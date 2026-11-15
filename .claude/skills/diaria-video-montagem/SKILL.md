@@ -125,6 +125,15 @@ npx tsx scripts/video-roteiro-blocos.ts {AAMMDD}
 
 Exit 3 = a edição não tem o JSON: seguir como sempre. Exit 0 = a proposta: por peça, as falas na ordem, o bloco de cada uma na montagem (o resumo do horizontal vira `resumo_curto` nos verticais), os `targets` de cada fala (`--json` traz o fragmento de `blocks`) e o vertical 2 como corte `guia` em `sequences` (as duas sequências de sempre vêm junto, porque `sequences` substitui as default), com `screenTitle` = o título do vertical 2 e `hook` = o gancho gravado à parte; o `screenTitle` da vertical da edição é o título do vertical 1. Usar a proposta para classificar as linhas da decupagem por bloco e, no `blocks.json` (item 5), para os `targets` e as `sequences`. A proposta não tem tempo no bruto: as tomadas e os intervalos continuam saindo da decupagem e do Gate 1. Falas fora da proposta saem em `[aviso]` (sem `bloco` no JSON, ou num bloco que o vertical não tem): resolver no Gate 1. A publicação do vertical 2 é uma semana depois do vertical 1, pelo banco de agendamentos (#12774), não no dia útil seguinte como os outros cortes.
 
+Campos do roteiro que a proposta já aplica (todos opcionais; sem eles, o comportamento de antes):
+
+- **`porVideo.{vertical1,vertical2}.ordem` (#13128):** cada vertical sai na ordem declarada. Dentro de um bloco, a fala que o vertical põe noutra posição que o horizontal vira **item próprio daquele vertical** no fragmento de `blocks` (mesmo texto, `targets` só dele), na posição certa; o item do horizontal fica onde estava, com `targets: ["youtube"]`. Copiar o fragmento como veio: juntar os dois itens num só desfaz a ordem. Entre blocos a montagem ordena pelo bloco, e a proposta avisa uma ordem que cruze blocos.
+- **`cortes` (#13129):** o corte de um vertical sai aplicado nele: a fala vira os trechos que sobram, cada um um item com `targets` daquele vertical (dois itens quando o corte é no meio), e o horizontal mantém o item da fala inteira. Cada trecho casa sozinho na decupagem, e o que foi cortado fica fora da sequência. Os **cortes de reserva** não entram: saem em `cortesReserva` (no `--json`, com os `segmentos` que substituem a fala e os segundos que economizam) e na seção "Cortes de reserva" do Markdown. Aplicar só quando o `roteiro` acusar a vertical acima do alvo (Passo 3, duração-alvo), e antes da sugestão de frases a cortar do próprio `roteiro`: trocar o item da fala pelos `segmentos` daquele vertical e refazer `build`.
+- **`fontes` (#13132):** saem na proposta e entram no `fact-check-input.json` como `roteiro_fontes` (Passo 3a), que o `fact-checker` em `mode: "video"` usa além das fontes do D1.
+- **`tela` (#13120):** o texto de tela de cada fala, para propor os textos de tela no Premiere. A proposta ainda não o leva ao XML: ler na página do roteiro ou no JSON.
+
+A proposta também traz a duração estimada de cada vídeo (`duracoes` no `--json`, a 150 palavras por minuto, alvos em `publishing.video.roteiro`, #13130): é a do texto do roteiro, não a medida no bruto, que continua sendo a do `roteiro`.
+
 **Nenhuma versão leva "Por que isso importa?"** (decisão do editor, 26/10/2026).
 
 ## Passo 3 — Roteiro final (Gate 2)

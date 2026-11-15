@@ -255,7 +255,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
+import { readRoteiroFontes, readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
@@ -2526,7 +2526,8 @@ export const VIDEO_FACT_CHECK_INPUT_FILE = "fact-check-input.json";
 /**
  * `fact-check-input` (#11956): os itens que vão ao ar (a união das versões,
  * com a fala ouvida quando difere do pedido), o hash deles e onde estão as
- * fontes do D1 baixadas no Stage 4 (`_internal/fact-check-sources/`).
+ * fontes do D1 baixadas no Stage 4 (`_internal/fact-check-sources/`), mais
+ * as fontes por fala do roteiro (`roteiro_fontes`, #13132).
  */
 function cmdFactCheckInput(ctx: Ctx): number {
   const { plans: ps, resolved } = plans(ctx);
@@ -2540,6 +2541,9 @@ function cmdFactCheckInput(ctx: Ctx): number {
     items_sha256: factCheckItemsSha256(items),
     items,
     sources_dir: sourcesDir,
+    // #13132: fontes de fora do D1 declaradas por fala no roteiro-falas.json
+    // (fatos do rascunho do editor checados na web); o agent as usa além do D1.
+    roteiro_fontes: readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`)),
     approved_json_path: join(editionDirFor(ctx.edition), "_internal", "01-approved.json"),
     out_path: f(ctx, VIDEO_FACT_CHECK_FILE),
   };

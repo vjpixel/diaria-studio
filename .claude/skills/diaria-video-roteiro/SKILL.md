@@ -7,7 +7,7 @@ effort: medium
 
 # /diaria-video-roteiro AAMMDD
 
-Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do processo da edição 261112 (10/11/2026), feito à mão numa sessão: o roteiro saiu de uma primeira versão até a 22ª em conversa com o editor. Exemplo completo, com o layout da página: `data/editions/2611/261112/_internal/roteiro-d1.html` (em `data/`, fora do git; sem ele, o Passo 5 descreve o layout).
+Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do processo da edição 261112 (10/11/2026), feito à mão numa sessão: o roteiro saiu de uma primeira versão até a 22ª em conversa com o editor. Desde o #13120 a página sai do `roteiro-falas.json` pelo `scripts/render-roteiro-video.ts`, no layout da 261116 (`data/editions/2611/261116/_internal/roteiro-d1.html`, em `data/`, fora do git; o JSON daquela edição é a fixture `test/fixtures/roteiro-video/roteiro-falas-261116.json`).
 
 **Fora de escopo:** gravar, decupar, checar os fatos da fala gravada no bruto e montar (tudo do `/diaria-video-montagem`), publicar (`/diaria-publica`). Esta skill não altera `02-reviewed.md` nem `03-social.md`.
 
@@ -28,13 +28,23 @@ Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do proces
 
 Se o editor já contou um caso pessoal ou uma opinião sobre o tema nesta conversa, usar. Se não, escrever o comentário como sugestão marcada e perguntar, na entrega da primeira versão, se ele tem um caso próprio. O relato dele é o que mais melhora o vídeo.
 
+**Rascunho do editor como entrada (#13132).** O editor pode trazer um rascunho próprio do roteiro (notícia e comentários, em texto ou imagem). Ler cada ponto e separar: **fato** a checar ou **opinião** dele (opinião entra como fala dele, sem checagem). Para cada fato:
+
+1. Está na fonte do D1 (`d1.txt`) ou no fact-check da edição? Usar como está.
+2. Não está: buscar na web (WebSearch e WebFetch) e classificar como **confirmado**, **só em fonte terceira** (blog, agregador, site de comparação: entra com a ressalva nas notas), **contraditório** (fontes divergem ou o ponto está errado: propor a versão corrigida, em vez de só excluir; na 261116 o mapa Pro/Flash/Flash-Lite do rascunho estava errado e foi corrigido) ou **sem fonte** (fica fora).
+3. A fala que usa um fato de fora do D1 leva `fontes` no `roteiro-falas.json` (Passo 5): a URL e o que ela sustenta. É o que o fact-check da fala gravada (`/diaria-video-montagem`, Passo 3a) recebe além do D1.
+
+Na entrega da primeira versão, listar os fatos checados com a classificação e, à parte, **os pontos do rascunho que ficaram de fora ou entraram só em parte, com o motivo** (na 261116 o editor perguntou por isso). A lista vai também nas notas da página (`notas` no JSON).
+
 ## Passo 2 — Formato: uma gravação, três vídeos
 
 O editor grava uma vez, na ordem do horizontal. Os verticais são cortes dessa gravação.
 
 - **Horizontal (1920x1080, cerca de 3 min):** a notícia inteira. Blocos: Gancho, Abertura, Resumo, Comentário, card de CTA.
 - **Vertical 1, a notícia (cerca de 60 s):** gancho, resumo curto com o número mais forte, o comentário pessoal e uma chamada falada para o vídeo completo. Sai primeiro.
-- **Vertical 2, o guia (cerca de 75 s):** o que fazer, em passos. Tem que se sustentar sozinho. Sai uma semana depois do vertical 1.
+- **Vertical 2, o guia (cerca de 60 s):** o que fazer, em passos. Tem que se sustentar sozinho. Sai uma semana depois do vertical 1. A prévia da montagem aceita até 75 s, mas o alvo do roteiro é 60 (#13130).
+
+A duração de cada vídeo sai do `video-roteiro-blocos.ts` (Passo 5), estimada a 150 palavras por minuto, com o card de CTA à parte: nunca contar à mão. Vertical acima de 60 s ou horizontal longe de 3 min dão `[aviso]` com a sugestão de corte. Os alvos ficam em `publishing.video.roteiro` do `platform.config.json` (`alvo_s`, `palavras_por_minuto`, `horizontal_folga_s`, `cta_card_s`).
 
 Regras de estrutura:
 
@@ -43,7 +53,7 @@ Regras de estrutura:
 - Toda fala usada num vertical precisa funcionar sem a anterior: repetir o sujeito ("o Claude Code", não "ele") e não depender de uma fala que ficou só no horizontal.
 - Quando o vídeo entrega dicas, o gancho promete: "Fica até o final, que eu vou te dar três dicas pra…". No vertical 1 a promessa vira a chamada final para o vídeo completo no YouTube. É falada porque fora do YouTube Shorts o post não leva link para o horizontal (#12735).
 - Abertura fixa, sempre a mesma: "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida."
-- Cada vídeo tem título e texto da capa. O título é pensado para a busca e o clique no YouTube e pode ser diferente do título do D1 na newsletter; avisar quando for. O texto da capa segue a diretriz de `docs/youtube-capa-texto.md` (#12737): complementa o título, 2 a 6 palavras (5 no vertical), pergunta ou afirmação; ordenar os candidatos com `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file {arquivo}` e trazer os primeiros como opções. O script compara a capa com o título do D1 e com os títulos do vídeo (`--title`, ou os do `roteiro-falas.json` quando ele já existe): passar `--title` quando o vídeo trata de outro assunto que o D1 do `02-reviewed.md`.
+- Cada vídeo tem título e texto da capa. O título é pensado para a busca e o clique no YouTube e pode ser diferente do título do D1 na newsletter; avisar quando for. **O título do vertical 1 é sempre o do horizontal** (#13116, decisão do editor de 15/11/2026): o vertical 1 chama para o "vídeo completo no YouTube", e com o mesmo título a pessoa reconhece o vídeo. Por isso o título do horizontal cabe em cerca de 40 caracteres (o corte do feed de Shorts), com o nome do produto no começo. As capas dos dois continuam diferentes; o vertical 2 tem título próprio. No JSON, `porVideo.vertical1.titulo` pode ficar ausente: herda o do horizontal. O texto da capa segue a diretriz de `docs/youtube-capa-texto.md` (#12737): complementa o título, 2 a 6 palavras (5 no vertical), pergunta ou afirmação; ordenar os candidatos com `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file {arquivo}` e trazer os primeiros como opções. O script compara a capa com o título do D1 e com os títulos do vídeo (`--title`, ou os do `roteiro-falas.json` quando ele já existe): passar `--title` quando o vídeo trata de outro assunto que o D1 do `02-reviewed.md`.
 
 Critérios de título, capa e gancho (#13116, decididos com o editor em 15/11/2026; detalhe em `docs/youtube-capa-texto.md`):
 
@@ -52,7 +62,7 @@ Critérios de título, capa e gancho (#13116, decididos com o editor em 15/11/20
 3. A capa do vertical aparece sozinha na grade do perfil: precisa de sujeito reconhecível ("Sua Busca", "Google"), nunca uma pergunta sem sujeito ("Inventa cinco vezes menos?").
 4. O gancho chega ao ponto em cerca de 3 s no vertical e em até 5 a 10 s no horizontal: o que importa para quem assiste vem na primeira frase. Estimar a duração a cerca de 150 palavras por minuto (3 s são umas 8 palavras).
 
-Pergunta ou afirmação na capa: escolher pela clareza, não pelo formato (a diretriz não tem evidência para preferir uma ou outra). Título do horizontal: mirar cerca de 60 caracteres, com o nome do produto no começo.
+Pergunta ou afirmação na capa: escolher pela clareza, não pelo formato (a diretriz não tem evidência para preferir uma ou outra). Título do horizontal: com o nome do produto no começo, em cerca de 40 caracteres, porque é também o do vertical 1 (esse limite refina os cerca de 60 caracteres anotados antes). Os `[aviso]` do `video-roteiro-blocos.ts` apontam gancho longo no vertical, título igual ao gancho e capa de vertical sem sujeito.
 
 ## Passo 3 — Regras da fala
 
@@ -64,7 +74,7 @@ Vêm de decisões do editor. Não reabrir.
 - Tom de conversa: "pra", "tinha", frases curtas. Imperativo no mesmo tom do começo ao fim ("escreve", "guarda", "confere"), nunca misturado com "escreva", "guarde".
 - Um nome só para cada coisa. Se o resumo abriu com "senhas e chaves", não trocar por "credenciais" ou "segredos" depois.
 - Termo técnico vem com a explicação na mesma fala ou na seguinte ("o GitHub é o site onde os programadores publicam código").
-- Nome de arquivo ou comando ruim de falar vira descrição na fala ("o arquivo de configurações locais do Claude"), com o nome exato escrito na tela. Anotar isso nas notas de gravação.
+- Nome de arquivo ou comando ruim de falar vira descrição na fala ("o arquivo de configurações locais do Claude"), com o nome exato escrito na tela. Anotar no box "Na tela" da fala (campo `tela`, Passo 5), não nas notas.
 - Número arredondado para o ouvido ("mais de 500", "quase 2.000"), sem mudar o sentido.
 - Uma informação por frase. Fala com três dados vira duas falas.
 - Não repetir o mesmo fato no resumo e no comentário.
@@ -79,17 +89,19 @@ Vêm de decisões do editor. Não reabrir.
 
 ## Passo 5 — Entregar como artefato
 
-Gravar a página em `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-d1.html` e publicar com a ferramenta Artifact, seguindo o que ela pede para uma página nova. Gravar o link do artefato num comentário HTML na primeira linha do arquivo (`<!-- artifact: URL -->`): uma sessão retomada lê esse link e republica no mesmo endereço, em vez de criar outro. Partir do layout do exemplo da 261112 (ou do roteiro da edição anterior mais recente que tiver um):
+**A fonte é o JSON; a página é gerada dele (#13120).** Gravar o roteiro em `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-falas.json` (formato abaixo) e gerar a página com:
 
-- uma caixa no topo com o formato da versão;
-- botão "Copiar roteiro";
-- uma seção por vídeo, com título, texto da capa, blocos e falas numeradas;
-- etiquetas para "Seu relato", "Gravar à parte" e sugestões;
-- notas de gravação no fim: ordem de gravação, quais falas cada vertical usa, o que mostrar na tela, de quem é cada fala, ressalvas de fidelidade.
+```bash
+npx tsx scripts/render-roteiro-video.ts {AAMMDD}
+```
+
+Ele valida o JSON (inválido = exit 2, nada gravado), repete os `[aviso]` do `video-roteiro-blocos.ts` e grava `_internal/roteiro-d1.html` no layout da 261116: caixa "Gravação" no topo (duração calculada e falas de cada vídeo, o que gravar à parte, os itens de `gravacao`), botão "Copiar roteiro", uma seção por vídeo com título, texto da capa, blocos e falas numeradas, o box **"Na tela"** ao lado de cada fala que tem `tela` (empilhado no celular), os verticais na ordem de `ordem`, o corte parcial riscado e o de reserva sublinhado, e as "Notas para a edição" no fim (cortes, ordem diferente do horizontal, fontes de fora do D1 e os itens de `notas`). Nunca escrever nem editar o HTML à mão: a mesma fala aparece em cada vídeo que a usa, e só gerando do JSON as cópias não divergem. O texto de tela não lista mais nas notas: vai no box da fala.
+
+Publicar a página com a ferramenta Artifact, seguindo o que ela pede para uma página nova, e gerar de novo com `--artifact-url {URL}`: o link fica num comentário na primeira linha (`<!-- artifact: URL -->`), que as gerações seguintes preservam sozinhas. Uma sessão retomada lê esse link e republica no mesmo endereço, em vez de criar outro.
 
 Na resposta, dar o link e citar só o que mudou.
 
-**O roteiro em JSON (#12751).** Junto com a página, gravar `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-falas.json`, que é o que a montagem e a publicação leem (a página é para o editor ler; nenhum script lê o HTML):
+**O roteiro em JSON (#12751).** É o que a montagem e a publicação leem, e a página sai dele (nenhum script lê o HTML):
 
 ```json
 {
@@ -97,26 +109,69 @@ Na resposta, dar o link e citar só o que mudou.
   "veiculos": ["veículos da fonte do D1"],
   "porVideo": {
     "horizontal": { "titulo": "título do YouTube", "capa": "texto da capa" },
-    "vertical1": { "titulo": "…", "capa": "…" },
+    "vertical1": { "capa": "…", "ordem": ["H1", "H4", "H10", "H10c", "V1-CTA"] },
     "vertical2": { "titulo": "…", "capa": "…" }
   },
   "falas": [
-    { "id": "H1", "bloco": "gancho", "texto": "…", "videos": ["horizontal", "vertical1"], "gravarAParte": false }
-  ]
+    { "id": "H1", "bloco": "gancho", "texto": "…", "videos": ["horizontal", "vertical1"], "gravarAParte": false },
+    {
+      "id": "H4", "bloco": "resumo", "texto": "… na Busca do Google e em outros serviços da empresa.", "videos": ["horizontal", "vertical1"],
+      "tela": "App do Gemini · Busca do Google · AI Studio",
+      "cortes": { "vertical1": "e em outros serviços da empresa" }
+    },
+    {
+      "id": "H6", "bloco": "resumo", "texto": "…", "videos": ["horizontal", "vertical1"],
+      "cortes": { "vertical1": { "trecho": "…", "reserva": true } },
+      "fontes": [{ "url": "https://…", "sustenta": "Hydrogen 51, Argon 50 no índice" }]
+    }
+  ],
+  "gravacao": ["Antes de gravar: confira se …"],
+  "notas": ["Repetição de propósito: …", "Do rascunho, ficou de fora: … (motivo)"]
 }
 ```
 
-Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da montagem em que a fala entra no horizontal (ou no vertical, quando ela só existe lá): `gancho`, `abertura`, `resumo`, `comentario`, `cta_vertical` (a chamada final do vertical 1); o resumo do horizontal vira o resumo curto nos verticais sozinho. `porVideo` traz o título e o texto da capa de cada vídeo, como na página. Validar com `npx tsx scripts/video-roteiro-blocos.ts {AAMMDD}` (exit 0 = o JSON serve; os `[aviso]` apontam fala sem bloco ou fora da ordem do vertical, gancho do vertical com mais de ~8 palavras antes do primeiro ponto e título que repete o gancho, #13116).
+Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da montagem em que a fala entra no horizontal (ou no vertical, quando ela só existe lá): `gancho`, `abertura`, `resumo`, `comentario`, `cta_vertical` (a chamada final do vertical 1); o resumo do horizontal vira o resumo curto nos verticais sozinho. `porVideo` traz o título e o texto da capa de cada vídeo (o vertical 1 sem título herda o do horizontal, #13116). Campos opcionais, todos retrocompatíveis:
+
+- **`tela`** (por fala, #13120): o texto que vai escrito na tela durante a fala, sempre que ela tiver texto, número, nome ou comparação para mostrar (o nome exato de um arquivo, índice ou modelo que a fala descreve sem citar; os números; a escada de modelos). Curto; `\n` quebra a linha. Sem seta (`→`, `←`, #9721). A montagem pode usá-lo para propor os textos de tela.
+- **`cortes`** (por fala, #13129): `{ "vertical1": "trecho exato" }` tira o trecho só naquele vídeo (o horizontal fica com a fala inteira); `{ "trecho": "…", "reserva": true }` marca o corte que só entra se o vídeo passar do alvo. O trecho tem de estar no texto, e o vídeo tem de usar a fala.
+- **`fontes`** (por fala, #13132): `[{ "url", "sustenta" }]` para cada fato de fora da fonte do D1 (Passo 1).
+- **`porVideo.{vertical1,vertical2}.ordem`** (#13128): a sequência daquele corte, por id, quando ela difere da ordem do horizontal. Tem de trazer exatamente as falas do vídeo. Dentro de um bloco a montagem segue essa ordem; entre blocos ela ordena pelo bloco (gancho, resumo, comentário…), e o validador avisa uma ordem que cruze blocos.
+- **`porVideo.{v}.cta`**: o texto do card de CTA na página, quando não é o padrão ("Gostou? / Curta o vídeo / …").
+- **`gravacao`** e **`notas`**: itens a mais da caixa "Gravação" e das "Notas para a edição" (o que conferir antes de gravar, repetição de propósito, de quem é cada fala, ressalvas de fidelidade, o que ficou de fora do rascunho do editor).
+
+Validar com `npx tsx scripts/video-roteiro-blocos.ts {AAMMDD}` (exit 0 = o JSON serve; exit 2 lista o que está errado, inclusive `ordem` com fala faltando ou sobrando, corte com trecho que não está na fala e `tela` com seta). Os `[aviso]` apontam fala sem bloco ou fora da ordem do vertical, gancho do vertical com mais de ~8 palavras antes do primeiro ponto, título que repete o gancho e capa de vertical sem sujeito (#13116), e vertical acima de 60 s ou horizontal fora da faixa de 3 min, com a sugestão de corte (#13130). A saída traz a duração estimada de cada vídeo: é ela que a página mostra.
+
+## Passo 5a — Revisão por um segundo modelo, por vídeo (#13131)
+
+Na 261116 o editor pediu várias vezes que um segundo modelo criticasse o roteiro, e cada rodada achou problema real que a primeira versão e o humanizador não pegaram: gancho fraco e longo, referência solta depois do corte ("o do meio", "isso"), contradição entre o gancho e o comentário ("ultrapassou" contra "empatou"), imprecisão ("um quinto ou menos" contra "mais de cinco vezes"), fala que afirma mais do que a fonte, ordem do comentário que quebrava o raciocínio. Funcionou melhor pedindo a crítica **por vídeo**, cada um como peça inteira. Roda duas vezes, sem o editor precisar pedir:
+
+- **depois da primeira versão**, antes de entregá-la: revisão do conjunto;
+- **no Passo 7**, depois do humanizador: revisão da coerência e da narrativa.
+
+**Ordem:** passar o humanizador (Passo 7, item 1) **antes** de cada revisão, para o revisor não gastar a crítica no que o humanizador já resolve.
+
+**Despacho:** um Agent `subagent_type: "general-purpose"` com `model: "fable"` explícito (o Fable 5.2, o modelo das revisões da 261116; o Agent tool não recebe `effort`, então vale o do turno, `medium` pelo frontmatter desta skill), **somente leitura**: não edita arquivo, não publica, não roda o render. Recebe o caminho do `roteiro-falas.json` (as falas, os vídeos de cada uma, a `ordem` e os `cortes` de cada vertical), a fonte do D1 (`_internal/fact-check-sources/d1.txt`), as `fontes` declaradas e as regras dos Passos 2 a 4 desta skill. Prompt-base:
+
+> Revise o roteiro de fala em `{caminho do roteiro-falas.json}` como três vídeos separados: o horizontal, o vertical 1 e o vertical 2. Monte cada vídeo com as falas que ele usa, na ordem dele (`porVideo.{vertical}.ordem` quando existir, senão a ordem das falas no JSON), já com os `cortes` daquele vídeo aplicados, e leia cada um como uma peça inteira, sem ter visto os outros. Para cada vídeo aponte: gancho fraco ou longo (no vertical, o ponto chega em ~3 s); fala que perdeu a referência no corte ("isso", "o do meio", "também"); contradição entre falas; número ou comparação impreciso; afirmação que vai além da fonte (`{d1.txt}` e as `fontes` do JSON); ordem que quebra o raciocínio; título e gancho iguais. Respeite as regras em `.claude/skills/diaria-video-roteiro/SKILL.md`, Passos 2 a 4. Não reescreva o roteiro inteiro: proponha reescritas pontuais, por id de fala. Responda em três blocos, `## Horizontal`, `## Vertical 1`, `## Vertical 2`, cada um com a lista `- {id}: {problema}; proposta: "{fala nova}"` (ou "sem problemas"), e no fim `## Entre vídeos`, para o que só aparece comparando os três.
+
+**Filtro do coordenador, antes de mostrar ao editor.** A resposta nunca vai crua. O coordenador (esta sessão):
+
+1. descarta o que contraria decisão já tomada nesta conversa ou registrada (na 261116, a volta de uma frase que o editor tinha tirado), e o que contraria as regras dos Passos 2 a 4;
+2. confere cada reescrita contra o humanizador: aponta onde ela reintroduz um vício (o "E" no começo de frase, travessão, regra de três) e corrige antes de propor;
+3. confere contra a fonte o que o revisor diz ser imprecisão, antes de aceitar;
+4. entrega ao editor, por vídeo, o que sobrou: o problema, a fala atual e a proposta, separando o que foi aplicado (correção mecânica: referência solta, imprecisão confirmada na fonte) do que é decisão dele (mudança de sentido, de ordem ou de corte). Descartes saem numa linha só, com o motivo.
+
+Aplicar no JSON e gerar a página de novo (Passo 6, item 1). Revisor indisponível (erro do Agent, modelo recusado): dizer isso na entrega e seguir sem a revisão, nunca travar o roteiro por ela.
 
 ## Passo 6 — Iterar com o editor
 
 O editor dita ajustes por voz, um de cada vez. Para cada um:
 
-1. Aplicar com `Edit` no arquivo e republicar no mesmo link, com um rótulo de versão. Na página, o texto de uma fala aparece de novo em cada vídeo que a usa: mudar todas as cópias (`replace_all` com um trecho que só exista nas falas) e conferir que as notas de gravação continuam certas. Aplicar a mesma mudança no `roteiro-falas.json` (fala, título, capa, quais vídeos usam a fala): ele tem de descrever a versão da página.
+1. Aplicar com `Edit` no `roteiro-falas.json` (fala, título, capa, quais vídeos usam a fala, `tela`, `cortes`, `ordem`, `notas`), gerar a página de novo (`render-roteiro-video.ts {AAMMDD}`) e republicar no mesmo link, com um rótulo de versão. A página sai do JSON, então todas as cópias da fala mudam juntas; conferir só os `[aviso]` e as notas livres (`notas`, `gravacao`), que não se atualizam sozinhas.
 2. Responder com a fala nova entre aspas.
 3. Se o ajuste criar um problema (um fato errado, uma fala que perdeu a referência), dizer e propor a saída, sem aplicar por conta própria o que muda o sentido.
 
-Antes de uma mudança de estrutura (trocar a persona, mudar o número de vídeos), salvar uma cópia `roteiro-d1-v{N}.html` na mesma pasta.
+Antes de uma mudança de estrutura (trocar a persona, mudar o número de vídeos), salvar uma cópia `roteiro-d1-v{N}.html` e `roteiro-falas-v{N}.json` na mesma pasta.
 
 Termo que parece erro de ditado por voz: usar o termo certo e avisar.
 
@@ -125,16 +180,18 @@ Termo que parece erro de ditado por voz: usar o termo certo e avisar.
 Quando o editor pedir, ou quando o roteiro parar de mudar:
 
 1. Passar a skill `humanizador` nas falas. Não mexer nas falas que são palavras do editor (o relato e a última fala do comentário, quando ele ditou), só apontar.
-2. Revisão final, nesta lista:
+2. Revisão da coerência e da narrativa por um segundo modelo, por vídeo (Passo 5a), com o filtro do coordenador.
+3. Revisão final, nesta lista:
    - alguma fala perdeu a referência depois de um corte ou de uma troca de ordem ("isso", "também", "a mesma decisão")?
    - o relato pessoal ainda combina com a frase que o apresenta?
    - algum fato aparece duas vezes?
    - cada vertical faz sentido sozinho e cumpre o que o gancho promete?
    - o vertical 2 chega nas dicas em até uns 30 s? Se passar disso, encurtar o que vem antes.
-   - os critérios de título, capa e gancho do Passo 2 (#13116): título e gancho de cada vídeo dizem a mesma coisa com palavras diferentes? A capa do horizontal não repete o assunto do título? A capa de cada vertical tem sujeito reconhecível? A primeira frase do gancho chega ao ponto (umas 8 palavras no vertical, até 5 a 10 s no horizontal)? Os `[aviso]` do `video-roteiro-blocos.ts` apontam gancho longo no vertical e título que repete o gancho.
-   - as durações escritas na página batem com o texto?
-   - a caixa do topo e as notas descrevem a versão atual?
-3. Entregar as mudanças aplicadas e, separadas, as decisões que são do editor.
+   - os critérios de título, capa e gancho do Passo 2 (#13116): título e gancho de cada vídeo dizem a mesma coisa com palavras diferentes? O título do vertical 1 é o do horizontal, e ele cabe em uns 40 caracteres? A capa do horizontal não repete o assunto do título? A capa de cada vertical tem sujeito reconhecível? A primeira frase do gancho chega ao ponto (umas 8 palavras no vertical, até 5 a 10 s no horizontal)? Os `[aviso]` do `video-roteiro-blocos.ts` apontam gancho longo no vertical, título que repete o gancho e capa de vertical sem sujeito.
+   - os verticais cabem em 60 s? A duração vem do `video-roteiro-blocos.ts`, já com os cortes; acima do alvo, usar primeiro os cortes de reserva declarados.
+   - toda fala com texto, número, nome ou comparação para mostrar tem `tela`? Toda fala com fato de fora do D1 tem `fontes`?
+   - as notas livres (`notas`, `gravacao`) descrevem a versão atual? O resto da caixa do topo e das notas sai do JSON.
+4. Entregar as mudanças aplicadas e, separadas, as decisões que são do editor.
 
 ## Passo 8 — Conferir a gravação contra o roteiro (#12754)
 

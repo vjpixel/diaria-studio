@@ -1,0 +1,249 @@
+{
+  "edicao": "261116",
+  "veiculos": [
+    "blog do Google"
+  ],
+  "porVideo": {
+    "horizontal": {
+      "titulo": "Google te dá Gemini 4 Hydrogen de graça",
+      "capa": "Já está na sua Busca"
+    },
+    "vertical1": {
+      "titulo": "Google te dá Gemini 4 Hydrogen de graça",
+      "capa": "Sua Busca mudou de IA"
+    },
+    "vertical2": {
+      "titulo": "Novo Gemini: 3 dicas pra usar melhor",
+      "capa": "Google: para de usar palavra-chave"
+    }
+  },
+  "falas": [
+    {
+      "id": "H1",
+      "bloco": "gancho",
+      "texto": "A IA da sua Busca do Google mudou. O modelo novo, o menor da família, ultrapassou um modelo maior da própria empresa num teste de inteligência.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H1b",
+      "bloco": "gancho",
+      "texto": "É de graça, e no final tem três dicas pra tirar mais dele.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H2",
+      "bloco": "abertura",
+      "texto": "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H3",
+      "bloco": "resumo",
+      "texto": "O Google lançou um modelo feito pra executar rápido as tarefas do dia a dia.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H4",
+      "bloco": "resumo",
+      "texto": "O Gemini 4 Hydrogen já está liberado pra todo mundo no app do Gemini, na Busca do Google e em outros serviços da empresa.",
+      "videos": [
+        "horizontal",
+        "vertical1",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H5",
+      "bloco": "resumo",
+      "texto": "No app, quem usa de graça recebe esse modelo automaticamente, quando ele for o mais indicado pro pedido.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H9",
+      "bloco": "resumo",
+      "texto": "Pra quem conhecia os nomes antigos: o Hydrogen é o sucessor do Flash. Acima dele vêm o Argon e o Carbon, que é o mais forte. No app, o Argon vem no plano Pro e o Carbon, no Ultra.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H6",
+      "bloco": "resumo",
+      "texto": "Num índice independente que compara a inteligência dos modelos de IA, o Hydrogen marcou 51 pontos. O Gemini 4 Argon marcou 50.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H7",
+      "bloco": "resumo",
+      "texto": "Segundo o Google, o Hydrogen termina as tarefas duas vezes e meia mais rápido que o Flash. Também inventa menos de um quinto do que o Flash inventava.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H9c",
+      "bloco": "comentario",
+      "texto": "No índice independente, o Hydrogen fica no nível dos modelos intermediários da Anthropic e da OpenAI.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10c",
+      "bloco": "comentario",
+      "texto": "O Google entrega o Hydrogen de graça, na Busca e no app. A OpenAI não libera um modelo desse nível no plano gratuito.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10",
+      "bloco": "comentario",
+      "texto": "Em seis semanas, o Google lançou três modelos, e o menor já passou o Argon, o do meio.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10d",
+      "bloco": "comentario",
+      "texto": "Com isso, o Google voltou pra corrida.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10e",
+      "bloco": "comentario",
+      "texto": "Pra quem programa, o Google também oferece os modelos em dupla: o mais forte planeja e o Hydrogen executa, na mesma tarefa.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10b",
+      "bloco": "comentario",
+      "texto": "Por isso, comparar modelo com modelo diz cada vez menos. O que pesa é de qual empresa você usa a IA.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10f",
+      "bloco": "comentario",
+      "texto": "Se você usa só o plano gratuito do ChatGPT, vale testar o Gemini. Pra pergunta rápida, nem precisa do app: a Busca do Google já resolve.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H12",
+      "bloco": "comentario",
+      "texto": "Pra tirar mais do Hydrogen, na Busca e no app, são três dicas.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H13",
+      "bloco": "comentario",
+      "texto": "Um: na Busca, escreve como você escreveria pro ChatGPT, com a dúvida inteira, em vez de palavra-chave. Em vez de \"restaurante domingo vegano\", escreve: \"restaurante pra oito pessoas, aberto domingo, com opção vegana perto de mim\".",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H14",
+      "bloco": "comentario",
+      "texto": "Dois: no app do Gemini, diz logo no pedido o tom, o formato e as regras. Por exemplo: escreve um e-mail pro meu cliente avisando que a entrega vai atrasar uma semana. Três linhas, tom formal, sem jargão, e termina propondo uma nova data.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H15",
+      "bloco": "comentario",
+      "texto": "Segundo o Google, o Hydrogen melhorou nisso: devolver pronto na primeira tentativa.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H16",
+      "bloco": "comentario",
+      "texto": "Três: confere o que importa. O Google diz que o Hydrogen inventa menos. Menos não é zero. Número, data e nome, você checa antes de mandar pra frente.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H17",
+      "bloco": "comentario",
+      "texto": "Resumindo: a IA que vem de graça, no lugar onde você já pesquisa, ficou melhor, e chegou ao nível do que a OpenAI só libera pra quem paga.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "V1-CTA",
+      "bloco": "cta_vertical",
+      "texto": "As três dicas pra tirar mais dele estão no vídeo completo, no YouTube da diar.ia.br.",
+      "videos": [
+        "vertical1"
+      ],
+      "gravarAParte": true
+    },
+    {
+      "id": "V2-G",
+      "bloco": "gancho",
+      "texto": "A IA do Google mudou. Agora vale pedir diferente.",
+      "videos": [
+        "vertical2"
+      ],
+      "gravarAParte": true
+    }
+  ]
+}
