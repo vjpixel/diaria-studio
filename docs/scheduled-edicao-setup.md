@@ -263,7 +263,7 @@ Verificar o `--max-turns` atual vs. complexidade da pipeline. Se logs mostram qu
 
 ### `ExecStart=` do unit systemd embute o Node errado
 
-Mesmo achado ao vivo do watchdog (#4857, incidente #4823): `buildEdicaoSystemdUnitFiles` embute `process.execPath` — o Node que **rodou o gerador**, literalmente, no `ExecStart=`. Gerar com `nvm use`/`fnm use` do `.nvmrc` já ativado; senão o unit fica preso a um Node desatualizado. `setup-edicao-schedule-systemd.ts` avisa (não bloqueia) se detectar isso.
+Mesmo achado ao vivo do watchdog (#4857, incidente #4823): até o #13151, `buildEdicaoSystemdUnitFiles` embutia `process.execPath` — o Node que **rodou o gerador** — no `ExecStart=`, e por `ssh` não-interativo isso dava `/usr/bin/node`. Desde o #13151, `setup-edicao-schedule-systemd.ts` (e o `setup-watchdog-schedule-systemd.ts`) resolve o node como o `setup-systemd-timers.ts` (#13136): `--node-bin`/`DIARIA_SYSTEMD_NODE_BIN` → instalação do nvm que casa com o `.nvmrc` → node do processo, só se ele casar. Sem node que case, ou abaixo do piso, o gerador recusa (exit 1) em vez de só avisar.
 
 ---
 

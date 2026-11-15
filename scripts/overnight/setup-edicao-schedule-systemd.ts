@@ -8,8 +8,9 @@
  * `scripts/overnight/setup-watchdog-schedule-systemd.ts` (fora do registry,
  * ver decisão documentada em `scripts/lib/edicao-systemd-units.ts`).
  *
- * Este script SÓ ESCREVE ARQUIVOS EM DISCO — nunca chama `systemctl` nem
- * qualquer outro subprocess. ARMAR (copiar pra `~/.config/systemd/user/` +
+ * Este script SÓ ESCREVE ARQUIVOS EM DISCO — nunca chama `systemctl`. O único
+ * subprocesso é `<node> --version`, para conferir o node do `ExecStart=`
+ * (#13151). ARMAR (copiar pra `~/.config/systemd/user/` +
  * `systemctl --user enable --now`) é ação humana explícita na máquina real.
  *
  * **Armar/desarmar: `scripts/overnight/arm-edicao-schedule-systemd.ts
@@ -21,21 +22,25 @@
  * sem publicar nada — o alarme de outra máquina não fica sabendo.
  *
  * Uso:
- *   npx tsx scripts/overnight/setup-edicao-schedule-systemd.ts [--out-dir <dir>]
+ *   npx tsx scripts/overnight/setup-edicao-schedule-systemd.ts [--out-dir <dir>] [--node-bin <path>]
  *
  * --out-dir: relativo à raiz do repo (default: ".systemd-units/" — mesmo
  *            diretório usado pelas outras gerações de unit, git-ignorado).
  *
- * Mesmo achado ao vivo do #4857 pro watchdog: `buildEdicaoSystemdUnitFiles`
- * embute `process.execPath` (o Node que RODOU este comando) literalmente no
- * `ExecStart=` gerado — rodar com `nvm use`/`fnm use` do `.nvmrc` ativado
- * ANTES de gerar, senão o unit fica preso a um Node desatualizado/errado.
+ * --node-bin: node absoluto do `ExecStart=` (também `DIARIA_SYSTEMD_NODE_BIN`).
+ *
+ * Node do `ExecStart=` (#13151): até aqui o gerador embutia `process.execPath`
+ * (o Node que RODOU este comando) e só avisava quando ele estava abaixo do
+ * piso — por `ssh` não-interativo isso dá `/usr/bin/node`. Agora o node vem de
+ * `resolveCheckedSystemdNodeBinary` (`--node-bin` → nvm do `.nvmrc` → processo,
+ * se ele casar com o `.nvmrc`), o mesmo caminho de `setup-systemd-timers.ts`
+ * desde o #13136; sem node que case, ou abaixo do piso, o CLI recusa (exit 1).
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkNodeVersion } from "../lib/check-node-version.ts";
 import { getStringArg, isMainModule } from "../lib/cli-args.ts";
+import { resolveCheckedSystemdNodeBinary, type CheckedNodeBinaryDeps } from "../lib/systemd-node-binary-checked.ts";
 import { buildEdicaoSystemdUnitFiles, EDICAO_UNIT_NAME } from "../lib/edicao-systemd-units.ts";
 
 const DEFAULT_OUT_DIR = ".systemd-units";
@@ -45,9 +50,16 @@ const DEFAULT_OUT_DIR = ".systemd-units";
  * se necessário). Retorna os paths absolutos escritos, `[service, timer]`.
  * Nunca chama `systemctl` — só filesystem.
  */
-export function generateEdicaoSystemdUnits(repoRootAbs: string, outDirAbs: string): string[] {
+export function generateEdicaoSystemdUnits(
+  repoRootAbs: string,
+  outDirAbs: string,
+  nodeBin: string = process.execPath,
+): string[] {
   mkdirSync(outDirAbs, { recursive: true });
-  const { serviceFileName, timerFileName, serviceContent, timerContent } = buildEdicaoSystemdUnitFiles(repoRootAbs);
+  const { serviceFileName, timerFileName, serviceContent, timerContent } = buildEdicaoSystemdUnitFiles(
+    repoRootAbs,
+    nodeBin,
+  );
   const servicePath = join(outDirAbs, serviceFileName);
   const timerPath = join(outDirAbs, timerFileName);
   writeFileSync(servicePath, serviceContent, "utf8");
@@ -72,33 +84,35 @@ export function buildEdicaoArmInstructions(outDirAbs: string): string {
   );
 }
 
-export function main(argv: string[], repoRootAbs: string, execNodeVersion: string = process.version): number {
+export function main(argv: string[], repoRootAbs: string, deps: CheckedNodeBinaryDeps = {}): number {
   let outDirArg: string | undefined;
+  let nodeBinArg: string | undefined;
   try {
     outDirArg = getStringArg(argv, "out-dir", { example: DEFAULT_OUT_DIR });
+    nodeBinArg = getStringArg(argv, "node-bin", { example: "/home/vjpixel/.nvm/versions/node/v24.19.0/bin/node" });
+  } catch (e) {
+    console.error((e as Error).message);
+    return 1;
+  }
+
+  // #13151: node do ExecStart determinístico (nvm do .nvmrc), como em
+  // setup-systemd-timers.ts desde o #13136. Sem node que case, recusa.
+  let nodeBin: string;
+  try {
+    const resolved = resolveCheckedSystemdNodeBinary(nodeBinArg, deps);
+    nodeBin = resolved.path;
+    console.log(`node do ExecStart: ${resolved.path} (${resolved.version}, origem: ${resolved.source})`);
   } catch (e) {
     console.error((e as Error).message);
     return 1;
   }
 
   const outDirAbs = resolve(repoRootAbs, outDirArg ?? DEFAULT_OUT_DIR);
-  const written = generateEdicaoSystemdUnits(repoRootAbs, outDirAbs);
+  const written = generateEdicaoSystemdUnits(repoRootAbs, outDirAbs, nodeBin);
 
   console.log(`Edição diária agendada (#2068) -> ${written.length} arquivo(s) gerado(s) em ${outDirAbs}:\n`);
   for (const p of written) console.log(`  ${p}`);
   console.log(buildEdicaoArmInstructions(outDirAbs));
-
-  const nodeCheck = checkNodeVersion(execNodeVersion);
-  if (!nodeCheck.ok) {
-    console.warn(
-      `\n[aviso] ExecStart= foi gerado com o Node deste shell (${execNodeVersion}, ` +
-        `process.execPath=${process.execPath}) — esse caminho fica EMBUTIDO literalmente ` +
-        "no unit, não se atualiza sozinho depois. " +
-        `${nodeCheck.message} ` +
-        "Se este não for o Node que o projeto usa (nvm use / fnm use no .nvmrc), " +
-        "reative a versão correta e gere de novo ANTES de copiar pra ~/.config/systemd/user/.\n",
-    );
-  }
 
   return 0;
 }

@@ -54,8 +54,15 @@ export function buildEdicaoOnCalendar(hour: number = 16, minute: number = 0): st
  * e sai rápido quando a edição do dia já foi iniciada, então disparar mesmo
  * quando o editor já rodou manualmente é barato e seguro.
  */
-export function buildEdicaoSystemdUnitFiles(repoRootAbs: string): SystemdUnitFiles {
-  const execStart = `${process.execPath} --import tsx ${repoRootAbs}/scripts/overnight/run-scheduled-edicao.ts`;
+export function buildEdicaoSystemdUnitFiles(
+  repoRootAbs: string,
+  // #13151: node do `ExecStart=`. O CLI (`setup-edicao-schedule-systemd.ts`)
+  // passa o resolvido por `resolveSystemdNodeBinary` (nvm do `.nvmrc`), como
+  // `setup-systemd-timers.ts` faz desde o #13136. O default `process.execPath`
+  // fica só para chamadas de biblioteca e testes.
+  nodeBin: string = process.execPath,
+): SystemdUnitFiles {
+  const execStart = `${nodeBin} --import tsx ${repoRootAbs}/scripts/overnight/run-scheduled-edicao.ts`;
   const onCalendar = buildEdicaoOnCalendar();
 
   const serviceContent = [
