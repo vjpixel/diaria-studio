@@ -12,6 +12,10 @@
  *   - por dia: views, minutos e inscritos ganhos/perdidos do canal;
  *   - por dia e fonte (`insightTrafficSourceType`): views;
  *   - curva de retenção por vídeo (`elapsedVideoTimeRatio` × `audienceWatchRatio`);
+ *   - termos de busca do YouTube que trouxeram views (`insightTrafficSourceDetail`
+ *     com `insightTrafficSourceType==YT_SEARCH`), do canal e por vídeo, nos
+ *     últimos 28 dias (#13087). Lista vazia é resultado válido: o YouTube omite
+ *     termo abaixo do limiar de privacidade;
  *   - total de inscritos do canal (`channels.list`, Data API) como série.
  *
  * Escopo: a Analytics API pede `yt-analytics.readonly`, escopo OPCIONAL do
@@ -49,7 +53,20 @@ export const YOUTUBE_ANALYTICS_FILES = {
   trafficSources: "traffic-sources.jsonl",
   videos: "videos.jsonl",
   retention: "retention.jsonl",
+  searchTerms: "search-terms.jsonl",
 } as const;
+
+/** Janela dos termos de busca (#13087): os últimos N dias até ontem (BRT). */
+export const YOUTUBE_SEARCH_TERMS_WINDOW_DAYS = 28;
+
+/** Teto da API para `insightTrafficSourceDetail` por consulta. */
+export const YOUTUBE_SEARCH_TERMS_MAX_RESULTS = 25;
+
+/** Teto de vídeos com consulta de termos por execução (1 chamada por vídeo). */
+export const YOUTUBE_SEARCH_TERMS_MAX_VIDEOS = 40;
+
+/** Métricas da consulta de termos de busca. */
+export const SEARCH_TERM_METRICS = ["views", "estimatedMinutesWatched"] as const;
 
 export const VIDEO_METRICS = [
   "views",
@@ -104,6 +121,27 @@ export function resolveDailyWindow(input: {
   }
   if (startDate > endDate) startDate = endDate;
   return { startDate, endDate };
+}
+
+/** Janela móvel dos termos de busca: `YOUTUBE_SEARCH_TERMS_WINDOW_DAYS` dias terminando ontem (BRT). */
+export function resolveSearchTermsWindow(now: Date, days = YOUTUBE_SEARCH_TERMS_WINDOW_DAYS): { startDate: string; endDate: string } {
+  const endDate = addDays(brtIsoDate(now), -1);
+  return { startDate: addDays(endDate, -(days - 1)), endDate };
+}
+
+/**
+ * Consulta de termos de busca do YouTube (`YT_SEARCH`), do canal inteiro ou de
+ * um vídeo. A API exige `sort=-views` e `maxResults` ≤ 25 para essa dimensão.
+ */
+export function searchTermsQuery(window: { startDate: string; endDate: string }, videoId?: string | null): AnalyticsQuery {
+  return {
+    ...window,
+    metrics: SEARCH_TERM_METRICS,
+    dimensions: ["insightTrafficSourceDetail"],
+    filters: videoId ? `insightTrafficSourceType==YT_SEARCH;video==${videoId}` : "insightTrafficSourceType==YT_SEARCH",
+    sort: "-views",
+    maxResults: YOUTUBE_SEARCH_TERMS_MAX_RESULTS,
+  };
 }
 
 // ─── Consulta ────────────────────────────────────────────────────────────────
@@ -226,6 +264,37 @@ export interface ChannelSnapshotLine {
   /** Estado da parte Analytics desta execução. */
   analytics: "ok" | AnalyticsFailureKind;
   analyticsError?: string;
+  /**
+   * Resumo da coleta de termos de busca desta execução (#13087). Presente só
+   * quando a coleta rodou: é o que separa "lista vazia" (limiar de privacidade
+   * do YouTube) de "ainda não coletado" no relatório. Ausente em linhas
+   * anteriores ao #13087.
+   */
+  searchTerms?: SearchTermsSummary;
+}
+
+export interface SearchTermsSummary {
+  startDate: string;
+  endDate: string;
+  /** Termos devolvidos pela consulta do canal; `null` se ela falhou. */
+  channelTerms: number | null;
+  videosQueried: number;
+  videoTerms: number;
+  failures: number;
+}
+
+export interface SearchTermLine {
+  capturedAt: string;
+  /** Dia BRT da captura. */
+  date: string;
+  scope: "channel" | "video";
+  /** `null` no escopo do canal. */
+  videoId: string | null;
+  startDate: string;
+  endDate: string;
+  term: string;
+  views: number;
+  estimatedMinutesWatched: number;
 }
 
 export interface ChannelDailyLine {
@@ -288,6 +357,31 @@ export function toTrafficSourceLines(rows: AnalyticsRow[], capturedAt: string): 
   return rows
     .filter((r) => typeof r.day === "string" && typeof r.insightTrafficSourceType === "string")
     .map((r) => ({ capturedAt, day: r.day as string, source: r.insightTrafficSourceType as string, views: num(r.views) }));
+}
+
+/** Linhas de termos de busca; termo vazio/ausente fica de fora. Lista vazia é resultado válido. */
+export function toSearchTermLines(input: {
+  rows: AnalyticsRow[];
+  capturedAt: string;
+  date: string;
+  startDate: string;
+  endDate: string;
+  videoId?: string | null;
+}): SearchTermLine[] {
+  const videoId = input.videoId ?? null;
+  return input.rows
+    .filter((r) => typeof r.insightTrafficSourceDetail === "string" && r.insightTrafficSourceDetail.trim() !== "")
+    .map((r) => ({
+      capturedAt: input.capturedAt,
+      date: input.date,
+      scope: videoId ? ("video" as const) : ("channel" as const),
+      videoId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      term: r.insightTrafficSourceDetail as string,
+      views: num(r.views),
+      estimatedMinutesWatched: num(r.estimatedMinutesWatched),
+    }));
 }
 
 export function toRetentionPoints(rows: AnalyticsRow[]): Array<[number, number]> {
@@ -459,6 +553,93 @@ export function latestVideoSnapshot(lines: VideoSnapshotLine[]): VideoSnapshotLi
   );
 }
 
+/**
+ * Termos de busca da execução mais recente (#13087). Cada execução grava a
+ * linha do canal e as de termo com o mesmo `capturedAt`; a última linha de
+ * canal que registrou a coleta (`searchTerms`) aponta a execução, e só as
+ * linhas de termo dela entram: re-rodar no mesmo dia não soma termos de duas
+ * execuções, e a execução que voltou vazia mostra vazio (limiar de privacidade),
+ * não a lista de uma captura anterior. Sem esse registro (store anterior ao
+ * #13087, ou linhas soltas), vale o último `date` das linhas de termo, com
+ * cada escopo (canal, ou vídeo) na sua captura mais recente.
+ */
+export function latestSearchTerms(
+  lines: SearchTermLine[],
+  channel: ChannelSnapshotLine[] = [],
+): { date: string | null; summary: SearchTermsSummary | null; lines: SearchTermLine[] } {
+  let marker: ChannelSnapshotLine | null = null;
+  for (const c of channel) {
+    if (!c.searchTerms) continue;
+    if (!marker || c.capturedAt >= marker.capturedAt) marker = c;
+  }
+  const lastLineDate = lines.length ? lines.reduce((m, l) => (l.date > m ? l.date : m), lines[0].date) : null;
+  if (marker && (!lastLineDate || marker.date >= lastLineDate)) {
+    const capturedAt = marker.capturedAt;
+    return { date: marker.date, summary: marker.searchTerms!, lines: lines.filter((l) => l.capturedAt === capturedAt) };
+  }
+  const date = lastLineDate;
+  if (!date) return { date: null, summary: null, lines: [] };
+  const ofDate = lines.filter((l) => l.date === date);
+  const scopeKey = (l: SearchTermLine) => `${l.scope}|${l.videoId ?? ""}`;
+  const lastCapture = new Map<string, string>();
+  for (const l of ofDate) {
+    const k = scopeKey(l);
+    const prev = lastCapture.get(k);
+    if (!prev || l.capturedAt > prev) lastCapture.set(k, l.capturedAt);
+  }
+  return { date, summary: null, lines: ofDate.filter((l) => l.capturedAt === lastCapture.get(scopeKey(l))) };
+}
+
+const SEARCH_TERMS_EMPTY_NOTE =
+  "O YouTube omite termos com volume baixo (limiar de privacidade): com o canal pequeno, lista curta ou vazia é resultado válido, não falha do coletor.";
+
+/** Seção do relatório com os termos de busca da execução mais recente (#13087). */
+function searchTermsSection(lines: SearchTermLine[], channel: ChannelSnapshotLine[], videos: VideoSnapshotLine[]): string[] {
+  const latest = latestSearchTerms(lines, channel);
+  if (!latest.date) return ["## Termos de busca no YouTube", "", "Sem coleta de termos de busca gravada ainda.", ""];
+  const window = latest.summary ?? latest.lines[0];
+  const out = [
+    `## Termos de busca no YouTube (${window ? `${window.startDate} a ${window.endDate}, ` : ""}captura de ${latest.date})`,
+    "",
+    SEARCH_TERMS_EMPTY_NOTE,
+    "",
+  ];
+  const byViews = (a: SearchTermLine, b: SearchTermLine) => b.views - a.views || a.term.localeCompare(b.term);
+  const esc = (s: string) => s.replace(/\|/g, "/");
+  const chan = latest.lines.filter((l) => l.scope === "channel").sort(byViews);
+  out.push("### Canal", "");
+  if (chan.length) {
+    out.push("| Termo | Views | Min. assistidos |", "|---|---:|---:|");
+    for (const l of chan) out.push(`| ${esc(l.term)} | ${fmtInt(l.views)} | ${fmtInt(l.estimatedMinutesWatched)} |`);
+  } else if (latest.summary && latest.summary.channelTerms === null) {
+    out.push("Consulta do canal falhou nesta captura (ver o log da task).");
+  } else {
+    out.push("Nenhum termo acima do limiar de privacidade nesta janela.");
+  }
+  out.push("");
+  const vid = latest.lines.filter((l) => l.scope === "video");
+  out.push("### Por vídeo", "");
+  if (vid.length) {
+    const titles = new Map(latestVideoSnapshot(videos).map((v) => [v.videoId, v.title]));
+    const totalByVideo = new Map<string, number>();
+    for (const l of vid) totalByVideo.set(l.videoId!, (totalByVideo.get(l.videoId!) ?? 0) + l.views);
+    vid.sort((a, b) => totalByVideo.get(b.videoId!)! - totalByVideo.get(a.videoId!)! || a.videoId!.localeCompare(b.videoId!) || byViews(a, b));
+    out.push("| Vídeo | Termo | Views | Min. assistidos |", "|---|---|---:|---:|");
+    for (const l of vid) {
+      const label = esc(titles.get(l.videoId!) ?? l.videoId!);
+      out.push(`| ${label} (${l.videoId}) | ${esc(l.term)} | ${fmtInt(l.views)} | ${fmtInt(l.estimatedMinutesWatched)} |`);
+    }
+  } else {
+    out.push(
+      latest.summary
+        ? `Nenhum termo acima do limiar de privacidade nos ${latest.summary.videosQueried} vídeo(s) consultado(s)${latest.summary.failures ? ` (${latest.summary.failures} consulta(s) falharam)` : ""}.`
+        : "Nenhum termo por vídeo nesta captura.",
+    );
+  }
+  out.push("");
+  return out;
+}
+
 const fmtInt = (n: number): string => Math.round(n).toLocaleString("pt-BR");
 const fmtPct = (n: number): string => `${n.toFixed(1).replace(".", ",")}%`;
 /** Segundos em "m:ss". Arredonda o total ANTES de dividir: 59,6 s é "1:00", nunca "0:60". */
@@ -480,8 +661,9 @@ function videoTable(rows: VideoSnapshotLine[]): string[] {
 
 /**
  * Relatório em markdown: tabela por vídeo (Shorts e horizontais separados,
- * ordenados por inscritos líquidos), série do total de inscritos e série
- * diária do canal com a fonte de tráfego.
+ * ordenados por inscritos líquidos), série do total de inscritos, série
+ * diária do canal com a fonte de tráfego e, com `searchTerms`, os termos de
+ * busca do YouTube do canal e por vídeo (#13087).
  */
 export function renderAnalyticsReport(input: {
   channel: ChannelSnapshotLine[];
@@ -490,6 +672,8 @@ export function renderAnalyticsReport(input: {
   videos: VideoSnapshotLine[];
   /** Índice vídeo → edição atual; corrige linhas gravadas sem edição (#12224). */
   index?: EditionVideoIndex;
+  /** Termos de busca gravados (#13087); ausente omite a seção. */
+  searchTerms?: SearchTermLine[];
 }): string {
   const lines: string[] = ["# YouTube Analytics — @diariabr", ""];
   const channel = latestByKey(input.channel, (l) => l.date).sort((a, b) => a.date.localeCompare(b.date));
@@ -542,5 +726,6 @@ export function renderAnalyticsReport(input: {
     }
     lines.push("");
   }
+  if (input.searchTerms) lines.push(...searchTermsSection(input.searchTerms, input.channel, input.videos));
   return lines.join("\n");
 }

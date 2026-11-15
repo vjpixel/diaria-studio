@@ -42,9 +42,10 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as dotenvParse } from "dotenv";
+import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { findUnknownFlags, isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -111,7 +112,8 @@ function readD1Title(dir: string): string {
   const path = join(dir, "02-reviewed.md");
   if (!existsSync(path)) return "";
   try {
-    return parseDestaques(readFileSync(path, "utf8")).find((d) => d.n === 1)?.title ?? "";
+    // #13051: o título do D1 sai sem o erro intencional da edição.
+    return parseDestaques(readReviewedMdScrubbed(dir, basename(dir))).find((d) => d.n === 1)?.title ?? "";
   } catch {
     return "";
   }

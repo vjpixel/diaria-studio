@@ -38,6 +38,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
+import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import { formatAAMMDD, parseAAMMDD, resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { matchPostsToWindow } from "./lib/weekly-linkedin-clicks.ts";
 import type { WeeklyRankedCandidate } from "./lib/weekly-linkedin-select.ts";
@@ -170,9 +171,11 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
   // Leitura das edições e do cache de clique (mesmo caminho do select-linkedin-weekly.ts).
   const editionsRootDir = join(rootDir, "data/editions");
   const editions = contentWindow.map((date) => {
-    const mdPath = join(resolveEditionDir(editionsRootDir, date), "02-reviewed.md");
+    const dir = resolveEditionDir(editionsRootDir, date);
+    const mdPath = join(dir, "02-reviewed.md");
     if (!existsSync(mdPath)) return { date, found: false, md: "" };
-    return { date, found: true, md: readFileSync(mdPath, "utf8") };
+    // #13051: o erro intencional da edição nunca sai dela (ranking e gate do pacote).
+    return { date, found: true, md: readReviewedMdScrubbed(dir, date) };
   });
   const found = editions.filter((e) => e.found);
   if (found.length === 0) fail(1, `Nenhuma edição com 02-reviewed.md na janela ${contentWindow.join(", ")} — nada pra selecionar.`);

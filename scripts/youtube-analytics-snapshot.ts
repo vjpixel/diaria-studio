@@ -3,7 +3,10 @@
  *
  * Snapshot diário do YouTube Analytics do @diariabr: inscritos ganhos/perdidos
  * e retenção por vídeo, série diária do canal, views por fonte de tráfego
- * (Shorts, busca, sugeridos, URL externa...) e o total de inscritos do canal.
+ * (Shorts, busca, sugeridos, URL externa...), os termos de busca do YouTube
+ * que trouxeram views ao canal e a cada vídeo nos últimos 28 dias
+ * (`search-terms.jsonl`, #13087; lista vazia é válida, limiar de privacidade)
+ * e o total de inscritos do canal.
  * Miolo puro em `scripts/lib/diaria/youtube-analytics.ts`; este arquivo faz a
  * I/O (token, `data/youtube-analytics/*.jsonl`, índice das edições).
  *
@@ -31,7 +34,8 @@
  * `--since` re-busca a série diária desde a data (padrão: últimos 7 dias do
  * já gravado; sem histórico, desde 21/10/2026). `--dry-run` busca e imprime o
  * resumo sem gravar. `--report` só lê o que já foi gravado e imprime a tabela
- * por vídeo (Shorts e horizontais separados) e as séries, sem rede.
+ * por vídeo (Shorts e horizontais separados), as séries e os termos de busca,
+ * sem rede.
  *
  * Exit: 0 = ok (inclui token sem o escopo de Analytics, com aviso);
  * 1 = erro (credencial ausente, token, rede, API); 2 = uso inválido.
@@ -61,6 +65,7 @@ import {
   YOUTUBE_ANALYTICS_FILES,
   YOUTUBE_ANALYTICS_RETENTION_MAX_VIDEOS,
   YOUTUBE_ANALYTICS_SERIES_START,
+  YOUTUBE_SEARCH_TERMS_MAX_VIDEOS,
   YouTubeAnalyticsError,
   brtIsoDate,
   isoToAammdd,
@@ -71,8 +76,11 @@ import {
   queryAnalytics,
   renderAnalyticsReport,
   resolveDailyWindow,
+  resolveSearchTermsWindow,
+  searchTermsQuery,
   toChannelDailyLines,
   toRetentionPoints,
+  toSearchTermLines,
   toTrafficSourceLines,
   toVideoSnapshotLines,
   withPreApiEditionVideos,
@@ -80,6 +88,8 @@ import {
   type ChannelSnapshotLine,
   type EditionVideoIndex,
   type RetentionLine,
+  type SearchTermLine,
+  type SearchTermsSummary,
   type TrafficSourceLine,
   type VideoMeta,
   type VideoSnapshotLine,
@@ -160,7 +170,50 @@ export interface SnapshotResult {
   traffic: TrafficSourceLine[];
   videos: VideoSnapshotLine[];
   retention: RetentionLine[];
+  searchTerms: SearchTermLine[];
   written: boolean;
+}
+
+/**
+ * Termos de busca do YouTube (#13087): uma consulta do canal e uma por vídeo
+ * (os `YOUTUBE_SEARCH_TERMS_MAX_VIDEOS` mais vistos), janela móvel de 28 dias.
+ * Lista vazia é resultado válido (limiar de privacidade do YouTube), nunca
+ * falha. Falha real de uma consulta vira aviso e o resto segue, como na
+ * retenção; escopo ausente/API desligada sobe para o fail-soft do snapshot.
+ * Empurra as linhas em `out` e devolve o resumo gravado na linha do canal.
+ */
+async function collectSearchTerms(
+  deps: SnapshotDeps,
+  token: string,
+  input: { capturedAt: string; date: string; now: Date; videoIds: string[]; out: SearchTermLine[] },
+): Promise<SearchTermsSummary> {
+  const window = resolveSearchTermsWindow(input.now);
+  const summary: SearchTermsSummary = { ...window, channelTerms: null, videosQueried: 0, videoTerms: 0, failures: 0 };
+  const run = async (videoId: string | null): Promise<SearchTermLine[] | null> => {
+    try {
+      const rows = await queryAnalytics(deps.fetch, token, searchTermsQuery(window, videoId));
+      return toSearchTermLines({ rows, capturedAt: input.capturedAt, date: input.date, ...window, videoId });
+    } catch (e) {
+      if (e instanceof YouTubeAnalyticsError && e.kind !== "error") throw e;
+      summary.failures++;
+      deps.warn(`[aviso] termos de busca ${videoId ? `de ${videoId}` : "do canal"} indisponíveis: ${(e as Error).message}`);
+      return null;
+    }
+  };
+  const channelLines = await run(null);
+  if (channelLines) {
+    summary.channelTerms = channelLines.length;
+    input.out.push(...channelLines);
+  }
+  for (const videoId of input.videoIds.slice(0, YOUTUBE_SEARCH_TERMS_MAX_VIDEOS)) {
+    summary.videosQueried++;
+    const lines = await run(videoId);
+    if (!lines) continue;
+    summary.videoTerms += lines.length;
+    input.out.push(...lines);
+  }
+  if (summary.failures) deps.warn(`[aviso] ${summary.failures} consulta(s) de termos de busca falharam; o resto do snapshot foi gravado`);
+  return summary;
 }
 
 async function getJson(fetchFn: FetchLike, url: string, token: string, what: string): Promise<unknown> {
@@ -209,7 +262,7 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     await getJson(deps.fetch, `${YOUTUBE_API_BASE}/channels?part=statistics&mine=true`, token, "channels.list"),
   );
   const channel: ChannelSnapshotLine = { capturedAt, date, ...stats, analytics: "ok" };
-  const result: SnapshotResult = { channel, daily: [], traffic: [], videos: [], retention: [], written: false };
+  const result: SnapshotResult = { channel, daily: [], traffic: [], videos: [], retention: [], searchTerms: [], written: false };
 
   const storedDays = readStore<ChannelDailyLine>(input.dataRoot, YOUTUBE_ANALYTICS_FILES.channelDaily).map((l) => l.day);
   const lastStoredDay = storedDays.length ? storedDays.reduce((m, d) => (d > m ? d : m)) : null;
@@ -261,6 +314,7 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
       if (points.length) result.retention.push({ capturedAt, date, videoId, points });
     }
     if (retentionFailures) deps.warn(`[aviso] ${retentionFailures} curva(s) de retenção falharam; o resto do snapshot foi gravado`);
+    channel.searchTerms = await collectSearchTerms(deps, token, { capturedAt, date, now, videoIds: ids, out: result.searchTerms });
   } catch (e) {
     if (!(e instanceof YouTubeAnalyticsError) || e.kind === "error") throw e;
     // Escopo ausente / API desligada: ação do editor, não falha da task.
@@ -270,6 +324,8 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     result.traffic = [];
     result.videos = [];
     result.retention = [];
+    result.searchTerms = [];
+    delete channel.searchTerms;
     deps.warn(`[aviso] ${e.message}`);
   }
 
@@ -279,12 +335,14 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.trafficSources, result.traffic);
     appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.videos, result.videos);
     appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.retention, result.retention);
+    appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.searchTerms, result.searchTerms);
     result.written = true;
   }
   deps.log(
     `snapshot ${date}: ${stats.subscriberCount ?? "?"} inscritos; analytics=${channel.analytics}; ` +
       `${result.daily.length} dia(s) ${window.startDate}..${window.endDate}, ${result.traffic.length} linha(s) de fonte, ` +
-      `${result.videos.length} vídeo(s), ${result.retention.length} curva(s) de retenção${input.dryRun ? " (dry-run, nada gravado)" : ""}`,
+      `${result.videos.length} vídeo(s), ${result.retention.length} curva(s) de retenção, ` +
+      `${result.searchTerms.length} termo(s) de busca${input.dryRun ? " (dry-run, nada gravado)" : ""}`,
   );
   return result;
 }
@@ -301,6 +359,7 @@ export function buildReport(dataRoot: string): string {
     daily: readStore<ChannelDailyLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.channelDaily),
     traffic: readStore<TrafficSourceLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.trafficSources),
     videos: readStore<VideoSnapshotLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.videos),
+    searchTerms: readStore<SearchTermLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.searchTerms),
     // Linhas gravadas antes do vídeo entrar no índice saem com a edição atual (#12224).
     index: resolveEditionVideoIndex(dataRoot).index,
   });

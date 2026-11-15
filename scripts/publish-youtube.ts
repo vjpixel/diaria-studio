@@ -143,6 +143,7 @@ import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
+import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import {
   YOUTUBE_THUMBNAIL_ENDPOINT,
   YOUTUBE_THUMB_FILE,
@@ -1594,7 +1595,8 @@ async function main(): Promise<number> {
 
   const plan = planYouTubePublish({
     aammdd,
-    reviewedMd: readFileSync(reviewedPath, "utf8"),
+    // #13051: título/descrição do vídeo saem sem o erro intencional da edição.
+    reviewedMd: readReviewedMdScrubbed(dir, aammdd),
     now: new Date(),
     episode: parseEpisode(values["episode"]),
     editionUrl: values["edition-url"],

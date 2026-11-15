@@ -37,6 +37,11 @@ import {
 import { parseEdition, normalizeHeader } from "./monthly-click-sections.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+import {
+  loadIntentionalErrorPair,
+  loadJsonlForEditionsRoot,
+  scrubIntentionalError,
+} from "./lib/intentional-error-scrub.ts"; // #13051
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   fetchBrazilProbabilities,
@@ -566,11 +571,19 @@ export function collectMonth(
   const allDestaques: MonthlyDestaque[] = [];
   const source_counts = { local: 0, raw: 0, missing: 0 };
 
+  // #13051: o erro intencional de cada edição nunca sai dela — o mensal (e a
+  // mensal-apoiadores, que parte do draft dele) usa a grafia correta.
+  const intentionalJsonl = loadJsonlForEditionsRoot(editionsRoot);
+  const pairFor = (edition: string) =>
+    loadIntentionalErrorPair(editionDirsByAammdd.get(edition) ?? join(editionsRoot, edition), edition, {
+      jsonlEntries: intentionalJsonl,
+    });
+
   for (const edition of allEditions) {
     const localEditionDir = editionDirsByAammdd.get(edition);
     const localPath = localEditionDir ? join(localEditionDir, "02-reviewed.md") : undefined;
     if (localSet.has(edition) && localPath && existsSync(localPath)) {
-      const md = readFileSync(localPath, "utf8");
+      const md = scrubIntentionalError(readFileSync(localPath, "utf8"), pairFor(edition));
       const dest = parseLocalEdition(edition, md);
       // Paridade com parsePost (raw-post): avisa tanto no caso 0 quanto no
       // caso parcial (1-2 de 3 esperados) — sem isso, uma edição com só 1-2
@@ -591,7 +604,7 @@ export function collectMonth(
 
     const rawFile = rawByEdition.get(edition);
     if (rawFile) {
-      const text = readFileSync(rawFile.path, "utf8");
+      const text = scrubIntentionalError(readFileSync(rawFile.path, "utf8"), pairFor(edition));
       allDestaques.push(...parsePost(rawFile, text, warnings)); // parsePost já empurra warning em 0
       source_counts.raw++;
       continue;
