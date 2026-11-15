@@ -228,8 +228,14 @@ export type ReelsPlatform = "facebook" | "instagram";
  * EXATO da página, e o efeito de um nome divergente na Posts API (4xx, que
  * derrubaria o vídeo do perfil pessoal, ou texto puro) não foi medido (review
  * do PR #12489). Por isso a menção só sai com `urn` configurado E
- * `mention_verified: true` (o editor conferiu o nome atual da página num post
- * de teste, passo 2 do #13033); fora disso o post sai sem a linha.
+ * `mention_verified: true`; fora disso o post sai sem a linha. Medição de
+ * 15/11/2026 (passo 2 do #13033): post de teste no perfil pessoal pela Posts
+ * API com o texto desta função (nome `diar.ia.br`, `urn:li:organization:110742958`)
+ * voltou 201, e o embed público renderizou `diar.ia.br` como link para
+ * `linkedin.com/company/diar.ia.br`, sem URL nem lnkd.in (post apagado em
+ * seguida). Desde então o flag é `true` no `platform.config.json` e no
+ * default abaixo (os dois iguais, travado por teste); trocar `name` ou `urn`
+ * pede nova medição antes de manter o flag ligado.
  */
 export interface DiariaProfiles {
   linkedin: { name: string; urn: string | null; url: string; mentionVerified: boolean };
@@ -238,7 +244,7 @@ export interface DiariaProfiles {
 }
 
 export const DEFAULT_DIARIA_PROFILES: Readonly<DiariaProfiles> = Object.freeze({
-  linkedin: { name: "diar.ia.br", urn: "urn:li:organization:110742958", url: "https://www.linkedin.com/company/diar.ia.br/", mentionVerified: false },
+  linkedin: { name: "diar.ia.br", urn: "urn:li:organization:110742958", url: "https://www.linkedin.com/company/diar.ia.br/", mentionVerified: true },
   threads: { handle: "diar.ia.br", url: "https://www.threads.com/@diar.ia.br" },
   facebook: { url: "https://www.facebook.com/diar.ia.br" },
 });
@@ -252,7 +258,7 @@ export const DIARIA_FOLLOW_PURPOSE = "para receber dicas e notícias de IA todos
  *
  * Formato: `Siga a {menção} para receber dicas e notícias de IA todos os
  * dias`, com a menção NATIVA do perfil da diar.ia.br naquela rede. O LinkedIn
- * (e provavelmente o Facebook) lê `diar.ia.br` solto como domínio e o
+ * lê `diar.ia.br` solto como domínio e o
  * transforma em link para o SITE, e encurta a URL do perfil para `lnkd.in/…`
  * (#13033: a linha antiga `Siga a diar.ia.br: linkedin.com/company/diar.ia.br`
  * saía com dois links, nenhum para seguir a página). Por isso não há mais
@@ -260,10 +266,14 @@ export const DIARIA_FOLLOW_PURPOSE = "para receber dicas e notícias de IA todos
  * página (`linkedin_page_repost`) e o card final do vídeo já pedem para seguir.
  *
  * - LinkedIn pessoal: `@[Nome](urn:li:organization:ID)`, só com
- *   `mention_verified: true` (nome da página medido num post real, #12465).
- * - Threads pessoal: `@handle`.
- * - Página VJ Pixel e perfil pessoal do Facebook: `null` (a tag de página da
- *   Graph API não foi medida, e `diar.ia.br` solto viraria link para o site).
+ *   `mention_verified: true` (nome da página medido num post real em
+ *   15/11/2026, #12465/#13033: a menção vira link para a página da empresa).
+ * - Threads pessoal: `@handle` (medido em 15/11/2026: `@diar.ia.br` vira link
+ *   para o perfil `/@diar.ia.br`).
+ * - Página VJ Pixel e perfil pessoal do Facebook: `null`. O Facebook não tem
+ *   menção pela API: medido em 15/11/2026 (#13034), a tag de página
+ *   `@[839717705901271]` foi descartada em silêncio pela Graph API (texto lido
+ *   de volta: "Siga a  para…"), e `diar.ia.br` solto viraria link para o site.
  * - Destinos que já publicam pela conta da diar.ia.br (YouTube, página
  *   diar.ia.br, Instagram @diar.ia.br, X @diariabr, TikTok @diar.ia.br): `null`.
  *

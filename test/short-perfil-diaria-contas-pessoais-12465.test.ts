@@ -32,9 +32,14 @@ describe("#12465 diariaFollowLine por destino (frase única desde #13033/#13034)
     );
   });
 
-  it("LinkedIn pessoal sem mention_verified (default) ou sem URN: sem linha, nunca a URL (review do PR #12489, #13033)", () => {
-    assert.equal(DEFAULT_DIARIA_PROFILES.linkedin.mentionVerified, false);
-    assert.equal(diariaFollowLine("linkedin_profile"), null);
+  it("default: mention_verified ligado desde a medição de 15/11/2026 (#13033)", () => {
+    assert.equal(DEFAULT_DIARIA_PROFILES.linkedin.mentionVerified, true);
+    assert.equal(diariaFollowLine("linkedin_profile"), diariaFollowLine("linkedin_profile", VERIFIED));
+  });
+
+  it("LinkedIn pessoal com mention_verified false ou sem URN: sem linha, nunca a URL (review do PR #12489, #13033)", () => {
+    const off = { ...VERIFIED, linkedin: { ...VERIFIED.linkedin, mentionVerified: false } };
+    assert.equal(diariaFollowLine("linkedin_profile", off), null);
     const semUrn = { ...VERIFIED, linkedin: { ...VERIFIED.linkedin, urn: null } };
     assert.equal(diariaFollowLine("linkedin_profile", semUrn), null);
   });

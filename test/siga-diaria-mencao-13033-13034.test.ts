@@ -17,6 +17,7 @@ import {
   type DiariaProfiles,
 } from "../scripts/lib/diaria/short-video.ts";
 import { toLittleText } from "../scripts/lib/linkedin-personal.ts";
+import { readFileSync } from "node:fs";
 
 const VERIFIED: DiariaProfiles = { ...DEFAULT_DIARIA_PROFILES, linkedin: { ...DEFAULT_DIARIA_PROFILES.linkedin, mentionVerified: true } };
 const NO_IDS: DiariaProfiles = {
@@ -60,10 +61,26 @@ describe("#13033/#13034 diariaFollowLine nunca deixa diar.ia.br solto nem URL", 
     }
   }
 
-  it("o config do repo (mention_verified ainda false) não dá linha no LinkedIn nem no Facebook", () => {
-    const fromConfig = loadDiariaProfiles({ linkedin: { mention_verified: false } });
-    assert.equal(diariaFollowLine("linkedin_profile", fromConfig), null);
+  it("mention_verified false: sem linha no LinkedIn; Facebook nunca tem linha", () => {
+    const off = loadDiariaProfiles({ linkedin: { mention_verified: false } });
+    assert.equal(diariaFollowLine("linkedin_profile", off), null);
+    assert.equal(diariaFollowLine("facebook:vjpixel", off), null);
+  });
+
+  it("o config do repo liga a menção medida em 15/11/2026 (LinkedIn) e segue sem linha no Facebook", () => {
+    const cfg = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
+    const fromConfig = loadDiariaProfiles(cfg.publishing.shorts.diaria_profiles);
+    // Medição do #13033: nome e URN exatos, que o LinkedIn transformou em link para a página.
+    assert.equal(fromConfig.linkedin.mentionVerified, true);
+    assert.equal(fromConfig.linkedin.name, "diar.ia.br");
+    assert.equal(fromConfig.linkedin.urn, "urn:li:organization:110742958");
+    assert.equal(
+      diariaFollowLine("linkedin_profile", fromConfig),
+      "Siga a @[diar.ia.br](urn:li:organization:110742958) para receber dicas e notícias de IA todos os dias",
+    );
+    // Medição do #13034: a Graph API descartou a tag de página, então o Facebook segue sem linha.
     assert.equal(diariaFollowLine("facebook:vjpixel", fromConfig), null);
+    assert.equal(diariaFollowLine("facebook_profile", fromConfig), null);
   });
 });
 
