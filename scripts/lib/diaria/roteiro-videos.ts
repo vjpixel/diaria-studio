@@ -55,6 +55,32 @@ export function avisosTomConversacional(roteiro: Pick<RoteiroFalas, "falas">): s
   return avisos;
 }
 
+/** Empresas que não precisam ir entre parênteses depois do nome do modelo (#13180). */
+const EMPRESA_ENTRE_PARENTESES = /\((?:Anthropic|OpenAI|Google|Google DeepMind|DeepMind|Meta|Microsoft|xAI|DeepSeek|Mistral|Alibaba|Amazon|Apple|Nvidia|NVIDIA)\)/u;
+/** Rótulos que o editor tirou do box na 261116 (#13180): "(padrão)", "(dados do Google)". */
+const ROTULO_ENTRE_PARENTESES = /\((?:padr[ãa]o|default|dados d[aoe]s? [^)]+)\)/iu;
+
+/**
+ * Formato do texto de tela (#13180, padrões do editor na 261116): avisa,
+ * nunca invalida. Só o horizontal tem tela; um item por linha (sem " · ");
+ * o título do box, quando há, é a linha inteira entre `**`; sem empresa entre
+ * parênteses depois do nome do modelo; sem rótulos como "(padrão)".
+ */
+export function avisosTela(roteiro: Pick<RoteiroFalas, "falas">): string[] {
+  const avisos: string[] = [];
+  for (const f of roteiro.falas) {
+    if (typeof f.tela !== "string" || !f.tela.trim()) continue;
+    if (!f.videos.includes("horizontal")) avisos.push(`${f.id}: tela numa fala que só está nos verticais; os verticais saem sem texto de tela, e o box não aparece (#13180).`);
+    if (/\s·\s/u.test(f.tela)) avisos.push(`${f.id}: tela com " · "; um item por linha (\\n) (#13180).`);
+    const empresa = f.tela.match(EMPRESA_ENTRE_PARENTESES);
+    if (empresa) avisos.push(`${f.id}: tela com a empresa entre parênteses ${empresa[0]}; o nome do modelo basta (#13180).`);
+    const rotulo = f.tela.match(ROTULO_ENTRE_PARENTESES);
+    if (rotulo) avisos.push(`${f.id}: tela com o rótulo ${rotulo[0]}; tirar (#13180).`);
+    if (f.tela.split("\n").some((l) => l.includes("**") && !/^\s*\*\*[^*]+\*\*\s*$/u.test(l))) avisos.push(`${f.id}: tela com ** fora de uma linha inteira; o negrito é só para o título do box, na linha própria (#13180).`);
+  }
+  return avisos;
+}
+
 /** Slug default do corte do vertical 2 na montagem ("o guia"). */
 export const VERTICAL2_CORTE_SLUG = "guia";
 
@@ -517,7 +543,8 @@ export function readRoteiroTelas(editionDir: string, warn: (msg: string) => void
       if (f && f.tela !== undefined) comTela++;
       // Seta nunca chega ao leitor (#9721): a tela com seta fica fora, e o aviso do inválido diz por quê.
       if (!f || typeof f.id !== "string" || typeof f.texto !== "string" || typeof f.tela !== "string" || !f.tela.trim() || SETA.test(f.tela)) continue;
-      out.push({ id: f.id, texto: f.texto, tela: f.tela.trim() });
+      // O `**` do título do box (#13180) é marcação da página, não texto da tela.
+      out.push({ id: f.id, texto: f.texto, tela: f.tela.replace(/\*\*/g, "").trim() });
     }
   }
   const problemas = validarRoteiroFalas(lido.raw);

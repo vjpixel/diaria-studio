@@ -15,7 +15,8 @@
  * acima do alvo de duração ou horizontal fora da faixa (`avisosDuracao`,
  * #13130; alvos em `publishing.video.roteiro` do `platform.config.json`).
  * Também avisa verbos de relatório e trechos com mais de 30 palavras sem
- * pausa (`avisosTomConversacional`, #13165), sem bloquear a proposta.
+ * pausa (`avisosTomConversacional`, #13165), e o formato do texto de tela
+ * (`avisosTela`, #13180), sem bloquear a proposta.
  * A saída traz a duração estimada de cada vídeo (`duracoes` no `--json`).
  * A validação (`validarRoteiroFalas`, roteiro-gravacao.ts) cobre os campos
  * novos: `tela` (#13120), `cortes` (#13129), `fontes` (#13132),
@@ -41,6 +42,7 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import {
   avisosDuracao,
+  avisosTela,
   avisosTomConversacional,
   avisosGanchoETitulo,
   duracaoPorVideo,
@@ -105,7 +107,7 @@ export function main(
   }
   const cfg = lerDuracaoConfig(root, io.err);
   const proposta = propostaBlocosDoRoteiro(lido.roteiro, { ...(corte ? { corteSlug: corte } : {}), palavrasPorMinuto: cfg.palavrasPorMinuto });
-  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro), ...avisosTela(lido.roteiro)]) io.err(`[aviso] ${a}`);
   io.out(
     flags.has("json")
       ? JSON.stringify({ ...proposta, duracoes: duracaoPorVideo(lido.roteiro, cfg) }, null, 2)

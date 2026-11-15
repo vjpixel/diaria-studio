@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import { artifactUrlDe, artifactUrlSegura, renderRoteiroPagina } from "./lib/diaria/roteiro-pagina.ts";
-import { avisosTomConversacional, avisosDuracao, avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
+import { avisosTomConversacional, avisosDuracao, avisosTela, avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
 import { lerDuracaoConfig } from "./video-roteiro-blocos.ts";
 
 export const ROTEIRO_PAGINA_FILE = "_internal/roteiro-d1.html";
@@ -82,7 +82,7 @@ export function main(
   const artifactUrl = artifactFlag ?? (paginaExistia ? artifactUrlDe(readFileSync(outPath, "utf8")) ?? undefined : undefined);
   const cfg = lerDuracaoConfig(root, io.err);
   const proposta = propostaBlocosDoRoteiro(lido.roteiro, { palavrasPorMinuto: cfg.palavrasPorMinuto });
-  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro), ...avisosTela(lido.roteiro)]) io.err(`[aviso] ${a}`);
   let html: string;
   try {
     html = renderRoteiroPagina(lido.roteiro, { cfg, ...(artifactUrl ? { artifactUrl } : {}) });
