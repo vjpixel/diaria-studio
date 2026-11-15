@@ -62,7 +62,7 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
-import { decideResumeOrRetry, parseRetryIdList } from "./lib/social-retry.ts"; // #13076 — `--retry dN`, mesma regra do Threads (#11105)
+import { decideResumeOrRetry, formatRetryOutsideDispatch, parseRetryIdList, retryIdsOutsideDispatch } from "./lib/social-retry.ts"; // #13076 — `--retry dN`, mesma regra do Threads (#11105); #13089 id fora do envio
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
@@ -888,6 +888,13 @@ async function main(): Promise<number | void> {
   }
   const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
+  // #13089: id pedido em --retry fora do envio (`um` sem post USE MELHOR, `d3`
+  // em edição de 2 destaques) sairia calado com exit 0. Falha antes de enviar.
+  const retryMissing = retryIdsOutsideDispatch(retryIds, dispatchIds);
+  if (retryMissing.length > 0) {
+    console.error(formatRetryOutsideDispatch("instagram", retryMissing, dispatchIds));
+    return 1;
+  }
 
   for (const d of dispatchIds) {
     const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568
