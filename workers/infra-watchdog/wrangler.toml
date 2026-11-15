@@ -1,0 +1,27 @@
+name = "diaria-infra-watchdog"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+[observability]
+enabled = true
+
+[[kv_namespaces]]
+binding = "OPS_STATE"
+# Existing diaria-ops-state, platform.config.json; shared with Neo #12982.
+id = "35cdc7ea4951452b965da27bdcf9e0c2"
+
+[[durable_objects.bindings]]
+name = "WATCHDOG"
+class_name = "InfraWatchdog"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InfraWatchdog"]
+
+# Deliberately disabled: activation is a separate operational action.
+[triggers]
+crons = []
+# Activation cadence: */5 * * * *
+# Secrets required: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+# GOOGLE_REFRESH_TOKEN (gmail.send), EDITOR_EMAIL. Never copy credentials into git.

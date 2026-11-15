@@ -77,7 +77,8 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
+import { formatRetryOutsideDispatch, parseRetryIdList, RETRYABLE_STATUSES, retryIdsOutsideDispatch } from "./lib/social-retry.ts"; // #13076; #13089 id fora do envio
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Threads não renderiza markdown; #10441 ponto único do texto de post
@@ -486,18 +487,12 @@ export function parseRetryIds(
   raw: string | undefined,
   flagWithoutValue: boolean,
 ): { ok: true; ids: Set<string> | null } | { ok: false; error: string } {
-  if (raw === undefined && !flagWithoutValue) return { ok: true, ids: null };
-  const ids = (raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-  if (ids.length === 0) return { ok: false, error: `--retry exige os posts a re-tentar (ex: --retry d2 ou --retry d2,um; aceitos: ${THREADS_RETRY_IDS.join(", ")})` };
-  const invalid = ids.filter((id) => !(THREADS_RETRY_IDS as readonly string[]).includes(id));
-  if (invalid.length > 0) return { ok: false, error: `--retry: id(s) inválido(s) ${invalid.join(", ")} (aceitos: ${THREADS_RETRY_IDS.join(", ")})` };
-  return { ok: true, ids: new Set(ids) };
+  // #13076 — regra compartilhada com o Instagram e o carrossel semanal.
+  return parseRetryIdList(raw, flagWithoutValue, THREADS_RETRY_IDS, { noun: "os posts", example: "--retry d2 ou --retry d2,um" });
 }
 
-/** Status que o resume trata como "já tentado, não refazer" (#11076). */
-const RESUME_SKIP_STATUSES = new Set<PostEntry["status"]>(["draft", "scheduled", "published", "send_unknown"]);
-/** #11105 — o que `--retry` aceita refazer: nada saiu (`failed`) ou o editor conferiu que não saiu (`send_unknown`). */
-const RETRYABLE_STATUSES = new Set<PostEntry["status"]>(["failed", "send_unknown"]);
+// Status que o resume trata como "já tentado, não refazer" (#11076): RESUME_SKIP_STATUSES, compartilhado (#13074).
+// #11105 — o que `--retry` aceita refazer: RETRYABLE_STATUSES, compartilhado (#13076).
 
 export type ThreadsDispatchDecision =
   | { action: "dispatch" }
@@ -844,6 +839,13 @@ async function main(): Promise<number | void> {
   }
   const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
+  // #13089: id pedido em --retry fora do envio (`um` sem post USE MELHOR, `d3`
+  // em edição de 2 destaques) sairia calado com exit 0. Falha antes de enviar.
+  const retryMissing = retryIdsOutsideDispatch(retryIds, dispatchIds);
+  if (retryMissing.length > 0) {
+    console.error(formatRetryOutsideDispatch("threads", retryMissing, dispatchIds));
+    return 1;
+  }
 
   for (const d of dispatchIds) {
     const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568

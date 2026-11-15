@@ -23,7 +23,9 @@ test("CLI integra proteção, ignora log dry-run e recusa log inválido", () => 
     mkdirSync(join(dir, "_internal"));
     const input = join(dir, "in.json"), out = join(dir, "out.json");
     const log = join(dir, "_internal/fact-check-autofix.json");
-    const factual = { from: "40%", to: "50%" };
+    // #13052: número trocado (`40%`→`50%`) cai sempre como identifier_swap; aqui
+    // a sugestão sobre o fato não traz token novo e só a proteção a segura.
+    const factual = { from: "Caiu 40%", to: "Caiu cerca de 40%" };
     writeFileSync(input, JSON.stringify([conditional, factual, real]));
     const run = () => spawnSync(process.execPath, ["--import", "tsx", "scripts/clarice-filter.ts", "--edition-dir", dir, "--suggestions", input, "--out", out], { encoding: "utf8" });
     assert.equal(run().status, 0);

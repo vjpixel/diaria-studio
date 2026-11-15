@@ -92,6 +92,7 @@ import {
   appendSocialPosts,
   readSocialPublished,
   resolveSubtype,
+  RESUME_SKIP_STATUSES,
 } from "./lib/social-published-store.ts";
 import type { PostEntry, PostSubtype } from "./lib/social-published-store.ts";
 
@@ -1436,7 +1437,9 @@ async function main(): Promise<number | void> {
           p.platform === "linkedin" &&
           p.destaque === d &&
           resolveSubtype(p) === subtype &&
-          (p.status === "draft" || p.status === "scheduled"),
+          // #13074: `published` (Worker/Make, sem url) e `send_unknown`
+          // (ausente do feed, #13009) também: redespachar duplica o post.
+          RESUME_SKIP_STATUSES.has(p.status),
       );
 
     // ── Calcular mainAt (1× por destaque, reusado pelos comments) ──

@@ -92,7 +92,7 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { appendSocialPosts, readSocialPublished, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, readSocialPublished, RESUME_SKIP_STATUSES, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
 import { deleteFromWorkerQueue, postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { publishFacebookCarouselByUrl, validateScheduledTime } from "./publish-facebook.ts";
 import {
@@ -356,7 +356,8 @@ export function findLiveSocialDispatch(published: SocialPublished, channel: Retr
       (p) =>
         p.platform === platform &&
         p.destaque === RETROSPECTIVA_SOCIAL_DESTAQUE &&
-        (p.status === "scheduled" || p.status === "published") &&
+        // #13074: `send_unknown` (envio ambíguo ou ausente do feed) também é vivo.
+        RESUME_SKIP_STATUSES.has(p.status) &&
         (page === undefined || channel !== "facebook" || resolvePostPage(p) === page),
     ) ?? null
   );

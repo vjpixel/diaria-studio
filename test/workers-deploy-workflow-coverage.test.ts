@@ -86,6 +86,21 @@ function isDeployedViaWorker(workerDir: string, workflowFiles: { name: string; c
 }
 
 describe("cobertura de deploy workflow por worker (#5337)", () => {
+  it("infra-watchdog mantém deploy condicionado à autorização operacional (#12981)", () => {
+    const workflow = readWorkflowFiles().find((f) => f.name === "deploy-infra-watchdog.yml");
+    assert.ok(workflow, "infra-watchdog precisa de workflow de deploy");
+    assert.ok(extractPushPaths(workflow.content).includes("workers/infra-watchdog/**"));
+    assert.match(workflow.content, /^  workflow_dispatch:/m);
+    assert.match(
+      workflow.content,
+      /^  deploy:\n    if: \$\{\{ vars\.INFRA_300_WATCHDOG_DEPLOY_ENABLED == 'true' \}\}\n    uses: \.\/\.github\/workflows\/deploy-worker\.yml/m,
+      "o job inteiro deve exigir opt-in, inclusive no dispatch manual",
+    );
+    assert.match(workflow.content, /^      worker: infra-watchdog$/m);
+    const wrangler = readFileSync(resolve(ROOT, "workers/infra-watchdog/wrangler.toml"), "utf8");
+    assert.match(wrangler, /^crons = \[\]$/m, "deploy não deve armar o vigia antes da ativação");
+  });
+
   it("todo worker descoberto tem um .github/workflows/*.yml que referencia workers/{dir}/**", () => {
     const workers = discoverWorkers();
     assert.ok(workers.length > 0, "discoverWorkers() não encontrou nenhum worker — algo está errado na varredura");

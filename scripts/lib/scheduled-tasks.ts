@@ -166,6 +166,17 @@ export interface ScheduledTaskDefinition {
    * outro significado (abort do semáforo D4, guard hoje removido) — os dois
    * usos nunca coexistiram. Default (campo ausente): só 0 é sucesso. */
   successExitCodes?: number[];
+  /** #13017 — re-executa a unit quando a rodada falhou SÓ por rede (DNS,
+   * conexão, `fetch failed`, `gh` sem rede). O runner sai com
+   * `TRANSIENT_NETWORK_EXIT_CODE` nesse caso e o `.service` gerado leva
+   * `RestartForceExitStatus=` + `RestartSec=15min` + teto de partidas (~4h
+   * de tentativas, ver `scripts/lib/transient-network-failure.ts`). Qualquer
+   * outra falha segue sem retry. Só para task diária/semanal/mensal cujos
+   * passos possam rodar de novo sem efeito duplicado (leitura, sync, alarme):
+   * task `interval` já tenta de novo na própria cadência, e o gerador
+   * recusa a combinação. Task que ENVIA (e-mail, conversão) fica fora até a
+   * idempotência dela ser conferida. Default (ausente): sem retry. */
+  retryOnTransientNetwork?: boolean;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
   /** #5639 — enable/disable da task sem remover do registro.
@@ -275,6 +286,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // do .env). Exit 3 = rodada degradada (remoções bloqueadas) — fica fora de
     // successExitCodes de propósito, pra unit sair `failed` e o alarme pegar.
     schedule: { kind: "daily", hour: 10, minute: 17 },
+    retryOnTransientNetwork: true, // #13017
     guard: {
       requiredFile: "apoia-se/contacts.jsonl",
       abortMessage:
@@ -770,6 +782,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // contatos antes do 1º `novos`/`daily` do dia (ver grep de `hour: 8,`/
     // `hour: 9,` neste arquivo antes de mexer no horário).
     schedule: { kind: "daily", hour: 8, minute: 45 },
+    retryOnTransientNetwork: true, // #13017
     issue: "#8117, #8113, #8038",
   },
   {
@@ -788,6 +801,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     ],
     logPath: "clarice-subscribers/.brevo-sync-daily.log",
     schedule: { kind: "daily", hour: 8, minute: 30 },
+    retryOnTransientNetwork: true, // #13017
     issue: "#2932, #2928, #4047, #4740",
   },
   {
@@ -797,6 +811,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     steps: [{ key: "sync", script: "scripts/sync-cursos-subscribers-kv.ts" }],
     logPath: "cursos-subscribers/.kv-sync.log",
     schedule: { kind: "daily", hour: 9, minute: 15 },
+    retryOnTransientNetwork: true, // #13017
     issue: "#4052, #4320",
   },
   {
@@ -993,6 +1008,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // `--list` antes de escolher (10:10 Backlog-Reconcile, 10:15
     // Robots-Txt-Drift-Check — nada em 10:11-10:14).
     schedule: { kind: "daily", hour: 10, minute: 12 },
+    retryOnTransientNetwork: true, // #13017
     issue: "#8340, refs #4902, #4754, #8062",
   },
   {
@@ -2226,6 +2242,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // retém `created_at` por assinante, então o que ele minimiza é a janela
     // em que alguém cadastra e é deletado do Kit antes de ser visto 1 vez.
     schedule: { kind: "daily", hour: 4, minute: 25 },
+    retryOnTransientNetwork: true, // #13017
     // `--write` grava de verdade (a task agendada é o ÚNICO caller que passa
     // essa flag por padrão — execução manual é dry-run, ver docstring de
     // `diaria-subscribers-ingest-kit.ts`). Guard de escritor único (cópia de
@@ -3106,6 +3123,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // entrada já registrada. O slot 10:05, que precedia este até o corte
     // de Diaria-Session-Registry-SafeBackup-Alarm (#6798 item 5), está livre.
     schedule: { kind: "daily", hour: 10, minute: 10 },
+    retryOnTransientNetwork: true, // #13017
     // Sem guard — `fetchOpenBacklog` já é fail-soft (falha do `gh` devolve
     // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
     // falhou" como "backlog limpo").
@@ -3126,6 +3144,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // unidades foram desenvolvidas em worktrees isolados e escolheram o
     // mesmo buraco livre. Resolvido no merge da rodada overnight 260826.
     schedule: { kind: "daily", hour: 10, minute: 25 },
+    retryOnTransientNetwork: true, // #13017
     // Sem guard: fetchReports() é fail-soft por design (busca vazia = 0
     // relatórios, nunca erro) — a única falha dura é a BUSCA em si (Gmail
     // API indisponível/auth), que o próprio script já reporta com exit != 0.
@@ -3285,6 +3304,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // (Diaria-Postmaster-Spam-Sync, 12:30) do outro -- checado via
     // `--list` antes de escolher (#5408).
     schedule: { kind: "daily", hour: 10, minute: 50 },
+    retryOnTransientNetwork: true, // #13017
     // Sem guard -- ga4-sync.ts escreve snapshot NOVO
     // (`{AAAA-MM-DD}.json` + `latest.json`), nunca sobrescreve store
     // acumulado; um dia sem coleta so deixa o snapshot do dia anterior
