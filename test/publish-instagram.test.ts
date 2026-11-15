@@ -504,10 +504,12 @@ describe("Resume-aware skip posts já publicados", () => {
   it("script verifica status 'published' como válido para skip", () => {
     // No Facebook apenas draft/scheduled são skipped; no Instagram, published também é skip
     // #13074: o skip usa o conjunto compartilhado (inclui published e send_unknown).
+    // #13076: via decideResumeOrRetry (scripts/lib/social-retry.ts), que lê esse conjunto;
+    // o comportamento está em test/social-retry-send-unknown-13076.test.ts (CLI real).
     assert.match(
       SRC,
-      /RESUME_SKIP_STATUSES\.has\(p\.status\)/,
-      "deve usar RESUME_SKIP_STATUSES na verificação de skip",
+      /decideResumeOrRetry\(d, entries, \{ skipExisting, retryIds \}\)/,
+      "deve decidir o skip por decideResumeOrRetry (RESUME_SKIP_STATUSES)",
     );
   });
 });
