@@ -97,6 +97,45 @@ export interface CapaHookScore {
   /** `--hook` pronto para a capa do Short (2 a 5 palavras, #12462), ou `null`. */
   short_hook: string | null;
   short_reason: string | null;
+  /**
+   * Aviso só da capa do Short (#13116): na grade do perfil ela aparece sem o
+   * título, então precisa de sujeito reconhecível. `null` quando tem sujeito
+   * ou quando não cabe no Short. Não muda a pontuação, que é a mesma para os
+   * dois formatos.
+   */
+  short_warning: string | null;
+}
+
+/** Opções de `scoreCapaHook` (#13116). */
+export interface CapaScoreOptions {
+  /**
+   * Títulos do vídeo (o do roteiro ou o `--title` da publicação), conferidos
+   * além do título do D1. Na 261116 o vídeo era sobre outro assunto que o D1
+   * do `02-reviewed.md`, e a comparação só com o D1 não pegava a repetição.
+   */
+  titles?: string[];
+}
+
+/**
+ * Pronomes que, no começo da capa, viram sujeito que a pessoa reconhece sem
+ * o título ("Sua Busca", "Você paga?"). Pronome sozinho como objeto ("te")
+ * também conta: fala com quem vê.
+ */
+const CAPA_SUBJECT_PRONOUNS = ["você", "voce", "sua", "seu", "suas", "seus", "te", "eles", "elas"];
+
+/**
+ * Pure (#13116): a capa tem sujeito reconhecível sem o título? Conta nome
+ * conhecido (`CAPA_KNOWN_NAMES`), "IA", pronome que fala com quem vê, ou nome
+ * próprio em maiúscula fora da 1ª palavra (a 1ª palavra é sempre maiúscula).
+ * Heurística de propósito frouxa: só acusa o caso claro, de verbo ou número
+ * sem ninguém fazendo a ação ("Inventa cinco vezes menos?").
+ */
+export function hasRecognizableSubject(hook: string): boolean {
+  const flat = flatHook(hook);
+  const lw = lowerWords(flat);
+  if (lw.some((w) => CAPA_KNOWN_NAMES.includes(w) || w === "ia" || CAPA_SUBJECT_PRONOUNS.includes(w))) return true;
+  const tokens = flat.split(/\s+/).filter(Boolean);
+  return tokens.slice(1).some((t) => /^[A-ZÀ-ÖØ-Þ]\p{L}/u.test(t));
 }
 
 const LINE_BREAK_RE = /\r?\n|\\n|\|/;
@@ -174,7 +213,7 @@ export function salientNumbers(text: string): string[] {
 }
 
 /** Pure: pontua um candidato contra a diretriz (#12737). */
-export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigin = "agente"): CapaHookScore {
+export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigin = "agente", opts: CapaScoreOptions = {}): CapaHookScore {
   const hook = rawHook.replace(/\s+/g, " ").trim();
   const flat = flatHook(hook);
   const words = capaHookWords(hook).length;
@@ -214,18 +253,33 @@ export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigi
     notes.push("pontuação de exagero (mais de um ? ou ! no fim)");
   }
 
-  // Repetição do título: a capa complementa, não repete.
+  // Repetição do título: a capa complementa, não repete. Confere o título do
+  // D1 e, quando informados, os títulos do vídeo (#13116): vale o pior caso.
   const hookContent = contentWords(flat);
-  const titleContent = new Set(contentWords(d1.title));
-  const titleFlat = d1.title.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
-  const hookFlatLower = flat.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
-  if (hookFlatLower.length > 0 && titleFlat.includes(hookFlatLower) && words >= 3) {
-    violations.push("é um trecho literal do título do D1: a capa precisa dizer outra coisa");
+  const normTitle = (t: string): string => t.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
+  const hookFlatLower = normTitle(flat);
+  const references = [
+    { label: "do D1", title: d1.title },
+    ...(opts.titles ?? []).map((t) => t.trim()).filter(Boolean).map((title) => ({ label: "do vídeo", title })),
+  ];
+  const literal = references.find((r) => hookFlatLower.length > 0 && normTitle(r.title).includes(hookFlatLower) && words >= 3);
+  if (literal) {
+    violations.push(`é um trecho literal do título ${literal.label}: a capa precisa dizer outra coisa`);
   } else if (hookContent.length > 0) {
-    const overlap = hookContent.filter((w) => titleContent.has(w)).length / hookContent.length;
+    let overlap = 0;
+    let worst = references[0];
+    for (const r of references) {
+      const titleContent = new Set(contentWords(r.title));
+      const o = hookContent.filter((w) => titleContent.has(w)).length / hookContent.length;
+      if (o > overlap) {
+        overlap = o;
+        worst = r;
+      }
+    }
     if (overlap >= TITLE_OVERLAP_LIMIT) {
       score -= 20;
-      notes.push(`repete o título (${Math.round(overlap * 100)}% das palavras de conteúdo)`);
+      const which = references.length > 1 ? ` ${worst.label}` : "";
+      notes.push(`repete o título${which} (${Math.round(overlap * 100)}% das palavras de conteúdo)`);
     } else if (overlap === 0) {
       score += 10;
       notes.push("complementa o título sem repetir palavras");
@@ -295,6 +349,10 @@ export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigi
     horizontal_reason: h.reason,
     short_hook: s.hook,
     short_reason: s.reason,
+    short_warning:
+      s.hook && !hasRecognizableSubject(hook)
+        ? 'sem sujeito reconhecível: na grade do perfil a capa do Short aparece sem o título; diga quem ("Google", "Sua busca")'
+        : null,
   };
 }
 
@@ -435,9 +493,10 @@ export const CAPA_HOOKS_BASELINE_261110: ReadonlyArray<{ hook: string; views: nu
 ];
 
 /** Pure: texto da lista para o editor (terminal / mensagem do agente). */
-export function formatCapaSuggestions(ranked: CapaHookScore[], d1: CapaD1, limit = 10): string {
+export function formatCapaSuggestions(ranked: CapaHookScore[], d1: CapaD1, limit = 10, titles: string[] = []): string {
   const lines: string[] = [];
   lines.push(`Texto de capa — D1: ${d1.title}`);
+  for (const t of titles) lines.push(`Título do vídeo: ${t}`);
   lines.push("Potencial é heurístico (diretriz de docs/youtube-capa-texto.md), não previsão de CTR. Quem escolhe é o editor.");
   lines.push("");
   ranked.slice(0, limit).forEach((s, i) => {
@@ -447,6 +506,7 @@ export function formatCapaSuggestions(ranked: CapaHookScore[], d1: CapaD1, limit
     if (s.notes.length > 0) lines.push(`   ${s.notes.join("; ")}`);
     lines.push(`   horizontal: ${s.horizontal_hook ? `--hook "${s.horizontal_hook}"` : `não cabe (${s.horizontal_reason})`}`);
     lines.push(`   Short: ${s.short_hook ? `--hook "${s.short_hook}"` : `não cabe (${s.short_reason})`}`);
+    if (s.short_warning) lines.push(`   aviso no Short: ${s.short_warning}`);
   });
   lines.push("");
   lines.push("Referência do canal (levantamento de 10/11/2026, amostra pequena):");
