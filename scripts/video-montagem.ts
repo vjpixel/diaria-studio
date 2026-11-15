@@ -255,7 +255,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
+import { readRoteiroFontes, readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
@@ -2534,18 +2534,21 @@ function cmdFactCheckInput(ctx: Ctx): number {
   const sourcesDir = join(editionDirFor(ctx.edition), "_internal", "fact-check-sources");
   const manifest = join(sourcesDir, "manifest.json");
   if (!existsSync(manifest)) console.error(`[aviso] sem ${manifest}: as fontes do D1 não foram baixadas (Stage 4, run-fact-checker.ts); o agent cai no WebFetch da URL do D1 (#11956)`);
+  // #13132: as fontes que o roteiro declarou por fala (fatos de fora da fonte do D1).
+  const roteiroFontes = readRoteiroFontes(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`));
   const input = {
     mode: "video" as const,
     edition: ctx.edition,
     items_sha256: factCheckItemsSha256(items),
     items,
     sources_dir: sourcesDir,
+    ...(roteiroFontes.length ? { roteiro_fontes: roteiroFontes } : {}),
     approved_json_path: join(editionDirFor(ctx.edition), "_internal", "01-approved.json"),
     out_path: f(ctx, VIDEO_FACT_CHECK_FILE),
   };
   const path = f(ctx, VIDEO_FACT_CHECK_INPUT_FILE);
   writeJson(path, input);
-  console.error(`[video-montagem] fact-check-input: ${items.length} item(ns) da fala; agent fact-checker com mode "video", input ${path}, out ${input.out_path}`);
+  console.error(`[video-montagem] fact-check-input: ${items.length} item(ns) da fala${roteiroFontes.length ? `, ${roteiroFontes.length} fonte(s) do roteiro por fala` : ""}; agent fact-checker com mode "video", input ${path}, out ${input.out_path}`);
   console.log(path);
   return 0;
 }

@@ -82,7 +82,8 @@ describe("#12751 (1): proposta de blocos para os dois verticais", () => {
   it("três sequências: horizontal, vertical da edição e o corte guia", () => {
     assert.deepEqual(p.sequencias.map((s) => s.chave), ["youtube", "outras-redes", "guia"]);
     const v2 = p.sequencias[2];
-    assert.deepEqual(v2.falas.map((f) => f.id), ["H4", "V2-gancho"]);
+    // #13128: sem ordem declarada, o vertical segue a montagem (bloco a bloco): o gancho gravado à parte abre.
+    assert.deepEqual(v2.falas.map((f) => f.id), ["V2-gancho", "H4"]);
     assert.equal(v2.titulo, "3 dicas para não vazar senha no Claude Code");
     assert.equal(p.screenTitle, "Mais de 500 senhas vazadas pelo Claude Code");
   });

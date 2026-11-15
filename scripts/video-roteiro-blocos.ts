@@ -13,6 +13,12 @@
  * mais de ~8 palavras antes do primeiro ponto e título que repete o gancho
  * (`avisosGanchoETitulo`, #13116).
  *
+ * Desde a #13128/#13129/#13130: cada vertical na ordem própria
+ * (`porVideo.{vertical}.ordem`), com os cortes parciais (`cortes`) aplicados, e
+ * a duração estimada de cada vídeo (`[duração]` no stderr e na proposta), com
+ * `[aviso]` de vertical acima do alvo e sugestão de corte. Alvos e ritmo em
+ * `platform.config.json` → `publishing.video.roteiro`.
+ *
  * Só propõe: não grava `blocks.json` nem decupagem. Os tempos no bruto saem da
  * decupagem e o editor decide no Gate 1/Gate 2 da montagem.
  *
@@ -30,7 +36,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
-import { avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, renderPropostaBlocos, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
+import { VIDEO_LABEL } from "./lib/diaria/roteiro-gravacao.ts";
+import { avisosGanchoETitulo, formatarDuracao, loadAlvosRoteiro, parseRoteiroFalas, propostaBlocosDoRoteiro, renderPropostaBlocos, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
 
 export const EXIT_SEM_ROTEIRO = 3;
 
@@ -63,8 +70,10 @@ export function main(argv: string[] = process.argv.slice(2), io: { out: (s: stri
     io.err("[video-roteiro-blocos] --corte precisa ser um slug (minúsculas, dígitos e hífen)");
     return 2;
   }
-  const proposta = propostaBlocosDoRoteiro(lido.roteiro, corte ? { corteSlug: corte } : {});
-  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  const { alvos, avisos: avisosConfig } = loadAlvosRoteiro();
+  const proposta = propostaBlocosDoRoteiro(lido.roteiro, { alvos, ...(corte ? { corteSlug: corte } : {}) });
+  for (const a of [...avisosConfig, ...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  for (const d of proposta.duracoes) io.err(`[duração] ${VIDEO_LABEL[d.video]}: ~${formatarDuracao(d.segundos)} de fala (${d.palavras} palavras, alvo ~${formatarDuracao(d.alvoS)}) + ~${formatarDuracao(proposta.ctaCardS)} do card de CTA`);
   io.out(flags.has("json") ? JSON.stringify(proposta, null, 2) : renderPropostaBlocos(proposta));
   return 0;
 }

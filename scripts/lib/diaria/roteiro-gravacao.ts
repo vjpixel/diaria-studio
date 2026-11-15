@@ -46,12 +46,66 @@ export interface FalaRoteiro {
    * A proposta de blocos (`scripts/lib/diaria/roteiro-videos.ts`) lê daqui.
    */
   bloco?: BlockKey;
+  /**
+   * Texto que vai escrito na tela junto da fala (#13120): o nome exato que a
+   * fala descreve sem citar, os números, a comparação. A página mostra num box
+   * ao lado da fala; a proposta de blocos repassa para a montagem.
+   */
+  tela?: string;
+  /**
+   * Corte parcial da fala num vertical (#13129): o trecho exato que sai daquele
+   * vídeo; o horizontal fica com a fala inteira. `reserva: true` = só entra se
+   * a duração estimada do vertical passar do alvo.
+   */
+  cortes?: Partial<Record<VerticalRoteiro, CorteFala | CorteFala[]>>;
+  /** Fontes do que a fala afirma fora da fonte do D1 (#13132): o fact-check da montagem lê. */
+  fontes?: FonteFala[];
+  /** Etiqueta da fala na página ("Seu relato", "Sugestão"). */
+  etiqueta?: string;
+}
+
+/** Os dois verticais, os únicos vídeos com ordem e cortes próprios (o horizontal é a gravação). */
+export type VerticalRoteiro = "vertical1" | "vertical2";
+export const VERTICAIS_ROTEIRO: readonly VerticalRoteiro[] = ["vertical1", "vertical2"];
+
+/** Um corte parcial (#13129): o trecho, ou `{ trecho, reserva }`. */
+export type CorteFala = string | { trecho: string; reserva?: boolean };
+
+/** Uma fonte da fala (#13132): a URL e o que ela sustenta. */
+export interface FonteFala {
+  url: string;
+  sustenta: string;
 }
 
 /** Título e texto da capa de um vídeo do roteiro (#12751). */
 export interface PecaVideo {
   titulo?: string;
   capa?: string;
+  /**
+   * Só nos verticais (#13128): a sequência das falas daquele corte, por id.
+   * Ausente = a ordem do horizontal (a do array `falas`).
+   */
+  ordem?: string[];
+}
+
+/** Situação de um fato checado fora da fonte do D1 (#13132). */
+export const SITUACOES_FATO = ["confirmado", "fonte-terceira", "contraditorio", "sem-fonte"] as const;
+export type SituacaoFato = (typeof SITUACOES_FATO)[number];
+
+/** Um ponto do rascunho do editor checado fora da fonte do D1 (#13132). */
+export interface FatoChecado {
+  fato: string;
+  situacao: SituacaoFato;
+  fonte?: string;
+  /** A versão corrigida, quando a checagem contradiz. */
+  correcao?: string;
+}
+
+/** Ponto do rascunho do editor que ficou fora do roteiro, ou entrou só em parte (#13132). */
+export interface PontoExcluido {
+  ponto: string;
+  motivo: string;
+  parcial?: boolean;
 }
 
 export interface RoteiroFalas {
@@ -65,6 +119,19 @@ export interface RoteiroFalas {
    * `/diaria-publica` usa o título do horizontal no YouTube e os textos da capa.
    */
   porVideo?: Partial<Record<VideoRoteiro, PecaVideo>>;
+  /** Fatos do rascunho do editor checados fora da fonte do D1 (#13132). */
+  fatosChecados?: FatoChecado[];
+  /** Pontos do rascunho do editor que ficaram fora, ou entraram em parte, com o motivo (#13132). */
+  excluidos?: PontoExcluido[];
+  /** Notas livres para a gravação e a edição (a página mostra no fim). */
+  notas?: string[];
+}
+
+/** Os cortes de uma fala num vertical, normalizados para `{ trecho, reserva }`. */
+export function cortesDaFala(f: Pick<FalaRoteiro, "cortes">, v: VerticalRoteiro): Array<{ trecho: string; reserva: boolean }> {
+  const c = f.cortes?.[v];
+  if (c === undefined) return [];
+  return (Array.isArray(c) ? c : [c]).map((x) => (typeof x === "string" ? { trecho: x, reserva: false } : { trecho: x.trecho, reserva: x.reserva === true }));
 }
 
 /**
@@ -472,6 +539,7 @@ export function validarRoteiroFalas(x: unknown): string[] {
     if (o.bloco !== undefined && !(typeof o.bloco === "string" && isBlockKey(o.bloco))) {
       problemas.push(`falas[${i}].bloco deve ser um bloco da montagem (gancho, titulo, abertura, resumo, resumo_curto, comentario, cta_yt, cta_vertical, cta_ig, cta_out, fecho)`);
     }
+    problemas.push(...validarCamposDaFala(o, i));
   });
   if (r.veiculos !== undefined && (!Array.isArray(r.veiculos) || !r.veiculos.every((v) => typeof v === "string"))) {
     problemas.push("`veiculos` deve ser lista de strings");
@@ -486,10 +554,103 @@ export function validarRoteiroFalas(x: unknown): string[] {
         for (const campo of ["titulo", "capa"] as const) {
           if (p[campo] !== undefined && (typeof p[campo] !== "string" || !(p[campo] as string).trim())) problemas.push(`porVideo.${k}.${campo} deve ser texto não vazio`);
         }
+        if (p.ordem !== undefined) problemas.push(...validarOrdem(k, p.ordem, r.falas as unknown[]));
       }
     }
   }
+  problemas.push(...validarListaDeObjetos(r.fatosChecados, "fatosChecados", (o, l) => {
+    const out: string[] = [];
+    if (!textoNaoVazio(o.fato)) out.push(`${l}.fato ausente`);
+    if (!(SITUACOES_FATO as readonly unknown[]).includes(o.situacao)) out.push(`${l}.situacao deve ser ${SITUACOES_FATO.join("|")}`);
+    for (const c of ["fonte", "correcao"] as const) if (o[c] !== undefined && !textoNaoVazio(o[c])) out.push(`${l}.${c} deve ser texto não vazio`);
+    return out;
+  }));
+  problemas.push(...validarListaDeObjetos(r.excluidos, "excluidos", (o, l) => {
+    const out: string[] = [];
+    if (!textoNaoVazio(o.ponto)) out.push(`${l}.ponto ausente`);
+    if (!textoNaoVazio(o.motivo)) out.push(`${l}.motivo ausente (o editor quer saber por que o ponto ficou fora)`);
+    if (o.parcial !== undefined && typeof o.parcial !== "boolean") out.push(`${l}.parcial deve ser booleano`);
+    return out;
+  }));
+  if (r.notas !== undefined && (!Array.isArray(r.notas) || !r.notas.every(textoNaoVazio))) problemas.push("`notas` deve ser lista de textos não vazios");
   return problemas;
+}
+
+function textoNaoVazio(x: unknown): x is string {
+  return typeof x === "string" && x.trim().length > 0;
+}
+
+function validarListaDeObjetos(x: unknown, nome: string, item: (o: Record<string, unknown>, label: string) => string[]): string[] {
+  if (x === undefined) return [];
+  if (!Array.isArray(x)) return [`\`${nome}\` deve ser lista`];
+  return x.flatMap((o, i) => (o && typeof o === "object" && !Array.isArray(o) ? item(o as Record<string, unknown>, `${nome}[${i}]`) : [`${nome}[${i}] deve ser objeto`]));
+}
+
+/** `tela`, `cortes`, `fontes` e `etiqueta` de uma fala (#13120, #13129, #13132). */
+function validarCamposDaFala(o: Record<string, unknown>, i: number): string[] {
+  const out: string[] = [];
+  const l = `falas[${i}]`;
+  for (const c of ["tela", "etiqueta"] as const) if (o[c] !== undefined && !textoNaoVazio(o[c])) out.push(`${l}.${c} deve ser texto não vazio`);
+  if (o.cortes !== undefined) {
+    if (!o.cortes || typeof o.cortes !== "object" || Array.isArray(o.cortes)) out.push(`${l}.cortes deve ser objeto por vertical ({ "vertical1": "trecho" })`);
+    else {
+      const videos = Array.isArray(o.videos) ? (o.videos as unknown[]) : [];
+      const texto = typeof o.texto === "string" ? o.texto : "";
+      for (const [v, val] of Object.entries(o.cortes as Record<string, unknown>)) {
+        if (!(VERTICAIS_ROTEIRO as readonly string[]).includes(v)) {
+          out.push(`${l}.cortes.${v}: só vertical1|vertical2 (o horizontal fica com a fala inteira)`);
+          continue;
+        }
+        if (!videos.includes(v)) out.push(`${l}.cortes.${v}: a fala não está no ${VIDEO_LABEL[v as VerticalRoteiro]} (videos)`);
+        const lista = Array.isArray(val) ? val : [val];
+        if (lista.length === 0) out.push(`${l}.cortes.${v}: lista vazia`);
+        let resto = texto;
+        lista.forEach((c, j) => {
+          const trecho = typeof c === "string" ? c : c && typeof c === "object" && !Array.isArray(c) ? (c as Record<string, unknown>).trecho : undefined;
+          const reserva = c && typeof c === "object" ? (c as Record<string, unknown>).reserva : undefined;
+          const lc = `${l}.cortes.${v}${Array.isArray(val) ? `[${j}]` : ""}`;
+          if (!textoNaoVazio(trecho)) {
+            out.push(`${lc}: trecho ausente (texto, ou { "trecho": "…", "reserva": true })`);
+            return;
+          }
+          if (reserva !== undefined && typeof reserva !== "boolean") out.push(`${lc}.reserva deve ser booleano`);
+          if (!resto.includes(trecho)) out.push(`${lc}: o trecho "${trecho}" não está no texto da fala (copiar exato)`);
+          else resto = resto.replace(trecho, "");
+        });
+        if (texto && !/[\p{L}\p{N}]/u.test(resto)) out.push(`${l}.cortes.${v}: os cortes tiram a fala inteira; tirar o ${v} de \`videos\` em vez disso`);
+      }
+    }
+  }
+  if (o.fontes !== undefined) {
+    if (!Array.isArray(o.fontes) || o.fontes.length === 0) out.push(`${l}.fontes deve ser lista não vazia de { url, sustenta }`);
+    else
+      o.fontes.forEach((fo, j) => {
+        const f = (fo ?? {}) as Record<string, unknown>;
+        if (!textoNaoVazio(f.url) || !/^https?:\/\//.test(f.url)) out.push(`${l}.fontes[${j}].url deve ser URL http(s)`);
+        if (!textoNaoVazio(f.sustenta)) out.push(`${l}.fontes[${j}].sustenta ausente (o que a fonte sustenta na fala)`);
+      });
+  }
+  return out;
+}
+
+/** `porVideo.{vertical}.ordem` (#13128): exatamente as falas marcadas para aquele vídeo, cada uma uma vez. */
+function validarOrdem(video: string, ordem: unknown, falas: unknown[]): string[] {
+  const l = `porVideo.${video}.ordem`;
+  if (!(VERTICAIS_ROTEIRO as readonly string[]).includes(video)) return [`${l}: só nos verticais (o horizontal segue a ordem de \`falas\`)`];
+  if (!Array.isArray(ordem) || !ordem.every((x) => typeof x === "string")) return [`${l} deve ser lista de ids de fala`];
+  const doVideo = falas
+    .map((f) => (f ?? {}) as Record<string, unknown>)
+    .filter((f) => typeof f.id === "string" && Array.isArray(f.videos) && f.videos.includes(video))
+    .map((f) => f.id as string);
+  const out: string[] = [];
+  const vistos = new Set<string>();
+  const repetidos = ordem.filter((id) => (vistos.has(id) ? true : (vistos.add(id), false)));
+  if (repetidos.length) out.push(`${l}: id repetido: ${[...new Set(repetidos)].join(", ")}`);
+  const sobrando = ordem.filter((id) => !doVideo.includes(id));
+  if (sobrando.length) out.push(`${l}: id que não é fala do ${video} (sobrando): ${[...new Set(sobrando)].join(", ")}`);
+  const faltando = doVideo.filter((id) => !vistos.has(id));
+  if (faltando.length) out.push(`${l}: fala do ${video} fora da ordem (faltando): ${faltando.join(", ")}`);
+  return out;
 }
 
 /** Relatório em texto para o modelo partir dele (não é a resposta final ao editor). */
