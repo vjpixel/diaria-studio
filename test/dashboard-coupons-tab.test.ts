@@ -32,6 +32,14 @@ const renderCoupons = (
   opts?: Parameters<typeof renderCouponTabPanel>[2],
 ) => renderCouponTabPanel(usage, now, opts);
 
+it("#13093: explica o cache dos cupons e o horário previsto sem prometer pontualidade", () => {
+  const html = renderCoupons(syntheticUsage);
+  assert.match(html, /Cupons usam dados salvos em cache/);
+  assert.match(html, /“Atualizar agora” não renova estes dados/);
+  assert.match(html, /06:00 BRT no GitHub Actions, mas pode atrasar/);
+  assert.match(html, /após a conclusão da coleta/);
+});
+
 // ---------------------------------------------------------------------------
 // Fixture sintética — IDs e emails exclusivamente @example.com
 // ---------------------------------------------------------------------------
