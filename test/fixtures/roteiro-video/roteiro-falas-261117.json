@@ -1,0 +1,342 @@
+{
+  "edicao": "261117",
+  "veiculos": [
+    "MIT Technology Review Brasil",
+    "MIT Technology Review"
+  ],
+  "porVideo": {
+    "horizontal": {
+      "titulo": "Drauzio falso: golpe com IA vende cura",
+      "capa": "Tem paciente largando o remédio"
+    },
+    "vertical1": {
+      "capa": "Drauzio nunca vendeu essa cura",
+      "ordem": [
+        "H1",
+        "H5",
+        "H9",
+        "H9b",
+        "H10d",
+        "H10f",
+        "V1-CTA"
+      ]
+    },
+    "vertical2": {
+      "titulo": "Médico falso de IA: como não cair",
+      "capa": "Vídeo do Drauzio vendendo cura?",
+      "ordem": [
+        "V2-G",
+        "H12",
+        "H13d",
+        "H13b",
+        "H14"
+      ]
+    }
+  },
+  "falas": [
+    {
+      "id": "H1",
+      "bloco": "gancho",
+      "texto": "Tem gente largando remédio por vídeo falso. Tem até vídeo com a voz do Drauzio Varella, imitada, vendendo produto milagroso pra diabetes.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H1b",
+      "bloco": "gancho",
+      "texto": "Fica comigo até o final, que tem um trecho pronto pra você mandar pros seus pais, com o que fazer pra não cair nessa.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H2",
+      "bloco": "abertura",
+      "texto": "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H3",
+      "bloco": "resumo",
+      "texto": "A história é essa: tem paciente recebendo vídeo com a voz do Drauzio, e até do Roberto Carlos, indicando um remédio maravilhoso. A Sociedade Brasileira de Diabetes teve que sair respondendo.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H4",
+      "bloco": "resumo",
+      "texto": "No final, quase sempre tem um botão: compre aqui o seu remédio.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H5",
+      "bloco": "resumo",
+      "texto": "Não é caso isolado. Uma agência de checagem brasileira conferiu mais de 750 afirmações sobre saúde que circulavam por aí, de 2017 pra cá. Quase nove em cada dez eram falsas.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false,
+      "tela": "764 alegações checadas\n87,3% falsas",
+      "fontes": [
+        {
+          "url": "https://www.agencialupa.org/observatorio/2026/10/19/da-pandemia-aos-videos-com-ia-desinformacao-em-saude-repete-mecanismos-de-persuasao/",
+          "sustenta": "764 alegações de 498 checagens, 87,3% falsas, março de 2017 a junho de 2026 (Raio-X da Desinformação em Saúde, Observatório Lupa)"
+        }
+      ],
+      "cortes": {
+        "vertical1": "que circulavam por aí, de 2017 pra cá"
+      }
+    },
+    {
+      "id": "H8",
+      "bloco": "resumo",
+      "texto": "Antes o boato só enganava. Agora ele dá dinheiro: o golpe vende suplemento, e o alvo preferido é quem tem diabetes.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H7",
+      "bloco": "resumo",
+      "texto": "Pra vender, eles usam deepfake de médico conhecido. Deepfake é aquele vídeo falso feito com IA. Tem também ator fingindo ser especialista e site que imita portal de notícia.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "tela": "Deepfake de médico conhecido\nAtor no papel de especialista\nSite que imita portal de notícia"
+    },
+    {
+      "id": "H9",
+      "bloco": "resumo",
+      "texto": "O estrago é de verdade. Um endocrinologista da Sociedade Brasileira de Diabetes já viu paciente largar o remédio por um produto que viu num vídeo ou num texto.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H9b",
+      "bloco": "resumo",
+      "texto": "Resultado: o diabetes saiu do controle. Colegas dele contam casos de cetoacidose, uma emergência que pode matar.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10",
+      "bloco": "comentario",
+      "texto": "O que mais me incomoda é que o golpe usa justamente a confiança que a gente tem em médico.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10b",
+      "bloco": "comentario",
+      "texto": "Não é pouca confiança: nas pesquisas, médico aparece em primeiro lugar entre as fontes em que o brasileiro confia.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "tela": "Fonte de informação mais confiável:\nmédicos 60,1% · cientistas 47,3%"
+    },
+    {
+      "id": "H10c",
+      "bloco": "comentario",
+      "texto": "O golpe também pega a pessoa cansada. Tratar diabetes costuma ser dois, três, quatro remédios. Aí aparece alguém dizendo que dá pra trocar tudo por uma coisa só.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10e",
+      "bloco": "comentario",
+      "texto": "Denunciar adianta? Nem sempre. Aquele endocrinologista denuncia conteúdo falso no Instagram, e muitas vezes a resposta é que não acharam nada de errado.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H13",
+      "bloco": "comentario",
+      "texto": "Agora um aviso pra quem usa IA todo dia, como eu e você: não adianta perguntar pro chatbot se um vídeo desses é verdade.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H13c",
+      "bloco": "comentario",
+      "texto": "Chatbot também inventa. Um professor recebeu o trabalho de um aluno, e lá tinha citação de textos que o professor nunca escreveu. Quem inventou foi o chatbot.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10d",
+      "bloco": "comentario",
+      "texto": "Não pensa que ter estudo protege. O pai daquele endocrinologista também é médico, e já acreditou numa notícia falsa.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H10f",
+      "bloco": "comentario",
+      "texto": "Se até um médico cai, imagina os nossos pais.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H11a",
+      "bloco": "comentario",
+      "texto": "Agora vem a parte pra mandar pros seus pais. Na descrição tem um link que já abre o vídeo neste ponto.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "tela": "Link na descrição:\ncomeça no trecho pros seus pais"
+    },
+    {
+      "id": "H11",
+      "bloco": "comentario",
+      "texto": "Tem golpe usando inteligência artificial pra imitar médico conhecido em vídeo. Então olha como não cair.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H12",
+      "bloco": "comentario",
+      "texto": "Viu médico famoso vendendo produto milagroso? Desconfia.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H13d",
+      "bloco": "comentario",
+      "texto": "Na dúvida, procura o canal oficial do médico e vê se o vídeo tá lá. O Drauzio Varella já teve a voz usada em vídeo falso. No canal dele no YouTube tem até um vídeo ensinando a reconhecer médico falso feito com inteligência artificial.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "tela": "Canal do Drauzio Varella no YouTube:\nComo identificar médicos criados por IA?",
+      "fontes": [
+        {
+          "url": "https://www.youtube.com/shorts/dongY67Tw9M",
+          "sustenta": "Short do canal Drauzio Varella, 10/11/2026: Como identificar médicos criados por IA?"
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=r25Oq01MC3w",
+          "sustenta": "Versão longa no mesmo canal, 10/11/2026"
+        }
+      ]
+    },
+    {
+      "id": "H13b",
+      "bloco": "comentario",
+      "texto": "Se o vídeo for sobre diabetes, a Sociedade Brasileira de Diabetes tem uma página só pra desmentir boato. Chama Diabetes Fato ou Fake, o endereço tá aqui na tela.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "tela": "diabetes.org.br/fake"
+    },
+    {
+      "id": "H14",
+      "bloco": "comentario",
+      "texto": "Agora, o mais importante: só mexe no remédio depois de conversar com o seu médico. Nunca por causa de vídeo.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "H15",
+      "bloco": "comentario",
+      "texto": "A inteligência artificial deixou o golpista falar com a voz de um médico em quem você confia. Só que médico de confiança mesmo é o que conhece o seu caso.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false
+    },
+    {
+      "id": "V1-CTA",
+      "bloco": "cta_vertical",
+      "texto": "No vídeo completo, no YouTube da diar.ia.br, tem um trecho pronto pra mandar pros seus pais não caírem em médico falso de IA.",
+      "videos": [
+        "vertical1"
+      ],
+      "gravarAParte": true
+    },
+    {
+      "id": "V2-G",
+      "bloco": "gancho",
+      "texto": "Seu pai recebeu vídeo do Drauzio vendendo cura? É golpe, a voz é imitada. Manda este vídeo pra ele, que daqui pra frente eu falo com ele.",
+      "videos": [
+        "vertical2"
+      ],
+      "gravarAParte": true
+    }
+  ],
+  "gravacao": [
+    "A edição 261117 ainda não passou pelas Etapas 1 a 4. Este roteiro sai do texto do deepfake escrito para a 261116 (guardado em _forensic/swap-261115-1617-d2). Antes de gravar, confira se o D1 que passou no gate 4 manteve os mesmos fatos."
+  ],
+  "notas": [
+    "Fonte do D1: reportagem de 13/11/2026 sobre desinformação em saúde (não citar o veículo). Os números são do relatório Raio-X da Desinformação em Saúde, da Lupa, que a fala chama de \"uma agência de checagem brasileira\".",
+    "Arredondamentos: 764 alegações viraram \"mais de 750 afirmações\" (não boatos: 12,7% não eram falsas); 87,3% virou \"quase nove em cada dez\". O número exato vai na tela.",
+    "Da fonte: vozes do Drauzio Varella e do Roberto Carlos, o botão de compra (fala do endocrinologista Flávio Pirozzi), falsa autoridade em 21,6%, deepfake, ator e site falso, diabetes como alvo, descompensação e cetoacidose, confiança em médicos (60,1%, estudo de 2022), o pai do Pirozzi, as denúncias no Instagram, não checar perguntando pro Gemini (pesquisadora Luisa Massarani) e quem repassa achando que ajuda (Maiquel Rosauro).",
+    "Dicas nossas, fora da fonte: as três regras (H12, H13d, H14) e o aviso de não checar com chatbot (H13; o caso da bibliografia inventada em H13c é da fonte). O vídeo do Drauzio em H13d vem da pesquisa do YouTube de 15/11, não da reportagem.",
+    "A fonte fala em vídeos manipulados com a voz do Drauzio e do Roberto Carlos, sem dizer que foram feitos com IA nem ligar esses vídeos aos pacientes que largaram o remédio. Por isso a IA aparece de forma geral (H7, H10b, H15, V2-G, a partir da fala do analista da Lupa sobre deepfakes de médicos conhecidos) e H9 fala em vídeo ou texto na internet.",
+    "Comentário (H10 a H10e e H15): sem caso pessoal do editor (15/11); H10 é opinião escrita por nós, o resto vem da fonte.",
+    "Nomes fixos: produto (ou suplemento) para o falso, remédio para o tratamento de verdade. H3 e H4 mantêm remédio porque reproduzem o que o vídeo falso diz.",
+    "Numeração: H8 passou para antes de H7, e H7 virou duas falas (H7 e H7b).",
+    "Títulos (15/11): pesquisa no YouTube dos últimos 30 dias. Os vídeos de maior audiência sobre o assunto levam Drauzio no título; os termos que mais se repetem são médicos, criados por IA, deepfake, golpe e identificar. Por isso o Drauzio entrou no começo do título do horizontal, e médico falso e IA entraram no título do vertical 2. O próprio canal do Drauzio tem um Short de 10/11 com 27 mil views: Como identificar médicos criados por IA?",
+    "Vertical 2 (15/11, decisão do editor): é o vídeo para o nosso público repassar aos pais. O pedido de compartilhamento vem no gancho, depois da tensão, e as regras falam direto com quem recebe. Legenda do post do vertical 2: Manda pra quem recebe esse tipo de vídeo no WhatsApp. Medir pelos compartilhamentos no Instagram contra os verticais anteriores.",
+    "Antes desta mudança: cópia em roteiro-falas-v3.json e roteiro-d1-v3.html. H13 virou o aviso sobre chatbot, só no horizontal; H13c e H13d são novas; H14b saiu do vertical 2.",
+    "Revisão do Fable (15/11, aplicada inteira por decisão do editor): o vertical 2 agora diz no gancho que a voz é imitada e anuncia as três regras. Dica nossa nova: ver se o vídeo está no canal oficial do médico (H13d). O vertical 1 voltou à ordem H1, H5, H9.",
+    "Exceção consciente: os títulos do horizontal e do vertical 2 dizem IA por causa da busca, embora a fonte só fale em vídeos manipulados com a voz. As falas mantêm a IA de forma geral.",
+    "O campo tela ainda não chega ao XML da montagem (#13140): os números de H5 e H10b e o endereço de H13b, que a fala manda olhar na tela, precisam ir à mão.",
+    "Vertical 2 menos duro (15/11, pedido do editor): as regras numeradas viraram conversa com os pais, sem Um/Dois/Três. As falas valem também no horizontal. Cópia anterior: roteiro-falas-v5.json.",
+    "Comentário do vertical 1 (15/11, pedido do editor): saíram H10 e H10b (confiança em médico, genérico e repetido) e entraram H10d (o pai do endocrinologista, que é médico, acreditou numa notícia falsa) e H10f, opinião nossa que liga o caso à chamada para o vídeo completo.",
+    "Trecho para os pais (15/11, decisão do editor): de H11 até o fim, o horizontal fala tanto com quem assiste quanto com os pais, que podem chegar pelo link com tempo. H14b saiu e H11 deixou de citar os pais. Na publicação, montar à mão o link {URL}?t={segundos do início de H11} e pôr na descrição e no comentário fixado: Pra mandar pros seus pais: {link}. Hoje nada gera esse link sozinho (#13164).",
+    "Revisão do Fable da v10 (15/11, aplicada inteira por decisão do editor): o trecho pros pais (H11 em diante) passou a se explicar sozinho, com o golpe definido em H11, o Drauzio apresentado em H13d e inteligência artificial por extenso. H10d e H10f foram para logo antes de H11a. Saíram as telas de H6, H7 e H9b, e a de H5 foi enxugada. Ressalva aberta: o vertical 1 herda o título com IA, mas nenhuma fala dele menciona IA. Cópia anterior: roteiro-falas-v10.json.",
+    "Versão conversacional (15/11, pedido do editor): perguntas, tá, né, a gente, frases mais curtas, mesmos fatos. Cópia anterior: roteiro-falas-v11.json.",
+    "Revisão do Fable da v12 (15/11, aplicada inteira por decisão do editor): pontes entre as falas (H5, H9, H10c, H13, H10d), troca de vez em V2-G, registro falado. O gancho não abre com trecho do vídeo falso (decisão do editor). Cópia anterior: roteiro-falas-v12.json.",
+    "Corte de tempo (15/11): o horizontal passou de 4 min com as pontes. H6 (falsa autoridade) saiu, e H7b foi junto com H7, numa fala só. O gancho H1 foi reescrito para chegar ao ponto em 7 palavras e não repetir o título. A fonte sustenta paciente largando remédio por vídeo ou texto (Pirozzi)."
+  ]
+}
