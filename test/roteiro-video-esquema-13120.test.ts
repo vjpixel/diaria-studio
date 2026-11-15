@@ -148,6 +148,15 @@ describe("#13129: o trecho cortado e o que sobra", () => {
   it("corte no meio vira dois trechos", () => {
     assert.deepEqual(segmentosSemTrecho("Primeiro isto. Depois aquilo. Por fim o resto.", "Depois aquilo."), ["Primeiro isto.", "Por fim o resto."]);
   });
+  it("o corte e a página pulam a ocorrência dentro de palavra, como o validador (review do contínuo)", () => {
+    assert.deepEqual(segmentosSemTrecho("Hydrogen saiu. Hydro também.", "Hydro"), ["Hydrogen saiu.", "também."]);
+    const r = base();
+    const h4 = r.falas.find((f) => f.id === "H4")!;
+    h4.texto = "Hydrogen saiu. Hydro também.";
+    h4.cortes = { vertical1: "Hydro" };
+    assert.deepEqual(validarRoteiroFalas(r), []);
+    assert.match(renderRoteiroPagina(r), /Hydrogen saiu\. <del[^>]*>Hydro<\/del>/);
+  });
   it("trecho ausente = null; trecho = fala inteira = []", () => {
     assert.equal(segmentosSemTrecho("Uma fala.", "outra"), null);
     assert.deepEqual(segmentosSemTrecho("Uma fala.", "Uma fala."), []);

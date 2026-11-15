@@ -106,7 +106,7 @@ export function corteDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): Co
 export function segmentosSemTrecho(texto: string, trecho: string): string[] | null {
   const t = trecho.trim();
   if (!t) return null;
-  const i = texto.indexOf(t);
+  const i = posicoesDoTrecho(texto, t)[0] ?? -1;
   if (i < 0) return null;
   const limpa = (s: string) => s.replace(/\s+([.,;:!?…])/g, "$1").replace(/\s+/g, " ").trim();
   const antes = limpa(texto.slice(0, i)).replace(/[\s,;:]+$/, "");
@@ -127,20 +127,28 @@ export function segmentosSemTrecho(texto: string, trecho: string): string[] | nu
 /** Seta proibida no texto que chega ao leitor (#9721). */
 export const SETA = /[→←]/;
 
-/** Quantas vezes o trecho aparece no texto como palavras inteiras (#13129). */
-export function ocorrenciasDoTrecho(texto: string, trecho: string): number {
+/**
+ * As posições em que o trecho aparece no texto como palavras inteiras (#13129):
+ * uma ocorrência no meio de uma palavra ("Hydro" de "Hydrogen") não conta.
+ * Validador, corte e página usam esta mesma busca, para nunca discordarem.
+ */
+export function posicoesDoTrecho(texto: string, trecho: string): number[] {
   const t = trecho.trim();
-  if (!t) return 0;
+  if (!t) return [];
   const letra = /[\p{L}\p{N}]/u;
-  let n = 0;
+  const out: number[] = [];
   for (let i = texto.indexOf(t); i >= 0; i = texto.indexOf(t, i + 1)) {
     const antes = i > 0 ? texto[i - 1] : "";
     const depois = texto[i + t.length] ?? "";
-    // Corte no meio de uma palavra ("Hydro" de "Hydrogen") não conta.
     if ((antes && letra.test(antes) && letra.test(t[0])) || (depois && letra.test(depois) && letra.test(t[t.length - 1]))) continue;
-    n++;
+    out.push(i);
   }
-  return n;
+  return out;
+}
+
+/** Quantas vezes o trecho aparece no texto como palavras inteiras (#13129). */
+export function ocorrenciasDoTrecho(texto: string, trecho: string): number {
+  return posicoesDoTrecho(texto, trecho).length;
 }
 
 export interface RoteiroFalas {

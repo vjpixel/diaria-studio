@@ -22,7 +22,7 @@
  */
 
 import type { BlockKey } from "./video-montage.ts";
-import { corteDaFala, SETA, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
+import { corteDaFala, posicoesDoTrecho, SETA, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 import { blocoNaVertical, duracaoPorVideo, falasDoVideo, fmtDuracao, roteiroPecas, ROTEIRO_DURACAO_DEFAULT, type RoteiroDuracaoConfig } from "./roteiro-videos.ts";
 
 /** Formato e papel de cada vídeo, no cabeçalho da seção. */
@@ -68,7 +68,7 @@ function escBr(s: string): string {
 /** A fala com o corte do vídeo marcado: riscado (corte) ou sublinhado (reserva), #13129. */
 function textoComCorte(f: FalaRoteiro, v: VideoRoteiro): string {
   const c = corteDaFala(f, v);
-  const i = c ? f.texto.indexOf(c.trecho.trim()) : -1;
+  const i = c ? posicoesDoTrecho(f.texto, c.trecho)[0] ?? -1 : -1;
   if (!c || i < 0) return esc(f.texto);
   const t = c.trecho.trim();
   const marca = c.reserva
