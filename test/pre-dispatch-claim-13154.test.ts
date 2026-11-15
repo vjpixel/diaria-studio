@@ -77,6 +77,11 @@ describe("github-claim-marker (#13154)", () => {
     assert.deepEqual(parseClaimMarkers(body), [{ kind: "develop", sessionId: "s1", host: "neo", at: DEVELOP_AT }]);
   });
 
+  it("comentário não cita nenhuma issue (#N criaria backlink a cada claim)", () => {
+    const body = formatClaimComment({ kind: "develop", sessionId: "s1", host: "neo", at: DEVELOP_AT });
+    assert.doesNotMatch(body + formatReleaseComment({ sessionId: "s1", at: DEVELOP_AT }), /#\d/);
+  });
+
   it("recusa token com espaço ou `--` (não deixa fechar o comentário HTML)", () => {
     assert.throws(() => formatClaimComment({ kind: "develop", sessionId: "a -->x", host: "neo", at: DEVELOP_AT }));
   });

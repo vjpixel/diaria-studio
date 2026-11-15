@@ -82,7 +82,9 @@ export function formatClaimComment(marker: GithubClaimMarker): string {
   return (
     `<!-- diaria-claim: v=1 kind=${kind} session=${session} host=${host} at=${at} -->\n` +
     `Issue reivindicada pela sessão \`${kind}\` na máquina \`${host}\` (${at}). ` +
-    `Sinal entre máquinas do #13154: outra rodada não despacha esta issue enquanto a claim valer ` +
+    // Sem `#N` no texto: citar uma issue aqui criaria um backlink na timeline
+    // dela a cada claim gravada em qualquer outra issue.
+    `Sinal de claim entre máquinas: outra rodada não despacha esta issue enquanto a claim valer ` +
     `(até ser solta ou por ${Math.round(claimReleaseMsForKind(kind) / 3_600_000)}h).`
   );
 }
