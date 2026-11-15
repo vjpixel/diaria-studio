@@ -34,6 +34,13 @@
  * `--approved` padrão: `_internal/01-approved-capped.json`, e
  * `_internal/01-approved.json` quando o capped não existe. D1 = `highlights[0]`.
  *
+ * Modo roteiro de vídeo (#13156, `/diaria-video-roteiro`, Passo 2):
+ *   npx tsx scripts/youtube-title-research.ts --edition-dir {EDITION_DIR}/ --title "assunto ou título candidato"
+ *       [--url URL] [--queries "q1|q2|q3"] [--days 30] [--max 20]
+ * `--title` dispensa o approved (a edição pode ainda não existir) e grava em
+ * `_internal/youtube-title-research-roteiro.json`, nunca no arquivo do D1 do
+ * Stage 2. Janela padrão de 30 dias. Não combina com `--approved` nem `--gate-block`.
+ *
  * Stdout: modo pesquisa = JSON `{ status, reason, path, videos, top_terms }`;
  * `--gate-block` = o texto do bloco do gate. Exit: 0 sempre que os argumentos
  * são válidos (inclusive falha de API); 2 = uso inválido.
@@ -51,7 +58,9 @@ import { YOUTUBE_API_BASE, defaultYouTubeUploadDeps, refreshYouTubeAccessToken }
 import {
   DEFAULT_RESEARCH_DAYS,
   DEFAULT_RESEARCH_MAX_VIDEOS,
+  DEFAULT_ROTEIRO_RESEARCH_DAYS,
   YOUTUBE_TITLE_RESEARCH_FILE,
+  YOUTUBE_TITLE_RESEARCH_ROTEIRO_FILE,
   emptyResearch,
   formatGateBlock,
   researchMatchesD1,
@@ -62,7 +71,7 @@ import {
 } from "./lib/diaria/youtube-title-research.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const KNOWN_FLAGS = ["edition-dir", "approved", "queries", "days", "max", "gate-block", "refresh-if-stale", "help"] as const;
+const KNOWN_FLAGS = ["edition-dir", "approved", "title", "url", "queries", "days", "max", "gate-block", "refresh-if-stale", "help"] as const;
 
 /** D1 = `highlights[0]` do approved; título/URL do `article`, com a URL do topo de fallback. */
 export function readD1FromApproved(approvedPath: string): ResearchD1 | null {
@@ -104,6 +113,16 @@ export interface ResearchOptions {
   queryOverrides?: string[];
   days?: number;
   maxVideos?: number;
+  /**
+   * Modo roteiro (#13156): título (e URL opcional) dados direto, sem ler o
+   * approved. Grava em `YOUTUBE_TITLE_RESEARCH_ROTEIRO_FILE`.
+   */
+  roteiro?: { title: string; url?: string };
+}
+
+/** Arquivo de saída: o do D1 (Stage 2/4) ou o do roteiro de vídeo (#13156). */
+export function researchOutPath(editionDir: string, roteiro: boolean): string {
+  return join(editionDir, roteiro ? YOUTUBE_TITLE_RESEARCH_ROTEIRO_FILE : YOUTUBE_TITLE_RESEARCH_FILE);
 }
 
 /** Pesquisa + gravação. Nunca lança por API: falha vira `status` no arquivo. */
@@ -112,13 +131,18 @@ export async function researchAndWrite(deps: ResearchDeps, opts: ResearchOptions
   const now = deps.now();
   let research: YouTubeTitleResearch | undefined;
   let d1: ResearchD1 | null = null;
-  try {
-    d1 = readD1FromApproved(opts.approvedPath);
-  } catch (e) {
-    deps.warn(`[aviso] approved ilegível (${opts.approvedPath}): ${(e as Error).message}`);
+  if (opts.roteiro) {
+    const title = opts.roteiro.title.trim();
+    d1 = title ? { title, url: opts.roteiro.url?.trim() ?? "" } : null;
+  } else {
+    try {
+      d1 = readD1FromApproved(opts.approvedPath);
+    } catch (e) {
+      deps.warn(`[aviso] approved ilegível (${opts.approvedPath}): ${(e as Error).message}`);
+    }
   }
   if (!d1) {
-    research = emptyResearch("skipped", `D1 sem título/URL em ${opts.approvedPath}`, { edition, d1: null, now });
+    research = emptyResearch("skipped", opts.roteiro ? "--title vazio" : `D1 sem título/URL em ${opts.approvedPath}`, { edition, d1: null, now });
   } else if (!deps.credentials.credentials) {
     research = emptyResearch("skipped", `credenciais do YouTube ausentes: ${deps.credentials.missing.join(", ")}`, { edition, d1, now });
   } else {
@@ -148,7 +172,7 @@ export async function researchAndWrite(deps: ResearchDeps, opts: ResearchOptions
   for (const w of research.warnings) deps.warn(`[aviso] ${w}`);
   if (research.status !== "ok") deps.warn(`[aviso] pesquisa de títulos no YouTube: ${research.status}${research.reason ? ` — ${research.reason}` : ""}`);
 
-  const out = join(opts.editionDir, YOUTUBE_TITLE_RESEARCH_FILE);
+  const out = researchOutPath(opts.editionDir, Boolean(opts.roteiro));
   try {
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, JSON.stringify(research, null, 2) + "\n");
@@ -175,13 +199,30 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const unknown = findUnknownFlags(argv, KNOWN_FLAGS);
   const args = parseArgs(argv);
-  const usage = "uso: youtube-title-research.ts --edition-dir DIR [--approved PATH] [--queries \"q1|q2\"] [--days N] [--max N] | --gate-block [--refresh-if-stale]";
+  const usage =
+    "uso: youtube-title-research.ts --edition-dir DIR [--approved PATH | --title T [--url U]] [--queries \"q1|q2\"] [--days N] [--max N] | --gate-block [--refresh-if-stale]";
   if (unknown.length || args.flags.has("help") || !args.values["edition-dir"]) {
     if (unknown.length) console.error(`flag(s) desconhecida(s): ${unknown.join(", ")}`);
     console.error(usage);
     return 2;
   }
-  const days = positiveInt(args.values.days, DEFAULT_RESEARCH_DAYS);
+  // Modo roteiro (#13156): título dado direto, arquivo próprio, nunca o do D1.
+  const roteiroMode = args.values.title !== undefined || args.flags.has("title");
+  if (roteiroMode) {
+    const title = (args.values.title ?? "").trim();
+    if (!title) {
+      console.error(`--title exige um valor\n${usage}`);
+      return 2;
+    }
+    if (args.values.approved || args.flags.has("gate-block") || args.flags.has("refresh-if-stale")) {
+      console.error(`--title não combina com --approved, --gate-block nem --refresh-if-stale\n${usage}`);
+      return 2;
+    }
+  } else if (args.values.url !== undefined) {
+    console.error(`--url só vale com --title\n${usage}`);
+    return 2;
+  }
+  const days = positiveInt(args.values.days, roteiroMode ? DEFAULT_ROTEIRO_RESEARCH_DAYS : DEFAULT_RESEARCH_DAYS);
   const maxVideos = positiveInt(args.values.max, DEFAULT_RESEARCH_MAX_VIDEOS);
   if (days === null || maxVideos === null) {
     console.error(`--days/--max inválido (inteiro positivo)\n${usage}`);
@@ -197,7 +238,14 @@ async function main(): Promise<number> {
     if (creds.overridden.length) console.error(`[premissa] ${creds.overridden.join(", ")} do .env do repo vencem o ambiente (#8237)`);
     return { fetch: defaultYouTubeUploadDeps.fetch, now: () => new Date(), warn: (m) => console.error(m), credentials: creds };
   };
-  const opts: ResearchOptions = { editionDir, approvedPath, queryOverrides, days, maxVideos };
+  const opts: ResearchOptions = {
+    editionDir,
+    approvedPath,
+    queryOverrides,
+    days,
+    maxVideos,
+    ...(roteiroMode ? { roteiro: { title: (args.values.title ?? "").trim(), url: args.values.url } } : {}),
+  };
 
   if (args.flags.has("gate-block")) {
     let research = readResearch(editionDir);
@@ -219,9 +267,11 @@ async function main(): Promise<number> {
     JSON.stringify({
       status: research.status,
       reason: research.reason,
-      path: join(editionDir, YOUTUBE_TITLE_RESEARCH_FILE),
+      path: researchOutPath(editionDir, roteiroMode),
       videos: research.videos.length,
       top_terms: research.top_terms,
+      // Modo roteiro (#13156): o topo vai na entrega ao editor (título, views, canal).
+      ...(roteiroMode ? { top_videos: research.videos.slice(0, 5).map((v) => ({ title: v.title, views: v.views, channel: v.channel })) } : {}),
     }),
   );
   return 0;
