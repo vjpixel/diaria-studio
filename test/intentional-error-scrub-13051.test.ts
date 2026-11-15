@@ -64,11 +64,9 @@ describe("#13051 helper: scrub + guard", () => {
 
   it("nunca mexe dentro de URL (valor numérico não quebra link)", () => {
     const num = { edition: "261111", wrong: "2025", correct: "2026" };
-    const text = "[Relatório de 2025](https://exemplo.com/2025/relatorio) saiu em 2025.";
-    assert.equal(
-      scrubIntentionalError(text, num),
-      "[Relatório de 2026](https://exemplo.com/2025/relatorio) saiu em 2026.",
-    );
+    // Uma ocorrência fora da URL (#13105: valor ambíguo só troca o que é atribuível ao erro).
+    const text = "[Relatório de 2025](https://exemplo.com/2025/relatorio) saiu.";
+    assert.equal(scrubIntentionalError(text, num), "[Relatório de 2026](https://exemplo.com/2025/relatorio) saiu.");
     assert.deepEqual(findIntentionalErrorLeaks("https://exemplo.com/2025/x", [num]), []);
   });
 
@@ -93,7 +91,7 @@ describe("#13051 helper: scrub + guard", () => {
       JSON.stringify({ edition: "260506", error_type: "ortografico", is_feature: true, wrong_value: "Gmial", correct_value: "Gmail" }) + "\n",
     );
     assert.equal(jsonlPathForEditionDir(legacy), join(root, "data", "intentional-errors.jsonl"));
-    assert.deepEqual(loadIntentionalErrorPair(withJson, "261111"), pair);
+    assert.deepEqual(loadIntentionalErrorPair(withJson, "261111"), { ...pair, location: "RADAR, item 2" });
     assert.deepEqual(loadIntentionalErrorPair(legacy, "260506"), { edition: "260506", wrong: "Gmial", correct: "Gmail" });
     assert.deepEqual(
       loadWindowIntentionalErrors(editionsRoot, ["260506", "261111", "261112"]).map((p) => p.wrong),

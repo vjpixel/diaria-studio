@@ -118,11 +118,13 @@ import {
 } from "./lib/alarm-issues.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
-  findIntentionalErrorLeaks,
+  findScopedIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
   formatIntentionalErrorLeaks,
   loadIntentionalErrorPair,
   loadWindowIntentionalErrors,
   scrubIntentionalError,
+  segmentTextByEdition,
 } from "./lib/intentional-error-scrub.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
@@ -147,6 +149,7 @@ import {
 } from "./lib/circle-stack-select.ts";
 import {
   applyCircleStackExclusions,
+  circleStackSelectionAttributedTexts,
   renderCircleStackPost,
   type CircleStackEdition,
   type CircleStackExclusion,
@@ -623,7 +626,16 @@ export async function publishCircleStackCycle(
     const publishedAt = now().toISOString();
     // #12556: o link do post só existe se o webhook o devolver (hoje devolve só {"ok": true}).
     const postUrl = result && typeof result.postUrl === "string" && result.postUrl ? result.postUrl : null;
-    const confirmed: CircleStackPublishedState = { ...attempt, published_at: publishedAt, ...(postUrl ? { post_url: postUrl } : {}) };
+    // #13104: identidade do post no Circle (resposta da Admin API repassada), se veio.
+    const postId = result && typeof result.postId === "number" ? result.postId : null;
+    const postSlug = result && typeof result.postSlug === "string" && result.postSlug ? result.postSlug : null;
+    const confirmed: CircleStackPublishedState = {
+      ...attempt,
+      published_at: publishedAt,
+      ...(postUrl ? { post_url: postUrl } : {}),
+      ...(postId !== null ? { post_id: postId } : {}),
+      ...(postSlug ? { post_slug: postSlug } : {}),
+    };
     writeFileAtomic(statePath, JSON.stringify(confirmed, null, 2));
     return { publishedAt, forced: blockReason !== null, postUrl };
   } finally {
@@ -1101,17 +1113,25 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   // título do vídeo). Dry-run avisa (prévia e aviso ao editor); --publish
   // recusa, como as demais violações. `titleOriginal`/`excluded` não entram:
   // não são renderizados.
+  // #13105: escopado — o erro de cada edição só conta no item DAQUELA edição
+  // (e no texto sem origem: abertura, fecho); número/palavra curta só avisa.
   const editionsRootForGuard = join(dataRoot, "data", "editions");
   if (existsSync(editionsRootForGuard)) {
-    const leaks = findIntentionalErrorLeaks(
-      `${rendered.title}\n${rendered.markdown}`,
+    const { blocking, advisory } = findScopedIntentionalErrorLeaks(
+      segmentTextByEdition(`${rendered.title}\n${rendered.markdown}`, circleStackSelectionAttributedTexts(selection)),
       loadWindowIntentionalErrors(editionsRootForGuard, resolution.contentWindow),
     );
-    if (leaks.length > 0) {
-      const leakMsg = formatIntentionalErrorLeaks(leaks, `Post da Stack ${cycle} (seleção ${selectionPath})`);
+    const where = `Post da Stack ${cycle} (seleção ${selectionPath})`;
+    if (blocking.length > 0) {
+      const leakMsg = formatIntentionalErrorLeaks(blocking, where);
       violations.push(leakMsg);
       warnings = [...warnings, leakMsg];
       console.warn(`⚠ ${leakMsg}`);
+    }
+    if (advisory.length > 0) {
+      const adviceMsg = formatIntentionalErrorAdvisory(advisory, where);
+      warnings = [...warnings, adviceMsg];
+      console.warn(`⚠ ${adviceMsg}`);
     }
   }
 

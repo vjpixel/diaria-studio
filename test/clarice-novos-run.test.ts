@@ -599,7 +599,7 @@ describe("clarice-novos-run (#4941)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("POST sendNow RECUSADO (sub-script exit 1, falha real) -> runNovos code=1, sem --finalize — nunca confundido com o 3 de disparo incerto", async () => {
+    it("POST sendNow RECUSADO (sub-script exit 1, falha real) -> runNovos code=4 (seleção presa, #13098), sem --finalize — nunca confundido com o 3 de disparo incerto", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
       handlers["scripts/clarice-schedule-group.ts"] = [
@@ -610,8 +610,9 @@ describe("clarice-novos-run (#4941)", () => {
       const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
-      assert.equal(result.code, 1);
-      assert.notEqual(result.code, 3, "#5743: POST recusado é erro duro (1), nunca o código de disparo incerto (3)");
+      // #13098: depois da seleção gravada a falha sai 4 (contatos presos), não 1.
+      assert.equal(result.code, 4);
+      assert.notEqual(result.code, 3, "#5743: POST recusado é erro duro, nunca o código de disparo incerto (3)");
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize")));
       rmSync(root, { recursive: true, force: true });
     });

@@ -28,6 +28,8 @@
  * cache (3x o bruto da edição, descontado o bruto já baixado; 25 GB sem bruto
  * conhecido). Só lê: não cria pasta nem baixa nada. Exit 0 = a montagem roda
  * aqui; 1 = falta algo obrigatório. OpenCV (face/gaze) é aviso: há fallback manual.
+ * As variáveis `DIARIA_VIDEO_*` valem também quando só estão no `.env` do
+ * projeto (#13103): o `main` carrega o `.env` antes das sondas.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -35,6 +37,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import {
   assessVideoEnv,
@@ -269,6 +272,9 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, 
 }
 
 async function main(): Promise<void> {
+  // #13103: o .env antes de qualquer sonda. DIARIA_VIDEO_CACHE_DIR só no .env
+  // fazia o --montagem medir ~/.cache (disco do sistema) em vez do HD do cache.
+  loadProjectEnv(ROOT);
   const args = parseArgs(process.argv.slice(2));
   if (args.flags.has("montagem")) {
     const r = await runMontageEnvCheck(args.values["edition"], args.values["python"], args.values["drive-root"]);

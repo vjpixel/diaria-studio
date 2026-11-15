@@ -15,6 +15,9 @@
  *     no texto não são aceitas.
  *   - 200 com `{"ok": true}` = publicado. 502 = o Circle recusou/falhou.
  *   - O post sai PUBLICADO na hora — não há rascunho.
+ *   - #13104: 200 com a resposta da Admin API v2 do Circle repassada sem mexer
+ *     (`{ message: "Post created.", post: { id, slug, url, ... } }`) também
+ *     conta como publicado — `post.id` numérico é a prova.
  */
 
 export const STACK_WEBHOOK_KEY_ENV = "STACK_WEBHOOK_KEY";
@@ -83,9 +86,11 @@ export function assertStackWebhookConfig(webhookUrl: string, key: string): void 
 }
 
 /**
- * Envia o post. Só considera sucesso 200 com `{"ok": true}` — 2xx com outro
- * corpo é tratado como falha, porque o post é publicado direto e um "parece
- * que foi" sem confirmação não pode virar estado de "publicado". Timeout de
+ * Envia o post. Só considera sucesso 2xx com prova de publicação
+ * (`isStackPostConfirmed`: `{"ok": true}` no topo ou `post.id` numérico do
+ * Circle, #13104) — 2xx com outro corpo é tratado como falha, porque o post é
+ * publicado direto e um "parece que foi" sem confirmação não pode virar estado
+ * de "publicado". Timeout de
  * `timeoutMs` (default `STACK_WEBHOOK_TIMEOUT_MS`) rejeita — o post pode ter
  * saído mesmo assim, por isso o caller trata qualquer rejeição como estado
  * ambíguo, não como "nada enviado".
@@ -113,14 +118,56 @@ export async function sendStackPost(
   } catch {
     parsed = null;
   }
-  const ok = !!parsed && typeof parsed === "object" && (parsed as { ok?: unknown }).ok === true;
-  if (!ok) throw new Error(`Webhook da Stack respondeu ${res.status} sem {"ok": true} — publicação não confirmada: ${text.slice(0, 300)}`);
-  return { postUrl: extractStackPostUrl(parsed) };
+  if (!isStackPostConfirmed(parsed)) {
+    throw new Error(`Webhook da Stack respondeu ${res.status} sem {"ok": true} nem post.id do Circle — publicação não confirmada: ${text.slice(0, 300)}`);
+  }
+  return { postUrl: extractStackPostUrl(parsed), ...extractStackPostIdentity(parsed) };
 }
 
-/** Resultado do envio confirmado. `postUrl` = link do post, se o webhook devolveu (#12556). */
+/**
+ * Resultado do envio confirmado. `postUrl` = link do post, se o webhook devolveu (#12556);
+ * `postId`/`postSlug` = identidade do post no Circle, se a resposta trouxe (#13104).
+ */
 export interface StackPostResult {
   postUrl: string | null;
+  postId: number | null;
+  postSlug: string | null;
+}
+
+/** `post` da resposta, quando é objeto (formato da Admin API v2 do Circle). */
+function responsePost(response: unknown): Record<string, unknown> | null {
+  if (!response || typeof response !== "object") return null;
+  const post = (response as Record<string, unknown>).post;
+  return post && typeof post === "object" && !Array.isArray(post) ? (post as Record<string, unknown>) : null;
+}
+
+/** `post.id` inteiro positivo (o Circle usa id numérico); string numérica não conta. */
+function circlePostId(response: unknown): number | null {
+  const id = responsePost(response)?.id;
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * Pure (#13104): a resposta prova que o post saiu? Dois formatos:
+ *   - contrato do n8n da Stack: `{"ok": true}` no topo;
+ *   - resposta do Circle repassada sem mexer: `post.id` numérico.
+ * `ok: false` explícito vence o `post.id` (o webhook disse que falhou).
+ */
+export function isStackPostConfirmed(response: unknown): boolean {
+  if (!response || typeof response !== "object" || Array.isArray(response)) return false;
+  const ok = (response as { ok?: unknown }).ok;
+  if (ok === true) return true;
+  if (ok === false) return false;
+  return circlePostId(response) !== null;
+}
+
+/** Pure (#13104): `post.id`/`post.slug` da resposta do Circle, quando vieram. */
+export function extractStackPostIdentity(response: unknown): { postId: number | null; postSlug: string | null } {
+  const slug = responsePost(response)?.slug;
+  return {
+    postId: circlePostId(response),
+    postSlug: typeof slug === "string" && slug.trim() ? slug.trim() : null,
+  };
 }
 
 /** Campos em que o n8n da Stack pode devolver o link do post (#12556; hoje devolve só `{"ok": true}`). */

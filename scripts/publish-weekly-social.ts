@@ -210,10 +210,12 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveWeeklyEditionDirs } from "./lib/select-weekly-d1.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
-  findIntentionalErrorLeaks,
+  findScopedIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
   formatIntentionalErrorLeaks,
   loadWindowIntentionalErrors,
   readReviewedMdScrubbed,
+  segmentTextByEdition,
 } from "./lib/intentional-error-scrub.ts";
 import {
   extractInstagramCandidates,
@@ -1826,10 +1828,18 @@ async function runOneMode(
   // #13051: guard — o erro intencional de qualquer edição da semana não sai na
   // legenda nem nos cards (títulos dos itens). Pega texto que não veio do scrub
   // (resumo do agente, seleção compartilhada antiga). Prévia avisa; agendar aborta.
-  const intentionalErrorLeaks = findIntentionalErrorLeaks(
-    [caption, fbCaption, threadsCaption, ...items.map((it) => it.title)].join("\n"),
+  // #13105: escopado — o erro de cada edição só conta no item DAQUELA edição
+  // (e no texto sem origem, como a abertura); número/palavra curta só avisa.
+  const { blocking: intentionalErrorLeaks, advisory: intentionalErrorAdvisory } = findScopedIntentionalErrorLeaks(
+    segmentTextByEdition(
+      [caption, fbCaption, threadsCaption, ...items.map((it) => it.title)].join("\n"),
+      captionItems.map((it) => ({ edition: it.editionDate, texts: [it.title, it.summary] })),
+    ),
     loadWindowIntentionalErrors(editionsRoot, existingCandidates.map((c) => c.date)),
   );
+  if (intentionalErrorAdvisory.length > 0) {
+    console.error(`[publish-weekly-social] AVISO: ${formatIntentionalErrorAdvisory(intentionalErrorAdvisory, `Carrossel semanal ${saturday} (${mode})`)}`);
+  }
   if (intentionalErrorLeaks.length > 0) {
     const leakMsg = formatIntentionalErrorLeaks(intentionalErrorLeaks, `Carrossel semanal ${saturday} (${mode})`);
     if (!doSchedule && !imagesOnly) {

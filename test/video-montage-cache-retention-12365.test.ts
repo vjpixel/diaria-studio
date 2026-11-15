@@ -359,7 +359,7 @@ describe("#12365 CLI: exit codes", () => {
   it("raiz padrão ausente sem a variável → exit 0, nada a fazer", () => {
     const { base } = fixture();
     try {
-      const r = run([], { HOME: join(base, "home"), DIARIA_VIDEO_CACHE_DIR: undefined });
+      const r = run([], { HOME: join(base, "home"), DIARIA_VIDEO_CACHE_DIR: "" /* "" e não undefined: o .env da máquina não preenche (#13103) */ });
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /nada a fazer/);
     } finally {
@@ -373,7 +373,7 @@ describe("#12365 CLI: exit codes", () => {
       cacheEdition(cache, "250101");
       publish(data, "250101");
       chmodSync(cache, 0o555); // sem escrita na raiz: o rmSync da edição falha
-      const r = run(["--apply", "--cache-dir", cache, "--data-root", data], { HOME: join(base, "home"), DIARIA_VIDEO_CACHE_DIR: undefined });
+      const r = run(["--apply", "--cache-dir", cache, "--data-root", data], { HOME: join(base, "home"), DIARIA_VIDEO_CACHE_DIR: "" /* "" e não undefined: o .env da máquina não preenche (#13103) */ });
       assert.equal(r.status, 1, r.stdout + r.stderr);
       assert.match(r.stderr, /falha ao apagar 250101/);
     } finally {

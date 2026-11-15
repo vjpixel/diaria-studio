@@ -216,10 +216,19 @@ export function buildDisarmScript(): string {
   return ["$ErrorActionPreference = 'Stop'", ...stopAndUnregisterLines()].join("\n");
 }
 
+/**
+ * Lista as `Diaria-Failover-*` como JSON. Sem `-ErrorAction SilentlyContinue`
+ * (#12993): ele escondia acesso negado e o serviço do Agendador fora do ar,
+ * devolvendo `[]` com exit 0, e o `--disarm` lia isso como "removidas". Só o
+ * "nada encontrado" (`ObjectNotFound`) vira lista vazia; qualquer outro erro
+ * relança e o script sai ≠ 0. (No 5.1 o curinga sem resultado nem chega a
+ * errar, medido em 15/11/2026; o `catch` cobre versões que erram.)
+ */
 export function buildStatusScript(): string {
   return [
     "$ErrorActionPreference = 'Stop'",
-    `$t = @(Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")} -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ name = $_.TaskName; state = [string]$_.State } })`,
+    `$raw = try { @(Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")}) } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { @() } else { throw } }`,
+    `$t = @($raw | ForEach-Object { [pscustomobject]@{ name = $_.TaskName; state = [string]$_.State } })`,
     "ConvertTo-Json -InputObject $t -Compress",
   ].join("\n");
 }
@@ -239,6 +248,25 @@ export function parseStatusOutput(stdout: string): ArmedTask[] {
     .filter((x): x is { name: unknown; state: unknown } => !!x && typeof x === "object")
     .map((x) => ({ name: String(x.name), state: String(x.state) }))
     .filter((x) => x.name.startsWith(FAILOVER_TASK_PREFIX));
+}
+
+export type ArmedSetCheck = { ok: true } | { ok: false; missing: string[]; extra: string[]; disabled: string[] };
+
+/**
+ * Confere se as `Diaria-Failover-*` que o Task Scheduler lista batem com as
+ * que o plano registraria (#12993). O PowerShell pode sair 0 sem ter rodado o
+ * script inteiro (ver `powershell-file.ts`): o status do processo não prova
+ * o registro, só a releitura prova. Tarefa registrada mas `Disabled` (sobra de
+ * um `Disable-ScheduledTask` que não chegou ao registro) não dispara: conta
+ * como falha.
+ */
+export function checkArmedSet(expected: readonly string[], armed: readonly ArmedTask[]): ArmedSetCheck {
+  const want = new Set(expected);
+  const have = new Set(armed.map((t) => t.name));
+  const missing = [...want].filter((n) => !have.has(n)).sort();
+  const extra = [...have].filter((n) => !want.has(n)).sort();
+  const disabled = armed.filter((t) => want.has(t.name) && t.state === "Disabled").map((t) => t.name).sort();
+  return missing.length === 0 && extra.length === 0 && disabled.length === 0 ? { ok: true } : { ok: false, missing, extra, disabled };
 }
 
 export type ArmPrecondition = { ok: true; reason: string } | { ok: false; reason: string };

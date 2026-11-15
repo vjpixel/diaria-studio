@@ -174,9 +174,22 @@ export interface ScheduledTaskDefinition {
    * outra falha segue sem retry. Só para task diária/semanal/mensal cujos
    * passos possam rodar de novo sem efeito duplicado (leitura, sync, alarme):
    * task `interval` já tenta de novo na própria cadência, e o gerador
-   * recusa a combinação. Task que ENVIA (e-mail, conversão) fica fora até a
-   * idempotência dela ser conferida. Default (ausente): sem retry. */
-  retryOnTransientNetwork?: boolean;
+   * recusa a combinação. Task que ENVIA (e-mail, conversão) só entra com a
+   * idempotência comprovada no próprio script, registrada num comentário na
+   * entrada (decisão do editor 15/11/2026): hoje só `Diaria-Clarice-Novos`
+   * e `-Tarde`. `Diaria-Onboarding-Welcome-Run` e
+   * `Diaria-Google-Ads-Confirmations-Upload` ficam fora: resposta perdida
+   * num POST que saiu pode reenviar (motivo em
+   * `test/transient-network-retry-13017.test.ts`). Default (ausente): sem
+   * retry.
+   *
+   * `true`: o runner classifica pela saída de cada passo que falhou.
+   * `"step-declares"` (#13098): o script sai ele mesmo com
+   * `TRANSIENT_NETWORK_EXIT_CODE` quando a falha foi só de rede, e o runner
+   * nunca reclassifica a saída (`resolveStepDeclaredExitCode`). É o modo de
+   * task que envia: só o script sabe se a falha veio antes ou depois de o
+   * envio começar. */
+  retryOnTransientNetwork?: boolean | "step-declares";
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
   /** #5639 — enable/disable da task sem remover do registro.
@@ -1686,7 +1699,18 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // docstring de `successExitCodes` e de `NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE`
     // em `clarice-novos-run.ts`.
     successExitCodes: [3],
-    issue: "#4347, #4941, #5140, #5445, #5447, #5660, #5743",
+    // #13017 (decisão do editor 15/11/2026: unit que envia só entra com
+    // idempotência comprovada). Modo "step-declares": `clarice-novos-run.ts`
+    // só sai 105 quando o sub-passo que falhou caiu por rede ANTES de a
+    // seleção ser gravada no `sent-or-queued.json` (Passo 3). Daí em diante
+    // a falha sai 4 (`NOVOS_STRANDED_SELECTION_EXIT_CODE`): contatos presos
+    // na campanha da key, unit `failed`, sem retry (review da PR #13098).
+    // POST `sendNow` com resposta perdida, e GET-verify sem resposta, saem 3
+    // (#9699), sucesso aqui. A rerrodada pós-105 resolve uma key nova e o
+    // grupo `novos` exclui quem já está em lista com campanha
+    // `queued`∪`sent` na Brevo (`guardScope: "committed"`).
+    retryOnTransientNetwork: "step-declares",
+    issue: "#4347, #4941, #5140, #5445, #5447, #5660, #5743, #13017",
   },
   {
     name: "Diaria-Clarice-Novos-Tarde",
@@ -1773,7 +1797,15 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // disparo INCERTO (POST sendNow aceito, GET-verify não confirmou status
     // terminal), não conta como unit `failed`.
     successExitCodes: [3],
-    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5660, #5743",
+    // #13017: mesma conferência de idempotência do par das 09:00. As
+    // re-execuções (até ~4h) podem cruzar `Diaria-Clarice-Envio` (19:10):
+    // a partição `isNovos`×`isRampWarm` pelo cutoff (#5410) mantém os dois
+    // grupos disjuntos, e o `clarice-schedule-group.ts` das duas grava o
+    // `group-campaigns.json` relendo o disco sob trava e aplicando só as
+    // entradas que ele mesmo mudou (`writeGroupCampaignsMerged`, #13098),
+    // então a Tarde não apaga a onda de amanhã que o Envio registrou.
+    retryOnTransientNetwork: "step-declares",
+    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5660, #5743, #13017",
   },
   {
     name: "Diaria-Clarice-Envio",

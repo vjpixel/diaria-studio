@@ -76,7 +76,12 @@ import { dirname, join, resolve } from "node:path";
 import type { ScheduledTaskDefinition } from "./scheduled-tasks.ts";
 import { unitBaseName } from "./systemd-units.ts";
 import { syncCode as syncCodeFn, type GitSyncResult, type GitSyncOutcome } from "./git-sync.ts";
-import { resolveTransientNetworkExitCode, TRANSIENT_NETWORK_EXIT_CODE, type ClassifiableStep } from "./transient-network-failure.ts";
+import {
+  resolveStepDeclaredExitCode,
+  resolveTransientNetworkExitCode,
+  TRANSIENT_NETWORK_EXIT_CODE,
+  type ClassifiableStep,
+} from "./transient-network-failure.ts";
 
 /** Resultado de rodar um único passo (`execStep`). */
 export interface StepExecResult {
@@ -533,7 +538,11 @@ export function runScheduledTask(
   // (`RestartForceExitStatus=`, ver scripts/lib/transient-network-failure.ts).
   // Guard abortado não é rede (é `data/` sem montar): fica como está.
   if (def.retryOnTransientNetwork && !guardAborted && failingCode !== 0) {
-    failingCode = resolveTransientNetworkExitCode(failingCode, classifiable, def.successExitCodes ?? []);
+    // "step-declares" (#13098): o script já classificou; o runner só repassa.
+    failingCode =
+      def.retryOnTransientNetwork === "step-declares"
+        ? resolveStepDeclaredExitCode(failingCode, classifiable, def.successExitCodes ?? [])
+        : resolveTransientNetworkExitCode(failingCode, classifiable, def.successExitCodes ?? []);
     if (failingCode === TRANSIENT_NETWORK_EXIT_CODE) {
       const msg =
         `[task-runner] ${def.name}: falha só de rede nesta rodada; saindo com ${TRANSIENT_NETWORK_EXIT_CODE} ` +

@@ -59,6 +59,12 @@ import { acquireRateStateTestLock, releaseRateStateTestLock } from "./_helpers/w
 before(acquireRateStateTestLock);
 after(releaseRateStateTestLock);
 
+it("#13093: banner limita o refresh à Brevo e esclarece a exceção dos cupons", () => {
+  const html = injectKvOnlyBanner("<body></body>", null);
+  assert.match(html, /dados recentes da Brevo ao vivo/);
+  assert.match(html, /Cupons usam cache e não são renovados por este botão/);
+});
+
 // ---------------------------------------------------------------------------
 // (a)+(b) buildClariceDashboardHtml() default — KV-only, zero network calls
 // ---------------------------------------------------------------------------
