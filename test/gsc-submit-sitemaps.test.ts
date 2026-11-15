@@ -9,6 +9,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { GSC_DEFAULT_SITE } from "../scripts/lib/gsc.ts";
 import {
   submitSitemap,
   submitAll,
@@ -26,13 +30,41 @@ describe("CURADORIA_SITEMAPS (#4546)", () => {
   // não a leitura. O host principal continua fora (sitemap gerado pela
   // Beehiiv, já auto-descoberto).
   // #7581: `anual` ENTROU pelo mesmo motivo — gate de cadastro + trecho público.
-  it("são os 4 sitemaps próprios — retrospectiva/cursos/livros/arquivo, sem o do host principal", () => {
+  // #8350: `especial` ENTROU — Artigos Especiais + páginas de entidade
+  // (`/entidades/*`, lote 1 brasileiro no PR #12957), mesma domain property.
+  it("são os 5 sitemaps próprios — especial/retrospectiva/cursos/livros/arquivo, sem o do host principal", () => {
     assert.deepEqual(CURADORIA_SITEMAPS, [
+      "https://especial.diar.ia.br/sitemap.xml",
       "https://retrospectiva.diar.ia.br/sitemap.xml",
       "https://cursos.diar.ia.br/sitemap.xml",
       "https://livros.diar.ia.br/sitemap.xml",
       "https://arquivo.diar.ia.br/sitemap.xml",
     ]);
+  });
+});
+
+describe("sitemap do especial.diar.ia.br (#8350)", () => {
+  const artigosPublic = resolve(dirname(fileURLToPath(import.meta.url)), "..", "workers", "artigos", "public");
+
+  it("a URL da lista é a que o robots.txt do Worker artigos declara", () => {
+    const robots = readFileSync(resolve(artigosPublic, "robots.txt"), "utf8");
+    const declared = [...robots.matchAll(/^Sitemap:\s*(\S+)\s*$/gim)].map((m) => m[1]);
+    assert.deepEqual(declared, ["https://especial.diar.ia.br/sitemap.xml"]);
+    assert.ok((CURADORIA_SITEMAPS as readonly string[]).includes(declared[0]));
+  });
+
+  it("o sitemap servido lista as páginas de entidade do lote 1 (o que o reenvio precisa levar ao GSC)", () => {
+    const xml = readFileSync(resolve(artigosPublic, "sitemap.xml"), "utf8");
+    for (const slug of ["tse", "pl-2338", "nubank", "maritaca-ai"]) {
+      assert.ok(xml.includes(`<loc>https://especial.diar.ia.br/entidades/${slug}/</loc>`), `sitemap sem /entidades/${slug}/`);
+    }
+  });
+
+  it("o host está sob a domain property padrão (sc-domain:diar.ia.br), não precisa de propriedade própria", () => {
+    assert.equal(GSC_DEFAULT_SITE, "sc-domain:diar.ia.br");
+    for (const url of CURADORIA_SITEMAPS) {
+      assert.match(new URL(url).hostname, /(^|\.)diar\.ia\.br$/);
+    }
   });
 });
 
