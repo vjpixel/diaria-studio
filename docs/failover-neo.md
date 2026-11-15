@@ -140,8 +140,9 @@ npx tsx scripts/failover/neo-takeover.ts --arm             # com o sinal da #129
 O `--arm` para e remove as `Diaria-Failover-*` antigas, registra as atuais e
 então grava o lease `infra:scheduler-owner` para o Neo (6 h, renovado pelas
 próprias tarefas). Antes do lease, relê o Task Scheduler: se as
-`Diaria-Failover-*` registradas não batem com o plano, desfaz o registro e sai
-1 sem gravar o lease (#12993). Lease que não confirma desfaz o registro das
+`Diaria-Failover-*` registradas não batem com o plano (ou alguma está
+`Disabled`), desfaz o registro e sai 1 sem gravar o lease; plano sem nenhuma
+tarefa critical é recusado antes de registrar (#12993). Lease que não confirma desfaz o registro das
 tarefas (e apaga o lease, salvo se a releitura mostrar o do `300`).
 
 ## 3. Conferir
@@ -190,9 +191,11 @@ do Neo). Se alguma ainda estiver rodando depois da espera, usa
 interrompido pode ter publicado sem registrar no store, ou seguir vivo como
 processo filho. Nesse caso, conferir o canal antes de o `300` retomar
 (#12993). As tasks do `300` retomam na próxima
-execução. Se a releitura ainda mostra `Diaria-Failover-*`, avisa e sai 1, mas
-libera o lease assim mesmo: sem o lease do Neo as que sobraram cedem ao `300`
-(remova-as no Agendador de Tarefas). Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
+execução. Se a releitura ainda mostra `Diaria-Failover-*` (ou falha), sai 1:
+sem o sinal `infra:300:down-since` libera o lease (as que sobraram cedem ao
+`300`); com o sinal presente ou ilegível retém o lease, porque com lease
+ausente e sinal presente as do Neo assumiriam. Remova as que sobraram no
+Agendador de Tarefas (e apague o sinal, se o `300` voltou) e rode de novo. Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
 quando o lease vale. Se o Neo morreu armado e não dá para rodar o `--disarm`
 nele, `--disarm --force` em outra máquina com o `.env` libera só o lease (sem
 `--force`, fora do Windows ele recusa: as tarefas do Neo seguiriam armadas);

@@ -16,7 +16,8 @@
  * `--arm`: exige o sinal `infra:300:down-since` (#12981) no KV ou `--force`.
  *   1. registra as `Diaria-Failover-*` (parando e removendo as antigas antes)
  *      e relê o Task Scheduler: o conjunto registrado tem que bater com o
- *      plano, senão rollback e exit 1 sem gravar o lease (#12993);
+ *      plano (e nenhuma `Disabled`), senão rollback e exit 1 sem gravar o
+ *      lease (#12993). Plano vazio é recusado antes de registrar;
  *   2. grava o lease `infra:scheduler-owner` para o Neo e relê.
  *   Ordem de propósito: tarefa sem lease do Neo cede (o Neo é fail-closed),
  *   mas lease sem tarefa pararia o `300` à toa. Se o lease não confirmar, as
@@ -26,8 +27,9 @@
  *   terminar (até 10 min; `Stop-ScheduledTask` só como último recurso, com
  *   AVISO, #12993), remove as tarefas e depois libera o lease, só se ele for
  *   do Neo. O `300` retoma na próxima execução das tasks dele. Se a releitura
- *   ainda mostra `Diaria-Failover-*`, avisa e sai 1, mas libera o lease (sem
- *   ele as do Neo cedem, #12993). Remoção que
+ *   ainda mostra `Diaria-Failover-*` (ou falha), sai 1: sem o sinal de queda
+ *   libera o lease (as restantes cedem); com o sinal presente ou ilegível
+ *   retém o lease, porque as restantes assumiriam (#12993). Remoção que
  *   falha não libera o lease; lease ilegível sai 1. Fora do Windows não há
  *   tarefa a remover: liberar o lease ali deixaria as do Neo armadas agindo
  *   ao lado do `300`, então exige `--force` (#12993).
@@ -72,7 +74,7 @@ import {
   type LastKnownLease,
 } from "../lib/failover/scheduler-lease.ts";
 import { readPlatformConfigFile } from "../lib/failover/task-gate.ts";
-import { SCHEDULED_TASKS } from "../lib/scheduled-tasks.ts";
+import { SCHEDULED_TASKS, type ScheduledTaskDefinition } from "../lib/scheduled-tasks.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const P = "[neo-takeover]";
@@ -104,6 +106,8 @@ export interface TakeoverDeps {
   lastKnownLease: () => LastKnownLease | null;
   log: (msg: string) => void;
   err: (msg: string) => void;
+  /** Registro de tasks de onde sai o plano (default: `SCHEDULED_TASKS`). */
+  tasks: readonly ScheduledTaskDefinition[];
 }
 
 function runPowerShell(script: string): PsResult {
@@ -135,6 +139,7 @@ function defaultDeps(): TakeoverDeps {
     lastKnownLease: () => fileLeaseMemory(defaultLeaseMemoryPath()).load(),
     log: (m) => console.log(m),
     err: (m) => console.error(m),
+    tasks: SCHEDULED_TASKS,
   };
 }
 
@@ -217,7 +222,7 @@ async function arm(d: TakeoverDeps, force: boolean, dryRun: boolean): Promise<nu
   d.log(`${P} pré-condição: ${pre.reason}`);
   if (!pre.ok && !dryRun) return 1;
 
-  const plan = buildArmPlan({ tasks: SCHEDULED_TASKS, nodePath: process.execPath, repoRoot: d.root, localOffsetMin: localOffsetMin() });
+  const plan = buildArmPlan({ tasks: d.tasks, nodePath: process.execPath, repoRoot: d.root, localOffsetMin: localOffsetMin() });
   for (const w of plan.warnings) d.err(`${P} AVISO: ${w}`);
   d.log(`${P} ${plan.entries.length} tarefas critical:`);
   for (const e of plan.entries) d.log(`  - ${e.windowsName} <- ${e.registryName}`);
@@ -239,6 +244,11 @@ async function arm(d: TakeoverDeps, force: boolean, dryRun: boolean): Promise<nu
     d.err(`${P} sem KV não há lease, e sem lease as tarefas do Neo não agem (fail-closed): ${kv.reason}`);
     return 1;
   }
+  if (plan.entries.length === 0) {
+    // Lease do Neo sem tarefa nenhuma pararia o 300 e ninguém rodaria nada.
+    d.err(`${P} o plano não tem nenhuma tarefa critical para armar; nada registrado, lease NÃO gravado.`);
+    return 1;
+  }
 
   const reg = d.runPowerShell(plan.script);
   if (!reg.ok) {
@@ -257,7 +267,8 @@ async function arm(d: TakeoverDeps, force: boolean, dryRun: boolean): Promise<nu
       : check && !check.ok
         ? `esperadas ${plan.entries.length}, registradas ${listed.armed.length}` +
           (check.missing.length ? `; faltando: ${check.missing.join(", ")}` : "") +
-          (check.extra.length ? `; sobrando: ${check.extra.join(", ")}` : "")
+          (check.extra.length ? `; sobrando: ${check.extra.join(", ")}` : "") +
+          (check.disabled.length ? `; desabilitadas: ${check.disabled.join(", ")}` : "")
         : "conferência inconclusiva";
     d.err(`${P} registro das tarefas não confirmado: ${why}. Lease NÃO gravado. Desfazendo (rollback).`);
     await rollbackArm(d, kv.kv, false);
@@ -321,10 +332,12 @@ async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise
       d.err(`${P} remoção das tarefas falhou: ${r.stderr.trim()}. O lease NÃO foi liberado.`);
       return 1;
     }
-    // #12993: o status 0 não prova a remoção. Se sobrou tarefa, avisa e sai 1,
-    // mas segue liberando o lease: tarefa do Neo sem o lease do Neo não age
-    // (fail-closed), e o 300 volta a ser dono. Segurar o lease seria pior: as
-    // que sobraram continuariam agindo e o 300 seguiria parado.
+    // #12993: o status 0 não prova a remoção. Se sobrou tarefa (ou a listagem
+    // falhou), o que fazer com o lease depende do sinal de queda: sem o sinal,
+    // tarefa do Neo com lease ausente não age (`decideLease` só deixa o Neo
+    // assumir lease ausente com `infra:300:down-since` presente), então liberar
+    // devolve o 300 e só se avisa. COM o sinal (ou sinal ilegível), liberar
+    // faria as que sobraram assumirem ao lado do 300: o lease é retido e sai 1.
     const l = listArmed(d);
     if (l.ok && l.armed.length === 0) d.log(`${P} tarefas Diaria-Failover-* paradas e removidas.`);
     else {
@@ -332,7 +345,16 @@ async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise
         l.ok
           ? `ainda há ${l.armed.length} Diaria-Failover-* registradas (${l.armed.map((t) => t.name).join(", ")})`
           : `remoção não confirmada (${l.error})`;
-      d.err(`${P} AVISO: ${unverified}. O lease do Neo é liberado mesmo assim (sem ele as do Neo cedem ao 300); remova as que sobraram no Agendador de Tarefas.`);
+      const sig = kv.ok ? await readDownSignal(kv.kv) : ({ kind: "error", error: kv.reason } as const);
+      if (sig.kind !== "absent") {
+        const why = sig.kind === "present" ? `o sinal de queda do 300 está presente (desde ${sig.since})` : `o sinal de queda não foi lido (${sig.error})`;
+        d.err(
+          `${P} AVISO: ${unverified}, e ${why}: sem o lease do Neo as tarefas restantes RETOMARIAM ao lado do 300. ` +
+            `Lease NÃO liberado. Remova as que sobraram no Agendador de Tarefas (e apague infra:300:down-since se o 300 voltou) e rode --disarm de novo.`,
+        );
+        return 1;
+      }
+      d.err(`${P} AVISO: ${unverified}. Sem o sinal de queda, o lease do Neo é liberado (as restantes cedem ao 300); remova-as no Agendador de Tarefas.`);
     }
   } else if (!force) {
     // #12993: aqui não há Task Scheduler para desarmar. Liberar o lease com as

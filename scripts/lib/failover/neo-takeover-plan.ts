@@ -241,23 +241,26 @@ export function parseStatusOutput(stdout: string): ArmedTask[] {
     .filter((x) => x.name.startsWith(FAILOVER_TASK_PREFIX));
 }
 
-export type ArmedSetCheck = { ok: true } | { ok: false; missing: string[]; extra: string[] };
+export type ArmedSetCheck = { ok: true } | { ok: false; missing: string[]; extra: string[]; disabled: string[] };
 
 /**
  * Confere se as `Diaria-Failover-*` que o Task Scheduler lista batem com as
  * que o plano registraria (#12993). O PowerShell pode sair 0 sem ter rodado o
  * script inteiro (ver `powershell-file.ts`): o status do processo não prova
- * o registro, só a releitura prova.
+ * o registro, só a releitura prova. Tarefa registrada mas `Disabled` (sobra de
+ * um `Disable-ScheduledTask` que não chegou ao registro) não dispara: conta
+ * como falha.
  */
 export function checkArmedSet(expected: readonly string[], armed: readonly ArmedTask[]): ArmedSetCheck {
   const want = new Set(expected);
   const have = new Set(armed.map((t) => t.name));
   const missing = [...want].filter((n) => !have.has(n)).sort();
   const extra = [...have].filter((n) => !want.has(n)).sort();
-  return missing.length === 0 && extra.length === 0 ? { ok: true } : { ok: false, missing, extra };
+  const disabled = armed.filter((t) => want.has(t.name) && t.state === "Disabled").map((t) => t.name).sort();
+  return missing.length === 0 && extra.length === 0 && disabled.length === 0 ? { ok: true } : { ok: false, missing, extra, disabled };
 }
 
-export type ArmPrecondition ={ ok: true; reason: string } | { ok: false; reason: string };
+export type ArmPrecondition = { ok: true; reason: string } | { ok: false; reason: string };
 
 /**
  * `--arm` só passa com o sinal de queda da #12981 (`infra:300:down-since`)

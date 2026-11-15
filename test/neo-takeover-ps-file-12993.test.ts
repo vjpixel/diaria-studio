@@ -15,9 +15,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { main as takeoverMain } from "../scripts/failover/neo-takeover.ts";
+import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import { buildStatusScript, checkArmedSet } from "../scripts/lib/failover/neo-takeover-plan.ts";
 import { encodePs1, powershellFileArgs, runPowerShellFile, UTF8_BOM, UTF8_OUTPUT_LINE } from "../scripts/lib/failover/powershell-file.ts";
-import { SCHEDULER_LEASE_KEY } from "../scripts/lib/failover/scheduler-lease.ts";
+import { DOWN_SIGNAL_KEY, SCHEDULER_LEASE_KEY } from "../scripts/lib/failover/scheduler-lease.ts";
 
 const REPO = "C:\\Users\\editor\\Projects\\diaria-studio";
 
@@ -102,20 +103,34 @@ describe("runPowerShellFile: .ps1 com BOM e -File, nunca -Command - (#12993)", (
 describe("checkArmedSet", () => {
   it("bate só com o conjunto exato", () => {
     assert.deepEqual(checkArmedSet(["A", "B"], [{ name: "B", state: "Ready" }, { name: "A", state: "Ready" }]), { ok: true });
-    assert.deepEqual(checkArmedSet(["A", "B"], []), { ok: false, missing: ["A", "B"], extra: [] });
-    assert.deepEqual(checkArmedSet(["A"], [{ name: "A", state: "Ready" }, { name: "Z", state: "Ready" }]), { ok: false, missing: [], extra: ["Z"] });
+    assert.deepEqual(checkArmedSet(["A", "B"], []), { ok: false, missing: ["A", "B"], extra: [], disabled: [] });
+    assert.deepEqual(checkArmedSet(["A"], [{ name: "A", state: "Ready" }, { name: "Z", state: "Ready" }]), {
+      ok: false,
+      missing: [],
+      extra: ["Z"],
+      disabled: [],
+    });
+  });
+
+  it("tarefa registrada mas Disabled não conta como armada", () => {
+    assert.deepEqual(checkArmedSet(["A", "B"], [{ name: "A", state: "Ready" }, { name: "B", state: "Disabled" }]), {
+      ok: false,
+      missing: [],
+      extra: [],
+      disabled: ["B"],
+    });
   });
 });
 
 /** Task Scheduler fingido: registra no máximo `registerOnly` tarefas, simulando o script truncado. */
-function fakeScheduler(opts: { registerOnly?: number; unregisterNoop?: boolean; statusFails?: boolean } = {}) {
+function fakeScheduler(opts: { registerOnly?: number; unregisterNoop?: boolean; statusFails?: boolean; state?: string } = {}) {
   const tasks = new Set<string>();
   return {
     tasks,
     run(script: string) {
       if (script === buildStatusScript()) {
         if (opts.statusFails) return { ok: false, stdout: "", stderr: "Get-ScheduledTask falhou" };
-        return { ok: true, stdout: JSON.stringify([...tasks].map((name) => ({ name, state: "Ready" }))), stderr: "" };
+        return { ok: true, stdout: JSON.stringify([...tasks].map((name) => ({ name, state: opts.state ?? "Ready" }))), stderr: "" };
       }
       if (/Unregister-ScheduledTask/.test(script) && !opts.unregisterNoop) tasks.clear();
       const names = [...script.matchAll(/Register-ScheduledTask -TaskName '([^']+)'/g)].map((m) => m[1]);
@@ -150,6 +165,7 @@ function harness(sch: ReturnType<typeof fakeScheduler>, kvInit: Record<string, s
     lastKnownLease: () => null,
     log: (m: string) => void out.push(m),
     err: (m: string) => void out.push(m),
+    tasks: SCHEDULED_TASKS,
   };
   return { store, out, puts, deleted, deps };
 }
@@ -183,6 +199,24 @@ describe("--arm relê o Task Scheduler antes de gravar o lease (#12993)", () => 
     assert.match(h.out.join("\n"), /não consegui listar as tarefas \(Get-ScheduledTask falhou\)/);
   });
 
+  it("tarefas registradas mas Disabled -> exit 1, lease NÃO gravado", async () => {
+    const h = harness(fakeScheduler({ state: "Disabled" }));
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
+    assert.equal(h.puts.length, 0);
+    assert.match(h.out.join("\n"), /desabilitadas: Diaria-Failover-/);
+  });
+
+  it("plano sem nenhuma task critical -> exit 1 antes de registrar, lease NÃO gravado", async () => {
+    const scripts: string[] = [];
+    const sch = fakeScheduler();
+    const h = harness(sch);
+    const d = { ...h.deps, tasks: [], runPowerShell: (s: string) => (scripts.push(s), sch.run(s)) };
+    assert.equal(await takeoverMain(["--arm", "--force"], d), 1);
+    assert.equal(scripts.length, 0, "nada mandado ao PowerShell");
+    assert.equal(h.puts.length, 0);
+    assert.match(h.out.join("\n"), /não tem nenhuma tarefa critical/);
+  });
+
   it("contagem certa -> exit 0 e lease do Neo gravado", async () => {
     const sch = fakeScheduler();
     const h = harness(sch);
@@ -205,6 +239,26 @@ describe("--disarm confere 0 tarefas restantes (#12993)", () => {
     const text = h.out.join("\n");
     assert.match(text, /ainda há 1 Diaria-Failover-\* registradas \(Diaria-Failover-Edicao\)/);
     assert.match(text, /--disarm incompleto/);
+  });
+
+  it("sobrou tarefa COM o sinal de queda presente -> exit 1 e lease RETIDO (as restantes retomariam)", async () => {
+    const sch = fakeScheduler({ unregisterNoop: true });
+    sch.tasks.add("Diaria-Failover-Edicao");
+    const h = harness(sch, { ...neoLease, [DOWN_SIGNAL_KEY]: "2026-11-15T10:00:00Z" });
+    assert.equal(await takeoverMain(["--disarm"], h.deps), 1);
+    assert.deepEqual(h.deleted, [], "lease do Neo mantido");
+    assert.ok(h.store.has(SCHEDULER_LEASE_KEY));
+    const text = h.out.join("\n");
+    assert.match(text, /sinal de queda do 300 está presente/);
+    assert.match(text, /RETOMARIAM/);
+    assert.match(text, /Lease NÃO liberado/);
+  });
+
+  it("listagem falha depois da remoção COM o sinal presente -> exit 1 e lease RETIDO", async () => {
+    const h = harness(fakeScheduler({ statusFails: true }), { ...neoLease, [DOWN_SIGNAL_KEY]: "2026-11-15T10:00:00Z" });
+    assert.equal(await takeoverMain(["--disarm"], h.deps), 1);
+    assert.deepEqual(h.deleted, []);
+    assert.match(h.out.join("\n"), /remoção não confirmada/);
   });
 
   it("removeu tudo -> exit 0", async () => {
