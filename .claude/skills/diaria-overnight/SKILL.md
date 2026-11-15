@@ -54,7 +54,7 @@ nunca uma razão reescrita só para passar no regex.
 ## Fila obrigatória de escaladas do contínuo (#12684)
 
 No briefing inicial, rodar `npx tsx scripts/list-continuo-escalation-queue.ts`.
-Cada item de `queue` é uma PR escalada há mais de 24h: apresentar URL,
+Cada item de `queue` é uma PR escalada há mais de 6h (#13094; eram 24h): apresentar URL,
 `since` e `reason` como pendência explícita do editor, dono da fila
 `briefing overnight/develop`, e registrar destino e decisão no plano/relatório.
 Fila vazia dispensa esta seção; erro do comando é bloqueio de leitura da fila,
@@ -63,8 +63,8 @@ transitória resolvida: revalidar os gates normais antes de qualquer ação.
 Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
 liberação explícita; o briefing nunca promove draft automaticamente.
 
-**Prazo de validade de 48h (#12765).** Cada item traz `expired` e
-`destination`. Passadas 48h a escalada sai da fila de pendências sem prazo:
+**Prazo de validade de 24h (#12765; era 48h até o #13094).** Cada item traz `expired` e
+`destination`. Passadas 24h a escalada sai da fila de pendências sem prazo:
 rodar `npx tsx scripts/list-continuo-escalation-queue.ts --apply`, que fecha
 as de destino `fechar-redundante`, `fechar-para-issue` e `fechar-reabrir-issue`
 (comentário na PR e na issue de origem, branch preservada, `gh pr reopen`
@@ -74,7 +74,8 @@ PR com `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr {N}`; se na rodad
 seguinte ainda houver conflito ou CI parado, ela vira `fechar-reabrir-issue`.
 Destino `briefing` segue como pendência do editor — inclusive toda PR
 retida para o editor (#10278) ou reivindicada por sessão viva, que nunca
-recebe destino automático. Falha parcial do `--apply` sai em `failures[]`
+recebe destino automático, e toda PR `lane: manual` (branch fora das lanes
+autônomas, #13094), que só recebe `briefing` ou `fixer`. Falha parcial do `--apply` sai em `failures[]`
 (exit 1): reportar, nunca tratar como fila vazia.
 
 **Teto global de PRs abertos (#12765).** Antes de compor cada onda, rodar

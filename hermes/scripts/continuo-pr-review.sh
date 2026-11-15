@@ -1145,7 +1145,7 @@ fi
 # porque este stdout é o que o Telegram entrega: "escalei de novo, ninguém
 # decidiu" precisa ser distinguível de "escalei agora".
 if [ "$ESCALATED_RECURRING" -gt 0 ]; then
-  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), ainda sem merge desde a 1ª escalada:$ESCALATED_RECURRING_PRS — dono: editor; fila: briefing overnight/develop (consultar list-continuo-escalation-queue.ts para pendências >24h)"
+  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), ainda sem merge desde a 1ª escalada:$ESCALATED_RECURRING_PRS — dono: editor; fila: briefing overnight/develop (consultar list-continuo-escalation-queue.ts para pendências >6h)"
 fi
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso
