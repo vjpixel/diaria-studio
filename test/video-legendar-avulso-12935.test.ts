@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Interval, Word } from "../scripts/lib/diaria/video-montage.ts";
 import {
   captionCoverageFindings,
@@ -102,10 +102,14 @@ describe("#12935 captionCoverageFindings (autorrevisão do legendar)", () => {
 
 describe("#12935 legendar: saídas e CLI", () => {
   it("legendarOutputPaths: ao lado do vídeo, ou no --out-dir; nunca o próprio vídeo", () => {
+    // #13150 — esperado montado com resolve/join: no Windows "/v/261112" vira
+    // "C:\v\261112" (separador e unidade da plataforma).
     const p = legendarOutputPaths("/v/261112/20261112_200050.mp4");
-    assert.equal(p.srt, "/v/261112/20261112_200050.srt");
-    assert.equal(p.burned, "/v/261112/20261112_200050 - legendado.mp4");
-    assert.equal(legendarOutputPaths("/v/a.b.mov", "/out").srt, "/out/a.b.srt");
+    assert.equal(p.srt, join(resolve("/v/261112"), "20261112_200050.srt"));
+    assert.equal(p.burned, join(resolve("/v/261112"), "20261112_200050 - legendado.mp4"));
+    assert.notEqual(p.srt, resolve("/v/261112/20261112_200050.mp4"));
+    assert.notEqual(p.burned, resolve("/v/261112/20261112_200050.mp4"));
+    assert.equal(legendarOutputPaths("/v/a.b.mov", "/out").srt, join(resolve("/out"), "a.b.srt"));
   });
 
   it("legendarIsVertical considera a rotação do celular", () => {

@@ -15,7 +15,8 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import fs, { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -833,7 +834,7 @@ describe("#12655 fix: link-video-d1 com a releitura injetada (A4)", () => {
     assert.equal(existsSync(urlFile()), false);
   });
 
-  it("terminal com a escrita do registro falhando continua terminal (não vira inconclusivo)", { skip: process.getuid?.() === 0 }, async () => {
+  it("terminal com a escrita do registro falhando continua terminal (não vira inconclusivo)", async () => {
     const env = { GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", YOUTUBE_REFRESH_TOKEN: "r", YOUTUBE_CHANNEL_ID: "UCdiaria" };
     const fetchDeps = {
       now: () => new Date(NOW),
@@ -842,13 +843,29 @@ describe("#12655 fix: link-video-d1 com a releitura injetada (A4)", () => {
           ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
           : new Response(JSON.stringify({ items: [{ id: VID, snippet: { channelId: "UCdiaria" }, status: { uploadStatus: "failed" } }] }), { status: 200 }),
     };
-    chmodSync(join(dir, "_internal"), 0o555);
+    // #13150 — a falha de escrita é simulada no `writeFileSync`, não por
+    // `chmod 0o555` no diretório: no Windows o chmod de diretório não impede
+    // criar arquivo (só o bit de escrita de ARQUIVO existe lá), a escrita
+    // passava e `persisted` vinha `true`. `syncBuiltinESMExports` propaga a
+    // troca para os imports nomeados de `node:fs` do módulo sob teste. Vale
+    // também como root, que ignora o modo do diretório.
+    const internalDir = join(dir, "_internal");
+    const realWrite = fs.writeFileSync;
+    fs.writeFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (typeof file === "string" && file.startsWith(internalDir)) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: "EACCES" });
+      }
+      return (realWrite as (...a: unknown[]) => void)(file, ...rest);
+    }) as typeof fs.writeFileSync;
+    syncBuiltinESMExports();
     try {
       const r = await refreshYouTubeRecordState({ editionDir: dir, videoUrl: URL, env, deps: fetchDeps as never });
       assert.equal(r.kind, "terminal");
       assert.equal((r as { persisted?: boolean }).persisted, false);
+      assert.match((r as { persistError?: string }).persistError ?? "", /EACCES/);
     } finally {
-      chmodSync(join(dir, "_internal"), 0o755);
+      fs.writeFileSync = realWrite;
+      syncBuiltinESMExports();
     }
   });
 });

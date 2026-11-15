@@ -153,13 +153,45 @@ export function flagContaminatedSeeds(ideas: KeywordIdea[], seeds: string[]): Se
   return out;
 }
 
+/** `true` se `keyword` contém alguma semente inteira como sequência de palavras
+ *  ("como usar o gemini no celular" contém "como usar o gemini"). */
+function containsSeedPhrase(keyword: string, seeds: string[]): boolean {
+  const k = ` ${norm(keyword).split(/\s+/).join(" ")} `;
+  return seeds.some((s) => {
+    const p = norm(s).split(/\s+/).join(" ");
+    return p.length > 0 && k.includes(` ${p} `);
+  });
+}
+
+export interface PartitionOptions {
+  /** Sementes curadas para um fim que o filtro de marca não conhece (pauta de
+   *  vídeo, #13153): nenhuma semente é marcada como contaminada, e ideia que
+   *  contém uma semente inteira fica em `kept` mesmo sem marcador de IA. O
+   *  resto da vizinhança segue o filtro de sempre ("gemini dj" continua fora).
+   *  Default `false` — o pull de `seed/keywords.csv`, que alimenta a descoberta
+   *  do Stage 1 (#8370), mantém o filtro inteiro. */
+  trustSeeds?: boolean;
+}
+
 /** Composição usada pelo CLI: aplica o filtro de relevância e tira da tabela de
- *  demanda a semente de marca contaminada (ela vira só aviso + `discarded`). */
-export function partitionIdeas(ideas: KeywordIdea[], seeds: string[]): {
+ *  demanda a semente de marca contaminada (ela vira só aviso + `discarded`).
+ *  Com `trustSeeds` (#13153), as sementes e as ideias que as contêm ficam. */
+export function partitionIdeas(ideas: KeywordIdea[], seeds: string[], opts: PartitionOptions = {}): {
   kept: KeywordIdea[];
   discarded: KeywordIdea[];
   contaminated: SeedContamination[];
 } {
+  if (opts.trustSeeds) {
+    const kept: KeywordIdea[] = [];
+    const discarded: KeywordIdea[] = [];
+    const base = filterRelevantIdeas(ideas, seeds);
+    const keptSet = new Set(base.kept);
+    for (const idea of ideas) {
+      if (keptSet.has(idea) || containsSeedPhrase(idea.keyword, seeds)) kept.push(idea);
+      else discarded.push(idea);
+    }
+    return { kept, discarded, contaminated: [] };
+  }
   const filtered = filterRelevantIdeas(ideas, seeds);
   const contaminated = flagContaminatedSeeds(ideas, seeds);
   const bad = new Set(contaminated.map((c) => norm(c.seed)));
