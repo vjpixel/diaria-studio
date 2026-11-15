@@ -84,6 +84,8 @@ function mockFetch(opts: { analyticsStatus?: number; analyticsBody?: string; ret
         if (fail) return new Response(fail.body, { status: fail.status });
         return json(table(["elapsedVideoTimeRatio", "audienceWatchRatio"], vid === X ? undefined : [[0.5, 0.4], [0.01, 1.0]]));
       }
+      // Termos de busca (#13087): coberto em test/youtube-search-terms-13087.test.ts.
+      if (dims === "insightTrafficSourceDetail") return json(table(["insightTrafficSourceDetail", "views", "estimatedMinutesWatched"], undefined));
     }
     return new Response("inesperado", { status: 404 });
   };
