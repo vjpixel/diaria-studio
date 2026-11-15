@@ -267,9 +267,9 @@ describe("#12556 — link do post publicado", () => {
   it("sendStackPost devolve o link quando o webhook manda", async () => {
     const payload = buildStackPostPayload("T", "Corpo");
     const fakeFetch = (async () => new Response(JSON.stringify({ ok: true, post_url: "https://x.test/p" }), { status: 200 })) as typeof fetch;
-    assert.deepEqual(await sendStackPost("https://hook.test", "k", payload, fakeFetch), { postUrl: "https://x.test/p" });
+    assert.deepEqual(await sendStackPost("https://hook.test", "k", payload, fakeFetch), { postUrl: "https://x.test/p", postId: null, postSlug: null });
     const okOnly = (async () => new Response('{"ok": true}', { status: 200 })) as typeof fetch;
-    assert.deepEqual(await sendStackPost("https://hook.test", "k", payload, okOnly), { postUrl: null });
+    assert.deepEqual(await sendStackPost("https://hook.test", "k", payload, okOnly), { postUrl: null, postId: null, postSlug: null });
   });
 
   it("publishCircleStackCycle grava post_url no state", async () => {
@@ -280,7 +280,7 @@ describe("#12556 — link do post publicado", () => {
       title: "T",
       payload: buildStackPostPayload("T", "Corpo"),
       force: false,
-      send: async () => ({ postUrl: "https://x.test/p" }),
+      send: async () => ({ postUrl: "https://x.test/p", postId: null, postSlug: null }),
     });
     assert.equal(r.postUrl, "https://x.test/p");
     assert.equal(JSON.parse(readFileSync(statePath, "utf8")).post_url, "https://x.test/p");
