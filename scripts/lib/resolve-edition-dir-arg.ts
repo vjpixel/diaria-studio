@@ -26,9 +26,17 @@
  *  4. No win32, path estilo MSYS `/c/Users/...` → `C:/Users/...` (só chega
  *     ao Node assim com `MSYS_NO_PATHCONV=1`; sem isso o Git Bash converte).
  *  5. Relativo → `path.resolve(root, raw)` (raiz do repo, nunca o cwd).
+ *  6. (#13179) Diretório resolvido que não existe, dentro de `{root}/data/`,
+ *     com `data/` indisponível (link/junction pendente: Google Drive para
+ *     desktop desmontado, OneDrive fechado) → erro que nomeia causa e ação,
+ *     em vez do "02-reviewed.md não encontrado" que cada publisher daria
+ *     depois. Diretório que de fato não existe (com `data/` saudável) segue
+ *     sem erro aqui: cada publisher já trata.
  */
 
+import { existsSync } from "node:fs";
 import { win32, posix } from "node:path";
+import { explainDataPathUnavailable } from "./data-dir-probe.mjs";
 
 export class EditionDirArgError extends Error {
   constructor(message: string) {
@@ -84,6 +92,12 @@ export function resolveEditionDirArg(raw: string | undefined | null, opts: Resol
       `--edition-dir "${trimmed}" resolve para a raiz do filesystem (${abs}) — provavelmente '$VAR/' ` +
         "com a variável vazia no subshell. Passe o diretório da edição (data/editions/AAMM/AAMMDD/).",
     );
+  }
+  // #13179: só na plataforma real (a emulação de outra plataforma no teste
+  // produz path que o `fs` daqui não entende).
+  if (platform === process.platform && !existsSync(abs)) {
+    const why = explainDataPathUnavailable(opts.root, abs);
+    if (why) throw new EditionDirArgError(`--edition-dir "${trimmed}": ${why}`);
   }
   return abs;
 }
