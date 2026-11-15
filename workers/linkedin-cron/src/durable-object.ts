@@ -1,3 +1,4 @@
+import { recordDispatch } from "./dispatch-record";
 import type { QueueEntry, ReelsContainerRef } from "./index";
 import { CLAIM_TTL_MS, sameQueueContent } from "./index";
 import { fireQueueEntry, pickReelsContainer, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
@@ -117,12 +118,13 @@ function terminalConflictBody(state: FiredOrAmbiguous, base: Record<string, unkn
 
 export class LinkedInScheduler {
   private state: DurableObjectState;
-  /** #12372 item 2 — só `ALERT_WEBHOOK_URL`, pro alerta de fallback do
+  /** #13099 — LINKEDIN_QUEUE guarda o histórico sem credenciais.
+   *  #12372 item 2 — `ALERT_WEBHOOK_URL`, pro alerta de fallback do
    *  documento. O runtime passa o env do Worker como 2º argumento; os testes
    *  que constroem o DO só com `state` seguem válidos (alerta vai pro log). */
-  private env: { ALERT_WEBHOOK_URL?: string };
+  private env: { ALERT_WEBHOOK_URL?: string; LINKEDIN_QUEUE?: KVNamespace };
 
-  constructor(state: DurableObjectState, env?: { ALERT_WEBHOOK_URL?: string }) {
+  constructor(state: DurableObjectState, env?: { ALERT_WEBHOOK_URL?: string; LINKEDIN_QUEUE?: KVNamespace }) {
     this.state = state;
     this.env = env ?? {};
   }
@@ -479,6 +481,8 @@ export class LinkedInScheduler {
       threads,
       linkedin,
     });
+
+    await recordDispatch(this.env.LINKEDIN_QUEUE, key, entry, outcome);
 
     if (outcome.status === "send_unknown") {
       // #11106 — a Meta pode ter publicado. Liberar o claim (como no `failed`)

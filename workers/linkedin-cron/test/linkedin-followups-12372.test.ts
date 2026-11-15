@@ -142,7 +142,7 @@ describe("#12372 item 2 — fallback do documento vira alerta", () => {
 
   it("documento publicado → fired sem documentFallback", async () => {
     installLinkedIn();
-    assert.deepEqual(await fireQueueEntry(docEntry(), CONFIG), { status: "fired" });
+    assert.equal((await fireQueueEntry(docEntry(), CONFIG)).status, "fired");
   });
 
   it("alertLinkedInDocumentFallback manda pro ALERT_WEBHOOK_URL com key, destaque e motivo", async () => {

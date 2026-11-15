@@ -60,7 +60,7 @@ describe("#8052: channel=linkedin + image_urls[1] (não-carrossel) continua indo
 
     try {
       const outcome = await fireQueueEntry(entry, { webhookUrl: "https://make.test/diaria", linkedin: LINKEDIN_CREDS });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.equal(calls.length, 1);
       assert.match(calls[0], /make\.test/);
     } finally {
@@ -145,7 +145,7 @@ describe("#8052: channel=linkedin + image_urls[>1] com credenciais → fireLinke
 
     try {
       const outcome = await fireQueueEntry(entry, { webhookUrl: "https://make.test/diaria", linkedin: LINKEDIN_CREDS });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
 
       // 3× (initializeUpload + fetch bytes + PUT upload) + 1× POST /rest/posts = 10 chamadas
       assert.equal(calls.length, 10);

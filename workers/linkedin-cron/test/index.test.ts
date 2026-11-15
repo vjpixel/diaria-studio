@@ -540,7 +540,8 @@ describe("#880 dead-letter retry após MAX_RETRIES", () => {
     globalThis.fetch = savedFetch;
     assert.equal(result.fired, 1);
     assert.equal(result.dlq, 0);
-    assert.equal(kv.store.size, 0);
+    assert.equal([...kv.store.keys()].filter(k => k.startsWith("queue:") || k.startsWith("dlq:")).length, 0);
+    assert.equal([...kv.store.keys()].filter(k => k.startsWith("fired:")).length, 1);
   });
 });
 

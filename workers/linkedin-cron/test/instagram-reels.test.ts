@@ -136,7 +136,7 @@ describe("#10823 Reels: disparo pela fila", () => {
       reelsEntry({ ig_account: "vjpixel", collaborators: ["diar.ia.br"], cover_url: "https://cdn.test/cover.jpg" }),
       baseConfig(),
     );
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
 
     const create = calls.find((c) => c.url.endsWith("/media"));
     assert.ok(create, "deve criar o container");
@@ -165,7 +165,7 @@ describe("#10823 Reels: disparo pela fila", () => {
   it("sem ig_account publica na conta da diar.ia.br (backward-compat) e sem collaborators omite o campo", async () => {
     const calls = mockGraph(["FINISHED"]);
     const out = await fireQueueEntry(reelsEntry(), baseConfig());
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     const create = calls.find((c) => c.url.endsWith("/media"))!;
     assert.match(create.url, /\/ig-diaria\/media$/);
     assert.equal(new URLSearchParams(create.body).get("collaborators"), null);
@@ -250,7 +250,7 @@ describe("#10823 Reels: disparo pela fila", () => {
       { ...reelsEntry({ ig_account: "vjpixel" }), media_type: undefined, video_url: undefined, image_url: "https://x.test/a.jpg" },
       baseConfig(),
     );
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     const create = calls.find((c) => c.url.endsWith("/media"))!;
     assert.match(create.url, /\/ig-vjpixel\/media$/);
     assert.equal(new URLSearchParams(create.body).get("image_url"), "https://x.test/a.jpg");

@@ -103,7 +103,7 @@ describe("#10922 fireQueueEntry: retoma o container entre voltas", () => {
 
     g.pollsUntilFinished = g.polls + 1; // a Meta termina durante a 2ª volta
     const second = await fireQueueEntry(reelsEntry({ reels_container: ref, retry_count: 1 }), config);
-    assert.deepEqual(second, { status: "fired" });
+    assert.equal(second.status, "fired");
     assert.equal(g.containersCreated, 1, "nunca cria um 2º container");
     assert.deepEqual(g.publishedContainers, ["container-1"]);
   });
@@ -116,7 +116,7 @@ describe("#10922 fireQueueEntry: retoma o container entre voltas", () => {
     assert.equal(ref?.id, "container-1");
     g.publishFails = false;
     const second = await fireQueueEntry(reelsEntry({ reels_container: ref }), config);
-    assert.deepEqual(second, { status: "fired" });
+    assert.equal(second.status, "fired");
     assert.equal(g.containersCreated, 1);
   });
 
@@ -137,7 +137,7 @@ describe("#10922 fireQueueEntry: retoma o container entre voltas", () => {
     assert.equal(g.containersCreated, 0);
 
     const second = await fireQueueEntry(reelsEntry({ retry_count: 2 }), config);
-    assert.deepEqual(second, { status: "fired" });
+    assert.equal(second.status, "fired");
     assert.equal(g.containersCreated, 1, "a volta seguinte cria um container novo");
     assert.deepEqual(g.publishedContainers, ["container-1"]);
   });
@@ -187,7 +187,7 @@ describe("#10922 fireQueueEntry: retoma o container entre voltas", () => {
     const g = mockGraph();
     const old = new Date(Date.now() - REELS_CONTAINER_RESUME_MAX_AGE_MS - 60_000).toISOString();
     const out = await fireQueueEntry(reelsEntry({ reels_container: { id: "old-container", created_at: old } }), config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(g.containersCreated, 1);
     assert.deepEqual(g.publishedContainers, ["container-1"]);
   });

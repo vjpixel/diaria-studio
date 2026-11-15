@@ -121,6 +121,7 @@ interface WorkerListResponse {
   count: number;
   items: Array<{
     key: string;
+    channel?: string;
     text: string;
     image_url: string | null;
     scheduled_at: string;
@@ -592,6 +593,22 @@ export async function verifyFacebookEntries(
   return { results, warnings };
 }
 
+/** #13099 — fail closed for missing history, IDs or a platform lookup failure. */
+export async function fetchVerifiedDispatch(workerUrl: string, workerToken: string, key: string): Promise<{ items: unknown[] } | null> {
+  try {
+    const url = new URL("/fired", workerUrl);
+    url.searchParams.set("key", key);
+    url.searchParams.set("verify", "true");
+    const res = await fetch(url, { headers: { "X-Diaria-Token": workerToken }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const fired = await res.json() as { verification?: { verified: boolean }; items?: unknown[] };
+    return fired.verification?.verified === true && Array.isArray(fired.items) && fired.items.length === 1
+      ? { items: fired.items } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   // #2834: --strict é flag booleana incondicional no parser local original
@@ -619,7 +636,7 @@ async function main(): Promise<number | void> {
 
   const published = readSocialPublished(publishedPath);
   const fbEntries = published.posts.filter((p) => p.platform === "facebook");
-  const liEntries = published.posts.filter((p) => p.platform === "linkedin");
+  const liEntries = published.posts.filter((p) => ["linkedin", "instagram", "threads"].includes(p.platform));
 
   const warnings: string[] = [];
   const results: VerifyResult[] = [];
@@ -662,7 +679,7 @@ async function main(): Promise<number | void> {
       } else {
         results.push({
           destaque: e.destaque,
-          platform: "linkedin",
+          platform: e.platform,
           expected_status: e.status,
           verified: false,
           reason: "missing_worker_creds",
@@ -683,7 +700,7 @@ async function main(): Promise<number | void> {
       if (e.status === "failed") {
         results.push({
           destaque: e.destaque,
-          platform: "linkedin",
+          platform: e.platform,
           expected_status: e.status,
           verified: false,
           reason: "publish_failed",
@@ -691,7 +708,19 @@ async function main(): Promise<number | void> {
         });
         continue;
       }
-      results.push(reconcileLinkedin(e, queueItems));
+      const candidates = queueItems.filter(it =>
+        (it.channel ?? "linkedin") === e.platform && (!e.worker_queue_key || it.key === e.worker_queue_key));
+      const queued = { ...reconcileLinkedin(e, candidates), platform: e.platform };
+      // #13099 — a removed queue entry is not proof of publication. Check the
+      // recorded platform ID through the authenticated Worker (credentials stay there).
+      if (!queued.verified && e.worker_queue_key && !queueItems.some(it => it.key === e.worker_queue_key)) {
+        const fired = await fetchVerifiedDispatch(workerUrl, workerToken, String(e.worker_queue_key));
+        if (fired) {
+          results.push({ ...queued, verified: true, reason: "platform_id_confirmed", external_state: fired.items });
+          continue;
+        }
+      }
+      results.push(queued);
     }
   }
 
@@ -706,7 +735,7 @@ async function main(): Promise<number | void> {
   // Detectar bug de merge #918: total != soma fb + li sugere sobrescrita
   // (entries silenciosamente perdidas durante write concorrente).
   const totalEntries = published.posts.filter(
-    (p) => p.platform === "linkedin" || p.platform === "facebook",
+    (p) => ["linkedin", "instagram", "threads", "facebook"].includes(p.platform),
   ).length;
   if (totalEntries !== expectedCount) {
     warnings.push(
