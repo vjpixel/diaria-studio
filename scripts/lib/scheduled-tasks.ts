@@ -2400,6 +2400,8 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
           "--seeds-file", "seed/video-keywords.csv",
           "--out", "data/seo/video-keywords-{date}.json",
           "--report-out", "data/seo/video-keywords-{date}.md",
+          // #13153: sem isto o filtro de marca descarta "como usar o gemini".
+          "--trust-seeds",
         ],
         bestEffort: true,
       },

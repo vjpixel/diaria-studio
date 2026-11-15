@@ -13,6 +13,13 @@
  * (`seed/video-keywords.csv` → `data/seo/video-keywords-{date}.json`, #13090)
  * com args estáticos.
  *
+ * `--trust-seeds` (#13153) desliga o filtro de marca para as SEMENTES do
+ * arquivo: nenhuma vira "contaminada", e ideia que contém uma semente inteira
+ * fica na tabela mesmo sem marcador de IA ("como usar o gemini no celular").
+ * É o modo do pull de vídeo, cujas sementes "como usar o gemini"/"gemini vs
+ * claude" o filtro descartaria. O pull de `seed/keywords.csv` roda sem a flag:
+ * ele alimenta a descoberta do Stage 1 (#8370) e precisa do filtro inteiro.
+ *
  * `--terms` (lista separada por vírgula) sobrescreve o CSV de sementes — testar
  * hipótese nova não exige commit (#8356). Sem `--terms`, usa `seed/keywords.csv`
  * (mesmas sementes do `bing-pull.ts --mode keywords`). A API aceita 20 sementes
@@ -115,7 +122,8 @@ async function main(argv: string[]): Promise<number> {
   const ideas = dedupeIdeas(allIdeas);
 
   const date = new Date().toISOString().slice(0, 10);
-  const { kept, discarded, contaminated } = partitionIdeas(ideas, seeds);
+  const trustSeeds = flags.has("trust-seeds");
+  const { kept, discarded, contaminated } = partitionIdeas(ideas, seeds, { trustSeeds });
   const jsonPath = resolve(ROOT, expandDateToken(values.out ?? `data/seo/google-keywords-${date}.json`, date));
   const mdPath = resolve(ROOT, expandDateToken(values["report-out"] ?? `data/seo/google-keywords-${date}.md`, date));
   for (const p of [jsonPath, mdPath]) mkdirSync(dirname(p), { recursive: true });
