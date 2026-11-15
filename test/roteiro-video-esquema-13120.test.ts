@@ -23,6 +23,7 @@ import {
   duracaoPorVideo,
   propostaBlocosDoRoteiro,
   readRoteiroFontes,
+  readRoteiroHorizontal,
   ROTEIRO_FALAS_FILE,
   roteiroDuracaoConfigFrom,
   roteiroPecas,
@@ -80,13 +81,40 @@ describe("#13120/#13128/#13129/#13132: esquema retrocompatível", () => {
   });
   it("corte com trecho que não está no texto, em vídeo que não usa a fala, ou da fala inteira é recusado", () => {
     const r = base();
-    r.falas.find((f) => f.id === "H4")!.cortes = { vertical1: "trecho inexistente", horizontal: H4_FIM };
+    r.falas.find((f) => f.id === "H4")!.cortes = { vertical1: "trecho inexistente" };
     r.falas.find((f) => f.id === "H3")!.cortes = { vertical1: "O Google" };
-    r.falas.find((f) => f.id === "H10d")!.cortes = { horizontal: "Com isso, o Google voltou pra corrida." };
+    const h10f = r.falas.find((f) => f.id === "H10f")!;
+    h10f.cortes = { vertical1: h10f.texto };
     const p = validarRoteiroFalas(r).join("\n");
     assert.match(p, /H4\.cortes\.vertical1: trecho não aparece/);
     assert.match(p, /H3\.cortes\.vertical1: a fala não está no vertical 1/);
-    assert.match(p, /H10d\.cortes\.horizontal: o trecho é a fala inteira/);
+    assert.match(p, /H10f\.cortes\.vertical1: o trecho é a fala inteira/);
+  });
+  it("corte no horizontal é recusado: o horizontal fica com a fala inteira", () => {
+    const r = base();
+    r.falas.find((f) => f.id === "H4")!.cortes = { horizontal: H4_FIM };
+    assert.match(validarRoteiroFalas(r).join("\n"), /H4\.cortes\.horizontal: o horizontal fica com a fala inteira/);
+  });
+  it("corte no meio de uma palavra ou de trecho repetido é recusado", () => {
+    const r = base();
+    r.falas.find((f) => f.id === "H4")!.cortes = { vertical1: "Hydro" };
+    // "o tom, o formato e as regras": "o" aparece mais de uma vez como palavra.
+    r.falas.find((f) => f.id === "H14")!.cortes = { vertical2: "o" };
+    const p = validarRoteiroFalas(r).join("\n");
+    assert.match(p, /H4\.cortes\.vertical1: trecho não aparece no texto da fala como palavras inteiras/);
+    assert.match(p, /H14\.cortes\.vertical2: o trecho aparece \d+ vezes/);
+  });
+  it("fala de abertura num vertical é recusada", () => {
+    const r = base();
+    r.falas.find((f) => f.id === "H2")!.videos.push("vertical1");
+    assert.match(validarRoteiroFalas(r).join("\n"), /H2: bloco abertura não existe nos verticais/);
+  });
+  it("seta em qualquer texto que chega ao leitor é recusada, com o campo (#9721)", () => {
+    const r = base();
+    r.falas[0].texto = "Antes → depois.";
+    r.porVideo!.vertical2!.capa = "Google ← Busca";
+    r.notas = ["a → b"];
+    assert.match(validarRoteiroFalas(r).join("\n"), /seta .*H1\.texto, porVideo\.vertical2\.capa, notas\[0\]/);
   });
   it("tela com seta é recusada (#9721)", () => {
     const r = base();
@@ -103,6 +131,12 @@ describe("#13120/#13128/#13129/#13132: esquema retrocompatível", () => {
 });
 
 describe("#13129: o trecho cortado e o que sobra", () => {
+  it("corte que leva o ponto final junto: o que sobra termina com ponto", () => {
+    assert.deepEqual(segmentosSemTrecho("A lançou X, e isso muda tudo.", "e isso muda tudo."), ["A lançou X."]);
+  });
+  it("corte no meio de uma frase não força ponto nem maiúscula", () => {
+    assert.deepEqual(segmentosSemTrecho("O modelo, que custa 20 dólares, chegou hoje.", "que custa 20 dólares,"), ["O modelo", "chegou hoje."]);
+  });
   it("corte no fim: o que sobra ganha o ponto final", () => {
     const h4 = base().falas.find((f) => f.id === "H4")!.texto;
     assert.deepEqual(segmentosSemTrecho(h4, H4_FIM), ["O Gemini 4 Hydrogen já está liberado pra todo mundo no app do Gemini, na Busca do Google."]);
@@ -186,15 +220,29 @@ describe("#13128/#13129: a proposta de blocos segue a ordem e os cortes", () => 
     const dir = mkdtempSync(join(tmpdir(), "roteiro-fontes-"));
     try {
       const avisos: string[] = [];
-      assert.deepEqual(readRoteiroFontes(dir, (m) => avisos.push(m)), []);
-      assert.deepEqual(avisos, []);
+      const warn = (m: string) => void avisos.push(m);
+      const ausente = readRoteiroFontes(dir, warn);
+      assert.equal(ausente.status, "ausente");
+      assert.equal(ausente.fontes.length, 0);
+      assert.equal(avisos.length, 0);
       mkdirSync(join(dir, "_internal"));
       writeFileSync(join(dir, ROTEIRO_FALAS_FILE), JSON.stringify(completo()));
-      const fontes = readRoteiroFontes(dir, (m) => avisos.push(m));
-      assert.deepEqual(fontes.map((f) => [f.fala, f.url]), [["H6", "https://artificialanalysis.ai/models"]]);
-      assert.match(fontes[0].texto, /51 pontos/);
+      const ok = readRoteiroFontes(dir, warn);
+      assert.equal(ok.status, "ok");
+      assert.deepEqual(ok.fontes.map((f) => [f.fala, f.url]), [["H6", "https://artificialanalysis.ai/models"]]);
+      assert.match(ok.fontes[0].texto, /51 pontos/);
+      // Um corte desatualizado invalida o roteiro, mas não tira as fontes do fact-check.
+      const r = completo();
+      r.falas.find((f) => f.id === "H4")!.cortes = { vertical1: "trecho que sumiu" };
+      writeFileSync(join(dir, ROTEIRO_FALAS_FILE), JSON.stringify(r));
+      const inv = readRoteiroFontes(dir, warn);
+      assert.equal(inv.status, "invalido");
+      assert.equal(inv.fontes.length, 1);
+      assert.ok(inv.problemas.some((x) => /H4\.cortes/.test(x)));
       writeFileSync(join(dir, ROTEIRO_FALAS_FILE), "{");
-      assert.deepEqual(readRoteiroFontes(dir, (m) => avisos.push(m)), []);
+      const ileg = readRoteiroFontes(dir, warn);
+      assert.equal(ileg.status, "ilegivel");
+      assert.equal(ileg.fontes.length, 0);
       assert.ok(avisos.some((a) => /ilegível.*#13132/.test(a)));
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -227,8 +275,15 @@ describe("#13130: duração estimada por vídeo", () => {
     const com = duracaoPorVideo(completo()).find((x) => x.video === "vertical1")!.segundos;
     assert.ok(com < sem);
   });
-  it("os alvos vêm da config, com default para valor ausente ou inválido", () => {
-    const cfg = roteiroDuracaoConfigFrom({ publishing: { video: { roteiro: { alvo_s: { vertical1: 75, vertical2: "x" }, palavras_por_minuto: 0 } } } });
+  it("os alvos vêm da config, com default (e aviso) para valor inválido", () => {
+    const avisos: string[] = [];
+    const cfg = roteiroDuracaoConfigFrom(
+      { publishing: { video: { roteiro: { alvo_s: { vertical1: 75, vertical2: "x", vertical_1: 9 }, palavras_por_minuto: 0 } } } },
+      (m) => void avisos.push(m),
+    );
+    assert.ok(avisos.some((a) => /alvo_s\.vertical2 inválido/.test(a)));
+    assert.ok(avisos.some((a) => /palavras_por_minuto inválido/.test(a)));
+    assert.ok(avisos.some((a) => /alvo_s\.vertical_1: vídeo desconhecido/.test(a)));
     assert.equal(cfg.alvoS.vertical1, 75);
     assert.equal(cfg.alvoS.vertical2, ROTEIRO_DURACAO_DEFAULT.alvoS.vertical2);
     assert.equal(cfg.palavrasPorMinuto, ROTEIRO_DURACAO_DEFAULT.palavrasPorMinuto);
@@ -284,6 +339,23 @@ describe("#13120: a página gerada do JSON", () => {
   });
 });
 
+describe("#13132 (review): a publicação não perde o título por um problema em outro campo", () => {
+  it("readRoteiroHorizontal usa título e capa do horizontal mesmo com o roteiro inválido, com aviso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "roteiro-horizontal-"));
+    try {
+      mkdirSync(join(dir, "_internal"));
+      const r = completo();
+      r.falas.find((f) => f.id === "H4")!.cortes = { vertical1: "trecho que sumiu" };
+      writeFileSync(join(dir, ROTEIRO_FALAS_FILE), JSON.stringify(r));
+      const avisos: string[] = [];
+      assert.deepEqual(readRoteiroHorizontal(dir, (m) => void avisos.push(m)), { titulo: "Google te dá Gemini 4 Hydrogen de graça", capa: "Já está na sua Busca" });
+      assert.ok(avisos.some((a) => /inválido.*uso o título e a capa do horizontal/.test(a)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("CLIs: render-roteiro-video e video-roteiro-blocos", () => {
   function tmp(): { dir: string; falas: string; out: string } {
     const dir = mkdtempSync(join(tmpdir(), "roteiro-13120-"));
@@ -308,6 +380,40 @@ describe("CLIs: render-roteiro-video e video-roteiro-blocos", () => {
       assert.equal(artifactUrlDe(html), "https://claude.ai/artifact/abc");
       assert.match(html, /<title>Roteiro D1 261116<\/title>/);
       assert.ok(c.err.some((e) => /\[aviso\] vertical 2 com/.test(e)));
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+  it("render sem roteiro-falas.json sai 3 sem gravar", () => {
+    const t = tmp();
+    try {
+      const c = io();
+      assert.equal(renderMain(["261116", "--falas", join(t.dir, "nao-existe.json"), "--out", t.out], c.io, join(t.dir, "root")), 3);
+      assert.throws(() => readFileSync(t.out));
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+  it("render recusa --artifact-url que quebraria o comentário HTML; o link é achado mesmo fora da 1ª linha", () => {
+    const t = tmp();
+    try {
+      const c = io();
+      assert.equal(renderMain(["261116", "--falas", t.falas, "--out", t.out, "--artifact-url", "https://x/a-->b"], c.io, join(t.dir, "root")), 2);
+      assert.equal(artifactUrlDe("<!-- artifact: https://x/a-->b -->"), null);
+      assert.equal(artifactUrlDe("﻿<!doctype html>\n<!-- artifact: https://claude.ai/artifact/z -->"), "https://claude.ai/artifact/z");
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+  it("render repete os avisos da proposta de blocos (ordem que cruza blocos)", () => {
+    const t = tmp();
+    try {
+      const r = completo();
+      r.porVideo!.vertical1!.ordem = ["H4", "H1", "H6", "H10", "H10c", "H10f", "V1-CTA"];
+      writeFileSync(t.falas, JSON.stringify(r));
+      const c = io();
+      assert.equal(renderMain(["261116", "--falas", t.falas, "--stdout"], c.io, join(t.dir, "root")), 0);
+      assert.ok(c.err.some((e) => /ordem declarada põe H1/.test(e)));
     } finally {
       rmSync(t.dir, { recursive: true, force: true });
     }

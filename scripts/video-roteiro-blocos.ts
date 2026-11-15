@@ -15,8 +15,9 @@
  * acima do alvo de duração ou horizontal fora da faixa (`avisosDuracao`,
  * #13130; alvos em `publishing.video.roteiro` do `platform.config.json`).
  * A saída traz a duração estimada de cada vídeo (`duracoes` no `--json`).
- * Campos novos do JSON validados aqui: `tela` (#13120), `cortes` (#13129),
- * `fontes` (#13132) e `porVideo.{vertical}.ordem` (#13128).
+ * A validação (`validarRoteiroFalas`, roteiro-gravacao.ts) cobre os campos
+ * novos: `tela` (#13120), `cortes` (#13129), `fontes` (#13132),
+ * `porVideo.{vertical}.ordem` (#13128), `porVideo.{v}.cta`, `gravacao` e `notas`.
  *
  * Só propõe: não grava `blocks.json` nem decupagem. Os tempos no bruto saem da
  * decupagem e o editor decide no Gate 1/Gate 2 da montagem.
@@ -25,7 +26,7 @@
  *   AAMMDD:   edição (lê `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-falas.json`)
  *   --falas:  outro caminho para o JSON do roteiro
  *   --corte:  slug do corte do vertical 2 (default `guia`)
- *   --json:   saída JSON (`PropostaBlocos`) em vez do Markdown
+ *   --json:   saída JSON (`PropostaBlocos` mais `duracoes`) em vez do Markdown
  *
  * Exit: 0 = proposta impressa; 3 = sem roteiro-falas.json (edição sem roteiro
  * pela skill: seguir a montagem como antes); 2 = uso ou arquivo inválido.
@@ -57,7 +58,7 @@ export function lerDuracaoConfig(root: string, err: (s: string) => void): Roteir
   const path = join(root, "platform.config.json");
   if (!existsSync(path)) return ROTEIRO_DURACAO_DEFAULT;
   try {
-    return roteiroDuracaoConfigFrom(JSON.parse(readFileSync(path, "utf8")));
+    return roteiroDuracaoConfigFrom(JSON.parse(readFileSync(path, "utf8")), (m) => err(`[aviso] ${m}`));
   } catch (e) {
     err(`[aviso] ${path} ilegível (${(e as Error).message}): alvos de duração default (#13130)`);
     return ROTEIRO_DURACAO_DEFAULT;

@@ -10,8 +10,10 @@
  * `scripts/lib/diaria/roteiro-pagina.ts`.
  *
  * O JSON é validado antes (o mesmo `validarRoteiroFalas` do
- * `video-roteiro-blocos.ts`); inválido = exit 2, nada gravado. Os `[aviso]` do
- * validador (gancho, título, capa, duração) saem no stderr, sem mudar o exit.
+ * `video-roteiro-blocos.ts`); inválido = exit 2, nada gravado. Os mesmos
+ * `[aviso]` do `video-roteiro-blocos.ts` (proposta de blocos, gancho, título,
+ * capa, duração) saem no stderr, sem mudar o exit. A página é gravada num
+ * arquivo temporário e renomeada, para o Drive nunca sincronizar uma pela metade.
  *
  * O link do artefato (`<!-- artifact: URL -->`, 1ª linha) é preservado da
  * página que já existe no destino, para a skill republicar no mesmo endereço;
@@ -27,13 +29,13 @@
  * Exit: 0 = página gerada (o caminho no stdout); 3 = sem roteiro-falas.json; 2 = uso, JSON inválido ou seta no texto.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
-import { artifactUrlDe, renderRoteiroPagina } from "./lib/diaria/roteiro-pagina.ts";
-import { avisosDuracao, avisosGanchoETitulo, parseRoteiroFalas, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
+import { artifactUrlDe, artifactUrlSegura, renderRoteiroPagina } from "./lib/diaria/roteiro-pagina.ts";
+import { avisosDuracao, avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
 import { lerDuracaoConfig } from "./video-roteiro-blocos.ts";
 
 export const ROTEIRO_PAGINA_FILE = "_internal/roteiro-d1.html";
@@ -71,14 +73,16 @@ export function main(
     return 2;
   }
   const artifactFlag = values["artifact-url"];
-  if (artifactFlag !== undefined && !/^https:\/\/\S+$/.test(artifactFlag)) {
-    io.err("[render-roteiro-video] --artifact-url precisa ser uma URL https");
+  if (artifactFlag !== undefined && !artifactUrlSegura(artifactFlag)) {
+    io.err("[render-roteiro-video] --artifact-url precisa ser uma URL https (sem espaço, <, > ou --)");
     return 2;
   }
   const outPath = values["out"] ?? join(dir, ROTEIRO_PAGINA_FILE);
-  const artifactUrl = artifactFlag ?? (existsSync(outPath) ? artifactUrlDe(readFileSync(outPath, "utf8")) ?? undefined : undefined);
+  const paginaExistia = existsSync(outPath);
+  const artifactUrl = artifactFlag ?? (paginaExistia ? artifactUrlDe(readFileSync(outPath, "utf8")) ?? undefined : undefined);
   const cfg = lerDuracaoConfig(root, io.err);
-  for (const a of [...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg)]) io.err(`[aviso] ${a}`);
+  const proposta = propostaBlocosDoRoteiro(lido.roteiro, { palavrasPorMinuto: cfg.palavrasPorMinuto });
+  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg)]) io.err(`[aviso] ${a}`);
   let html: string;
   try {
     html = renderRoteiroPagina(lido.roteiro, { cfg, ...(artifactUrl ? { artifactUrl } : {}) });
@@ -90,8 +94,26 @@ export function main(
     io.out(html);
     return 0;
   }
-  writeFileSync(outPath, html, "utf8");
-  if (!artifactUrl) io.err("[render-roteiro-video] página sem link de artefato na 1ª linha: depois de publicar, gere de novo com --artifact-url (Passo 5)");
+  const tmp = `${outPath}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, html, "utf8");
+    renameSync(tmp, outPath);
+  } catch (e) {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      /* o temporário que sobrar não muda o resultado: a página não foi gravada */
+    }
+    io.err(`[render-roteiro-video] não gravei ${outPath}: ${(e as Error).message}`);
+    return 2;
+  }
+  if (!artifactUrl) {
+    io.err(
+      paginaExistia
+        ? "[render-roteiro-video] a página anterior não tinha link de artefato: confira se ela já foi publicada (republicar no mesmo link) antes de publicar uma nova; depois, gere de novo com --artifact-url (Passo 5)"
+        : "[render-roteiro-video] página sem link de artefato: depois de publicar, gere de novo com --artifact-url (Passo 5)",
+    );
+  }
   io.out(outPath);
   return 0;
 }

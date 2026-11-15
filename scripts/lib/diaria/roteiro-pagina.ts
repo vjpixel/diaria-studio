@@ -21,8 +21,8 @@
  * confere o HTML inteiro.
  */
 
-import { BLOCK_KEYS, type BlockKey } from "./video-montage.ts";
-import { corteDaFala, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
+import type { BlockKey } from "./video-montage.ts";
+import { corteDaFala, SETA, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 import { blocoNaVertical, duracaoPorVideo, falasDoVideo, fmtDuracao, roteiroPecas, ROTEIRO_DURACAO_DEFAULT, type RoteiroDuracaoConfig } from "./roteiro-videos.ts";
 
 /** Formato e papel de cada vídeo, no cabeçalho da seção. */
@@ -52,8 +52,6 @@ const ROTULO_BLOCO: Record<BlockKey, string> = {
   cta_out: "Chamada final",
   fecho: "Fecho",
 };
-
-export const SETA_GLIFO = /[→←]/;
 
 export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -141,10 +139,6 @@ export function itensGravacao(roteiro: RoteiroFalas, cfg: RoteiroDuracaoConfig =
     if (!d) continue;
     const nome = v === "horizontal" ? "Horizontal" : v === "vertical1" ? "Vertical 1, a notícia" : "Vertical 2, o guia";
     const alvo = d.foraDoAlvo ? (v === "horizontal" ? " (fora da faixa de ~3 min)" : ` (acima do alvo de ${fmtDuracao(d.alvoS)})`) : "";
-    if (v === "horizontal") {
-      itens.push(`<b>${nome}:</b> cerca de ${fmtDuracao(d.segundos)}${alvo}.`);
-      continue;
-    }
     const ids = falasDoVideo(roteiro, v).falas.map((f) => (f.gravarAParte ? `${f.id} (à parte)` : f.id));
     itens.push(`<b>${nome}:</b> cerca de ${fmtDuracao(d.segundos)}${alvo}. Falas: ${esc(ids.join(", "))}.`);
   }
@@ -262,10 +256,12 @@ export interface RenderOpts {
 
 /**
  * Pure (#13120): a página do roteiro a partir do JSON (já validado). Lança se
- * algum texto trouxer seta (→/←, #9721), que o validador só confere no `tela`.
+ * a página sair com seta (→/←, #9721; o validador já recusa em todo texto, aqui
+ * é a rede para JSON não validado) ou com link de artefato inseguro.
  */
 export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}): string {
   const cfg = opts.cfg ?? ROTEIRO_DURACAO_DEFAULT;
+  if (opts.artifactUrl && !artifactUrlSegura(opts.artifactUrl)) throw new Error(`link de artefato inválido para o comentário HTML: ${opts.artifactUrl}`);
   const dur = new Map(duracaoPorVideo(roteiro, cfg).map((d) => [d.video, d.segundos] as const));
   const videos = VIDEOS_ROTEIRO.filter((v) => roteiro.falas.some((f) => f.videos.includes(v)));
   const nVert = videos.filter((v) => v !== "horizontal").length;
@@ -302,16 +298,22 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `<script>\n${SCRIPT}\n</script>`,
     ``,
   ].join("\n");
-  const seta = html.match(SETA_GLIFO);
+  const seta = html.match(SETA);
   if (seta) throw new Error(`a página sairia com seta (${seta[0]}), proibida no que chega ao leitor (#9721): troque no roteiro-falas.json`);
   return html;
 }
 
-/** O link do artefato na 1ª linha de uma página já gravada (`<!-- artifact: URL -->`), ou null. */
-export function artifactUrlDe(htmlExistente: string): string | null {
-  const m = htmlExistente.match(/^\s*<!--\s*artifact:\s*(\S+)\s*-->/);
-  return m ? m[1] : null;
+/** URL de artefato que pode ir num comentário HTML: https, sem `--`, `<` nem `>`. */
+export function artifactUrlSegura(url: string): boolean {
+  return /^https:\/\/[^\s<>]+$/.test(url) && !url.includes("--");
 }
 
-/** Os blocos da montagem, exportados para o teste conferir a cobertura dos rótulos. */
-export const BLOCOS_COM_ROTULO = BLOCK_KEYS.filter((b) => ROTULO_BLOCO[b]);
+/**
+ * O link do artefato de uma página já gravada (`<!-- artifact: URL -->`, em
+ * qualquer linha: página antiga, BOM ou doctype antes), ou null. Link que não
+ * passa em `artifactUrlSegura` não é reaproveitado.
+ */
+export function artifactUrlDe(htmlExistente: string): string | null {
+  const m = htmlExistente.match(/<!--\s*artifact:\s*(\S+)\s*-->/);
+  return m && artifactUrlSegura(m[1]) ? m[1] : null;
+}

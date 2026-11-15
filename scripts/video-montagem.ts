@@ -2534,6 +2534,7 @@ function cmdFactCheckInput(ctx: Ctx): number {
   const items = factCheckItems(ps, resolved);
   const sourcesDir = join(editionDirFor(ctx.edition), "_internal", "fact-check-sources");
   const manifest = join(sourcesDir, "manifest.json");
+  const roteiro = readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   if (!existsSync(manifest)) console.error(`[aviso] sem ${manifest}: as fontes do D1 não foram baixadas (Stage 4, run-fact-checker.ts); o agent cai no WebFetch da URL do D1 (#11956)`);
   const input = {
     mode: "video" as const,
@@ -2543,7 +2544,10 @@ function cmdFactCheckInput(ctx: Ctx): number {
     sources_dir: sourcesDir,
     // #13132: fontes de fora do D1 declaradas por fala no roteiro-falas.json
     // (fatos do rascunho do editor checados na web); o agent as usa além do D1.
-    roteiro_fontes: readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`)),
+    // O status separa "sem fonte declarada" de "roteiro com problema".
+    roteiro_fontes: roteiro.fontes,
+    roteiro_fontes_status: roteiro.status,
+    ...(roteiro.problemas.length ? { roteiro_fontes_problemas: roteiro.problemas } : {}),
     approved_json_path: join(editionDirFor(ctx.edition), "_internal", "01-approved.json"),
     out_path: f(ctx, VIDEO_FACT_CHECK_FILE),
   };

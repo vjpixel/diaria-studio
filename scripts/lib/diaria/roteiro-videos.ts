@@ -56,8 +56,8 @@ export function parseRoteiroFalas(raw: unknown): RoteiroLido {
  * 15/11/2026: o vertical 1 chama para o "vídeo completo no YouTube", e com o
  * mesmo título a pessoa reconhece o vídeo). As capas continuam próprias.
  */
-export function roteiroPecas(roteiro: Pick<RoteiroFalas, "porVideo">): Partial<Record<VideoRoteiro, PecaVideo>> {
-  const out: Partial<Record<VideoRoteiro, PecaVideo>> = {};
+export function roteiroPecas(roteiro: Pick<RoteiroFalas, "porVideo">): Partial<Record<VideoRoteiro, Pick<PecaVideo, "titulo" | "capa">>> {
+  const out: Partial<Record<VideoRoteiro, Pick<PecaVideo, "titulo" | "capa">>> = {};
   for (const v of VIDEOS_ROTEIRO) {
     const p = roteiro.porVideo?.[v];
     const titulo = p?.titulo?.trim() || (v === "vertical1" ? roteiro.porVideo?.horizontal?.titulo?.trim() : undefined);
@@ -323,41 +323,75 @@ export function renderPropostaBlocos(p: PropostaBlocos): string {
  * null com aviso (cai no título do D1, nunca derruba o plano).
  */
 export function readRoteiroHorizontal(editionDir: string, warn: (msg: string) => void): { titulo?: string; capa?: string } | null {
-  const roteiro = readRoteiroDaEdicao(editionDir, warn, "título e capa do roteiro ignorados, usando o D1 (#12751)");
-  return roteiro ? roteiroPecas(roteiro).horizontal ?? null : null;
+  const lido = readRoteiroBruto(editionDir);
+  if (lido.estado === "ausente") return null;
+  if (lido.estado === "ilegivel") {
+    warn(`${lido.path} ilegível (${lido.erro}): título e capa do roteiro ignorados, usando o D1 (#12751)`);
+    return null;
+  }
+  const parsed = parseRoteiroFalas(lido.raw);
+  if (parsed.ok) return roteiroPecas(parsed.roteiro).horizontal ?? null;
+  // Um problema em outro campo (um corte que deixou de bater depois de a fala
+  // mudar) não pode trocar o título do YouTube pelo do D1: título e capa do
+  // horizontal valem se forem texto, com aviso do resto (#13132, review).
+  const h = (lido.raw as { porVideo?: { horizontal?: Record<string, unknown> } })?.porVideo?.horizontal;
+  const titulo = typeof h?.titulo === "string" && h.titulo.trim() ? h.titulo.trim() : undefined;
+  const capa = typeof h?.capa === "string" && h.capa.trim() ? h.capa.trim() : undefined;
+  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${titulo || capa ? "uso o título e a capa do horizontal mesmo assim" : "título e capa do roteiro ignorados, usando o D1"} (#12751)`);
+  return titulo || capa ? { ...(titulo ? { titulo } : {}), ...(capa ? { capa } : {}) } : null;
 }
 
-/**
- * O `roteiro-falas.json` da edição, validado. Sem o arquivo = null em
- * silêncio; ilegível ou inválido = null com aviso (`consequencia` diz o que
- * o chamador faz sem ele).
- */
-export function readRoteiroDaEdicao(editionDir: string, warn: (msg: string) => void, consequencia: string): RoteiroFalas | null {
+type RoteiroBruto = { estado: "ausente" } | { estado: "ilegivel"; path: string; erro: string } | { estado: "lido"; path: string; raw: unknown };
+
+function readRoteiroBruto(editionDir: string): RoteiroBruto {
   const path = join(editionDir, ROTEIRO_FALAS_FILE);
-  if (!existsSync(path)) return null;
-  let raw: unknown;
+  if (!existsSync(path)) return { estado: "ausente" };
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    return { estado: "lido", path, raw: JSON.parse(readFileSync(path, "utf8")) };
   } catch (e) {
-    warn(`${path} ilegível (${(e as Error).message}): ${consequencia}`);
-    return null;
+    return { estado: "ilegivel", path, erro: (e as Error).message };
   }
-  const lido = parseRoteiroFalas(raw);
-  if (!lido.ok) {
-    warn(`${path} inválido (${lido.problemas.join("; ")}): ${consequencia}`);
-    return null;
-  }
-  return lido.roteiro;
+}
+
+/** Uma fonte de fora do D1, como o fact-check da fala recebe (#13132). */
+export interface FonteDoRoteiro {
+  fala: string;
+  texto: string;
+  url: string;
+  sustenta: string;
 }
 
 /**
  * As fontes de fora do D1 declaradas por fala no roteiro (#13132), para o
- * fact-check da fala na montagem (`fact-check-input`). Sem roteiro = [].
+ * fact-check da fala na montagem (`fact-check-input`), com o estado da
+ * leitura: `ausente` (edição sem roteiro), `ilegivel` (JSON quebrado: nenhuma
+ * fonte), `invalido` (o roteiro tem problema em outro campo: as fontes válidas
+ * de cada fala saem mesmo assim, para o fact-check não perder fonte por um
+ * corte desatualizado) ou `ok`. O chamador grava o estado junto, para o agent
+ * distinguir "sem fonte declarada" de "roteiro com problema".
  */
-export function readRoteiroFontes(editionDir: string, warn: (msg: string) => void): Array<{ fala: string; texto: string; url: string; sustenta: string }> {
-  const roteiro = readRoteiroDaEdicao(editionDir, warn, "fontes do roteiro fora do fact-check da fala; só as do D1 (#13132)");
-  if (!roteiro) return [];
-  return roteiro.falas.flatMap((f) => (f.fontes ?? []).map((fo) => ({ fala: f.id, texto: f.texto, url: fo.url, sustenta: fo.sustenta })));
+export function readRoteiroFontes(editionDir: string, warn: (msg: string) => void): { status: "ok" | "ausente" | "ilegivel" | "invalido"; problemas: string[]; fontes: FonteDoRoteiro[] } {
+  const lido = readRoteiroBruto(editionDir);
+  if (lido.estado === "ausente") return { status: "ausente", problemas: [], fontes: [] };
+  if (lido.estado === "ilegivel") {
+    warn(`${lido.path} ilegível (${lido.erro}): fontes do roteiro fora do fact-check da fala; só as do D1 (#13132)`);
+    return { status: "ilegivel", problemas: [lido.erro], fontes: [] };
+  }
+  const problemas = validarRoteiroFalas(lido.raw);
+  const falas = (lido.raw as { falas?: unknown })?.falas;
+  const fontes: FonteDoRoteiro[] = [];
+  if (Array.isArray(falas)) {
+    for (const f of falas as Array<Record<string, unknown> | null>) {
+      if (!f || typeof f.id !== "string" || typeof f.texto !== "string" || !Array.isArray(f.fontes)) continue;
+      for (const fo of f.fontes as Array<Record<string, unknown> | null>) {
+        if (typeof fo?.url === "string" && /^https?:\/\/\S+$/.test(fo.url) && typeof fo.sustenta === "string" && fo.sustenta.trim()) {
+          fontes.push({ fala: f.id, texto: f.texto, url: fo.url, sustenta: fo.sustenta });
+        }
+      }
+    }
+  }
+  if (problemas.length) warn(`${lido.path} inválido (${problemas.join("; ")}): ${fontes.length} fonte(s) das falas seguem para o fact-check; corrija o roteiro (#13132)`);
+  return { status: problemas.length ? "invalido" : "ok", problemas, fontes };
 }
 
 // ─── Gancho e título (#13116) ────────────────────────────────────────────────
@@ -416,6 +450,8 @@ export function avisosGanchoETitulo(roteiro: Pick<RoteiroFalas, "falas" | "porVi
     }
     const titulo = pecas[v]?.titulo;
     if (!titulo) continue;
+    // Vertical 1 com o título herdado e o mesmo gancho do horizontal: o aviso do horizontal já cobre.
+    if (v === "vertical1" && titulo === pecas.horizontal?.titulo && roteiro.falas.find((f) => f.bloco === "gancho" && f.videos.includes("horizontal"))?.id === gancho.id) continue;
     const t = normFrase(titulo);
     const f = normFrase(frase);
     const tituloContent = contentWords(titulo);
@@ -470,19 +506,26 @@ const numPositivo = (x: unknown): number | null => (typeof x === "number" && Num
  * defaults: `palavras_por_minuto`, `alvo_s.{horizontal,vertical1,vertical2}`,
  * `horizontal_folga_s`, `cta_card_s`. Valor ausente ou inválido = o default.
  */
-export function roteiroDuracaoConfigFrom(config: unknown): RoteiroDuracaoConfig {
+export function roteiroDuracaoConfigFrom(config: unknown, warn: (msg: string) => void = () => {}): RoteiroDuracaoConfig {
   const r = (config as { publishing?: { video?: { roteiro?: Record<string, unknown> } } })?.publishing?.video?.roteiro ?? {};
   const alvo = (r.alvo_s ?? {}) as Record<string, unknown>;
   const d = ROTEIRO_DURACAO_DEFAULT;
+  // Valor presente mas inválido cai no default com aviso; ausente, em silêncio.
+  const num = (chave: string, x: unknown, def: number): number => {
+    const v = numPositivo(x);
+    if (v === null && x !== undefined) warn(`publishing.video.roteiro.${chave} inválido (${JSON.stringify(x)}): usando o default ${def} (#13130)`);
+    return v ?? def;
+  };
+  for (const k of Object.keys(alvo)) if (!(VIDEOS_ROTEIRO as readonly string[]).includes(k)) warn(`publishing.video.roteiro.alvo_s.${k}: vídeo desconhecido, ignorado (horizontal|vertical1|vertical2) (#13130)`);
   return {
-    palavrasPorMinuto: numPositivo(r.palavras_por_minuto) ?? d.palavrasPorMinuto,
+    palavrasPorMinuto: num("palavras_por_minuto", r.palavras_por_minuto, d.palavrasPorMinuto),
     alvoS: {
-      horizontal: numPositivo(alvo.horizontal) ?? d.alvoS.horizontal,
-      vertical1: numPositivo(alvo.vertical1) ?? d.alvoS.vertical1,
-      vertical2: numPositivo(alvo.vertical2) ?? d.alvoS.vertical2,
+      horizontal: num("alvo_s.horizontal", alvo.horizontal, d.alvoS.horizontal),
+      vertical1: num("alvo_s.vertical1", alvo.vertical1, d.alvoS.vertical1),
+      vertical2: num("alvo_s.vertical2", alvo.vertical2, d.alvoS.vertical2),
     },
-    horizontalFolgaS: numPositivo(r.horizontal_folga_s) ?? d.horizontalFolgaS,
-    ctaCardS: numPositivo(r.cta_card_s) ?? d.ctaCardS,
+    horizontalFolgaS: num("horizontal_folga_s", r.horizontal_folga_s, d.horizontalFolgaS),
+    ctaCardS: num("cta_card_s", r.cta_card_s, d.ctaCardS),
   };
 }
 
