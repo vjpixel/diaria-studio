@@ -61,12 +61,14 @@ const stackSel = (): CircleStackSelection => ({
   video: { title: "Claude X comentado", url: "https://www.youtube.com/watch?v=abc", editionDate: "261104", views: 120, description: "O Claude X lê 2 milhões de tokens." },
 });
 
-describe("#13023 — LinkedIn semanal: principal vídeo da semana", () => {
-  it("a frase da seção, como o leitor lê, diz 'principal vídeo da semana'", () => {
-    assert.equal(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT, "No principal vídeo da semana");
+describe("#13023/#13045 — LinkedIn semanal: frase do vídeo", () => {
+  it("a frase fixa da seção (#13045) não fala em audiência nem em 'principal vídeo da semana'", () => {
+    // #13045: o rótulo "principal vídeo da semana" fica só na seção da Stack.
+    assert.equal(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT, "YouTube da diar.ia.br");
     const { html } = renderLinkedinWeeklyHtml(linkedinInput());
     const text = stripHtmlToText(html);
-    assert.ok(text.includes("No principal vídeo da semana no canal da diar.ia.br eu comento o destaque acima."), text);
+    assert.ok(text.includes("Eu comento o destaque acima no YouTube da diar.ia.br."), text);
+    assert.doesNotMatch(text, /principal vídeo da semana/i);
     assert.doesNotMatch(text, AUDIENCIA_RE);
   });
 });

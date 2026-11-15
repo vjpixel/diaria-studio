@@ -147,7 +147,13 @@ describe("formatInstagramWeekly", () => {
 
   it("#5330: modo default (omitido) continua 'clicked' — back-compat com chamadores existentes", () => {
     const caption = formatInstagramWeekly(makeItems(2));
-    assert.match(caption, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+    assert.match(caption, /^As notícias de IA mais lidas da semana:/);
+  });
+
+  it("#13049: a intro do clicked não cita a marca em texto puro (vira link para o site)", () => {
+    const intro = formatInstagramWeekly(makeItems(2), "clicked").split("\n")[0];
+    assert.equal(intro, "As notícias de IA mais lidas da semana:");
+    assert.doesNotMatch(intro, /diar\.ia\.br/);
   });
 });
 
@@ -196,7 +202,7 @@ describe("formatFacebookWeekly (#5348)", () => {
 
   it("modo default (omitido) continua 'clicked'", () => {
     const caption = formatFacebookWeekly(makeItems(2));
-    assert.match(caption, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+    assert.match(caption, /^As notícias de IA mais lidas da semana:/);
   });
 });
 
@@ -251,7 +257,7 @@ describe("formatThreadsWeekly (#5348, unidade Threads)", () => {
 
   it("modo default (omitido) continua 'clicked'", () => {
     const caption = formatThreadsWeekly(makeItems(2));
-    assert.match(caption, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+    assert.match(caption, /^As notícias de IA mais lidas da semana:/);
   });
 });
 
@@ -315,6 +321,6 @@ describe("formatTwitterWeekly (#8056)", () => {
 
   it("modo default (omitido) continua 'clicked'", () => {
     const caption = formatTwitterWeekly(makeItems(2));
-    assert.match(caption, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+    assert.match(caption, /^As notícias de IA mais lidas da semana:/);
   });
 });

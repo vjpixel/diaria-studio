@@ -154,8 +154,16 @@ Agent(subagent_type="stack-writer", prompt="Manifest: {scratchpad}/stack-manifes
 Enquanto os agentes rodam, a sessão escreve o **post de feed do LinkedIn**
 (Passo 8d de `/diaria-linkedin-semanal`: estrutura do #12787, título = manchete
 1 literal) a partir das manchetes do `ln-selection.json`. Ele só depende das
-manchetes, então sai antes do paste, não depois. Comentário do Use Melhor
+manchetes, então sai antes do paste, não depois. O convite do fim segue o
+item 4 do Passo 8d (#13048: "Para assinar, clique em "Veja minha
+newsletter", logo abaixo do meu nome."). Comentário do Use Melhor
 continua opcional e nunca inventado (#5970): só entra se o editor oferecer.
+
+Quando o `ln-selection.json` tem `video`, a sessão escreve junto a **frase
+do vídeo** (#13045, Passo 7 de `/diaria-linkedin-semanal`, "Frase do
+vídeo"): lê a legenda `diaria-comentada-{video.editionDate}.srt` da edição
+do vídeo e escreve UMA frase (até 280 caracteres) com o que o vídeo explica
+e o artigo não traz, gravada em `{scratchpad}/ln-video-pitch-{cycle}.txt`.
 
 ## Passo 4 — Humanizador + Clarice numa leva
 
@@ -169,7 +177,8 @@ resumos de cada modo, `data/weekly/{S}-{modo}/_internal/06-summaries.json`
    `summary` dos dois `06-summaries.json` (só item sem `summary_clarice`,
    teto 200 caracteres e 2 frases), `opening`/`notes[].stackNote`/
    `videoDescription` do `circle-stack-copy.json` (tetos do Passo 3 de
-   `/diaria-stack`) e o texto do post de feed. Mesmas instruções de campo
+   `/diaria-stack`), o texto do post de feed e a frase do vídeo (quando
+   houver). Mesmas instruções de campo
    das skills isoladas: não tocar `url`, `title`, `summary_raw`, `carouselKey`, `cycle`.
    Depois: `weekly-summaries-passes.ts humanized --path {P}` (cada modo) e
    tirar todo travessão do post de feed antes da Clarice.
@@ -183,7 +192,10 @@ resumos de cada modo, `data/weekly/{S}-{modo}/_internal/06-summaries.json`
    - post de feed: gravar o texto em
      `data/weekly/{cycle}/_internal/ln-feed-post-clarice-input.txt`, filtrar
      com `--source-text` e fechar com o guard do #12794
-     (`weekly-feed-post-review.ts --cycle {cycle} --mark --humanizador --clarice-filtered ...`).
+     (`weekly-feed-post-review.ts --cycle {cycle} --mark --humanizador --clarice-filtered ...`);
+   - frase do vídeo (quando houver): Clarice sobre
+     `{scratchpad}/ln-video-pitch-{cycle}.txt`, filtrada por
+     `clarice-filter.ts`, com as sugestões aplicadas no mesmo arquivo.
 
 ## Passo 5 — Renders e rascunho do LinkedIn (antes do gate)
 
@@ -195,9 +207,11 @@ Na mesma leva:
   `{scratchpad}/pacote-{cycle}/`.
 - Retro, prévia de texto final de cada modo (legendas com os resumos), sem
   `--schedule`.
-- LinkedIn: `npx tsx scripts/render-linkedin-weekly.ts --cycle {cycle}`
-  (Passo 7 da skill do LinkedIn; copiar a capa e a imagem do vídeo para o
-  scratchpad, #12788).
+- LinkedIn: `npx tsx scripts/render-linkedin-weekly.ts --cycle {cycle}`,
+  com `--video-pitch-file {scratchpad}/ln-video-pitch-{cycle}.txt` quando
+  houver vídeo (#13045: o script confere a frase contra a legenda e grava
+  `video.pitch`; exit 1 = recusada, nada gravado) (Passo 7 da skill do
+  LinkedIn; copiar a capa e a imagem do vídeo para o scratchpad, #12788).
 - Stack: `npx tsx scripts/publish-circle-stack.ts --publish-monday {M}` e
   `npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {M}`
   (Passo 5 de `/diaria-stack`; o HTML sai em
@@ -289,14 +303,18 @@ Com o "aprovar":
    nada de agendar, aprovar ou colar. Exit 2 = a seleção mudou depois do gate
    (kit-sync ou edição nova que mexeu nos itens): re-rodar o Passo 1 e levar
    a seleção nova ao gate. Com exit 0, re-rodar
-   `select-linkedin-weekly.ts --shared-selection` + render, para o
-   `ln-selection.json` sair sem `pendingGroup`.
+   `select-linkedin-weekly.ts --shared-selection {arquivo} --require-approved`
+   + render, para o `ln-selection.json` sair sem `pendingGroup` (#13035:
+   exit 2 = a seleção não tem aprovação gravada, um `--pick`/`--swap`
+   depois do `--confirm-suggestions`; gravar a aprovação de novo antes de
+   colar).
 2. Só depois do item 1 ok, em paralelo:
    - retro: `publish-weekly-social.ts --saturday {S} --mode both --shared-selection {arquivo} --schedule`
      (Passo 4 de `/diaria-retro-semanal`; recusa com exit 2 se o replay da
      seleção com o cache de agora der outra seleção, se as URLs não baterem
-     com o hash da aprovação, ou se o empate do clicked ainda for só
-     sugestão; taxa que mudou sem mexer na seleção, como a sexta ainda
+     com o hash da aprovação, se o empate do clicked ainda for só
+     sugestão, ou se o arquivo não tiver aprovação gravada (`--pick`/`--swap`
+     depois do `--confirm-suggestions`, #13035); taxa que mudou sem mexer na seleção, como a sexta ainda
      acumulando clique, é só aviso) e
      o registro do horário de cada dia, como no cabeçalho "Horário durante o
      teste rotativo" de `/diaria-retro-semanal`:
@@ -331,7 +349,8 @@ A skill termina aqui, com uma lista só:
 - **Falta à mão (#8031):** somente capa e agendamento do LinkedIn no fluxo
   com rascunho auditado. Entregar a capa (`data/weekly/{cycle}/04-d1-2x1.jpg`
   e, havendo vídeo, a imagem dele), o post de feed pronto para usar no
-  agendamento e o horário de
+  agendamento (trocando o "@diar.ia.br" digitado pela página diar.ia.br na
+  lista de menções do LinkedIn, item 4 do Passo 9 do LinkedIn, #13049) e o horário de
   `social-schedule-rotation.ts --linkedin-article --date {M}`;
   registrar `--record ... --kind linkedin_article` depois de agendar.
 - **Exceções pendentes:** ajuste manual da âncora da menção (#10385), quando
@@ -364,16 +383,20 @@ Confira se já há corpo colado antes de qualquer paste, para não duplicar.
 8b: use o HTML final via ClipboardEvent com o sentinela <p>&nbsp;</p>.
 Espere estabilizar. Retorno [BLOCKED] não autoriza colar de novo.
 8c: extraia âncoras (texto, base e utm_content, sem href cru) e tamanho do
-texto; chame auditLinkedinPaste de scripts/lib/linkedin-paste-audit.ts
-contra o HTML fonte sem sentinela. Confira TODAS as âncoras e UTMs,
+texto; monte pastedAnchors com o href da FONTE só quando texto, utm_content
+E base (origem + caminho) baterem com a âncora da fonte; senão use a base
+colada (a menção não tem UTM: sem comparar a base, a troca para
+http://diar.ia.br passa despercebida). Chame auditLinkedinPaste de
+scripts/lib/linkedin-paste-audit.ts contra o HTML fonte sem sentinela. Confira TODAS as âncoras e UTMs,
 inclusive a menção diar.ia.br (#10385, #13049), sem presumir que o paste
-preservou os links. Só WORDMARK_HREF_REWRITE_HINT em mencao-abertura pode
-seguir como ajuste manual documentado; outros erros param a entrega,
+preservou os links. Só WORDMARK_HREF_REWRITE_HINT na menção diar.ia.br
+(href linkedin.com/company/diar.ia.br) pode seguir como ajuste manual
+documentado; TRAILING_WORDMARK_SPLIT_HINT se corrige como no 8c; outros erros param a entrega,
 com no máximo 2 tentativas de correção conforme 8c. Não declarar auditado
 sem executar a auditoria. Preencha o título diretamente no campo.
 Pare no Passo 9: capa, imagem de vídeo quando houver e agendamento são
 manuais (#8031). Entregue o resultado da auditoria e o ajuste da menção,
-com a URL original completa/UTM para o editor conferir após salvar.
+com a URL original completa para o editor conferir após salvar.
 ```
 
 Incluir no prompt também o caminho Windows de `videoImagePath`, se houver

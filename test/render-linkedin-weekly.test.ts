@@ -163,8 +163,8 @@ describe("render-linkedin-weekly.ts — abertura/fecho padrão sem pergunta (#80
       assert.ok(!html.includes("fim do post. Assine grátis."), "abertura renderizada sem 'Assine grátis.'");
       // 3. CTA da abertura com o rótulo novo, UTM cta-abertura preservado.
       assert.match(html, /<p><a href="[^"]*utm_content=cta-abertura">Assinar a edição diária grátis<\/a><\/p>/);
-      // Wordmark segue pré-linkado com UTM mencao-abertura (#8819).
-      assert.match(html, /utm_content=mencao-abertura">diar\.ia\.br<\/a>, newsletter de IA/);
+      // Wordmark segue pré-linkado (#8819), desde o #13049 para a página do LinkedIn.
+      assert.match(html, /<a href="https:\/\/www\.linkedin\.com\/company\/diar\.ia\.br\/">diar\.ia\.br<\/a>, newsletter de IA/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

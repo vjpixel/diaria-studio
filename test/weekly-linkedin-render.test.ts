@@ -380,7 +380,7 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
       opening: "Escrevo a diar.ia.br, newsletter de IA que sai por e-mail.\n\nOutra menção a diar.ia.br aqui.",
     };
     const html = renderLinkedinWeeklyHtml(input).html;
-    const anchor = html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+    const anchor = html.match(/<a href="https:\/\/www\.linkedin\.com\/company\/diar\.ia\.br\/">([^<]+)<\/a>/)?.[1] ?? "";
     // #8819 reverte a extensão de 3 palavras (achado 260823/PR #5987 + ciclo
     // 26w39: o LinkedIn divide em 2 âncoras uma âncora que COMEÇA com o
     // wordmark e tem continuação dentro do mesmo <a>) — a âncora agora é
@@ -389,7 +389,7 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
     // A continuação (", newsletter de IA...") segue existindo no HTML, só que
     // como texto puro, IMEDIATAMENTE depois do </a> — nunca some.
     assert.ok(html.includes("</a>, newsletter de IA que sai por e-mail."), `continuação deve sobreviver como texto fora da âncora: ${html.slice(0, 400)}`);
-    assert.equal((html.match(/utm_content=mencao-abertura/g) ?? []).length, 1, "só a PRIMEIRA menção é linkada");
+    assert.equal((html.match(/linkedin\.com\/company\/diar\.ia\.br/g) ?? []).length, 1, "só a PRIMEIRA menção é linkada");
   });
 
   it("#8819: wordmark no fim do parágrafo AGORA é linkado normalmente — não depende mais de palavra seguinte pra estender a âncora", () => {
@@ -403,7 +403,7 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
       "A newsletter se chama diar.ia.br,",
     ]) {
       const r = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening });
-      const anchor = r.html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+      const anchor = r.html.match(/<a href="https:\/\/www\.linkedin\.com\/company\/diar\.ia\.br\/">([^<]+)<\/a>/)?.[1] ?? "";
       assert.equal(anchor, "diar.ia.br", `deve linkar mesmo no fim da frase: ${opening} -> ${r.html}`);
       assert.ok(!r.warnings.some((w) => /não pôde virar link/i.test(w)), `não deve mais emitir esse warning: ${r.warnings.join(" | ")}`);
     }
@@ -412,7 +412,7 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
   it("a âncora NÃO atravessa fronteira de frase — trivial desde #8819 (âncora é só o wordmark, nada mais entra nela)", () => {
     const r = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening: "Escrevo a diar.ia.br. Confira quando puder." });
     assert.ok(!/Confira quando puder[^<]*<\/a>/.test(r.html), `âncora vazou pra frase seguinte: ${r.html.slice(0, 300)}`);
-    const anchor = r.html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+    const anchor = r.html.match(/<a href="https:\/\/www\.linkedin\.com\/company\/diar\.ia\.br\/">([^<]+)<\/a>/)?.[1] ?? "";
     assert.equal(anchor, "diar.ia.br");
   });
 
@@ -421,13 +421,13 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
     // quebrado e um href apontando pra HOME em vez do artigo específico.
     const opening = "Leia em https://diar.ia.br/p/algum-artigo sobre isso.";
     const html = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening }).html;
-    assert.ok(!/utm_content=mencao-abertura/.test(html), "não pode linkar dentro de uma URL");
+    assert.ok(!/linkedin\.com\/company\/diar\.ia\.br/.test(html), "não pode linkar dentro de uma URL");
     assert.ok(html.includes("https://diar.ia.br/p/algum-artigo"), "a URL original tem que sair intacta");
   });
 
   it("abertura sem menção ao wordmark não inventa link", () => {
     const html = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening: "Abertura sem citar a marca." }).html;
-    assert.ok(!/utm_content=mencao-abertura/.test(html));
+    assert.ok(!/linkedin\.com\/company\/diar\.ia\.br/.test(html));
   });
 
   it("abertura vazia não emite CTA órfão (o link some junto com o parágrafo)", () => {

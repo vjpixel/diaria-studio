@@ -147,11 +147,15 @@ describe("#10772 plano", () => {
     assert.equal(p.linkedin_profile.action, "publish");
     assert.equal(p.linkedin_profile.title, D1.title);
     assert.doesNotMatch(p.linkedin_profile.caption, /https?:\/\//, "#11617: sem link no texto do LinkedIn");
-    // #12465/#13033: sem `mention_verified` (review do PR #12489) o perfil pessoal sai
-    // sem a linha de seguir: nada de URL da página (o LinkedIn a encurta em lnkd.in e
-    // autolinka `diar.ia.br` para o site). O X (@diariabr) nunca leva a linha.
-    assert.doesNotMatch(p.linkedin_profile.caption, /Siga|linkedin\.com\/company|lnkd\.in/);
-    assert.doesNotMatch(p.linkedin_profile.caption, /urn:li:organization/);
+    // #12465/#13033: com `mention_verified` (ligado desde a medição de 15/11/2026) o
+    // perfil pessoal leva a frase com a menção nativa da página, nunca a URL (o LinkedIn
+    // a encurta em lnkd.in e autolinka `diar.ia.br` para o site). O X (@diariabr) nunca
+    // leva a linha.
+    assert.ok(
+      p.linkedin_profile.caption.includes("Siga a @[diar.ia.br](urn:li:organization:110742958) para receber dicas e notícias de IA todos os dias"),
+      p.linkedin_profile.caption,
+    );
+    assert.doesNotMatch(p.linkedin_profile.caption, /linkedin\.com\/company|lnkd\.in/);
     assert.doesNotMatch(p.x.caption, /Siga/);
     assert.equal(p.x.scheduledAt, null);
   });

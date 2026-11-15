@@ -7,7 +7,7 @@
  * linha única antes do fecho (#12081) saiu. A CLI copia a imagem sem overlay
  * da edição do vídeo para o editor subir à mão. A auditoria pós-paste desconta
  * o auto-link do LinkedIn sobre "diar.ia.br" em texto puro (a frase da seção
- * tem uma menção), senão o Passo 8c pararia a skill toda semana com vídeo.
+ * tinha uma menção até o #13045; hoje ela vem do corpo de manchete).
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +18,7 @@ import {
   renderLinkedinWeeklyHtml,
   videoSectionHeadlineIndex,
   LINKEDIN_WEEKLY_VIDEO_HEADING,
+  LINKEDIN_WEEKLY_VIDEO_LEAD,
   LINKEDIN_WEEKLY_VIDEO_LINK_TEXT,
   LINKEDIN_WEEKLY_VIDEO_TAIL,
   type WeeklyLinkedinRenderInput,
@@ -63,7 +64,7 @@ describe("#12777 — seção Vídeo da semana no render", () => {
     const after = html.slice(sec).split("\n");
     assert.equal(
       after[1],
-      `<p><a href="${VIDEO_URL}?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w45&amp;utm_content=video">${LINKEDIN_WEEKLY_VIDEO_LINK_TEXT}</a>${LINKEDIN_WEEKLY_VIDEO_TAIL}</p>`,
+      `<p>${LINKEDIN_WEEKLY_VIDEO_LEAD}<a href="${VIDEO_URL}?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w45&amp;utm_content=video">${LINKEDIN_WEEKLY_VIDEO_LINK_TEXT}</a>${LINKEDIN_WEEKLY_VIDEO_TAIL}</p>`,
     );
     assert.equal(after[2], "<hr/>");
     assert.ok(!/<img/i.test(html), "sem <img> no HTML colado");
@@ -125,13 +126,27 @@ describe("#12777 — seção Vídeo da semana no render", () => {
   });
 });
 
-describe("#12777 — auditoria pós-paste com a menção da seção do vídeo", () => {
-  const sourceHtml = renderLinkedinWeeklyHtml(input({ video: { title: "T", url: VIDEO_URL, editionDate: "261103" } })).html;
+describe("#12777 — auditoria pós-paste com menção da marca em texto puro", () => {
+  // Desde o #13045 a seção do vídeo não tem mais menção em texto puro (o
+  // wordmark fica dentro do link "YouTube da diar.ia.br"); a menção solta
+  // agora vem do corpo de uma manchete.
+  const base = input();
+  const sourceHtml = renderLinkedinWeeklyHtml(
+    input({
+      headlines: [{ ...base.headlines[0], body: "A diar.ia.br mostrou o golpe." }, ...base.headlines.slice(1)],
+      video: { title: "T", url: VIDEO_URL, editionDate: "261103" },
+    }),
+  ).html;
   const sourceAnchors = extractAnchorsFromHtml(sourceHtml);
   const textLen = stripHtmlToText(sourceHtml).length;
 
-  it("conta só a menção em texto puro (a da abertura é âncora)", () => {
+  it("conta só a menção em texto puro (a da abertura e a do vídeo são âncora)", () => {
     assert.equal(countUnlinkedWordmarkMentions(sourceHtml), 1);
+    assert.equal(
+      countUnlinkedWordmarkMentions(renderLinkedinWeeklyHtml(input({ video: { title: "T", url: VIDEO_URL, editionDate: "261103" } })).html),
+      0,
+      "#13045: a seção do vídeo não deixa menção solta",
+    );
     assert.equal(countUnlinkedWordmarkMentions("<p>sem marca</p>"), 0);
     assert.equal(countUnlinkedWordmarkMentions("<p>veja https://diar.ia.br/p/x</p>"), 0, "URL colada não é menção");
   });

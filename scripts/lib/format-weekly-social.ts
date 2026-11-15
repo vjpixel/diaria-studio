@@ -133,7 +133,11 @@ export type WeeklyInstagramMode = "clicked" | "highlights";
 const INTRO_LINES: Record<WeeklyInstagramMode, string> = {
   // #7571: trocado de "Os mais clicados da semana" — decisão do editor,
   // mesmo texto do card de capa em `publish-weekly-social.ts::buildFlatCardTexts`.
-  clicked: "As notícias de IA mais lidas da semana na diar.ia.br:",
+  // #13049 item 1 (13/11/2026): sem "na diar.ia.br". A legenda sai por API, que
+  // não faz menção, e a marca em texto puro vira link para o site (regra do
+  // editor: a marca aponta para o perfil, nunca para o site). O post já sai
+  // pela conta da diar.ia.br; a frase fica igual ao título do card de capa.
+  clicked: "As notícias de IA mais lidas da semana:",
   highlights: "Confira aqui o resumo dos destaques:",
 };
 
