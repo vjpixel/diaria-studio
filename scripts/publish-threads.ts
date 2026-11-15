@@ -78,7 +78,7 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
-import { parseRetryIdList, RETRYABLE_STATUSES } from "./lib/social-retry.ts"; // #13076
+import { formatRetryOutsideDispatch, parseRetryIdList, RETRYABLE_STATUSES, retryIdsOutsideDispatch } from "./lib/social-retry.ts"; // #13076; #13089 id fora do envio
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Threads não renderiza markdown; #10441 ponto único do texto de post
@@ -839,6 +839,13 @@ async function main(): Promise<number | void> {
   }
   const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
+  // #13089: id pedido em --retry fora do envio (`um` sem post USE MELHOR, `d3`
+  // em edição de 2 destaques) sairia calado com exit 0. Falha antes de enviar.
+  const retryMissing = retryIdsOutsideDispatch(retryIds, dispatchIds);
+  if (retryMissing.length > 0) {
+    console.error(formatRetryOutsideDispatch("threads", retryMissing, dispatchIds));
+    return 1;
+  }
 
   for (const d of dispatchIds) {
     const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568

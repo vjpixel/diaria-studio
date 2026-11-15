@@ -65,7 +65,12 @@
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
  *     [--show-ranking] [--check-slot] [--reschedule] [--shared-selection PATH]
- *     [--retry instagram[,facebook,threads,linkedin]]
+ *     [--retry instagram[,facebook,threads]]
+ *
+ * `--retry linkedin` é recusado (#13088): a chave do Worker é fixa por
+ * carrossel e o retry pela mesma chave recebe 409 `already_fired` sem postar
+ * nada. LinkedIn `failed` se refaz com a retomada normal; `send_unknown` se
+ * confere na página e, se o carrossel não saiu, se posta à mão.
  *
  * `--retry {canal}` (#13076, exige `--schedule`): re-tenta SÓ esses canais,
  * e só os que estão `failed`/`send_unknown` (ou sem entrada). Canal já
@@ -250,7 +255,7 @@ import {
   weeklySummaryPassWarnings,
 } from "./lib/weekly-summaries.ts";
 import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry } from "./lib/social-published-store.ts";
-import { decideResumeOrRetry, parseRetryIdList, type ResumeRetryDecision } from "./lib/social-retry.ts"; // #13076
+import { decideResumeOrRetry, formatRetryOutsideDispatch, parseRetryIdList, retryIdsOutsideDispatch, type ResumeRetryDecision } from "./lib/social-retry.ts"; // #13076; #13089
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
 import { deleteFromWorkerQueue, idempotentConflictKey, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
@@ -875,6 +880,26 @@ const defaultWeeklyPdfUploader: WeeklyPdfUploader = async (filePath, kvKey) => {
 /** #13076 — canais aceitos por `--retry` no carrossel semanal (o X é do prep-weekly-twitter.ts). */
 export const WEEKLY_RETRY_CHANNELS = ["instagram", "facebook", "threads", "linkedin"] as const;
 
+/**
+ * #13088 — `--retry linkedin` é recusado. A chave do Worker é fixa por
+ * carrossel (`linkedInWeeklyIdempotencyKey`): depois que ela disparou, o
+ * retry devolve 409 `already_fired`, que `enqueueWeeklyLinkedIn` trata como
+ * sucesso, e o store passaria de `send_unknown` a `scheduled` sem post novo.
+ * `failed` não precisa de `--retry`: a retomada normal já o refaz.
+ */
+export const WEEKLY_LINKEDIN_RETRY_REFUSAL =
+  "--retry linkedin não é aceito (#13088): a chave do Worker deste carrossel já disparou e o retry pela mesma chave não posta nada novo. " +
+  "LinkedIn failed: rode --schedule sem --retry (a retomada refaz failed). " +
+  "LinkedIn send_unknown: confira a página no LinkedIn; se o carrossel não saiu, poste à mão.";
+
+/** #13088 — aviso de `send_unknown` na retomada, por canal (o LinkedIn não tem --retry). */
+export function weeklySendUnknownHint(channel: string, label: string): string {
+  if (channel === "linkedin") {
+    return `AVISO ${label}: envio não confirmado (send_unknown). Conferir a página no LinkedIn; se o carrossel não saiu, postar à mão — --retry linkedin não reposta (a chave do Worker já disparou, #13088).`;
+  }
+  return `AVISO ${label}: envio não confirmado (send_unknown). Conferir o perfil; se o carrossel não saiu, rodar com --schedule --retry ${channel} (re-tenta só este canal, #13076).`;
+}
+
 /** #13076 — `--retry instagram[,threads]`: `null` = flag ausente. */
 export function parseWeeklyRetryChannels(
   raw: string | undefined,
@@ -1026,6 +1051,15 @@ export async function main(
       ].filter((x): x is string => x !== null);
       if (clash.length > 0) {
         console.error(`ERRO: --retry não combina com ${clash.join(", ")}. Uso: --schedule --retry instagram[,threads].`);
+        process.exit(1);
+        return;
+      }
+      // #13088: o LinkedIn sai pelo Worker com chave fixa por carrossel; o
+      // retry reenviaria a mesma chave, o Worker responde 409 already_fired e
+      // o 409 conta como sucesso: grava `scheduled` por cima do send_unknown
+      // sem nenhum post novo. Recusado antes de qualquer envio.
+      if (retryParsed.ids.has("linkedin")) {
+        console.error(`ERRO: ${WEEKLY_LINKEDIN_RETRY_REFUSAL}`);
         process.exit(1);
         return;
       }
@@ -1833,6 +1867,15 @@ async function runOneMode(
   // despacha, não tem status de canal pra pular) — skip-existing não se
   // aplica: mesmo já agendado, o editor ainda pode querer ver o carrossel.
   if ((skipExisting || retryChannels) && !imagesOnly) {
+    // #13089: `--retry facebook` sem página habilitada sairia calado com exit 0.
+    if (retryChannels) {
+      const dispatchChannels = ["instagram", "threads", "linkedin", ...(fbPendingPages.length > 0 ? ["facebook"] : [])];
+      const retryMissing = retryIdsOutsideDispatch(retryChannels, dispatchChannels);
+      if (retryMissing.length > 0) {
+        console.error(formatRetryOutsideDispatch(`semanal ${destaqueKey}`, retryMissing, dispatchChannels));
+        return false;
+      }
+    }
     const published = readSocialPublished(publishedPath);
     // #12419: `cancelling` conta como existente. Até o bloco de cancelamento
     // (abaixo) zerar os skips, o canal fica pulado: uma falha no caminho
@@ -1848,9 +1891,7 @@ async function runOneMode(
       if (decision.action === "dispatch") return false;
       if (decision.action === "skip-existing") {
         console.log(`SKIP ${label} — already ${decision.existing.status}`);
-        if (decision.existing.status === "send_unknown") {
-          console.warn(`AVISO ${label}: envio não confirmado (send_unknown). Conferir o perfil; se o carrossel não saiu, rodar com --schedule --retry ${channel} (re-tenta só este canal, #13076).`);
-        }
+        if (decision.existing.status === "send_unknown") console.warn(weeklySendUnknownHint(channel, label));
       } else if (decision.action === "retry-refused") {
         console.error(`SKIP ${label}: --retry recusado — já está ${decision.existing.status}; refazer duplicaria. --retry só refaz failed/send_unknown.`);
       }

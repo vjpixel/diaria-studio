@@ -31,6 +31,28 @@ export function parseRetryIdList(
   return { ok: true, ids: new Set(ids) };
 }
 
+/**
+ * #13089 — ids pedidos em `--retry` que esta execução não despacha (o `um` num
+ * dia sem o post USE MELHOR, o `d3` numa edição de 2 destaques, o `facebook`
+ * sem página habilitada no semanal). Sem isso o laço pula o id calado e a
+ * execução sai 0: o editor lê "feito" sem que nada tenha sido enviado. Puro;
+ * `null` (sem `--retry`) = lista vazia.
+ */
+export function retryIdsOutsideDispatch(retryIds: ReadonlySet<string> | null, dispatchIds: readonly string[]): string[] {
+  if (!retryIds) return [];
+  const present = new Set(dispatchIds);
+  return [...retryIds].filter((id) => !present.has(id));
+}
+
+/** #13089 — mensagem de erro para `retryIdsOutsideDispatch` não vazio. */
+export function formatRetryOutsideDispatch(platform: string, missing: readonly string[], dispatchIds: readonly string[]): string {
+  const available = dispatchIds.length > 0 ? dispatchIds.join(", ") : "nenhum";
+  return (
+    `ERRO ${platform}: --retry pediu ${missing.join(", ")}, que esta execução não despacha (disponíveis: ${available}). ` +
+    `Nada foi enviado; corrija os ids do --retry e rode de novo (#13089).`
+  );
+}
+
 export type ResumeRetryDecision =
   | { action: "dispatch" }
   /** Retomada normal: o id já tem entrada que não se refaz. */
