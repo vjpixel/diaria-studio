@@ -60,9 +60,16 @@ export function factCheckItems(plans: SequencePlan[], resolved: Partial<Record<B
   return [...byId.values()];
 }
 
-/** Hash do que foi checado: texto e fala de cada item (o tempo no bruto não muda o fato). */
-export function factCheckItemsSha256(items: FactCheckItem[]): string {
-  return createHash("sha256").update(JSON.stringify(items.map((i) => [i.id, i.text, i.heard ?? null]))).digest("hex");
+/**
+ * Hash do que foi checado: texto e fala de cada item (o tempo no bruto não muda
+ * o fato) e, desde #13132, as fontes do roteiro (`url` + `sustenta`): trocar
+ * uma fonte depois do fact-check também o torna velho. Sem fontes, o hash é o
+ * de antes, para um `fact-check.json` já gravado continuar valendo.
+ */
+export function factCheckItemsSha256(items: FactCheckItem[], fontes: ReadonlyArray<{ fala: string; url: string; sustenta: string }> = []): string {
+  const base = items.map((i) => [i.id, i.text, i.heard ?? null]);
+  const payload = fontes.length ? { items: base, fontes: fontes.map((f) => [f.fala, f.url, f.sustenta]) } : base;
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 export const VIDEO_FACT_VERDICTS = ["SUSTAINED", "INFERRED", "DIVERGENT", "NOT_FOUND_IN_SOURCE", "SOURCE_UNREACHABLE"] as const;
@@ -133,14 +140,18 @@ export function factCheckProposal(claim: VideoFactClaim, item: FactCheckItem): s
  * só com o roteiro mudado (`stale`); sem mudança, claim não localizado segue em
  * aberto como "não localizado, conferir" (#11994).
  */
-export function factCheckSection(fc: VideoFactCheck | null, items: FactCheckItem[]): { lines: string[]; graves: number; stale: boolean } {
+export function factCheckSection(
+  fc: VideoFactCheck | null,
+  items: FactCheckItem[],
+  fontes: ReadonlyArray<{ fala: string; url: string; sustenta: string }> = [],
+): { lines: string[]; graves: number; stale: boolean } {
   const lines = ["## Fact-check da fala (#11956)", ""];
   if (!fc) {
     lines.push("**[aviso] fact-check não rodou:** rodar o Passo 3a (`fact-check-input` + agent `fact-checker` em `mode: \"video\"`) antes de aprovar o Gate 2.", "");
     return { lines, graves: 0, stale: false };
   }
-  const stale = fc.items_sha256 !== factCheckItemsSha256(items);
-  if (stale) lines.push("**[aviso] o roteiro mudou depois do fact-check:** os achados abaixo são da versão anterior; frases novas não foram checadas (rodar o Passo 3a de novo).", "");
+  const stale = fc.items_sha256 !== factCheckItemsSha256(items, fontes);
+  if (stale) lines.push("**[aviso] o roteiro mudou depois do fact-check:** os achados abaixo são da versão anterior; frases ou fontes novas não foram checadas (rodar o Passo 3a de novo).", "");
   const graves = fc.claims.filter((c) => GRAVE_VERDICTS.has(c.verdict));
   const unreachable = fc.claims.filter((c) => c.verdict === "SOURCE_UNREACHABLE");
   const ok = fc.claims.length - graves.length - unreachable.length;

@@ -30,6 +30,7 @@ import {
   ROTEIRO_DURACAO_DEFAULT,
 } from "../scripts/lib/diaria/roteiro-videos.ts";
 import { artifactUrlDe, renderRoteiroPagina } from "../scripts/lib/diaria/roteiro-pagina.ts";
+import { factCheckItemsSha256, factCheckSection, type FactCheckItem } from "../scripts/lib/diaria/video-fact-check.ts";
 import { main as renderMain } from "../scripts/render-roteiro-video.ts";
 import { main as blocosMain } from "../scripts/video-roteiro-blocos.ts";
 
@@ -345,6 +346,22 @@ describe("#13120: a página gerada do JSON", () => {
     const r = base();
     r.falas[0].texto = "A <b>IA</b> & cia.";
     assert.match(renderRoteiroPagina(r), /A &lt;b&gt;IA&lt;\/b&gt; &amp; cia\./);
+  });
+});
+
+describe("#13132 (review): trocar uma fonte do roteiro torna o fact-check da fala velho", () => {
+  const items = [{ id: "comentario.0", block: "comentario", index: 0, text: "O Hydrogen marcou 51.", start: 0, end: 2, versions: ["youtube"] }] as unknown as FactCheckItem[];
+  const fonte = { fala: "H6", url: "https://artificialanalysis.ai/models", sustenta: "Hydrogen 51" };
+  it("sem fontes, o hash é o de antes (fact-check.json já gravado continua valendo)", () => {
+    assert.equal(factCheckItemsSha256(items, []), factCheckItemsSha256(items));
+  });
+  it("fonte nova, trocada ou removida muda o hash, e a seção avisa que o fact-check está velho", () => {
+    const comFonte = factCheckItemsSha256(items, [fonte]);
+    assert.notEqual(comFonte, factCheckItemsSha256(items));
+    assert.notEqual(comFonte, factCheckItemsSha256(items, [{ ...fonte, sustenta: "Hydrogen 54" }]));
+    const fc = { mode: "video" as const, edition: "261116", items_sha256: comFonte, claims: [] };
+    assert.equal(factCheckSection(fc, items, [fonte]).stale, false);
+    assert.equal(factCheckSection(fc, items, []).stale, true);
   });
 });
 

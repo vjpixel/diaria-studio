@@ -2465,7 +2465,9 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   if (existsSync(fcPath)) {
     try { fc = parseVideoFactCheck(readJson<unknown>(fcPath, VIDEO_FACT_CHECK_FILE)); } catch (e) { fcError = (e as Error).message; }
   }
-  const section = factCheckSection(fc, factCheckItems(ps, resolved));
+  // #13132: as fontes do roteiro entram no hash; trocar uma depois do fact-check o torna velho.
+  const fontesRoteiro = readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`)).fontes;
+  const section = factCheckSection(fc, factCheckItems(ps, resolved), fontesRoteiro);
   if (fcError) {
     // Ilegível não é "não rodou": o Doc diz o motivo, e o roteiro sai assim mesmo.
     section.lines.splice(2, 1, `**[aviso] fact-check ilegível (${mdCell(fcError)}):** rodar o agent de novo antes de aprovar o Gate 2.`);
@@ -2552,7 +2554,7 @@ function cmdFactCheckInput(ctx: Ctx): number {
   const input = {
     mode: "video" as const,
     edition: ctx.edition,
-    items_sha256: factCheckItemsSha256(items),
+    items_sha256: factCheckItemsSha256(items, roteiro.fontes),
     items,
     sources_dir: sourcesDir,
     // #13132: fontes de fora do D1 declaradas por fala no roteiro-falas.json
