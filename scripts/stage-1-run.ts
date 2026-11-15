@@ -183,6 +183,7 @@ import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curatio
 import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
 import { formatHighlightSameFactNotes } from "./lib/same-fact-check.ts"; // #9595
 import { formatStudySourceNotes } from "./lib/study-source-recurrence.ts"; // #11763
+import { formatSecondaryPossibleRepeatNotes } from "./lib/secondary-theme-repeat.ts"; // #13143
 
 // Mesma disciplina do #4983 — carregar .env ANTES de qualquer outro código.
 loadProjectEnv();
@@ -785,7 +786,9 @@ function internalPath(editionDir: string, file: string): string {
  * #9595: avisos de MESMO FATO nos destaques aprovados, lidos de
  * `01-highlight-theme-check.json` × `01-approved.json`. Fail-soft: arquivo
  * ausente/ilegível → nenhuma linha (o check em si já é fail-soft). Desde
- * #11763 inclui também `study_source_warnings` (mesmo estudo já publicado).
+ * #11763 inclui também `study_source_warnings` (mesmo estudo já publicado);
+ * desde #13143, os `secondary_warnings` com `possible_repeat` (item do pool
+ * com o tema de um item publicado nas últimas edições).
  */
 function highlightSameFactNotes(deps: Stage1RunDeps, editionDir: string, approvedPath: string): string[] {
   const themePath = resolve(deps.rootDir, internalPath(editionDir, "01-highlight-theme-check.json"));
@@ -795,7 +798,12 @@ function highlightSameFactNotes(deps: Stage1RunDeps, editionDir: string, approve
     const themeCheck = JSON.parse(deps.readFile(themePath));
     const approved = JSON.parse(deps.readFile(approvedAbs));
     // #11763: + cobertura secundária de estudo/relatório já publicado (destaque ou pool).
-    return [...formatHighlightSameFactNotes(themeCheck, approved), ...formatStudySourceNotes(themeCheck, approved)];
+    return [
+      ...formatHighlightSameFactNotes(themeCheck, approved),
+      ...formatStudySourceNotes(themeCheck, approved),
+      // #13143: secundário que repete o tema de item publicado (warning-only).
+      ...formatSecondaryPossibleRepeatNotes(themeCheck, approved),
+    ];
   } catch (err) {
     console.error(`⚠️  #9595: aviso de MESMO FATO nos destaques não lido (${(err as Error).message}) — fail-soft.`);
     return [];
