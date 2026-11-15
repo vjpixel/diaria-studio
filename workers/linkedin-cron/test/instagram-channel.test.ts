@@ -186,7 +186,7 @@ describe("#3817 backward-compat: entry sem `channel` continua indo pro webhook M
         // instagram presente mas não deve ser usado — entry não pediu esse canal
         instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
       });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.equal(fetchCalls.length, 1);
       assert.equal(fetchCalls[0], "https://make.test/diaria");
     } finally {

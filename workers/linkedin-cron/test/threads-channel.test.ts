@@ -158,7 +158,7 @@ describe("#3944 Parte B backward-compat: entry sem `channel` continua indo pro w
         // threads presente mas não deve ser usado — entry não pediu esse canal
         threads: { userId: "acc", accessToken: "tok", apiVersion: "v1.0" },
       });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.equal(fetchCalls.length, 1);
       assert.equal(fetchCalls[0], "https://make.test/diaria");
     } finally {

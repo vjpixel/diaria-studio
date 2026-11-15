@@ -1,3 +1,4 @@
+import { verifyDispatchRecord, type DispatchRecord } from "./dispatch-record";
 /**
  * diaria-linkedin-cron — Cloudflare Worker (#TBD)
  *
@@ -1799,6 +1800,30 @@ export default {
     if (path === "/health" && request.method === "GET") {
       return handleHealth(env);
     }
+    if (path === "/fired" && request.method === "GET") {
+      if (!isAuthorized(request, env)) return json({ error: "unauthorized" }, 401);
+      const key = url.searchParams.get("key");
+      const edition = url.searchParams.get("edition");
+      if (!key && !/^\d{6}$/.test(edition ?? "")) return json({ error: "key or edition=AAMMDD required" }, 400);
+      if (url.searchParams.get("verify") === "true" && !key) return json({ error: "verification requires key" }, 400);
+      const items: DispatchRecord[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = key ? null : await env.LINKEDIN_QUEUE.list({ prefix: "fired:", cursor });
+        for (const name of key ? [`fired:${key}`] : page!.keys.map(k => k.name)) {
+          const raw = await env.LINKEDIN_QUEUE.get(name);
+          if (!raw) continue;
+          const record = JSON.parse(raw) as DispatchRecord;
+          // Edition is the scheduled calendar date in Brasilia, like the social slots.
+          const date = new Date(Date.parse(record.scheduled_at) - 3 * 3600000).toISOString().slice(2, 10).replace(/-/g, "");
+          if (!edition || date === edition) items.push(record);
+        }
+        cursor = page && !page.list_complete ? page.cursor : undefined;
+      } while (cursor);
+      const verification = url.searchParams.get("verify") === "true" && items[0]
+        ? await verifyDispatchRecord(items[0], await withRefreshedThreadsToken(env)) : undefined;
+      return json({ items, ...(verification && { verification }) });
+    }
     if (path === "/list" && request.method === "GET") {
       return handleList(request, env);
     }
@@ -1854,6 +1879,7 @@ export default {
           "GET /health",
           "GET /list (auth: X-Diaria-Token)",
           "GET /instagram/comment-scope (auth: X-Diaria-Token) — token do Worker pode comentar? (#11750)",
+          "GET /fired?edition=AAMMDD (auth: X-Diaria-Token)",
           "GET /dlq (auth: X-Diaria-Token)",
           "DELETE /dlq/:key (auth: X-Diaria-Token)",
         ],

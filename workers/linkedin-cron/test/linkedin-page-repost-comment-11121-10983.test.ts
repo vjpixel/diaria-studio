@@ -68,7 +68,7 @@ describe("#11121 repost da página", () => {
   it("POST /rest/posts com reshareContext.parent e author = página → fired", async () => {
     const calls = installFetch(() => new Response("", { status: 201 }));
     const out = await fireQueueEntry(entry({ action: "repost", target_post_urn: PROFILE_POST }), config());
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://api.linkedin.com/rest/posts");
     assert.equal(calls[0].method, "POST");
@@ -112,7 +112,7 @@ describe("#10983 comentário como página", () => {
       entry({ action: "comment", destaque: "d1", parent_destaque: "d1", text: "Assista no YouTube: https://youtu.be/abcdefghijk", target_post_urn: "urn:li:share:42" }),
       config(),
     );
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, `https://api.linkedin.com/rest/socialActions/${encodeURIComponent("urn:li:share:42")}/comments`);
     const body = JSON.parse(calls[0].body);
@@ -141,7 +141,7 @@ describe("#10983 comentário como página", () => {
       entry({ action: "comment", destaque: "d1", parent_destaque: "d1", text: "link", parent_scheduled_at: D1_AT }),
       config(),
     );
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(calls[0].method, "GET");
     assert.match(calls[0].url, /q=author/);
     assert.ok(calls[0].url.includes(`author=${encodeURIComponent(CREDS.authorUrn)}`));
@@ -208,7 +208,7 @@ describe("#10983 comentário como página", () => {
       entry({ action: "comment", destaque: "d1", text: "link", parent_scheduled_at: D1_AT, parent_text_hint: "O Brasil (enfim) ganhou uma lei de IA." }),
       config(),
     );
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(calls[1].url, `https://api.linkedin.com/rest/socialActions/${encodeURIComponent("urn:li:share:961")}/comments`);
   });
 

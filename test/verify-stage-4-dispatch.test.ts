@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  fetchVerifiedDispatch,
   reconcileFb,
   reconcileLinkedin,
   findScheduledMatch,
@@ -416,5 +417,28 @@ describe("#1183 silent-fail quando schedule field omitido", () => {
       const r = reconcileLinkedin(entry, queue, PAST_NOW);
       assert.equal(r.verified, true);
     });
+  });
+});
+
+
+describe("#13099 verification of dispatched IDs", () => {
+  it("asks authenticated Worker to check platform ID; rejects history without confirmation", async () => {
+    const original = globalThis.fetch;
+    try {
+      for (const verified of [true, false, undefined]) {
+        globalThis.fetch = (async (url: URL, init: RequestInit) => {
+          assert.equal(url.pathname, "/fired");
+          assert.equal(url.searchParams.get("key"), "queue:123");
+          assert.equal(url.searchParams.get("verify"), "true");
+          assert.equal((init.headers as Record<string, string>)["X-Diaria-Token"], "secret");
+          return Response.json({ items: [{ post_id: "123" }], verification: { verified } });
+        }) as typeof fetch;
+        assert.equal((await fetchVerifiedDispatch("https://worker.test", "secret", "queue:123")) !== null, verified === true);
+      }
+      globalThis.fetch = (async () => new Response("not found", { status: 404 })) as typeof fetch;
+      assert.equal(await fetchVerifiedDispatch("https://worker.test", "secret", "queue:123"), null);
+      globalThis.fetch = (async () => { throw new Error("timeout"); }) as typeof fetch;
+      assert.equal(await fetchVerifiedDispatch("https://worker.test", "secret", "queue:123"), null);
+    } finally { globalThis.fetch = original; }
   });
 });

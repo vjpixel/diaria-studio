@@ -1,3 +1,4 @@
+import { recordDispatch } from "./dispatch-record";
 import type { Env, QueueEntry, ReelsContainerRef } from "./index";
 import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS, sameQueueContent } from "./index";
 import {
@@ -202,6 +203,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       entry = rest;
     }
     const outcome = await fireQueueEntry(entry, config);
+    await recordDispatch(env.LINKEDIN_QUEUE, k.name, entry, outcome);
 
     if (outcome.status === "send_unknown") {
       // #11106 — resposta ambígua do publish: a Meta pode ter publicado. Antes

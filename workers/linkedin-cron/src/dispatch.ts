@@ -75,7 +75,9 @@ export interface FireConfig {
   reelsPollDeadlineMs?: number;
 }
 
-export type FireOutcome =
+export type DispatchMetadata = { postId?: string; containerId?: string; httpStatus?: number };
+
+export type FireOutcome = (
   /** `documentFallback` (#12372 item 2): o post de DOCUMENTO falhou e o
    *  carrossel de imagens de fallback foi publicado no lugar — o caller
    *  (cron e alarm) manda o alerta, com o motivo. Ausente = disparo normal. */
@@ -97,7 +99,7 @@ export type FireOutcome =
    *  release do claim do alarm (que deixaria o cron refazer). Os dois caminhos
    *  marcam o DO como disparado (o alarm não refaz) e a entry vai pra DLQ com
    *  `last_error` começando por `send_unknown:` — o editor confere o perfil. */
-  | { status: "send_unknown"; reason: string };
+  | { status: "send_unknown"; reason: string }) & DispatchMetadata;
 
 /** #11106 — prefixo do `last_error` na DLQ para envio ambíguo. */
 export const SEND_UNKNOWN_PREFIX = "send_unknown:";
@@ -192,9 +194,9 @@ async function fireLinkedIn(entry: QueueEntry, webhookUrl: string, apiKey?: stri
       }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (res.ok) return { status: "fired" };
+    if (res.ok) return { status: "fired", httpStatus: res.status, postId: res.headers.get("x-restli-id") ?? undefined };
     const body = await res.text();
-    return { status: "failed", reason: `Make webhook HTTP ${res.status}: ${body.slice(0, 200)}` };
+    return { status: "failed", httpStatus: res.status, reason: `Make webhook HTTP ${res.status}: ${body.slice(0, 200)}` };
   } catch (e) {
     const err = e as Error;
     if (err.name === "AbortError" || err.name === "TimeoutError") {
@@ -382,7 +384,7 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
       }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (postRes.status === 201 || postRes.ok) return { status: "fired" };
+    if (postRes.status === 201 || postRes.ok) return { status: "fired", httpStatus: postRes.status, postId: postRes.headers.get("x-restli-id") ?? undefined };
     const body = await postRes.text();
     const why = `POST /rest/posts falhou: HTTP ${postRes.status}: ${body.slice(0, 200)} (images=${imageUrns.join(",")})`;
     // #12372 item 1 — 4xx é rejeição definitiva (nada publicado): dlq. 5xx é
@@ -572,7 +574,7 @@ async function fireLinkedInDocument(
     const outcome = await fireLinkedInCarousel(fallbackImageUrls, caption, creds);
     // #12372 item 2 — o fallback publicou, mas o documento não: o caller
     // alarma (`documentFallback`), senão um motivo recorrente fica invisível.
-    if (outcome.status === "fired") return { status: "fired", documentFallback: `LinkedIn documento: ${why}` };
+    if (outcome.status === "fired") return { ...outcome, documentFallback: `LinkedIn documento: ${why}` };
     // #12372 item 1 — POST do carrossel ambíguo: preservar `send_unknown`
     // (virar `dlq` aqui deixaria o alarm liberar o claim e o cron refazer).
     if (outcome.status === "send_unknown") {
@@ -619,7 +621,7 @@ async function fireLinkedInDocument(
       reason: `${SEND_UNKNOWN_PREFIX} LinkedIn documento: POST /rest/posts fetch ${fetchFailure(e as Error)} (document=${documentUrn}) — o post pode ter saído; confira a página antes de republicar`,
     };
   }
-  if (postRes.ok) return { status: "fired" };
+  if (postRes.ok) return { status: "fired", httpStatus: postRes.status, postId: postRes.headers.get("x-restli-id") ?? undefined };
   const body = await postRes.text();
   const why = `POST /rest/posts falhou: HTTP ${postRes.status}: ${body.slice(0, 200)} (document=${documentUrn})`;
   if (postRes.status >= 400 && postRes.status < 500) return fallback(why);
@@ -647,7 +649,7 @@ function linkedInRestHeaders(creds: LinkedInCreds): Record<string, string> {
  * (#11106, mesmo critério de `fireLinkedInCarousel`, #12372).
  */
 async function classifyLinkedInCreate(res: Response, label: string): Promise<FireOutcome> {
-  if (res.ok) return { status: "fired" };
+  if (res.ok) return { status: "fired", httpStatus: res.status, postId: res.headers.get("x-restli-id") ?? undefined };
   const body = await res.text();
   const why = `${label}: HTTP ${res.status}: ${body.slice(0, 200)}`;
   if (res.status >= 400 && res.status < 500) return { status: "dlq", reason: why };
@@ -1074,22 +1076,22 @@ async function fireInstagramSingle(
       data = JSON.parse(text);
     } catch {
       return {
-        status: "failed",
+        status: "failed", containerId, httpStatus: res.status,
         reason: `Instagram /media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
       };
     }
     if (!res.ok || data.error) {
       return {
-        status: "failed",
+        status: "failed", containerId, httpStatus: res.status,
         reason: `Instagram /media_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
       };
     }
     if (!data.id) {
-      return { status: "failed", reason: `Instagram /media_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
+      return { status: "failed", containerId, httpStatus: res.status, reason: `Instagram /media_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
     }
     // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
     if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
-    return { status: "fired" };
+    return { status: "fired", postId: data.id, containerId, httpStatus: res.status };
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
@@ -1456,7 +1458,7 @@ async function fireInstagramReels(
       `[instagram-reels] Reels com a mesma legenda já publicado (media_id=${prior.mediaId}) — ` +
         `tratado como disparado, sem criar container novo (#10877).`,
     );
-    return { status: "fired" };
+    return { status: "fired", postId: prior.mediaId };
   }
   if (prior.kind === "unverifiable") {
     if (prior.transient) {
@@ -1551,7 +1553,7 @@ async function fireInstagramReels(
   }
 
   const publishFailure = await publishReelsContainer(base, creds, containerId);
-  if (publishFailure === null) return { status: "fired" };
+  if (typeof publishFailure !== "string") return publishFailure;
   // #10877 — falha no media_publish não prova que o Reels não saiu (timeout com
   // a Meta publicando do outro lado). Container PUBLISHED = sucesso, nunca retry.
   if (await containerWasPublished(base, containerId, creds.accessToken)) {
@@ -1559,7 +1561,7 @@ async function fireInstagramReels(
       `[instagram-reels] media_publish falhou (${publishFailure}) mas o container ${containerId} ` +
         `está PUBLISHED — tratado como disparado (#10877).`,
     );
-    return { status: "fired" };
+    return { status: "fired", containerId };
   }
   // #10922 — o container FINISHED segue valendo: a próxima volta só publica.
   return fail(`Instagram Reels /media_publish ${publishFailure} (container_id=${containerId})`);
@@ -1598,9 +1600,9 @@ export function pickReelsContainer(a: unknown, b: unknown, nowMs: number): Reels
   return Date.parse(rb.created_at) > Date.parse(ra.created_at) ? rb : ra;
 }
 
-/** POST /media_publish do container de Reels. `null` = publicado (com id);
+/** POST /media_publish do container de Reels. FireOutcome = publicado (com id);
  * string = o motivo da falha, sem o container_id (o caller acrescenta). */
-async function publishReelsContainer(base: string, creds: InstagramCreds, containerId: string): Promise<string | null> {
+async function publishReelsContainer(base: string, creds: InstagramCreds, containerId: string): Promise<string | FireOutcome> {
   try {
     const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
     const res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
@@ -1617,7 +1619,7 @@ async function publishReelsContainer(base: string, creds: InstagramCreds, contai
     }
     if (!res.ok || data.error) return `HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`;
     if (!data.id) return `sem id: ${text.slice(0, 200)}`;
-    return null;
+    return { status: "fired", postId: data.id, containerId, httpStatus: res.status };
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
@@ -1806,25 +1808,25 @@ async function fireInstagramCarousel(
       data = JSON.parse(text);
     } catch {
       return {
-        status: "dlq",
+        status: "dlq", containerId: parentId, httpStatus: res.status,
         reason: `Instagram carrossel: media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (parent_id=${parentId})`,
       };
     }
     if (!res.ok || data.error) {
       return {
-        status: "dlq",
+        status: "dlq", containerId: parentId, httpStatus: res.status,
         reason: `Instagram carrossel: media_publish falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (parent_id=${parentId})`,
       };
     }
     if (!data.id) {
       return {
-        status: "dlq",
+        status: "dlq", containerId: parentId, httpStatus: res.status,
         reason: `Instagram carrossel: media_publish sem id: ${text.slice(0, 200)} (parent_id=${parentId})`,
       };
     }
     // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
     if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
-    return { status: "fired" };
+    return { status: "fired", postId: data.id, containerId: parentId, httpStatus: res.status };
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
@@ -1972,7 +1974,7 @@ async function publishThreadsCreation(
     return serverError ? ambiguous(reason) : { status: definiteFailure, reason };
   }
   if (!data.id) return ambiguous(`${label} sem id: ${text.slice(0, 200)} ${idSuffix}`);
-  return { status: "fired" };
+  return { status: "fired", postId: data.id, httpStatus: res.status };
 }
 
 /** Nº máximo de tentativas de poll do status de um container Threads antes

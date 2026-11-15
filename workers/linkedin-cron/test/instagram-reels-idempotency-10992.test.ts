@@ -367,7 +367,7 @@ describe("#10992 item 3 — limite de taxa da Graph é transitório", () => {
   it("recusa definitiva (403 code 10, sem permissão) segue publicando como antes", async () => {
     const graph = mockGraph(() => new Response(JSON.stringify({ error: { message: "(#10) permission", code: 10 } }), { status: 403 }));
     const out = await fireQueueEntry(entry, config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(graph.publishes(), 1);
   });
 

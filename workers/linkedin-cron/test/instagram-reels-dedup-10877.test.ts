@@ -108,7 +108,7 @@ describe("#10877 Reels: media_publish estoura o tempo mas a Meta publicou", () =
   it("container PUBLISHED depois do timeout → fired na mesma volta (sem retry)", async () => {
     const st = mockGraph({ publishTimesOutButLands: true, containerAfterPublish: "PUBLISHED" });
     const out = await fireQueueEntry(reelsEntry(), config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(st.publishCalls, 1);
     assert.equal(st.containersCreated, 1);
   });
@@ -122,7 +122,7 @@ describe("#10877 Reels: media_publish estoura o tempo mas a Meta publicou", () =
 
     // Retry da fila (mesma entry, retry_count incrementado pelo cron).
     const second = await fireQueueEntry(reelsEntry({ retry_count: 1 }), config);
-    assert.deepEqual(second, { status: "fired" }, "2ª volta: Reels já publicado conta como disparado");
+    assert.equal(second.status, "fired", "2ª volta: Reels já publicado conta como disparado");
     assert.equal(st.containersCreated, 1, "nenhum container novo no retry");
     assert.equal(st.publishCalls, 1, "um único media_publish — sem Reels em dobro");
   });
@@ -132,7 +132,7 @@ describe("#10877 Reels: media_publish estoura o tempo mas a Meta publicou", () =
       media: [{ id: "reel-old", caption: CAPTION, timestamp: new Date(Date.now() - 30_000).toISOString(), media_product_type: "REELS" }],
     });
     const out = await fireQueueEntry(reelsEntry({ retry_count: 0 }), config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(st.containersCreated, 0);
     assert.equal(st.publishCalls, 0);
   });
@@ -171,7 +171,7 @@ describe("#10877 Reels: busca de dedup antes de criar o container", () => {
       media: [{ id: "outro", caption: "outro post", timestamp: new Date().toISOString(), media_product_type: "REELS" }],
     });
     const out = await fireQueueEntry(reelsEntry(), config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(st.containersCreated, 1);
     assert.equal(st.publishCalls, 1);
   });
@@ -180,7 +180,7 @@ describe("#10877 Reels: busca de dedup antes de criar o container", () => {
     const old = new Date(Date.now() - 60_000 - REELS_DEDUP_LOOKBACK_MS - 3_600_000).toISOString();
     const st = mockGraph({ media: [{ id: "antigo", caption: CAPTION, timestamp: old, media_product_type: "REELS" }] });
     const out = await fireQueueEntry(reelsEntry(), config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(st.publishCalls, 1);
   });
 
@@ -211,7 +211,7 @@ describe("#10877 Reels: busca de dedup antes de criar o container", () => {
       mediaListResponse: () => new Response(JSON.stringify({ error: { message: "(#10) permission" } }), { status: 403 }),
     });
     const out = await fireQueueEntry(reelsEntry(), config);
-    assert.deepEqual(out, { status: "fired" });
+    assert.equal(out.status, "fired");
     assert.equal(st.publishCalls, 1);
   });
 
