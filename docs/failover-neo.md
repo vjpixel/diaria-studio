@@ -139,8 +139,10 @@ npx tsx scripts/failover/neo-takeover.ts --arm             # com o sinal da #129
 
 O `--arm` para e remove as `Diaria-Failover-*` antigas, registra as atuais e
 então grava o lease `infra:scheduler-owner` para o Neo (6 h, renovado pelas
-próprias tarefas). Lease que não confirma desfaz o registro das tarefas (e
-apaga o lease, salvo se a releitura mostrar o do `300`).
+próprias tarefas). Antes do lease, relê o Task Scheduler: se as
+`Diaria-Failover-*` registradas não batem com o plano, desfaz o registro e sai
+1 sem gravar o lease (#12993). Lease que não confirma desfaz o registro das
+tarefas (e apaga o lease, salvo se a releitura mostrar o do `300`).
 
 ## 3. Conferir
 
@@ -188,7 +190,9 @@ do Neo). Se alguma ainda estiver rodando depois da espera, usa
 interrompido pode ter publicado sem registrar no store, ou seguir vivo como
 processo filho. Nesse caso, conferir o canal antes de o `300` retomar
 (#12993). As tasks do `300` retomam na próxima
-execução. Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
+execução. Se a releitura ainda mostra `Diaria-Failover-*`, avisa e sai 1, mas
+libera o lease assim mesmo: sem o lease do Neo as que sobraram cedem ao `300`
+(remova-as no Agendador de Tarefas). Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
 quando o lease vale. Se o Neo morreu armado e não dá para rodar o `--disarm`
 nele, `--disarm --force` em outra máquina com o `.env` libera só o lease (sem
 `--force`, fora do Windows ele recusa: as tarefas do Neo seguiriam armadas);
@@ -243,3 +247,12 @@ task `critical` horária no `300` (ex.: `Diaria-Shorts-Instagram-Catchup`,
 `journalctl --user -u diaria-shorts-instagram-catchup.service`) mostra
 `[failover 300] ... lease ativo do neo ...; 300 cede`, e a mesma tarefa no Neo
 roda. `--disarm` devolve: a próxima execução no `300` volta a agir.
+
+O 1º ensaio (15/11/2026) achou o `--arm` dizendo "armado: 15 tarefas" com o
+lease do Neo gravado e nenhuma `Diaria-Failover-*` no Agendador: o script ia
+para o `powershell.exe -Command -` pelo stdin, e o PowerShell 5.1 descarta em
+silêncio tudo depois do 1º bloco multi-linha e sai 0 (o `--disarm` também não
+removia nada). Desde então o script roda de um `.ps1` temporário com BOM
+(`-File`, `scripts/lib/failover/powershell-file.ts`) e o `--arm`/`--disarm`
+releem as tarefas antes de dar o resultado (#12993). No ensaio, confira o
+`--status` depois do `--arm`: o número de tarefas tem que bater com o plano.

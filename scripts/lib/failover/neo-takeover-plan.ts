@@ -241,7 +241,23 @@ export function parseStatusOutput(stdout: string): ArmedTask[] {
     .filter((x) => x.name.startsWith(FAILOVER_TASK_PREFIX));
 }
 
-export type ArmPrecondition = { ok: true; reason: string } | { ok: false; reason: string };
+export type ArmedSetCheck = { ok: true } | { ok: false; missing: string[]; extra: string[] };
+
+/**
+ * Confere se as `Diaria-Failover-*` que o Task Scheduler lista batem com as
+ * que o plano registraria (#12993). O PowerShell pode sair 0 sem ter rodado o
+ * script inteiro (ver `powershell-file.ts`): o status do processo não prova
+ * o registro, só a releitura prova.
+ */
+export function checkArmedSet(expected: readonly string[], armed: readonly ArmedTask[]): ArmedSetCheck {
+  const want = new Set(expected);
+  const have = new Set(armed.map((t) => t.name));
+  const missing = [...want].filter((n) => !have.has(n)).sort();
+  const extra = [...have].filter((n) => !want.has(n)).sort();
+  return missing.length === 0 && extra.length === 0 ? { ok: true } : { ok: false, missing, extra };
+}
+
+export type ArmPrecondition ={ ok: true; reason: string } | { ok: false; reason: string };
 
 /**
  * `--arm` só passa com o sinal de queda da #12981 (`infra:300:down-since`)

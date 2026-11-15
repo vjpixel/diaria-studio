@@ -14,7 +14,9 @@
  *   npx tsx scripts/failover/neo-takeover.ts --disarm [--force] [--dry-run]
  *
  * `--arm`: exige o sinal `infra:300:down-since` (#12981) no KV ou `--force`.
- *   1. registra as `Diaria-Failover-*` (parando e removendo as antigas antes);
+ *   1. registra as `Diaria-Failover-*` (parando e removendo as antigas antes)
+ *      e relê o Task Scheduler: o conjunto registrado tem que bater com o
+ *      plano, senão rollback e exit 1 sem gravar o lease (#12993);
  *   2. grava o lease `infra:scheduler-owner` para o Neo e relê.
  *   Ordem de propósito: tarefa sem lease do Neo cede (o Neo é fail-closed),
  *   mas lease sem tarefa pararia o `300` à toa. Se o lease não confirmar, as
@@ -23,7 +25,9 @@
  * `--disarm`: desabilita as `Diaria-Failover-*`, espera a execução em curso
  *   terminar (até 10 min; `Stop-ScheduledTask` só como último recurso, com
  *   AVISO, #12993), remove as tarefas e depois libera o lease, só se ele for
- *   do Neo. O `300` retoma na próxima execução das tasks dele. Remoção que
+ *   do Neo. O `300` retoma na próxima execução das tasks dele. Se a releitura
+ *   ainda mostra `Diaria-Failover-*`, avisa e sai 1, mas libera o lease (sem
+ *   ele as do Neo cedem, #12993). Remoção que
  *   falha não libera o lease; lease ilegível sai 1. Fora do Windows não há
  *   tarefa a remover: liberar o lease ali deixaria as do Neo armadas agindo
  *   ao lado do `300`, então exige `--force` (#12993).
@@ -35,7 +39,6 @@
  * Exit: 0 ok; 1 falha (KV, PowerShell, pré-condição); 2 uso inválido.
  */
 
-import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findUnknownFlags, hasFlag, isMainModule } from "../lib/cli-args.ts";
@@ -47,12 +50,15 @@ import {
   buildArmPlan,
   buildDisarmScript,
   buildStatusScript,
+  checkArmedSet,
   decideArmPrecondition,
   isAgentWorktreePath,
   parseStatusOutput,
   planLeaseRelease,
   POWERSHELL_TIMEOUT_MS,
+  type ArmedTask,
 } from "../lib/failover/neo-takeover-plan.ts";
+import { runPowerShellFile, type PsResult } from "../lib/failover/powershell-file.ts";
 import {
   ARM_LEASE_BY,
   LEASE_TTL_MS,
@@ -83,7 +89,7 @@ export function parseMode(argv: string[]): { ok: true; mode: Mode; force: boolea
   return { ok: true, mode: modes[0], force, dryRun: hasFlag(argv, "dry-run") };
 }
 
-export type PsResult = { ok: boolean; stdout: string; stderr: string };
+export type { PsResult };
 export type TakeoverKv = Pick<KvOps, "get" | "put" | "delete">;
 export type OpenKvResult = { ok: true; kv: TakeoverKv } | { ok: false; reason: string };
 
@@ -101,14 +107,11 @@ export interface TakeoverDeps {
 }
 
 function runPowerShell(script: string): PsResult {
-  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"], {
-    input: script,
-    encoding: "utf8",
-    // Cobre a espera do disarm (#12993): até DRAIN_WAIT_SECONDS + STOP_WAIT_SECONDS.
-    timeout: POWERSHELL_TIMEOUT_MS,
-  });
-  if (r.error) return { ok: false, stdout: "", stderr: r.error.message };
-  return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  // `.ps1` temporário + `-File`, nunca `-Command -` com o script no stdin: o
+  // PowerShell 5.1 descarta em silêncio o que vem depois do 1º bloco
+  // multi-linha e sai 0 (#12993, 1º ensaio de 15/11/2026). Timeout cobre a
+  // espera do disarm: até DRAIN_WAIT_SECONDS + STOP_WAIT_SECONDS.
+  return runPowerShellFile(script, POWERSHELL_TIMEOUT_MS);
 }
 
 function openKv(): OpenKvResult {
@@ -139,15 +142,27 @@ function localOffsetMin(): number {
   return -new Date().getTimezoneOffset();
 }
 
+type ArmedList = { ok: true; armed: ArmedTask[] } | { ok: false; error: string };
+
+/** Lista as `Diaria-Failover-*` do Task Scheduler. Saída ilegível conta como falha. */
+function listArmed(d: TakeoverDeps): ArmedList {
+  const r = d.runPowerShell(buildStatusScript());
+  if (!r.ok) return { ok: false, error: r.stderr.trim() || "PowerShell saiu com erro" };
+  try {
+    return { ok: true, armed: parseStatusOutput(r.stdout) };
+  } catch (e) {
+    return { ok: false, error: `saída ilegível (${(e as Error).message})` };
+  }
+}
+
 async function status(d: TakeoverDeps): Promise<number> {
   const kv = d.openKv();
   if (d.platform === "win32") {
-    const r = d.runPowerShell(buildStatusScript());
-    if (!r.ok) d.err(`${P} não consegui listar as tarefas: ${r.stderr.trim()}`);
+    const l = listArmed(d);
+    if (!l.ok) d.err(`${P} não consegui listar as tarefas: ${l.error}`);
     else {
-      const armed = parseStatusOutput(r.stdout);
-      d.log(`${P} tarefas Diaria-Failover-* armadas: ${armed.length}`);
-      for (const t of armed) d.log(`  - ${t.name} (${t.state})`);
+      d.log(`${P} tarefas Diaria-Failover-* armadas: ${l.armed.length}`);
+      for (const t of l.armed) d.log(`  - ${t.name} (${t.state})`);
     }
   } else {
     d.log(`${P} não é Windows (${d.platform}): tarefas do Task Scheduler não consultadas`);
@@ -175,8 +190,14 @@ async function status(d: TakeoverDeps): Promise<number> {
 async function rollbackArm(d: TakeoverDeps, kv: TakeoverKv | null, deleteLease: boolean): Promise<void> {
   const r = d.runPowerShell(buildDisarmScript());
   relayStderr(d, r);
-  if (r.ok) d.err(`${P} rollback: tarefas Diaria-Failover-* removidas.`);
-  else d.err(`${P} rollback: remoção das tarefas FALHOU (${r.stderr.trim()}); rode --disarm à mão.`);
+  if (!r.ok) d.err(`${P} rollback: remoção das tarefas FALHOU (${r.stderr.trim()}); rode --disarm à mão.`);
+  else {
+    // #12993: o status 0 do PowerShell não prova a remoção; só a releitura prova.
+    const l = listArmed(d);
+    if (l.ok && l.armed.length === 0) d.err(`${P} rollback: tarefas Diaria-Failover-* removidas.`);
+    else if (l.ok) d.err(`${P} rollback: ainda há ${l.armed.length} Diaria-Failover-* registradas (${l.armed.map((t) => t.name).join(", ")}); rode --disarm à mão.`);
+    else d.err(`${P} rollback: remoção não confirmada (${l.error}); confira com --status e rode --disarm à mão se sobrar tarefa.`);
+  }
   if (deleteLease && kv) {
     try {
       await kv.delete(SCHEDULER_LEASE_KEY);
@@ -225,6 +246,23 @@ async function arm(d: TakeoverDeps, force: boolean, dryRun: boolean): Promise<nu
     await rollbackArm(d, kv.kv, false);
     return 1;
   }
+  // #12993: o PowerShell 5.1 já saiu 0 sem ter registrado nada (1º ensaio,
+  // 15/11/2026). Antes de gravar o lease, a releitura do Task Scheduler tem
+  // que mostrar exatamente as tarefas do plano.
+  const listed = listArmed(d);
+  const check = listed.ok ? checkArmedSet(plan.entries.map((e) => e.windowsName), listed.armed) : null;
+  if (!listed.ok || !check || !check.ok) {
+    const why = !listed.ok
+      ? `não consegui listar as tarefas (${listed.error})`
+      : check && !check.ok
+        ? `esperadas ${plan.entries.length}, registradas ${listed.armed.length}` +
+          (check.missing.length ? `; faltando: ${check.missing.join(", ")}` : "") +
+          (check.extra.length ? `; sobrando: ${check.extra.join(", ")}` : "")
+        : "conferência inconclusiva";
+    d.err(`${P} registro das tarefas não confirmado: ${why}. Lease NÃO gravado. Desfazendo (rollback).`);
+    await rollbackArm(d, kv.kv, false);
+    return 1;
+  }
 
   const lease = makeLease(STANDBY_HOST, d.now(), ARM_LEASE_BY);
   try {
@@ -268,6 +306,7 @@ function relayStderr(d: TakeoverDeps, r: PsResult): void {
 }
 
 async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise<number> {
+  let unverified: string | null = null;
   const kv = d.openKv();
   const read = kv.ok ? await readLease(kv.kv) : ({ kind: "error", error: kv.reason } as const);
   const release = planLeaseRelease(read);
@@ -282,7 +321,19 @@ async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise
       d.err(`${P} remoção das tarefas falhou: ${r.stderr.trim()}. O lease NÃO foi liberado.`);
       return 1;
     }
-    d.log(`${P} tarefas Diaria-Failover-* paradas e removidas.`);
+    // #12993: o status 0 não prova a remoção. Se sobrou tarefa, avisa e sai 1,
+    // mas segue liberando o lease: tarefa do Neo sem o lease do Neo não age
+    // (fail-closed), e o 300 volta a ser dono. Segurar o lease seria pior: as
+    // que sobraram continuariam agindo e o 300 seguiria parado.
+    const l = listArmed(d);
+    if (l.ok && l.armed.length === 0) d.log(`${P} tarefas Diaria-Failover-* paradas e removidas.`);
+    else {
+      unverified =
+        l.ok
+          ? `ainda há ${l.armed.length} Diaria-Failover-* registradas (${l.armed.map((t) => t.name).join(", ")})`
+          : `remoção não confirmada (${l.error})`;
+      d.err(`${P} AVISO: ${unverified}. O lease do Neo é liberado mesmo assim (sem ele as do Neo cedem ao 300); remova as que sobraram no Agendador de Tarefas.`);
+    }
   } else if (!force) {
     // #12993: aqui não há Task Scheduler para desarmar. Liberar o lease com as
     // tarefas do Neo ainda armadas deixaria o 300 e o Neo agindo juntos.
@@ -307,6 +358,10 @@ async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise
     }
   }
   d.log(`${P} lease: ${release.action === "delete" ? release.reason : `mantido (${release.reason})`}`);
+  if (unverified) {
+    d.err(`${P} --disarm incompleto: ${unverified}.`);
+    return 1;
+  }
   return 0;
 }
 
