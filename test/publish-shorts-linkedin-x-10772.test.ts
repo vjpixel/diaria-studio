@@ -368,7 +368,7 @@ describe("#10772 registro e estado", () => {
       calls++;
       return "https://pub.r2.dev/shorts/v.mp4";
     });
-    assert.deepEqual(ok, { destination: "x", ok: true, buffer: { text: "Texto", dueAt: "2026-10-22T15:00:00.000Z", videoUrl: "https://pub.r2.dev/shorts/v.mp4" } });
+    assert.deepEqual(ok, { destination: "x", ok: true, pending_buffer_create: true, buffer: { text: "Texto", dueAt: "2026-10-22T15:00:00.000Z", videoUrl: "https://pub.r2.dev/shorts/v.mp4" } });
     assert.equal(calls, 1);
     const sync = await prepareBufferItem(item, () => {
       throw new Error("R2 não configurado (SHORTS_R2_BUCKET)");

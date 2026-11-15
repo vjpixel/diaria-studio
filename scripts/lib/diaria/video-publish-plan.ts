@@ -126,6 +126,19 @@ export interface VideoPlanDestination {
   /** Texto/título que sai no destino; `null` = ainda não existe no plano (vínculo pelas `sources`). */
   content: Record<string, string | string[] | null> | null;
   owner: VideoPlanOwner;
+  /**
+   * #12279: substituição explícita de um post JÁ AGENDADO (V1 por V2): o ID do
+   * post antigo e o horário dele, que o novo envio preserva. Só existe no
+   * manifesto de substituição (`--replace-scheduled`); entra na projeção do
+   * destino, então a autorização vale para ESTE post antigo e nenhum outro.
+   */
+  replaces?: VideoPlanReplacement;
+}
+
+/** #12279: o post agendado que a substituição troca (ID na plataforma e horário preservado). */
+export interface VideoPlanReplacement {
+  id: string;
+  at: string;
 }
 
 export interface VideoPlanManifest {
@@ -215,7 +228,7 @@ export function destinationProjection(
     media: m.media,
     metadata: m.metadata,
     timezone: m.timezone,
-    destination: { id: d.id, at: d.at, effective_at: d.effective_at, content: d.content },
+    destination: { id: d.id, at: d.at, effective_at: d.effective_at, content: d.content, ...(d.replaces ? { replaces: d.replaces } : {}) },
     ...(d.content === null ? { sources: m.sources } : {}),
   };
 }
@@ -353,11 +366,50 @@ export function videoPlanManifestPath(editionDir: string, part: VideoPlanPart): 
   return join(editionDir, "_internal", `video-publish-plan.${part}.json`);
 }
 
-export function writeVideoPlanManifest(editionDir: string, m: VideoPlanManifest): string {
-  const path = videoPlanManifestPath(editionDir, m.part);
+/**
+ * #12279: manifesto da substituição do vertical agendado, num arquivo próprio
+ * (o plano normal da parte não é sobrescrito). Lido pelo `grant --replace-scheduled`.
+ */
+export function videoPlanReplacementManifestPath(editionDir: string): string {
+  return join(editionDir, "_internal", "video-publish-plan.vertical-replace.json");
+}
+
+export function writeVideoPlanManifest(editionDir: string, m: VideoPlanManifest, opts: { replacement?: boolean } = {}): string {
+  const path = opts.replacement ? videoPlanReplacementManifestPath(editionDir) : videoPlanManifestPath(editionDir, m.part);
   mkdirSync(join(editionDir, "_internal"), { recursive: true });
   writeFileAtomic(path, JSON.stringify(m, null, 2) + "\n");
   return path;
+}
+
+/** #12279: o manifesto é de substituição? (todo destino troca um post agendado). */
+export function isReplacementManifest(m: VideoPlanManifest): boolean {
+  return m.part === "vertical" && m.destinations.length > 0 && m.destinations.every((d) => d.replaces !== undefined);
+}
+
+/** #12279: algum destino do manifesto troca um post agendado? */
+export function hasReplacementDestination(m: VideoPlanManifest): boolean {
+  return m.destinations.some((d) => d.replaces !== undefined);
+}
+
+/**
+ * Pure (#12279): o manifesto de substituição a partir do manifesto do plano
+ * do vertical (já com o horário preservado em cada item): só os destinos
+ * trocados, cada um com o post antigo (`replaces`) e o dono = o comando da
+ * substituição. A mídia é a do vídeo novo (V2): o hash dos bytes entra na
+ * projeção de cada destino.
+ */
+export function buildReplacementManifest(
+  base: VideoPlanManifest,
+  targets: readonly { destination: string; old_id: string; at: string }[],
+  command: string,
+): VideoPlanManifest {
+  const destinations: VideoPlanDestination[] = [];
+  for (const t of targets) {
+    const d = base.destinations.find((x) => x.id === t.destination);
+    if (!d) throw new Error(`substituição: ${t.destination} fora do plano do vertical`);
+    destinations.push({ ...d, owner: { by: "agent", command }, replaces: { id: t.old_id, at: t.at } });
+  }
+  return { ...base, destinations };
 }
 
 /** Valida a forma mínima de um manifesto lido do disco (lança com o motivo). */
@@ -377,8 +429,8 @@ export function parseVideoPlanManifest(raw: string, where: string): VideoPlanMan
   return o as VideoPlanManifest;
 }
 
-export function readVideoPlanManifest(editionDir: string, part: VideoPlanPart): VideoPlanManifest | null {
-  const path = videoPlanManifestPath(editionDir, part);
+export function readVideoPlanManifest(editionDir: string, part: VideoPlanPart, opts: { replacement?: boolean } = {}): VideoPlanManifest | null {
+  const path = opts.replacement ? videoPlanReplacementManifestPath(editionDir) : videoPlanManifestPath(editionDir, part);
   if (!existsSync(path)) return null;
   return parseVideoPlanManifest(readFileSync(path, "utf8"), path);
 }

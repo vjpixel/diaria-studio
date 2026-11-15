@@ -38,6 +38,14 @@
  *    envio sem registro) que o editor conferiu na conta, com
  *    `--override-uncertain "{o que foi conferido}"`. O processo que consumiu a
  *    última autorização do destino precisa estar morto nesta máquina.
+ *    Exceção explícita (#12279, decisão do editor de 15/11/2026): o grant
+ *    `--replace-scheduled` do manifesto de SUBSTITUIÇÃO de um vertical já
+ *    agendado (V1 por V2). Ali o destino registrado é o post que o plano
+ *    aprovado troca (ID antigo, hash dos bytes novos e horário preservado no
+ *    manifesto); as demais barreiras (releitura gravada, processo morto,
+ *    mesma máquina) seguem valendo, e a autorização de substituição só serve
+ *    à rodada `publish-shorts --replace-scheduled --publish`, que a consome
+ *    antes da 1ª exclusão.
  *
  * ## Escopo por máquina
  *
@@ -65,13 +73,19 @@ import {
   commandMatchesOwner,
   destinationBindingSha256,
   diffManifests,
+  hasReplacementDestination,
   isAuthorizableDestination,
+  isReplacementManifest,
   planSha256,
   type VideoPlanAction,
   type VideoPlanManifest,
   type VideoPlanOwner,
   type VideoPlanPart,
+  type VideoPlanReplacement,
 } from "./video-publish-plan.ts";
+import { replacementGrantRefusal } from "./short-scheduled-replace.ts";
+import type { ShortPublishedEntry } from "./short-video.ts";
+import type { ShortSendingMark } from "./shorts-sending-marker.ts";
 
 export const AUTHORIZATION_STORE_SCHEMA = "diaria-video-publish-authorizations/v1";
 export const AUTHORIZATION_STORE_FILE = "_internal/video-publish-authorizations.json";
@@ -99,6 +113,12 @@ interface VideoPublishAuthorizationBase {
   granted_host: string;
   /** Destino acusado por estado incerto que o editor conferiu (`--override-uncertain`). */
   override_uncertain?: string;
+  /**
+   * #12279: autorização de SUBSTITUIÇÃO explícita (`grant --replace-scheduled`):
+   * o post agendado que ela troca. Só serve ao `publish-shorts --replace-scheduled`,
+   * e a rodada de substituição só consome autorização com este campo.
+   */
+  replacement?: VideoPlanReplacement;
 }
 
 export interface ActiveVideoPublishAuthorization extends VideoPublishAuthorizationBase {
@@ -279,6 +299,19 @@ export interface GrantInput {
   isPidAlive?: (pid: number) => boolean;
   /** O editor conferiu na conta o destino acusado só por estado incerto (texto do que foi conferido). */
   overrideUncertain?: string | null;
+  /**
+   * #12279: grant de SUBSTITUIÇÃO explícita (`--replace-scheduled`). Só aceita o
+   * manifesto de substituição, e é a única exceção à recusa de nova autorização
+   * para destino que a releitura acusou como saído: o post acusado é o agendado
+   * que o plano aprovado troca (ID e horário no plano).
+   */
+  replacement?: boolean;
+  /**
+   * #12279: o registro do vertical lido SOB o lock do registro de autorização
+   * (obrigatório com `replacement`): cada post antigo do plano precisa ser o
+   * registrado, agendado, no mesmo horário, com folga e sem envio em aberto.
+   */
+  replacementRegistry?: { entries: readonly ShortPublishedEntry[]; openMarks: readonly ShortSendingMark[] };
 }
 
 /** Pure: confere a barreira de retry de um destino. `null` = pode autorizar; senão, o motivo. */
@@ -286,7 +319,7 @@ function retryRefusal(
   store: VideoPublishAuthorizationStore,
   m: VideoPlanManifest,
   dest: string,
-  input: { host: string; isPidAlive: (pid: number) => boolean; overrideUncertain: string | null },
+  input: { host: string; isPidAlive: (pid: number) => boolean; overrideUncertain: string | null; replacing?: boolean },
 ): string | null {
   const events = retryEvents(store, m.part, dest);
   if (!events.length) return null;
@@ -320,6 +353,10 @@ function retryRefusal(
       return `${m.part}/${dest}: a releitura do registro de ${check.at} saiu ${check.verdict}: conferir as contas antes de qualquer nova autorização`;
     }
     if (check.registered.includes(dest)) {
+      // #12279: na substituição explícita o destino registrado é justamente o post agendado que o
+      // plano aprovado troca (ID e horário no manifesto, conferidos contra o registro no grant e
+      // contra a plataforma antes de apagar). Fora dela, a recusa segue igual.
+      if (input.replacing) continue;
       const uncertainOnly = (check.uncertain ?? []).includes(dest);
       if (uncertainOnly && input.overrideUncertain) continue;
       return (
@@ -353,6 +390,18 @@ export function grantVideoPublishAuthorization(storeIn: VideoPublishAuthorizatio
   if (m.media.video_sha256 === null) {
     return { ok: false, error: "o plano não tem o vídeo (video_sha256 null): baixe o vídeo, refaça o dry-run e aprove esse plano" };
   }
+  const replacement = input.replacement === true;
+  if (replacement && !isReplacementManifest(m)) {
+    return { ok: false, error: "--replace-scheduled exige o manifesto de substituição (publish-shorts.ts AAMMDD --replace-scheduled, dry-run): este plano não troca post agendado nenhum (#12279)" };
+  }
+  if (!replacement && hasReplacementDestination(m)) {
+    return { ok: false, error: "este é o manifesto de uma substituição de post agendado: o grant dele exige --replace-scheduled (#12279)" };
+  }
+  if (replacement) {
+    if (!input.replacementRegistry) return { ok: false, error: "grant de substituição sem o registro do vertical para conferir os posts antigos: nada autorizado (#12279)" };
+    const refusal = replacementGrantRefusal(m, input.replacementRegistry.entries, input.now, input.replacementRegistry.openMarks);
+    if (refusal) return { ok: false, error: refusal };
+  }
   const authorizable = authorizableDestinations(m);
   let targets = authorizable;
   if (input.only && input.only.length) {
@@ -365,7 +414,8 @@ export function grantVideoPublishAuthorization(storeIn: VideoPublishAuthorizatio
   const host = input.host ?? currentHost();
   const overrideUncertain = input.overrideUncertain?.trim() || null;
   for (const dest of targets) {
-    const refusal = retryRefusal(storeIn, m, dest, { host, isPidAlive: input.isPidAlive ?? isPidAliveHere, overrideUncertain });
+    const replacing = replacement && m.destinations.find((x) => x.id === dest)?.replaces !== undefined;
+    const refusal = retryRefusal(storeIn, m, dest, { host, isPidAlive: input.isPidAlive ?? isPidAliveHere, overrideUncertain, replacing });
     if (refusal) return { ok: false, error: refusal };
   }
 
@@ -393,6 +443,7 @@ export function grantVideoPublishAuthorization(storeIn: VideoPublishAuthorizatio
       confirmed_at: nowIso,
       granted_host: host,
       ...(overrideUncertain ? { override_uncertain: overrideUncertain } : {}),
+      ...(replacement && d.replaces ? { replacement: { ...d.replaces } } : {}),
       status: "active",
     };
     store.authorizations.push(auth);
@@ -419,6 +470,12 @@ export interface ConsumeInput {
   fallbackCommand?: string;
   /** A rodada foi chamada com `--now` (nunca vale para destino aprovado agendado, decisão B). */
   forceNow?: boolean;
+  /**
+   * #12279: rodada de substituição (`publish-shorts --replace-scheduled --publish`).
+   * Só ela consome autorização de substituição, e ela só consome autorização de
+   * substituição: nenhuma das duas serve à outra.
+   */
+  replacement?: boolean;
 }
 
 /**
@@ -500,6 +557,16 @@ export function consumeVideoPublishAuthorization(storeIn: VideoPublishAuthorizat
         refuse(dest, "owner-mismatch", ownerErr);
         continue;
       }
+    }
+    if (Boolean(latest.replacement) !== (input.replacement === true)) {
+      refuse(
+        dest,
+        "outside-plan",
+        latest.replacement
+          ? `a autorização de ${latest.confirmed_at} é de substituição do post ${latest.replacement.id} (#12279): só a rodada --replace-scheduled a consome`
+          : `a rodada --replace-scheduled só consome autorização de substituição (grant --replace-scheduled), e a de ${latest.confirmed_at} é de publicação normal (#12279)`,
+      );
+      continue;
     }
     const { binding, hint } = executionBinding(m, dest, latest, { now: input.now, forceNow: input.forceNow === true });
     if (binding === null) {
@@ -697,6 +764,7 @@ export function consumeBeforeExternalEffects(input: {
   command?: string;
   fallbackCommand?: string;
   forceNow?: boolean;
+  replacement?: boolean;
 }): { ok: true; consumed: ConsumedVideoPublishAuthorization[] } | { ok: false; error: string; refusals?: AuthorizationRefusal[] } {
   try {
     type Out = { ok: true; consumed: ConsumedVideoPublishAuthorization[] } | { ok: false; error: string; refusals?: AuthorizationRefusal[] };
