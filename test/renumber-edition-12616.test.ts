@@ -74,6 +74,12 @@ function seedEdition(): void {
   put("_internal/kit-semanal-frio-published.json", '{"broadcast_id":11,"status":"scheduled"}');
 }
 
+/**
+ * #13150 — o script monta a pasta com `editionDir()` (`path.join`), que no
+ * Windows sai com `\`; as asserções conferem o caminho em `/`.
+ */
+const toPosix = (s: string): string => s.replace(/\\/g, "/");
+
 function cliDeps(codes: number[] = []): RenumberCliDeps & { logs: string[]; ran: string[][] } {
   const logs: string[] = [];
   const ran: string[][] = [];
@@ -103,7 +109,7 @@ describe("renumber-edition (#12616)", () => {
     assert.ok(existsSync(fromDir()));
     assert.ok(!existsSync(toDir()));
     assert.match(readFileSync(join(fromDir(), "02-reviewed.md"), "utf8"), /261109/);
-    const out = d.logs.join("\n");
+    const out = toPosix(d.logs.join("\n"));
     assert.match(out, /close-poll\.ts --edition 261110/);
     assert.match(out, /publish-kit-semanal-frio\.ts --edition-dir data\/editions\/2611\/261110 --push/);
     assert.doesNotMatch(out, /--edition-dir data\/editions\/2611\/261109/);
@@ -174,7 +180,7 @@ describe("renumber-edition (#12616)", () => {
       d2.ran.map((a) => a[0]),
       ["scripts/close-poll.ts", "scripts/publish-newsletter-kit.ts", "scripts/publish-edition-site-page.ts", "scripts/publish-kit-semanal-frio.ts"],
     );
-    assert.deepEqual(d2.ran[2], ["scripts/publish-edition-site-page.ts", "--edition-dir", "data/editions/2611/261110", "--slug", "o-slug"]);
+    assert.deepEqual(d2.ran[2].map(toPosix), ["scripts/publish-edition-site-page.ts", "--edition-dir", "data/editions/2611/261110", "--slug", "o-slug"]);
     assert.ok(readRenumberReport(toDir())!.remote_steps.every((s) => s.status === "done"));
   });
 
@@ -221,7 +227,7 @@ describe("#12662 borda alfanumérica e edição já agendada", () => {
     assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, d), 2);
     assert.equal(d.ran.length, 0, "nenhum passo remoto");
     assert.ok(existsSync(fromDir()) && !existsSync(toDir()), "parte local não rodou");
-    const out = d.logs.join("\n");
+    const out = toPosix(d.logs.join("\n"));
     assert.match(out, /kit-newsletter @ 2026-11-09T09:00:00Z/);
     assert.match(out, /schedule-newsletter-kit\.ts --edition-dir data\/editions\/2611\/261110/);
     assert.match(out, /--ack-scheduled/);
