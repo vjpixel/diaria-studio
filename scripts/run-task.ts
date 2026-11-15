@@ -63,8 +63,8 @@ function usage(): string {
 export interface RunTaskDeps {
   gate?: Partial<FailoverGateDeps>;
   runner?: RunScheduledTaskOptions;
-  /** Lê o `.env` do repo (default: `readDotenv`). */
-  readDotenv?: (repoRootAbs: string) => Record<string, string>;
+  /** Lê o `.env` do repo (default: `readDotenv`); `null` = arquivo ausente, erro de leitura lança. */
+  readDotenv?: (repoRootAbs: string) => Record<string, string> | null;
   /** Ambiente do processo (default `process.env`). */
   processEnv?: Record<string, string | undefined>;
   /** Executor real de passo, usado na run do Neo com o env mesclado (default `execTsxStep`). */
@@ -117,18 +117,18 @@ export function standbySkippedSync(): GitSyncResult {
 }
 
 /**
- * `.env` do repo parseado, sem tocar `process.env`. Ausente = `{}`; qualquer
- * outro erro de leitura LANÇA (#12993): no Neo, um `.env` ilegível virava
- * `{}` e o gate dizia "configuração do KV ausente", mandando procurar a causa
- * no lugar errado.
+ * `.env` do repo parseado, sem tocar `process.env`. Ausente = `null` (o
+ * chamador decide se avisa, #13126); qualquer outro erro de leitura LANÇA
+ * (#12993): no Neo, um `.env` ilegível virava `{}` e o gate dizia
+ * "configuração do KV ausente", mandando procurar a causa no lugar errado.
  */
-function readDotenv(repoRootAbs: string): Record<string, string> {
+function readDotenv(repoRootAbs: string): Record<string, string> | null {
   const path = join(repoRootAbs, ".env");
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error(`.env ilegível em ${path}: ${(e as Error).message}`);
   }
   return parseDotenv(raw);
@@ -174,7 +174,18 @@ export async function main(argv: string[], repoRootAbs: string, deps: RunTaskDep
   if (needsEnv) {
     let dotenv: Record<string, string>;
     try {
-      dotenv = (deps.readDotenv ?? readDotenv)(repoRootAbs);
+      const read = (deps.readDotenv ?? readDotenv)(repoRootAbs);
+      if (read === null && standby) {
+        // #13126: no Neo o Task Scheduler não tem EnvironmentFile, e o `.env`
+        // é a fonte dos segredos dos passos. Sem este aviso o gate dizia só
+        // "configuração do KV ausente", com a causa real (`.env` ausente)
+        // fora da mensagem. Segue com o ambiente do processo: se ele trouxer
+        // tudo, a run age; se não, o gate falha fechado logo depois.
+        console.error(
+          `[failover ${role}] ${def.name}: WARN .env ausente em ${join(repoRootAbs, ".env")}; no Neo ele é a fonte dos segredos dos passos (npm run sync-env); seguindo só com o ambiente do processo`,
+        );
+      }
+      dotenv = read ?? {};
     } catch (e) {
       // #12993: no Neo é fail-closed com a causa real; no 300 o .env é
       // complemento do EnvironmentFile do systemd, então segue com aviso.

@@ -324,7 +324,10 @@ function expiryHint(d: TakeoverDeps): string {
   const last = (() => {
     try {
       return d.lastKnownLease();
-    } catch {
+    } catch (e) {
+      // #13126: a memória local ilegível não muda a decisão (o lease não foi
+      // liberado de qualquer jeito), mas some sem aviso se for engolida aqui.
+      d.err(`${P} WARN memória local do lease ilegível (${(e as Error).message}); horário de expiração estimado sem ela`);
       return null;
     }
   })();
