@@ -73,6 +73,9 @@ export function buildArmInstructions(): string {
     "~/.config/systemd/user/ e rodar:\n" +
     "  systemctl --user daemon-reload\n" +
     "  systemctl --user enable --now <nome>.timer\n" +
+    "\nRetry de rede (#13017): os .service com RestartForceExitStatus= mudam só o\n" +
+    "   .service (o .timer é o mesmo); antes do daemon-reload, conferir com\n" +
+    "   `systemd-analyze --user verify ~/.config/systemd/user/<nome>.service`.\n" +
     "\n⚠️  MUDOU O HORÁRIO DE UMA TASK? Os units usam Persistent=true, e o systemd\n" +
     "   dispara NA HORA se existe uma ocorrência do OnCalendar entre o último\n" +
     "   disparo e agora. Para task que manda e-mail ou gasta crédito de API isso\n" +

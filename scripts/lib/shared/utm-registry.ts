@@ -2202,6 +2202,16 @@ export function buildJogarBioCampaign(source: string): string {
 export const EXTERNAL_SURFACE_BASE_URL = "https://diar.ia.br/";
 
 /**
+ * Bases dos 2 botões do Linktree pessoal do editor (`perfil-linktree-pixel`,
+ * #13020) — a única superfície do inventário que aponta pra páginas que não
+ * são a home. As URLs vivas saem de `buildExternalSurfaceUrl(surface, base)`.
+ */
+export const LINKTREE_PIXEL_URL_BASES = {
+  newsletter: "https://diar.ia.br/assinar",
+  conteudoAutentico: "https://diar.ia.br/produto/conteudo-autentico",
+} as const;
+
+/**
  * Uma superfície EXTERNA: campo de bio/site num painel de terceiro, preenchido
  * à mão. Deliberadamente NÃO é um `UtmEmitter` — aquele tipo exige
  * `originFile` (path do repo, travado por `test/utm-registry-4041.test.ts`), e
@@ -2445,6 +2455,28 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
       "mantém mensuráveis em separado.",
     status: "ativo",
     appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-linktree-pixel",
+    label: "Linktree pessoal do editor (linktr.ee/vjpixel)",
+    source: "linktree",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("linktree", "pixel"),
+    panelUrl: "https://linktr.ee/admin",
+    field: "Links → botão de cada link → URL",
+    description:
+      "Linktree PESSOAL do editor (`linktr.ee/vjpixel`), reorganizado em " +
+      "13/11/2026 (#13020). A variante `-pixel` do `utm_campaign` separa este " +
+      "Linktree de um eventual Linktree da marca, como nos 2 repos do GitHub. " +
+      "Dois botões, MESMO trio de UTM, paths diferentes — monte cada um com " +
+      "`buildExternalSurfaceUrl(s, base)` passando a base do botão: newsletter " +
+      "em `https://diar.ia.br/assinar` (`LINKTREE_PIXEL_URL_BASES.newsletter`) e " +
+      "aula Conteúdo Autêntico em `https://diar.ia.br/produto/conteudo-autentico` " +
+      "(`LINKTREE_PIXEL_URL_BASES.conteudoAutentico`). Os 2 compartilham o " +
+      "campaign de propósito: são botões da mesma superfície, e o Beehiiv só " +
+      "agrega plano por campaign.",
+    status: "ativo",
+    appliedAt: "2026-11-13",
   },
   {
     id: "perfil-nexo",

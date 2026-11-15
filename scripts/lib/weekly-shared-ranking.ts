@@ -402,7 +402,7 @@ export interface RankingSnapshotRow {
  * gravado e o de agora — outro conjunto de edições, item elegível do produto
  * que sumiu ou mudou de taxa. Só AVISO: mudança de taxa fora da seleção é
  * normal (a sexta ainda acumulando clique) e não altera o que vai sair; quem
- * recusa é o replay (`replayDivergence`). `now.ranked` é deduplicado como o
+ * recusa é o replay (`replaySharedFile`). `now.ranked` é deduplicado como o
  * arquivo (`dedupeCandidatesByUrl`: 1ª ocorrência, destaque vence seção),
  * senão uma URL repetida entre edições daria diferença permanente.
  * Compara a taxa arredondada a 2 casas, como é gravada.
@@ -438,21 +438,31 @@ export function rankingDivergence(
 /**
  * Pure (revisão da PR #13026): refaz a seleção com os candidatos de AGORA e as
  * decisões gravadas no arquivo (`overrides`), e compara com a gravada
- * (`sameSelection`, mesma lógica do `--confirm-suggestions`). Devolve o motivo
- * quando a seleção mudou (ou quando uma decisão gravada deixou de valer), ou
- * `null` quando o replay dá a mesma seleção.
+ * (`sameSelection`, mesma lógica do `--confirm-suggestions`). `divergence` é o
+ * motivo quando a seleção mudou (ou quando uma decisão gravada deixou de
+ * valer), ou `null` quando o replay dá a mesma seleção. Devolve também a
+ * seleção recalculada (`null` quando uma decisão gravada deixou de valer). Os
+ * consumidores leem o estado do empate DAQUI, nunca do arquivo (#13035): um
+ * `resolution` editado à mão não decide nada.
  */
-export function replayDivergence(
+function replaySharedFile(
   file: { overrides: SharedOverrides; clicked: ProductSelection; linkedin: ProductSelection },
   now: { candidates: WeeklyRankedCandidate[]; editionsFound: number },
-): string | null {
+): { replay: SharedSelectionCore | null; divergence: string | null } {
   let replay: SharedSelectionCore;
   try {
     replay = buildSharedSelection({ candidates: now.candidates, editionsFound: now.editionsFound, overrides: file.overrides });
   } catch (e) {
-    if (e instanceof SharedSelectionError) return `uma decisão gravada não vale mais: ${e.message}`;
+    if (e instanceof SharedSelectionError) return { replay: null, divergence: `uma decisão gravada não vale mais: ${e.message}` };
     throw e;
   }
+  return { replay, divergence: describeDivergence(replay, file) };
+}
+
+function describeDivergence(
+  replay: SharedSelectionCore,
+  file: { clicked: ProductSelection; linkedin: ProductSelection },
+): string | null {
   if (sameSelection(replay, file)) return null;
   const changed = SHARED_PRODUCTS.filter(
     (p) => JSON.stringify(replay[p].urls) !== JSON.stringify(file[p].urls) || JSON.stringify(replay[p].pending) !== JSON.stringify(file[p].pending ?? null),
@@ -466,7 +476,12 @@ export function replayDivergence(
  *   - `blocking`: o replay mudou a seleção, ou as URLs não batem com o hash
  *     da aprovação — usar o arquivo publicaria o que o editor não viu.
  *   - `warnings`: o dado mudou sem mudar a seleção (`rankingDivergence`).
- *   - `pendingUnresolved`: empate do produto ainda só sugerido.
+ *   - `pendingUnresolved`: empate do produto ainda só sugerido, segundo a
+ *     seleção RECALCULADA (#13035): o `resolution` gravado no arquivo não
+ *     conta. Replay que falhou conta como não resolvido (e já é `blocking`).
+ *   - `approved`: o arquivo tem aprovação do gate (`--confirm-suggestions`).
+ *     `--pick`/`--swap` depois dela zeram o campo, então `false` aqui é
+ *     seleção que o editor não aprovou na forma atual (#13035).
  * Quem decide se recusa é o consumidor (agendar recusa; prévia avisa).
  */
 export function checkSharedFileForProduct(
@@ -480,10 +495,10 @@ export function checkSharedFileForProduct(
     linkedin: ProductSelection;
   },
   now: { editionsFound: string[]; candidates: WeeklyRankedCandidate[] },
-): { blocking: string[]; warnings: string[]; pendingUnresolved: boolean } {
+): { blocking: string[]; warnings: string[]; pendingUnresolved: boolean; approved: boolean } {
   const blocking: string[] = [];
-  const replay = replayDivergence(file, { candidates: now.candidates, editionsFound: now.editionsFound.length });
-  if (replay) blocking.push(replay);
+  const { replay, divergence } = replaySharedFile(file, { candidates: now.candidates, editionsFound: now.editionsFound.length });
+  if (divergence) blocking.push(divergence);
   if (file.approved && file.approved.hash !== selectionHash(file)) {
     blocking.push("as URLs do arquivo não batem com o hash da aprovação do gate (arquivo editado depois de aprovado)");
   }
@@ -491,8 +506,9 @@ export function checkSharedFileForProduct(
     editionsFound: now.editionsFound,
     ranked: now.candidates.filter((c) => isEligibleFor(product, c)),
   }).map((d) => `dado de clique mudou desde a seleção compartilhada, sem mudar a seleção: ${d}`);
-  const pending = file[product].pending;
-  return { blocking, warnings, pendingUnresolved: Boolean(pending && pending.resolution !== "editor") };
+  const pending = replay ? replay[product].pending : file[product].pending;
+  const pendingUnresolved = replay === null || Boolean(pending && pending.resolution !== "editor");
+  return { blocking, warnings, pendingUnresolved, approved: Boolean(file.approved?.hash) };
 }
 
 /**
@@ -519,13 +535,23 @@ export function selectionHash(sel: { clicked: { urls: string[] }; linkedin: { ur
     .digest("hex");
 }
 
-/** Pure: os recortes recalculados são os mesmos gravados (urls, grupo e sugestão de empate)? */
+/**
+ * Pure: os recortes recalculados são os mesmos gravados (urls, grupo, sugestão
+ * e resolução do empate)? A resolução entra na chave desde o #13035: um
+ * `"resolution": "editor"` escrito à mão sem `picks` gravados dá replay
+ * `"suggestion"`, e o arquivo deixa de valer em vez de passar como decidido.
+ */
 export function sameSelection(
   a: { clicked: ProductSelection; linkedin: ProductSelection },
   b: { clicked: ProductSelection; linkedin: ProductSelection },
 ): boolean {
   const key = (p: ProductSelection) =>
-    JSON.stringify({ urls: p.urls, suggested: p.pending?.suggested ?? null, group: p.pending?.group ?? null });
+    JSON.stringify({
+      urls: p.urls,
+      suggested: p.pending?.suggested ?? null,
+      group: p.pending?.group ?? null,
+      resolution: p.pending?.resolution ?? null,
+    });
   return SHARED_PRODUCTS.every((p) => key(a[p]) === key(b[p]));
 }
 

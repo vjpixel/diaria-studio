@@ -1,6 +1,6 @@
 ---
 name: diaria-pacote-semanal
-description: Pacote semanal numa sessão só (#13022) — os dois carrosséis da retro (`/diaria-retro-semanal`, highlights no sábado e clicked no domingo), a newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, segunda) e o post do Radar de Notícias Stack (`/diaria-stack`, envio de segunda 06:00), com seleção única por clique compartilhada entre o clicked e as manchetes do LinkedIn, escrita e humanizador+Clarice numa leva, renders em paralelo e UM gate consolidado (um Artifact, uma aprovação). Depois do sim, agenda a retro, aprova a Stack e cola o LinkedIn pelo Chrome, terminando na lista do que falta à mão (capa e agendamento do LinkedIn, #8031). Execução manual entre sexta e sábado. As três skills continuam existindo como entrada isolada (retry, um produto só). Uso — `/diaria-pacote-semanal [AAMMDD-do-sabado] [--no-gates]`.
+description: Pacote semanal numa sessão só (#13022) — os dois carrosséis da retro (`/diaria-retro-semanal`, highlights no sábado e clicked no domingo), a newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, segunda) e o post do Radar de Notícias Stack (`/diaria-stack`, envio de segunda 06:00), com seleção única por clique compartilhada entre o clicked e as manchetes do LinkedIn, escrita e humanizador+Clarice numa leva, renders em paralelo e UM gate consolidado (um Artifact, uma aprovação). Antes do gate, cola e audita o rascunho do LinkedIn pelo Chrome quando disponível. Depois do sim, agenda a retro e aprova a Stack, terminando na lista do que falta à mão (capa e agendamento do LinkedIn, #8031). Execução manual entre sexta e sábado. As três skills continuam existindo como entrada isolada (retry, um produto só). Uso — `/diaria-pacote-semanal [AAMMDD-do-sabado] [--no-gates]`.
 disable-model-invocation: true
 ---
 
@@ -75,6 +75,15 @@ O `{cycle}` sai impresso pelo Passo 1 (`weekly-shared-selection.ts`).
 ## Passo 0 — Preflight (uma vez)
 
 1. Resolver `{S}`, `{D}`, `{M}`.
+   **Claude in Chrome (#13053):** conferir as ferramentas disponíveis nesta
+   sessão (incluindo descoberta de ferramentas, quando houver) e registrar
+   `chromeAvailable`: só é verdadeiro se o Claude in Chrome estiver
+   disponível para operar o navegador. Não inferir pela máquina ou por um
+   browser genérico. Se ausente (caso do `300`), avisar já: "Sem Claude in
+   Chrome nesta sessão: o paste do LinkedIn ficará para o Neo; entregarei
+   o prompt de handoff no fim." Continuar a produção e levar esse aviso ao
+   gate. Ausência desde o preflight não é desconexão MCP (#738); se uma
+   ferramenta disponível desconectar durante o uso, segue o halt normal.
 2. Slot da retro (#10389), antes de tudo:
    `npx tsx scripts/publish-weekly-social.ts --saturday {S} --mode both --check-slot`.
    Exit 2 segue o Passo 0 de `/diaria-retro-semanal` (opções de `--time`,
@@ -176,7 +185,7 @@ resumos de cada modo, `data/weekly/{S}-{modo}/_internal/06-summaries.json`
      com `--source-text` e fechar com o guard do #12794
      (`weekly-feed-post-review.ts --cycle {cycle} --mark --humanizador --clarice-filtered ...`).
 
-## Passo 5 — Renders em paralelo (antes do gate)
+## Passo 5 — Renders e rascunho do LinkedIn (antes do gate)
 
 Na mesma leva:
 
@@ -194,6 +203,19 @@ Na mesma leva:
   (Passo 5 de `/diaria-stack`; o HTML sai em
   `data/weekly/{cycle}/_internal/circle-stack-preview.html`).
 
+**Paste antecipado (#13037):** assim que o render do LinkedIn terminar,
+enquanto os outros renders rodam, se `chromeAvailable: true` e sem
+`--no-gates`, executar os Passos 8a a 8c de `/diaria-linkedin-semanal`:
+abrir pela página da newsletter, colar com o sentinela e auditar com
+`auditLinkedinPaste`. É somente um **rascunho reversível**, sem publicar
+nem agendar. Respeitar a retomada do Passo 0: não repetir artigo já
+colado/publicado sem mudança no conteúdo.
+Registrar o resultado da auditoria e a versão do HTML/título efetivamente
+colados para comparar após ajustes e no pós-gate. `ok: false` aparece como
+falha no Artifact do Passo 6; no máximo 2 tentativas de correção, conforme
+8c. Nunca declarar o paste aceito enquanto a auditoria falhar. Desconexão
+MCP segue o halt #738. Sem Chrome ou com `--no-gates`, não colar.
+
 ## Passo 6 — Gate consolidado (pulado com `--no-gates`)
 
 **Um Artifact só**, montado em `{scratchpad}/pacote-{cycle}/index.html`
@@ -208,6 +230,9 @@ Na mesma leva:
    (premissa abaixo), avisos da retro (empate, semana curta, resumo faltando,
    linguagem comercial, item sem imagem), do `ln-{cycle}.json` (capa
    ausente, trocas #5538, Use Melhor sem comentário) e os `⚠` da Stack.
+   Se `chromeAvailable: false`, incluir explicitamente: "Paste e auditoria
+   do LinkedIn pendentes para outra máquina (Neo); aprovar este pacote não
+   cola o artigo. O prompt de handoff será entregue no Passo 8."
 2. **Uma seção por produto, no formato final:**
    - carrossel highlights (slides reais, legendas dos 4 canais, horário de `{S}`);
    - carrossel clicked (slides, legendas, horário de `{D}`, taxa de cada item);
@@ -217,6 +242,10 @@ Na mesma leva:
      embutida e linkada) com o estado do ciclo.
 3. **O ranking compartilhado** (título, edição, taxa, onde cada item entrou)
    para o editor trocar um item sem abrir arquivo.
+4. **Status do paste do LinkedIn:** rascunho colado e auditoria aceita,
+   falha (`ok: false`, com os erros da auditoria), ou pendente com o motivo.
+   Exibir o resultado real do Passo 5 junto da prévia; falha de auditoria
+   não pode ser apresentada como sucesso nem liberada pelo "aprovar".
 
 Apresentar o link e fazer UMA pergunta (`AskUserQuestion`): aprovar tudo
 (recomendado), pedir ajuste (com o que mudar) ou abortar.
@@ -238,6 +267,15 @@ mesmo endereço:
 - texto (resumo, nota da Stack, post de feed): editar e repassar só aquele
   texto pelo humanizador/Clarice, com os guards de cada skill;
 - Use Melhor do LinkedIn (#11777): `select-linkedin-weekly.ts ... --use-melhor-url`.
+
+**Invalidar o rascunho após ajustes:** depois de `--swap` ou `--pick`,
+reexecutar a seleção e o render dos produtos afetados. Se o HTML ou título
+do LinkedIn mudar (também por ajuste do Use Melhor), marcar o rascunho
+anterior como defasado e voltar ao paste e à auditoria do Passo 5 antes de
+reapresentar o gate. Substituir o corpo anterior, sem duplicá-lo. Troca só
+no clicked que não muda o artigo não exige recolar. Republicar o Artifact
+com o novo status da auditoria; auditoria aceita de uma versão anterior
+não vale para a nova.
 
 ## Passo 7 — Pós-gate (sem nova pergunta)
 
@@ -267,10 +305,16 @@ Com o "aprovar":
    - Stack: `npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {M}`
      (Passo 6 de `/diaria-stack`; com `scheduledRunPast: true`, não aprovar e
      dizer que o ciclo só sai com `/diaria-stack {M} --publish`).
-3. LinkedIn pelo Chrome: Passos 8a a 8c de `/diaria-linkedin-semanal`
-   (abrir pela página da newsletter, colar com o sentinela, auditar com
-   `auditLinkedinPaste`; `ok: false` para e envolve o editor, máximo 2
-   tentativas de correção). Antes de entregar o post de feed:
+3. Se `chromeAvailable: false`, não tentar o paste: marcar LinkedIn como
+   pendente e gerar o handoff no Passo 8, sem nova pergunta.
+   Se `chromeAvailable: true`, reaproveitar o paste e a auditoria do Passo 5.
+   Comparar o HTML e título finais após o render do item 1 com a versão
+   colada: confirmação de sugestão sem mudança no artigo não repete paste.
+   Só se estiver defasado, executar novamente os Passos 8a a 8c de `/diaria-linkedin-semanal`
+   e atualizar o Artifact com a auditoria; `ok: false` para a entrega do
+   LinkedIn e envolve o editor, máximo 2 tentativas de correção. Auditoria
+   anterior falha continua pendente, mesmo após o sim. Em ambos os casos,
+   antes de entregar o post de feed:
    `weekly-feed-post-review.ts --cycle {cycle} --check`.
 
 Com `--no-gates`: sem o item 1 (ninguém aprovou nada); só a retro do item
@@ -283,14 +327,62 @@ A skill termina aqui, com uma lista só:
 
 - **Feito:** retro agendada (horário de cada modo e canais), Stack aprovada
   para segunda 06:00 (ou o motivo de não estar), artigo do LinkedIn colado e
-  auditado no rascunho, link do Artifact.
-- **Falta à mão (#8031):** capa do LinkedIn (`data/weekly/{cycle}/04-d1-2x1.jpg`
-  e, havendo vídeo, a imagem dele), o post de feed pronto para colar, o
-  horário de `social-schedule-rotation.ts --linkedin-article --date {M}`,
-  o ajuste manual da âncora da menção (#10385) quando houver, e o
-  `--record ... --kind linkedin_article` depois de agendar. Itens que
-  `--no-gates` deixou pendentes (aprovação da Stack, paste do LinkedIn)
-  entram aqui também.
+  auditado no rascunho **somente se executado com auditoria aceita**, link do Artifact.
+- **Falta à mão (#8031):** somente capa e agendamento do LinkedIn no fluxo
+  com rascunho auditado. Entregar a capa (`data/weekly/{cycle}/04-d1-2x1.jpg`
+  e, havendo vídeo, a imagem dele), o post de feed pronto para usar no
+  agendamento e o horário de
+  `social-schedule-rotation.ts --linkedin-article --date {M}`;
+  registrar `--record ... --kind linkedin_article` depois de agendar.
+- **Exceções pendentes:** ajuste manual da âncora da menção (#10385), quando
+  indicado pela auditoria; falha de paste/auditoria; handoff sem Chrome;
+  ou o que `--no-gates` deixou pendente (aprovação da Stack e paste do
+  LinkedIn). Listar somente as exceções que de fato ocorreram.
+
+### Handoff automático para o Neo sem Chrome (#13053)
+
+Se o paste estiver pendente e `chromeAvailable: false`, entregar SEM o
+editor precisar pedir um **prompt pronto para colar numa sessão do Neo**.
+Gravar também em `data/weekly/{cycle}/_internal/ln-chrome-handoff.txt`.
+Expandir `{cycle}`, `{M}`, todos os caminhos e o título com os valores
+reais do ciclo; não entregar placeholders. Ler o título literal de
+`headlines[0].title` em `_internal/ln-selection.json`. Usar este modelo:
+
+```text
+Retome apenas o paste do artigo do LinkedIn do pacote semanal {cycle}.
+Leia CLAUDE.md e os Passos 8a-8c e 9 de /diaria-linkedin-semanal,
+bem como context/publishers/linkedin.md. Não re-renderizar, não refazer
+seleção/escrita/passes e não agendar a retro nem aprovar a Stack de novo.
+HTML final: I:\Meu Drive\diaria-studio-data\weekly\{cycle}\ln-{cycle}.html
+Seleção: I:\Meu Drive\diaria-studio-data\weekly\{cycle}\_internal\ln-selection.json
+Metadados: I:\Meu Drive\diaria-studio-data\weekly\{cycle}\ln-{cycle}.json
+Capa: I:\Meu Drive\diaria-studio-data\weekly\{cycle}\04-d1-2x1.jpg
+Título do artigo (literal): {headlines[0].title}
+Confirme os arquivos sincronizados; se faltarem, pare e informe, sem gerar outros.
+8a: abra pela página DA newsletter e confirme o destino no cabeçalho.
+Confira se já há corpo colado antes de qualquer paste, para não duplicar.
+8b: use o HTML final via ClipboardEvent com o sentinela <p>&nbsp;</p>.
+Espere estabilizar. Retorno [BLOCKED] não autoriza colar de novo.
+8c: extraia âncoras (texto, base e utm_content, sem href cru) e tamanho do
+texto; chame auditLinkedinPaste de scripts/lib/linkedin-paste-audit.ts
+contra o HTML fonte sem sentinela. Confira TODAS as âncoras e UTMs,
+inclusive a menção diar.ia.br (#10385, #13049), sem presumir que o paste
+preservou os links. Só WORDMARK_HREF_REWRITE_HINT em mencao-abertura pode
+seguir como ajuste manual documentado; outros erros param a entrega,
+com no máximo 2 tentativas de correção conforme 8c. Não declarar auditado
+sem executar a auditoria. Preencha o título diretamente no campo.
+Pare no Passo 9: capa, imagem de vídeo quando houver e agendamento são
+manuais (#8031). Entregue o resultado da auditoria e o ajuste da menção,
+com a URL original completa/UTM para o editor conferir após salvar.
+```
+
+Incluir no prompt também o caminho Windows de `videoImagePath`, se houver
+nos metadados (normalmente `video-04-d1-2x1.jpg`), e o post de feed já
+revisado, após o `weekly-feed-post-review.ts --cycle {cycle} --check`.
+Com `--no-gates`, explicitar que o pacote **não foi aprovado** e que o
+prompt só pode executar o paste depois da aprovação do editor; entregar
+handoff não autoriza a colagem. Em retomada com artigo já colado/publicado,
+não gerar instrução para repetir o paste.
 
 ## O que muda em cada produto
 

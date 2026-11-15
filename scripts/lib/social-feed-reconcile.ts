@@ -22,8 +22,13 @@
  *     Stage 0 (`prev-social-status.ts`) passa a listar o post. Nunca
  *     `failed`: `failed` fica fora do skip de retomada dos publicadores, e uma
  *     retomada da Etapa 5 repostaria sozinha — duplicata se o casamento errou
- *     (review da PR #13016). `send_unknown` é pulado na retomada e só sai com
- *     `--retry` explícito, depois de o editor conferir o perfil.
+ *     (review da PR #13016). `send_unknown` está em `RESUME_SKIP_STATUSES`
+ *     (`social-published-store.ts`, #13074), pulado na retomada de todos os
+ *     publicadores, e só sai com escolha explícita do editor depois de
+ *     conferir o perfil (`--retry` no Threads, `--no-skip-existing`/`--force`
+ *     nos demais). Exceção: `published` com prova de disparo (`ig_media_id`/
+ *     `threads_media_id`, o `media_publish` devolveu id) nunca é rebaixado —
+ *     fica `published` e ganha `feed_absent_at`/`feed_absent_reason` à parte.
  *   - `none`: sem conclusão (ainda cedo, feed não cobre a janela, leitura
  *     falhou, ou mais de um candidato sem texto para desempatar). Nada muda.
  *
@@ -105,7 +110,18 @@ export function needsFeedReconcile(entry: PostEntry): boolean {
   if (!isFeedPlatform(entry.platform)) return false;
   if (resolveSubtype(entry) !== "main") return false;
   if (typeof entry.url === "string" && entry.url.trim()) return false;
+  // #13074: ausência já registrada num `published` com prova de disparo.
+  if (typeof entry.feed_absent_at === "string" && entry.feed_absent_at) return false;
   return entry.status === "scheduled" || entry.status === "published";
+}
+
+/**
+ * #13074 — a entrada traz prova de que o post saiu: o `media_publish`/
+ * `threads_publish` devolveu um id (publicação direta, sem o Worker). O
+ * `published` do Worker (`worker_drained_feed_unverified`) não tem prova.
+ */
+function hasFireProof(entry: PostEntry): boolean {
+  return [entry.ig_media_id, entry.threads_media_id].some((v) => typeof v === "string" && v.trim() !== "");
 }
 
 /** `+0000` → `+00:00` (formato da Graph API) para o `Date.parse`. */
@@ -265,8 +281,19 @@ export function applyFeedDecision(entry: PostEntry, decision: FeedDecision, now:
         `reconcile-social-permalinks.ts (#13009).`,
     };
   }
-  // `send_unknown`, nunca `failed`: nenhum publicador reposta sozinho numa
-  // retomada (o `failed` sairia do skip e duplicaria se o casamento errou).
+  // #13074: com prova de disparo o status fica `published` (o post saiu; o
+  // casamento é que não achou). A ausência vai em campo à parte.
+  if (entry.status === "published" && hasFireProof(entry)) {
+    return {
+      ...entry,
+      feed_absent_at: now.toISOString(),
+      feed_absent_reason: `absent_from_feed: ${decision.reason}`,
+      feed_verified_at: now.toISOString(),
+    };
+  }
+  // `send_unknown`, nunca `failed`: `send_unknown` está em RESUME_SKIP_STATUSES
+  // e nenhum publicador o reposta numa retomada (#13074); o `failed` sairia do
+  // skip e duplicaria se o casamento errou.
   return {
     ...entry,
     status: "send_unknown",

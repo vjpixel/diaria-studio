@@ -65,6 +65,18 @@
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
  *     [--show-ranking] [--check-slot] [--reschedule] [--shared-selection PATH]
+ *     [--retry instagram[,facebook,threads]]
+ *
+ * `--retry linkedin` é recusado (#13088): a chave do Worker é fixa por
+ * carrossel e o retry pela mesma chave recebe 409 `already_fired` sem postar
+ * nada. LinkedIn `failed` se refaz com a retomada normal; `send_unknown` se
+ * confere na página e, se o carrossel não saiu, se posta à mão.
+ *
+ * `--retry {canal}` (#13076, exige `--schedule`): re-tenta SÓ esses canais,
+ * e só os que estão `failed`/`send_unknown` (ou sem entrada). Canal já
+ * publicado/agendado é recusado; os outros canais não são tocados. Antes a
+ * única saída de um `send_unknown` era `--no-skip-existing`, que redespachava
+ * o carrossel em TODOS os canais. `facebook` cobre as páginas habilitadas.
  *
  * `--reschedule` (#12375, exige `--schedule` e um modo só): muda o horário de
  * um carrossel JÁ agendado. Cancela as entradas `scheduled` do modo (fila do
@@ -148,8 +160,10 @@
  * gate. Sem a flag, nada muda. Com `--schedule`, sai com exit 2 se o
  * replay da seleção (cache de agora + decisões gravadas) der outra seleção
  * (kit-sync depois do gate que mexeu nos itens; taxa que mudou sem mexer na
- * seleção é só aviso), se as URLs não baterem com o hash da aprovação, ou se o empate do clicked
- * ainda for só sugestão — esta última só passa com `--allow-suggested-ties`,
+ * seleção é só aviso), se as URLs não baterem com o hash da aprovação, se o
+ * arquivo não tiver aprovação gravada (#13035: `--pick`/`--swap` depois do
+ * `--confirm-suggestions` a zeram), ou se o empate do clicked ainda for só
+ * sugestão — estas duas últimas só passam com `--allow-suggested-ties`,
  * que o pacote usa apenas no caminho `--no-gates`.
  *
  * `--force-incomplete-week`: se menos de `WEEKLY_MIN_ITEMS` itens forem
@@ -241,6 +255,7 @@ import {
   weeklySummaryPassWarnings,
 } from "./lib/weekly-summaries.ts";
 import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry } from "./lib/social-published-store.ts";
+import { decideResumeOrRetry, formatRetryOutsideDispatch, parseRetryIdList, retryIdsOutsideDispatch, type ResumeRetryDecision } from "./lib/social-retry.ts"; // #13076; #13089
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
 import { deleteFromWorkerQueue, idempotentConflictKey, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
@@ -862,6 +877,73 @@ const defaultWeeklyPdfUploader: WeeklyPdfUploader = async (filePath, kvKey) => {
  * sob demanda de RADAR/USE MELHOR — testes injetam um fake em vez do
  * gerador real (custo de API paga).
  */
+/** #13076 — canais aceitos por `--retry` no carrossel semanal (o X é do prep-weekly-twitter.ts). */
+export const WEEKLY_RETRY_CHANNELS = ["instagram", "facebook", "threads", "linkedin"] as const;
+
+/**
+ * #13088 — `--retry linkedin` é recusado. A chave do Worker é fixa por
+ * carrossel (`linkedInWeeklyIdempotencyKey`): depois que ela disparou, o
+ * retry devolve 409 `already_fired`, que `enqueueWeeklyLinkedIn` trata como
+ * sucesso, e o store passaria de `send_unknown` a `scheduled` sem post novo.
+ * `failed` não precisa de `--retry`: a retomada normal já o refaz.
+ */
+export const WEEKLY_LINKEDIN_RETRY_REFUSAL =
+  "--retry linkedin não é aceito (#13088): a chave do Worker deste carrossel já disparou e o retry pela mesma chave não posta nada novo. " +
+  "LinkedIn failed: rode --schedule sem --retry (a retomada refaz failed). " +
+  "LinkedIn send_unknown: confira a página no LinkedIn; se o carrossel não saiu, poste à mão.";
+
+/** #13088 — aviso de `send_unknown` na retomada, por canal (o LinkedIn não tem --retry). */
+export function weeklySendUnknownHint(channel: string, label: string): string {
+  if (channel === "linkedin") {
+    return `AVISO ${label}: envio não confirmado (send_unknown). Conferir a página no LinkedIn; se o carrossel não saiu, postar à mão — --retry linkedin não reposta (a chave do Worker já disparou, #13088).`;
+  }
+  return `AVISO ${label}: envio não confirmado (send_unknown). Conferir o perfil; se o carrossel não saiu, rodar com --schedule --retry ${channel} (re-tenta só este canal, #13076).`;
+}
+
+/** #13076 — `--retry instagram[,threads]`: `null` = flag ausente. */
+export function parseWeeklyRetryChannels(
+  raw: string | undefined,
+  flagWithoutValue: boolean,
+): { ok: true; ids: Set<string> | null } | { ok: false; error: string } {
+  return parseRetryIdList(raw, flagWithoutValue, WEEKLY_RETRY_CHANNELS, {
+    noun: "os canais",
+    example: "--retry instagram ou --retry instagram,threads",
+  });
+}
+
+/**
+ * #13076 — decide, por canal (e por página do Facebook), o que esta rodada
+ * despacha. Puro. Retomada (#13074): `published`/`send_unknown`/`scheduled`/
+ * `draft` e `cancelling` (#12419) são pulados. Com `--retry`, só os canais
+ * pedidos, e só se a entrada for `failed`/`send_unknown` (ou não existir).
+ */
+export function decideWeeklyChannelDispatch(
+  posts: readonly PostEntry[],
+  destaqueKey: string,
+  fbPageSlugs: readonly string[],
+  opts: { skipExisting: boolean; retryChannels: ReadonlySet<string> | null },
+): {
+  instagram: ResumeRetryDecision;
+  threads: ResumeRetryDecision;
+  linkedin: ResumeRetryDecision;
+  facebook: Array<{ slug: string; decision: ResumeRetryDecision }>;
+} {
+  const entriesOf = (platform: string, pageSlug?: string) =>
+    posts.filter((p) => p.platform === platform && p.destaque === destaqueKey && (pageSlug === undefined || resolvePostPage(p) === pageSlug));
+  const decide = (channel: string, entries: PostEntry[]): ResumeRetryDecision => {
+    // #12419: `cancelling` conta como existente na retomada (ver o caller).
+    const cancelling = entries.find((p) => p.status === "cancelling");
+    if (!opts.retryChannels && opts.skipExisting && cancelling) return { action: "skip-existing", existing: cancelling };
+    return decideResumeOrRetry(channel, entries, { skipExisting: opts.skipExisting, retryIds: opts.retryChannels });
+  };
+  return {
+    instagram: decide("instagram", entriesOf("instagram")),
+    threads: decide("threads", entriesOf("threads")),
+    linkedin: decide("linkedin", entriesOf("linkedin")),
+    facebook: fbPageSlugs.map((slug) => ({ slug, decision: decide("facebook", entriesOf("facebook", slug)) })),
+  };
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   opts: {
@@ -946,6 +1028,41 @@ export async function main(
       );
       process.exit(1);
       return;
+    }
+  }
+
+  // #13076: --retry refaz só os canais pedidos; precisa agendar e não compõe
+  // com os modos que redespacham tudo ou não despacham nada.
+  {
+    const retryParsed = parseWeeklyRetryChannels(values["retry"], flags.has("retry"));
+    if (!retryParsed.ok) {
+      console.error(`ERRO: ${retryParsed.error}`);
+      process.exit(1);
+      return;
+    }
+    if (retryParsed.ids) {
+      const clash = [
+        !flags.has("schedule") ? "ausência de --schedule" : null,
+        flags.has("no-skip-existing") ? "--no-skip-existing" : null,
+        flags.has("reschedule") ? "--reschedule" : null,
+        flags.has("images-only") ? "--images-only" : null,
+        flags.has("manifest-only") ? "--manifest-only" : null,
+        flags.has("summary-manifest") ? "--summary-manifest" : null,
+      ].filter((x): x is string => x !== null);
+      if (clash.length > 0) {
+        console.error(`ERRO: --retry não combina com ${clash.join(", ")}. Uso: --schedule --retry instagram[,threads].`);
+        process.exit(1);
+        return;
+      }
+      // #13088: o LinkedIn sai pelo Worker com chave fixa por carrossel; o
+      // retry reenviaria a mesma chave, o Worker responde 409 already_fired e
+      // o 409 conta como sucesso: grava `scheduled` por cima do send_unknown
+      // sem nenhum post novo. Recusado antes de qualquer envio.
+      if (retryParsed.ids.has("linkedin")) {
+        console.error(`ERRO: ${WEEKLY_LINKEDIN_RETRY_REFUSAL}`);
+        process.exit(1);
+        return;
+      }
     }
   }
 
@@ -1205,13 +1322,14 @@ export function readSharedClickedSelection(
   if (shared.saturday !== saturday) return { error: `${path} é do sábado ${shared.saturday}, não de ${saturday}.` };
   const badOverrides = validateOverrides(shared.overrides);
   if (badOverrides) return { error: `${path}: ${badOverrides} — re-rode weekly-shared-selection.ts (--reset-overrides).` };
-  const resolved = shared.clicked.pending?.resolution === "editor";
-  // Empate já escolhido pelo editor: o aviso de "escolha manual necessária"
-  // não vale mais (mesmo filtro do select-linkedin-weekly.ts).
+  // Empate já escolhido pelo editor, ou zerado por uma troca depois da escolha
+  // (#13035: `pending: null`): o aviso de "escolha manual necessária" não vale
+  // mais (mesmo filtro do select-linkedin-weekly.ts).
+  const unresolved = Boolean(shared.clicked.pending) && shared.clicked.pending.resolution !== "editor";
   const warnings: string[] = (shared.clicked.warnings ?? []).filter(
-    (w: string) => !resolved || !w.includes("escolha manual necessária no gate"),
+    (w: string) => unresolved || !w.includes("escolha manual necessária no gate"),
   );
-  if (shared.clicked.pending && !resolved) {
+  if (unresolved) {
     warnings.push("Empate (#5109) do clicked ainda com a SUGESTÃO do pacote (desempate editorial) — confirme ou troque no gate consolidado.");
   }
   return { urls: shared.clicked.urls, manual: Boolean(shared.clicked.manual), warnings, file: shared };
@@ -1261,6 +1379,9 @@ async function runOneMode(
     return false;
   }
   const skipExisting = !flags.has("no-skip-existing");
+  // #13076 — validado em main(); aqui só relido.
+  const retryParsed = parseWeeklyRetryChannels(values["retry"], flags.has("retry"));
+  const retryChannels = retryParsed.ok ? retryParsed.ids : null;
   const forceIncompleteWeek = flags.has("force-incomplete-week"); // herdado do #4101 finding 6
   // #4511 fleet review ALTO: confirmação explícita pra prosseguir com dado
   // de clique incompleto (post ausente do cache OU não-enriquecido por
@@ -1438,10 +1559,18 @@ async function runOneMode(
       editionsFound: existingCandidates.map((c) => c.date),
       candidates: sharedCandidates,
     });
+    // #13035: sem aprovação gravada (nunca aprovado, ou --pick/--swap depois
+    // da aprovação, que zeram o campo) o hash não tem com que comparar, então
+    // agendar exige `approved`. Só o caminho --no-gates (--allow-suggested-ties)
+    // agenda sem aprovação, por definição.
+    const allowUnapproved = flags.has("allow-suggested-ties");
     const blockers = [
       ...check.blocking.map((d) => `seleção compartilhada desatualizada: ${d}`),
-      ...(check.pendingUnresolved && !flags.has("allow-suggested-ties")
+      ...(check.pendingUnresolved && !allowUnapproved
         ? ["empate (#5109) do clicked ainda só com a sugestão — confirme no gate (weekly-shared-selection.ts --confirm-suggestions) ou, só no caminho --no-gates, passe --allow-suggested-ties"]
+        : []),
+      ...(!check.approved && !allowUnapproved
+        ? ["seleção compartilhada sem aprovação do gate (nunca aprovada, ou --pick/--swap depois da aprovação) — grave a aprovação com weekly-shared-selection.ts --confirm-suggestions ou, só no caminho --no-gates, passe --allow-suggested-ties"]
         : []),
     ];
     if (blockers.length > 0 && doSchedule) {
@@ -1737,36 +1866,42 @@ async function runOneMode(
   // #8385: --images-only nunca lê/escreve `06-weekly-published.json` (não
   // despacha, não tem status de canal pra pular) — skip-existing não se
   // aplica: mesmo já agendado, o editor ainda pode querer ver o carrossel.
-  if (skipExisting && !imagesOnly) {
+  if ((skipExisting || retryChannels) && !imagesOnly) {
+    // #13089: `--retry facebook` sem página habilitada sairia calado com exit 0.
+    if (retryChannels) {
+      const dispatchChannels = ["instagram", "threads", "linkedin", ...(fbPendingPages.length > 0 ? ["facebook"] : [])];
+      const retryMissing = retryIdsOutsideDispatch(retryChannels, dispatchChannels);
+      if (retryMissing.length > 0) {
+        console.error(formatRetryOutsideDispatch(`semanal ${destaqueKey}`, retryMissing, dispatchChannels));
+        return false;
+      }
+    }
     const published = readSocialPublished(publishedPath);
     // #12419: `cancelling` conta como existente. Até o bloco de cancelamento
     // (abaixo) zerar os skips, o canal fica pulado: uma falha no caminho
     // (horário inválido, título que estoura o card, imagem) não grava `failed`
     // por cima da entrada, o que apagaria a chave e o `fb_post_id` dela pelo
     // upsert e tiraria da próxima rodada a retomada do cancelamento.
-    const isExisting = (p: PostEntry): boolean => p.status === "draft" || p.status === "scheduled" || p.status === "cancelling";
-    const existingIg = published.posts.find((p) => p.platform === "instagram" && p.destaque === destaqueKey && isExisting(p));
-    const existingFbFor = (slug: string) =>
-      published.posts.find((p) => p.platform === "facebook" && p.destaque === destaqueKey && resolvePostPage(p) === slug && isExisting(p));
-    const existingThreads = published.posts.find((p) => p.platform === "threads" && p.destaque === destaqueKey && isExisting(p));
-    const existingLinkedIn = published.posts.find((p) => p.platform === "linkedin" && p.destaque === destaqueKey && isExisting(p));
-    if (existingIg) {
-      console.log(`SKIP instagram/${destaqueKey} — already ${existingIg.status}`);
-      skipInstagram = true;
-    }
-    fbPendingPages = fbPendingPages.filter((pg) => {
-      const existingFb = existingFbFor(pg.slug);
-      if (existingFb) console.log(`SKIP ${facebookPageLabel(pg.slug, destaqueKey)} — already ${existingFb.status}`);
-      return !existingFb;
-    });
-    if (existingThreads) {
-      console.log(`SKIP threads/${destaqueKey} — already ${existingThreads.status}`);
-      skipThreads = true;
-    }
-    if (existingLinkedIn) {
-      console.log(`SKIP linkedin/${destaqueKey} — already ${existingLinkedIn.status}`);
-      skipLinkedIn = true;
-    }
+    // #13074: `published` (sem url, o Worker não devolve o permalink) e
+    // `send_unknown` (envio ambíguo ou ausente do feed, #13009) também contam:
+    // redespachar o carrossel sem conferir o perfil o duplica.
+    // #13076: `--retry {canal}` refaz só o canal pedido (failed/send_unknown).
+    const plan = decideWeeklyChannelDispatch(published.posts, destaqueKey, fbPendingPages.map((pg) => pg.slug), { skipExisting, retryChannels });
+    const skipFor = (channel: string, label: string, decision: ResumeRetryDecision): boolean => {
+      if (decision.action === "dispatch") return false;
+      if (decision.action === "skip-existing") {
+        console.log(`SKIP ${label} — already ${decision.existing.status}`);
+        if (decision.existing.status === "send_unknown") console.warn(weeklySendUnknownHint(channel, label));
+      } else if (decision.action === "retry-refused") {
+        console.error(`SKIP ${label}: --retry recusado — já está ${decision.existing.status}; refazer duplicaria. --retry só refaz failed/send_unknown.`);
+      }
+      return true;
+    };
+    skipInstagram = skipFor("instagram", `instagram/${destaqueKey}`, plan.instagram);
+    const fbSkip = new Map(plan.facebook.map(({ slug, decision }) => [slug, decision]));
+    fbPendingPages = fbPendingPages.filter((pg) => !skipFor("facebook", facebookPageLabel(pg.slug, destaqueKey), fbSkip.get(pg.slug) ?? { action: "dispatch" }));
+    skipThreads = skipFor("threads", `threads/${destaqueKey}`, plan.threads);
+    skipLinkedIn = skipFor("linkedin", `linkedin/${destaqueKey}`, plan.linkedin);
   }
   // #12375: --reschedule — o PLANO (puro, sem rede) sai aqui, antes da
   // resolução de imagem, pra abortar cedo quando não é seguro cancelar (post
@@ -1783,9 +1918,13 @@ async function runOneMode(
   // skips depois dos DELETEs.
   // `--no-skip-existing` é a escolha explícita de redespachar tudo sem ler o
   // registro (mesma fronteira do skip-existing acima) e não entra aqui.
+  // #13076: com `--retry` a retomada do cancelamento não roda (ela zera os
+  // skips e redespacharia todos os canais): o canal `cancelling` é recusado
+  // pelo --retry e a retomada sem --retry fica para a rodada seguinte.
   const resumeCancelling =
     doSchedule &&
     skipExisting &&
+    !retryChannels &&
     !imagesOnly &&
     !flags.has("reschedule") &&
     !flags.has("manifest-only") &&
@@ -1827,7 +1966,7 @@ async function runOneMode(
       tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", ...fields });
     }
   };
-  if (skipExisting && !imagesOnly && !reschedule && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
+  if ((skipExisting || retryChannels) && !imagesOnly && !reschedule && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
   // #11062: trava dos resumos DEPOIS do skip-existing — re-run sem nada
   // pendente (ou só o Threads, cuja legenda não usa resumo) não é barrado.
   // #12375: no --reschedule todo canal volta a ser despachado.

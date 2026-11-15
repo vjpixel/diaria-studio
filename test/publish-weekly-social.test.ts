@@ -54,6 +54,7 @@ import {
   prepareWeeklyLinkedInDocument,
   linkedInDocumentFallbackFingerprint,
   main,
+  weeklySendUnknownHint,
 } from "../scripts/publish-weekly-social.ts";
 import { WorkerQueueError } from "../scripts/lib/worker-queue-client.ts";
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
@@ -3261,6 +3262,219 @@ describe("main(): dispatch mockado", () => {
       const liEntries = out.posts.filter((p: any) => p.platform === "linkedin" && p.destaque === "weekly-clicked");
       assert.equal(liEntries.length, 1, "a entry LinkedIn pré-existente não deveria ser duplicada nem re-tentada");
       assert.equal(liEntries[0].worker_queue_key, "queue:linkedin:pre-existing");
+    });
+
+    it("#13074: entradas send_unknown (ausente do feed) e published sem url NÃO são redespachadas no retry", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const at = "2027-12-26T11:00:00-03:00";
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            // O que a reconciliação de feed (#13009) grava quando o post não casa.
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "send_unknown", previous_status: "published", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:ig:old" },
+            // O que o verify-social-worker-dispatch grava (sem url — o Worker não devolve permalink).
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "published", scheduled_at: at, worker_queue_key: "queue:th:old" },
+            { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:li:old" },
+          ],
+        }),
+      );
+
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          queueCalls.push(JSON.parse(opts.body as string).channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: "queue:dup", scheduled_at: at }) };
+        })
+        .times(3);
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.deepEqual(queueCalls, [], "nenhum canal deveria ter batido /queue — o post pode estar no ar");
+      const out = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8"));
+      const byPlatform = (pl: string) => out.posts.filter((p: any) => p.platform === pl && p.destaque === "weekly-clicked");
+      assert.equal(byPlatform("instagram")[0].status, "send_unknown");
+      assert.equal(byPlatform("threads")[0].status, "published");
+      assert.equal(byPlatform("linkedin")[0].status, "send_unknown");
+      assert.equal(byPlatform("instagram")[0].worker_queue_key, "queue:ig:old");
+    });
+
+    // #13076: o editor conferiu que o carrossel do Instagram não saiu. Antes a
+    // única saída era --no-skip-existing, que redespachava Threads e LinkedIn
+    // também (duplicando o Threads já publicado).
+    async function runRetry13076(retry: string): Promise<{ queueCalls: string[]; posts: any[] }> {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const at = "2027-12-26T11:00:00-03:00";
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:ig:old" },
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "published", scheduled_at: at, worker_queue_key: "queue:th:old" },
+            { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:li:old" },
+          ],
+        }),
+      );
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          queueCalls.push(body.channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .times(3);
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--retry", retry, "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+      const posts = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8")).posts.filter((p: any) => p.destaque === "weekly-clicked");
+      return { queueCalls, posts };
+    }
+
+    it("#13076: --retry instagram refaz só o Instagram send_unknown; Threads publicado e LinkedIn send_unknown ficam intactos", async () => {
+      const { queueCalls, posts } = await runRetry13076("instagram");
+      assert.deepEqual(queueCalls, ["instagram"]);
+      const by = (pl: string) => posts.filter((p: any) => p.platform === pl);
+      assert.equal(by("instagram").length, 1);
+      assert.equal(by("instagram")[0].status, "scheduled");
+      assert.equal(by("instagram")[0].worker_queue_key, "queue:instagram:new");
+      assert.equal(by("threads")[0].status, "published");
+      assert.equal(by("threads")[0].worker_queue_key, "queue:th:old");
+      assert.equal(by("linkedin")[0].status, "send_unknown");
+      assert.equal(by("linkedin")[0].worker_queue_key, "queue:li:old");
+    });
+
+    it("#13076: --retry threads é recusado (já publicado) e nada é despachado", async () => {
+      const { queueCalls, posts } = await runRetry13076("threads");
+      assert.deepEqual(queueCalls, []);
+      assert.equal(posts.find((p: any) => p.platform === "threads").worker_queue_key, "queue:th:old");
+      assert.equal(posts.find((p: any) => p.platform === "instagram").status, "send_unknown");
+    });
+
+    // #13088: a chave do LinkedIn é fixa por carrossel. Antes o retry reenviava
+    // a mesma chave, o Worker devolvia 409 already_fired, o 409 contava como
+    // sucesso e o store passava de send_unknown a scheduled sem post novo.
+    for (const retry of ["linkedin", "instagram,linkedin"]) {
+      it(`#13088: --retry ${retry} é recusado antes de enviar; com o Worker respondendo 409 already_fired o LinkedIn segue send_unknown`, async () => {
+        const saturdayStr = aammddOf(new Date(2027, 11, 25));
+        const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+        addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+        const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+        mkdirSync(publishedDir, { recursive: true });
+        const at = "2027-12-26T11:00:00-03:00";
+        writeFileSync(
+          resolve(publishedDir, "06-weekly-published.json"),
+          JSON.stringify({
+            posts: [
+              { platform: "instagram", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:ig:old" },
+              { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "linkedin-weekly:x:main" },
+            ],
+          }),
+        );
+        const queueCalls: string[] = [];
+        mockAgent
+          .get("https://worker.test")
+          .intercept({ path: "/queue", method: "POST" })
+          .reply((opts) => {
+            queueCalls.push(JSON.parse(opts.body as string).channel);
+            return { statusCode: 409, data: JSON.stringify({ error: "already_fired", key: "linkedin-weekly:x:main" }) };
+          })
+          .persist();
+        const errors: string[] = [];
+        const originalError = console.error;
+        console.error = (...a: unknown[]) => {
+          errors.push(a.map(String).join(" "));
+        };
+        try {
+          await expectMockedExit(
+            () =>
+              main(
+                ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--retry", retry, "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+                { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+              ),
+            1,
+          );
+        } finally {
+          console.error = originalError;
+        }
+        assert.deepEqual(queueCalls, [], "nada pode bater na fila do Worker");
+        assert.match(errors.join("\n"), /--retry linkedin não é aceito \(#13088\)/);
+        const posts = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8")).posts;
+        const li = posts.find((p: any) => p.platform === "linkedin");
+        assert.equal(li.status, "send_unknown");
+        assert.equal(li.worker_queue_key, "linkedin-weekly:x:main");
+        assert.equal(posts.find((p: any) => p.platform === "instagram").status, "send_unknown");
+      });
+    }
+
+    it("#13088: o aviso de send_unknown do LinkedIn não manda rodar --retry linkedin", () => {
+      assert.doesNotMatch(weeklySendUnknownHint("linkedin", "linkedin/weekly-clicked"), /rodar com --schedule --retry/);
+      assert.match(weeklySendUnknownHint("linkedin", "linkedin/weekly-clicked"), /postar à mão/);
+      assert.match(weeklySendUnknownHint("instagram", "instagram/weekly-clicked"), /--schedule --retry instagram/);
+    });
+
+    // #13089: sem página do Facebook habilitada, --retry facebook saía 0 sem enviar nada.
+    it("#13089: --retry facebook sem página habilitada sai 1 e não despacha nada", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      writeFileSync(resolve(publishedDir, "06-weekly-published.json"), JSON.stringify({ posts: [] }));
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          queueCalls.push(JSON.parse(opts.body as string).channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: "queue:x", scheduled_at: "2027-12-26T11:00:00-03:00" }) };
+        })
+        .persist();
+      const errors: string[] = [];
+      const originalError = console.error;
+      console.error = (...a: unknown[]) => {
+        errors.push(a.map(String).join(" "));
+      };
+      try {
+        await expectMockedExit(
+          () =>
+            main(
+              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--retry", "instagram,facebook", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+              {
+                dataRoot,
+                flatCardGenerator: fakeFlatCardGenerator,
+                newsCardGenerator: fakeNewsCardGenerator,
+                // Única página desligada: nenhuma página do Facebook entra no envio.
+                facebookPagesConfig: {
+                  publishing: { social: { facebook: { pages: [{ slug: "diaria", enabled: false, page_id_env: "FACEBOOK_PAGE_ID", token_env: "FACEBOOK_PAGE_ACCESS_TOKEN" }] } } },
+                },
+              },
+            ),
+          1,
+        );
+      } finally {
+        console.error = originalError;
+      }
+      assert.deepEqual(queueCalls, []);
+      assert.match(errors.join("\n"), /--retry pediu facebook, que esta execução não despacha/);
+      assert.deepEqual(JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8")).posts, []);
     });
   });
 

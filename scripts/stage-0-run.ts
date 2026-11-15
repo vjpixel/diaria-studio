@@ -1181,6 +1181,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     } else {
       report.note(`⚠️  0k — verify-facebook-posts pulado: ${fbGate.reason}`);
     }
+    softStep(deps, report, "reconcile-published-videos (0k)", "scripts/reconcile-published-videos.ts", ["--edition-dir", `${prevDir}/`, "--lookback-days", "3"]);
     softStep(deps, report, "verify-social-worker-dispatch (0k)", "scripts/verify-social-worker-dispatch.ts", ["--edition-dir", `${prevDir}/`]);
     // #13009/#13008: confere IG/Threads/LinkedIn no FEED da conta — grava o
     // permalink, ou marca `send_unknown` (absent_from_feed) o post vencido
