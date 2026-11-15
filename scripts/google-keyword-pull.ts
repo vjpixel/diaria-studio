@@ -8,6 +8,11 @@
  *   npx tsx scripts/google-keyword-pull.ts [--terms "a,b,c"] [--seeds-file seed/keywords.csv] \
  *     [--out data/seo/google-keywords-{YYYY-MM-DD}.json] [--report-out data/seo/google-keywords-{YYYY-MM-DD}.md]
  *
+ * `--out`/`--report-out` aceitam o token literal `{date}` (trocado pela data do
+ * pull) — é assim que a task mensal grava o pull das sementes de vídeo
+ * (`seed/video-keywords.csv` → `data/seo/video-keywords-{date}.json`, #13090)
+ * com args estáticos.
+ *
  * `--terms` (lista separada por vírgula) sobrescreve o CSV de sementes — testar
  * hipótese nova não exige commit (#8356). Sem `--terms`, usa `seed/keywords.csv`
  * (mesmas sementes do `bing-pull.ts --mode keywords`). A API aceita 20 sementes
@@ -51,6 +56,11 @@ export function parseSeedsCsv(csv: string): string[] {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l, i) => l && !(i === 0 && l.toLowerCase() === "term"));
+}
+
+/** Troca o token literal `{date}` de `--out`/`--report-out` pela data do pull (#13090). */
+export function expandDateToken(path: string, date: string): string {
+  return path.split("{date}").join(date);
 }
 
 export function parseTermsArg(arg: string): string[] {
@@ -106,8 +116,8 @@ async function main(argv: string[]): Promise<number> {
 
   const date = new Date().toISOString().slice(0, 10);
   const { kept, discarded, contaminated } = partitionIdeas(ideas, seeds);
-  const jsonPath = resolve(ROOT, values.out ?? `data/seo/google-keywords-${date}.json`);
-  const mdPath = resolve(ROOT, values["report-out"] ?? `data/seo/google-keywords-${date}.md`);
+  const jsonPath = resolve(ROOT, expandDateToken(values.out ?? `data/seo/google-keywords-${date}.json`, date));
+  const mdPath = resolve(ROOT, expandDateToken(values["report-out"] ?? `data/seo/google-keywords-${date}.md`, date));
   for (const p of [jsonPath, mdPath]) mkdirSync(dirname(p), { recursive: true });
 
   writeFileSync(
