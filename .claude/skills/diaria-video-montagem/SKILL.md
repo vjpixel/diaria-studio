@@ -11,6 +11,10 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 
 **Fora de escopo:** o upload do vídeo final (é do `/diaria-publica`) e a edição fina no Premiere, que continua manual.
 
+## Trecho para compartilhar (#13164)
+
+Com `porVideo.horizontal.trechoCompartilhar` no roteiro, o `build` grava `_internal/video-montagem/trecho-compartilhar.json`: id, rótulo, fala e `seconds`, calculado pela primeira palavra na decupagem e pela posição nos clipes finais (com as pausas cortadas). Fala ausente, ambígua ou com o início removido para o build: corrigir a decupagem/blocos, nunca inventar um tempo. Sem o campo, o registro fica `null` quando o horizontal é reconstruído. Incluir o segundo no relato, como **sugestão a conferir no export final** (`requiresFinalCheck: true`). Uma reedição no Premiere pode mudar esse segundo; a Parte A do `/diaria-publica` confere antes do upload.
+
 ## Argumentos
 
 - `AAMMDD` — opcional. Sem ele, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`) e seguir; os scripts recebem sempre a data explícita.

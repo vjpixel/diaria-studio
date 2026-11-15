@@ -993,3 +993,22 @@ export function describeYouTubeState(state: PublishState, opts: { auditBlocked?:
       return "estado não confirmado na releitura — confira no YouTube Studio antes de afirmar qualquer coisa";
   }
 }
+
+/** #13164: após obter o id, inclui o link do trecho no snippet do vídeo novo.
+ * Só snippet: mantém privacidade/agendamento. A releitura confere a descrição. */
+export async function setYouTubeShareDescription(
+  deps: YouTubeUploadDeps, token: string, videoId: string,
+  original: { title: string; description: string; [key: string]: unknown }, description: string,
+): Promise<void> {
+  const snippet: Record<string, unknown> = { title: original.title, description };
+  for (const k of YOUTUBE_WRITABLE_SNIPPET_FIELDS) if (original[k] !== undefined) snippet[k] = original[k];
+  const res = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet`, {
+    method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: videoId, snippet }),
+  });
+  if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "update"));
+  const check = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet&id=${encodeURIComponent(videoId)}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!check.ok) throw new Error(explainYouTubeUploadError(check.status, await errorSnippet(check), "reread"));
+  const json = await readJson(check) as { items?: Array<{ id?: string; snippet?: { description?: string } }> } | undefined;
+  if (json?.items?.find((v) => v.id === videoId)?.snippet?.description !== description) throw new Error("descrição com link do trecho não confirmada na releitura; conferir no Studio");
+}

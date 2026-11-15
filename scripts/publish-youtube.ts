@@ -128,6 +128,8 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * `--force` (não é: sobe o vídeo da edição).
  */
 
+import { confirmedShare, readShareCue, shareDescription, shareLine, videoSha256, type SharePublish } from "./lib/diaria/video-share.ts";
+import { setYouTubeShareDescription } from "./lib/diaria/youtube-upload.ts";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -240,6 +242,7 @@ export interface YouTubePublishPlanInput {
    * D1); a capa entra no plano como sugestão de gancho para a capa (Passo A2).
    */
   roteiro?: { titulo?: string; capa?: string };
+  share?: SharePublish;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumb: { path: string; exists: boolean };
   /** Legenda SRT do horizontal (#11384). Ausente = sem legenda no plano. */
@@ -263,6 +266,7 @@ export interface YouTubePublishPlan {
   titleSource: "d1" | "flag" | "roteiro";
   /** #12751: o texto da capa do horizontal no roteiro, ausente sem roteiro. */
   roteiroCapa?: string;
+  share?: SharePublish;
   schedule: YouTubeScheduleDecision;
   /** O que o vídeo de fato fica — difere de `schedule` sem a auditoria do GCP. */
   effective: YouTubeEffectiveVisibility;
@@ -374,7 +378,8 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
   return {
     aammdd: input.aammdd,
     episode,
-    metadata,
+    metadata: input.share ? { ...metadata, description: shareDescription(metadata.description, input.share) } : metadata,
+    ...(input.share ? { share: input.share } : {}),
     d1Title: derived.title,
     titleSource,
     ...(roteiroCapa ? { roteiroCapa } : {}),
@@ -409,6 +414,7 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   thumbnail_path: string | null;
   /** O plano previa o rebaixamento pra private (projeto GCP sem auditoria). */
   audit_blocked: boolean;
+  share?: { line: string; descriptionOk: boolean; error: string | null; pinnedComment: "pending-studio" };
   /**
    * #11739: o `title` veio de `--title` (≠ D1); `roteiro` (#12751): do roteiro
    * do vídeo. Ausente = título do D1. O título derivado do D1 fica em
@@ -653,6 +659,10 @@ function recordExistingVideo(
     ...(v.matchedBy === "period" ? { period_match_accepted: true } : {}),
     ...(history.length > 0 ? { previous_uploads: history } : {}),
   };
+  if (plan.share) {
+    record.share = { line: shareLine(plan.share, v.videoId), descriptionOk: false, error: "vídeo já no canal: aplicar descrição no Studio depois de conferir o tempo nesse vídeo", pinnedComment: "pending-studio" };
+    input.log(`[pendente] conferir o tempo no vídeo do canal e pôr na descrição e no comentário fixado pelo Studio: ${record.share.line}`);
+  }
   input.log(
     `[ok] already-on-channel: ${v.url} (${v.title || "sem título"}) já está no canal, reconhecido por ${v.matchedBy}, estado ${state} — nada enviado. ` +
       "Se não for o vídeo desta edição, rode de novo com --force (cria OUTRO vídeo no canal).",
@@ -871,6 +881,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
       `[ok] vídeo desta edição já enviado (${rec.url}, estado relido em ${rec.rereadAt}: ${rec.state}) — nada enviado. ` +
         "Use --force para subir de novo (cria OUTRO vídeo no canal).",
     );
+    if (rec.share) log(`[pendente] comentário para publicar/fixar no Studio${rec.share.descriptionOk ? "" : " e link na descrição a conferir"}: ${rec.share.line}`);
     if (plan.captions && !rec.captions?.ok) {
       log(`[aviso] o vídeo registrado não tem legenda enviada — \`npx tsx scripts/publish-youtube.ts ${plan.aammdd} --captions-only\` envia ${plan.captions.path} (#11384)`);
     }
@@ -907,6 +918,10 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
     log(`publish-youtube: não foi possível ler o vídeo/capa: ${(e as Error).message}. Nada foi enviado.`);
     return { exitCode: 1, record: null, skipped: false };
   }
+  if (plan.share && videoSha256(video) !== plan.share.videoSha256) {
+    log("[erro] export mudou depois da conferência do trecho compartilhável; refaça --share-start e aprove o plano novo. Nada enviado.");
+    return { exitCode: 1, record: null, skipped: false };
+  }
   // #11384: a legenda é opcional — ilegível vira aviso, nunca bloqueia o vídeo.
   let srt: Buffer | null = null;
   if (plan.captions) {
@@ -931,6 +946,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
     writeFileAtomic(recordPath, JSON.stringify(full, null, 2) + "\n");
   };
 
+  let shareResult: YouTubePublishedRecord["share"];
   let result: YouTubeUploadResult;
   try {
     result = await uploadYouTubeVideo(deps, {
@@ -957,13 +973,22 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
             },
           }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
-      ...(srt
-        ? {
-            afterVideo: async (token: string, videoId: string) => {
-              captionOut.result = await uploadCaptionSafely(deps, token, videoId, srt, plan.captions?.path ?? null);
-            },
+      ...((srt || plan.share) ? {
+        afterVideo: async (token: string, videoId: string) => {
+          if (plan.share) {
+            shareResult = { line: shareLine(plan.share, videoId), descriptionOk: false, error: null, pinnedComment: "pending-studio" };
+            try {
+              await setYouTubeShareDescription(deps, token, videoId, plan.request.body.snippet, shareDescription(plan.request.body.snippet.description, plan.share, videoId));
+              shareResult.descriptionOk = true;
+            } catch (e) {
+              shareResult.error = (e as Error).message;
+              log(`[aviso] vídeo enviado, mas o link na descrição falhou: ${shareResult.error}; aplicar no Studio: ${shareResult.line}. Não repetir o upload.`);
+            }
+            log(`[pendente] comentário para publicar e fixar no Studio: ${shareResult.line}`);
           }
-        : {}),
+          if (srt) captionOut.result = await uploadCaptionSafely(deps, token, videoId, srt, plan.captions?.path ?? null);
+        },
+      } : {}),
     });
   } catch (e) {
     if (e instanceof ExistingEditionVideoError) {
@@ -1007,6 +1032,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
     audit_blocked: plan.effective.auditBlocked,
     ...result,
     ...(captionOut.result ? { captions: captionOut.result } : {}),
+    ...(shareResult ? { share: shareResult } : {}),
     ...(history.length > 0 ? { previous_uploads: history } : {}),
   };
 
@@ -1462,13 +1488,13 @@ export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: s
       captions_sha256: plan.captions ? sha256File(plan.captions.path) : null,
     },
     sources: readVideoPlanSources(editionDir),
-    command: `npx tsx scripts/publish-youtube.ts ${plan.aammdd} --upload --confirm-publish ${plan.aammdd}`,
+    command: `npx tsx scripts/publish-youtube.ts ${plan.aammdd} --upload --confirm-publish ${plan.aammdd}${plan.share ? ` --share-start ${plan.share.seconds}` : ""}`,
     ...(generatedAt ? { generatedAt } : {}),
   });
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--video-id VIDEO_ID] [--dry-run] [--force] [--captions-reviewed] | --captions-list [--video-id VIDEO_ID] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--video-id VIDEO_ID] [--dry-run] [--force] [--captions-reviewed] | --captions-list [--video-id VIDEO_ID] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO] [--share-start SEGUNDOS]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -1593,8 +1619,11 @@ async function main(): Promise<number> {
   // #12751: título e capa do horizontal no roteiro do vídeo, quando a /diaria-video-roteiro gravou o JSON.
   const roteiro = readRoteiroHorizontal(dir, (w) => console.error(`[aviso] ${w}`));
 
+  const shareCue = readShareCue(dir);
+  const share = shareCue ? confirmedShare(shareCue, values["share-start"], readFileSync(videoPath)) : undefined;
   const plan = planYouTubePublish({
     aammdd,
+    ...(share ? { share } : {}),
     // #13051: título/descrição do vídeo saem sem o erro intencional da edição.
     reviewedMd: readReviewedMdScrubbed(dir, aammdd),
     now: new Date(),
