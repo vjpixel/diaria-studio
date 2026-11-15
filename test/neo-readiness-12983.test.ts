@@ -43,7 +43,7 @@ import {
   UNVERIFIED_STREAK_THRESHOLD,
   updateUnverifiedStreak,
 } from "../scripts/lib/failover/neo-readiness-alarm.ts";
-import { main as readinessMain, parseDopplerNames, probeInstagram, probeLinkedIn, probeThreads, withTimeout, type ReadinessDeps } from "../scripts/failover/neo-readiness.ts";
+import { main as readinessMain, parseDopplerNames, probeInstagram, readDotenvFile, probeLinkedIn, probeThreads, withTimeout, type ReadinessDeps } from "../scripts/failover/neo-readiness.ts";
 import { classifyInstagramProfileResponse, probeInstagramToken } from "../scripts/lib/instagram-token-probe.ts";
 import { missingYouTubeCredentials } from "../scripts/lib/diaria/youtube-upload.ts";
 import { main as alarmMain, type AlarmDeps } from "../scripts/neo-readiness-alarm.ts";
@@ -610,6 +610,43 @@ describe("CLI neo-readiness (deps falsas)", () => {
     const { d, out } = deps({ readDotenv: () => ({ CLOUDFLARE_ACCOUNT_ID: "x", CLOUDFLARE_WORKERS_TOKEN: "y" }) });
     assert.equal(await readinessMain([], d), 1);
     assert.ok(out.some((l) => /falta KIT_API_KEY: só no Doppler/.test(l)), out.join("\n"));
+  });
+
+  it("#13126: .env ilegível (não ENOENT) sai como falta com a causa, não só 'segredo ausente'", async () => {
+    const { d, out } = deps({
+      readDotenv: () => {
+        throw new Error("EACCES: permission denied, open 'C:\\repo\\.env'");
+      },
+    });
+    assert.equal(await readinessMain([], d), 1);
+    assert.ok(out.some((l) => /FALHA: \.env ilegível \(EACCES: permission denied/.test(l)), out.join("\n"));
+  });
+
+  it("#13126: .env ausente sai como falta própria; .env lido é ok", async () => {
+    const absent = deps({ readDotenv: () => null });
+    assert.equal(await readinessMain([], absent.d), 1);
+    assert.ok(absent.out.some((l) => /FALHA: \.env ausente no checkout/.test(l)), absent.out.join("\n"));
+    const { d, out } = deps();
+    await readinessMain(["--json"], d);
+    const report = JSON.parse(out.find((l) => l.trimStart().startsWith("{"))!) as { checks: Array<{ id: string; status: string }> };
+    assert.equal(report.checks.find((c) => c.id === "dotenv")?.status, "ok");
+  });
+
+  it("#13126: leitor real do .env: ENOENT é null, diretório no lugar do arquivo lança", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "readiness-dotenv-13126-"));
+    try {
+      assert.equal(readDotenvFile(dir), null);
+      writeFileSync(join(dir, ".env"), "KIT_API_KEY=x\n");
+      assert.deepEqual(readDotenvFile(dir), { KIT_API_KEY: "x" });
+      rmSync(join(dir, ".env"));
+      mkdirSync(join(dir, ".env"));
+      assert.throws(() => readDotenvFile(dir), /EISDIR/);
+      const b = deps({ root: dir, readDotenv: readDotenvFile });
+      await readinessMain([], b.d);
+      assert.ok(b.out.some((l) => /FALHA: \.env ilegível \(EISDIR/.test(l)), b.out.join("\n"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("segredo só no ambiente da sessão (GOOGLE_* do app) não deixa a task pronta", async () => {

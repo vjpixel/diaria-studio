@@ -775,6 +775,42 @@ export function buildShortCoverPanelSvg(panelTopRatio = SHORT_COVER_PANEL_TOP_RA
   );
 }
 
+/**
+ * Só o painel e o gancho da capa vertical, num PNG transparente (#13123): o
+ * mesmo desenho do `composeShortCover`, sem o frame por baixo, para a montagem
+ * sobrepor nos primeiros quadros do vertical (o vídeo é o fundo). Desenhado em
+ * 1080x1920 e redimensionado para `width`x`height` (vertical de outro
+ * tamanho). Gancho fora de 2 a 5 palavras lança (`normalizeShortCoverHook`).
+ */
+export async function composeShortCoverOverlay(input: { hook: string; width?: number; height?: number; panelTopRatio?: number }): Promise<{ png: Buffer; warnings: string[] }> {
+  const warnings: string[] = [];
+  const hook = normalizeShortCoverHook(input.hook);
+  const panelTopRatio = input.panelTopRatio ?? SHORT_COVER_PANEL_TOP_RATIO;
+  const panel = buildShortCoverPanelSvg(panelTopRatio);
+  const hookLayer = await renderHookLayer(hook, SHORT_HOOK_MAX_WIDTH, "middle");
+  const panelTop = Math.round(SHORT_COVER_H * panelTopRatio);
+  const panelH = SHORT_COVER_H - panelTop;
+  if (hookLayer.height > panelH - 80) warnings.push(`gancho com ${hookLayer.height}px de altura quase não cabe no painel (${panelH}px): encurte o texto da capa`);
+  let png = await sharp({ create: { width: SHORT_COVER_W, height: SHORT_COVER_H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([
+      { input: Buffer.from(panel), left: 0, top: 0 },
+      {
+        input: hookLayer.png,
+        left: Math.max(0, Math.round((SHORT_COVER_W - hookLayer.width) / 2)),
+        top: Math.max(panelTop, panelTop + Math.round((panelH - hookLayer.height) / 2)),
+      },
+    ])
+    .png()
+    .toBuffer();
+  const w = input.width ?? SHORT_COVER_W;
+  const h = input.height ?? SHORT_COVER_H;
+  if (w !== SHORT_COVER_W || h !== SHORT_COVER_H) {
+    if (Math.abs(w / h - 9 / 16) > (9 / 16) * 0.02) warnings.push(`sequência ${w}x${h} não é 9:16: a capa é esticada para o quadro`);
+    png = await sharp(png).resize(w, h, { fit: "fill" }).png().toBuffer();
+  }
+  return { png, warnings };
+}
+
 export interface ComposeShortCoverInput {
   /** Frame do vertical (JPEG/PNG), em qualquer tamanho 9:16. */
   frame: Buffer;
