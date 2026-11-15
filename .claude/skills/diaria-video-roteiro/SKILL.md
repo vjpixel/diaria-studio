@@ -43,7 +43,16 @@ Regras de estrutura:
 - Toda fala usada num vertical precisa funcionar sem a anterior: repetir o sujeito ("o Claude Code", não "ele") e não depender de uma fala que ficou só no horizontal.
 - Quando o vídeo entrega dicas, o gancho promete: "Fica até o final, que eu vou te dar três dicas pra…". No vertical 1 a promessa vira a chamada final para o vídeo completo no YouTube. É falada porque fora do YouTube Shorts o post não leva link para o horizontal (#12735).
 - Abertura fixa, sempre a mesma: "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida."
-- Cada vídeo tem título e texto da capa. O título é pensado para a busca e o clique no YouTube e pode ser diferente do título do D1 na newsletter; avisar quando for. O texto da capa segue a diretriz de `docs/youtube-capa-texto.md` (#12737): complementa o título, 2 a 6 palavras (5 no vertical), pergunta ou afirmação; ordenar os candidatos com `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file {arquivo}` e trazer os primeiros como opções.
+- Cada vídeo tem título e texto da capa. O título é pensado para a busca e o clique no YouTube e pode ser diferente do título do D1 na newsletter; avisar quando for. O texto da capa segue a diretriz de `docs/youtube-capa-texto.md` (#12737): complementa o título, 2 a 6 palavras (5 no vertical), pergunta ou afirmação; ordenar os candidatos com `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file {arquivo}` e trazer os primeiros como opções. O script compara a capa com o título do D1 e com os títulos do vídeo (`--title`, ou os do `roteiro-falas.json` quando ele já existe): passar `--title` quando o vídeo trata de outro assunto que o D1 do `02-reviewed.md`.
+
+Critérios de título, capa e gancho (#13116, decididos com o editor em 15/11/2026; detalhe em `docs/youtube-capa-texto.md`):
+
+1. Título e gancho fazem a mesma promessa com palavras diferentes, nunca iguais. No horizontal a pessoa já leu o título antes do clique: o título traz o assunto e o nome, para a busca; o gancho traz a consequência para quem assiste. Nos verticais o título aparece escrito na tela e a fala sai como legenda queimada, então título igual ao gancho mostra a mesma frase duas vezes: o título diz o assunto, o gancho traz a tensão. No Instagram, a primeira linha da legenda do post (corte em cerca de 125 caracteres) também não copia o título.
+2. A capa do horizontal aparece sempre com o título: traz a consequência e não repete o assunto.
+3. A capa do vertical aparece sozinha na grade do perfil: precisa de sujeito reconhecível ("Sua Busca", "Google"), nunca uma pergunta sem sujeito ("Inventa cinco vezes menos?").
+4. O gancho chega ao ponto em cerca de 3 s no vertical e em até 5 a 10 s no horizontal: o que importa para quem assiste vem na primeira frase. Estimar a duração a cerca de 150 palavras por minuto (3 s são umas 8 palavras).
+
+Pergunta ou afirmação na capa: escolher pela clareza, não pelo formato (a diretriz não tem evidência para preferir uma ou outra). Título do horizontal: mirar cerca de 60 caracteres, com o nome do produto no começo.
 
 ## Passo 3 — Regras da fala
 
@@ -97,7 +106,7 @@ Na resposta, dar o link e citar só o que mudou.
 }
 ```
 
-Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da montagem em que a fala entra no horizontal (ou no vertical, quando ela só existe lá): `gancho`, `abertura`, `resumo`, `comentario`, `cta_vertical` (a chamada final do vertical 1); o resumo do horizontal vira o resumo curto nos verticais sozinho. `porVideo` traz o título e o texto da capa de cada vídeo, como na página. Validar com `npx tsx scripts/video-roteiro-blocos.ts {AAMMDD}` (exit 0 = o JSON serve; os `[aviso]` apontam fala sem bloco ou fora da ordem do vertical).
+Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da montagem em que a fala entra no horizontal (ou no vertical, quando ela só existe lá): `gancho`, `abertura`, `resumo`, `comentario`, `cta_vertical` (a chamada final do vertical 1); o resumo do horizontal vira o resumo curto nos verticais sozinho. `porVideo` traz o título e o texto da capa de cada vídeo, como na página. Validar com `npx tsx scripts/video-roteiro-blocos.ts {AAMMDD}` (exit 0 = o JSON serve; os `[aviso]` apontam fala sem bloco ou fora da ordem do vertical, gancho do vertical com mais de ~8 palavras antes do primeiro ponto e título que repete o gancho, #13116).
 
 ## Passo 6 — Iterar com o editor
 
@@ -122,6 +131,7 @@ Quando o editor pedir, ou quando o roteiro parar de mudar:
    - algum fato aparece duas vezes?
    - cada vertical faz sentido sozinho e cumpre o que o gancho promete?
    - o vertical 2 chega nas dicas em até uns 30 s? Se passar disso, encurtar o que vem antes.
+   - os critérios de título, capa e gancho do Passo 2 (#13116): título e gancho de cada vídeo dizem a mesma coisa com palavras diferentes? A capa do horizontal não repete o assunto do título? A capa de cada vertical tem sujeito reconhecível? A primeira frase do gancho chega ao ponto (umas 8 palavras no vertical, até 5 a 10 s no horizontal)? Os `[aviso]` do `video-roteiro-blocos.ts` apontam gancho longo no vertical e título que repete o gancho.
    - as durações escritas na página batem com o texto?
    - a caixa do topo e as notas descrevem a versão atual?
 3. Entregar as mudanças aplicadas e, separadas, as decisões que são do editor.

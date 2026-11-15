@@ -11,12 +11,16 @@
  * de cada formato. O editor escolhe ANTES de a capa ser composta.
  *
  * Uso:
- *   npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} [--candidates-file F] [--candidate "texto"]... [--json] [--limit 10]
+ *   npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} [--candidates-file F] [--candidate "texto"]... [--title "título do vídeo"]... [--json] [--limit 10]
  *   npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --record "Ensinaram a IA|e foram demitidos" --format horizontal|short
  *   npx tsx scripts/suggest-capa-hooks.ts --history [--json]
  *
  * `--edition-dir` substitui a pasta da edição. D1 = `## DESTAQUE 1` do
- * `02-reviewed.md`. `--record` grava o gancho escolhido em
+ * `02-reviewed.md`. A repetição do título é conferida contra o título do D1 e
+ * contra os títulos do vídeo (#13116): `--title` (repetível) ou, sem ele, os
+ * títulos de `_internal/roteiro-falas.json` (`porVideo`, gravado pela
+ * `/diaria-video-roteiro`). Cada candidato traz também o aviso de capa do
+ * Short sem sujeito reconhecível. `--record` grava o gancho escolhido em
  * `_internal/youtube-capa-hooks.json` (um por formato), para o `--history`
  * cruzar depois com as views de `data/youtube-analytics/videos.jsonl`.
  *
@@ -45,21 +49,24 @@ import {
   type HookHistoryVideoLine,
 } from "./lib/diaria/youtube-capa-hooks.ts";
 import { YOUTUBE_ANALYTICS_DIR, YOUTUBE_ANALYTICS_FILES } from "./lib/diaria/youtube-analytics.ts";
+import { parseRoteiroFalas, ROTEIRO_FALAS_FILE, roteiroPecas } from "./lib/diaria/roteiro-videos.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const KNOWN_FLAGS = ["edition-dir", "candidates-file", "candidate", "json", "limit", "record", "format", "history", "help"] as const;
-const VALUE_FLAGS = new Set(["edition-dir", "candidates-file", "candidate", "limit", "record", "format"]);
+const KNOWN_FLAGS = ["edition-dir", "candidates-file", "candidate", "title", "json", "limit", "record", "format", "history", "help"] as const;
+const VALUE_FLAGS = new Set(["edition-dir", "candidates-file", "candidate", "title", "limit", "record", "format"]);
 
 interface Args {
   positional: string[];
   values: Record<string, string>;
   candidates: string[];
+  /** `--title`, repetível (#13116). */
+  titles: string[];
   flags: Set<string>;
 }
 
 /** Parser próprio: `--candidate` é repetível e o valor pode conter `|` (quebra de linha do gancho). */
 export function parseSuggestArgs(argv: string[]): Args {
-  const out: Args = { positional: [], values: {}, candidates: [], flags: new Set() };
+  const out: Args = { positional: [], values: {}, candidates: [], titles: [], flags: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith("--")) {
@@ -72,6 +79,7 @@ export function parseSuggestArgs(argv: string[]): Args {
       const v = eq > 0 ? a.slice(eq + 1) : argv[++i];
       if (v === undefined) throw new Error(`--${key} precisa de valor`);
       if (key === "candidate") out.candidates.push(v);
+      else if (key === "title") out.titles.push(v);
       else out.values[key] = v;
     } else {
       out.flags.add(key);
@@ -91,6 +99,31 @@ export function parseCandidatesFile(raw: string): string[] {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"));
+}
+
+/**
+ * Títulos do vídeo no roteiro (#13116): os de `porVideo` em
+ * `_internal/roteiro-falas.json`, sem repetir. Sem o arquivo = lista vazia em
+ * silêncio; ilegível ou inválido = lista vazia com aviso (a comparação fica só
+ * com o D1, nunca derruba a sugestão).
+ */
+export function readRoteiroTitles(editionDir: string, warn: (msg: string) => void): string[] {
+  const path = join(editionDir, ROTEIRO_FALAS_FILE);
+  if (!existsSync(path)) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    warn(`[aviso] ${path} ilegível (${(err as Error).message}): capa comparada só com o título do D1`);
+    return [];
+  }
+  const lido = parseRoteiroFalas(raw);
+  if (!lido.ok) {
+    warn(`[aviso] ${path} inválido (${lido.problemas.join("; ")}): capa comparada só com o título do D1`);
+    return [];
+  }
+  const titles = Object.values(roteiroPecas(lido.roteiro)).map((p) => p?.titulo).filter((t): t is string => Boolean(t));
+  return [...new Set(titles)];
 }
 
 function readJsonl(path: string): HookHistoryVideoLine[] {
@@ -198,17 +231,19 @@ async function main(): Promise<number> {
   if (args.values["candidates-file"]) {
     agentCandidates.push(...parseCandidatesFile(readFileSync(resolve(args.values["candidates-file"]), "utf8")));
   }
+  const titles = args.titles.length > 0 ? args.titles : readRoteiroTitles(dir, (m) => console.error(m));
+  const opts = { titles };
   const scores = [
-    ...agentCandidates.map((c) => scoreCapaHook(c, d1, "agente")),
-    ...seedCapaHooks(d1).map((c) => scoreCapaHook(c, d1, "semente")),
+    ...agentCandidates.map((c) => scoreCapaHook(c, d1, "agente", opts)),
+    ...seedCapaHooks(d1).map((c) => scoreCapaHook(c, d1, "semente", opts)),
   ];
   const ranked = rankCapaHooks(scores);
   if (agentCandidates.length === 0) {
     console.error("[aviso] sem candidatos do agente: só as sementes do D1. Escreva 8 a 10 pela diretriz e passe com --candidates-file.");
   }
   const limit = Number.parseInt(args.values.limit ?? "10", 10);
-  if (args.flags.has("json")) console.log(JSON.stringify({ d1, suggestions: ranked.slice(0, limit) }, null, 2));
-  else console.log(formatCapaSuggestions(ranked, d1, Number.isFinite(limit) && limit > 0 ? limit : 10));
+  if (args.flags.has("json")) console.log(JSON.stringify({ d1, titles, suggestions: ranked.slice(0, limit) }, null, 2));
+  else console.log(formatCapaSuggestions(ranked, d1, Number.isFinite(limit) && limit > 0 ? limit : 10, titles));
   return 0;
 }
 
