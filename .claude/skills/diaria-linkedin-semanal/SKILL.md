@@ -512,6 +512,25 @@ clique que o LinkedIn não oferece) da edição do vídeo para
 `videoImagePath` no `ln-{cycle}.json`: é a imagem que o editor sobe à mão
 na seção (Passo 9).
 
+**Frase do vídeo (#13045).** A seção abre com a frase fixa "Eu comento o
+destaque acima no YouTube da diar.ia.br." (link em "YouTube da diar.ia.br";
+"principal vídeo da semana" fica só na seção da Stack) e fecha com uma frase
+da semana sobre o que o vídeo traz que o texto não traz. Quando
+`ln-selection.json` tem `video`, antes do render:
+
+1. ler a legenda da edição do vídeo, `diaria-comentada-{video.editionDate}.srt`
+   na pasta da edição;
+2. escrever UMA frase (até 280 caracteres) com o que o vídeo explica e o
+   artigo não traz, só com fatos da fala; nada de "o mais assistido"/"o mais
+   visto", nada de "diar.ia.br", sem link nem seta (referência do 26w46: "No
+   vídeo, explico em três etapas como a IA aprende com o time e passa a
+   dispensá-lo, e por que as vagas de entrada são as mais afetadas.");
+3. humanizador + Clarice como no Passo 5, com `clarice-filter.ts`;
+4. passar no render com `--video-pitch-file {arquivo}`: o script confere
+   contra a legenda e grava `video.pitch`; exit 1 = recusada, nada gravado.
+
+Re-render sem a flag reusa o gravado; sem frase, a seção sai só com a fixa.
+
 ## Passo 7b — Publicar a prévia visual do artefato (#8027, obrigatório antes do Passo 8)
 
 **Diferente de simplesmente colar `ln-{cycle}.html` cru num Artifact, esta
@@ -674,12 +693,22 @@ Menção a "diar.ia.br" em texto puro (a frase da seção "Vídeo da semana",
 âncoras a mais da contagem, até o número de menções em texto puro da fonte.
 
 - **`result.ok === true`:** prosseguir pro Passo 8d.
-- **Exceção, a perda esperada da menção (#10385, decisão do editor de
-  18/10/2026):** se os ÚNICOS issues forem `WORDMARK_HREF_REWRITE_HINT` na
-  âncora `mencao-abertura` (o LinkedIn reescreve todo "diar.ia.br" do corpo,
-  ver `context/publishers/linkedin.md` item (f)), NÃO tentar corrigir: seguir
-  pro 8d e entregar no Passo 9 com o pedido de ajuste manual (item 4).
-  Qualquer outro issue, sozinho ou junto desse, cai na regra abaixo.
+- **Exceção, a reescrita esperada da menção (#10385, decisão do editor de
+  18/10/2026; href da menção no perfil desde o #13049):** se os ÚNICOS
+  issues forem `WORDMARK_HREF_REWRITE_HINT` de href divergente na âncora
+  "diar.ia.br" da menção (o `href` da fonte é
+  `https://www.linkedin.com/company/diar.ia.br/`, sem UTM; o LinkedIn
+  reescreve todo "diar.ia.br" do corpo, ver `context/publishers/linkedin.md`
+  item (f)), NÃO tentar corrigir: seguir pro 8d e entregar no Passo 9 com o
+  pedido de ajuste manual (item 5). Qualquer outro issue, sozinho ou junto
+  desse, cai nas regras abaixo.
+- **Âncora "YouTube da diar.ia.br" dividida (#13049 item 3):** issue com
+  `TRAILING_WORDMARK_SPLIT_HINT` é padrão conhecido (no 26w46 a âncora saiu
+  como "YouTube da" + "diar.ia.br" apontando para a home). Corrigir assim:
+  selecionar o texto inteiro da âncora por `Range` via `javascript_tool`
+  (sem clicar no link), aplicar o link pelo botão de link da toolbar com o
+  `href` da fonte e repetir a auditoria, com o mesmo teto de 2 tentativas
+  da regra abaixo.
 - **`result.ok === false`:** PARAR — não escrever o texto do post de feed
   nem entregar ao editor. Apresentar `result.issues` ao editor. Se algum
   issue citar o padrão conhecido de split de âncora "diar.ia.br" (PR #5987,
@@ -737,9 +766,13 @@ ainda não conhece a newsletter. Padrão, nesta ordem:
 3. **O que tem no artigo**: o resumo de cada manchete, o vídeo da semana
    (só quando `ln-selection.json` tiver `video`) e o Use Melhor, descrito
    pelo benefício ao leitor.
-4. **Apresentação da newsletter e convite no fim**: o que é a diar.ia.br,
-   a frequência ("todo dia útil"), "5 minutos por dia", grátis, e que o
-   link para assinar está no artigo.
+4. **Apresentação da newsletter e convite no fim** (#13048, #13049 item
+   4): o que é a @diar.ia.br, a frequência ("todo dia útil"), "5 minutos
+   por dia", grátis, e o convite: "Para assinar, clique em "Veja minha
+   newsletter", logo abaixo do meu nome.". A frase depende do rótulo "Veja
+   minha newsletter" no perfil do editor (URL
+   `https://diar.ia.br/?utm_source=linkedin&utm_medium=bio&utm_campaign=perfil-linkedin-pessoal`);
+   se o rótulo mudar, atualizar este padrão.
 5. **Bloco de hashtags** na mesma regra dos posts sociais da diária
    (`.claude/agents/social-writer.md`, #367): até 5 hashtags, sempre
    `#InteligenciaArtificial`, nunca `#Tecnologia`, em português quando
@@ -758,7 +791,7 @@ Um advogado levou multa de R$ 5 mil no STF por esconder, numa petição, em letr
 
 No artigo tem o resumo de cada uma, um vídeo meu comentando o golpe da selfie e um passo a passo para conferir se a fonte que o ChatGPT cita diz mesmo o que ele afirma.
 
-As três saíram na diar.ia.br, a newsletter de IA que escrevo e mando por e-mail todo dia útil. São 5 minutos por dia e é grátis. O link para assinar está no artigo.
+As três saíram na @diar.ia.br, a newsletter de IA que escrevo e mando por e-mail todo dia útil. São 5 minutos por dia e é grátis. Para assinar, clique em "Veja minha newsletter", logo abaixo do meu nome.
 
 #InteligenciaArtificial #SegurancaDigital #Trabalho #Justica
 ```
@@ -833,20 +866,26 @@ editor, nesta ordem:
    2 = texto sem revisão ou alterado depois dela: volte ao Passo 8d, nunca
    entregue a versão recusada. Cada versão nova que o editor pedir passa
    pelo mesmo ciclo (Write, duas passadas, `--mark`, `--check`).
-4. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
-   editor de 18/10/2026)**, só quando o `ln-{cycle}.html` tiver uma âncora
-   com `utm_content=mencao-abertura` (abertura sem a marca não gera
+4. **Menção à página no post de feed (#13049):** no post de feed, apagar o
+   "@diar.ia.br" digitado e escolher a página diar.ia.br na lista de
+   menções que o LinkedIn abre.
+5. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
+   editor de 18/10/2026; href no perfil desde o #13049)**, só quando o
+   `ln-{cycle}.html` tiver a âncora da menção
+   (`linkedin.com/company/diar.ia.br`; abertura sem a marca não gera
    âncora). O LinkedIn reescreve todo "diar.ia.br" do corpo para
-   `http://diar.ia.br` sem UTM, então essa âncora chega sem a UTM (o Passo
+   `http://diar.ia.br`, então essa âncora chega com o href trocado (o Passo
    8c acusa com `WORDMARK_HREF_REWRITE_HINT`). Pedir ao editor, de forma
    explícita, que corrija o link da menção à mão antes de agendar, e passar
-   o `href` dessa âncora no `ln-{cycle}.html` como a URL pronta pra colar.
-   Na UI: selecionar o texto "diar.ia.br" da menção arrastando o mouse (sem
-   clicar direto no link), abrir o diálogo de link e colar a URL. Depois de
-   corrigir, recarregar o rascunho e conferir que o link da menção ainda
-   tem `utm_content=mencao-abertura` (ainda não verificado se a correção
-   manual sobrevive ao salvar; se não sobreviver, avisar na #10385).
-5. **As instruções da ação manual**, resumidas:
+   o `href` dessa âncora no `ln-{cycle}.html`
+   (`https://www.linkedin.com/company/diar.ia.br/`, sem UTM) como a URL
+   pronta pra colar. Na UI: selecionar o texto "diar.ia.br" da menção
+   arrastando o mouse (sem clicar direto no link), abrir o diálogo de link
+   e colar a URL. Depois de corrigir, recarregar o rascunho e conferir que
+   o link da menção ainda aponta para o perfil (ainda não verificado se a
+   correção manual sobrevive ao salvar; se não sobreviver, avisar na
+   #10385).
+6. **As instruções da ação manual**, resumidas:
    - Na aba já aberta com o rascunho colado, subir a imagem de capa no
      campo nativo (ícone no topo do editor, acima do título —
      `context/publishers/linkedin.md` §3).
