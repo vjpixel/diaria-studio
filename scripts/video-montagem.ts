@@ -230,6 +230,8 @@
  * montagem do HD, nunca o ponto em si. No modo API, a variável apontando para um diretório que
  * não existe, ou que está no mesmo disco do home (HD desmontado), para com erro em vez de criar
  * o cache no disco raiz. Retenção: scripts/prune-video-montage-cache.ts (task diária).
+ * A variável vale também quando só está no .env do projeto (#13103): a entrada de linha de
+ * comando (`cliMain`) carrega o .env antes de resolver o cache.
  *
  * Bruto só de áudio (#11552): sem stream de vídeo (ou, sem vídeo solto na
  * pasta, um .m4a/.mp3/.wav), o `transcribe` grava `source.json` com
@@ -251,6 +253,7 @@ import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import {
@@ -4879,6 +4882,20 @@ async function runCommand(
   }
 }
 
+/**
+ * Entrada da linha de comando (#13103): carrega o `.env` do projeto ANTES do
+ * `main` resolver qualquer caminho. Sem isso, `DIARIA_VIDEO_CACHE_DIR` (e
+ * `DIARIA_VIDEO_DRIVE_ROOT`/`DIARIA_VIDEO_PYTHON`) só valiam quando já estavam
+ * no ambiente do processo, e numa sessão comum o cache ia para
+ * `~/.cache/diaria-video-montagem`, no disco do sistema. O `.env` nunca
+ * sobrescreve o ambiente (`loadProjectEnv`). Os testes chamam `main` direto,
+ * sem ler o `.env` da máquina; `envRoot` existe para o teste de regressão.
+ */
+export async function cliMain(argv = process.argv.slice(2), deps?: MontageDriveDeps, envRoot: string = ROOT): Promise<number> {
+  loadProjectEnv(envRoot);
+  return main(argv, deps);
+}
+
 if (isMainModule(import.meta.url)) {
-  runCli(() => main(), { onError: (e) => console.error("video-montagem:", e instanceof Error ? e.message : e) });
+  runCli(() => cliMain(), { onError: (e) => console.error("video-montagem:", e instanceof Error ? e.message : e) });
 }

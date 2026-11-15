@@ -45,6 +45,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { formatBytes } from "./lib/onedrive-quota.ts";
 import { brtDateOf } from "./lib/ads-rolling-window.ts";
 import { editionDir } from "./lib/edition-paths.ts";
@@ -273,6 +274,9 @@ const REASON_TEXT: Record<CacheRemoveReason | CacheKeepReason | CacheSkipReason,
 };
 
 function main(): void {
+  // #13103: DIARIA_VIDEO_CACHE_DIR só no .env (rodada à mão, fora da unit
+  // systemd que já lê o .env) deixava a raiz configurada fora da varredura.
+  loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const apply = hasFlag(argv, "apply");
   const keepDays = getIntArg(argv, "keep-days", { min: 1 }) ?? DEFAULT_CACHE_KEEP_DAYS;
