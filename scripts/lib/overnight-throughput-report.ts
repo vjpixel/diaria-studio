@@ -49,12 +49,16 @@ export const THROUGHPUT_SEGMENTS = [
   ["pr_opened→ci_green", "pr_opened", "ci_green"],
   ["ci_green→merged", "ci_green", "merged"],
   ["dispatch→merged", "dispatch", "merged"],
+  ["pr_opened→review_done", "pr_opened", "review_done"],
+  ["review_done→gate2", "review_done", "gate2"],
+  ["ci_green→gate2", "ci_green", "gate2"],
+  ["gate2→merged", "gate2", "merged"],
 ] as const;
 
 export type ThroughputSegmentName = (typeof THROUGHPUT_SEGMENTS)[number][0];
 
 /** Marcos cuja cobertura o relatório mostra (alavanca 4 da #13271). */
-export const TIMELINE_MILESTONES = ["dispatch", "pr_opened", "ci_green", "merged"] as const;
+export const TIMELINE_MILESTONES = ["dispatch", "pr_opened", "ci_green", "review_done", "gate2", "merged"] as const;
 
 export interface SegmentStats {
   p50_ms: number | null;

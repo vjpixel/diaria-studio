@@ -20,6 +20,16 @@ it("updates every issue in a batch, preserves prior events and unrelated entries
   assert.deepEqual(recordUnitTimeline(next, [1, 2], "dispatch", end), next);
 });
 
+it("review and Gate 2 preserve first observations across repeated notifications", () => {
+  const plan = { issues: [{ number: 1 }, { number: 2 }] };
+  for (const mark of ["ci_green", "review_done", "gate2"]) {
+    const first = recordUnitTimeline(plan, [1, 2], mark, start);
+    const repeated = recordUnitTimeline(first, [1, 2], mark, end);
+    assert.deepEqual(repeated, first);
+    assert.equal((repeated.issues as any[])[1].timeline[mark], start);
+  }
+});
+
 it("dict identity distinguishes repositories with the same issue number", () => {
   const plan = { issues: { "21": { status: "elegivel" }, "vjpixel/diaria-design#21": { status: "elegivel" } } };
   const next = recordUnitTimeline(plan, ["vjpixel/diaria-design#21"], "merged", end) as any;
@@ -54,7 +64,7 @@ it("wave CLI and lifecycle CLI populate a renderable timeline without manual pla
     assert.match(noRepairOut, /no-op idempotente/);
     assert.doesNotMatch(noRepairOut, /timeline reparada/);
     assert.equal(read().waves.length, 1);
-    for (const message of ["pr_opened", "fix_iteration", "merged"]) {
+    for (const message of ["pr_opened", "fix_iteration", "ci_green", "review_done", "gate2", "merged"]) {
       run("log-event.ts", ["--edition", "261103b", "--agent", "overnight", "--message", message,
         "--details", JSON.stringify({ issues: [1], pr: 100, tentativa: 3 })]);
     }
@@ -63,6 +73,10 @@ it("wave CLI and lifecycle CLI populate a renderable timeline without manual pla
     assert.ok(plan.issues[0].timeline.pr_opened);
     assert.ok(plan.issues[0].timeline.fix_iteration_3);
     assert.ok(plan.issues[0].timeline.merged);
+    for (const mark of ["ci_green", "review_done", "gate2"]) {
+      assert.ok(Number.isFinite(Date.parse(plan.issues[0].timeline[mark])));
+      assert.equal(plan.issues[1].timeline?.[mark], undefined);
+    }
     assert.equal(plan.issues[1].timeline.merged, undefined);
     const rows = buildTimelineRows(plan);
     assert.notEqual(rows[0].durationMs, null);

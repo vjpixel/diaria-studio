@@ -121,7 +121,7 @@ if ((event.agent === "overnight" || event.agent === "develop") &&
   const d = details as Record<string, unknown>;
   const name = event.message === "fix_iteration" && Number.isInteger(d.tentativa) && Number(d.tentativa) > 0
     ? `fix_iteration_${d.tentativa}` : event.message;
-  if (/^(dispatch|pr_opened|ci_green|merged|draft|pulada|fix_iteration_[1-9]\d*)$/.test(name) &&
+  if (/^(dispatch|pr_opened|ci_green|review_done|gate2|merged|draft|pulada|fix_iteration_[1-9]\d*)$/.test(name) &&
       Array.isArray(d.issues) && d.issues.every((id) => typeof id === "number" || typeof id === "string")) {
     const planPath = resolve(process.cwd(), "data", event.agent, event.edition, "plan.json");
     try {

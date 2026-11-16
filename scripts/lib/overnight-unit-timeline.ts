@@ -8,7 +8,7 @@ export function recordUnitTimeline(
   plan: Record<string, unknown>, ids: readonly (number | string)[],
   event: string, timestamp: string,
 ): Record<string, unknown> {
-  if (!/^(dispatch|pr_opened|ci_green|merged|draft|pulada|fix_iteration_[1-9]\d*)$/.test(event) ||
+  if (!/^(dispatch|pr_opened|ci_green|review_done|gate2|merged|draft|pulada|fix_iteration_[1-9]\d*)$/.test(event) ||
       !Number.isFinite(Date.parse(timestamp))) return plan;
   const keys = new Set(ids.map(toIssueKey).filter(Boolean));
   const normalized = normalizeIssues<Record<string, unknown>>(plan as import("./plan-issues-normalize.ts").IssuesBearing<Record<string, unknown>>);
