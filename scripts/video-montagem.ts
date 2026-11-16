@@ -179,7 +179,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
  *       pelo mesmo `framingFor` do XML (`previewCropFor`), a legenda do horizontal queimada e o
- *       áudio normalizado, em `{AAMMDD} - previa youtube.mp4`; o review cobre ela também.
+ *       áudio normalizado, em `{AAMMDD} - previa horizontal.mp4`; o review cobre ela também.
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
  *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
  *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
@@ -2607,9 +2607,10 @@ export function xmlFileName(seqName: string): string {
 export function srtFileName(seqName: string): string {
   return `${seqName} - legendas.srt`;
 }
-/** `label` = o destino, ou o slug do corte (`previa soberana`, não `previa instagram`). */
+/** Formato para as sequências da edição; cortes preservam `previa {slug}` (#13208). */
 export function previewFileName(edition: string, label: SequenceTarget | string): string {
-  return `${edition} - previa ${label}.mp4`;
+  const format = label === "youtube" ? "horizontal" : label === "outras-redes" || label === "instagram" ? "vertical" : label;
+  return `${edition} - previa ${format}.mp4`;
 }
 
 /** O que o refino por áudio fez neste build (#11500), gravado no `plan.json`. */
@@ -4512,6 +4513,11 @@ export function reviewFinalSequence(file: string, seq: string | undefined, specs
     if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${[...VIDEO_TARGETS, ...cortes].join(", ")} (veio ${seq})`);
     return { target: seq as VideoTarget, key: seq };
   }
+  const previewFormat = /^\d{6} - previa (horizontal|vertical)\.mp4$/.exec(basename(file));
+  if (previewFormat) {
+    const target = previewFormat[1] === "horizontal" ? "youtube" : "outras-redes";
+    return { target, key: target };
+  }
   const corte = corteSuffixOf(basename(file));
   if (corte) {
     const hit = specs.find((s) => s.corte === corte);
@@ -4878,13 +4884,14 @@ async function fetchNamed(d: DriveSession, given: string, where: "edition" | "fi
 export interface DriveUploadRegistry {
   files: Record<string, { id: string; link: string | null; at: string; from: string }>;
   pending: string[];
+  previewNamesNoticeShown?: boolean;
 }
 
 function readRegistry(path: string): DriveUploadRegistry {
   if (!existsSync(path)) return { files: {}, pending: [] };
   try {
     const r = JSON.parse(readFileSync(path, "utf8")) as Partial<DriveUploadRegistry>;
-    return { files: r.files ?? {}, pending: Array.isArray(r.pending) ? r.pending : [] };
+    return { files: r.files ?? {}, pending: Array.isArray(r.pending) ? r.pending : [], previewNamesNoticeShown: r.previewNamesNoticeShown === true };
   } catch (e) {
     log(`[aviso] ${path} ilegível (${(e as Error).message}): recomeçando o registro de uploads`);
     return { files: {}, pending: [] };
@@ -4910,6 +4917,11 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
       const r = await uploadToFolder(d.deps, folder.id, queue[i], log);
       reg.files[r.name] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: queue[i] };
       uploaded.push(queue[i]);
+      if (!reg.previewNamesNoticeShown && [previewFileName(ctx.edition, "youtube"), previewFileName(ctx.edition, "outras-redes")].includes(r.name)) {
+        // Preservar possíveis arquivos antigos: podem conter uma revisão do editor.
+        log(`[aviso] #13208: prévias agora usam horizontal/vertical. Se existirem no Drive de ${ctx.edition}, as antigas "previa youtube.mp4", "previa outras-redes.mp4" ou "previa instagram.mp4" foram preservadas; use a prévia com o novo nome. Remoção manual após conferir. Aviso único por edição.`);
+        reg.previewNamesNoticeShown = true;
+      }
       save(queue.slice(i + 1));
       log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${r.name}: ${r.webViewLink ?? r.id}`);
     }
