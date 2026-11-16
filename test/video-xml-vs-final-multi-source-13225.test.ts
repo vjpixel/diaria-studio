@@ -28,22 +28,22 @@ function multiPlan(dir: string): PlanFileLite {
 }
 
 describe("#13225: fallback do áudio do bruto em vários arquivos", () => {
-  it("bruto em 2 arquivos sem audio.wav no cache: pula, sem extrair só o 1º", () => {
+  it("bruto em 2 arquivos sem audio.wav no cache e sem cópia local resolvida: pula, sem extrair só o 1º", async () => {
     const dir = tmp();
-    const res = brutoWav("261110", join(dir, "work-sem-cache"), multiPlan(dir));
+    const res = await brutoWav("261110", join(dir, "work-sem-cache"), multiPlan(dir));
     assert.equal(res.wav, null);
     assert.ok(res.wav === null && /2 arquivos/.test(res.reason), JSON.stringify(res));
   });
 
-  it("audio.wav do cache da montagem continua valendo no bruto multi-arquivo", () => {
+  it("audio.wav do cache da montagem continua valendo no bruto multi-arquivo", async () => {
     const dir = tmp();
     writeFileSync(join(dir, "audio.wav"), "");
-    const res = brutoWav("261110", dir, multiPlan(dir));
+    const res = await brutoWav("261110", dir, multiPlan(dir));
     assert.deepEqual(res, { wav: join(dir, "audio.wav") });
   });
 
-  it("bruto único fora desta máquina segue com o motivo de sempre", () => {
-    const res = brutoWav("261110", "/nao-existe", { plans: [], source: { fps: 30, path: "/nao-existe/bruto.mp4" } });
+  it("bruto único fora desta máquina segue com o motivo de sempre", async () => {
+    const res = await brutoWav("261110", "/nao-existe", { plans: [], source: { fps: 30, path: "/nao-existe/bruto.mp4" } });
     assert.equal(res.wav, null);
     assert.ok(res.wav === null && /bruto fora desta máquina/.test(res.reason));
   });
