@@ -264,6 +264,7 @@ import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { previewTelaArgs, telaBoxSvg, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -1072,6 +1073,8 @@ export interface XmlBuildOptions {
   capaInicio?: Readonly<Record<string, CapaInicioAsset>> | null;
   /** #13140: os marcadores de tela de cada sequência (chave = `sequenceKey`); só entram no hash os da sequência (sem eles, o hash de antes). */
   telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
+  /** #13204: os boxes de tela (PNG) de cada sequência; só entram no hash os da sequência, sem o caminho local. */
+  telaOverlays?: Readonly<Record<string, readonly TelaOverlay[]>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1119,6 +1122,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
+        ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
       }),
     )
     .update("\0plan\0")
@@ -1265,7 +1269,7 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
     }
   }
   const ps = specs.map((s) => {
-    // #12101: o respiro da vinheta depois do título, só no horizontal.
+    // #12101: o respiro da vinheta depois do título (todas as sequências desde o #13204).
     if (!speech) return buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s) });
     const r = withLostWordFallback((pauses) => buildSequencePlan(s, blocks, pauses, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s), ...SPEECH_DETECT_PLAN }), speechSil, fallbackSil);
     if (r.fellBack) {
@@ -1338,6 +1342,8 @@ export interface SequenceXmlAssets {
   ctaCard?: CtaCardAsset;
   /** #13123: a capa que o XML desta sequência levou nos primeiros quadros (a prévia a sobrepõe igual). */
   capaInicio?: CapaInicioAsset;
+  /** #13204: os boxes de tela que o XML desta sequência levou (a prévia os sobrepõe igual). */
+  telaOverlays?: TelaOverlay[];
 }
 
 /**
@@ -3436,11 +3442,32 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
+  const telaOverlays: Record<string, TelaOverlay[]> = {};
   for (const p of picked) {
     if (!isYoutubeSpec(p.spec)) continue;
     const ms = telaMarkersFor(p, resolved, source.fps, telas);
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
     const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
+    if (ms.length) {
+      const overlays: TelaOverlay[] = [];
+      for (const m of ms) {
+        try {
+          const svg = telaBoxSvg(m.tela, p.spec.width, p.spec.height);
+          const name = telaFileName(ctx.edition, m.id, createHash("sha256").update(svg).digest("hex").slice(0, 12));
+          const out = join(ctx.outDir, name);
+          // Regravado sempre, como capa e título: no modo API o snapshot do out dir é o que sobe (#13204).
+          await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
+          renameSync(`${out}.part`, out);
+          overlays.push({ id: m.id, tela: m.tela, path: out, xmlPath: capaInicioXmlPath(mediaPath, name), width: p.spec.width, height: p.spec.height, in: m.in, out: m.out });
+        } catch (e) {
+          console.error(`[aviso] ${p.spec.name}: box de tela ${m.id} falhou (${(e as Error).message.split("\n")[0]}): fica só o marcador (#13204)`);
+        }
+      }
+      if (overlays.length) {
+        telaOverlays[sequenceKey(p.spec)] = overlays;
+        console.error(`[premissa] ${p.spec.name}: ${overlays.length} box(es) de tela (PNG) numa faixa acima do bruto, no tempo da fala (${overlays.map((o) => `${o.id} ${(o.in / source.fps).toFixed(1)}–${(o.out / source.fps).toFixed(1)} s`).join(", ")}); conferir no 1º import (#13204)`);
+      }
+    }
     if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
   }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
@@ -3472,6 +3499,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     premierePaths: ctx.premierePaths ?? null,
     capaInicio,
     telaMarkers,
+    telaOverlays,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -3491,7 +3519,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -3503,7 +3531,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}) }])) },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}), ...(telaOverlays[sequenceKey(p.spec)] ? { telaOverlays: telaOverlays[sequenceKey(p.spec)] } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -4321,6 +4349,17 @@ async function cmdPreview(
       console.error(`[aviso] capa no começo na prévia falhou (${(e as Error).message.split("\n")[0]}): prévia sem a capa; o XML a tem (#13123)`);
     }
   } else if (capa) console.error(`[aviso] capa no começo do XML não encontrada nesta máquina (${capa.path}): prévia sem ela; rode build nesta máquina (#13123)`);
+  // #13204: os boxes de tela do XML, cada um no trecho dele.
+  const telas = (assets.telaOverlays ?? []).filter((o) => existsSync(o.path) && o.in < plan.durationFrames);
+  if (telas.length) {
+    try {
+      run("ffmpeg", previewTelaArgs({ input: "joined.mp4", out: "joined-tela.mp4", ...size, overlays: telas.map((o) => ({ png: o.path, in: o.in, out: Math.min(o.out, plan.durationFrames) })) }), { cwd: dir });
+      renameSync(join(dir, "joined-tela.mp4"), join(dir, "joined.mp4"));
+      console.error(`[video-montagem] prévia com ${telas.length} box(es) de tela (${telas.map((o) => o.id).join(", ")}, #13204)`);
+    } catch (e) {
+      console.error(`[aviso] boxes de tela na prévia falharam (${(e as Error).message.split("\n")[0]}): prévia sem eles; o XML os tem (#13204)`);
+    }
+  } else if (assets.telaOverlays?.length) console.error("[aviso] boxes de tela do XML não encontrados nesta máquina: prévia sem eles (#13204)");
   let subtitles: string | undefined;
   if (subs.use) {
     copyFileSync(srt, join(dir, "leg.srt"));
