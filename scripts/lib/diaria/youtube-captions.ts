@@ -12,6 +12,8 @@
  * `.mp4`, `youtubeCaptionFileName`).
  */
 
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import {
   assertExpectedChannel,
   refreshYouTubeAccessToken,
@@ -38,6 +40,33 @@ export function youtubeCaptionFileName(aammdd: string): string {
  */
 export function youtubeCaptionNoPlanMarkerPath(srtPath: string): string {
   return `${srtPath}.no-plan.json`;
+}
+
+/**
+ * #13212: o registro da cópia que o `video-montagem.ts` grava ao escrever o
+ * SRT do horizontal na pasta da edição (`youtube-srt.json`, no state dir
+ * default da montagem).
+ */
+export function youtubeSrtRecordPath(editionDir: string): string {
+  return join(editionDir, "_internal", "video-montagem", "youtube-srt.json");
+}
+
+/**
+ * #13212: a cópia na pasta da edição é a legenda da MONTAGEM (tempos da
+ * sequência montada, não do export)? Desde o #13212 o `srt` sem
+ * `--from-final` não grava mais o horizontal, mas uma cópia antiga pode ter
+ * ficado. É dela quando o registro tem o mesmo sha256 e não tem `fromExport`.
+ * Cópia editada à mão (sha diferente) ou sem registro não conta. Puro.
+ */
+export function isMontageCaptionCopy(srt: string | null, record: { sha256?: unknown; fromExport?: unknown } | null): boolean {
+  if (srt === null || !record || typeof record.sha256 !== "string") return false;
+  if (typeof record.fromExport === "string" && record.fromExport !== "") return false;
+  return createHash("sha256").update(srt).digest("hex") === record.sha256;
+}
+
+/** #13212: o comando que gera a legenda do horizontal a partir do export final. */
+export function fromFinalCaptionCommand(aammdd: string): string {
+  return `npx tsx scripts/video-montagem.ts srt ${aammdd} --seq youtube --from-final "{export do horizontal em Final/}"`;
 }
 
 /** Conteúdo da marca acima. */

@@ -129,16 +129,18 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       o PNG com fundo a 70% como clipe na V2, pendente de conferência no 1º import com o PNG
  *       via XML) ou off; o text (gerador de texto do FCP7 sobre fundo Color+Crop)
  *       saiu no #12104 e agora é erro.
- *   srt AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--from-raw] [--force]
- *       legendas de todas as sequências (#11957: o horizontal também; --seq escolhe uma).
+ *   srt AAMMDD [--seq instagram|outras-redes|{corte}] [--from-raw] [--force]
+ *       legendas das verticais e dos cortes (#13212: o horizontal fica fora; a legenda dele
+ *       sai só do export final, com `--seq youtube --from-final`, e `--seq youtube` sem
+ *       `--from-final` recusa; --seq escolhe uma).
  *       Retranscreve o áudio montado (cache por trechos + identidade do áudio);
  *       --from-raw remapeia o transcript do bruto. O texto é o do roteiro,
  *       alinhado aos tempos da fala (#11960, `forceAlignToScript`): palavra do
  *       roteiro sem par ganha tempo interpolado, palavra ouvida sem par sai quando
  *       cai antes/depois do roteiro, perto de corte ou em silêncio ([aviso] lista).
- *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
- *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
- *       cópia editada à mão depois do último srt fica, salvo --force.
+ *       (Até o #13212 o do horizontal também saía daqui, como
+ *       `diaria-comentada-{AAMMDD}.srt` na pasta da edição; agora só o --from-final
+ *       grava esse arquivo, o que o `publish-youtube.ts --upload` envia.)
  *   srt AAMMDD --seq youtube --from-final PATH [--heard-text] [--force] [--retranscribe]
  *       (#12078) a legenda do horizontal no tempo do EXPORT final do Premiere (respiros, vinheta):
  *       transcreve o export (o mesmo cache do review-final, por identidade do arquivo + modelo e
@@ -147,8 +149,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       o export saiu do XML daquele build). Grava `{sequência} - legendas do export.srt` no out
  *       dir e a cópia `diaria-comentada-{AAMMDD}.srt` na pasta da edição pela mesma regra; cópia
  *       editada à mão = exit 1 com [erro] (saída: --force, ou --captions-only --captions com o
- *       arquivo do out dir). Uma cópia gravada pelo --from-final não é trocada por um `srt` da
- *       montagem depois, salvo --force. No modo API, PATH que não existe no disco é o nome em
+ *       arquivo do out dir). No modo API, PATH que não existe no disco é o nome em
  *       Final/ no Drive (baixado só depois de validar --seq e o plano). Bruto só de áudio fica
  *       fora: sem build não há plano do horizontal (o `srt` para antes, exit 3).
  *       Backfill de legenda: este comando + `publish-youtube.ts AAMMDD --captions-only`.
@@ -3722,9 +3723,25 @@ export function applyYoutubeSrtCopy(input: {
 /** O horizontal (#11957): mora na lib desde o #13186, reexportado para quem já importava daqui. */
 export { isYoutubeSpec };
 
-/** As sequências do `srt` (#11957): sem `--seq`, todas, o horizontal também; com ele, a escolhida (`youtube` inclusive). */
-export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P[] {
-  return pickPlans(all, seq, false);
+/** #13212: a recusa do `srt --seq youtube` sem `--from-final`, com o comando do export. */
+export function srtHorizontalRefusal(edition: string): string {
+  return (
+    `a legenda do horizontal sai só do export final (#13212): npx tsx scripts/video-montagem.ts srt ${edition} --seq youtube --from-final "{export do horizontal em Final/}" ` +
+    `(no modo API, o nome do arquivo em Final/ no Drive)`
+  );
+}
+
+/**
+ * As sequências do `srt` da montagem. #13212 (decisão do editor, 15/11/2026):
+ * só as verticais e os cortes; sem `--seq` o horizontal fica fora, e `--seq`
+ * que escolhe o horizontal recusa (a legenda dele sai só do export final,
+ * `srt --seq youtube --from-final`). Antes (#11957) o horizontal entrava.
+ */
+export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined, edition = "{AAMMDD}"): P[] {
+  const picked = pickPlans(all, seq, false);
+  if (seq === undefined) return picked.filter((p) => !isYoutubeSpec(p.spec));
+  if (picked.some((p) => isYoutubeSpec(p.spec))) throw new Error(`--seq ${seq} sem --from-final: ${srtHorizontalRefusal(edition)}`);
+  return picked;
 }
 
 /**
@@ -4154,7 +4171,12 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
   // #12093: o que o alinhamento decidiu (ouvido × roteiro) vira item do relatório final, não só stderr.
   const notesPath = f(ctx, SRT_NOTES_FILE);
   const notes: Record<string, string[]> = existsSync(notesPath) ? readJson<Record<string, string[]>>(notesPath, SRT_NOTES_FILE) : {};
-  for (const plan of srtPlans(pf.plans, target)) {
+  const plans = srtPlans(pf.plans, target, ctx.edition);
+  if (target === undefined && pf.plans.some((p) => isYoutubeSpec(p.spec))) {
+    console.error(`[premissa] o horizontal fica fora do srt da montagem; ${srtHorizontalRefusal(ctx.edition)}, quando o editor pedir`);
+  }
+  if (plans.length === 0) console.error("[aviso] nenhuma vertical no plan.json: nenhuma legenda gerada (#13212)");
+  for (const plan of plans) {
     const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec, (w) => console.error(`[aviso] ${w}`));
     // #11960: o texto do roteiro no tempo da fala, não o texto ouvido.
     const aligned = forceAlignToScript(heard, plan.script, { aliases: vocab.aliases, cuts: cutPoints(plan, fps), endS: plan.durationFrames / fps });
@@ -4166,11 +4188,7 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, srt);
     console.log(path);
-    if (isYoutubeSpec(plan.spec)) {
-      // #12285: a versão do XML (id + since), não o builtAt de todo build, decide se o export da legenda ficou velho.
-      const v = xmlVersionAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")));
-      writeYoutubeSrtCopy(ctx, srt, undefined, v.builtAtMs, v.sequenceId);
-    }
+    // #13212: o horizontal não passa por aqui (srtPlans), então a cópia da pasta da edição só sai do --from-final.
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
@@ -4212,7 +4230,9 @@ export const SRT_NOTES_FILE = "srt-notas.json";
  * desta sequência não recusa mais a prévia: ela sai sem legenda, com
  * `[aviso]`. `--no-subs` tira a legenda mesmo com SRT em dia. Puro.
  */
-export function previewSubtitleDecision(input: { srtPath: string; exists: boolean; srtMtimeMs?: number; builtAtMs: number; noSubs: boolean }): { use: boolean; message: string | null } {
+export function previewSubtitleDecision(input: { srtPath: string; exists: boolean; srtMtimeMs?: number; builtAtMs: number; noSubs: boolean; horizontal?: boolean }): { use: boolean; message: string | null } {
+  // #13212: a prévia do horizontal sai sempre sem legenda (a legenda dele vem só do export final), mesmo com um SRT antigo no out dir.
+  if (input.horizontal) return { use: false, message: "[video-montagem] prévia do horizontal sem legenda: a legenda do horizontal sai só do export final (srt --seq youtube --from-final, #13212)" };
   if (input.noSubs) return { use: false, message: "[video-montagem] prévia sem legenda (--no-subs): as legendas (srt) vêm depois da aprovação das prévias (#12579)" };
   if (!input.exists) return { use: false, message: `[aviso] sem ${input.srtPath}: a prévia sai sem legenda; as legendas (srt) vêm depois da aprovação das prévias (#12579)` };
   if ((input.srtMtimeMs ?? 0) < input.builtAtMs) {
@@ -4280,7 +4300,7 @@ async function cmdPreview(
   const planPath = f(ctx, "plan.json");
   // #11969: contra o build DESTA sequência, não o último build de qualquer uma. #12579: defasado = prévia sem legenda, não recusa.
   const srtExists = existsSync(srt);
-  const subs = previewSubtitleDecision({ srtPath: srt, exists: srtExists, srtMtimeMs: srtExists ? mtime(srt) : undefined, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)), noSubs });
+  const subs = previewSubtitleDecision({ srtPath: srt, exists: srtExists, srtMtimeMs: srtExists ? mtime(srt) : undefined, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)), noSubs, horizontal: isYoutubeSpec(plan.spec) });
   if (subs.message) console.error(subs.message);
   const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
