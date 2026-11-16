@@ -328,10 +328,12 @@ describe("#12735 diar.ia.br/video: registro e redirect", () => {
 
 
 describe("#13117 chamada falada até o horizontal", () => {
+  // #13209: a linha só entra com o mesmo título do horizontal publicado; o TikTok, só com tiktok_bio_link.
+  const withTikTokBio = { ...base, config: { publishing: { shorts: { ...base.config.publishing.shorts, tiktok_bio_link: true } } } };
   it("cta_vertical exige linha na bio e resposta Threads sem URL no corpo", () => {
-    const plan = planShortsPublish({ ...base, horizontalVideo: { recordTitle: "Horizontal", noVideo: false, url: URL_H, ctaVertical: true } });
+    const plan = planShortsPublish({ ...withTikTokBio, horizontalVideo: { recordTitle: D1.title, noVideo: false, url: URL_H, ctaVertical: true } });
     const items = byDest(plan);
-    const ig = planShortsPublish({ ...base, only: ["instagram"], writer: "instagram-timer", horizontalVideo: { recordTitle: "Horizontal", noVideo: false, url: URL_H, ctaVertical: true } });
+    const ig = planShortsPublish({ ...withTikTokBio, only: ["instagram"], writer: "instagram-timer", horizontalVideo: { recordTitle: D1.title, noVideo: false, url: URL_H, ctaVertical: true } });
     items.instagram = byDest(ig).instagram;
     for (const id of ["instagram", "tiktok", "threads_profile"]) {
       const text = items[id].caption ?? items[id].text;
@@ -370,13 +372,15 @@ describe("#13117 rotas de atualização de texto mantêm a linha da bio", () => 
   const BIO = /Vídeo completo: link na bio/;
   it("--update-scheduled: TikTok com ctaVertical leva a linha; sem, não", () => {
     const entries = [{ destination: "tiktok", status: "scheduled", id: "buffer:t1", scheduled_at: "2026-10-22T15:00:00.000Z" } as any];
-    const run = (ctaVertical?: boolean) => {
-      const [item] = planScheduledUpdates({ entries, d1: D1, now: new Date("2026-10-22T03:00:00Z"), coverPresent: false, ctaVertical });
+    const run = (ctaVertical?: boolean, tiktokBioLink = true) => {
+      const [item] = planScheduledUpdates({ entries, d1: D1, now: new Date("2026-10-22T03:00:00Z"), coverPresent: false, ctaVertical, tiktokBioLink });
       assert.equal(item.action, "buffer_edit");
       return (item as { text: string }).text;
     };
     assert.match(run(true), BIO);
     assert.doesNotMatch(run(), BIO);
+    // #13209: flag desligada (o default) tira a linha mesmo com ctaVertical.
+    assert.doesNotMatch(run(true, false), BIO);
   });
 
   it("--update-published: Instagram e Threads com ctaVertical levam a linha; sem, não", () => {

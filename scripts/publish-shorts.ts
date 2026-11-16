@@ -302,6 +302,8 @@ import {
   buildReelsCaption,
   buildYouTubeShortMetadata,
   resolveShortHorizontalTitle,
+  resolveVerticalBioCta,
+  VERTICAL_BIO_CTA_LINE,
   DIARIA_YOUTUBE_CHANNEL_URL,
   firstSentence,
   facebookDestinationId,
@@ -1102,6 +1104,15 @@ export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; ro
 }
 
 /**
+ * #13209: a linha da bio nas rotas de troca de texto (`--update-scheduled`,
+ * `--update-published`), com a mesma regra do plano: fala `cta_vertical` e o
+ * mesmo título do horizontal publicado.
+ */
+export function verticalBioCtaFromHorizontal(horizontal: { recordTitle: string | null; noVideo: boolean; ctaVertical?: boolean }, d1Title: string): boolean {
+  return resolveVerticalBioCta({ ctaFala: horizontal.ctaVertical === true, d1Title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }).ctaVertical;
+}
+
+/**
  * #12191: o horizontal da edição para a citação na descrição do Short. Lê o
  * título do registro do upload (`_internal/05-youtube-published.json`) e o
  * marcador de edição sem vídeo. Fail-soft: registro ausente ou ilegível vira
@@ -1178,7 +1189,24 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
   const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
   // #12735: o horizontal DA edição na legenda das redes que aceitam link (LinkedIn, X, Facebook). Nunca no corte.
-  const ctaVertical = !corte && input.horizontalVideo?.ctaVertical === true;
+  // #13117: fala `cta_vertical` no roteiro. #13209: a linha "Vídeo completo:
+  // link na bio" só entra se, além da fala, o vertical tiver o mesmo título
+  // do horizontal publicado (`resolveVerticalBioCta`).
+  const ctaFala = !corte && input.horizontalVideo?.ctaVertical === true;
+  const bioCta = resolveVerticalBioCta({
+    ctaFala,
+    d1Title: d1.title,
+    recordTitle: input.horizontalVideo?.recordTitle ?? null,
+    noVideo: input.horizontalVideo?.noVideo ?? false,
+  });
+  const ctaVertical = bioCta.ctaVertical;
+  if (ctaFala && !ctaVertical) {
+    premises.push(
+      `legenda do vertical sem "${VERTICAL_BIO_CTA_LINE}": ${
+        bioCta.reason === "titulo-diferente" ? "o título do vertical difere do horizontal publicado" : "sem horizontal publicado nesta edição (registro do upload)"
+      } (#13209)`,
+    );
+  }
   if (!corte && input.horizontalVideo?.roteiroWarning) warnings.push(input.horizontalVideo.roteiroWarning);
   const horizontalLink = corte || input.horizontalVideo?.noVideo ? null : (input.horizontalVideo?.url ?? null);
 
@@ -1558,7 +1586,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       }
       let post: { caption: string; title: string };
       try {
-        post = buildTikTokPost({ d1: d1In, ctaVertical });
+        post = buildTikTokPost({ d1: d1In, ctaVertical, tiktokBioLink: cfg.tiktokBioLink === true }); // #13209
       } catch (e) {
         warnings.push(`tiktok: ${(e as Error).message}`);
         return { destination: dest.id, mode: "guided", action: "skip_invalid", detail: (e as Error).message };
@@ -1788,13 +1816,19 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
   // #12735: o dry-run mostra, por destino, o link do horizontal que o vertical usa.
   const horizontalLinks = corte ? undefined : planShortHorizontalLinks(destinations.map((d) => d.id), horizontalLink, input.horizontalVideo?.noVideo ?? false);
+  // #13209: o aviso de horizontal ausente segue a FALA (o vídeo promete o
+  // completo); a linha da bio e a resposta do Threads seguem a linha resolvida.
+  if (horizontalLinks && ctaFala && !horizontalLink) {
+    for (const id of Object.keys(horizontalLinks)) warnings.push(`${id}: roteiro com cta_vertical, mas falta horizontal desta edição (${D1_VIDEO_URL_FILE}); confira também o vídeo relacionado do Short (#13117)`);
+  }
   if (horizontalLinks && ctaVertical) {
     for (const [id, h] of Object.entries(horizontalLinks)) {
-      if (h.route === "bio") {
-        h.note += "; legenda obrigatória: Vídeo completo: link na bio";
+      if (id === "tiktok" && cfg.tiktokBioLink !== true) {
+        h.note += "; legenda sem a linha da bio (publishing.shorts.tiktok_bio_link desligada, #13209)";
+      } else if (h.route === "bio") {
+        h.note += `; legenda obrigatória: ${VERTICAL_BIO_CTA_LINE}`;
         warnings.push(`${id}: bio NÃO conferida. Abra o perfil usado para publicar, confira o campo Site com ${h.link}, toque no link e confirme que abre o horizontal desta edição. Se o campo Site não existir (TikTok), habilite-o antes de confiar na chamada (#13117).`);
       }
-      if (!horizontalLink) warnings.push(`${id}: roteiro com cta_vertical, mas falta horizontal desta edição (${D1_VIDEO_URL_FILE}); confira também o vídeo relacionado do Short (#13117)`);
       if (id === "threads_profile") {
         h.note += `; resposta ao próprio post: ${horizontalLink ?? "FALTA LINK DO HORIZONTAL"}`;
         if (horizontalLink) h.replyText = `Vídeo completo: ${horizontalLink}`;
@@ -5082,7 +5116,8 @@ async function runUpdateScheduled(input: {
     items = planScheduledUpdates({
       entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
       horizontalLink: horizontal?.url ?? null, // #12735
-      ctaVertical: horizontal?.ctaVertical === true, // #13117: nunca no corte (horizontal null)
+      ctaVertical: horizontal ? verticalBioCtaFromHorizontal(horizontal, d1.title) : false, // #13117/#13209: nunca no corte (horizontal null)
+      tiktokBioLink: shortsCfg.tiktokBioLink === true, // #13209
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {
@@ -5381,7 +5416,7 @@ async function runUpdatePublished(input: {
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
     items = planPublishedTextUpdates({
       entries, d1, now: new Date(), horizontalTitle, horizontalLink: horizontal?.url ?? null, only: input.only, known: knownDestinationIds(shortsCfg),
-      ctaVertical: horizontal?.ctaVertical === true, // #13117: nunca no corte (horizontal null)
+      ctaVertical: horizontal ? verticalBioCtaFromHorizontal(horizontal, d1.title) : false, // #13117/#13209: nunca no corte (horizontal null)
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {

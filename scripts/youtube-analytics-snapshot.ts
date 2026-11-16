@@ -39,8 +39,9 @@
  * `--since` re-busca a série diária desde a data (padrão: últimos 7 dias do
  * já gravado; sem histórico, desde 21/10/2026). `--dry-run` busca e imprime o
  * resumo sem gravar. `--report` só lê o que já foi gravado e imprime a tabela
- * por vídeo (Shorts e horizontais separados), as séries e os termos de busca,
- * sem rede.
+ * por vídeo (Shorts e horizontais separados), os horizontais por pauta
+ * (#13195: `data/youtube-analytics/pautas.json` do editor, senão a seção do
+ * DESTAQUE 1 da edição), as séries e os termos de busca, sem rede.
  *
  * Exit: 0 = ok (inclui token sem o escopo de Analytics, com aviso);
  * 1 = erro (credencial ausente, token, rede, API); 2 = uso inválido.
@@ -107,6 +108,14 @@ import {
   type ReachReportLine,
   type ReachSummary,
 } from "./lib/diaria/youtube-reach.ts";
+import {
+  YOUTUBE_PAUTAS_FILE,
+  horizontalEditions,
+  parsePautaOverrides,
+  resolveEditionPautas,
+  type EditionPautas,
+} from "./lib/diaria/youtube-pauta.ts";
+import { parseDestaques } from "./extract-destaques.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KNOWN_FLAGS = ["since", "dry-run", "report", "out", "help"] as const;
@@ -407,7 +416,38 @@ export function resolveEditionVideoIndex(dataRoot: string): { index: EditionVide
   return { index: withPreApiEditionVideos(index), warnings };
 }
 
-export function buildReport(dataRoot: string): string {
+/**
+ * Pauta de cada edição com horizontal (#13195): `pautas.json` do editor vence
+ * a seção do DESTAQUE 1 de `02-reviewed.md`. Fail-soft: `02-reviewed.md`
+ * ausente ou sem D1 deixa a edição sem pauta (listada no relatório);
+ * `pautas.json` ilegível vira aviso e vale só o D1.
+ */
+export function resolvePautas(dataRoot: string, index: EditionVideoIndex, warn: (msg: string) => void = () => {}): EditionPautas {
+  const d1Categories = new Map<string, string>();
+  for (const edition of horizontalEditions(index)) {
+    const path = join(dataRoot, "editions", edition.slice(0, 4), edition, "02-reviewed.md");
+    if (!existsSync(path)) continue;
+    try {
+      const d1 = parseDestaques(readFileSync(path, "utf8")).find((d) => d.n === 1);
+      if (d1?.category) d1Categories.set(edition, d1.category);
+    } catch (e) {
+      warn(`[aviso] ${path}: ${(e as Error).message} — edição sem pauta do D1 (#13195)`);
+    }
+  }
+  let overrides = new Map<string, string>();
+  const overridePath = join(analyticsDir(dataRoot), YOUTUBE_PAUTAS_FILE);
+  if (existsSync(overridePath)) {
+    try {
+      overrides = parsePautaOverrides(JSON.parse(readFileSync(overridePath, "utf8")), overridePath);
+    } catch (e) {
+      warn(`[aviso] ${(e as Error).message} — vale só a pauta do D1 (#13195)`);
+    }
+  }
+  return resolveEditionPautas({ d1Categories, overrides });
+}
+
+export function buildReport(dataRoot: string, warn: (msg: string) => void = () => {}): string {
+  const index = resolveEditionVideoIndex(dataRoot).index;
   return renderAnalyticsReport({
     channel: readStore<ChannelSnapshotLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.channel),
     daily: readStore<ChannelDailyLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.channelDaily),
@@ -415,7 +455,8 @@ export function buildReport(dataRoot: string): string {
     videos: readStore<VideoSnapshotLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.videos),
     searchTerms: readStore<SearchTermLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.searchTerms),
     // Linhas gravadas antes do vídeo entrar no índice saem com a edição atual (#12224).
-    index: resolveEditionVideoIndex(dataRoot).index,
+    index,
+    pautas: resolvePautas(dataRoot, index, warn),
   });
 }
 
@@ -449,7 +490,7 @@ async function main(): Promise<number> {
   const dataRoot = join(ROOT, "data");
 
   if (args.flags.has("report")) {
-    const md = buildReport(dataRoot);
+    const md = buildReport(dataRoot, (m) => console.error(m));
     if (args.values.out) writeFileSync(resolve(args.values.out), md);
     else console.log(md);
     return 0;

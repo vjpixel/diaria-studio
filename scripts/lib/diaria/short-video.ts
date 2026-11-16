@@ -342,6 +342,40 @@ export function loadDiariaProfiles(raw: unknown): DiariaProfiles {
  */
 export const REELS_NEWSLETTER_SENTENCE = "A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos.";
 
+/** #13117: linha da legenda que aponta o vertical para o horizontal pela bio. */
+export const VERTICAL_BIO_CTA_LINE = "Vídeo completo: link na bio";
+
+/** #13209: título comparável (sem markdown, espaços colapsados, NFC, sem caixa). */
+export function normalizeVideoTitle(title: string): string {
+  return stripInlineMarkdown(title).normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("pt-BR");
+}
+
+/**
+ * #13209 (decisão do editor no briefing do overnight 261116): a legenda do
+ * vertical só leva "Vídeo completo: link na bio" quando o vertical tem o
+ * MESMO título de um horizontal publicado. O link da bio leva ao horizontal
+ * da edição; com outro título, o leitor não reconhece o vídeo que a linha
+ * prometeu. Além disso segue valendo a fala `cta_vertical` do roteiro
+ * (#13117): sem chamada falada, a linha também não entra.
+ *
+ * Título do vertical = `buildYouTubeShortTitle(d1Title)` (o que o vertical
+ * publica); título do horizontal = o do registro do upload
+ * (`_internal/05-youtube-published.json`). Sem registro, ou edição sem vídeo,
+ * não há horizontal publicado e a linha sai.
+ */
+export function resolveVerticalBioCta(input: {
+  ctaFala: boolean;
+  d1Title: string;
+  recordTitle?: string | null;
+  noVideo?: boolean;
+}): { ctaVertical: boolean; reason: "sem-fala" | "sem-horizontal-publicado" | "titulo-diferente" | null } {
+  if (!input.ctaFala) return { ctaVertical: false, reason: "sem-fala" };
+  const record = input.recordTitle?.trim();
+  if (input.noVideo || !record) return { ctaVertical: false, reason: "sem-horizontal-publicado" };
+  const same = normalizeVideoTitle(buildYouTubeShortTitle(input.d1Title)) === normalizeVideoTitle(record);
+  return same ? { ctaVertical: true, reason: null } : { ctaVertical: false, reason: "titulo-diferente" };
+}
+
 /** #11388: CTA do Reels no Instagram, o texto final aprovado pelo editor (o link da bio é o único clicável). */
 export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo link da bio.`;
 
@@ -363,7 +397,7 @@ export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1I
   const hook = firstSentence(input.d1.body);
   const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
   // #12735: o horizontal da edição só no Facebook (a legenda do Reels no Instagram não tem link clicável; lá o caminho é a bio).
-  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : input.ctaVertical ? "Vídeo completo: link na bio" : "";
+  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : input.ctaVertical ? VERTICAL_BIO_CTA_LINE : "";
   // #12465: `follow` = `diariaFollowLine(destino)`, só nas contas pessoais (página VJ Pixel, perfil pessoal).
   const caption = [title, hook, link, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
@@ -382,12 +416,17 @@ export const TIKTOK_TITLE_MAX_CHARS = 90;
  * do Facebook (título, gancho, a frase da newsletter e as hashtags), sem link:
  * a legenda do TikTok não tem link clicável e o link da bio ainda não existe
  * (conta pessoal, sem o campo Site). Sem `#Shorts`, que é só do YouTube.
+ * #13209: "Vídeo completo: link na bio" só entra com `ctaVertical` (já
+ * resolvido por `resolveVerticalBioCta`) E `tiktokBioLink` (a flag
+ * `publishing.shorts.tiktok_bio_link`, default desligada): sem o campo Site,
+ * a linha prometeria um link que a bio não tem.
  */
-export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean }): { caption: string; title: string } {
+export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean; tiktokBioLink?: boolean }): { caption: string; title: string } {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const caption = [title, hook, input.ctaVertical ? "Vídeo completo: link na bio" : "", REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  const bioLine = input.ctaVertical === true && input.tiktokBioLink === true ? VERTICAL_BIO_CTA_LINE : "";
+  const caption = [title, hook, bioLine, REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (Array.from(caption).length > TIKTOK_CAPTION_MAX_CHARS) throw new Error(`legenda do TikTok passou de ${TIKTOK_CAPTION_MAX_CHARS} caracteres`);
   const chars = Array.from(title);
   const shortTitle = chars.length <= TIKTOK_TITLE_MAX_CHARS ? title : `${chars.slice(0, TIKTOK_TITLE_MAX_CHARS - 1).join("").trimEnd()}…`;
@@ -431,7 +470,7 @@ export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: S
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
-  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", [input.ctaVertical ? "Vídeo completo: link na bio" : "", follow].filter(Boolean).join("\n\n"));
+  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", [input.ctaVertical ? VERTICAL_BIO_CTA_LINE : "", follow].filter(Boolean).join("\n\n"));
   return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", [link, follow].filter(Boolean).join("\n\n"));
 }
 
@@ -585,6 +624,13 @@ export interface ShortsConfig {
   tiktok: boolean;
   /** #11515: canal TikTok na Buffer (`list_channels`, org "My Organization"). Obrigatório com `tiktok: true`. */
   tiktokBufferChannelId: string | null;
+  /**
+   * #13209 (premissa do briefing do overnight 261116): a bio do TikTok tem o
+   * link do horizontal (`publishing.shorts.tiktok_bio_link`). A conta é
+   * pessoal e não tinha o campo Site, então a legenda do TikTok só leva
+   * "Vídeo completo: link na bio" com esta flag ligada. Ausente = `false`.
+   */
+  tiktokBioLink?: boolean;
   /**
    * #11795: os destinos do corte avulso que a API não agenda (`linkedin_profile`,
    * `threads_profile`, `instagram`) saem pelo timer do 300
@@ -746,6 +792,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
     tiktok,
     tiktokBufferChannelId: tiktokChannel,
+    tiktokBioLink: optionalBool(raw, "tiktok_bio_link", false), // #13209: default desligado
     corteViaTimer: optionalBool(raw, "corte_via_timer", DEFAULT_SHORTS_CONFIG.corteViaTimer),
     diariaProfiles: loadDiariaProfiles(raw.diaria_profiles),
   };
