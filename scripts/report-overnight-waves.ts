@@ -40,6 +40,8 @@ const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
 
 export interface ScannedRound {
   dir: string;
+  /** `plan.started_at`, usado pela hora de rodada de `report-overnight-throughput.ts` (#13271). */
+  started_at?: string;
   waves?: OvernightWaveRecord[];
   issues: PlanIssue[];
 }
@@ -81,6 +83,7 @@ export function readRoundPlan(planPath: string, dir: string = basename(dirname(p
     if (plan === null || typeof plan !== "object") return null;
     return {
       dir,
+      started_at: typeof plan.started_at === "string" ? plan.started_at : undefined,
       waves: Array.isArray(plan.waves) ? plan.waves : undefined,
       issues: normalizeIssues(plan),
     };

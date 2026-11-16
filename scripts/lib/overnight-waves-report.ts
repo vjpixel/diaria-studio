@@ -110,6 +110,44 @@ export interface WavesAggregateReport {
   pr_to_merge_p90_ms: { cap_hit_true: number | null; cap_hit_false: number | null };
   /** Tamanho de cada amostra usada no p90 (unidades com duração conhecida). */
   pr_to_merge_sample_size: { cap_hit_true: number; cap_hit_false: number };
+  /** Critério de reversão do teto avaliado sobre os p90 acima (#13270). */
+  reversal: WaveCapReversalVerdict;
+}
+
+/**
+ * Limiar do critério de reversão do teto (#8486, mantido no #10821): `pr→merge`
+ * p90 acima de ~30 min nas ondas com `cap_hit: true` = voltar a 6. Antes do
+ * #13270 a regra só existia em prosa (`OVERNIGHT_WAVE_CAP`, SKILL.md) e ninguém
+ * fazia a conta; agora o relatório diz se ela disparou.
+ */
+export const WAVE_CAP_REVERSAL_P90_MS = 30 * 60 * 1000;
+
+/**
+ * Veredito do critério de reversão (#13270):
+ * - `sem-amostra`: nenhuma unidade com duração conhecida em onda `cap_hit: true`.
+ * - `nao-disparou`: p90 das ondas cheias dentro do limiar.
+ * - `disparou`: p90 das ondas cheias acima do limiar e acima do das outras ondas
+ *   (o teto cheio piora o ciclo: voltar a 6 é a leitura direta da regra).
+ * - `disparou-sem-efeito-do-teto`: p90 das ondas cheias acima do limiar, mas as
+ *   ondas sem `cap_hit` também passam dele e não ficam melhores. O gargalo não é
+ *   o número de worktrees, e baixar o teto não resolve sozinho.
+ *
+ * A decisão (voltar a 6 ou rever o limiar) é do editor; o relatório só faz a conta.
+ */
+export type WaveCapReversalVerdict =
+  | { verdict: "sem-amostra"; threshold_ms: number }
+  | { verdict: "nao-disparou" | "disparou" | "disparou-sem-efeito-do-teto"; threshold_ms: number };
+
+/** Pure: avalia o critério de reversão a partir dos dois p90. */
+export function evaluateWaveCapReversal(
+  p90: { cap_hit_true: number | null; cap_hit_false: number | null },
+  threshold_ms: number = WAVE_CAP_REVERSAL_P90_MS,
+): WaveCapReversalVerdict {
+  if (p90.cap_hit_true === null) return { verdict: "sem-amostra", threshold_ms };
+  if (p90.cap_hit_true <= threshold_ms) return { verdict: "nao-disparou", threshold_ms };
+  const otherAlsoSlow = p90.cap_hit_false !== null && p90.cap_hit_false > threshold_ms;
+  const fullWorse = p90.cap_hit_false === null || p90.cap_hit_true > p90.cap_hit_false;
+  return { verdict: otherAlsoSlow && !fullWorse ? "disparou-sem-efeito-do-teto" : "disparou", threshold_ms };
 }
 
 /**
@@ -138,20 +176,22 @@ export function aggregateWaveRounds(
   const durTrue = allDurations.filter((d) => d.cap_hit && d.duration_ms !== null).map((d) => d.duration_ms as number);
   const durFalse = allDurations.filter((d) => !d.cap_hit && d.duration_ms !== null).map((d) => d.duration_ms as number);
 
+  const pr_to_merge_p90_ms = {
+    cap_hit_true: percentile(durTrue, 90),
+    cap_hit_false: percentile(durFalse, 90),
+  };
   return {
     rounds_scanned: rounds.length,
     waves_total: allWaves.length,
     unit_count_distribution,
     cap_hit_count,
     cap_hit_fraction: allWaves.length === 0 ? 0 : cap_hit_count / allWaves.length,
-    pr_to_merge_p90_ms: {
-      cap_hit_true: percentile(durTrue, 90),
-      cap_hit_false: percentile(durFalse, 90),
-    },
+    pr_to_merge_p90_ms,
     pr_to_merge_sample_size: {
       cap_hit_true: durTrue.length,
       cap_hit_false: durFalse.length,
     },
+    reversal: evaluateWaveCapReversal(pr_to_merge_p90_ms),
   };
 }
 
@@ -194,5 +234,22 @@ export function renderWavesReportMarkdown(report: WavesAggregateReport): string 
   lines.push(
     `pr→merge p90 (cap_hit=false): ${fmtDurationMs(report.pr_to_merge_p90_ms.cap_hit_false)} (n=${report.pr_to_merge_sample_size.cap_hit_false})`,
   );
+  lines.push("");
+  lines.push(renderReversalLine(report.reversal));
   return lines.join("\n");
+}
+
+/** Linha do critério de reversão do teto (#13270). */
+export function renderReversalLine(r: WaveCapReversalVerdict): string {
+  const limiar = fmtDurationMs(r.threshold_ms);
+  switch (r.verdict) {
+    case "sem-amostra":
+      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): sem amostra em onda com cap_hit.`;
+    case "nao-disparou":
+      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): não disparou.`;
+    case "disparou":
+      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): DISPAROU, e as ondas cheias ficam piores que as outras. Decisão do editor: voltar a 6 ou rever o limiar.`;
+    case "disparou-sem-efeito-do-teto":
+      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): DISPAROU, mas as ondas sem cap_hit também passam do limiar e não ficam melhores. O gargalo não é o teto. Decisão do editor: voltar a 6 ou rever o limiar.`;
+  }
 }
