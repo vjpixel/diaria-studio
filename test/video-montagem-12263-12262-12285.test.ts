@@ -100,17 +100,21 @@ describe("#12263 (2): o detector de fala recua até o ataque medido contra o pis
   it('consoante suave (-45 dB) antes da vogal: a ilha do limiar fixo começa depois do ataque; o recuo a pega', () => {
     // Piso -60; "s" de 1,00 a 1,08 s a -45 dB (abaixo de -33 e, na diferença, de -46); vogal a -20 dB.
     const e = frames(4, [[1.0, 1.08, -45], [1.08, 2, -20]], -60);
-    const fixed = speechIslands(e);
+    // Limiares fixos de propósito: desde o #13188 o relativo baixa os limiares neste bruto baixo e a ilha já pega o "s".
+    const FIXED = { fullDb: SPEECH_DETECT.fullDb, diffDb: SPEECH_DETECT.diffDb };
+    const fixed = speechIslands(e, FIXED);
     assert.equal(fixed.length, 1);
     assert.ok(fixed[0].start >= 1.075, `pré-condição: o limiar fixo começa na vogal (${fixed[0].start})`);
     const [ext] = extendIslandAttacks(e, fixed);
     assert.ok(ext.start <= 1.005 && ext.start >= 1.0 - 1e-9, `ataque em ${ext.start}`);
     assert.equal(ext.end, fixed[0].end);
+    const [relative] = speechIslands(e);
+    assert.ok(relative.start <= 1.005, `#13188: com o relativo a ilha começa no "s" (${relative.start})`);
   });
 
   it("o recuo para em attackMaxS e na ilha anterior", () => {
     const long = frames(4, [[0.5, 1.0, -45], [1.0, 2, -20]], -60);
-    const [ext] = extendIslandAttacks(long, speechIslands(long));
+    const [ext] = extendIslandAttacks(long, speechIslands(long, { fullDb: SPEECH_DETECT.fullDb, diffDb: SPEECH_DETECT.diffDb }));
     assert.ok(Math.abs(ext.start - (1.0 - SPEECH_DETECT.attackMaxS)) < 0.006, `teto: ${ext.start}`);
     const prev = [{ start: 0.2, end: 0.95 }, { start: 1.0, end: 2 }];
     assert.equal(extendIslandAttacks(long, prev)[1].start, 0.95);

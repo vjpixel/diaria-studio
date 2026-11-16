@@ -16,7 +16,11 @@
  *     com `insightTrafficSourceType==YT_SEARCH`), do canal e por vídeo, nos
  *     últimos 28 dias (#13087). Lista vazia é resultado válido: o YouTube omite
  *     termo abaixo do limiar de privacidade;
- *   - total de inscritos do canal (`channels.list`, Data API) como série.
+ *   - total de inscritos do canal (`channels.list`, Data API) como série;
+ *   - impressões e taxa de cliques da capa por vídeo (#13192): a Analytics
+ *     API não as expõe; vêm da YouTube Reporting API (`channel_reach_basic_a1`,
+ *     `scripts/lib/diaria/youtube-reach.ts`), em `reach-daily.jsonl`, e entram
+ *     somadas na linha de `videos.jsonl` (`thumbnailImpressions`, `thumbnailCtr`).
  *
  * Escopo: a Analytics API pede `yt-analytics.readonly`, escopo OPCIONAL do
  * token (`missingOptionalScopes`, `scripts/lib/youtube-oauth.ts`). Token antigo
@@ -31,6 +35,7 @@
  */
 
 import type { FetchLike } from "./youtube-upload.ts";
+import type { ReachSummary, VideoReach } from "./youtube-reach.ts";
 
 export const YOUTUBE_ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly";
 export const YOUTUBE_ANALYTICS_ENDPOINT = "https://youtubeanalytics.googleapis.com/v2/reports";
@@ -54,6 +59,10 @@ export const YOUTUBE_ANALYTICS_FILES = {
   videos: "videos.jsonl",
   retention: "retention.jsonl",
   searchTerms: "search-terms.jsonl",
+  /** Linhas dia × vídeo do `channel_reach_basic_a1` (#13192). */
+  reachDaily: "reach-daily.jsonl",
+  /** Relatórios de alcance já baixados (id, período, `createTime`) (#13192). */
+  reachReports: "reach-reports.jsonl",
 } as const;
 
 /** Janela dos termos de busca (#13087): os últimos N dias até ontem (BRT). */
@@ -271,6 +280,12 @@ export interface ChannelSnapshotLine {
    * anteriores ao #13087.
    */
   searchTerms?: SearchTermsSummary;
+  /**
+   * Resumo da coleta de impressões/taxa de cliques da capa (#13192, Reporting
+   * API). Ausente em linhas anteriores ao #13192 ou quando a parte Analytics
+   * falhou antes dela.
+   */
+  reach?: ReachSummary;
 }
 
 export interface SearchTermsSummary {
@@ -328,6 +343,17 @@ export interface VideoSnapshotLine {
   averageViewPercentage: number;
   subscribersGained: number;
   subscribersLost: number;
+  /**
+   * Impressões da capa somadas nos relatórios de alcance já baixados (#13192),
+   * dias do Pacífico de `YOUTUBE_ANALYTICS_SERIES_START` até `endDate`. `null`:
+   * nenhum relatório cobre o vídeo ainda (job recém-criado, ou vídeo sem
+   * impressão). Ausente em linhas anteriores ao #13192.
+   */
+  thumbnailImpressions?: number | null;
+  /** Taxa de cliques da capa em fração (0..1), cliques ÷ impressões; `null` como acima. */
+  thumbnailCtr?: number | null;
+  /** Último dia (Pacífico) coberto pelos relatórios de alcance do vídeo. */
+  reachLastDay?: string | null;
 }
 
 export interface RetentionLine {
@@ -442,6 +468,8 @@ export function toVideoSnapshotLines(input: {
   endDate: string;
   index: EditionVideoIndex;
   meta: Map<string, VideoMeta>;
+  /** Alcance agregado por vídeo (#13192); ausente = coleta não rodou, campos ficam de fora. */
+  reach?: Map<string, VideoReach>;
 }): VideoSnapshotLine[] {
   return input.rows
     .filter((r) => typeof r.video === "string" && r.video)
@@ -468,8 +496,13 @@ export function toVideoSnapshotLines(input: {
         averageViewPercentage: num(r.averageViewPercentage),
         subscribersGained: num(r.subscribersGained),
         subscribersLost: num(r.subscribersLost),
+        ...(input.reach ? reachFields(input.reach.get(videoId)) : {}),
       };
     });
+}
+
+function reachFields(r: VideoReach | undefined): Pick<VideoSnapshotLine, "thumbnailImpressions" | "thumbnailCtr" | "reachLastDay"> {
+  return { thumbnailImpressions: r ? r.impressions : null, thumbnailCtr: r ? r.ctr : null, reachLastDay: r ? r.lastDay : null };
 }
 
 /** Extrai `statistics` de `channels.list?part=statistics&mine=true`. */
@@ -648,12 +681,22 @@ export const fmtSec = (n: number): string => {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 };
 
+/** Taxa de cliques da capa (fração) em "2,2%"; sem dado, "—". */
+export const fmtCtr = (ctr: number | null | undefined): string => (ctr == null ? "—" : `${(ctr * 100).toFixed(1).replace(".", ",")}%`);
+
 function videoTable(rows: VideoSnapshotLine[]): string[] {
-  const out = ["| Edição | Vídeo | Views | Min. assistidos | Duração média | % médio | Inscritos + | Inscritos − | Líquido |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"];
+  // Colunas da capa só quando a captura já traz o campo (#13192): store
+  // anterior segue com a tabela de sempre.
+  const withReach = rows.some((r) => r.thumbnailImpressions !== undefined);
+  const out = [
+    `| Edição | Vídeo | Views | Min. assistidos | Duração média | % médio | Inscritos + | Inscritos − | Líquido |${withReach ? " Impressões da capa | CTR da capa |" : ""}`,
+    `|---|---|---:|---:|---:|---:|---:|---:|---:|${withReach ? "---:|---:|" : ""}`,
+  ];
   for (const r of rows) {
     const label = (r.title ?? r.videoId).replace(/\|/g, "/");
+    const reach = withReach ? ` ${r.thumbnailImpressions == null ? "—" : fmtInt(r.thumbnailImpressions)} | ${fmtCtr(r.thumbnailCtr)} |` : "";
     out.push(
-      `| ${r.edition ?? "?"} | ${label} (${r.videoId}) | ${fmtInt(r.views)} | ${fmtInt(r.estimatedMinutesWatched)} | ${fmtSec(r.averageViewDuration)} | ${fmtPct(r.averageViewPercentage)} | ${fmtInt(r.subscribersGained)} | ${fmtInt(r.subscribersLost)} | ${fmtInt(r.subscribersGained - r.subscribersLost)} |`,
+      `| ${r.edition ?? "?"} | ${label} (${r.videoId}) | ${fmtInt(r.views)} | ${fmtInt(r.estimatedMinutesWatched)} | ${fmtSec(r.averageViewDuration)} | ${fmtPct(r.averageViewPercentage)} | ${fmtInt(r.subscribersGained)} | ${fmtInt(r.subscribersLost)} | ${fmtInt(r.subscribersGained - r.subscribersLost)} |${reach}`,
     );
   }
   return out;
@@ -680,6 +723,17 @@ export function renderAnalyticsReport(input: {
   const last = channel[channel.length - 1];
   if (last && last.analytics !== "ok") {
     lines.push(`> Aviso: última captura (${last.date}) sem dados de Analytics: ${last.analyticsError ?? last.analytics}`, "");
+  }
+  if (last?.reach) {
+    const r = last.reach;
+    if (r.status !== "ok" && r.status !== "dry-run") {
+      lines.push(`> Aviso: impressões e taxa de cliques da capa indisponíveis na última captura (${last.date}): ${r.error ?? r.status}`, "");
+    } else if (r.jobCreated || (r.jobId && r.reportsListed === 0)) {
+      lines.push(
+        `> Impressões e taxa de cliques da capa: job da YouTube Reporting API ${r.jobCreated ? "criado nesta captura" : "ainda sem relatório"}; o 1º relatório sai em até 48h, com os 30 dias anteriores à criação. Linha de base anterior: docs/youtube-capa-ctr.md.`,
+        "",
+      );
+    }
   }
 
   const latest = latestVideoSnapshot(input.videos);

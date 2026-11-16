@@ -82,6 +82,9 @@ function mockFetch(terms: Record<string, TermsResponse>) {
         return json(table(["insightTrafficSourceDetail", "views", "estimatedMinutesWatched"], r as unknown[][] | undefined));
       }
     }
+    // Alcance da capa (#13192): job já existe, ainda sem relatório.
+    if (url === "https://youtubereporting.googleapis.com/v1/jobs") return json({ jobs: [{ id: "job1", reportTypeId: "channel_reach_basic_a1" }] });
+    if (url.startsWith("https://youtubereporting.googleapis.com/v1/jobs/job1/reports")) return json({});
     return new Response("inesperado", { status: 404 });
   };
   return { fetch, calls };
