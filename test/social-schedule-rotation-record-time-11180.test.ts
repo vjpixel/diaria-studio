@@ -7,10 +7,10 @@
  * Os testes de CLI usam `--log` num diretório temporário: nada toca o
  * `data/social-schedule-rotation.jsonl` real.
  */
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -67,7 +67,16 @@ function readLog(p: string): Array<Record<string, unknown>> {
 }
 
 describe("CLI --record --time (#11180), log temporário", () => {
-  const base = ["--record", "--date", "261026", "--kind", "linkedin_article"];
+  // #13286: o registro do artigo semanal exige a conferência da menção
+  // aprovada para o ciclo (261026 → 26w43); fixture num diretório temporário.
+  const weeklyRoot = mkdtempSync(join(tmpdir(), "rot-11180-weekly-"));
+  mkdirSync(join(weeklyRoot, "26w43", "_internal"), { recursive: true });
+  writeFileSync(
+    join(weeklyRoot, "26w43", "_internal", "ln-feed-post-mention.json"),
+    JSON.stringify({ em: "2026-10-25T12:00:00.000Z", ok: true, status: "mention", message: "ok" }),
+  );
+  after(() => rmSync(weeklyRoot, { recursive: true, force: true }));
+  const base = ["--record", "--date", "261026", "--kind", "linkedin_article", "--weekly-root", weeklyRoot];
 
   it("sem --time: grava o planejado, igual a antes", () => {
     const dir = mkdtempSync(join(tmpdir(), "rot-11180-"));

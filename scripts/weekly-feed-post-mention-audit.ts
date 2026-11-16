@@ -31,6 +31,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { feedPostPath } from "./lib/weekly-feed-post-review.ts";
 import { loadDiariaProfiles } from "./lib/diaria/short-video.ts";
+import { FEED_POST_MENTION_REL } from "./lib/linkedin-article-mention-gate.ts";
 import {
   auditFeedPostMention,
   FEED_MENTION_DOM_SNIPPET,
@@ -42,8 +43,8 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[weekly-feed-post-mention-audit]";
 
-/** Resultado gravado ao lado do texto do post. */
-export const FEED_POST_MENTION_REL = "_internal/ln-feed-post-mention.json";
+/** Resultado gravado ao lado do texto do post. Lido pelo `--record` do artigo semanal (#13286). */
+export { FEED_POST_MENTION_REL };
 
 export class MentionAuditInputError extends Error {}
 

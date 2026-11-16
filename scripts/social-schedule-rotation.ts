@@ -31,6 +31,13 @@
  *   # linha leva `planned_time` + `time_differs_from_plan: true`
  *   npx tsx scripts/social-schedule-rotation.ts --record --date 261026 --kind linkedin_article --time 14:25
  *
+ *   # #13286: linha `linkedin_article` só grava com a conferência da menção
+ *   # @diar.ia.br do post de feed aprovada (`data/weekly/{cycle}/_internal/
+ *   # ln-feed-post-mention.json`, de weekly-feed-post-mention-audit.ts). Ausente
+ *   # ou reprovada → exit 1, nada gravado. `unverified` só passa com
+ *   # --mention-visual-ok (editor confirmou à vista). --weekly-root troca o
+ *   # diretório dos ciclos (default data/weekly; testes).
+ *
  * Nunca publica nem agenda nada — só lê o config e (com `--record`) escreve
  * um arquivo local.
  */
@@ -63,6 +70,7 @@ import {
   recordedTimeConflict,
   rowKey,
 } from "./lib/social-schedule-rotation-record.ts";
+import { checkLinkedinArticleMentionGate } from "./lib/linkedin-article-mention-gate.ts";
 
 // Reexport: a lógica de gravação mora na lib (os publicadores também gravam, #10417 finding 3).
 export { DEFAULT_ROTATION_LOG, newRowsToRecord, rowKey };
@@ -165,6 +173,18 @@ function main(): void {
       }
       const r = toRecord[0] as RecordedRotationRow;
       if (r.time_differs_from_plan) console.error(`[social-schedule-rotation] horário real ${r.time} difere do planejado ${r.planned_time} — gravado com a marca time_differs_from_plan.`);
+    }
+    // #13286: linha do artigo semanal do LinkedIn só grava com a conferência
+    // da menção @diar.ia.br do post de feed aprovada para o ciclo (#13261).
+    if (toRecord.some((r) => r.kind === "linkedin_article")) {
+      const article = toRecord.find((r) => r.kind === "linkedin_article") as RotationPlanRow;
+      const gate = checkLinkedinArticleMentionGate({
+        publishDate: article.date,
+        weeklyRoot: resolve(ROOT, get("--weekly-root") ?? "data/weekly"),
+        allowUnverified: has("--mention-visual-ok"),
+      });
+      if (!gate.ok) throw new Error(`[#13286] registro do artigo semanal recusado: ${gate.reason}`);
+      console.error(`[social-schedule-rotation] menção @diar.ia.br do ciclo ${gate.cycle} conferida (${gate.status}).`);
     }
     const n = recordRotationRows(logPath, toRecord);
     // #10438: "já gravada(s)" sobre o array FILTRADO, não sobre `rows`.

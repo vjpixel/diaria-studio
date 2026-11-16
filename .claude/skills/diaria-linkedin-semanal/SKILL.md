@@ -886,7 +886,10 @@ editor, nesta ordem:
    stderr (texto puro, link para o site, menção apagada ou sem sinal de
    menção no DOM) e repetir a conferência depois da correção; `unverified`
    pede confirmação à vista do editor. O resultado fica em
-   `_internal/ln-feed-post-mention.json`. O mesmo snippet serve no post já
+   `_internal/ln-feed-post-mention.json`, e o `--record` do item 6 recusa
+   (exit 1, nada gravado) sem esse arquivo ou com a conferência reprovada
+   (#13286); `unverified` confirmado à vista pelo editor passa com
+   `--mention-visual-ok` no `--record`. O mesmo snippet serve no post já
    publicado (aberto em modo de edição), se a conferência ficou para depois.
 5. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
    editor de 18/10/2026; href no perfil desde o #13049)**, só quando o
