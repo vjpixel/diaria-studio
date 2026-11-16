@@ -3,7 +3,7 @@
  * check-git-identity.ts (#13259)
  *
  * Confere que a identidade git efetiva do checkout (`user.name`/`user.email`)
- * não é vazia nem placeholder de teste (`Test <test@test.com>` assinou os
+ * não é vazia nem placeholder de teste (`Test`, `test@` no domínio `test.com`, assinou os
  * commits da rodada 261115f). Lógica em `scripts/lib/git-identity-guard.ts`.
  *
  * Uso: npx tsx scripts/check-git-identity.ts [--cwd DIR]

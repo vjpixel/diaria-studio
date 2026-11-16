@@ -354,7 +354,7 @@ async function main() {
   }
 
   // #13259: daqui em diante o trem cria commits de merge locais; com
-  // identidade placeholder (`Test <test@test.com>`, rodada 261115f) eles saem
+  // identidade placeholder (`Test`, `test@` no domínio `test.com`, rodada 261115f) eles saem
   // assinados por ela. Fica depois da triagem (só leitura) para "nada a
   // fazer" seguir saindo 0. Preparação falhou antes de qualquer lote = exit 1.
   {

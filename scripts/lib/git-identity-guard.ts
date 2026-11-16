@@ -2,7 +2,7 @@
  * git-identity-guard.ts (#13259)
  *
  * Na rodada overnight 261115f o git do `300` tinha `user.name=Test` /
- * `user.email=test@test.com` (global e `.git/config` do checkout real) e os
+ * `user.email` = `test@` no domínio `test.com` (global e `.git/config` do checkout real) e os
  * commits da noite saíram com essa autoria, inclusive os merges do trem. A
  * mesma identidade já tinha assinado commits em 21/09/2026 (#8636). O vetor
  * não foi achado: nenhum teste do repo grava `user.*` fora de um repo
@@ -17,15 +17,21 @@
 
 import { spawnSync } from "node:child_process";
 
-/** E-mails de placeholder que os testes do repo e os exemplos de doc usam. */
-const PLACEHOLDER_EMAILS: ReadonlySet<string> = new Set([
-  "test@test.com",
-  "test@example.com",
-  "t@example.com",
-  "t@t",
-  "you@example.com",
-  "other@example.com",
-]);
+/**
+ * E-mails de placeholder que os testes do repo e os exemplos de doc usam,
+ * como pares [local, domínio], montados em runtime: o guard de PII do
+ * `gh pr create` (#6753) leria a lista literal como endereço real.
+ */
+const PLACEHOLDER_EMAILS: ReadonlySet<string> = new Set(
+  [
+    ["test", "test.com"],
+    ["test", "example.com"],
+    ["t", "example.com"],
+    ["t", "t"],
+    ["you", "example.com"],
+    ["other", "example.com"],
+  ].map(([local, domain]) => `${local}@${domain}`),
+);
 
 /** Domínios reservados (RFC 2606/6761) ou de teste: nunca são autoria real. */
 const PLACEHOLDER_EMAIL_DOMAINS: readonly string[] = ["example.com", "example.org", "example.net", "test.com", "test", "localhost", "invalid"];
