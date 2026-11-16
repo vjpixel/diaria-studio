@@ -194,6 +194,9 @@ import {
   type UnregisteredCaptionOutcome,
   youtubeCaptionFileName,
   youtubeCaptionNoPlanMarkerPath,
+  youtubeSrtRecordPath,
+  isMontageCaptionCopy,
+  fromFinalCaptionCommand,
   type CaptionTrack,
   type CaptionUploadResult,
 } from "./lib/diaria/youtube-captions.ts";
@@ -246,7 +249,12 @@ export interface YouTubePublishPlanInput {
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumb: { path: string; exists: boolean };
   /** Legenda SRT do horizontal (#11384). Ausente = sem legenda no plano. */
-  captions?: { path: string; exists: boolean };
+  captions?: {
+    path: string;
+    exists: boolean;
+    /** #13212: a cópia é a legenda da montagem (sem `--from-final`): não sobe, o plano pede o comando do export. */
+    fromMontage?: boolean;
+  };
   /** Projeto GCP auditado? Default `YOUTUBE_API_PROJECT_AUDITED` (false). */
   projectAudited?: boolean;
   /** Modo do CLI — muda só o texto dos avisos. Default `dry-run`. */
@@ -366,8 +374,18 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     warnings.push(`capa ausente em ${input.thumb.path} — o YouTube usaria a thumb automática`);
   }
 
-  if (input.captions && !input.captions.exists) {
-    premises.push(`sem legenda em ${input.captions.path} — o vídeo sobe sem legenda (passe --captions PATH; depois, --captions-only envia só ela, #11384)`);
+  const captionsUsable = input.captions?.exists === true && input.captions.fromMontage !== true;
+  if (input.captions?.exists && input.captions.fromMontage) {
+    // #13212: a legenda do horizontal sai só do export final; a da montagem tem os tempos da sequência, não os do que vai ao ar.
+    warnings.push(
+      `${input.captions.path} é a legenda da montagem (tempos da sequência, não do export): o vídeo sobe sem ela. ` +
+        `Gere a do export com ${fromFinalCaptionCommand(input.aammdd)} e envie com --captions-only (#13212)`,
+    );
+  } else if (input.captions && !input.captions.exists) {
+    premises.push(
+      `sem legenda em ${input.captions.path} — o vídeo sobe sem legenda. A do horizontal sai do export final: ` +
+        `${fromFinalCaptionCommand(input.aammdd)}, depois --captions-only envia só ela (#11384, #13212)`,
+    );
   }
 
   const request = buildYouTubeInsertRequest(metadata, schedule, {
@@ -390,7 +408,7 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     thumbnail: input.thumb.exists
       ? { path: input.thumb.path, exists: true, endpoint: `${YOUTUBE_THUMBNAIL_ENDPOINT}?videoId={videoId}` }
       : null,
-    captions: input.captions?.exists
+    captions: captionsUsable && input.captions
       ? { path: input.captions.path, exists: true, endpoint: YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT, language: YOUTUBE_CAPTION_LANGUAGE }
       : null,
     themes,
@@ -1110,6 +1128,24 @@ export async function runThumbnailOnly(deps: YouTubeUploadDeps, input: Omit<RunC
   return { exitCode: 0, record, skipped: false };
 }
 
+/**
+ * #13212: a cópia `diaria-comentada-{AAMMDD}.srt` da pasta da edição é a
+ * legenda da montagem (`isMontageCaptionCopy` contra o `youtube-srt.json` da
+ * montagem)? Registro ausente ou ilegível = não (cópia à mão ou anterior ao
+ * registro segue subindo como antes).
+ */
+export function captionCopyIsFromMontage(editionDir: string, captionsPath: string): boolean {
+  const recordPath = youtubeSrtRecordPath(editionDir);
+  if (!existsSync(captionsPath) || !existsSync(recordPath)) return false;
+  try {
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as { sha256?: unknown; fromExport?: unknown };
+    return isMontageCaptionCopy(readFileSync(captionsPath, "utf8"), record);
+  } catch (e) {
+    console.error(`[aviso] ${recordPath} ilegível (${(e as Error).message}): a origem da legenda não foi conferida (#13212)`);
+    return false;
+  }
+}
+
 export interface RunCaptionsOnlyInput {
   aammdd: string;
   editionDir: string;
@@ -1120,6 +1156,8 @@ export interface RunCaptionsOnlyInput {
   force: boolean;
   /** #12429: `--captions-reviewed`, o SRT sem plano (marcado como não revisado) foi conferido. */
   captionsReviewed?: boolean;
+  /** #13212: a cópia default é a legenda da montagem (`captionCopyIsFromMontage`): recusa e pede o `--from-final`. */
+  captionsFromMontage?: boolean;
   /**
    * #12429: `--video-id`, o vídeo da edição que não tem registro (horizontal
    * antigo, fora da varredura do `--accept-period-match`). Só a legenda: nada
@@ -1226,6 +1264,13 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   }
   if (!existsSync(input.captionsPath)) {
     log(`publish-youtube: legenda ausente em ${input.captionsPath} (passe --captions PATH). Nenhuma legenda enviada.`);
+    return { ...refused, videoId };
+  }
+  if (input.captionsFromMontage) {
+    log(
+      `publish-youtube: ${input.captionsPath} é a legenda da montagem (tempos da sequência, não do export). ` +
+        `Gere a do export com ${fromFinalCaptionCommand(input.aammdd)} e rode de novo (#13212). Nenhuma legenda enviada.`,
+    );
     return { ...refused, videoId };
   }
   const noPlanMarker = youtubeCaptionNoPlanMarkerPath(input.captionsPath);
@@ -1583,6 +1628,8 @@ async function main(): Promise<number> {
     return outcome.exitCode;
   }
   const captionsPath = resolve(values["captions"] ?? join(dir, youtubeCaptionFileName(aammdd)));
+  // #13212: só o caminho default; `--captions PATH` explícito é escolha de quem roda.
+  const captionsFromMontage = values["captions"] === undefined && captionCopyIsFromMontage(dir, captionsPath);
   if (captionsOnly) {
     if (flags.has("no-captions")) {
       console.error("publish-youtube: --captions-only com --no-captions não faz nada.");
@@ -1596,6 +1643,7 @@ async function main(): Promise<number> {
       env: process.env,
       force: flags.has("force"),
       captionsReviewed: flags.has("captions-reviewed"),
+      captionsFromMontage,
       videoId: values["video-id"],
       dryRun,
       readFile: (p) => readFileSync(p),
@@ -1654,7 +1702,7 @@ async function main(): Promise<number> {
     ...(roteiro ? { roteiro } : {}),
     video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
     thumb: { path: thumbPath, exists: existsSync(thumbPath) },
-    ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath) } }),
+    ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath), fromMontage: captionsFromMontage } }),
     mode: dryRun ? "dry-run" : "upload",
   });
 

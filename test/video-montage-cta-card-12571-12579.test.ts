@@ -287,6 +287,15 @@ describe("prévia sem legenda até a aprovação (#12579)", () => {
     assert.match(n.message ?? "", /--no-subs/);
   });
 
+  it("#13212: a prévia do horizontal sai sem legenda mesmo com SRT em dia", () => {
+    const d = previewSubtitleDecision({ srtPath: "x.srt", exists: true, srtMtimeMs: 300, builtAtMs: 200, noSubs: false, horizontal: true });
+    assert.equal(d.use, false);
+    assert.match(d.message ?? "", /horizontal sem legenda.*--from-final.*#13212/);
+    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
+    const body = src.slice(src.indexOf("async function cmdPreview("), src.indexOf("function cmdReview("));
+    assert.match(body, /horizontal: isYoutubeSpec\(plan\.spec\)/);
+  });
+
   it("o cmdPreview não tem mais o throw do SRT defasado (regressão)", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
     const body = src.slice(src.indexOf("async function cmdPreview("), src.indexOf("function cmdReview("));

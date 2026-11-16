@@ -114,12 +114,12 @@ describe("#11957: SRT do horizontal", () => {
     { spec: { target: "instagram" as const, corte: "soberana", width: 1080, height: 1920, name: "Diaria comentada_Vertical_V1-soberana" } },
   ];
 
-  it("srt sem --seq gera todas as sequências, o horizontal também", () => {
-    assert.deepEqual(srtPlans(plans, undefined).map((p) => p.spec.name), plans.map((p) => p.spec.name));
+  it("#13212: srt sem --seq gera só as verticais e os cortes, sem o horizontal", () => {
+    assert.deepEqual(srtPlans(plans, undefined).map((p) => p.spec.name), ["Diaria comentada_Vertical_V1", "Diaria comentada_Vertical_V1-soberana"]);
   });
 
-  it("srt --seq youtube escolhe o horizontal (antes recusava: só verticais)", () => {
-    assert.deepEqual(srtPlans(plans, "youtube").map((p) => p.spec.name), ["Diaria comentada_Youtube_V1"]);
+  it("#13212: srt --seq youtube sem --from-final recusa apontando o export; --seq de corte segue", () => {
+    assert.throws(() => srtPlans(plans, "youtube", "261116"), /--seq youtube sem --from-final.*#13212.*srt 261116 --seq youtube --from-final /);
     assert.deepEqual(srtPlans(plans, "soberana").map((p) => p.spec.name), ["Diaria comentada_Vertical_V1-soberana"]);
   });
 
