@@ -70,7 +70,14 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S]
+ *       (#13219) XML LEVE por padrão: os clipes apontam trechos do bruto em H.264 4K + PCM 48 kHz
+ *       (`trechos/` na pasta da edição, só o que as sequências usam, folga de 1 s de cada lado,
+ *       trechos a menos de 3 s um do outro viram um só; nome = arquivo + quadros de início e fim,
+ *       reaproveitado no rebuild), para o Premiere não converter o AAC do bruto inteiro nem tocar
+ *       o HEVC pelo Drive. h264_nvenc quando o ffmpeg tem; senão libx264. --xml-bruto aponta o
+ *       bruto, como antes; --trechos-folga muda a folga. No modo API (300) sai o XML do bruto, com
+ *       [aviso] (os trechos não sobem pelo upload do out dir). Falha do ffmpeg = XML do bruto, com [aviso].
  *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado-{chave}.wav`
  *       (`cleanAudioFileName`; a chave é o hash dos args do ffmpeg), o áudio do bruto com afftdn +
  *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
@@ -412,6 +419,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
+import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
 import { assemblySegments, edgeFindings, edgeLine, longPauses, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
@@ -1163,6 +1171,8 @@ export interface XmlBuildOptions {
   capaInicio?: Readonly<Record<string, CapaInicioAsset>> | null;
   /** #13140: os marcadores de tela de cada sequência (chave = `sequenceKey`); só entram no hash os da sequência (sem eles, o hash de antes). */
   telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
+  /** #13219: a folga dos trechos do XML leve, em segundos; ausente/null = XML do bruto (o hash fica o de antes). */
+  trechosFolgaS?: number | null;
   /** #13204: os boxes de tela (PNG) de cada sequência; só entram no hash os da sequência, sem o caminho local. */
   telaOverlays?: Readonly<Record<string, readonly TelaOverlay[]>> | null;
 }
@@ -1212,6 +1222,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
+        ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
       }),
     )
@@ -3282,6 +3293,99 @@ export async function renderCtaCard(input: {
   };
 }
 
+/** #13219: XML leve (padrão) ou o bruto (`--xml-bruto`), e a folga dos trechos. */
+export interface TrechosBuildOption {
+  enabled: boolean;
+  folgaS: number;
+}
+
+/**
+ * #13219: os trechos do bruto que as sequências usam, em H.264 + PCM, na
+ * subpasta `trechos/` do out dir (a pasta da edição). Arquivo já presente é
+ * reaproveitado (o nome leva o arquivo e os quadros de início e fim; o render
+ * vai para `.part` e só vira o nome final completo). NVENC que falha cai para
+ * libx264 uma vez, com [aviso]; libx264 que falha lança (o build volta ao
+ * XML do bruto). `encode`/`listEncoders` são injetáveis para o teste.
+ */
+export function renderTrechos(input: {
+  plans: readonly Pick<SequencePlan, "clips">[];
+  source: SourceInfo;
+  outDir: string;
+  /** O caminho do bruto no XML (a pasta da edição, como o Premiere a vê): os trechos ficam em `trechos/` ao lado. */
+  mediaPath: string;
+  folgaS: number;
+  encode?: (args: string[]) => void;
+  listEncoders?: () => string;
+  log?: (line: string) => void;
+}): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number } {
+  const log = input.log ?? ((m: string) => console.error(m));
+  const encode = input.encode ?? ((args: string[]) => { run("ffmpeg", args); });
+  const files = sourceFiles(input.source);
+  const uses = input.plans.flatMap((p) =>
+    p.clips.map((c) => {
+      const k = c.file ?? 0;
+      const off = files[k]?.offsetFrames ?? 0;
+      return { fileIndex: k, in: c.frameIn - off, out: c.frameOut - off };
+    }),
+  );
+  const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
+  const dir = join(input.outDir, TRECHOS.dirName);
+  mkdirSync(dir, { recursive: true });
+  let encoder: TrechoEncoder = pickTrechoEncoder(input.listEncoders ? input.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
+  const p = input.mediaPath.replace(/\\/g, "/");
+  const xmlDir = `${p.slice(0, p.lastIndexOf("/") + 1)}${TRECHOS.dirName}/`;
+  let made = 0;
+  let reused = 0;
+  const trechos = planned.map((t) => {
+    const out = join(dir, t.name);
+    if (existsSync(out)) reused++;
+    else {
+      const part = `${out}.part`;
+      const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
+      try {
+        encode(args(encoder));
+      } catch (e) {
+        if (encoder !== "h264_nvenc") throw e;
+        log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split("\n")[0]}): os trechos seguem em libx264 (#13219)`);
+        encoder = "libx264";
+        encode(args(encoder));
+      }
+      renameSync(part, out);
+      made++;
+    }
+    return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
+  });
+  return { trechos, encoder, made, reused };
+}
+
+/**
+ * #13219: o XML leve do build, ou `null` para o XML do bruto (`--xml-bruto`,
+ * modo API, ou ffmpeg que falhou), sempre dito no relato.
+ */
+function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: SourceInfo, mediaPath: string, opt: TrechosBuildOption): TrechoXml[] | null {
+  if (!opt.enabled) {
+    console.error("[aviso] --xml-bruto: o XML aponta o bruto inteiro; o Premiere converte o AAC de cada arquivo e lê o HEVC pelo Drive (#13219)");
+    return null;
+  }
+  if (ctx.mode === "api") {
+    console.error("[aviso] modo API do Drive: XML do bruto, sem trechos (a subpasta trechos/ não sobe pelo upload do out dir); para o XML leve, rode o build no Neo (#13219)");
+    return null;
+  }
+  try {
+    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS });
+    const cov = trechosCoverage(r.trechos, sourceFiles(source));
+    console.error(
+      `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s)), ` +
+        `H.264 no tamanho do bruto (${r.encoder}, qualidade ${TRECHOS.quality}, GOP ${TRECHOS.gop}, sem B-frames, ${source.fps} fps CFR, 8 bits) + PCM 48 kHz, folga de ${opt.folgaS} s; ` +
+        "--xml-bruto aponta o bruto; conferir no Premiere do Mac o playback e a cor (8 bits) (#13219)",
+    );
+    return r.trechos;
+  } catch (e) {
+    console.error(`[aviso] trechos do XML leve falharam (${(e as Error).message.split("\n")[0]}): XML do bruto, como com --xml-bruto (#13219)`);
+    return null;
+  }
+}
+
 /** #12571: sequência sem card e sem CTA falado (nenhum item de `cta_*` na ordem dela) sai sem CTA nenhum. */
 export function sequenceHasSpokenCta(plan: Pick<SequencePlan, "clips">): boolean {
   return plan.clips.some((c) => (CTA_BLOCKS as readonly string[]).includes(c.block));
@@ -3358,7 +3462,7 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
   return lines;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }, trechosOpt: TrechosBuildOption = { enabled: true, folgaS: TRECHOS.folgaS }): Promise<number> {
   // #12902: recusar antes do detector/refino, assets e XMLs: sem o plano
   // anterior legível, o merge de um build parcial descartaria as outras
   // sequências. Entradas mudadas não recusam mais (#12968): as outras ficam no
@@ -3622,6 +3726,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     ...Object.values(ctaCard).map((c) => c.xmlPath),
     ...Object.values(capaInicio).map((c) => c.xmlPath),
   ];
+  // #13219: XML leve (trechos em H.264 + PCM) antes da versão, que muda com ele.
+  const trechos = buildTrechosOrNull(ctx, picked, source, mediaPath, trechosOpt);
+  if (trechos) xmlFilePaths.push(...trechos.map((t) => t.xmlPath));
   console.error(premierePathsLine(ctx.premierePaths, unmappedPremierePaths(xmlFilePaths, ctx.premierePaths)));
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
@@ -3641,6 +3748,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     premierePaths: ctx.premierePaths ?? null,
     capaInicio,
     telaMarkers,
+    trechosFolgaS: trechos ? trechosOpt.folgaS : null,
     telaOverlays,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
@@ -3661,7 +3769,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechos }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -5246,6 +5354,8 @@ async function runCommand(
       {
         // #12104: o modo removido (`text`) falha aqui, antes de baixar o bruto.
         const titleMode = parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined));
+        // #13219: XML leve por padrão; --xml-bruto volta ao bruto. A folga inválida falha aqui, antes de baixar o bruto.
+        const trechosOpt: TrechosBuildOption = { enabled: !flags.has("xml-bruto"), folgaS: parseTrechosFolgaArg(values["trechos-folga"] ?? (flags.has("trechos-folga") ? "" : undefined)) };
         // #13234: motor da faixa tratada (ffmpeg padrão; deepfilternet até a escolha de ouvido). Inválido para aqui, antes do bruto.
         const denoise = resolveAudioDenoise({
           flag: values["audio-denoise"] ?? (flags.has("audio-denoise") ? "" : undefined),
@@ -5261,7 +5371,7 @@ async function runCommand(
           ...(values["speech-diff-db"] !== undefined || flags.has("speech-diff-db") ? { diffDb: parseSpeechDbArg("--speech-diff-db", values["speech-diff-db"] ?? "") } : {}),
           ...(flags.has("no-speech-voice") ? { voice: false } : {}),
         };
-        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d, speechOpts, denoise);
+        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d, speechOpts, denoise, trechosOpt);
       }
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "I:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
