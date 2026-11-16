@@ -33,7 +33,10 @@
  *
  * Opções comuns: --drive-root DIR (Drive for desktop; default
  * DIARIA_VIDEO_DRIVE_ROOT ou I:/Meu Drive/diaria-studio-video; ausente = API do
- * Drive), --cache-dir DIR, --work-dir DIR, --folder-id ID.
+ * Drive), --cache-dir DIR, --work-dir DIR, --folder-id ID, --fetch-bruto (modo API:
+ * baixa do Drive para `{cache}/bruto/` os arquivos do bruto em vários arquivos que
+ * faltam no cache, para concatenar o áudio quando o `audio.wav` da montagem já foi
+ * podado; sem a flag, só usa o que já está no cache, #12089/#13225).
  *
  * `--open-issues` abre (ou comenta) issue de ajuste do gerador quando um
  * padrão passa dos limiares de `PATTERN_RULES`; sem a flag só lista. Nunca
@@ -48,7 +51,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,6 +96,7 @@ import {
   type SequenceRecord,
 } from "./lib/diaria/video-xml-vs-final.ts";
 import { BASELINE_11670 } from "./lib/diaria/video-xml-vs-final-baseline.ts";
+import { concatListText, MULTI_AUDIO_FILE } from "./video-montagem.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const OUT_DIR = join("data", "video-xml-vs-final");
@@ -137,7 +141,7 @@ export function todayBrt(now = new Date()): string {
 export interface PlanFileLite {
   plans: SequencePlan[];
   /** `files` = bruto em vários arquivos (#12559); `path` é então só o do 1º. */
-  source: { fps?: number; audioOnly?: boolean; path?: string; files?: Array<{ path?: string }> };
+  source: { fps?: number; audioOnly?: boolean; path?: string; files?: Array<{ id?: string; path?: string; frames?: number }> };
   xmlVersions?: Record<string, { id: string }>;
   stale?: Record<string, unknown>;
 }
@@ -173,6 +177,19 @@ export interface Finder {
   /** Os candidatos a final da edição: pastas Final/ (e Editado/ se Final/ não tiver mp4). */
   list(edition: string): Promise<Array<{ name: string; modifiedTime?: string | null; fetch: () => Promise<string> }>>;
   workDir(edition: string): string;
+  /**
+   * Cópia local de UM arquivo do bruto em vários arquivos (#12089, #13225), ou `null`
+   * sem cópia nesta máquina. Local: o caminho do `plan.json` ou `{drive}/{AAMMDD}/{nome}`;
+   * API: `{cache}/bruto/{nome}` (o mesmo da montagem), baixado do Drive só com `--fetch-bruto`.
+   * Ausente = nenhum arquivo do bruto resolve (o multi-arquivo segue pulado).
+   */
+  brutoFile?(edition: string, file: { id?: string; path?: string }): Promise<string | null>;
+}
+
+/** Nome do arquivo do bruto (o `path` do `source.json` vem com `/`, mas pode ter `\` de um Windows antigo). */
+export function brutoFileName(file: { id?: string; path?: string }): string | null {
+  const fromPath = file.path?.split(/[\\/]/).pop();
+  return fromPath || (file.id ? `${file.id}.mp4` : null);
 }
 
 function localFinder(driveRoot: string, workDirFlag: string | undefined): Finder {
@@ -195,10 +212,16 @@ function localFinder(driveRoot: string, workDirFlag: string | undefined): Finder
       return finals.length ? finals : pick(isEditedFolderName);
     },
     workDir: (edition) => resolve(workDirFlag ?? workDirDefault("local", "", tmpdir(), edition)),
+    async brutoFile(edition, file) {
+      if (file.path && existsSync(file.path)) return file.path;
+      const name = brutoFileName(file);
+      const p = name ? join(driveRoot, edition, name) : null;
+      return p && existsSync(p) ? p : null;
+    },
   };
 }
 
-async function apiFinder(cacheFlag: string | undefined, workDirFlag: string | undefined, folderIdFlag: string | undefined): Promise<Finder> {
+async function apiFinder(cacheFlag: string | undefined, workDirFlag: string | undefined, folderIdFlag: string | undefined, fetchBruto = false): Promise<Finder> {
   const { gFetchRetry } = await import("./lib/drive-helpers.ts");
   const { gFetch } = await import("./google-auth.ts");
   const deps: MontageDriveDeps = { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}) };
@@ -232,6 +255,20 @@ async function apiFinder(cacheFlag: string | undefined, workDirFlag: string | un
       }));
     },
     workDir: (edition) => resolve(workDirFlag ?? workDirDefault("api", cacheOf(edition), tmpdir(), edition)),
+    async brutoFile(edition, file) {
+      const name = brutoFileName(file);
+      if (!name) return null;
+      // Mesmo caminho em que a montagem guarda o bruto baixado (`{cache}/bruto/{nome}`).
+      const dir = join(cacheOf(edition), "bruto");
+      const local = join(dir, name);
+      if (existsSync(local) && !fetchBruto) return local;
+      if (!fetchBruto) return null;
+      const found = await listChildren(deps, rootId(), { name: edition, foldersOnly: true });
+      if (found.length === 0) return null;
+      const folder: DriveEntry = found.length === 1 ? found[0] : await findEditionFolder(deps, rootId(), edition);
+      const hit = (await listChildren(deps, folder.id)).find((f) => f.mimeType !== FOLDER_MIME && f.name === name);
+      return hit ? (await ensureCachedFile(deps, hit, dir, log)).localPath : null;
+    },
   };
 }
 
@@ -249,27 +286,94 @@ function transcriptWords(edition: string): Word[] {
  * O áudio 16 kHz mono do bruto: o do cache da montagem, ou extraído do bruto se ele está nesta máquina.
  * `wav: null` traz o motivo do pulo.
  *
- * Bruto em vários arquivos (#12559) sem o `audio.wav` do cache não tem fallback (#13225): `source.path`
- * é só o do 1º arquivo e os tempos do `plan.json` são globais, na linha do tempo que concatena todos.
- * Extrair só o 1º daria clipes "removidos" (ou pontas falsas) a partir do 2º arquivo.
+ * Bruto em vários arquivos (#12559): `source.path` é só o do 1º arquivo e os tempos do `plan.json` são
+ * globais, na linha do tempo que concatena todos. Extrair só o 1º daria clipes "removidos" (ou pontas
+ * falsas) a partir do 2º arquivo (#13225). Sem o `audio.wav`, vale o áudio concatenado que a montagem
+ * deixou no mesmo diretório de trabalho, ou a concatenação dos arquivos na ordem, cada um com a duração
+ * exata dele na linha do tempo (`frames/fps`, `apad` + `-t`, como o `transcribe`), quando todos têm cópia
+ * local (`Finder.brutoFile`). A 261116 (8 arquivos) ficou fora da comparação da #12089 por isso.
  */
-export function brutoWav(edition: string, workDir: string, pf: PlanFileLite): { wav: string } | { wav: null; reason: string } {
+export async function brutoWav(
+  edition: string,
+  workDir: string,
+  pf: PlanFileLite,
+  resolveFile?: Finder["brutoFile"],
+): Promise<{ wav: string } | { wav: null; reason: string }> {
   const cached = join(workDir, "audio.wav");
-  if (existsSync(cached)) return { wav: cached };
-  const nFiles = pf.source.files?.length ?? 0;
-  if (nFiles > 1) {
-    log(`[aviso] ${edition}: bruto em ${nFiles} arquivos sem ${cached}; o fallback extrairia só o 1º — sequências fora da comparação (#13225)`);
-    return { wav: null, reason: `áudio do bruto ausente (${cached}) e bruto em ${nFiles} arquivos: o fallback não concatena (#13225)` };
+  const files = pf.source.files ?? [];
+  const local: Array<string | null> = [];
+  if (!existsSync(cached) && files.length > 1 && !existsSync(join(workDir, MULTI_AUDIO_FILE))) {
+    for (const file of files) local.push(resolveFile ? await resolveFile(edition, file) : null);
+  }
+  const step = brutoAudioStep({ cached, montageConcat: join(workDir, MULTI_AUDIO_FILE), pf, local, exists: existsSync });
+  if (step.kind === "skip") {
+    log(`[aviso] ${edition}: ${step.reason} — sequências fora da comparação`);
+    return { wav: null, reason: step.reason };
+  }
+  if (step.kind === "cached") return { wav: step.wav };
+  // Nome por origem: um `bruto-16k.wav` de antes do #13225 (só o 1º arquivo de um bruto multi-arquivo) nunca é reaproveitado.
+  const ownName = step.kind === "concat" ? `bruto-16k-${step.parts.length}arq.wav` : step.kind === "montage-concat" ? "bruto-16k-concat-montagem.wav" : "bruto-16k.wav";
+  const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, ownName);
+  if (existsSync(own)) return { wav: own };
+  mkdirSync(dirname(own), { recursive: true });
+  const toWav16k = (src: string, out: string, durationS?: number) =>
+    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...(durationS !== undefined ? ["-af", "apad", "-t", durationS.toFixed(6)] : []), "-c:a", "pcm_s16le", "-f", "wav", out]);
+  const tmp = `${own}.tmp`;
+  if (step.kind === "concat") {
+    log(`[video-xml-vs-final] ${edition}: concatenando o áudio dos ${step.parts.length} arquivos do bruto (#12089, #13225)…`);
+    const parts = step.parts.map((p, i) => {
+      const part = join(dirname(own), `parte-${String(i + 1).padStart(2, "0")}.wav`);
+      toWav16k(p.src, part, p.durationS);
+      return part;
+    });
+    const list = join(dirname(own), "partes.txt");
+    writeFileSync(list, concatListText(parts));
+    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-f", "wav", tmp]);
+  } else {
+    log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${step.src})…`);
+    toWav16k(step.src, tmp);
+  }
+  // .tmp + rename: um WAV pela metade de uma rodada interrompida nunca passa por inteiro na próxima.
+  renameSync(tmp, own);
+  return { wav: own };
+}
+
+export type BrutoAudioStep =
+  | { kind: "cached"; wav: string }
+  | { kind: "single"; src: string }
+  | { kind: "montage-concat"; src: string }
+  | { kind: "concat"; parts: Array<{ src: string; durationS: number }> }
+  | { kind: "skip"; reason: string };
+
+/**
+ * De onde sai o áudio do bruto (puro, #12089/#13225): o `audio.wav` do cache da montagem; no bruto em
+ * vários arquivos, o concatenado da montagem (`MULTI_AUDIO_FILE`, já na linha do tempo global) ou a
+ * concatenação dos arquivos com cópia local (`local[i]`, na ordem de `source.files`); no bruto único, o
+ * próprio arquivo. Arquivo sem cópia local ou sem `frames` não deixa concatenar: pula, dizendo quais.
+ */
+export function brutoAudioStep(input: {
+  cached: string;
+  montageConcat: string;
+  pf: PlanFileLite;
+  local: ReadonlyArray<string | null>;
+  exists: (p: string) => boolean;
+}): BrutoAudioStep {
+  const { cached, montageConcat, pf, local, exists } = input;
+  if (exists(cached)) return { kind: "cached", wav: cached };
+  const files = pf.source.files ?? [];
+  if (files.length > 1) {
+    if (exists(montageConcat)) return { kind: "montage-concat", src: montageConcat };
+    const fps = pf.source.fps;
+    const missing = files.flatMap((f, i) => (local[i] ? [] : [brutoFileName(f) ?? `arquivo ${i + 1}`]));
+    const noFrames = files.flatMap((f, i) => (typeof f.frames === "number" && f.frames > 0 ? [] : [brutoFileName(f) ?? `arquivo ${i + 1}`]));
+    const head = `áudio do bruto ausente (${cached}) e bruto em ${files.length} arquivos`;
+    if (missing.length) return { kind: "skip", reason: `${head}: ${missing.length} sem cópia nesta máquina (${missing.join(", ")}); --fetch-bruto baixa do Drive (#13225)` };
+    if (!fps || fps <= 0 || noFrames.length) return { kind: "skip", reason: `${head}: sem a duração de cada arquivo no plan.json (fps/frames), a concatenação desalinharia a linha do tempo (#13225)` };
+    return { kind: "concat", parts: files.map((f, i) => ({ src: local[i] as string, durationS: (f.frames as number) / fps })) };
   }
   const src = pf.source.path;
-  if (!src || !existsSync(src)) return { wav: null, reason: `áudio do bruto ausente (${cached}) e bruto fora desta máquina` };
-  const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-16k.wav");
-  if (!existsSync(own)) {
-    mkdirSync(dirname(own), { recursive: true });
-    log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${src})…`);
-    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", own]);
-  }
-  return { wav: own };
+  if (!src || !exists(src)) return { kind: "skip", reason: `áudio do bruto ausente (${cached}) e bruto fora desta máquina` };
+  return { kind: "single", src };
 }
 
 /** Compara uma edição. `null` = sem plan.json (fora da rodada). */
@@ -312,7 +416,7 @@ export async function compareEdition(
   }
   const words = transcriptWords(edition);
   const wd = finder.workDir(edition);
-  const brutoRes = brutoWav(edition, wd, pf);
+  const brutoRes = await brutoWav(edition, wd, pf, finder.brutoFile?.bind(finder));
   const bruto = brutoRes.wav;
   const brutoSkipReason = brutoRes.wav === null ? brutoRes.reason : "";
   let brutoEnv: ReturnType<typeof energyEnvelope> | null = null;
@@ -502,7 +606,7 @@ async function finish(opts: { openIssues: boolean; dryRun: boolean; register: bo
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const { values, flags, positional } = parseArgs(argv);
   const [cmd, arg] = positional;
-  const usage = "uso: npx tsx scripts/video-xml-vs-final.ts <compare AAMMDD|run|backfill|aggregate> [--final PATH] [--seq KEY] [--today AAMMDD] [--days N] [--from AAMMDD] [--to AAMMDD] [--open-issues] [--dry-run] [--no-register]";
+  const usage = "uso: npx tsx scripts/video-xml-vs-final.ts <compare AAMMDD|run|backfill|aggregate> [--final PATH] [--seq KEY] [--today AAMMDD] [--days N] [--from AAMMDD] [--to AAMMDD] [--open-issues] [--dry-run] [--no-register] [--fetch-bruto]";
   if (!cmd || flags.has("help") || !["compare", "run", "backfill", "aggregate"].includes(cmd)) {
     console.error(usage);
     return 2;
@@ -520,7 +624,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const fresh = new Map<string, EditionRecord>();
   try {
     const driveRoot = values["drive-root"] ?? process.env.DIARIA_VIDEO_DRIVE_ROOT ?? DEFAULT_DRIVE_ROOT;
-    const getFinder = async () => (existsSync(driveRoot) ? localFinder(driveRoot, values["work-dir"]) : apiFinder(values["cache-dir"], values["work-dir"], values["folder-id"]));
+    const getFinder = async () => (existsSync(driveRoot) ? localFinder(driveRoot, values["work-dir"]) : apiFinder(values["cache-dir"], values["work-dir"], values["folder-id"], flags.has("fetch-bruto")));
     if (cmd === "compare") {
       if (!arg || !/^\d{6}$/.test(arg)) {
         console.error(usage);
