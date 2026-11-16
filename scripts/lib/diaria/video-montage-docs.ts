@@ -860,6 +860,7 @@ export function roteiroMarkdown(
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   fps: number,
   opts: {
+    falasPlanejadas?: Readonly<Record<string, string>>;
     alternatives?: Partial<Record<BlockKey, Array<{ start: number; end: number; text: string }>>>;
     /** Alvo da vertical (#11757, #12694); ausente = `VERTICAL_TARGET_S`, limitado a ele. */
     verticalTargetS?: number;
@@ -926,6 +927,16 @@ export function roteiroMarkdown(
         });
       }
       lines.push("", `Estimativa depois dos cortes: ~${sec(target.totalS - target.coveredS)} de fala (alvo ${target.targetS} s). Aplicado o corte, refazer o build para medir de novo.`, "");
+    }
+    if (opts.falasPlanejadas && Object.keys(opts.falasPlanejadas).length) {
+      lines.push("**Origem no roteiro de gravação (congelado):** planejado só é repetido quando difere; fala dividida ou cortada é comparada à origem inteira.", "", "| Bloco / item | Id da fala | Planejado | Gravado | Bruto |", "|---|---|---|---|---|");
+      for (const key of p.spec.order) (resolved[key] ?? []).forEach((it, i) => {
+        if (!itemInTarget(it, p.spec)) return;
+        const planned = it.falaId ? opts.falasPlanejadas![it.falaId] : undefined;
+        const recorded = it.heard ?? it.text;
+        lines.push(`| ${BLOCK_LABELS[key]} [${i}] | ${mdCell(it.falaId ?? "sem vínculo")} | ${mdCell(planned === undefined ? "origem não disponível" : planned === recorded ? "igual ao gravado" : planned)} | ${mdCell(recorded)} | ${span(it.interval.start, it.interval.end)} |`);
+      });
+      lines.push("");
     }
     lines.push("| Bloco | Fala | Bruto |", "|---|---|---|");
     // Só os itens desta versão (`targets`/`skip`, #11377).

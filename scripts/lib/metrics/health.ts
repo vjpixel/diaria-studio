@@ -532,11 +532,21 @@ export function evaluateFrescorFromResult(
  * aqui seria um ERRO DE CATEGORIA (checar a coisa errada), não uma
  * duplicação — o gate de série curta deles usa uma fonte de cobertura
  * própria, passada pelo chamador a `evaluateQueda`.
+ *
+ * `hoje` (#7478-#7481): o dia corrente SEM NENHUMA linha no log (nem de
+ * sucesso, nem de falha) é "captura ainda em andamento", não buraco. A
+ * `Diaria-Kit-Roster-Ingest` começa 04:25 BRT e só grava a linha depois de
+ * `ingestKitRoster` terminar; desde 12/11/2026 isso passa das 04:40 do
+ * alarme (linha de 16/11 gravada 04:47), e o alarme passou a reabrir as 4
+ * issues de frescor TODO dia apontando só o próprio dia. Linha de falha de
+ * hoje continua alarmando na hora (a execução terminou, e falhou); dia
+ * corrente sem linha é cobrado no dia seguinte, quando já é "ontem".
  */
 export function evaluateFrescorFromCapturaLog(
   metricaId: string,
   dias: readonly string[],
   capturaLog: readonly CapturaLogEntry[],
+  hoje?: string,
 ): MetricsHealthFinding | null {
   const faltando = dias.filter((d) => !hasCaptureOnDay(capturaLog, d));
   if (faltando.length === 0) return null;
@@ -545,7 +555,8 @@ export function evaluateFrescorFromCapturaLog(
   // Sinal próprio, mais preciso, sem mudar a classificação (`faltando`
   // continua vindo de `hasCaptureOnDay`, que já ignora linhas de falha).
   const falharam = new Set(captureFailureDays(capturaLog, faltando));
-  const semExecucao = faltando.filter((d) => !falharam.has(d));
+  const semExecucao = faltando.filter((d) => !falharam.has(d) && d !== hoje);
+  if (semExecucao.length === 0 && falharam.size === 0) return null;
   const partes: string[] = [];
   if (semExecucao.length > 0) {
     partes.push(`sem execução registrada em data/metrics/captura-log.jsonl (F2) para: ${semExecucao.join(", ")}`);

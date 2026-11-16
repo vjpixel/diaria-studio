@@ -948,7 +948,8 @@ async function main(): Promise<void> {
     if (frescorResultFinding) findings.push(frescorResultFinding);
 
     if (isAcquisition) {
-      const frescorCapturaFinding = evaluateFrescorFromCapturaLog(id, dias, capturaLog);
+      // #7478-#7481: `hoje` sem linha nenhuma = ingestão ainda rodando, não buraco.
+      const frescorCapturaFinding = evaluateFrescorFromCapturaLog(id, dias, capturaLog, hoje);
       if (frescorCapturaFinding) findings.push(frescorCapturaFinding);
     }
   }

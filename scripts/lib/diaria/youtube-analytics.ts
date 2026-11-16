@@ -36,6 +36,7 @@
 
 import type { FetchLike } from "./youtube-upload.ts";
 import type { ReachSummary, VideoReach } from "./youtube-reach.ts";
+import { renderPautaSection, type EditionPautas } from "./youtube-pauta.ts";
 
 export const YOUTUBE_ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly";
 export const YOUTUBE_ANALYTICS_ENDPOINT = "https://youtubeanalytics.googleapis.com/v2/reports";
@@ -704,7 +705,8 @@ function videoTable(rows: VideoSnapshotLine[]): string[] {
 
 /**
  * Relatório em markdown: tabela por vídeo (Shorts e horizontais separados,
- * ordenados por inscritos líquidos), série do total de inscritos, série
+ * ordenados por inscritos líquidos), com `pautas` os horizontais somados por
+ * pauta (#13195), série do total de inscritos, série
  * diária do canal com a fonte de tráfego e, com `searchTerms`, os termos de
  * busca do YouTube do canal e por vídeo (#13087).
  */
@@ -717,6 +719,8 @@ export function renderAnalyticsReport(input: {
   index?: EditionVideoIndex;
   /** Termos de busca gravados (#13087); ausente omite a seção. */
   searchTerms?: SearchTermLine[];
+  /** Pauta por edição (#13195); ausente omite a seção "Horizontais por pauta". */
+  pautas?: EditionPautas;
 }): string {
   const lines: string[] = ["# YouTube Analytics — @diariabr", ""];
   const channel = latestByKey(input.channel, (l) => l.date).sort((a, b) => a.date.localeCompare(b.date));
@@ -755,6 +759,7 @@ export function renderAnalyticsReport(input: {
   } else {
     lines.push("## Por vídeo", "", "Sem snapshot por vídeo gravado ainda.", "");
   }
+  if (input.pautas) lines.push(...renderPautaSection(snap, input.pautas));
 
   lines.push("## Total de inscritos do canal", "", "| Dia | Inscritos |", "|---|---:|");
   for (const c of channel) lines.push(`| ${c.date} | ${c.subscriberCount === null ? "?" : fmtInt(c.subscriberCount)} |`);

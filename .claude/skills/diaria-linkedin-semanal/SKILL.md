@@ -874,7 +874,20 @@ editor, nesta ordem:
    pelo mesmo ciclo (Write, duas passadas, `--mark`, `--check`).
 4. **Menção à página no post de feed (#13049):** no post de feed, apagar o
    "@diar.ia.br" digitado e escolher a página diar.ia.br na lista de
-   menções que o LinkedIn abre.
+   menções que o LinkedIn abre. **Conferência obrigatória antes de agendar
+   (#13261, o passo foi pulado em 16/11/2026 e o post saiu com o link para
+   o site):** quando o editor disser que colou o texto e escolheu a menção,
+   e antes do clique de agendar, rode
+   `npx tsx scripts/weekly-feed-post-mention-audit.ts --snippet`, execute o
+   JavaScript impresso pelo `javascript_tool` na aba do diálogo, grave o
+   JSON devolvido (Write) num arquivo do scratchpad e rode
+   `npx tsx scripts/weekly-feed-post-mention-audit.ts --cycle {cycle} --dom-json {arquivo}`.
+   Exit 0 = menção confirmada. Exit 2 = avisar o editor com a mensagem do
+   stderr (texto puro, link para o site, menção apagada ou sem sinal de
+   menção no DOM) e repetir a conferência depois da correção; `unverified`
+   pede confirmação à vista do editor. O resultado fica em
+   `_internal/ln-feed-post-mention.json`. O mesmo snippet serve no post já
+   publicado (aberto em modo de edição), se a conferência ficou para depois.
 5. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
    editor de 18/10/2026; href no perfil desde o #13049)**, só quando o
    `ln-{cycle}.html` tiver a âncora da menção
@@ -923,7 +936,8 @@ editor, nesta ordem:
    - Confirmar em `linkedin.com/article/manage/scheduled/` que o artigo
      aparece agendado.
 
-A skill não verifica o resultado desta ação — é ação humana, fora do
+A skill não verifica o resultado desta ação (exceto a menção do item 4,
+conferida pelo DOM antes do agendamento, #13261) — é ação humana, fora do
 mecanismo de auditoria automatizado (mesma razão pela qual `/diaria-6-
 agendamento` não se aplica aqui, ver seção seguinte). Se o editor quiser
 confirmação de que o rascunho colado está intacto antes de subir a capa,

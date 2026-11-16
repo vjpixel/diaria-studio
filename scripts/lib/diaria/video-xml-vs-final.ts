@@ -884,7 +884,7 @@ export interface BrutoPart {
 export interface BrutoSourceLite {
   fps?: number;
   path?: string;
-  files?: ReadonlyArray<{ path?: string; frames?: number; offsetFrames?: number }>;
+  files?: ReadonlyArray<{ id?: string; path?: string; frames?: number; offsetFrames?: number }>;
 }
 
 /** Nome do arquivo de um caminho de qualquer máquina (`/` ou `\`). */
@@ -907,8 +907,10 @@ export function brutoParts(source: BrutoSourceLite): { parts: BrutoPart[] } | { 
     const sorted = [...files].sort((a, b) => (a.offsetFrames ?? 0) - (b.offsetFrames ?? 0));
     const parts: BrutoPart[] = [];
     for (const f of sorted) {
-      if (!f.path || !(f.frames && f.frames > 0)) return { parts: null, reason: "bruto em vários arquivos sem caminho ou frames de algum arquivo no plan.json" };
-      parts.push({ name: brutoFileName(f.path), originalPath: f.path, durationS: f.frames / fps });
+      // Sem `path`, o nome sai do `id` do `source.json` (`{id}.mp4`, o nome no Drive, #12089).
+      const name = f.path ? brutoFileName(f.path) : f.id ? `${f.id}.mp4` : "";
+      if (!name || !(f.frames && f.frames > 0)) return { parts: null, reason: "bruto em vários arquivos sem caminho ou frames de algum arquivo no plan.json" };
+      parts.push({ name, originalPath: f.path ?? "", durationS: f.frames / fps });
     }
     return { parts };
   }
