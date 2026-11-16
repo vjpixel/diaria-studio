@@ -5,12 +5,17 @@
  * e retenção por vídeo, série diária do canal, views por fonte de tráfego
  * (Shorts, busca, sugeridos, URL externa...), os termos de busca do YouTube
  * que trouxeram views ao canal e a cada vídeo nos últimos 28 dias
- * (`search-terms.jsonl`, #13087; lista vazia é válida, limiar de privacidade)
- * e o total de inscritos do canal.
+ * (`search-terms.jsonl`, #13087; lista vazia é válida, limiar de privacidade),
+ * o total de inscritos do canal e, desde o #13192, impressões e taxa de
+ * cliques da capa por vídeo (`reach-daily.jsonl` + campos `thumbnail*` em
+ * `videos.jsonl`), da YouTube Reporting API: a Analytics API não as expõe
+ * (`scripts/lib/diaria/youtube-reach.ts`, `docs/youtube-capa-ctr.md`).
  * Miolo puro em `scripts/lib/diaria/youtube-analytics.ts`; este arquivo faz a
  * I/O (token, `data/youtube-analytics/*.jsonl`, índice das edições).
  *
- * Só LÊ o YouTube. Escopos: `youtube.readonly` (total do canal, títulos) e
+ * Só LÊ o YouTube. Única escrita na conta: na 1ª execução cria o job de
+ * relatório `channel_reach_basic_a1` da Reporting API (configuração de
+ * leitura, não publica nada). Escopos: `youtube.readonly` (total do canal, títulos) e
  * `yt-analytics.readonly` (o resto). Token sem o 2º (gerado antes do #12075)
  * não falha: grava só o total do canal, marca `analytics: "missing-scope"` e
  * avisa para rodar `scripts/youtube-oauth-setup.ts`. A YouTube Analytics API
@@ -94,6 +99,14 @@ import {
   type VideoMeta,
   type VideoSnapshotLine,
 } from "./lib/diaria/youtube-analytics.ts";
+import {
+  YouTubeReportingError,
+  aggregateReachByVideo,
+  collectReach,
+  type ReachDailyLine,
+  type ReachReportLine,
+  type ReachSummary,
+} from "./lib/diaria/youtube-reach.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KNOWN_FLAGS = ["since", "dry-run", "report", "out", "help"] as const;
@@ -171,7 +184,34 @@ export interface SnapshotResult {
   videos: VideoSnapshotLine[];
   retention: RetentionLine[];
   searchTerms: SearchTermLine[];
+  /** Linhas novas de alcance da capa baixadas nesta execução (#13192). */
+  reachDaily: ReachDailyLine[];
+  reachReports: ReachReportLine[];
   written: boolean;
+}
+
+/**
+ * Impressões/taxa de cliques da capa (#13192). Nunca derruba o snapshot: job,
+ * listagem ou download que falham viram aviso e `reach.status` na linha do
+ * canal; os campos `thumbnail*` dos vídeos saem do que já estava gravado.
+ */
+async function collectReachSafe(
+  deps: SnapshotDeps,
+  token: string,
+  input: { capturedAt: string; dataRoot: string; dryRun: boolean },
+): Promise<{ summary: ReachSummary; daily: ReachDailyLine[]; reports: ReachReportLine[] }> {
+  const known = new Set(readStore<ReachReportLine>(input.dataRoot, YOUTUBE_ANALYTICS_FILES.reachReports).map((r) => r.reportId));
+  try {
+    return await collectReach(deps.fetch, token, { capturedAt: input.capturedAt, knownReportIds: known, dryRun: input.dryRun, warn: deps.warn });
+  } catch (e) {
+    const kind = e instanceof YouTubeReportingError ? e.kind : "error";
+    deps.warn(`[aviso] impressões/taxa de cliques da capa indisponíveis: ${(e as Error).message}`);
+    return {
+      summary: { status: kind, jobId: null, jobCreated: false, reportsListed: 0, reportsDownloaded: 0, rowsAdded: 0, failures: 0, error: (e as Error).message },
+      daily: [],
+      reports: [],
+    };
+  }
 }
 
 /**
@@ -262,7 +302,7 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     await getJson(deps.fetch, `${YOUTUBE_API_BASE}/channels?part=statistics&mine=true`, token, "channels.list"),
   );
   const channel: ChannelSnapshotLine = { capturedAt, date, ...stats, analytics: "ok" };
-  const result: SnapshotResult = { channel, daily: [], traffic: [], videos: [], retention: [], searchTerms: [], written: false };
+  const result: SnapshotResult = { channel, daily: [], traffic: [], videos: [], retention: [], searchTerms: [], reachDaily: [], reachReports: [], written: false };
 
   const storedDays = readStore<ChannelDailyLine>(input.dataRoot, YOUTUBE_ANALYTICS_FILES.channelDaily).map((l) => l.day);
   const lastStoredDay = storedDays.length ? storedDays.reduce((m, d) => (d > m ? d : m)) : null;
@@ -287,7 +327,15 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     });
     const ids = videoRows.map((r) => r.video).filter((v): v is string => typeof v === "string" && !!v);
     const meta = await fetchVideoMeta(deps, token, ids);
-    result.videos = toVideoSnapshotLines({ rows: videoRows, capturedAt, date, ...cumulative, index: input.index, meta });
+    const reach = await collectReachSafe(deps, token, { capturedAt, dataRoot: input.dataRoot, dryRun: !!input.dryRun });
+    channel.reach = reach.summary;
+    result.reachDaily = reach.daily;
+    result.reachReports = reach.reports;
+    const reachByVideo = aggregateReachByVideo(
+      [...readStore<ReachDailyLine>(input.dataRoot, YOUTUBE_ANALYTICS_FILES.reachDaily), ...reach.daily],
+      cumulative,
+    );
+    result.videos = toVideoSnapshotLines({ rows: videoRows, capturedAt, date, ...cumulative, index: input.index, meta, reach: reachByVideo });
     // Retenção: uma consulta por vídeo, a parte mais frágil do snapshot. Falha
     // real numa delas (ex.: 400 num vídeo sem curva) vira aviso e o laço segue —
     // não pode derrubar o total do canal nem as séries já buscadas (review do
@@ -325,7 +373,10 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     result.videos = [];
     result.retention = [];
     result.searchTerms = [];
+    result.reachDaily = [];
+    result.reachReports = [];
     delete channel.searchTerms;
+    delete channel.reach;
     deps.warn(`[aviso] ${e.message}`);
   }
 
@@ -336,13 +387,16 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.videos, result.videos);
     appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.retention, result.retention);
     appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.searchTerms, result.searchTerms);
+    appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.reachDaily, result.reachDaily);
+    appendStore(input.dataRoot, YOUTUBE_ANALYTICS_FILES.reachReports, result.reachReports);
     result.written = true;
   }
   deps.log(
     `snapshot ${date}: ${stats.subscriberCount ?? "?"} inscritos; analytics=${channel.analytics}; ` +
       `${result.daily.length} dia(s) ${window.startDate}..${window.endDate}, ${result.traffic.length} linha(s) de fonte, ` +
       `${result.videos.length} vídeo(s), ${result.retention.length} curva(s) de retenção, ` +
-      `${result.searchTerms.length} termo(s) de busca${input.dryRun ? " (dry-run, nada gravado)" : ""}`,
+      `${result.searchTerms.length} termo(s) de busca, alcance da capa=${channel.reach?.status ?? "-"}` +
+      `${channel.reach?.jobCreated ? " (job criado; 1º relatório em até 48h)" : ""} ${result.reachReports.length} relatório(s) novo(s)${input.dryRun ? " (dry-run, nada gravado)" : ""}`,
   );
   return result;
 }
