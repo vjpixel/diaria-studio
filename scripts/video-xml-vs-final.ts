@@ -673,12 +673,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   try {
     const driveRoot = values["drive-root"] ?? process.env.DIARIA_VIDEO_DRIVE_ROOT ?? DEFAULT_DRIVE_ROOT;
     const getFinder = async () => (existsSync(driveRoot) ? localFinder(driveRoot, values["work-dir"]) : apiFinder(values["cache-dir"], values["work-dir"], values["folder-id"], flags.has("fetch-bruto")));
+    // O mesmo --cache-dir do apiFinder vale na busca do bruto (#13279): sem ele, o bruto em vários arquivos no cache custom era "não achado".
+    const brutoLookup = defaultBrutoLookup(values["cache-dir"]);
     if (cmd === "compare") {
       if (!arg || !/^\d{6}$/.test(arg)) {
         console.error(usage);
         return 2;
       }
-      const rec = await compareEdition(arg, await getFinder(), { finalPath: values.final, seq: values.seq });
+      const rec = await compareEdition(arg, await getFinder(), { finalPath: values.final, seq: values.seq, brutoLookup });
       if (!rec) {
         console.error(`${arg}: sem plan.json (${planPath(arg)})`);
         return 1;
@@ -697,7 +699,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const to = values.to ?? today;
       const finder = await getFinder();
       for (const e of editionsWithPlan().filter((x) => x.edition >= from && x.edition <= to)) {
-        const rec = await compareEdition(e.edition, finder);
+        const rec = await compareEdition(e.edition, finder, { brutoLookup });
         if (rec) {
           round.push(rec);
           saveRecord(rec, state, dryRun, fresh);
@@ -715,7 +717,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       if (todo.length) {
         const finder = await getFinder();
         for (const e of todo) {
-          const rec = await compareEdition(e, finder, { skip: new Set(state.done[e]?.sequences ?? []) });
+          const rec = await compareEdition(e, finder, { skip: new Set(state.done[e]?.sequences ?? []), brutoLookup });
           if (rec) {
             round.push(rec);
             saveRecord(rec, state, dryRun, fresh);
