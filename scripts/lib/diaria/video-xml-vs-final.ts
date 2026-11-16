@@ -19,7 +19,9 @@
  *      final, nas pontas estendidas fora de todo clipe do XML: o sinal da
  *      #13194; a fala da outra tomada e a dos trechos acrescentados fica de
  *      fora) e "palavras tiradas". `alignWithReorder` dá os trechos mesmo
- *      com a ordem trocada.
+ *      com a ordem trocada; quando ele cobre pouco do final, o
+ *      `alignFinalToBruto` cai no `alignGuidedByClips` (os deslocamentos
+ *      vêm dos clipes do XML, na ordem dele, #12089).
  *   3. `aggregateRecords` + `detectPatterns`: o agregado ao longo do tempo e os
  *      padrões que se repetem em N edições, cada um com a evidência e o corpo
  *      de issue pronto (marcador `video-xml-final-pattern: {id}` para não
@@ -31,7 +33,7 @@
  * OCR no final, que ficam para quando um padrão pedir.
  */
 
-import { alignEnvelopes, type AlignOptions, type AlignRun } from "./video-audio-align.ts";
+import { alignEnvelopes, labelRuns, type AlignOptions, type AlignRun } from "./video-audio-align.ts";
 import type { Word } from "./video-montage.ts";
 
 export const XML_FINAL_SCHEMA = 1;
@@ -82,6 +84,217 @@ export function alignWithReorder(
   const runs = [...base.runs, ...extra].sort((x, y) => x.audioStart - y.audioStart);
   const covered = runs.reduce((n, r) => n + (r.audioEnd - r.audioStart), 0);
   return { runs, coverage: durF > 0 ? covered / durF : 0, reordered: extra.length };
+}
+
+export const CLIP_GUIDE_DEFAULTS = {
+  /** Pedaço máximo de clipe procurado sozinho (s): pausa tirada no meio do clipe muda o deslocamento. */
+  pieceS: 1.0,
+  /** Pedaço mais curto que isto não é procurado (s): envelope curto acha par falso em qualquer lugar. */
+  minPieceS: 0.6,
+  /** Correlação mínima de um candidato. */
+  minScore: 0.75,
+  /** Candidatos por pedaço (os maiores picos de correlação no final inteiro). */
+  candidates: 6,
+  /** Picos a menos disto (s) são o mesmo candidato. */
+  peakSepS: 0.5,
+  /** Folga sem custo entre o fim de um pedaço e o começo do seguinte no final (s): ponta aparada, pausa tirada, vinheta. */
+  gapFreeS: 1.5,
+  /** Custo por segundo de vão além da folga (clipes tirados pelo editor custam pouco; salto falso, muito). */
+  gapCostPerS: 0.05,
+  /** Sobreposição tolerada (s): o pedaço seguinte começando antes do fim do anterior. */
+  overlapFreeS: 0.3,
+  /** Custo de uma sobreposição maior: ordem trocada no final é rara, par falso é comum. */
+  overlapCost: 3,
+  /** Custo de deixar um pedaço sem par (o editor tirou o clipe, ou nenhum candidato serve). */
+  skipCost: 0.4,
+  /** Desvio-padrão (dB) abaixo do qual o pedaço é silêncio (não procurado). */
+  flatStdDb: 3,
+  floorDb: -80,
+  /** Deslocamentos a menos disto (s) são o mesmo. */
+  sameOffsetS: 0.05,
+} as const;
+
+export type ClipGuideOptions = Partial<{ [K in keyof typeof CLIP_GUIDE_DEFAULTS]: number }>;
+
+/** Pearson entre `a[ia..ia+n)` e `b[ib..ib+n)` (já cortados no piso); `null` fora dos vetores ou com um lado constante. */
+function pearsonSlice(a: ArrayLike<number>, ia: number, b: ArrayLike<number>, ib: number, n: number): number | null {
+  if (n < 2 || ia < 0 || ib < 0 || ia + n > a.length || ib + n > b.length) return null;
+  let sa = 0, sb = 0, qa = 0, qb = 0, d = 0;
+  for (let i = 0; i < n; i++) {
+    const x = a[ia + i];
+    const y = b[ib + i];
+    sa += x;
+    sb += y;
+    qa += x * x;
+    qb += y * y;
+    d += x * y;
+  }
+  const ma = sa / n;
+  const mb = sb / n;
+  const va = qa / n - ma * ma;
+  const vb = qb / n - mb * mb;
+  if (va <= 0 || vb <= 0) return null;
+  return (d / n - ma * mb) / Math.sqrt(va * vb);
+}
+
+/**
+ * Deslocamentos (bruto − final, s) na ordem do final, guiados pelos clipes do
+ * XML (#12089). O `alignEnvelopes` acha os deslocamentos por janelas de
+ * `windowS` sobre o final e supõe que eles só crescem (pausa cortada). Nenhuma
+ * das duas premissas vale no XML da montagem: ele pula para frente e para trás
+ * no bruto (a 261116 vai de 1427 s para 617 s e de 1705 s para 699 s) e tem
+ * clipes de ~3 s, menores que a janela, que então mistura 3 ou 4 deslocamentos
+ * e não acha par (23% de cobertura no horizontal da 261116, 35% na vertical).
+ *
+ * Aqui cada clipe vira pedaços de até `pieceS` (pausa interna tirada pelo
+ * editor = pedaço seguinte com outro deslocamento), cada pedaço ganha os
+ * maiores picos de correlação no final inteiro como candidatos, e uma
+ * programação dinâmica escolhe um candidato (ou nenhum) por pedaço, na ordem
+ * do XML: soma das correlações menos o custo dos vãos e das sobreposições
+ * entre pedaços seguidos. Escolher pedaço a pedaço, pelo mais perto, não
+ * serve: um par falso de clipe curto (fala parecida 19 s adiante, r 0,86)
+ * levava o cursor e perdia todos os clipes seguintes. A rotulagem e o corte
+ * fino ficam com o `labelRuns`. Puro.
+ */
+export function clipGuidedOffsets(
+  finalDb: ArrayLike<number>,
+  brutoDb: ArrayLike<number>,
+  hopS: number,
+  clips: readonly XmlClip[],
+  opts: ClipGuideOptions = {},
+): number[] {
+  const o = { ...CLIP_GUIDE_DEFAULTS, ...opts };
+  const F = Float64Array.from(finalDb, (v) => Math.max(o.floorDb, v));
+  const B = Float64Array.from(brutoDb, (v) => Math.max(o.floorDb, v));
+  const fr = (s: number) => Math.round(s / hopS);
+  const flat = (x: Float64Array, a: number, n: number) => {
+    let s = 0, q = 0;
+    for (let i = a; i < a + n; i++) {
+      s += x[i];
+      q += x[i] * x[i];
+    }
+    const m = s / n;
+    return Math.sqrt(Math.max(0, q / n - m * m)) < o.flatStdDb;
+  };
+
+  // Pedaços, na ordem do XML, cada um com os candidatos (início no final, quadros).
+  type Cand = { t: number; r: number };
+  const pieces: Array<{ ib: number; n: number; cands: Cand[] }> = [];
+  for (const c of clips) {
+    const dur = c.srcOut - c.srcIn;
+    if (dur < o.minPieceS) continue;
+    const nPieces = Math.max(1, Math.round(dur / o.pieceS));
+    const len = dur / nPieces;
+    for (let k = 0; k < nPieces; k++) {
+      const ib = fr(c.srcIn + k * len);
+      const n = fr(len);
+      if (n < 2 || ib < 0 || ib + n > B.length || n > F.length || flat(B, ib, n)) continue;
+      const r = new Float64Array(F.length - n + 1);
+      for (let t = 0; t < r.length; t++) r[t] = pearsonSlice(B, ib, F, t, n) ?? -1;
+      const peaks: Cand[] = [];
+      for (let t = 0; t < r.length; t++) {
+        if (r[t] < o.minScore || (t > 0 && r[t - 1] > r[t]) || (t + 1 < r.length && r[t + 1] >= r[t])) continue;
+        peaks.push({ t, r: r[t] });
+      }
+      peaks.sort((x, y) => y.r - x.r);
+      const cands: Cand[] = [];
+      for (const p of peaks) {
+        if (cands.length >= o.candidates) break;
+        if (cands.every((q) => Math.abs(q.t - p.t) * hopS >= o.peakSepS)) cands.push(p);
+      }
+      if (cands.length) pieces.push({ ib, n, cands });
+    }
+  }
+  if (pieces.length === 0) return [];
+
+  // dp[i][c]: melhor caminho que termina com o pedaço i no candidato c (os pedaços entre o anterior escolhido e i ficam sem par).
+  const trans = (prevEnd: number, t: number) => {
+    const gapS = (t - prevEnd) * hopS;
+    if (gapS < -o.overlapFreeS) return -o.overlapCost;
+    return -o.gapCostPerS * Math.max(0, gapS - o.gapFreeS);
+  };
+  const dp: number[][] = [];
+  const back: Array<Array<[number, number] | null>> = [];
+  let bestEnd: [number, number] | null = null;
+  let bestScore = -Infinity;
+  for (let i = 0; i < pieces.length; i++) {
+    dp.push([]);
+    back.push([]);
+    for (const [ci, c] of pieces[i].cands.entries()) {
+      let s = c.r - o.skipCost * i; // começar aqui: os i pedaços anteriores sem par
+      let from: [number, number] | null = null;
+      for (let j = 0; j < i; j++) {
+        const skipped = o.skipCost * (i - j - 1);
+        for (const [cj, pc] of pieces[j].cands.entries()) {
+          const v = dp[j][cj] - skipped + trans(pc.t + pieces[j].n, c.t) + c.r;
+          if (v > s) {
+            s = v;
+            from = [j, cj];
+          }
+        }
+      }
+      dp[i].push(s);
+      back[i].push(from);
+      const total = s - o.skipCost * (pieces.length - 1 - i);
+      if (total > bestScore) {
+        bestScore = total;
+        bestEnd = [i, ci];
+      }
+    }
+  }
+  const chosen: Array<{ ib: number; t: number }> = [];
+  for (let at = bestEnd; at; at = back[at[0]][at[1]]) chosen.push({ ib: pieces[at[0]].ib, t: pieces[at[0]].cands[at[1]].t });
+  chosen.reverse();
+
+  const offsets: number[] = [];
+  for (const { ib, t } of chosen) {
+    const off = (ib - t) * hopS;
+    const last = offsets[offsets.length - 1];
+    if (last === undefined || Math.abs(off - last) > o.sameOffsetS) offsets.push(r3(off));
+  }
+  return offsets;
+}
+
+/**
+ * Alinhamento final × bruto guiado pelo XML (#12089): `clipGuidedOffsets` dá
+ * os deslocamentos na ordem do final e o `labelRuns` dá os trechos. Mesmo
+ * formato do `alignWithReorder` (o `reordered` é 0: a ordem do XML já está nos
+ * candidatos).
+ */
+export function alignGuidedByClips(
+  finalDb: ArrayLike<number>,
+  brutoDb: ArrayLike<number>,
+  hopS: number,
+  clips: readonly XmlClip[],
+  opts: AlignOptions = {},
+  guide: ClipGuideOptions = {},
+): { runs: AlignRun[]; coverage: number; reordered: number } {
+  const offsets = clipGuidedOffsets(finalDb, brutoDb, hopS, clips, guide);
+  const { runs, coverage } = labelRuns(finalDb, brutoDb, hopS, offsets, opts);
+  return { runs, coverage, reordered: 0 };
+}
+
+/**
+ * O alinhamento que a comparação usa (#12089): o por janela
+ * (`alignWithReorder`, o de sempre) e, se ele cobrir menos que `minCoverage`
+ * do final, o guiado pelos clipes do XML; fica o de maior cobertura. `method`
+ * diz qual valeu e `windowCoverage` guarda a do por janela, para o registro
+ * explicar a troca.
+ */
+export function alignFinalToBruto(
+  finalDb: ArrayLike<number>,
+  brutoDb: ArrayLike<number>,
+  hopS: number,
+  clips: readonly XmlClip[],
+  opts: AlignOptions,
+  minCoverage: number,
+): { runs: AlignRun[]; coverage: number; reordered: number; method: "janela" | "guiado-xml"; windowCoverage: number } {
+  const win = alignWithReorder(finalDb, brutoDb, hopS, opts);
+  if (win.coverage >= minCoverage || clips.length === 0) return { ...win, method: "janela", windowCoverage: win.coverage };
+  const guided = alignGuidedByClips(finalDb, brutoDb, hopS, clips, opts);
+  return guided.coverage > win.coverage
+    ? { ...guided, method: "guiado-xml", windowCoverage: win.coverage }
+    : { ...win, method: "janela", windowCoverage: win.coverage };
 }
 
 /** Abaixo disto (s) a diferença é ruído do alinhamento (a #11670 media ±0,05–0,08 s). */

@@ -206,6 +206,32 @@ export function alignEnvelopes(audioDb: ArrayLike<number>, videoDb: ArrayLike<nu
     offsets.push(w.offset);
   }
   if (offsets.length === 0) return { hopS, windows, offsets, runs: [], coverage: 0 };
+  return { hopS, windows, ...labelRuns(A, V, hopS, offsets, o) };
+}
+
+/**
+ * Passo 2 do `alignEnvelopes`, exposto (#12089): rotula cada sub-trecho do
+ * áudio com um dos `offsets` candidatos (o índice só cresce: os candidatos vêm
+ * na ordem em que aparecem no áudio, mas o VALOR pode subir ou descer) e
+ * devolve os trechos com par, cortes refinados quadro a quadro. Quem já sabe a
+ * sequência de deslocamentos (o XML da montagem diz a ordem dos clipes no
+ * final, `clipGuidedOffsets`) chama direto, sem a busca por janela.
+ */
+export function labelRuns(
+  audioDb: ArrayLike<number>,
+  videoDb: ArrayLike<number>,
+  hopS: number,
+  offsets: readonly number[],
+  opts: AlignOptions = {},
+): { offsets: number[]; runs: AlignRun[]; coverage: number } {
+  const o = { ...ALIGN_DEFAULTS, ...opts };
+  // Cortar no piso é idempotente: o `alignEnvelopes` passa os vetores já cortados.
+  const A = clampFloor(audioDb, o.floorDb);
+  const V = clampFloor(videoDb, o.floorDb);
+  const pA = prefix(A);
+  const pV = prefix(V);
+  const durA = A.length * hopS;
+  if (offsets.length === 0) return { offsets: [], runs: [], coverage: 0 };
 
   // Rotulagem monótona dos sub-trechos.
   const step = Math.max(1, Math.round(o.stepS / hopS));
@@ -274,7 +300,7 @@ export function alignEnvelopes(audioDb: ArrayLike<number>, videoDb: ArrayLike<nu
   }
   refineCuts(runs, A, V, hopS, o.subWinS, o.floorDb);
   for (const r of runs) covered += r.audioEnd - r.audioStart;
-  return { hopS, windows, offsets, runs, coverage: durA > 0 ? covered / durA : 0 };
+  return { offsets: [...offsets], runs, coverage: durA > 0 ? covered / durA : 0 };
 }
 
 /**

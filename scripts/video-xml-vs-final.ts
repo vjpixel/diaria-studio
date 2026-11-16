@@ -13,7 +13,10 @@
  * alinhamento monótono por correlação do `--from-audio` (#11504,
  * `alignEnvelopes`), com o final no lugar do "áudio" e o bruto no do "vídeo",
  * mais uma busca global nos vãos sem par (`alignWithReorder`: trecho
- * reordenado pelo editor).
+ * reordenado pelo editor). Se isso cobrir menos que `MIN_COVERAGE` do final
+ * (XML de clipes curtos que pula para frente e para trás no bruto, a 261116),
+ * vale o alinhamento guiado pelos clipes do XML (`alignFinalToBruto`, #12089),
+ * com uma nota no registro da sequência.
  * Sem o `audio.wav` do cache, o áudio do bruto sai dos arquivos dele, achados
  * nesta ordem: caminho do `plan.json`, arquivo do HD do 300
  * (`VIDEO_ARCHIVE_ROOT`, default `/mnt/hd-sata/arquivo-video`, #12548), cache
@@ -79,7 +82,7 @@ import {
 import { isEditedFolderName, isFinalFolderName, videoVersionOf } from "./lib/diaria/drive-video-source.ts";
 import {
   aggregateRecords,
-  alignWithReorder,
+  alignFinalToBruto,
   compareSequence,
   detectPatterns,
   driveUnavailableReason,
@@ -493,14 +496,19 @@ export async function compareEdition(
       const fa = parseWavPcm16(readFileSync(fwav));
       const fe = energyEnvelope(fa.samples, fa.sampleRate);
       const finalDurationS = fa.samples.length / fa.sampleRate;
-      const al = alignWithReorder(fe.db, brutoEnv.db, brutoEnv.hopS, ALIGN_OPTS);
+      const xmlClips = plan.clips.map((c, i) => ({ index: i, srcIn: c.srcIn, srcOut: c.srcOut }));
+      // #12089: XML com clipes curtos e saltos no bruto derruba o alinhamento por janela; aí vale o guiado pelos clipes.
+      const al = alignFinalToBruto(fe.db, brutoEnv.db, brutoEnv.hopS, xmlClips, ALIGN_OPTS, MIN_COVERAGE);
+      const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
       if (al.coverage < MIN_COVERAGE) {
-        record.skipped.push({ key, reason: `alinhamento fraco: ${(al.coverage * 100).toFixed(0)}% do final com par no bruto (mínimo ${MIN_COVERAGE * 100}%)` });
+        record.skipped.push({ key, reason: `alinhamento fraco: ${pct(al.coverage)} do final com par no bruto (mínimo ${MIN_COVERAGE * 100}%; por janela ${pct(al.windowCoverage)}, guiado pelo XML incluído)` });
         continue;
       }
+      const alignNote = al.method === "guiado-xml" ? `alinhamento guiado pelos clipes do XML (#12089): ${pct(al.coverage)} do final com par, contra ${pct(al.windowCoverage)} por janela` : null;
+      if (alignNote) log(`[video-xml-vs-final] ${edition} ${key}: ${alignNote}`);
       const fps = pf.source.fps ?? 30;
       const cmp = compareSequence({
-        clips: plan.clips.map((c, i) => ({ index: i, srcIn: c.srcIn, srcOut: c.srcOut })),
+        clips: xmlClips,
         spans: finalSpansFromRuns(al.runs),
         words,
         finalDurationS,
@@ -519,6 +527,7 @@ export async function compareEdition(
         framing: null,
         captions: null,
         detail,
+        ...(alignNote ? { notes: [alignNote] } : {}),
       };
       record.sequences.push(seqRec);
       log(`[video-xml-vs-final] ${edition} ${key}: ${summary.clipsRemoved}/${summary.clips} clipes fora, ${summary.clipsTouched} mexidos, ${summary.wordsRecovered} palavra(s) recuperada(s)`);
