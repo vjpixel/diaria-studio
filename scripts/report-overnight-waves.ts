@@ -6,10 +6,10 @@
  * Varre `data/overnight/{AAMMDD*}/plan.json` (todas as rondas por padrão, ou
  * um subconjunto via `--since AAMMDD`) e imprime a distribuição de
  * `unit_count`, a fração de ondas com `cap_hit`, e o `pr→merge` p90
- * segmentado por `cap_hit` — os 3 números que decidem o A/B do teto (3→6 no
- * #8486, 6→10 no #10821): critério já escrito na SKILL — `cap_hit` quase
- * sempre `false` = teto nunca foi o limite; `pr→merge` p90 > ~30min (ou
- * `draft-ci-vermelho` subindo) nas ondas com `cap_hit: true` = voltar a 6.
+ * segmentado por `cap_hit` (contexto: fila do merge serial, #13271), mais os
+ * sinais do critério de reversão v2 do teto (#13270): `draft-ci-vermelho` e
+ * `dispatch→PR` p50 das ondas cheias contra as outras. `cap_hit` quase sempre
+ * `false` = teto nunca foi o limite; o veredito de reversão sai na última linha.
  *
  * Corte natural pra 1ª leitura (ver #8496): rondas a partir de 260920
  * (primeiras com `waves`) — `--since 260920`. Para julgar o teto 10 sozinho

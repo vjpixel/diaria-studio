@@ -30,9 +30,11 @@ import { compareIssueKeys, toIssueKey, type IssueKey } from "./issue-key.ts";
  * Teto de unidades concorrentes numa onda do overnight (3 até #8486, 6 até
  * #10821). Subiu para 10 a pedido do editor (22/10/2026) depois que as 2
  * primeiras ondas da rodada 261022 bateram o teto (`cap_hit=true`). O teto
- * do `/diaria-develop` continua 6. Critério de reversão do #8486 segue
- * valendo: `pr→merge` p90 > ~30 min ou `draft-ci-vermelho` subindo = voltar
- * a 6.
+ * do `/diaria-develop` continua 6. Critério de reversão v2 (#13270, 16/11/2026,
+ * substitui o `pr→merge` p90 > ~30 min do #8486, defasado desde o trem de
+ * merge): voltar a 6 quando as ondas cheias tiverem `draft-ci-vermelho` >= 2×
+ * o das outras (com 3+ drafts) ou `dispatch→PR` p50 >= 1,5× — conta feita
+ * por `evaluateWaveCapReversal` (`overnight-waves-report.ts`).
  */
 export const OVERNIGHT_WAVE_CAP = 10;
 
