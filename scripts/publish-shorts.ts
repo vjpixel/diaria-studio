@@ -292,6 +292,8 @@ import {
 } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint, corteContentFingerprintFromBytes } from "./lib/diaria/corte-content.ts";
 import { planScheduledUpdates, type ScheduledUpdateItem } from "./lib/diaria/short-scheduled-update.ts";
+import { blocoNaVertical, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
+import type { BlockKey } from "./lib/diaria/video-montage.ts";
 import { CORTE_LIFECYCLE_MIN_LEAD_MS, executeCorteLifecycle, planCorteLifecycle, type CorteLifecycleOp } from "./lib/diaria/short-corte-lifecycle.ts";
 import { corteTextChangeBlockers, executePublishedTextUpdates, planPublishedTextUpdates, type PublishedUpdateItem } from "./lib/diaria/short-published-update.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
@@ -1076,14 +1078,26 @@ export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTi
   );
 }
 
-/** #13117: chamada falada do roteiro; leitura sem efeitos externos. */
+/**
+ * #13117: chamada falada do roteiro; leitura sem efeitos externos. Os blocos
+ * legados `cta_ig`/`cta_out`/`cta_yt` também viram `cta_vertical` na vertical
+ * (`blocoNaVertical`). Sem o arquivo = sem aviso (edição sem roteiro pela
+ * skill, mesmo padrão de `readRoteiroHorizontal`); ilegível ou inválido avisa.
+ */
 export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; roteiroWarning?: string } {
+  const path = join(editionDir, ROTEIRO_FALAS_FILE);
+  if (!existsSync(path)) return {};
   try {
-    const raw = JSON.parse(readFileSync(join(editionDir, "_internal/roteiro-falas.json"), "utf8"));
-    if (!Array.isArray(raw.falas)) throw new Error("falas ausentes");
-    return { ctaVertical: raw.falas.some((f: { bloco?: string; texto?: string }) => f?.bloco === "cta_vertical" && typeof f.texto === "string" && f.texto.trim()) };
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(raw?.falas)) throw new Error("falas ausentes");
+    return {
+      ctaVertical: raw.falas.some(
+        (f: { bloco?: unknown; texto?: unknown }) =>
+          typeof f?.bloco === "string" && blocoNaVertical(f.bloco as BlockKey) === "cta_vertical" && typeof f.texto === "string" && f.texto.trim() !== "",
+      ),
+    };
   } catch {
-    return { roteiroWarning: "roteiro-falas.json ausente ou ilegível: não foi possível conferir cta_vertical; comportamento anterior preservado (#13117)" };
+    return { roteiroWarning: "roteiro-falas.json ilegível ou inválido: não foi possível conferir cta_vertical; comportamento anterior preservado (#13117)" };
   }
 }
 
@@ -5068,6 +5082,7 @@ async function runUpdateScheduled(input: {
     items = planScheduledUpdates({
       entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
       horizontalLink: horizontal?.url ?? null, // #12735
+      ctaVertical: horizontal?.ctaVertical === true, // #13117: nunca no corte (horizontal null)
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {
@@ -5366,6 +5381,7 @@ async function runUpdatePublished(input: {
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
     items = planPublishedTextUpdates({
       entries, d1, now: new Date(), horizontalTitle, horizontalLink: horizontal?.url ?? null, only: input.only, known: knownDestinationIds(shortsCfg),
+      ctaVertical: horizontal?.ctaVertical === true, // #13117: nunca no corte (horizontal null)
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {

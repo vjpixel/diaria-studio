@@ -23,6 +23,7 @@ import {
   shortHorizontalRoute,
 } from "../scripts/lib/diaria/short-video.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
+import { planPublishedTextUpdates } from "../scripts/lib/diaria/short-published-update.ts";
 import { readVerticalCta, planShortHorizontalLinks, planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
 import { computeTwitterWeightedLength, TWITTER_CHAR_LIMIT } from "../scripts/lib/twitter-weight.ts";
 import {
@@ -353,7 +354,8 @@ describe("#13117 chamada falada até o horizontal", () => {
 it("#13117 lê CTA do roteiro e avisa quando não pode conferir", () => {
   const dir = mkdtempSync(join(tmpdir(), "cta-13117-"));
   try {
-    assert.match(readVerticalCta(dir).roteiroWarning!, /ausente ou ilegível/);
+    // Roteiro ausente (edição sem a skill) não avisa: mesmo padrão de readRoteiroHorizontal.
+    assert.deepEqual(readVerticalCta(dir), {});
     mkdirSync(join(dir, "_internal"));
     for (const [falas, expected] of [[[{ bloco: "comentario", texto: "x" }], false], [[{ bloco: "cta_vertical", texto: "YouTube da diar.ia.br" }], true], [[{ bloco: "cta_vertical", texto: " " }], false]] as const) {
       writeFileSync(join(dir, "_internal/roteiro-falas.json"), JSON.stringify({ falas }));
@@ -361,5 +363,49 @@ it("#13117 lê CTA do roteiro e avisa quando não pode conferir", () => {
     }
     writeFileSync(join(dir, "_internal/roteiro-falas.json"), "{inválido");
     assert.match(readVerticalCta(dir).roteiroWarning!, /ilegível/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe("#13117 rotas de atualização de texto mantêm a linha da bio", () => {
+  const BIO = /Vídeo completo: link na bio/;
+  it("--update-scheduled: TikTok com ctaVertical leva a linha; sem, não", () => {
+    const entries = [{ destination: "tiktok", status: "scheduled", id: "buffer:t1", scheduled_at: "2026-10-22T15:00:00.000Z" } as any];
+    const run = (ctaVertical?: boolean) => {
+      const [item] = planScheduledUpdates({ entries, d1: D1, now: new Date("2026-10-22T03:00:00Z"), coverPresent: false, ctaVertical });
+      assert.equal(item.action, "buffer_edit");
+      return (item as { text: string }).text;
+    };
+    assert.match(run(true), BIO);
+    assert.doesNotMatch(run(), BIO);
+  });
+
+  it("--update-published: Instagram e Threads com ctaVertical levam a linha; sem, não", () => {
+    const now = new Date("2026-11-14T12:00:00.000Z");
+    const entries = [
+      { destination: "instagram", status: "published", id: "ig1", at: "2026-11-14T10:00:00.000Z" },
+      { destination: "threads_profile", status: "published", id: "th1", at: new Date(now.getTime() - 60_000).toISOString() },
+    ] as any[];
+    const run = (ctaVertical?: boolean) => Object.fromEntries(planPublishedTextUpdates({ entries, d1: D1, now, ctaVertical }).map((i) => [i.destination, i]));
+    const com = run(true);
+    for (const id of ["instagram", "threads_profile"]) {
+      assert.equal(com[id].action, "ui");
+      assert.match((com[id] as { text: string }).text, BIO, id);
+      assert.ok(!(com[id] as { text: string }).text.includes(URL_H));
+    }
+    const sem = run();
+    for (const id of ["instagram", "threads_profile"]) assert.doesNotMatch((sem[id] as { text: string }).text, BIO, id);
+  });
+});
+
+it("#13117 blocos legados cta_ig/cta_out/cta_yt contam como cta_vertical; abertura não", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cta-legado-13117-"));
+  try {
+    mkdirSync(join(dir, "_internal"));
+    for (const [bloco, expected] of [["cta_ig", true], ["cta_out", true], ["cta_yt", true], ["abertura", false]] as const) {
+      writeFileSync(join(dir, "_internal/roteiro-falas.json"), JSON.stringify({ falas: [{ bloco, texto: "Veja o completo no YouTube" }] }));
+      assert.equal(readVerticalCta(dir).ctaVertical, expected, bloco);
+    }
+    writeFileSync(join(dir, "_internal/roteiro-falas.json"), JSON.stringify({ sem: "falas" }));
+    assert.match(readVerticalCta(dir).roteiroWarning!, /inválido/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
