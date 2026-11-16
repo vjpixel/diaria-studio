@@ -177,6 +177,41 @@ describe("passada B: som fora do roteiro na borda (#11500 item 3)", () => {
     assert.equal(d.to, undefined);
   });
 
+  it("#13189: regras e aliases preservam Hydrogen nas duas bordas, inclusive omitido do transcript", () => {
+    const env = envOf(14, [[10.1, 10.4], [10.8, 11.6], [12, 12.5]]);
+    for (const variant of ["hidrogênio", "Hidrogen"]) {
+      for (const edge of ["in", "out"] as const) {
+        const reference = [w(10.8, 11.1, "teve"), w(11.2, 11.6, "notas")];
+        const heard = [w(10.1, 10.4, variant), ...reference, w(12, 12.5, variant)];
+        const clip: RawClip = { block: "d1", srcIn: 10, srcOut: 13, script: "Hydrogen teve notas Hydrogen" };
+        const [win] = edgeWindowsFor(clip, 14);
+        const cache = new Map([[win.key, heard]]);
+        const rules = [{ pattern: "hidrogênio", replacement: "Hydrogen", flags: "gi", targets: ["horizontal"] }];
+        const opts = { thresholdDb: TH, durationS: 14, rules, target: { target: "horizontal" as const }, match: makeMatcher([{ heard: "Hidrogen", written: "Hydrogen" }]) };
+        const result = trimEdgeExtras([clip], cache, reference, env, opts);
+        assert.equal(result.clips[0][edge === "in" ? "srcIn" : "srcOut"], clip[edge === "in" ? "srcIn" : "srcOut"]);
+        assert.equal(result.adjustments.length, 0);
+        assert.equal(cache.get(win.key)?.[0].text, variant, "cache bruto preservado");
+        if (variant === "hidrogênio") {
+          const without = edgeExtras({ edge, clip, heard, reference, env, thresholdDb: TH });
+          assert.notEqual(without.to, undefined, "fixture reproduz o corte indevido sem vocabulário");
+        }
+      }
+    }
+  });
+
+  it("#13189: vocabulário participa do alinhamento e mantém a remoção de hesitação real", () => {
+    const env = envOf(14, [[10, 13]]);
+    const reference = [w(10.1, 10.4, "pelas"), w(10.5, 11, "IAs")];
+    const heard = [w(10.1, 10.4, "pelas"), w(10.5, 11, "viagens"), w(11.5, 12, "ahn")];
+    const input = { edge: "out" as const, clip: { srcIn: 10, srcOut: 13, script: "corrida pelas IAs" }, heard, reference, env, thresholdDb: TH,
+      rules: [{ pattern: "viagens", replacement: "IAs", targets: ["horizontal"] }], target: { target: "horizontal" as const } };
+    const d = edgeExtras(input);
+    assert.equal(d.extra, "ahn");
+    assert.ok(d.to !== undefined && d.to >= 11 && d.to < 11.5);
+    assert.equal(edgeExtras({ ...input, target: { target: "vertical" } }).to, undefined, "regra de outra sequência não entra no alinhamento");
+  });
+
   it("trimEdgeExtras usa a janela da borda e registra o ajuste", () => {
     const env = envOf(580, [[573.08, 573.45], [573.6, 579]]);
     const clip: RawClip = { block: "comentario", srcIn: 573.08, srcOut: 579, script: "junto com os modelos que a gente" };

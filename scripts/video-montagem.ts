@@ -2767,7 +2767,9 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
   let env = energyEnvelope(samples, sampleRate);
   const thresholdDb = silenceThresholdDb(ctx);
   const words = nonEmptyWords(f(ctx, "transcript.json"), "transcript.json");
-  const match = makeMatcher(loadVocab().aliases);
+  const vocab = loadVocab();
+  const rules = [...vocab.rules, ...(loadBlocks(ctx).file.vocabulary ?? [])];
+  const match = makeMatcher(vocab.aliases);
   const warnings: string[] = [];
   let highEnv: ReturnType<typeof energyEnvelope> | undefined;
   try { highEnv = highBandEnvelope(ctx, source); }
@@ -2789,7 +2791,7 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
     let clips = stageA[i].clips;
     const adjustments: CutAdjustment[] = [...(p.cutAdjustments ?? []), ...stageA[i].adjustments];
     if (heard) {
-      const b = trimEdgeExtras(clips, heard, words, env, { thresholdDb, durationS: source.durationS, match });
+      const b = trimEdgeExtras(clips, heard, words, env, { thresholdDb, durationS: source.durationS, match, rules, target: p.spec });
       clips = b.clips;
       adjustments.push(...b.adjustments);
       for (const n of b.notes) warnings.push(`${p.spec.name}: ${n}`);
