@@ -193,7 +193,8 @@ ganho por esforço primeiro.
 - **Esforço:** alto e incerto; roda no Mac do editor, exige instalar painel CEP.
 - **Risco:** alto: projetos comunitários sem suporte da Adobe, API de script em
   depreciação, roda numa máquina com o projeto aberto do editor. Proposta é só
-  um spike de 1 sessão interativa (label `windows`/develop) para ver se o
+  um spike de 1 sessão interativa no Mac do editor (label `develop-track`; a
+  label `windows` não serve, o Premiere roda no Mac) para ver se o
   import + Flip funcionam, sem tocar no fluxo.
 - **Fonte:** [Adobe_Premiere_Pro_MCP](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP).
 
