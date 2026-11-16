@@ -342,6 +342,7 @@ import {
   premiereRootFrom,
   unmappedPremierePaths,
   previewClipArgs,
+  previewClipAudioArgs,
   previewCropFor,
   clipFraming,
   previewSize,
@@ -4560,6 +4561,7 @@ async function cmdPreview(
   const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
   const list: string[] = [];
+  const audioParts: string[] = [];
   const size = previewSize(plan.spec);
   // #12101/#12102: o que o XML DESTA sequência levou (gravado no build dela), não o que o config diz agora.
   const assets = pf.xmlAssets?.[sequenceKey(plan.spec)] ?? {};
@@ -4572,6 +4574,10 @@ async function cmdPreview(
   const multiAudio = multi ? (audioSrc ?? audioInputOf(ctx, pf.source)) : undefined;
   plan.clips.forEach((c, i) => {
     const name = `c${String(i).padStart(2, "0")}.mp4`;
+    // #13303: o áudio exato do clipe (PCM, amostras por quadro), regravado sobre o concat no fim.
+    const wav = `a${String(i).padStart(2, "0")}.wav`;
+    run("ffmpeg", previewClipAudioArgs({ audioSrc: (multi ? multiAudio : audioSrc) ?? pf.source.path, start: c.frameIn / fps, frames: c.frameOut - c.frameIn, fps, out: join(dir, wav) }));
+    audioParts.push(wav);
     if (multi) {
       // A mesma geometria do XML (arquivo, encaixe, framing do arquivo e do item).
       const g = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, fileOverrides: pf.fileOverrides, clip: c });
@@ -4579,7 +4585,7 @@ async function cmdPreview(
       run("ffmpeg", previewClipArgs({
         src: g.file.path, start: (c.frameIn - off) / fps, end: (c.frameOut - off) / fps,
         crop: g.main.crop ?? { x: 0, y: 0, w: g.file.width, h: g.file.height }, mirrored: g.mirrored, fps, out: join(dir, name), ...size,
-        audioSrc: multiAudio, audioStart: c.frameIn / fps, fit: g.fit,
+        audioSrc: multiAudio, audioStart: c.frameIn / fps, fit: g.fit, videoOnly: true,
       }));
       list.push(`file '${name}'`);
       console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block}, ${g.file.id}${g.fit !== "fill" ? `, ${g.fit}` : ""})`);
@@ -4590,7 +4596,7 @@ async function cmdPreview(
     // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
     const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}) }));
+    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }));
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
@@ -4603,7 +4609,7 @@ async function cmdPreview(
       // O mesmo formato de pixel dos clipes do bruto (o concat não recodifica); ffprobe falho = o do card.
       let pixFmt: string | undefined;
       try { pixFmt = run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", join(dir, "c00.mp4")]).stdout.trim() || undefined; } catch { pixFmt = undefined; }
-      run("ffmpeg", ctaCardPreviewClipArgs({ src: card.path, out: join(dir, name), fps, ...size, durationS: card.frames / fps, pixFmt }));
+      run("ffmpeg", ctaCardPreviewClipArgs({ src: card.path, out: join(dir, name), fps, ...size, durationS: card.frames / fps, pixFmt, videoOnly: true }));
       list.push(`file '${name}'`);
       cardS = card.frames / fps;
       console.error(`[video-montagem] card de CTA no fim da prévia (${cardS.toFixed(2)} s, #12571)`);
@@ -4613,6 +4619,15 @@ async function cmdPreview(
   } else if (card) console.error(`[aviso] card de CTA do XML não encontrado nesta máquina (${card.path}): prévia sem ele; rode build nesta máquina (#12571)`);
   writeFileSync(join(dir, "list.txt"), list.join("\n") + "\n");
   run("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "joined.mp4"], { cwd: dir });
+  // #13303: troca a faixa (AAC por clipe, deriva ~21 ms por corte) pela concatenação PCM de amostras exatas; o card segue em silêncio.
+  if (cardS > 0) {
+    run("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", cardS.toFixed(6), "-c:a", "pcm_s16le", "a-card.wav"], { cwd: dir });
+    audioParts.push("a-card.wav");
+  }
+  writeFileSync(join(dir, "alist.txt"), concatListText(audioParts));
+  run("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "alist.txt", "-c", "copy", "exact.wav"], { cwd: dir });
+  run("ffmpeg", ["-y", "-v", "error", "-i", "joined.mp4", "-i", "exact.wav", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "joined-exact.mp4"], { cwd: dir });
+  renameSync(join(dir, "joined-exact.mp4"), join(dir, "joined.mp4"));
   // #13123: a capa que o XML desta sequência levou, por cima dos primeiros quadros (antes da legenda e da vinheta).
   const capa = assets.capaInicio ?? null;
   if (capa && existsSync(capa.path)) {

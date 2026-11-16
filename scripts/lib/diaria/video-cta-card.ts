@@ -271,8 +271,16 @@ export function ctaCardRenderArgs(input: { png: string; out: string; fps: number
  * formato de pixel dos clipes do bruto (bruto de 10 bits sai em yuv420p10le, e
  * o concat sem recodificar exige o mesmo nos dois); ausente = o do MP4 do card.
  */
-export function ctaCardPreviewClipArgs(input: { src: string; out: string; fps: number; width: number; height: number; durationS?: number; pixFmt?: string }): string[] {
+export function ctaCardPreviewClipArgs(input: { src: string; out: string; fps: number; width: number; height: number; durationS?: number; pixFmt?: string; videoOnly?: boolean }): string[] {
   const d = (input.durationS ?? CTA_CARD.durationS).toFixed(3);
+  if (input.videoOnly) {
+    // #13303: sem faixa de áudio (a prévia remonta o áudio exato à parte).
+    return [
+      "-y", "-v", "error", "-i", input.src, "-an",
+      "-vf", `scale=${input.width}:${input.height},setsar=1,fps=${input.fps}${input.pixFmt && /^[a-z0-9_]+$/.test(input.pixFmt) ? `,format=${input.pixFmt}` : ""}`,
+      "-t", d, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", input.out,
+    ];
+  }
   return [
     "-y", "-v", "error",
     "-i", input.src,

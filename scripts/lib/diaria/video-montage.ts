@@ -4793,6 +4793,12 @@ export function previewClipArgs(input: {
   audioStart?: number;
   /** #12559: encaixe `fit`/`blur-fill` (o `crop` é ignorado); ausente/`fill` = recorte de sempre. */
   fit?: FitMode;
+  /**
+   * #13303: clipe só de vídeo (`-an`). O concat copy dá a cada segmento a duração
+   * do MAIOR stream, e o AAC por clipe sobra ~21 ms: a linha do tempo inflava por
+   * corte. O áudio da prévia entra à parte (`previewClipAudioArgs`).
+   */
+  videoOnly?: boolean;
 }): string[] {
   const d = input.end - input.start;
   if (!(d > 0)) throw new Error(`clipe vazio (${input.start}-${input.end})`);
@@ -4806,12 +4812,35 @@ export function previewClipArgs(input: {
   const aStart = input.audioStart ?? input.start;
   return [
     "-y", "-v", "error",
-    "-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.src,
-    ...(input.audioSrc ? ["-ss", aStart.toFixed(3), "-to", (aStart + d).toFixed(3), "-i", input.audioSrc, "-map", "0:v:0", "-map", "1:a:0"] : []),
-    "-vf", vf, "-af", af,
+    // #13303: só vídeo, corta por contagem de quadros (o `-to` em 3 casas arredonda e ganha/perde 1 quadro por clipe).
+    ...(input.videoOnly
+      ? ["-ss", (input.start + 0.25 / input.fps).toFixed(6), "-i", input.src, "-frames:v", String(Math.round(d * input.fps))]
+      : ["-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.src]),
+    ...(!input.videoOnly && input.audioSrc ? ["-ss", aStart.toFixed(3), "-to", (aStart + d).toFixed(3), "-i", input.audioSrc, "-map", "0:v:0", "-map", "1:a:0"] : []),
+    "-vf", vf, ...(input.videoOnly ? ["-an"] : ["-af", af]),
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-    "-c:a", "aac", "-ar", "48000", "-ac", "2",
+    ...(input.videoOnly ? [] : ["-c:a", "aac", "-ar", "48000", "-ac", "2"]),
     input.out,
+  ];
+}
+
+/**
+ * #13303: o áudio de UM clipe da prévia em PCM, com exatamente `frames` quadros
+ * (`round(frames * 48000 / fps)` amostras). Cada clipe codificado em AAC tem
+ * priming/padding de 1024 amostras (~21 ms) e o `concat -c copy` soma isso por
+ * corte (~1,3 s em 55 clipes); em PCM com contagem exata de amostras o
+ * acumulado fica no mesmo quadro do vídeo, qualquer que seja o `start` (fora
+ * da grade de quadros do bruto, p.ex. 1315.356).
+ */
+export function previewClipAudioArgs(input: { audioSrc: string; start: number; frames: number; fps: number; out: string }): string[] {
+  if (!(input.frames > 0)) throw new Error(`clipe vazio (${input.frames} quadros)`);
+  const samples = Math.round((input.frames * 48000) / input.fps);
+  const d = samples / 48000;
+  const fade = `afade=t=in:d=0.02,afade=t=out:st=${Math.max(0, d - 0.03).toFixed(3)}:d=0.03`;
+  return [
+    "-y", "-v", "error", "-ss", Math.max(0, input.start).toFixed(6), "-i", input.audioSrc, "-vn",
+    "-af", `aresample=48000,aformat=channel_layouts=stereo,${fade},apad=whole_len=${samples},atrim=end_sample=${samples}`,
+    "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", input.out,
   ];
 }
 
