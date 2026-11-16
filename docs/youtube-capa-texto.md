@@ -6,6 +6,9 @@ Vale para o gancho das duas capas do vídeo "diar.ia.br comentada": a horizontal
 (padrão da 261021, #11942: close-up do editor à esquerda, gancho embaixo à
 direita).
 
+Visual da capa (fonte, tamanho do texto, fundo, logo, alerta): benchmark em
+`docs/youtube-capa-visual.md` (#13217).
+
 Ferramenta: `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file F`
 pontua os candidatos contra esta diretriz e imprime o `--hook` pronto de cada
 formato (detalhes no fim).
