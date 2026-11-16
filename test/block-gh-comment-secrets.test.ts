@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   findSecrets,
   redactSecrets,
@@ -290,7 +290,8 @@ describe("#12746: nome único e frescor do --body-file", () => {
       },
       now: NOW,
     });
-    assert.deepEqual(seen, ["/w/sub/c-12846-1.md"]);
+    // resolve() em vez do literal: no Windows o caminho resolvido é `C:\w\sub\...` (#13243).
+    assert.deepEqual(seen, [resolve("/w", "sub/c-12846-1.md")]);
   });
   it("comandos obrigatórios do overnight (OVERNIGHT_REQUIRED_BASH_COMMANDS) não são negados pela regra de nome", () => {
     for (const c of OVERNIGHT_REQUIRED_BASH_COMMANDS) {
@@ -316,7 +317,8 @@ describe("#12746: nome único e frescor do --body-file", () => {
     writeFileSync(oldFile, "corpo antigo");
     const past = new Date(Date.now() - BODY_FILE_STALE_MS - 5 * 60_000);
     utimesSync(oldFile, past, past);
-    const warn = JSON.parse(runHook(`gh issue comment 1 --body-file ${oldFile}`).stdout);
+    // Barras normais: no comando de shell a `\` do caminho do Windows vira escape (#13243).
+    const warn = JSON.parse(runHook(`gh issue comment 1 --body-file "${oldFile.replace(/\\/g, "/")}"`).stdout);
     assert.equal(warn.hookSpecificOutput.permissionDecision, undefined);
     assert.match(warn.hookSpecificOutput.additionalContext, /#12746/);
     assert.match(warn.systemMessage, /#12746/);

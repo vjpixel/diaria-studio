@@ -163,7 +163,7 @@ describe("#12554 — erro de leitura com o caminho do arquivo", () => {
     const root = mkdtempSync(join(tmpdir(), "stack-12554-"));
     mkdirSync(join(root, "2611", "261109"), { recursive: true });
     writeFileSync(join(root, "2611", "261109", "02-reviewed.md"), "x");
-    assert.throws(() => readEdition(root, "261109", unknown), /2611\/261109\/02-reviewed\.md \(UNKNOWN\)/);
+    assert.throws(() => readEdition(root, "261109", unknown), /2611[\\/]261109[\\/]02-reviewed\.md \(UNKNOWN\)/);
     assert.equal(readEdition(root, "261102"), "sem-edicao");
   });
 });
