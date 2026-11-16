@@ -136,7 +136,8 @@ export function todayBrt(now = new Date()): string {
 
 export interface PlanFileLite {
   plans: SequencePlan[];
-  source: { fps?: number; audioOnly?: boolean; path?: string };
+  /** `files` = bruto em vários arquivos (#12559); `path` é então só o do 1º. */
+  source: { fps?: number; audioOnly?: boolean; path?: string; files?: Array<{ path?: string }> };
   xmlVersions?: Record<string, { id: string }>;
   stale?: Record<string, unknown>;
 }
@@ -244,19 +245,31 @@ function transcriptWords(edition: string): Word[] {
   return (t.segments ?? []).flatMap((s) => s.words ?? []);
 }
 
-/** O áudio 16 kHz mono do bruto: o do cache da montagem, ou extraído do bruto se ele está nesta máquina. */
-function brutoWav(edition: string, workDir: string, pf: PlanFileLite): string | null {
+/**
+ * O áudio 16 kHz mono do bruto: o do cache da montagem, ou extraído do bruto se ele está nesta máquina.
+ * `wav: null` traz o motivo do pulo.
+ *
+ * Bruto em vários arquivos (#12559) sem o `audio.wav` do cache não tem fallback (#13225): `source.path`
+ * é só o do 1º arquivo e os tempos do `plan.json` são globais, na linha do tempo que concatena todos.
+ * Extrair só o 1º daria clipes "removidos" (ou pontas falsas) a partir do 2º arquivo.
+ */
+export function brutoWav(edition: string, workDir: string, pf: PlanFileLite): { wav: string } | { wav: null; reason: string } {
   const cached = join(workDir, "audio.wav");
-  if (existsSync(cached)) return cached;
+  if (existsSync(cached)) return { wav: cached };
+  const nFiles = pf.source.files?.length ?? 0;
+  if (nFiles > 1) {
+    log(`[aviso] ${edition}: bruto em ${nFiles} arquivos sem ${cached}; o fallback extrairia só o 1º — sequências fora da comparação (#13225)`);
+    return { wav: null, reason: `áudio do bruto ausente (${cached}) e bruto em ${nFiles} arquivos: o fallback não concatena (#13225)` };
+  }
   const src = pf.source.path;
-  if (!src || !existsSync(src)) return null;
+  if (!src || !existsSync(src)) return { wav: null, reason: `áudio do bruto ausente (${cached}) e bruto fora desta máquina` };
   const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-16k.wav");
   if (!existsSync(own)) {
     mkdirSync(dirname(own), { recursive: true });
     log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${src})…`);
     sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", own]);
   }
-  return own;
+  return { wav: own };
 }
 
 /** Compara uma edição. `null` = sem plan.json (fora da rodada). */
@@ -299,7 +312,9 @@ export async function compareEdition(
   }
   const words = transcriptWords(edition);
   const wd = finder.workDir(edition);
-  const bruto = brutoWav(edition, wd, pf);
+  const brutoRes = brutoWav(edition, wd, pf);
+  const bruto = brutoRes.wav;
+  const brutoSkipReason = brutoRes.wav === null ? brutoRes.reason : "";
   let brutoEnv: ReturnType<typeof energyEnvelope> | null = null;
   for (const plan of plans) {
     const key = sequenceKey(plan.spec);
@@ -308,8 +323,8 @@ export async function compareEdition(
       record.skipped.push({ key, reason: "sem final exportado em Final/" });
       continue;
     }
-    if (!bruto) {
-      record.skipped.push({ key, reason: `áudio do bruto ausente (${join(wd, "audio.wav")}) e bruto fora desta máquina` });
+    if (bruto === null) {
+      record.skipped.push({ key, reason: brutoSkipReason });
       continue;
     }
     try {
