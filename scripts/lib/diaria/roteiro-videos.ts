@@ -161,7 +161,7 @@ export interface PropostaBlocos {
   edicao?: string;
   sequencias: SequenciaProposta[];
   /** Fragmento do `blocks.json`: só os textos e o escopo (`targets`), sem tempo no bruto. */
-  blocks: Partial<Record<BlockKey, Array<{ text: string; targets?: string[] }>>>;
+  blocks: Partial<Record<BlockKey, Array<{ text: string; falaId: string; targets?: string[] }>>>;
   /** As sequências do `blocks.json` (as duas de sempre + o corte do vertical 2), ou ausente sem vertical 2. */
   sequences?: SequenceSpec[];
   /** Título na tela da vertical da edição (o do vertical 1 no roteiro). */
@@ -243,7 +243,7 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
   // lista do bloco; a fala que ela usa mais à frente que a posição corrente é
   // reaproveitada (ganha a chave), e a que ficaria para trás vira item próprio
   // inserido ali (#13128). Fala cortada vira os itens dos trechos (#13129).
-  type Item = { text: string; chaves: Set<string> };
+  type Item = { text: string; falaId: string; chaves: Set<string> };
   const porBloco = new Map<BlockKey, Item[]>();
   for (const s of sequencias) {
     const pos = new Map<BlockKey, number>();
@@ -252,12 +252,12 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
       porBloco.set(f.bloco, lista);
       for (const text of f.segmentos ?? [f.texto]) {
         let p = pos.get(f.bloco) ?? 0;
-        const achado = lista.findIndex((it, j) => j >= p && it.text === text);
+        const achado = lista.findIndex((it, j) => j >= p && it.text === text && it.falaId === f.id);
         if (achado >= 0) {
           lista[achado].chaves.add(s.chave);
           p = achado + 1;
         } else {
-          lista.splice(p, 0, { text, chaves: new Set([s.chave]) });
+          lista.splice(p, 0, { text, falaId: f.id, chaves: new Set([s.chave]) });
           p += 1;
         }
         pos.set(f.bloco, p);
@@ -305,7 +305,7 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
     const comBlocoAqui = Object.entries(ordemDe).filter(([, order]) => order.includes(b)).map(([k]) => k);
     for (const it of lista) {
       const todas = comBlocoAqui.every((k) => it.chaves.has(k));
-      (blocks[b] ??= []).push({ text: it.text, ...(todas ? {} : { targets: [...it.chaves] }) });
+      (blocks[b] ??= []).push({ text: it.text, falaId: it.falaId, ...(todas ? {} : { targets: [...it.chaves] }) });
     }
   }
 
@@ -773,4 +773,17 @@ export function renderDuracoes(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteir
   }
   linhas.push("", `Mais o card de CTA, ~${cfg.ctaCardS} s em cada vídeo.`, "");
   return linhas.join("\n");
+}
+
+/** Texto planejado por id, somente leitura; não substitui a fala gravada (#13207). */
+export function readRoteiroFalas(editionDir: string, warn: (msg: string) => void): Record<string, string> {
+  const lido = readRoteiroBruto(editionDir);
+  if (lido.estado === "ausente") return {};
+  if (lido.estado === "ilegivel") { warn(`roteiro de gravação ilegível: ${lido.erro}`); return {}; }
+  const raw = lido.raw as { falas?: unknown };
+  const result: Record<string, string> = Object.create(null);
+  if (Array.isArray(raw?.falas)) for (const f of raw.falas) {
+    if (typeof f?.id === "string" && typeof f?.texto === "string") result[f.id] = f.texto;
+  }
+  return result;
 }

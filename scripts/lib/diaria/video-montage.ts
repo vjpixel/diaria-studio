@@ -1190,6 +1190,8 @@ export const SEQUENCE_TARGETS: readonly SequenceTarget[] = ["youtube", "instagra
  * arquivo.
  */
 export interface ItemFraming {
+  /** Id da fala no roteiro de gravação congelado (#13207). */
+  falaId?: string;
   framing?: FramePoint;
   /**
    * Bruto em vários arquivos (#12559): de qual arquivo o item vem (`id` do
@@ -1478,6 +1480,7 @@ function validateSourceFit(o: Record<string, unknown>, label: string): string[] 
   const errors: string[] = [];
   if (o.source !== undefined && (typeof o.source !== "string" || !o.source.trim())) errors.push(`${label}: source precisa ser o id de um arquivo do bruto (nome sem extensão)`);
   if (o.fit !== undefined && !isFitMode(o.fit)) errors.push(`${label}: fit precisa ser fill, fit ou blur-fill`);
+  if (o.falaId !== undefined && (typeof o.falaId !== "string" || !o.falaId.trim())) errors.push(`${label}: falaId precisa ser texto não vazio (id da fala no roteiro de gravação)`);
   return errors;
 }
 
@@ -1884,6 +1887,7 @@ const scopeOf = (it: ItemScope & ItemFraming): ItemScope & ItemFraming => ({
   ...(it.skip ? { skip: it.skip } : {}),
   ...(it.framing ? { framing: { faceX: it.framing.faceX, eyeY: it.framing.eyeY } } : {}),
   ...(it.source !== undefined ? { source: it.source } : {}),
+  ...(it.falaId !== undefined ? { falaId: it.falaId } : {}),
   ...(it.fit !== undefined ? { fit: it.fit } : {}),
 });
 
