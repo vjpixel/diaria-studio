@@ -186,8 +186,9 @@ describe("#13140 (2): texto de tela como marcador do XML", () => {
   ];
   // A fala longa saiu em 2 clipes (um corte de pausa no meio).
   const clips = [clip("titulo", 10, 13, 0), clip("resumo_curto", 20, 40, 90), clip("comentario", 430, 444, 690), clip("comentario", 446, 460, 1110)];
+  const SPEC_H: SequenceSpec = { ...SPEC_V, target: "youtube", name: "Diaria comentada_Youtube_V1", width: 1920, height: 1080 };
   it("cada fala com tela cai no tempo dela na sequência; fala fora desta versão não entra", () => {
-    const ms = telaMarkersFor(vplan(60, clips), resolved, 30, telas);
+    const ms = telaMarkersFor(vplan(60, clips, SPEC_H), resolved, 30, telas);
     assert.deepEqual(ms, [
       { id: "H4", tela: "App do Gemini · Busca do Google", in: 90, out: 690 },
       { id: "H10f", tela: "ChatGPT grátis × Gemini", in: 690, out: 1530 },
@@ -195,8 +196,15 @@ describe("#13140 (2): texto de tela como marcador do XML", () => {
   });
   it("o trecho que sobra de um corte parcial (3+ palavras) casa com a fala; item curto não", () => {
     const cortado = { ...resolved, comentario: [item(430, 444, "Se você usa só o plano gratuito do ChatGPT, vale testar o Gemini.")], fecho: [item(900, 903, "Até amanhã.")] };
-    const ms = telaMarkersFor(vplan(60, [clip("comentario", 430, 444, 0), clip("fecho", 900, 903, 420)]), cortado, 30, [...telas, { id: "F", texto: "Até amanhã, e obrigado por assistir.", tela: "x" }]);
+    const ms = telaMarkersFor(vplan(60, [clip("comentario", 430, 444, 0), clip("fecho", 900, 903, 420)], SPEC_H), cortado, 30, [...telas, { id: "F", texto: "Até amanhã, e obrigado por assistir.", tela: "x" }]);
     assert.deepEqual(ms.map((m) => [m.id, m.in, m.out]), [["H10f", 0, 420]]);
+  });
+  it("#13186: fala com tela no horizontal e no vertical 1 vira marcador só na sequência horizontal", () => {
+    const h = telaMarkersFor(vplan(60, clips, SPEC_H), resolved, 30, telas);
+    assert.deepEqual(h.map((m) => m.id), ["H4", "H10f"]);
+    assert.deepEqual(telaMarkersFor(vplan(60, clips), resolved, 30, telas), []);
+    assert.deepEqual(telaMarkersFor(vplan(60, clips, { ...SPEC_V, target: "instagram" }), resolved, 30, telas), []);
+    assert.deepEqual(telaMarkersFor(vplan(60, clips, { ...SPEC_V, corte: "x" }), resolved, 30, telas), []);
   });
   it("buildXmeml põe o marcador no <sequence>, com o texto escapado; sem marcador, o XML de antes", () => {
     const plan = vplan(60, clips);
