@@ -166,6 +166,11 @@
  * autônoma, `worktree-agent-*` ou `overnight/*` (#11458): worktree parado do
  * editor, de qualquer outra branch, nunca sai por ele fora do guard de disco.
  *
+ * **#13283 — merge pela branch remota que contém o HEAD.** Worktree do
+ * `dev-fixer` com branch local de outro nome (enviada por refspec) nunca
+ * casava no `gh pr list --head`; `selectMergedViaRemoteForRemoval` confere o
+ * merge também pelas branches de `origin` que contêm o HEAD.
+ *
  * Uso:
  *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>]
  *       [--confirm-shared] [--session-id <id>] [--reclaim-open-pr]
@@ -592,6 +597,45 @@ export function selectPushedCleanForRemoval(
   return result;
 }
 
+/**
+ * #13283 — worktree cuja branch LOCAL tem outro nome que a branch da PR. O
+ * `dev-fixer` às vezes não consegue fazer checkout da branch da PR (ela está
+ * em uso no worktree do implementador), commita numa branch local própria
+ * (`fixer-13239`) e envia com refspec (`git push origin
+ * fixer-13239:develop/fix-13239`). O GitHub não conhece `fixer-13239`, então
+ * `selectMergedForRemoval` nunca confirma o merge e o worktree fica para trás.
+ *
+ * Aqui o merge é conferido pelas branches REMOTAS que contêm o HEAD do
+ * worktree (`remoteBranchesOf`, injetável): basta uma delas ter PR mergeada.
+ * Qualquer uma delas (ou a branch local) com PR aberta preserva o worktree,
+ * mesma regra do #8792. `remoteBranchesOf` real devolve `[]` quando o HEAD
+ * já está em `origin/master` (worktree recém-criado, sem commit próprio):
+ * sem isso, qualquer branch remota criada depois daquele commit "conteria"
+ * o HEAD e uma PR mergeada qualquer removeria um worktree que nem começou.
+ * Conter o HEAD numa branch remota também garante que nenhum commit do
+ * worktree fica só local; o guard de sujeira (#7304) segue como último filtro.
+ */
+export function selectMergedViaRemoteForRemoval(
+  entries: WorktreeEntry[],
+  alreadySelected: WorktreeEntry[],
+  remoteBranchesOf: (path: string) => string[],
+  isMerged: (branch: string) => boolean,
+  hasOpenPr: (branch: string) => boolean,
+): WorktreeEntry[] {
+  const alreadyPaths = new Set(alreadySelected.map((e) => e.path));
+  const result: WorktreeEntry[] = [];
+  for (const e of entries) {
+    if (alreadyPaths.has(e.path)) continue;
+    const remotes = remoteBranchesOf(e.path);
+    if (remotes.length === 0) continue;
+    if (!remotes.some((b) => isMerged(b))) continue;
+    if (e.branch !== null && hasOpenPr(e.branch)) continue;
+    if (remotes.some((b) => hasOpenPr(b))) continue;
+    result.push(e);
+  }
+  return result;
+}
+
 // ─── I/O real (fail-soft) ────────────────────────────────────────────────
 
 const GH_TIMEOUT_MS = 10_000;
@@ -680,6 +724,54 @@ export function checkBranchMergedViaGh(branch: string, cwd: string): boolean {
     return Array.isArray(parsed) && parsed.length > 0;
   } catch {
     return false;
+  }
+}
+
+/** #13283 — teto de branches remotas conferidas por worktree (cada uma custa um `gh`). */
+export const REMOTE_BRANCHES_PER_WORKTREE_MAX = 5;
+
+/**
+ * #13283 — parseia a saída de `git for-each-ref --format=%(refname)
+ * refs/remotes/origin/`: nomes sem `origin/`, fora `HEAD`, `master` e `main`,
+ * no máximo `REMOTE_BRANCHES_PER_WORKTREE_MAX`.
+ */
+export function parseRemoteBranchesContainingHead(output: string): string[] {
+  const names: string[] = [];
+  for (const raw of output.split(/\r?\n/)) {
+    const ref = raw.trim();
+    if (!ref.startsWith("refs/remotes/origin/")) continue;
+    const name = ref.slice("refs/remotes/origin/".length);
+    if (name === "" || name === "HEAD" || name === "master" || name === "main") continue;
+    names.push(name);
+  }
+  return names.slice(0, REMOTE_BRANCHES_PER_WORKTREE_MAX);
+}
+
+/**
+ * #13283 — branches de `origin` (sem o prefixo) que contêm o HEAD do
+ * worktree. Devolve `[]` se o HEAD já é ancestral de `origin/master`
+ * (worktree sem commit próprio; ver `selectMergedViaRemoteForRemoval`) e em
+ * qualquer falha (fail-soft: sem branch, nada sai por este seletor).
+ */
+export function remoteBranchesContainingHeadSafe(path: string): string[] {
+  try {
+    if (!existsSync(path)) return [];
+    const onMaster = spawnSync("git", ["merge-base", "--is-ancestor", "HEAD", "origin/master"], {
+      cwd: path,
+      encoding: "utf8",
+      timeout: GH_TIMEOUT_MS,
+    });
+    // 0 = HEAD já está em origin/master; 1 = não está; outro = erro.
+    if (onMaster.status !== 1) return [];
+    const result = spawnSync("git", ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin/"], {
+      cwd: path,
+      encoding: "utf8",
+      timeout: GH_TIMEOUT_MS,
+    });
+    if (result.status !== 0) return [];
+    return parseRemoteBranchesContainingHead(result.stdout ?? "");
+  } catch {
+    return [];
   }
 }
 
@@ -1256,6 +1348,9 @@ export function runMainWithCheckers(
      *  fica desligado (comportamento anterior). `main()` passa os reais. */
     isHeadOnRemote?: (path: string) => boolean;
     lastActivityMs?: (path: string) => number | null;
+    /** #13283 — opcional: branches remotas que contêm o HEAD do worktree.
+     *  Sem ele, o seletor de merge pela branch remota fica desligado. */
+    remoteBranchesContainingHead?: (path: string) => string[];
     nowMs?: number;
     /** #12457 — relógio para medir o tempo de cada remoção e o total da
      *  varredura. Injetável só para teste; default `Date.now`. */
@@ -1336,7 +1431,19 @@ export function runMainWithCheckers(
     // (reuso de branch) é trabalho vivo — preserva. Ver docblock de
     // `filterOutWorktreesWithOpenPr`.
     const mergedOpenPrSkipped = filterOutWorktreesWithOpenPr(mergedRemoval, checkers.hasOpenPr);
-    const mergedRemovalEffective = mergedOpenPrSkipped.kept;
+    // #13283: branch local com outro nome que a da PR (fixer que envia com
+    // refspec) — confere o merge pelas branches remotas que contêm o HEAD.
+    // Os preservados por PR aberta (#8792) não voltam por aqui.
+    const mergedViaRemoteRemoval = checkers.remoteBranchesContainingHead
+      ? selectMergedViaRemoteForRemoval(
+          candidates,
+          [...mergedRemoval],
+          checkers.remoteBranchesContainingHead,
+          checkers.isMerged,
+          checkers.hasOpenPr,
+        )
+      : [];
+    const mergedRemovalEffective = [...mergedOpenPrSkipped.kept, ...mergedViaRemoteRemoval];
     const orphanedStaleRemoval = selectOrphanedForStaleRemoval(
       candidates,
       mergedRemovalEffective,
@@ -1379,7 +1486,8 @@ export function runMainWithCheckers(
 
     console.log(
       `[cleanup-merged-worktrees] ${candidates.length} worktree(s) encontrados, ` +
-        `${mergedRemovalEffective.length} com PR mergeada confirmada (sem PR aberta, #8792), ` +
+        `${mergedRemovalEffective.length} com PR mergeada confirmada (sem PR aberta, #8792; ` +
+        `${mergedViaRemoteRemoval.length} pela branch remota que contém o HEAD, #13283), ` +
         `${mergedOpenPrSkipped.skipped.length} com PR mergeada MAS PR aberta na branch (preservados, #8792), ` +
         `${orphanedStaleRemoval.length} órfão(s) parado(s) há mais de 7 dias (#5418), ` +
         `${abandonedRemoval.length} abandonado(s) — issue fechada há mais de 14 dias (#7650), ` +
@@ -1416,13 +1524,15 @@ export function runMainWithCheckers(
     const liveProcessSnapshot: ProcessInfo[] = dryRun ? [] : checkers.listProcesses();
     const removeLoopStartedAt = clock();
     for (const entry of toRemove) {
-      const reason = mergedRemovalEffective.includes(entry)
-        ? "branch mergeada"
-        : orphanedStaleRemoval.includes(entry)
-          ? "órfão + stale (#5418)"
-          : abandonedRemoval.includes(entry)
-            ? "abandonado + issue fechada (#7650)"
-            : "já enviado + parado há 3h (#11446)";
+      const reason = mergedViaRemoteRemoval.includes(entry)
+        ? "HEAD em branch remota mergeada (#13283)"
+        : mergedRemovalEffective.includes(entry)
+          ? "branch mergeada"
+          : orphanedStaleRemoval.includes(entry)
+            ? "órfão + stale (#5418)"
+            : abandonedRemoval.includes(entry)
+              ? "abandonado + issue fechada (#7650)"
+              : "já enviado + parado há 3h (#11446)";
       if (dryRun) {
         console.log(`[cleanup-merged-worktrees] (dry-run) removeria: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
         continue;
@@ -1510,6 +1620,7 @@ export function runCleanupWithRealCheckers(args: Record<string, string>, repoRoo
   runMainWithCheckers(args, repoRoot, {
     isHeadOnRemote: (path) => isHeadOnRemoteSafe(path),
     lastActivityMs: (path) => getWorktreeLastActivityMsSafe(path),
+    remoteBranchesContainingHead: (path) => remoteBranchesContainingHeadSafe(path),
     isMerged: (branch) => checkBranchMergedViaGh(branch, repoRoot),
     hasOpenPr: (branch) => checkBranchHasOpenPrViaGh(branch, repoRoot),
     branchExistsLocally: (branch) => checkBranchExistsLocally(branch, repoRoot),
