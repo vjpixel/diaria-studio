@@ -65,7 +65,7 @@ export interface ShortCoverRecord {
    * aplica o JPG vertical pelo Studio web e confere a persistência, o Passo B3a
    * de `/diaria-publica-video` troca o valor para `studio_web` (#12436).
    * Desde a opção 2 do #12100 (11/11/2026), o vertical enviado ao YouTube leva
-   * a capa nos primeiros ~400 ms (arredondado ao frame; `first_frame_ms` grava
+   * a capa nos primeiros ~1 s (400 ms até 16/11/2026; arredondado ao frame; `first_frame_ms` grava
    * o valor efetivo) e o valor é `first_frame_cover`: aplicado, mas
    * NÃO confirmado — nada aqui afirma que o leitor vê a capa no feed até a
    * medição do `oar2.jpg` (`check-short-feed-cover.ts --image oar2`).
@@ -85,7 +85,7 @@ export interface ShortCoverRecord {
  * (o script grava após o `thumbnails.set` sem a capa no 1º frame);
  * `studio_web` = aplicada pelo Studio web e conferida (gravado pelo agente no
  * Passo B3a; absorvente no `keepStudioWebVerticalFeed`); `first_frame_cover`
- * (#12100 opção 2) = a capa foi posta nos primeiros ~400 ms do vertical
+ * (#12100 opção 2) = a capa foi posta nos primeiros ~1 s do vertical
  * enviado (o script grava, com qualquer `ok` do `thumbnails.set`), sem
  * confirmação de que o frame automático do YouTube caiu nela. `manual` (com
  * `ok`) e `first_frame_cover` geram o aviso de `youtubeShortsVerticalCoverWarning`.
