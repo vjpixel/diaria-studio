@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 13 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 16 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Google põe o Gemini 4 Hydrogen na sua Busca</title>
+      <link>https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca</guid>
+      <pubDate>Mon, 16 Nov 2026 09:00:00 GMT</pubDate>
+      <description>MEC proíbe IA para alunos da educação infantil | ChatGPT Wallet: agentes compram sem ver seu cartão</description>
+    </item>
     <item>
       <title>Jensen Huang deixa a NVIDIA após 33 anos</title>
       <link>https://diar.ia.br/p/jensen-huang-deixa-a-nvidia-apos-33-anos</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/banco-da-inglaterra-teme-colapso-economico-global</guid>
       <pubDate>Wed, 02 Sep 2026 09:00:00 GMT</pubDate>
       <description>Google Antigravity resolve problemas de matemática | Plataformas passam a sinalizar conteúdo de IA</description>
-    </item>
-    <item>
-      <title>Gates propõe empregos só para humanos</title>
-      <link>https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos</guid>
-      <pubDate>Tue, 01 Sep 2026 09:00:00 GMT</pubDate>
-      <description>Seu suporte de TI pode sumir como o da Cielo | Grok foi treinado com abuso infantil, diz processo</description>
     </item>
   </channel>
 </rss>
