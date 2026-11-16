@@ -16,10 +16,10 @@
 
 export interface BenchmarkChannel {
   /** Handle do YouTube, com @. */
-  handle: string;
-  lang: "pt" | "en";
+  readonly handle: `@${string}`;
+  readonly lang: "pt" | "en";
   /** Por que o canal entrou (registrado no doc). */
-  why: string;
+  readonly why: string;
 }
 
 /**
@@ -43,35 +43,44 @@ export const BENCHMARK_CHANNELS: readonly BenchmarkChannel[] = [
   { handle: "@olhardigital", lang: "pt", why: "veículo de notícia de tecnologia em PT-BR" },
 ];
 
-/** Vídeo com menos que isso é Short (o limite do YouTube é 3 min). */
+/** Vídeo com até isso (inclusive) conta como Short (o limite do YouTube é 3 min). */
 export const SHORT_MAX_SECONDS = 180;
 /** Vídeo mais novo que isso ainda está acumulando views; fica fora da conta. */
 export const MIN_AGE_DAYS = 7;
-/** Quantos vídeos longos por canal entram na mediana. */
+/** Teto de vídeos longos por canal na amostra da mediana (o piso é `MIN_SAMPLE`). */
 export const VIDEOS_PER_CHANNEL = 30;
-/** A partir de quantas vezes a mediana o vídeo conta como "acima da média". */
+/**
+ * A partir de quantas vezes a MEDIANA do canal o vídeo conta como "acima da
+ * média" (o nome no doc é coloquial; a referência é a mediana, que um único
+ * viral não distorce).
+ */
 export const OUTLIER_RATIO = 2;
+/** Canal com menos vídeos longos elegíveis que isso fica fora (mediana instável). */
+export const MIN_SAMPLE = 10;
 
 /** `PT1H2M3S` → 3723. Formato desconhecido → null. */
 export function parseIsoDuration(iso: string): number | null {
   const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/.exec(iso.trim());
-  if (!m || iso.trim() === "P" || iso.trim() === "PT") return null;
+  if (!m || iso.trim() === "P" || iso.trim().endsWith("T")) return null;
   const [, d, h, min, s] = m;
   return (Number(d ?? 0) * 86400) + (Number(h ?? 0) * 3600) + (Number(min ?? 0) * 60) + Math.round(Number(s ?? 0));
 }
 
 export interface BenchmarkVideo {
-  id: string;
-  title: string;
-  publishedAt: string;
-  durationSeconds: number;
-  views: number;
-  thumbnailUrl: string;
+  readonly id: string;
+  readonly title: string;
+  /** ISO 8601, como a API devolve. Data impossível de ler deixa o vídeo de fora. */
+  readonly publishedAt: string;
+  readonly durationSeconds: number;
+  readonly views: number;
+  /** `null` = a API não trouxe miniatura. */
+  readonly thumbnailUrl: string | null;
 }
 
+/** Só `rankChannel` constrói: o ratio é relativo à mediana do canal ranqueado. */
 export interface RankedVideo extends BenchmarkVideo {
   /** views ÷ mediana do canal. */
-  ratio: number;
+  readonly ratio: number;
 }
 
 export function median(values: readonly number[]): number {
@@ -88,37 +97,49 @@ export function median(values: readonly number[]): number {
 export function eligibleVideos(videos: readonly BenchmarkVideo[], now: Date): BenchmarkVideo[] {
   const cutoff = now.getTime() - MIN_AGE_DAYS * 86400_000;
   return videos
-    .filter((v) => v.durationSeconds > SHORT_MAX_SECONDS && Date.parse(v.publishedAt) <= cutoff)
-    .sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))
-    .slice(0, VIDEOS_PER_CHANNEL);
+    .map((v) => ({ v, t: Date.parse(v.publishedAt) }))
+    .filter(({ v, t }) => Number.isFinite(t) && v.durationSeconds > SHORT_MAX_SECONDS && t <= cutoff)
+    .sort((a, b) => b.t - a.t)
+    .slice(0, VIDEOS_PER_CHANNEL)
+    .map(({ v }) => v);
 }
 
 export interface ChannelRanking {
-  medianViews: number;
-  sample: number;
+  readonly medianViews: number;
+  readonly sample: number;
   /** ratio ≥ OUTLIER_RATIO, maior primeiro. */
-  outliers: RankedVideo[];
-  /** Os vídeos mais perto da mediana (grupo de controle visual). */
-  typical: RankedVideo[];
+  readonly outliers: readonly RankedVideo[];
+  /**
+   * Os vídeos mais perto da mediana (grupo de controle visual). "Perto" é em
+   * escala log: 0,5x e 2x estão à mesma distância de 1x.
+   */
+  readonly typical: readonly RankedVideo[];
 }
 
-/** Separa os acima da média e os típicos de um canal. `typicalCount` típicos, os mais perto de ratio 1. */
+/**
+ * Separa os acima da média e os típicos de um canal: `typicalCount` típicos,
+ * os mais perto de ratio 1. Mediana 0 não tem ratio definido: devolve os dois
+ * grupos vazios (a CLI trata como erro do canal).
+ */
 export function rankChannel(videos: readonly BenchmarkVideo[], typicalCount = 3): ChannelRanking {
   const med = median(videos.map((v) => v.views));
-  const ranked: RankedVideo[] = videos.map((v) => ({ ...v, ratio: med > 0 ? v.views / med : 0 }));
+  if (med <= 0) return { medianViews: med, sample: videos.length, outliers: [], typical: [] };
+  const ranked: RankedVideo[] = videos.map((v) => ({ ...v, ratio: v.views / med }));
   const outliers = ranked.filter((v) => v.ratio >= OUTLIER_RATIO).sort((a, b) => b.ratio - a.ratio);
+  // ratio 0 (vídeo sem views) fica no fim dos típicos.
+  const dist = (r: number) => (r > 0 ? Math.abs(Math.log(r)) : Number.POSITIVE_INFINITY);
   const typical = ranked
     .filter((v) => v.ratio < OUTLIER_RATIO)
-    .sort((a, b) => Math.abs(Math.log(a.ratio || 1e-9)) - Math.abs(Math.log(b.ratio || 1e-9)))
-    .slice(0, typicalCount);
+    .sort((a, b) => dist(a.ratio) - dist(b.ratio))
+    .slice(0, Math.max(0, typicalCount));
   return { medianViews: med, sample: videos.length, outliers, typical };
 }
 
-/** Melhor miniatura disponível do `snippet.thumbnails`. */
-export function bestThumbnail(thumbs: Record<string, { url?: string } | undefined> | undefined): string {
+/** Melhor miniatura disponível do `snippet.thumbnails`; `null` se nenhuma. */
+export function bestThumbnail(thumbs: Record<string, { url?: string } | undefined> | undefined): string | null {
   for (const k of ["maxres", "standard", "high", "medium", "default"]) {
     const u = thumbs?.[k]?.url;
     if (u) return u;
   }
-  return "";
+  return null;
 }

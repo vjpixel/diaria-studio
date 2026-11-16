@@ -7,8 +7,9 @@ um repertório de capas para testar. **Nada aqui muda o padrão do pipeline**
 (261021, #11942); isso só acontece se um teste da #13192 mostrar ganho.
 
 Coleta reproduzível: `npx tsx scripts/youtube-capa-benchmark.ts` (só leitura
-da YouTube Data API oficial, ~60 unidades de cota). Grava JSON, miniaturas e
-uma folha de contato por canal em `data/youtube-capa-benchmark/{data}/`.
+da YouTube Data API oficial, até 7 unidades de cota por canal, ~84 no total).
+Grava o JSON e, dos canais ok, as miniaturas dos dois grupos e uma folha de
+contato em `data/youtube-capa-benchmark/{data UTC}/`.
 
 ## Método
 
@@ -18,10 +19,12 @@ uma folha de contato por canal em `data/youtube-capa-benchmark/{data}/`.
   Olhar Digital), de 87 mil a 4,3 milhões de inscritos. Critério de escolha
   em `BENCHMARK_CHANNELS` (`scripts/lib/diaria/youtube-capa-benchmark.ts`).
   TecMundo e Asimov Academy foram descartados na 1ª rodada (motivo no código).
-- Por canal: os 30 vídeos longos mais recentes (acima de 3 min, com 7+ dias).
-- **Acima da média** = views ≥ 2x a mediana do próprio canal. **Típico** = os
-  3 mais perto da mediana. A taxa de cliques de outro canal não é pública;
-  comparar com a mediana do próprio canal é o que neutraliza o tamanho dele.
+- Por canal: até 30 vídeos longos mais recentes (acima de 3 min, com 7+ dias;
+  canal com menos de 10 fica de fora). Na rodada de 16/11 todos tiveram 30.
+- **Acima da média** (rótulo; o cálculo é sobre a mediana) = views ≥ 2x a
+  mediana da amostra do canal. **Típico** = os 3 mais perto da mediana. A taxa
+  de cliques de outro canal não é pública; comparar com a mediana do próprio
+  canal normaliza o tamanho dele (não a pauta).
 - Rodada de 16/11/2026: 12 canais, 360 vídeos, 66 acima da média.
 
 **Ressalva que vale para tudo abaixo:** views acima da média medem pauta,
@@ -110,8 +113,12 @@ parênteses):
   ainda soma quando a pauta já é forte.
 
 A variação A aparece em todos os vídeos de propósito: se ela ganhar de forma
-consistente, é a mudança de padrão mais simples de adotar (mexe só no
-`gen-youtube-thumb.ts`, não no retrato nem no fundo).
+consistente, é a mudança de padrão mais simples de adotar, porque não mexe no
+retrato nem no fundo. Mexe no gancho em `scripts/lib/diaria/youtube-thumb.ts`:
+hoje ele é Georgia (`FONTS.serif`, com guard de fonte da marca), de 2 a 4
+palavras (`HOOK_MIN_WORDS`/`HOOK_MAX_WORDS`) e de 64 a 130 px
+(`HOOK_MIN_FONT`/`HOOK_MAX_FONT`, até ~18% da altura). Para o teste, as capas
+A podem ser montadas à parte, sem mudar esse módulo.
 
 As capas são geradas como hoje (`gen-youtube-thumb.ts`) e trocadas com
 `publish-youtube.ts --thumbnail-only` (#12134) quando o teste for antes e
