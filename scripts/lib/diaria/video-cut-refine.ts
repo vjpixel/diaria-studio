@@ -33,6 +33,9 @@
 
 import {
   alignTokens,
+  applyVocabularyToWords,
+  type VocabRule,
+  type SequenceRef,
   normalizeToken,
   tokenize,
   tokensMatch,
@@ -289,6 +292,8 @@ export function edgeExtras(input: {
   env: Envelope;
   thresholdDb: number;
   match?: TokenMatcher;
+  rules?: VocabRule[];
+  target?: SequenceRef;
 }): EdgeDecision {
   const baseEq = input.match ?? tokensMatch;
   // Homófonos de borda: o Whisper pode ouvir "a" onde o roteiro diz "há".
@@ -296,9 +301,12 @@ export function edgeExtras(input: {
   const homophone = (s: string) => normalizeToken(s) === "ha" ? "a" : normalizeToken(s);
   const eq: TokenMatcher = (a, b) => baseEq(a, b) || homophone(a) === homophone(b);
   const { srcIn, srcOut } = input.clip;
-  const H = input.heard.filter((w) => w.text.trim() && w.end > srcIn + 0.02 && w.start < srcOut - 0.02);
+  // #13189: normaliza antes do alinhamento e da proteção pelo roteiro.
+  const heard = applyVocabularyToWords(input.heard, input.rules ?? [], input.target);
+  const reference = applyVocabularyToWords(input.reference, input.rules ?? [], input.target);
+  const H = heard.filter((w) => w.text.trim() && w.end > srcIn + 0.02 && w.start < srcOut - 0.02);
   const Ht = H.map((w) => normalizeToken(w.text));
-  const Rt = input.reference.map((w) => normalizeToken(w.text)).filter(Boolean);
+  const Rt = reference.map((w) => normalizeToken(w.text)).filter(Boolean);
   const keep = H.map((_, i) => Boolean(Ht[i]));
   const Hk = H.filter((_, i) => keep[i]);
   const Hkt = Ht.filter((_, i) => keep[i]);
@@ -385,7 +393,7 @@ export function trimEdgeExtras(
   heard: Map<string, Word[]>,
   words: Word[],
   env: Envelope,
-  opts: { thresholdDb: number; durationS: number; match?: TokenMatcher },
+  opts: { thresholdDb: number; durationS: number; match?: TokenMatcher; rules?: VocabRule[]; target?: SequenceRef },
 ): { clips: RawClip[]; adjustments: CutAdjustment[]; notes: string[] } {
   const adjustments: CutAdjustment[] = [];
   const notes: string[] = [];
@@ -397,7 +405,7 @@ export function trimEdgeExtras(
       const t = edge === "in" ? cur.srcIn : cur.srcOut;
       const h = heardForEdge(windows, heard, edge === "in" ? r.srcIn : r.srcOut);
       if (!h) continue;
-      const d = edgeExtras({ edge, clip: cur, heard: h, reference, env, thresholdDb: opts.thresholdDb, match: opts.match });
+      const d = edgeExtras({ edge, clip: cur, heard: h, reference, env, thresholdDb: opts.thresholdDb, match: opts.match, rules: opts.rules, target: opts.target });
       if (d.note) notes.push(`${r.block} ${edge === "in" ? "entrada" : "saída"} em ${t.toFixed(2)} s: ${d.note}`);
       if (d.to === undefined) continue;
       adjustments.push({ block: r.block, edge, from: t, to: d.to, reason: `som fora do roteiro na borda: "${d.extra}"` });
