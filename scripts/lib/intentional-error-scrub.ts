@@ -34,6 +34,13 @@
  * pode aparecer de forma legítima em outro item ("2025" numa data). Para ele o
  * scrub só troca a ocorrência que dá pra atribuir ao erro (única no texto, ou
  * única na seção de `location`), e o guard escopado só AVISA, nunca recusa.
+ *
+ * #13223: quem decide se o valor é ambíguo é a `category` do registro, não só
+ * a forma da string (`isAmbiguousPair`). Só grafia (`ortografico`/`spelling`)
+ * é "nome escrito errado, que nunca aparece de forma legítima". Erro de
+ * `attribution`/`factual`/… troca um nome REAL e bem escrito por outro
+ * ("Sonnet" no lugar de "Haiku", 261008): o nome plantado aparece de forma
+ * legítima no resto do texto e é tratado como ambíguo.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -59,6 +66,13 @@ export interface IntentionalErrorPair {
    * ou do `detail`/`description`. Escopa o scrub de valor ambíguo à seção.
    */
   location?: string;
+  /**
+   * #13223: `category` (JSON da edição) ou `error_type` (JSONL). Decide se o
+   * `wrong` é grafia errada (troca em qualquer caixa, guard recusa) ou nome
+   * real trocado (ambíguo). Ausente = registro sem categoria: vale só a forma
+   * da string, como antes do #13223.
+   */
+  category?: string;
 }
 
 /** Valor utilizável: string, não vazia, não placeholder `{PREENCHER...}`. */
@@ -82,6 +96,8 @@ export function pairFromRecord(
         correct_value?: unknown;
         no_error?: unknown;
         location?: unknown;
+        category?: unknown;
+        error_type?: unknown;
         destaque?: unknown;
         detail?: unknown;
         description?: unknown;
@@ -98,7 +114,8 @@ export function pairFromRecord(
     (typeof rec.destaque === "number" ? `DESTAQUE ${rec.destaque}` : null) ??
     usable(rec.detail) ??
     usable(rec.description);
-  return { edition, wrong, correct, ...(location ? { location } : {}) };
+  const category = usable(rec.category) ?? usable(rec.error_type);
+  return { edition, wrong, correct, ...(location ? { location } : {}), ...(category ? { category } : {}) };
 }
 
 /**
@@ -109,6 +126,30 @@ export function pairFromRecord(
 export function isAmbiguousWrongValue(wrong: string): boolean {
   const w = wrong.trim();
   return /\p{N}/u.test(w) || [...w].length <= 3;
+}
+
+/** Categorias de grafia errada (#13223), já sem acento e em minúsculas. */
+const SPELLING_CATEGORIES = new Set(["ortografico", "ortografia", "spelling", "grafia", "typo"]);
+
+/** Categoria sem acento, minúsculas; `null` para ausente ou `unknown` (registro sem categoria). */
+function normalizedCategory(category: string | undefined): string | null {
+  if (!category) return null;
+  const c = category.normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
+  return c && c !== "unknown" ? c : null;
+}
+
+/**
+ * Pure (#13223): o par é ambíguo (o `wrong` pode aparecer de forma legítima no
+ * texto)? Número ou palavra curta sempre é (`isAmbiguousWrongValue`). Com
+ * categoria declarada, só grafia (`ortografico`/`spelling`) deixa de ser:
+ * `attribution`/`factual`/… trocam um nome real por outro, e o nome plantado
+ * existe de forma legítima no resto da edição. Sem categoria, vale só a forma
+ * da string.
+ */
+export function isAmbiguousPair(pair: Pick<IntentionalErrorPair, "wrong" | "category">): boolean {
+  if (isAmbiguousWrongValue(pair.wrong)) return true;
+  const cat = normalizedCategory(pair.category);
+  return cat !== null && !SPELLING_CATEGORIES.has(cat);
 }
 
 /**
@@ -171,10 +212,12 @@ function escapeRe(s: string): string {
  * ("APPEL" num título em caixa alta, "appel" num slug de texto) — senão a
  * variante escapa do scrub e do guard. Valor AMBÍGUO (número, palavra curta)
  * segue sensível a maiúsculas: "Mau" no começo de frase não é o "mau" plantado.
+ * #13223: nome real trocado (`attribution`…) também é ambíguo e sensível a
+ * maiúsculas.
  */
-function wholeWordRe(wrong: string): RegExp {
-  const flags = isAmbiguousWrongValue(wrong) ? "gu" : "giu";
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(wrong)}(?![\\p{L}\\p{N}])`, flags);
+function wholeWordRe(pair: Pick<IntentionalErrorPair, "wrong" | "category">): RegExp {
+  const flags = isAmbiguousPair(pair) ? "gu" : "giu";
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(pair.wrong)}(?![\\p{L}\\p{N}])`, flags);
 }
 
 /**
@@ -210,15 +253,20 @@ function mapOutsideUrls(text: string, fn: (chunk: string) => string): string {
   return out + fn(text.slice(last));
 }
 
-/** Nº de ocorrências de `wrong` em `text` (palavra inteira, fora de URL). */
-function countOutsideUrls(text: string, wrong: string): number {
+/** Nº de ocorrências do `wrong` do par em `text` (palavra inteira, fora de URL). */
+export function countIntentionalErrorOccurrences(
+  text: string,
+  pair: Pick<IntentionalErrorPair, "wrong" | "category">,
+): number {
   let count = 0;
   mapOutsideUrls(text, (chunk) => {
-    count += [...chunk.matchAll(wholeWordRe(wrong))].length;
+    count += [...chunk.matchAll(wholeWordRe(pair))].length;
     return chunk;
   });
   return count;
 }
+
+const countOutsideUrls = countIntentionalErrorOccurrences;
 
 /**
  * Pure: troca o `wrong` do par pelo `correct` (palavra inteira, fora de URL).
@@ -226,26 +274,27 @@ function countOutsideUrls(text: string, wrong: string): number {
  * #13105: o erro foi plantado UMA vez, mas o mesmo valor pode existir de forma
  * legítima em outro item. Regra:
  *   - 1 ocorrência no texto → troca (é o erro);
- *   - várias, valor não ambíguo ("Appel") → troca todas (grafia errada não
- *     aparece de forma legítima);
- *   - várias, valor ambíguo ("2025") → troca só se a seção de `location`
+ *   - várias, valor não ambíguo ("Appel", grafia) → troca todas (grafia
+ *     errada não aparece de forma legítima);
+ *   - várias, valor ambíguo ("2025", ou nome real trocado como "Sonnet" no
+ *     lugar de "Haiku", #13223 — `isAmbiguousPair`) → troca só se a seção de `location`
  *     (`sectionKeyFromLocation`) tem exatamente 1 ocorrência; senão deixa o
  *     texto como está — melhor o guard avisar do que corromper a data certa
  *     de outro item.
  */
 export function scrubIntentionalError(text: string, pair: IntentionalErrorPair | null | undefined): string {
   if (!pair || !text) return text;
-  const re = wholeWordRe(pair.wrong);
+  const re = wholeWordRe(pair);
   const replaceAll = (t: string) =>
     mapOutsideUrls(t, (chunk) => chunk.replace(re, (m) => correctInMatchCase(m, pair.wrong, pair.correct)));
-  const total = countOutsideUrls(text, pair.wrong);
+  const total = countOutsideUrls(text, pair);
   if (total === 0) return text;
-  if (total === 1 || !isAmbiguousWrongValue(pair.wrong)) return replaceAll(text);
+  if (total === 1 || !isAmbiguousPair(pair)) return replaceAll(text);
   const key = sectionKeyFromLocation(pair.location);
   if (!key) return text;
   const lines = text.split("\n");
   const keys = sectionKeyPerLine(text);
-  const inSection = lines.reduce((n, line, i) => (keys[i] === key ? n + countOutsideUrls(line, pair.wrong) : n), 0);
+  const inSection = lines.reduce((n, line, i) => (keys[i] === key ? n + countOutsideUrls(line, pair) : n), 0);
   if (inSection !== 1) return text;
   return lines.map((line, i) => (keys[i] === key ? replaceAll(line) : line)).join("\n");
 }
@@ -317,7 +366,7 @@ export function findIntentionalErrorLeaks(
     const key = `${p.edition}\u0000${p.wrong}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const count = countOutsideUrls(text, p.wrong);
+    const count = countOutsideUrls(text, p);
     if (count > 0) leaks.push({ ...p, count });
   }
   return leaks;
@@ -385,7 +434,8 @@ export interface ScopedIntentionalErrorLeaks {
  * Pure (#13105): o guard escopado. O `wrong` de cada edição só é procurado nos
  * trechos DAQUELA edição e nos sem origem — nunca no item de outra edição, onde
  * o mesmo valor pode ser legítimo ("2025" no título de outro dia). Valor
- * ambíguo (`isAmbiguousWrongValue`) vai para `advisory`: a Stack de segunda
+ * ambíguo (`isAmbiguousPair`: número, palavra curta, ou nome real trocado,
+ * #13223) vai para `advisory`: a Stack de segunda
  * 06:00 roda sem ninguém olhando e não pode travar por um falso positivo.
  */
 export function findScopedIntentionalErrorLeaks(
@@ -400,9 +450,9 @@ export function findScopedIntentionalErrorLeaks(
     seen.add(key);
     const count = segments
       .filter((s) => s.edition === null || s.edition === p.edition)
-      .reduce((n, s) => n + (s.text ? countOutsideUrls(s.text, p.wrong) : 0), 0);
+      .reduce((n, s) => n + (s.text ? countOutsideUrls(s.text, p) : 0), 0);
     if (count === 0) continue;
-    (isAmbiguousWrongValue(p.wrong) ? out.advisory : out.blocking).push({ ...p, count });
+    (isAmbiguousPair(p) ? out.advisory : out.blocking).push({ ...p, count });
   }
   return out;
 }
@@ -415,7 +465,7 @@ export function formatIntentionalErrorAdvisory(leaks: readonly IntentionalErrorL
   const parts = leaks.map((l) => `"${l.wrong}" (erro intencional da ${l.edition}; o correto é "${l.correct}", ${l.count}x)`);
   return (
     `${where}: o valor do erro intencional aparece no texto — ${parts.join("; ")}. ` +
-    "É número ou palavra curta e pode ser legítimo, então não recusa o envio (#13105): confira se não é o erro da edição."
+    "O valor pode aparecer de forma legítima (número, palavra curta ou nome real trocado por outro), então não recusa o envio (#13105, #13223): confira se não é o erro da edição."
   );
 }
 
