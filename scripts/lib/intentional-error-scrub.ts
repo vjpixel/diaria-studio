@@ -394,6 +394,12 @@ function htmlEscaped(s: string): string {
  * textos de item tirados, crus ou com escape HTML) vira o trecho sem origem.
  * Texto de item que o render reescreveu e não dá para tirar fica no resto —
  * aí o guard o trata como sem origem (mais rígido, nunca mais frouxo).
+ *
+ * #13112: só vira trecho o texto de item que APARECE no texto final (cru ou
+ * com escape HTML; inteiro, ou as linhas dele que o render manteve). Campo
+ * da seleção que o render não publica (`why` de Lançamentos/Use melhor/Radar,
+ * item excluído, corpo trocado pelo `stackNote`) não conta: o erro ali não
+ * sai para o leitor e não pode recusar o envio.
  */
 export function segmentTextByEdition(fullText: string, items: readonly AttributedTexts[]): EditionTextSegment[] {
   const segments: EditionTextSegment[] = [];
@@ -403,14 +409,22 @@ export function segmentTextByEdition(fullText: string, items: readonly Attribute
       .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
       .map((text) => ({ edition: it.edition ? it.edition : null, text })),
   );
+  const rendered = (f: string) => fullText.includes(f) || fullText.includes(htmlEscaped(f));
   // O render costuma partir o corpo em parágrafos ou juntar as linhas: tira
   // também cada linha e a versão com espaços colapsados.
   const variants = new Set<string>();
   for (const a of attributed) {
-    segments.push({ edition: a.edition, text: a.text });
     // Linha curta solta ("2025") não sai do resto: tiraria o mesmo valor do
     // texto sem origem (a abertura), onde ele é vazamento de verdade.
-    const parts = [a.text.replace(/\s+/g, " ").trim(), ...a.text.split("\n").map((l) => l.trim())].filter((f) => f.length >= 12);
+    const collapsed = a.text.replace(/\s+/g, " ").trim();
+    const lines = a.text.split("\n").map((l) => l.trim()).filter((f) => f.length >= 12);
+    const parts = [collapsed, ...lines].filter((f) => f.length >= 12);
+    if (rendered(a.text)) segments.push({ edition: a.edition, text: a.text });
+    else if (collapsed.length >= 12 && rendered(collapsed)) segments.push({ edition: a.edition, text: collapsed });
+    else {
+      const kept = lines.filter(rendered);
+      if (kept.length > 0) segments.push({ edition: a.edition, text: kept.join("\n") });
+    }
     for (const f of [a.text, ...parts]) {
       if (!f) continue;
       variants.add(f);

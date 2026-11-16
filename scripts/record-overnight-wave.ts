@@ -26,7 +26,11 @@
  * do briefing após compaction, nunca pode ficar truncado.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts";
+import { currentSessionId } from "./lib/session-transcript.ts";
+import { COORDINATOR_ESTIMATE_MESSAGE, estimateCoordinatorUsage, estimateToDetails } from "./coordinator-usage-estimate.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import {
@@ -59,6 +63,73 @@ export function parseUnits(raw: string): WaveIssueId[][] {
       return legacyIssueNumber(ref) ?? formatIssueRef(ref);
     }),
   );
+}
+
+/** Onde gravar o checkpoint de token da onda (#13260), ou por que não gravar. */
+export type WaveCheckpointTarget =
+  | { ok: true; rootDir: string; edition: string; phase: string; sessionId: string | null }
+  | { ok: false; reason: string };
+
+/**
+ * Pure (#13260): destino do checkpoint de token que a gravação da onda emite
+ * como efeito colateral. Só vale para o plano da rodada real,
+ * `{raiz}/data/overnight/{rodada}/plan.json`: a edição é o nome da pasta da
+ * rodada (mesma convenção do `--run-dir` de
+ * `check-overnight-token-instrumentation.ts`) e o run-log é o da raiz. Plano
+ * fora desse caminho (teste, cópia em /tmp) não grava nada: um evento falso
+ * no run-log de produção corromperia a base do delta seguinte. Sessão: a do
+ * ambiente (a que roda o comando, dona do transcript), senão a do `plan.json`.
+ */
+export function waveCheckpointTarget(
+  planPath: string,
+  plan: Record<string, unknown>,
+  waveNumber: number,
+  env: NodeJS.ProcessEnv = process.env,
+): WaveCheckpointTarget {
+  const runDir = dirname(resolve(planPath));
+  const overnightDir = dirname(runDir);
+  const dataDir = dirname(overnightDir);
+  if (basename(planPath) !== "plan.json" || basename(overnightDir) !== "overnight" || basename(dataDir) !== "data") {
+    return { ok: false, reason: `plano fora de data/overnight/{rodada}/plan.json (${planPath})` };
+  }
+  const planSession = typeof plan.session_id === "string" && plan.session_id.trim() ? plan.session_id.trim() : null;
+  return {
+    ok: true,
+    rootDir: dirname(dataDir),
+    edition: basename(runDir),
+    phase: `onda w${waveNumber}`,
+    sessionId: currentSessionId(env) ?? planSession,
+  };
+}
+
+/**
+ * I/O (#13260): grava o `coordinator_tokens_estimate` da onda pelo mesmo
+ * cálculo do `coordinator-usage-estimate.ts` (delta desde o último
+ * checkpoint, `tokens: null` com `reason` sem fonte). Os checkpoints manuais
+ * eram esquecidos (rodada 261115f, mesma classe de #5009/#6634); a onda é
+ * gravada sempre, então o checkpoint sai junto. Nunca lança nem muda o exit.
+ */
+function emitWaveTokenCheckpoint(target: WaveCheckpointTarget): void {
+  if (!target.ok) {
+    console.error(`[record-overnight-wave] checkpoint de token não gravado: ${target.reason}`);
+    return;
+  }
+  try {
+    const result = estimateCoordinatorUsage({
+      edition: target.edition,
+      agent: "overnight",
+      sessionId: target.sessionId,
+      rootDir: target.rootDir,
+      cwd: process.cwd(),
+    });
+    const details = estimateToDetails(result, target.phase, target.sessionId);
+    logEvent({ edition: target.edition, stage: null, agent: "overnight", level: "info", message: COORDINATOR_ESTIMATE_MESSAGE, details }, target.rootDir);
+    console.log(
+      `[record-overnight-wave] ${COORDINATOR_ESTIMATE_MESSAGE} gravado: phase="${target.phase}" tokens=${details.tokens ?? `null (${details.reason})`}`,
+    );
+  } catch (e) {
+    console.error(`[record-overnight-wave] checkpoint de token não gravado: ${(e as Error).message}`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {
@@ -152,4 +223,7 @@ if (isMainModule(import.meta.url)) {
   console.log(
     `[record-overnight-wave] onda registrada: ${record.unit_count} unidade(s), cap_hit=${record.cap_hit}`,
   );
+  // #13260: checkpoint de token da onda, sem depender de o coordenador lembrar.
+  const waveNumber = Array.isArray(next.waves) ? next.waves.length : existingWaves.length + 1;
+  emitWaveTokenCheckpoint(waveCheckpointTarget(values.plan, next, waveNumber));
 }
