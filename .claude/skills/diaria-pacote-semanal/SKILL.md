@@ -350,7 +350,8 @@ A skill termina aqui, com uma lista só:
   com rascunho auditado. Entregar a capa (`data/weekly/{cycle}/04-d1-2x1.jpg`
   e, havendo vídeo, a imagem dele), o post de feed pronto para usar no
   agendamento (trocando o "@diar.ia.br" digitado pela página diar.ia.br na
-  lista de menções do LinkedIn, item 4 do Passo 9 do LinkedIn, #13049) e o horário de
+  lista de menções do LinkedIn, item 4 do Passo 9 do LinkedIn, #13049, com a
+  conferência `weekly-feed-post-mention-audit.ts` antes de agendar, #13261) e o horário de
   `social-schedule-rotation.ts --linkedin-article --date {M}`;
   registrar `--record ... --kind linkedin_article` depois de agendar.
 - **Exceções pendentes:** ajuste manual da âncora da menção (#10385), quando
