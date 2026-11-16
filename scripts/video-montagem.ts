@@ -265,7 +265,7 @@ import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
-import { previewTelaArgs, telaBoxSvg, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
+import { clampTelaOverlaps, previewTelaArgs, telaBoxSvg, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -359,6 +359,8 @@ import {
   vinhetaConfigFrom,
   vinhetaScalePct,
   vinhetaSpan,
+  vinhetaDuckSpan,
+  VINHETA_DUCK_DB,
   titleBreathS,
   VINHETA_AFTER_SPEECH_S,
   type VinhetaAsset,
@@ -469,6 +471,7 @@ import {
   frameEnergies,
   speechIslands,
   speechJoinWarnings,
+  absorbShortClips,
   speechPauseSilences,
   trimEdgeExtras,
   windowKey,
@@ -2829,6 +2832,8 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
     }
     // #12559: o refino mede no áudio global; a borda nunca passa para o arquivo vizinho.
     clips = clampRawsToFiles(clips, source);
+    // #13239 item 2: a pausa da vinheta sai do refino com a duração pedida.
+    clips = restoreFillerEdges(clips, p.clips);
     let assembled = assembleClips(p.spec, clips, source.fps);
     adjustments.push(...assembled.merges);
     // #13194: borda que o verify-xml acusaria como SOM CORTADO abre até o silêncio aqui, sem esperar o verify.
@@ -2904,10 +2909,46 @@ const rawOf = (c: PlannedClip): RawClip => ({
   // #12559 (review da PR #12563): sem isto o refino (que roda por padrão) jogava todo clipe no 1º arquivo, sem o encaixe.
   ...(c.file !== undefined ? { file: c.file } : {}),
   ...(c.fit !== undefined ? { fit: c.fit } : {}),
+  // #13239 item 2: sem isto a pausa da vinheta (#13204) perdia a marca no refino e virava clipe comum.
+  ...(c.filler ? { filler: true as const } : {}),
 });
 
 /** Exportado para o teste (#12559): o refino preserva arquivo e encaixe do clipe. */
 export const rawClipOf = rawOf;
+
+/**
+ * #13239 item 2: a pausa da vinheta (`filler`, #13204) é silêncio escolhido de
+ * propósito, com a duração que a vinheta pede: o refino das bordas (vale de
+ * energia, sibilantes, arquivo) não a encolhe. Os clipes `filler` voltam às
+ * bordas de antes do refino, na ordem em que aparecem.
+ */
+export function restoreFillerEdges<T extends Pick<RawClip, "srcIn" | "srcOut" | "filler">>(refined: readonly T[], before: ReadonlyArray<Pick<RawClip, "srcIn" | "srcOut" | "filler">>): T[] {
+  const orig = before.filter((c) => c.filler);
+  let k = 0;
+  return refined.map((c) => {
+    if (!c.filler) return c;
+    const o = orig[k++];
+    return o ? { ...c, srcIn: o.srcIn, srcOut: o.srcOut } : c;
+  });
+}
+
+/**
+ * #13241: o clipe curto (abaixo de 0,3 s) de cada sequência, no plano final
+ * (depois do refino, ou sem ele): funde ao vizinho contíguo no bruto ou sai
+ * (`absorbShortClips`), e a sequência é remontada (`assembleClips`: escala e
+ * posições). Os ajustes entram no `cutAdjustments` do plano; as notas, no relato do build.
+ */
+export function absorbShortClipsOfPlans(ps: readonly SequencePlan[], words: ReadonlyArray<Pick<Word, "start" | "end">>, fps: number): { plans: SequencePlan[]; notes: string[] } {
+  const notes: string[] = [];
+  const plans = ps.map((p) => {
+    const r = absorbShortClips(p.clips.map(rawOf), words);
+    for (const n of r.notes) notes.push(`${p.spec.name}: ${n}`);
+    if (!r.adjustments.length) return p;
+    const assembled = assembleClips(p.spec, r.clips, fps);
+    return { ...p, clips: assembled.clips, durationFrames: assembled.durationFrames, cutAdjustments: [...(p.cutAdjustments ?? []), ...r.adjustments, ...assembled.merges] };
+  });
+  return { plans, notes };
+}
 
 /**
  * Versão do XML de cada sequência deste build (#12111): o nome passa a
@@ -3253,8 +3294,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   printTakeRepeatWarnings(ctx, resolved);
   const refined = refineCuts(ctx, ps0, source, audioRefine, speech.cut !== null);
   refined.info.speechDetect = speech.cut ? { applied: true, islands: speech.cut.islands.length } : { applied: false, reason: speech.reason ?? "desligado" };
-  const ps = refined.plans;
+  // #13241: clipe de menos de 0,3 s não sai sozinho no XML (pulo de imagem): funde ao vizinho ou sai.
+  const absorbed = absorbShortClipsOfPlans(refined.plans, nonEmptyWords(f(ctx, "transcript.json"), "transcript.json"), source.fps);
+  const ps = absorbed.plans;
   for (const w of refined.warnings) console.error(`[aviso] ${w}`);
+  for (const n of absorbed.notes) console.error(`[aviso] ${n}`);
   const { framing, assumed } = effectiveFraming(file);
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
   let problems = 0;
@@ -3305,6 +3349,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (vinheta) {
       const vs = vinhetaSpan(p, source.fps, vinheta);
       console.error(vs ? `   vinheta do logo em ${(vs.start / source.fps).toFixed(2)}–${(vs.end / source.fps).toFixed(2)} s (${vs.afterTitle ? "depois do título" : "sem título: aos 2 s"})` : "   [aviso] sequência curta demais para a vinheta do logo (#12101)");
+      const ds = vinhetaDuckSpan(p, source.fps, vinheta);
+      if (ds) console.error(`   [premissa] áudio do bruto ${VINHETA_DUCK_DB} dB sob a vinheta em ${(ds.start / source.fps).toFixed(2)}–${(ds.end / source.fps).toFixed(2)} s (o respiro sem fala; clipe de áudio partido, só o 1º pedaço linkado ao vídeo): conferir no 1º import se o som a cada ponto sumiu (#13240)`);
     }
     // #12101: a pausa longa depois do título no horizontal é o respiro da vinheta, de propósito.
     if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath && breathBlock ? [breathBlock] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
@@ -3447,7 +3493,10 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const telaOverlays: Record<string, TelaOverlay[]> = {};
   for (const p of picked) {
     if (!isYoutubeSpec(p.spec)) continue;
-    const ms = telaMarkersFor(p, resolved, source.fps, telas);
+    // #13239 item 1: um box por vez na faixa (o marcador de uma fala não invade o da seguinte).
+    const clamped = clampTelaOverlaps(telaMarkersFor(p, resolved, source.fps, telas));
+    for (const w of clamped.warnings) console.error(`[aviso] ${p.spec.name}: ${w}`);
+    const ms = clamped.items;
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
     const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
     if (ms.length) {
@@ -4406,7 +4455,10 @@ async function cmdPreview(
   ];
   if (vinheta && vs) {
     console.error(`[video-montagem] prévia com a vinheta do logo em ${(vs.start / fps).toFixed(2)} s (#12101)`);
-    const withVinheta = ["-i", vinheta.path, "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET }), "-map", "[vout]", "-map", "[aout]"];
+    // #13240: o mesmo abaixamento do áudio sob a vinheta que o XML leva.
+    const ds = vinhetaDuckSpan(plan, fps, vinheta);
+    const duck = ds ? { startS: ds.start / fps, endS: ds.end / fps, db: VINHETA_DUCK_DB } : null;
+    const withVinheta = ["-i", vinheta.path, "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET, duck }), "-map", "[vout]", "-map", "[aout]"];
     try {
       run("ffmpeg", finalArgs(withVinheta), { cwd: dir });
     } catch (e) {

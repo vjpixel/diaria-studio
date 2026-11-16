@@ -128,8 +128,39 @@ export interface TelaOverlay {
 }
 
 /**
+ * #13239 item 1: os boxes de tela ficam numa faixa só, e dois clipes não se
+ * sobrepõem nela. O marcador de uma fala vai do 1º ao último item dela
+ * (`telaMarkersFor`), então itens não contíguos, ou uma fala curta que casa
+ * com duas linhas, invadem o box seguinte (e a prévia empilha dois boxes).
+ * Na ordem de entrada, o `out` de cada um para no `in` do seguinte; o que
+ * fica sem duração sai, com aviso.
+ */
+export function clampTelaOverlaps<T extends { id: string; in: number; out: number }>(xs: readonly T[]): { items: T[]; warnings: string[] } {
+  const sorted = [...xs].sort((a, b) => a.in - b.in || a.out - b.out);
+  const items: T[] = [];
+  const warnings: string[] = [];
+  sorted.forEach((x, i) => {
+    const next = sorted[i + 1];
+    if (!next || x.out <= next.in) {
+      items.push(x);
+      return;
+    }
+    const out = next.in;
+    if (out <= x.in) {
+      warnings.push(`box de tela ${x.id} começa junto com ${next.id} na mesma faixa: fica só o de ${next.id} (#13239)`);
+      return;
+    }
+    warnings.push(`box de tela ${x.id} invadia ${next.id} (quadros ${next.in}–${x.out}): termina no quadro ${out}, onde ${next.id} começa (#13239)`);
+    items.push({ ...x, out });
+  });
+  return { items, warnings };
+}
+
+/**
  * A faixa do xmeml com os boxes de tela (um clipe por texto). `fileIdOf` dá o
- * id do `<file>` e diz se já foi definido no documento.
+ * id do `<file>` e diz se já foi definido no documento. A `<duration>` do
+ * `<file>` é a do clipe mais longo que usa o mesmo PNG nesta faixa (#13239
+ * item 6): a do 1º clipe deixava o 2º, mais longo, passar do fim da mídia.
  */
 export function telaTrack(input: {
   overlays: readonly TelaOverlay[];
@@ -138,15 +169,17 @@ export function telaTrack(input: {
   fileIdOf: (xmlPath: string) => { id: string; defined: boolean };
   url: (p: string) => string;
 }): string {
-  const clips = input.overlays
-    .filter((o) => o.out > o.in)
+  const valid = input.overlays.filter((o) => o.out > o.in);
+  const fileLen = new Map<string, number>();
+  for (const o of valid) fileLen.set(o.xmlPath, Math.max(fileLen.get(o.xmlPath) ?? 0, o.out - o.in));
+  const clips = valid
     .map((o, i) => {
       const len = o.out - o.in;
       const { id: fileId, defined } = input.fileIdOf(o.xmlPath);
       const name = o.xmlPath.replace(/\\/g, "/").split("/").pop() ?? o.xmlPath;
       const file = defined
         ? `<file id="${fileId}"/>`
-        : `<file id="${fileId}"><name>${escapeXml(name)}</name><pathurl>${escapeXml(input.url(o.xmlPath))}</pathurl>\n${input.rate}<duration>${len}</duration>\n` +
+        : `<file id="${fileId}"><name>${escapeXml(name)}</name><pathurl>${escapeXml(input.url(o.xmlPath))}</pathurl>\n${input.rate}<duration>${fileLen.get(o.xmlPath) ?? len}</duration>\n` +
           `<media><video><samplecharacteristics><width>${o.width}</width><height>${o.height}</height></samplecharacteristics></video></media></file>`;
       return (
         `<clipitem id="${input.idPrefix}-${i + 1}"><name>tela ${escapeXml(o.id)}</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +

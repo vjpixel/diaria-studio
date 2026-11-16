@@ -1255,3 +1255,89 @@ export function speechJoinWarnings(
   });
   return out;
 }
+
+/**
+ * #13241: clipe abaixo de `minS` (o `shortClipS` do aviso, 0,3 s) nunca sai
+ * sozinho no XML. Na 261116 o detector com limiares baixos (#13188) deixou um
+ * pedaço de 1 quadro (918,17–918,185 s do bruto) na ponta de um item, que o
+ * filtro de pedaço curto mantém por tocar a borda (`touchesEdge`, #11753): um
+ * pulo de imagem com troca de zoom. Para cada clipe curto, na ordem:
+ *  1. funde ao vizinho (anterior ou seguinte na sequência) quando são do mesmo
+ *     arquivo e encaixe, o vizinho vem depois dele no bruto (ou antes, para o
+ *     anterior) e a pausa entre os dois no bruto é de até `joinGapS`; com os
+ *     dois vizinhos possíveis, vale a pausa menor. A pausa curta passa a ficar
+ *     dentro do clipe;
+ *  2. sem vizinho para fundir e sem palavra do transcript com o meio dentro
+ *     dele, sai do plano (é estalo ou sobra de palavra esticada);
+ *  3. com palavra dentro, fica, e o `[aviso]` do `speechJoinWarnings` continua.
+ * A pausa da vinheta (`filler`, #13204) nunca entra nem recebe fusão. O zoom do
+ * clipe que recebe a fusão pela entrada segue o corte do clipe curto (o
+ * `keepScale` dele); no descarte, o seguinte só mantém o zoom do anterior se os
+ * dois cortes eram de pausa curta.
+ */
+export const SHORT_CLIP_ABSORB = { minS: 0.3, joinGapS: 0.45 } as const;
+
+export function absorbShortClips(
+  raws: readonly RawClip[],
+  words: ReadonlyArray<Pick<Word, "start" | "end">>,
+  opts: { minS?: number; joinGapS?: number } = {},
+): { clips: RawClip[]; adjustments: CutAdjustment[]; notes: string[] } {
+  const minS = opts.minS ?? SHORT_CLIP_ABSORB.minS;
+  const joinGap = opts.joinGapS ?? SHORT_CLIP_ABSORB.joinGapS;
+  const xs = raws.map((r) => ({ ...r }));
+  const out: RawClip[] = [];
+  const adjustments: CutAdjustment[] = [];
+  const notes: string[] = [];
+  const dur = (r: RawClip) => r.srcOut - r.srcIn;
+  // `b` segue `a` no bruto, mesmo arquivo e encaixe, pausa (ou sobreposição) de até `joinGap`.
+  const gapIfJoinable = (a: RawClip | undefined, b: RawClip | undefined): number | null => {
+    if (!a || !b || a.filler || b.filler) return null;
+    if ((a.file ?? 0) !== (b.file ?? 0) || a.fit !== b.fit) return null;
+    if (b.srcIn < a.srcIn - 1e-9) return null;
+    const gap = b.srcIn - a.srcOut;
+    return Math.abs(gap) <= joinGap + 1e-9 ? gap : null;
+  };
+  const own = (x: RawClip) => x.parts ?? [{ block: x.block, srcIn: x.srcIn, srcOut: x.srcOut }];
+  for (let i = 0; i < xs.length; i++) {
+    const r = xs[i];
+    if (r.filler || !(dur(r) < minS - 1e-9)) {
+      out.push(r);
+      continue;
+    }
+    const prev = out[out.length - 1];
+    const next = xs[i + 1];
+    const gp = gapIfJoinable(prev, r);
+    const gn = gapIfJoinable(r, next);
+    const len = `${dur(r).toFixed(2)} s em ${r.srcIn.toFixed(2)}–${r.srcOut.toFixed(2)} s do bruto`;
+    if (gp !== null && (gn === null || Math.abs(gp) <= Math.abs(gn))) {
+      adjustments.push({ block: r.block, edge: "emenda", from: prev.srcOut, to: r.srcOut, reason: `clipe curto (${len}) fundido ao anterior, pausa de ${Math.max(0, gp).toFixed(2)} s no bruto: sem pulo de imagem (#13241)` });
+      if (prev.parts || r.parts || r.block !== prev.block) prev.parts = [...own(prev), ...own(r)];
+      prev.srcOut = Math.max(prev.srcOut, r.srcOut);
+      if (r.script && r.script !== prev.script) prev.script = prev.script ? `${prev.script} ${r.script}` : r.script;
+      continue;
+    }
+    if (gn !== null) {
+      adjustments.push({ block: next.block, edge: "emenda", from: next.srcIn, to: r.srcIn, reason: `clipe curto (${len}) fundido ao seguinte, pausa de ${Math.max(0, gn).toFixed(2)} s no bruto: sem pulo de imagem (#13241)` });
+      if (next.parts || r.parts || r.block !== next.block) next.parts = [...own(r), ...own(next)];
+      next.srcIn = Math.min(next.srcIn, r.srcIn);
+      if (r.script && r.script !== next.script) next.script = next.script ? `${r.script} ${next.script}` : r.script;
+      // O corte antes do clipe fundido é o que vinha antes do curto.
+      if (r.keepScale) next.keepScale = true;
+      else delete next.keepScale;
+      if (r.block !== next.block) next.block = r.block;
+      continue;
+    }
+    const hasWord = words.some((w) => {
+      const m = (w.start + w.end) / 2;
+      return m >= r.srcIn - 1e-6 && m <= r.srcOut + 1e-6;
+    });
+    if (hasWord) {
+      notes.push(`${r.block}: clipe curto (${len}) com palavra dentro e sem vizinho contíguo no bruto: fica no XML, conferir no Premiere (#13241)`);
+      out.push(r);
+      continue;
+    }
+    adjustments.push({ block: r.block, edge: "in", from: r.srcIn, to: r.srcOut, reason: `clipe curto (${len}) descartado: sem palavra do transcript dentro e sem vizinho contíguo no bruto (pulo de imagem, #13241)` });
+    if (next && !(r.keepScale && next.keepScale)) delete next.keepScale;
+  }
+  return { clips: out, adjustments, notes };
+}
