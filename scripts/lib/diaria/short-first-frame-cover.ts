@@ -5,8 +5,8 @@
  * Shorts sem miniatura vertical própria é um frame automático do vídeo
  * (`i.ytimg.com/vi/{id}/oar2.jpg`). A aposta desta peça: pôr a capa vertical
  * (`04-youtube-short-capa.jpg`) nos PRIMEIROS frames do arquivo que vai para o
- * YouTube, por ~400 ms (arredondado ao frame; o registro grava o valor
- * efetivo) com áudio em silêncio, para o frame automático cair nela. O YouTube não garante pegar o 1º frame: o registro grava
+ * YouTube, por ~1 s (arredondado ao frame; o registro grava o valor
+ * efetivo; eram 400 ms até a medição de 16/11/2026, que não pegou) com áudio em silêncio, para o frame automático cair nela. O YouTube não garante pegar o 1º frame: o registro grava
  * `vertical_feed: "first_frame_cover"` (aplicado, NÃO confirmado) e a medição
  * é o `check-short-feed-cover.ts --image oar2` no Short seguinte.
  *
@@ -22,8 +22,13 @@
  * mesma W×H, áudio se e só se a origem tem, duração = original + capa.
  */
 
-/** Duração default da capa no início do vertical do YouTube (ms). */
-export const SHORT_FIRST_FRAME_COVER_DEFAULT_MS = 400;
+/**
+ * Duração default da capa no início do vertical do YouTube (ms). Era 400 até
+ * 16/11/2026: a medição no 1º Short com a capa (261112, Hkx35UI-XCM) deu o
+ * `oar2.jpg` como frame automático (distância 0,441), e a decisão do editor
+ * foi alongar para ~1 s e medir de novo no Short seguinte (#12100).
+ */
+export const SHORT_FIRST_FRAME_COVER_DEFAULT_MS = 1000;
 /** Faixa aceita em `publishing.shorts.youtube_first_frame_cover_ms`. */
 export const SHORT_FIRST_FRAME_COVER_MIN_MS = 100;
 export const SHORT_FIRST_FRAME_COVER_MAX_MS = 2000;
