@@ -1962,10 +1962,16 @@ async function publishThreadsCreation(
     return ambiguous(`${label} fetch ${timeout ? "timeout" : "failed"}: ${err.message} ${idSuffix}`);
   }
   const serverError = res.status >= 500;
-  let data: { id?: string; error?: ThreadsGraphError };
+  let data: { id?: string; error?: ThreadsGraphError } | null;
   try {
     data = JSON.parse(text);
   } catch {
+    data = null;
+  }
+  // #13193 — corpo `null` (ou outro valor não-objeto) é JSON válido, mas
+  // `data.error` lançaria TypeError e a falha sairia como exceção genérica.
+  // Trata como corpo sem JSON útil, igual ao laço do container pai.
+  if (!data || typeof data !== "object") {
     const reason = `${label} resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} ${idSuffix}`;
     return res.ok || serverError ? ambiguous(reason) : { status: definiteFailure, reason };
   }
@@ -2067,9 +2073,14 @@ async function createThreadsCarouselParent(
   childIds: string[],
   caption: string,
 ): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
+  // #13193 — `errors` guarda o detalhe completo (vai pro console a cada
+  // tentativa); `summaries` só `HTTP status + code/subcode`, para o `reason`
+  // da DLQ não juntar 3 erros completos da Meta (~1-1,5 KB no e-mail de alerta).
   const errors: string[] = [];
+  const summaries: string[] = [];
   for (let attempt = 1; attempt <= THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS; attempt++) {
     let failure: string;
+    let summary: string;
     let retryable = true;
     try {
       const params = new URLSearchParams({
@@ -2090,13 +2101,16 @@ async function createThreadsCarouselParent(
       } catch {
         data = null;
       }
-      if (!data) {
+      if (!data || typeof data !== "object") {
         failure = `resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}`;
+        summary = `HTTP ${res.status} resposta não-JSON`;
       } else if (!res.ok || data.error) {
         failure = `HTTP ${res.status}: ${describeThreadsError(data.error, text)}`;
+        summary = summarizeThreadsHttpError(res.status, data.error);
         retryable = isThreadsParentRetryable(data.error);
       } else if (!data.id) {
         failure = `sem id: ${text.slice(0, 200)}`;
+        summary = `HTTP ${res.status} sem id`;
       } else {
         if (attempt > 1) {
           console.warn(
@@ -2109,9 +2123,11 @@ async function createThreadsCarouselParent(
       const err = e as Error;
       const timeout = err.name === "AbortError" || err.name === "TimeoutError";
       failure = `fetch ${timeout ? "timeout" : "failed"}: ${err.message}`;
+      summary = `fetch ${timeout ? "timeout" : "failed"}`;
       retryable = false;
     }
     errors.push(`tentativa ${attempt}: ${failure}`);
+    summaries.push(`tentativa ${attempt}: ${summary}`);
     console.warn(
       `[threads-carousel] container pai falhou na tentativa ${attempt}/${THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS}: ${failure} (children=${childIds.join(",")})`,
     );
@@ -2121,10 +2137,25 @@ async function createThreadsCarouselParent(
     }
   }
   const n = errors.length;
+  // Anteriores resumidas, a última com o detalhe completo (#13193).
+  const detail = [...summaries.slice(0, -1), errors[n - 1]].join(" | ");
   return {
     ok: false,
-    reason: `Threads carrossel: container pai falhou após ${n} ${n === 1 ? "tentativa" : "tentativas"}: ${errors.join(" | ")} (children=${childIds.join(",")})`,
+    reason: `Threads carrossel: container pai falhou após ${n} ${n === 1 ? "tentativa" : "tentativas"}: ${detail} (children=${childIds.join(",")})`,
   };
+}
+
+/**
+ * #13193 — resumo curto de um erro HTTP da Threads API para as tentativas
+ * anteriores à última no `reason` da DLQ: só status, code e subcode.
+ */
+export function summarizeThreadsHttpError(status: number, error: ThreadsGraphError | undefined): string {
+  const meta: string[] = [];
+  if (error && typeof error === "object") {
+    if (typeof error.code === "number") meta.push(`code=${error.code}`);
+    if (typeof error.error_subcode === "number") meta.push(`subcode=${error.error_subcode}`);
+  }
+  return meta.length ? `HTTP ${status} (${meta.join(", ")})` : `HTTP ${status}`;
 }
 
 /**
