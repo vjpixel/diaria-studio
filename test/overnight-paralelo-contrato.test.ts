@@ -100,8 +100,9 @@ describe("#6299 — o overnight declara paralelismo, com teto", () => {
     // #10821 (22/10/2026, pedido do editor): o overnight subiu para 10 e o
     // develop ficou em 6, então a relação `o <= d` deixou de valer por decisão
     // explícita. O gargalo medido é o merge serial, não o número de
-    // worktrees; o critério de reversão do #8486 (p90 pr→merge > ~30 min ou
-    // draft-ci-vermelho subindo) é o que segura o risco agora. O que segue
+    // worktrees; o critério de reversão (v2 desde o #13270: draft-ci-vermelho
+    // e dispatch→PR das ondas cheias contra as outras) é o que segura o risco
+    // agora. O que segue
     // travado: os dois tetos são números explícitos e o do overnight bate com
     // OVERNIGHT_WAVE_CAP.
     assert.ok(Number.isInteger(d) && d > 0, `teto do develop ilegível (${developCap[1]})`);
@@ -116,8 +117,11 @@ describe("#6299 — o overnight declara paralelismo, com teto", () => {
     // Com o overnight mais folgado que o develop (#10821), o que segura o
     // risco é o critério de reversão — se ele sumir da prosa, o 10 vira
     // número sem saída.
+    // #13270: o critério v1 (pr→merge p90 > ~30 min) virou o v2, que compara
+    // as ondas cheias com as outras; a prosa precisa seguir citando a saída.
     const s = read(OVERNIGHT);
-    assert.match(s, /p90 acima de ~30 min ou `draft-ci-vermelho` subindo = voltar a 6/);
+    assert.match(s, /`dispatch→PR` p50 >= 1,5× o das outras = voltar a 6 \(critério de reversão v2, #13270/);
+    assert.doesNotMatch(s, /p90 acima de ~30 min ou `draft-ci-vermelho` subindo = voltar a 6/, "critério v1 defasado voltou à prosa");
     assert.doesNotMatch(s, /até 6 desses ciclos/, "a Fase 1 do overnight ainda diz 6 ciclos em voo");
   });
 
