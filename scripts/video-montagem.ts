@@ -3105,7 +3105,9 @@ export function premierePathsLine(map: PremierePathMap | undefined, unmapped: re
   if (!map) {
     return "[premissa] pathurl do XML com a raiz do Neo (I:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/diaria-studio-video (#12707)";
   }
-  const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA); conferir no 1º import no Mac (#12707)`;
+  // A conferência do 1º import (#12707) já foi feita: os XMLs da 261112 (raiz do Mac) saíram do Premiere
+  // do Mac com título, vinheta e card de CTA no export final (Editado/), então a linha não pede mais conferir.
+  const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA), para o Premiere do Mac (#12707)`;
   return unmapped.length ? `${base}\n[aviso] fora de ${map.from}, com o caminho de origem no XML (devem chegar offline no Mac): ${unmapped.join(", ")} (#12707)` : base;
 }
 

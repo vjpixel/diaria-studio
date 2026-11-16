@@ -668,10 +668,10 @@ function optionalBool(raw: Record<string, unknown>, key: string, fallback: boole
 /**
  * #12100 opção 2: `youtube_first_frame_cover` (boolean, default true) liga a
  * capa no 1º frame do vertical do YouTube; `youtube_first_frame_cover_ms`
- * (inteiro entre 100 e 2000, default 400) diz quanto tempo. Desligada → null.
+ * (inteiro entre 100 e 2000, default 1000; era 400 até 16/11/2026) diz quanto tempo. Desligada → null.
  * `_ms` inválido NÃO derruba a rodada (review da PR #12844): a capa no 1º
  * frame é opcional e o config é lido por todos os destinos, então vira
- * `[aviso]` e cai no default 400. O boolean inválido segue lançando, como as
+ * `[aviso]` e cai no default (1000). O boolean inválido segue lançando, como as
  * outras flags de `publishing.shorts`.
  */
 export function loadYouTubeFirstFrameCoverMs(raw: Record<string, unknown>, warn: (line: string) => void = (l) => console.error(l)): number | null {

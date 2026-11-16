@@ -152,4 +152,10 @@ describe("#12707: versão do XML e relato", () => {
     assert.doesNotMatch(premierePathsLine(MAP, []), /\[aviso\]/);
     assert.match(premierePathsLine(MAP, ["D:/outro/a.mov"]), /\[aviso\].*D:\/outro\/a\.mov/);
   });
+  it("com o mapa, a linha não pede mais conferir o 1º import (feito na 261112)", () => {
+    // Os XMLs da 261112 (raiz /Users/Shared/diaria-studio-video) saíram do Premiere do Mac com título,
+    // vinheta e card de CTA no export: o pedido de conferência a cada build virou ruído.
+    assert.doesNotMatch(premierePathsLine(MAP, []), /conferir/);
+    assert.match(premierePathsLine(MAP, []), /Premiere do Mac/);
+  });
 });

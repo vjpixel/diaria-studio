@@ -3,7 +3,7 @@
  *
  * O feed de Shorts mostra um frame automático do vertical (`oar2.jpg`) e o
  * `thumbnails.set` só troca a miniatura 16:9. O vertical enviado ao YouTube
- * passa a levar a capa nos primeiros ~0,4 s, para o frame automático cair
+ * passa a levar a capa nos primeiros ~1 s (0,4 s até a medição de 16/11/2026), para o frame automático cair
  * nela. Aqui: o plano/comando do ffmpeg (puro), o orquestrador com I/O falso
  * (nunca toca o vertical da edição, sempre apaga o temporário, nunca lança), a
  * chave do config, e o registro: `first_frame_cover` é "aplicado, não
@@ -293,14 +293,14 @@ describe("#12100 opção 2 — youtubeShortUploadFile (o que sobe para o YouTube
 });
 
 describe("#12100 opção 2 — config publishing.shorts", () => {
-  it("default ligado em 400 ms; false desliga; ms fora da faixa ou não inteiro avisa e cai no default (não derruba os destinos)", () => {
+  it("default ligado em 1000 ms; false desliga; ms fora da faixa ou não inteiro avisa e cai no default (não derruba os destinos)", () => {
     assert.equal(loadYouTubeFirstFrameCoverMs({}), SHORT_FIRST_FRAME_COVER_DEFAULT_MS);
     assert.equal(loadYouTubeFirstFrameCoverMs({ youtube_first_frame_cover: false, youtube_first_frame_cover_ms: 9 }), null);
     assert.equal(loadYouTubeFirstFrameCoverMs({ youtube_first_frame_cover_ms: 500 }), 500);
     for (const bad of [50, 2500, 400.5, "400"]) {
       const warns: string[] = [];
       assert.equal(loadYouTubeFirstFrameCoverMs({ youtube_first_frame_cover_ms: bad }, (l) => warns.push(l)), SHORT_FIRST_FRAME_COVER_DEFAULT_MS);
-      assert.match(warns.join("\n"), /\[aviso\].*entre 100 e 2000.*default 400/);
+      assert.match(warns.join("\n"), /\[aviso\].*entre 100 e 2000.*default 1000 ms/);
     }
     assert.throws(() => loadYouTubeFirstFrameCoverMs({ youtube_first_frame_cover: "sim" }), /boolean/);
     assert.equal(loadShortsConfig(undefined).youtubeFirstFrameCoverMs, SHORT_FIRST_FRAME_COVER_DEFAULT_MS);
@@ -309,7 +309,19 @@ describe("#12100 opção 2 — config publishing.shorts", () => {
   it("platform.config.json liga a capa no 1º frame", () => {
     const config = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
     assert.equal(config.publishing.shorts.youtube_first_frame_cover, true);
-    assert.equal(loadShortsConfig(config).youtubeFirstFrameCoverMs, 400);
+    assert.equal(loadShortsConfig(config).youtubeFirstFrameCoverMs, 1000);
+  });
+
+  // Regressão #12100 (decisão do editor de 16/11/2026): com 400 ms a medição
+  // do 1º Short (Hkx35UI-XCM) deu o oar2 como frame automático. O default e o
+  // valor do config passam a ~1 s; voltar a 400 ms (ou menos) refaria um
+  // teste já reprovado em vez de medir o novo.
+  it("capa inicial alongada para ~1 s: default e config em 1000 ms, 30 frames a 30 fps, +1 s na duração", () => {
+    assert.equal(SHORT_FIRST_FRAME_COVER_DEFAULT_MS, 1000);
+    const config = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
+    assert.ok(config.publishing.shorts.youtube_first_frame_cover_ms > 400, "capa inicial não pode voltar aos 400 ms já reprovados na medição");
+    const plan = planFirstFrameCover({ probe: PROBE, leadMs: loadShortsConfig(config).youtubeFirstFrameCoverMs! });
+    assert.deepEqual(plan, { ok: true, frames: 30, leadSeconds: 1 });
   });
 
   it("o plano descreve a capa no 1º frame como não confirmada", () => {
