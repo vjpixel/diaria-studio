@@ -3350,7 +3350,8 @@ export function renderTrechos(input: {
         encode(args(encoder));
       } catch (e) {
         if (encoder !== "h264_nvenc") throw e;
-        log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split("\n")[0]}): os trechos seguem em libx264 (#13219)`);
+        // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
+        log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
         encoder = "libx264";
         encode(args(encoder));
       }
