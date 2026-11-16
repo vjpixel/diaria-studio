@@ -373,6 +373,20 @@ export async function ingestOneBroadcast(
       for (const linkClick of linkClicks) {
         if (!linkClick.url || linkClick.unique_clicks <= 0) continue;
         const urlResult = await deps.fetchUrlClicks(broadcast.id, linkClick.url);
+        // #13268: o filtro por URL é "clicou neste broadcast E nesta URL"
+        // (ver `buildUrlClickFilterBody`); quem clicou na mesma URL em outro
+        // broadcast pode entrar. Mais gente do que o `unique_clicks` do Kit
+        // para o link = a aproximação vazou: o link fica de fora em vez de
+        // gravar clique atribuído a quem não clicou. Não é erro (repetir não
+        // muda o resultado), então não marca `partial`; fica contado.
+        if (urlResult.emails.length > linkClick.unique_clicks) {
+          counts.links_descartados_por_excesso = (counts.links_descartados_por_excesso ?? 0) + 1;
+          console.error(
+            `  ⚠️  broadcast ${id}: link ${linkClick.url} descartado — filtro devolveu ` +
+              `${urlResult.emails.length} e o Kit conta ${linkClick.unique_clicks} clique(s) único(s) (#13268).`,
+          );
+          continue;
+        }
         const r = ingestBroadcastUrlClicks(db, broadcast.id, linkClick.url, urlResult.emails, ts, now);
         eventsNew += r.newEvents;
         eventsAlreadyKnown += r.alreadyKnown;

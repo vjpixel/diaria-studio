@@ -276,22 +276,33 @@ export function buildAudienceFilterBody(
 /**
  * Corpo de `POST /v4/subscribers/filter` escopado por LINK (#7206) — quem
  * clicou numa `url` específica de um broadcast, não no broadcast inteiro.
- * Mesmo molde de {@link buildAudienceFilterBody} (`type: "clicks"` sempre),
- * com `urls: [url]` a mais no mesmo filtro — best-effort a partir da
- * descrição da MCP `filter_subscribers` ("optionally scoped to specific
- * broadcasts or URLs") e do corpo da issue #7206 ("filtro urls adicional
- * (...) devolve um subconjunto diferente do broadcast inteiro").
  *
- * **NÃO confirmado ao vivo** (nem o nome do campo `urls`, nem se ele entra
- * no MESMO objeto do `all[]` ou precisa de outro shape) — mesma disciplina
- * de `kit-click-fields.ts` (sonda que confirma nome/tipo de campo contra um
- * clique real antes de qualquer consumidor depender dele). Quem rodar isto
- * contra a API pela 1ª vez deve comparar a resposta contra esta suposição
- * — se o shape divergir, ajustar aqui, não silenciosamente no chamador.
+ * **Shape corrigido no #13268.** A 1ª versão punha `urls: [url]` direto no
+ * filtro (`all[0].urls`) e a API do Kit recusava todo broadcast com
+ * `422 {"errors":["Unknown key `urls` at `all[0]`."]}` (1955 vezes no log da
+ * task, desde pelo menos 09/09). O schema da MCP `filter_subscribers` mostra
+ * onde a URL entra: como item de escopo dentro de `any`, `{type: "urls",
+ * urls: [...], matching: "exact"}`, ao lado de `{type: "broadcasts", ids}`.
+ *
+ * Os itens de `any` são OR (texto da MCP: "OR-ed within the filter"), então
+ * broadcast e URL no mesmo `any` dariam "clicou neste broadcast OU nesta URL
+ * em qualquer broadcast". Por isso são DOIS filtros de `clicks` em `all`
+ * (AND): clicou em algo deste broadcast E clicou nesta URL. Ainda é uma
+ * aproximação: quem clicou na mesma URL em OUTRO broadcast e em qualquer link
+ * deste entra também. `ingestOneBroadcast` compara o total com o
+ * `unique_clicks` que o Kit informa para o link e descarta o link quando o
+ * filtro devolve mais gente do que o Kit contou.
+ *
+ * Shape tirado do schema da MCP, ainda **não confirmado ao vivo** contra a
+ * API REST (o guard do repo proíbe rede ao vivo em sessão automatizada). Se
+ * a 1ª rodada real devolver outro 422, ajustar aqui.
  */
 export function buildUrlClickFilterBody(broadcastId: number, url: string, after?: string): Record<string, unknown> {
   const body: Record<string, unknown> = {
-    all: [{ type: "clicks", any: [{ type: "broadcasts", ids: [broadcastId] }], urls: [url], count_greater_than: 0 }],
+    all: [
+      { type: "clicks", any: [{ type: "broadcasts", ids: [broadcastId] }], count_greater_than: 0 },
+      { type: "clicks", any: [{ type: "urls", urls: [url], matching: "exact" }], count_greater_than: 0 },
+    ],
     per_page: 100,
   };
   if (after) body.after = after;
