@@ -21,6 +21,7 @@ import { aammddToIsoDate, readSnippetExpiry } from "../shared/snippet-header.ts"
 import { readSnippetFileRaw } from "../shared/snippet-loader.ts"; // #10174
 import { detectSocialInviteDrift } from "../shared/encerramento-snippet.ts"; // #10835
 import { findRawHtmlTag } from "../shared/non-box-snippets.ts"; // #12202
+import { findUnknownTemplateMarkers, findClosingCreditsLines } from "../lint-checks/reviewed-md-template-leaks.ts"; // #13252
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
@@ -2932,6 +2933,55 @@ export function checkBoxDivulgacaoRawHtml(editionDir: string): InvariantViolatio
 }
 
 /**
+ * #13252: `{{...}}` em `02-reviewed.md` que não é merge tag conhecida de ESP
+ * (`findUnknownTemplateMarkers`). Edição 261116: `{{OPENING}}` cru veio do
+ * snippet de encerramento escolhido pro slot 1 e só foi barrado pelo Kit
+ * (exit 8) e pelo site (exit 5) no Stage 5. Error, gate-blocking. Roda também
+ * no Stage 2, logo após o stitch.
+ */
+export function checkReviewedUnknownTemplateMarkers(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  return findUnknownTemplateMarkers(readFileSync(path, "utf8")).map((hit) => ({
+    rule: "reviewed-unknown-template-marker",
+    message:
+      `02-reviewed.md linha ${hit.line}: marcador \`${hit.marker}\` não é merge tag conhecida do ESP — ` +
+      `o leitor veria o texto cru (e o Kit/site recusam no Stage 5). Fix: substituir pelo texto ` +
+      `final ou remover o bloco que o trouxe (box de divulgação com snippet que não é box, #13252).`,
+    source_issue: "#13252",
+    severity: "error" as const,
+    file: path,
+    line: hit.line,
+  }));
+}
+
+/**
+ * #13252: parágrafo de créditos do "Para encerrar" ("Nesta edição da
+ * diar.ia.br, usei...") mais de uma vez em `02-reviewed.md` — o bloco saiu
+ * duplicado (edição 261116: cópia no slot 1 + PARA ENCERRAR). Error,
+ * gate-blocking. Roda também no Stage 2.
+ */
+export function checkReviewedDuplicateClosingBlock(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const lines = findClosingCreditsLines(readFileSync(path, "utf8"));
+  if (lines.length <= 1) return [];
+  return [
+    {
+      rule: "reviewed-duplicate-closing-block",
+      message:
+        `02-reviewed.md tem o parágrafo "Nesta edição da diar.ia.br, usei..." ${lines.length} vezes ` +
+        `(linhas ${lines.join(", ")}) — o bloco "Para encerrar" saiu duplicado. Fix: remover a cópia ` +
+        `fora do PARA ENCERRAR (em geral um box de divulgação com o snippet de encerramento, #13252).`,
+      source_issue: "#13252",
+      severity: "error",
+      file: path,
+      line: lines[1],
+    },
+  ];
+}
+
+/**
  * #9253: `boxes_divulgacao.slotN` trocado no config DEPOIS do stitch não tem
  * efeito — `_internal/box-selection.json` congelou o snippet antigo e o
  * render lê título/alt/categoria dele. Warning (não bloqueia: a troca pode
@@ -4799,6 +4849,20 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#12202",
     stage: 4,
     run: checkBoxDivulgacaoRawHtml,
+  },
+  {
+    id: "reviewed-unknown-template-marker",
+    description: "02-reviewed.md com {{...}} que não é merge tag conhecida do ESP (ex.: {{OPENING}} do snippet de encerramento) — o leitor veria o marcador cru (#13252)",
+    source_issue: "#13252",
+    stage: 4,
+    run: checkReviewedUnknownTemplateMarkers,
+  },
+  {
+    id: "reviewed-duplicate-closing-block",
+    description: "02-reviewed.md com o parágrafo \"Nesta edição da diar.ia.br, usei...\" mais de uma vez — bloco Para encerrar duplicado (#13252)",
+    source_issue: "#13252",
+    stage: 4,
+    run: checkReviewedDuplicateClosingBlock,
   },
   {
     id: "render-warnings-consumed",
