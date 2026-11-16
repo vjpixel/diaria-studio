@@ -381,6 +381,9 @@ describe("#13117 rotas de atualização de texto mantêm a linha da bio", () => 
     assert.doesNotMatch(run(), BIO);
     // #13209: flag desligada (o default) tira a linha mesmo com ctaVertical.
     assert.doesNotMatch(run(true, false), BIO);
+    // #13274: no lugar dela, a chamada sem link; sem ctaVertical, nenhuma das duas.
+    assert.match(run(true, false), /Vídeo completo no YouTube: @diariabr/);
+    assert.doesNotMatch(run(false, false), /no YouTube: @diariabr/);
   });
 
   it("--update-published: Instagram e Threads com ctaVertical levam a linha; sem, não", () => {

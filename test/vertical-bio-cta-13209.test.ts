@@ -13,6 +13,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  TIKTOK_NO_BIO_CTA_LINE,
+  TIKTOK_NO_BIO_CTA_MAX_CHARS,
   VERTICAL_BIO_CTA_LINE,
   buildTikTokPost,
   loadShortsConfig,
@@ -28,6 +30,7 @@ const D1 = {
 };
 const URL_H = "https://youtu.be/AbCdEfGhIjK";
 const BIO = /Vídeo completo: link na bio/;
+const NO_BIO_CTA = /Vídeo completo no YouTube: @diariabr/; // #13274
 
 const REVIEWED = `DESTAQUE 1 | 🔐 SEGURANÇA
 
@@ -147,6 +150,29 @@ describe("#13209 ponto 2: TikTok só com tiktok_bio_link", () => {
     const on = plan({ recordTitle: D1.title, tiktokBioLink: true });
     assert.match(textOf(on, "tiktok"), BIO);
     assert.ok(on.warnings.some((w) => w.startsWith("tiktok: bio NÃO conferida")));
+  });
+
+  it("#13274: flag desligada troca a linha da bio pela chamada sem link; ligada, volta a da bio", () => {
+    assert.ok(Array.from(TIKTOK_NO_BIO_CTA_LINE).length <= TIKTOK_NO_BIO_CTA_MAX_CHARS);
+    assert.doesNotMatch(TIKTOK_NO_BIO_CTA_LINE, /link na bio/);
+    const off = buildTikTokPost({ d1: D1, ctaVertical: true, tiktokBioLink: false }).caption;
+    assert.doesNotMatch(off, /link na bio/);
+    assert.match(off, NO_BIO_CTA);
+    assert.match(buildTikTokPost({ d1: D1, ctaVertical: true }).caption, NO_BIO_CTA);
+    assert.doesNotMatch(buildTikTokPost({ d1: D1, ctaVertical: true, tiktokBioLink: true }).caption, NO_BIO_CTA);
+    for (const flag of [true, false]) assert.doesNotMatch(buildTikTokPost({ d1: D1, ctaVertical: false, tiktokBioLink: flag }).caption, NO_BIO_CTA);
+  });
+
+  it("#13274 plano: TikTok sem 'link na bio' e com a chamada sem link; Threads segue com a bio; título diferente tira as duas", () => {
+    const off = plan({ recordTitle: D1.title });
+    assert.doesNotMatch(textOf(off, "tiktok"), /link na bio/);
+    assert.match(textOf(off, "tiktok"), NO_BIO_CTA);
+    assert.match(textOf(off, "threads_profile"), BIO);
+    assert.match(off.horizontalLinks!.tiktok.note, /#13274/);
+    assert.doesNotMatch(textOf(plan({ recordTitle: D1.title, tiktokBioLink: true }), "tiktok"), NO_BIO_CTA);
+    const diff = plan({ recordTitle: "Outro título qualquer" });
+    assert.doesNotMatch(textOf(diff, "tiktok"), NO_BIO_CTA);
+    assert.doesNotMatch(textOf(diff, "tiktok"), BIO);
   });
 
   it("platform.config.json versionado mantém a flag desligada", () => {

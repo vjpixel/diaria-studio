@@ -304,6 +304,7 @@ import {
   resolveShortHorizontalTitle,
   resolveVerticalBioCta,
   VERTICAL_BIO_CTA_LINE,
+  TIKTOK_NO_BIO_CTA_LINE,
   DIARIA_YOUTUBE_CHANNEL_URL,
   firstSentence,
   facebookDestinationId,
@@ -1824,7 +1825,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   if (horizontalLinks && ctaVertical) {
     for (const [id, h] of Object.entries(horizontalLinks)) {
       if (id === "tiktok" && cfg.tiktokBioLink !== true) {
-        h.note += "; legenda sem a linha da bio (publishing.shorts.tiktok_bio_link desligada, #13209)";
+        h.note += `; legenda sem a linha da bio (publishing.shorts.tiktok_bio_link desligada, #13209); chamada sem link: ${TIKTOK_NO_BIO_CTA_LINE} (#13274)`;
       } else if (h.route === "bio") {
         h.note += `; legenda obrigatória: ${VERTICAL_BIO_CTA_LINE}`;
         warnings.push(`${id}: bio NÃO conferida. Abra o perfil usado para publicar, confira o campo Site com ${h.link}, toque no link e confirme que abre o horizontal desta edição. Se o campo Site não existir (TikTok), habilite-o antes de confiar na chamada (#13117).`);
