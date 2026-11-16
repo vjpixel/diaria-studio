@@ -457,6 +457,32 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     issue: "#11353",
   },
   {
+    name: "Diaria-Video-Xml-Vs-Final-Daily",
+    failover: "skip",
+    description:
+      "compara o XML gerado pela montagem com o vídeo exportado em Final/ (cortes, pontas, pausas, tomadas, palavras recuperadas) e abre/comenta issue de ajuste por padrão recorrente (#13196)",
+    steps: [{ key: "run", script: "scripts/video-xml-vs-final.ts", args: ["run", "--open-issues"] }],
+    logPath: "video-xml-vs-final/.run.log",
+    // Diária 22:15 BRT (slot livre): o horizontal sai de manhã e a vertical ao
+    // meio-dia, então o final do dia já está em Final/. Janela de 14 dias para
+    // trás: o editor às vezes exporta dias depois; edição sem par volta na
+    // rodada seguinte. Só LÊ o Drive (Final/, pela API no 300) e a edição;
+    // grava em data/video-xml-vs-final/, no relatório do Studio e em issue.
+    //
+    // DECLARADA, NÃO ARMADA (unidade overnight em worktree isolado, mesma
+    // disciplina do #7663): a 1ª rodada real e o arme
+    // (`scripts/setup-systemd-timers.ts --task Diaria-Video-Xml-Vs-Final-Daily`
+    // no 300, depois de tirar o `enabled: false`) ficam com o editor/coordenador.
+    schedule: { kind: "daily", hour: 22, minute: 15 },
+    enabled: false,
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem comparar (ausencia nao e prova de video sem par).",
+    },
+    issue: "#13196, #13197",
+  },
+  {
     name: "Diaria-Agendamentos-Tick",
     failover: "catchup",
     description:

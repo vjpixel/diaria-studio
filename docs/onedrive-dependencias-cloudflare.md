@@ -557,6 +557,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Kv-Image-Binding-Smoke | daily 06:45 | desarmada | `scripts/check-kv-image-binding.ts` | `kv-image-smoke/.check.log` |  | G10 |
 | Diaria-Regen-Home-Watchdog | daily 06:20 | armada | `scripts/check-regen-home.ts` | `regen-home-watchdog/.check.log` |  | G1, G10 |
 | Diaria-Video-D1-Link-Watch | daily 06:05 | armada | `scripts/video-d1-link-watch.ts` | `video-d1-link-watch/.watch.log` | `editions` | G4, G1, G10 |
+| Diaria-Video-Xml-Vs-Final-Daily | daily 22:15 | desarmada | `scripts/video-xml-vs-final.ts` | `video-xml-vs-final/.run.log` | `editions` | G1, G7, G10 |
 | Diaria-YouTube-Analytics-Snapshot | daily 11:35 | armada | `scripts/youtube-analytics-snapshot.ts` | `youtube-analytics/.snapshot.log` | `editions` | G4, G1, G10 |
 | Diaria-Short-Related-Missed-Alarm | daily 13:30 | armada | `scripts/short-related-missed-alarm.ts` | `short-related-missed-alarm/.alarm.log` | `editions` | G3, G4, G1, G10 |
 | Diaria-Agendamentos-Tick | interval 1h | armada | `scripts/agendamentos-tick.ts` | `agendamentos/.tick.log` | `editions` | G14, G10 (incluída em 11/11/2026, depois da medição) |

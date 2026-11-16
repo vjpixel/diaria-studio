@@ -156,6 +156,10 @@ const VALID_KINDS = [
   "agent-eval",
   "ads-digest",
   "calibration-audit",
+  // #13196: comparação recorrente XML gerado × vídeo publicado
+  // (`scripts/video-xml-vs-final.ts`). `sessionId` = AAMMDD do dia da rodada.
+  // Somente leitura, sem e-mail.
+  "video-xml-final",
 ] as const;
 
 export type ReportKind = (typeof VALID_KINDS)[number];
