@@ -44,7 +44,7 @@ O editor grava uma vez, na ordem do horizontal. Os verticais são cortes dessa g
 - **Vertical 1, a notícia (cerca de 60 s):** gancho, resumo curto com o número mais forte, o comentário pessoal e uma chamada falada para o vídeo completo. Sai primeiro.
 - **Vertical 2, o guia (cerca de 60 s):** o que fazer, em passos. Tem que se sustentar sozinho. Sai uma semana depois do vertical 1. A prévia da montagem aceita até 75 s, mas o alvo do roteiro é 60 (#13130).
 
-A duração de cada vídeo sai do `video-roteiro-blocos.ts` (Passo 5), estimada a 150 palavras por minuto, com o card de CTA à parte: nunca contar à mão. Vertical acima de 60 s ou horizontal longe de 3 min dão `[aviso]` com a sugestão de corte. Os alvos ficam em `publishing.video.roteiro` do `platform.config.json` (`alvo_s`, `palavras_por_minuto`, `horizontal_folga_s`, `cta_card_s`).
+A duração de cada vídeo sai do `video-roteiro-blocos.ts` (Passo 5), estimada a 150 palavras por minuto mais 1,7 s da pausa da vinheta depois do título (a montagem a põe em todo vídeo, #13239), com o card de CTA à parte: nunca contar à mão. Vertical acima de 60 s ou horizontal longe de 3 min dão `[aviso]` com a sugestão de corte. Os alvos ficam em `publishing.video.roteiro` do `platform.config.json` (`alvo_s`, `palavras_por_minuto`, `horizontal_folga_s`, `cta_card_s`, `pausa_vinheta_s`).
 
 Regras de estrutura:
 

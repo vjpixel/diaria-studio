@@ -157,7 +157,7 @@ describe("#13239 item 3: o silêncio da pausa sai do pré-roll e prefere o de de
   it("só o pré-roll cabe: usa ele (com aviso do trecho), em vez de deixar a vinheta sobre a fala", () => {
     const p = buildSequencePlan(SPEC_V, resolved, [{ start: 0, end: 5 }, { start: 22.95, end: 23.2 }], src, { breathAfter: vinhetaBreathFor(SPEC_V) });
     assert.equal(p.clips.find((c) => c.filler)?.srcIn, 0.05);
-    assert.match(p.warnings![0], /pausa completada com .* em 0\.05–/);
+    assert.match(p.premises![0], /pausa completada com .* em 0\.05–.*no pré-roll/);
   });
 });
 

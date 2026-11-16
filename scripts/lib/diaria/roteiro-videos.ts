@@ -29,6 +29,7 @@ import {
   BLOCK_KEYS,
   defaultSequences,
   openingBlockOf,
+  VINHETA_BREATH_S,
   type BlockKey,
   type SequenceSpec,
 } from "./video-montage.ts";
@@ -645,6 +646,11 @@ export interface RoteiroDuracaoConfig {
   horizontalFolgaS: number;
   /** Duração do card de CTA, mostrada à parte. */
   ctaCardS: number;
+  /**
+   * Pausa sem fala depois do título, onde entra a vinheta do logo (#13204,
+   * #13239 item 5): a montagem a põe em todo vídeo, e ela conta no alvo.
+   */
+  pausaVinhetaS: number;
 }
 
 /**
@@ -657,6 +663,7 @@ export const ROTEIRO_DURACAO_DEFAULT: RoteiroDuracaoConfig = {
   alvoS: { horizontal: 180, vertical1: 60, vertical2: 60 },
   horizontalFolgaS: 60,
   ctaCardS: 4,
+  pausaVinhetaS: VINHETA_BREATH_S,
 };
 
 const numPositivo = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : null);
@@ -664,7 +671,8 @@ const numPositivo = (x: unknown): number | null => (typeof x === "number" && Num
 /**
  * `publishing.video.roteiro` do `platform.config.json` (#13130), por cima dos
  * defaults: `palavras_por_minuto`, `alvo_s.{horizontal,vertical1,vertical2}`,
- * `horizontal_folga_s`, `cta_card_s`. Valor ausente ou inválido = o default.
+ * `horizontal_folga_s`, `cta_card_s`, `pausa_vinheta_s` (0 tira a pausa da
+ * conta, #13239). Valor ausente ou inválido = o default.
  */
 export function roteiroDuracaoConfigFrom(config: unknown, warn: (msg: string) => void = () => {}): RoteiroDuracaoConfig {
   const r = (config as { publishing?: { video?: { roteiro?: Record<string, unknown> } } })?.publishing?.video?.roteiro ?? {};
@@ -686,14 +694,20 @@ export function roteiroDuracaoConfigFrom(config: unknown, warn: (msg: string) =>
     },
     horizontalFolgaS: num("horizontal_folga_s", r.horizontal_folga_s, d.horizontalFolgaS),
     ctaCardS: num("cta_card_s", r.cta_card_s, d.ctaCardS),
+    pausaVinhetaS: r.pausa_vinheta_s === 0 ? 0 : num("pausa_vinheta_s", r.pausa_vinheta_s, d.pausaVinhetaS),
   };
 }
 
 export interface DuracaoVideo {
   video: VideoRoteiro;
   palavras: number;
-  /** Fala estimada, em segundos, com os cortes que não são de reserva já aplicados. */
+  /**
+   * Duração estimada, em segundos: a fala, com os cortes que não são de
+   * reserva já aplicados, mais a pausa da vinheta (`pausaS`, #13239).
+   */
   segundos: number;
+  /** A pausa da vinheta somada em `segundos` (#13239 item 5). */
+  pausaS: number;
   alvoS: number;
   /** Passou do alvo (vertical) ou saiu da faixa do horizontal. */
   foraDoAlvo: boolean;
@@ -707,17 +721,23 @@ function textoNoVideo(f: FalaRoteiro, v: VideoRoteiro): string {
   return seg?.length ? seg.join(" ") : f.texto;
 }
 
-/** Pure (#13130): palavras e duração estimada de cada vídeo do roteiro. */
+/**
+ * Pure (#13130): palavras e duração estimada de cada vídeo do roteiro. A
+ * estimativa soma a pausa da vinheta (#13239 item 5): na 261116 os verticais
+ * saíram 1,4 s mais longos que a conta só da fala, porque a montagem põe a
+ * pausa depois do título em todo vídeo desde o #13204.
+ */
 export function duracaoPorVideo(roteiro: Pick<RoteiroFalas, "falas">, cfg: RoteiroDuracaoConfig = ROTEIRO_DURACAO_DEFAULT): DuracaoVideo[] {
   const out: DuracaoVideo[] = [];
   for (const v of VIDEOS_ROTEIRO) {
     const falas = roteiro.falas.filter((f) => f.videos.includes(v));
     if (!falas.length) continue;
     const palavras = falas.reduce((n, f) => n + palavrasDe(textoNoVideo(f, v)).length, 0);
-    const segundos = Math.round((palavras / cfg.palavrasPorMinuto) * 60);
+    const pausaS = cfg.pausaVinhetaS;
+    const segundos = Math.round((palavras / cfg.palavrasPorMinuto) * 60 + pausaS);
     const alvoS = cfg.alvoS[v];
     const foraDoAlvo = v === "horizontal" ? Math.abs(segundos - alvoS) > cfg.horizontalFolgaS : segundos > alvoS;
-    out.push({ video: v, palavras, segundos, alvoS, foraDoAlvo });
+    out.push({ video: v, palavras, segundos, pausaS, alvoS, foraDoAlvo });
   }
   return out;
 }
@@ -726,6 +746,9 @@ export function duracaoPorVideo(roteiro: Pick<RoteiroFalas, "falas">, cfg: Rotei
 export function fmtDuracao(s: number): string {
   return s >= 60 ? `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}` : `${s} s`;
 }
+
+/** " (fala + ~1,7 s da pausa da vinheta)": a estimativa soma a pausa (#13239), então não é só fala. */
+const comPausa = (s: number): string => (s > 0 ? ` (fala + ~${s.toFixed(1).replace(".", ",")} s da pausa da vinheta)` : " de fala");
 
 /**
  * Pure (#13130): avisos de duração. Vertical acima do alvo sai com a sugestão
@@ -739,7 +762,7 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
     if (!d.foraDoAlvo) continue;
     if (d.video === "horizontal") {
       const lado = d.segundos > d.alvoS ? "acima" : "abaixo";
-      avisos.push(`horizontal com ~${fmtDuracao(d.segundos)} de fala, ${lado} da faixa de ~${fmtDuracao(d.alvoS)} (± ${cfg.horizontalFolgaS} s) (#13130)`);
+      avisos.push(`horizontal com ~${fmtDuracao(d.segundos)} estimados${comPausa(d.pausaS)}, ${lado} da faixa de ~${fmtDuracao(d.alvoS)} (± ${cfg.horizontalFolgaS} s) (#13130)`);
       continue;
     }
     const sugestoes: string[] = [];
@@ -758,7 +781,7 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
       .slice(0, 3);
     if (longas.length) sugestoes.push(`as falas mais longas: ${longas.map((l) => `${l.id} (~${l.s} s)`).join(", ")}`);
     avisos.push(
-      `${VIDEO_LABEL[d.video]} com ~${fmtDuracao(d.segundos)} de fala, acima do alvo de ${fmtDuracao(d.alvoS)} (card de CTA à parte)${sugestoes.length ? `; para cortar: ${sugestoes.join("; ")}` : ""} (#13130)`,
+      `${VIDEO_LABEL[d.video]} com ~${fmtDuracao(d.segundos)} estimados${comPausa(d.pausaS)}, acima do alvo de ${fmtDuracao(d.alvoS)} (card de CTA à parte)${sugestoes.length ? `; para cortar: ${sugestoes.join("; ")}` : ""} (#13130)`,
     );
   }
   return avisos;
@@ -766,12 +789,13 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
 
 /** As durações em Markdown, uma linha por vídeo (o card de CTA à parte). */
 export function renderDuracoes(roteiro: Pick<RoteiroFalas, "falas">, cfg: RoteiroDuracaoConfig = ROTEIRO_DURACAO_DEFAULT): string {
-  const linhas = [`## Duração estimada (${cfg.palavrasPorMinuto} palavras/min, #13130)`, "", "| Vídeo | Palavras | Fala | Alvo |", "|---|---|---|---|"];
+  const linhas = [`## Duração estimada (${cfg.palavrasPorMinuto} palavras/min, #13130)`, "", "| Vídeo | Palavras | Estimado | Alvo |", "|---|---|---|---|"];
   for (const d of duracaoPorVideo(roteiro, cfg)) {
     const alvo = d.video === "horizontal" ? `~${fmtDuracao(d.alvoS)} ± ${cfg.horizontalFolgaS} s` : `até ${fmtDuracao(d.alvoS)}`;
     linhas.push(`| ${VIDEO_LABEL[d.video]} | ${d.palavras} | ~${fmtDuracao(d.segundos)}${d.foraDoAlvo ? " (fora do alvo)" : ""} | ${alvo} |`);
   }
-  linhas.push("", `Mais o card de CTA, ~${cfg.ctaCardS} s em cada vídeo.`, "");
+  const pausa = cfg.pausaVinhetaS > 0 ? `A estimativa já inclui, além da fala, ~${cfg.pausaVinhetaS.toFixed(1).replace(".", ",")} s da pausa da vinheta depois do título (#13239). ` : "";
+  linhas.push("", `${pausa}Mais o card de CTA, ~${cfg.ctaCardS} s em cada vídeo.`, "");
   return linhas.join("\n");
 }
 

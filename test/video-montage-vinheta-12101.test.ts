@@ -120,7 +120,8 @@ describe("#12101/#13204: respiro da vinheta depois do título, em todas as sequ�
       // Faltam 1,4 s (1,7 - 0,3), com 0,05 s de margem dentro do silêncio.
       assert.equal(titulo[1].srcIn, 10.05);
       assert.equal(titulo[1].srcOut, 11.45);
-      assert.match(p.warnings![0], /pausa completada com 1\.40 s de silêncio do bruto em 10\.05–11\.45 s/);
+      // #13239 item 3: o trecho escolhido sai como [premissa], não como aviso.
+      assert.match(p.premises![0], /pausa completada com 1\.40 s de silêncio do bruto em 10\.05–11\.45 s/);
       const vs = vinhetaSpan(p, 30, VIN);
       assert.ok(vs);
       assert.equal(vs.start, titulo[0].seqEnd, "a vinheta começa na pausa, nunca sobre a fala");

@@ -267,7 +267,8 @@ describe("#13128/#13129: a proposta de blocos segue a ordem e os cortes", () => 
 
 describe("#13130: duração estimada por vídeo", () => {
   it("261116: horizontal ~3 min 22 s, vertical 1 ~62 s e vertical 2 ~61 s, como a página calculada à mão", () => {
-    const d = Object.fromEntries(duracaoPorVideo(base()).map((x) => [x.video, x]));
+    // A conta à mão era só a fala; a pausa da vinheta entrou depois (#13239 item 5), por isso aqui sem ela.
+    const d = Object.fromEntries(duracaoPorVideo(base(), { ...ROTEIRO_DURACAO_DEFAULT, pausaVinhetaS: 0 }).map((x) => [x.video, x]));
     assert.equal(d.horizontal.segundos, 202);
     assert.equal(d.vertical1.segundos, 62);
     assert.equal(d.vertical2.segundos, 61);
@@ -328,7 +329,8 @@ describe("#13120: a página gerada do JSON", () => {
     assert.ok(!h.includes("<del"));
   });
   it("durações calculadas e falas de cada vertical na caixa Gravação", () => {
-    assert.match(html, /<b>Horizontal:<\/b> cerca de 3 min 22 s\./);
+    // 3 min 22 s de fala + a pausa da vinheta (#13239 item 5).
+    assert.match(html, /<b>Horizontal:<\/b> cerca de 3 min 23 s\./);
     assert.match(html, /Vertical 1, a notícia:<\/b> cerca de [^.]+\. Falas: H1, H4, H6, H10, H10c, H10f, V1-CTA \(à parte\)\./);
   });
   it("fontes e cortes de reserva nas notas", () => {

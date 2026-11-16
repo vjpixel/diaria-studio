@@ -2307,6 +2307,12 @@ export interface SequencePlan {
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
   warnings?: string[];
   /**
+   * #13239 item 3: premissas do plano para o editor conferir (o build as
+   * imprime como `[premissa]`): o trecho do bruto escolhido para completar a
+   * pausa da vinheta e por que ele (`pickVinhetaFiller`).
+   */
+  premises?: string[];
+  /**
    * #12101: fim da última palavra do bloco `titulo` nesta versão (#12586: do
    * bloco de abertura, `openingBlockOfOrder`; o gancho sem título), em segundos
    * do bruto: a âncora da vinheta (`vinhetaSpan`) e do respiro conferido
@@ -2339,6 +2345,174 @@ export function wordCoveredBySilence(w: Interval, parts: Interval[], silences: I
 }
 
 /**
+ * Energia do bruto para escolher o silêncio da pausa da vinheta (#13239 item
+ * 3): os quadros do detector de fala (`FrameEnergy` de video-cut-refine.ts,
+ * aqui só a forma, para não criar import circular), o limite de "som" da
+ * checagem de entrada (`entrySoundLimitDb`, piso + 45% da faixa) e a margem de
+ * cada ponta medida junto (`lookS`: quem chama passa o `SPEECH_DETECT.entryLookS`
+ * da mesma checagem, #12263, para o valor não morar em dois lugares).
+ */
+export interface FillerEnergy {
+  hopS: number;
+  fullDb: ArrayLike<number>;
+  quietDb: number;
+  lookS: number;
+}
+
+/** Rosto "parado" entre os itens vizinhos do silêncio: centro e olhos a até 4% do quadro do item do bloco. */
+export const FILLER_FACE_STILL_TOL = 0.04;
+/**
+ * Distância máxima, em segundos, entre a borda do silêncio e o item vizinho
+ * cujo rosto conta (#13239). Um item mais longe que isso já é outro momento
+ * do bruto, e o rosto dele não diz se o editor se mexeu durante o silêncio:
+ * sem vizinho nesse raio, aquele lado fica "sem medida". 3 s é a ordem do
+ * respiro entre frases de uma mesma tomada; troca de tomada costuma passar
+ * disso, e aí o rosto não pesa em vez de pesar com a medida errada.
+ */
+export const FILLER_FACE_NEIGHBOR_S = 3;
+
+export interface FillerPickInput {
+  silences: Interval[];
+  /** Segundos de pausa que faltam. */
+  need: number;
+  /** Fim da fala do bloco (a última palavra) no bruto. */
+  from: number;
+  /** Limites do arquivo do item no bruto. */
+  file: Interval;
+  /** Intervalos de todos os itens resolvidos (a pausa nunca cai em fala de outro trecho). */
+  busy: Interval[];
+  /** Folga dentro do silêncio, em cada ponta. */
+  pad: number;
+  energy?: FillerEnergy;
+  /** Itens com rosto medido (`face --write`), pelo mesmo intervalo de `busy`: o rosto dos vizinhos do silêncio diz se o editor se mexeu ali. */
+  framings?: Array<{ interval: Interval; framing: FramePoint }>;
+  /** O rosto do item do bloco; ausente = só os dois vizinhos comparados entre si (com um vizinho só, sem medida). */
+  itemFraming?: FramePoint;
+}
+
+export interface FillerPick {
+  srcIn: number;
+  srcOut: number;
+  /** Os critérios do trecho escolhido, em prosa, para a `[premissa]` do build. */
+  why: string[];
+}
+
+/**
+ * O silêncio que completa a pausa da vinheta (#13204, #13239 item 3). Antes,
+ * só a distância decidia, e na 261116 o vertical V12 completou a pausa com
+ * 42,30–43,99 s do bruto, entre tomadas, com som na entrada (-52 dB). Agora,
+ * entre os silêncios do arquivo que cabem a pausa fora de todo item, vence,
+ * nesta ordem: fora do pré-roll (antes da 1ª fala do arquivo); sem som na
+ * pausa nem nos `energy.lookS` de cada ponta (pico abaixo do limite da
+ * checagem de entrada, quando a energia do detector existe; janela fora dos
+ * quadros = sem medida, entre o quieto e o com som); com o rosto parado (os
+ * itens vizinhos do silêncio, a até `FILLER_FACE_NEIGHBOR_S`, com o rosto
+ * medido no mesmo lugar do item do bloco, quando o `face` gravou framing);
+ * depois da fala do bloco; e o mais perto dela. Com som em todos, fica o de
+ * pico mais baixo. Com a energia, a pausa pode ir para o meio ou para o fim do
+ * silêncio, o ponto mais quieto: o som na borda (o estalo antes do corte da
+ * 261116) muda o ponto, não o silêncio. Sem energia nem framing, é a escolha
+ * de antes. O `why` só diz "nenhum silêncio ..." quando nenhum candidato
+ * atendia aquele critério; se algum atendia e perdeu por um critério anterior,
+ * diz qual.
+ */
+export function pickVinhetaFiller(inp: FillerPickInput): FillerPick | null {
+  const { need, from, file: fb, busy, pad, energy } = inp;
+  const inFile = (x: Interval) => x.end > fb.start && x.start < fb.end;
+  const firstSpeech = Math.min(...busy.filter(inFile).map((b) => b.start), fb.end);
+  // Pico na janela da pausa com as pontas; null = sem medida (sem energia, ou janela fora dos quadros), nunca -Infinity.
+  const peakDb = (a: number, b: number): number | null => {
+    if (!energy) return null;
+    const i0 = Math.max(0, Math.floor((a - energy.lookS) / energy.hopS + 1e-9));
+    const i1 = Math.min(energy.fullDb.length, Math.ceil((b + energy.lookS) / energy.hopS - 1e-9));
+    if (i1 <= i0) return null;
+    let m = Number.NEGATIVE_INFINITY;
+    for (let k = i0; k < i1; k++) m = Math.max(m, energy.fullDb[k]);
+    return Number.isFinite(m) ? m : null;
+  };
+  const dist = (p: FramePoint, q: FramePoint) => Math.max(Math.abs(p.faceX - q.faceX), Math.abs(p.eyeY - q.eyeY));
+  const framingOf = (x: Interval) =>
+    (inp.framings ?? []).find((f) => Math.abs(f.interval.start - x.start) < 1e-6 && Math.abs(f.interval.end - x.end) < 1e-6)?.framing;
+  const items = busy.filter(inFile);
+  // O rosto nos itens logo antes e logo depois do silêncio, no mesmo arquivo e a até FILLER_FACE_NEIGHBOR_S.
+  // O vizinho é o item mais perto, com ou sem framing: sem framing nele, aquele lado fica sem medida
+  // (nunca pula para um item mais longe). null = sem medida (o rosto não pesa).
+  const faceMoved = (s: Interval): boolean | null => {
+    const before = items.filter((x) => x.end <= s.start + 1e-6).sort((a, b) => b.end - a.end)[0];
+    const after = items.filter((x) => x.start >= s.end - 1e-6).sort((a, b) => a.start - b.start)[0];
+    const near: FramePoint[] = [];
+    for (const [x, gap] of [[before, before ? s.start - before.end : 0], [after, after ? after.start - s.end : 0]] as const) {
+      const f = x && gap <= FILLER_FACE_NEIGHBOR_S + 1e-9 ? framingOf(x) : undefined;
+      if (f) near.push(f);
+    }
+    const ref = inp.itemFraming;
+    if (ref) return near.length === 0 ? null : near.some((f) => dist(f, ref) > FILLER_FACE_STILL_TOL);
+    // Sem o rosto do item: só os dois vizinhos entre si; com um só, nada a comparar.
+    return near.length === 2 ? dist(near[0], near[1]) > FILLER_FACE_STILL_TOL : null;
+  };
+  // Som: 0 quieto (medido), 1 sem medida, 2 com som.
+  type Cand = { s: Interval; srcIn: number; preRoll: boolean; peak: number | null; sound: 0 | 1 | 2; moved: boolean | null; after: boolean };
+  const cands: Cand[] = [];
+  const peakKey = (p: number | null) => (p === null ? Number.POSITIVE_INFINITY : p);
+  for (const s of inp.silences) {
+    if (s.start < fb.start || s.end > fb.end || s.end - s.start < need + 2 * pad) continue;
+    // Posições da pausa no silêncio: o começo (a de antes); com energia, também o meio e o fim.
+    const lo = s.start + pad;
+    const hi = s.end - pad - need;
+    const spots = energy ? [lo, (lo + hi) / 2, hi] : [lo];
+    const free = spots.filter((x) => !busy.some((b) => x < b.end && x + need > b.start));
+    if (free.length === 0) continue;
+    // O ponto mais quieto (o medido vence o sem medida); empate fica com o começo.
+    const best = free.map((x) => ({ x, peak: peakDb(x, x + need) })).reduce((a, b) => (peakKey(b.peak) < peakKey(a.peak) - 1e-9 ? b : a));
+    const sound: 0 | 1 | 2 = !energy || best.peak === null ? 1 : best.peak > energy.quietDb ? 2 : 0;
+    cands.push({ s, srcIn: best.x, preRoll: s.start < firstSpeech - 1e-9, peak: best.peak, sound, moved: faceMoved(s), after: s.start >= from - 1e-9 });
+  }
+  const pick = cands.sort((a, b) =>
+    Number(a.preRoll) - Number(b.preRoll) ||
+    a.sound - b.sound ||
+    // Todos com som: o menos alto.
+    (a.sound === 2 && b.sound === 2 ? peakKey(a.peak) - peakKey(b.peak) : 0) ||
+    Number(a.moved === true) - Number(b.moved === true) ||
+    Number(!a.after) - Number(!b.after) ||
+    Math.abs(a.s.start - from) - Math.abs(b.s.start - from),
+  )[0];
+  if (!pick) return null;
+  // As alternativas melhores num critério perderam por um critério anterior: qual (pela ordem do sort).
+  const lostBy = (alts: Cand[], upTo: 1 | 2 | 3): string => {
+    const why = new Set<string>();
+    for (const c of alts) {
+      if (c.preRoll && !pick.preRoll) why.add("no pré-roll");
+      else if (upTo >= 2 && c.sound > pick.sound) why.add(c.sound === 2 ? "com som" : "sem medida de energia");
+      else if (upTo >= 3 && c.moved === true && pick.moved !== true) why.add("com o rosto em outra posição");
+    }
+    return why.size ? [...why].join(" ou ") : "atrás por um critério anterior";
+  };
+  const why: string[] = [];
+  if (pick.after) why.push("depois da fala do bloco");
+  else {
+    const alts = cands.filter((c) => c.after);
+    why.push(alts.length ? `antes da fala do bloco (os silêncios depois dela estavam ${lostBy(alts, 3)})` : "antes da fala do bloco (nenhum silêncio que sirva depois dela)");
+  }
+  why.push("fora dos itens");
+  if (pick.preRoll) why.push("no pré-roll (nenhum outro silêncio serve)");
+  if (!energy) why.push("sem medida de energia (detector de fala desligado)");
+  else if (pick.sound === 1) why.push("sem medida de energia nesse trecho (fora dos quadros do detector)");
+  else if (pick.sound === 0) why.push(`sem som (pico ${Math.round(pick.peak!)} dB, limite ${Math.round(energy.quietDb)} dB)`);
+  else {
+    const alts = cands.filter((c) => c.sound < 2 || peakKey(c.peak) < peakKey(pick.peak));
+    const motivo = alts.length ? `os silêncios mais quietos estavam ${lostBy(alts, 1)}` : "nenhum silêncio mais quieto";
+    why.push(`com som (pico ${Math.round(pick.peak!)} dB, acima do limite de ${Math.round(energy.quietDb)} dB: ${motivo})`);
+  }
+  if (pick.moved === null) why.push("sem rosto medido nos vizinhos (face)");
+  else if (!pick.moved) why.push("rosto parado nos vizinhos");
+  else {
+    const alts = cands.filter((c) => c.moved !== true);
+    why.push(`rosto em outra posição nos vizinhos (${alts.length ? `os silêncios sem essa troca estavam ${lostBy(alts, 2)}` : "nenhum silêncio com o rosto parado"})`);
+  }
+  return { srcIn: round3(pick.srcIn), srcOut: round3(pick.srcIn + need), why };
+}
+
+/**
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
  * (`speechParts`); trechos contíguos no bruto (itens do roteiro escritos frase a
  * frase sobre uma fala contínua) se fundem e a escala alterna base/punch-in a
@@ -2356,10 +2530,11 @@ export function buildSequencePlan(
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   silences: Interval[],
   source: Pick<SourceInfo, "fps" | "durationS" | "files">,
-  opts: { holdBlocks?: BlockKey[]; breathAfter?: Partial<Record<BlockKey, number>> } & SpeechOptions = {},
+  opts: { holdBlocks?: BlockKey[]; breathAfter?: Partial<Record<BlockKey, number>>; fillerEnergy?: FillerEnergy } & SpeechOptions = {},
 ): SequencePlan {
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
   const warnings: string[] = [];
+  const premises: string[] = [];
   // #12559: bruto em vários arquivos. Cada item fica no arquivo da sua fala; nenhum clipe atravessa a emenda.
   const bounds = source.files && source.files.length > 1
     ? source.files.map((x) => ({ id: x.id, start: x.offsetFrames / source.fps, end: (x.offsetFrames + x.frames) / source.fps }))
@@ -2446,21 +2621,21 @@ export function buildSequencePlan(
           // fora de todo item resolvido (nunca fala de outro trecho) e nunca menor que um clipe.
           const need = round3(Math.max(minClip, breath - Math.max(0, end - from)));
           const fb = bounds ? bounds[file] : { start: 0, end: source.durationS };
-          const pad = 0.05;
-          const busy = Object.values(resolved).flatMap((xs) => (xs ?? []).map((x) => x.interval));
-          // #13239 item 3: o silêncio antes da 1ª fala do arquivo é pré-roll (o editor se ajeitando);
-          // preferir um depois da fala do bloco, depois um fora do pré-roll, e só então o mais perto.
-          const firstSpeech = Math.min(...busy.filter((b) => b.end > fb.start && b.start < fb.end).map((b) => b.start), fb.end);
-          const tier = (s: Interval) => (s.start < firstSpeech - 1e-9 ? 2 : s.start >= from - 1e-9 ? 0 : 1);
-          const pick = silences
-            .filter((s) => s.start >= fb.start && s.end <= fb.end && s.end - s.start >= need + 2 * pad)
-            .filter((s) => !busy.some((b) => s.start + pad < b.end && s.start + pad + need > b.start))
-            .sort((a, b) => tier(a) - tier(b) || Math.abs(a.start - from) - Math.abs(b.start - from))[0];
+          const all = Object.values(resolved).flatMap((xs) => xs ?? []);
+          // #13239 item 3: fora do pré-roll, sem som, com o rosto parado, depois da fala, e só então o mais perto.
+          const pick = pickVinhetaFiller({
+            silences, need, from, file: fb, pad: 0.05,
+            busy: all.map((x) => x.interval),
+            ...(opts.fillerEnergy ? { energy: opts.fillerEnergy } : {}),
+            framings: all.flatMap((x) => (x.framing ? [{ interval: x.interval, framing: x.framing }] : [])),
+            ...(it.framing ? { itemFraming: it.framing } : {}),
+          });
           if (pick) {
-            breathFiller = { srcIn: round3(pick.start + pad), srcOut: round3(pick.start + pad + need) };
-            warnings.push(
+            breathFiller = { srcIn: pick.srcIn, srcOut: pick.srcOut };
+            premises.push(
               `${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s no bruto (a fala seguinte vem logo); ` +
-                `pausa completada com ${need.toFixed(2)} s de silêncio do bruto em ${breathFiller.srcIn.toFixed(2)}–${breathFiller.srcOut.toFixed(2)} s, para a vinheta não cobrir a fala (#13204)`,
+                `pausa completada com ${need.toFixed(2)} s de silêncio do bruto em ${breathFiller.srcIn.toFixed(2)}–${breathFiller.srcOut.toFixed(2)} s, para a vinheta não cobrir a fala (#13204): ` +
+                `${pick.why.join(", ")}; conferir esse trecho no Premiere (#13239)`,
             );
           } else {
             warnings.push(
@@ -2520,6 +2695,7 @@ export function buildSequencePlan(
     spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges,
     ...(lostWords.length ? { lostWords } : {}),
     ...(warnings.length ? { warnings } : {}),
+    ...(premises.length ? { premises } : {}),
     ...(titleSpeechEndS !== undefined ? { titleSpeechEndS } : {}),
   };
 }

@@ -489,6 +489,7 @@ import {
   windowKey,
   extendIslandAttacks,
   entryCutSoundWarnings,
+  entrySoundLimitDb,
   speechThresholds,
   voiceAnchorDb,
   voicedFractionAboveThreshold,
@@ -1369,10 +1370,13 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
       console.error(`[aviso] detector de fala (#12089): ${guard.protectedWords.length} palavra(s) do transcript abaixo do limiar ficaram no corte em vez de sair na pausa: ${guard.protectedWords.map((w) => `"${w.text}" em ${w.start.toFixed(2)} s`).join(", ")}; conferir no áudio (se for ruído, --no-speech-detect ou intervalo no blocks.json)`);
     }
   }
+  // #13239 item 3: a energia do detector escolhe o silêncio da pausa da vinheta pelo mesmo limite do "corta som" (#12263).
+  const quiet = speech?.energy ? entrySoundLimitDb(speech.energy) : null;
+  const fillerEnergy = speech?.energy && quiet ? { fillerEnergy: { hopS: speech.energy.hopS, fullDb: speech.energy.fullDb, quietDb: quiet.lim, lookS: SPEECH_DETECT.entryLookS } } : {};
   const ps = specs.map((s) => {
     // #12101: o respiro da vinheta depois do título (todas as sequências desde o #13204).
     if (!speech) return buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s) });
-    const r = withLostWordFallback((pauses) => buildSequencePlan(s, blocks, pauses, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s), ...SPEECH_DETECT_PLAN }), speechSil, fallbackSil);
+    const r = withLostWordFallback((pauses) => buildSequencePlan(s, blocks, pauses, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s), ...fillerEnergy, ...SPEECH_DETECT_PLAN }), speechSil, fallbackSil);
     if (r.fellBack) {
       // As proteções que a rede trouxe de volta: as palavras esticadas que agora caem dentro dos clipes desta sequência.
       const back = stretched.filter((w) => r.plan.clips.some((c) => Math.min(w.end, c.frameOut / source.fps) - Math.max(w.start, c.frameIn / source.fps) > 1e-6));
@@ -3525,6 +3529,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     const hook = corteHookLine(file, p.spec);
     if (hook) console.error(`[${hook.level}] ${p.spec.name}: ${hook.text}`);
     for (const w of p.warnings ?? []) console.error(`[aviso] ${w}`);
+    // #13239 item 3: o trecho do bruto que completou a pausa da vinheta, e por quê.
+    for (const w of p.premises ?? []) console.error(`[premissa] ${w}`);
     // #12101: o refino dos cortes pode encolher o respiro depois do título; conferir no plano final.
     // #12586: o respiro vem depois do bloco de abertura (o título, ou o gancho falado sem título).
     const breathBlock = vinhetaBreathBlock(p.spec);

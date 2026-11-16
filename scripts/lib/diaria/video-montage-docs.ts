@@ -41,6 +41,8 @@ import {
   tokenize,
   tokensMatch,
   validateVocabRules,
+  vinhetaBreathBlock,
+  VINHETA_BREATH_S,
   type BlockKey,
   type Interval,
   type RepetitionCut,
@@ -497,13 +499,15 @@ export function decupagemMarkdown(edition: string, doc: DecupagemDoc, sequences:
     for (const r of b.rows) lines.push(`| ${span(r.start, r.end)} | ${mdCell(r.fala)} | ${mdCell(r.sugestao)} |  |`);
     lines.push("");
   }
-  lines.push("## Montagem sugerida", "", "Só as linhas com sugestão \"usar\", na ordem de cada versão. A duração soma os trechos do bruto, antes de tirar os silêncios.", "");
+  lines.push("## Montagem sugerida", "", `Só as linhas com sugestão \"usar\", na ordem de cada versão. A duração soma os trechos do bruto, antes de tirar os silêncios; a versão cuja abertura tem fala \"usar\" soma também a pausa da vinheta e diz isso embaixo do título.`, "");
   const byKey = new Map(doc.blocks.map((b) => [b.key, b]));
   const totals = new Map(suggestedDurations(doc, sequences).map((d) => [d.spec.name, d]));
   for (const spec of sequences) {
     const rowsFor = (k: BlockKey) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar");
     const d = totals.get(spec.name)!;
     lines.push(`### ${versionLabel(spec)}: ${spec.name} (~${clockTime(d.totalS)})`, "");
+    // #13239: a pausa só é citada onde conta (abertura com fala "usar"), nunca no cabeçalho comum.
+    if (d.pausaS > 0) lines.push(`Inclui a pausa de ${d.pausaS.toFixed(1).replace(".", ",")} s da vinheta depois da abertura.`, "");
     if (d.overS > 0) {
       lines.push(
         `**Passa de ${SHORTS_MAX_S / 60}:00 (Shorts) em ~${d.overS.toFixed(1)} s**, estimativa antes de tirar os silêncios: a decupagem propõe o corte (trecho e tempos), não o repassa.`,
@@ -700,15 +704,19 @@ export function verticalTargetWarning(name: string, c: VerticalTargetCheck): str
 /**
  * Duração de cada versão na montagem sugerida (soma dos trechos "usar" do
  * bruto, antes de tirar os silêncios: estimativa por cima) e quanto a vertical
- * passa do teto do Shorts (`overS`, 0 no horizontal e dentro do teto).
+ * passa do teto do Shorts (`overS`, 0 no horizontal e dentro do teto). Soma
+ * também a pausa da vinheta (`pausaS`, #13239 item 5), que a montagem põe
+ * depois do bloco de abertura (título, ou gancho sem título) quando ele tem
+ * fala "usar" (#13204).
  */
-export function suggestedDurations(doc: DecupagemDoc, sequences: SequenceSpec[] = defaultSequences()): Array<{ spec: SequenceSpec; totalS: number; overS: number }> {
+export function suggestedDurations(doc: DecupagemDoc, sequences: SequenceSpec[] = defaultSequences()): Array<{ spec: SequenceSpec; totalS: number; overS: number; pausaS: number }> {
   const byKey = new Map(doc.blocks.map((b) => [b.key, b]));
+  const usar = (k: BlockKey) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar");
   return sequences.map((spec) => {
-    const totalS = spec.order
-      .flatMap((k) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar"))
-      .reduce((acc, r) => acc + (r.end - r.start), 0);
-    return { spec, totalS, overS: shortsOverS(spec, totalS) };
+    const opening = vinhetaBreathBlock(spec);
+    const pausaS = opening && usar(opening).length ? VINHETA_BREATH_S : 0;
+    const totalS = spec.order.flatMap(usar).reduce((acc, r) => acc + (r.end - r.start), 0) + pausaS;
+    return { spec, totalS, overS: shortsOverS(spec, totalS), pausaS };
   });
 }
 
