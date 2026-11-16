@@ -469,12 +469,10 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // rodada seguinte. Só LÊ o Drive (Final/, pela API no 300) e a edição;
     // grava em data/video-xml-vs-final/, no relatório do Studio e em issue.
     //
-    // DECLARADA, NÃO ARMADA (unidade overnight em worktree isolado, mesma
-    // disciplina do #7663): a 1ª rodada real e o arme
-    // (`scripts/setup-systemd-timers.ts --task Diaria-Video-Xml-Vs-Final-Daily`
-    // no 300, depois de tirar o `enabled: false`) ficam com o editor/coordenador.
+    // Arme e backfill com --open-issues autorizados pelo editor em
+    // 16/11/2026 (#13196), sem dry-run prévio. O
+    // Diaria-Remediate-Never-Armed-Tasks (#8153) arma no 300 após o merge.
     schedule: { kind: "daily", hour: 22, minute: 15 },
-    enabled: false,
     guard: {
       requiredFile: "editions",
       abortMessage:
