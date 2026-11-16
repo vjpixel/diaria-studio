@@ -4520,7 +4520,10 @@ describe("#7003 — claim-issue nunca recria o registro ZERADO quando a âncora 
     const result = claimIssueAutoRegistering(root, "overnight", "coord-7003c", 7003, TAG, iso(NOW));
 
     assert.equal(result.autoRegisterMode, "fresh", "sessão encerrada não ressuscita claims por um claim novo");
-    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "overnight", TAG, "coord-7003c"), "utf8"));
+    // #13238: o re-claim "fresh" de um kind com autoridade de merge vai para o
+    // registro interactive — a sessão encerrada não volta como coordenadora.
+    assert.equal(result.registeredKind, "interactive");
+    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "interactive", TAG, "coord-7003c"), "utf8"));
     assert.deepEqual(onDisk.claimed_issues, [7003]);
   });
 

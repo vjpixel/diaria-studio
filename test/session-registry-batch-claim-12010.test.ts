@@ -21,7 +21,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -51,7 +51,7 @@ function freshRoot(): string {
   return root;
 }
 
-function readAnchor(root: string, kind: "overnight" | "develop", sessionId: string) {
+function readAnchor(root: string, kind: "overnight" | "develop" | "continuo" | "interactive", sessionId: string) {
   return JSON.parse(readFileSync(sessionFilePath(root, kind, TAG, sessionId), "utf8"));
 }
 
@@ -181,10 +181,20 @@ describe("claimIssuesAutoRegistering — âncora ausente resolvida uma vez para 
 
   it("sessão nunca registrada: auto-registra e reivindica o lote", () => {
     const root = freshRoot();
+    const result = claimIssuesAutoRegistering(root, "continuo", "nova", [7, 8], TAG, iso(NOW));
+    assert.equal(result.ok, true);
+    assert.equal(result.autoRegisterMode, "fresh");
+    assert.deepEqual(readAnchor(root, "continuo", "nova").claimed_issues, [7, 8]);
+  });
+
+  it("#13238: --kind develop sem registro grava o lote no registro interactive, nunca cria develop", () => {
+    const root = freshRoot();
     const result = claimIssuesAutoRegistering(root, "develop", "nova", [7, 8], TAG, iso(NOW));
     assert.equal(result.ok, true);
     assert.equal(result.autoRegisterMode, "fresh");
-    assert.deepEqual(readAnchor(root, "develop", "nova").claimed_issues, [7, 8]);
+    assert.equal(result.registeredKind, "interactive");
+    assert.deepEqual(readAnchor(root, "interactive", "nova").claimed_issues, [7, 8]);
+    assert.equal(existsSync(sessionFilePath(root, "develop", TAG, "nova")), false);
   });
 });
 

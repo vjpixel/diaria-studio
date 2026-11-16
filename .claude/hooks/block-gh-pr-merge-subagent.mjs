@@ -138,6 +138,7 @@ import {
   d1HookFailureNotice,
   d1LocksClientForHook,
   d1ReadLockHolder,
+  d1ReadMergeGrant,
   mergeGrantConsumedD1Name,
   mergeLockD1Name,
 } from "./lib/d1-locks.mjs";
@@ -458,6 +459,32 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo
     }
   }
   return null;
+}
+
+/**
+ * #13242: aceita a concessão lida do D1 (`d1ReadMergeGrant`, já conferida em
+ * forma, identidade, auto-concessão e repo) só com as MESMAS regras do arquivo
+ * que dependem desta máquina. Pura.
+ *   - a concedente precisa ser coordenadora com AUTORIDADE DE MERGE ativa na
+ *     varredura (`scan.ids` + `scan.kinds`): basta qualquer versão sincronizada
+ *     do registro dela, não a que traz a concessão — é o atraso dessa versão
+ *     que o D1 contorna. Concedente desconhecida aqui nunca vale;
+ *   - TTL de `grantedAt` com a mesma tolerância de skew;
+ *   - consumo no registro da beneficiária (`ledger`) derruba.
+ * A marca de consumo no D1 é conferida depois, pelo chamador, igual à da
+ * concessão do arquivo.
+ */
+export function acceptD1MergeGrant(d1Grant, sessionId, scan, ledger, now = Date.now()) {
+  if (!d1Grant || typeof sessionId !== "string" || sessionId === "") return null;
+  if (d1Grant.grantedTo !== sessionId || d1Grant.grantedBy === d1Grant.grantedTo) return null;
+  if (!scan?.ids?.has(d1Grant.grantedBy)) return null;
+  if (!MERGE_AUTHORITY_KINDS.has(scan.kinds?.get(d1Grant.grantedBy))) return null;
+  if (ledger && ledgerConsumedAt(ledger, d1Grant)) return null;
+  const grantedMs = Date.parse(d1Grant.grantedAt);
+  if (!Number.isFinite(grantedMs)) return null;
+  const ageMs = now - grantedMs;
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > MERGE_GRANT_TTL_MS) return null;
+  return d1Grant;
 }
 
 /**
@@ -1737,7 +1764,8 @@ if (
       // #10618: o filtro por repo roda DENTRO do leitor, antes de escolher —
       // uma concessão viva de outro repo nunca esconde a do repo certo.
       // Comando com mais de um repo: concessão nenhuma vale (cada uma é de um repo só).
-      const grant = singleRepo ? readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), singleRepo) : null;
+      // `let`: sem concessão no arquivo, o D1 pode tê-la (#13242, abaixo).
+      let grant = singleRepo ? readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), singleRepo) : null;
       // #10618: na whitelist/forma simples o PR já foi lido (inclusive da URL
       // canônica); fora delas nenhuma concessão conta e vale o extrator antigo.
       let targetPr;
@@ -1797,11 +1825,41 @@ if (
       // resposta) naquela posição, nunca some da lista.
       const d1HoldersByRepo = targetRepos.map(() => []);
       let d1GrantConsumed = false;
+      let grantFromD1 = false;
       if (d1.client) {
-        const [lockReads, markerRead] = await Promise.all([
+        // #13242: sem concessão no arquivo, procura a do D1 (gravada pelo
+        // grant-merge da coordenadora de outra máquina). Em paralelo com os
+        // locks; a marca de consumo dela vem numa 2ª leitura, só se existir.
+        const [lockReads, fileMarkerRead, d1GrantRead] = await Promise.all([
           Promise.all(targetRepos.map((r) => d1ReadLockHolder(d1.client, mergeLockD1Name(r)))),
           grant !== null ? d1ReadLockHolder(d1.client, mergeGrantConsumedD1Name(grant)) : Promise.resolve(null),
+          grant === null && singleRepo ? d1ReadMergeGrant(d1.client, payload.session_id, singleRepo) : Promise.resolve(null),
         ]);
+        let markerRead = fileMarkerRead;
+        if (d1GrantRead !== null && !d1GrantRead.ok) {
+          appendHookRunLog(repoRoot, "merge-guard", d1GrantRead.permanent ? "error" : "warn", "d1_grant_read_failed", {
+            error: d1GrantRead.error,
+            permanent: d1GrantRead.permanent,
+          });
+          d1Notices.push(d1HookFailureNotice("concessão de merge", d1GrantRead.error, d1GrantRead.permanent));
+        } else if (d1GrantRead?.ok && d1GrantRead.value) {
+          const accepted = acceptD1MergeGrant(
+            d1GrantRead.value,
+            payload.session_id,
+            scan,
+            readMergeGrantConsumptions(repoRoot),
+          );
+          appendHookRunLog(repoRoot, "merge-guard", "info", "d1_grant_found", {
+            grantedBy: d1GrantRead.value.grantedBy,
+            grantedAt: d1GrantRead.value.grantedAt,
+            accepted: accepted !== null,
+          });
+          if (accepted !== null) {
+            grant = accepted;
+            grantFromD1 = true;
+            markerRead = await d1ReadLockHolder(d1.client, mergeGrantConsumedD1Name(accepted));
+          }
+        }
         lockReads.forEach((r, i) => {
           if (r.ok) {
             d1HoldersByRepo[i] = [r.value];
@@ -1821,6 +1879,10 @@ if (
             permanent: markerRead.permanent,
           });
           d1Notices.push(d1HookFailureNotice("marca de consumo da concessão", markerRead.error, markerRead.permanent));
+          // #13242: a concessão que só o D1 conhece não vale sem a conferência
+          // do consumo (a do arquivo segue o fail-open de sempre): esta porta
+          // é nova, e na dúvida fica fechada.
+          if (grantFromD1) grant = null;
         }
       }
       if (d1Notices.length > 0) process.stderr.write(`${d1Notices.join("\n")}\n`);
