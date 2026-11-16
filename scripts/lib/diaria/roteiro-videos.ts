@@ -747,6 +747,9 @@ export function fmtDuracao(s: number): string {
   return s >= 60 ? `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}` : `${s} s`;
 }
 
+/** " (fala + ~1,7 s da pausa da vinheta)": a estimativa soma a pausa (#13239), então não é só fala. */
+const comPausa = (s: number): string => (s > 0 ? ` (fala + ~${s.toFixed(1).replace(".", ",")} s da pausa da vinheta)` : " de fala");
+
 /**
  * Pure (#13130): avisos de duração. Vertical acima do alvo sai com a sugestão
  * de corte, nesta ordem: os cortes de reserva declarados, depois as falas mais
@@ -759,7 +762,7 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
     if (!d.foraDoAlvo) continue;
     if (d.video === "horizontal") {
       const lado = d.segundos > d.alvoS ? "acima" : "abaixo";
-      avisos.push(`horizontal com ~${fmtDuracao(d.segundos)} de fala, ${lado} da faixa de ~${fmtDuracao(d.alvoS)} (± ${cfg.horizontalFolgaS} s) (#13130)`);
+      avisos.push(`horizontal com ~${fmtDuracao(d.segundos)} estimados${comPausa(d.pausaS)}, ${lado} da faixa de ~${fmtDuracao(d.alvoS)} (± ${cfg.horizontalFolgaS} s) (#13130)`);
       continue;
     }
     const sugestoes: string[] = [];
@@ -778,7 +781,7 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
       .slice(0, 3);
     if (longas.length) sugestoes.push(`as falas mais longas: ${longas.map((l) => `${l.id} (~${l.s} s)`).join(", ")}`);
     avisos.push(
-      `${VIDEO_LABEL[d.video]} com ~${fmtDuracao(d.segundos)} de fala, acima do alvo de ${fmtDuracao(d.alvoS)} (card de CTA à parte)${sugestoes.length ? `; para cortar: ${sugestoes.join("; ")}` : ""} (#13130)`,
+      `${VIDEO_LABEL[d.video]} com ~${fmtDuracao(d.segundos)} estimados${comPausa(d.pausaS)}, acima do alvo de ${fmtDuracao(d.alvoS)} (card de CTA à parte)${sugestoes.length ? `; para cortar: ${sugestoes.join("; ")}` : ""} (#13130)`,
     );
   }
   return avisos;
@@ -786,12 +789,12 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
 
 /** As durações em Markdown, uma linha por vídeo (o card de CTA à parte). */
 export function renderDuracoes(roteiro: Pick<RoteiroFalas, "falas">, cfg: RoteiroDuracaoConfig = ROTEIRO_DURACAO_DEFAULT): string {
-  const linhas = [`## Duração estimada (${cfg.palavrasPorMinuto} palavras/min, #13130)`, "", "| Vídeo | Palavras | Fala | Alvo |", "|---|---|---|---|"];
+  const linhas = [`## Duração estimada (${cfg.palavrasPorMinuto} palavras/min, #13130)`, "", "| Vídeo | Palavras | Estimado | Alvo |", "|---|---|---|---|"];
   for (const d of duracaoPorVideo(roteiro, cfg)) {
     const alvo = d.video === "horizontal" ? `~${fmtDuracao(d.alvoS)} ± ${cfg.horizontalFolgaS} s` : `até ${fmtDuracao(d.alvoS)}`;
     linhas.push(`| ${VIDEO_LABEL[d.video]} | ${d.palavras} | ~${fmtDuracao(d.segundos)}${d.foraDoAlvo ? " (fora do alvo)" : ""} | ${alvo} |`);
   }
-  const pausa = cfg.pausaVinhetaS > 0 ? `A fala já inclui ~${cfg.pausaVinhetaS.toFixed(1).replace(".", ",")} s da pausa da vinheta depois do título (#13239). ` : "";
+  const pausa = cfg.pausaVinhetaS > 0 ? `A estimativa já inclui, além da fala, ~${cfg.pausaVinhetaS.toFixed(1).replace(".", ",")} s da pausa da vinheta depois do título (#13239). ` : "";
   linhas.push("", `${pausa}Mais o card de CTA, ~${cfg.ctaCardS} s em cada vídeo.`, "");
   return linhas.join("\n");
 }

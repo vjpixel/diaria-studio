@@ -499,13 +499,15 @@ export function decupagemMarkdown(edition: string, doc: DecupagemDoc, sequences:
     for (const r of b.rows) lines.push(`| ${span(r.start, r.end)} | ${mdCell(r.fala)} | ${mdCell(r.sugestao)} |  |`);
     lines.push("");
   }
-  lines.push("## Montagem sugerida", "", `Só as linhas com sugestão \"usar\", na ordem de cada versão. A duração soma os trechos do bruto, antes de tirar os silêncios, mais a pausa de ${VINHETA_BREATH_S.toFixed(1).replace(".", ",")} s da vinheta depois do título.`, "");
+  lines.push("## Montagem sugerida", "", `Só as linhas com sugestão \"usar\", na ordem de cada versão. A duração soma os trechos do bruto, antes de tirar os silêncios; a versão cuja abertura tem fala \"usar\" soma também a pausa da vinheta e diz isso embaixo do título.`, "");
   const byKey = new Map(doc.blocks.map((b) => [b.key, b]));
   const totals = new Map(suggestedDurations(doc, sequences).map((d) => [d.spec.name, d]));
   for (const spec of sequences) {
     const rowsFor = (k: BlockKey) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar");
     const d = totals.get(spec.name)!;
     lines.push(`### ${versionLabel(spec)}: ${spec.name} (~${clockTime(d.totalS)})`, "");
+    // #13239: a pausa só é citada onde conta (abertura com fala "usar"), nunca no cabeçalho comum.
+    if (d.pausaS > 0) lines.push(`Inclui a pausa de ${d.pausaS.toFixed(1).replace(".", ",")} s da vinheta depois da abertura.`, "");
     if (d.overS > 0) {
       lines.push(
         `**Passa de ${SHORTS_MAX_S / 60}:00 (Shorts) em ~${d.overS.toFixed(1)} s**, estimativa antes de tirar os silêncios: a decupagem propõe o corte (trecho e tempos), não o repassa.`,

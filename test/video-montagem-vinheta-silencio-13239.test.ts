@@ -16,7 +16,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   VINHETA_BREATH_S,
+  FILLER_FACE_NEIGHBOR_S,
   buildSequencePlan,
+  defaultSequences,
   pickVinhetaFiller,
   vinhetaBreathFor,
   type FillerEnergy,
@@ -26,7 +28,7 @@ import {
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
 import { buildDecupagemDoc, decupagemMarkdown, suggestedDurations, type DecupagemPlan } from "../scripts/lib/diaria/video-montage-docs.ts";
-import { duracaoPorVideo, renderDuracoes, roteiroDuracaoConfigFrom, ROTEIRO_DURACAO_DEFAULT } from "../scripts/lib/diaria/roteiro-videos.ts";
+import { avisosDuracao, duracaoPorVideo, renderDuracoes, roteiroDuracaoConfigFrom, ROTEIRO_DURACAO_DEFAULT } from "../scripts/lib/diaria/roteiro-videos.ts";
 import type { RoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
 
 const FPS = 30;
@@ -38,7 +40,7 @@ function energy(durS: number, loud: Array<[number, number, number]>, quietDb = -
   const n = Math.ceil(durS / HOP);
   const fullDb = new Float64Array(n).fill(-70);
   for (const [a, b, db] of loud) for (let k = Math.floor(a / HOP); k < Math.min(n, Math.ceil(b / HOP)); k++) fullDb[k] = db;
-  return { hopS: HOP, fullDb, quietDb };
+  return { hopS: HOP, fullDb, quietDb, lookS: 0.04 };
 }
 
 const w = (text: string, start: number, end: number): Word => ({ text, start, end });
@@ -119,6 +121,74 @@ describe("#13239 item 3: o silêncio da pausa da vinheta por energia e rosto", (
     assert.equal(pickVinhetaFiller({ ...base, silences: silences.slice(1) })?.srcIn, 42.3);
   });
 
+  it("conflito de critérios: o silêncio depois da fala tem som e o de antes vence; a premissa diz por quê, sem 'nenhum silêncio'", () => {
+    // Fala do arquivo desde 10 s (o silêncio de 22–25 s não é pré-roll), fala do bloco até 34,44 s.
+    const b2 = [{ start: 10, end: 20 }, ...busy];
+    const e = energy(300, [[42, 44.2, -30]]);
+    const p = pickVinhetaFiller({ ...base, busy: b2, silences: [{ start: 22, end: 25 }, { start: 42.25, end: 44.1 }], energy: e });
+    assert.ok(p && p.srcIn >= 22 && p.srcOut <= 25, `pausa em ${p?.srcIn}`);
+    assert.equal(p.why[0], "antes da fala do bloco (os silêncios depois dela estavam com som)");
+    assert.ok(!p.why.some((x) => /nenhum/.test(x)), p.why.join("; "));
+    // Sem alternativa depois da fala, aí sim "nenhum".
+    const so = pickVinhetaFiller({ ...base, busy: b2, silences: [{ start: 22, end: 25 }], energy: e });
+    assert.equal(so?.why[0], "antes da fala do bloco (nenhum silêncio que sirva depois dela)");
+  });
+
+  it("conflito de critérios: com som escolhido porque o quieto era pré-roll; rosto em outra posição porque o parado tinha som", () => {
+    const e = energy(300, [[42, 44.2, -30], [90, 93, -38]]);
+    const loud = pickVinhetaFiller({ ...base, silences, energy: e });
+    assert.ok(loud && loud.srcIn >= 90);
+    assert.ok(loud.why.some((x) => /com som \(pico -38 dB.*os silêncios mais quietos estavam no pré-roll\)/.test(x)), loud.why.join("; "));
+    assert.ok(!loud.why.some((x) => /nenhum silêncio mais quieto/.test(x)));
+
+    const here = { faceX: 0.48, eyeY: 0.54 };
+    const moved = { faceX: 0.6, eyeY: 0.5 };
+    // 42,25–44,1: rosto parado nos vizinhos (34,6 e 45), com som. 90–93: quieto, rosto em outra posição (vizinho em 94).
+    const framings = [
+      { interval: { start: 27.2, end: 34.6 }, framing: here },
+      { interval: { start: 45, end: 50 }, framing: here },
+      { interval: { start: 94, end: 100 }, framing: moved },
+    ];
+    const e2 = energy(300, [[42, 44.2, -30]]);
+    const p = pickVinhetaFiller({ ...base, busy: [...busy, { start: 45, end: 50 }, { start: 94, end: 100 }], silences: silences.slice(1), energy: e2, framings, itemFraming: here });
+    assert.ok(p && p.srcIn >= 90, `pausa em ${p?.srcIn}`);
+    assert.ok(p.why.includes("rosto em outra posição nos vizinhos (os silêncios sem essa troca estavam com som)"), p.why.join("; "));
+  });
+
+  it(`rosto: só conta vizinho a até ${FILLER_FACE_NEIGHBOR_S} s; o mais perto sem framing é "sem medida", nunca pula para um item longe`, () => {
+    const here = { faceX: 0.48, eyeY: 0.54 };
+    const moved = { faceX: 0.6, eyeY: 0.5 };
+    const s = [{ start: 90, end: 93 }];
+    // Vizinho com o rosto em outra posição, mas a 10 s do silêncio: não pesa.
+    const far = pickVinhetaFiller({ ...base, busy: [...busy, { start: 103, end: 110 }], silences: s, framings: [{ interval: { start: 103, end: 110 }, framing: moved }], itemFraming: here });
+    assert.ok(far?.why.includes("sem rosto medido nos vizinhos (face)"), far?.why.join("; "));
+    // Item colado no silêncio sem framing, e um mais longe (dentro do raio) com outra posição: o lado fica sem medida.
+    const gap = pickVinhetaFiller({
+      ...base, busy: [...busy, { start: 93.1, end: 94 }, { start: 94.5, end: 95.5 }], silences: s,
+      framings: [{ interval: { start: 94.5, end: 95.5 }, framing: moved }], itemFraming: here,
+    });
+    assert.ok(gap?.why.includes("sem rosto medido nos vizinhos (face)"), gap?.why.join("; "));
+    // Sem o rosto do item: um vizinho só não tem com quem comparar (sem medida); dois, entre si.
+    const one = pickVinhetaFiller({ ...base, busy: [...busy, { start: 93.5, end: 95 }], silences: s, framings: [{ interval: { start: 93.5, end: 95 }, framing: moved }] });
+    assert.ok(one?.why.includes("sem rosto medido nos vizinhos (face)"), one?.why.join("; "));
+    const two = pickVinhetaFiller({
+      ...base, busy: [...busy, { start: 88, end: 89.5 }, { start: 93.5, end: 95 }], silences: s,
+      framings: [{ interval: { start: 88, end: 89.5 }, framing: here }, { interval: { start: 93.5, end: 95 }, framing: moved }],
+    });
+    assert.ok(two?.why.some((x) => x.startsWith("rosto em outra posição")), two?.why.join("; "));
+  });
+
+  it("energia que não cobre o trecho: 'sem medida', nunca -Infinity na premissa", () => {
+    const e = energy(50, []); // quadros só até 50 s; o silêncio está em 90 s
+    const p = pickVinhetaFiller({ ...base, silences: [{ start: 90, end: 93 }], energy: e });
+    assert.ok(p);
+    assert.ok(p.why.includes("sem medida de energia nesse trecho (fora dos quadros do detector)"), p.why.join("; "));
+    assert.ok(!p.why.join(" ").includes("Infinity"));
+    // Um quieto medido vence o sem medida.
+    const q = pickVinhetaFiller({ ...base, silences: [{ start: 42.25, end: 44.1 }, { start: 90, end: 93 }], energy: energy(50, []) });
+    assert.ok(q && q.srcIn < 50);
+  });
+
   it("buildSequencePlan: com a energia do detector, o trecho escolhido sai como [premissa] com os critérios", () => {
     const resolved = {
       titulo: [item(20, 23, "a vinheta", [w("a", 20, 21.5), w("vinheta", 21.6, 22.9)], 23.2)],
@@ -150,7 +220,12 @@ describe("#13239 item 5: a estimativa de duração conta a pausa da vinheta", ()
       const s = sem.get(d.video)!;
       assert.ok(d.segundos - s.segundos >= 1 && d.segundos - s.segundos <= 2, `${d.video}: ${s.segundos} → ${d.segundos}`);
     }
-    assert.match(renderDuracoes(roteiro()), /inclui ~1,7 s da pausa da vinheta/);
+    assert.match(renderDuracoes(roteiro()), /\| Estimado \|[\s\S]*inclui, além da fala, ~1,7 s da pausa da vinheta/);
+    // Aviso: a duração que soma a pausa não se chama "de fala" (#13239 review item 6).
+    const av = avisosDuracao(roteiro());
+    assert.ok(av.some((a) => /vertical 1 com ~1 min 3 s estimados \(fala \+ ~1,7 s da pausa da vinheta\), acima do alvo/.test(a)), av.join("\n"));
+    assert.ok(!av.some((a) => / de fala, /.test(a)), av.join("\n"));
+    assert.ok(avisosDuracao(roteiro(), { ...ROTEIRO_DURACAO_DEFAULT, pausaVinhetaS: 0 }).some((a) => /estimados de fala, acima/.test(a)));
   });
 
   it("a pausa empurra para fora do alvo a vertical que só a fala deixava no limite", () => {
@@ -185,8 +260,32 @@ describe("#13239 item 5: a estimativa de duração conta a pausa da vinheta", ()
       assert.equal(x.pausaS, VINHETA_BREATH_S, x.spec.name);
       assert.equal(Math.round(x.totalS * 10) / 10, Math.round((4 + 60 + 3 + VINHETA_BREATH_S) * 10) / 10, x.spec.name);
     }
-    assert.match(decupagemMarkdown("261116", buildDecupagemDoc(plan, segs)), /mais a pausa de 1,7 s da vinheta depois do título/);
+    assert.match(decupagemMarkdown("261116", buildDecupagemDoc(plan, segs)), /Inclui a pausa de 1,7 s da vinheta depois da abertura/);
     const semTitulo: DecupagemPlan = { ...plan, blocks: [{ key: "titulo", rows: [{ segments: [1], suggestion: "cortar" }] }, ...plan.blocks.slice(1)] };
     for (const x of suggestedDurations(buildDecupagemDoc(semTitulo, segs))) assert.equal(x.pausaS, 0, x.spec.name);
+    assert.ok(!decupagemMarkdown("261116", buildDecupagemDoc(semTitulo, segs)).includes("Inclui a pausa"));
+  });
+
+  it("decupagem: sem título, a abertura no gancho falado com \"usar\" soma a pausa; gancho cortado, não", () => {
+    const seg = (text: string, start: number, end: number): Segment => ({ start, end, text, words: [{ start, end, text }] } as Segment);
+    const segs = [seg("A IA mudou o vestibular.", 0, 3), seg("Comentário.", 4, 64), seg("Até amanhã!", 65, 68)];
+    const plan: DecupagemPlan = {
+      edition: "261116",
+      blocks: [
+        { key: "gancho", rows: [{ segments: [1], suggestion: "usar" }] },
+        { key: "comentario", rows: [{ segments: [2], suggestion: "usar" }] },
+        { key: "fecho", rows: [{ segments: [3], suggestion: "usar" }] },
+      ],
+    };
+    const seqs = defaultSequences("V1", "monologo", "gancho");
+    const d = suggestedDurations(buildDecupagemDoc(plan, segs), seqs);
+    assert.equal(d.length, 2);
+    for (const x of d) {
+      assert.ok(!x.spec.order.includes("titulo") && x.spec.order.includes("gancho"), x.spec.name);
+      assert.equal(x.pausaS, VINHETA_BREATH_S, x.spec.name);
+      assert.ok(Math.abs(x.totalS - (3 + 60 + 3 + VINHETA_BREATH_S)) < 1e-9, `${x.spec.name}: ${x.totalS}`);
+    }
+    const cortado: DecupagemPlan = { ...plan, blocks: [{ key: "gancho", rows: [{ segments: [1], suggestion: "cortar" }] }, ...plan.blocks.slice(1)] };
+    for (const x of suggestedDurations(buildDecupagemDoc(cortado, segs), seqs)) assert.equal(x.pausaS, 0, x.spec.name);
   });
 });

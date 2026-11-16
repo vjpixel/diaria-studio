@@ -1372,7 +1372,7 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
   }
   // #13239 item 3: a energia do detector escolhe o silêncio da pausa da vinheta pelo mesmo limite do "corta som" (#12263).
   const quiet = speech?.energy ? entrySoundLimitDb(speech.energy) : null;
-  const fillerEnergy = speech?.energy && quiet ? { fillerEnergy: { hopS: speech.energy.hopS, fullDb: speech.energy.fullDb, quietDb: quiet.lim } } : {};
+  const fillerEnergy = speech?.energy && quiet ? { fillerEnergy: { hopS: speech.energy.hopS, fullDb: speech.energy.fullDb, quietDb: quiet.lim, lookS: SPEECH_DETECT.entryLookS } } : {};
   const ps = specs.map((s) => {
     // #12101: o respiro da vinheta depois do título (todas as sequências desde o #13204).
     if (!speech) return buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s) });
