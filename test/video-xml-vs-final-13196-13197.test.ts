@@ -382,7 +382,7 @@ describe("self-review PR #13205: Drive inacessível não é 'sem final exportado
     plans: [{ spec: { target: "youtube" }, clips: [], durationFrames: 0 } as unknown as PlanFileLite["plans"][number]],
     source: { fps: 30 },
   };
-  const finderOf = (list: Finder["list"]): Finder => ({ mode: "api", list, workDir: () => "/nao-existe" });
+  const finderOf = (list: Finder["list"]): Finder => ({ mode: "api", list, workDir: () => "/nao-existe", brutoFile: async () => null });
 
   it("falha de consulta vira drive-indisponivel e alarma", async () => {
     const rec = await compareEdition("261110", finderOf(async () => {

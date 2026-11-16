@@ -14,6 +14,11 @@
  * `alignEnvelopes`), com o final no lugar do "áudio" e o bruto no do "vídeo",
  * mais uma busca global nos vãos sem par (`alignWithReorder`: trecho
  * reordenado pelo editor).
+ * Sem o `audio.wav` do cache, o áudio do bruto sai dos arquivos dele, achados
+ * nesta ordem: caminho do `plan.json`, arquivo do HD do 300
+ * (`VIDEO_ARCHIVE_ROOT`, default `/mnt/hd-sata/arquivo-video`, #12548), cache
+ * da montagem (`{cache}/{AAMMDD}/bruto`) e a pasta `{AAMMDD}/` do Drive. Bruto
+ * em vários arquivos é concatenado na linha do tempo do plano (`frames/fps`).
  * Cada trecho do final ganha o tempo no bruto; o cruzamento com os clipes do
  * plano dá as diferenças. Somente leitura sobre Drive e edição: grava só em
  * `data/video-xml-vs-final/` e no cache local.
@@ -48,7 +53,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,12 +92,20 @@ import {
   pickFinalsPerSequence,
   renderReport,
   XML_FINAL_SCHEMA,
+  brutoParts,
+  brutoSearchDirs,
+  brutoTimelineMatches,
+  type BrutoPart,
   type DetectedPattern,
   type EditionRecord,
   type RecurringState,
   type SequenceRecord,
 } from "./lib/diaria/video-xml-vs-final.ts";
 import { BASELINE_11670 } from "./lib/diaria/video-xml-vs-final-baseline.ts";
+import { editionsOfFolder } from "./lib/diaria/video-bruto-archive.ts";
+
+/** Montagem do HD do 300 onde o `archive-video-brutos.ts` guarda os brutos (`DEFAULT_MOUNT`, #12548). */
+const DEFAULT_ARCHIVE_MOUNT = "/mnt/hd-sata";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const OUT_DIR = join("data", "video-xml-vs-final");
@@ -137,7 +150,7 @@ export function todayBrt(now = new Date()): string {
 export interface PlanFileLite {
   plans: SequencePlan[];
   /** `files` = bruto em vários arquivos (#12559); `path` é então só o do 1º. */
-  source: { fps?: number; audioOnly?: boolean; path?: string; files?: Array<{ path?: string }> };
+  source: { fps?: number; audioOnly?: boolean; path?: string; files?: Array<{ path?: string; frames?: number; offsetFrames?: number }> };
   xmlVersions?: Record<string, { id: string }>;
   stale?: Record<string, unknown>;
 }
@@ -173,6 +186,19 @@ export interface Finder {
   /** Os candidatos a final da edição: pastas Final/ (e Editado/ se Final/ não tiver mp4). */
   list(edition: string): Promise<Array<{ name: string; modifiedTime?: string | null; fetch: () => Promise<string> }>>;
   workDir(edition: string): string;
+  /**
+   * Um arquivo do bruto pelo nome, na pasta `{AAMMDD}/` do Drive (Drive for desktop ou API, baixado para o
+   * cache). `null` = não está lá; erro de credencial/rede sobe.
+   */
+  brutoFile(edition: string, name: string): Promise<string | null>;
+}
+
+/** Arquivo de `dir` com este nome, sem diferenciar maiúsculas (o Drive e o Windows não diferenciam). */
+function fileInDir(dir: string, name: string): string | null {
+  if (!existsSync(dir)) return null;
+  const want = name.toLowerCase();
+  const hit = readdirSync(dir).find((n) => n.toLowerCase() === want);
+  return hit && statSync(join(dir, hit)).isFile() ? join(dir, hit) : null;
 }
 
 function localFinder(driveRoot: string, workDirFlag: string | undefined): Finder {
@@ -195,6 +221,7 @@ function localFinder(driveRoot: string, workDirFlag: string | undefined): Finder
       return finals.length ? finals : pick(isEditedFolderName);
     },
     workDir: (edition) => resolve(workDirFlag ?? workDirDefault("local", "", tmpdir(), edition)),
+    brutoFile: async (edition, name) => fileInDir(join(driveRoot, edition), name),
   };
 }
 
@@ -232,6 +259,16 @@ async function apiFinder(cacheFlag: string | undefined, workDirFlag: string | un
       }));
     },
     workDir: (edition) => resolve(workDirFlag ?? workDirDefault("api", cacheOf(edition), tmpdir(), edition)),
+    async brutoFile(edition, name) {
+      const found = await listChildren(deps, rootId(), { name: edition, foldersOnly: true });
+      if (found.length === 0) return null;
+      const folder: DriveEntry = found.length === 1 ? found[0] : await findEditionFolder(deps, rootId(), edition);
+      const want = name.toLowerCase();
+      const file = (await listChildren(deps, folder.id)).find((f) => f.mimeType !== FOLDER_MIME && f.name.toLowerCase() === want);
+      if (!file) return null;
+      // Mesmo destino do modo API da montagem: `{cache}/{AAMMDD}/bruto/` (reaproveita o que ela já baixou).
+      return (await ensureCachedFile(deps, file, join(cacheOf(edition), "bruto"), log)).localPath;
+    },
   };
 }
 
@@ -245,29 +282,118 @@ function transcriptWords(edition: string): Word[] {
   return (t.segments ?? []).flatMap((s) => s.words ?? []);
 }
 
+/** Onde procurar o bruto fora do caminho do `plan.json` (#13196/#13197, resíduo da 1ª rodada real). */
+export interface BrutoLookup {
+  /** Raiz do arquivo do HD do 300 (#12548); `null` = não procurar lá. */
+  archiveRoot: string | null;
+  /** `{cache}/{AAMMDD}` da montagem; `null` = sem cache configurado nesta máquina. */
+  montageEditionCache(edition: string): string | null;
+}
+
+export function defaultBrutoLookup(cacheFlag?: string, env: NodeJS.ProcessEnv = process.env): BrutoLookup {
+  return {
+    archiveRoot: env.VIDEO_ARCHIVE_ROOT ?? join(env.VIDEO_ARCHIVE_MOUNT ?? DEFAULT_ARCHIVE_MOUNT, "arquivo-video"),
+    montageEditionCache(edition) {
+      try {
+        return driveCacheDir(edition, cacheFlag, env.DIARIA_VIDEO_CACHE_DIR, homedir());
+      } catch (e) {
+        log(`[aviso] ${edition}: cache da montagem indisponível (${(e as Error).message}); bruto não procurado lá`);
+        return null;
+      }
+    },
+  };
+}
+
+/** Um arquivo do bruto nesta máquina: caminho do `plan.json`, arquivo do HD, cache da montagem e, por último, o Drive. */
+async function locateBrutoPart(edition: string, part: BrutoPart, finder: Finder, lookup: BrutoLookup): Promise<string | null> {
+  if (existsSync(part.originalPath)) return part.originalPath;
+  const archiveFolders = lookup.archiveRoot && existsSync(lookup.archiveRoot) ? readdirSync(lookup.archiveRoot) : [];
+  const dirs = brutoSearchDirs({
+    edition,
+    archiveRoot: lookup.archiveRoot,
+    archiveFolders,
+    montageEditionCache: lookup.montageEditionCache(edition),
+    join,
+    editionsOfFolder,
+  });
+  for (const dir of dirs) {
+    const hit = fileInDir(dir, part.name);
+    if (hit) return hit;
+  }
+  return finder.brutoFile(edition, part.name);
+}
+
+function probeDurationS(path: string): number {
+  return Number(sh("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.trim());
+}
+
+/** ffmpeg de um arquivo do bruto para 16 kHz mono; com `durationS`, completa com silêncio e corta na duração da linha do tempo. */
+function extract16k(src: string, out: string, durationS: number | null): void {
+  const fit = durationS === null ? [] : ["-af", "apad", "-t", durationS.toFixed(6)];
+  const tmp = `${out}.tmp.wav`;
+  sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...fit, "-c:a", "pcm_s16le", tmp]);
+  renameSync(tmp, out);
+}
+
 /**
- * O áudio 16 kHz mono do bruto: o do cache da montagem, ou extraído do bruto se ele está nesta máquina.
- * `wav: null` traz o motivo do pulo.
- *
- * Bruto em vários arquivos (#12559) sem o `audio.wav` do cache não tem fallback (#13225): `source.path`
- * é só o do 1º arquivo e os tempos do `plan.json` são globais, na linha do tempo que concatena todos.
- * Extrair só o 1º daria clipes "removidos" (ou pontas falsas) a partir do 2º arquivo.
+ * O áudio 16 kHz mono do bruto: o `audio.wav` do cache da montagem ou, sem
+ * ele, extraído dos arquivos do bruto achados por `locateBrutoPart`. Bruto em
+ * vários arquivos (#12559, antes pulado pela #13225): um WAV por arquivo,
+ * cada um na duração que ocupa na linha do tempo (`frames/fps`, com `apad`), e
+ * a concatenação na ordem de `offsetFrames`, como o `ensureMultiAudio` da
+ * montagem. Duração final conferida contra a linha do tempo: não bater é pulo,
+ * nunca uma comparação com os tempos deslocados. `wav: null` traz o motivo.
  */
-export function brutoWav(edition: string, workDir: string, pf: PlanFileLite): { wav: string } | { wav: null; reason: string } {
+export async function brutoWav(
+  edition: string,
+  workDir: string,
+  pf: PlanFileLite,
+  finder: Finder,
+  lookup: BrutoLookup = defaultBrutoLookup(),
+): Promise<{ wav: string } | { wav: null; reason: string }> {
   const cached = join(workDir, "audio.wav");
   if (existsSync(cached)) return { wav: cached };
-  const nFiles = pf.source.files?.length ?? 0;
-  if (nFiles > 1) {
-    log(`[aviso] ${edition}: bruto em ${nFiles} arquivos sem ${cached}; o fallback extrairia só o 1º — sequências fora da comparação (#13225)`);
-    return { wav: null, reason: `áudio do bruto ausente (${cached}) e bruto em ${nFiles} arquivos: o fallback não concatena (#13225)` };
+  const bp = brutoParts(pf.source);
+  if (bp.parts === null) return { wav: null, reason: `áudio do bruto ausente (${cached}) e ${bp.reason}` };
+  const parts = bp.parts;
+  const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, parts.length > 1 ? "bruto-multi-16k.wav" : "bruto-16k.wav");
+  const fits = (p: string) => existsSync(p) && brutoTimelineMatches(probeDurationS(p), parts, pf.source.fps);
+  if (fits(own)) return { wav: own };
+  const local: string[] = [];
+  for (const part of parts) {
+    let p: string | null;
+    try {
+      p = await locateBrutoPart(edition, part, finder, lookup);
+    } catch (e) {
+      log(`[erro] ${edition}: busca do bruto ${part.name} no Drive falhou: ${(e as Error).message}`);
+      return { wav: null, reason: driveUnavailableReason(`bruto ${part.name}: ${(e as Error).message}`) };
+    }
+    if (!p) return { wav: null, reason: `áudio do bruto ausente (${cached}) e ${part.name} não achado (caminho do plan.json, arquivo do HD, cache da montagem, Drive)` };
+    local.push(p);
   }
-  const src = pf.source.path;
-  if (!src || !existsSync(src)) return { wav: null, reason: `áudio do bruto ausente (${cached}) e bruto fora desta máquina` };
-  const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-16k.wav");
-  if (!existsSync(own)) {
-    mkdirSync(dirname(own), { recursive: true });
-    log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${src})…`);
-    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", own]);
+  mkdirSync(dirname(own), { recursive: true });
+  if (parts.length === 1) {
+    log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${local[0]})…`);
+    extract16k(local[0], own, null);
+    return { wav: own };
+  }
+  const dir = join(dirname(own), "bruto-parts");
+  mkdirSync(dir, { recursive: true });
+  const wavs: string[] = [];
+  for (const [i, part] of parts.entries()) {
+    const w = join(dir, `${String(i + 1).padStart(2, "0")}.wav`);
+    log(`[video-xml-vs-final] ${edition}: áudio do bruto ${i + 1}/${parts.length} (${local[i]})…`);
+    extract16k(local[i], w, part.durationS);
+    wavs.push(w);
+  }
+  const { concatListText } = await import("./video-montagem.ts");
+  const list = join(dir, "list.txt");
+  writeFileSync(list, concatListText(wavs));
+  const tmp = `${own}.tmp.wav`;
+  sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", tmp]);
+  renameSync(tmp, own);
+  if (!fits(own)) {
+    return { wav: null, reason: `áudio do bruto em ${parts.length} arquivos com ${probeDurationS(own)} s, a linha do tempo do plan.json não bate (#12559)` };
   }
   return { wav: own };
 }
@@ -276,7 +402,7 @@ export function brutoWav(edition: string, workDir: string, pf: PlanFileLite): { 
 export async function compareEdition(
   edition: string,
   finder: Finder,
-  opts: { finalPath?: string; seq?: string; skip?: ReadonlySet<string>; plan?: PlanFileLite } = {},
+  opts: { finalPath?: string; seq?: string; skip?: ReadonlySet<string>; plan?: PlanFileLite; brutoLookup?: BrutoLookup } = {},
 ): Promise<EditionRecord | null> {
   const pf = opts.plan ?? readJsonSafe<PlanFileLite>(planPath(edition));
   if (!pf) return null;
@@ -312,9 +438,8 @@ export async function compareEdition(
   }
   const words = transcriptWords(edition);
   const wd = finder.workDir(edition);
-  const brutoRes = brutoWav(edition, wd, pf);
-  const bruto = brutoRes.wav;
-  const brutoSkipReason = brutoRes.wav === null ? brutoRes.reason : "";
+  // Só procura (e talvez baixa) o bruto quando alguma sequência tem final: sem final não há o que comparar.
+  let brutoRes: Awaited<ReturnType<typeof brutoWav>> | null = null;
   let brutoEnv: ReturnType<typeof energyEnvelope> | null = null;
   for (const plan of plans) {
     const key = sequenceKey(plan.spec);
@@ -323,10 +448,12 @@ export async function compareEdition(
       record.skipped.push({ key, reason: "sem final exportado em Final/" });
       continue;
     }
-    if (bruto === null) {
-      record.skipped.push({ key, reason: brutoSkipReason });
+    brutoRes ??= await brutoWav(edition, wd, pf, finder, opts.brutoLookup);
+    if (brutoRes.wav === null) {
+      record.skipped.push({ key, reason: brutoRes.reason });
       continue;
     }
+    const bruto = brutoRes.wav;
     try {
       const finalPath = await fin.fetch();
       const tag = basename(finalPath).replace(/[^\w.-]+/g, "_");
