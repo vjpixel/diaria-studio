@@ -429,7 +429,8 @@ export function mergeEditionRecord(prev: EditionRecord | null, next: EditionReco
   const sequences = [...prevSeqs.filter((s) => !keys.has(s.key)), ...nextSeqs].sort((a, b) => a.key.localeCompare(b.key));
   const measured = new Set(sequences.map((s) => s.key));
   const skipped = [...prev.skipped.filter((s) => !keys.has(s.key) && !next.skipped.some((n) => n.key === s.key)), ...next.skipped].filter((s) => !measured.has(s.key));
-  const method = sequences.some((s) => s.method !== "11670-manual") ? "audio-envelope-align-v1" : "11670-manual";
+  // Sem nenhuma sequência medida, o método é o do registro novo: a rodada automática que só pulou não vira "#11670".
+  const method = sequences.length === 0 ? next.method : sequences.some((s) => s.method !== "11670-manual") ? "audio-envelope-align-v1" : "11670-manual";
   return { ...next, method, generatedAt: next.method === method ? next.generatedAt : prev.generatedAt, sequences, skipped };
 }
 
@@ -860,4 +861,97 @@ export function editionsToCompare(input: {
     })
     .map((e) => e.edition)
     .sort();
+}
+
+// ── Bruto: onde achar cada arquivo e como montar a linha do tempo ───────────
+//
+// A 1ª rodada real (backfill de 16/11/2026) pulou todas as edições de 261104
+// em diante: sem o `audio.wav` no cache da montagem, só o caminho gravado no
+// `plan.json` era tentado (G:/I:, do Windows) e o bruto em vários arquivos não
+// tinha fallback (#13225). O bruto, porém, está no HD do 300 depois do
+// arquivamento semanal (#12548), no cache da montagem ou no Drive.
+
+export interface BrutoPart {
+  /** Nome do arquivo (sem a pasta), como o Drive e o arquivo do HD o guardam. */
+  name: string;
+  /** Caminho gravado no `plan.json` (pode ser de outra máquina). */
+  originalPath: string;
+  /** Duração na linha do tempo (frames/fps); `null` no bruto de um arquivo só. */
+  durationS: number | null;
+}
+
+/** Fonte do `plan.json` no que interessa aqui (`SourceInfo` da montagem). */
+export interface BrutoSourceLite {
+  fps?: number;
+  path?: string;
+  files?: ReadonlyArray<{ id?: string; path?: string; frames?: number; offsetFrames?: number }>;
+}
+
+/** Nome do arquivo de um caminho de qualquer máquina (`/` ou `\`). */
+export function brutoFileName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+/**
+ * Pura — os arquivos do bruto na ordem da linha do tempo da montagem. Bruto em
+ * vários arquivos (#12559) precisa de `fps` e `frames` de cada um: é a duração
+ * que cada parte ocupa na linha do tempo global dos `srcIn`/`srcOut`. Sem
+ * isso, o motivo do pulo (nunca uma concatenação com tempos errados).
+ */
+export function brutoParts(source: BrutoSourceLite): { parts: BrutoPart[] } | { parts: null; reason: string } {
+  const files = source.files ?? [];
+  if (files.length > 1) {
+    const fps = source.fps;
+    if (!fps || !(fps > 0)) return { parts: null, reason: "bruto em vários arquivos sem fps no plan.json" };
+    const sorted = [...files].sort((a, b) => (a.offsetFrames ?? 0) - (b.offsetFrames ?? 0));
+    const parts: BrutoPart[] = [];
+    for (const f of sorted) {
+      // Sem `path`, o nome sai do `id` do `source.json` (`{id}.mp4`, o nome no Drive, #12089).
+      const name = f.path ? brutoFileName(f.path) : f.id ? `${f.id}.mp4` : "";
+      if (!name || !(f.frames && f.frames > 0)) return { parts: null, reason: "bruto em vários arquivos sem caminho ou frames de algum arquivo no plan.json" };
+      parts.push({ name, originalPath: f.path ?? "", durationS: f.frames / fps });
+    }
+    return { parts };
+  }
+  const path = files[0]?.path ?? source.path;
+  if (!path) return { parts: null, reason: "plan.json sem o caminho do bruto" };
+  return { parts: [{ name: brutoFileName(path), originalPath: path, durationS: null }] };
+}
+
+/**
+ * Pura — as pastas locais onde procurar um arquivo do bruto, em ordem: as do
+ * arquivo do HD do 300 cujo nome cobre a edição (`261105`, `261109-10`, mesmo
+ * critério do `archive-video-brutos.ts`, #12548) e a do cache da montagem
+ * (`{cache}/{AAMMDD}/bruto`, onde o modo API dela baixa). O caminho original
+ * do `plan.json` é tentado antes, por quem chama.
+ */
+export function brutoSearchDirs(input: {
+  edition: string;
+  archiveRoot: string | null;
+  archiveFolders: readonly string[];
+  montageEditionCache: string | null;
+  join: (...p: string[]) => string;
+  editionsOfFolder: (name: string) => string[] | null;
+}): string[] {
+  const dirs: string[] = [];
+  if (input.archiveRoot) {
+    for (const f of [...input.archiveFolders].sort()) {
+      if (input.editionsOfFolder(f)?.includes(input.edition)) dirs.push(input.join(input.archiveRoot, f));
+    }
+  }
+  if (input.montageEditionCache) dirs.push(input.join(input.montageEditionCache, "bruto"));
+  return dirs;
+}
+
+/**
+ * Pura — a duração do áudio montado bate com a linha do tempo? Tolerância de
+ * 1 quadro mais 1 amostra (mesmo critério do `audioDurationMatches` da
+ * montagem, #12559): um áudio mais curto adiantaria todas as falas seguintes.
+ */
+export function brutoTimelineMatches(actualS: number, parts: readonly BrutoPart[], fps: number | undefined, sampleRate = 16000): boolean {
+  if (parts.some((p) => p.durationS === null)) return true;
+  const expect = parts.reduce((s, p) => s + (p.durationS ?? 0), 0);
+  const tol = (fps && fps > 0 ? 1 / fps : 0) + 1 / sampleRate + 1e-6;
+  return Number.isFinite(actualS) && Math.abs(actualS - expect) <= tol;
 }
