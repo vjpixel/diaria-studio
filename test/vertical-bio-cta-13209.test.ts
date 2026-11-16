@@ -86,7 +86,7 @@ const textOf = (p: ReturnType<typeof planShortsPublish>, id: string): string => 
 
 describe("#13209 ponto 1: linha da bio só com o mesmo título do horizontal publicado", () => {
   it("resolveVerticalBioCta: fala + mesmo título liga; título diferente, sem registro ou sem vídeo desliga", () => {
-    assert.deepEqual(resolveVerticalBioCta({ ctaFala: true, d1Title: D1.title, recordTitle: D1.title }), { ctaVertical: true, reason: null });
+    assert.deepEqual(resolveVerticalBioCta({ ctaFala: true, d1Title: D1.title, recordTitle: D1.title }), { ctaVertical: true, reason: null, criterio: "titulo" });
     assert.equal(resolveVerticalBioCta({ ctaFala: true, d1Title: D1.title, recordTitle: "Outro título" }).reason, "titulo-diferente");
     assert.equal(resolveVerticalBioCta({ ctaFala: true, d1Title: D1.title, recordTitle: null }).reason, "sem-horizontal-publicado");
     assert.equal(resolveVerticalBioCta({ ctaFala: true, d1Title: D1.title, recordTitle: D1.title, noVideo: true }).reason, "sem-horizontal-publicado");

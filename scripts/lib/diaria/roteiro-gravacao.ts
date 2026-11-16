@@ -88,6 +88,16 @@ export interface PecaVideo {
   ordem?: string[];
   /** Texto do card de CTA do vídeo na página (#13120); ausente = o card padrão. */
   cta?: string;
+  /**
+   * Só no vertical 1 (#13280, decisão do editor no briefing 261116b): o
+   * vertical pertence ao horizontal da edição, e a legenda dele chama para o
+   * vídeo completo ("Vídeo completo: link na bio" e, no TikTok sem link na
+   * bio, a chamada pelo @). Decide no lugar da comparação de títulos do
+   * #13209, que nunca casa quando o horizontal usa o título do roteiro.
+   * Ausente = vale a comparação de títulos. O vertical 2 sai como corte
+   * avulso, sem horizontal, e não leva o campo.
+   */
+  pertenceAoHorizontal?: boolean;
 }
 
 /** O corte de uma fala num vídeo, normalizado (string vira `{ trecho }`). */
@@ -772,6 +782,11 @@ export function validarRoteiroFalas(x: unknown): string[] {
         if (!v || typeof v !== "object") problemas.push(`porVideo.${k} deve ser objeto { titulo, capa, cta, ordem }`);
         for (const campo of ["titulo", "capa", "cta"] as const) {
           if (p[campo] !== undefined && (typeof p[campo] !== "string" || !(p[campo] as string).trim())) problemas.push(`porVideo.${k}.${campo} deve ser texto não vazio`);
+        }
+        // #13280: a marcação de que o vertical pertence ao horizontal, só no vertical 1.
+        if (p.pertenceAoHorizontal !== undefined) {
+          if (k !== "vertical1") problemas.push(`porVideo.${k}.pertenceAoHorizontal: só vale no vertical 1 (o vertical 2 sai como corte avulso, sem horizontal)`);
+          else if (typeof p.pertenceAoHorizontal !== "boolean") problemas.push("porVideo.vertical1.pertenceAoHorizontal deve ser true ou false");
         }
         if (p.trechoCompartilhar !== undefined) {
           const t = p.trechoCompartilhar as { inicio?: unknown; rotulo?: unknown } | null;
