@@ -60,6 +60,12 @@ export function readGroupCampaignsTracked<T extends GroupCampaignKeyed>(path: st
  * Pura: `onDisk` mais as entradas de `current` que diferem de `baseline`
  * (mesma `key` + `campaignId`) ou que não existiam nele. A entrada mudada
  * substitui a do disco na mesma posição; a nova vai para o fim.
+ *
+ * Entrada que esta invocação NÃO mudou mas que sumiu do disco (edição à mão,
+ * arquivo trocado) volta para o fim (#13224): o registro nunca remove
+ * entradas, e o guard das 05:00 depende da entrada da onda do dia. É o que o
+ * aviso de `writeGroupCampaignsMerged` ("regravada a partir desta invocação")
+ * promete.
  */
 export function mergeGroupCampaigns<T extends GroupCampaignKeyed>(
   baseline: readonly T[],
@@ -69,8 +75,8 @@ export function mergeGroupCampaigns<T extends GroupCampaignKeyed>(
   const merged = onDisk.map((e) => ({ ...e }));
   for (const cur of current) {
     const base = baseline.find((b) => sameCampaign(b, cur));
-    if (base && JSON.stringify(base) === JSON.stringify(cur)) continue;
     const i = merged.findIndex((d) => sameCampaign(d, cur));
+    if (i >= 0 && base && JSON.stringify(base) === JSON.stringify(cur)) continue;
     if (i >= 0) merged[i] = { ...cur };
     else merged.push({ ...cur });
   }

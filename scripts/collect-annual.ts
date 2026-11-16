@@ -63,7 +63,8 @@ import { parseLegacyEditionHtml } from "./lib/shared/legacy-edition-parse.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import type { IntentionalError } from "./lib/intentional-errors.ts";
 import {
-  isAmbiguousWrongValue,
+  countIntentionalErrorOccurrences,
+  isAmbiguousPair,
   loadIntentionalErrorPair,
   loadJsonlForEditionsRoot,
   pairFromRecord,
@@ -155,10 +156,24 @@ export function destaquesForPost(
   // `location`; plantado fora dos destaques (RADAR…), nenhum destaque é tocado.
   const scope = annualScrubScope(pair);
   if (scope === "none") return res;
+  const inScope = (d: AnnualDestaque) => typeof scope !== "number" || d.position === scope;
+  // #13223: valor ambíguo (número, palavra curta, nome real trocado) só é
+  // trocado quando há UMA ocorrência somando os campos dos destaques em escopo.
+  // Campo a campo, o título "Haiku 5.5 supera o Sonnet 5" (1 "Sonnet") viraria
+  // "supera o Haiku 5", embora o erro da 261008 estivesse no corpo.
+  if (isAmbiguousPair(pair)) {
+    const total = res.destaques
+      .filter(inScope)
+      .reduce(
+        (n, d) => n + [d.title, d.body, d.why, d.category].reduce((m, f) => m + (f ? countIntentionalErrorOccurrences(f, pair) : 0), 0),
+        0,
+      );
+    if (total !== 1) return res;
+  }
   return {
     source: res.source,
     destaques: res.destaques.map((d) =>
-      typeof scope === "number" && d.position !== scope
+      !inScope(d)
         ? d
         : {
             ...d,
@@ -178,7 +193,7 @@ export function destaquesForPost(
  * fora dos destaques.
  */
 export function annualScrubScope(pair: IntentionalErrorPair): "all" | "none" | number {
-  if (!isAmbiguousWrongValue(pair.wrong)) return "all";
+  if (!isAmbiguousPair(pair)) return "all";
   const key = sectionKeyFromLocation(pair.location);
   if (!key) return "all";
   const m = /^DESTAQUE (\d)$/.exec(key);

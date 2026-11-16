@@ -66,10 +66,13 @@
 //     considerado quando a palavra COMEÇA pela expansão;
 //   - expansão de variável na posição de comando (`$GH pr merge 5`,
 //     `"${cmd[@]}"`) — o valor só existe em tempo de execução;
-//   - corpo de heredoc: FAIL-CLOSED, lido como comandos E, quando o
-//     delimitador não tem aspas, como string entre aspas duplas (`$(...)`/
-//     crase; com `<<'D'` o bash não expande o corpo, #13148) — conta merge
-//     se qualquer leitura achar.
+//   - corpo de heredoc: FAIL-CLOSED, lido como comandos E como string entre
+//     aspas duplas (`$(...)`/crase), com QUALQUER delimitador — inclusive o
+//     aspado (`<<'D'`, `<<"D"`, `<<\D`), que o bash não expande: um
+//     consumidor pode transformar o texto antes de um shell (`sed "s/'//g"
+//     <<'D' | sh`), #13171 (o #13148 pulava a 2ª leitura no aspado; não
+//     voltar a pular, reabre o bypass) — conta merge se qualquer leitura
+//     achar.
 //     Quem alimenta um shell com o corpo é inenumerável (`| sh`, `bash -c
 //     "$(cat <<…)"`, `while … eval`, `$SHELL <<…`, `ssh host <<…`), então
 //     não há lista de "runners": o corpo só é pulado quando o comando INTEIRO

@@ -448,6 +448,35 @@ describe("group-campaigns.json: escrita mesclada sob trava (#13098, P2-2)", () =
     assert.deepEqual(baselineEntriesMissingFromDisk([entry("a", 1)], [entry("b", 2)]).map((e) => e.key), ["a"]);
   });
 
+  it("#13224: entrada sumida do disco e NÃO alterada aqui é regravada, como o log diz", () => {
+    const path = join(dir, "gc-gone-13224.json");
+    writeFileSync(path, JSON.stringify([entry("a", 1), entry("b", 2)], null, 2));
+    const mine = readGroupCampaigns(path);
+    // Alguém troca o arquivo durante os PUTs; "a" some e esta invocação não a alterou.
+    writeFileSync(path, JSON.stringify([entry("b", 2)], null, 2));
+    const logs: string[] = [];
+    writeGroupCampaignsMerged(path, JSON.stringify(mine), (m) => logs.push(m));
+    assert.ok(logs.some((l) => /entrada a .*regravada a partir desta invocação/.test(l)), logs.join(" | "));
+    const final = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    assert.deepEqual(final.map((e) => e.key).sort(), ["a", "b"]);
+    // Escrita seguinte da mesma invocação não duplica nem perde a entrada.
+    writeGroupCampaignsMerged(path, JSON.stringify(mine), (m) => logs.push(m));
+    const again = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    assert.deepEqual(again.map((e) => e.key).sort(), ["a", "b"]);
+  });
+
+  it("#13224: mergeGroupCampaigns re-adiciona a entrada não alterada que falta no disco", () => {
+    const base = [entry("a", 1), entry("b", 2)];
+    const merged = mergeGroupCampaigns(base, base, [entry("b", 2, { status: "sent" })]);
+    assert.deepEqual(
+      merged.map((e) => [e.key, e.status]),
+      [
+        ["b", "sent"],
+        ["a", entry("a", 1).status],
+      ],
+    );
+  });
+
   it("mergeGroupCampaigns: entrada sem mudança não sobrescreve o disco; nova vai para o fim", () => {
     const base = [entry("a", 1)];
     const disk = [entry("a", 1, { status: "sent" }), entry("x", 9)];
