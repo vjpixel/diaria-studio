@@ -91,8 +91,9 @@ describe("#13051 helper: scrub + guard", () => {
       JSON.stringify({ edition: "260506", error_type: "ortografico", is_feature: true, wrong_value: "Gmial", correct_value: "Gmail" }) + "\n",
     );
     assert.equal(jsonlPathForEditionDir(legacy), join(root, "data", "intentional-errors.jsonl"));
-    assert.deepEqual(loadIntentionalErrorPair(withJson, "261111"), { ...pair, location: "RADAR, item 2" });
-    assert.deepEqual(loadIntentionalErrorPair(legacy, "260506"), { edition: "260506", wrong: "Gmial", correct: "Gmail" });
+    // #13223: o par leva a categoria (JSON `category`, JSONL `error_type`).
+    assert.deepEqual(loadIntentionalErrorPair(withJson, "261111"), { ...pair, location: "RADAR, item 2", category: "ortografico" });
+    assert.deepEqual(loadIntentionalErrorPair(legacy, "260506"), { edition: "260506", wrong: "Gmial", correct: "Gmail", category: "ortografico" });
     assert.deepEqual(
       loadWindowIntentionalErrors(editionsRoot, ["260506", "261111", "261112"]).map((p) => p.wrong),
       ["Gmial", "Appel"],
