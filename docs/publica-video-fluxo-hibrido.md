@@ -91,3 +91,35 @@ As filhas devem testar plano alterado/edição errada/sem confirmação, interru
 - **A4:** `scripts/lib/diaria/youtube-link-refresh.ts`, chamado pelo `link-video-d1.ts`, relê `videos.list?part=snippet,status` e atualiza o registro só com id e canal conferidos; falha de API nunca vira público; `failed`/`rejected`/`deleted` é terminal e fica gravado no registro (`terminal_upload_status`), recusado pelo `gateVideoLink` também numa execução seguinte inconclusiva ou com `--no-refresh-status`; com o `05-video-url.txt` desse vídeo já gravado, o `check-video-before-publish` devolve `video-terminal` e bloqueia a Etapa 5 e o Schedule, inclusive depois do sentinel da Etapa 5 e com `--skip youtube` (#12965); `--assume-public` continua só depois da confirmação humana atual.
 
 **Premissas registradas:** a aprovação do vertical não entra na bateria do horizontal: o plano do vertical inclui o link do horizontal (hash do #12654), que só existe depois do upload. A pergunta de B vem logo depois do link, antes da Etapa 5, e o `--publish` por API roda em paralelo às Etapas 5/6; os passos guiados (Chrome, Buffer) ficam para depois do Stage 6, serializados. A medição antes/depois depende de uma rodada real com as fases completas (follow-up), sem promessa de ganho antes disso.
+
+## 1ª rodada com o fluxo híbrido: 261116 (#12878)
+
+Medida em 16/11/2026 a partir de `data/editions/2611/261116/_internal/publica-phases.jsonl` (sessão `b277360f`, máquina Neo, 04:47:28Z a 06:03:40Z) e do `stage-status.json` da mesma edição. Reprodução somente leitura: `npx tsx scripts/publica-phase.ts report 261116`. É **uma** rodada: serve de primeiro ponto, não de mediana.
+
+**Caminho crítico** (união dos intervalos): 1h01m53s, dos quais 41m51s de execução e 20m04s de espera do editor. A soma ingênua das fases daria 1h08m42s, porque o fetch, a capa em background e o `vertical-api` correram sobrepostos a outras fases. Do 1º evento ao último passaram 1h16m12s: 14 min sem fase aberta, entre uma fase e outra (o turno do assistente fora de qualquer fase). Indisponíveis: `decisoes` e `link`, sem par de início e fim.
+
+| Fase | Parte | Tentativas | Duração | Relógio |
+|---|---|---:|---:|---|
+| preflight | sessão | 1 | 11s | execução |
+| fetch | horizontal | 1 | 3m05s | execução (background) |
+| fetch | vertical | 2 | 1m59s | execução (background) |
+| capa | horizontal | 2 | 18m12s | execução (2m07s em background, 16m05s no thread principal) |
+| plano | horizontal | 3 | 8s | execução |
+| aprovação | horizontal | 1 | 6m08s | espera |
+| upload | horizontal | 1 | 1m13s | execução |
+| plano | vertical | 1 | 3s | execução |
+| aprovação | vertical | 1 | 41s | espera |
+| vertical-api | vertical | 1 | 2m51s | execução (background, sobreposta à Etapa 5) |
+| stage5 | sessão | 1 | 15m38s | execução |
+| stage6-teste | sessão | 1 | 33s | execução |
+| stage6-gate | sessão | 1 | 13m15s | espera |
+| stage6-schedule | sessão | 1 | 7s | execução |
+| vertical-guiado | vertical | 1 | 4m39s | execução (depois da Etapa 6) |
+
+**Contra a baseline** (medianas de 4 edições: Stage 5 11m03s, Stage 6 12m05s): no `stage-status.json` a Etapa 5 da 261116 levou 15m03s e a Etapa 6 15m52s (31s até o gate, 15m21s do gate ao fim, 13m15s deles na fase `stage6-gate`, espera do editor). As duas ficaram **acima** da mediana. A telemetria não abre a Etapa 5 por dentro, então a causa dos 4 minutos a mais não sai destes dados; não atribuir ao fluxo híbrido nem ao vídeo.
+
+**O que a rodada mostra:** a fase mais longa do vídeo foi a capa do horizontal (18m12s, quase 30% do caminho crítico), e a espera do editor somou 20 minutos (aprovações e olhada no teste). Upload, planos e o `vertical-api` em paralelo à Etapa 5 custaram pouco. A baseline não tem fase de vídeo para comparar, então não há número de ganho a declarar.
+
+**Isolamento de custo:** as linhas das Etapas 5 e 6 no `stage-status.json` não têm `excluded_other_parts`, e isso está certo nesta rodada: nenhuma fase de vídeo do thread principal caiu dentro das janelas (upload terminou 1m24s antes do início da Etapa 5, e o `vertical-guiado` começou depois do fim da Etapa 6). A única fase de vídeo dentro da janela da Etapa 5 foi o `vertical-api`, processo em background sem transcript de LLM, que não entra no custo do stage. Sem `parse_problems`: o JSONL não teve linha ilegível. A exclusão de intervalos (#12655) não foi exercitada ao vivo; segue coberta só pelo teste com transcript de fixture.
+
+**Ganho de tempo:** não demonstrado. Para afirmar ganho, juntar mais rodadas com as fases completas e comparar a mesma métrica (Etapas 5/6 do `stage-status.json`); o caminho crítico do vídeo só se compara com rodadas futuras do próprio fluxo híbrido.

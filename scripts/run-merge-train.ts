@@ -109,6 +109,7 @@ import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "nod
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { recordTrainMergedTimeline } from "./lib/overnight-unit-timeline.ts";
+import { evaluateGitIdentity, formatGitIdentityProblem, readGitIdentity } from "./lib/git-identity-guard.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -348,6 +349,20 @@ async function main() {
     if (prNumbers.length === 0) {
       console.log("run-merge-train: nenhum PR do studio aberto entre os candidatos — nada a fazer.");
       process.exit(0);
+      return;
+    }
+  }
+
+  // #13259: daqui em diante o trem cria commits de merge locais; com
+  // identidade placeholder (`Test <test@test.com>`, rodada 261115f) eles saem
+  // assinados por ela. Fica depois da triagem (só leitura) para "nada a
+  // fazer" seguir saindo 0. Preparação falhou antes de qualquer lote = exit 1.
+  {
+    const identity = readGitIdentity(cwd);
+    const verdict = evaluateGitIdentity(identity.name, identity.email);
+    if (!verdict.ok) {
+      console.error(`run-merge-train: ${formatGitIdentityProblem(verdict)}`);
+      process.exit(1);
       return;
     }
   }
