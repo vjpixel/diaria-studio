@@ -3361,8 +3361,10 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #13164: o tempo no corte final planejado, nunca o tempo no bruto.
   const horizontalShare = picked.find((p) => sequenceKey(p.spec) === "youtube");
   if (horizontalShare) {
-    const cue = readShareCue(editionDirFor(ctx.edition));
-    writeJson(f(ctx, SHARE_FILE), cue ? { ...cue, seconds: shareTimeInPlan(cue, horizontalShare, resolved, source.fps), requiresFinalCheck: true } : null);
+    // Tempo é sugestão: sem casamento único fica `seconds: null` com aviso, nunca para o build (review #13170).
+    const avisa = (m: string) => console.error(`[aviso] ${m}`);
+    const cue = readShareCue(editionDirFor(ctx.edition), avisa);
+    writeJson(f(ctx, SHARE_FILE), cue ? { ...cue, seconds: shareTimeInPlan(cue, horizontalShare, resolved, source.fps, avisa), requiresFinalCheck: true } : null);
   }
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
   // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).

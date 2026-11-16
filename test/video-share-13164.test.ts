@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { validarRoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
-import { confirmedShare, readShareCue, shareDescription, shareLine, shareTimeInPlan } from "../scripts/lib/diaria/video-share.ts";
+import { confirmedShare, readShareCue, shareDescription, shareForRun, shareLine, shareTimeInPlan } from "../scripts/lib/diaria/video-share.ts";
 import { defaultSequences, type SequencePlan, type ResolvedItem } from "../scripts/lib/diaria/video-montage.ts";
 import { setYouTubeShareDescription, type YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { planYouTubePublish, runYouTubeUpload, buildYouTubePlanManifest } from "../scripts/publish-youtube.ts";
@@ -36,23 +36,75 @@ describe("#13164 roteiro e tempo no corte", () => {
       { ...roteiro, porVideo: { horizontal: { trechoCompartilhar: { inicio: "H11", rotulo: "Pais\nLink" } } } },
     ]) assert.match(validarRoteiroFalas(bad).join(";"), /trechoCompartilhar/);
   });
-  it("leitura sem roteiro não muda edições antigas; JSON quebrado falha", () => temp((dir) => {
+  it("leitura sem roteiro não muda edições antigas; JSON quebrado só falha se citar o trecho", () => temp((dir) => {
     assert.equal(readShareCue(dir), null);
     mkdirSync(join(dir, "_internal"));
     const p = join(dir, "_internal/roteiro-falas.json");
     writeFileSync(p, JSON.stringify(roteiro));
     assert.deepEqual(readShareCue(dir), cue);
+    const avisos: string[] = [];
     writeFileSync(p, "{");
-    assert.throws(() => readShareCue(dir));
+    assert.equal(readShareCue(dir, (m) => avisos.push(m)), null);
+    assert.match(avisos.join(";"), /ilegível/);
+    writeFileSync(p, `{"porVideo":{"horizontal":{"trechoCompartilhar":`);
+    assert.throws(() => readShareCue(dir), /trechoCompartilhar/);
+  }));
+  it("review #13170: problema em outro campo do roteiro não bloqueia; trecho inválido falha", () => temp((dir) => {
+    mkdirSync(join(dir, "_internal"));
+    const p = join(dir, "_internal/roteiro-falas.json");
+    // `ordem` no horizontal é inválido para validarRoteiroFalas, mas não toca o trecho.
+    const outroCampo = { ...roteiro, porVideo: { horizontal: { ...roteiro.porVideo.horizontal, ordem: ["H11"] } }, falas: [...roteiro.falas, { id: "X1", texto: "", videos: ["vertical9"] }] };
+    assert.notDeepEqual(validarRoteiroFalas(outroCampo), []);
+    writeFileSync(p, JSON.stringify(outroCampo));
+    assert.deepEqual(readShareCue(dir), cue);
+    writeFileSync(p, JSON.stringify({ ...roteiro, porVideo: { horizontal: { trechoCompartilhar: { inicio: "H99", rotulo: "Pais" } } } }));
+    assert.throws(() => readShareCue(dir), /inicio/);
+    writeFileSync(p, JSON.stringify({ ...roteiro, porVideo: { horizontal: { trechoCompartilhar: { inicio: "H11", rotulo: "Pais → aqui" } } } }));
+    assert.throws(() => readShareCue(dir), /rotulo/);
   }));
   it("usa palavras da decupagem e posição final, com pausa cortada e início deslocado", () => {
     const spec = defaultSequences("V1", "monologo", "gancho")[0];
     const p: SequencePlan = { spec, clips: [{ block: "comentario", srcIn: 100, srcOut: 110, frameIn: 3000, frameOut: 3300, seqStart: 900, seqEnd: 1200, scale: 1 }], durationFrames: 1200, script: "", missingBlocks: [], dropped: [] };
     const item = { text: cue.texto, interval: { start: 100, end: 110 }, words: [{ start: 100.5, end: 101, text: "Antes" }] } as ResolvedItem;
     assert.equal(shareTimeInPlan(cue, p, { comentario: [item] }, 30), 30.5);
-    assert.throws(() => shareTimeInPlan(cue, p, {}, 30), /ausente ou ambígua/);
-    assert.throws(() => shareTimeInPlan(cue, p, { comentario: [item, item] }, 30), /ambígua/);
-    assert.throws(() => shareTimeInPlan(cue, { ...p, clips: [] }, { comentario: [item] }, 30), /removido/);
+    // review #13170: sem casamento único, null com aviso (nunca derruba o build).
+    const avisos: string[] = [];
+    const w = (m: string) => avisos.push(m);
+    assert.equal(shareTimeInPlan(cue, p, {}, 30, w), null);
+    assert.equal(shareTimeInPlan(cue, p, { comentario: [item, item] }, 30, w), null);
+    assert.equal(shareTimeInPlan(cue, { ...p, clips: [] }, { comentario: [item] }, 30, w), null);
+    assert.match(avisos.join("\n"), /ausente/);
+    assert.match(avisos.join("\n"), /ambíguo/);
+    assert.match(avisos.join("\n"), /removido/);
+  });
+  it("review #13170: fala dividida em vários itens usa o item que abre a fala", () => {
+    const spec = defaultSequences("V1", "monologo", "gancho")[0];
+    const p: SequencePlan = { spec, clips: [{ block: "comentario", srcIn: 100, srcOut: 120, frameIn: 3000, frameOut: 3600, seqStart: 900, seqEnd: 1500, scale: 1 }], durationFrames: 1500, script: "", missingBlocks: [], dropped: [] };
+    const fim = { text: "confira quem está falando.", interval: { start: 110, end: 114 }, words: [{ start: 110.2, end: 110.6, text: "confira" }] } as ResolvedItem;
+    const abre = { text: "Antes de comprar", interval: { start: 102, end: 104 }, words: [{ start: 102, end: 102.4, text: "Antes" }] } as ResolvedItem;
+    // ordem no blocks.json com o fim antes do início: o tempo é do item que abre a fala.
+    assert.equal(shareTimeInPlan(cue, p, { comentario: [fim, abre] }, 30), 32);
+    // só o fim decupado: início fora, null com aviso.
+    const avisos: string[] = [];
+    assert.equal(shareTimeInPlan(cue, p, { comentario: [fim] }, 30, (m) => avisos.push(m)), null);
+    assert.match(avisos.join(";"), /início da fala/);
+    // trecho curto (<3 palavras) não casa sozinho.
+    assert.equal(shareTimeInPlan(cue, p, { comentario: [{ ...abre, text: "Antes de" }] }, 30), null);
+  });
+  it("review #13170: rerun depois do cleanup (sem vídeo) e caminhos que não criam vídeo não leem o arquivo nem pedem --share-start", () => {
+    const enoent = () => { throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }); };
+    for (const o of [
+      { videoExists: false, createsVideo: false }, // --upload retomado com registro done / --accept-period-match
+      { videoExists: false, createsVideo: true }, // --dry-run sem o vídeo baixado
+      { videoExists: true, createsVideo: false },
+    ]) {
+      const avisos: string[] = [];
+      assert.equal(shareForRun({ cue, rawSeconds: undefined, ...o, readVideo: enoent, warn: (m) => avisos.push(m) }), undefined);
+      assert.match(avisos.join(";"), /trechoCompartilhar H11/);
+    }
+    assert.equal(shareForRun({ cue: null, rawSeconds: undefined, videoExists: false, createsVideo: true, readVideo: enoent, warn: () => assert.fail() }), undefined);
+    assert.throws(() => shareForRun({ cue, rawSeconds: undefined, videoExists: true, createsVideo: true, readVideo: () => bytes, warn: () => {} }), /--share-start/);
+    assert.equal(shareForRun({ cue, rawSeconds: "61", videoExists: true, createsVideo: true, readVideo: () => bytes, warn: () => {} })?.seconds, 61);
   });
   it("requer segundo conferido no export, aceita zero e rejeita fração/negativo/NaN", () => {
     for (const s of [undefined, "-1", "1.5", "NaN", ""]) assert.throws(() => confirmedShare(cue, s, bytes), /confira a fala no export final/);

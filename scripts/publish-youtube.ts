@@ -128,7 +128,7 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * `--force` (não é: sobe o vídeo da edição).
  */
 
-import { confirmedShare, readShareCue, shareDescription, shareLine, videoSha256, type SharePublish } from "./lib/diaria/video-share.ts";
+import { readShareCue, shareDescription, shareForRun, shareLine, videoSha256, type SharePublish } from "./lib/diaria/video-share.ts";
 import { setYouTubeShareDescription } from "./lib/diaria/youtube-upload.ts";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -1619,8 +1619,28 @@ async function main(): Promise<number> {
   // #12751: título e capa do horizontal no roteiro do vídeo, quando a /diaria-video-roteiro gravou o JSON.
   const roteiro = readRoteiroHorizontal(dir, (w) => console.error(`[aviso] ${w}`));
 
-  const shareCue = readShareCue(dir);
-  const share = shareCue ? confirmedShare(shareCue, values["share-start"], readFileSync(videoPath)) : undefined;
+  // O registro decide se este --upload pode criar vídeo (videos.insert). Ilegível recusa antes de consumir.
+  // Lido antes do plano: o trecho compartilhável (#13164) só é conferido no caminho que cria o vídeo.
+  let record: ReturnType<typeof readPublishedRecord> | null = null;
+  if (upload && values["accept-period-match"] === undefined) {
+    try {
+      record = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd);
+    } catch (e) {
+      console.error(`publish-youtube: registro do upload ilegível (${(e as Error).message}): nenhuma autorização consumida e nada enviado — conferir o canal e o arquivo antes de qualquer nova chamada (#12654)`);
+      return 1;
+    }
+  }
+  // Sem --force, registro "done" (retomada do podcast/playlists) ou "pending" (recusa no miolo) não chega ao
+  // videos.insert: não exige nem gasta autorização. Só a chamada que pode criar vídeo passa pela trava.
+  const canInsert = record !== null && (flags.has("force") || record.kind === "none");
+  const share = shareForRun({
+    cue: readShareCue(dir, (w) => console.error(`[aviso] ${w}`)),
+    rawSeconds: values["share-start"],
+    videoExists,
+    createsVideo: dryRun || canInsert,
+    readVideo: () => readFileSync(videoPath),
+    warn: (w) => console.error(`[aviso] ${w}`),
+  });
   const plan = planYouTubePublish({
     aammdd,
     ...(share ? { share } : {}),
@@ -1674,17 +1694,6 @@ async function main(): Promise<number> {
   // qualquer gravação. O --accept-period-match não envia nada e fica de fora, como na confirmação do #11741.
   let approvedMedia: VideoPlanManifest["media"] | null = null;
   if (values["accept-period-match"] === undefined) {
-    // O registro decide se este --upload pode criar vídeo (videos.insert). Ilegível recusa antes de consumir.
-    let record: ReturnType<typeof readPublishedRecord>;
-    try {
-      record = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd);
-    } catch (e) {
-      console.error(`publish-youtube: registro do upload ilegível (${(e as Error).message}): nenhuma autorização consumida e nada enviado — conferir o canal e o arquivo antes de qualquer nova chamada (#12654)`);
-      return 1;
-    }
-    // Sem --force, registro "done" (retomada do podcast/playlists) ou "pending" (recusa no miolo) não chega ao
-    // videos.insert: não exige nem gasta autorização. Só a chamada que pode criar vídeo passa pela trava.
-    const canInsert = flags.has("force") || record.kind === "none";
     if (canInsert) {
       if (!plan.video.exists) {
         console.error(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);

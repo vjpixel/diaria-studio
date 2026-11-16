@@ -13,7 +13,7 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 
 ## Trecho para compartilhar (#13164)
 
-Com `porVideo.horizontal.trechoCompartilhar` no roteiro, o `build` grava `_internal/video-montagem/trecho-compartilhar.json`: id, rótulo, fala e `seconds`, calculado pela primeira palavra na decupagem e pela posição nos clipes finais (com as pausas cortadas). Fala ausente, ambígua ou com o início removido para o build: corrigir a decupagem/blocos, nunca inventar um tempo. Sem o campo, o registro fica `null` quando o horizontal é reconstruído. Incluir o segundo no relato, como **sugestão a conferir no export final** (`requiresFinalCheck: true`). Uma reedição no Premiere pode mudar esse segundo; a Parte A do `/diaria-publica` confere antes do upload.
+Com `porVideo.horizontal.trechoCompartilhar` no roteiro, o `build` grava `_internal/video-montagem/trecho-compartilhar.json`: id, rótulo, fala e `seconds`, calculado pela primeira palavra na decupagem e pela posição nos clipes finais (com as pausas cortadas). A fala casa como o texto de tela: inteira ou dividida em itens (trecho com 3+ palavras), e o tempo sai do item que abre a fala. Fala ausente, ambígua ou com o início removido não para o build: `seconds` fica `null` com `[aviso]`; relatar e conferir o tempo no export final, nunca inventar um. Sem o campo, o registro fica `null` quando o horizontal é reconstruído. Incluir o segundo no relato, como **sugestão a conferir no export final** (`requiresFinalCheck: true`). Uma reedição no Premiere pode mudar esse segundo; a Parte A do `/diaria-publica` confere antes do upload.
 
 ## Argumentos
 
