@@ -175,6 +175,134 @@ export function edgeFindings(
   });
 }
 
+// ── Borda com SOM CORTADO aberta pelo build (#13194) ──────────────────────
+
+/** Quanto o build pode abrir cada borda com SOM CORTADO até achar o silêncio (#13194). */
+export const CUT_EDGE_OPEN = { maxS: 0.6 } as const;
+
+/** Palavra de fora a menos disto da borda pode ser a do próprio clipe (`ownWord`). */
+const OWN_WORD_GAP_S = 0.15;
+
+/** Clipe da sequência como o build monta (s e quadros globais do bruto). */
+export interface OpenableClip {
+  block: string;
+  srcIn: number;
+  srcOut: number;
+  frameIn: number;
+  frameOut: number;
+}
+
+export interface OpenedEdge<B extends string = string> {
+  block: B;
+  edge: "in" | "out";
+  from: number;
+  to: number;
+  /** Energia logo fora da borda antes (a que o verify-xml acusaria) e depois de abrir. */
+  fromDb: number;
+  toDb: number;
+}
+
+export interface UnresolvedEdge<B extends string = string> {
+  block: B;
+  edge: "in" | "out";
+  atS: number;
+  db: number;
+}
+
+/**
+ * #13194 (decisão do editor de 15/11: na dúvida, silêncio a palavra cortada):
+ * o build aplica o critério do `verify-xml` (`edgeFindings`, a mesma janela de
+ * 40 ms do lado de fora e o mesmo limiar) aos clipes que vai gravar no XML e
+ * abre a borda com SOM CORTADO, quadro a quadro, até o 1º ponto em que o lado
+ * de fora fica no silêncio. A abertura para em `maxOpenS`, no limite do arquivo
+ * do bruto, na palavra vizinha INTEIRA de fora (`words`, a que termina antes da
+ * entrada ou começa depois da saída: a palavra que a borda corta ao meio é a
+ * que se quer reabrir, e a 1ª/última do próprio roteiro do clipe colada na
+ * borda também, via `ownWord`) e no clipe mais próximo da sequência do mesmo lado (o
+ * áudio nunca se repete). Sem silêncio até lá, a borda fica como estava e sai
+ * em `unresolved`, que o `verify-xml` segue acusando.
+ */
+export function openCutSoundEdges<T extends OpenableClip>(
+  clips: readonly T[],
+  fps: number,
+  levelDb: (a: number, b: number) => number,
+  thresholdDb: number,
+  opts: {
+    durationS: number;
+    words?: ReadonlyArray<{ start: number; end: number; text?: string }>;
+    /** A palavra de fora colada na borda que é do PRÓPRIO clipe (a 1ª/última do roteiro dele, com o tempo do Whisper atrasado): não limita a abertura. */
+    ownWord?: (clip: T, edge: "in" | "out", w: { start: number; end: number; text?: string }) => boolean;
+    bounds?: ReadonlyArray<{ start: number; end: number }>;
+    maxOpenS?: number;
+    windowS?: number;
+  },
+): { clips: T[]; opened: OpenedEdge<T["block"]>[]; unresolved: UnresolvedEdge<T["block"]>[] } {
+  const maxOpen = opts.maxOpenS ?? CUT_EDGE_OPEN.maxS;
+  const windowS = opts.windowS ?? EDGE_WINDOW_S;
+  const words = opts.words ?? [];
+  const eps = 1e-6;
+  const timeline = (cs: readonly T[]): TimelineClip[] => cs.map((c) => ({ start: 0, end: 0, in: c.frameIn, out: c.frameOut, fileId: "file-1", gIn: c.frameIn, gOut: c.frameOut }));
+  const findings = (cs: readonly T[]) => edgeFindings(timeline(cs), fps, levelDb, thresholdDb, windowS, opts.bounds);
+  const spanOf = (t: number) => opts.bounds?.find((s) => t >= s.start - eps && t < s.end) ?? { start: 0, end: opts.durationS };
+  const cur = clips.map((c) => ({ ...c }));
+  const opened: OpenedEdge<T["block"]>[] = [];
+  const first = findings(cur);
+  for (let i = 0; i < cur.length; i++) {
+    for (const edge of ["in", "out"] as const) {
+      const f0 = first[i];
+      if (!(edge === "in" ? f0.cutIn : f0.cutOut)) continue;
+      const c = cur[i];
+      const span = spanOf((c.srcIn + c.srcOut) / 2);
+      const others = cur.filter((_, j) => j !== i);
+      if (edge === "in") {
+        const a = c.frameIn / fps;
+        const lo = Math.max(
+          0,
+          span.start,
+          a - maxOpen,
+          ...words.filter((w) => w.end <= a + eps && !(a - w.end < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w))).map((w) => w.end),
+          ...others.filter((o) => o.frameOut <= c.frameIn).map((o) => o.frameOut / fps),
+        );
+        const loFrame = Math.ceil(lo * fps - eps);
+        for (let fr = c.frameIn - 1; fr >= loFrame; fr--) {
+          const trial = cur.map((x, j) => (j === i ? { ...x, frameIn: fr, srcIn: fr / fps } : x));
+          const e = findings(trial)[i];
+          if (!e.cutIn) {
+            opened.push({ block: c.block, edge, from: c.srcIn, to: fr / fps, fromDb: f0.beforeDb, toDb: e.beforeDb });
+            cur[i] = trial[i];
+            break;
+          }
+        }
+      } else {
+        const b = c.frameOut / fps;
+        const hi = Math.min(
+          opts.durationS,
+          span.end,
+          b + maxOpen,
+          ...words.filter((w) => w.start >= b - eps && !(w.start - b < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w))).map((w) => w.start),
+          ...others.filter((o) => o.frameIn >= c.frameOut).map((o) => o.frameIn / fps),
+        );
+        const hiFrame = Math.floor(hi * fps + eps);
+        for (let fr = c.frameOut + 1; fr <= hiFrame; fr++) {
+          const trial = cur.map((x, j) => (j === i ? { ...x, frameOut: fr, srcOut: fr / fps } : x));
+          const e = findings(trial)[i];
+          if (!e.cutOut) {
+            opened.push({ block: c.block, edge, from: c.srcOut, to: fr / fps, fromDb: f0.afterDb, toDb: e.afterDb });
+            cur[i] = trial[i];
+            break;
+          }
+        }
+      }
+    }
+  }
+  const unresolved: UnresolvedEdge<T["block"]>[] = [];
+  findings(cur).forEach((e, i) => {
+    if (e.cutIn) unresolved.push({ block: cur[i].block, edge: "in", atS: e.inS, db: e.beforeDb });
+    if (e.cutOut) unresolved.push({ block: cur[i].block, edge: "out", atS: e.outS, db: e.afterDb });
+  });
+  return { clips: cur, opened, unresolved };
+}
+
 /** Trechos do bruto (s globais) na ordem da sequência: a entrada do `ffmpeg` que remonta o áudio só pelo XML. */
 export function assemblySegments(clips: readonly TimelineClip[], rate: number): Array<{ start: number; end: number }> {
   return clips.map((c) => ({ start: c.gIn / rate, end: c.gOut / rate }));

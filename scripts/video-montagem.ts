@@ -26,7 +26,8 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   gaze AAMMDD [--seq K]  (#12560) folha de olhar/expressão por clipe (`gaze-{seq}.jpg`)
  *   verify-xml AAMMDD [--seq K] [--no-transcribe]
  *       (#12561) lê o áudio do PRÓPRIO XML, mede as bordas (SOM CORTADO) e compara a fala
- *       montada com o roteiro; exit 1 com problema
+ *       montada com o roteiro; exit 1 com problema. O build já abre a borda com SOM
+ *       CORTADO até o silêncio no mesmo critério (#13194); a que sobra é aviso do build
  *   transcribe AAMMDD --from-audio ARQ [--audio-transcript JSON] [--source VIDEO]
  *       (#11504) o vídeo chegou depois de o áudio separado (o mesmo som, com pausas
  *       cortadas) já estar transcrito: alinha o áudio ao vídeo por correlação do
@@ -109,6 +110,9 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       `edge-retranscribe.json`), corte ainda em plena fala vira [aviso]; cada ajuste sai no
  *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS ou mais com o piso do bruto, #11968) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
+ *       (#13194) por último, a borda que o verify-xml acusaria como SOM CORTADO (40 ms de
+ *       fora acima do limiar do bruto) abre quadro a quadro até o silêncio, até 0,6 s, sem
+ *       passar da palavra vizinha de fora nem de outro clipe; sem silêncio, [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       (#12711) item com fala demais para o texto (ritmo da gravação) ou frase repetida no
  *       intervalo = [aviso] de tomada repetida (o Whisper colapsa a repetição); o roteiro confere
@@ -333,6 +337,7 @@ import {
   audioEndFromSilences,
   screenTitleSvg,
   normalizeToken,
+  tokenize,
   segmentCues,
   sequenceSourceRanges,
   srtTimestamp,
@@ -399,7 +404,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { assemblySegments, edgeFindings, edgeLine, longPauses, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { assemblySegments, edgeFindings, edgeLine, longPauses, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
@@ -2286,6 +2291,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
   let bad = 0;
+  let cutTotal = 0;
   const report: Record<string, unknown> = {};
   for (const plan of chosen) {
     const key = sequenceKey(plan.spec);
@@ -2335,11 +2341,14 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
       for (const x of findings) console.log(`  ${clockTime(x.at)}  ${x.kind}: ${x.detail}`);
     }
     bad += issues.length + cut.length + findings.length;
+    cutTotal += cut.length;
     report[key] = { xml: xmlPath, clips: clips.length, issues, cutEdges: cut, findings };
   }
   writeJson(f(ctx, "verify-xml.json"), report);
   if (bad) {
     console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura, fala divergente ou tomada colapsada, #12711): corrigir o blocks.json/build antes da prévia (#12561)`);
+    // #13194: o build já abre sozinho a borda com SOM CORTADO até o silêncio; a que sobra é a que ele não conseguiu (ou um XML anterior).
+    if (cutTotal) console.error(`[erro] verify-xml: ${cutTotal} borda(s) com SOM CORTADO: rode build de novo (ele abre a borda até o silêncio, #13194); a que sobrar depois do build não tem silêncio até a palavra vizinha (aviso do build): abrir o item no blocks.json ou conferir no Premiere`);
     return 1;
   }
   console.error(`[video-montagem] verify-xml: zero bordas cortadas${transcribe ? " e áudio do XML batendo com o roteiro" : "; fala NÃO conferida (--no-transcribe)"} (#12561)`);
@@ -2769,6 +2778,8 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
   }
   const { sampleRate, samples } = parseWavPcm16(readFileSync(audio));
   let env = energyEnvelope(samples, sampleRate);
+  // #13194: o envelope que o verify-xml mede nas bordas (sem a banda alta), para o build abrir o SOM CORTADO no mesmo critério.
+  const verifyEnv = env;
   const thresholdDb = silenceThresholdDb(ctx);
   const words = nonEmptyWords(f(ctx, "transcript.json"), "transcript.json");
   const vocab = loadVocab();
@@ -2810,8 +2821,16 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
     }
     // #12559: o refino mede no áudio global; a borda nunca passa para o arquivo vizinho.
     clips = clampRawsToFiles(clips, source);
-    const assembled = assembleClips(p.spec, clips, source.fps);
+    let assembled = assembleClips(p.spec, clips, source.fps);
     adjustments.push(...assembled.merges);
+    // #13194: borda que o verify-xml acusaria como SOM CORTADO abre até o silêncio aqui, sem esperar o verify.
+    const opened = openCutEdgesOfPlan(assembled.clips, verifyEnv, thresholdDb, source, words, heard);
+    if (opened.adjustments.length) {
+      adjustments.push(...opened.adjustments);
+      assembled = assembleClips(p.spec, opened.clips.map(rawOf), source.fps);
+      adjustments.push(...assembled.merges);
+    }
+    for (const n of opened.warnings) warnings.push(`${p.spec.name}: ${n}`);
     highBandWarnings[sequenceKey(p.spec)] = highEnv
       ? highBandCutWarnings(assembled.clips.map((c) => ({ ...c, srcIn: c.frameIn / source.fps, srcOut: c.frameOut / source.fps })), highEnv)
       : ["banda alta não conferida: bruto indisponível; possível fonema cortado (#11940)"];
@@ -2820,6 +2839,46 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
     return { ...p, clips: assembled.clips, durationFrames: assembled.durationFrames, cutAdjustments: adjustments };
   });
   return { plans: out, info: { applied: true, thresholdDb, edgeWindows: windows.size, edgesRetranscribed: heard !== null, highBandWarnings }, warnings };
+}
+
+/**
+ * #13194: aplica `openCutSoundEdges` (o critério das bordas do `verify-xml`)
+ * aos clipes montados de uma sequência. As palavras vizinhas que limitam a
+ * abertura são as do transcript e as da retranscrição das bordas (o som fora
+ * do roteiro que a passada B tirou só aparece nelas, #11968). Borda que não
+ * achou silêncio vira aviso: o `verify-xml` vai acusar e o editor decide.
+ */
+export function openCutEdgesOfPlan(
+  clips: PlannedClip[],
+  env: ReturnType<typeof energyEnvelope>,
+  thresholdDb: number,
+  source: SourceInfo,
+  words: Word[],
+  heard: Map<string, Word[]> | null,
+): { clips: PlannedClip[]; adjustments: CutAdjustment[]; warnings: string[] } {
+  const neighbors = [...words, ...(heard ? [...heard.values()].flat() : [])].filter((w) => w.text.trim());
+  const r = openCutSoundEdges(clips, source.fps, (a, b) => maxDbIn(env, a, b), thresholdDb, {
+    durationS: source.durationS,
+    words: neighbors,
+    bounds: isMultiSource(source) ? fileBounds(source) : undefined,
+    ownWord: (c, edge, w) => {
+      const toks = tokenize(c.script ?? "");
+      const own = edge === "in" ? toks[0] : toks[toks.length - 1];
+      return !!own && !!w.text && normalizeToken(w.text) === own;
+    },
+  });
+  const side = (e: "in" | "out") => (e === "in" ? "entrada" : "saída");
+  return {
+    clips: r.clips,
+    adjustments: r.opened.map((o) => ({
+      block: o.block,
+      edge: o.edge,
+      from: o.from,
+      to: Math.round(o.to * 1000) / 1000,
+      reason: `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${thresholdDb} dB): aberto até o silêncio (${Math.round(o.toDb)} dB) (#13194)`,
+    })),
+    warnings: r.unresolved.map((u) => `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${thresholdDb} dB) sem silêncio até a palavra vizinha ou ${CUT_EDGE_OPEN.maxS} s: o verify-xml vai acusar; conferir no Premiere (#13194)`),
+  };
 }
 
 /** Janela do vale de energia quando o corte vem do detector de fala (#12089): afina, não reabre a pausa. */
