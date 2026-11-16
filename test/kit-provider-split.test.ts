@@ -249,19 +249,36 @@ describe("buildAudienceFilterBody", () => {
   });
 });
 
-describe("buildUrlClickFilterBody (#7206)", () => {
+describe("buildUrlClickFilterBody (#7206, shape #13268)", () => {
+  type Scope = { type: string; ids?: number[]; urls?: string[]; matching?: string };
+  type Cond = { type: string; any: Scope[]; count_greater_than: number } & Record<string, unknown>;
+
   it("sempre pede type: 'clicks' — escopar por URL nunca troca o eixo", () => {
-    const body = buildUrlClickFilterBody(25622689, "https://diar.ia.br/x") as {
-      all: Array<{ type: string; any: Array<{ type: string; ids: number[] }>; urls: string[] }>;
-    };
-    assert.equal(body.all[0].type, "clicks");
-    assert.deepEqual(body.all[0].any[0], { type: "broadcasts", ids: [25622689] });
-    assert.deepEqual(body.all[0].urls, ["https://diar.ia.br/x"]);
+    const body = buildUrlClickFilterBody(25622689, "https://diar.ia.br/x") as { all: Cond[] };
+    for (const cond of body.all) assert.equal(cond.type, "clicks");
+  });
+
+  it("regressão #13268: nenhum filtro de all[] leva a chave `urls` (a API devolvia 422)", () => {
+    const body = buildUrlClickFilterBody(25622689, "https://diar.ia.br/x") as { all: Cond[] };
+    for (const cond of body.all) {
+      assert.equal("urls" in cond, false, `all[] com chave urls: ${JSON.stringify(cond)}`);
+      for (const key of Object.keys(cond)) {
+        assert.ok(["type", "any", "count_greater_than"].includes(key), `chave inesperada em all[]: ${key}`);
+      }
+    }
+  });
+
+  it("broadcast e URL em filtros separados de all[] (AND), nunca no mesmo any[] (OR)", () => {
+    const body = buildUrlClickFilterBody(25622689, "https://diar.ia.br/x") as { all: Cond[] };
+    assert.equal(body.all.length, 2);
+    assert.deepEqual(body.all[0].any, [{ type: "broadcasts", ids: [25622689] }]);
+    assert.deepEqual(body.all[1].any, [{ type: "urls", urls: ["https://diar.ia.br/x"], matching: "exact" }]);
+    for (const cond of body.all) assert.equal(cond.any.length, 1);
   });
 
   it("escopa a URL pedida, não outra", () => {
-    const body = buildUrlClickFilterBody(1, "https://diar.ia.br/a") as { all: Array<{ urls: string[] }> };
-    assert.deepEqual(body.all[0].urls, ["https://diar.ia.br/a"]);
+    const body = buildUrlClickFilterBody(1, "https://diar.ia.br/a") as { all: Cond[] };
+    assert.deepEqual(body.all[1].any[0].urls, ["https://diar.ia.br/a"]);
   });
 
   it("só manda 'after' quando há cursor (1ª página não leva a chave)", () => {

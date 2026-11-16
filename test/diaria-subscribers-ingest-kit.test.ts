@@ -182,6 +182,40 @@ describe("ingestOneBroadcast", () => {
     db.close();
   });
 
+  it("#13268: filtro por URL devolve mais gente que o unique_clicks do link — link descartado, broadcast segue ok", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const deps = {
+      fetchAudience: fakeFetchAudience({
+        sent: ["a@x.com", "b@x.com"],
+        delivered: ["a@x.com", "b@x.com"],
+        opens: ["a@x.com", "b@x.com"],
+        clicks: ["a@x.com", "b@x.com"],
+      }),
+      getBroadcastStats: async () => makeStats(2),
+      getBroadcastLinkClicks: async () => ({
+        clicks: [
+          // b@x.com clicou nesta URL em OUTRO broadcast: o AND do filtro deixa entrar.
+          { id: 1, url: "https://apoia.se/diaria", unique_clicks: 1, click_to_delivery_rate: 0.5, click_to_open_rate: 0.5 },
+          { id: 2, url: "https://diar.ia.br/materia-y", unique_clicks: 1, click_to_delivery_rate: 0.5, click_to_open_rate: 0.5 },
+        ],
+      }),
+      fetchUrlClicks: async (_id: number, url: string) =>
+        url === "https://apoia.se/diaria"
+          ? { emails: ["a@x.com", "b@x.com"], descartadas: 0 }
+          : { emails: ["b@x.com"], descartadas: 0 },
+    };
+    const broadcast = { id: 7, subject: "Edição", published_at: "2026-11-01T09:00:00.000Z", send_at: null };
+    const outcome = await ingestOneBroadcast(db, broadcast, deps, "2026-11-01T12:00:00.000Z");
+
+    assert.equal(outcome.entry.status, "ok", "descartar link por excesso não é erro: não volta para a fila");
+    assert.equal(outcome.entry.counts?.links_descartados_por_excesso, 1);
+    assert.equal(outcome.entry.counts?.clicks_com_url, 1);
+    const subA = findSubscriberIdByAlias(db, "kit", null, "a@x.com");
+    const urlsA = getSubscriberTimeline(db, subA!).filter((e) => e.type === "click" && e.url != null);
+    assert.equal(urlsA.length, 0, "a@x.com não ganha clique atribuído a apoia.se");
+    db.close();
+  });
+
   it("#7206: link com unique_clicks 0 é ignorado — não paga chamada de rede à toa", async () => {
     const db = openDiariaSubscribersDb(":memory:");
     let calledFetchUrl = false;
@@ -284,7 +318,8 @@ describe("ingestOneBroadcast", () => {
       getBroadcastStats: async () => makeStats(1),
       getBroadcastLinkClicks: async () => ({
         clicks: [
-          { id: 1, url: "https://a", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 },
+          // unique_clicks coerente com o filtro (2 e 1): acima dele o link é descartado (#13268).
+          { id: 1, url: "https://a", unique_clicks: 2, click_to_delivery_rate: 0, click_to_open_rate: 0 },
           { id: 2, url: "https://b", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 },
         ],
       }),

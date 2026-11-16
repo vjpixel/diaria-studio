@@ -818,7 +818,10 @@ export function ensureSubscriber(
     // resolver cross-plataforma decidir.
   }
 
-  db.exec("BEGIN");
+  // SAVEPOINT em vez de BEGIN (#13268): o chamador pode já estar dentro de
+  // `runInTransaction` (ingestão em lote), e SQLite recusa BEGIN aninhado.
+  // Fora de transação, SAVEPOINT abre uma, como o BEGIN fazia.
+  db.exec("SAVEPOINT ensure_subscriber");
   try {
     let subscriberId: number;
     if (mergeSubscriberId !== null) {
@@ -840,10 +843,41 @@ export function ensureSubscriber(
       `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     ).run(subscriberId, platform, externalId, normalizedEmail, now);
-    db.exec("COMMIT");
+    db.exec("RELEASE ensure_subscriber");
     return subscriberId;
   } catch (err) {
-    db.exec("ROLLBACK");
+    db.exec("ROLLBACK TO ensure_subscriber");
+    db.exec("RELEASE ensure_subscriber");
+    throw err;
+  }
+}
+
+/**
+ * Roda `fn` dentro de UMA transação (#13268). Sem isso, cada `INSERT`/`UPDATE`
+ * da ingestão é uma transação própria, com um fsync no commit; desde que
+ * `data/` foi para o HD SATA do `300` (#12359, 12/11/2026) o
+ * `diaria-kit-roster-ingest` passou de ~11 min para ~3h20, com 1m42s de CPU
+ * no total (o resto é espera de disco). Em lote, o fsync acontece uma vez por
+ * chamada.
+ *
+ * Usa SAVEPOINT, então aninha: dentro de outra `runInTransaction` (ou de
+ * `ensureSubscriber`) vira um ponto de restauração, fora dela abre a
+ * transação. Exceção em `fn` desfaz tudo o que `fn` gravou e é relançada.
+ * `fn` é síncrona de propósito: segurar a transação durante um `await` de
+ * rede travaria a escrita de outros processos no mesmo store.
+ */
+export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec("SAVEPOINT run_in_transaction");
+  try {
+    const out = fn();
+    if (out instanceof Promise) {
+      throw new Error("runInTransaction: fn precisa ser síncrona (recebeu Promise)");
+    }
+    db.exec("RELEASE run_in_transaction");
+    return out;
+  } catch (err) {
+    db.exec("ROLLBACK TO run_in_transaction");
+    db.exec("RELEASE run_in_transaction");
     throw err;
   }
 }

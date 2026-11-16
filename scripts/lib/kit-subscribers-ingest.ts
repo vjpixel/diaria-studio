@@ -61,6 +61,7 @@ import {
   upsertSubscription,
   upsertAttribute,
   coerceAttributeValue,
+  runInTransaction,
   type EventType,
 } from "./diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "./kit-subscribers.ts";
@@ -157,31 +158,34 @@ export function ingestBroadcastAudience(
   let alreadyKnown = 0;
   let subscribersTouched = 0;
 
-  for (const rawEmail of emails) {
-    const email = rawEmail.trim().toLowerCase();
-    if (!email || seen.has(email)) continue;
-    seen.add(email);
+  // #13268: numa transação só (1 fsync por chamada, não 1 por linha).
+  runInTransaction(db, () => {
+    for (const rawEmail of emails) {
+      const email = rawEmail.trim().toLowerCase();
+      if (!email || seen.has(email)) continue;
+      seen.add(email);
 
-    const subscriberId = ensureSubscriber(db, "kit", null, email, now);
-    subscribersTouched++;
-    const { inserted } = recordEvent(db, {
-      subscriberId,
-      platform: "kit",
-      type,
-      externalEventId: buildKitEventExternalId(email, broadcastId, axis),
-      // #6591: `edicao` = o broadcast — o Kit já grava exatamente 1 evento
-      // "click" por (assinante × broadcast) (a chave natural acima não tem
-      // eixo de link), então `edicao` aqui é redundante com a chave natural
-      // pra ESTE eixo, mas populá-lo sempre (não só em "click") é o que
-      // permite `leitor-store.ts` contar "recebidas"/"únicas clicadas" por
-      // `COUNT(DISTINCT edicao)` de forma simétrica entre plataformas, sem
-      // um caso especial pro Kit.
-      edicao: String(broadcastId),
-      ts,
-    });
-    if (inserted) newEvents++;
-    else alreadyKnown++;
-  }
+      const subscriberId = ensureSubscriber(db, "kit", null, email, now);
+      subscribersTouched++;
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "kit",
+        type,
+        externalEventId: buildKitEventExternalId(email, broadcastId, axis),
+        // #6591: `edicao` = o broadcast — o Kit já grava exatamente 1 evento
+        // "click" por (assinante × broadcast) (a chave natural acima não tem
+        // eixo de link), então `edicao` aqui é redundante com a chave natural
+        // pra ESTE eixo, mas populá-lo sempre (não só em "click") é o que
+        // permite `leitor-store.ts` contar "recebidas"/"únicas clicadas" por
+        // `COUNT(DISTINCT edicao)` de forma simétrica entre plataformas, sem
+        // um caso especial pro Kit.
+        edicao: String(broadcastId),
+        ts,
+      });
+      if (inserted) newEvents++;
+      else alreadyKnown++;
+    }
+  });
 
   return { newEvents, alreadyKnown, subscribersTouched };
 }
@@ -234,25 +238,28 @@ export function ingestBroadcastUrlClicks(
   let alreadyKnown = 0;
   let subscribersTouched = 0;
 
-  for (const rawEmail of emails) {
-    const email = rawEmail.trim().toLowerCase();
-    if (!email || seen.has(email)) continue;
-    seen.add(email);
+  // #13268: numa transação só (1 fsync por chamada, não 1 por linha).
+  runInTransaction(db, () => {
+    for (const rawEmail of emails) {
+      const email = rawEmail.trim().toLowerCase();
+      if (!email || seen.has(email)) continue;
+      seen.add(email);
 
-    const subscriberId = ensureSubscriber(db, "kit", null, email, now);
-    subscribersTouched++;
-    const { inserted } = recordEvent(db, {
-      subscriberId,
-      platform: "kit",
-      type: "click",
-      externalEventId: buildKitUrlClickExternalId(email, broadcastId, url),
-      edicao: String(broadcastId),
-      url,
-      ts,
-    });
-    if (inserted) newEvents++;
-    else alreadyKnown++;
-  }
+      const subscriberId = ensureSubscriber(db, "kit", null, email, now);
+      subscribersTouched++;
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "kit",
+        type: "click",
+        externalEventId: buildKitUrlClickExternalId(email, broadcastId, url),
+        edicao: String(broadcastId),
+        url,
+        ts,
+      });
+      if (inserted) newEvents++;
+      else alreadyKnown++;
+    }
+  });
 
   return { newEvents, alreadyKnown, subscribersTouched };
 }
@@ -417,114 +424,117 @@ export function ingestKitRoster(
   let unsubKnown = 0;
   let attributesWritten = 0;
 
-  for (const sub of subscribers) {
-    const email = sub.email_address.trim().toLowerCase();
-    if (!email) continue;
+  // #13268: numa transação só (1 fsync por chamada, não 1 por linha).
+  runInTransaction(db, () => {
+    for (const sub of subscribers) {
+      const email = sub.email_address.trim().toLowerCase();
+      if (!email) continue;
 
-    const subscriberId = ensureSubscriber(db, "kit", String(sub.id), email, now);
-    const fields = sub.fields ?? {};
-    const status = sub.state ?? null;
-    const exited = status != null && KIT_EXITED_STATES.has(status);
+      const subscriberId = ensureSubscriber(db, "kit", String(sub.id), email, now);
+      const fields = sub.fields ?? {};
+      const status = sub.state ?? null;
+      const exited = status != null && KIT_EXITED_STATES.has(status);
 
-    // #7222 finding 1: precisa ser lido ANTES do upsertSubscription abaixo
-    // (que sobrescreve `exited_at`) — é o único jeito de distinguir
-    // "já estava exited numa rodada anterior" de "está transicionando para
-    // exited agora". Sem isso, todo dia em que o roster reporta o MESMO
-    // `state` (Kit não expõe timestamp de cancelamento — ver docstring do
-    // módulo) gera um `externalEventId` novo (chave inclui o dia da
-    // captura) e o evento `unsub` seria reinserido para sempre.
-    const previousSubscription = db
-      .prepare(
-        `SELECT exited_at, source, utm_source, utm_medium, utm_campaign, utm_channel,
-                utm_term, utm_content, referring_site, origem_cadastro, reativado
-         FROM subscription WHERE subscriber_id = ? AND platform = 'kit'`,
-      )
-      .get(subscriberId) as (KitPreviousOrigem & { exited_at: string | null }) | undefined;
-    const wasExitedBefore = previousSubscription != null && previousSubscription.exited_at != null;
+      // #7222 finding 1: precisa ser lido ANTES do upsertSubscription abaixo
+      // (que sobrescreve `exited_at`) — é o único jeito de distinguir
+      // "já estava exited numa rodada anterior" de "está transicionando para
+      // exited agora". Sem isso, todo dia em que o roster reporta o MESMO
+      // `state` (Kit não expõe timestamp de cancelamento — ver docstring do
+      // módulo) gera um `externalEventId` novo (chave inclui o dia da
+      // captura) e o evento `unsub` seria reinserido para sempre.
+      const previousSubscription = db
+        .prepare(
+          `SELECT exited_at, source, utm_source, utm_medium, utm_campaign, utm_channel,
+                  utm_term, utm_content, referring_site, origem_cadastro, reativado
+           FROM subscription WHERE subscriber_id = ? AND platform = 'kit'`,
+        )
+        .get(subscriberId) as (KitPreviousOrigem & { exited_at: string | null }) | undefined;
+      const wasExitedBefore = previousSubscription != null && previousSubscription.exited_at != null;
 
-    // #8235: rede de segurança do store — sobrescrita de origem pelo
-    // reativar que tenha escapado do worker não apaga a origem gravada aqui.
-    const origem = resolveKitOrigemOnReativacao(previousSubscription ?? null, {
-      source: fields.utm_source ?? null,
-      utm_source: fields.utm_source ?? null,
-      utm_medium: fields.utm_medium ?? null,
-      utm_campaign: fields.utm_campaign ?? null,
-      utm_channel: fields.utm_channel ?? null,
-      utm_term: fields.utm_term ?? null,
-      utm_content: fields.utm_content ?? null,
-      referring_site: fields.referring_site ?? null,
-      origem_cadastro: fields.origem_cadastro ?? null,
-    });
-
-    upsertSubscription(
-      db,
-      subscriberId,
-      "kit",
-      {
-        status,
-        enteredAt: sub.created_at ?? null,
-        exitedAt: exited ? now : null,
-        source: origem.fields.source,
-        utmMedium: origem.fields.utm_medium,
-        utmCampaign: origem.fields.utm_campaign,
-        utmChannel: origem.fields.utm_channel,
-        referringSite: origem.fields.referring_site,
-        origemCadastro: origem.fields.origem_cadastro,
-        utmSource: origem.fields.utm_source,
-        utmTerm: origem.fields.utm_term,
-        utmContent: origem.fields.utm_content,
-        reativado: origem.reativado,
-        // #7179 (F7): série viva do Kit — distingue de "backfill-beehiiv"/
-        // "seed-kit" nas linhas reconstruídas pelo backfill histórico.
-        origemSerie: "kit-vivo",
-      },
-      now,
-    );
-    subscriptionsWritten++;
-
-    if (sub.created_at) {
-      const { inserted } = recordEvent(db, {
-        subscriberId,
-        platform: "kit",
-        type: "subscribe",
-        externalEventId: `${email}:subscribe:${sub.created_at}`,
-        ts: sub.created_at,
+      // #8235: rede de segurança do store — sobrescrita de origem pelo
+      // reativar que tenha escapado do worker não apaga a origem gravada aqui.
+      const origem = resolveKitOrigemOnReativacao(previousSubscription ?? null, {
+        source: fields.utm_source ?? null,
+        utm_source: fields.utm_source ?? null,
+        utm_medium: fields.utm_medium ?? null,
+        utm_campaign: fields.utm_campaign ?? null,
+        utm_channel: fields.utm_channel ?? null,
+        utm_term: fields.utm_term ?? null,
+        utm_content: fields.utm_content ?? null,
+        referring_site: fields.referring_site ?? null,
+        origem_cadastro: fields.origem_cadastro ?? null,
       });
-      if (inserted) subscribeNew++;
-      else subscribeKnown++;
-    }
 
-    if (exited && !wasExitedBefore) {
-      // O Kit não expõe timestamp de cancelamento — só o ESTADO ATUAL (ver
-      // docstring do módulo/#7174), e o roster reporta o MESMO `state` em
-      // TODA rodada enquanto o assinante seguir cancelado. Gravar só na
-      // TRANSIÇÃO (`wasExitedBefore` checado acima, antes do upsert acima
-      // sobrescrever `exited_at`) é o que impede reinserção sem limite
-      // (#7222 finding 1) — o guard `INSERT OR IGNORE` de `recordEvent` só
-      // dedupe pela CHAVE, e uma chave por dia de captura seria sempre nova.
-      // A chave natural ainda usa o dia da captura (não `now` inteiro) por
-      // segurança — se este `if` algum dia rodar 2x no mesmo dia pro mesmo
-      // assinante antes do estado ter sido persistido em outra rodada, o
-      // `INSERT OR IGNORE` segue sendo a rede de segurança, não a regra.
-      const captureDay = now.slice(0, 10);
-      const { inserted } = recordEvent(db, {
+      upsertSubscription(
+        db,
         subscriberId,
-        platform: "kit",
-        type: "unsub",
-        externalEventId: `${email}:unsub:${status}:${captureDay}`,
-        ts: now,
-      });
-      if (inserted) unsubNew++;
-      else unsubKnown++;
-    } else if (exited) {
-      unsubKnown++;
-    }
+        "kit",
+        {
+          status,
+          enteredAt: sub.created_at ?? null,
+          exitedAt: exited ? now : null,
+          source: origem.fields.source,
+          utmMedium: origem.fields.utm_medium,
+          utmCampaign: origem.fields.utm_campaign,
+          utmChannel: origem.fields.utm_channel,
+          referringSite: origem.fields.referring_site,
+          origemCadastro: origem.fields.origem_cadastro,
+          utmSource: origem.fields.utm_source,
+          utmTerm: origem.fields.utm_term,
+          utmContent: origem.fields.utm_content,
+          reativado: origem.reativado,
+          // #7179 (F7): série viva do Kit — distingue de "backfill-beehiiv"/
+          // "seed-kit" nas linhas reconstruídas pelo backfill histórico.
+          origemSerie: "kit-vivo",
+        },
+        now,
+      );
+      subscriptionsWritten++;
 
-    for (const attr of extractKitFieldAttributes(sub)) {
-      upsertAttribute(db, subscriberId, "kit", attr.key, attr.value, now);
-      attributesWritten++;
+      if (sub.created_at) {
+        const { inserted } = recordEvent(db, {
+          subscriberId,
+          platform: "kit",
+          type: "subscribe",
+          externalEventId: `${email}:subscribe:${sub.created_at}`,
+          ts: sub.created_at,
+        });
+        if (inserted) subscribeNew++;
+        else subscribeKnown++;
+      }
+
+      if (exited && !wasExitedBefore) {
+        // O Kit não expõe timestamp de cancelamento — só o ESTADO ATUAL (ver
+        // docstring do módulo/#7174), e o roster reporta o MESMO `state` em
+        // TODA rodada enquanto o assinante seguir cancelado. Gravar só na
+        // TRANSIÇÃO (`wasExitedBefore` checado acima, antes do upsert acima
+        // sobrescrever `exited_at`) é o que impede reinserção sem limite
+        // (#7222 finding 1) — o guard `INSERT OR IGNORE` de `recordEvent` só
+        // dedupe pela CHAVE, e uma chave por dia de captura seria sempre nova.
+        // A chave natural ainda usa o dia da captura (não `now` inteiro) por
+        // segurança — se este `if` algum dia rodar 2x no mesmo dia pro mesmo
+        // assinante antes do estado ter sido persistido em outra rodada, o
+        // `INSERT OR IGNORE` segue sendo a rede de segurança, não a regra.
+        const captureDay = now.slice(0, 10);
+        const { inserted } = recordEvent(db, {
+          subscriberId,
+          platform: "kit",
+          type: "unsub",
+          externalEventId: `${email}:unsub:${status}:${captureDay}`,
+          ts: now,
+        });
+        if (inserted) unsubNew++;
+        else unsubKnown++;
+      } else if (exited) {
+        unsubKnown++;
+      }
+
+      for (const attr of extractKitFieldAttributes(sub)) {
+        upsertAttribute(db, subscriberId, "kit", attr.key, attr.value, now);
+        attributesWritten++;
+      }
     }
-  }
+  });
 
   return {
     processed: subscribers.length,
@@ -597,18 +607,21 @@ export function ingestKitConfirmations(
 ): { newEvents: number; alreadyKnown: number } {
   let newEvents = 0;
   let alreadyKnown = 0;
-  for (const c of detectKitConfirmations(transitions, emailById, snapshotDate)) {
-    const subscriberId = ensureSubscriber(db, "kit", String(c.subscriberId), c.email, now);
-    const { inserted } = recordEvent(db, {
-      subscriberId,
-      platform: "kit",
-      type: "confirm",
-      externalEventId: c.externalEventId,
-      ts: c.ts,
-    });
-    if (inserted) newEvents++;
-    else alreadyKnown++;
-  }
+  // #13268: numa transação só (1 fsync por chamada, não 1 por linha).
+  runInTransaction(db, () => {
+    for (const c of detectKitConfirmations(transitions, emailById, snapshotDate)) {
+      const subscriberId = ensureSubscriber(db, "kit", String(c.subscriberId), c.email, now);
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "kit",
+        type: "confirm",
+        externalEventId: c.externalEventId,
+        ts: c.ts,
+      });
+      if (inserted) newEvents++;
+      else alreadyKnown++;
+    }
+  });
   return { newEvents, alreadyKnown };
 }
 
