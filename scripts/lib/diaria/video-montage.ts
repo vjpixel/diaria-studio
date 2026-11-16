@@ -469,10 +469,15 @@ export function sameSpeech(heard: string[], wanted: string[], match: TokenMatche
 
 /** Margens do corte de uma tomada (premissa #11208, medidas na 261027). */
 export const TAKE_DEFAULTS = {
-  /** Ar antes da 1ª palavra. */
-  preRollS: 0.15,
-  /** Ar depois da última palavra. */
-  postRollS: 0.25,
+  /**
+   * Ar antes da 1ª palavra. #13194: 0,3 s (era 0,15): os tempos do Whisper
+   * começam depois do ataque, e na 261116 o editor abriu à mão as pontas de
+   * todos os itens em até 0,3 s, sem encostar na palavra vizinha (`guardS`). O
+   * silêncio que sobrar na ponta sai no corte de pausas, não fica no clipe.
+   */
+  preRollS: 0.3,
+  /** Ar depois da última palavra. #13194: 0,3 s (era 0,25), pelo mesmo motivo (o Whisper termina antes da cauda). */
+  postRollS: 0.3,
   /** Distância mínima até a palavra vizinha (fora da tomada). */
   guardS: 0.05,
   /** Pausa maior que isso entre duas palavras encerra a tomada, salvo se a palavra seguinte é a esperada do roteiro (#11505). */
