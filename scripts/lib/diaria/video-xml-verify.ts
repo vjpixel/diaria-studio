@@ -4,9 +4,10 @@
  * MESMO plano; a prévia pode estar certa e o XML que o Premiere importa,
  * errado. Aqui o XML é lido como o Premiere lê:
  *
- *   - os `clipitem` de áudio da faixa principal (`a{n}`; a vinheta fica de
- *     fora), com `start`/`end`/`in`/`out` e a `timebase` declarada (inclusive
- *     NTSC 1000/1001);
+ *   - os `clipitem` de áudio da faixa principal (`a{n}`, e os pedaços
+ *     `a{n}-2`/`a{n}-3` do clipe partido sob a vinheta, remontados num clipe
+ *     só, #13249; a vinheta fica de fora), com `start`/`end`/`in`/`out` e a
+ *     `timebase` declarada (inclusive NTSC 1000/1001);
  *   - o `<file>` de cada clipe decide o deslocamento: `file-{k}` é o k-ésimo
  *     arquivo do bruto (quadros locais, bruto em vários arquivos #12559),
  *     `file-audio` é a faixa tratada, que já está na linha do tempo global;
@@ -51,9 +52,16 @@ export function parseXmlAudio(xml: string): ParsedXmlAudio {
   if (audioAt < 0) throw new Error("XML sem a faixa de áudio da sequência");
   const audio = xml.slice(audioAt);
   const clips: XmlAudioClip[] = [];
-  const re = /<clipitem id="a\d+">([\s\S]*?)<\/clipitem>/g;
+  // #13249: o clipe de áudio sob a vinheta sai partido em `a{n}`, `a{n}-2`, `a{n}-3` (#13240, Audio Levels
+  // diferente em cada pedaço). Pedaço contíguo ao anterior do MESMO clipe (mesmo `<file>`, sequência e mídia
+  // emendadas) volta a ser um clipe só: o plano conta clipes, não pedaços, e a emenda não é corte. Pedaço
+  // que não emenda fica separado, e `xmlStructureIssues`/`xmlPlanIssues` acusam.
+  const re = /<clipitem id="a(\d+)(?:-(\d+))?">([\s\S]*?)<\/clipitem>/g;
+  let lastBase: string | null = null;
   for (const m of audio.matchAll(re)) {
-    const body = m[1];
+    const base = m[1];
+    const isPiece = m[2] !== undefined;
+    const body = m[3];
     const num = (tag: string) => {
       const x = body.match(new RegExp(`<${tag}>(-?\\d+)</${tag}>`));
       if (!x) throw new Error(`clipitem de áudio sem <${tag}>`);
@@ -61,7 +69,13 @@ export function parseXmlAudio(xml: string): ParsedXmlAudio {
     };
     const file = body.match(/<file id="([^"]+)"/);
     if (!file) throw new Error("clipitem de áudio sem <file>");
-    clips.push({ start: num("start"), end: num("end"), in: num("in"), out: num("out"), fileId: file[1] });
+    const clip: XmlAudioClip = { start: num("start"), end: num("end"), in: num("in"), out: num("out"), fileId: file[1] };
+    const prev = clips[clips.length - 1];
+    if (isPiece && prev && lastBase === base && prev.fileId === clip.fileId && prev.end === clip.start && prev.out === clip.in) {
+      prev.end = clip.end;
+      prev.out = clip.out;
+    } else clips.push(clip);
+    lastBase = base;
   }
   const fileDurations: Record<string, number> = {};
   for (const m of xml.matchAll(/<file id="([^"]+)"><name>[\s\S]*?<duration>(\d+)<\/duration>/g)) fileDurations[m[1]] ??= Number(m[2]);
