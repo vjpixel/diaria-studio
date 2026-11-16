@@ -16,8 +16,10 @@
  *      interna removida, trecho acrescentado, tomada trocada (o acrescentado
  *      tem o texto de um clipe removido), ordem. As palavras do
  *      `transcript.json` do bruto dão "palavras recuperadas pelo editor" (no
- *      final, fora de todo clipe do XML: o sinal da #13194) e "palavras
- *      tiradas".
+ *      final, nas pontas estendidas fora de todo clipe do XML: o sinal da
+ *      #13194; a fala da outra tomada e a dos trechos acrescentados fica de
+ *      fora) e "palavras tiradas". `alignWithReorder` dá os trechos mesmo
+ *      com a ordem trocada.
  *   3. `aggregateRecords` + `detectPatterns`: o agregado ao longo do tempo e os
  *      padrões que se repetem em N edições, cada um com a evidência e o corpo
  *      de issue pronto (marcador `video-xml-final-pattern: {id}` para não
@@ -29,10 +31,58 @@
  * OCR no final, que ficam para quando um padrão pedir.
  */
 
-import type { AlignRun } from "./video-audio-align.ts";
+import { alignEnvelopes, type AlignOptions, type AlignRun } from "./video-audio-align.ts";
 import type { Word } from "./video-montage.ts";
 
 export const XML_FINAL_SCHEMA = 1;
+
+/** Vão do final sem par a partir do qual a 2ª passada procura o trecho no bruto inteiro (s). */
+export const REORDER_MIN_GAP_S = 2;
+
+/**
+ * Alinhamento final × bruto que aguenta trecho reordenado (self-review da PR
+ * #13205). `alignEnvelopes` é monótono (o deslocamento só cresce, pensado para
+ * pausa cortada): o trecho que o editor levou para trás fica sem par, os clipes
+ * dele sairiam como removidos e a ordem trocada, invisível. Aqui, como a #11670
+ * fazia ("busca global quando o trecho muda"), cada vão sem par de pelo menos
+ * `minGapS` é alinhado de novo sozinho contra o bruto inteiro, e os runs
+ * achados entram na posição dele. Puro.
+ */
+export function alignWithReorder(
+  finalDb: ArrayLike<number>,
+  brutoDb: ArrayLike<number>,
+  hopS: number,
+  opts: AlignOptions = {},
+  minGapS = REORDER_MIN_GAP_S,
+): { runs: AlignRun[]; coverage: number; reordered: number } {
+  const base = alignEnvelopes(finalDb, brutoDb, hopS, opts);
+  const durF = finalDb.length * hopS;
+  const gaps: Iv[] = [];
+  let cur = 0;
+  for (const r of base.runs) {
+    if (r.audioStart - cur >= minGapS) gaps.push({ start: cur, end: r.audioStart });
+    cur = Math.max(cur, r.audioEnd);
+  }
+  if (durF - cur >= minGapS) gaps.push({ start: cur, end: durF });
+  const extra: AlignRun[] = [];
+  for (const g of gaps) {
+    const a = Math.round(g.start / hopS);
+    const b = Math.min(finalDb.length, Math.round(g.end / hopS));
+    if (b - a < 2) continue;
+    const slice = Array.prototype.slice.call(finalDb, a, b) as number[];
+    // Busca no bruto inteiro: o trecho pode estar antes do ponto onde a 1ª passada parou.
+    const sub = alignEnvelopes(slice, brutoDb, hopS, { ...opts, minOffsetS: -(b - a) * hopS, maxOffsetS: brutoDb.length * hopS });
+    const t0 = a * hopS;
+    for (const r of sub.runs) {
+      const s = r3(Math.max(g.start, r.audioStart + t0));
+      const e = r3(Math.min(g.end, r.audioEnd + t0));
+      if (e > s) extra.push({ audioStart: s, audioEnd: e, offset: r3(r.offset - t0) });
+    }
+  }
+  const runs = [...base.runs, ...extra].sort((x, y) => x.audioStart - y.audioStart);
+  const covered = runs.reduce((n, r) => n + (r.audioEnd - r.audioStart), 0);
+  return { runs, coverage: durF > 0 ? covered / durF : 0, reordered: extra.length };
+}
 
 /** Abaixo disto (s) a diferença é ruído do alinhamento (a #11670 media ±0,05–0,08 s). */
 export const XML_FINAL_TOLERANCE_S = 0.1;
@@ -177,13 +227,15 @@ export interface SequenceSummary {
   clips: number;
   clipsRemoved: number;
   clipsTouched: number;
-  /** Médias sobre os clipes mantidos (ms); `null` sem clipe mantido. */
+  /** Médias sobre os clipes mantidos (ms), sem as pontas emendadas ao vizinho; `null` sem nenhuma. */
   headMeanMs: number | null;
   tailMeanMs: number | null;
   headExtended: number;
   headTrimmed: number;
   tailExtended: number;
   tailTrimmed: number;
+  /** Emendas: clipes que o editor juntou ao seguinte do XML (a ponta deles fica fora das médias). */
+  joins: number;
   internalPausesRemoved: number;
   internalPausesMs: number;
   added: number;
@@ -275,10 +327,13 @@ export function compareSequence(input: {
   let orderInversions = 0;
   for (let i = 0; i < kept.length; i++) for (let j = i + 1; j < kept.length; j++) if ((kept[i].finalStart as number) > (kept[j].finalStart as number)) orderInversions++;
 
+  // Só a palavra das pontas estendidas conta como recuperada (o sinal da #13194): a fala da outra tomada e a dos
+  // trechos acrescentados já sai em `takeSwaps`/`added` e não é palavra comida pelo corte (self-review da PR #13205).
+  const addedIvs = added.map((a) => ({ start: a.brutoStart, end: a.brutoEnd }));
   const wordsRecovered = words
     .filter((w) => {
       const mid = (w.start + w.end) / 2;
-      return within(mid, used) && !within(mid, xmlIvs) && w.text.trim() !== "";
+      return within(mid, used) && !within(mid, xmlIvs) && !within(mid, addedIvs) && w.text.trim() !== "";
     })
     .map((w) => ({ text: w.text.trim(), start: r3(w.start), end: r3(w.end) }));
   const wordsRemoved = words.filter((w) => {
@@ -288,17 +343,22 @@ export function compareSequence(input: {
 
   const pairedS = input.spans.reduce((n, s) => n + Math.max(0, s.finalEnd - s.finalStart), 0);
   const keptClips = out.filter((c) => c.status === "kept");
+  // Ponta emendada ao clipe vizinho mede o vão inteiro até ele, não padding: fica fora da média e das contagens de
+  // ponta, e entra à parte em `joins` (self-review da PR #13205).
+  const heads = keptClips.filter((c) => !c.joinedHead).map((c) => c.headMs as number);
+  const tails = keptClips.filter((c) => !c.joinedTail).map((c) => c.tailMs as number);
   const mean = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
   const summary: SequenceSummary = {
     clips: out.length,
     clipsRemoved: out.length - keptClips.length,
     clipsTouched: out.filter((c) => c.touched).length,
-    headMeanMs: mean(keptClips.map((c) => c.headMs as number)),
-    tailMeanMs: mean(keptClips.map((c) => c.tailMs as number)),
-    headExtended: keptClips.filter((c) => (c.headMs as number) > 0).length,
-    headTrimmed: keptClips.filter((c) => (c.headMs as number) < 0).length,
-    tailExtended: keptClips.filter((c) => (c.tailMs as number) > 0).length,
-    tailTrimmed: keptClips.filter((c) => (c.tailMs as number) < 0).length,
+    headMeanMs: mean(heads),
+    tailMeanMs: mean(tails),
+    headExtended: heads.filter((x) => x > 0).length,
+    headTrimmed: heads.filter((x) => x < 0).length,
+    tailExtended: tails.filter((x) => x > 0).length,
+    tailTrimmed: tails.filter((x) => x < 0).length,
+    joins: keptClips.filter((c) => c.joinedTail).length,
     internalPausesRemoved: keptClips.reduce((n, c) => n + c.internalPauses.length, 0),
     internalPausesMs: keptClips.reduce((n, c) => n + c.internalPauses.reduce((m, p) => m + p.ms, 0), 0),
     added: added.filter((a) => a.swapOf === undefined).length,
@@ -750,6 +810,29 @@ export interface RecurringState {
 }
 
 export const EMPTY_STATE: RecurringState = { lastRunAt: null, done: {}, patterns: {} };
+
+/**
+ * Motivo de `skipped` quando a consulta ao Drive falhou (credencial, rede,
+ * pasta duplicada): distinto de "sem final exportado", que é ausência real
+ * (self-review da PR #13205).
+ */
+export const DRIVE_UNAVAILABLE_REASON = "drive-indisponivel";
+
+export const driveUnavailableReason = (message: string) => `${DRIVE_UNAVAILABLE_REASON}: ${message.slice(0, 200)}`;
+
+/** A edição não pôde ser consultada no Drive (todas as sequências puladas por isso). */
+export function isDriveUnavailable(rec: EditionRecord): boolean {
+  return rec.sequences.length === 0 && rec.skipped.length > 0 && rec.skipped.every((s) => s.reason.startsWith(`${DRIVE_UNAVAILABLE_REASON}:`));
+}
+
+/**
+ * Alarme da rodada: nenhuma das edições consultadas chegou ao Drive. O CLI sai
+ * `1` nesse caso, para a falha de acesso não passar por "nada a comparar" e a
+ * edição sair da janela de 14 dias em silêncio. Puro.
+ */
+export function driveUnreachable(records: readonly EditionRecord[]): boolean {
+  return records.length > 0 && records.every(isDriveUnavailable);
+}
 
 /** AAMMDD → Date UTC do dia (meio-dia, sem borda de fuso). */
 export function editionDate(e: string): Date {

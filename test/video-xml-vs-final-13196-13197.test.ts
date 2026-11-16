@@ -10,8 +10,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   aggregateRecords,
+  alignWithReorder,
   compareSequence,
   detectPatterns,
+  driveUnreachable,
+  isDriveUnavailable,
   editionsToCompare,
   EMPTY_STATE,
   finalSpansFromRuns,
@@ -31,6 +34,7 @@ import { BASELINE_11670 } from "../scripts/lib/diaria/video-xml-vs-final-baselin
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import { isReportKind } from "../scripts/studio-ui/studio-reports.ts";
 import { alignEnvelopes } from "../scripts/lib/diaria/video-audio-align.ts";
+import { compareEdition, reportPatterns, type Finder, type PlanFileLite } from "../scripts/video-xml-vs-final.ts";
 
 /** Final montado como a sequência de trechos do bruto, colados em ordem. */
 function spansOf(pieces: Array<[number, number]>): FinalSpan[] {
@@ -130,6 +134,31 @@ describe("#13196 compareSequence: classifica cada diferença", () => {
     assert.equal(r.clips[0].joinedTail, true);
     assert.equal(r.clips[0].tailMs, 6000, "a ponta para no clipe seguinte do XML (20 s)");
     assert.equal(r.clips[1].joinedHead, true);
+  });
+
+  it("ponta emendada fica fora da média de ponta e conta à parte (self-review PR #13205)", () => {
+    const r = compareSequence({ clips, spans: spansOf([[10, 25], [30, 33]]), finalDurationS: 18 });
+    assert.equal(r.summary.joins, 1);
+    assert.equal(r.summary.tailMeanMs, 0, "o vão de 6000 ms até o vizinho não é padding");
+    assert.equal(r.summary.headMeanMs, 0);
+    assert.equal(r.summary.tailExtended, 0);
+  });
+
+  it("fala da outra tomada não conta como palavra recuperada (self-review PR #13205)", () => {
+    const words = [
+      w("ele", 30, 30.5), w("chega", 30.5, 31), w("a", 31, 31.2), w("igualar", 31.2, 32), w("o", 32, 32.2), w("gpt", 32.2, 33),
+      w("ele", 40, 40.5), w("chega", 40.5, 41), w("a", 41, 41.2), w("igualar", 41.2, 42), w("o", 42, 42.2), w("gpt", 42.2, 43),
+      w("anticonvulsionante.", 14.0, 14.6),
+    ];
+    const r = compareSequence({ clips, spans: spansOf([[10, 14.7], [20, 25], [40, 43]]), words, finalDurationS: 12.7 });
+    assert.equal(r.summary.takeSwaps, 1);
+    assert.deepEqual(r.wordsRecovered.map((x) => x.text), ["anticonvulsionante."], "só a palavra da ponta estendida");
+  });
+
+  it("fala de trecho acrescentado não conta como palavra recuperada", () => {
+    const r = compareSequence({ clips, spans: spansOf([[10, 14], [50, 52], [20, 25], [30, 33]]), words: [w("extra", 50.5, 51)], finalDurationS: 14 });
+    assert.equal(r.summary.added, 1);
+    assert.equal(r.summary.wordsRecovered, 0);
   });
 });
 
@@ -317,6 +346,87 @@ describe("#13196 método: o alinhamento por envelope acha os cortes do final no 
     // final igual. O que conta é a pausa de ~4 s tirada perto dos 20 s.
     const gap = r.clips[0].internalPauses.find((p) => p.start >= 18.9 && p.start <= 20.3);
     assert.ok(gap && Math.abs(gap.ms - 4000) <= 300, JSON.stringify(r.clips[0].internalPauses));
+  });
+
+  it("trecho reordenado pelo editor: a 2ª passada global acha o par e a ordem trocada (self-review PR #13205)", () => {
+    const hop = 0.01;
+    let seed = 11;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+    const bruto = new Float64Array(6000);
+    for (let i = 0; i < bruto.length; i++) bruto[i] = i % 400 < 300 ? -30 + 20 * rnd() : -80;
+    const seg = (a: number, b: number) => bruto.slice(Math.round(a / hop), Math.round(b / hop));
+    // XML: A = 8–20 s, B = 24–40 s. O editor pôs B antes de A.
+    const parts = [seg(24, 40), seg(8, 20)];
+    const final = new Float64Array(parts.reduce((n, p) => n + p.length, 0));
+    let o = 0;
+    for (const p of parts) {
+      final.set(p, o);
+      o += p.length;
+    }
+    const opts = { windowS: 10, windowHopS: 5, stepS: 0.05, subWinS: 1 };
+    const clipsAB = [{ index: 0, srcIn: 8, srcOut: 20 }, { index: 1, srcIn: 24, srcOut: 40 }];
+    const mono = alignEnvelopes(final, bruto, hop, opts);
+    const before = compareSequence({ clips: clipsAB, spans: finalSpansFromRuns(mono.runs), finalDurationS: final.length * hop });
+    assert.equal(before.clips[0].status, "removed", "premissa: o alinhamento monótono perde o trecho que foi para trás");
+    const al = alignWithReorder(final, bruto, hop, opts);
+    assert.ok(al.coverage > 0.9, `cobertura ${al.coverage}`);
+    assert.ok(al.reordered >= 1);
+    const r = compareSequence({ clips: clipsAB, spans: finalSpansFromRuns(al.runs), finalDurationS: final.length * hop });
+    assert.equal(r.summary.clipsRemoved, 0);
+    assert.equal(r.summary.orderInversions, 1);
+  });
+});
+
+describe("self-review PR #13205: Drive inacessível não é 'sem final exportado'", () => {
+  const plan: PlanFileLite = {
+    plans: [{ spec: { target: "youtube" }, clips: [], durationFrames: 0 } as unknown as PlanFileLite["plans"][number]],
+    source: { fps: 30 },
+  };
+  const finderOf = (list: Finder["list"]): Finder => ({ mode: "api", list, workDir: () => "/nao-existe" });
+
+  it("falha de consulta vira drive-indisponivel e alarma", async () => {
+    const rec = await compareEdition("261110", finderOf(async () => {
+      throw new Error("401 invalid_grant");
+    }), { plan });
+    assert.ok(rec);
+    assert.equal(rec.skipped.length, 1);
+    assert.match(rec.skipped[0].reason, /^drive-indisponivel: 401 invalid_grant/);
+    assert.equal(isDriveUnavailable(rec), true);
+    assert.equal(driveUnreachable([rec]), true);
+  });
+
+  it("pasta sem final segue 'sem final exportado' e não alarma", async () => {
+    const rec = await compareEdition("261110", finderOf(async () => []), { plan });
+    assert.ok(rec);
+    assert.match(rec.skipped[0].reason, /^sem final exportado/);
+    assert.equal(driveUnreachable([rec]), false);
+  });
+
+  it("uma edição alcançada basta para não alarmar a rodada", () => {
+    const bad: EditionRecord = { schema: XML_FINAL_SCHEMA, edition: "261110", method: "audio-envelope-align-v1", generatedAt: "", sequences: [], skipped: [{ key: "k", reason: "drive-indisponivel: x" }] };
+    const ok: EditionRecord = { ...bad, edition: "261111", skipped: [{ key: "k", reason: "sem final exportado em Final/" }] };
+    assert.equal(driveUnreachable([bad, ok]), false);
+    assert.equal(driveUnreachable([]), false);
+  });
+});
+
+describe("self-review PR #13205: state.json gravado a cada padrão", () => {
+  it("gh que falha no 2º padrão não perde o registro da issue do 1º", async () => {
+    const mk = (id: string) => ({ id, title: `t ${id}`, priority: "P3" as const, editions: ["261110", "261111"], evidence: [], suggestion: "s", evidenceHash: `h-${id}` });
+    const state = { lastRunAt: null, done: {}, patterns: {} } as { lastRunAt: null; done: Record<string, never>; patterns: Record<string, { issue: number; evidenceHash: string }> };
+    const persisted: string[] = [];
+    let creates = 0;
+    const gh = (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list") return "[]";
+      if (args[0] === "issue" && args[1] === "create") {
+        creates++;
+        if (creates === 2) throw new Error("gh saiu 1: rede");
+        return "https://github.com/vjpixel/diaria-studio/issues/99001";
+      }
+      throw new Error(`gh inesperado: ${args.join(" ")}`);
+    };
+    await assert.rejects(reportPatterns([mk("a"), mk("b")], state, [], true, { gh, persist: (s) => persisted.push(JSON.stringify(s.patterns)) }), /rede/);
+    assert.deepEqual(persisted, [JSON.stringify({ a: { issue: 99001, evidenceHash: "h-a" } })]);
   });
 });
 

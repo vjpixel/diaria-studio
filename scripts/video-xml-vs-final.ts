@@ -11,7 +11,9 @@
  * Método (o da #11670, agora no repo): áudio do bruto (o `audio.wav` 16 kHz
  * do cache da montagem) e do final a 16 kHz mono; envelope de energia; o
  * alinhamento monótono por correlação do `--from-audio` (#11504,
- * `alignEnvelopes`), com o final no lugar do "áudio" e o bruto no do "vídeo".
+ * `alignEnvelopes`), com o final no lugar do "áudio" e o bruto no do "vídeo",
+ * mais uma busca global nos vãos sem par (`alignWithReorder`: trecho
+ * reordenado pelo editor).
  * Cada trecho do final ganha o tempo no bruto; o cruzamento com os clipes do
  * plano dá as diferenças. Somente leitura sobre Drive e edição: grava só em
  * `data/video-xml-vs-final/` e no cache local.
@@ -41,7 +43,8 @@
  * `aggregate.json`, `report.md` e `state.json` (o que já foi comparado e as
  * issues por padrão).
  *
- * Exit: 0 ok (inclusive sem nada a comparar); 1 erro de execução; 2 uso.
+ * Exit: 0 ok (inclusive sem nada a comparar); 1 erro de execução, ou nenhuma
+ * edição da rodada pôde ser consultada no Drive (`drive-indisponivel`); 2 uso.
  */
 
 import { spawnSync } from "node:child_process";
@@ -51,7 +54,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
-import { alignEnvelopes } from "./lib/diaria/video-audio-align.ts";
 import { energyEnvelope, parseWavPcm16 } from "./lib/diaria/video-cut-refine.ts";
 import { parseLoudnormJson, sequenceKey, type SequencePlan, type Word } from "./lib/diaria/video-montage.ts";
 import {
@@ -69,8 +71,11 @@ import {
 import { isEditedFolderName, isFinalFolderName, videoVersionOf } from "./lib/diaria/drive-video-source.ts";
 import {
   aggregateRecords,
+  alignWithReorder,
   compareSequence,
   detectPatterns,
+  driveUnavailableReason,
+  driveUnreachable,
   editionsToCompare,
   EMPTY_STATE,
   finalSpansFromRuns,
@@ -129,7 +134,7 @@ export function todayBrt(now = new Date()): string {
   return `${String(d.getUTCFullYear()).slice(2)}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-interface PlanFileLite {
+export interface PlanFileLite {
   plans: SequencePlan[];
   source: { fps?: number; audioOnly?: boolean; path?: string };
   xmlVersions?: Record<string, { id: string }>;
@@ -162,7 +167,7 @@ export function editionsWithPlan(root = ROOT): Array<{ edition: string; sequence
   return outList.sort((a, b) => a.edition.localeCompare(b.edition));
 }
 
-interface Finder {
+export interface Finder {
   mode: "local" | "api";
   /** Os candidatos a final da edição: pastas Final/ (e Editado/ se Final/ não tiver mp4). */
   list(edition: string): Promise<Array<{ name: string; modifiedTime?: string | null; fetch: () => Promise<string> }>>;
@@ -206,13 +211,11 @@ async function apiFinder(cacheFlag: string | undefined, workDirFlag: string | un
   return {
     mode: "api",
     async list(edition) {
-      let folder: DriveEntry;
-      try {
-        folder = await findEditionFolder(deps, rootId(), edition);
-      } catch (e) {
-        log(`[aviso] ${edition}: pasta da edição no Drive: ${(e as Error).message}`);
-        return [];
-      }
+      // Pasta ausente = sem final (ainda); qualquer outra falha (credencial, rede, pasta duplicada) sobe e vira
+      // `drive-indisponivel` no `compareEdition`, nunca "sem final exportado" (self-review da PR #13205).
+      const found = await listChildren(deps, rootId(), { name: edition, foldersOnly: true });
+      if (found.length === 0) return [];
+      const folder: DriveEntry = found.length === 1 ? found[0] : await findEditionFolder(deps, rootId(), edition);
       const subs = await listChildren(deps, folder.id, { foldersOnly: true });
       const filesOf = async (pred: (n: string) => boolean) => {
         const all: DriveEntry[] = [];
@@ -257,8 +260,12 @@ function brutoWav(edition: string, workDir: string, pf: PlanFileLite): string | 
 }
 
 /** Compara uma edição. `null` = sem plan.json (fora da rodada). */
-export async function compareEdition(edition: string, finder: Finder, opts: { finalPath?: string; seq?: string; skip?: ReadonlySet<string> } = {}): Promise<EditionRecord | null> {
-  const pf = readJsonSafe<PlanFileLite>(planPath(edition));
+export async function compareEdition(
+  edition: string,
+  finder: Finder,
+  opts: { finalPath?: string; seq?: string; skip?: ReadonlySet<string>; plan?: PlanFileLite } = {},
+): Promise<EditionRecord | null> {
+  const pf = opts.plan ?? readJsonSafe<PlanFileLite>(planPath(edition));
   if (!pf) return null;
   const { reviewFinalSequence } = await import("./video-montagem.ts");
   const specs = pf.plans.map((p) => p.spec);
@@ -269,15 +276,23 @@ export async function compareEdition(edition: string, finder: Finder, opts: { fi
       return null;
     }
   };
-  const candidates = opts.finalPath
-    ? [{ name: basename(opts.finalPath), modifiedTime: null, fetch: async () => resolve(opts.finalPath as string) }]
-    : await finder.list(edition);
-  const finals = pickFinalsPerSequence(candidates, resolveKey, videoVersionOf);
   const record: EditionRecord = { schema: XML_FINAL_SCHEMA, edition, method: "audio-envelope-align-v1", generatedAt: new Date().toISOString(), sequences: [], skipped: [] };
   const plans = pf.plans.filter((p) => {
     const k = sequenceKey(p.spec);
     return !pf.stale?.[k] && (!opts.seq || k === opts.seq) && !opts.skip?.has(k);
   });
+  let candidates: Awaited<ReturnType<Finder["list"]>>;
+  try {
+    candidates = opts.finalPath
+      ? [{ name: basename(opts.finalPath), modifiedTime: null, fetch: async () => resolve(opts.finalPath as string) }]
+      : await finder.list(edition);
+  } catch (e) {
+    const reason = driveUnavailableReason((e as Error).message);
+    log(`[erro] ${edition}: consulta ao Drive falhou: ${(e as Error).message}`);
+    for (const p of plans) record.skipped.push({ key: sequenceKey(p.spec), reason });
+    return record;
+  }
+  const finals = pickFinalsPerSequence(candidates, resolveKey, videoVersionOf);
   if (pf.source.audioOnly) {
     for (const p of plans) record.skipped.push({ key: sequenceKey(p.spec), reason: "bruto só de áudio (#11552): sem XML de vídeo" });
     return record;
@@ -311,7 +326,7 @@ export async function compareEdition(edition: string, finder: Finder, opts: { fi
       const fa = parseWavPcm16(readFileSync(fwav));
       const fe = energyEnvelope(fa.samples, fa.sampleRate);
       const finalDurationS = fa.samples.length / fa.sampleRate;
-      const al = alignEnvelopes(fe.db, brutoEnv.db, brutoEnv.hopS, ALIGN_OPTS);
+      const al = alignWithReorder(fe.db, brutoEnv.db, brutoEnv.hopS, ALIGN_OPTS);
       if (al.coverage < MIN_COVERAGE) {
         record.skipped.push({ key, reason: `alinhamento fraco: ${(al.coverage * 100).toFixed(0)}% do final com par no bruto (mínimo ${MIN_COVERAGE * 100}%)` });
         continue;
@@ -373,7 +388,7 @@ function saveRecord(rec: EditionRecord, state: RecurringState, dryRun: boolean, 
   return merged;
 }
 
-function gh(args: string[]): string {
+function ghCli(args: string[]): string {
   return sh("gh", args).stdout.trim();
 }
 
@@ -383,8 +398,26 @@ function bodyFile(text: string): string {
   return p;
 }
 
+export interface ReportPatternsDeps {
+  gh?: (args: string[]) => string;
+  /**
+   * Grava o estado logo depois de cada issue aberta/comentada (self-review da
+   * PR #13205): um `gh` que falha no 2º padrão não pode deixar o 1º sem
+   * registro, senão a rodada seguinte abre outra issue antes de o índice de
+   * busca do GitHub alcançar a primeira.
+   */
+  persist?: (state: RecurringState) => void;
+}
+
 /** Abre ou comenta a issue de cada padrão; devolve o que fez (para o log/relatório). */
-export async function reportPatterns(patterns: readonly DetectedPattern[], state: RecurringState, records: readonly EditionRecord[], openIssues: boolean): Promise<string[]> {
+export async function reportPatterns(
+  patterns: readonly DetectedPattern[],
+  state: RecurringState,
+  records: readonly EditionRecord[],
+  openIssues: boolean,
+  deps: ReportPatternsDeps = {},
+): Promise<string[]> {
+  const gh = deps.gh ?? ghCli;
   const done: string[] = [];
   const examples = patternExamples(records);
   for (const p of patterns) {
@@ -414,6 +447,7 @@ export async function reportPatterns(patterns: readonly DetectedPattern[], state
       done.push(`${p.id}: issue #${target} aberta`);
     }
     state.patterns[p.id] = { issue: target, evidenceHash: p.evidenceHash };
+    deps.persist?.(state);
   }
   return done;
 }
@@ -431,7 +465,7 @@ async function finish(opts: { openIssues: boolean; dryRun: boolean; register: bo
   }
   writeJson(out("aggregate.json"), { generatedAt: new Date().toISOString(), ...agg, patterns });
   writeFileSync(out("report.md"), report);
-  const actions = await reportPatterns(patterns, opts.state, records, opts.openIssues);
+  const actions = await reportPatterns(patterns, opts.state, records, opts.openIssues, { persist: (s) => writeJson(out("state.json"), s) });
   for (const a of actions) log(`[video-xml-vs-final] ${a}`);
   opts.state.lastRunAt = new Date().toISOString();
   writeJson(out("state.json"), opts.state);
@@ -486,8 +520,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       if (dryRun) process.stdout.write(JSON.stringify(merged, null, 2) + "\n");
       else writeJson(out("state.json"), state);
       for (const s of rec.skipped) log(`[pulada] ${arg} ${s.key}: ${s.reason}`);
-      return 0;
+      return driveUnreachable([rec]) ? 1 : 0;
     }
+    /** Os registros comparados nesta rodada (sem o baseline importado): base do alarme de Drive inacessível. */
+    const round: EditionRecord[] = [];
     if (cmd === "backfill") {
       for (const b of BASELINE_11670) saveRecord(b, state, dryRun, fresh);
       const from = values.from ?? BACKFILL_FROM;
@@ -495,7 +531,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const finder = await getFinder();
       for (const e of editionsWithPlan().filter((x) => x.edition >= from && x.edition <= to)) {
         const rec = await compareEdition(e.edition, finder);
-        if (rec) saveRecord(rec, state, dryRun, fresh);
+        if (rec) {
+          round.push(rec);
+          saveRecord(rec, state, dryRun, fresh);
+        }
       }
     }
     if (cmd === "run") {
@@ -510,11 +549,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         const finder = await getFinder();
         for (const e of todo) {
           const rec = await compareEdition(e, finder, { skip: new Set(state.done[e]?.sequences ?? []) });
-          if (rec) saveRecord(rec, state, dryRun, fresh);
+          if (rec) {
+            round.push(rec);
+            saveRecord(rec, state, dryRun, fresh);
+          }
         }
       }
     }
     await finish({ openIssues, dryRun, register: !flags.has("no-register"), today, state, fresh });
+    if (driveUnreachable(round)) {
+      console.error(`video-xml-vs-final: nenhuma das ${round.length} edição(ões) pôde ser consultada no Drive (motivo em skipped: drive-indisponivel)`);
+      return 1;
+    }
     return 0;
   } catch (e) {
     console.error(`video-xml-vs-final: ${(e as Error).message}`);
