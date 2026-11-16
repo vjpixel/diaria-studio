@@ -318,7 +318,7 @@ describe("#12746: nome único e frescor do --body-file", () => {
     const past = new Date(Date.now() - BODY_FILE_STALE_MS - 5 * 60_000);
     utimesSync(oldFile, past, past);
     // Barras normais: no comando de shell a `\` do caminho do Windows vira escape (#13243).
-    const warn = JSON.parse(runHook(`gh issue comment 1 --body-file ${oldFile.replace(/\\/g, "/")}`).stdout);
+    const warn = JSON.parse(runHook(`gh issue comment 1 --body-file "${oldFile.replace(/\\/g, "/")}"`).stdout);
     assert.equal(warn.hookSpecificOutput.permissionDecision, undefined);
     assert.match(warn.hookSpecificOutput.additionalContext, /#12746/);
     assert.match(warn.systemMessage, /#12746/);
