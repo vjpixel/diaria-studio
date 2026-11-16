@@ -59,6 +59,8 @@ export function planScheduledUpdates(input: {
   diariaProfiles?: DiariaProfiles;
   /** #12735: link do horizontal da edição (`05-video-url.txt`) na legenda do Facebook e do X; ausente/null = sem link. */
   horizontalLink?: string | null;
+  /** #13117: roteiro com cta_vertical; a legenda do TikTok aponta para a bio. Nunca no corte. */
+  ctaVertical?: boolean;
 }): ScheduledUpdateItem[] {
   const only = input.only && input.only.length ? new Set(input.only) : null;
   if (only && input.known) {
@@ -104,7 +106,7 @@ export function planScheduledUpdates(input: {
       if (e.destination === "x") {
         out.push({ destination: e.destination, action: "buffer_edit", bufferId, text: buildShortSocialText({ platform: "x", d1: input.d1, horizontalLink: input.horizontalLink }), scheduledAt });
       } else {
-        const post = buildTikTokPost({ d1: input.d1 });
+        const post = buildTikTokPost({ d1: input.d1, ctaVertical: input.ctaVertical === true });
         out.push({ destination: e.destination, action: "buffer_edit", bufferId, text: post.caption, scheduledAt, tiktokTitle: post.title });
       }
     } else {

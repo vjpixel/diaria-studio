@@ -62,6 +62,8 @@ export function planPublishedTextUpdates(input: {
   /** Link do horizontal (#12735) no Facebook e no LinkedIn; `null` = sem link. */
   horizontalLink?: string | null;
   diariaProfiles?: DiariaProfiles;
+  /** #13117: roteiro com cta_vertical; Instagram e Threads apontam para a bio. Nunca no corte. */
+  ctaVertical?: boolean;
   only?: readonly string[] | null;
   /** Ids que o config conhece: `--only` com nome fora deles e do registro lança. */
   known?: ReadonlySet<string>;
@@ -117,7 +119,7 @@ export function planPublishedTextUpdates(input: {
       out.push({
         destination: e.destination,
         action: "ui",
-        text: buildReelsCaption({ platform: "instagram", d1: input.d1 }),
+        text: buildReelsCaption({ platform: "instagram", d1: input.d1, ctaVertical: input.ctaVertical === true }),
         how: "a API do Instagram não edita legenda: Gerenciar post → Editar (Claude in Chrome ou app)",
         ...(e.url ? { url: e.url } : {}),
       });
@@ -127,7 +129,7 @@ export function planPublishedTextUpdates(input: {
         out.push({
           destination: e.destination,
           action: "ui",
-          text: buildShortSocialText({ platform: "threads", d1: input.d1, follow: diariaFollowLine("threads_profile", input.diariaProfiles) }),
+          text: buildShortSocialText({ platform: "threads", d1: input.d1, follow: diariaFollowLine("threads_profile", input.diariaProfiles), ctaVertical: input.ctaVertical === true }),
           how: `o Threads só edita pela UI e até 15 min depois de publicar (até ${new Date(atMs + THREADS_EDIT_WINDOW_MS).toISOString()})`,
           ...(e.url ? { url: e.url } : {}),
         });
