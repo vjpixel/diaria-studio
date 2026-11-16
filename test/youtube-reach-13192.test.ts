@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  YOUTUBE_REACH_CTR_SCALE,
   YOUTUBE_REACH_REPORT_TYPE,
   YouTubeReportingError,
   aggregateReachByVideo,
@@ -21,6 +22,7 @@ import {
   parseReachCsv,
   reachDay,
   splitCsvLine,
+  type CtrScale,
   type ReachDailyLine,
 } from "../scripts/lib/diaria/youtube-reach.ts";
 import { fmtCtr, renderAnalyticsReport, type ChannelSnapshotLine, type VideoSnapshotLine } from "../scripts/lib/diaria/youtube-analytics.ts";
@@ -36,38 +38,63 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+/** Linha com `clicks` já em cliques (escala percentual: valor cru × 100). */
 function line(day: string, videoId: string, impressions: number, clicks: number, reportCreateTime: string, capturedAt = "2026-11-16T00:00:00Z"): ReachDailyLine {
-  return { capturedAt, reportId: reportCreateTime, reportCreateTime, day, videoId, impressions, clicks, ctr: impressions ? clicks / impressions : null, ctrRaw: null, ctrScale: "fraction" };
+  return { capturedAt, reportId: reportCreateTime, reportCreateTime, day, videoId, impressions, clicksRaw: clicks * 100, ctrRaw: null };
+}
+
+/** Fração de um único vídeo, pelo caminho real (CSV → agregação). */
+function ctrOf(rows: ReachDailyLine[], videoId: string, scale?: CtrScale): number | null {
+  return aggregateReachByVideo(rows, undefined, scale).get(videoId)?.ctr ?? null;
 }
 
 describe("#13192 CSV do channel_reach_basic_a1", () => {
-  it("lê pelo cabeçalho (ordem livre), data YYYYMMDD, taxa em fração", () => {
-    const csv = ["video_thumbnail_impressions_ctr,video_id,date,channel_id,video_thumbnail_impressions", `0.05,${H},20261110,UC,200`, `0.01,${S},20261110,UC,100`, ""].join("\n");
+  it("lê pelo cabeçalho (ordem livre), data YYYYMMDD, valor cru preservado", () => {
+    const csv = ["video_thumbnail_impressions_ctr,video_id,date,channel_id,video_thumbnail_impressions", `5,${H},20261110,UC,200`, `1,${S},20261110,UC,100`, ""].join("\n");
     const rows = parseReachCsv(csv, META);
     const h = rows.find((r) => r.videoId === H)!;
     assert.equal(h.day, "2026-11-10");
     assert.equal(h.impressions, 200);
-    assert.equal(h.clicks, 10);
-    assert.equal(h.ctr, 0.05);
-    assert.equal(h.ctrScale, "fraction");
+    assert.equal(h.ctrRaw, 5);
+    assert.equal(h.clicksRaw, 1000);
     assert.equal(h.reportId, "r1");
+    assert.equal(ctrOf(rows, H), 0.05);
   });
 
-  it("valor > 1 no arquivo: escala percentual, dividida por 100 (valor cru preservado)", () => {
-    const rows = parseReachCsv([CSV_HEADER, `20261110,UC,${H},500,2.2`, `20261110,UC,${S},100,0.8`].join("\n"), META);
-    const h = rows.find((r) => r.videoId === H)!;
-    const s = rows.find((r) => r.videoId === S)!;
-    assert.equal(h.ctrScale, "percent");
-    assert.ok(Math.abs(h.ctr! - 0.022) < 1e-12);
-    assert.ok(Math.abs(s.ctr! - 0.008) < 1e-12, "0,8 no mesmo arquivo percentual é 0,8%, não 80%");
-    assert.equal(s.ctrRaw, 0.8);
+  it("escala é a constante fixa (percentual), não inferida pelo conteúdo do arquivo", () => {
+    assert.equal(YOUTUBE_REACH_CTR_SCALE, "percent");
+    const mixed = parseReachCsv([CSV_HEADER, `20261110,UC,${H},500,2.2`, `20261110,UC,${S},100,0.8`].join("\n"), META);
+    assert.ok(Math.abs(ctrOf(mixed, H)! - 0.022) < 1e-12);
+    assert.ok(Math.abs(ctrOf(mixed, S)! - 0.008) < 1e-12);
+  });
+
+  it("regressão (review PR #13202): arquivo percentual com TODOS os vídeos abaixo de 1% não vira 60%/80%", () => {
+    const rows = parseReachCsv([CSV_HEADER, `20261110,UC,${H},1000,0.6`, `20261110,UC,${S},500,0.8`].join("\n"), META);
+    assert.ok(Math.abs(ctrOf(rows, H)! - 0.006) < 1e-12, "0,6 é 0,6%, não 60%");
+    assert.ok(Math.abs(ctrOf(rows, S)! - 0.008) < 1e-12, "0,8 é 0,8%, não 80%");
+    // O mesmo valor cru lido no mesmo dia, sozinho ou ao lado de um vídeo acima
+    // de 1%, dá a mesma taxa: a decisão não depende do resto do arquivo.
+    const withHigh = parseReachCsv([CSV_HEADER, `20261110,UC,${H},1000,0.6`, `20261110,UC,${S},500,3`].join("\n"), META);
+    assert.equal(ctrOf(withHigh, H), ctrOf(rows, H));
+  });
+
+  it("trocar a escala na leitura reinterpreta o histórico gravado sem re-baixar", () => {
+    const rows = parseReachCsv([CSV_HEADER, `20261110,UC,${H},200,0.05`].join("\n"), META, "fraction");
+    assert.equal(ctrOf(rows, H, "fraction"), 0.05);
+    assert.ok(Math.abs(ctrOf(rows, H, "percent")! - 0.0005) < 1e-12);
+  });
+
+  it("valor fora da escala lança (formato mudou ou escala fixa errada)", () => {
+    assert.throws(() => parseReachCsv([CSV_HEADER, `20261110,UC,${H},200,250`].join("\n"), META), /fora da escala percent/);
+    assert.throws(() => parseReachCsv([CSV_HEADER, `20261110,UC,${H},200,-1`].join("\n"), META), /fora da escala/);
+    assert.throws(() => parseReachCsv([CSV_HEADER, `20261110,UC,${H},200,2.2`].join("\n"), META, "fraction"), /fora da escala fraction/);
   });
 
   it("linhas repetidas do par dia/vídeo somam por cliques estimados", () => {
-    const rows = parseReachCsv([CSV_HEADER, `20261110,UC,${H},100,0.1`, `20261110,UC,${H},300,0.02`].join("\n"), META);
+    const rows = parseReachCsv([CSV_HEADER, `20261110,UC,${H},100,10`, `20261110,UC,${H},300,2`].join("\n"), META);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].impressions, 400);
-    assert.ok(Math.abs(rows[0].ctr! - 16 / 400) < 1e-12);
+    assert.ok(Math.abs(ctrOf(rows, H)! - 16 / 400) < 1e-12);
   });
 
   it("só cabeçalho (dia sem dado) é lista vazia; coluna obrigatória ausente lança", () => {
@@ -85,7 +112,7 @@ describe("#13192 CSV do channel_reach_basic_a1", () => {
 
   it("vídeo sem impressão: taxa null, nunca NaN", () => {
     const rows = parseReachCsv([CSV_HEADER, `20261110,UC,${H},0,0`].join("\n"), META);
-    assert.equal(rows[0].ctr, null);
+    assert.equal(ctrOf(rows, H), null);
   });
 });
 
@@ -126,6 +153,10 @@ function reportingMock(opts: {
   jobs?: Array<{ id: string; reportTypeId: string }>;
   reports?: Array<{ id: string; startTime: string; createTime: string; csv: string | { status: number; body: string } }>;
   failJobs?: { status: number; body: string };
+  /** `jobs.create` responde com este status (ex.: 409 ALREADY_EXISTS). */
+  failCreate?: { status: number; body: string };
+  /** Jobs que só aparecem na listagem com `includeSystemManaged=true`. */
+  systemJobs?: Array<{ id: string; reportTypeId: string }>;
 }) {
   const calls: Array<{ url: string; method: string; body?: string }> = [];
   const fetch = async (url: string, init?: RequestInit): Promise<Response | null> => {
@@ -136,7 +167,14 @@ function reportingMock(opts: {
       if (opts.failJobs) return new Response(opts.failJobs.body, { status: opts.failJobs.status });
       return json(opts.jobs ? { jobs: opts.jobs } : {});
     }
-    if (url === "https://youtubereporting.googleapis.com/v1/jobs" && method === "POST") return json({ id: "novo", reportTypeId: YOUTUBE_REACH_REPORT_TYPE });
+    if (url === "https://youtubereporting.googleapis.com/v1/jobs?includeSystemManaged=true" && method === "GET") {
+      const all = [...(opts.jobs ?? []), ...(opts.systemJobs ?? [])];
+      return json(all.length ? { jobs: all } : {});
+    }
+    if (url === "https://youtubereporting.googleapis.com/v1/jobs" && method === "POST") {
+      if (opts.failCreate) return new Response(opts.failCreate.body, { status: opts.failCreate.status });
+      return json({ id: "novo", reportTypeId: YOUTUBE_REACH_REPORT_TYPE });
+    }
     const m = /\/v1\/jobs\/([^/]+)\/reports/.exec(url);
     if (m) {
       return json({
@@ -189,6 +227,38 @@ describe("#13192 coleta da Reporting API (fetch mockado)", () => {
     assert.equal(out.summary.jobId, "novo");
     assert.equal(out.summary.jobCreated, true);
     assert.equal(out.summary.reportsDownloaded, 0);
+  });
+
+  it("jobs.create com 409 (job já existe, fora da listagem padrão): relista e reusa o job", async () => {
+    const mock = reportingMock({
+      failCreate: { status: 409, body: '{"error":{"code":409,"status":"ALREADY_EXISTS","message":"Job already exists"}}' },
+      systemJobs: [{ id: "existente", reportTypeId: YOUTUBE_REACH_REPORT_TYPE }],
+      reports: [{ id: "r1", startTime: "2026-11-10T08:00:00Z", createTime: "2026-11-11T00:00:00Z", csv: csv1 }],
+    });
+    const warnings: string[] = [];
+    const out = await collectReach(only(mock), "tok", { capturedAt: "c", knownReportIds: new Set(), dryRun: false, warn: (m) => warnings.push(m) });
+    assert.equal(out.summary.jobId, "existente");
+    assert.equal(out.summary.jobCreated, false);
+    assert.equal(out.summary.reportsDownloaded, 1);
+    assert.equal(mock.calls.filter((c) => c.method === "POST").length, 1, "não tenta criar de novo depois do 409");
+    assert.deepEqual(warnings, []);
+  });
+
+  it("jobs.create com 409 e job invisível mesmo na relistagem: erro explícito, não loop", async () => {
+    const mock = reportingMock({ failCreate: { status: 409, body: '{"error":{"status":"ALREADY_EXISTS"}}' } });
+    await assert.rejects(
+      collectReach(only(mock), "tok", { capturedAt: "c", knownReportIds: new Set(), dryRun: false, warn: () => {} }),
+      (e: unknown) => e instanceof YouTubeReportingError && e.httpStatus === 409 && /já existe/.test(e.message),
+    );
+  });
+
+  it("jobs.create com outro erro (500) não é tratado como job existente", async () => {
+    const mock = reportingMock({ failCreate: { status: 500, body: "boom" } });
+    await assert.rejects(
+      collectReach(only(mock), "tok", { capturedAt: "c", knownReportIds: new Set(), dryRun: false, warn: () => {} }),
+      (e: unknown) => e instanceof YouTubeReportingError && e.httpStatus === 500,
+    );
+    assert.ok(!mock.calls.some((c) => c.url.includes("includeSystemManaged")));
   });
 
   it("--dry-run nunca cria o job", async () => {
@@ -276,7 +346,7 @@ function readLines<T>(dataRoot: string, file: string): T[] {
 
 describe("#13192 runSnapshot: capa em videos.jsonl", () => {
   const reports = [
-    { id: "r10", startTime: "2026-11-10T08:00:00Z", createTime: "2026-11-11T00:00:00Z", csv: [CSV_HEADER, `20261110,UC,${H},200,0.05`].join("\n") },
+    { id: "r10", startTime: "2026-11-10T08:00:00Z", createTime: "2026-11-11T00:00:00Z", csv: [CSV_HEADER, `20261110,UC,${H},200,5`].join("\n") },
     { id: "r11", startTime: "2026-11-11T08:00:00Z", createTime: "2026-11-12T00:00:00Z", csv: [CSV_HEADER, `20261111,UC,${H},300,0.0`].join("\n") },
   ];
 

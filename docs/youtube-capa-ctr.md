@@ -60,14 +60,20 @@ mostra o aviso de API desligada.
 ### Premissa a conferir no 1º relatório real
 
 A doc chama `video_thumbnail_impressions_ctr` de porcentagem e define como
-cliques ÷ impressões, sem dizer a escala. O leitor decide por arquivo: algum
-valor acima de 1 conta como escala percentual (divide por 100); senão, fração.
-O valor cru fica em `ctrRaw` e a escala usada em `ctrScale`, em
-`reach-daily.jsonl`, para corrigir sem baixar de novo. Conferir o primeiro
-relatório contra o Studio: o "Só o Claude Opus 5.5 supera a IA aberta da
-Mistral" tinha 0,8% na leitura de 16/11/2026. Se o arquivo vier todo em
-porcentagem abaixo de 1 (ex.: 0,8 e 0,6), a regra lê como fração e mostra 80%;
-nesse caso, fixar a escala percentual em `parseReachCsv`.
+cliques ÷ impressões, sem dizer a escala. A escala é FIXA, nunca inferida pelo
+conteúdo do arquivo: `YOUTUBE_REACH_CTR_SCALE` em
+`scripts/lib/diaria/youtube-reach.ts`, hoje percentual (0,8 = 0,8%). Inferir
+por arquivo ("algum valor acima de 1 = percentual") leria como fração o dia em
+que todos os vídeos ficassem abaixo de 1% e mostraria 80% (review da PR
+#13202). `reach-daily.jsonl` guarda só o valor cru (`ctrRaw` e `clicksRaw`,
+impressões × valor cru) e a conversão para fração acontece na leitura, então
+trocar a constante corrige todo o histórico sem baixar de novo. Valor fora da
+escala (acima de 100 em percentual, acima de 1 em fração, ou negativo) faz o
+relatório daquele dia virar aviso e ser baixado de novo na execução seguinte.
+Conferir o primeiro relatório contra o Studio: o "Só o Claude Opus 5.5 supera
+a IA aberta da Mistral" tinha 0,8% na leitura de 16/11/2026. Se a taxa sair
+100 vezes menor que a do Studio (0,008%), o CSV vem em fração: trocar a
+constante para `"fraction"`.
 
 ## Fonte manual: export do YouTube Studio
 

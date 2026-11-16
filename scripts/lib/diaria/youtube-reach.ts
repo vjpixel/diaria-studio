@@ -28,12 +28,18 @@
  *     baixou (ids em `reach-reports.jsonl`) e guarda as linhas em
  *     `reach-daily.jsonl`.
  *
- * Escala da taxa de cliques — PREMISSA a confirmar com o 1º relatório real: a
- * doc chama a métrica de "percentage" e define como cliques ÷ impressões, sem
- * dizer a escala. Por arquivo: algum valor > 1 → escala percentual (÷ 100);
- * senão, fração. O valor cru fica gravado (`ctrRaw`, `ctrScale`) para corrigir
- * sem re-baixar caso a premissa esteja errada (conferir contra o Studio: o
- * "Só o Claude Opus 5.5 supera..." tinha 0,8%).
+ * Escala da taxa de cliques — FIXA, nunca inferida por arquivo (review da PR
+ * #13202): a doc chama a métrica de "percentage" e não diz a escala, e
+ * inferir pelo conteúdo ("algum valor > 1 = percentual") lê errado o arquivo
+ * percentual em que todos os vídeos ficaram abaixo de 1% (0,6 e 0,8 viravam
+ * 60% e 80%). A escala é a constante `YOUTUBE_REACH_CTR_SCALE` (percentual,
+ * pelo nome da métrica na doc). O CSV grava só o valor CRU (`ctrRaw`, e
+ * `clicksRaw` = Σ impressões × valor cru); a conversão para fração acontece
+ * na leitura (`aggregateReachByVideo`), então corrigir a constante corrige
+ * todo o histórico sem baixar nada de novo. Valor fora da faixa da escala
+ * (negativo, ou > 100 em percentual, > 1 em fração) lança: formato mudou.
+ * Conferir o 1º relatório real contra o Studio (o "Só o Claude Opus 5.5
+ * supera..." tinha 0,8%): se o número sair 100x menor, a escala é fração.
  */
 
 import { classifyAnalyticsFailure, type AnalyticsFailureKind } from "./youtube-analytics.ts";
@@ -48,6 +54,17 @@ export const YOUTUBE_REACH_MAX_DOWNLOADS = 90;
 
 export type CtrScale = "fraction" | "percent";
 
+/**
+ * Escala de `video_thumbnail_impressions_ctr` no CSV. Decisão fixa (ver o
+ * cabeçalho do arquivo): trocar aqui reinterpreta todo o `reach-daily.jsonl`.
+ */
+export const YOUTUBE_REACH_CTR_SCALE: CtrScale = "percent";
+
+/** Divisor que leva o valor cru para fração (0..1). */
+export function ctrScaleDivisor(scale: CtrScale): number {
+  return scale === "percent" ? 100 : 1;
+}
+
 /** Uma linha por dia (Pacífico) e vídeo, de um relatório baixado. */
 export interface ReachDailyLine {
   capturedAt: string;
@@ -58,13 +75,14 @@ export interface ReachDailyLine {
   day: string;
   videoId: string;
   impressions: number;
-  /** Cliques estimados (impressões × taxa), somados se o CSV trouxer várias linhas do par. */
-  clicks: number;
-  /** Taxa de cliques em fração (0..1); `null` sem impressões. */
-  ctr: number | null;
-  /** Último valor cru de `video_thumbnail_impressions_ctr` do par, para auditoria da escala. */
+  /**
+   * Σ impressões × valor cru da taxa, na escala do CSV (cliques × divisor da
+   * escala). Somado se o CSV trouxer várias linhas do par. A fração sai na
+   * leitura, com `YOUTUBE_REACH_CTR_SCALE`.
+   */
+  clicksRaw: number;
+  /** Último valor cru de `video_thumbnail_impressions_ctr` do par, para auditoria. */
   ctrRaw: number | null;
-  ctrScale: CtrScale;
 }
 
 /** Marcador de relatório já baixado (inclusive vazio: dia sem dado tem só cabeçalho). */
@@ -132,6 +150,7 @@ export function reachDay(raw: string): string | null {
 export function parseReachCsv(
   csv: string,
   meta: { capturedAt: string; reportId: string; reportCreateTime: string },
+  scale: CtrScale = YOUTUBE_REACH_CTR_SCALE,
 ): ReachDailyLine[] {
   const lines = csv.split(/\r?\n/).filter((l) => l.trim() !== "");
   if (!lines.length) return [];
@@ -161,23 +180,28 @@ export function parseReachCsv(
     const ctrRaw = Number(cells[iCtr]);
     raw.push({ day, videoId, impressions: Number.isFinite(impressions) ? impressions : 0, ctrRaw: Number.isFinite(ctrRaw) ? ctrRaw : 0 });
   }
-  const ctrScale: CtrScale = raw.some((r) => r.ctrRaw > 1) ? "percent" : "fraction";
-  const divisor = ctrScale === "percent" ? 100 : 1;
+  const max = ctrScaleDivisor(scale);
+  const out = raw.find((r) => r.ctrRaw < 0 || r.ctrRaw > max);
+  if (out) {
+    throw new Error(
+      `relatório ${YOUTUBE_REACH_REPORT_TYPE} com taxa de cliques ${out.ctrRaw} fora da escala ${scale} (0..${max}) em ${out.day}/${out.videoId}: formato mudou ou a escala fixa (YOUTUBE_REACH_CTR_SCALE) está errada`,
+    );
+  }
 
   const byKey = new Map<string, ReachDailyLine>();
   for (const r of raw) {
     const k = `${r.day}|${r.videoId}`;
-    const clicks = r.impressions * (r.ctrRaw / divisor);
+    const clicksRaw = r.impressions * r.ctrRaw;
     const prev = byKey.get(k);
     if (prev) {
       prev.impressions += r.impressions;
-      prev.clicks += clicks;
+      prev.clicksRaw += clicksRaw;
       prev.ctrRaw = r.ctrRaw;
     } else {
-      byKey.set(k, { ...meta, day: r.day, videoId: r.videoId, impressions: r.impressions, clicks, ctr: null, ctrRaw: r.ctrRaw, ctrScale });
+      byKey.set(k, { ...meta, day: r.day, videoId: r.videoId, impressions: r.impressions, clicksRaw, ctrRaw: r.ctrRaw });
     }
   }
-  return [...byKey.values()].map((l) => ({ ...l, ctr: l.impressions > 0 ? l.clicks / l.impressions : null }));
+  return [...byKey.values()];
 }
 
 // ─── Dedup e agregação ───────────────────────────────────────────────────────
@@ -205,6 +229,7 @@ export function currentReachDaily(lines: ReachDailyLine[]): ReachDailyLine[] {
 
 export interface VideoReach {
   impressions: number;
+  /** Cliques estimados (impressões × taxa em fração). */
   clicks: number;
   /** Fração (0..1); `null` sem impressões. */
   ctr: number | null;
@@ -212,19 +237,28 @@ export interface VideoReach {
   lastDay: string;
 }
 
-/** Soma por vídeo das linhas vigentes dentro de `[startDate, endDate]` (dias do Pacífico). */
-export function aggregateReachByVideo(lines: ReachDailyLine[], window?: { startDate?: string; endDate?: string }): Map<string, VideoReach> {
+/**
+ * Soma por vídeo das linhas vigentes dentro de `[startDate, endDate]` (dias do
+ * Pacífico). A taxa crua vira fração aqui, com a escala fixa.
+ */
+export function aggregateReachByVideo(
+  lines: ReachDailyLine[],
+  window?: { startDate?: string; endDate?: string },
+  scale: CtrScale = YOUTUBE_REACH_CTR_SCALE,
+): Map<string, VideoReach> {
+  const divisor = ctrScaleDivisor(scale);
   const out = new Map<string, VideoReach>();
   for (const l of currentReachDaily(lines)) {
     if (window?.startDate && l.day < window.startDate) continue;
     if (window?.endDate && l.day > window.endDate) continue;
+    const clicks = l.clicksRaw / divisor;
     const prev = out.get(l.videoId);
     if (prev) {
       prev.impressions += l.impressions;
-      prev.clicks += l.clicks;
+      prev.clicks += clicks;
       if (l.day < prev.firstDay) prev.firstDay = l.day;
       if (l.day > prev.lastDay) prev.lastDay = l.day;
-    } else out.set(l.videoId, { impressions: l.impressions, clicks: l.clicks, ctr: null, firstDay: l.day, lastDay: l.day });
+    } else out.set(l.videoId, { impressions: l.impressions, clicks, ctr: null, firstDay: l.day, lastDay: l.day });
   }
   for (const v of out.values()) v.ctr = v.impressions > 0 ? v.clicks / v.impressions : null;
   return out;
@@ -296,19 +330,42 @@ async function listAll(fetchFn: FetchLike, token: string, baseUrl: string, field
   return items;
 }
 
+async function findReachJob(fetchFn: FetchLike, token: string, url: string): Promise<string | null> {
+  const jobs = await listAll(fetchFn, token, url, "jobs");
+  const hit = jobs.find((j) => j.reportTypeId === YOUTUBE_REACH_REPORT_TYPE && typeof j.id === "string" && j.id);
+  return hit ? (hit.id as string) : null;
+}
+
 /**
  * Job do `channel_reach_basic_a1`: o existente, ou um novo se `create`. Sem
  * job e sem `create` (dry-run) devolve `jobId: null`.
+ *
+ * `jobs.create` com 409 (ALREADY_EXISTS) = o job já existe, criado por outro
+ * client ou numa corrida com outra execução: relista (inclusive os jobs
+ * gerenciados pelo sistema) e reusa o que achar. Se nem assim aparecer, lança
+ * com a causa, em vez de tentar criar de novo todo dia.
  */
 export async function ensureReachJob(fetchFn: FetchLike, token: string, opts: { create: boolean }): Promise<{ jobId: string | null; created: boolean }> {
-  const jobs = await listAll(fetchFn, token, `${YOUTUBE_REPORTING_API_BASE}/jobs`, "jobs");
-  const hit = jobs.find((j) => j.reportTypeId === YOUTUBE_REACH_REPORT_TYPE && typeof j.id === "string");
-  if (hit) return { jobId: hit.id as string, created: false };
+  const listUrl = `${YOUTUBE_REPORTING_API_BASE}/jobs`;
+  const existing = await findReachJob(fetchFn, token, listUrl);
+  if (existing) return { jobId: existing, created: false };
   if (!opts.create) return { jobId: null, created: false };
-  const made = await reportingJson(fetchFn, token, `${YOUTUBE_REPORTING_API_BASE}/jobs`, {
-    method: "POST",
-    body: JSON.stringify({ reportTypeId: YOUTUBE_REACH_REPORT_TYPE, name: YOUTUBE_REACH_JOB_NAME }),
-  });
+  let made: Record<string, unknown>;
+  try {
+    made = await reportingJson(fetchFn, token, listUrl, {
+      method: "POST",
+      body: JSON.stringify({ reportTypeId: YOUTUBE_REACH_REPORT_TYPE, name: YOUTUBE_REACH_JOB_NAME }),
+    });
+  } catch (e) {
+    if (!(e instanceof YouTubeReportingError) || e.httpStatus !== 409) throw e;
+    const again = await findReachJob(fetchFn, token, `${listUrl}?includeSystemManaged=true`);
+    if (again) return { jobId: again, created: false };
+    throw new YouTubeReportingError(
+      `jobs.create respondeu 409 (job do ${YOUTUBE_REACH_REPORT_TYPE} já existe), mas jobs.list não o devolve nem com includeSystemManaged: confira os jobs do canal na YouTube Reporting API`,
+      "error",
+      409,
+    );
+  }
   if (typeof made.id !== "string" || !made.id) throw new YouTubeReportingError("jobs.create não devolveu o id do job", "error", null);
   return { jobId: made.id, created: true };
 }
