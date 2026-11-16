@@ -275,7 +275,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvg, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
@@ -2585,7 +2585,7 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   });
   // #13140: os cortes de reserva do roteiro abrem a sugestão da vertical acima do alvo.
   const cortesReserva = readRoteiroCortesReserva(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`), { corteSlug: VERTICAL2_CORTE_SLUG });
-  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles, cortesReserva });
+  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { falasPlanejadas: readRoteiroFalas(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`)), alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles, cortesReserva });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
   let fc: ReturnType<typeof parseVideoFactCheck> | null = null;
