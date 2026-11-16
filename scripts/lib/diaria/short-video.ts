@@ -345,6 +345,16 @@ export const REELS_NEWSLETTER_SENTENCE = "A diar.ia.br é a newsletter que resum
 /** #13117: linha da legenda que aponta o vertical para o horizontal pela bio. */
 export const VERTICAL_BIO_CTA_LINE = "Vídeo completo: link na bio";
 
+/**
+ * #13274: chamada do TikTok enquanto a bio não tem link (conta pessoal sem o
+ * campo Site; o TikTok libera a partir de 1.000 seguidores ou em conta
+ * comercial). Não depende de link: aponta o canal do YouTube pelo @. Curta de
+ * propósito (teto de 80 caracteres, `TIKTOK_NO_BIO_CTA_MAX_CHARS`).
+ */
+export const TIKTOK_NO_BIO_CTA_LINE = "Vídeo completo no YouTube: @diariabr";
+/** #13274: teto da chamada sem link do TikTok. */
+export const TIKTOK_NO_BIO_CTA_MAX_CHARS = 80;
+
 /** #13209: título comparável (sem markdown, espaços colapsados, NFC, sem caixa). */
 export function normalizeVideoTitle(title: string): string {
   return stripInlineMarkdown(title).normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("pt-BR");
@@ -420,12 +430,14 @@ export const TIKTOK_TITLE_MAX_CHARS = 90;
  * resolvido por `resolveVerticalBioCta`) E `tiktokBioLink` (a flag
  * `publishing.shorts.tiktok_bio_link`, default desligada): sem o campo Site,
  * a linha prometeria um link que a bio não tem.
+ * #13274: com a flag desligada (e as mesmas condições de `ctaVertical`), a
+ * legenda leva `TIKTOK_NO_BIO_CTA_LINE`, chamada que não depende de link.
  */
 export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean; tiktokBioLink?: boolean }): { caption: string; title: string } {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const bioLine = input.ctaVertical === true && input.tiktokBioLink === true ? VERTICAL_BIO_CTA_LINE : "";
+  const bioLine = input.ctaVertical !== true ? "" : input.tiktokBioLink === true ? VERTICAL_BIO_CTA_LINE : TIKTOK_NO_BIO_CTA_LINE;
   const caption = [title, hook, bioLine, REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (Array.from(caption).length > TIKTOK_CAPTION_MAX_CHARS) throw new Error(`legenda do TikTok passou de ${TIKTOK_CAPTION_MAX_CHARS} caracteres`);
   const chars = Array.from(title);
