@@ -952,7 +952,15 @@ interface ShortsPlanCommonInput {
    * título (`readHorizontalVideoForShort`). Ausente = sem registro e sem
    * marcador de "sem vídeo": cita o título derivado do D1. Ignorado no corte.
    */
-  horizontalVideo?: { recordTitle: string | null; noVideo: boolean; url?: string | null; ctaVertical?: boolean; roteiroWarning?: string };
+  horizontalVideo?: {
+    recordTitle: string | null;
+    noVideo: boolean;
+    url?: string | null;
+    ctaVertical?: boolean;
+    /** #13280: `porVideo.vertical1.pertenceAoHorizontal` do roteiro; ausente = critério do título (#13209). */
+    pertenceAoHorizontal?: boolean;
+    roteiroWarning?: string;
+  };
   editionUrl?: string;
   /** De onde veio o `editionUrl` (só pra premissa). */
   editionUrlSource?: string;
@@ -1087,17 +1095,20 @@ export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTi
  * (`blocoNaVertical`). Sem o arquivo = sem aviso (edição sem roteiro pela
  * skill, mesmo padrão de `readRoteiroHorizontal`); ilegível ou inválido avisa.
  */
-export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; roteiroWarning?: string } {
+export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; pertenceAoHorizontal?: boolean; roteiroWarning?: string } {
   const path = join(editionDir, ROTEIRO_FALAS_FILE);
   if (!existsSync(path)) return {};
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(raw?.falas)) throw new Error("falas ausentes");
+    // #13280: a marcação do roteiro de que o vertical 1 pertence ao horizontal. Só boolean conta; outro tipo é ignorado (vale o título, #13209).
+    const marca = raw?.porVideo?.vertical1?.pertenceAoHorizontal;
     return {
       ctaVertical: raw.falas.some(
         (f: { bloco?: unknown; texto?: unknown }) =>
           typeof f?.bloco === "string" && blocoNaVertical(f.bloco as BlockKey) === "cta_vertical" && typeof f.texto === "string" && f.texto.trim() !== "",
       ),
+      ...(typeof marca === "boolean" ? { pertenceAoHorizontal: marca } : {}),
     };
   } catch {
     return { roteiroWarning: "roteiro-falas.json ilegível ou inválido: não foi possível conferir cta_vertical; comportamento anterior preservado (#13117)" };
@@ -1106,11 +1117,21 @@ export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; ro
 
 /**
  * #13209: a linha da bio nas rotas de troca de texto (`--update-scheduled`,
- * `--update-published`), com a mesma regra do plano: fala `cta_vertical` e o
- * mesmo título do horizontal publicado.
+ * `--update-published`), com a mesma regra do plano: fala `cta_vertical`,
+ * horizontal publicado e a marcação do roteiro (#13280) ou, sem ela, o mesmo
+ * título do horizontal publicado.
  */
-export function verticalBioCtaFromHorizontal(horizontal: { recordTitle: string | null; noVideo: boolean; ctaVertical?: boolean }, d1Title: string): boolean {
-  return resolveVerticalBioCta({ ctaFala: horizontal.ctaVertical === true, d1Title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }).ctaVertical;
+export function verticalBioCtaFromHorizontal(
+  horizontal: { recordTitle: string | null; noVideo: boolean; ctaVertical?: boolean; pertenceAoHorizontal?: boolean },
+  d1Title: string,
+): boolean {
+  return resolveVerticalBioCta({
+    ctaFala: horizontal.ctaVertical === true,
+    d1Title,
+    recordTitle: horizontal.recordTitle,
+    noVideo: horizontal.noVideo,
+    pertenceAoHorizontal: horizontal.pertenceAoHorizontal,
+  }).ctaVertical;
 }
 
 /**
@@ -1119,7 +1140,14 @@ export function verticalBioCtaFromHorizontal(horizontal: { recordTitle: string |
  * marcador de edição sem vídeo. Fail-soft: registro ausente ou ilegível vira
  * `recordTitle: null` (a citação cai no título derivado do D1).
  */
-export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean; url: string | null; ctaVertical?: boolean; roteiroWarning?: string } {
+export function readHorizontalVideoForShort(editionDir: string): {
+  recordTitle: string | null;
+  noVideo: boolean;
+  url: string | null;
+  ctaVertical?: boolean;
+  pertenceAoHorizontal?: boolean;
+  roteiroWarning?: string;
+} {
   const roteiro = readVerticalCta(editionDir);
   const noVideo = isNoVideoEdition(editionDir);
   const url = noVideo ? null : readHorizontalUrlForShort(editionDir);
@@ -1192,21 +1220,28 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #12735: o horizontal DA edição na legenda das redes que aceitam link (LinkedIn, X, Facebook). Nunca no corte.
   // #13117: fala `cta_vertical` no roteiro. #13209: a linha "Vídeo completo:
   // link na bio" só entra se, além da fala, o vertical tiver o mesmo título
-  // do horizontal publicado (`resolveVerticalBioCta`).
+  // do horizontal publicado (`resolveVerticalBioCta`). #13280: a marcação do
+  // roteiro (`porVideo.vertical1.pertenceAoHorizontal`) decide no lugar do título.
   const ctaFala = !corte && input.horizontalVideo?.ctaVertical === true;
   const bioCta = resolveVerticalBioCta({
     ctaFala,
     d1Title: d1.title,
     recordTitle: input.horizontalVideo?.recordTitle ?? null,
     noVideo: input.horizontalVideo?.noVideo ?? false,
+    pertenceAoHorizontal: corte ? undefined : input.horizontalVideo?.pertenceAoHorizontal,
   });
   const ctaVertical = bioCta.ctaVertical;
+  if (ctaVertical && bioCta.criterio === "roteiro") {
+    premises.push(`legenda do vertical com a chamada ao vídeo completo: o roteiro marca o vertical 1 como do horizontal (porVideo.vertical1.pertenceAoHorizontal, #13280)`);
+  }
   if (ctaFala && !ctaVertical) {
-    premises.push(
-      `legenda do vertical sem "${VERTICAL_BIO_CTA_LINE}": ${
-        bioCta.reason === "titulo-diferente" ? "o título do vertical difere do horizontal publicado" : "sem horizontal publicado nesta edição (registro do upload)"
-      } (#13209)`,
-    );
+    const motivo =
+      bioCta.reason === "roteiro-nao-pertence"
+        ? "o roteiro marca o vertical 1 como fora do horizontal (porVideo.vertical1.pertenceAoHorizontal: false, #13280)"
+        : bioCta.reason === "titulo-diferente"
+          ? "o título do vertical difere do horizontal publicado e o roteiro não marca o vertical 1 como do horizontal (porVideo.vertical1.pertenceAoHorizontal, #13280)"
+          : "sem horizontal publicado nesta edição (registro do upload)";
+    premises.push(`legenda do vertical sem "${VERTICAL_BIO_CTA_LINE}": ${motivo} (#13209)`);
   }
   if (!corte && input.horizontalVideo?.roteiroWarning) warnings.push(input.horizontalVideo.roteiroWarning);
   const horizontalLink = corte || input.horizontalVideo?.noVideo ? null : (input.horizontalVideo?.url ?? null);

@@ -372,18 +372,34 @@ export function normalizeVideoTitle(title: string): string {
  * publica); título do horizontal = o do registro do upload
  * (`_internal/05-youtube-published.json`). Sem registro, ou edição sem vídeo,
  * não há horizontal publicado e a linha sai.
+ *
+ * #13280 (decisão do editor no briefing do overnight 261116b, opção c): com
+ * roteiro, o título do horizontal vem do roteiro e o do vertical do D1, e a
+ * comparação de títulos nunca casa. Por isso o roteiro marca se o vertical 1
+ * pertence ao horizontal (`porVideo.vertical1.pertenceAoHorizontal`), e a
+ * marcação decide no lugar do título: `true` liga a linha, `false` desliga.
+ * Sem marcação (edição sem roteiro, ou roteiro anterior ao campo), vale a
+ * comparação de títulos do #13209. A fala `cta_vertical` e o horizontal
+ * publicado seguem exigidos nos dois critérios.
  */
 export function resolveVerticalBioCta(input: {
   ctaFala: boolean;
   d1Title: string;
   recordTitle?: string | null;
   noVideo?: boolean;
-}): { ctaVertical: boolean; reason: "sem-fala" | "sem-horizontal-publicado" | "titulo-diferente" | null } {
-  if (!input.ctaFala) return { ctaVertical: false, reason: "sem-fala" };
+  pertenceAoHorizontal?: boolean;
+}): {
+  ctaVertical: boolean;
+  reason: "sem-fala" | "sem-horizontal-publicado" | "titulo-diferente" | "roteiro-nao-pertence" | null;
+  criterio: "roteiro" | "titulo" | null;
+} {
+  if (!input.ctaFala) return { ctaVertical: false, reason: "sem-fala", criterio: null };
   const record = input.recordTitle?.trim();
-  if (input.noVideo || !record) return { ctaVertical: false, reason: "sem-horizontal-publicado" };
+  if (input.noVideo || !record) return { ctaVertical: false, reason: "sem-horizontal-publicado", criterio: null };
+  if (input.pertenceAoHorizontal === true) return { ctaVertical: true, reason: null, criterio: "roteiro" };
+  if (input.pertenceAoHorizontal === false) return { ctaVertical: false, reason: "roteiro-nao-pertence", criterio: "roteiro" };
   const same = normalizeVideoTitle(buildYouTubeShortTitle(input.d1Title)) === normalizeVideoTitle(record);
-  return same ? { ctaVertical: true, reason: null } : { ctaVertical: false, reason: "titulo-diferente" };
+  return same ? { ctaVertical: true, reason: null, criterio: "titulo" } : { ctaVertical: false, reason: "titulo-diferente", criterio: "titulo" };
 }
 
 /** #11388: CTA do Reels no Instagram, o texto final aprovado pelo editor (o link da bio é o único clicável). */

@@ -124,7 +124,7 @@ Na resposta, dar o link e citar só o que mudou.
   "veiculos": ["veículos da fonte do D1"],
   "porVideo": {
     "horizontal": { "titulo": "título do YouTube", "capa": "texto da capa" },
-    "vertical1": { "capa": "…", "ordem": ["H1", "H6", "H4"] },
+    "vertical1": { "capa": "…", "ordem": ["H1", "H6", "H4"], "pertenceAoHorizontal": true },
     "vertical2": { "titulo": "…", "capa": "…" }
   },
   "falas": [
@@ -161,6 +161,7 @@ Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da 
 - **`fontes`** (por fala, #13132): `[{ "url", "sustenta" }]` para cada fato de fora da fonte do D1 (Passo 1).
 - **`porVideo.{vertical1,vertical2}.ordem`** (#13128): a sequência daquele corte, por id, quando ela difere da ordem do horizontal. Tem de trazer exatamente as falas do vídeo. Dentro de um bloco a montagem segue essa ordem; entre blocos ela ordena pelo bloco (gancho, resumo, comentário…), e o `video-roteiro-blocos.ts` e o render avisam uma ordem que cruze blocos.
 - **`porVideo.horizontal.trechoCompartilhar`** (#13164): `{ "inicio": "H11", "rotulo": "Pra mandar pros seus pais" }`, quando a fala promete um link para compartilhar só um trecho do horizontal. `inicio` precisa existir e pertencer ao horizontal; `rotulo` é texto em uma linha. O tempo só nasce na montagem, nunca estimar pelo roteiro. O campo é opcional e só vale no horizontal.
+- **`porVideo.vertical1.pertenceAoHorizontal`** (#13280, decisão do editor no briefing do overnight 261116b): `true` quando o vertical 1 é recorte do horizontal da edição e chama para o vídeo completo (o caso normal, com a fala `cta_vertical`). É essa marcação que liga, na legenda do vertical, "Vídeo completo: link na bio" (Instagram e Threads) e a chamada pelo @ no TikTok; sem ela, a publicação compara o título do vertical (o do D1) com o do horizontal publicado, e com o título do horizontal vindo do roteiro a linha não entra. `false` tira a linha de propósito. Só vale no vertical 1 (o vertical 2 sai como corte avulso, sem horizontal); o validador recusa o campo nos outros vídeos e valor que não seja `true`/`false`.
 - **`porVideo.{v}.cta`**: o texto do card de CTA na página, quando não é o padrão ("Gostou? / Curta o vídeo / …").
 - **`gravacao`** e **`notas`**: itens a mais da caixa "Gravação" e das "Notas para a edição" (o que conferir antes de gravar, repetição de propósito, de quem é cada fala, ressalvas de fidelidade, o que ficou de fora do rascunho do editor).
 
