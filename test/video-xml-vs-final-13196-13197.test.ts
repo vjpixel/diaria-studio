@@ -431,11 +431,11 @@ describe("self-review PR #13205: state.json gravado a cada padrão", () => {
 });
 
 describe("#13196 registro da task e do relatório", () => {
-  it("task diária declarada e NÃO armada, rodando o run com --open-issues", () => {
+  it("task diária habilitada após autorização do editor, rodando o run com --open-issues", () => {
     const t = getScheduledTaskByName("Diaria-Video-Xml-Vs-Final-Daily");
     assert.ok(t);
-    assert.equal(t.enabled, false);
-    assert.equal(t.schedule.kind, "daily");
+    assert.notEqual(t.enabled, false);
+    assert.deepEqual(t.schedule, { kind: "daily", hour: 22, minute: 15 });
     assert.equal(t.steps[0].script, "scripts/video-xml-vs-final.ts");
     assert.deepEqual(t.steps[0].args, ["run", "--open-issues"]);
   });
