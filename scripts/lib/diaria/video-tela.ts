@@ -48,20 +48,43 @@ export function telaLines(tela: string): Array<{ text: string; head: boolean }> 
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => {
-      const m = /^\*\*(.+)\*\*$/u.exec(l);
+      const m = /^\*\*([^*]+)\*\*$/u.exec(l);
       return m ? { text: m[1].trim(), head: true } : { text: l.replace(/\*\*/g, ""), head: false };
     });
 }
 
-/** Geometria do box num quadro `width`x`height`. */
+/** Largura estimada de uma linha (px), pela largura média do caractere; o título em negrito é mais largo. */
+export function telaLineWidth(l: { text: string; head: boolean }, fontPx: number): number {
+  return l.text.length * fontPx * TELA_BOX.avgCharEm * (l.head ? 1.08 : 1);
+}
+
+/** Quebra nas palavras a linha que passa de `maxPx` (a continuação mantém o negrito do título). */
+function wrapLines(lines: Array<{ text: string; head: boolean }>, fontPx: number, maxPx: number) {
+  const out: Array<{ text: string; head: boolean }> = [];
+  for (const l of lines) {
+    let cur = "";
+    for (const w of l.text.split(/\s+/)) {
+      const next = cur ? `${cur} ${w}` : w;
+      if (cur && telaLineWidth({ text: next, head: l.head }, fontPx) > maxPx) {
+        out.push({ text: cur, head: l.head });
+        cur = w;
+      } else cur = next;
+    }
+    if (cur) out.push({ text: cur, head: l.head });
+  }
+  return out;
+}
+
+/** Geometria do box num quadro `width`x`height`. Linha mais larga que o box quebra nas palavras (#13204). */
 export function telaBoxLayout(tela: string, width: number, height: number) {
   const k = width / TELA_BOX.refWidth;
-  const lines = telaLines(tela);
   const fontPx = TELA_BOX.fontPx * k;
   const lineH = fontPx * TELA_BOX.lineHeightEm;
-  const textW = Math.max(...lines.map((l) => l.text.length * fontPx * TELA_BOX.avgCharEm * (l.head ? 1.08 : 1)), fontPx * 6);
   const maxW = width * TELA_BOX.maxWidthFrac;
-  const w = Math.min(maxW, textW + 2 * TELA_BOX.padX * k + TELA_BOX.barPx * k);
+  const chrome = 2 * TELA_BOX.padX * k + TELA_BOX.barPx * k;
+  const lines = wrapLines(telaLines(tela), fontPx, maxW - chrome);
+  const textW = Math.max(...lines.map((l) => telaLineWidth(l, fontPx)), fontPx * 6);
+  const w = Math.min(maxW, textW + chrome);
   const h = lines.length * lineH + 2 * TELA_BOX.padY * k;
   const x = width - TELA_BOX.marginRight * k - w;
   const y = (height - h) / 2;

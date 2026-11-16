@@ -3380,10 +3380,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
           const svg = telaBoxSvg(m.tela, p.spec.width, p.spec.height);
           const name = telaFileName(ctx.edition, m.id, createHash("sha256").update(svg).digest("hex").slice(0, 12));
           const out = join(ctx.outDir, name);
-          if (!existsSync(out)) {
-            await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
-            renameSync(`${out}.part`, out);
-          }
+          // Regravado sempre, como capa e título: no modo API o snapshot do out dir é o que sobe (#13204).
+          await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
+          renameSync(`${out}.part`, out);
           overlays.push({ id: m.id, tela: m.tela, path: out, xmlPath: capaInicioXmlPath(mediaPath, name), width: p.spec.width, height: p.spec.height, in: m.in, out: m.out });
         } catch (e) {
           console.error(`[aviso] ${p.spec.name}: box de tela ${m.id} falhou (${(e as Error).message.split("\n")[0]}): fica só o marcador (#13204)`);

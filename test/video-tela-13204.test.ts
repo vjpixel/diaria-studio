@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { previewTelaArgs, telaBoxLayout, telaBoxSvg, telaFileName, telaLines, telaTrack } from "../scripts/lib/diaria/video-tela.ts";
+import { TELA_BOX, previewTelaArgs, telaBoxLayout, telaBoxSvg, telaFileName, telaLineWidth, telaLines, telaTrack } from "../scripts/lib/diaria/video-tela.ts";
 import { telaMarkersFor, type ResolvedItem, type SequenceSpec } from "../scripts/lib/diaria/video-montage.ts";
 
 const H6 = "**Artificial Analysis Intelligence Index**\nHydrogen: 51\nArgon: 50\nClaude Sonnet 5.5: 55\nGPT-6.1 Terra: 51";
@@ -28,6 +28,18 @@ describe("#13204: box de tela", () => {
     assert.ok(box.x + box.w <= 1920, "não passa da borda");
     assert.ok(box.y > 0 && box.y + box.h < 1080);
     assert.ok(Math.abs(box.y + box.h / 2 - 540) <= 1);
+  });
+
+  it("(review) toda linha cabe na largura de texto do box: a longa quebra nas palavras", () => {
+    const { lines, fontPx, box, k } = telaBoxLayout(H6, 1920, 1080);
+    const textMax = box.w - (2 * TELA_BOX.padX + TELA_BOX.barPx) * k;
+    for (const l of lines) assert.ok(telaLineWidth(l, fontPx) <= textMax + 1, `"${l.text}" cabe (${telaLineWidth(l, fontPx).toFixed(0)} ≤ ${textMax.toFixed(0)})`);
+    assert.ok(lines.length > telaLines(H6).length, "o título longo virou 2 linhas");
+    assert.ok(lines.filter((l) => l.head).length >= 2, "a continuação segue em negrito");
+  });
+
+  it("(review) **A** e **B** na mesma linha não vira título", () => {
+    assert.deepEqual(telaLines("**A** e **B**"), [{ text: "A e B", head: false }]);
   });
 
   it("SVG: transparente fora do box, texto escapado, título em negrito", () => {
@@ -73,6 +85,17 @@ describe("#13204: telaMarkersFor casa pelo id da fala no item", () => {
     assert.equal(telaMarkersFor({ spec, clips }, { comentario: [item(10, 20, said)] }, 30, telas).length, 0);
     const ms = telaMarkersFor({ spec, clips }, { comentario: [item(10, 20, said, "H6")] }, 30, telas);
     assert.deepEqual(ms.map((m) => [m.id, m.in, m.out]), [["H6", 0, 300]]);
+  });
+
+  it("(review) fala do roteiro sem texto ainda casa pelo id do item", () => {
+    const semTexto = [{ id: "H6", texto: "", tela: H6 }];
+    assert.equal(telaMarkersFor({ spec, clips }, { comentario: [item(10, 20, "qualquer", "H6")] }, 30, semTexto).length, 1);
+  });
+
+  it("(review) a pausa da vinheta (filler) dentro do intervalo do item não puxa o marcador", () => {
+    const comFiller = [{ ...clips[0], srcIn: 9.2, srcOut: 9.8, frameIn: 276, frameOut: 294, seqStart: 0, seqEnd: 18, filler: true as const }, { ...clips[0], seqStart: 18, seqEnd: 318 }];
+    const ms = telaMarkersFor({ spec, clips: comFiller }, { comentario: [item(9, 20, "x", "H6")] }, 30, telas);
+    assert.equal(ms[0].in, 18);
   });
 
   it("id de outra fala não casa, mesmo com o texto igual", () => {

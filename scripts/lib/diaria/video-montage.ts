@@ -1480,7 +1480,6 @@ function validateSourceFit(o: Record<string, unknown>, label: string): string[] 
   const errors: string[] = [];
   if (o.source !== undefined && (typeof o.source !== "string" || !o.source.trim())) errors.push(`${label}: source precisa ser o id de um arquivo do bruto (nome sem extensão)`);
   if (o.fit !== undefined && !isFitMode(o.fit)) errors.push(`${label}: fit precisa ser fill, fit ou blur-fill`);
-  if (o.fala !== undefined && (typeof o.fala !== "string" || !o.fala.trim())) errors.push(`${label}: fala precisa ser o id de uma fala do roteiro-falas.json (H6)`);
   return errors;
 }
 
@@ -1589,6 +1588,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         errors.push(...validateItemScope(it, label, cortes));
         if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing do item precisa só de faceX e eyeY, entre 0 e 1 (fração do quadro; a caneca é a do framing do arquivo)`);
         errors.push(...validateSourceFit(it, label));
+        if (it.fala !== undefined && (typeof it.fala !== "string" || !it.fala.trim())) errors.push(`${label}: fala precisa ser o id de uma fala do roteiro-falas.json (H6)`);
       });
     }
   }
@@ -2153,6 +2153,8 @@ export interface PlannedClip {
   file?: number;
   /** Encaixe pedido pelo item (#12559); ausente = o da sequência ou o default (`effectiveFit`). */
   fit?: FitMode;
+  /** Pausa da vinheta tirada de um silêncio de outro trecho do bruto (#13204): não é fala de item nenhum. */
+  filler?: true;
 }
 
 /** Trecho do bruto antes de virar clipe (sem frames, sem posição na sequência, sem escala). */
@@ -2166,6 +2168,7 @@ export interface RawClip {
   framing?: FramePoint;
   file?: number;
   fit?: FitMode;
+  filler?: true;
 }
 
 /** Segundos do clipe que são do bloco `key` (clipe fundido de blocos diferentes conta só o pedaço do bloco). */
@@ -2221,7 +2224,7 @@ export function assembleClips(
     if (!(r.srcOut > r.srcIn)) continue;
     const prev = merged[merged.length - 1];
     // #12559: nunca funde através da emenda entre dois arquivos (nem trechos com encaixe diferente).
-    if (prev && (prev.file ?? 0) === (r.file ?? 0) && prev.fit === r.fit && r.srcIn >= prev.srcIn - 1e-9 && r.srcIn - prev.srcOut < frame - 1e-9) {
+    if (prev && !prev.filler && !r.filler && (prev.file ?? 0) === (r.file ?? 0) && prev.fit === r.fit && r.srcIn >= prev.srcIn - 1e-9 && r.srcIn - prev.srcOut < frame - 1e-9) {
       merges.push({
         block: r.block,
         edge: "emenda",
@@ -2267,6 +2270,7 @@ export function assembleClips(
       ...(r.framing ? { framing: r.framing } : {}),
       ...(r.file !== undefined ? { file: r.file } : {}),
       ...(r.fit !== undefined ? { fit: r.fit } : {}),
+      ...(r.filler ? { filler: true as const } : {}),
     });
     t += frameOut - frameIn;
   }
@@ -2426,14 +2430,17 @@ export function buildSequencePlan(
         const from = it.lastWordEnd ?? lastPart.end;
         const end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
         lastPart.end = round3(end);
-        if (end - from < breath - 0.05) {
+        if (end - from < breath - VINHETA_BREATH_SLACK_S - 1e-9) {
           // #13204: a vinheta nunca cobre fala. Sem silêncio bastante no bruto logo depois do bloco
-          // (a fala seguinte vem colada), a pausa vem do silêncio mais próximo do mesmo arquivo.
-          const need = round3(breath - Math.max(0, end - from));
+          // (a fala seguinte vem colada), a pausa vem do silêncio mais próximo do mesmo arquivo:
+          // fora de todo item resolvido (nunca fala de outro trecho) e nunca menor que um clipe.
+          const need = round3(Math.max(minClip, breath - Math.max(0, end - from)));
           const fb = bounds ? bounds[file] : { start: 0, end: source.durationS };
           const pad = 0.05;
+          const busy = Object.values(resolved).flatMap((xs) => (xs ?? []).map((x) => x.interval));
           const pick = silences
             .filter((s) => s.start >= fb.start && s.end <= fb.end && s.end - s.start >= need + 2 * pad)
+            .filter((s) => !busy.some((b) => s.start + pad < b.end && s.start + pad + need > b.start))
             .sort((a, b) => Math.abs(a.start - from) - Math.abs(b.start - from))[0];
           if (pick) {
             breathFiller = { srcIn: round3(pick.start + pad), srcOut: round3(pick.start + pad + need) };
@@ -2469,7 +2476,7 @@ export function buildSequencePlan(
       // #13204: a pausa da vinheta, quando o bruto não a tem logo depois do bloco.
       if (breathFiller) {
         raws.push({
-          block: key, srcIn: breathFiller.srcIn, srcOut: breathFiller.srcOut, script: it.text,
+          block: key, srcIn: breathFiller.srcIn, srcOut: breathFiller.srcOut, filler: true,
           ...(it.framing ? { framing: { ...it.framing } } : {}),
           ...(bounds ? { file } : {}),
           ...(it.fit !== undefined ? { fit: it.fit } : {}),
@@ -3231,6 +3238,8 @@ export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number)
  * Era 0,7 s só no horizontal, e a vinheta invadia a fala seguinte.
  */
 export const VINHETA_BREATH_S = 1.7;
+/** Falta de respiro tolerada antes de completar a pausa com silêncio de outro trecho (#13204): a vinheta pede 0,3 s + 1,3 s. */
+export const VINHETA_BREATH_SLACK_S = 0.1;
 /** Começo da vinheta na sequência sem bloco `titulo` (261029, vertical "soberana": 2–3 s). */
 export const VINHETA_NO_TITLE_START_S = 2;
 
@@ -3321,9 +3330,10 @@ export function vinhetaSpan(
     else {
       // #13204: a fala seguinte vem colada no bruto e a pausa é outro trecho (silêncio do bruto):
       // a vinheta entra no fim do clipe com a última palavra, o começo da pausa.
+      // A pausa do bruto segue o clipe na sequência: 0,3 s depois da palavra, contados para dentro dela.
       const f = Math.round(plan.titleSpeechEndS * fps);
-      const c = plan.clips.find((x) => f >= x.frameIn && f <= x.frameOut);
-      if (c && c.seqEnd < titleEnd) start = c.seqEnd;
+      const c = plan.clips.find((x) => !x.filler && f >= x.frameIn && f <= x.frameOut);
+      if (c && c.seqEnd < titleEnd) start = Math.min(titleEnd, c.seqStart + (f - c.frameIn) + Math.round(VINHETA_AFTER_SPEECH_S * fps));
     }
   }
   const end = Math.min(plan.durationFrames, start + Math.round(asset.durationS * fps));
@@ -3521,10 +3531,10 @@ export function telaMarkersFor(
   const out: TelaMarker[] = [];
   for (const t of telas) {
     const fala = norm(t.texto);
-    if (!fala) continue;
     const meus = items.filter((it) => {
       // #13204: o id da fala no item vence o casamento por texto (a fala gravada pode diferir do roteiro).
       if (it.fala !== undefined) return it.fala === t.id;
+      if (!fala) return false;
       const x = norm(it.text);
       if (!x) return false;
       if (x === fala) return true;
@@ -3534,6 +3544,8 @@ export function telaMarkersFor(
     let outF = -Infinity;
     for (const it of meus) {
       for (const c of plan.clips) {
+        // #13204: a pausa da vinheta tirada de outro trecho do bruto não é fala de item nenhum.
+        if (c.filler) continue;
         if (c.srcOut <= it.interval.start || c.srcIn >= it.interval.end) continue;
         inF = Math.min(inF, c.seqStart + Math.round(Math.max(0, it.interval.start - c.srcIn) * fps));
         outF = Math.max(outF, c.seqEnd - Math.round(Math.max(0, c.srcOut - it.interval.end) * fps));

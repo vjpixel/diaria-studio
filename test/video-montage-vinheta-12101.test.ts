@@ -125,7 +125,25 @@ describe("#12101/#13204: respiro da vinheta depois do título, em todas as sequ�
       assert.ok(vs);
       assert.equal(vs.start, titulo[0].seqEnd, "a vinheta começa na pausa, nunca sobre a fala");
       assert.ok(vs.end <= titulo[1].seqEnd, "e acaba antes da abertura");
+      assert.equal(titulo[1].filler, true, "a pausa vem marcada: não é fala de item nenhum");
+      assert.equal(titulo[1].script, undefined);
     }
+  });
+
+  it("#13204 (review): a pausa nunca sai de dentro de outro item, nem funde com o trecho da fala", () => {
+    // o silêncio de 5–6,9 s cabe e é o mais próximo, mas está dentro da abertura (5–7 s): fica o de 10–12 s.
+    const p = buildSequencePlan(SPEC_H, resolved(3.2), [{ start: 2.95, end: 3.2 }, { start: 5, end: 6.9 }, { start: 10, end: 12 }], src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    const titulo = p.clips.filter((c) => c.block === "titulo");
+    assert.equal(titulo[1].srcIn, 10.05);
+  });
+
+  it("#13204 (review): falta de até 0,1 s não puxa pausa; acima disso, a pausa tem pelo menos um clipe mínimo", () => {
+    const quase = buildSequencePlan(SPEC_H, resolved(4.5), [{ start: 2.95, end: 4.5 }, { start: 10, end: 12 }], src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    assert.equal(quase.clips.filter((c) => c.block === "titulo").length, 1, "1,6 s já cabe a vinheta (0,3 + 1,3)");
+    const curta = buildSequencePlan(SPEC_H, resolved(4.4), [{ start: 2.95, end: 4.4 }, { start: 10, end: 12 }], src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    const titulo = curta.clips.filter((c) => c.block === "titulo");
+    assert.equal(titulo.length, 2);
+    assert.equal(Math.round((titulo[1].srcOut - titulo[1].srcIn) * 1000), 600,"nunca um flash de 2-3 quadros");
   });
 
   it("#13204: sem silêncio que caiba no arquivo, avisa que a vinheta pode cobrir a fala", () => {
