@@ -84,11 +84,12 @@ describe("#12089: limiar relativo ao bruto", () => {
     assert.deepEqual([manual.fullDb, manual.source.fullDb, manual.source.diffDb], [-28, "manual", "relativo"]);
   });
 
-  it("bruto baixo (fala a -25 dB, piso -60/-70): o fixo vence e nada muda", () => {
+  it("bruto baixo (fala a -25 dB, piso -60/-70): desde o #13188 o relativo BAIXA os fixos (-49/-60), sem aviso", () => {
     const e = hotEnvelope(10, [[1, 3, -25, true], [4, 6, -25, true], [7, 9, -25, true]], { floorDb: -60, noiseDiffDb: -70 });
     for (let i = 0; i < e.diffDb.length; i++) if (e.fullDb[i] === -60) e.diffDb[i] = -70;
     const th = speechThresholds(e);
-    assert.deepEqual([th.fullDb, th.diffDb, th.status], [SPEECH_DETECT.fullDb, SPEECH_DETECT.diffDb, "fixo-venceu"]);
+    assert.deepEqual([th.fullDb, th.diffDb, th.status], [-25 - SPEECH_DETECT.fullBelowTopDb, -70 + SPEECH_DETECT.diffAboveFloorDb, "relativo"]);
+    assert.deepEqual(th.source, { fullDb: "relativo", diffDb: "relativo" });
     assert.deepEqual(th.warnings, [], "bruto baixo é o caso normal, sem aviso");
   });
 

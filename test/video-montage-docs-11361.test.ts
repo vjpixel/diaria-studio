@@ -241,7 +241,7 @@ describe("roteiro final por versão (#11361)", () => {
   });
 
   it("texto integral com o timecode e a tomada do bruto", () => {
-    assert.match(md, /\| Título \([\d.]+ s\) \| Uma atualização de privacidade do Google\. \| 00:10\.8–00:13\.3 \(tomada 1 de 1\) \|/);
+    assert.match(md, /\| Título \([\d.]+ s\) \| Uma atualização de privacidade do Google\. \| 00:10\.7–00:13\.3 \(tomada 1 de 1\) \|/); // #13194: preRollS 0,3 s, presa no fim da palavra anterior
     assert.match(md, /\| Abertura \([\d.]+ s\) \| Olá, eu sou o Pixel, editor da diária\. \| 00:05\.0–00:07\.8 \|/);
   });
 

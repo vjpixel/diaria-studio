@@ -81,12 +81,15 @@
  *       de 0,32 s ou mais sai com 150 ms antes da fala e 120 ms depois; ilha abaixo de 60 ms é
  *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, clipe abaixo de
  *       0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
- *       (#12089, medição da 261105) os limiares são o MAIOR entre o fixo e o relativo ao bruto
- *       (sinal cheio 24 dB abaixo do topo da fala, 1ª diferença 10 dB acima do piso; só com 90%
- *       de quadros com som entre o 1º e o último som e topo 20 dB acima do piso, senão o fixo com
- *       [aviso]), e com a voz medida (F0) quadro a mais de 150 ms antes / 200 ms depois de uma
- *       âncora de voz (F0 acima do limiar fixo) não é fala (respiração e ruído de sala saem; a
- *       vogal curta fica; com menos de 20% dos quadros acima do limiar com voz o filtro desliga);
+ *       (#12089, medição da 261105) os limiares são os relativos ao bruto (sinal cheio 24 dB
+ *       abaixo do topo da fala, 1ª diferença 10 dB acima do piso; só com 90% de quadros com som
+ *       entre o 1º e o último som e topo 20 dB acima do piso, senão o fixo com [aviso]); desde o
+ *       #13188 baixam o fixo no bruto baixo (nunca a menos de 10 dB do piso), e a cauda da
+ *       palavra acima do piso + 12 dB fica na ilha. Com a voz medida (F0) quadro a mais de 150 ms
+ *       antes / 200 ms depois de uma âncora de voz (F0 acima do limiar fixo) não é fala
+ *       (respiração e ruído de sala saem; a vogal curta fica; #13194: o começo de palavra pouco
+ *       vozeado, contínuo até a voz em até 400 ms e 20 dB acima do piso, também fica; com menos
+ *       de 20% dos quadros acima do limiar com voz o filtro desliga);
  *       palavra esticada pelo Whisper com metade ou mais em ilhas, ou menos de 150 ms na pausa,
  *       não devolve a pausa ([aviso] por palavra). --speech-full-db/--speech-diff-db sobrepõem os
  *       limiares; --no-speech-voice desliga o filtro pela F0.

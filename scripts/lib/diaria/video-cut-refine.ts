@@ -647,7 +647,8 @@ export const SPEECH_DETECT = {
    * final do editor. O limiar passa a ser o MAIOR entre o fixo e o relativo ao
    * bruto: sinal cheio `fullBelowTopDb` abaixo do topo da fala (percentil
    * `topPercentile`), 1ª diferença `diffAboveFloorDb` acima do piso (percentil
-   * `floorPercentile`). Num bruto baixo o fixo vence e nada muda.
+   * `floorPercentile`). Desde o #13188 o relativo também baixa o fixo num
+   * bruto baixo (ver `relativeLowerAboveFloorDb`).
    */
   fullBelowTopDb: 24,
   diffAboveFloorDb: 10,
@@ -667,6 +668,13 @@ export const SPEECH_DETECT = {
   /** #12089, sanity do relativo: o limiar relativo do sinal cheio tem de ficar mais que isto acima do piso, senão o ruído de sala vira fala. */
   relativeAboveFloorMinDb: 6,
   /**
+   * #13188: quando o relativo BAIXA o fixo (bruto baixo: na 261116, -31 LUFS e
+   * piso -79 dB, o fixo comeu o fim de 47 palavras), o limiar nunca fica a
+   * menos que isto acima do piso de ruído do bruto, no sinal cheio e na 1ª
+   * diferença: abaixo disso é ruído de sala, não fala.
+   */
+  relativeLowerAboveFloorDb: 10,
+  /**
    * #12089: respiração e ruído no nível da fala baixa (-26 a -33 dB) não têm
    * F0; a vogal curta ("A empresa", 40 ms a -26 dB) tem. Com a voz medida
    * (`FrameEnergy.voiced`), quadro acima do limiar só é fala a até
@@ -678,6 +686,18 @@ export const SPEECH_DETECT = {
    */
   voicedLeadS: 0.15,
   voicedTailS: 0.2,
+  /**
+   * #13194: a palavra curta pouco vozeada no começo da frase ("No" de "No
+   * índice", na 261116) ficava a mais de `voicedLeadS` da 1ª âncora de voz e o
+   * filtro a tirava como respiração. Na dúvida, mantém: o trecho acima do
+   * limiar, contínuo (sem quadro abaixo do limiar no meio) até uma âncora a até
+   * `voicedLeadMaxS`, fica como fala se a energia dele passa de
+   * `voicedKeepAboveFloorDb` acima do piso do bruto. A respiração do bruto
+   * quente (-26 a -33 dB com piso -41) fica abaixo disso, e a separada da fala
+   * por um vale continua saindo.
+   */
+  voicedLeadMaxS: 0.4,
+  voicedKeepAboveFloorDb: 20,
   /**
    * #12089, sanity do filtro pela F0: com menos que esta fração dos quadros
    * acima do limiar com voz, a medição da F0 não está vendo a fala (voz muito
@@ -714,8 +734,9 @@ type SpeechDetectOpts<K extends keyof typeof SPEECH_DETECT> = { [P in K]?: numbe
 export type SpeechThresholdSource = "fixo" | "relativo" | "manual";
 
 /**
- * Situação do limiar relativo (#12089): `relativo` = algum relativo venceu o
- * fixo; `fixo-venceu` = medido, mas o fixo é maior (bruto baixo); os demais
+ * Situação do limiar relativo (#12089): `relativo` = algum relativo substituiu
+ * o fixo (subindo no bruto quente, ou baixando no bruto baixo desde o #13188);
+ * `fixo-venceu` = medido e igual ao fixo; os demais
  * são as sanidades que o desligam (`sem-ruido-medido`: silêncio digital no
  * meio do bruto; `gap-insuficiente`: topo e piso próximos demais).
  */
@@ -742,9 +763,11 @@ export function voiceAnchorDb(fullDb: number = SPEECH_DETECT.fullDb): number {
 }
 
 /**
- * Limiares de fala do bruto (#12089): o maior entre o fixo e o relativo (topo
- * − `fullBelowTopDb`, piso + `diffAboveFloorDb`), com as sanidades que voltam
- * ao fixo; `overrides` (`--speech-full-db`/`--speech-diff-db`) vencem tudo.
+ * Limiares de fala do bruto (#12089): o relativo (topo − `fullBelowTopDb`,
+ * piso + `diffAboveFloorDb`) no lugar do fixo, nos dois sentidos desde o
+ * #13188 (para baixo, nunca a menos de `relativeLowerAboveFloorDb` do piso),
+ * com as sanidades que voltam ao fixo; `overrides`
+ * (`--speech-full-db`/`--speech-diff-db`) vencem tudo.
  */
 export function speechThresholds(e: FrameEnergy, overrides: { fullDb?: number; diffDb?: number } = {}): SpeechThresholds {
   const D = SPEECH_DETECT;
@@ -780,13 +803,17 @@ export function speechThresholds(e: FrameEnergy, overrides: { fullDb?: number; d
         `detector de fala (#12089): limiar relativo desligado, topo da fala ${top.toFixed(1)} dB só ${gap.toFixed(1)} dB acima do piso ${floors.fullDb.toFixed(1)} dB (bruto ruidoso ou clipado; mínimo ${D.relativeMinGapDb} dB e o limiar ${D.relativeAboveFloorMinDb} dB acima do piso); valem os fixos (${D.fullDb}/${D.diffDb} dB), conferir as pausas no Premiere`,
       );
     } else {
-      relFull = full;
-      relDiff = floors.diffDb + D.diffAboveFloorDb;
-      status = relFull > D.fullDb || relDiff > D.diffDb ? "relativo" : "fixo-venceu";
+      // #13188: num bruto baixo (-31 LUFS, piso -79 dB na 261116) o relativo também BAIXA os fixos, mas nunca a menos
+      // de `relativeLowerAboveFloorDb` do piso: o corte só entra onde há silêncio claro, relativo ao ruído do próprio bruto (#13194).
+      relFull = full >= D.fullDb ? full : Math.max(full, floors.fullDb + D.relativeLowerAboveFloorDb);
+      const diff = floors.diffDb + D.diffAboveFloorDb;
+      relDiff = diff >= D.diffDb ? diff : Math.max(diff, floors.diffDb + D.relativeLowerAboveFloorDb);
+      status = relFull !== D.fullDb || relDiff !== D.diffDb ? "relativo" : "fixo-venceu";
     }
   }
+  // #13188: o relativo vale nos dois sentidos (antes só subia: num bruto baixo o fixo vencia e comia o fim das palavras).
   const pick = (over: number | undefined, fixed: number, rel: number): [number, SpeechThresholdSource] =>
-    over !== undefined ? [over, "manual"] : rel > fixed ? [round3(rel), "relativo"] : [fixed, "fixo"];
+    over !== undefined ? [over, "manual"] : Number.isFinite(rel) && rel !== fixed ? [round3(rel), "relativo"] : [fixed, "fixo"];
   const [fullDb, fullSrc] = pick(overrides.fullDb, D.fullDb, relFull);
   const [diffDb, diffSrc] = pick(overrides.diffDb, D.diffDb, relDiff);
   return {
@@ -1009,10 +1036,12 @@ export function speechIslands(
   const on = new Uint8Array(n);
   for (let i = 0; i < n; i++) on[i] = e.fullDb[i] > fullDb || e.diffDb[i] > diffDb ? 1 : 0;
   const tail = Math.round(SPEECH_DETECT.voicedTailS / e.hopS);
+  const floors = speechNoiseFloors(e);
   // Última âncora de voz até cada quadro (-1 = nenhuma); null sem a voz medida.
   let lastAnchor: Int32Array | null = null;
   if (e.voiced) {
     const lead = Math.round(SPEECH_DETECT.voicedLeadS / e.hopS);
+    const leadMax = Math.round(SPEECH_DETECT.voicedLeadMaxS / e.hopS);
     const anchorDb = voiceAnchorDb(fullDb);
     const isAnchor = (i: number) => e.voiced![i] === 1 && e.fullDb[i] > anchorDb;
     const nextAnchor = new Int32Array(n).fill(-1);
@@ -1020,6 +1049,14 @@ export function speechIslands(
       if (isAnchor(i)) next = i;
       nextAnchor[i] = next;
     }
+    // #13194: distância (em quadros) até a próxima âncora por quadros acima do limiar sem interrupção (-1 = sem caminho contínuo).
+    const runToAnchor = new Int32Array(n).fill(-1);
+    for (let i = n - 1; i >= 0; i--) {
+      if (isAnchor(i)) runToAnchor[i] = 0;
+      else if (on[i] && i + 1 < n && runToAnchor[i + 1] >= 0) runToAnchor[i] = runToAnchor[i + 1] + 1;
+    }
+    const keepFull = floors ? floors.fullDb + SPEECH_DETECT.voicedKeepAboveFloorDb : Infinity;
+    const keepDiff = floors ? floors.diffDb + SPEECH_DETECT.voicedKeepAboveFloorDb : Infinity;
     lastAnchor = new Int32Array(n).fill(-1);
     for (let i = 0, prev = -1; i < n; i++) {
       if (isAnchor(i)) prev = i;
@@ -1027,7 +1064,9 @@ export function speechIslands(
       if (!on[i]) continue;
       const nearAfter = prev >= 0 && i - prev <= tail;
       const nearBefore = nextAnchor[i] >= 0 && nextAnchor[i] - i <= lead;
-      if (!nearAfter && !nearBefore) on[i] = 0;
+      // Na dúvida, mantém (#13194): o começo da palavra pouco vozeado, colado na voz e bem acima do piso, é fala.
+      const leadsIntoVoice = runToAnchor[i] >= 0 && runToAnchor[i] <= leadMax && (e.fullDb[i] > keepFull || e.diffDb[i] > keepDiff);
+      if (!nearAfter && !nearBefore && !leadsIntoVoice) on[i] = 0;
     }
   }
   const raw: Interval[] = [];
@@ -1047,9 +1086,11 @@ export function speechIslands(
     else merged.push({ ...r });
   }
   const kept = merged.filter((r) => r.end - r.start >= minIsland - 1e-9);
-  // Cauda abaixo do limiar relativo e acima do fixo (só muda algo quando o relativo venceu).
-  const lowFull = SPEECH_DETECT.fullDb;
-  const lowDiff = SPEECH_DETECT.diffDb;
+  // Cauda abaixo do limiar relativo e acima do fixo (muda algo quando o relativo subiu). #13188: o limite é o
+  // MENOR entre o fixo, o limiar das ilhas e o piso + `attackAboveFloorDb` (o mesmo do recuo do ataque): no bruto
+  // baixo a cauda da palavra abaixo do limiar, mas bem acima do piso, fica na ilha.
+  const lowFull = Math.min(SPEECH_DETECT.fullDb, fullDb, floors ? floors.fullDb + SPEECH_DETECT.attackAboveFloorDb : Infinity);
+  const lowDiff = Math.min(SPEECH_DETECT.diffDb, diffDb, floors ? floors.diffDb + SPEECH_DETECT.attackAboveFloorDb : Infinity);
   const maxFwd = Math.round(SPEECH_DETECT.decayMaxS / e.hopS);
   // Com a voz medida, o quadro que o filtro de respiração rejeitaria (longe da última âncora) para a cauda.
   const nearVoice = (j: number) => !lastAnchor || (lastAnchor[j] >= 0 && j - lastAnchor[j] <= tail);
