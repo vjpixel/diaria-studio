@@ -20,7 +20,8 @@
  *   - manual (qualquer outra branch: do editor ou de autor desconhecido): só
  *     `briefing` ou `fixer` (este só passadas 6h), NUNCA `fechar-*` (vale
  *     também sem `--all-open`);
- *   - bot (autor bot, `dependabot/`, `bot/`): fora da fila com `--all-open`,
+ *   - bot (`isBotPr`, #13185: autor bot, `dependabot/`, `renovate/`, `bot/`):
+ *     fora da fila com `--all-open`,
  *     listada em `skipped`; sem a flag, escalada de bot sai com `lane: bot`
  *     e também nunca fecha.
  * PR reivindicada por sessão viva — pelo corpo (gate) ou pela issue de origem
@@ -73,6 +74,7 @@
  * Uso: npx tsx scripts/list-continuo-escalation-queue.ts [--all-open] [--apply]
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { isBotPr, type BotPrLike } from "./lib/bot-pr.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { extractClosingIssueNumbers } from "./lib/continuo-superseded-check.ts";
 import { checkSessionsScanHealth, isIssueClaimedByOther, resolveRepoRoot } from "./lib/session-registry.ts";
@@ -117,17 +119,15 @@ export function overdueEscalation(events: LabelEvent[], now: number): string | n
 
 export type PrLane = "autonomous" | "manual" | "bot";
 const AUTONOMOUS_PREFIXES = ["overnight/", "develop/", "continuo/"];
-const BOT_PREFIXES = ["dependabot/", "bot/"];
 
 /**
  * Pure (#13094): de onde a PR veio. Só a branch das lanes autônomas conta
  * como autônoma; qualquer outra (inclusive autor desconhecido) é `manual`,
- * que nunca fecha sozinha (fail-closed).
+ * que nunca fecha sozinha (fail-closed). Bot pela mesma regra do teto de PRs
+ * abertos (`isBotPr`, #13185).
  */
-export function prLane(pr: { headRefName: string; author?: { login?: string; is_bot?: boolean } | null }): PrLane {
-  const login = pr.author?.login ?? "";
-  if (pr.author?.is_bot === true || /\[bot\]$/.test(login) || login.startsWith("app/")) return "bot";
-  if (BOT_PREFIXES.some((p) => pr.headRefName.startsWith(p))) return "bot";
+export function prLane(pr: BotPrLike): PrLane {
+  if (isBotPr(pr)) return "bot";
   if (AUTONOMOUS_PREFIXES.some((p) => pr.headRefName.startsWith(p))) return "autonomous";
   return "manual";
 }
@@ -462,6 +462,10 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean, opts: QueueO
       }
       const ageMs = now - Date.parse(since);
       const overdue = ageMs > ESCALATION_QUEUE_AFTER_MS;
+      // #13185: antes de 6h só entra o que vai ao fixer, e PR `aberta` ou
+      // não-autônoma nunca vai ao fixer antes de 6h (`shortcutWindowOk`). O
+      // gate (vários `gh`, até 180s) seria descartado: não roda.
+      if (!overdue && (kind === "aberta" || lane !== "autonomous")) continue;
       step = "gate";
       const gate = deps.gate(pr.number);
       const labels = pr.labels.map((l) => l.name);

@@ -13,11 +13,14 @@
  * `scripts/list-continuo-escalation-queue.ts`) em vez de abrir PR nova.
  *
  * Conta drafts e resgates (`continuo/rescue-*`) de propósito: são justamente
- * os que ficavam parados. Só PR de bot de dependência fica de fora — ele tem
- * ciclo próprio e não sai de nenhuma rodada.
+ * os que ficavam parados. Só PR de bot fica de fora — ela tem ciclo próprio e
+ * não sai de nenhuma rodada. A detecção é a mesma da fila de escaladas
+ * (`isBotPr`, `scripts/lib/bot-pr.ts`, #13185).
  *
  * Puro (sem I/O). CLI: `scripts/check-open-pr-cap.ts`.
  */
+
+import { isBotPr } from "./bot-pr.ts";
 
 /**
  * Teto de PRs abertos (não-bot) no repo. Valor escolhido no #12765; hoje igual
@@ -28,7 +31,7 @@ export const OPEN_PR_CAP = 10;
 export interface OpenPrLike {
   number?: number;
   headRefName: string;
-  author?: { login?: string } | null;
+  author?: { login?: string; is_bot?: boolean } | null;
 }
 
 export interface OpenPrSlots {
@@ -44,17 +47,10 @@ export type OpenPrCapResult =
   | (OpenPrSlots & { verified: true; truncated: boolean })
   | { verified: false; open: null; cap: number; slots: number; counted: null; reason: string };
 
-/** Pure: PR de bot de dependência (Dependabot/Renovate) não conta no teto. */
-export function isDependencyBotPr(pr: OpenPrLike): boolean {
-  const login = (pr.author?.login ?? "").toLowerCase();
-  if (/(^|\/)(dependabot|renovate)(\[bot\])?$/.test(login)) return true;
-  return /^(dependabot|renovate)\//.test(pr.headRefName);
-}
-
-/** Pure: quantas PRs novas ainda cabem. Nunca lança. */
+/** Pure: quantas PRs novas ainda cabem. PR de bot (`isBotPr`) não conta. Nunca lança. */
 export function computeOpenPrSlots(prs: OpenPrLike[], cap: number = OPEN_PR_CAP): OpenPrSlots {
   if (!Number.isInteger(cap) || cap < 0) throw new Error(`teto inválido: ${cap}`);
-  const counted = prs.filter((pr) => !isDependencyBotPr(pr));
+  const counted = prs.filter((pr) => !isBotPr(pr));
   return {
     open: counted.length,
     cap,

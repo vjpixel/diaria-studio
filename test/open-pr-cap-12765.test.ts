@@ -7,11 +7,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   combineContinuoCaps,
   computeOpenPrSlots,
-  isDependencyBotPr,
   OPEN_PR_CAP,
   resolveWaveOpenPrSlots,
   waveOpenPrCapError,
 } from "../scripts/lib/open-pr-cap.ts";
+import { isBotPr } from "../scripts/lib/bot-pr.ts";
 import { FAKE_GH_SKIP_WIN32, fakeGhEnv, withoutGhCredentials, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { OPEN_PR_LIST_LIMIT, readOpenPrCap } from "../scripts/check-open-pr-cap.ts";
 import {
@@ -56,9 +56,9 @@ describe("teto global de PRs abertos (#12765)", () => {
   });
 
   it("bot detectado por login ou por branch", () => {
-    assert.equal(isDependencyBotPr(pr(1, "x", "dependabot[bot]")), true);
-    assert.equal(isDependencyBotPr(pr(1, "dependabot/x")), true);
-    assert.equal(isDependencyBotPr(pr(1, "overnight/fix-1")), false);
+    assert.equal(isBotPr(pr(1, "x", "dependabot[bot]")), true);
+    assert.equal(isBotPr(pr(1, "dependabot/x")), true);
+    assert.equal(isBotPr(pr(1, "overnight/fix-1")), false);
   });
 
   it("onda não passa das vagas; 0 vagas recusa qualquer onda", () => {
