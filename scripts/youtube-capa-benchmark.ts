@@ -200,7 +200,10 @@ async function downloadThumb(v: RankedVideo, dir: string): Promise<{ path: strin
   if (!v.thumbnailUrl) return { reason: "API sem miniatura" };
   try {
     const res = await fetch(v.thumbnailUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) return { reason: `HTTP ${res.status}` };
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { reason: `HTTP ${res.status}` };
+    }
     // Normaliza para 16:9 (as "high" vêm 4:3 com tarja preta).
     const buf = await sharp(Buffer.from(await res.arrayBuffer())).resize(640, 360, { fit: "cover" }).jpeg({ quality: 85 }).toBuffer();
     // Grava em .tmp e renomeia: rodada interrompida não deixa jpg truncado no cache.
