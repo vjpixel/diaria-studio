@@ -11,10 +11,15 @@
  * - **Fração de ondas com `cap_hit`**: `cap_hit` quase sempre `false` significa
  *   que a fila nunca tinha unidades independentes suficientes pra o teto ser
  *   de fato o limite.
- * - **`pr→merge` p90 segmentado por `cap_hit`**: se subir muito acima de
- *   ~30min (ou o volume de `draft-ci-vermelho` subir) nas ondas com
- *   `cap_hit: true`, é sinal de que o teto 10 (#10821; era 6 no #8486)
- *   está sobrecarregando o coordenador/CI e vale reverter pra 6.
+ * - **`pr→merge` p90 segmentado por `cap_hit`**: contexto, não critério. Desde
+ *   o trem de merge (#6300) esse trecho mede a fila do merge serial e o
+ *   coordenador (#13271), não o número de worktrees; o limiar absoluto de
+ *   ~30 min que decidia a reversão do teto ficou defasado (#13270).
+ * - **Critério de reversão do teto (v2, #13270)**: compara as ondas cheias
+ *   (`cap_hit: true`) com as outras em dois sinais que o teto de fato mexe —
+ *   taxa de `draft-ci-vermelho` (trabalho desassistido queimado, o risco que o
+ *   teto defende) e `dispatch→PR` p50 (implementadores concorrendo). Ver
+ *   `evaluateWaveCapReversal`.
  *
  * `pr→merge` de uma UNIDADE (não de uma issue isolada) é definido como o
  * intervalo entre o `pr_opened` MAIS CEDO e o `merged` MAIS TARDE entre as
@@ -34,7 +39,19 @@ export interface WaveUnitDuration {
   cap_hit: boolean;
   /** ms entre o pr_opened mais cedo e o merged mais tarde da unidade; null se incompleto. */
   duration_ms: number | null;
+  /** ms entre o dispatch mais cedo e o pr_opened mais cedo da unidade; null se incompleto (#13270). */
+  dispatch_to_pr_ms: number | null;
+  /**
+   * Desfecho da unidade (#13270): `draft` se alguma issue terminou
+   * `draft-ci-vermelho`, senão `merged` se alguma terminou `mergeada`, senão
+   * `other` (pulada, retida, ainda em voo). Só `draft`/`merged` entram na taxa.
+   */
+  outcome: "draft" | "merged" | "other";
 }
+
+/** Status de `plan.issues[]` que o critério de reversão lê (#13270). */
+const DRAFT_STATUS = "draft-ci-vermelho";
+const MERGED_STATUS = "mergeada";
 
 /** Pure: índice `owner/repo#N -> PlanIssue` (#10618, fatia 4: por chave, a
  * design#21 não colide com a studio#21), ignorando entradas sem identidade. */
@@ -66,21 +83,34 @@ export function computeWaveUnitDurations(
   const out: WaveUnitDuration[] = [];
   for (const wave of waves) {
     for (const unit of wave.units) {
+      let earliestDispatch: number | null = null;
       let earliestOpen: number | null = null;
       let latestMerged: number | null = null;
+      let anyDraft = false;
+      let anyMerged = false;
       for (const id of unit.issues) {
         const key = waveIssueKey(id);
-        const tl = key ? byKey.get(key)?.timeline : undefined;
+        const issue = key ? byKey.get(key) : undefined;
+        const tl = issue?.timeline;
+        const dispatch = parseISO(tl?.dispatch);
         const open = parseISO(tl?.pr_opened);
         const merged = parseISO(tl?.merged);
+        if (dispatch !== null && (earliestDispatch === null || dispatch < earliestDispatch)) earliestDispatch = dispatch;
         if (open !== null && (earliestOpen === null || open < earliestOpen)) earliestOpen = open;
         if (merged !== null && (latestMerged === null || merged > latestMerged)) latestMerged = merged;
+        if (issue?.status === DRAFT_STATUS) anyDraft = true;
+        if (issue?.status === MERGED_STATUS) anyMerged = true;
       }
       const duration_ms =
         earliestOpen !== null && latestMerged !== null && latestMerged >= earliestOpen
           ? latestMerged - earliestOpen
           : null;
-      out.push({ issues: unit.issues, cap_hit: wave.cap_hit, duration_ms });
+      const dispatch_to_pr_ms =
+        earliestDispatch !== null && earliestOpen !== null && earliestOpen >= earliestDispatch
+          ? earliestOpen - earliestDispatch
+          : null;
+      const outcome = anyDraft ? "draft" : anyMerged ? "merged" : "other";
+      out.push({ issues: unit.issues, cap_hit: wave.cap_hit, duration_ms, dispatch_to_pr_ms, outcome });
     }
   }
   return out;
@@ -110,44 +140,123 @@ export interface WavesAggregateReport {
   pr_to_merge_p90_ms: { cap_hit_true: number | null; cap_hit_false: number | null };
   /** Tamanho de cada amostra usada no p90 (unidades com duração conhecida). */
   pr_to_merge_sample_size: { cap_hit_true: number; cap_hit_false: number };
-  /** Critério de reversão do teto avaliado sobre os p90 acima (#13270). */
+  /** Sinais do critério de reversão do teto, por grupo `cap_hit` (#13270). */
+  reversal_signals: { cap_hit_true: WaveGroupSignals; cap_hit_false: WaveGroupSignals };
+  /** Critério de reversão do teto (v2) avaliado sobre `reversal_signals` (#13270). */
   reversal: WaveCapReversalVerdict;
 }
 
-/**
- * Limiar do critério de reversão do teto (#8486, mantido no #10821): `pr→merge`
- * p90 acima de ~30 min nas ondas com `cap_hit: true` = voltar a 6. Antes do
- * #13270 a regra só existia em prosa (`OVERNIGHT_WAVE_CAP`, SKILL.md) e ninguém
- * fazia a conta; agora o relatório diz se ela disparou.
- */
-export const WAVE_CAP_REVERSAL_P90_MS = 30 * 60 * 1000;
+/** Sinais que o teto da onda de fato mexe, num grupo de ondas (#13270). */
+export interface WaveGroupSignals {
+  /** Unidades com desfecho `draft` (alguma issue `draft-ci-vermelho`). */
+  draft: number;
+  /** Unidades com desfecho `merged` (sem draft). */
+  merged: number;
+  /** `draft / (draft + merged)`; null sem nenhuma unidade com desfecho. */
+  draft_rate: number | null;
+  /** p50 de `dispatch→PR` das unidades com os dois marcos. */
+  dispatch_to_pr_p50_ms: number | null;
+  dispatch_to_pr_n: number;
+}
 
 /**
- * Veredito do critério de reversão (#13270):
- * - `sem-amostra`: nenhuma unidade com duração conhecida em onda `cap_hit: true`.
- * - `nao-disparou`: p90 das ondas cheias dentro do limiar.
- * - `disparou`: p90 das ondas cheias acima do limiar e acima do das outras ondas
- *   (o teto cheio piora o ciclo: voltar a 6 é a leitura direta da regra).
- * - `disparou-sem-efeito-do-teto`: p90 das ondas cheias acima do limiar, mas as
- *   ondas sem `cap_hit` também passam dele e não ficam melhores. O gargalo não é
- *   o número de worktrees, e baixar o teto não resolve sozinho.
+ * Critério de reversão do teto, v2 (#13270, decisão do editor de 16/11/2026:
+ * manter o teto em 10 e rever o critério). O v1 (#8486, mantido no #10821) era
+ * `pr→merge` p90 acima de ~30 min nas ondas cheias = voltar a 6. Ficou
+ * defasado com o trem de merge (#6300): o `pr→merge` passou a medir a fila do
+ * merge serial e o coordenador, que crescem com o número de PRs prontas e não
+ * com o de worktrees, e o limiar absoluto disparava em qualquer teto (as ondas
+ * sem `cap_hit` também passavam de 30 min, 56m de p90 na leitura da #13270).
  *
- * A decisão (voltar a 6 ou rever o limiar) é do editor; o relatório só faz a conta.
+ * O v2 compara as ondas cheias com as outras (mesmo instrumento, mesma época)
+ * em dois sinais que o teto pode piorar:
+ * - **`draft-ci-vermelho`**: trabalho desassistido queimado, o risco que o
+ *   teto sempre defendeu. Dispara com taxa das ondas cheias >= `draft_ratio`×
+ *   a das outras E pelo menos `draft_min_full` drafts nas cheias (1 contra 0
+ *   não é sinal).
+ * - **`dispatch→PR` p50**: implementadores concorrendo por máquina e limite de
+ *   uso. Dispara com p50 das cheias >= `dispatch_p50_ratio`× o das outras.
+ *   p50, não p90: a amostra das cheias é pequena (n=25 na leitura da #13270) e
+ *   o p90 de n pequeno é 1 ou 2 unidades.
+ *
+ * Cada sinal só é avaliado com amostra mínima; sem nenhum avaliável o veredito
+ * é `sem-amostra`. Os números são premissa declarada no #13270 (não medidos
+ * contra um incidente), revistos pelo editor quando quiser.
+ */
+export const WAVE_CAP_REVERSAL = {
+  /** Unidades com desfecho (draft + merged) exigidas em cada grupo. */
+  min_outcomes: 20,
+  draft_ratio: 2,
+  draft_min_full: 3,
+  dispatch_p50_ratio: 1.5,
+  /** Unidades com `dispatch→PR` exigidas em cada grupo. */
+  dispatch_min_n: 10,
+} as const;
+
+export type WaveCapReversalSignal = "draft-ci-vermelho" | "dispatch-pr";
+
+/**
+ * Veredito do critério de reversão v2 (#13270):
+ * - `sem-amostra`: nenhum dos dois sinais tem amostra mínima.
+ * - `nao-disparou`: nenhum sinal avaliado disparou (`evaluated` diz quais foram).
+ * - `disparou`: ao menos um sinal disparou (`reasons`). Leitura direta: voltar
+ *   o teto a 6. A decisão segue com o editor; o relatório só faz a conta.
  */
 export type WaveCapReversalVerdict =
-  | { verdict: "sem-amostra"; threshold_ms: number }
-  | { verdict: "nao-disparou" | "disparou" | "disparou-sem-efeito-do-teto"; threshold_ms: number };
+  | { verdict: "sem-amostra" }
+  | { verdict: "nao-disparou"; evaluated: WaveCapReversalSignal[] }
+  | { verdict: "disparou"; reasons: WaveCapReversalSignal[] };
 
-/** Pure: avalia o critério de reversão a partir dos dois p90. */
-export function evaluateWaveCapReversal(
-  p90: { cap_hit_true: number | null; cap_hit_false: number | null },
-  threshold_ms: number = WAVE_CAP_REVERSAL_P90_MS,
-): WaveCapReversalVerdict {
-  if (p90.cap_hit_true === null) return { verdict: "sem-amostra", threshold_ms };
-  if (p90.cap_hit_true <= threshold_ms) return { verdict: "nao-disparou", threshold_ms };
-  const otherAlsoSlow = p90.cap_hit_false !== null && p90.cap_hit_false > threshold_ms;
-  const fullWorse = p90.cap_hit_false === null || p90.cap_hit_true > p90.cap_hit_false;
-  return { verdict: otherAlsoSlow && !fullWorse ? "disparou-sem-efeito-do-teto" : "disparou", threshold_ms };
+/** Pure: avalia o critério de reversão v2 a partir dos sinais dos dois grupos. */
+export function evaluateWaveCapReversal(signals: {
+  cap_hit_true: WaveGroupSignals;
+  cap_hit_false: WaveGroupSignals;
+}): WaveCapReversalVerdict {
+  const full = signals.cap_hit_true;
+  const other = signals.cap_hit_false;
+  const C = WAVE_CAP_REVERSAL;
+  const evaluated: WaveCapReversalSignal[] = [];
+  const reasons: WaveCapReversalSignal[] = [];
+
+  if (
+    full.draft + full.merged >= C.min_outcomes &&
+    other.draft + other.merged >= C.min_outcomes &&
+    full.draft_rate !== null &&
+    other.draft_rate !== null
+  ) {
+    evaluated.push("draft-ci-vermelho");
+    const ratioHit = other.draft_rate === 0 ? full.draft_rate > 0 : full.draft_rate >= C.draft_ratio * other.draft_rate;
+    if (full.draft >= C.draft_min_full && ratioHit) reasons.push("draft-ci-vermelho");
+  }
+
+  if (
+    full.dispatch_to_pr_n >= C.dispatch_min_n &&
+    other.dispatch_to_pr_n >= C.dispatch_min_n &&
+    full.dispatch_to_pr_p50_ms !== null &&
+    other.dispatch_to_pr_p50_ms !== null &&
+    other.dispatch_to_pr_p50_ms > 0
+  ) {
+    evaluated.push("dispatch-pr");
+    if (full.dispatch_to_pr_p50_ms >= C.dispatch_p50_ratio * other.dispatch_to_pr_p50_ms) reasons.push("dispatch-pr");
+  }
+
+  if (reasons.length > 0) return { verdict: "disparou", reasons };
+  if (evaluated.length === 0) return { verdict: "sem-amostra" };
+  return { verdict: "nao-disparou", evaluated };
+}
+
+/** Pure: sinais do critério de reversão de um grupo de unidades (#13270). */
+export function groupSignals(units: WaveUnitDuration[]): WaveGroupSignals {
+  const draft = units.filter((u) => u.outcome === "draft").length;
+  const merged = units.filter((u) => u.outcome === "merged").length;
+  const d2p = units.filter((u) => u.dispatch_to_pr_ms !== null).map((u) => u.dispatch_to_pr_ms as number);
+  return {
+    draft,
+    merged,
+    draft_rate: draft + merged === 0 ? null : draft / (draft + merged),
+    dispatch_to_pr_p50_ms: percentile(d2p, 50),
+    dispatch_to_pr_n: d2p.length,
+  };
 }
 
 /**
@@ -180,6 +289,10 @@ export function aggregateWaveRounds(
     cap_hit_true: percentile(durTrue, 90),
     cap_hit_false: percentile(durFalse, 90),
   };
+  const reversal_signals = {
+    cap_hit_true: groupSignals(allDurations.filter((d) => d.cap_hit)),
+    cap_hit_false: groupSignals(allDurations.filter((d) => !d.cap_hit)),
+  };
   return {
     rounds_scanned: rounds.length,
     waves_total: allWaves.length,
@@ -191,7 +304,8 @@ export function aggregateWaveRounds(
       cap_hit_true: durTrue.length,
       cap_hit_false: durFalse.length,
     },
-    reversal: evaluateWaveCapReversal(pr_to_merge_p90_ms),
+    reversal_signals,
+    reversal: evaluateWaveCapReversal(reversal_signals),
   };
 }
 
@@ -234,22 +348,45 @@ export function renderWavesReportMarkdown(report: WavesAggregateReport): string 
   lines.push(
     `pr→merge p90 (cap_hit=false): ${fmtDurationMs(report.pr_to_merge_p90_ms.cap_hit_false)} (n=${report.pr_to_merge_sample_size.cap_hit_false})`,
   );
+  lines.push("(pr→merge é contexto: mede a fila do merge serial e o coordenador, não decide o teto — #13270, #13271.)");
+  lines.push("");
+  const s = report.reversal_signals;
+  lines.push(`draft-ci-vermelho (cap_hit=true): ${fmtDraft(s.cap_hit_true)}`);
+  lines.push(`draft-ci-vermelho (cap_hit=false): ${fmtDraft(s.cap_hit_false)}`);
+  lines.push(
+    `dispatch→PR p50 (cap_hit=true): ${fmtDurationMs(s.cap_hit_true.dispatch_to_pr_p50_ms)} (n=${s.cap_hit_true.dispatch_to_pr_n})`,
+  );
+  lines.push(
+    `dispatch→PR p50 (cap_hit=false): ${fmtDurationMs(s.cap_hit_false.dispatch_to_pr_p50_ms)} (n=${s.cap_hit_false.dispatch_to_pr_n})`,
+  );
   lines.push("");
   lines.push(renderReversalLine(report.reversal));
   return lines.join("\n");
 }
 
-/** Linha do critério de reversão do teto (#13270). */
+function fmtDraft(g: WaveGroupSignals): string {
+  const total = g.draft + g.merged;
+  const pct = g.draft_rate === null ? "—" : `${(g.draft_rate * 100).toFixed(1)}%`;
+  return `${g.draft}/${total} unidades com desfecho (${pct})`;
+}
+
+const SIGNAL_LABEL: Record<WaveCapReversalSignal, string> = {
+  "draft-ci-vermelho": "draft-ci-vermelho",
+  "dispatch-pr": "dispatch→PR p50",
+};
+
+/** Linha do critério de reversão do teto, v2 (#13270). */
 export function renderReversalLine(r: WaveCapReversalVerdict): string {
-  const limiar = fmtDurationMs(r.threshold_ms);
+  const C = WAVE_CAP_REVERSAL;
+  const regra =
+    `Critério de reversão do teto (ondas cheias contra as outras: draft-ci-vermelho >= ${C.draft_ratio}x e >= ${C.draft_min_full}, ` +
+    `ou dispatch→PR p50 >= ${C.dispatch_p50_ratio}x)`;
   switch (r.verdict) {
     case "sem-amostra":
-      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): sem amostra em onda com cap_hit.`;
+      return `${regra}: sem amostra mínima (${C.min_outcomes} unidades com desfecho ou ${C.dispatch_min_n} com dispatch→PR em cada grupo).`;
     case "nao-disparou":
-      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): não disparou.`;
+      return `${regra}: não disparou (avaliado: ${r.evaluated.map((x) => SIGNAL_LABEL[x]).join(", ")}).`;
     case "disparou":
-      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): DISPAROU, e as ondas cheias ficam piores que as outras. Decisão do editor: voltar a 6 ou rever o limiar.`;
-    case "disparou-sem-efeito-do-teto":
-      return `Critério de reversão do teto (p90 > ${limiar} nas ondas cheias): DISPAROU, mas as ondas sem cap_hit também passam do limiar e não ficam melhores. O gargalo não é o teto. Decisão do editor: voltar a 6 ou rever o limiar.`;
+      return `${regra}: DISPAROU (${r.reasons.map((x) => SIGNAL_LABEL[x]).join(", ")}). Leitura direta: voltar o teto a 6; a decisão é do editor.`;
   }
 }

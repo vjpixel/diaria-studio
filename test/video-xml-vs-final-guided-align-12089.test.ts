@@ -82,9 +82,7 @@ describe("#12089: alinhamento XML × final guiado pelos clipes", () => {
   });
 
   it("guiado pelo XML: cobre o final e mede o que o editor mudou", () => {
-    const al = alignFinalToBruto(final, bruto, HOP, CLIPS, OPTS, 0.5);
-    assert.equal(al.method, "guiado-xml");
-    assert.ok(al.windowCoverage < 0.5);
+    const al = alignGuidedByClips(final, bruto, HOP, CLIPS, OPTS);
     assert.ok(al.coverage > 0.9, `cobertura ${al.coverage}`);
     const r = compareSequence({ clips: CLIPS, spans: finalSpansFromRuns(al.runs), finalDurationS: durF });
     assert.deepEqual(r.clips.filter((c) => c.status === "removed").map((c) => c.index), [4]);
@@ -92,6 +90,22 @@ describe("#12089: alinhamento XML × final guiado pelos clipes", () => {
     assert.ok(pause && Math.abs(pause.ms - 600) <= 150, JSON.stringify({ c7: r.clips[7], runs: al.runs, offs: clipGuidedOffsets(final, bruto, HOP, CLIPS) }));
     assert.ok(r.clips[9].headMs !== null && Math.abs(r.clips[9].headMs + 200) <= 100, `entrada do clipe 9: ${r.clips[9].headMs}`);
     assert.equal(r.summary.orderInversions, 0);
+  });
+
+  it("alignFinalToBruto: os clipes do plan.json (#13197) já cobrem, e o guiado pelo XML (#12089) não entra", () => {
+    const al = alignFinalToBruto(final, bruto, HOP, CLIPS, OPTS, 0.5);
+    assert.equal(al.method, "janela");
+    assert.equal(al.guide, "plan-clips");
+    assert.ok(al.coverage > 0.9, `cobertura ${al.coverage}`);
+  });
+
+  it("alignFinalToBruto cai no guiado pelo XML quando nem a janela nem os clipes do plan.json cobrem", () => {
+    // Ruído forte e periódico no final: o alignByPlanClips (r ≥ 0,8 no clipe inteiro) não acha par, os pedaços de 1 s acham.
+    const noisy = Float64Array.from(final, (v, i) => v + ((i * 7919) % 13) * 6);
+    const al = alignFinalToBruto(noisy, bruto, HOP, CLIPS, OPTS, 0.5);
+    assert.equal(al.method, "guiado-xml");
+    assert.ok(al.windowCoverage < 0.5, `1ª camada ${al.windowCoverage}`);
+    assert.ok(al.coverage > 0.8, `cobertura ${al.coverage}`);
   });
 
   it("um par falso de clipe curto adiante não leva os clipes seguintes (escolha conjunta, não pedaço a pedaço)", () => {

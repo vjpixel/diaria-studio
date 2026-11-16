@@ -13,10 +13,13 @@
  * alinhamento monótono por correlação do `--from-audio` (#11504,
  * `alignEnvelopes`), com o final no lugar do "áudio" e o bruto no do "vídeo",
  * mais uma busca global nos vãos sem par (`alignWithReorder`: trecho
- * reordenado pelo editor). Se isso cobrir menos que `MIN_COVERAGE` do final
- * (XML de clipes curtos que pula para frente e para trás no bruto, a 261116),
- * vale o alinhamento guiado pelos clipes do XML (`alignFinalToBruto`, #12089),
- * com uma nota no registro da sequência.
+ * reordenado pelo editor). Na montagem picotada (clipes curtos fora da ordem
+ * do bruto, 261104/261105), os clipes do plan.json dão os deslocamentos
+ * candidatos (`alignByPlanClips`, #13197); vale a base que cobre mais. Se isso
+ * ainda cobrir menos que `MIN_COVERAGE` do final (XML de clipes curtos que pula
+ * para frente e para trás no bruto, a 261116), vale o alinhamento guiado pelos
+ * clipes do XML (`alignFinalToBruto` → `alignGuidedByClips`, #12089), com uma
+ * nota no registro da sequência.
  * Sem o `audio.wav` do cache, o áudio do bruto sai dos arquivos dele, achados
  * nesta ordem: caminho do `plan.json`, arquivo do HD do 300
  * (`VIDEO_ARCHIVE_ROOT`, default `/mnt/hd-sata/arquivo-video`, #12548), cache
@@ -497,9 +500,10 @@ export async function compareEdition(
       const fe = energyEnvelope(fa.samples, fa.sampleRate);
       const finalDurationS = fa.samples.length / fa.sampleRate;
       const xmlClips = plan.clips.map((c, i) => ({ index: i, srcIn: c.srcIn, srcOut: c.srcOut }));
-      // #12089: XML com clipes curtos e saltos no bruto derruba o alinhamento por janela; aí vale o guiado pelos clipes.
+      // Camada 1: janela × clipes do plan.json (#13197); camada 2, só abaixo de MIN_COVERAGE: guiado pelos clipes do XML (#12089).
       const al = alignFinalToBruto(fe.db, brutoEnv.db, brutoEnv.hopS, xmlClips, ALIGN_OPTS, MIN_COVERAGE);
       const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
+      log(`[video-xml-vs-final] ${edition} ${key}: alinhamento ${al.method === "guiado-xml" ? "guiado-xml" : al.guide}, ${pct(al.coverage)} do final com par`);
       if (al.coverage < MIN_COVERAGE) {
         record.skipped.push({ key, reason: `alinhamento fraco: ${pct(al.coverage)} do final com par no bruto (mínimo ${MIN_COVERAGE * 100}%; por janela ${pct(al.windowCoverage)}, guiado pelo XML incluído)` });
         continue;
