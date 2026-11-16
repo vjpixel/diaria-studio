@@ -82,7 +82,7 @@ import {
   isRuntimeExcluded, // #12202
   type SnippetAudienceSource,
 } from "./lib/shared/snippet-header.ts";
-import { findRawHtmlTag } from "./lib/shared/non-box-snippets.ts"; // #12202
+import { findRawHtmlTag, findTemplatePlaceholder } from "./lib/shared/non-box-snippets.ts"; // #12202, #13252
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { resolveEnrichmentState } from "./lib/shared/enrichment-state.ts";
 import {
@@ -184,6 +184,10 @@ export interface SnippetInfo {
   /** #12202: corpo com tag HTML crua (`findRawHtmlTag`) — o render de box
    * escaparia e o leitor veria as tags como texto. Ausente = `false`. */
   rawHtmlBody?: boolean;
+  /** #13252: corpo com marcador de template do projeto (`{{OPENING}}`…,
+   * `findTemplatePlaceholder`) — o caminho do box não substitui marcador e o
+   * leitor o veria cru. Ausente = `false`. */
+  templatePlaceholderBody?: boolean;
 }
 
 export function parseSnippetContent(file: string, content: string): SnippetInfo {
@@ -198,7 +202,21 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   const expires = parseBoxHeaderField(content, "expires");
   const runtimeExcluded = isRuntimeExcluded(content);
   const rawHtmlBody = findRawHtmlTag(body) !== null;
-  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys, expires, runtimeExcluded, rawHtmlBody };
+  const templatePlaceholderBody = findTemplatePlaceholder(body) !== null;
+  return {
+    file,
+    nome,
+    urls,
+    fullUrls,
+    seasonal,
+    audience,
+    audienceSource,
+    eventKeys,
+    expires,
+    runtimeExcluded,
+    rawHtmlBody,
+    templatePlaceholderBody,
+  };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,

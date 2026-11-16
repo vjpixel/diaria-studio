@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 143 invariants.
+**Total**: 147 invariants.
 
 ## Static (estrutura do repo)
 
@@ -58,7 +58,9 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `newsletter-humanizador-diff-ran` | humanizador da newsletter rodou (diff _internal/02-normalized.md vs _internal/02-humanized.md) (#6337, #1072) | #6337 |
 | `por-que-isso-importa-separate-line` | 'Por que isso importa:' em linha separada (editorial-rules) | #editorial-rules |
 | `reveal-temporal-prefix` | intentional-error.json.reveal (quando preenchido) começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6337, #6139) | #6337 |
+| `reviewed-duplicate-closing-block` | 02-reviewed.md com o bloco Para encerrar duplicado — mesma checagem do Stage 4, rodada logo após o stitch (#13252) | #13252 |
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105), resumos do pool completos/traduzidos (#9358) e itens de seção com URL resolvível pelo parser real (#3821/#10311) | #964 |
+| `reviewed-unknown-template-marker` | 02-reviewed.md com {{...}} que não é merge tag conhecida do ESP — mesma checagem do Stage 4, rodada logo após o stitch (#13252) | #13252 |
 | `social-humanizer-provenance-recorded` | Humanizador e Clarice registrados por conteúdo antes de concluir Stage 2 (#12331) | #12331 |
 | `social-humanizer-sentinel-written` | check-humanizer-social.ts --write rodou de fato no fim do Stage 2 — sentinel .humanizer-social-done.json existe e bate com 03-social.md atual (#6305) | #6305 |
 | `social-no-trailing-editorial-hook` | 03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658) | #2658 |
@@ -118,8 +120,10 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `public-images-md5-matches-local` | hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252) | #11252 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `render-warnings-consumed` | eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch / convite_amigo_snippet_missing) surfaced no gate (#4673, warning-only) | #4673 |
+| `reviewed-duplicate-closing-block` | 02-reviewed.md com o parágrafo "Nesta edição da diar.ia.br, usei..." mais de uma vez — bloco Para encerrar duplicado (#13252) | #13252 |
 | `reviewed-no-pending-placeholder` | 02-reviewed.md sem placeholder de destaque não integrado ([RASCUNHO PENDENTE …]/[TEXTO PENDENTE …] do swap/promote) (#12259) | #12259 |
 | `reviewed-onedrive-conflict-copy` | avisa quando o OneDrive deixou cópia de conflito (*-safeBackup-*.md) de 02-reviewed.md/03-social.md — o principal pode ter perdido uma edição (#12259) | #12259 |
+| `reviewed-unknown-template-marker` | 02-reviewed.md com {{...}} que não é merge tag conhecida do ESP (ex.: {{OPENING}} do snippet de encerramento) — o leitor veria o marcador cru (#13252) | #13252 |
 | `secondary-theme-possible-repeat` | Item do pool que o passe secundário do Stage 1 marcou como possível repetição de tema (entidade + termo de conteúdo em comum com item publicado nas últimas edições) e segue no 02-reviewed.md final (warning-only) | #13143 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
