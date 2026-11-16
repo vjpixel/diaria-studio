@@ -398,6 +398,10 @@ Escolhe o corte `_Outras redes_` da pasta `Final/` (ou, sem ela, o vertical "fin
 npx tsx scripts/publish-shorts.ts {AAMMDD} --from-drive {FILE_ID}
 ```
 
+### Checagem guiada das bios (#13117)
+
+Quando o plano indicar `cta_vertical`, antes de pedir aprovação do vertical, conferir os perfis usados no Instagram, TikTok e Threads: abrir cada perfil, conferir o campo Site com `https://diar.ia.br/video?utm_source=instagram`, `https://diar.ia.br/video?utm_source=tiktok` e `https://diar.ia.br/video?utm_source=threads`, respectivamente, tocar no link e verificar que o horizontal desta edição abre. No Instagram, conferir a autora indicada no plano; no Threads, o perfil pessoal do editor. Registrar no relato a conta, a URL conferida e o resultado por rede. Sem acesso ao perfil, pedir ao editor essa conferência e relatar como pendente; nunca declarar a bio confirmada pelo simples fato de o plano conter a URL. TikTok sem campo Site exige habilitá-lo na conta; texto na bio sem link clicável não confirma o caminho. A linha “Vídeo completo: link na bio” entra nas três legendas. O Threads mantém o corpo sem URL e publica o link do horizontal numa resposta ao próprio post; se o aviso disser que a resposta não foi confirmada, conferir as respostas antes de completar à mão, sem republicar o vídeo.
+
 ### Passo B2 — Plano
 
 ```bash

@@ -103,6 +103,7 @@ export async function publishThreadsProfileVideo(args: {
   creds: ThreadsPersonalCreds;
   videoUrl: string;
   text: string;
+  replyText?: string | null;
   deps: ThreadsVideoDeps;
 }): Promise<ThreadsVideoOutcome> {
   const { creds, videoUrl, text, deps } = args;
@@ -126,10 +127,21 @@ export async function publishThreadsProfileVideo(args: {
     return sendUnknown(deps, `envio ambíguo no threads_publish (${e.message}; container ${containerId})`);
   }
   const url = await fetchThreadsPermalink(mediaId, creds.accessToken, creds.apiVersion, deps.fetch);
+  const warnings: string[] = [];
+  if (args.replyText) {
+    try {
+      const reply = await createThreadsContainer(creds.userId, creds.accessToken, { mediaType: "TEXT", text: args.replyText, replyToId: mediaId }, creds.apiVersion, deps.fetch);
+      await waitForThreadsContainer(reply, creds.accessToken, creds.apiVersion, { maxAttempts: 5, intervalMs: 1000, onTimeout: "throw", sleep, fetchFn: deps.fetch });
+      await publishThreadsContainer(creds.userId, creds.accessToken, reply, creds.apiVersion, deps.fetch);
+    } catch (e) {
+      warnings.push(`Threads: vídeo publicado (${mediaId}), resposta com horizontal não confirmada: ${(e as Error).message}. Confira as respostas do post antes de adicionar o link à mão; não republique o vídeo (#13117).`);
+    }
+  }
+  if (!url) warnings.push("o Threads publicou mas não devolveu o permalink — confira o perfil");
   const at = deps.now().toISOString();
   return {
     entry: { destination: THREADS_PROFILE_DESTINATION, status: "published", id: mediaId, ...(url ? { url } : {}), scheduled_at: null, at },
-    ...(url ? {} : { warnings: ["o Threads publicou mas não devolveu o permalink — confira o perfil"] }),
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 
