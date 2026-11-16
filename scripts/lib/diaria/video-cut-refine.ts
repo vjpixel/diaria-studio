@@ -959,10 +959,9 @@ export function entryCutSoundWarnings(
   fps: number,
   opts: SpeechDetectOpts<"entrySoundFraction" | "entryLookS" | "floorPercentile" | "topPercentile"> = {},
 ): string[] {
-  const floor = percentileDb(e.fullDb, opts.floorPercentile ?? SPEECH_DETECT.floorPercentile);
-  const top = percentileDb(e.fullDb, opts.topPercentile ?? SPEECH_DETECT.topPercentile);
-  if (floor === null || top === null || !(top > floor)) return [];
-  const lim = floor + (opts.entrySoundFraction ?? SPEECH_DETECT.entrySoundFraction) * (top - floor);
+  const limit = entrySoundLimitDb(e, opts);
+  if (!limit) return [];
+  const { floor, lim } = limit;
   const look = opts.entryLookS ?? SPEECH_DETECT.entryLookS;
   const out: string[] = [];
   clips.forEach((c, i) => {
@@ -981,6 +980,22 @@ export function entryCutSoundWarnings(
     }
   });
   return out;
+}
+
+/**
+ * O limite de "som" da checagem de entrada (#12263): piso do bruto + 45% da
+ * faixa até o percentil alto. Exposto para a escolha do silêncio da pausa da
+ * vinheta (#13239 item 3) usar o mesmo critério do `[aviso]` "corta som". null
+ * = energia sem faixa (bruto mudo ou plano).
+ */
+export function entrySoundLimitDb(
+  e: Pick<FrameEnergy, "fullDb">,
+  opts: SpeechDetectOpts<"entrySoundFraction" | "floorPercentile" | "topPercentile"> = {},
+): { floor: number; top: number; lim: number } | null {
+  const floor = percentileDb(e.fullDb, opts.floorPercentile ?? SPEECH_DETECT.floorPercentile);
+  const top = percentileDb(e.fullDb, opts.topPercentile ?? SPEECH_DETECT.topPercentile);
+  if (floor === null || top === null || !(top > floor)) return null;
+  return { floor, top, lim: floor + (opts.entrySoundFraction ?? SPEECH_DETECT.entrySoundFraction) * (top - floor) };
 }
 
 /** Energia por quadro (não sobrepostos, `hopS`): o quadro `i` cobre `[i·hopS, (i+1)·hopS)`. */
