@@ -97,7 +97,8 @@ export interface TimelineClip extends XmlAudioClip {
 
 /**
  * Leva cada clipe à linha do tempo global: `file-{k}` soma o `offsetFrames` do
- * k-ésimo arquivo; `file-audio` (faixa tratada) já é global. `<file>` que não
+ * k-ésimo arquivo; o trecho do XML leve `file-{k}-t{início}` (#13219) soma
+ * também o início dele; `file-audio` (faixa tratada) já é global. `<file>` que não
  * existe no bruto é erro (o XML aponta outro bruto).
  */
 export function toTimeline(parsed: ParsedXmlAudio, offsets: readonly number[]): { clips: TimelineClip[]; errors: string[] } {
@@ -105,10 +106,11 @@ export function toTimeline(parsed: ParsedXmlAudio, offsets: readonly number[]): 
   const clips = parsed.clips.map((c, i) => {
     let off = 0;
     if (c.fileId !== "file-audio") {
-      const k = /^file-(\d+)$/.exec(c.fileId);
+      // #13219: o trecho do XML leve (`file-{k}-t{início}`) é o arquivo k a partir do quadro local `início`.
+      const k = /^file-(\d+)(?:-t(\d+))?$/.exec(c.fileId);
       const o = k ? offsets[Number(k[1]) - 1] : undefined;
       if (o === undefined) errors.push(`clipe ${i + 1}: aponta ${c.fileId}, que não existe no bruto (${offsets.length} arquivo(s))`);
-      else off = o;
+      else off = o + (k?.[2] !== undefined ? Number(k[2]) : 0);
     }
     return { ...c, gIn: c.in + off, gOut: c.out + off };
   });

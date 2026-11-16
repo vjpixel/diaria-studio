@@ -31,6 +31,7 @@
 import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
+import { findTrecho, type TrechoXml } from "./video-xml-trechos.ts";
 import {
   coverScalePct,
   displaySize,
@@ -3572,6 +3573,13 @@ export function buildXmeml(
      * editor pôr a faixa de texto no Premiere. Ausente (ou sem a chave) = sem marcador.
      */
     telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
+    /**
+     * #13219: XML leve. Os clipes do bruto (vídeo, fundo do `blur-fill` e o
+     * áudio quando não há faixa tratada) apontam para o trecho que os contém
+     * (H.264 + PCM, `video-xml-trechos.ts`), com in/out no tempo do trecho.
+     * Clipe sem trecho que o contenha é erro. Ausente = o bruto, como sempre.
+     */
+    trechos?: readonly TrechoXml[] | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -3600,6 +3608,18 @@ export function buildXmeml(
       `<file id="${id}"><name>${escapeXml(baseName(path))}</name><pathurl>${escapeXml(url(path))}</pathurl>\n` +
       `${rate}<duration>${dur}</duration>\n` +
       `<media><video><samplecharacteristics><width>${w}</width><height>${h}</height></samplecharacteristics></video>\n` +
+      `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`
+    );
+  };
+  // #13219: um `<file>` por trecho, definido no 1º uso (vídeo, fundo e áudio do mesmo clipe o compartilham).
+  const trechoDefined = new Set<string>();
+  const trechoEl = (t: TrechoXml): string => {
+    if (trechoDefined.has(t.id)) return `<file id="${t.id}"/>`;
+    trechoDefined.add(t.id);
+    return (
+      `<file id="${t.id}"><name>${escapeXml(baseName(t.xmlPath))}</name><pathurl>${escapeXml(url(t.xmlPath))}</pathurl>\n` +
+      `${rate}<duration>${t.end - t.start}</duration>\n` +
+      `<media><video><samplecharacteristics><width>${t.width}</width><height>${t.height}</height></samplecharacteristics></video>\n` +
       `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`
     );
   };
@@ -3708,24 +3728,32 @@ export function buildXmeml(
       const g = clipGeometry({ source, spec, framing, fileOverrides: opts.fileOverrides, clip: c });
       const k = g.fileIndex;
       const off = multi ? files[k].offsetFrames : 0;
-      const fileDur = multi ? files[k].frames : total;
+      const localIn = c.frameIn - off;
+      const localOut = c.frameOut - off;
+      // #13219: no XML leve o clipe aponta o trecho que o contém, com in/out no tempo do trecho.
+      const tr = opts.trechos ? findTrecho(opts.trechos, k, localIn, localOut) : null;
+      if (opts.trechos && !tr) throw new Error(`XML leve: clipe ${c.block} (${files[k].id}, quadros ${localIn}–${localOut}) fora de todos os trechos (#13219)`);
+      const shift = tr ? tr.start : 0;
+      const fileDur = tr ? tr.end - tr.start : multi ? files[k].frames : total;
       const links =
         `<link><linkclipref>v${cid}</linkclipref><mediatype>video</mediatype></link>` +
         `<link><linkclipref>a${cid}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>${i + 1}</clipindex></link>`;
       const head =
         `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${fileDur}</duration>\n` +
-        `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn - off}</in><out>${c.frameOut - off}</out>\n`;
-      // A faixa tratada é a linha do tempo global inteira: in/out globais.
-      const audioHead = multi && opts.audioPath
+        `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${localIn - shift}</in><out>${localOut - shift}</out>\n`;
+      // A faixa tratada é a linha do tempo global inteira: in/out globais (no bruto único, igual ao do bruto sem trecho).
+      const audioHead = opts.audioPath
         ? `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
           `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`
         : head;
-      v.push(`<clipitem id="v${cid}">${head}${fileEl(k)}${motionFilter(g.main.scalePct, g.main.center)}\n${links}</clipitem>`);
+      const videoFile = (): string => (tr ? trechoEl(tr) : fileEl(k));
+      v.push(`<clipitem id="v${cid}">${head}${videoFile()}${motionFilter(g.main.scalePct, g.main.center)}\n${links}</clipitem>`);
       if (g.background) {
-        bg.push(`<clipitem id="bg${cid}">${head.replace(`<name>${escapeXml(c.block)}</name>`, `<name>${escapeXml(c.block)}-fundo</name>`)}${fileEl(k)}${motionFilter(g.background.scalePct, g.background.center)}${gaussianBlurFilter(BLUR_FILL_RADIUS)}</clipitem>`);
+        bg.push(`<clipitem id="bg${cid}">${head.replace(`<name>${escapeXml(c.block)}</name>`, `<name>${escapeXml(c.block)}-fundo</name>`)}${videoFile()}${motionFilter(g.background.scalePct, g.background.center)}${gaussianBlurFilter(BLUR_FILL_RADIUS)}</clipitem>`);
       }
+      const audioFile = !opts.audioPath && tr ? trechoEl(tr) : audioFileEl(k);
       a.push(
-        `<clipitem id="a${cid}">${audioHead}${audioFileEl(k)}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
+        `<clipitem id="a${cid}">${audioHead}${audioFile}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
       );
     });
     const card = ctaCardOf(plan);
