@@ -2328,8 +2328,10 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     logPath: "metrics-health/.alarm.log",
     // Diária 04:40 BRT — depois de Diaria-Kit-Roster-Ingest (04:25, acima),
     // que grava a captura do dia que este alarme lê (data/metrics/captura-
-    // log.jsonl, F2) — o sinal de frescor precisa da captura do dia já
-    // gravada (ou honestamente ausente) antes de avaliar. Slot livre: o
+    // log.jsonl, F2). Desde 12/11/2026 a linha do dia sai depois das 04:40
+    // (ingestão mais lenta); o dia corrente SEM linha conta como captura em
+    // andamento e só é cobrado no dia seguinte (#7478-#7481,
+    // `evaluateFrescorFromCapturaLog`). Slot livre: o
     // próximo horário matinal já ocupado é 05:00 (Diaria-Clarice-Envio-
     // Guard, ver grep de `kind: "daily"` neste arquivo).
     schedule: { kind: "daily", hour: 4, minute: 40 },

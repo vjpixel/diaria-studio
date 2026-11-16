@@ -299,6 +299,36 @@ describe("evaluateFrescorFromCapturaLog — buraco em captura-log.jsonl (F2)", (
     assert.match(finding!.motivo, new RegExp(diaFalho));
     assert.match(finding!.motivo, /captura falhou/);
   });
+
+  describe("#7478-#7481: dia corrente sem linha é captura em andamento, não buraco", () => {
+    const hoje = "2026-11-16";
+    const dias = dias14(hoje);
+
+    it("só `hoje` sem linha (ingestão ainda rodando às 04:40) não alarma", () => {
+      // Reproduz 12-16/11/2026: o alarme roda antes de a Kit-Roster-Ingest
+      // gravar a linha do dia e apontava só o próprio dia, todo dia.
+      const capturaLog = dias.filter((d) => d !== hoje).map(capturaEntry);
+      assert.ok(evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog), "sem `hoje` o comportamento antigo segue");
+      assert.equal(evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog, hoje), null);
+    });
+
+    it("buraco em dia passado continua alarmando, sem citar `hoje`", () => {
+      const ontem = dias[dias.length - 2];
+      const capturaLog = dias.filter((d) => d !== hoje && d !== ontem).map(capturaEntry);
+      const finding = evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog, hoje);
+      assert.ok(finding);
+      assert.match(finding!.motivo, new RegExp(ontem));
+      assert.doesNotMatch(finding!.motivo, new RegExp(hoje));
+    });
+
+    it("linha de falha de `hoje` alarma na hora (a execução terminou e falhou)", () => {
+      const capturaLog = dias.map((d) => (d === hoje ? { ...capturaEntry(d), exit: 1 } : capturaEntry(d)));
+      const finding = evaluateFrescorFromCapturaLog("cadastros-dia", dias, capturaLog, hoje);
+      assert.ok(finding);
+      assert.match(finding!.motivo, /captura falhou/);
+      assert.match(finding!.motivo, new RegExp(hoje));
+    });
+  });
 });
 
 describe("evaluateMetaSinal", () => {
