@@ -28,6 +28,8 @@
  * cache (3x o bruto da edição, descontado o bruto já baixado; 25 GB sem bruto
  * conhecido). Só lê: não cria pasta nem baixa nada. Exit 0 = a montagem roda
  * aqui; 1 = falta algo obrigatório. OpenCV (face/gaze) é aviso: há fallback manual.
+ * O `deep-filter` do DeepFilterNet (#13234, redução de ruído opcional da faixa
+ * tratada) também é aviso: sem ele a faixa sai no ffmpeg.
  * As variáveis `DIARIA_VIDEO_*` valem também quando só estão no `.env` do
  * projeto (#13103): o `main` carrega o `.env` antes das sondas.
  */
@@ -73,6 +75,7 @@ import {
   type MontageDriveDeps,
 } from "./lib/diaria/video-montage-drive.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
+import { assessDeepFilterProbe, deepFilterBin } from "./lib/diaria/audio-denoise.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,6 +90,19 @@ function probeCommand(cmd: string, args: string[], timeoutMs = 20_000): ProbeRes
   if (r.error) return { ok: false, detail: `${cmd} indisponível: ${r.error.message}` };
   if (r.status !== 0) return { ok: false, detail: `${cmd} exit ${r.status}: ${firstLine(r.stderr) ?? firstLine(r.stdout) ?? "sem saída"}` };
   return { ok: true, detail: firstLine(r.stdout) ?? firstLine(r.stderr) };
+}
+
+/**
+ * #13234: o `deep-filter` do DeepFilterNet (opcional; sem ele a faixa tratada
+ * sai no ffmpeg). Confere a versão e as flags que o render usa no `--help`.
+ */
+export function probeDeepFilter(): MontageProbe {
+  const bin = deepFilterBin(process.env.DIARIA_DEEP_FILTER);
+  const v = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 20_000, shell: process.platform === "win32" });
+  if (v.error) return assessDeepFilterProbe({ bin, version: null, help: null, error: v.error.message });
+  if (v.status !== 0) return assessDeepFilterProbe({ bin, version: null, help: null, error: `exit ${v.status}: ${firstLine(v.stderr) ?? "sem saída"}` });
+  const h = spawnSync(bin, ["--help"], { encoding: "utf8", timeout: 20_000, shell: process.platform === "win32" });
+  return assessDeepFilterProbe({ bin, version: `${v.stdout ?? ""}\n${v.stderr ?? ""}`, help: `${h.stdout ?? ""}\n${h.stderr ?? ""}` });
 }
 
 function probeRembg(): ProbeResult {
@@ -268,7 +284,7 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, 
       ? { ok: false, detail: `espaço livre ilegível em ${cacheRoot}` }
       : { ok: free >= need, detail: `${(free / 1e9).toFixed(1)} GB livres no disco de ${cacheRoot}, precisa ${(need / 1e9).toFixed(1)} GB` };
   }
-  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, opencv: probeOpenCv(py.python), drive: drive.probe, disk }, process.platform, py);
+  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, opencv: probeOpenCv(py.python), deepfilter: probeDeepFilter(), drive: drive.probe, disk }, process.platform, py);
 }
 
 async function main(): Promise<void> {

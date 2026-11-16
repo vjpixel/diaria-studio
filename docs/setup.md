@@ -125,6 +125,46 @@ apagar a pasta da edição depois do `/diaria-publica` libera o espaço.
 Auth: o OAuth do projeto (`data/.credentials.json`), o mesmo do
 `fetch-drive-video.ts`.
 
+### Redução de ruído da faixa tratada: DeepFilterNet (#13234)
+
+A faixa de áudio tratada do XML sai por padrão no ffmpeg (`afftdn` + `agate`,
+#12102/#12262). O build também trata com o DeepFilterNet 3 (realce neural de
+fala, local, CPU, sem custo recorrente) quando pedido: `build AAMMDD
+--audio-denoise deepfilternet [--df-atten-db N]`, ou
+`DIARIA_VIDEO_AUDIO_DENOISE=deepfilternet` (e `DIARIA_VIDEO_DF_ATTEN_DB`) no
+`.env`. Sem o binário, ou se ele falhar, a faixa sai no ffmpeg com `[aviso]`.
+O motor, a versão do binário e o teto da atenuação entram no nome da faixa
+(`{AAMMDD}_audio_tratado-{chave}.wav`), então trocar qualquer um grava um WAV
+novo. O padrão só muda depois do A/B de ouvido.
+
+Instalação (Neo e 300): baixar o binário `deep-filter` da página de releases
+do DeepFilterNet (`github.com/Rikorose/DeepFilterNet/releases`, o arquivo
+`deep-filter-{versão}-{plataforma}`, ex. `x86_64-unknown-linux-musl` no 300 e
+`x86_64-pc-windows-msvc.exe` no Neo), pôr no PATH com o nome `deep-filter`
+(ou apontar `DIARIA_DEEP_FILTER` para o caminho) e conferir:
+
+```bash
+deep-filter --version
+npx tsx scripts/check-video-env.ts --montagem --edition AAMMDD   # item deepfilter
+```
+
+Premissa a conferir na 1ª instalação: o binário de release já inclui o modelo
+padrão (DeepFilterNet3), sem download à parte. O check confere a versão e as
+flags que o build usa (`--compensate-delay`, `--atten-lim-db`,
+`--output-dir`); faltando alguma, o item avisa e o build cai no ffmpeg.
+
+A/B cego no mesmo trecho do bruto, com o export do Adobe Podcast como
+referência (na linha do tempo do bruto):
+
+```bash
+npx tsx scripts/video-audio-denoise-ab.ts --src BRUTO --start 120 --dur 60 --reference ADOBE.wav --out DIR
+```
+
+Sai `ab-A.wav`, `ab-B.wav`, ... embaralhados (áudio cru, tratamento atual,
+DeepFilterNet sem teto e com teto de 18 dB, Adobe) e `ab-chave.json` com a
+chave e as medidas (piso nas pausas, nível da fala, LUFS, energia acima de 5 kHz
+na fala). Ouvir antes de abrir a chave.
+
 ## Demais dependências
 
 > Gerador de imagens via assinatura ChatGPT (Codex CLI, sem custo por uso): ver `docs/codex-image-setup.md` (#9088).

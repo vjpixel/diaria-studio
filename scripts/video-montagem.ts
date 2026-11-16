@@ -76,6 +76,10 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
  *       cru com [aviso]; --no-audio-clean tira. No modo API o build baixa o bruto de novo se ele
  *       saiu do cache, antes do render da faixa (#12209).
+ *       (#13234) [--audio-denoise ffmpeg|deepfilternet] [--df-atten-db N] (ou DIARIA_VIDEO_AUDIO_DENOISE /
+ *       DIARIA_VIDEO_DF_ATTEN_DB no .env; binário em DIARIA_DEEP_FILTER, padrão `deep-filter`): motor
+ *       da faixa tratada. Padrão ffmpeg até a escolha de ouvido (A/B: scripts/video-audio-denoise-ab.ts);
+ *       deepfilternet ausente ou falho cai no ffmpeg com [aviso]. Motor, versão e teto entram no hash.
  *       (#12101) vinheta do logo (publishing.video.vinheta_logo.path) na faixa do topo, no fim do
  *       título; respiro de 0,7 s depois do título no horizontal.
  *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
@@ -511,6 +515,17 @@ import {
 } from "./lib/diaria/video-montage-drive.ts";
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
+import {
+  deepFilterArgs,
+  deepFilterBin,
+  deepFilterDescriptor,
+  deepFilterInputArgs,
+  deepFilterOutputPath,
+  parseDeepFilterVersion,
+  resolveAudioDenoise,
+  type AudioDenoiseChoice,
+  type AudioDenoiseEngine,
+} from "./lib/diaria/audio-denoise.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
 import { youtubeCaptionFileName, youtubeCaptionNoPlanMarkerPath, type YoutubeCaptionNoPlanMarker } from "./lib/diaria/youtube-captions.ts";
@@ -714,7 +729,10 @@ export interface TreatedAudio {
   path: string;
   /** No XML (ao lado do bruto no Neo). */
   xmlPath: string;
+  /** O `-af` do ffmpeg, ou o descritor do DeepFilterNet (`deepFilterDescriptor`, #13234). */
   filter: string;
+  /** Motor que de fato gerou a faixa (#13234); ausente em build anterior = `ffmpeg`. */
+  engine?: AudioDenoiseEngine;
 }
 
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -729,9 +747,13 @@ const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuf
  *  - a meta não grava: `[aviso]`, e a faixa vale (só não é reaproveitada no próximo build).
  */
 export function renderCleanAudio(
-  input: { src: string; outDir: string; stateDir: string; edition: string; mediaPath: string; thresholdDb: number },
+  input: { src: string; outDir: string; stateDir: string; edition: string; mediaPath: string; thresholdDb: number; denoise?: AudioDenoiseChoice },
   deps: {
     ffmpeg?: (args: string[]) => void;
+    /** #13234: o `deep-filter` (args de `deepFilterArgs`). */
+    deepFilter?: (args: string[]) => void;
+    /** #13234: versão do `deep-filter` instalado; `null` = ausente (cai no ffmpeg). */
+    deepFilterVersion?: () => string | null;
     rename?: (from: string, to: string) => void;
     writeMeta?: (path: string, text: string) => void;
     warn?: (m: string) => void;
@@ -743,7 +765,20 @@ export function renderCleanAudio(
   const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
   const info = deps.info ?? ((m: string) => console.error(m));
   const debug = deps.debug ?? ((m: string) => console.error(`[debug] ${m}`));
-  const filter = audioCleanFilter(audioCleanParams(input.thresholdDb));
+  const ffmpeg = deps.ffmpeg ?? ((args: string[]) => run("ffmpeg", args));
+  // #13234: DeepFilterNet pedido e instalado = o descritor dele no lugar do -af (entra no hash e na versão do XML).
+  let engine: AudioDenoiseEngine = "ffmpeg";
+  let filter = audioCleanFilter(audioCleanParams(input.thresholdDb));
+  if (input.denoise?.engine === "deepfilternet") {
+    const bin = deepFilterBin(process.env.DIARIA_DEEP_FILTER);
+    const version = (deps.deepFilterVersion ?? (() => defaultDeepFilterVersion(bin, debug)))();
+    if (version) {
+      engine = "deepfilternet";
+      filter = deepFilterDescriptor(version, input.denoise.attenDb);
+    } else {
+      warn(`DeepFilterNet (${bin}) não encontrado: a faixa tratada sai no ffmpeg (afftdn + agate); instalar: docs/setup.md, seção "Vídeo: montagem" (#13234)`);
+    }
+  }
   const key = cleanAudioKey(filter);
   const out = join(input.outDir, cleanAudioFileName(input.edition, key));
   const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition, key);
@@ -759,7 +794,7 @@ export function renderCleanAudio(
     try {
       if (JSON.stringify(JSON.parse(readFileSync(metaPath, "utf8"))) === JSON.stringify(id)) {
         info(`[video-montagem] faixa de áudio tratada reaproveitada: ${out} (#12102)`);
-        return { path: out, xmlPath, filter, reused: true };
+        return { path: out, xmlPath, filter, engine, reused: true };
       }
     } catch (e) {
       debug(`faixa tratada: ${metaPath} ilegível (${(e as Error).message}); renderiza de novo`);
@@ -769,7 +804,18 @@ export function renderCleanAudio(
   const part = `${out}.part`;
   try {
     mkdirSync(input.outDir, { recursive: true });
-    (deps.ffmpeg ?? ((args: string[]) => run("ffmpeg", args)))(audioCleanArgs({ src: input.src, out: part, filter }));
+    if (engine === "deepfilternet") {
+      try {
+        renderDeepFilter({ src: input.src, part, tmpDir: join(input.stateDir, "deepfilter-tmp"), attenDb: input.denoise?.attenDb ?? null }, { ffmpeg, deepFilter: deps.deepFilter });
+      } catch (e) {
+        rmSync(part, { force: true });
+        // #13234: o modelo falhou; o ffmpeg ainda trata melhor que o áudio cru.
+        warn(`DeepFilterNet falhou (${(e as Error).message}): a faixa tratada sai no ffmpeg (afftdn + agate) (#13234)`);
+        return renderCleanAudio({ ...input, denoise: undefined }, deps);
+      }
+    } else {
+      ffmpeg(audioCleanArgs({ src: input.src, out: part, filter }));
+    }
   } catch (e) {
     rmSync(part, { force: true });
     warn(`faixa de áudio tratada não renderizada (${(e as Error).message}): o XML e a prévia seguem com o áudio cru do bruto; aplicar o Enhance no Premiere (#12102)`);
@@ -796,7 +842,47 @@ export function renderCleanAudio(
       warn(`${metaPath} não gravado (${(e as Error).message}): a faixa tratada vale, só não será reaproveitada no próximo build (#12102)`);
     }
   }
-  return { path: out, xmlPath, filter, reused: false };
+  return { path: out, xmlPath, filter, engine, reused: false };
+}
+
+/** #13234: versão do `deep-filter` (`--version`); ausente ou sem número = `null`. */
+function defaultDeepFilterVersion(bin: string, debug: (m: string) => void): string | null {
+  try {
+    const r = run(bin, ["--version"]);
+    return parseDeepFilterVersion(`${r.stdout}\n${r.stderr}`);
+  } catch (e) {
+    debug(`deep-filter --version: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * #13234: a faixa tratada pelo DeepFilterNet, gravada em `part`: o áudio do
+ * bruto em WAV mono 48 kHz (`deepFilterInputArgs`), o `deep-filter` com
+ * `--compensate-delay` (sem o atraso do STFT e do lookahead do modelo, a faixa
+ * fica na mesma linha do tempo do vídeo) e o WAV de saída convertido para o
+ * formato da faixa (PCM 16 bits mono 48 kHz, o mesmo do ffmpeg). O temporário
+ * fica no state dir (fora do out dir, que o snapshot do upload lê) e sai no
+ * fim, com sucesso ou não. Qualquer falha LANÇA; quem chama cai no ffmpeg.
+ */
+export function renderDeepFilter(
+  input: { src: string; part: string; tmpDir: string; attenDb: number | null },
+  deps: { ffmpeg: (args: string[]) => void; deepFilter?: (args: string[]) => void },
+): void {
+  const deepFilter = deps.deepFilter ?? ((args: string[]) => void run(deepFilterBin(process.env.DIARIA_DEEP_FILTER), args));
+  rmSync(input.tmpDir, { recursive: true, force: true });
+  const outDir = join(input.tmpDir, "out");
+  mkdirSync(outDir, { recursive: true });
+  try {
+    const wav = join(input.tmpDir, "in.wav");
+    deps.ffmpeg(deepFilterInputArgs({ src: input.src, out: wav }));
+    deepFilter(deepFilterArgs({ wav, outDir, attenDb: input.attenDb }));
+    const enhanced = deepFilterOutputPath({ wav, outDir });
+    if (!existsSync(enhanced)) throw new Error(`o deep-filter não gravou ${enhanced}`);
+    deps.ffmpeg(["-y", "-v", "error", "-i", enhanced, "-ac", "1", "-ar", String(AUDIO_CLEAN.sampleRate), "-c:a", "pcm_s16le", "-f", "wav", input.part]);
+  } finally {
+    rmSync(input.tmpDir, { recursive: true, force: true });
+  }
 }
 
 type Loudness = ReturnType<typeof parseLoudnormJson>;
@@ -3231,7 +3317,7 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
   return lines;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }): Promise<number> {
   // #12902: recusar antes do detector/refino, assets e XMLs: sem o plano
   // anterior legível, o merge de um build parcial descartaria as outras
   // sequências. Entradas mudadas não recusam mais (#12968): as outras ficam no
@@ -3336,11 +3422,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (source.files?.length) for (const w of fitWarnings(picked, source, file)) console.error(`[aviso] ${w}`);
   // #12102: faixa de áudio tratada (aproximação do Enhance do Adobe Podcast), só depois do gate de problemas; falha do ffmpeg = áudio cru, com aviso.
   const treatedRun = audioClean
-    ? renderCleanAudio({ src: audioInputOf(ctx, source), outDir: ctx.outDir, stateDir: ctx.stateDir, edition: ctx.edition, mediaPath, thresholdDb: silenceThresholdDb(ctx) })
+    ? renderCleanAudio({ src: audioInputOf(ctx, source), outDir: ctx.outDir, stateDir: ctx.stateDir, edition: ctx.edition, mediaPath, thresholdDb: silenceThresholdDb(ctx), denoise })
     : null;
-  const treated: TreatedAudio | null = treatedRun ? { path: treatedRun.path, xmlPath: treatedRun.xmlPath, filter: treatedRun.filter } : null;
+  const treated: TreatedAudio | null = treatedRun ? { path: treatedRun.path, xmlPath: treatedRun.xmlPath, filter: treatedRun.filter, engine: treatedRun.engine } : null;
   if (!audioClean) console.error("[aviso] --no-audio-clean: o áudio do XML e da prévia é o cru do bruto; aplicar o Enhance no Premiere (#12102)");
-  if (treated) {
+  if (treated?.engine === "deepfilternet") {
+    console.error(
+      `[premissa] áudio do XML e da prévia na faixa tratada ${treated.xmlPath} pelo DeepFilterNet (${treated.filter}; motor via ${denoise.from}), o vídeo segue no bruto; ` +
+        `teto da atenuação ${denoise.attenDb === null ? "desligado" : `${denoise.attenDb} dB`}; conferir sibilantes e finais de palavra no 1º import (#13234, #13194)`,
+    );
+  } else if (treated) {
     console.error(
       `[premissa] áudio do XML e da prévia na faixa tratada ${treated.xmlPath} (${treated.filter}): aproximação do Enhance do Adobe Podcast (Background 0%, Speech 40%), o vídeo segue no bruto; ` +
         `o Enhance pode ir por cima no Premiere; redução de ruído de ${AUDIO_CLEAN.nrDb} dB igual em todo o áudio e gate suave (pausas no máximo ${-AUDIO_CLEAN.rangeDb} dB abaixo, ${AUDIO_CLEAN.attackMs}/${AUDIO_CLEAN.releaseMs} ms), sem zerar o ambiente; conferir uma pausa típica no 1º import e registrar ajuste em AUDIO_CLEAN (#12102, #12262)`,
@@ -5103,6 +5194,13 @@ async function runCommand(
       {
         // #12104: o modo removido (`text`) falha aqui, antes de baixar o bruto.
         const titleMode = parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined));
+        // #13234: motor da faixa tratada (ffmpeg padrão; deepfilternet até a escolha de ouvido). Inválido para aqui, antes do bruto.
+        const denoise = resolveAudioDenoise({
+          flag: values["audio-denoise"] ?? (flags.has("audio-denoise") ? "" : undefined),
+          env: process.env.DIARIA_VIDEO_AUDIO_DENOISE,
+          attenFlag: values["df-atten-db"] ?? (flags.has("df-atten-db") ? "" : undefined),
+          attenEnv: process.env.DIARIA_VIDEO_DF_ATTEN_DB,
+        });
         // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
         if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
         // #12089: limiares do detector de fala sobrepostos à mão (padrão: relativos ao bruto).
@@ -5111,7 +5209,7 @@ async function runCommand(
           ...(values["speech-diff-db"] !== undefined || flags.has("speech-diff-db") ? { diffDb: parseSpeechDbArg("--speech-diff-db", values["speech-diff-db"] ?? "") } : {}),
           ...(flags.has("no-speech-voice") ? { voice: false } : {}),
         };
-        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d, speechOpts);
+        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d, speechOpts, denoise);
       }
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "I:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');

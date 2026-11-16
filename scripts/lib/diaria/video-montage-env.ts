@@ -10,7 +10,7 @@
  * falharia). Daqui o venv próprio `~/.venv-video-montagem` e o check.
  */
 
-export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "opencv" | "drive" | "disk";
+export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "opencv" | "drive" | "disk" | "deepfilter";
 
 export interface MontageProbe {
   ok: boolean;
@@ -19,7 +19,14 @@ export interface MontageProbe {
   fix?: string;
 }
 
-export type MontageEnvProbes = Record<MontageEnvItemId, MontageProbe>;
+/**
+ * `deepfilter` (#13234) é opcional: sonda ausente = item fora do relatório
+ * (chamadas anteriores ao DeepFilterNet seguem valendo).
+ */
+export type MontageEnvProbes = Record<Exclude<MontageEnvItemId, "deepfilter">, MontageProbe> & { deepfilter?: MontageProbe };
+
+/** Itens que só avisam: a montagem roda sem eles (há fallback). */
+const WARNING_ONLY: readonly MontageEnvItemId[] = ["opencv", "deepfilter"];
 
 export interface MontageEnvItem {
   id: MontageEnvItemId;
@@ -83,7 +90,7 @@ export function montageSetupCommand(platform: NodeJS.Platform | string): string 
     : "uv venv --python 3.12 ~/.venv-video-montagem && VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/montagem-requirements.txt";
 }
 
-const ORDER = ["ffmpeg", "python", "model", "opencv", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
+const ORDER = ["ffmpeg", "python", "model", "opencv", "deepfilter", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
 
 function fixFor(id: MontageEnvItemId, platform: string, python: string): string {
   switch (id) {
@@ -99,6 +106,8 @@ function fixFor(id: MontageEnvItemId, platform: string, python: string): string 
       return "Drive for desktop com a diaria.editor montada (I:/Meu Drive/diaria-studio-video) ou OAuth do projeto válido (data/.credentials.json; renovar com scripts/oauth-setup.ts)";
     case "disk":
       return MONTAGE_DISK_FIX;
+    case "deepfilter":
+      return DEEP_FILTER_FIX;
   }
 }
 
@@ -116,17 +125,23 @@ export const MONTAGE_DISK_FIX =
   "(3) cache do npm: npm cache clean --force; " +
   "ou apontar DIARIA_VIDEO_CACHE_DIR para um subdiretório do HD (#12352)";
 
+/**
+ * #13234: o DeepFilterNet é opcional (sem ele a faixa tratada sai no ffmpeg),
+ * então o item só avisa. Instalação: `docs/setup.md`, seção "Vídeo: montagem".
+ */
+export const DEEP_FILTER_FIX =
+  "instalar o binário deep-filter do DeepFilterNet 3 (docs/setup.md, seção \"Vídeo: montagem\") no PATH ou em DIARIA_DEEP_FILTER; sem ele a faixa tratada sai no ffmpeg (afftdn + agate) (#13234)";
+
 /** Puro: relatório a partir das sondas. */
 export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Platform | string, python: { python: string; from: string }): MontageEnvReport {
-  const items = ORDER.map((id): MontageEnvItem => ({
-    id,
-    ok: probes[id].ok,
-    fix: probes[id].ok ? null : (probes[id].fix ?? fixFor(id, platform, python.python)),
-    detail: probes[id].detail ?? null,
-  }));
-  // OpenCV só atende face/gaze; o enquadramento manual mantém a montagem viável (P3).
-  const missing = items.filter((i) => !i.ok && i.id !== "opencv").map((i) => i.id);
-  const warnings = items.filter((i) => !i.ok && i.id === "opencv").map((i) => i.id);
+  const items = ORDER.flatMap((id): MontageEnvItem[] => {
+    const probe = probes[id];
+    if (!probe) return [];
+    return [{ id, ok: probe.ok, fix: probe.ok ? null : (probe.fix ?? fixFor(id, platform, python.python)), detail: probe.detail ?? null }];
+  });
+  // OpenCV só atende face/gaze (enquadramento manual, P3); sem DeepFilterNet o áudio sai no ffmpeg (#13234).
+  const missing = items.filter((i) => !i.ok && !WARNING_ONLY.includes(i.id)).map((i) => i.id);
+  const warnings = items.filter((i) => !i.ok && WARNING_ONLY.includes(i.id)).map((i) => i.id);
   return { platform, python, items, ready: missing.length === 0, missing, warnings };
 }
 
@@ -134,7 +149,7 @@ export function formatMontageEnvReport(r: MontageEnvReport): string {
   const lines = [`Ambiente da montagem do vídeo (${r.platform}, python: ${r.python.python} (${r.python.from})):`];
   for (const i of r.items) {
     const d = i.detail ? ` (${i.detail})` : "";
-    lines.push(i.ok ? `  [ok] ${i.id}${d}` : `  [${i.id === "opencv" ? "aviso" : "falta"}] ${i.id}${d}. Resolver: ${i.fix}`);
+    lines.push(i.ok ? `  [ok] ${i.id}${d}` : `  [${WARNING_ONLY.includes(i.id) ? "aviso" : "falta"}] ${i.id}${d}. Resolver: ${i.fix}`);
   }
   lines.push(r.ready ? "A montagem roda nesta máquina." : `A montagem NÃO roda nesta máquina (falta: ${r.missing.join(", ")}).`);
   return lines.join("\n");
