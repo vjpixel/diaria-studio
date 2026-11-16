@@ -191,7 +191,7 @@ describe("CLI: --seq e arquivos por sequência", () => {
 
   it("a prévia de cada corte tem nome próprio", () => {
     assert.notEqual(previewFileName("261103", sequenceKey(SOBERANA)), previewFileName("261103", sequenceKey(CHIPS)));
-    assert.equal(previewFileName("261103", sequenceKey(OUT)), "261103 - previa outras-redes.mp4");
+    assert.equal(previewFileName("261103", sequenceKey(OUT)), "261103 - previa vertical.mp4");
   });
 
   it("review-final: cada export de corte vai para a sequência dele, e --seq aceita o slug", () => {

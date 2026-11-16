@@ -83,6 +83,10 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
  *       cru com [aviso]; --no-audio-clean tira. No modo API o build baixa o bruto de novo se ele
  *       saiu do cache, antes do render da faixa (#12209).
+ *       (#13234) [--audio-denoise ffmpeg|deepfilternet] [--df-atten-db N] (ou DIARIA_VIDEO_AUDIO_DENOISE /
+ *       DIARIA_VIDEO_DF_ATTEN_DB no .env; binário em DIARIA_DEEP_FILTER, padrão `deep-filter`): motor
+ *       da faixa tratada. Padrão ffmpeg até a escolha de ouvido (A/B: scripts/video-audio-denoise-ab.ts);
+ *       deepfilternet ausente ou falho cai no ffmpeg com [aviso]. Motor, versão e teto entram no hash.
  *       (#12101) vinheta do logo (publishing.video.vinheta_logo.path) na faixa do topo, no fim do
  *       título; respiro de 0,7 s depois do título no horizontal.
  *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
@@ -136,16 +140,18 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       o PNG com fundo a 70% como clipe na V2, pendente de conferência no 1º import com o PNG
  *       via XML) ou off; o text (gerador de texto do FCP7 sobre fundo Color+Crop)
  *       saiu no #12104 e agora é erro.
- *   srt AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--from-raw] [--force]
- *       legendas de todas as sequências (#11957: o horizontal também; --seq escolhe uma).
+ *   srt AAMMDD [--seq instagram|outras-redes|{corte}] [--from-raw] [--force]
+ *       legendas das verticais e dos cortes (#13212: o horizontal fica fora; a legenda dele
+ *       sai só do export final, com `--seq youtube --from-final`, e `--seq youtube` sem
+ *       `--from-final` recusa; --seq escolhe uma).
  *       Retranscreve o áudio montado (cache por trechos + identidade do áudio);
  *       --from-raw remapeia o transcript do bruto. O texto é o do roteiro,
  *       alinhado aos tempos da fala (#11960, `forceAlignToScript`): palavra do
  *       roteiro sem par ganha tempo interpolado, palavra ouvida sem par sai quando
  *       cai antes/depois do roteiro, perto de corte ou em silêncio ([aviso] lista).
- *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
- *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
- *       cópia editada à mão depois do último srt fica, salvo --force.
+ *       (Até o #13212 o do horizontal também saía daqui, como
+ *       `diaria-comentada-{AAMMDD}.srt` na pasta da edição; agora só o --from-final
+ *       grava esse arquivo, o que o `publish-youtube.ts --upload` envia.)
  *   srt AAMMDD --seq youtube --from-final PATH [--heard-text] [--force] [--retranscribe]
  *       (#12078) a legenda do horizontal no tempo do EXPORT final do Premiere (respiros, vinheta):
  *       transcreve o export (o mesmo cache do review-final, por identidade do arquivo + modelo e
@@ -154,8 +160,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       o export saiu do XML daquele build). Grava `{sequência} - legendas do export.srt` no out
  *       dir e a cópia `diaria-comentada-{AAMMDD}.srt` na pasta da edição pela mesma regra; cópia
  *       editada à mão = exit 1 com [erro] (saída: --force, ou --captions-only --captions com o
- *       arquivo do out dir). Uma cópia gravada pelo --from-final não é trocada por um `srt` da
- *       montagem depois, salvo --force. No modo API, PATH que não existe no disco é o nome em
+ *       arquivo do out dir). No modo API, PATH que não existe no disco é o nome em
  *       Final/ no Drive (baixado só depois de validar --seq e o plano). Bruto só de áudio fica
  *       fora: sem build não há plano do horizontal (o `srt` para antes, exit 3).
  *       Backfill de legenda: este comando + `publish-youtube.ts AAMMDD --captions-only`.
@@ -186,7 +191,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
  *       pelo mesmo `framingFor` do XML (`previewCropFor`), a legenda do horizontal queimada e o
- *       áudio normalizado, em `{AAMMDD} - previa youtube.mp4`; o review cobre ela também.
+ *       áudio normalizado, em `{AAMMDD} - previa horizontal.mp4`; o review cobre ela também.
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
  *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
  *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
@@ -271,6 +276,7 @@ import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { clampTelaOverlaps, previewTelaArgs, telaBoxSvg, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -364,6 +370,8 @@ import {
   vinhetaConfigFrom,
   vinhetaScalePct,
   vinhetaSpan,
+  vinhetaDuckSpan,
+  VINHETA_DUCK_DB,
   titleBreathS,
   VINHETA_AFTER_SPEECH_S,
   type VinhetaAsset,
@@ -475,6 +483,7 @@ import {
   frameEnergies,
   speechIslands,
   speechJoinWarnings,
+  absorbShortClips,
   speechPauseSilences,
   trimEdgeExtras,
   windowKey,
@@ -517,6 +526,17 @@ import {
 } from "./lib/diaria/video-montage-drive.ts";
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
+import {
+  deepFilterArgs,
+  deepFilterBin,
+  deepFilterDescriptor,
+  deepFilterInputArgs,
+  deepFilterOutputPath,
+  parseDeepFilterVersion,
+  resolveAudioDenoise,
+  type AudioDenoiseChoice,
+  type AudioDenoiseEngine,
+} from "./lib/diaria/audio-denoise.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
 import { youtubeCaptionFileName, youtubeCaptionNoPlanMarkerPath, type YoutubeCaptionNoPlanMarker } from "./lib/diaria/youtube-captions.ts";
@@ -720,7 +740,10 @@ export interface TreatedAudio {
   path: string;
   /** No XML (ao lado do bruto no Neo). */
   xmlPath: string;
+  /** O `-af` do ffmpeg, ou o descritor do DeepFilterNet (`deepFilterDescriptor`, #13234). */
   filter: string;
+  /** Motor que de fato gerou a faixa (#13234); ausente em build anterior = `ffmpeg`. */
+  engine?: AudioDenoiseEngine;
 }
 
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -735,9 +758,13 @@ const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuf
  *  - a meta não grava: `[aviso]`, e a faixa vale (só não é reaproveitada no próximo build).
  */
 export function renderCleanAudio(
-  input: { src: string; outDir: string; stateDir: string; edition: string; mediaPath: string; thresholdDb: number },
+  input: { src: string; outDir: string; stateDir: string; edition: string; mediaPath: string; thresholdDb: number; denoise?: AudioDenoiseChoice },
   deps: {
     ffmpeg?: (args: string[]) => void;
+    /** #13234: o `deep-filter` (args de `deepFilterArgs`). */
+    deepFilter?: (args: string[]) => void;
+    /** #13234: versão do `deep-filter` instalado; `null` = ausente (cai no ffmpeg). */
+    deepFilterVersion?: () => string | null;
     rename?: (from: string, to: string) => void;
     writeMeta?: (path: string, text: string) => void;
     warn?: (m: string) => void;
@@ -749,7 +776,20 @@ export function renderCleanAudio(
   const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
   const info = deps.info ?? ((m: string) => console.error(m));
   const debug = deps.debug ?? ((m: string) => console.error(`[debug] ${m}`));
-  const filter = audioCleanFilter(audioCleanParams(input.thresholdDb));
+  const ffmpeg = deps.ffmpeg ?? ((args: string[]) => run("ffmpeg", args));
+  // #13234: DeepFilterNet pedido e instalado = o descritor dele no lugar do -af (entra no hash e na versão do XML).
+  let engine: AudioDenoiseEngine = "ffmpeg";
+  let filter = audioCleanFilter(audioCleanParams(input.thresholdDb));
+  if (input.denoise?.engine === "deepfilternet") {
+    const bin = deepFilterBin(process.env.DIARIA_DEEP_FILTER);
+    const version = (deps.deepFilterVersion ?? (() => defaultDeepFilterVersion(bin, debug)))();
+    if (version) {
+      engine = "deepfilternet";
+      filter = deepFilterDescriptor(version, input.denoise.attenDb);
+    } else {
+      warn(`DeepFilterNet (${bin}) não encontrado: a faixa tratada sai no ffmpeg (afftdn + agate); instalar: docs/setup.md, seção "Vídeo: montagem" (#13234)`);
+    }
+  }
   const key = cleanAudioKey(filter);
   const out = join(input.outDir, cleanAudioFileName(input.edition, key));
   const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition, key);
@@ -765,7 +805,7 @@ export function renderCleanAudio(
     try {
       if (JSON.stringify(JSON.parse(readFileSync(metaPath, "utf8"))) === JSON.stringify(id)) {
         info(`[video-montagem] faixa de áudio tratada reaproveitada: ${out} (#12102)`);
-        return { path: out, xmlPath, filter, reused: true };
+        return { path: out, xmlPath, filter, engine, reused: true };
       }
     } catch (e) {
       debug(`faixa tratada: ${metaPath} ilegível (${(e as Error).message}); renderiza de novo`);
@@ -775,7 +815,18 @@ export function renderCleanAudio(
   const part = `${out}.part`;
   try {
     mkdirSync(input.outDir, { recursive: true });
-    (deps.ffmpeg ?? ((args: string[]) => run("ffmpeg", args)))(audioCleanArgs({ src: input.src, out: part, filter }));
+    if (engine === "deepfilternet") {
+      try {
+        renderDeepFilter({ src: input.src, part, tmpDir: join(input.stateDir, "deepfilter-tmp"), attenDb: input.denoise?.attenDb ?? null }, { ffmpeg, deepFilter: deps.deepFilter });
+      } catch (e) {
+        rmSync(part, { force: true });
+        // #13234: o modelo falhou; o ffmpeg ainda trata melhor que o áudio cru.
+        warn(`DeepFilterNet falhou (${(e as Error).message}): a faixa tratada sai no ffmpeg (afftdn + agate) (#13234)`);
+        return renderCleanAudio({ ...input, denoise: undefined }, deps);
+      }
+    } else {
+      ffmpeg(audioCleanArgs({ src: input.src, out: part, filter }));
+    }
   } catch (e) {
     rmSync(part, { force: true });
     warn(`faixa de áudio tratada não renderizada (${(e as Error).message}): o XML e a prévia seguem com o áudio cru do bruto; aplicar o Enhance no Premiere (#12102)`);
@@ -802,7 +853,47 @@ export function renderCleanAudio(
       warn(`${metaPath} não gravado (${(e as Error).message}): a faixa tratada vale, só não será reaproveitada no próximo build (#12102)`);
     }
   }
-  return { path: out, xmlPath, filter, reused: false };
+  return { path: out, xmlPath, filter, engine, reused: false };
+}
+
+/** #13234: versão do `deep-filter` (`--version`); ausente ou sem número = `null`. */
+function defaultDeepFilterVersion(bin: string, debug: (m: string) => void): string | null {
+  try {
+    const r = run(bin, ["--version"]);
+    return parseDeepFilterVersion(`${r.stdout}\n${r.stderr}`);
+  } catch (e) {
+    debug(`deep-filter --version: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * #13234: a faixa tratada pelo DeepFilterNet, gravada em `part`: o áudio do
+ * bruto em WAV mono 48 kHz (`deepFilterInputArgs`), o `deep-filter` com
+ * `--compensate-delay` (sem o atraso do STFT e do lookahead do modelo, a faixa
+ * fica na mesma linha do tempo do vídeo) e o WAV de saída convertido para o
+ * formato da faixa (PCM 16 bits mono 48 kHz, o mesmo do ffmpeg). O temporário
+ * fica no state dir (fora do out dir, que o snapshot do upload lê) e sai no
+ * fim, com sucesso ou não. Qualquer falha LANÇA; quem chama cai no ffmpeg.
+ */
+export function renderDeepFilter(
+  input: { src: string; part: string; tmpDir: string; attenDb: number | null },
+  deps: { ffmpeg: (args: string[]) => void; deepFilter?: (args: string[]) => void },
+): void {
+  const deepFilter = deps.deepFilter ?? ((args: string[]) => void run(deepFilterBin(process.env.DIARIA_DEEP_FILTER), args));
+  rmSync(input.tmpDir, { recursive: true, force: true });
+  const outDir = join(input.tmpDir, "out");
+  mkdirSync(outDir, { recursive: true });
+  try {
+    const wav = join(input.tmpDir, "in.wav");
+    deps.ffmpeg(deepFilterInputArgs({ src: input.src, out: wav }));
+    deepFilter(deepFilterArgs({ wav, outDir, attenDb: input.attenDb }));
+    const enhanced = deepFilterOutputPath({ wav, outDir });
+    if (!existsSync(enhanced)) throw new Error(`o deep-filter não gravou ${enhanced}`);
+    deps.ffmpeg(["-y", "-v", "error", "-i", enhanced, "-ac", "1", "-ar", String(AUDIO_CLEAN.sampleRate), "-c:a", "pcm_s16le", "-f", "wav", input.part]);
+  } finally {
+    rmSync(input.tmpDir, { recursive: true, force: true });
+  }
 }
 
 type Loudness = ReturnType<typeof parseLoudnormJson>;
@@ -1082,6 +1173,8 @@ export interface XmlBuildOptions {
   telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
   /** #13219: a folga dos trechos do XML leve, em segundos; ausente/null = XML do bruto (o hash fica o de antes). */
   trechosFolgaS?: number | null;
+  /** #13204: os boxes de tela (PNG) de cada sequência; só entram no hash os da sequência, sem o caminho local. */
+  telaOverlays?: Readonly<Record<string, readonly TelaOverlay[]>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1130,6 +1223,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
         ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS } : {}),
+        ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
       }),
     )
     .update("\0plan\0")
@@ -1276,7 +1370,7 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
     }
   }
   const ps = specs.map((s) => {
-    // #12101: o respiro da vinheta depois do título, só no horizontal.
+    // #12101: o respiro da vinheta depois do título (todas as sequências desde o #13204).
     if (!speech) return buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s) });
     const r = withLostWordFallback((pauses) => buildSequencePlan(s, blocks, pauses, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s), ...SPEECH_DETECT_PLAN }), speechSil, fallbackSil);
     if (r.fellBack) {
@@ -1349,6 +1443,8 @@ export interface SequenceXmlAssets {
   ctaCard?: CtaCardAsset;
   /** #13123: a capa que o XML desta sequência levou nos primeiros quadros (a prévia a sobrepõe igual). */
   capaInicio?: CapaInicioAsset;
+  /** #13204: os boxes de tela que o XML desta sequência levou (a prévia os sobrepõe igual). */
+  telaOverlays?: TelaOverlay[];
 }
 
 /**
@@ -2612,9 +2708,10 @@ export function xmlFileName(seqName: string): string {
 export function srtFileName(seqName: string): string {
   return `${seqName} - legendas.srt`;
 }
-/** `label` = o destino, ou o slug do corte (`previa soberana`, não `previa instagram`). */
+/** Formato para as sequências da edição; cortes preservam `previa {slug}` (#13208). */
 export function previewFileName(edition: string, label: SequenceTarget | string): string {
-  return `${edition} - previa ${label}.mp4`;
+  const format = label === "youtube" ? "horizontal" : label === "outras-redes" || label === "instagram" ? "vertical" : label;
+  return `${edition} - previa ${format}.mp4`;
 }
 
 /** O que o refino por áudio fez neste build (#11500), gravado no `plan.json`. */
@@ -2832,6 +2929,8 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
     }
     // #12559: o refino mede no áudio global; a borda nunca passa para o arquivo vizinho.
     clips = clampRawsToFiles(clips, source);
+    // #13239 item 2: a pausa da vinheta sai do refino com a duração pedida.
+    clips = restoreFillerEdges(clips, p.clips);
     let assembled = assembleClips(p.spec, clips, source.fps);
     adjustments.push(...assembled.merges);
     // #13194: borda que o verify-xml acusaria como SOM CORTADO abre até o silêncio aqui, sem esperar o verify.
@@ -2907,10 +3006,46 @@ const rawOf = (c: PlannedClip): RawClip => ({
   // #12559 (review da PR #12563): sem isto o refino (que roda por padrão) jogava todo clipe no 1º arquivo, sem o encaixe.
   ...(c.file !== undefined ? { file: c.file } : {}),
   ...(c.fit !== undefined ? { fit: c.fit } : {}),
+  // #13239 item 2: sem isto a pausa da vinheta (#13204) perdia a marca no refino e virava clipe comum.
+  ...(c.filler ? { filler: true as const } : {}),
 });
 
 /** Exportado para o teste (#12559): o refino preserva arquivo e encaixe do clipe. */
 export const rawClipOf = rawOf;
+
+/**
+ * #13239 item 2: a pausa da vinheta (`filler`, #13204) é silêncio escolhido de
+ * propósito, com a duração que a vinheta pede: o refino das bordas (vale de
+ * energia, sibilantes, arquivo) não a encolhe. Os clipes `filler` voltam às
+ * bordas de antes do refino, na ordem em que aparecem.
+ */
+export function restoreFillerEdges<T extends Pick<RawClip, "srcIn" | "srcOut" | "filler">>(refined: readonly T[], before: ReadonlyArray<Pick<RawClip, "srcIn" | "srcOut" | "filler">>): T[] {
+  const orig = before.filter((c) => c.filler);
+  let k = 0;
+  return refined.map((c) => {
+    if (!c.filler) return c;
+    const o = orig[k++];
+    return o ? { ...c, srcIn: o.srcIn, srcOut: o.srcOut } : c;
+  });
+}
+
+/**
+ * #13241: o clipe curto (abaixo de 0,3 s) de cada sequência, no plano final
+ * (depois do refino, ou sem ele): funde ao vizinho contíguo no bruto ou sai
+ * (`absorbShortClips`), e a sequência é remontada (`assembleClips`: escala e
+ * posições). Os ajustes entram no `cutAdjustments` do plano; as notas, no relato do build.
+ */
+export function absorbShortClipsOfPlans(ps: readonly SequencePlan[], words: ReadonlyArray<Pick<Word, "start" | "end">>, fps: number): { plans: SequencePlan[]; notes: string[] } {
+  const notes: string[] = [];
+  const plans = ps.map((p) => {
+    const r = absorbShortClips(p.clips.map(rawOf), words);
+    for (const n of r.notes) notes.push(`${p.spec.name}: ${n}`);
+    if (!r.adjustments.length) return p;
+    const assembled = assembleClips(p.spec, r.clips, fps);
+    return { ...p, clips: assembled.clips, durationFrames: assembled.durationFrames, cutAdjustments: [...(p.cutAdjustments ?? []), ...r.adjustments, ...assembled.merges] };
+  });
+  return { plans, notes };
+}
 
 /**
  * Versão do XML de cada sequência deste build (#12111): o nome passa a
@@ -3327,7 +3462,7 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
   return lines;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, trechosOpt: TrechosBuildOption = { enabled: true, folgaS: TRECHOS.folgaS }): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }, trechosOpt: TrechosBuildOption = { enabled: true, folgaS: TRECHOS.folgaS }): Promise<number> {
   // #12902: recusar antes do detector/refino, assets e XMLs: sem o plano
   // anterior legível, o merge de um build parcial descartaria as outras
   // sequências. Entradas mudadas não recusam mais (#12968): as outras ficam no
@@ -3349,8 +3484,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   printTakeRepeatWarnings(ctx, resolved);
   const refined = refineCuts(ctx, ps0, source, audioRefine, speech.cut !== null);
   refined.info.speechDetect = speech.cut ? { applied: true, islands: speech.cut.islands.length } : { applied: false, reason: speech.reason ?? "desligado" };
-  const ps = refined.plans;
+  // #13241: clipe de menos de 0,3 s não sai sozinho no XML (pulo de imagem): funde ao vizinho ou sai.
+  const absorbed = absorbShortClipsOfPlans(refined.plans, nonEmptyWords(f(ctx, "transcript.json"), "transcript.json"), source.fps);
+  const ps = absorbed.plans;
   for (const w of refined.warnings) console.error(`[aviso] ${w}`);
+  for (const n of absorbed.notes) console.error(`[aviso] ${n}`);
   const { framing, assumed } = effectiveFraming(file);
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
   let problems = 0;
@@ -3401,6 +3539,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (vinheta) {
       const vs = vinhetaSpan(p, source.fps, vinheta);
       console.error(vs ? `   vinheta do logo em ${(vs.start / source.fps).toFixed(2)}–${(vs.end / source.fps).toFixed(2)} s (${vs.afterTitle ? "depois do título" : "sem título: aos 2 s"})` : "   [aviso] sequência curta demais para a vinheta do logo (#12101)");
+      const ds = vinhetaDuckSpan(p, source.fps, vinheta);
+      if (ds) console.error(`   [premissa] áudio do bruto ${VINHETA_DUCK_DB} dB sob a vinheta em ${(ds.start / source.fps).toFixed(2)}–${(ds.end / source.fps).toFixed(2)} s (o respiro sem fala; clipe de áudio partido, só o 1º pedaço linkado ao vídeo): conferir no 1º import se o som a cada ponto sumiu (#13240)`);
     }
     // #12101: a pausa longa depois do título no horizontal é o respiro da vinheta, de propósito.
     if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath && breathBlock ? [breathBlock] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
@@ -3432,11 +3572,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (source.files?.length) for (const w of fitWarnings(picked, source, file)) console.error(`[aviso] ${w}`);
   // #12102: faixa de áudio tratada (aproximação do Enhance do Adobe Podcast), só depois do gate de problemas; falha do ffmpeg = áudio cru, com aviso.
   const treatedRun = audioClean
-    ? renderCleanAudio({ src: audioInputOf(ctx, source), outDir: ctx.outDir, stateDir: ctx.stateDir, edition: ctx.edition, mediaPath, thresholdDb: silenceThresholdDb(ctx) })
+    ? renderCleanAudio({ src: audioInputOf(ctx, source), outDir: ctx.outDir, stateDir: ctx.stateDir, edition: ctx.edition, mediaPath, thresholdDb: silenceThresholdDb(ctx), denoise })
     : null;
-  const treated: TreatedAudio | null = treatedRun ? { path: treatedRun.path, xmlPath: treatedRun.xmlPath, filter: treatedRun.filter } : null;
+  const treated: TreatedAudio | null = treatedRun ? { path: treatedRun.path, xmlPath: treatedRun.xmlPath, filter: treatedRun.filter, engine: treatedRun.engine } : null;
   if (!audioClean) console.error("[aviso] --no-audio-clean: o áudio do XML e da prévia é o cru do bruto; aplicar o Enhance no Premiere (#12102)");
-  if (treated) {
+  if (treated?.engine === "deepfilternet") {
+    console.error(
+      `[premissa] áudio do XML e da prévia na faixa tratada ${treated.xmlPath} pelo DeepFilterNet (${treated.filter}; motor via ${denoise.from}), o vídeo segue no bruto; ` +
+        `teto da atenuação ${denoise.attenDb === null ? "desligado" : `${denoise.attenDb} dB`}; conferir sibilantes e finais de palavra no 1º import (#13234, #13194)`,
+    );
+  } else if (treated) {
     console.error(
       `[premissa] áudio do XML e da prévia na faixa tratada ${treated.xmlPath} (${treated.filter}): aproximação do Enhance do Adobe Podcast (Background 0%, Speech 40%), o vídeo segue no bruto; ` +
         `o Enhance pode ir por cima no Premiere; redução de ruído de ${AUDIO_CLEAN.nrDb} dB igual em todo o áudio e gate suave (pausas no máximo ${-AUDIO_CLEAN.rangeDb} dB abaixo, ${AUDIO_CLEAN.attackMs}/${AUDIO_CLEAN.releaseMs} ms), sem zerar o ambiente; conferir uma pausa típica no 1º import e registrar ajuste em AUDIO_CLEAN (#12102, #12262)`,
@@ -3540,11 +3685,35 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
+  const telaOverlays: Record<string, TelaOverlay[]> = {};
   for (const p of picked) {
     if (!isYoutubeSpec(p.spec)) continue;
-    const ms = telaMarkersFor(p, resolved, source.fps, telas);
+    // #13239 item 1: um box por vez na faixa (o marcador de uma fala não invade o da seguinte).
+    const clamped = clampTelaOverlaps(telaMarkersFor(p, resolved, source.fps, telas));
+    for (const w of clamped.warnings) console.error(`[aviso] ${p.spec.name}: ${w}`);
+    const ms = clamped.items;
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
     const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
+    if (ms.length) {
+      const overlays: TelaOverlay[] = [];
+      for (const m of ms) {
+        try {
+          const svg = telaBoxSvg(m.tela, p.spec.width, p.spec.height);
+          const name = telaFileName(ctx.edition, m.id, createHash("sha256").update(svg).digest("hex").slice(0, 12));
+          const out = join(ctx.outDir, name);
+          // Regravado sempre, como capa e título: no modo API o snapshot do out dir é o que sobe (#13204).
+          await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
+          renameSync(`${out}.part`, out);
+          overlays.push({ id: m.id, tela: m.tela, path: out, xmlPath: capaInicioXmlPath(mediaPath, name), width: p.spec.width, height: p.spec.height, in: m.in, out: m.out });
+        } catch (e) {
+          console.error(`[aviso] ${p.spec.name}: box de tela ${m.id} falhou (${(e as Error).message.split("\n")[0]}): fica só o marcador (#13204)`);
+        }
+      }
+      if (overlays.length) {
+        telaOverlays[sequenceKey(p.spec)] = overlays;
+        console.error(`[premissa] ${p.spec.name}: ${overlays.length} box(es) de tela (PNG) numa faixa acima do bruto, no tempo da fala (${overlays.map((o) => `${o.id} ${(o.in / source.fps).toFixed(1)}–${(o.out / source.fps).toFixed(1)} s`).join(", ")}); conferir no 1º import (#13204)`);
+      }
+    }
     if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
   }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
@@ -3580,6 +3749,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     capaInicio,
     telaMarkers,
     trechosFolgaS: trechos ? trechosOpt.folgaS : null,
+    telaOverlays,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -3599,7 +3769,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, trechos }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechos }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -3611,7 +3781,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}) }])) },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}), ...(telaOverlays[sequenceKey(p.spec)] ? { telaOverlays: telaOverlays[sequenceKey(p.spec)] } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -3801,9 +3971,25 @@ export function applyYoutubeSrtCopy(input: {
 /** O horizontal (#11957): mora na lib desde o #13186, reexportado para quem já importava daqui. */
 export { isYoutubeSpec };
 
-/** As sequências do `srt` (#11957): sem `--seq`, todas, o horizontal também; com ele, a escolhida (`youtube` inclusive). */
-export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P[] {
-  return pickPlans(all, seq, false);
+/** #13212: a recusa do `srt --seq youtube` sem `--from-final`, com o comando do export. */
+export function srtHorizontalRefusal(edition: string): string {
+  return (
+    `a legenda do horizontal sai só do export final (#13212): npx tsx scripts/video-montagem.ts srt ${edition} --seq youtube --from-final "{export do horizontal em Final/}" ` +
+    `(no modo API, o nome do arquivo em Final/ no Drive)`
+  );
+}
+
+/**
+ * As sequências do `srt` da montagem. #13212 (decisão do editor, 15/11/2026):
+ * só as verticais e os cortes; sem `--seq` o horizontal fica fora, e `--seq`
+ * que escolhe o horizontal recusa (a legenda dele sai só do export final,
+ * `srt --seq youtube --from-final`). Antes (#11957) o horizontal entrava.
+ */
+export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined, edition = "{AAMMDD}"): P[] {
+  const picked = pickPlans(all, seq, false);
+  if (seq === undefined) return picked.filter((p) => !isYoutubeSpec(p.spec));
+  if (picked.some((p) => isYoutubeSpec(p.spec))) throw new Error(`--seq ${seq} sem --from-final: ${srtHorizontalRefusal(edition)}`);
+  return picked;
 }
 
 /**
@@ -4233,7 +4419,12 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
   // #12093: o que o alinhamento decidiu (ouvido × roteiro) vira item do relatório final, não só stderr.
   const notesPath = f(ctx, SRT_NOTES_FILE);
   const notes: Record<string, string[]> = existsSync(notesPath) ? readJson<Record<string, string[]>>(notesPath, SRT_NOTES_FILE) : {};
-  for (const plan of srtPlans(pf.plans, target)) {
+  const plans = srtPlans(pf.plans, target, ctx.edition);
+  if (target === undefined && pf.plans.some((p) => isYoutubeSpec(p.spec))) {
+    console.error(`[premissa] o horizontal fica fora do srt da montagem; ${srtHorizontalRefusal(ctx.edition)}, quando o editor pedir`);
+  }
+  if (plans.length === 0) console.error("[aviso] nenhuma vertical no plan.json: nenhuma legenda gerada (#13212)");
+  for (const plan of plans) {
     const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec, (w) => console.error(`[aviso] ${w}`));
     // #11960: o texto do roteiro no tempo da fala, não o texto ouvido.
     const aligned = forceAlignToScript(heard, plan.script, { aliases: vocab.aliases, cuts: cutPoints(plan, fps), endS: plan.durationFrames / fps });
@@ -4245,11 +4436,7 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, srt);
     console.log(path);
-    if (isYoutubeSpec(plan.spec)) {
-      // #12285: a versão do XML (id + since), não o builtAt de todo build, decide se o export da legenda ficou velho.
-      const v = xmlVersionAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")));
-      writeYoutubeSrtCopy(ctx, srt, undefined, v.builtAtMs, v.sequenceId);
-    }
+    // #13212: o horizontal não passa por aqui (srtPlans), então a cópia da pasta da edição só sai do --from-final.
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
@@ -4291,7 +4478,9 @@ export const SRT_NOTES_FILE = "srt-notas.json";
  * desta sequência não recusa mais a prévia: ela sai sem legenda, com
  * `[aviso]`. `--no-subs` tira a legenda mesmo com SRT em dia. Puro.
  */
-export function previewSubtitleDecision(input: { srtPath: string; exists: boolean; srtMtimeMs?: number; builtAtMs: number; noSubs: boolean }): { use: boolean; message: string | null } {
+export function previewSubtitleDecision(input: { srtPath: string; exists: boolean; srtMtimeMs?: number; builtAtMs: number; noSubs: boolean; horizontal?: boolean }): { use: boolean; message: string | null } {
+  // #13212: a prévia do horizontal sai sempre sem legenda (a legenda dele vem só do export final), mesmo com um SRT antigo no out dir.
+  if (input.horizontal) return { use: false, message: "[video-montagem] prévia do horizontal sem legenda: a legenda do horizontal sai só do export final (srt --seq youtube --from-final, #13212)" };
   if (input.noSubs) return { use: false, message: "[video-montagem] prévia sem legenda (--no-subs): as legendas (srt) vêm depois da aprovação das prévias (#12579)" };
   if (!input.exists) return { use: false, message: `[aviso] sem ${input.srtPath}: a prévia sai sem legenda; as legendas (srt) vêm depois da aprovação das prévias (#12579)` };
   if ((input.srtMtimeMs ?? 0) < input.builtAtMs) {
@@ -4359,7 +4548,7 @@ async function cmdPreview(
   const planPath = f(ctx, "plan.json");
   // #11969: contra o build DESTA sequência, não o último build de qualquer uma. #12579: defasado = prévia sem legenda, não recusa.
   const srtExists = existsSync(srt);
-  const subs = previewSubtitleDecision({ srtPath: srt, exists: srtExists, srtMtimeMs: srtExists ? mtime(srt) : undefined, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)), noSubs });
+  const subs = previewSubtitleDecision({ srtPath: srt, exists: srtExists, srtMtimeMs: srtExists ? mtime(srt) : undefined, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)), noSubs, horizontal: isYoutubeSpec(plan.spec) });
   if (subs.message) console.error(subs.message);
   const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
@@ -4429,6 +4618,17 @@ async function cmdPreview(
       console.error(`[aviso] capa no começo na prévia falhou (${(e as Error).message.split("\n")[0]}): prévia sem a capa; o XML a tem (#13123)`);
     }
   } else if (capa) console.error(`[aviso] capa no começo do XML não encontrada nesta máquina (${capa.path}): prévia sem ela; rode build nesta máquina (#13123)`);
+  // #13204: os boxes de tela do XML, cada um no trecho dele.
+  const telas = (assets.telaOverlays ?? []).filter((o) => existsSync(o.path) && o.in < plan.durationFrames);
+  if (telas.length) {
+    try {
+      run("ffmpeg", previewTelaArgs({ input: "joined.mp4", out: "joined-tela.mp4", ...size, overlays: telas.map((o) => ({ png: o.path, in: o.in, out: Math.min(o.out, plan.durationFrames) })) }), { cwd: dir });
+      renameSync(join(dir, "joined-tela.mp4"), join(dir, "joined.mp4"));
+      console.error(`[video-montagem] prévia com ${telas.length} box(es) de tela (${telas.map((o) => o.id).join(", ")}, #13204)`);
+    } catch (e) {
+      console.error(`[aviso] boxes de tela na prévia falharam (${(e as Error).message.split("\n")[0]}): prévia sem eles; o XML os tem (#13204)`);
+    }
+  } else if (assets.telaOverlays?.length) console.error("[aviso] boxes de tela do XML não encontrados nesta máquina: prévia sem eles (#13204)");
   let subtitles: string | undefined;
   if (subs.use) {
     copyFileSync(srt, join(dir, "leg.srt"));
@@ -4454,7 +4654,10 @@ async function cmdPreview(
   ];
   if (vinheta && vs) {
     console.error(`[video-montagem] prévia com a vinheta do logo em ${(vs.start / fps).toFixed(2)} s (#12101)`);
-    const withVinheta = ["-i", vinheta.path, "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET }), "-map", "[vout]", "-map", "[aout]"];
+    // #13240: o mesmo abaixamento do áudio sob a vinheta que o XML leva.
+    const ds = vinhetaDuckSpan(plan, fps, vinheta);
+    const duck = ds ? { startS: ds.start / fps, endS: ds.end / fps, db: VINHETA_DUCK_DB } : null;
+    const withVinheta = ["-i", vinheta.path, "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET, duck }), "-map", "[vout]", "-map", "[aout]"];
     try {
       run("ffmpeg", finalArgs(withVinheta), { cwd: dir });
     } catch (e) {
@@ -4580,6 +4783,11 @@ export function reviewFinalSequence(file: string, seq: string | undefined, specs
     const cortes = specs.flatMap((s) => (s.corte ? [s.corte] : []));
     if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${[...VIDEO_TARGETS, ...cortes].join(", ")} (veio ${seq})`);
     return { target: seq as VideoTarget, key: seq };
+  }
+  const previewFormat = /^\d{6} - previa (horizontal|vertical)\.mp4$/.exec(basename(file));
+  if (previewFormat) {
+    const target = previewFormat[1] === "horizontal" ? "youtube" : "outras-redes";
+    return { target, key: target };
   }
   const corte = corteSuffixOf(basename(file));
   if (corte) {
@@ -4947,13 +5155,14 @@ async function fetchNamed(d: DriveSession, given: string, where: "edition" | "fi
 export interface DriveUploadRegistry {
   files: Record<string, { id: string; link: string | null; at: string; from: string }>;
   pending: string[];
+  previewNamesNoticeShown?: boolean;
 }
 
 function readRegistry(path: string): DriveUploadRegistry {
   if (!existsSync(path)) return { files: {}, pending: [] };
   try {
     const r = JSON.parse(readFileSync(path, "utf8")) as Partial<DriveUploadRegistry>;
-    return { files: r.files ?? {}, pending: Array.isArray(r.pending) ? r.pending : [] };
+    return { files: r.files ?? {}, pending: Array.isArray(r.pending) ? r.pending : [], previewNamesNoticeShown: r.previewNamesNoticeShown === true };
   } catch (e) {
     log(`[aviso] ${path} ilegível (${(e as Error).message}): recomeçando o registro de uploads`);
     return { files: {}, pending: [] };
@@ -4979,6 +5188,11 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
       const r = await uploadToFolder(d.deps, folder.id, queue[i], log);
       reg.files[r.name] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: queue[i] };
       uploaded.push(queue[i]);
+      if (!reg.previewNamesNoticeShown && [previewFileName(ctx.edition, "youtube"), previewFileName(ctx.edition, "outras-redes")].includes(r.name)) {
+        // Preservar possíveis arquivos antigos: podem conter uma revisão do editor.
+        log(`[aviso] #13208: prévias agora usam horizontal/vertical. Se existirem no Drive de ${ctx.edition}, as antigas "previa youtube.mp4", "previa outras-redes.mp4" ou "previa instagram.mp4" foram preservadas; use a prévia com o novo nome. Remoção manual após conferir. Aviso único por edição.`);
+        reg.previewNamesNoticeShown = true;
+      }
       save(queue.slice(i + 1));
       log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${r.name}: ${r.webViewLink ?? r.id}`);
     }
@@ -5142,6 +5356,13 @@ async function runCommand(
         const titleMode = parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined));
         // #13219: XML leve por padrão; --xml-bruto volta ao bruto. A folga inválida falha aqui, antes de baixar o bruto.
         const trechosOpt: TrechosBuildOption = { enabled: !flags.has("xml-bruto"), folgaS: parseTrechosFolgaArg(values["trechos-folga"] ?? (flags.has("trechos-folga") ? "" : undefined)) };
+        // #13234: motor da faixa tratada (ffmpeg padrão; deepfilternet até a escolha de ouvido). Inválido para aqui, antes do bruto.
+        const denoise = resolveAudioDenoise({
+          flag: values["audio-denoise"] ?? (flags.has("audio-denoise") ? "" : undefined),
+          env: process.env.DIARIA_VIDEO_AUDIO_DENOISE,
+          attenFlag: values["df-atten-db"] ?? (flags.has("df-atten-db") ? "" : undefined),
+          attenEnv: process.env.DIARIA_VIDEO_DF_ATTEN_DB,
+        });
         // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
         if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
         // #12089: limiares do detector de fala sobrepostos à mão (padrão: relativos ao bruto).
@@ -5150,7 +5371,7 @@ async function runCommand(
           ...(values["speech-diff-db"] !== undefined || flags.has("speech-diff-db") ? { diffDb: parseSpeechDbArg("--speech-diff-db", values["speech-diff-db"] ?? "") } : {}),
           ...(flags.has("no-speech-voice") ? { voice: false } : {}),
         };
-        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d, speechOpts, trechosOpt);
+        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d, speechOpts, denoise, trechosOpt);
       }
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "I:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');

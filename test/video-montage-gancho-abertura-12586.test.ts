@@ -128,18 +128,18 @@ describe("#12586: PNG do título, respiro e vinheta seguem na mesma frase", () =
   const H = byTarget(specs, "youtube");
   const V = byTarget(specs, "outras-redes");
 
-  it("o respiro de 0,7 s do horizontal vai depois do gancho (nunca na vertical)", () => {
+  it("o respiro da vinheta vai depois do gancho, no horizontal e na vertical (#13204)", () => {
     assert.equal(vinhetaBreathBlock(H), "gancho");
     assert.deepEqual(vinhetaBreathFor(H), { gancho: VINHETA_BREATH_S });
-    assert.equal(vinhetaBreathFor(V), undefined);
+    assert.deepEqual(vinhetaBreathFor(V), { gancho: VINHETA_BREATH_S });
     const p = buildSequencePlan(H, resolved, silences, src, { breathAfter: vinhetaBreathFor(H) });
     const g = p.clips.filter((c) => c.block === "gancho");
-    assert.equal(g[g.length - 1].srcOut, 3.6, "0,7 s depois da última palavra (2,9 s)");
+    assert.equal(g[g.length - 1].srcOut, 4.6, "1,7 s depois da última palavra (2,9 s)");
     assert.equal(p.titleSpeechEndS, 2.9);
-    assert.equal(titleBreathS(p, 30), 0.7);
+    assert.equal(titleBreathS(p, 30), 1.7);
   });
 
-  it("a vinheta entra 0,3 s depois da última palavra do gancho no horizontal, e no fim do gancho na vertical", () => {
+  it("a vinheta entra 0,3 s depois da última palavra do gancho, no horizontal e na vertical (#13204)", () => {
     const ph = buildSequencePlan(H, resolved, silences, src, { breathAfter: vinhetaBreathFor(H) });
     const last = ph.clips.filter((c) => c.block === "gancho").at(-1)!;
     const vs = vinhetaSpan(ph, 30, VIN);
@@ -148,7 +148,9 @@ describe("#12586: PNG do título, respiro e vinheta seguem na mesma frase", () =
     const pv = buildSequencePlan(V, resolved, silences, src, { breathAfter: vinhetaBreathFor(V) });
     const vv = vinhetaSpan(pv, 30, VIN);
     assert.ok(vv?.afterTitle, "não cai no fallback de 2 s");
-    assert.equal(vv.start, blockRunEndFrame(pv.clips, "gancho", 30));
+    const lv = pv.clips.filter((c) => c.block === "gancho").at(-1)!;
+    assert.equal(vv.start, lv.seqStart + (Math.round(2.9 * 30) - lv.frameIn) + Math.round(VINHETA_AFTER_SPEECH_S * 30));
+    assert.ok(vv.end <= blockRunEndFrame(pv.clips, "gancho", 30)!, "a vinheta acaba antes da fala seguinte");
   });
 
   it("o PNG do título da vertical fica na duração do gancho", () => {

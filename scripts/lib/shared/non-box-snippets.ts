@@ -19,9 +19,11 @@
  * - nome casa um padrão de `NON_BOX_SNIPPET_FILE_PATTERNS` (e-mails do
  *   onboarding, intros dos envios da Brevo);
  * - corpo com tag HTML crua (`findRawHtmlTag`) — o render escaparia;
+ * - corpo com marcador de template do projeto (`findTemplatePlaceholder`,
+ *   #13252) — o caminho do box não substitui marcador;
  * - `runtime: false` no header (documentação/referência, #4500/#4504).
  *
- * Os dois últimos são lidos do conteúdo por `parseSnippetContent`
+ * Os três últimos são lidos do conteúdo por `parseSnippetContent`
  * (`box-click-report.ts`) e chegam aqui como flags de `NonBoxSignals`.
  */
 
@@ -37,6 +39,11 @@ export const NON_BOX_SNIPPET_FILES: ReadonlySet<string> = new Set(["hub-divulgac
 export const NON_BOX_SNIPPET_FILE_PATTERNS: readonly RegExp[] = [
   /^onboarding-\d+\.md$/i,
   /^brevo-.+-intro\.md$/i,
+  // #13252: bloco "Para encerrar" (`encerramento-social-apoio.md` e qualquer
+  // outro `encerramento-*.md`). O stitch já o põe no fim da edição via
+  // `renderEncerramentoSocialApoio`; como box ele duplicava o bloco e saía
+  // com `{{OPENING}}` cru (edição 261116, slot 1).
+  /^encerramento-.+\.md$/i,
 ];
 
 /** `true` quando o NOME do arquivo já basta pra dizer que não é box. */
@@ -59,15 +66,37 @@ export function findRawHtmlTag(text: string): string | null {
   return m[0].length > 60 ? `${m[0].slice(0, 57)}...` : m[0];
 }
 
+/**
+ * #13252: marcador de template do PROJETO (`{{OPENING}}`, `{{FORM_URL}}`,
+ * `{{IMAGE_TOOL}}`...): nome em maiúsculas, sem espaço nem ponto. Quem usa o
+ * snippet com marcador o substitui no próprio caminho (encerramento,
+ * onboarding, formulário); o caminho do box de divulgação não substitui nada,
+ * então o leitor veria o marcador cru. Merge tag de ESP (`{{ subscriber.x }}`,
+ * `{{email}}`) não casa: tem minúscula, ponto ou espaço.
+ */
+const TEMPLATE_PLACEHOLDER_RE = /\{\{[A-Z][A-Z0-9_]*\}\}/;
+
+/** Primeiro marcador de template do projeto em `text`, ou `null`. */
+export function findTemplatePlaceholder(text: string): string | null {
+  const m = TEMPLATE_PLACEHOLDER_RE.exec(text);
+  return m ? m[0] : null;
+}
+
 export interface NonBoxSignals {
   /** `runtime: false` no header do snippet. */
   runtimeExcluded?: boolean;
   /** Corpo (sem o header) com tag HTML crua. */
   rawHtmlBody?: boolean;
+  /** #13252: corpo (sem o header) com marcador de template do projeto. */
+  templatePlaceholderBody?: boolean;
 }
 
 /** Combina nome + sinais de conteúdo. Snippet ausente = só o nome decide. */
 export function isNonBoxSnippet(file: string, signals?: NonBoxSignals | null): boolean {
   if (isNonBoxSnippetFileName(file)) return true;
-  return signals?.runtimeExcluded === true || signals?.rawHtmlBody === true;
+  return (
+    signals?.runtimeExcluded === true ||
+    signals?.rawHtmlBody === true ||
+    signals?.templatePlaceholderBody === true
+  );
 }

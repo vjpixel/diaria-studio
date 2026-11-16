@@ -144,7 +144,13 @@ export function buildSystemdUnitFiles(
   // `resolveNodeVersionForPath`) antes de chamar aqui. Ver `scripts/lib/systemd-node-floor-guard.ts` pro guard
   // complementar, que detecta units JÁ ARMADOS em `~/.config/systemd/user/`
   // nascidos antes deste fix.
-  assertSupportedNodeVersion();
+  //
+  // #13226: por isso a checagem de `process.version` só roda quando o
+  // `ExecStart=` vai usar o node DESTE processo. Com `nodeBin` explícito, o
+  // node do processo é irrelevante para a unit (ssh não-interativo com
+  // `/usr/bin/node` v20 abaixo do piso e o nvm resolvido como `nodeBin`):
+  // conferir `process.version` aqui abortaria a geração de uma unit correta.
+  if (nodeBin === process.execPath) assertSupportedNodeVersion();
 
   const unitName = unitBaseName(task.name);
   const onCalendar = scheduleToOnCalendar(task.schedule);

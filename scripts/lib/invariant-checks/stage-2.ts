@@ -29,7 +29,12 @@ import {
   checkUseMelhorBeginnerMinimum,
   type BeginnerMinimumItem,
 } from "../lint-checks/use-melhor-beginner-minimum.ts";
-import { checkCarouselTextOverflow, checkBoxDivulgacaoExpiry } from "./stage-4.ts"; // #6439; #10174
+import {
+  checkCarouselTextOverflow,
+  checkBoxDivulgacaoExpiry,
+  checkReviewedUnknownTemplateMarkers,
+  checkReviewedDuplicateClosingBlock,
+} from "./stage-4.ts"; // #6439; #10174; #13252
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -801,6 +806,20 @@ export const STAGE_2_RULES: InvariantRule[] = [
     source_issue: "#10174",
     stage: 2,
     run: (editionDir: string) => checkBoxDivulgacaoExpiry(editionDir),
+  },
+  {
+    id: "reviewed-unknown-template-marker",
+    description: "02-reviewed.md com {{...}} que não é merge tag conhecida do ESP — mesma checagem do Stage 4, rodada logo após o stitch (#13252)",
+    source_issue: "#13252",
+    stage: 2,
+    run: checkReviewedUnknownTemplateMarkers,
+  },
+  {
+    id: "reviewed-duplicate-closing-block",
+    description: "02-reviewed.md com o bloco Para encerrar duplicado — mesma checagem do Stage 4, rodada logo após o stitch (#13252)",
+    source_issue: "#13252",
+    stage: 2,
+    run: checkReviewedDuplicateClosingBlock,
   },
 ];
 

@@ -98,7 +98,11 @@ describe("flushStoreOnSignal (#12513)", () => {
   });
 });
 
-describe("REGRESSÃO #12513: processo real recebendo o sinal grava o store", () => {
+// No Windows não há entrega de SIGINT/SIGTERM a um handler: `process.kill(pid, sinal)`
+// encerra o filho na hora, sem passar pelo flush (#13243). O CI (Linux) cobre o caso.
+describe("REGRESSÃO #12513: processo real recebendo o sinal grava o store", {
+  skip: process.platform === "win32" ? "sinais POSIX não chegam a handler no Windows (#13243)" : false,
+}, () => {
   const dir = mkdtempSync(join(tmpdir(), "signal-flush-12513-"));
   after(() => rmSync(dir, { recursive: true, force: true }));
   // `.mts`: fora do repo não há package.json `type: module`, e o top-level await precisa de ESM.

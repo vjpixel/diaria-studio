@@ -1,0 +1,227 @@
+{
+  "issue": 13200,
+  "analytics": {
+    "source": "data/youtube-analytics/videos.jsonl",
+    "sha256": "094e271e03d0addffa439b03a5b4f833a16abd065e732e0852032f510f2b2825",
+    "capturedAt": "2026-11-15T14:35:01.913Z",
+    "startDate": "2026-10-21",
+    "endDate": "2026-11-14"
+  },
+  "metadata": {
+    "source": "YouTube Data API v3 videos.list",
+    "part": "contentDetails,snippet,status",
+    "capturedAt": "2026-11-16T04:16:49.197Z"
+  },
+  "exclusions": [
+    {
+      "videoId": "MMyBVHVQELI",
+      "reason": "Classificado como short por duração em captura antiga; índice atual de #12224 identifica como horizontal. Ausente dos Shorts da captura mais recente."
+    }
+  ],
+  "rows": [
+    {
+      "videoId": "UYllsanoQqw",
+      "title": "Google pode usar seus dados do Photos para direcionar anúncios #Shorts",
+      "edition": "261027",
+      "publishedAt": "2026-10-27T11:00:02Z",
+      "privacyStatus": "public",
+      "durationIso": "PT49S",
+      "durationSec": 49,
+      "views": 140,
+      "averageViewDuration": 17,
+      "averageViewPercentage": 35.3
+    },
+    {
+      "videoId": "7rAJiUe-qcg",
+      "title": "Nvidia: CEO admite caso com suposta espiã",
+      "edition": "261110",
+      "publishedAt": "2026-11-10T09:30:36Z",
+      "privacyStatus": "public",
+      "durationIso": "PT51S",
+      "durationSec": 51,
+      "views": 158,
+      "averageViewDuration": 30,
+      "averageViewPercentage": 60.62
+    },
+    {
+      "videoId": "BQkZjUGWTDQ",
+      "title": "Golpe da selfie: criminosos usam IA para copiar seu rosto #Shorts",
+      "edition": "261104",
+      "publishedAt": "2026-11-04T09:30:06Z",
+      "privacyStatus": "public",
+      "durationIso": "PT52S",
+      "durationSec": 52,
+      "views": 1336,
+      "averageViewDuration": 40,
+      "averageViewPercentage": 78.22
+    },
+    {
+      "videoId": "B8I7kxAaIDI",
+      "title": "Nubank demite time antifraude e põe IA no lugar",
+      "edition": "261111",
+      "publishedAt": "2026-11-11T09:30:23Z",
+      "privacyStatus": "public",
+      "durationIso": "PT54S",
+      "durationSec": 54,
+      "views": 439,
+      "averageViewDuration": 57,
+      "averageViewPercentage": 106.96
+    },
+    {
+      "videoId": "5CZ0zFFJ4RM",
+      "title": "Justiça proíbe Meta de treinar IA com reportagens #Shorts",
+      "edition": "261105",
+      "publishedAt": "2026-11-05T09:30:02Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M5S",
+      "durationSec": 65,
+      "views": 638,
+      "averageViewDuration": 28,
+      "averageViewPercentage": 43.95
+    },
+    {
+      "videoId": "Hkx35UI-XCM",
+      "title": "Claude Code pode ter vazado suas senhas no GitHub",
+      "edition": "261112",
+      "publishedAt": "2026-11-12T09:30:30Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M7S",
+      "durationSec": 67,
+      "views": 40,
+      "averageViewDuration": 52,
+      "averageViewPercentage": 78.99
+    },
+    {
+      "videoId": "X4j2u-WxFvk",
+      "title": "Falhas no PHP colocam a internet em alerta global #Shorts",
+      "edition": "261023",
+      "publishedAt": "2026-10-23T22:00:11Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M13S",
+      "durationSec": 73,
+      "views": 138,
+      "averageViewDuration": 31,
+      "averageViewPercentage": 42.64
+    },
+    {
+      "videoId": "uIwtuFBqGkg",
+      "title": "Lula promete uma IA brasileira #Shorts",
+      "edition": "261029",
+      "publishedAt": "2026-10-29T09:30:09Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M15S",
+      "durationSec": 75,
+      "views": 1379,
+      "averageViewDuration": 40,
+      "averageViewPercentage": 54.11
+    },
+    {
+      "videoId": "27q1xuvBUc4",
+      "title": "OpenAI lança GPT-6.1 Terra pela metade do preço #Shorts",
+      "edition": "261028",
+      "publishedAt": "2026-10-28T15:00:16Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M16S",
+      "durationSec": 76,
+      "views": 86,
+      "averageViewDuration": 39,
+      "averageViewPercentage": 52.02
+    },
+    {
+      "videoId": "WEAmxrYpr1E",
+      "title": "Você ainda trata a IA como máquina? #Shorts",
+      "edition": null,
+      "publishedAt": "2026-11-02T11:00:17Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M20S",
+      "durationSec": 80,
+      "views": 107,
+      "averageViewDuration": 41,
+      "averageViewPercentage": 52.27
+    },
+    {
+      "videoId": "-ZMq-9gWoSc",
+      "title": "O que é IA soberana? #Shorts",
+      "edition": null,
+      "publishedAt": "2026-11-07T15:00:15Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M23S",
+      "durationSec": 83,
+      "views": 194,
+      "averageViewDuration": 62,
+      "averageViewPercentage": 75.3
+    },
+    {
+      "videoId": "4Sdq1thhSAA",
+      "title": "Pais acusam ChatGPT de matar sua filha #Shorts",
+      "edition": "261030",
+      "publishedAt": "2026-10-30T13:50:25Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M24S",
+      "durationSec": 84,
+      "views": 1401,
+      "averageViewDuration": 46,
+      "averageViewPercentage": 55.62
+    },
+    {
+      "videoId": "5fsKYRaf4g4",
+      "title": "Qual modelo do ChatGPT escolher e por quê",
+      "edition": null,
+      "publishedAt": "2026-11-08T20:54:53Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M24S",
+      "durationSec": 84,
+      "views": 109,
+      "averageViewDuration": 33,
+      "averageViewPercentage": 40.23
+    },
+    {
+      "videoId": "5jX3X0sgMtg",
+      "title": "Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas #Shorts",
+      "edition": "261103",
+      "publishedAt": "2026-11-03T15:00:31Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M29S",
+      "durationSec": 89,
+      "views": 132,
+      "averageViewDuration": 30,
+      "averageViewPercentage": 34.15
+    },
+    {
+      "videoId": "K3GqRK5gFds",
+      "title": "Claude projetou proteínas contra veneno de escorpião #Shorts",
+      "edition": "261022",
+      "publishedAt": "2026-10-22T15:00:20Z",
+      "privacyStatus": "public",
+      "durationIso": "PT1M54S",
+      "durationSec": 114,
+      "views": 34,
+      "averageViewDuration": 45,
+      "averageViewPercentage": 39.56
+    },
+    {
+      "videoId": "nhMUtgPPs4U",
+      "title": "Você já viu IA mentir. Já viu roubar? #Shorts",
+      "edition": "261021",
+      "publishedAt": "2026-10-22T02:28:56Z",
+      "privacyStatus": "public",
+      "durationIso": "PT2M",
+      "durationSec": 120,
+      "views": 109,
+      "averageViewDuration": 44,
+      "averageViewPercentage": 37.33
+    },
+    {
+      "videoId": "bV09g-rLZW4",
+      "title": "O Jensen Huang se demitiu. E agora, Nvidia?",
+      "edition": null,
+      "publishedAt": "2026-11-12T23:35:34Z",
+      "privacyStatus": "public",
+      "durationIso": "PT2M13S",
+      "durationSec": 133,
+      "views": 368,
+      "averageViewDuration": 58,
+      "averageViewPercentage": 43.73
+    }
+  ]
+}
