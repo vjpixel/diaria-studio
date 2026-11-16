@@ -19,10 +19,14 @@ import {
   unitKeyOf,
 } from "../scripts/lib/overnight-throughput-report.ts";
 import {
+  aggregateWaveRounds,
+  computeWaveUnitDurations,
   evaluateWaveCapReversal,
   renderReversalLine,
-  WAVE_CAP_REVERSAL_P90_MS,
+  renderWavesReportMarkdown,
+  type WaveGroupSignals,
 } from "../scripts/lib/overnight-waves-report.ts";
+import { buildWaveRecord } from "../scripts/lib/overnight-waves.ts";
 import { readRoundPlan } from "../scripts/report-overnight-waves.ts";
 import type { PlanIssue } from "../scripts/render-overnight-timeline.ts";
 
@@ -143,22 +147,79 @@ describe("CLI report-overnight-throughput", () => {
   });
 });
 
-describe("evaluateWaveCapReversal (#13270)", () => {
-  const T = WAVE_CAP_REVERSAL_P90_MS;
-  it("sem amostra em onda cheia", () => {
-    assert.equal(evaluateWaveCapReversal({ cap_hit_true: null, cap_hit_false: 90 * MIN }).verdict, "sem-amostra");
+/** Sinais de um grupo; `draft_rate` derivado como no `groupSignals`. */
+function sig(draft: number, merged: number, p50Min: number | null, n: number): WaveGroupSignals {
+  return {
+    draft,
+    merged,
+    draft_rate: draft + merged === 0 ? null : draft / (draft + merged),
+    dispatch_to_pr_p50_ms: p50Min === null ? null : p50Min * MIN,
+    dispatch_to_pr_n: n,
+  };
+}
+
+describe("evaluateWaveCapReversal, critério v2 (#13270)", () => {
+  it("dado medido em 16/11 (draft 1/101 vs 5/332, dispatch→PR p50 16m vs 14m): não dispara", () => {
+    // Regressão do critério v1: com o pr→merge p90 (1h29m vs 56m) o veredito
+    // era DISPAROU, embora o teto não piorasse nada que ele controla.
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(1, 100, 16, 25), cap_hit_false: sig(5, 327, 14, 76) });
+    assert.deepEqual(v, { verdict: "nao-disparou", evaluated: ["draft-ci-vermelho", "dispatch-pr"] });
+    assert.match(renderReversalLine(v), /não disparou/);
   });
-  it("dentro do limiar não dispara", () => {
-    assert.equal(evaluateWaveCapReversal({ cap_hit_true: T, cap_hit_false: null }).verdict, "nao-disparou");
+  it("draft-ci-vermelho 2x maior nas ondas cheias, com 3+ drafts: dispara", () => {
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(4, 36, 15, 20), cap_hit_false: sig(5, 195, 15, 80) });
+    assert.deepEqual(v, { verdict: "disparou", reasons: ["draft-ci-vermelho"] });
+    assert.match(renderReversalLine(v), /DISPAROU \(draft-ci-vermelho\)\. Leitura direta: voltar o teto a 6/);
   });
-  it("caso medido na #13270 (1h29m cheias vs 56m): dispara, ondas cheias piores", () => {
-    const v = evaluateWaveCapReversal({ cap_hit_true: 89 * MIN, cap_hit_false: 56 * MIN });
-    assert.equal(v.verdict, "disparou");
-    assert.match(renderReversalLine(v), /DISPAROU, e as ondas cheias ficam piores/);
+  it("taxa maior mas só 2 drafts nas cheias: não dispara (1 ou 2 contra 0 não é sinal)", () => {
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(2, 30, 15, 20), cap_hit_false: sig(0, 200, 15, 80) });
+    assert.equal(v.verdict, "nao-disparou");
   });
-  it("as duas acima do limiar e as cheias não piores: dispara sem efeito do teto", () => {
-    const v = evaluateWaveCapReversal({ cap_hit_true: 40 * MIN, cap_hit_false: 50 * MIN });
-    assert.equal(v.verdict, "disparou-sem-efeito-do-teto");
-    assert.match(renderReversalLine(v), /O gargalo não é o teto/);
+  it("outras ondas sem nenhum draft e 3 nas cheias: dispara", () => {
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(3, 30, null, 0), cap_hit_false: sig(0, 200, null, 0) });
+    assert.deepEqual(v, { verdict: "disparou", reasons: ["draft-ci-vermelho"] });
+  });
+  it("dispatch→PR p50 1,5x maior nas ondas cheias: dispara", () => {
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(0, 30, 21, 12), cap_hit_false: sig(0, 200, 14, 80) });
+    assert.deepEqual(v, { verdict: "disparou", reasons: ["dispatch-pr"] });
+    assert.match(renderReversalLine(v), /DISPAROU \(dispatch→PR p50\)/);
+  });
+  it("amostra abaixo do mínimo nos dois sinais: sem-amostra", () => {
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(5, 10, 60, 9), cap_hit_false: sig(0, 200, 10, 80) });
+    assert.deepEqual(v, { verdict: "sem-amostra" });
+    assert.match(renderReversalLine(v), /sem amostra mínima/);
+  });
+  it("só um sinal com amostra: avalia só ele", () => {
+    const v = evaluateWaveCapReversal({ cap_hit_true: sig(0, 25, 60, 5), cap_hit_false: sig(1, 200, 10, 80) });
+    assert.deepEqual(v, { verdict: "nao-disparou", evaluated: ["draft-ci-vermelho"] });
+  });
+});
+
+describe("sinais por unidade do critério v2 (#13270)", () => {
+  const at = (h: number, m: number) => `2026-11-16T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`;
+  it("lote: dispatch e pr_opened mais cedo; draft em qualquer issue faz a unidade draft", () => {
+    const wave = buildWaveRecord({ units: [[1, 2], [3]], cap: 2, deferred: 1, now: new Date(at(0, 0)) });
+    const issues = [
+      issue({ number: 1, status: "mergeada", timeline: { dispatch: at(0, 5), pr_opened: at(0, 40) } }),
+      issue({ number: 2, status: "draft-ci-vermelho", timeline: { dispatch: at(0, 0), pr_opened: at(0, 30) } }),
+      issue({ number: 3, status: "mergeada", timeline: { dispatch: at(0, 0), pr_opened: at(0, 10), merged: at(0, 50) } }),
+    ];
+    const [lote, solo] = computeWaveUnitDurations([wave], issues);
+    assert.equal(lote.outcome, "draft");
+    assert.equal(lote.dispatch_to_pr_ms, 30 * MIN);
+    assert.equal(solo.outcome, "merged");
+    assert.equal(solo.dispatch_to_pr_ms, 10 * MIN);
+  });
+  it("relatório imprime os sinais e marca pr→merge como contexto", () => {
+    const wave = buildWaveRecord({ units: [[1]], cap: 1, deferred: 1, now: new Date(at(0, 0)) });
+    const report = aggregateWaveRounds([
+      { waves: [wave], issues: [issue({ number: 1, timeline: { dispatch: at(0, 0), pr_opened: at(0, 10), merged: at(0, 20) } })] },
+    ]);
+    assert.equal(report.reversal_signals.cap_hit_true.merged, 1);
+    const md = renderWavesReportMarkdown(report);
+    assert.match(md, /pr→merge é contexto/);
+    assert.match(md, /draft-ci-vermelho \(cap_hit=true\): 0\/1/);
+    assert.match(md, /dispatch→PR p50 \(cap_hit=true\): 10m \(n=1\)/);
+    assert.match(md, /sem amostra mínima/);
   });
 });
