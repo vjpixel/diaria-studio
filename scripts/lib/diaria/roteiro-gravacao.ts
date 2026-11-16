@@ -77,6 +77,8 @@ export interface FonteFala {
 
 /** Título, texto da capa, card de CTA e (só nos verticais) ordem de um vídeo do roteiro (#12751, #13128). */
 export interface PecaVideo {
+  /** #13164: fala onde começa o trecho para compartilhar (só horizontal). */
+  trechoCompartilhar?: { inicio: string; rotulo: string };
   titulo?: string;
   capa?: string;
   /**
@@ -770,6 +772,12 @@ export function validarRoteiroFalas(x: unknown): string[] {
         if (!v || typeof v !== "object") problemas.push(`porVideo.${k} deve ser objeto { titulo, capa, cta, ordem }`);
         for (const campo of ["titulo", "capa", "cta"] as const) {
           if (p[campo] !== undefined && (typeof p[campo] !== "string" || !(p[campo] as string).trim())) problemas.push(`porVideo.${k}.${campo} deve ser texto não vazio`);
+        }
+        if (p.trechoCompartilhar !== undefined) {
+          const t = p.trechoCompartilhar as { inicio?: unknown; rotulo?: unknown } | null;
+          if (k !== "horizontal") problemas.push(`porVideo.${k}.trechoCompartilhar: só vale no horizontal`);
+          if (!t || typeof t.inicio !== "string" || !(r.falas as Array<Record<string, unknown>>).some((f) => f?.id === t.inicio && Array.isArray(f.videos) && f.videos.includes("horizontal"))) problemas.push("trechoCompartilhar.inicio deve ser id de fala do horizontal");
+          if (!t || typeof t.rotulo !== "string" || !t.rotulo.trim() || /[\r\n]/.test(t.rotulo) || SETA.test(t.rotulo)) problemas.push("trechoCompartilhar.rotulo deve ser texto não vazio, em uma linha, sem seta");
         }
         // #13128: ordem própria do corte vertical = exatamente as falas daquele vídeo.
         if (p.ordem !== undefined) {

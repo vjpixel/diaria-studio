@@ -1,3 +1,4 @@
+import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-share.ts";
 /**
  * scripts/video-montagem.ts (#11208) — montagem do vídeo diário "diar.ia.br
  * comentada", do bruto no Drive até o ponto de partida no Premiere. Usado pela
@@ -3357,6 +3358,14 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   }
   // #13123 (em teste): a capa nos primeiros quadros das verticais; falha = sequência sem a capa, com aviso.
   const capaInicio = await renderCapaInicioAssets(ctx, file, picked, source.fps, mediaPath);
+  // #13164: o tempo no corte final planejado, nunca o tempo no bruto.
+  const horizontalShare = picked.find((p) => sequenceKey(p.spec) === "youtube");
+  if (horizontalShare) {
+    // Tempo é sugestão: sem casamento único fica `seconds: null` com aviso, nunca para o build (review #13170).
+    const avisa = (m: string) => console.error(`[aviso] ${m}`);
+    const cue = readShareCue(editionDirFor(ctx.edition), avisa);
+    writeJson(f(ctx, SHARE_FILE), cue ? { ...cue, seconds: shareTimeInPlan(cue, horizontalShare, resolved, source.fps, avisa), requiresFinalCheck: true } : null);
+  }
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
   // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
