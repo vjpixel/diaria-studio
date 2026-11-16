@@ -778,15 +778,57 @@ const MERGE_BOOL_FLAGS = new Set(["--squash", "--merge", "--rebase", "-s", "-m",
 // fecha a aspa exatamente onde o shell abre e fecha.
 const MERGE_MESSAGE_FLAG_RE = / (?:--subject|--body|-t|-b) (?:"(?:[^"$`\\;&|]|\\[^"$`\\;&|])*"|'[^';&|]*')(?= |$)/g;
 
+// #13287: `--match-head-commit` com o SHA LITERAL (40 hex minúsculos) — a forma
+// que o SKILL do overnight manda usar no merge. O SHA não muda o repo-alvo; só
+// trava o commit avaliado. `$H`, `"$H"`, SHA abreviado ou maiúsculo seguem
+// fora da whitelist (a expansão de variável é justamente o que o guard não
+// consegue provar).
+const HEAD_SHA_RE = /^[0-9a-f]{40}$/;
+
 /**
  * Lê `gh pr merge` na forma EXATA da whitelist. Devolve `{ repo, pr, cd }`
  * (`repo` = do -R/--repo ou da URL canônica; `null` se nenhum dos dois) ou
- * `null` quando QUALQUER token foge do formato.
+ * `null` quando QUALQUER token foge do formato. O motivo da recusa sai em
+ * `explainStrictMergeRejection` (#13287).
  */
 export function parseStrictMerge(command) {
-  if (typeof command !== "string" || command.length > 2000) return null;
+  return parseStrictMergeDetailed(command).result;
+}
+
+/**
+ * #13287: o critério da whitelist que o comando NÃO cumpriu, em texto curto
+ * para a mensagem do guard; `null` quando o comando está na forma aceita.
+ */
+export function explainStrictMergeRejection(command) {
+  return parseStrictMergeDetailed(command).reason;
+}
+
+function describeBadToken(t) {
+  if (t === "") return "espaço duplo ou espaço no fim (token vazio)";
+  if (t === "--match-head-commit" || t.startsWith("--match-head-commit=")) {
+    return "`--match-head-commit` sem SHA literal de 40 hex minúsculos (variável como `$H` não é aceita: cole o SHA)";
+  }
+  if (/^(?:--subject|--body|-t|-b)(?:=|$)/.test(t)) {
+    return (
+      `\`${t.replace(/=.*$/s, "")}\` fora da forma aceita: valor entre aspas, separado por espaço, sem \`"\` interno, ` +
+      "`$`, crase, `;`, `&`, `|` nem `\\` antes deles"
+    );
+  }
+  if (t.includes("$")) return `\`${t}\` usa \`$\` (variável/expansão): use o valor literal`;
+  if (t.includes('"') || t.includes("'")) {
+    return `\`${t}\` tem aspas fora de \`--subject "…"\`/\`--body "…"\` (o texto não pode ter \`"\`, \`$\`, crase, \`;\`, \`&\` nem \`|\`)`;
+  }
+  return `token \`${t}\` fora da whitelist`;
+}
+
+function parseStrictMergeDetailed(command) {
+  const fail = (reason) => ({ result: null, reason });
+  if (typeof command !== "string") return fail("comando ausente");
+  if (command.length > 2000) return fail("comando com mais de 2000 caracteres");
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(command)) return null; // \r, \n, \t, ...
+  if (/[\u0000-\u001f\u007f]/.test(command)) {
+    return fail("caractere de controle (quebra de linha real, tab, \\r) — no `--body`, use `\\n` literal");
+  }
   let core = command;
   const pipe = PIPE_SUFFIX_RE.exec(core);
   if (pipe) core = pipe[1];
@@ -802,46 +844,62 @@ export function parseStrictMerge(command) {
   // que recusa qualquer aspa ou `\` que tenha sobrado.
   core = core.replace(MERGE_MESSAGE_FLAG_RE, "");
   const tokens = core.split(" ");
-  if (tokens[0] !== "gh" || tokens[1] !== "pr" || tokens[2] !== "merge") return null;
+  if (tokens[0] !== "gh" || tokens[1] !== "pr" || tokens[2] !== "merge") {
+    return fail(
+      "o comando não começa por `gh pr merge` (só `cd /caminho/absoluto && ` antes; nada de prefixo, `env`, " +
+        "variável ou outro comando encadeado)",
+    );
+  }
   let pr = null;
   let urlRepo = null;
   let flagRepo = null;
+  let headSha = null;
   for (let k = 3; k < tokens.length; k++) {
     const t = tokens[k];
     if (/^\d+$/.test(t)) {
-      if (pr !== null) return null;
+      if (pr !== null) return fail("mais de um número de PR no comando");
       pr = Number(t);
       continue;
     }
     const url = CANONICAL_PR_URL_RE.exec(t);
     if (url) {
-      if (pr !== null) return null;
+      if (pr !== null) return fail("mais de um número de PR no comando");
       pr = Number(url[2]);
       urlRepo = canonicalSlugToken(url[1]);
-      if (!urlRepo) return null;
+      if (!urlRepo) return fail(`URL de PR fora da forma canônica (\`${t}\`)`);
       continue;
     }
     if (MERGE_BOOL_FLAGS.has(t)) continue;
     if (t === "-R" || t === "--repo") {
       const v = tokens[k + 1] ?? "";
-      if (flagRepo !== null) return null;
+      if (flagRepo !== null) return fail("`-R`/`--repo` repetido");
       flagRepo = canonicalSlugToken(v);
-      if (!flagRepo) return null;
+      if (!flagRepo) return fail(`\`${t}\` sem slug canônico literal (\`owner/name\` minúsculo)`);
       k++;
       continue;
     }
     const eq = /^--repo=(.+)$/.exec(t);
     if (eq) {
-      if (flagRepo !== null) return null;
+      if (flagRepo !== null) return fail("`-R`/`--repo` repetido");
       flagRepo = canonicalSlugToken(eq[1]);
-      if (!flagRepo) return null;
+      if (!flagRepo) return fail(`\`${t}\` sem slug canônico literal (\`owner/name\` minúsculo)`);
       continue;
     }
-    return null; // token fora do formato (vazio = espaço duplo, cluster, --, aspas...)
+    // #13287: `--match-head-commit <sha>` / `--match-head-commit=<sha>`, SHA literal.
+    const shaEq = /^--match-head-commit=(.*)$/.exec(t);
+    if (t === "--match-head-commit" || shaEq) {
+      const v = shaEq ? shaEq[1] : (tokens[k + 1] ?? "");
+      if (headSha !== null) return fail("`--match-head-commit` repetido");
+      if (!HEAD_SHA_RE.test(v)) return fail(describeBadToken(shaEq ? t : "--match-head-commit"));
+      headSha = v;
+      if (!shaEq) k++;
+      continue;
+    }
+    return fail(describeBadToken(t)); // vazio = espaço duplo, cluster, --, aspas...
   }
-  if (pr === null) return null;
-  if (urlRepo && flagRepo && urlRepo !== flagRepo) return null;
-  return { repo: flagRepo ?? urlRepo, pr, cd };
+  if (pr === null) return fail("sem número de PR literal (`gh pr merge N` ou a URL canônica)");
+  if (urlRepo && flagRepo && urlRepo !== flagRepo) return fail("repo da URL difere do `-R`/`--repo`");
+  return { result: { repo: flagRepo ?? urlRepo, pr, cd }, reason: null };
 }
 
 /**
@@ -861,7 +919,9 @@ export function parseStrictMerge(command) {
  */
 export function resolveMergeTargets(command, cwd, opts = {}) {
   const { execFn = execFileSync, allowed = loadAllowedForeignRepos(), env = process.env } = opts;
-  const parsed = parseStrictMerge(command);
+  const { result: parsed, reason: parseReason } = parseStrictMergeDetailed(command);
+  // #13287: o critério que derrubou o comando no modo estrito, para a mensagem.
+  let strictReason = parseReason;
   // #11501: merge provado de um repo FORA de `issue_repos` (ex.:
   // vjpixel/fluxo-criativo). Segue estrito — o lock do diaria-studio é o que
   // vale (#10618 D: typo, fork ou nome antigo de repo renomeado, que o GitHub
@@ -872,15 +932,20 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
   // invocações são `gh pr merge` literal — o invariante deixa de depender só
   // de `parseStrictMerge` reler o comando cru (defesa em profundidade; com a
   // whitelist de hoje as duas leituras sempre concordam).
-  if (parsed && detectorConfirmsPlainMerge(command, opts)) {
+  if (parsed && !detectorConfirmsPlainMerge(command, opts)) {
+    strictReason =
+      "o detector de merge não confirmou um único `gh pr merge` literal (alias do gh, variável ou outra invocação)";
+  } else if (parsed) {
     const { repo, cd, pr } = parsed;
     if (repo !== null && repo !== DIARIA_STUDIO_REPO && !allowed.has(repo)) {
       unlistedRepo = repo;
+      strictReason = `${repo} está fora de issue_repos`;
     } else if (repo !== null && repo !== DIARIA_STUDIO_REPO) {
       // Repo de fora permitido: com `cd`, só vale se o diretório é dele.
       if (cd === null || repoFromCwdOrigin(cd, execFn) === repo) {
         return { mode: "foreign-whitelist", targets: [repo], grantRepo: repo, pr, explicitRepo: repo };
       }
+      strictReason = `o \`cd ${cd}\` não é um checkout de ${repo}`;
     } else if (repo === DIARIA_STUDIO_REPO) {
       return { mode: "studio-plain", targets: [DIARIA_STUDIO_REPO], grantRepo: DIARIA_STUDIO_REPO, pr, explicitRepo: repo };
     } else if (!(typeof env?.GH_REPO === "string" && env.GH_REPO !== "")) {
@@ -893,6 +958,11 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
       if (o === DIARIA_STUDIO_REPO) {
         return { mode: "studio-plain", targets: [DIARIA_STUDIO_REPO], grantRepo: DIARIA_STUDIO_REPO, pr, explicitRepo: repo };
       }
+      strictReason =
+        `sem \`-R\`, o origin do diretório não é provadamente o ${DIARIA_STUDIO_REPO} ` +
+        `(lido: ${o ?? "indeterminado"}) — acrescente \`-R ${DIARIA_STUDIO_REPO}\``;
+    } else {
+      strictReason = `\`GH_REPO\` herdado do ambiente sem \`-R\` explícito — acrescente \`-R ${DIARIA_STUDIO_REPO}\``;
     }
   }
   // ESTRITO: studio + tudo que o comando possa tocar.
@@ -933,6 +1003,7 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
     explicitRepo: null,
     indeterminate: hints.unknown,
     unlistedRepo,
+    strictReason,
   };
 }
 
