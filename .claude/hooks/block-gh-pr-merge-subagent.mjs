@@ -1509,7 +1509,7 @@ export function buildReturnToMainCheckoutHint(root) {
  * mensagem nomeia o lock que o guard confere (o do diaria-studio) em vez da
  * genérica de "forma que o guard não consegue provar".
  */
-export function buildRepoHint(targetRepos, complex = false, unlisted = null) {
+export function buildRepoHint(targetRepos, complex = false, unlisted = null, strictReason = null) {
   const foreign = targetRepos.filter((r) => r !== DIARIA_STUDIO_REPO);
   if (complex && unlisted && typeof unlisted.repo === "string") {
     const n = Number.isInteger(unlisted.pr) ? unlisted.pr : "N";
@@ -1523,12 +1523,20 @@ export function buildRepoHint(targetRepos, complex = false, unlisted = null) {
     );
   }
   if (complex) {
+    // #13287: nomeia o critério que falhou — antes a sessão só via a frase
+    // genérica e caía para `gh pr merge N --squash`, perdendo o
+    // `--match-head-commit` (merge sem travar o commit avaliado).
+    const why =
+      typeof strictReason === "string" && strictReason !== "" ? ` Critério que falhou: ${strictReason}.` : "";
     return (
       " (#10618) O comando não está na forma que o guard consegue provar (`gh pr merge N|<URL canônica> " +
-      "[--squash|--merge|--rebase|-d|--auto|--admin] [-R owner/name]`, sozinho, sem aspas/`$`/clusters, " +
-      "opcionalmente `cd /caminho/absoluto && ` e `2>&1 | tail -N`): o guard confere o lock de todo repo que " +
-      `ele pode tocar (${targetRepos.join(", ")}) e não aceita concessão/auto-autorização. Rode o merge ` +
-      "sozinho, nessa forma."
+      "[--squash|--merge|--rebase|-d|--auto|--admin] [-R owner/name] [--match-head-commit <SHA literal de 40 hex>] " +
+      '[--subject "…"] [--body "…"]`, sozinho, sem `$`/clusters, texto de subject/body sem `"` interno, `$`, ' +
+      "crase, `;`, `&`, `|` nem quebra de linha real (`\\n` literal serve), " +
+      "opcionalmente `cd /caminho/absoluto && ` e `2>&1 | tail -N`)." +
+      why +
+      ` Fora dessa forma o guard confere o lock de todo repo que ele pode tocar (${targetRepos.join(", ")}) e ` +
+      "não aceita concessão/auto-autorização. Rode o merge sozinho, nessa forma."
     );
   }
   if (targetRepos.length > 1) {
@@ -1617,6 +1625,43 @@ export function buildBlockReason(ctx = {}) {
 }
 
 /**
+ * #13287: abertura da recusa com o critério que de fato bloqueou, antes do
+ * texto longo. Na rodada 261116 o bloqueio real foi de identidade (a sessão
+ * não apareceu entre as coordenadoras naquele instante, `not-authorized`), mas
+ * a única frase específica da mensagem era o sufixo de forma do #10618, e a
+ * coordenadora concluiu que a forma do comando era o problema.
+ */
+export function describeBlockCause(blockCause, ctx = {}) {
+  // Lock: no modo estrito a forma do comando decide QUAIS locks entram, então
+  // ela pode ser parte da causa. Varredura degradada independe da forma.
+  const lockScope =
+    ctx.complex === true ? " Nesta forma de comando o guard confere o lock de todos os repos listados no fim." : "";
+  const forma = ctx.complex === true ? " A forma do comando NÃO é a causa." : "";
+  switch (blockCause) {
+    case "not-authorized":
+      if (ctx.callerInLinkedWorktree === true) {
+        return "[causa: not-authorized — o cwd da chamada é um worktree vinculado, não o checkout principal.]";
+      }
+      return (
+        "[causa: not-authorized — esta sessão não aparece entre as coordenadoras ativas do registro " +
+        "(data/sessions/) neste instante e não tem concessão que cubra este PR." +
+        (ctx.complex === true ? " A forma do comando não é a causa, mas nela concessão nem contaria (ver o fim)." : "") +
+        "]"
+      );
+    case "lock-held-other":
+      return `[causa: lock-held-other — o merge lock de um repo que o comando toca está com outra sessão.${lockScope}]`;
+    case "contention-multi-coordinator":
+      return `[causa: contention-multi-coordinator — há mais de uma coordenadora ativa e esta não detém o merge lock.${lockScope}]`;
+    case "contention-grantee":
+      return `[causa: contention-grantee — concessão válida, mas sem o merge lock com outra coordenadora ativa.${lockScope}]`;
+    case "scan-degraded":
+      return `[causa: scan-degraded — a varredura de data/sessions/ não foi confiável.${forma}]`;
+    default:
+      return typeof blockCause === "string" && blockCause !== "" ? `[causa: ${blockCause}]` : "";
+  }
+}
+
+/**
  * Detecção de merge do guard com try/catch PRÓPRIO (#10689 L): exceção dentro
  * do detector é `isMerge: true` (com `error`), nunca o catch fail-open do fim
  * do hook. `diagnostics`: avisos do detector (config do gh ilegível), pra log.
@@ -1645,6 +1690,7 @@ export function strictAllReposResolution(allowed = loadAllowedForeignRepos()) {
     pr: null,
     explicitRepo: null,
     indeterminate: true,
+    strictReason: "falha ao ler o comando (detecção ou resolução de alvo lançou erro)",
   };
 }
 
@@ -1703,11 +1749,15 @@ if (
       // #11501: merge provado de um repo fora de issue_repos — a mensagem nomeia o lock conferido.
       const unlisted =
         typeof resolution.unlistedRepo === "string" ? { repo: resolution.unlistedRepo, pr: resolution.pr } : null;
+      // #13287: critério que pôs o comando no modo estrito (vai na mensagem e no run-log).
+      const strictReason =
+        complex && typeof resolution.strictReason === "string" ? resolution.strictReason : null;
       if (repoRoot !== null) {
         appendHookRunLog(repoRoot, "merge-guard", complex ? "warn" : "info", "merge_target_repo", {
           mode: resolution.mode,
           targets: targetRepos,
           grantRepo: resolution.grantRepo,
+          ...(strictReason !== null ? { strictReason } : {}),
         });
       }
       if (repoRoot === null) {
@@ -1721,7 +1771,7 @@ if (
               permissionDecisionReason:
                 `${BLOCK_REASON} (#10618) Não foi possível localizar o checkout do diaria-studio (data/sessions/) ` +
                 "a partir do cwd nem do diretório do hook — varredura de sessões indeterminada, bloqueado na dúvida." +
-                buildRepoHint(targetRepos, complex, unlisted),
+                buildRepoHint(targetRepos, complex, unlisted, strictReason),
             },
           }),
         );
@@ -1894,10 +1944,16 @@ if (
               permissionDecision: "deny",
               // #10618: os comandos citados acima miram o lock do
               // diaria-studio por padrão — PR de outro repo precisa do --repo.
-              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause, command }) +
-                (findGhPrMergeInvocations(command).every((inv) => inv.via === "api-graphql")
-                  ? ""
-                  : buildRepoHint(targetRepos, complex, unlisted)),
+              permissionDecisionReason: (() => {
+                const graphqlOnly = findGhPrMergeInvocations(command).every((inv) => inv.via === "api-graphql");
+                // #13287: o critério que bloqueou vem primeiro.
+                const cause = graphqlOnly ? "" : describeBlockCause(blockCause, { ...ctx, complex });
+                return (
+                  (cause ? `${cause} ` : "") +
+                  buildBlockReason({ ...ctx, blockCause, command }) +
+                  (graphqlOnly ? "" : buildRepoHint(targetRepos, complex, unlisted, strictReason))
+                );
+              })(),
             },
           }),
         );

@@ -46,6 +46,8 @@ export function resolveGhTargets(command: unknown, cwd: unknown, opts?: ResolveO
 export function resolveGhTargetRepo(command: unknown, cwd: unknown, opts?: ResolveOpts): GhTargetRepo;
 /** `gh pr merge` na forma exata da whitelist, ou `null`. */
 export function parseStrictMerge(command: unknown): { repo: string | null; pr: number; cd: string | null } | null;
+/** #13287: critério da whitelist que o comando não cumpriu, ou `null` quando está na forma aceita. */
+export function explainStrictMergeRejection(command: unknown): string | null;
 
 /** Resolução de um merge com ônus da prova invertido (#10618). */
 export type MergeResolution =
@@ -65,6 +67,8 @@ export type MergeResolution =
        * concessão — #10618 D), mas a mensagem nomeia o lock que falta.
        */
       unlistedRepo: string | null;
+      /** #13287: o critério que pôs o comando no modo estrito (texto para a mensagem do guard). */
+      strictReason: string | null;
     };
 export function resolveMergeTargets(
   command: unknown,
