@@ -13,7 +13,9 @@
  * alinhamento monótono por correlação do `--from-audio` (#11504,
  * `alignEnvelopes`), com o final no lugar do "áudio" e o bruto no do "vídeo",
  * mais uma busca global nos vãos sem par (`alignWithReorder`: trecho
- * reordenado pelo editor).
+ * reordenado pelo editor). Na montagem picotada (clipes curtos fora da ordem
+ * do bruto, 261104/261105), os clipes do plan.json dão os deslocamentos
+ * candidatos (`alignByPlanClips`, #13197); vale a base que cobre mais.
  * Sem o `audio.wav` do cache, o áudio do bruto sai dos arquivos dele, achados
  * nesta ordem: caminho do `plan.json`, arquivo do HD do 300
  * (`VIDEO_ARCHIVE_ROOT`, default `/mnt/hd-sata/arquivo-video`, #12548), cache
@@ -93,6 +95,7 @@ import {
   patternIssueBody,
   PATTERN_MARKER,
   pickFinalsPerSequence,
+  REORDER_MIN_GAP_S,
   renderReport,
   XML_FINAL_SCHEMA,
   brutoParts,
@@ -493,7 +496,9 @@ export async function compareEdition(
       const fa = parseWavPcm16(readFileSync(fwav));
       const fe = energyEnvelope(fa.samples, fa.sampleRate);
       const finalDurationS = fa.samples.length / fa.sampleRate;
-      const al = alignWithReorder(fe.db, brutoEnv.db, brutoEnv.hopS, ALIGN_OPTS);
+      // Os clipes do XML guiam o alinhamento da montagem picotada (#13197).
+      const al = alignWithReorder(fe.db, brutoEnv.db, brutoEnv.hopS, ALIGN_OPTS, REORDER_MIN_GAP_S, plan.clips);
+      log(`[video-xml-vs-final] ${edition} ${key}: alinhamento ${al.guide}, ${(al.coverage * 100).toFixed(0)}% do final com par`);
       if (al.coverage < MIN_COVERAGE) {
         record.skipped.push({ key, reason: `alinhamento fraco: ${(al.coverage * 100).toFixed(0)}% do final com par no bruto (mínimo ${MIN_COVERAGE * 100}%)` });
         continue;

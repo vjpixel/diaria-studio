@@ -31,7 +31,18 @@
  * OCR no final, que ficam para quando um padrão pedir.
  */
 
-import { alignEnvelopes, type AlignOptions, type AlignRun } from "./video-audio-align.ts";
+import {
+  ALIGN_DEFAULTS,
+  alignEnvelopes,
+  clampFloor,
+  decimateMean,
+  pearsonAt,
+  prefix,
+  refineCuts,
+  stats,
+  type AlignOptions,
+  type AlignRun,
+} from "./video-audio-align.ts";
 import type { Word } from "./video-montage.ts";
 
 export const XML_FINAL_SCHEMA = 1;
@@ -54,8 +65,17 @@ export function alignWithReorder(
   hopS: number,
   opts: AlignOptions = {},
   minGapS = REORDER_MIN_GAP_S,
-): { runs: AlignRun[]; coverage: number; reordered: number } {
-  const base = alignEnvelopes(finalDb, brutoDb, hopS, opts);
+  clips: readonly Pick<XmlClip, "srcIn" | "srcOut">[] = [],
+): { runs: AlignRun[]; coverage: number; reordered: number; guide: "monotonic" | "plan-clips" } {
+  // Montagem picotada (#13197, 261104: 42 clipes em 127 s, a ordem do bruto
+  // trocada desde o 2º clipe): nenhuma janela de 10 s do final é um trecho
+  // contínuo do bruto, a passada monótona acha 0% e a busca dos vãos também
+  // falha. Com os clipes do plan.json, os deslocamentos candidatos saem de
+  // cada clipe; fica a base que cobre mais.
+  const mono = alignEnvelopes(finalDb, brutoDb, hopS, opts);
+  const guided = clips.length ? alignByPlanClips(finalDb, brutoDb, hopS, clips, opts) : null;
+  const useGuided = guided !== null && guided.coverage > mono.coverage;
+  const base = useGuided ? guided : mono;
   const durF = finalDb.length * hopS;
   const gaps: Iv[] = [];
   let cur = 0;
@@ -81,7 +101,141 @@ export function alignWithReorder(
   }
   const runs = [...base.runs, ...extra].sort((x, y) => x.audioStart - y.audioStart);
   const covered = runs.reduce((n, r) => n + (r.audioEnd - r.audioStart), 0);
-  return { runs, coverage: durF > 0 ? covered / durF : 0, reordered: extra.length };
+  return { runs, coverage: durF > 0 ? covered / durF : 0, reordered: extra.length, guide: useGuided ? "plan-clips" : "monotonic" };
+}
+
+/** Clipe do XML mais curto que isto (s) não gera deslocamento candidato: o envelope é curto demais para correlacionar. */
+export const PLAN_CLIP_MIN_S = 0.4;
+/** Correlação mínima do clipe do bruto num ponto do final para virar deslocamento candidato. */
+export const PLAN_CLIP_MIN_SCORE = 0.8;
+/** Picos da busca grossa refinados por clipe (o clipe curto tem pico grosso ambíguo). */
+const PLAN_CLIP_PEAKS = 3;
+
+/**
+ * Alinhamento guiado pelos clipes do `plan.json` (#13197). Cada clipe do XML
+ * (o trecho `[srcIn, srcOut)` do bruto) é procurado no final inteiro (busca
+ * grossa, depois fina nos melhores picos); onde ele casa, `srcIn − posição`
+ * vira um deslocamento candidato. Os sub-trechos do final são rotulados entre
+ * esses candidatos sem exigir ordem (o editor pode reordenar, e o próprio XML
+ * já sai fora da ordem do bruto), com custo de troca para não pular por
+ * ruído. A ponta que o editor estendeu fica no deslocamento do clipe (o bruto
+ * continua), e o trecho de fora do XML fica sem par para a busca dos vãos.
+ * Mesma saída de `alignEnvelopes` (final = "áudio", bruto = "vídeo"). Puro.
+ */
+export function alignByPlanClips(
+  finalDb: ArrayLike<number>,
+  brutoDb: ArrayLike<number>,
+  hopS: number,
+  clips: readonly Pick<XmlClip, "srcIn" | "srcOut">[],
+  opts: AlignOptions = {},
+): { runs: AlignRun[]; coverage: number; offsets: number[] } {
+  const o = { ...ALIGN_DEFAULTS, ...opts };
+  const F = clampFloor(finalDb, o.floorDb);
+  const B = clampFloor(brutoDb, o.floorDb);
+  const pF = prefix(F);
+  const pB = prefix(B);
+  const k = Math.max(1, Math.round(o.coarseFactor));
+  const Fc = decimateMean(F, k);
+  const Bc = decimateMean(B, k);
+  const pFc = prefix(Fc);
+  const pBc = prefix(Bc);
+  const durF = F.length * hopS;
+
+  const found: number[] = [];
+  for (const c of clips) {
+    const b0 = Math.round(c.srcIn / hopS);
+    const n = Math.round((c.srcOut - c.srcIn) / hopS);
+    if (n * hopS < PLAN_CLIP_MIN_S || b0 < 0 || b0 + n > B.length || n > F.length) continue;
+    if (stats(pB, b0, n).std < o.flatStdDb) continue;
+    const bc = Math.floor(b0 / k);
+    const nc = Math.max(2, Math.floor(n / k));
+    const coarse: Array<{ pos: number; r: number }> = [];
+    for (let p = 0; p + nc <= Fc.length; p++) coarse.push({ pos: p, r: pearsonAt(Bc, pBc, bc, Fc, pFc, p, nc) });
+    coarse.sort((x, y) => y.r - x.r);
+    let best = -1;
+    let bestPos = -1;
+    for (const peak of coarse.slice(0, PLAN_CLIP_PEAKS)) {
+      for (let f = peak.pos * k - 2 * k; f <= peak.pos * k + 2 * k; f++) {
+        const r = pearsonAt(B, pB, b0, F, pF, f, n);
+        if (r > best) {
+          best = r;
+          bestPos = f;
+        }
+      }
+    }
+    if (bestPos >= 0 && best >= PLAN_CLIP_MIN_SCORE) found.push(r3((b0 - bestPos) * hopS));
+  }
+  found.sort((x, y) => x - y);
+  const offsets: number[] = [];
+  for (const off of found) if (!offsets.length || off - offsets[offsets.length - 1] > o.sameOffsetS) offsets.push(off);
+  if (offsets.length === 0) return { runs: [], coverage: 0, offsets };
+
+  // Rotulagem dos sub-trechos, sem ordem: dp[t][j] = s(t, j) + max(dp[t−1][j], max_i dp[t−1][i] − troca).
+  const step = Math.max(1, Math.round(o.stepS / hopS));
+  const sub = Math.max(2, Math.round(o.subWinS / hopS));
+  const T = Math.max(1, Math.ceil(F.length / step));
+  const K = offsets.length;
+  const score = new Float64Array(T * K);
+  const flat = new Uint8Array(T);
+  for (let t = 0; t < T; t++) {
+    const c = t * step;
+    const a = Math.max(0, Math.min(F.length - sub, c - (sub >> 1)));
+    const n = Math.min(sub, F.length - a);
+    if (n < 2 || stats(pF, a, n).std < o.flatStdDb) {
+      flat[t] = 1;
+      continue;
+    }
+    for (let j = 0; j < K; j++) score[t * K + j] = pearsonAt(F, pF, a, B, pB, a + Math.round(offsets[j] / hopS), n);
+  }
+  const dp = new Float64Array(T * K);
+  const from = new Int32Array(T * K);
+  for (let j = 0; j < K; j++) dp[j] = flat[0] ? 0 : score[j];
+  for (let t = 1; t < T; t++) {
+    let pm = -Infinity;
+    let pmJ = 0;
+    for (let i = 0; i < K; i++) {
+      if (dp[(t - 1) * K + i] > pm) {
+        pm = dp[(t - 1) * K + i];
+        pmJ = i;
+      }
+    }
+    for (let j = 0; j < K; j++) {
+      const stay = dp[(t - 1) * K + j];
+      const sw = pm - o.switchPenalty;
+      const s = flat[t] ? 0 : score[t * K + j];
+      if (stay >= sw) {
+        dp[t * K + j] = stay + s;
+        from[t * K + j] = j;
+      } else {
+        dp[t * K + j] = sw + s;
+        from[t * K + j] = pmJ;
+      }
+    }
+  }
+  let j = 0;
+  for (let q = 1; q < K; q++) if (dp[(T - 1) * K + q] > dp[(T - 1) * K + j]) j = q;
+  const label = new Int32Array(T);
+  for (let t = T - 1; t >= 0; t--) {
+    label[t] = j;
+    if (t > 0) j = from[t * K + j];
+  }
+  const runs: AlignRun[] = [];
+  const ok = (u: number) => flat[u] === 1 || score[u * K + label[u]] >= o.minSubScore;
+  for (let t = 0; t < T; ) {
+    if (!ok(t)) {
+      t++;
+      continue;
+    }
+    let u = t;
+    while (u + 1 < T && label[u + 1] === label[t] && ok(u + 1)) u++;
+    const audioStart = r3(t === 0 ? 0 : (t * step - step / 2) * hopS);
+    const audioEnd = r3(u === T - 1 ? durF : ((u + 1) * step - step / 2) * hopS);
+    runs.push({ audioStart, audioEnd, offset: offsets[label[t]] });
+    t = u + 1;
+  }
+  refineCuts(runs, F, B, hopS, o.subWinS, o.floorDb);
+  const covered = runs.reduce((acc, r) => acc + (r.audioEnd - r.audioStart), 0);
+  return { runs, coverage: durF > 0 ? covered / durF : 0, offsets };
 }
 
 /** Abaixo disto (s) a diferença é ruído do alinhamento (a #11670 media ±0,05–0,08 s). */

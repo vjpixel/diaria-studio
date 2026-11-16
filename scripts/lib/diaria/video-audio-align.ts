@@ -87,13 +87,13 @@ export interface AlignResult {
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000;
 
-function clampFloor(db: ArrayLike<number>, floor: number): Float64Array {
+export function clampFloor(db: ArrayLike<number>, floor: number): Float64Array {
   const out = new Float64Array(db.length);
   for (let i = 0; i < db.length; i++) out[i] = Math.max(floor, db[i]);
   return out;
 }
 
-function decimateMean(x: Float64Array, k: number): Float64Array {
+export function decimateMean(x: Float64Array, k: number): Float64Array {
   const n = Math.floor(x.length / k);
   const out = new Float64Array(n);
   for (let i = 0; i < n; i++) {
@@ -105,7 +105,7 @@ function decimateMean(x: Float64Array, k: number): Float64Array {
 }
 
 /** Somas acumuladas (x e x²) para média/desvio de qualquer trecho em O(1). */
-function prefix(x: Float64Array): { s: Float64Array; q: Float64Array } {
+export function prefix(x: Float64Array): { s: Float64Array; q: Float64Array } {
   const s = new Float64Array(x.length + 1);
   const q = new Float64Array(x.length + 1);
   for (let i = 0; i < x.length; i++) {
@@ -115,14 +115,14 @@ function prefix(x: Float64Array): { s: Float64Array; q: Float64Array } {
   return { s, q };
 }
 
-function stats(p: { s: Float64Array; q: Float64Array }, a: number, n: number): { mean: number; std: number } {
+export function stats(p: { s: Float64Array; q: Float64Array }, a: number, n: number): { mean: number; std: number } {
   const mean = (p.s[a + n] - p.s[a]) / n;
   const v = (p.q[a + n] - p.q[a]) / n - mean * mean;
   return { mean, std: v > 0 ? Math.sqrt(v) : 0 };
 }
 
 /** Pearson entre `a[ia..ia+n)` e `b[ib..ib+n)`; 0 se algum lado é constante ou sai do vetor. */
-function pearsonAt(a: Float64Array, pa: ReturnType<typeof prefix>, ia: number, b: Float64Array, pb: ReturnType<typeof prefix>, ib: number, n: number): number {
+export function pearsonAt(a: Float64Array, pa: ReturnType<typeof prefix>, ia: number, b: Float64Array, pb: ReturnType<typeof prefix>, ib: number, n: number): number {
   if (ia < 0 || ib < 0 || ia + n > a.length || ib + n > b.length || n < 2) return 0;
   const sa = stats(pa, ia, n);
   const sb = stats(pb, ib, n);
@@ -303,7 +303,7 @@ function gainUnder(A: Float64Array, V: Float64Array, a: number, b: number, d: nu
  * sob o 1º mais o de depois sob o 2º. Os dois trechos passam a se encostar no
  * corte (o vão sem par entre eles, se havia, some: é a mesma fala).
  */
-function refineCuts(runs: AlignRun[], A: Float64Array, V: Float64Array, hopS: number, subWinS: number, floorDb: number): void {
+export function refineCuts(runs: AlignRun[], A: Float64Array, V: Float64Array, hopS: number, subWinS: number, floorDb: number): void {
   const ERR_MAX = 30;
   for (let i = 0; i + 1 < runs.length; i++) {
     const r1 = runs[i];
