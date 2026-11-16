@@ -5,7 +5,7 @@
  *   - o XML leva o MOV (ProRes 4444 com alpha, `publishing.video.vinheta_logo`)
  *     na faixa de vídeo do topo, no fim do bloco `titulo` (sem título: aos 2 s),
  *     com o som numa faixa de áudio própria;
- *   - o horizontal abre o respiro de `VINHETA_BREATH_S` depois do título;
+ *   - toda sequência abre o respiro de `VINHETA_BREATH_S` depois do título (#13204: era só o horizontal, 0,7 s), completado com silêncio do bruto quando a fala vem colada;
  *   - sem o arquivo, o build segue sem vinheta e avisa.
  */
 
@@ -69,63 +69,70 @@ function tracks(xml: string, kind: "video" | "audio"): string[] {
   return body.split("<track>").slice(1);
 }
 
-describe("#12101: respiro de 0,7 s depois do título no horizontal", () => {
-  it("só o horizontal com título ganha o respiro; verticais e entrevista ficam como estão", () => {
+describe("#12101/#13204: respiro da vinheta depois do título, em todas as sequências", () => {
+  it("horizontal e vertical com título ganham o respiro de 1,7 s; sem bloco de abertura, nenhum", () => {
     assert.deepEqual(vinhetaBreathFor(SPEC_H), { titulo: VINHETA_BREATH_S });
-    assert.equal(VINHETA_BREATH_S, 0.7);
-    assert.equal(vinhetaBreathFor(SPEC_V), undefined);
+    assert.deepEqual(vinhetaBreathFor(SPEC_V), { titulo: VINHETA_BREATH_S });
+    // #13204: cabe a vinheta de 1,3 s depois dos 0,3 s, com folga.
+    assert.equal(VINHETA_BREATH_S, 1.7);
+    assert.ok(VINHETA_BREATH_S >= 1.3 + VINHETA_AFTER_SPEECH_S);
     assert.equal(vinhetaBreathFor({ target: "youtube", order: ["abertura", "comentario", "cta_yt", "fecho"] }), undefined);
   });
 
-  // título falado 1,0–2,9 s; pausa no bruto até 5,0 s; abertura 5,0–7,0 s.
+  // título falado 1,0–2,9 s; pausa no bruto até 5,0 s; abertura 5,0–7,0 s; outro silêncio em 10–12 s.
   const resolved = (holdLimit: number) => ({
     titulo: [item(1, 3, "a vinheta", [w("a", 1, 1.5), w("vinheta", 1.6, 2.9)], holdLimit)],
     abertura: [item(5, 7, "olá eu sou", [w("olá", 5, 5.5), w("eu", 5.6, 6), w("sou", 6.1, 7)], 7)],
   });
-  const silences = [{ start: 2.95, end: 5 }];
+  const silences = [{ start: 2.95, end: 5 }, { start: 10, end: 12 }];
   const src = { fps: 30, durationS: 600 };
 
-  it("o último trecho do título vai até 0,7 s depois da última palavra, tirado do bruto (sem fala)", () => {
-    const p = buildSequencePlan(SPEC_H, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
-    const titulo = p.clips.filter((c) => c.block === "titulo");
-    assert.equal(titulo[titulo.length - 1].srcOut, 3.6);
-    assert.equal(p.warnings, undefined);
-    // Sem o respiro (a vertical), o título termina antes, no corte da pausa.
-    const pv = buildSequencePlan(SPEC_V, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(SPEC_V) });
-    const tv = pv.clips.filter((c) => c.block === "titulo");
-    assert.ok(tv[tv.length - 1].srcOut < 3.2, `vertical sem respiro: ${tv[tv.length - 1].srcOut}`);
-    assert.ok(p.durationFrames > pv.durationFrames, "o horizontal ficou mais longo pelo respiro");
+  it("o último trecho do título vai até 1,7 s depois da última palavra, tirado do bruto (sem fala), nas duas versões", () => {
+    for (const spec of [SPEC_H, SPEC_V]) {
+      const p = buildSequencePlan(spec, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(spec) });
+      const titulo = p.clips.filter((c) => c.block === "titulo");
+      assert.equal(titulo[titulo.length - 1].srcOut, 4.6, spec.name);
+      assert.equal(p.warnings, undefined, spec.name);
+    }
   });
 
-  it("encadeado (plano com respiro + vinhetaSpan): a vinheta entra 0,3 s depois da última palavra, DENTRO do respiro", () => {
+  it("encadeado (plano com respiro + vinhetaSpan): a vinheta entra 0,3 s depois da última palavra e termina antes da fala seguinte", () => {
     const p = buildSequencePlan(SPEC_H, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
     assert.equal(p.titleSpeechEndS, 2.9);
     const titulo = p.clips.filter((c) => c.block === "titulo");
     const last = titulo[titulo.length - 1];
     const vs = vinhetaSpan(p, 30, VIN);
     assert.ok(vs);
-    // A última palavra (2,9 s do bruto) cai em seqStart + (87 - frameIn); a vinheta, 9 quadros (0,3 s) depois.
     const speechEndSeq = last.seqStart + (Math.round(2.9 * 30) - last.frameIn);
     assert.equal(vs.start, speechEndSeq + Math.round(VINHETA_AFTER_SPEECH_S * 30));
-    assert.ok(vs.start < last.seqEnd, `a vinheta (${vs.start}) entra antes do fim do respiro (${last.seqEnd}), não depois`);
-    assert.equal(last.seqEnd - vs.start, Math.round((VINHETA_BREATH_S - VINHETA_AFTER_SPEECH_S) * 30), "sobram 0,4 s de respiro com a vinheta já no ar");
-    assert.equal(titleBreathS(p, 30), 0.7);
+    assert.ok(vs.end <= last.seqEnd, `a vinheta (até ${vs.end}) acaba dentro do respiro (${last.seqEnd}), antes da fala seguinte`);
+    assert.equal(titleBreathS(p, 30), 1.7);
   });
 
-  it("vertical (sem respiro): a fala seguinte vem antes de 0,3 s, a vinheta fica no fim do bloco titulo", () => {
-    const p = buildSequencePlan(SPEC_V, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(SPEC_V) });
-    const titleEnd = blockRunEndFrame(p.clips, "titulo", 30);
-    assert.equal(vinhetaSpan(p, 30, VIN)?.start, titleEnd);
+  it("#13204: fala seguinte colada no bruto: a pausa vem do silêncio mais próximo do mesmo arquivo, e a vinheta entra nela", () => {
+    // 261116, vertical: gancho até 34,44 s e o "E o melhor de tudo" logo em seguida no bruto.
+    for (const spec of [SPEC_H, SPEC_V]) {
+      // a pausa do bruto depois do título acaba em 3,2 s (fala colada); o silêncio de 10–12 s é o mais próximo que cabe.
+      const p = buildSequencePlan(spec, resolved(3.2), [{ start: 2.95, end: 3.2 }, { start: 10, end: 12 }], src, { breathAfter: vinhetaBreathFor(spec) });
+      const titulo = p.clips.filter((c) => c.block === "titulo");
+      assert.equal(titulo.length, 2, `${spec.name}: o trecho da fala + a pausa`);
+      assert.equal(titulo[0].srcOut, 3.2);
+      // Faltam 1,4 s (1,7 - 0,3), com 0,05 s de margem dentro do silêncio.
+      assert.equal(titulo[1].srcIn, 10.05);
+      assert.equal(titulo[1].srcOut, 11.45);
+      assert.match(p.warnings![0], /pausa completada com 1\.40 s de silêncio do bruto em 10\.05–11\.45 s/);
+      const vs = vinhetaSpan(p, 30, VIN);
+      assert.ok(vs);
+      assert.equal(vs.start, titulo[0].seqEnd, "a vinheta começa na pausa, nunca sobre a fala");
+      assert.ok(vs.end <= titulo[1].seqEnd, "e acaba antes da abertura");
+    }
   });
 
-  it("fala seguinte logo depois no bruto: o respiro para antes dela e o build avisa", () => {
-    const p = buildSequencePlan(SPEC_H, resolved(3.2), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
-    const titulo = p.clips.filter((c) => c.block === "titulo");
-    assert.equal(titulo[titulo.length - 1].srcOut, 3.2);
-    assert.equal(p.warnings?.length, 1);
-    assert.match(p.warnings![0], /respiro depois de titulo de 0\.30 s, abaixo dos 0\.7 s/);
-    assert.match(p.warnings![0], /a vinheta entra 0\.3 s depois da última palavra e pode cobrir o começo da fala seguinte/);
-    assert.doesNotMatch(p.warnings![0], /passa por cima da fala/);
+  it("#13204: sem silêncio que caiba no arquivo, avisa que a vinheta pode cobrir a fala", () => {
+    const p = buildSequencePlan(SPEC_H, resolved(3.2), [{ start: 2.95, end: 3.2 }], src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    assert.equal(p.clips.filter((c) => c.block === "titulo").length, 1);
+    assert.match(p.warnings![0], /respiro depois de titulo de 0\.30 s, abaixo dos 1\.7 s pedidos/);
+    assert.match(p.warnings![0], /a vinheta pode cobrir o começo da fala seguinte/);
   });
 
   it("titleBreathS: o respiro efetivo no plano final (o refino que encolhe a saída aparece aqui)", () => {
