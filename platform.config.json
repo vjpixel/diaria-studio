@@ -347,6 +347,8 @@
       "x": true,
       "tiktok": true,
       "tiktok_buffer_channel_id": "6ae86defe29c69a17136bace",
+      "tiktok_bio_link": false,
+      "tiktok_bio_link_note": "#13209 (premissa do briefing do overnight 261116, ate o editor dizer o contrario): a legenda do TikTok so leva 'Video completo: link na bio' com true. A conta do TikTok e pessoal e nao tinha o campo Site, entao a linha prometeria um link que a bio nao tem. Ligar so depois de habilitar o Site na bio do TikTok com diar.ia.br/video?utm_source=tiktok e conferir que abre o horizontal. Vale para o publish e para o --update-scheduled. Nas outras redes a linha segue a regra do #13209 (fala cta_vertical no roteiro + mesmo titulo do horizontal publicado), sem flag.",
       "diaria_profiles": {
         "linkedin": { "name": "diar.ia.br", "urn": "urn:li:organization:110742958", "url": "https://www.linkedin.com/company/diar.ia.br/", "mention_verified": true },
         "threads": { "handle": "diar.ia.br", "url": "https://www.threads.com/@diar.ia.br" },

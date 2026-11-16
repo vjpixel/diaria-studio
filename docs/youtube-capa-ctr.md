@@ -113,3 +113,28 @@ uma IA brasileira (209 views), Você já viu IA mentir. Já viu roubar? (153) e
 Claude Code pode ter vazado suas senhas no GitHub (136). Os demais vídeos não
 têm leitura de impressões nesta linha de base; os números deles passam a vir do
 snapshot quando o 1º relatório de alcance chegar.
+
+## Por pauta (#13195)
+
+Decisão do editor no briefing do overnight 261116: só instrumentar. O
+`--report` do snapshot ganhou a seção "Horizontais por pauta", que soma, por
+pauta, as views, as impressões e a taxa de cliques da capa (cliques ÷
+impressões somados, nunca a média simples das taxas) e o % médio assistido
+(ponderado por views). Embaixo vem cada horizontal com a pauta e a origem
+dela. Nada muda no fluxo diário: a decisão de gravar horizontal só para
+algumas pautas segue com o editor.
+
+A pauta de cada horizontal é a da edição dele:
+
+1. `data/youtube-analytics/pautas.json`, a classificação do editor, que vence
+   sempre. Formato `{ "AAMMDD": "pauta" }`, com rótulo livre ("impacto humano",
+   "segurança", "guia prático", "lançamento técnico", "fofoca corporativa",
+   "brasil"...); chaves que começam com `_` são notas. Chave fora de AAMMDD ou
+   pauta vazia invalida o arquivo, o relatório avisa e usa só o D1.
+2. Sem classificação do editor, a seção do DESTAQUE 1 da edição
+   (`DESTAQUE 1 | 🔐 SEGURANÇA` vira `segurança`), lida de `02-reviewed.md`.
+
+Horizontal sem nenhuma das duas aparece em "sem pauta" e é listado no fim da
+seção. Vídeo sem relatório de alcance ainda conta em views e retenção, mas
+fica fora da soma de impressões (a coluna mostra quantos ficaram de fora).
+Código: `scripts/lib/diaria/youtube-pauta.ts`.
