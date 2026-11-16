@@ -247,7 +247,7 @@ describe("#13219 build: XML leve por padrão, --xml-bruto e --trechos-folga", ()
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 const probe = (path: string, entries: string, stream: string): string =>
-  spawnSync("ffprobe", ["-v", "error", "-select_streams", stream, "-count_frames", "-show_entries", entries, "-of", "default=nw=1:nk=1", path], { encoding: "utf8" }).stdout.trim();
+  spawnSync("ffprobe", ["-v", "error", "-select_streams", stream, "-count_frames", "-show_entries", entries, "-of", "default=nw=1:nk=1", path], { encoding: "utf8" }).stdout.replace(/\r\n/g, "\n").trim(); // #13276: ffprobe no Windows devolve \r\n
 
 describe("#13219 renderTrechos com ffmpeg real (mídia sintética)", { skip: !hasFfmpeg && "ffmpeg ausente" }, () => {
   it("corta só os trechos usados, em H.264 + PCM 48 kHz, com os quadros planejados; o rebuild reaproveita", () => {
