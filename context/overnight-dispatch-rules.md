@@ -1622,7 +1622,7 @@ não como CI vermelho a ser descoberto.
 rodada 261116): pede o campo GraphQL `repository.issue.projectCards`, do
 Projects (classic) que o GitHub desligou, e sai com `GraphQL: Projects
 (classic) is being deprecated ... (repository.issue.projectCards)` sem ler
-nada. Com o comando quebrado, com o comando quebrado, a releitura da thread exigida antes de
+nada. Com o comando quebrado, a releitura da thread exigida antes de
 classificar (#12545, gate de roteamento #11301/#11315) trava a Fase 0 ou
 vira leitura só do corpo.
 
