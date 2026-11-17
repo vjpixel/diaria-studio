@@ -138,6 +138,30 @@ describe("#13368 achados do export sintético", () => {
     assert.deepEqual(f.map((x) => x.kind), ["quadro-preto"]);
   });
 
+  it("#13440 sem plano: preto real no começo (mídia offline) não some, vira achado de baixa certeza", () => {
+    const exclude = blackFreezeWindows({ durationS: DURATION_S, ctaCardS: CTA_S, plan: null, fps: null });
+    const f = checkBlackFreeze({ black: [{ start: 0, end: 3 }], freeze: [{ start: 0.5, end: 4 }], exclude });
+    assert.deepEqual(f.map((x) => [x.kind, x.at]), [["quadro-preto", 0], ["congelado", 0.5]]);
+    for (const x of f) {
+      assert.match(x.what, /baixa certeza/);
+      assert.match(x.fix, /vinheta/);
+    }
+  });
+
+  it("#13440 sem plano: trecho que atravessa o fim da abertura divide em baixa certeza + achado normal", () => {
+    const exclude = blackFreezeWindows({ durationS: DURATION_S, ctaCardS: CTA_S, plan: null, fps: null });
+    const f = checkBlackFreeze({ black: [{ start: OPENING_FALLBACK_S - 1, end: OPENING_FALLBACK_S + 1 }], freeze: [], exclude });
+    assert.deepEqual(f.map((x) => x.at), [OPENING_FALLBACK_S - 1, OPENING_FALLBACK_S]);
+    assert.match(f[0].what, /baixa certeza/);
+    assert.doesNotMatch(f[1].what, /baixa certeza/);
+  });
+
+  it("#13440 com plano: a vinheta segue descartada, sem achado de baixa certeza", () => {
+    const exclude = blackFreezeWindows({ durationS: DURATION_S, ctaCardS: CTA_S, plan: planEndingAt(12), fps: FPS, vinhetaS: 1.3 });
+    const f = checkBlackFreeze({ black: [{ start: 1.5, end: 3.8 }], freeze: [], exclude });
+    assert.deepEqual(f, []);
+  });
+
   it("o export sintético de verdade, pelo ffmpeg desta máquina, dá os mesmos achados", { skip: !hasFfmpeg }, () => {
     const dir = mkdtempSync(join(tmpdir(), "bf-13368-"));
     try {

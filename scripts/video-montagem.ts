@@ -5598,7 +5598,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
     freeze: parseFreezedetect(detectLog, probe.durationS),
     windows: blackFreezeWindows({ durationS: probe.durationS, ctaCardS: configCtaCardS(), plan, fps: planFps, vinhetaS: loadVinheta({ warn: () => {} })?.durationS ?? null }),
   };
-  if (!plan || !planFps) console.error(`[aviso] sem plano da sequência: preto/congelado ignorados nos primeiros ${OPENING_FALLBACK_S} s e no card de CTA presumido no fim (#13368)`);
+  if (!plan || !planFps) console.error(`[aviso] sem plano da sequência: preto/congelado nos primeiros ${OPENING_FALLBACK_S} s sai como achado de baixa certeza (pode ser a vinheta) e o card de CTA presumido no fim fica fora (#13368, #13440)`);
   findings.push(...checkBlackFreeze({ black: blackFreeze.black, freeze: blackFreeze.freeze, exclude: blackFreeze.windows, plan, fps: planFps }));
 
   const loud = parseLoudnormJson(

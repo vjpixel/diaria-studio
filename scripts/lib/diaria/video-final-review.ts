@@ -293,7 +293,7 @@ export const FREEZE_MIN_S = 2;
 export const BLACK_FREEZE_MARGIN_S = 0.5;
 /** Duração da vinheta do logo (o MOV dura 1,3 s, #13204) quando o arquivo não está nesta máquina. */
 export const VINHETA_FALLBACK_S = 1.3;
-/** Sem `plan.json`, a abertura inteira (título + vinheta) fica fora até aqui. */
+/** Sem `plan.json`, preto/congelado até aqui (título + vinheta) sai como achado de baixa certeza (#13440). */
 export const OPENING_FALLBACK_S = 6;
 
 export interface TimeSpan {
@@ -344,7 +344,10 @@ export interface ExcludedWindow extends TimeSpan {
  * folga. O card é a cauda do export (`ctaCardS` do config); com plano, um
  * export que acaba onde a montagem acaba não tem card. Sem plano, a abertura
  * até `OPENING_FALLBACK_S` sai no lugar da vinheta (onde ela cai depende do
- * título) e o card é presumido (padrão desde 09/11/2026, #12571).
+ * título) e o card é presumido (padrão desde 09/11/2026, #12571). A janela
+ * `abertura` é BRANDA (#13440): `checkBlackFreeze` não a descarta, reporta o
+ * que cair nela como achado de baixa certeza, porque ali também pode estar um
+ * preto real (1º clipe com mídia offline) e não só a vinheta.
  */
 export function blackFreezeWindows(input: {
   durationS: number;
@@ -387,39 +390,56 @@ export function subtractWindows(span: TimeSpan, windows: TimeSpan[]): TimeSpan[]
 
 /**
  * Trecho preto (≥ `BLACK_MIN_S`) e quadro congelado (≥ `FREEZE_MIN_S`) do
- * export, contados só fora das janelas (`blackFreezeWindows`).
+ * export, contados só fora das janelas (`blackFreezeWindows`). A janela
+ * `abertura` (sem plano) não descarta: o que cai nela vira achado de baixa
+ * certeza, porque pode ser a vinheta ou um preto real no começo do export
+ * (#13440).
  */
 export function checkBlackFreeze(input: {
   black: TimeSpan[];
   freeze: TimeSpan[];
-  exclude: TimeSpan[];
+  exclude: Array<TimeSpan & { label?: ExcludedWindow["label"] }>;
   plan?: SequencePlan | null;
   fps?: number | null;
 }): FinalReviewFinding[] {
   const out: FinalReviewFinding[] = [];
+  const hard = input.exclude.filter((w) => w.label !== "abertura");
+  const soft = input.exclude.filter((w) => w.label === "abertura");
   const raw = (t: number) => (input.plan && input.fps ? exportTimeToRaw(t, input.plan, input.fps) : undefined);
   const span = (p: TimeSpan) => `${(p.end - p.start).toFixed(1).replace(".", ",")} s (${exportClock(p.start)} a ${exportClock(p.end)})`;
+  const LOW = " (baixa certeza: cai na abertura sem plano da montagem, pode ser a vinheta)";
+  // Partes fora das janelas duras, cada uma marcada se cai numa janela branda.
+  const parts = (s: TimeSpan): Array<TimeSpan & { low: boolean }> =>
+    subtractWindows(s, hard).flatMap((p) => {
+      const outside = subtractWindows(p, soft).map((q) => ({ ...q, low: false }));
+      const inside = subtractWindows(p, outside).map((q) => ({ ...q, low: true }));
+      return [...inside, ...outside].sort((a, b) => a.start - b.start);
+    });
   for (const b of input.black) {
-    for (const p of subtractWindows(b, input.exclude)) {
+    for (const p of parts(b)) {
       if (p.end - p.start + 1e-9 < BLACK_MIN_S) continue;
       out.push({
         kind: "quadro-preto",
         at: round2(p.start),
         ...(raw(p.start) !== undefined ? { rawAt: raw(p.start) } : {}),
-        what: `${span(p)} de imagem preta`,
-        fix: "conferir no Premiere mídia offline ou clipe que não renderizou nesse trecho e reexportar",
+        what: `${span(p)} de imagem preta${p.low ? LOW : ""}`,
+        fix: p.low
+          ? "abrir o começo do export: se for só a vinheta, ignorar; se for mídia offline ou clipe que não renderizou, corrigir no Premiere e reexportar"
+          : "conferir no Premiere mídia offline ou clipe que não renderizou nesse trecho e reexportar",
       });
     }
   }
   for (const z of input.freeze) {
-    for (const p of subtractWindows(z, input.exclude)) {
+    for (const p of parts(z)) {
       if (p.end - p.start + 1e-9 < FREEZE_MIN_S) continue;
       out.push({
         kind: "congelado",
         at: round2(p.start),
         ...(raw(p.start) !== undefined ? { rawAt: raw(p.start) } : {}),
-        what: `${span(p)} de quadro congelado`,
-        fix: "conferir no Premiere o clipe desse trecho (quadro repetido, render travado, still esquecido) e reexportar",
+        what: `${span(p)} de quadro congelado${p.low ? LOW : ""}`,
+        fix: p.low
+          ? "abrir o começo do export: se for só a vinheta, ignorar; se for quadro repetido ou render travado, corrigir no Premiere e reexportar"
+          : "conferir no Premiere o clipe desse trecho (quadro repetido, render travado, still esquecido) e reexportar",
       });
     }
   }
