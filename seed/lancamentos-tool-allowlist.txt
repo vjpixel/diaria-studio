@@ -48,3 +48,6 @@ replit.com/blog/
 # não virou sinal genérico porque "ChatGPT for Academic Researchers" (programa
 # de acesso, #4339) tem a mesma forma e segue rebaixado.
 openai.com/index/more-ways-to-move-care-forward-with-chatgpt-for-healthcare
+
+# edição 261118: NVIDIA DGX Spark HPC Developer Kit (kit de desenvolvedor, produto oficial; título sem sinal de ferramenta).
+blogs.nvidia.com/blog/dgx-spark-hpc-developer-kit-sc26
