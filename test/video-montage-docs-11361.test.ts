@@ -263,6 +263,6 @@ describe("roteiro final por versão (#11361)", () => {
       ctaCardShare: Object.fromEntries(plans.map((p) => [p.spec.target, "Compartilhe com quem usa o Gmail"])),
     });
     assert.match(withCard, /\| CTA vertical \| \(sem CTA falado: o card de CTA fecha a versão\) \|  \|/);
-    assert.equal(withCard.match(/\| Card de CTA \(4 s\) \| Gostou\? Curta o vídeo\. Compartilhe com quem usa o Gmail\. Siga a diar\.ia\.br\. \| card, sem fala/g)?.length, plans.length);
+    assert.equal(withCard.match(/\| Card de CTA \(2 s\) \| Gostou\? Curta o vídeo\. Compartilhe com quem usa o Gmail\. Siga a diar\.ia\.br\. \| card, sem fala/g)?.length, plans.length);
   });
 });

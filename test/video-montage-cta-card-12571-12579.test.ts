@@ -63,7 +63,8 @@ const card = (spec: SequenceSpec, path = "/cache/out/261109_cta_card_vertical-ab
   width: spec.width,
   height: spec.height,
   fps: 30,
-  frames: ctaCardFrames(30),
+  // Fixture de 4 s (o default até o #13311): os testes de XML abaixo medem o lugar do card, não a duração default.
+  frames: ctaCardFrames(30, 4),
   share: CTA_CARD_DEFAULT_SHARE,
 });
 
@@ -103,13 +104,13 @@ describe("card de CTA: conteúdo (#12571)", () => {
     }
   });
 
-  it("ffmpeg: 4 s com fade-in de 0,5 s do preto, sem áudio; a prévia ganha áudio em silêncio e o formato de pixel dos clipes", () => {
+  it("ffmpeg: 2 s (#13311) com fade-in de 0,5 s do preto, sem áudio; a prévia ganha áudio em silêncio e o formato de pixel dos clipes", () => {
     const a = ctaCardRenderArgs({ png: "c.png", out: "c.mp4", fps: 30 });
     assert.ok(a.includes("-an"));
-    assert.equal(a[a.indexOf("-t") + 1], "4.000");
+    assert.equal(a[a.indexOf("-t") + 1], "2.000");
     assert.match(a[a.indexOf("-vf") + 1], /^fade=t=in:st=0:d=0\.5,/);
-    assert.equal(CTA_CARD.durationS, 4);
-    assert.equal(ctaCardFrames(30), 120);
+    assert.equal(CTA_CARD.durationS, 2);
+    assert.equal(ctaCardFrames(30), 60);
     const p = ctaCardPreviewClipArgs({ src: "c.mp4", out: "x.mp4", fps: 30, width: 720, height: 1280, pixFmt: "yuv420p10le" });
     assert.ok(p.includes("anullsrc=r=48000:cl=stereo"));
     assert.match(p[p.indexOf("-vf") + 1], /scale=720:1280.*format=yuv420p10le$/);
@@ -225,7 +226,7 @@ describe("renderCtaCard (#12571)", () => {
       assert.match(a.asset.path, /261109_cta_card_vertical-[0-9a-f]{16}\.mp4$/);
       assert.equal(readFileSync(a.asset.path, "utf8"), "mp4");
       assert.ok(a.asset.xmlPath.startsWith("G:/Meu Drive/YouTube/261109/261109_cta_card_vertical-"));
-      assert.equal(a.asset.frames, 120);
+      assert.equal(a.asset.frames, 60);
       assert.equal(a.asset.share, "Compartilhe com quem usa o ChatGPT");
       const b = await renderCtaCard(input);
       assert.equal(b.reused, true);

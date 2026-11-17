@@ -34,6 +34,7 @@ import {
   type SequenceSpec,
 } from "./video-montage.ts";
 import { contentWords } from "./youtube-title-research.ts";
+import { ctaCardDurationFrom, CTA_CARD } from "./video-cta-card.ts";
 import { hasRecognizableSubject } from "./youtube-capa-hooks.ts";
 import { corteDaFala, segmentosSemTrecho, SETA, validarRoteiroFalas, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type PecaVideo, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 
@@ -656,13 +657,14 @@ export interface RoteiroDuracaoConfig {
 /**
  * Defaults (#13130): vertical 1 e vertical 2 de ~60 s (na 261116 o vertical 2
  * de ~75 s na skill saiu ~60 na prática, e a decisão é alertar acima de 60),
- * horizontal de ~3 min com 1 min de folga, card de CTA de ~4 s.
+ * horizontal de ~3 min com 1 min de folga, card de CTA com a duração default
+ * da montagem (`CTA_CARD.durationS`, 2 s desde o #13311).
  */
 export const ROTEIRO_DURACAO_DEFAULT: RoteiroDuracaoConfig = {
   palavrasPorMinuto: PALAVRAS_POR_MINUTO,
   alvoS: { horizontal: 180, vertical1: 60, vertical2: 60 },
   horizontalFolgaS: 60,
-  ctaCardS: 4,
+  ctaCardS: CTA_CARD.durationS,
   pausaVinhetaS: VINHETA_BREATH_S,
 };
 
@@ -672,7 +674,9 @@ const numPositivo = (x: unknown): number | null => (typeof x === "number" && Num
  * `publishing.video.roteiro` do `platform.config.json` (#13130), por cima dos
  * defaults: `palavras_por_minuto`, `alvo_s.{horizontal,vertical1,vertical2}`,
  * `horizontal_folga_s`, `cta_card_s`, `pausa_vinheta_s` (0 tira a pausa da
- * conta, #13239). Valor ausente ou inválido = o default.
+ * conta, #13239). Valor ausente ou inválido = o default. Sem `cta_card_s` no
+ * roteiro, vale o `publishing.video.cta_card_s` da montagem (#13311), a mesma
+ * duração que o build põe no vídeo.
  */
 export function roteiroDuracaoConfigFrom(config: unknown, warn: (msg: string) => void = () => {}): RoteiroDuracaoConfig {
   const r = (config as { publishing?: { video?: { roteiro?: Record<string, unknown> } } })?.publishing?.video?.roteiro ?? {};
@@ -693,7 +697,7 @@ export function roteiroDuracaoConfigFrom(config: unknown, warn: (msg: string) =>
       vertical2: num("alvo_s.vertical2", alvo.vertical2, d.alvoS.vertical2),
     },
     horizontalFolgaS: num("horizontal_folga_s", r.horizontal_folga_s, d.horizontalFolgaS),
-    ctaCardS: num("cta_card_s", r.cta_card_s, d.ctaCardS),
+    ctaCardS: num("cta_card_s", r.cta_card_s, ctaCardDurationFrom(config)),
     pausaVinhetaS: r.pausa_vinheta_s === 0 ? 0 : num("pausa_vinheta_s", r.pausa_vinheta_s, d.pausaVinhetaS),
   };
 }

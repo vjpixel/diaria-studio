@@ -6,7 +6,9 @@
  * `modelos-chatgpt-261108`: fundo #111111, "Gostou?" em Georgia negrito com
  * fio teal (#00A0A0), três itens com ícone teal (Curta o vídeo / Compartilhe
  * com quem … / Siga a diar.ia.br), fade-in de ~0,5 s a partir do preto, ~4 s,
- * sem áudio.
+ * sem áudio. Desde o #13311 (decisão do editor, 16/11/2026) o card fica 2 s
+ * em todas as sequências (horizontal, vertical e cortes), configurável em
+ * `publishing.video.cta_card_s` do `platform.config.json`.
  *
  * Desenho (#12701): o card aprovado é o PNG de `YouTube/_marca/`
  * (`cta-card-vertical.png`, `cta-card-horizontal.png`), feito pelo script
@@ -30,8 +32,11 @@
 
 /** Estilo e tempos do card (#12571). */
 export const CTA_CARD = {
-  /** Duração do card na sequência, em segundos. */
-  durationS: 4,
+  /**
+   * Duração default do card na sequência, em segundos (#13311: 2 s, era 4).
+   * `publishing.video.cta_card_s` do config sobrepõe (`ctaCardDurationFrom`).
+   */
+  durationS: 2,
   /** Fade-in a partir do preto, em segundos (embutido no MP4). */
   fadeInS: 0.5,
   background: "#111111",
@@ -95,6 +100,20 @@ export type CtaCardOrientation = "vertical" | "horizontal";
 
 export function ctaCardOrientation(width: number, height: number): CtaCardOrientation {
   return height > width ? "vertical" : "horizontal";
+}
+
+/**
+ * A duração do card (#13311): `publishing.video.cta_card_s` do
+ * `platform.config.json`, ou o default `CTA_CARD.durationS`. Valor presente
+ * mas inválido (não número, não positivo, ou sem passar do fade-in) cai no
+ * default com aviso; ausente, em silêncio.
+ */
+export function ctaCardDurationFrom(config: unknown, warn: (msg: string) => void = () => {}): number {
+  const v = (config as { publishing?: { video?: { cta_card_s?: unknown } } })?.publishing?.video?.cta_card_s;
+  if (v === undefined) return CTA_CARD.durationS;
+  if (typeof v === "number" && Number.isFinite(v) && v > CTA_CARD.fadeInS) return v;
+  warn(`publishing.video.cta_card_s inválido (${JSON.stringify(v)}; precisa ser um número maior que o fade-in de ${CTA_CARD.fadeInS} s): usando o default ${CTA_CARD.durationS} s (#13311)`);
+  return CTA_CARD.durationS;
 }
 
 /** Quadros do card numa sequência de `fps`. */
