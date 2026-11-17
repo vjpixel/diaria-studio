@@ -680,6 +680,8 @@ export function dedup(
       continue;
     }
     // Keep the best: prefer registered source (no discovered_source flag) + longest title
+    // #13348: vencedor (critério antigo) herda summary de cópia irmã quando vazio
+    // (RSS sem summary + Brave com summary) — senão verify-summary-integrity aborta.
     const sorted = [...group].sort((a, b) => {
       const aDisc = a.discovered_source ? 1 : 0;
       const bDisc = b.discovered_source ? 1 : 0;
@@ -687,6 +689,10 @@ export function dedup(
       return (b.title?.length ?? 0) - (a.title?.length ?? 0);
     });
     const winner = sorted[0];
+    if (!String(winner.summary ?? "").trim()) {
+      const withSummary = sorted.find((a) => String(a.summary ?? "").trim());
+      if (withSummary) winner.summary = withSummary.summary;
+    }
     // #4193: mesma URL canônica capturada 2x (ex: editor mandou um link que o
     // crawler também achou) — se o vencedor escolhido por completude não é a
     // cópia editor_submitted mas outro membro do grupo é, o vencedor herda a
