@@ -31,7 +31,18 @@ import {
   type VinhetaAsset,
   type VinhetaSfx,
 } from "../scripts/lib/diaria/video-montage.ts";
-import { DEFAULT_DRIVE_ROOT, loadVinhetaSfx, loadVinhetaSfxForLocalRoot, xmlVersionHashOf, type XmlBuildOptions } from "../scripts/video-montagem.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import {
+  DEFAULT_DRIVE_ROOT,
+  loadVinhetaSfx,
+  loadVinhetaSfxForDrive,
+  loadVinhetaSfxForLocalRoot,
+  makeDriveSession,
+  vinhetaSfxPremissa,
+  xmlVersionHashOf,
+  type XmlBuildOptions,
+} from "../scripts/video-montagem.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
@@ -213,6 +224,71 @@ describe("#13240: arquivo ausente vira aviso, nunca falha", () => {
     const warns: string[] = [];
     assert.equal(await loadVinhetaSfxForLocalRoot(root, null, { readConfig: () => cfgSom, exists: () => false, warn: (m) => warns.push(m) }), null);
     assert.match(warns[0], /som da vinheta não encontrado em .*_marca.*#13240/);
+  });
+});
+
+describe("#13240: o efeito no modo API do Drive (loadVinhetaSfxForDrive)", () => {
+  it("baixa da _marca/ para o cache, mede lá, grava o caminho do Neo no XML e reaproveita o cache", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vinheta-som-"));
+    let downloads = 0;
+    const file = { id: "som", name: SFX_NAME, size: "3", modifiedTime: "2026-11-17T00:00:00Z" };
+    const drive = makeDriveSession("261117", dir, {
+      driveFetch: async (url) => {
+        const u = new URL(url);
+        if (u.searchParams.get("alt") === "media") { downloads++; return new Response("mp3", { headers: { "Content-Type": "audio/mpeg" } }); }
+        const q = u.searchParams.get("q") ?? "";
+        if (q.includes("'root' in parents")) return Response.json({ files: [{ id: "brand", name: "_marca", mimeType: "application/vnd.google-apps.folder" }] });
+        assert.match(q, /'brand' in parents/);
+        return Response.json({ files: [file] });
+      },
+      uploadFetch: async () => { throw new Error("não sobe"); },
+    }, () => "root");
+    try {
+      const cached = join(dir, "_marca", SFX_NAME);
+      const deps = {
+        readConfig: () => ({ publishing: { video: { vinheta_som: { path: SFX.path, at_s: [0.1, 0.333] } } } }),
+        exists: () => false,
+        probe: (p: string) => {
+          assert.equal(p, cached);
+          return JSON.stringify({ streams: [{ codec_type: "audio", channels: 2, sample_rate: "48000" }], format: { duration: "0.182146" } });
+        },
+        warn: (m: string) => { throw new Error(m); },
+      };
+      const s = await loadVinhetaSfxForDrive(drive, deps);
+      assert.equal(s?.path, SFX.path, "o XML grava o caminho do Neo, não o do cache");
+      assert.equal(s?.localPath, cached);
+      assert.deepEqual(s?.atS, [0.1, 0.333]);
+      assert.equal(s?.durationS, 0.182146);
+      await loadVinhetaSfxForDrive(drive, deps);
+      assert.equal(downloads, 1, "a 2ª chamada usa o cache");
+      // _marca/ ausente no Drive: [aviso] e null, nunca exceção.
+      const warns: string[] = [];
+      drive.deps.driveFetch = async () => Response.json({ files: [] });
+      assert.equal(await loadVinhetaSfxForDrive(drive, { ...deps, warn: (m) => warns.push(m) }), null);
+      assert.match(warns[0], /som da vinheta no Drive: 0 pastas _marca.*#13240/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("sem sessão do Drive: cai no modo local (loadVinhetaSfx)", async () => {
+    const warns: string[] = [];
+    assert.equal(await loadVinhetaSfxForDrive(null, { readConfig: () => ({}), warn: (m) => warns.push(m) }), null);
+    assert.match(warns[0], /sem publishing\.video\.vinheta_som/);
+  });
+});
+
+describe("#13240: a [premissa] do build sobre o som", () => {
+  it("diz que o som de tecla é intencional (decisão de 17/11) e pede conferir se toca nos 2 pontos, nunca se sumiu", () => {
+    const p = vinhetaSfxPremissa(SFX);
+    assert.match(p, /^\[premissa\] o som de tecla em cada ponto da vinheta é intencional/);
+    assert.match(p, /decisão do editor de 17\/11\/2026, #13240/);
+    assert.match(p, /conferir no 1º import se ele toca nos 2 pontos$/);
+    assert.doesNotMatch(p, /sumiu/);
+  });
+
+  it("o build não pede mais para conferir se o som a cada ponto sumiu", () => {
+    const src = readFileSync(join(ROOT, "scripts", "video-montagem.ts"), "utf8");
+    assert.doesNotMatch(src, /som a cada ponto sumiu/);
+    assert.match(src, /if \(vinheta\.sfx\) console\.error\(`   \$\{vinhetaSfxPremissa\(vinheta\.sfx\)\}`\);/);
   });
 });
 

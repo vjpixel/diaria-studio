@@ -857,6 +857,15 @@ export function loadVinhetaSfx(deps: Parameters<typeof loadVinheta>[0] & { probe
   }
 }
 
+/**
+ * #13240: a `[premissa]` do `build` sobre o som da vinheta. Até o #13246 ela
+ * pedia para conferir se o som a cada ponto tinha SUMIDO; desde 17/11/2026 o
+ * som é de propósito, e o que falta conferir é se ele toca em cada ponto.
+ */
+export function vinhetaSfxPremissa(sfx: Pick<VinhetaSfx, "atS">): string {
+  return `[premissa] o som de tecla em cada ponto da vinheta é intencional (decisão do editor de 17/11/2026, #13240): conferir no 1º import se ele toca nos ${sfx.atS.length} pontos`;
+}
+
 /** #13240: o efeito da vinheta resolvido no Drive (cache local para medir e para a prévia), com o caminho do config no XML. */
 export async function loadVinhetaSfxForDrive(
   drive: DriveSession | null,
@@ -3772,7 +3781,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(at.length ? `   som da vinheta nos quadros ${at.map((f) => `${f.start} (${(f.start / source.fps).toFixed(2)} s)`).join(" e ")} (#13240)` : "   [aviso] nenhum instante do som da vinheta cabe na sequência (#13240)");
       }
       const ds = vinhetaDuckSpan(p, source.fps, vinheta);
-      if (ds) console.error(`   [premissa] áudio do bruto ${VINHETA_DUCK_DB} dB sob a vinheta em ${(ds.start / source.fps).toFixed(2)}–${(ds.end / source.fps).toFixed(2)} s (o respiro sem fala; clipe de áudio partido, só o 1º pedaço linkado ao vídeo): conferir no 1º import se o som a cada ponto sumiu (#13240)`);
+      if (ds) console.error(`   [premissa] áudio do bruto ${VINHETA_DUCK_DB} dB sob a vinheta em ${(ds.start / source.fps).toFixed(2)}–${(ds.end / source.fps).toFixed(2)} s (o respiro sem fala; clipe de áudio partido, só o 1º pedaço linkado ao vídeo) (#13246)`);
+      if (vinheta.sfx) console.error(`   ${vinhetaSfxPremissa(vinheta.sfx)}`);
     }
     // #12101: a pausa longa depois do título no horizontal é o respiro da vinheta, de propósito.
     if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath && breathBlock ? [breathBlock] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
