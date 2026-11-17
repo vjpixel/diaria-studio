@@ -92,4 +92,19 @@ describe("#13413 — \\b mal escapado no JSON do vocabulário", () => {
     assert.deepEqual(vocabRuleWarnings(undefined, "x"), []);
     assert.deepEqual(vocabRuleWarnings([null, { pattern: 3 }], "x"), []);
   });
+
+  it("as mensagens que citam o pattern não imprimem o backspace cru", () => {
+    // Regra que apagaria a palavra: o aviso cita o pattern já com \b.
+    const erase = JSON.parse(String.raw`[{"pattern": "\bhidrogênio\\.", "replacement": ""}]`) as VocabRule[];
+    const warns: string[] = [];
+    applyVocabularyToWords([{ start: 0, end: 1, text: "hidrogênio." }], erase, undefined, (m) => warns.push(m));
+    assert.equal(warns.length, 1, warns.join("\n"));
+    assert.ok(warns[0].includes(String.raw`/\bhidrogênio\./`), warns[0]);
+    assert.ok(!warns[0].includes("\u0008"), warns[0]);
+    // Regex inválida: o erro da validação cita a fonte consertada.
+    const invalid = JSON.parse(String.raw`[{"pattern": "\b(hidrog", "replacement": "x"}]`);
+    const errs = validateVocabRules(invalid, "blocks.json vocabulary");
+    assert.equal(errs.length, 1, errs.join("\n"));
+    assert.ok(!errs[0].includes("\u0008"), errs[0]);
+  });
 });

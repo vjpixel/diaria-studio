@@ -2420,6 +2420,7 @@ function loadDecupagemPlan(ctx: Ctx, segments: Segment[]): DecupagemPlan | null 
   const parsed = parseDecupagemPlan(JSON.parse(readFileSync(path, "utf8")), segments.length);
   if (!parsed.ok) throw new Error(`decupagem-plan.json inválido:\n  - ${parsed.errors.join("\n  - ")}`);
   if (parsed.plan.edition !== ctx.edition) throw new Error(`decupagem-plan.json é da edição ${parsed.plan.edition}, não ${ctx.edition}`);
+  warnVocabOnce(vocabRuleWarnings(parsed.plan.vocabulary, "decupagem-plan.json vocabulary"));
   return parsed.plan;
 }
 

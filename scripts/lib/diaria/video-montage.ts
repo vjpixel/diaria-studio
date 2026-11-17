@@ -4385,7 +4385,7 @@ export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target
     if (r.targets && (!target || !sequenceInList(r.targets, target))) continue;
     const next = applyRuleToWords(cur, r);
     if (next === null) {
-      warn?.(`regra de vocabulário /${r.pattern}/ apagaria palavras; pulada`);
+      warn?.(`regra de vocabulário /${vocabPatternSource(r.pattern)}/ apagaria palavras; pulada`);
       continue;
     }
     cur = next;
