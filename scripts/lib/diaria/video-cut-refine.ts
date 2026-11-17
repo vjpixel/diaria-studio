@@ -748,6 +748,26 @@ export const SPEECH_DETECT = {
   protectStretchSoundS: 0.06,
   protectStretchLocalWindowS: 2,
   protectStretchAboveLocalFloorDb: 12,
+  /**
+   * #12089 (review da PR #13450): com as ilhas, o piso local sai só dos
+   * quadros FORA delas (os da pausa). Medido sobre a janela inteira, numa fala
+   * densa o percentil caía nos vales entre sílabas e a fala baixa dentro da
+   * pausa deixava de contar como som. Sobre os quadros de pausa o piso é o
+   * percentil `protectStretchFloorPercentile` (o p10 da janela inteira, com
+   * 30–40% de pausa, caía perto do p25 dela; o p10 só da pausa mede abaixo do
+   * ruído de sala e, na 261116, fazia a cauda de -62 a -68 dB de "e" em
+   * 918,31 s contar como som, devolvendo 1,4 s de pausa ao clipe). Com menos
+   * de `protectStretchFloorMinS` de quadros de pausa na janela não há piso
+   * confiável: a palavra segue protegida.
+   */
+  protectStretchFloorPercentile: 0.25,
+  protectStretchFloorMinS: 0.25,
+  /**
+   * #12089 (review da PR #13450): com os limiares do detector, o limiar de
+   * som nunca passa de `protectStretchBelowDetectDb` abaixo deles (o teste
+   * nunca exige mais do que o detector já descartou como não-fala).
+   */
+  protectStretchBelowDetectDb: 3,
 } as const;
 
 /** Opções numéricas que sobrepõem chaves de `SPEECH_DETECT` (o `as const` faria `Pick` aceitar só o literal). */
@@ -1165,25 +1185,56 @@ export function speechPauseSilences(islands: Interval[], durationS: number, opts
  * #12089 (261116): há som entre `a` e `b`? Som = `protectStretchSoundS`
  * seguidos acima do piso LOCAL (percentil `floorPercentile` dos quadros em
  * ±`protectStretchLocalWindowS`) + `protectStretchAboveLocalFloorDb`, no sinal
- * cheio ou na 1ª diferença. Sem quadro útil para medir o piso, responde que há
- * som (na dúvida, a palavra segue protegida).
+ * cheio ou na 1ª diferença. Com `islands` (review da PR #13450), o piso sai só
+ * dos quadros fora das ilhas, no percentil `protectStretchFloorPercentile`
+ * (a fala densa da janela não o contamina), e com
+ * menos de `protectStretchFloorMinS` deles responde que há som. Com
+ * `detectDb` (os limiares do detector), o limiar de som fica no máximo
+ * `protectStretchBelowDetectDb` abaixo deles. Sem quadro útil para medir o
+ * piso, responde que há som (na dúvida, a palavra segue protegida).
  */
 export function pauseSpanHasSound(
   e: Pick<FrameEnergy, "hopS" | "fullDb" | "diffDb">,
   a: number,
   b: number,
-  opts: SpeechDetectOpts<"protectStretchSoundS" | "protectStretchLocalWindowS" | "protectStretchAboveLocalFloorDb" | "floorPercentile"> = {},
+  opts: SpeechDetectOpts<
+    | "protectStretchSoundS"
+    | "protectStretchLocalWindowS"
+    | "protectStretchAboveLocalFloorDb"
+    | "floorPercentile"
+    | "protectStretchFloorPercentile"
+    | "protectStretchFloorMinS"
+    | "protectStretchBelowDetectDb"
+  > & {
+    /** As ilhas do detector: o piso local sai só dos quadros fora delas. */
+    islands?: Interval[];
+    /** Os limiares do detector (`SpeechThresholds`): teto do limiar de som. */
+    detectDb?: { fullDb: number; diffDb: number };
+  } = {},
 ): boolean {
   const n = e.fullDb.length;
   const win = opts.protectStretchLocalWindowS ?? SPEECH_DETECT.protectStretchLocalWindowS;
   const above = opts.protectStretchAboveLocalFloorDb ?? SPEECH_DETECT.protectStretchAboveLocalFloorDb;
-  const p = opts.floorPercentile ?? SPEECH_DETECT.floorPercentile;
+  const p = opts.islands
+    ? (opts.protectStretchFloorPercentile ?? SPEECH_DETECT.protectStretchFloorPercentile)
+    : (opts.floorPercentile ?? SPEECH_DETECT.floorPercentile);
   const need = Math.max(1, Math.round((opts.protectStretchSoundS ?? SPEECH_DETECT.protectStretchSoundS) / e.hopS));
   const w0 = Math.max(0, Math.floor((a - win) / e.hopS));
   const w1 = Math.min(n, Math.ceil((b + win) / e.hopS));
+  // Quadros que medem o piso: com as ilhas, só os de pausa (fora delas).
+  const usable = new Uint8Array(w1 - w0).fill(1);
+  if (opts.islands) {
+    for (const s of opts.islands) {
+      const s0 = Math.max(w0, Math.floor(s.start / e.hopS + 1e-9));
+      const s1 = Math.min(w1, Math.ceil(s.end / e.hopS - 1e-9));
+      for (let i = s0; i < s1; i++) usable[i - w0] = 0;
+    }
+    const minFrames = Math.round((opts.protectStretchFloorMinS ?? SPEECH_DETECT.protectStretchFloorMinS) / e.hopS);
+    if (usable.reduce((sum, v) => sum + v, 0) < minFrames) return true;
+  }
   const local = (db: Float64Array): number | null => {
     const vals: number[] = [];
-    for (let i = w0; i < w1; i++) if (Number.isFinite(db[i]) && db[i] > ENVELOPE_DEFAULTS.floorDb) vals.push(db[i]);
+    for (let i = w0; i < w1; i++) if (usable[i - w0] && Number.isFinite(db[i]) && db[i] > ENVELOPE_DEFAULTS.floorDb) vals.push(db[i]);
     if (!vals.length) return null;
     vals.sort((x, y) => x - y);
     return vals[Math.min(vals.length - 1, Math.floor(p * vals.length))];
@@ -1191,11 +1242,14 @@ export function pauseSpanHasSound(
   const fullFloor = local(e.fullDb);
   const diffFloor = local(e.diffDb);
   if (fullFloor === null || diffFloor === null) return true;
+  const below = opts.protectStretchBelowDetectDb ?? SPEECH_DETECT.protectStretchBelowDetectDb;
+  const fullLim = Math.min(fullFloor + above, opts.detectDb ? opts.detectDb.fullDb - below : Infinity);
+  const diffLim = Math.min(diffFloor + above, opts.detectDb ? opts.detectDb.diffDb - below : Infinity);
   const i0 = Math.max(0, Math.floor(a / e.hopS + 1e-9));
   const i1 = Math.min(n, Math.ceil(b / e.hopS - 1e-9));
   let run = 0;
   for (let i = i0; i < i1; i++) {
-    run = e.fullDb[i] > fullFloor + above || e.diffDb[i] > diffFloor + above ? run + 1 : 0;
+    run = e.fullDb[i] > fullLim || e.diffDb[i] > diffLim ? run + 1 : 0;
     if (run >= need) return true;
   }
   return false;
@@ -1228,6 +1282,8 @@ export function protectTranscribedWords(
      * perde a proteção. Palavra sem nenhum trecho em ilha segue protegida.
      */
     energy?: Pick<FrameEnergy, "hopS" | "fullDb" | "diffDb">;
+    /** Review da PR #13450: os limiares do detector, teto do limiar de som de `pauseSpanHasSound`. */
+    detectDb?: { fullDb: number; diffDb: number };
   } = {},
 ): {
   silences: Interval[];
@@ -1258,7 +1314,7 @@ export function protectTranscribedWords(
         !sorted.some((p) => {
           const a = Math.max(raw.start, p.start);
           const b = Math.min(raw.end, p.end);
-          return b - a > 1e-9 && pauseSpanHasSound(opts.energy!, a, b);
+          return b - a > 1e-9 && pauseSpanHasSound(opts.energy!, a, b, { islands: opts.islands, ...(opts.detectDb ? { detectDb: opts.detectDb } : {}) });
         });
       if (inIslands > 1e-9 && (inIslands >= minFrac * dur - 1e-9 || cut < maxCut - 1e-9 || silentInPause())) {
         stretchedWords.push({ text: (raw.text ?? "").trim(), start: raw.start, end: raw.end, cutS: round3(cut) });
@@ -1303,7 +1359,9 @@ const ilhaAt = (islands: Interval[], t: number) => islands.find((s) => s.start <
  *  - emenda com pausa acima de `longJoinPauseS` (cauda do clipe anterior +
  *    entrada do seguinte, medidas até a fala detectada);
  *  - pausa acima de `longJoinPauseS` entre duas ilhas DENTRO de um clipe (a
- *    que o corte não tirou: palavra protegida, item sem corte; 261116, #12089);
+ *    que o corte não tirou: palavra protegida, item sem corte; 261116, #12089),
+ *    menos no último clipe de um bloco em `longJoinOkAfter` (o respiro da
+ *    vinheta é pausa de propósito);
  *  - clipe abaixo de `shortClipS` (pulo de imagem visível);
  *  - entrada ou saída de clipe em plena fala (dentro de uma ilha): a entrada
  *    depois do ataque come o começo da palavra ("A empresa", "Porque" na 261104).
@@ -1330,7 +1388,11 @@ export function speechJoinWarnings(
     if (ilhaAt(islands, a)) out.push(`${c.block}: entrada em ${a.toFixed(2)} s do bruto (${at(c.seqStart)} da sequência) cai dentro da fala: pode comer o começo da palavra`);
     if (ilhaAt(islands, b)) out.push(`${c.block}: saída em ${b.toFixed(2)} s do bruto cai dentro da fala: pode comer o fim da palavra`);
     // #12089 (261116): a pausa que o corte não tirou fica DENTRO do clipe (palavra protegida, item sem corte), não só na emenda.
-    const inside = speechIn(a, b);
+    // Review da PR #13450: o último clipe de um bloco em `longJoinOkAfter` é esticado até o respiro da vinheta
+    // (`buildSequencePlan`); ilha solta nesse respiro não é pausa esquecida, mesma isenção da emenda.
+    const next0 = clips[i + 1];
+    const intentionalTail = okAfter.has(c.block) && (!next0 || next0.block !== c.block);
+    const inside = intentionalTail ? [] : speechIn(a, b);
     for (let k = 1; k < inside.length; k++) {
       const g0 = Math.max(a, inside[k - 1].end);
       const g1 = Math.min(b, inside[k].start);
@@ -1338,7 +1400,7 @@ export function speechJoinWarnings(
         out.push(`${c.block}: pausa de ${(g1 - g0).toFixed(2)} s dentro do clipe em ${at(c.seqStart + (g0 - a) * fps)} da sequência (bruto ${g0.toFixed(2)}–${g1.toFixed(2)} s, acima de ${longPause} s): o corte não a tirou; conferir no Premiere`);
       }
     }
-    const next = clips[i + 1];
+    const next = next0;
     if (!next) return;
     if (okAfter.has(c.block) && next.block !== c.block) return;
     const mine = speechIn(a, b);

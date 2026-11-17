@@ -13,6 +13,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { buildSequencePlan, type ResolvedItem, type SourceInfo, type Word } from "../scripts/lib/diaria/video-montage.ts";
 import {
   SPEECH_DETECT,
@@ -169,5 +171,98 @@ describe("#12089 (261116): aviso de pausa longa dentro do clipe", () => {
     assert.ok(!cut.some((x) => x.includes("dentro do clipe")), JSON.stringify(cut));
     const short = speechJoinWarnings([clip(0.85, 6.12)], [{ start: 1, end: 3 }, { start: 3.3, end: 6 }], FPS);
     assert.ok(!short.some((x) => x.includes("dentro do clipe")), JSON.stringify(short));
+  });
+});
+
+describe("#12089 (review da PR #13450): o piso local sai dos quadros de pausa, não da fala densa", () => {
+  // 4 s de fala densa (sílabas a -20 dB, vales de 50 ms a -46 dB) com uma pausa de 0,35 s (3,00–3,35 s) e,
+  // dentro dela, 100 ms de fala baixa a -58 dB. Na janela de ±2 s os quadros de pausa são menos de 10%:
+  // o p10 da janela inteira cai nos vales da fala, o limiar sobe a -34 dB e a fala baixa deixa de contar.
+  const islands = [{ start: 1, end: 3 }, { start: 3.35, end: 6 }];
+  const segs: Array<[number, number, number, boolean, number?]> = [];
+  for (const s of islands) {
+    for (let t = s.start; t < s.end - 1e-9; t += 0.15) segs.push([t, Math.min(s.end, t + 0.1), -20, true], [t + 0.1, Math.min(s.end, t + 0.15), -46, true]);
+  }
+  segs.push([3.12, 3.22, -58, true]);
+  const e = envelope(10, segs);
+  const pauses = speechPauseSilences(islands, 10, { padBeforeS: 0.05, padAfterS: 0.05 });
+  // O "e" do Whisper de 2,85 a 3,45 s: 0,25 s dos 0,6 s em ilhas (42%), 0,25 s na pausa (acima de protectStretchMaxCutS).
+  const words: Word[] = [{ start: 2.85, end: 3.45, text: "e" }];
+
+  it("pauseSpanHasSound: o piso da janela inteira (sem as ilhas) não vê a fala baixa; o piso da pausa vê", () => {
+    assert.equal(pauseSpanHasSound(e, 3.05, 3.3), false, "o comportamento contaminado que o review apontou");
+    assert.equal(pauseSpanHasSound(e, 3.05, 3.3, { islands }), true);
+  });
+
+  it("protectTranscribedWords: a palavra sobre a fala baixa segue protegida", () => {
+    const g = protectTranscribedWords(pauses, words, { islands, energy: e });
+    assert.deepEqual(g.protectedWords.map((w) => w.text), ["e"]);
+    assert.deepEqual(g.stretchedWords, []);
+  });
+
+  it("menos de protectStretchFloorMinS de quadros de pausa na janela: sem piso confiável, responde que há som", () => {
+    const tight = [{ start: 1, end: 3 }, { start: 3.2, end: 6 }];
+    const flat = envelope(10, [[1, 3, -20, true], [3.2, 6, -20, true]]);
+    assert.equal(pauseSpanHasSound(flat, 3, 3.2), false, "sem as ilhas, o trecho no piso não tem som");
+    assert.equal(pauseSpanHasSound(flat, 3, 3.2, { islands: tight }), true);
+  });
+
+  it("com os limiares do detector, o limiar de som nunca passa de protectStretchBelowDetectDb abaixo deles", () => {
+    // Pausa ruidosa (-45 dB no cheio): piso + 12 = -33 dB, acima do que o detector (-46/-60) já descartou.
+    const isl = [{ start: 1, end: 3 }, { start: 4, end: 6 }];
+    const noisy = envelope(10, [[1, 3, -20, true], [3, 4, -45, false, -75], [3.4, 3.5, -38, true, -75], [4, 6, -20, true]]);
+    assert.equal(pauseSpanHasSound(noisy, 3.2, 3.8, { islands: isl }), false);
+    assert.equal(pauseSpanHasSound(noisy, 3.2, 3.8, { islands: isl, detectDb: { fullDb: -46, diffDb: -60 } }), true);
+  });
+
+  it("a pausa no piso de verdade segue sem som com as ilhas e os limiares (o fix da 261116 continua)", () => {
+    const isl = [{ start: 1, end: 3 }, { start: 3.9, end: 6 }];
+    const quiet = envelope(10, [[1, 3, -20, true], [3.9, 6, -20, true]]);
+    assert.equal(pauseSpanHasSound(quiet, 3.12, 3.75, { islands: isl, detectDb: { fullDb: -46, diffDb: -60 } }), false);
+  });
+
+  it("zumbido de -52 dB com piso global de -79 dB, com as ilhas e os limiares do build da 261116: sem som", () => {
+    const segs2: Array<[number, number, number, boolean, number?]> = [];
+    for (let t = 0; t < 10; t += 0.04) segs2.push([t, t + 0.02, -52, false, -78], [t + 0.02, t + 0.04, -56, false, -80]);
+    segs2.push([1, 3, -25, true, -45], [5, 7, -25, true, -45]);
+    const hum = envelope(60, segs2);
+    const isl = [{ start: 1, end: 3 }, { start: 5, end: 7 }];
+    assert.equal(pauseSpanHasSound(hum, 3.2, 4.8, { islands: isl, detectDb: { fullDb: -46, diffDb: -60 } }), false);
+  });
+});
+
+describe("#12089 (review da PR #13450): o respiro da vinheta (longJoinOkAfter) não avisa pausa dentro do clipe", () => {
+  // O clipe do título é esticado até o respiro (1,7 s depois da fala, em 3,0 s); uma ilha solta no meio dele.
+  const islands = [{ start: 1, end: 3 }, { start: 3.8, end: 3.9 }, { start: 10, end: 12 }];
+  const clips = [
+    { block: "titulo", frameIn: Math.round(0.85 * FPS), frameOut: Math.round(4.7 * FPS), seqStart: 0 },
+    { block: "comentario", frameIn: Math.round(9.85 * FPS), frameOut: Math.round(12.12 * FPS), seqStart: Math.round(3.85 * FPS) },
+  ];
+
+  it("com longJoinOkAfter: [\"titulo\"]: sem aviso de pausa dentro do clipe do título", () => {
+    const w = speechJoinWarnings(clips, islands, FPS, { longJoinOkAfter: ["titulo"] });
+    assert.ok(!w.some((x) => x.includes("dentro do clipe")), JSON.stringify(w));
+  });
+
+  it("sem a isenção: a mesma ilha solta avisa (controle)", () => {
+    const w = speechJoinWarnings(clips, islands, FPS);
+    assert.ok(w.some((x) => x.startsWith("titulo:") && x.includes("dentro do clipe")), JSON.stringify(w));
+  });
+});
+
+describe("#12089 (review da PR #13450): o build passa a energia e os limiares para a proteção de palavra", () => {
+  // Teste de fonte: sem a energia no call site, o fix da 261116 cai em silêncio (a regra volta a ser a de antes).
+  const src = readFileSync(fileURLToPath(new URL("../scripts/video-montagem.ts", import.meta.url)), "utf8");
+
+  it("plans() chama protectTranscribedWords com islands, energy e detectDb do SpeechCut", () => {
+    const call = src.match(/protectTranscribedWords\(speech\.silences,[^\n]*\)/);
+    assert.ok(call, "chamada de protectTranscribedWords em plans() não encontrada");
+    assert.match(call[0], /islands: speech\.islands/);
+    assert.match(call[0], /energy: speech\.energy/);
+    assert.match(call[0], /detectDb: speech\.detectDb/);
+  });
+
+  it("speechDetection devolve a energia e os limiares do detector no SpeechCut", () => {
+    assert.match(src, /cut: \{ islands, silences: speechPauseSilences\(islands, source\.durationS\), energy, detectDb: \{ fullDb: th\.fullDb, diffDb: th\.diffDb \} \}/);
   });
 });
