@@ -15,7 +15,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { fireQueueEntry, LINKEDIN_PAGE_COMMENT_BASE, type LinkedInCreds } from "../src/dispatch.ts";
+import { fireQueueEntry, LINKEDIN_PAGE_COMMENT_BASE, V2_COMMENT_5XX_HINT, type LinkedInCreds } from "../src/dispatch.ts";
 import type { QueueEntry } from "../src/index.ts";
 
 const CREDS: LinkedInCreds = {
@@ -84,6 +84,24 @@ describe("#13101 comentário da página pelo /v2/socialActions", () => {
     const out = await fireQueueEntry(commentEntry(), config);
     assert.equal(out.status, "dlq");
     assert.match((out as { reason: string }).reason, /POST \/v2\/socialActions\/comments: HTTP 403/);
+  });
+
+  it("5xx do /v2 → send_unknown (sem reclassificar), citando o endpoint, o HTTP 500 e o aviso de corpo inválido", async () => {
+    installFetch(() => new Response('{"status":500}', { status: 500 }));
+    const out = await fireQueueEntry(commentEntry(), config);
+    assert.equal(out.status, "send_unknown");
+    const reason = (out as { reason: string }).reason;
+    assert.match(reason, /^send_unknown:/);
+    assert.match(reason, /POST \/v2\/socialActions\/comments: HTTP 500/);
+    assert.ok(reason.includes(V2_COMMENT_5XX_HINT), reason);
+    assert.ok(reason.includes("o /v2 devolve 500 também para corpo inválido"), reason);
+  });
+
+  it("4xx do /v2 não leva o aviso de 5xx", async () => {
+    installFetch(() => new Response("bad", { status: 400 }));
+    const out = await fireQueueEntry(commentEntry(), config);
+    assert.equal(out.status, "dlq");
+    assert.ok(!(out as { reason: string }).reason.includes(V2_COMMENT_5XX_HINT));
   });
 
   it("busca do post pelo horário segue no /rest/posts; só o comentário vai para o /v2", async () => {

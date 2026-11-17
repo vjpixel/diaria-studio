@@ -658,6 +658,10 @@ function linkedInV2Headers(creds: LinkedInCreds): Record<string, string> {
 /** #13101 — base do comentário da página (ver `linkedInV2Headers`). */
 export const LINKEDIN_PAGE_COMMENT_BASE = "https://api.linkedin.com/v2/socialActions";
 
+/** #13101 — aviso anexado ao `send_unknown` de um 5xx do comentário pelo `/v2`. */
+export const V2_COMMENT_5XX_HINT =
+  "o /v2 devolve 500 também para corpo inválido; se o post não tiver o comentário, foi rejeição, não falha de rede";
+
 /**
  * Classifica a resposta de um POST que CRIA algo no LinkedIn (post de repost,
  * comentário): 2xx = `fired`; 4xx = rejeição definitiva, nada criado = `dlq`;
@@ -854,7 +858,13 @@ async function fireLinkedInPageComment(entry: QueueEntry, creds: LinkedInCreds):
       body: JSON.stringify({ actor: creds.authorUrn, object: target, message: { text: entry.text } }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    return classifyLinkedInCreate(res, `LinkedIn comentário da página em ${target}: POST /v2/socialActions/comments`);
+    const out = await classifyLinkedInCreate(res, `LinkedIn comentário da página em ${target}: POST /v2/socialActions/comments`);
+    // #13101 — o /v2 devolve 500 até para corpo inválido (medido em 17/11), então
+    // o 5xx daqui é ambíguo de verdade: segue send_unknown, mas a razão avisa.
+    if (out.status === "send_unknown" && res.status >= 500) {
+      return { ...out, reason: `${out.reason}; ${V2_COMMENT_5XX_HINT}` };
+    }
+    return out;
   } catch (e) {
     return {
       status: "send_unknown",
