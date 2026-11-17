@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { recordUnitTimeline, recordTrainMergedTimeline } from "../scripts/lib/overnight-unit-timeline.ts";
+import { isTimelineEvent, recordUnitTimeline, recordTrainMergedTimeline } from "../scripts/lib/overnight-unit-timeline.ts";
 import { buildTimelineRows } from "../scripts/render-overnight-timeline.ts";
 
 const start = "2026-11-03T12:00:00.000Z";
@@ -18,6 +18,20 @@ it("updates every issue in a batch, preserves prior events and unrelated entries
   assert.equal(next.issues[2], plan.issues[2]);
   assert.equal(plan.issues[1].timeline, undefined);
   assert.deepEqual(recordUnitTimeline(next, [1, 2], "dispatch", end), next);
+});
+
+it("review_done and gate2 are timeline events and keep the first observation (#13271)", () => {
+  assert.ok(isTimelineEvent("review_done"));
+  assert.ok(isTimelineEvent("gate2"));
+  assert.ok(!isTimelineEvent("gate2_extra"));
+  assert.ok(!isTimelineEvent("review"));
+  const plan = { issues: [{ number: 1 }, { number: 2 }] };
+  for (const mark of ["ci_green", "review_done", "gate2"]) {
+    const first = recordUnitTimeline(plan, [1, 2], mark, start);
+    const repeated = recordUnitTimeline(first, [1, 2], mark, end);
+    assert.deepEqual(repeated, first);
+    assert.equal((repeated.issues as any[])[1].timeline[mark], start);
+  }
 });
 
 it("dict identity distinguishes repositories with the same issue number", () => {
@@ -54,7 +68,7 @@ it("wave CLI and lifecycle CLI populate a renderable timeline without manual pla
     assert.match(noRepairOut, /no-op idempotente/);
     assert.doesNotMatch(noRepairOut, /timeline reparada/);
     assert.equal(read().waves.length, 1);
-    for (const message of ["pr_opened", "fix_iteration", "merged"]) {
+    for (const message of ["pr_opened", "fix_iteration", "ci_green", "review_done", "gate2", "merged"]) {
       run("log-event.ts", ["--edition", "261103b", "--agent", "overnight", "--message", message,
         "--details", JSON.stringify({ issues: [1], pr: 100, tentativa: 3 })]);
     }
@@ -64,6 +78,11 @@ it("wave CLI and lifecycle CLI populate a renderable timeline without manual pla
     assert.ok(plan.issues[0].timeline.fix_iteration_3);
     assert.ok(plan.issues[0].timeline.merged);
     assert.equal(plan.issues[1].timeline.merged, undefined);
+    // #13271: os marcos novos passam pelo log-event.ts como os antigos.
+    for (const mark of ["ci_green", "review_done", "gate2"]) {
+      assert.ok(Number.isFinite(Date.parse(plan.issues[0].timeline[mark])), mark);
+      assert.equal(plan.issues[1].timeline?.[mark], undefined);
+    }
     const rows = buildTimelineRows(plan);
     assert.notEqual(rows[0].durationMs, null);
   } finally { rmSync(root, { recursive: true, force: true }); }
