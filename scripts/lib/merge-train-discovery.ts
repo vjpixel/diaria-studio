@@ -26,11 +26,22 @@ export function runGh(args: string[], cwd: string): RunResult {
   return { ok: true, stdout: result.stdout };
 }
 
-/** Lista arquivos tocados por um PR, via `gh pr diff N --name-only`. */
-export function filesForPr(prNumber: number, cwd: string): string[] {
-  const res = runGh(["pr", "diff", String(prNumber), "--name-only"], cwd);
+/**
+ * Lista arquivos tocados por um PR, paginando `pulls/{N}/files`. `gh pr diff
+ * --name-only` devolve HTTP 406 acima de 300 arquivos (#13386) — PR de
+ * backfill em massa travava o trem inteiro.
+ */
+export function filesForPr(
+  prNumber: number,
+  cwd: string,
+  run: (args: string[], cwd: string) => RunResult = runGh,
+): string[] {
+  const res = run(
+    ["api", `repos/vjpixel/diaria-studio/pulls/${prNumber}/files`, "--paginate", "--jq", ".[].filename"],
+    cwd,
+  );
   if (!res.ok) {
-    throw new Error(`gh pr diff --name-only falhou pro PR #${prNumber}: ${res.error}`);
+    throw new Error(`gh api pulls/${prNumber}/files falhou pro PR #${prNumber}: ${res.error}`);
   }
   return res.stdout
     .split("\n")

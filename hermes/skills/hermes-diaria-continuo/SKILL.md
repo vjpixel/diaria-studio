@@ -240,7 +240,7 @@ ordem:
    labela a PR na 1ª vez que ela é rejeitada (mesmo mecanismo de
    `continuo-escalado`, #7446 item 2) — antes disso `reject` não tinha
    NENHUM sinal persistente além de um comentário que se deduplica sozinho a
-   partir da 2ª vez (achado ao vivo: PR #7593, rejeitada e esquecida). Ao
+   partir da 2ª vez. Ao
    achar uma PR com esse label neste passo, decidir e agir, nunca só contar
    no relatório: (a) branch `continuo/*` com causa consertável (mesma
    disciplina do §3b — CI vermelho, achado pontual, diff pequeno) → push do
@@ -253,7 +253,7 @@ ordem:
    sem custo deixar) — ele só existe pra tornar a PR rejeitada BUSCÁVEL
    (`gh pr list --label continuo-rejeitado`), nunca precisa ser limpo.
 2. **Guard de caminho sensível** (fail-closed, #12884): `npx tsx
-   scripts/lib/sensitive-path-guard.ts --files "$(gh pr diff N --name-only | paste -sd, -)" --json`.
+   scripts/lib/sensitive-path-guard.ts --files "$(gh api repos/vjpixel/diaria-studio/pulls/N/files --paginate --jq '.[].filename' | paste -sd, -)" --json`.
    PR `N`: lista vazia, `"sensitive": true` ou erro/saída inválida
    (gh) → NÃO mergear; comentar e encaminhar.
 3. **Review independente pré-merge** (pipeline `requesting-code-review`,

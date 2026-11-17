@@ -381,7 +381,7 @@ export function parseRefsIssues(body: string): number[] {
   return [...found].sort((a, b) => a - b);
 }
 
-/** Título do PR-trem descartável (achado pelo `gh pr diff --name-only` de
+/** Título do PR-trem descartável (achado pela listagem `pulls/{N}/files` de
  * cada PR do lote, aberto só pra disparar o run único de CI sobre a
  * combinação — nunca é o merge final, ver `mergeTrainBatch` em
  * `merge-train-live.ts`). */
