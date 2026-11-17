@@ -382,7 +382,7 @@ describe("#13117 rotas de atualização de texto mantêm a linha da bio", () => 
     // #13209: flag desligada (o default) tira a linha mesmo com ctaVertical.
     assert.doesNotMatch(run(true, false), BIO);
     // #13274: no lugar dela, a chamada sem link; sem ctaVertical, nenhuma das duas.
-    assert.match(run(true, false), /Vídeo completo no YouTube: @diariabr/);
+    assert.match(run(true, false), /Vídeo completo no canal diar\.ia\.br do YouTube/);
     assert.doesNotMatch(run(false, false), /no YouTube: @diariabr/);
   });
 

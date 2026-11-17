@@ -75,6 +75,7 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { withFileLock } from "./lib/file-lock.ts";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { buildSpawnInvocation } from "./lib/spawn-argv.ts";
 import { currentSessionId } from "./lib/session-transcript.ts";
 import {
   PHASE_META,
@@ -136,7 +137,9 @@ export interface PhaseCliDeps {
 
 function defaultSpawn(argv: string[], onStart: (pid: number | undefined) => void): Promise<{ code: number; signal: NodeJS.Signals | null }> {
   return new Promise((resolvePromise) => {
-    const child = spawn(argv[0], argv.slice(1), { stdio: "inherit", shell: process.platform === "win32" });
+    // #13351: sem `shell: true` com array (concatena sem escapar, DEP0190): no Windows a linha do cmd sai escapada.
+    const inv = buildSpawnInvocation(argv);
+    const child = spawn(inv.command, inv.args, { stdio: "inherit", ...inv.options });
     onStart(child.pid);
     const forward = (sig: NodeJS.Signals) => {
       try {
