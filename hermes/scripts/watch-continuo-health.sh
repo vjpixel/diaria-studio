@@ -204,21 +204,9 @@ else
 fi
 
 # ── 3. claims vazando de novo? ───────────────────────────────────────────────
-LEAK=$(npx tsx scripts/lib/session-registry.ts active-of-kind --kind continuo 2>/dev/null | python3 -c "
-import sys, json, datetime as dt
-try:
-    d = json.load(sys.stdin)
-    now = dt.datetime.now(dt.timezone.utc)
-    for s in d.get('sessions', []):
-        # #10618 (fatia 4): claim de outro repo (owner/repo#N) também prende fila.
-        claims = (s.get('claimed_issues') or []) + (s.get('claimed_foreign_issues') or [])
-        hb = s.get('lastHeartbeat')
-        if not claims or not hb: continue
-        age_min = (now - dt.datetime.fromisoformat(hb.replace('Z', '+00:00'))).total_seconds() / 60
-        if age_min > 45:
-            print(f\"{s['sessionId']}: claims={claims} heartbeat parado há {age_min:.0f}min\")
-except Exception:
-    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+# #13418: só vaza claim de issue ABERTA sem PR aberto — claim com PR em curso é
+# legítima (SKILL.md "Fim de tick") e a de issue já fechada não prende nada.
+LEAK=$(npx tsx scripts/lib/session-registry.ts active-of-kind --kind continuo 2>/dev/null | npx tsx scripts/check-continuo-claim-leaks.ts 2>/dev/null || echo "__ERR__")
 case "$LEAK" in *__ERR__*) LEAK="__ERR__" ;; esac
 if [ "$LEAK" = "__ERR__" ]; then
   echo "[watch] claims: INDETERMINADO (registry/parse falhou)" >&2; FAILS=$((FAILS+1)); LEAK=""
