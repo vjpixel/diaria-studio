@@ -24,6 +24,10 @@
  *
  * Output: stdout JSON com `{ injected, total_pool_size, urls[] }`
  *
+ * #13331: também injeta os destaques reservados para esta edição por
+ * `reserve-destaque.ts` (`reserved-destaques.json` no mesmo `_internal/` do
+ * `--out`), com `editor_destaque_request` = posição reservada.
+ *
  * `--validate-pool`: sanity check do merge interno deste script. Confirma que
  * o pool resultante contém todas as URLs extraídas. Como o merge é feito por
  * este próprio script, falha apenas em bug interno (defensive guard).
@@ -45,6 +49,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 import { detectDestaqueRequest } from "./lib/destaque-upgrade.ts"; // #12193
+import { mergeReservationsIntoInjected, readReservedDestaques } from "./lib/reserved-destaques.ts"; // #13331
 
 /** #12193: e-mail com mais links que isto não é pedido de destaque de UM link. */
 export const MAX_URLS_FOR_DESTAQUE_REQUEST = 3;
@@ -564,7 +569,24 @@ async function main(): Promise<void> {
   }
 
   const submissionCounts = countSubmissionSources(allBlocks, capturedNewsletters, editorEmail);
-  const injected = [...injectedFromEditor, ...injectedFromNewsletters];
+
+  // #13331: destaques reservados para esta edição por `reserve-destaque.ts`
+  // (`_internal/reserved-destaques.json`, ao lado do `--out`). Entram como
+  // pedido de destaque do editor, igual ao "d1" do e-mail (#12193). Arquivo
+  // ilegível lança: reserva perdida em silêncio é a falha que o #13331 evita.
+  const targetPath = resolve(ROOT, outPath);
+  const reservations = readReservedDestaques(dirname(targetPath));
+  const withReservations = mergeReservationsIntoInjected(
+    [...injectedFromEditor, ...injectedFromNewsletters],
+    reservations,
+  );
+  const injected = withReservations.injected as SyntheticInboxArticle[];
+  if (reservations.length > 0) {
+    console.error(
+      `[inject-inbox-urls] ${reservations.length} destaque(s) reservado(s) (#13331): ` +
+        reservations.map((r) => `${r.request.toUpperCase()} ← ${r.from_edition}/${r.from_destaque} ${r.url}`).join("; "),
+    );
+  }
 
   // Merge com pool existente se passado
   let pool: Array<{ url: string; [k: string]: unknown }> = [];
@@ -576,7 +598,6 @@ async function main(): Promise<void> {
 
   // Atomic write (#628): write to .tmp + rename, evita leitor pegar JSON parcial
   // se o write crashar mid-flight. Padrão usado em drive-sync.ts, publish-facebook.ts.
-  const targetPath = resolve(ROOT, outPath);
   const tmpPath = targetPath + ".tmp";
   writeFileSync(tmpPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmpPath, targetPath);
@@ -620,6 +641,7 @@ async function main(): Promise<void> {
         // #11093: union of captured senders and preserved inbox forwards.
         distinct_newsletter_senders: submissionCounts.newsletterSenders,
         captured_newsletter_count: capturedNewsletterCount,
+        reserved_destaques: reservations.length, // #13331
         ...(captureFailure && {
           capture_failed: true,
           capture_error: captureFailure.error,
@@ -657,6 +679,7 @@ async function main(): Promise<void> {
       newsletter_blocks: newsletterBlocks.length, // #1095
       distinct_newsletter_senders: submissionCounts.newsletterSenders,
       captured_newsletter_count: capturedNewsletterCount, // #1541
+      reserved_destaques: reservations.length, // #13331
       total_inbox_blocks: allBlocks.length,
       newsletter_source: newsletterSource, // #1520
     })
