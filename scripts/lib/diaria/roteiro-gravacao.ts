@@ -61,6 +61,14 @@ export interface FalaRoteiro {
    */
   topicos?: string[];
   /**
+   * Trecho de outro vídeo que entra logo depois desta fala, no horizontal
+   * (formato react, pedido do editor em 17/11/2026): `origem` diz de onde
+   * vem e o intervalo ("Vídeo de 10/11, youtu.be/…, 3:42 a 4:00") e `texto`
+   * é a fala do trecho, transcrita. Só a página mostra, entre aspas, depois
+   * da fala; a montagem insere o trecho à mão.
+   */
+  trechoInserido?: { origem: string; texto: string };
+  /**
    * Corte parcial da fala por vertical (#13129): o trecho exato a tirar só
    * naquele vídeo (o horizontal fica intacto: o validador recusa `horizontal`). `reserva: true` = só entra se o
    * vídeo passar do alvo de duração.
@@ -750,6 +758,19 @@ export function validarRoteiroFalas(x: unknown): string[] {
           else if (/[\r\n]/.test(t)) problemas.push(`${rotulo}.topicos[${j}] deve ficar em uma linha`);
           else if (SETA.test(t)) problemas.push(`${rotulo}.topicos[${j}] usa seta (→/←), proibida na página (#9721)`);
         });
+      }
+    }
+    // Trecho de outro vídeo inserido depois da fala (react): só no horizontal.
+    if (o.trechoInserido !== undefined) {
+      const ti = o.trechoInserido as { origem?: unknown; texto?: unknown } | null;
+      if (!ti || typeof ti !== "object" || Array.isArray(ti)) problemas.push(`${rotulo}.trechoInserido deve ser objeto com origem e texto`);
+      else {
+        for (const k of ["origem", "texto"] as const) {
+          const val = ti[k];
+          if (typeof val !== "string" || !val.trim()) problemas.push(`${rotulo}.trechoInserido.${k} deve ser texto não vazio`);
+          else if (SETA.test(val)) problemas.push(`${rotulo}.trechoInserido.${k} usa seta (→/←), proibida na página (#9721)`);
+        }
+        if (Array.isArray(o.videos) && !o.videos.includes("horizontal")) problemas.push(`${rotulo}.trechoInserido só vale em fala do horizontal`);
       }
     }
     // #13129: corte parcial por vídeo, com o trecho exato do texto.

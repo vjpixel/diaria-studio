@@ -105,6 +105,34 @@ describe("topicos da fala", () => {
     assert.match(html, /querySelectorAll\('\.topicos'\)\.forEach\(function \(t\) \{ t\.remove\(\); \}\)/);
   });
 
+  it("trechoInserido: aparece entre aspas depois da fala, só no horizontal", () => {
+    const r = semTopicos();
+    const f = falaCompartilhada(r);
+    f.trechoInserido = { origem: "Vídeo de 10/11, 3:42 a 4:00", texto: "E ele pode chegar a perder o cargo." };
+    assert.deepEqual(validarRoteiroFalas(r), []);
+    const html = renderRoteiroPagina(r);
+    const bloco = '<figure class="insercao"><figcaption>Entra o trecho: Vídeo de 10/11, 3:42 a 4:00</figcaption><blockquote>“E ele pode chegar a perder o cargo.”</blockquote></figure>';
+    assert.equal(html.split(bloco).length - 1, 1, "uma vez só, no horizontal");
+    const h = html.slice(html.indexOf('aria-label="horizontal"'), html.indexOf('aria-label="vertical 1"'));
+    assert.ok(h.includes(bloco));
+  });
+
+  it("trechoInserido: recusa campo vazio, seta e fala fora do horizontal", () => {
+    const vazio = semTopicos();
+    falaCompartilhada(vazio).trechoInserido = { origem: "", texto: "x" };
+    assert.ok(validarRoteiroFalas(vazio).some((p) => p.includes("trechoInserido.origem deve ser texto não vazio")));
+
+    const seta = semTopicos();
+    falaCompartilhada(seta).trechoInserido = { origem: "Vídeo", texto: "antes → depois" };
+    assert.ok(validarRoteiroFalas(seta).some((p) => p.includes("trechoInserido.texto usa seta")));
+
+    const vertical = semTopicos();
+    const fv = vertical.falas.find((x) => !x.videos.includes("horizontal"));
+    assert.ok(fv, "a fixture precisa de uma fala só de vertical");
+    fv.trechoInserido = { origem: "Vídeo", texto: "Trecho" };
+    assert.ok(validarRoteiroFalas(vertical).some((p) => p.includes("trechoInserido só vale em fala do horizontal")));
+  });
+
   it("o Passo 5 da skill documenta o campo", () => {
     const skill = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-video-roteiro", "SKILL.md"), "utf8");
     assert.match(skill, /\*\*`topicos`\*\*/);

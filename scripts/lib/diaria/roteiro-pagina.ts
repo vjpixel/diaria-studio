@@ -97,7 +97,15 @@ function linhaFala(f: FalaRoteiro, v: VideoRoteiro, comTopicos: boolean): string
       ? `<ul class="topicos">${f.topicos.map((t) => `<li>${esc(t.trim())}</li>`).join("")}</ul>`
       : "<span></span>";
   const classe = comTopicos ? "row com-topicos" : "row";
-  return `<div class="${classe}">${topicos}<p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
+  const linha = `<div class="${classe}">${topicos}<p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
+  return linha + trechoInseridoHtml(f, v);
+}
+
+/** Trecho de outro vídeo inserido depois da fala (react): só no horizontal, entre aspas, com a origem. */
+function trechoInseridoHtml(f: FalaRoteiro, v: VideoRoteiro): string {
+  const t = f.trechoInserido;
+  if (!t || v !== "horizontal") return "";
+  return `<figure class="insercao"><figcaption>Entra o trecho: ${esc(t.origem.trim())}</figcaption><blockquote>“${esc(t.texto.trim())}”</blockquote></figure>`;
 }
 
 /** O bloco em que a fala aparece naquele vídeo (o resumo vira resumo curto nos verticais). */
@@ -246,6 +254,9 @@ body { background: var(--bg); color: var(--fg); font-family: var(--body); font-s
 .row.com-topicos { grid-template-columns: 150px minmax(0, 1fr) 210px; }
 .topicos { margin: 0; padding: 0 0 0 16px; font-size: 13.5px; line-height: 1.45; font-weight: 600; color: var(--fg); }
 .topicos li + li { margin-top: 2px; }
+.insercao { margin: 10px 0; padding: 8px 12px; border-left: 3px dashed var(--warn); background: var(--sug-bg); border-radius: 4px; }
+.insercao figcaption { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--warn); font-weight: 600; margin-bottom: 4px; }
+.insercao blockquote { margin: 0; font-style: italic; color: var(--fg); }
 .row + .row { margin-top: 10px; }
 .row p.fala { margin: 0; text-wrap: pretty; }
 .tela { font-size: 13.5px; line-height: 1.45; background: var(--sug-bg); color: var(--sug-fg); border-left: 3px solid var(--ink); border-radius: 4px; padding: 7px 10px; font-weight: 400; }
