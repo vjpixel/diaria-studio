@@ -4987,9 +4987,12 @@ export function previewClipArgs(input: {
   const { x, y, w, h } = input.crop;
   const outW = input.width ?? 720;
   const outH = input.height ?? 1280;
-  const vf = input.fit && input.fit !== "fill"
+  const baseVf = input.fit && input.fit !== "fill"
     ? fitPreviewFilter({ fit: input.fit, mirrored: input.mirrored, outW, outH, fps: input.fps })
     : `${input.mirrored ? "hflip," : ""}crop=${w}:${h}:${x}:${y},scale=${outW}:${outH},setsar=1,fps=${input.fps}`;
+  // #13335: clipe que passa do fim do vídeo do arquivo (stream de vídeo mais curto que o áudio) saía com
+  // menos quadros que o plano e o card de CTA entrava antes da fala; repete o último quadro até `-frames:v`.
+  const vf = input.videoOnly ? `${baseVf},tpad=stop_mode=clone:stop=-1` : baseVf;
   const af = `afade=t=in:d=0.02,afade=t=out:st=${Math.max(0, d - 0.03).toFixed(3)}:d=0.03`;
   const aStart = input.audioStart ?? input.start;
   return [
