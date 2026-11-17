@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generate } from "../scripts/generate-calibration-evidence-report.ts";
+import { generate, safeReportFileName } from "../scripts/generate-calibration-evidence-report.ts";
+import { featureFromCalibrationReportTitle } from "../scripts/trigger-track-a-calibration.ts";
+import { trackAReportFeatureLabel } from "../scripts/lib/track-a-features.ts";
 import type { CalibrationEvidenceInput } from "../scripts/lib/calibration-evidence-report.ts";
 
 describe("generate (#7978)", () => {
@@ -44,6 +46,28 @@ describe("generate (#7978)", () => {
       };
       assert.throws(() => generate(dir, input, "8010"));
       assert.ok(!existsSync(join(dir, "data", "reports", "calibration", "hands_on-8010.md")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("feature com prefixo track-a: gera nome sem caractere inválido no Windows e o título segue reconhecido pelo trigger (#13387)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "calib-evidence-win-"));
+    try {
+      const feature = trackAReportFeatureLabel("coverage_bonus_present");
+      const input: CalibrationEvidenceInput = {
+        feature,
+        whatChanges: "x",
+        cases: [{ edition: "260901", url: "https://x.com/a", action: "a" }],
+        revertCommand: "git revert abc123",
+      };
+      const result = generate(dir, input, "8010");
+      const name = result.outPath.split("/").pop()!;
+      assert.doesNotMatch(name, /[<>:"/\\|?*]/);
+      assert.equal(name, safeReportFileName(feature, "8010"));
+      assert.ok(existsSync(join(dir, "data", "reports", "calibration", name)));
+      assert.match(result.markdown, /track-a:coverage_bonus_present/);
+      assert.equal(featureFromCalibrationReportTitle(`Calibração ${feature} — PR #8010`), "coverage_bonus_present");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
