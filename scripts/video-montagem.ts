@@ -152,6 +152,11 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (Até o #13212 o do horizontal também saía daqui, como
  *       `diaria-comentada-{AAMMDD}.srt` na pasta da edição; agora só o --from-final
  *       grava esse arquivo, o que o `publish-youtube.ts --upload` envia.)
+ *       #13332: a mesma legenda entra no XML de cada vertical (o Premiere não importa
+ *       SRT de dentro do xmeml): um PNG por cue no estilo da prévia (PREVIEW_SUBTITLE_STYLE),
+ *       em `legendas-vertical/` (corte: `legendas-vertical-{slug}/`, que sobe para a
+ *       subpasta de mesmo nome da edição), numa faixa no topo do vídeo da sequência. O XML
+ *       com legenda é a versão entregue; um `build` de novo regrava o XML sem a faixa.
  *   srt AAMMDD --seq youtube --from-final PATH [--heard-text] [--force] [--retranscribe]
  *       (#12078) a legenda do horizontal no tempo do EXPORT final do Premiere (respiros, vinheta):
  *       transcreve o export (o mesmo cache do review-final, por identidade do arquivo + modelo e
@@ -286,6 +291,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvg, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
+import { cueFrames, parseAssStyle, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -311,6 +317,9 @@ import {
   collapsedTakeSuspects,
   cueTimings,
   cuesToSrt,
+  pathUrl,
+  premierePath,
+  wrapCueText,
   cutPoints,
   defaultSequences,
   describeCollapsedSuspect,
@@ -3670,7 +3679,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     return 1;
   }
   // #11641: no XML vai o caminho do bruto no Neo, não o do cache local do modo API.
-  const media = xmlMediaPath(source.path, { edition: ctx.edition, drive: readBrutoDrive(ctx), xmlMediaRoot: ctx.xmlMediaRoot, driveRoot: ctx.driveRoot, apiMode: ctx.mode === "api" });
+  const media = buildXmlMediaPath(ctx, source);
   const mediaPath = media.path;
   if (media.how === "api-guess") console.error(`[premissa] bruto lido de ${source.path} (fora do cache do Drive): o XML aponta ${mediaPath} no Neo; outro caminho: --xml-media-root (#11641)`);
   else if (mediaPath !== source.path) console.error(`[video-montagem] XML aponta o bruto em ${mediaPath} (lido de ${source.path}, #11641)`);
@@ -4536,7 +4545,12 @@ function cmdSrtFromFinalNoPlan(ctx: Ctx, file: string): number {
   });
 }
 
-function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number {
+/** #11641: o caminho do bruto que o XML grava (o do Neo, não o do cache do modo API); o `build` e a legenda do XML (#13332) usam o mesmo. */
+function buildXmlMediaPath(ctx: Ctx, source: Pick<SourceInfo, "path">): ReturnType<typeof xmlMediaPath> {
+  return xmlMediaPath(source.path, { edition: ctx.edition, drive: readBrutoDrive(ctx), xmlMediaRoot: ctx.xmlMediaRoot, driveRoot: ctx.driveRoot, apiMode: ctx.mode === "api" });
+}
+
+async function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): Promise<number> {
   const pf = loadPlan(ctx);
   const { file } = loadBlocks(ctx);
   const vocab = loadVocab();
@@ -4564,10 +4578,63 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
     writeFileAtomic(path, srt);
     console.log(path);
     // #13212: o horizontal não passa por aqui (srtPlans), então a cópia da pasta da edição só sai do --from-final.
+    // #13332: a mesma legenda dentro do XML da vertical, para o Premiere abrir já legendado.
+    const xml = await writeSubtitleXml(ctx, pf, plan, cueTimings(cues));
+    if (xml) console.log(xml);
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
   return 0;
+}
+
+/**
+ * #13332: a legenda da vertical dentro do XML dela. Cada cue (o texto do SRT,
+ * já quebrado em linhas) vira um PNG transparente do tamanho da sequência, no
+ * estilo da prévia (`PREVIEW_SUBTITLE_STYLE`), em `{subpasta}/` do out dir (que
+ * sobe para a subpasta de mesmo nome da edição), numa faixa no topo do vídeo
+ * da sequência. Um `srt` de novo troca a faixa; um `build` de novo regrava o
+ * XML sem ela (rodar o `srt` depois, como sempre). Falha aqui é aviso: o SRT
+ * já foi gravado e o XML fica como estava.
+ */
+async function writeSubtitleXml(ctx: Ctx, pf: PlanFile, plan: SequencePlan, cues: ReadonlyArray<{ start: number; end: number; text: string }>): Promise<string | null> {
+  const xmlPath = join(ctx.outDir, xmlFileName(plan.spec.name));
+  if (!existsSync(xmlPath)) {
+    console.error(`[aviso] ${plan.spec.name}: ${basename(xmlPath)} ausente no out dir: a legenda fica só no SRT (rode build antes do srt, #13332)`);
+    return null;
+  }
+  try {
+    const style = parseAssStyle(PREVIEW_SUBTITLE_STYLE);
+    const { width, height } = plan.spec;
+    const dirName = subtitleDirName(sequenceKey(plan.spec));
+    const dir = join(ctx.outDir, dirName);
+    mkdirSync(dir, { recursive: true });
+    const media = buildXmlMediaPath(ctx, pf.source).path.replace(/\\/g, "/");
+    const xmlDir = `${media.slice(0, media.lastIndexOf("/") + 1)}${dirName}/`;
+    const frames = cueFrames(cues, pf.source.fps, plan.durationFrames);
+    const overlays: SubtitleOverlay[] = [];
+    for (let i = 0; i < cues.length; i++) {
+      if (frames[i].out <= frames[i].in) continue;
+      const text = wrapCueText(cues[i].text);
+      const svg = subtitleCueSvg(text, width, height, style);
+      const name = subtitleFileName(ctx.edition, i + 1, createHash("sha256").update(svg).digest("hex").slice(0, 12));
+      const out = join(dir, name);
+      // Regravado sempre, como os boxes de tela: no modo API o snapshot do out dir é o que sobe (#13204).
+      await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
+      renameSync(`${out}.part`, out);
+      overlays.push({ index: i + 1, text, path: out, xmlPath: `${xmlDir}${name}`, width, height, in: frames[i].in, out: frames[i].out });
+    }
+    const rate = `<rate><timebase>${pf.source.fps}</timebase><ntsc>FALSE</ntsc></rate>`;
+    const track = subtitleTrack({ overlays, rate, url: (p) => pathUrl(premierePath(p, ctx.premierePaths)) });
+    writeFileAtomic(xmlPath, withSubtitleTrack(readFileSync(xmlPath, "utf8"), track));
+    console.error(
+      `[premissa] ${plan.spec.name}: ${overlays.length} legenda(s) em PNG (estilo da prévia) numa faixa no topo do XML, no tempo das cues do SRT, em ${dirName}/; ` +
+        `o XML com legenda é a versão entregue; um build de novo tira a faixa (rodar srt depois); conferir no 1º import (#13332)`,
+    );
+    return xmlPath;
+  } catch (e) {
+    console.error(`[aviso] ${plan.spec.name}: legenda no XML falhou (${(e as Error).message.split("\n")[0]}): o XML fica sem ela, o SRT está gravado (#13332)`);
+    return null;
+  }
 }
 
 /** #12237: legenda da montagem com até isto de duração é espremida (o export usa 0,3 s, `EXPORT_SRT_LIMITS`). */
@@ -5452,7 +5519,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   const up = d ?? ctx.localDrive ?? null;
   const uploads = up && DRIVE_UPLOAD_COMMANDS.includes(cmd);
   // #13334: `trechos/` (o XML leve do build) sobe para a subpasta de mesmo nome da edição.
-  const snap = () => snapshotDirWithSubdirs(ctx.outDir, [TRECHOS.dirName], (dir) => readdirSync(dir));
+  // #13332: e as legendas do XML das verticais, em `legendas-vertical*/`.
+  const snap = () => snapshotDirWithSubdirs(ctx.outDir, [TRECHOS.dirName, ...subtitleSubdirsIn(ctx.outDir)], (dir) => readdirSync(dir));
   const before = uploads ? snap() : null;
   const code = await runCommand(ctx, cmd, values, flags, seq, d);
   if (before && up && code === 0) {
@@ -5468,6 +5536,15 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     if (cmd === "build" && ctx.buildXmlFiles) await warnXmlFilesMissingInDrive(up, ctx.buildXmlFiles, ctx.mode === "local" ? (ctx.driveRoot ?? DEFAULT_DRIVE_ROOT) : DEFAULT_DRIVE_ROOT);
   }
   return code;
+}
+
+/** #13332: as subpastas de legenda do XML que já existem no out dir (sobem para a subpasta de mesmo nome da edição). */
+export function subtitleSubdirsIn(outDir: string): string[] {
+  try {
+    return readdirSync(outDir, { withFileTypes: true }).filter((e) => e.isDirectory() && /^legendas-vertical(-|$)/u.test(e.name)).map((e) => e.name);
+  } catch {
+    return [];
+  }
 }
 
 /**

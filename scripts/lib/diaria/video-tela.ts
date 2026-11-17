@@ -168,7 +168,10 @@ export function telaTrack(input: {
   idPrefix: string;
   fileIdOf: (xmlPath: string) => { id: string; defined: boolean };
   url: (p: string) => string;
+  /** Nome do clipe no Premiere (`{label} {id}`); padrão `tela`. A legenda das verticais usa `legenda` (#13332). */
+  label?: string;
 }): string {
+  const label = input.label ?? "tela";
   const valid = input.overlays.filter((o) => o.out > o.in);
   const fileLen = new Map<string, number>();
   for (const o of valid) fileLen.set(o.xmlPath, Math.max(fileLen.get(o.xmlPath) ?? 0, o.out - o.in));
@@ -182,7 +185,7 @@ export function telaTrack(input: {
         : `<file id="${fileId}"><name>${escapeXml(name)}</name><pathurl>${escapeXml(input.url(o.xmlPath))}</pathurl>\n${input.rate}<duration>${fileLen.get(o.xmlPath) ?? len}</duration>\n` +
           `<media><video><samplecharacteristics><width>${o.width}</width><height>${o.height}</height></samplecharacteristics></video></media></file>`;
       return (
-        `<clipitem id="${input.idPrefix}-${i + 1}"><name>tela ${escapeXml(o.id)}</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
+        `<clipitem id="${input.idPrefix}-${i + 1}"><name>${escapeXml(label)} ${escapeXml(o.id)}</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
         `${input.rate}<start>${o.in}</start><end>${o.out}</end><in>0</in><out>${len}</out>\n${file}</clipitem>`
       );
     });
