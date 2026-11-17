@@ -27,6 +27,8 @@ Com `porVideo.horizontal.trechoCompartilhar` no roteiro, o `build` grava `_inter
 
 **Retomada:** o `transcribe` pula o que já está em disco (`--force` refaz tudo; `source.json` refeito refaz os derivados, menos um `transcript.json` existente, que só `--force` retranscreve, #11504) e o `srt` reaproveita a transcrição da sequência enquanto os trechos e o áudio do bruto forem os mesmos. `decupagem`, `roteiro`, `build`, `preview` e `review` sempre refazem. O `plan.json` guarda o hash do `blocks.json`, do `source.json` e do `silences.json` (redetectado pelo `transcribe` quando o limiar muda, #11351): `srt`, `preview` e `review` recusam um plano defasado (rodar `build` de novo), o `preview` sai sem legenda (com `[aviso]`, sem recusar) quando o SRT é mais velho que o plano (#12579) e o `review` recusa uma prévia mais velha que o plano.
 
+**Arquivo de trabalho sumido no sync (#13404).** O sync de `data/` pode trocar `blocks.json` (ou `plan.json` e os demais de `_internal/video-montagem/`) por cópias `{nome}.conflictN`, sem deixar o original. O erro de "ausente" então aponta a cópia mais recente (por mtime) e o comando `cp` que a restaura; mostrar ao editor qual é antes de restaurar. Com o ok dele, rodar o comando de novo com `--restore-conflict`, que copia a mais recente de volta para cada arquivo ausente com `[premissa]` e deixa as cópias no disco. Um `roteiro` que falha avisa com `[erro]` que o `roteiro.md` do disco é da rodada anterior: não usar no Gate 2.
+
 ## Passo 0 — Máquina
 
 Roda no **Neo** (Drive for desktop em `I:`) ou no **300** (sem `I:`, a pasta da edição pela API do Drive, #11643). Conferir antes, nas duas:
