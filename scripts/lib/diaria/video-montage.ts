@@ -1215,6 +1215,11 @@ export interface ItemFraming {
 export interface FramePoint {
   faceX: number;
   eyeY: number;
+  /**
+   * Centro da boca (#13414), em fração da altura do bruto: as verticais
+   * ancoram por ele. Ausente = `eyeY + MOUTH_BELOW_EYES` (`[premissa]`).
+   */
+  mouthY?: number;
 }
 
 /**
@@ -1294,6 +1299,12 @@ export interface SequenceSpec {
    * altura nos dois zooms, menos teto acima da cabeça).
    */
   eyeFraction?: number;
+  /**
+   * Altura da BOCA no quadro, em fração (#13414): presente, a sequência ancora
+   * pela boca em vez dos olhos. Ausente numa vertical sem `eyeFraction` =
+   * `MOUTH_LINE_FRACTION` (0,5, a boca no centro); `sequenceAnchor` decide.
+   */
+  mouthFraction?: number;
   /**
    * Vertical extra, fora do fluxo da edição (261103: a 2ª vertical, sobre IA
    * soberana); o editor publica com `publish-shorts.ts --corte {slug} --video …`.
@@ -1387,6 +1398,8 @@ export const AUDIO_ONLY_FPS = 30;
 export interface Framing {
   faceX: number;
   eyeY: number;
+  /** Centro da boca em fração da altura (#13414); ausente = `eyeY + MOUTH_BELOW_EYES`. */
+  mouthY?: number;
   /**
    * Caixa da caneca diar.ia.br no bruto já desespelhado, em fração do quadro
    * (#11939). Opcional: sem ela o recorte é só pelo rosto, como antes. Com
@@ -1583,6 +1596,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
     if (!isObj(fr) || !isNum(fr.faceX) || !isNum(fr.eyeY) || fr.faceX < 0 || fr.faceX > 1 || fr.eyeY < 0 || fr.eyeY > 1) {
       errors.push(`${label} precisa de faceX e eyeY entre 0 e 1 (fração do quadro)`);
     }
+    if (isObj(fr) && fr.mouthY !== undefined && !(isNum(fr.mouthY) && fr.mouthY >= 0 && fr.mouthY <= 1)) errors.push(`${label}.mouthY precisa ser uma fração entre 0 e 1 (altura da boca no quadro, #13414)`);
     if (isObj(fr) && fr.mug !== undefined) {
       const m = fr.mug;
       const inUnit = (v: unknown) => isNum(v) && v >= 0 && v <= 1;
@@ -1632,7 +1646,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
           if (it.take !== undefined && !(Number.isInteger(it.take) && (it.take as number) >= 1)) errors.push(`${label}: take precisa ser inteiro ≥ 1`);
         }
         errors.push(...validateItemScope(it, label, cortes));
-        if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing do item precisa só de faceX e eyeY, entre 0 e 1 (fração do quadro; a caneca é a do framing do arquivo)`);
+        if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing do item precisa só de faceX, eyeY e (opcional) mouthY, entre 0 e 1 (fração do quadro; a caneca é a do framing do arquivo)`);
         errors.push(...validateSourceFit(it, label));
         if (it.fala !== undefined && (typeof it.fala !== "string" || !it.fala.trim())) errors.push(`${label}: fala precisa ser o id de uma fala do roteiro-falas.json (H6)`);
       });
@@ -1692,6 +1706,8 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (!Array.isArray(s.order) || s.order.length === 0 || s.order.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push(`${label}: order precisa listar blocos conhecidos`);
         if (!Array.isArray(s.scales) || s.scales.length !== 2 || s.scales.some((x) => !isNum(x) || x <= 0)) errors.push(`${label}: scales precisa de exatamente 2 números positivos`);
         if (s.eyeFraction !== undefined && !(isNum(s.eyeFraction) && s.eyeFraction > 0 && s.eyeFraction < 1)) errors.push(`${label}: eyeFraction precisa ser uma fração entre 0 e 1 (altura dos olhos no quadro)`);
+        if (s.mouthFraction !== undefined && !(isNum(s.mouthFraction) && s.mouthFraction > 0 && s.mouthFraction < 1)) errors.push(`${label}: mouthFraction precisa ser uma fração entre 0 e 1 (altura da boca no quadro, #13414)`);
+        if (s.mouthFraction !== undefined && s.eyeFraction !== undefined) errors.push(`${label}: eyeFraction e mouthFraction juntos; a sequência ancora por um só (#13414)`);
         errors.push(...validateSourceFit(s, label));
       });
     }
@@ -1744,19 +1760,27 @@ function isFramePoint(v: unknown): v is FramePoint {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const o = v as Record<string, unknown>;
   // Mesma faixa do framing do arquivo (0 a 1, fechada); só faceX/eyeY: a caneca é a do arquivo (#12233).
-  if (Object.keys(o).some((k) => k !== "faceX" && k !== "eyeY")) return false;
+  if (Object.keys(o).some((k) => k !== "faceX" && k !== "eyeY" && k !== "mouthY")) return false;
+  if (o.mouthY !== undefined && !(isNum(o.mouthY) && o.mouthY >= 0 && o.mouthY <= 1)) return false;
   return isNum(o.faceX) && isNum(o.eyeY) && o.faceX >= 0 && o.faceX <= 1 && o.eyeY >= 0 && o.eyeY <= 1;
 }
 
 function sameFramePoint(a?: FramePoint, b?: FramePoint): boolean {
-  return a === b || (!!a && !!b && a.faceX === b.faceX && a.eyeY === b.eyeY);
+  return a === b || (!!a && !!b && a.faceX === b.faceX && a.eyeY === b.eyeY && a.mouthY === b.mouthY);
 }
 
-const fmtFramePoint = (f?: FramePoint) => (f ? `${f.faceX}/${f.eyeY}` : "o do arquivo");
+const fmtFramePoint = (f?: FramePoint) => (f ? `${f.faceX}/${f.eyeY}${f.mouthY !== undefined ? `/boca ${f.mouthY}` : ""}` : "o do arquivo");
 
-/** O enquadramento de um clipe (#12233): o do item, quando há, sobre o do arquivo (a caneca segue a do arquivo). */
+/**
+ * O enquadramento de um clipe (#12233): o do item, quando há, sobre o do
+ * arquivo (a caneca segue a do arquivo). A boca (#13414) vem do item junto do
+ * rosto: item sem `mouthY` não herda a boca do arquivo (o rosto mudou de
+ * lugar), cai na estimativa `eyeY + MOUTH_BELOW_EYES`.
+ */
 export function clipFraming(base: Framing, c: Pick<PlannedClip, "framing">): Framing {
-  return c.framing ? { ...base, faceX: c.framing.faceX, eyeY: c.framing.eyeY } : base;
+  if (!c.framing) return base;
+  const { mouthY: _baseMouth, ...rest } = base;
+  return { ...rest, faceX: c.framing.faceX, eyeY: c.framing.eyeY, ...(c.framing.mouthY !== undefined ? { mouthY: c.framing.mouthY } : {}) };
 }
 
 /** O framing do `blocks.json`, ou o da 261027 (`assumed: true`, para o `[premissa]`). Um ponto só para build e prévia. */
@@ -1931,7 +1955,7 @@ export type ResolvedItem = {
 const scopeOf = (it: ItemScope & ItemFraming): ItemScope & ItemFraming => ({
   ...(it.targets ? { targets: it.targets } : {}),
   ...(it.skip ? { skip: it.skip } : {}),
-  ...(it.framing ? { framing: { faceX: it.framing.faceX, eyeY: it.framing.eyeY } } : {}),
+  ...(it.framing ? { framing: { faceX: it.framing.faceX, eyeY: it.framing.eyeY, ...(it.framing.mouthY !== undefined ? { mouthY: it.framing.mouthY } : {}) } } : {}),
   ...(it.source !== undefined ? { source: it.source } : {}),
   ...(it.falaId !== undefined ? { falaId: it.falaId } : {}),
   ...(it.fit !== undefined ? { fit: it.fit } : {}),
@@ -2764,6 +2788,35 @@ export function ganchoWarning(plan: Pick<SequencePlan, "spec" | "clips">): strin
 /** Olhos a ~40% da altura do quadro (#11208). */
 export const EYE_LINE_FRACTION = 0.4;
 
+/** Boca no centro do quadro nas verticais (#13414, pedido do editor de 17/11/2026). */
+export const MOUTH_LINE_FRACTION = 0.5;
+
+/**
+ * Distância da boca abaixo dos olhos, em fração da altura do bruto, quando o
+ * framing não traz `mouthY` (#13414): medida na 261116 (bruto 4K, olhos em
+ * 0,376 e boca em 0,476). Depende da distância à câmera: o `face` mede a boca
+ * de cada item e ela vence esta estimativa.
+ */
+export const MOUTH_BELOW_EYES = 0.1;
+
+/** A boca do framing (#13414): a medida, ou `eyeY + MOUTH_BELOW_EYES` com `assumed` para o `[premissa]`. */
+export function mouthLineOf(fr: Pick<Framing, "eyeY" | "mouthY">): { mouthY: number; assumed: boolean } {
+  return fr.mouthY !== undefined ? { mouthY: fr.mouthY, assumed: false } : { mouthY: Math.min(1, fr.eyeY + MOUTH_BELOW_EYES), assumed: true };
+}
+
+/**
+ * Por onde a sequência ancora o recorte na vertical (#13414): `mouthFraction`
+ * explícito = boca; vertical (altura > largura) sem `eyeFraction` = boca no
+ * centro (`MOUTH_LINE_FRACTION`); o resto (o horizontal, olhos a 1/3, e a
+ * vertical com `eyeFraction` posto à mão no blocks.json, como o guia da
+ * 261116) = olhos, como antes. É o que vai para `framingFor`.
+ */
+export function sequenceAnchor(spec: { width: number; height: number; eyeFraction?: number; mouthFraction?: number }): { eyeFraction?: number; mouthFraction?: number } {
+  if (spec.mouthFraction !== undefined) return { mouthFraction: spec.mouthFraction };
+  if (spec.height > spec.width && spec.eyeFraction === undefined) return { mouthFraction: MOUTH_LINE_FRACTION };
+  return spec.eyeFraction !== undefined ? { eyeFraction: spec.eyeFraction } : {};
+}
+
 export interface FramingResult {
   /** Recorte no bruto (px, já desespelhado); `w`/`h` pares para o ffmpeg, na proporção da sequência. */
   crop: { x: number; y: number; w: number; h: number };
@@ -2841,7 +2894,8 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
 /**
  * Recorte e posição de um clipe com escala `scalePct` (100 = 1 px do bruto por
  * px da sequência, como no Premiere): o rosto (`faceX`) no centro horizontal,
- * a linha dos olhos (`eyeY`) a `eyeFraction` da altura, sem sair do bruto (o
+ * a linha dos olhos (`eyeY`) a `eyeFraction` da altura (ou, com
+ * `mouthFraction`, a boca a essa fração da altura, #13414), sem sair do bruto (o
  * recorte encosta na borda em vez de mostrar faixa preta). O recorte mantém
  * SEMPRE a proporção da sequência: se o bruto não cobre o quadro na escala
  * pedida (bruto 1080p numa vertical a 115%), a escala sobe até cobrir.
@@ -2854,6 +2908,8 @@ export function framingFor(input: {
   scalePct: number;
   framing: Framing;
   eyeFraction?: number;
+  /** #13414: ancora pela boca (`mouthLineOf`) a esta fração da altura; vence `eyeFraction`. */
+  mouthFraction?: number;
 }): FramingResult {
   let s = input.scalePct / 100;
   if (!(s > 0)) throw new Error(`escala inválida: ${input.scalePct}`);
@@ -2869,7 +2925,10 @@ export function framingFor(input: {
   const w = Math.min(input.srcW - (input.srcW % 2), even(wf));
   const h = Math.min(input.srcH - (input.srcH % 2), even(hf));
   const faceCropX = clamp(input.framing.faceX * input.srcW - w / 2, 0, input.srcW - w);
-  const y = Math.round(clamp(input.framing.eyeY * input.srcH - eyeFrac * h, 0, input.srcH - h));
+  const anchorY = input.mouthFraction !== undefined
+    ? mouthLineOf(input.framing).mouthY * input.srcH - input.mouthFraction * h
+    : input.framing.eyeY * input.srcH - eyeFrac * h;
+  const y = Math.round(clamp(anchorY, 0, input.srcH - h));
   const mugBox = input.framing.mug;
   const withMug = mugBox ? mugCropX({ faceCropX, w, y, h, srcW: input.srcW, srcH: input.srcH, mug: mugBox }) : null;
   const x = withMug ? withMug.x : Math.round(faceCropX);
@@ -2908,7 +2967,7 @@ export interface ClipGeometry {
  */
 export function clipGeometry(input: {
   source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">;
-  spec: Pick<SequenceSpec, "width" | "height" | "eyeFraction" | "fit">;
+  spec: Pick<SequenceSpec, "width" | "height" | "eyeFraction" | "fit" | "mouthFraction">;
   framing: Framing;
   fileOverrides?: BlocksFile["files"];
   clip: Pick<PlannedClip, "scale" | "framing" | "file" | "fit">;
@@ -2928,7 +2987,7 @@ export function clipGeometry(input: {
   const seqH = input.spec.height;
   if (fit === "fill") {
     const base = input.source.files?.length ? framingOfFile(input.framing, { files: input.fileOverrides }, file.id) : input.framing;
-    const fr = framingFor({ srcW: file.width, srcH: file.height, seqW, seqH, scalePct: input.clip.scale, framing: clipFraming(base, input.clip), eyeFraction: input.spec.eyeFraction });
+    const fr = framingFor({ srcW: file.width, srcH: file.height, seqW, seqH, scalePct: input.clip.scale, framing: clipFraming(base, input.clip), ...sequenceAnchor({ width: seqW, height: seqH, eyeFraction: input.spec.eyeFraction, mouthFraction: input.spec.mouthFraction }) });
     return { fileIndex, file, fit, mirrored, main: { scalePct: fr.scalePct, center: fr.center, crop: fr.crop } };
   }
   const main = { scalePct: fitScalePct(file.width, file.height, seqW, seqH), center: { horiz: 0, vert: 0 } };
@@ -2978,14 +3037,14 @@ function framingVariants(clips: ReadonlyArray<{ scale: number; framing?: FramePo
   const seen = new Map<string, { scalePct: number; fr: Framing; label: string }>();
   for (const c of clips) {
     const fr = clipFraming(framing, c);
-    const key = `${c.scale}|${fr.faceX}|${fr.eyeY}`;
+    const key = `${c.scale}|${fr.faceX}|${fr.eyeY}|${fr.mouthY ?? ""}`;
     if (!seen.has(key)) seen.set(key, { scalePct: c.scale, fr, label: c.framing ? `, item com rosto em ${c.framing.faceX}/${c.framing.eyeY}` : "" });
   }
   return [...seen.values()].sort((a, b) => a.scalePct - b.scalePct || (a.label ? 1 : 0) - (b.label ? 1 : 0));
 }
 
 export function mugFramingWarnings(
-  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number; mouthFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
   source: { width: number; height: number },
   framing: Framing,
 ): string[] {
@@ -2993,7 +3052,7 @@ export function mugFramingWarnings(
   const out: string[] = [];
   for (const p of plans) {
     for (const { scalePct, fr: f, label } of framingVariants(p.clips, framing)) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, eyeFraction: p.spec.eyeFraction });
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, ...sequenceAnchor(p.spec) });
       if (fr.warning) out.push(`${p.spec.name} (${scalePct}%${label}): ${fr.warning}`);
     }
   }
@@ -3027,7 +3086,7 @@ export function minCenteredScalePct(srcW: number, seqW: number, faceX: number): 
  * até `MUG_MAX_FACE_SHIFT`) não conta: só o que sobra depois dele.
  */
 export function faceCenterWarnings(
-  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number; mouthFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
   source: { width: number; height: number },
   framing: Framing,
 ): string[] {
@@ -3035,7 +3094,7 @@ export function faceCenterWarnings(
   if (!(source.width > 0) || !(source.height > 0)) return out;
   for (const p of plans) {
     for (const { scalePct, fr: f, label } of framingVariants(p.clips, framing)) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, eyeFraction: p.spec.eyeFraction });
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, ...sequenceAnchor(p.spec) });
       // O recorte sem o deslocamento da caneca: o que sobra fora do centro é o clamp.
       const faceCropX = fr.crop.x - (fr.mugShift ?? 0) * source.width;
       const off = (f.faceX * source.width - faceCropX) / fr.crop.w - 0.5;
@@ -3053,6 +3112,49 @@ export function faceCenterWarnings(
 }
 
 /**
+ * Quanto a boca pode ficar fora do centro vertical do quadro, em fração da
+ * altura do recorte (#13414, pedido do editor): acima disso o `build` e a
+ * `review` avisam. Só o clamp na borda do bruto a tira do centro.
+ */
+export const MOUTH_CENTER_TOL = 0.02;
+
+/**
+ * Avisos da boca nas sequências ancoradas por ela (#13414, as verticais): um
+ * `[aviso]` por sequência e escala em que a boca fica a mais de
+ * `MOUTH_CENTER_TOL` da `mouthFraction` (o recorte bate na borda do bruto), e
+ * um `[premissa]` por sequência quando algum clipe usa a boca estimada
+ * (`eyeY + MOUTH_BELOW_EYES`, sem `mouthY` medido pelo `face`). Sequência
+ * ancorada pelos olhos (o horizontal, ou vertical com `eyeFraction` à mão)
+ * não entra.
+ */
+export function mouthCenterWarnings(
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number; mouthFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
+  source: { width: number; height: number },
+  framing: Framing,
+): { warnings: string[]; assumed: string[] } {
+  const warnings: string[] = [];
+  const assumed: string[] = [];
+  if (!(source.width > 0) || !(source.height > 0)) return { warnings, assumed };
+  for (const p of plans) {
+    const anchor = sequenceAnchor(p.spec);
+    if (anchor.mouthFraction === undefined) continue;
+    let anyAssumed = false;
+    for (const { scalePct, fr: f, label } of framingVariants(p.clips, framing)) {
+      const mouth = mouthLineOf(f);
+      if (mouth.assumed) anyAssumed = true;
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, ...anchor });
+      const at = (mouth.mouthY * source.height - fr.crop.y) / fr.crop.h;
+      const off = at - anchor.mouthFraction;
+      if (Math.abs(off) <= MOUTH_CENTER_TOL + 1e-9) continue;
+      const pctTxt = `${(Math.abs(off) * 100).toFixed(1).replace(".", ",")}%`;
+      warnings.push(`${p.spec.name} (${scalePct}%${label}): boca a ${pctTxt} ${off > 0 ? "abaixo" : "acima"} do centro vertical (o recorte bate na borda do bruto; limite ${MOUTH_CENTER_TOL * 100}%) (#13414)`);
+    }
+    if (anyAssumed) assumed.push(`${p.spec.name}: boca estimada em olhos + ${MOUTH_BELOW_EYES.toFixed(2).replace(".", ",")} da altura do bruto (sem mouthY no framing); rode face --write para medir a de cada item (#13414)`);
+  }
+  return { warnings, assumed };
+}
+
+/**
  * Os avisos de caneca (`mugFramingWarnings`) e de rosto centrado
  * (`faceCenterWarnings`) do `build`, da prévia e da `review` (#12566). Bruto
  * único: as duas funções de sempre, sem mudança no texto. Bruto em vários
@@ -3066,10 +3168,15 @@ export function framingWarningsByFile(
   source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">,
   framing: Framing,
   fileOverrides?: BlocksFile["files"],
-): { mug: string[]; face: string[] } {
-  if (!source.files?.length) return { mug: mugFramingWarnings(plans, source, framing), face: faceCenterWarnings(plans, source, framing) };
+): { mug: string[]; face: string[]; mouth: string[]; mouthAssumed: string[] } {
+  if (!source.files?.length) {
+    const m = mouthCenterWarnings(plans, source, framing);
+    return { mug: mugFramingWarnings(plans, source, framing), face: faceCenterWarnings(plans, source, framing), mouth: m.warnings, mouthAssumed: m.assumed };
+  }
   const mug: string[] = [];
   const face: string[] = [];
+  const mouth: string[] = [];
+  const mouthAssumed: string[] = [];
   source.files.forEach((sf, idx) => {
     const sub = plans
       .map((p) => ({
@@ -3082,17 +3189,24 @@ export function framingWarningsByFile(
     const size = { width: sf.width, height: sf.height };
     mug.push(...mugFramingWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
     face.push(...faceCenterWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+    const m = mouthCenterWarnings(sub, size, fr);
+    mouth.push(...m.warnings.map((w) => `${sf.id}: ${w}`));
+    mouthAssumed.push(...m.assumed.map((w) => `${sf.id}: ${w}`));
   });
-  return { mug, face };
+  return { mug, face, mouth, mouthAssumed };
 }
 
 /** Escalas que o `frame` desenha (#11939): as do horizontal (com os olhos a 1/3, #12093) e as das verticais. */
 export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string; eyeFraction?: number }> = [
   { seqW: 1920, seqH: 1080, scales: YOUTUBE_SCALES, color: "yellow", eyeFraction: YOUTUBE_EYE_FRACTION },
+  // #13414: as verticais ancoram pela boca (`sequenceAnchor`), sem eyeFraction.
   { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
 ];
 
-const FRAME_CROP_COLOR_PT: Record<string, string> = { yellow: "amarelo", cyan: "ciano", magenta: "magenta" };
+/** Cor da linha da boca no `frame` (#13414). */
+export const FRAME_MOUTH_LINE_COLOR = "red";
+
+const FRAME_CROP_COLOR_PT: Record<string, string> = { yellow: "amarelo", cyan: "ciano", magenta: "magenta", red: "vermelho" };
 
 /**
  * A legenda dos recortes do `frame` (#12565), montada de `FRAME_PREVIEW_CROPS`:
@@ -3103,7 +3217,7 @@ export function frameCropLegend(): string {
   const parts = FRAME_PREVIEW_CROPS.map(({ seqW, seqH, scales, color }) =>
     `${FRAME_CROP_COLOR_PT[color] ?? color} = ${seqW > seqH ? "horizontal" : "verticais"} ${scales.join("/")}%`,
   );
-  return [...parts, "magenta = caneca"].join(", ");
+  return [...parts, "magenta = caneca", `${FRAME_CROP_COLOR_PT[FRAME_MOUTH_LINE_COLOR]} = linha da boca (centro das verticais, #13414)`].join(", ");
 }
 
 /**
@@ -3112,12 +3226,13 @@ export function frameCropLegend(): string {
  * caixa da caneca em magenta quando o `framing` a traz. Cada linha de aviso
  * vem com a escala.
  */
-export function frameCropOverlays(source: { width: number; height: number }, framing: Framing): { filters: string[]; warnings: string[] } {
+export function frameCropOverlays(source: { width: number; height: number }, framing: Framing): { filters: string[]; warnings: string[]; premises: string[] } {
   const filters: string[] = [];
   const warnings: string[] = [];
+  const premises: string[] = [];
   for (const { seqW, seqH, scales, color, eyeFraction } of FRAME_PREVIEW_CROPS) {
     for (const scalePct of scales) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW, seqH, scalePct, framing, eyeFraction });
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW, seqH, scalePct, framing, ...sequenceAnchor({ width: seqW, height: seqH, eyeFraction }) });
       const { x, y, w, h } = fr.crop;
       filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@0.8:t=4`);
       if (fr.warning) warnings.push(`${seqW}x${seqH} ${scalePct}%: ${fr.warning}`);
@@ -3129,7 +3244,12 @@ export function frameCropOverlays(source: { width: number; height: number }, fra
     const y = Math.round(m.top * source.height);
     filters.push(`drawbox=x=${x}:y=${y}:w=${Math.round(m.right * source.width) - x}:h=${Math.round(m.bottom * source.height) - y}:color=magenta@0.9:t=3`);
   }
-  return { filters, warnings };
+  // #13414: a linha da boca (medida, ou olhos + MOUTH_BELOW_EYES) atravessando o bruto: nas verticais ela cai no centro do recorte ciano.
+  const mouth = mouthLineOf(framing);
+  const my = Math.round(clamp(mouth.mouthY * source.height, 0, Math.max(0, source.height - 4)));
+  filters.push(`drawbox=x=0:y=${my}:w=${source.width}:h=4:color=${FRAME_MOUTH_LINE_COLOR}@0.8:t=fill`);
+  if (mouth.assumed) premises.push(`linha da boca estimada em olhos + ${MOUTH_BELOW_EYES.toFixed(2).replace(".", ",")} da altura (framing sem mouthY, #13414)`);
+  return { filters, warnings, premises };
 }
 
 // ── XML FCP7 (xmeml v4) ───────────────────────────────────────────────────
@@ -5231,11 +5351,11 @@ export function previewSize(spec: Pick<SequenceSpec, "width" | "height">): { wid
  */
 export function previewCropFor(
   source: Pick<SourceInfo, "width" | "height">,
-  spec: Pick<SequenceSpec, "width" | "height" | "eyeFraction">,
+  spec: Pick<SequenceSpec, "width" | "height" | "eyeFraction" | "mouthFraction">,
   framing: Framing,
   scalePct: number,
 ): FramingResult["crop"] {
-  return framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct, framing, eyeFraction: spec.eyeFraction }).crop;
+  return framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct, framing, ...sequenceAnchor(spec) }).crop;
 }
 
 /** Estilo da legenda queimada no horizontal (#12096): a mesma letra, mais perto da base que na vertical. */

@@ -39,7 +39,7 @@ describe("#12560 itemFramings", () => {
     );
     assert.equal(res[0].found, 3);
     // centro = (290 + 72) / 720
-    assert.deepEqual(res[0].framing, { faceX: Math.round(((290 + 72) / 720) * 1000) / 1000, eyeY: Math.round(((300 + 160 * 0.4) / 1280) * 1000) / 1000 });
+    assert.deepEqual(res[0].framing, { faceX: Math.round(((290 + 72) / 720) * 1000) / 1000, eyeY: Math.round(((300 + 160 * 0.4) / 1280) * 1000) / 1000, mouthY: Math.round(((300 + 160 * 0.775) / 1280) * 1000) / 1000 });
   });
   it("sem rosto em nenhum frame (ou frame ilegível) = sem framing", () => {
     const res = itemFramings([det("fecho#0", []), det("fecho#0", [{ x: 1, y: 1, w: 9, h: 9 }], 0, 0)], ["fecho#0"]);
