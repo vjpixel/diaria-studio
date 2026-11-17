@@ -49,7 +49,7 @@
  * Travado por `test/sync-conflict-copy-12357.test.ts`.
  */
 
-import { copyFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, statSync, utimesSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 
 /** `.conflictN` no FIM do nome (rclone bisync, `--conflict-loser num`). */
@@ -99,13 +99,16 @@ export function conflictCopyBelongsToStem(copy: string, stem: string, ext: strin
 // Arquivo de trabalho que sumiu no sync (#13404)
 // ---------------------------------------------------------------------------
 //
-// Sem `--conflict-resolve newer`, o bisync renomeia as DUAS versões de um
-// arquivo alterado dos dois lados entre duas rodadas, e o nome original some
-// (montagem da 261116: `blocks.json` virou `blocks.json.conflict1..4` e todo
-// comando parou com "ausente"). Os helpers abaixo acham as cópias de um
-// arquivo ausente para a mensagem de erro apontar a mais recente e o comando
-// de restauração. Escolher a cópia é julgamento (o editor confere), então
-// restaurar só acontece por pedido explícito (`restoreMissingFromConflictCopies`).
+// O bisync do `300` já roda com `--conflict-resolve newer`, e mesmo assim o
+// `newer` nem sempre decide: na montagem da 261116 o log de 17/11/2026, 13:47
+// UTC, traz `sizes differ` e em seguida Path1 → `blocks.json.conflict1` e
+// Path2 → `blocks.json.conflict2`, as DUAS versões renomeadas e o nome
+// original sumido (o mesmo se repetiu até `.conflict4`, e todo comando parou
+// com "ausente"). Os helpers abaixo acham as cópias de um arquivo ausente para
+// a mensagem de erro apontar a mais nova e o comando de restauração. Quando os
+// mtimes empatam, a escolha é arbitrária e a mensagem diz isso, sem chamar
+// nenhuma de "mais recente". Escolher é julgamento (o editor confere), então
+// restaurar só acontece por pedido explícito e nomeado (`restoreFromConflictCopy`).
 
 /** Uma cópia de conflito do arquivo `{dir}/{nome}`. `seq` é o `N` do rclone ou o `NNNN` do OneDrive. */
 export interface SyncConflictCopy {
@@ -127,7 +130,12 @@ export const NODE_CONFLICT_COPY_FS: ConflictCopyFs = {
   readdir: (dir) => readdirSync(dir),
   mtimeMs: (p) => statSync(p).mtimeMs,
   exists: (p) => existsSync(p),
-  copy: (from, to) => copyFileSync(from, to),
+  // Preserva o mtime da cópia: a prévia e o SRT se comparam por mtime com o plano (#12579).
+  copy: (from, to) => {
+    copyFileSync(from, to);
+    const st = statSync(from);
+    utimesSync(to, st.atime, st.mtime);
+  },
 };
 
 function conflictSeq(name: string): number {
@@ -167,64 +175,88 @@ export function conflictCopiesOf(filePath: string, fs: ConflictCopyFs = NODE_CON
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs || b.seq - a.seq);
 }
 
-/** Aspas simples: o mesmo comando roda no Git Bash e no PowerShell (lá `cp` é alias de `Copy-Item`). */
-const shQuote = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
+/**
+ * A escolha entre as cópias de um arquivo (#13404). É a ÚNICA lista que a
+ * mensagem de erro e a restauração leem, para a mensagem nunca mostrar uma
+ * cópia e a restauração copiar outra.
+ *   - `none`: nenhuma cópia ao lado;
+ *   - `newest`: uma cópia tem o mtime estritamente maior que as outras;
+ *   - `tie`: as mais novas empatam no mtime, e a escolha entre elas seria
+ *     arbitrária (nunca restaurada sozinha, nunca chamada de "mais recente").
+ */
+export type ConflictChoice =
+  | { kind: "none" }
+  | { kind: "newest"; chosen: SyncConflictCopy; copies: SyncConflictCopy[] }
+  | { kind: "tie"; tied: SyncConflictCopy[]; copies: SyncConflictCopy[] };
 
-/** O comando que restaura a cópia `copy` como `filePath`. */
-export function conflictRestoreCommand(copy: string, filePath: string): string {
-  return `cp ${shQuote(copy)} ${shQuote(filePath)}`;
+export function chooseConflictCopy(filePath: string, fs: ConflictCopyFs = NODE_CONFLICT_COPY_FS): ConflictChoice {
+  const copies = conflictCopiesOf(filePath, fs);
+  if (!copies.length) return { kind: "none" };
+  const tied = copies.filter((c) => c.mtimeMs === copies[0].mtimeMs);
+  if (tied.length > 1) return { kind: "tie", tied, copies };
+  return { kind: "newest", chosen: copies[0], copies };
+}
+
+/** O horário em BRT (UTC-3, sem horário de verão desde 2019), com o offset explícito. */
+export function brtStamp(ms: number): string {
+  return `${new Date(ms - 3 * 3600_000).toISOString().slice(0, 19).replace("T", " ")} BRT (UTC-3)`;
+}
+
+/**
+ * O comando de Git Bash que restaura a cópia `copy` como `filePath`, entre
+ * aspas simples. `null` quando algum dos caminhos tem aspa simples: aí o
+ * comando não é gerado (escapar no Git Bash e no PowerShell é diferente, e um
+ * comando errado sobrescreveria o arquivo errado).
+ */
+export function conflictRestoreCommand(copy: string, filePath: string): string | null {
+  if (copy.includes("'") || filePath.includes("'")) return null;
+  return `cp '${copy}' '${filePath}'`;
 }
 
 /**
  * Linhas que explicam um arquivo ausente com cópias de conflito ao lado
- * (#13404): a mais recente, as outras e o comando de restauração. Vazio sem
- * cópia. Nunca restaura: quem escolhe a cópia é o editor.
+ * (#13404): a cópia mais nova, as outras e o comando de restauração (Git
+ * Bash). `restoreFlag` (ex.: `--restore-conflict blocks.json`) entra só
+ * quando há uma mais nova de fato, a mesma que a flag restauraria. No empate,
+ * a mensagem diz que a escolha é arbitrária e não sugere comando nem flag.
+ * Vazio sem cópia. Nunca restaura.
  */
-export function missingFileConflictHint(filePath: string, copies: readonly SyncConflictCopy[]): string[] {
-  if (!copies.length) return [];
-  const [latest, ...rest] = copies;
+export function missingFileConflictHint(filePath: string, choice: ConflictChoice, restoreFlag?: string): string[] {
+  if (choice.kind === "none") return [];
+  const n = choice.copies.length;
+  if (choice.kind === "tie") {
+    return [
+      `o sync de data/ deixou ${n} cópia(s) de conflito no lugar (#13404); ${choice.tied.map((c) => c.name).join(", ")} têm o mesmo horário (${brtStamp(choice.tied[0].mtimeMs)}), então a escolha entre elas é arbitrária: conferir o conteúdo e copiar à mão a certa para ${basename(filePath)}`,
+    ];
+  }
+  const rest = choice.copies.filter((c) => c !== choice.chosen);
   const others = rest.length ? `; as outras: ${rest.map((c) => c.name).join(", ")}` : "";
+  const cmd = conflictRestoreCommand(choice.chosen.path, filePath);
   return [
-    `o sync de data/ deixou ${copies.length} cópia(s) de conflito no lugar (#13404); a mais recente é ${latest.name} (modificada em ${new Date(latest.mtimeMs).toISOString()})${others}`,
-    `conferir e restaurar: ${conflictRestoreCommand(latest.path, filePath)}`,
+    `o sync de data/ deixou ${n} cópia(s) de conflito no lugar (#13404); a mais nova é ${choice.chosen.name} (modificada em ${brtStamp(choice.chosen.mtimeMs)})${others}`,
+    cmd ? `conferir e restaurar (Git Bash): ${cmd}` : `conferir e copiar à mão ${choice.chosen.name} para ${basename(filePath)} (caminho com aspa simples: comando não gerado)`,
+    ...(restoreFlag ? [`ou rodar o comando de novo com ${restoreFlag} (copia ${choice.chosen.name} de volta, com [premissa])`] : []),
   ];
 }
 
-export interface ConflictRestore {
-  /** O arquivo recriado. */
-  restored: string;
-  /** A cópia (a mais recente) que voltou para o nome original. */
-  from: string;
-  /** As cópias que ficaram de fora, para conferência. */
-  others: string[];
-}
+export type ConflictRestoreResult =
+  | { status: "restored"; from: string; others: string[] }
+  | { status: "present" }
+  | { status: "no-copy" }
+  | { status: "tie"; tied: string[] };
 
 /**
- * Para cada arquivo de `dir` que só existe como cópia `.conflictN` do rclone,
- * copia a mais recente de volta para o nome original (#13404). O original
- * presente nunca é tocado, e as cópias ficam no disco como evidência. Só roda
- * por pedido explícito de quem chama.
+ * Restaura UM arquivo nomeado a partir da cópia que `chooseConflictCopy`
+ * aponta (#13404). Original presente nunca é sobrescrito (`present`), empate
+ * não restaura (`tie`), e as cópias ficam no disco como evidência. Só roda
+ * por pedido explícito de quem chama: varrer o diretório ressuscitaria cópias
+ * velhas de arquivos que o pipeline apagou de propósito.
  */
-export function restoreMissingFromConflictCopies(dir: string, fs: ConflictCopyFs = NODE_CONFLICT_COPY_FS): ConflictRestore[] {
-  let names: string[];
-  try {
-    names = fs.readdir(dir);
-  } catch {
-    return [];
-  }
-  const originals = new Set<string>();
-  for (const name of names) {
-    const original = rcloneConflictOriginalName(name);
-    if (original) originals.add(original);
-  }
-  const out: ConflictRestore[] = [];
-  for (const original of [...originals].sort()) {
-    const target = join(dir, original);
-    if (fs.exists(target)) continue;
-    const copies = conflictCopiesOf(target, fs).filter((c) => isRcloneConflictName(c.name));
-    if (!copies.length) continue;
-    fs.copy(copies[0].path, target);
-    out.push({ restored: target, from: copies[0].path, others: copies.slice(1).map((c) => c.path) });
-  }
-  return out;
+export function restoreFromConflictCopy(filePath: string, fs: ConflictCopyFs = NODE_CONFLICT_COPY_FS): ConflictRestoreResult {
+  if (fs.exists(filePath)) return { status: "present" };
+  const choice = chooseConflictCopy(filePath, fs);
+  if (choice.kind === "none") return { status: "no-copy" };
+  if (choice.kind === "tie") return { status: "tie", tied: choice.tied.map((c) => c.path) };
+  fs.copy(choice.chosen.path, filePath);
+  return { status: "restored", from: choice.chosen.path, others: choice.copies.filter((c) => c !== choice.chosen).map((c) => c.path) };
 }

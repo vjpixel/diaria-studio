@@ -6,10 +6,11 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  * `scripts/lib/diaria/video-montage.ts` (pura, testada), este arquivo só roda
  * ffmpeg/ffprobe e o helper Python e lê/grava os arquivos.
  *
- * Flag de todos os subcomandos: `--restore-conflict` (#13404) copia de volta a
- * cópia de conflito do sync (`{nome}.conflictN`) mais recente de cada arquivo
- * de trabalho ausente, com `[premissa]`; sem ela, o erro de "ausente" só
- * aponta a cópia e o comando `cp`.
+ * Flag de todos os subcomandos: `--restore-conflict NOME[,NOME]` (#13404)
+ * copia de volta, para cada arquivo NOMEADO e ausente em `_internal/video-montagem/`,
+ * a cópia de conflito do sync (`{nome}.conflictN`) que o erro de "ausente"
+ * mostrou, com `[premissa]`. Nunca sobrescreve o original nem decide empate
+ * de mtime. Sem ela, o erro só aponta a cópia e o comando `cp` (Git Bash).
  *
  * Subcomandos e flags próprias:
  *   transcribe AAMMDD [--source PATH] [--force] [--silence-db DB]
@@ -290,7 +291,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { conflictCopiesOf, missingFileConflictHint, restoreMissingFromConflictCopies, type ConflictCopyFs } from "./lib/sync-conflict-copy.ts";
+import { brtStamp, chooseConflictCopy, conflictCopiesOf, missingFileConflictHint, restoreFromConflictCopy, type ConflictCopyFs } from "./lib/sync-conflict-copy.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -626,26 +627,33 @@ function readJson<T>(path: string, what: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
+/** #13404: o `stateDir` da execução em curso; `--restore-conflict NOME` só alcança arquivos dele. */
+let activeStateDir: string | undefined;
+
+/** A flag que restauraria `path`, ou nada se ele não está no `stateDir` (a flag não o alcança). */
+function restoreFlagFor(path: string, stateDir: string | undefined): string | undefined {
+  return stateDir !== undefined && resolve(dirname(path)) === resolve(stateDir) ? `--restore-conflict ${basename(path)}` : undefined;
+}
+
 /**
  * #13404: "{what} ausente: {path}" e, se o sync de `data/` deixou cópias de
- * conflito no lugar (`blocks.json.conflictN`), a mais recente e o comando para
+ * conflito no lugar (`blocks.json.conflictN`), a mais nova e o comando para
  * restaurá-la. Não restaura: a cópia certa é o editor quem confere
- * (`--restore-conflict` faz a cópia da mais recente quando ele pede).
+ * (`--restore-conflict {nome}` copia a mesma que a mensagem mostra, quando ele pede).
  */
-export function missingWorkFileMessage(path: string, what: string, fs?: ConflictCopyFs): string {
-  const hint = missingFileConflictHint(path, conflictCopiesOf(path, fs));
-  if (!hint.length) return `${what} ausente: ${path}`;
-  return [`${what} ausente: ${path}`, ...hint, "ou rodar o comando de novo com --restore-conflict (copia a mais recente de volta, com [premissa])"].join("\n  ");
+export function missingWorkFileMessage(path: string, what: string, fs?: ConflictCopyFs, stateDir: string | undefined = activeStateDir): string {
+  const hint = missingFileConflictHint(path, chooseConflictCopy(path, fs), restoreFlagFor(path, stateDir));
+  return [`${what} ausente: ${path}`, ...hint].join("\n  ");
 }
 
 /**
  * #13404: arquivo de trabalho OPCIONAL (lido só se existir) que sumiu no sync:
  * o comando segue como se ele não existisse, então avisar em vez de calar.
  */
-function warnConflictOnly(path: string): void {
-  if (existsSync(path)) return;
-  const hint = missingFileConflictHint(path, conflictCopiesOf(path));
-  if (hint.length) console.error(`[aviso] ${basename(path)} ausente, seguindo sem ele: ${hint.join("; ")}`);
+export function warnConflictOnly(path: string, log: (line: string) => void = (l) => console.error(l), fs?: ConflictCopyFs, stateDir: string | undefined = activeStateDir): void {
+  if ((fs?.exists ?? existsSync)(path)) return;
+  const hint = missingFileConflictHint(path, chooseConflictCopy(path, fs), restoreFlagFor(path, stateDir));
+  if (hint.length) log(`[aviso] ${basename(path)} ausente, seguindo sem ele: ${hint.join("; ")}`);
 }
 
 function writeJson(path: string, data: unknown): void {
@@ -1115,7 +1123,7 @@ function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
   const t = Number(at);
   if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
   const measured = measuredSource(ctx);
-  warnConflictOnly(f(ctx, "blocks.json"));
+  // Sem o aviso de cópia de conflito aqui: o `frame` roda o cmdFrame antes, que já o deu (#13404).
   const override = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file.mirrored : undefined;
   const out = f(ctx, `frame-${t.toFixed(1)}-orientacoes.jpg`);
   const vf = "scale=960:-2,split[a][b];[b]hflip[m];[a][m]hstack=inputs=2,drawgrid=w=iw/20:h=ih/10:t=1:c=white@0.4";
@@ -2396,7 +2404,7 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
   // Antes do gate 1 não há blocks.json: vale o mirrored do source.json (e o framing da 261027).
   warnConflictOnly(f(ctx, "blocks.json"));
-  const blocks =existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file : null;
+  const blocks = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file : null;
   const source = blocks ? sourceFor(ctx, blocks) : sourceFor(ctx);
   const base = effectiveFraming(blocks ?? {}).framing;
   // #12559: bruto em vários arquivos: --at é o tempo global; o frame sai do arquivo daquele instante, com o tamanho e o framing dele.
@@ -2705,7 +2713,7 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
  */
 export function roteiroNotRewrittenNotice(path: string, mtimeMs: number | null): string {
   if (mtimeMs === null) return `[erro] roteiro falhou: ${path} não foi gravado (#13404)`;
-  return `[erro] roteiro falhou: ${path} NÃO foi regravado; o que está no disco é de ${new Date(mtimeMs).toISOString()}, defasado: não usar no Gate 2 até o roteiro rodar sem erro (#13404)`;
+  return `[erro] roteiro falhou: ${path} NÃO foi regravado; o que está no disco é de ${brtStamp(mtimeMs)}, defasado: não usar no Gate 2 até o roteiro rodar sem erro (#13404)`;
 }
 
 function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
@@ -5497,18 +5505,31 @@ async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefi
 }
 
 /**
- * `--restore-conflict` (#13404): cada arquivo de trabalho da montagem que o
- * sync de `data/` deixou só como `{nome}.conflictN` volta ao nome original a
- * partir da cópia mais recente (mtime). As cópias ficam no disco; arquivo
- * presente nunca é tocado. A escolha é premissa, por isso o log.
+ * `--restore-conflict NOME[,NOME]` (#13404): só os arquivos nomeados (os que a
+ * mensagem de "ausente" cita), nunca uma varredura do `stateDir`, que
+ * ressuscitaria cópias velhas de arquivos que o pipeline apagou de propósito.
+ * A cópia restaurada é a mesma que a mensagem mostra (`chooseConflictCopy`).
+ * Original presente nunca é sobrescrito, empate de mtime não restaura, e as
+ * cópias ficam no disco. A escolha é premissa, por isso o log. Nome inválido
+ * (caminho, `..`) lança.
  */
-export function restoreConflictCopies(stateDir: string, fs?: ConflictCopyFs): number {
-  const done = restoreMissingFromConflictCopies(stateDir, fs);
-  for (const r of done) {
-    console.error(`[premissa] ${basename(r.restored)} restaurado de ${basename(r.from)}, a cópia de conflito mais recente${r.others.length ? ` (ficaram no disco: ${r.others.map((p) => basename(p)).join(", ")})` : ""}; conferir antes de seguir (#13404)`);
+export function restoreConflictCopies(stateDir: string, namesArg: string, fs?: ConflictCopyFs, log: (line: string) => void = (l) => console.error(l)): number {
+  const names = namesArg.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!names.length) throw new Error("--restore-conflict exige o nome do arquivo (ex.: --restore-conflict blocks.json), o que a mensagem de ausente cita");
+  const bad = names.filter((n) => n !== basename(n) || n.includes("/") || n.includes("\\") || n === "." || n === "..");
+  if (bad.length) throw new Error(`--restore-conflict aceita só o nome do arquivo em ${stateDir}, sem caminho: ${bad.join(", ")}`);
+  let restored = 0;
+  for (const name of names) {
+    const target = join(stateDir, name);
+    const r = restoreFromConflictCopy(target, fs);
+    if (r.status === "restored") {
+      restored++;
+      log(`[premissa] ${name} restaurado de ${basename(r.from)}, a cópia de conflito mais nova${r.others.length ? ` (ficaram no disco: ${r.others.map((p) => basename(p)).join(", ")})` : ""}; conferir antes de seguir (#13404)`);
+    } else if (r.status === "present") log(`[aviso] --restore-conflict: ${name} existe, nada sobrescrito (#13404)`);
+    else if (r.status === "no-copy") log(`[aviso] --restore-conflict: ${name} sem cópia de conflito em ${stateDir}, nada restaurado (#13404)`);
+    else log(`[aviso] --restore-conflict: ${name} não restaurado: ${r.tied.map((p) => basename(p)).join(", ")} têm o mesmo horário e a escolha seria arbitrária; copiar à mão a certa (#13404)`);
   }
-  if (!done.length) console.error(`[video-montagem] --restore-conflict: nenhum arquivo ausente com cópia de conflito em ${stateDir}`);
-  return done.length;
+  return restored;
 }
 
 export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps): Promise<number> {
@@ -5565,7 +5586,15 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
   };
   // #13404: só com o pedido do editor; sem a flag, a mensagem de "ausente" aponta a cópia e o comando.
-  if (flags.has("restore-conflict")) restoreConflictCopies(ctx.stateDir);
+  activeStateDir = ctx.stateDir;
+  if (flags.has("restore-conflict") || values["restore-conflict"] !== undefined) {
+    try {
+      restoreConflictCopies(ctx.stateDir, values["restore-conflict"] ?? "");
+    } catch (e) {
+      console.error(`video-montagem: ${(e as Error).message}`);
+      return 2;
+    }
+  }
   const seq = values["seq"];
   if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
     const stop = audioOnlyStop(ctx, cmd);
