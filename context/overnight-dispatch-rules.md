@@ -42,7 +42,7 @@ usa pra dar `low` effort no `/code-review` pós-`gh pr create`, e é o que o
 cleanup de fim de rodada usa pra deletar a branch remota corretamente.
 
 **Anúncio de PR (overnight, develop e continuo; #13271):** imediatamente após `gh pr create`,
-enviar ao coordenador via `SendMessage` o número/URL, o SHA completo (40 hex) do HEAD e as issues da
+enviar ao coordenador via `SendMessage` (destino `main`, a conversa principal) o número/URL, o SHA completo (40 hex) do HEAD e as issues da
 unidade, antes de iniciar o self-review. O coordenador começa a espera de CI em
 paralelo; o implementador segue o self-review e retorna o total de findings
 normalmente.
