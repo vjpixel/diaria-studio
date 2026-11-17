@@ -78,6 +78,9 @@
  * PRÓPRIO de 2 a 5 palavras em Georgia (a capa não repete o título do D1):
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --short-cover --at 6.2 --hook "IA ladra?"
  *     [--panel-top 0.62]   (fração da altura onde começa o painel)
+ *     [--srt "Diaria comentada_Vertical_V1 - legendas.srt"]   (#13256: a capa mostra a 1ª
+ *       legenda da fala; sem --at, sugere o instante dela e, sem --panel-top, põe o
+ *       painel logo abaixo da caixa da legenda; com os dois à mão, só avisa)
  *     [--video PATH]   (default: {edição}/diaria-comentada-{AAMMDD}-short.mp4)
  *     [--out PATH] [--edition-dir DIR]
  * Sem `--hook` sai a capa antiga: o frame cru, dentro da janela do lettering
@@ -117,6 +120,7 @@ import {
   buildCapaBackgroundPrompt,
   parseCapaScene,
 } from "./lib/diaria/youtube-thumb-capa-bg.ts";
+import { parseSrtCues, planShortCoverCaption, shortCoverCaptionWarnings } from "./lib/diaria/short-cover-caption.ts";
 import {
   THUMB_PORTRAITS_DIR,
   THUMB_PORTRAITS_META,
@@ -155,7 +159,7 @@ const USAGE =
   "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-sheet [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-portrait N [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --short-cover --at SEGUNDOS --hook \"Gancho de 2 a 5 palavras?\" [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
+  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) --hook \"Gancho de 2 a 5 palavras?\" [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
 
 /**
  * #11228: extrai N frames do vídeo BRUTO direto da Drive API (sem baixar o
@@ -422,15 +426,40 @@ async function main(): Promise<number> {
   if (values["pick-portrait"] !== undefined || flags.has("pick-portrait")) return pickPortrait(dir, values["pick-portrait"]);
 
   if (flags.has("short-cover")) {
-    const at = Number(values["at"]);
-    if (values["at"] === undefined) {
-      console.error("gen-youtube-thumb: --short-cover exige --at SEGUNDOS (com --hook: frame depois do lettering do título, > 3,5 s; sem --hook: dentro, 0–3,5 s)");
-      return 2;
-    }
     // #12462: gancho próprio na capa vertical (2 a 5 palavras), validado antes do ffmpeg.
     if (flags.has("hook")) throw new Error('--hook exige o valor: o gancho de 2 a 5 palavras (ex.: --hook "IA ladra?")');
+    if (flags.has("srt")) throw new Error("--srt exige o caminho do SRT do vertical (`Diaria comentada_Vertical_V1 - legendas.srt`, da montagem)");
     const shortHook = values["hook"];
-    const panelTop = values["panel-top"] !== undefined ? Number(values["panel-top"]) : undefined;
+    let panelTop = values["panel-top"] !== undefined ? Number(values["panel-top"]) : undefined;
+    let atValue = values["at"] !== undefined ? Number(values["at"]) : undefined;
+    // #13256: com o SRT do vertical, a capa mostra a 1ª legenda: sugere o --at e põe o painel abaixo dela.
+    if (values["srt"] !== undefined) {
+      const srtPath = resolve(values["srt"]);
+      if (!existsSync(srtPath)) {
+        console.error(`gen-youtube-thumb: SRT do vertical não encontrado em ${srtPath}`);
+        return 1;
+      }
+      const cap = planShortCoverCaption(parseSrtCues(readFileSync(srtPath, "utf8")));
+      if (!cap) {
+        console.error(`[aviso] ${srtPath}: nenhuma legenda depois do lettering do título; a capa segue sem a 1ª legenda (#13256)`);
+      } else {
+        for (const w of [...cap.warnings, ...shortCoverCaptionWarnings(cap, atValue, panelTop)]) console.error(`[aviso] ${w}`);
+        const cueText = cap.cue.text.replace(/\n/g, " ");
+        if (atValue === undefined) {
+          atValue = cap.at;
+          console.error(`[premissa] --at ${cap.at}: a 1ª legenda da fala ("${cueText}", ${cap.cue.start}–${cap.cue.end}s, do SRT) no frame (#13256)`);
+        }
+        if (panelTop === undefined) {
+          panelTop = cap.panelTopRatio;
+          console.error(`[premissa] --panel-top ${cap.panelTopRatio}: o painel começa abaixo da legenda (base em ${cap.captionBottomPx}px), que fica legível acima do gancho (#13256)`);
+        }
+      }
+    }
+    if (atValue === undefined) {
+      console.error("gen-youtube-thumb: --short-cover exige --at SEGUNDOS ou --srt (o SRT do vertical, que sugere o instante da 1ª legenda, #13256) (com --hook: frame depois do lettering do título, > 3,5 s; sem --hook: dentro, 0–3,5 s)");
+      return 2;
+    }
+    const at = atValue;
     if (shortHook === undefined) {
       console.error("[aviso] --short-cover sem --hook: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 5 palavras — passe --hook");
     }

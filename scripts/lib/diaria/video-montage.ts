@@ -4329,6 +4329,100 @@ export function alignPunctuationToScript(words: Word[], script: string, aliases:
 }
 
 /**
+ * #13257: limites da correção de grafia no `--heard-text`. Um trecho em que o
+ * ouvido e o roteiro divergem só vira o texto do roteiro quando é curto (até
+ * `maxGapTokens` palavras de cada lado) e fica entre `anchorRun` palavras
+ * casadas em sequência dos dois lados: é erro do Whisper ("Soné" × "Sonnet",
+ * "for" × "4"), não trecho que o editor regravou diferente do roteiro.
+ */
+export const HEARD_TEXT_FIX_DEFAULTS = { maxGapTokens: 3, anchorRun: 2 } as const;
+
+/**
+ * #13257: palavra de ruído que o Whisper escreve depois do fim da fala
+ * ("Música Música E aí" na 261116). Normalizada (`normalizeToken`); token que
+ * normaliza para vazio ("♪", "...") também conta como ruído.
+ */
+const HEARD_TAIL_NOISE = new Set(["musica", "aplausos", "risos", "e", "ai", "ah", "eh", "hum", "hm", "uhum"]);
+
+export interface HeardTextAlignment {
+  /** A legenda: o ouvido, com a grafia e a pontuação do roteiro onde casa, e as correções de `fixes`. */
+  words: Word[];
+  /** Trechos curtos trocados pelo roteiro (grafia), com o tempo do 1º ouvido. */
+  fixes: Array<{ heard: string; script: string; start: number }>;
+  /** Ruído ouvido depois da última palavra casada com o roteiro, fora da legenda. */
+  droppedTail: Word[];
+}
+
+/**
+ * #13257: o texto do `--heard-text` (export reeditado depois do build). Além do
+ * que `alignPunctuationToScript` faz (palavra casada vira o token do roteiro),
+ * aplica as trocas de grafia que o alinhamento acha em trechos curtos ancorados
+ * (`HEARD_TEXT_FIX_DEFAULTS`) — as mesmas linhas `ouvido X, legenda com o
+ * roteiro Y` do modo roteiro, só que sem exigir que o roteiro inteiro case — e
+ * descarta o ruído do fim ("Música", "E aí") depois da última palavra casada,
+ * como o modo roteiro descarta o ouvido "depois do fim". Trecho longo ou sem
+ * âncora fica como o Whisper ouviu: é fala que o roteiro não tem. Puro.
+ */
+export function alignHeardTextToScript(
+  words: Word[],
+  script: string,
+  aliases: VocabAlias[] = [],
+  opts: { maxGapTokens?: number; anchorRun?: number } = {},
+): HeardTextAlignment {
+  const maxGap = opts.maxGapTokens ?? HEARD_TEXT_FIX_DEFAULTS.maxGapTokens;
+  const anchor = Math.max(1, opts.anchorRun ?? HEARD_TEXT_FIX_DEFAULTS.anchorRun);
+  const raw = script.split(/\s+/).filter((t) => normalizeToken(t));
+  const merged = mergeSplitNumberTokens(words, raw);
+  const pairs = alignTokens(merged.map((w) => normalizeToken(w.text)), raw.map(normalizeToken), makeMatcher(aliases));
+  const base = merged.map((w) => ({ ...w, text: w.text.trim() }));
+  for (const [i, j] of pairs) base[i].text = raw[j];
+  // `anchor` pares em sequência (índices consecutivos dos dois lados) terminando em `pairs[k]` (dir = -1) ou começando nele (dir = 1).
+  // A sequência que chega à borda do roteiro (1ª ou última palavra dele) também ancora: "seu e -mail também." no fim da fala.
+  const anchored = (k: number, dir: 1 | -1): boolean => {
+    for (let n = 1; n < anchor; n++) {
+      const a = pairs[k + dir * (n - 1)];
+      const b = pairs[k + dir * n];
+      if (a && a[1] === (dir === 1 ? raw.length - 1 : 0)) return true;
+      if (!a || !b || Math.abs(b[0] - a[0]) !== 1 || Math.abs(b[1] - a[1]) !== 1) return false;
+    }
+    return true;
+  };
+  const replace = new Map<number, { last: number; words: Word[] }>();
+  const fixes: HeardTextAlignment["fixes"] = [];
+  for (let k = 0; k + 1 < pairs.length; k++) {
+    const [pi, pj] = pairs[k];
+    const [i, j] = pairs[k + 1];
+    const gapH = base.slice(pi + 1, i);
+    const gapS = raw.slice(pj + 1, j);
+    if (!gapH.length || !gapS.length || gapH.length > maxGap || gapS.length > maxGap) continue;
+    if (!anchored(k, -1) || !anchored(k + 1, 1)) continue;
+    replace.set(pi + 1, { last: i - 1, words: spreadTokens(gapS, gapH[0].start, gapH[gapH.length - 1].end) });
+    fixes.push({ heard: joinWordTexts(gapH.map((w) => w.text)), script: joinWordTexts(gapS), start: gapH[0].start });
+  }
+  const out: Word[] = [];
+  // Índice em `out` da última palavra casada com o roteiro (o ruído do fim só sai depois dela).
+  let lastMatched = -1;
+  const matched = new Set(pairs.map(([i]) => i));
+  for (let i = 0; i < base.length; i++) {
+    const r = replace.get(i);
+    if (r) {
+      out.push(...r.words);
+      i = r.last;
+      continue;
+    }
+    out.push(base[i]);
+    if (matched.has(i)) lastMatched = out.length - 1;
+  }
+  let cut = out.length;
+  while (cut - 1 > lastMatched) {
+    const t = normalizeToken(out[cut - 1].text);
+    if (t && !HEARD_TAIL_NOISE.has(t)) break;
+    cut--;
+  }
+  return { words: out.slice(0, cut), fixes, droppedTail: out.slice(cut) };
+}
+
+/**
  * Por que uma palavra ouvida sem par no roteiro saiu da legenda (#11960).
  * `fora do roteiro`: em plena fala, longe de corte (#12093). Até o #12093 ela
  * ficava na legenda; na 261104 isso desfez a edição do editor ("utilizado
