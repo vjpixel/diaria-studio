@@ -22,7 +22,7 @@ import {
   resolveThumbMirrored,
   thumbFrameFileName,
 } from "../scripts/lib/diaria/youtube-thumb-frames.ts";
-import { effectiveSource } from "../scripts/lib/diaria/video-montage.ts";
+import { effectiveSource, MIRRORED_DEFAULT, resolveMirrored } from "../scripts/lib/diaria/video-montage.ts";
 
 const CLI = fileURLToPath(new URL("../scripts/gen-youtube-thumb.ts", import.meta.url));
 const TSX_LOADER = pathToFileURL(fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url))).href;
@@ -50,13 +50,20 @@ describe("planDriveFrameArgs: hflip conforme o mirrored (#11378)", () => {
 });
 
 describe("resolveThumbMirrored: mesma precedência da montagem (#11378)", () => {
-  it("flag > blocks.json > source.json > default true", () => {
+  it("flag > blocks.json > source.json > default false (#13316)", () => {
     assert.deepEqual(resolveThumbMirrored({ flag: false, blocks: { mirrored: true }, source: { mirrored: true } }), { mirrored: false, from: "flag" });
     assert.deepEqual(resolveThumbMirrored({ blocks: { mirrored: false }, source: { mirrored: true } }), { mirrored: false, from: "blocks.json" });
     assert.deepEqual(resolveThumbMirrored({ blocks: { source: { mirrored: false } }, source: { mirrored: true } }), { mirrored: false, from: "blocks.json" });
     assert.deepEqual(resolveThumbMirrored({ blocks: { blocks: [] }, source: { mirrored: false } }), { mirrored: false, from: "source.json" });
-    assert.deepEqual(resolveThumbMirrored({}), { mirrored: true, from: "default" });
-    assert.deepEqual(resolveThumbMirrored({ source: { mirrored: "sim" } }), { mirrored: true, from: "default" });
+    assert.deepEqual(resolveThumbMirrored({}), { mirrored: false, from: "default" });
+    assert.deepEqual(resolveThumbMirrored({ source: { mirrored: "sim" } }), { mirrored: false, from: "default" });
+  });
+
+  it("#13316: sem nenhum estado, capa e montagem caem no mesmo default (nenhum true esquecido)", () => {
+    assert.equal(resolveThumbMirrored({}).mirrored, MIRRORED_DEFAULT);
+    assert.equal(resolveMirrored(null, null).mirrored, MIRRORED_DEFAULT);
+    const legacy = { path: "/b.mp4", fps: 30, durationS: 60, width: 3840, height: 2160 } as unknown as Parameters<typeof effectiveSource>[0];
+    assert.equal(effectiveSource(legacy).source.mirrored, MIRRORED_DEFAULT);
   });
 
   it("concorda com effectiveSource da montagem nos mesmos insumos", () => {
@@ -142,11 +149,11 @@ describe("CLI --pick-frame aplica o mirrored em vigor (#11378)", () => {
     assert.equal(await redAt(readFileSync(join(dir, THUMB_FRAMES_DIR, THUMB_FRAME_PICKED))), 0);
   });
 
-  it("sem estado da montagem vale o default dela (espelhado)", async () => {
+  it("sem estado da montagem vale o default dela (não espelhado desde o #13316)", async () => {
     const dir = await editionWithFrame({});
     const r = pick(dir);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(await redAt(readFileSync(join(dir, THUMB_FRAMES_DIR, THUMB_FRAME_PICKED))), 3);
+    assert.equal(await redAt(readFileSync(join(dir, THUMB_FRAMES_DIR, THUMB_FRAME_PICKED))), 0);
   });
 
   it("--mirrored e --no-mirrored juntos é erro", async () => {

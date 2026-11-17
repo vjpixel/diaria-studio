@@ -36,7 +36,7 @@
  *       (entrada do recorte rembg, que gera o `--portrait`)
  *   Bruto espelhado (#11378): os dois modos aplicam o `mirrored` em vigor, com
  *   a precedência da `/diaria-video-montagem` — `--mirrored`/`--no-mirrored` >
- *   `_internal/video-montagem/blocks.json` > `source.json` > true. O
+ *   `_internal/video-montagem/blocks.json` > `source.json` > false (#13316). O
  *   `--frames-from-drive` extrai com `hflip` e grava `frames.json`; o
  *   `--pick-frame` só espelha se o aplicado na extração diferir do em vigor.
  *   As flags vão depois do AAMMDD.

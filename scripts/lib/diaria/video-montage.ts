@@ -1680,7 +1680,7 @@ export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "m
     if (legacy.fps !== undefined && legacy.fps !== measured.fps) errors.push(`fps do blocks.json (${legacy.fps}) diverge do source.json (${measured.fps})`);
   }
   if (!Number.isInteger(measured.fps)) errors.push(`fps ${measured.fps} não inteiro: o XML usa timebase inteiro com NTSC=FALSE`);
-  const mirrored = file?.mirrored ?? legacy?.mirrored ?? measured.mirrored ?? true;
+  const mirrored = file?.mirrored ?? legacy?.mirrored ?? measured.mirrored ?? MIRRORED_DEFAULT;
   if (!measured.files?.length) {
     if (file?.files && Object.keys(file.files).length) errors.push(`blocks.json traz files (${Object.keys(file.files).join(", ")}), mas o bruto é um arquivo só: use framing/mirrored do topo`);
     return { source: { ...measured, mirrored }, errors };
@@ -1688,7 +1688,7 @@ export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "m
   // #12559: cada arquivo com o seu espelhamento: o override do arquivo, senão o geral do blocks.json, senão o medido nele.
   const ids = new Set(measured.files.map((x) => x.id));
   for (const id of Object.keys(file?.files ?? {})) if (!ids.has(id)) errors.push(`blocks.json files.${id}: arquivo inexistente no source.json (ids: ${[...ids].join(", ")})`);
-  const files = measured.files.map((x) => ({ ...x, mirrored: file?.files?.[x.id]?.mirrored ?? file?.mirrored ?? legacy?.mirrored ?? x.mirrored ?? measured.mirrored ?? true }));
+  const files = measured.files.map((x) => ({ ...x, mirrored: file?.files?.[x.id]?.mirrored ?? file?.mirrored ?? legacy?.mirrored ?? x.mirrored ?? measured.mirrored ?? MIRRORED_DEFAULT }));
   return { source: { ...measured, mirrored: files[0].mirrored, files }, errors };
 }
 
@@ -4745,7 +4745,7 @@ export function mirroredPremise(s: Pick<SourceInfo, "mirrored" | "mirroredFrom" 
       : s.mirroredFrom === "config"
         ? `publishing.video.mirrored_default do config${s.camera === "front" ? " (câmera frontal no metadado: o espelho depende do aparelho)" : " (sem metadado da câmera)"}`
         : s.mirroredFrom === "default"
-          ? "default do #11208, sem metadado da câmera nem config"
+          ? "default do código (#13316), sem metadado da câmera nem config"
           : "source.json anterior ao #11959, origem não registrada";
   const ambiguous = s.mirroredFrom !== "camera-metadata";
   return `mirrored=${s.mirrored} (${how})${ambiguous ? ": premissa, conferir no frame lado a lado no Gate 1 (o lado em que a caneca lê certo diz o valor: bruto = false, espelhado = true; o \"mirrored\" do blocks.json sobrepõe)" : ""}`;

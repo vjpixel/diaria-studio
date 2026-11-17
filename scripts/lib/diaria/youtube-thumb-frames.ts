@@ -25,6 +25,7 @@ import sharp from "sharp";
 import { COLORS, FONTS } from "../shared/design-tokens.ts";
 import { DRIVE_API } from "../drive-constants.ts";
 import { escapeXml } from "./youtube-thumb.ts";
+import { MIRRORED_DEFAULT } from "./video-montage.ts";
 
 /** Quantas opções de frame a folha mostra por padrão (5 em 261027). */
 export const DEFAULT_FRAME_COUNT = 5;
@@ -117,8 +118,9 @@ export type MirroredOrigin = "flag" | "blocks.json" | "source.json" | "default" 
  * O `mirrored` em vigor para os frames da capa, com a mesma precedência da
  * `/diaria-video-montagem` (`effectiveSource` em `video-montage.ts`):
  * `--mirrored`/`--no-mirrored` > `blocks.json` (`mirrored`, ou o legado
- * `source.mirrored`) > `source.json` > `true` (premissa #11208: o bruto vem
- * espelhado). Campo que não seja booleano é ignorado, como ausente.
+ * `source.mirrored`) > `source.json` > `MIRRORED_DEFAULT` da montagem (`false`
+ * desde o #13316; era `true`, a premissa do #11208). Campo que não seja
+ * booleano é ignorado, como ausente.
  *
  * `final` (#11532): os frames saem do vídeo exportado em `Final/` (fallback
  * quando o bruto não está no Drive). A exportação do Premiere já vem com o
@@ -138,7 +140,7 @@ export function resolveThumbMirrored(input: { flag?: boolean; blocks?: unknown; 
   if (fromBlocks !== undefined) return { mirrored: fromBlocks, from: "blocks.json" };
   const fromSource = bool(obj(input.source)?.mirrored);
   if (fromSource !== undefined) return { mirrored: fromSource, from: "source.json" };
-  return { mirrored: true, from: "default" };
+  return { mirrored: MIRRORED_DEFAULT, from: "default" };
 }
 
 /**
