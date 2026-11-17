@@ -128,8 +128,10 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS ou mais com o piso do bruto, #11968) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
  *       (#13194) por último, a borda que o verify-xml acusaria como SOM CORTADO (40 ms de
- *       fora acima do limiar do bruto) abre quadro a quadro até o silêncio, até 0,6 s, sem
- *       passar da palavra vizinha de fora nem de outro clipe; sem silêncio, [aviso].
+ *       fora acima do limiar da borda: o menor entre o do bruto e o piso de ruído LOCAL + 3 dB,
+ *       nunca abaixo de -60 dBFS) abre quadro a quadro até o silêncio, até 0,6 s, sem
+ *       passar da palavra vizinha de fora (folga de 0,15 s para a cauda que o Whisper deu a
+ *       ela) nem de outro clipe; sem silêncio, [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       (#12711) item com fala demais para o texto (ritmo da gravação) ou frase repetida no
  *       intervalo = [aviso] de tomada repetida (o Whisper colapsa a repetição); o roteiro confere
@@ -453,7 +455,7 @@ import {
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
 import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
-import { assemblySegments, edgeFindings, edgeLine, longPauses, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
@@ -2741,6 +2743,9 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   const edgeThreshold = verifyXmlEdgeThreshold(existsSync(silenceMeta) ? readJson<SilencesMeta>(silenceMeta, "silences.meta.json") : null);
   const thr = edgeThreshold.thresholdDb;
   console.error(`[video-montagem] verify-xml: bordas a ${thr} dBFS (${edgeThreshold.from}, o limiar do refino do build); piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "não medido"} dBFS (#12903, #12969)`);
+  // #13194: em cada borda vale o menor entre o fixo e o piso de ruído LOCAL + margem (localEdgeThreshold, o mesmo critério do build).
+  const thrAt = localEdgeThreshold(env, thr);
+  console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS) (#13194)`);
   if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
   let bad = 0;
@@ -2757,7 +2762,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const cardFrames = pf.xmlAssets?.[key]?.ctaCard?.frames ?? null;
     const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames }), ...capaInicioXmlIssues(xmlText, capaFramesOf(pf.xmlAssets?.[key]?.capaInicio, plan.durationFrames))];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
-    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thr, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined);
+    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thrAt, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined);
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
     const durS = (parsed.clips[parsed.clips.length - 1]?.end ?? 0) / parsed.rate;
     console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)${cardFrames ? ` + card de CTA ${(cardFrames / pf.source.fps).toFixed(2)} s sem fala` : ""}`);
@@ -3313,6 +3318,9 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
  * abertura são as do transcript e as da retranscrição das bordas (o som fora
  * do roteiro que a passada B tirou só aparece nelas, #11968). Borda que não
  * achou silêncio vira aviso: o `verify-xml` vai acusar e o editor decide.
+ * O limiar de cada borda é o menor entre `thresholdDb` (o fixo do bruto) e o
+ * piso de ruído local + 3 dB (`localEdgeThreshold`): a borda só fecha onde a
+ * energia caiu ao piso em volta dela, não num dBFS fixo.
  */
 export function openCutEdgesOfPlan(
   clips: PlannedClip[],
@@ -3323,7 +3331,7 @@ export function openCutEdgesOfPlan(
   heard: Map<string, Word[]> | null,
 ): { clips: PlannedClip[]; adjustments: CutAdjustment[]; warnings: string[] } {
   const neighbors = [...words, ...(heard ? [...heard.values()].flat() : [])].filter((w) => w.text.trim());
-  const r = openCutSoundEdges(clips, source.fps, (a, b) => maxDbIn(env, a, b), thresholdDb, {
+  const r = openCutSoundEdges(clips, source.fps, (a, b) => maxDbIn(env, a, b), localEdgeThreshold(env, thresholdDb), {
     durationS: source.durationS,
     words: neighbors,
     bounds: isMultiSource(source) ? fileBounds(source) : undefined,
@@ -3334,6 +3342,7 @@ export function openCutEdgesOfPlan(
     },
   });
   const side = (e: "in" | "out") => (e === "in" ? "entrada" : "saída");
+  const limiarNote = (db: number) => (db < thresholdDb - 1e-9 ? `, piso local + ${LOCAL_FLOOR_EDGE.marginDb} dB` : "");
   return {
     clips: r.clips,
     adjustments: r.opened.map((o) => ({
@@ -3341,9 +3350,9 @@ export function openCutEdgesOfPlan(
       edge: o.edge,
       from: o.from,
       to: Math.round(o.to * 1000) / 1000,
-      reason: `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${thresholdDb} dB): aberto até o silêncio (${Math.round(o.toDb)} dB) (#13194)`,
+      reason: `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${Math.round(o.thresholdDb)} dB${limiarNote(o.thresholdDb)}): aberto até o silêncio (${Math.round(o.toDb)} dB) (#13194)`,
     })),
-    warnings: r.unresolved.map((u) => `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${thresholdDb} dB) sem silêncio até a palavra vizinha ou ${CUT_EDGE_OPEN.maxS} s: o verify-xml vai acusar; conferir no Premiere (#13194)`),
+    warnings: r.unresolved.map((u) => `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}) sem silêncio até a palavra vizinha ou ${CUT_EDGE_OPEN.maxS} s: o verify-xml vai acusar; conferir no Premiere (#13194)`),
   };
 }
 

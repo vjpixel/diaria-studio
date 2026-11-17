@@ -152,14 +152,97 @@ export interface EdgeFinding {
   afterDb: number;
   cutIn: boolean;
   cutOut: boolean;
+  /** Limiar aplicado em cada borda (dBFS): o fixo do bruto ou o relativo ao piso local, o menor (#13194). */
+  thrInDb: number;
+  thrOutDb: number;
 }
 
 /** Janela medida do lado de fora de cada borda (o edicao-video usa 40 ms). */
 export const EDGE_WINDOW_S = 0.04;
 
 /**
+ * Limiar das bordas: um dBFS só para o bruto inteiro, ou um por instante
+ * (`localEdgeThreshold`, relativo ao piso de ruído em volta da borda, #13194).
+ */
+export type EdgeThreshold = number | ((t: number) => number);
+
+const thresholdAt = (thr: EdgeThreshold, t: number) => (typeof thr === "number" ? thr : thr(t));
+
+/**
+ * #13194 (decisão do editor de 15/11: na dúvida, silêncio a palavra cortada):
+ * a borda só fecha onde a energia caiu ao piso de ruído LOCAL. Na 261117 o
+ * piso do bruto em volta de 860 s é -55 dBFS (sala, não os -85 do piso
+ * global), e a cauda de "cair" seguia a -48..-52 dBFS depois do corte: abaixo
+ * dos -45 fixos, ninguém via, e o Whisper do final ouviu "caiu".
+ *
+ * - `windowS`: o piso é medido em ±4 s em volta da borda, o bastante para
+ *   pegar as pausas entre frases;
+ * - `percentile`: o 10º percentil do envelope nessa janela (o ruído de fundo,
+ *   não a fala); quadro em zero digital (-120) não entra;
+ * - `marginDb`: o silêncio é o piso + 3 dB. O ruído de sala estável oscila
+ *   ~2 dB acima do p10 na janela de 40 ms (261117, 900 s: p10 -56, máximo -54);
+ * - `minThresholdDb`: em bruto muito quieto (piso de -80 ou menos) o limiar
+ *   não desce de -60 dBFS: respiro e estalo baixos não viram "som cortado".
+ *
+ * O limiar relativo só desce: nunca passa do limiar fixo do bruto (o
+ * `noiseDb` do silences.meta.json). Em sala ruidosa (piso perto da fala) ele
+ * fica no fixo. O que segura a abertura em sala ruidosa é o teto de
+ * `openCutSoundEdges` (`CUT_EDGE_OPEN.maxS`, a palavra vizinha e o clipe
+ * vizinho), nunca o limiar.
+ */
+export const LOCAL_FLOOR_EDGE = { windowS: 4, percentile: 0.1, marginDb: 3, minThresholdDb: -60 } as const;
+
+/** Envelope de energia (o `energyEnvelope` do refino): `db[i]` no instante `i * hopS`. */
+export interface LevelEnvelope {
+  hopS: number;
+  db: ArrayLike<number>;
+}
+
+/** Piso de ruído local em `t`: percentil do envelope em `[t - windowS, t + windowS]`, sem o zero digital. Sem quadro medido, `null`. */
+export function localFloorDb(env: LevelEnvelope, t: number, opts: { windowS?: number; percentile?: number } = {}): number | null {
+  const windowS = opts.windowS ?? LOCAL_FLOOR_EDGE.windowS;
+  const p = opts.percentile ?? LOCAL_FLOOR_EDGE.percentile;
+  const lo = Math.max(0, Math.floor((t - windowS) / env.hopS));
+  const hi = Math.min(env.db.length - 1, Math.ceil((t + windowS) / env.hopS));
+  const vals: number[] = [];
+  for (let i = lo; i <= hi; i++) {
+    const d = env.db[i];
+    if (Number.isFinite(d) && d > -119.5) vals.push(d);
+  }
+  if (!vals.length) return null;
+  vals.sort((a, b) => a - b);
+  return vals[Math.min(vals.length - 1, Math.floor(p * vals.length))];
+}
+
+/**
+ * Limiar das bordas relativo ao piso local (#13194): `min(fixo, max(-60, piso
+ * local + 3 dB))`, por instante, com cache por quadro do envelope. Sem piso
+ * medido em volta (fora do áudio, ou só zero digital), o fixo.
+ */
+export function localEdgeThreshold(
+  env: LevelEnvelope,
+  fixedDb: number,
+  opts: { windowS?: number; percentile?: number; marginDb?: number; minThresholdDb?: number } = {},
+): (t: number) => number {
+  const margin = opts.marginDb ?? LOCAL_FLOOR_EDGE.marginDb;
+  const minDb = opts.minThresholdDb ?? LOCAL_FLOOR_EDGE.minThresholdDb;
+  const cache = new Map<number, number>();
+  return (t: number) => {
+    const k = Math.round(t / env.hopS);
+    let v = cache.get(k);
+    if (v === undefined) {
+      const floor = localFloorDb(env, k * env.hopS, opts);
+      v = floor === null ? fixedDb : Math.min(fixedDb, Math.max(minDb, floor + margin));
+      cache.set(k, v);
+    }
+    return v;
+  };
+}
+
+/**
  * Energia logo fora de cada borda (`levelDb(a, b)` = maior dBFS em [a, b] do
- * áudio do bruto). Acima de `thresholdDb` = som cortado, menos quando o trecho
+ * áudio do bruto). Acima do limiar da borda (`thresholdDb`: fixo, ou relativo
+ * ao piso local via `localEdgeThreshold`, #13194) = som cortado, menos quando o trecho
  * de fora está dentro de outro clipe contíguo no bruto (fala que continua no
  * clipe seguinte/anterior da sequência).
  */
@@ -167,7 +250,7 @@ export function edgeFindings(
   clips: readonly TimelineClip[],
   rate: number,
   levelDb: (a: number, b: number) => number,
-  thresholdDb: number,
+  thresholdDb: EdgeThreshold,
   windowS = EDGE_WINDOW_S,
   /** Limites (s globais) dos arquivos do bruto em vários arquivos: a janela nunca lê o arquivo vizinho (borda na emenda não é corte). */
   bounds?: ReadonlyArray<{ start: number; end: number }>,
@@ -185,9 +268,11 @@ export function edgeFindings(
     const aHi = Math.min(fs.end, b + windowS);
     const beforeDb = bLo < a - 1e-6 ? levelDb(bLo, a) : FLOOR;
     const afterDb = aHi > b + 1e-6 ? levelDb(b, aHi) : FLOOR;
-    const cutIn = beforeDb > thresholdDb && !coveredBy(clips[i - 1], bLo, a);
-    const cutOut = afterDb > thresholdDb && !coveredBy(clips[i + 1], b, aHi);
-    return { clip: i + 1, inS: a, outS: b, beforeDb, afterDb, cutIn, cutOut };
+    const thrInDb = thresholdAt(thresholdDb, a);
+    const thrOutDb = thresholdAt(thresholdDb, b);
+    const cutIn = beforeDb > thrInDb && !coveredBy(clips[i - 1], bLo, a);
+    const cutOut = afterDb > thrOutDb && !coveredBy(clips[i + 1], b, aHi);
+    return { clip: i + 1, inS: a, outS: b, beforeDb, afterDb, cutIn, cutOut, thrInDb, thrOutDb };
   });
 }
 
@@ -195,6 +280,12 @@ export function edgeFindings(
 
 /** Quanto o build pode abrir cada borda com SOM CORTADO até achar o silêncio (#13194). */
 export const CUT_EDGE_OPEN = { maxS: 0.6 } as const;
+
+/**
+ * Quanto a abertura pode entrar no tempo do Whisper da palavra vizinha de fora (#13194): a cauda da palavra do
+ * clipe que o Whisper deu à seguinte. Nunca mais que metade da palavra vizinha.
+ */
+export const NEIGHBOR_WORD_GRACE_S = 0.15;
 
 /** Palavra de fora a menos disto da borda pode ser a do próprio clipe (`ownWord`). */
 const OWN_WORD_GAP_S = 0.15;
@@ -216,6 +307,8 @@ export interface OpenedEdge<B extends string = string> {
   /** Energia logo fora da borda antes (a que o verify-xml acusaria) e depois de abrir. */
   fromDb: number;
   toDb: number;
+  /** Limiar da borda (dBFS) em que ela foi aberta (#13194: relativo ao piso local quando há envelope). */
+  thresholdDb: number;
 }
 
 export interface UnresolvedEdge<B extends string = string> {
@@ -223,6 +316,7 @@ export interface UnresolvedEdge<B extends string = string> {
   edge: "in" | "out";
   atS: number;
   db: number;
+  thresholdDb: number;
 }
 
 /**
@@ -232,7 +326,8 @@ export interface UnresolvedEdge<B extends string = string> {
  * abre a borda com SOM CORTADO, quadro a quadro, até o 1º ponto em que o lado
  * de fora fica no silêncio. A abertura para em `maxOpenS`, no limite do arquivo
  * do bruto, na palavra vizinha INTEIRA de fora (`words`, a que termina antes da
- * entrada ou começa depois da saída: a palavra que a borda corta ao meio é a
+ * entrada ou começa depois da saída, com folga de `NEIGHBOR_WORD_GRACE_S` para a
+ * cauda que o Whisper deu a ela, #13194; a palavra que a borda corta ao meio é a
  * que se quer reabrir, e a 1ª/última do próprio roteiro do clipe colada na
  * borda também, via `ownWord`) e no clipe mais próximo da sequência do mesmo lado (o
  * áudio nunca se repete). Sem silêncio até lá, a borda fica como estava e sai
@@ -242,7 +337,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
   clips: readonly T[],
   fps: number,
   levelDb: (a: number, b: number) => number,
-  thresholdDb: number,
+  thresholdDb: EdgeThreshold,
   opts: {
     durationS: number;
     words?: ReadonlyArray<{ start: number; end: number; text?: string }>;
@@ -260,6 +355,11 @@ export function openCutSoundEdges<T extends OpenableClip>(
   const timeline = (cs: readonly T[]): TimelineClip[] => cs.map((c) => ({ start: 0, end: 0, in: c.frameIn, out: c.frameOut, fileId: "file-1", gIn: c.frameIn, gOut: c.frameOut }));
   const findings = (cs: readonly T[]) => edgeFindings(timeline(cs), fps, levelDb, thresholdDb, windowS, opts.bounds);
   const spanOf = (t: number) => opts.bounds?.find((s) => t >= s.start - eps && t < s.end) ?? { start: 0, end: opts.durationS };
+  // #13194: o Whisper costuma começar a palavra seguinte em cima da cauda da anterior ("No[941,40-942,16]" na
+  // 261117, com a cauda de "ele." caindo até 941,55 s e o piso dali até 942 s). A abertura pode entrar até
+  // `NEIGHBOR_WORD_GRACE_S` (nunca mais que metade da palavra) no tempo dela: ela para no 1º silêncio, então só
+  // passa do tempo do Whisper quando a cauda emenda nele, e o que leva é a cauda, não a palavra.
+  const graceOf = (w: { start: number; end: number }) => Math.min(NEIGHBOR_WORD_GRACE_S, Math.max(0, (w.end - w.start) / 2));
   const cur = clips.map((c) => ({ ...c }));
   const opened: OpenedEdge<T["block"]>[] = [];
   const first = findings(cur);
@@ -276,7 +376,9 @@ export function openCutSoundEdges<T extends OpenableClip>(
           0,
           span.start,
           a - maxOpen,
-          ...words.filter((w) => w.end <= a + eps && !(a - w.end < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w))).map((w) => w.end),
+          ...words
+            .filter((w) => w.end <= a + eps && !(a - w.end < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w)))
+            .map((w) => w.end - graceOf(w)),
           ...others.filter((o) => o.frameOut <= c.frameIn).map((o) => o.frameOut / fps),
         );
         const loFrame = Math.ceil(lo * fps - eps);
@@ -284,7 +386,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
           const trial = cur.map((x, j) => (j === i ? { ...x, frameIn: fr, srcIn: fr / fps } : x));
           const e = findings(trial)[i];
           if (!e.cutIn) {
-            opened.push({ block: c.block, edge, from: c.srcIn, to: fr / fps, fromDb: f0.beforeDb, toDb: e.beforeDb });
+            opened.push({ block: c.block, edge, from: c.srcIn, to: fr / fps, fromDb: f0.beforeDb, toDb: e.beforeDb, thresholdDb: e.thrInDb });
             cur[i] = trial[i];
             break;
           }
@@ -295,7 +397,9 @@ export function openCutSoundEdges<T extends OpenableClip>(
           opts.durationS,
           span.end,
           b + maxOpen,
-          ...words.filter((w) => w.start >= b - eps && !(w.start - b < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w))).map((w) => w.start),
+          ...words
+            .filter((w) => w.start >= b - eps && !(w.start - b < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w)))
+            .map((w) => w.start + graceOf(w)),
           ...others.filter((o) => o.frameIn >= c.frameOut).map((o) => o.frameIn / fps),
         );
         const hiFrame = Math.floor(hi * fps + eps);
@@ -303,7 +407,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
           const trial = cur.map((x, j) => (j === i ? { ...x, frameOut: fr, srcOut: fr / fps } : x));
           const e = findings(trial)[i];
           if (!e.cutOut) {
-            opened.push({ block: c.block, edge, from: c.srcOut, to: fr / fps, fromDb: f0.afterDb, toDb: e.afterDb });
+            opened.push({ block: c.block, edge, from: c.srcOut, to: fr / fps, fromDb: f0.afterDb, toDb: e.afterDb, thresholdDb: e.thrOutDb });
             cur[i] = trial[i];
             break;
           }
@@ -313,8 +417,8 @@ export function openCutSoundEdges<T extends OpenableClip>(
   }
   const unresolved: UnresolvedEdge<T["block"]>[] = [];
   findings(cur).forEach((e, i) => {
-    if (e.cutIn) unresolved.push({ block: cur[i].block, edge: "in", atS: e.inS, db: e.beforeDb });
-    if (e.cutOut) unresolved.push({ block: cur[i].block, edge: "out", atS: e.outS, db: e.afterDb });
+    if (e.cutIn) unresolved.push({ block: cur[i].block, edge: "in", atS: e.inS, db: e.beforeDb, thresholdDb: e.thrInDb });
+    if (e.cutOut) unresolved.push({ block: cur[i].block, edge: "out", atS: e.outS, db: e.afterDb, thresholdDb: e.thrOutDb });
   });
   return { clips: cur, opened, unresolved };
 }
@@ -331,8 +435,8 @@ export function sequenceCutsS(clips: readonly XmlAudioClip[], rate: number): num
 
 export function edgeLine(e: EdgeFinding, clock: (s: number) => string): string {
   return (
-    `${String(e.clip).padStart(2)}  ${clock(e.inS)}–${clock(e.outS)}  antes da entrada ${e.beforeDb.toFixed(0)} dB${e.cutIn ? " ← SOM CORTADO" : ""}` +
-    `  depois da saída ${e.afterDb.toFixed(0)} dB${e.cutOut ? " ← SOM CORTADO" : ""}`
+    `${String(e.clip).padStart(2)}  ${clock(e.inS)}–${clock(e.outS)}  antes da entrada ${e.beforeDb.toFixed(0)} dB${e.cutIn ? ` ← SOM CORTADO (limiar ${e.thrInDb.toFixed(0)} dB)` : ""}` +
+    `  depois da saída ${e.afterDb.toFixed(0)} dB${e.cutOut ? ` ← SOM CORTADO (limiar ${e.thrOutDb.toFixed(0)} dB)` : ""}`
   );
 }
 
