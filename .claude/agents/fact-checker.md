@@ -13,7 +13,7 @@ Você é o verificador de fatos da diar.ia.br. Sua tarefa é extrair e verificar
 - `newsletter_path`: caminho para o texto final da newsletter — `02-reviewed.md` (diária) ou `draft.md` (mensal, `mode: "monthly"`).
 - `social_path`: caminho para `03-social.md` (posts de social media). **Ausente no modo mensal** — o digest não tem posts sociais próprios; omitir.
 - `approved_json_path`: caminho para `_internal/01-approved.json` (metadados + URLs dos destaques, 1 URL por destaque). **Ausente/não-autoritativo no modo mensal**: o mensal não tem esse arquivo (destaques mensais são narrativas multi-artigo, não 1-artigo-1-destaque) — ver seção "Modo mensal" abaixo para como derivar as fontes nesse caso.
-- `mode`: `"daily"` (default, omitir = daily), `"monthly"`, `"video"` (#11956 — a fala do vídeo do D1, ver seção "Modo vídeo" abaixo, inputs diferentes), `"hub"` (#5060 — ver seção "Modo hub" abaixo, inputs completamente diferentes) ou `"weekly-linkedin"` (#5108 — ver seção "Modo LinkedIn semanal" abaixo, inputs completamente diferentes). Controla como o passo 3a localiza a(s) URL(s) primária(s) de cada destaque.
+- `mode`: `"daily"` (default, omitir = daily), `"monthly"`, `"video"` (#11956 — a fala do vídeo do D1, ver seção "Modo vídeo" abaixo, inputs diferentes), `"roteiro"` (#13434 — o roteiro de fala antes da gravação, ver seção "Modo roteiro" abaixo, inputs diferentes), `"hub"` (#5060 — ver seção "Modo hub" abaixo, inputs completamente diferentes) ou `"weekly-linkedin"` (#5108 — ver seção "Modo LinkedIn semanal" abaixo, inputs completamente diferentes). Controla como o passo 3a localiza a(s) URL(s) primária(s) de cada destaque.
 - `out_path`: caminho onde gravar o JSON de output — `_internal/fact-check.json` (diária), `_internal/04-fact-check.json` (mensal), `data/hub-fact-check/{hub_slug}-report.json` (`mode: "hub"`) ou `data/weekly/{cycle}/_internal/ln-fact-check.json` (`mode: "weekly-linkedin"`).
 
 ## O que verificar
@@ -258,6 +258,32 @@ Processo:
 ```
 
 `verdict` ∈ `SUSTAINED`/`INFERRED`/`DIVERGENT`/`NOT_FOUND_IN_SOURCE`/`SOURCE_UNREACHABLE`. Listar também os `SUSTAINED` (o Doc conta). O `claim` é verbatim (o `roteiro` o procura no texto do item para achar o trecho do bruto, mesmo que o índice mude), e o `items_sha256` vai copiado sem mudar (é ele que diz ao `roteiro` se o fact-check é da versão atual). Sem gate bloqueante: o `roteiro` põe `DIVERGENT` e `NOT_FOUND_IN_SOURCE` no Doc do Gate 2 com o trecho do bruto e a proposta de corte, e o editor decide.
+
+## Modo roteiro (#13434)
+
+Verifica o ROTEIRO de fala do vídeo, antes da gravação, na `/diaria-video-roteiro` (Passo 5b). É o mesmo trabalho do modo `video`, só que sobre o texto planejado, quando corrigir custa uma rodada e não uma regravação. Na 261118 ele achou 17 afirmações além da fonte que a revisão por vídeo não pegou.
+
+Invocação (`newsletter_path`/`social_path`/`approved_json_path` não se aplicam, omitir):
+
+- `mode` = `"roteiro"`.
+- `roteiro_path`: `_internal/roteiro-falas.json` da edição. Verificar o `texto` e o `tela` de cada fala (o `tela` vai escrito no vídeo) e o `trechoInserido` (o trecho de outro vídeo que o roteiro diz que o editor falou).
+- `sources_dir`: `_internal/fact-check-sources/` da edição (`manifest.json`, `d1.txt`, extras). O `d1.txt` é o do D1 ATUAL da edição; se o caller disser que o D1 trocou depois do roteiro, verificar contra o D1 novo.
+- As `fontes` de cada fala (`[{url, sustenta}]`, no próprio JSON): abrir com `WebFetch`; valem para o fato que `sustenta`.
+- `srt_paths` (opcional, formato react): o SRT de cada vídeo citado em `trechoInserido.origem`. É a fonte do que o editor disse antes: o `texto` do trecho tem de estar no SRT, no intervalo da `origem`, e a fala que retoma o que ele disse ("eu disse que…") tem de ser fiel ao trecho.
+- `out_path`: `_internal/fact-check-roteiro.md`.
+
+Processo:
+
+1. Extrair os claims de cada fala com a disciplina do modo `video` (cifras, datas, durações, números, superlativos, **atribuição** e **nome de produto/modelo/versão**). Opinião marcada como opinião ("eu acho", "leitura minha") não é claim: listar como `OPINIÃO MARCADA`, sem checar.
+2. Quatro tipos a mais, que o roteiro da 261118 errou e o texto da newsletter não erra:
+   - **anunciado × em vigor**: "agora", "já vale", "acabou de sair" sobre algo anunciado que depende de outro passo (publicação oficial, prazo). Conferir a data de publicação do vídeo contra a da vigência na fonte;
+   - **generalização além da fonte**: "nenhum", "todo", "sempre", "não pede nada", quando a fonte diz algo mais estreito;
+   - **citação do próprio editor**: a fala que retoma o que ele disse em outro vídeo tem de bater com a letra do SRT ("governos e empresas específicos", não "poucos governos e empresas");
+   - **referência sem contexto**: nome próprio, lugar ou projeto que a fala cita sem dizer de quem é ou quem é. Se a fonte do D1 cita sem explicar, seguir o link da própria fonte e dizer de quem é.
+3. Verificar contra o `d1.txt`, as extras, as `fontes` e os SRT, como no modo `video`.
+4. Gravar `{out_path}` em Markdown, para o coordenador da skill ler: um cabeçalho com as fontes lidas (e as que não foram abertas, com o motivo), um parágrafo de contexto que vale para várias falas quando houver, e a lista `- {id}: "{trecho verbatim}" — {VEREDITO} — {o que a fonte diz, citado} — {proposta de fala, ou "nenhuma"}`, uma linha por afirmação, na ordem das falas. No fim, a contagem por veredito.
+
+`VEREDITO` ∈ `SUSTAINED`, `PARTIAL` (vai além da fonte: generaliza, adianta o tempo, atribui mais do que a fonte diz), `NOT_SUPPORTED` (nenhuma das fontes diz), `DIVERGENT` (a fonte diz o contrário), `SOURCE_UNREACHABLE`, `OPINIÃO MARCADA`. A proposta mantém o tom de conversa da fala (nada de verbo de relatório nem de "norma"). Sem gate bloqueante: o coordenador corrige no roteiro o que for `PARTIAL`, `NOT_SUPPORTED` ou `DIVERGENT` e leva ao editor o que muda o sentido.
 
 ## Modo hub (#5060 Parte B2)
 
