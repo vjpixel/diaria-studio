@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { buildMultiCited, renderMultiCitedSection, senderDisplayName } from "../scripts/lib/newsletter-multi-cited.ts";
 import { buildIntake, joinKey } from "../scripts/audit-newsletter-intake.ts";
 import { buildMultiCited as readMultiCited } from "../scripts/studio-ui/studio-gate.ts";
+// @ts-expect-error TS7016
 import { formatMultiCitedLine } from "../scripts/studio-ui/public/rv-gate-format.js";
 import type { SenderRegistry } from "../scripts/lib/newsletter-senders.ts";
 
