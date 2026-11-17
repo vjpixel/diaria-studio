@@ -52,6 +52,8 @@ export interface IssueTimeline {
   fix_iteration_1?: string;
   fix_iteration_2?: string;
   ci_green?: string;        // ISO — CI verde
+  review_done?: string;     // ISO — review + findings tratados sobre o HEAD avaliado (#13271)
+  gate2?: string;           // ISO — Gate 2 inteiro verde sobre o mesmo HEAD (#13271)
   merged?: string;          // ISO — PR mergeado
   draft?: string;           // ISO — convertido para draft (CI persistiu vermelho)
   pulada?: string;          // ISO — unidade pulada (bloqueio, sem resposta, etc.)

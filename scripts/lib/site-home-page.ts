@@ -35,6 +35,8 @@ import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação; #7358: evento de conversão no sucesso do cadastro
 import { fbCookieValueFromDocumentCookieJs } from "./shared/meta-fbc-bootstrap.ts"; // #8978: fbc/fbp no corpo do POST cross-origin (achado 1 do fleet review, #8983)
 import { renderSiteSocialIcons } from "./shared/site-social.ts"; // #13321: ícones das redes no rodapé
+import { DIARIA_YOUTUBE_SUBSCRIBE_URL } from "./canonical-urls.ts"; // #13323
+import { SITE_VIDEOS_UTM } from "./shared/utm-registry.ts"; // #13323
 import { renderSiteNav, renderSiteFooterLinks } from "./shared/site-nav.ts"; // #8497: menu global + rodapé alinhado — a home consome os MESMOS helpers que as demais páginas, em vez do markup próprio que só ela tinha
 
 /**
@@ -160,6 +162,11 @@ export interface HomeFeedEntry {
    *  — essa carrega o D1 também, de propósito, mas só pra `<meta
    *  name="description">` de SEO). `""` quando a edição não tem D2/D3. */
   description: string;
+  /** #13324: títulos do D2 e do D3 (nessa ordem), de `<meta name="dek-item">`
+   *  (`extractPageDekItems`). Não vazio = a linha fina sai em bullets; vazio
+   *  ou ausente (página antiga, sem a meta) = cai no `<p>` com
+   *  `description`. Opcional pelo mesmo motivo de `readingMinutes`. */
+  deks?: string[];
   url: string;
   date: string | null;
   /** Src do primeiro `<img class="hero">` da página da edição — capa do D1
@@ -284,6 +291,32 @@ export function extractPageDate(html: string): string | null {
 export function extractPageDek(html: string): string {
   const dekMatch = html.match(/<meta\s+name=["']dek["']\s+content=["']([^"']*)["']/i);
   return dekMatch ? stripHtmlBasic(dekMatch[1]) : "";
+}
+
+/**
+ * Nome da meta lida por `extractPageDekItems`. Literal aqui (não importado de
+ * `site-destaque-anchors.ts`, que grava a meta como `DEK_ITEM_META_NAME`):
+ * este módulo entra no bundle de Workers, e o import puxaria
+ * `edition-page-cta.ts` junto. A igualdade dos dois é travada em
+ * `test/site-home-dek-bullets-13324.test.ts`.
+ */
+export const HOME_DEK_ITEM_META_NAME = "dek-item";
+
+/**
+ * #13324: `<meta name="dek-item">` da página, na ordem (D2, D3) — a forma
+ * estruturada da linha fina, gravada por `buildArchivePageHtml` e pelo
+ * backfill (`backfillDekItems`, `site-destaque-anchors.ts`). Nunca separa a
+ * `<meta name="dek">` por `|`: um título pode conter `|`. Lista vazia quando
+ * a página não tem a meta (página antiga, edição só com D1).
+ */
+export function extractPageDekItems(html: string): string[] {
+  const re = new RegExp(`<meta\\s+name=["']${HOME_DEK_ITEM_META_NAME}["']\\s+content="([^"]*)"`, "gi");
+  const items: string[] = [];
+  for (const m of html.matchAll(re)) {
+    const text = stripHtmlBasic(m[1]);
+    if (text) items.push(text);
+  }
+  return items;
 }
 
 /**
@@ -493,6 +526,8 @@ export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
   "/produto/conteudo-autentico/b",
   "/guia/agente-ia",
   "/evento/agente-ia",
+  // #13323: todos os vídeos horizontais (`gen-videos-page.ts`).
+  "/videos",
 ];
 
 /** `true` se `loc` é uma das superfícies estáticas conhecidas (`KNOWN_STATIC_SITEMAP_PATHS`). */
@@ -588,17 +623,16 @@ export function isFutureEditorialDate(date: string | null, todayBrt: string): bo
   return Boolean(date && date > todayBrt);
 }
 
-export function buildHomeFeed(
+/**
+ * Entradas do sitemap com a data editorial resolvida, em ordem TOTAL: data
+ * desc, empate (e "sem data", `-Infinity`) por `<loc>` asc (#8360). Extraída
+ * de `buildHomeFeed` (#13323) para a lista de vídeos usar a MESMA ordem.
+ */
+export function sortSitemapByEditorialDate(
   sitemapXml: string,
   readPageHtml: (slug: string) => string | null,
-  limit = 10,
-  opts: BuildHomeFeedOptions = {},
-): HomeFeedEntry[] {
-  // #7686: "hoje" em BRT. Injetável só pra teste — produção sempre usa o
-  // relógio real; nenhum gerador de produção passa `todayBrt` (só o
-  // check de CI do #12319, ver `BuildHomeFeedOptions`).
-  const todayBrt = opts.todayBrt ?? brtDateString();
-  const entries = [...parseSitemap(sitemapXml)]
+): Array<{ entry: SitemapEntry; date: string | null }> {
+  return [...parseSitemap(sitemapXml)]
     .map((entry) => ({ entry, date: resolveEditorialDate(entry, readPageHtml) }))
     .sort((a, b) => {
       const aMs = a.date ? Date.parse(a.date) : Number.NEGATIVE_INFINITY;
@@ -610,6 +644,19 @@ export function buildHomeFeed(
       // documento, e reordenar o sitemap mudava o hero.
       return bVal - aVal || (a.entry.loc < b.entry.loc ? -1 : a.entry.loc > b.entry.loc ? 1 : 0);
     });
+}
+
+export function buildHomeFeed(
+  sitemapXml: string,
+  readPageHtml: (slug: string) => string | null,
+  limit = 10,
+  opts: BuildHomeFeedOptions = {},
+): HomeFeedEntry[] {
+  // #7686: "hoje" em BRT. Injetável só pra teste — produção sempre usa o
+  // relógio real; nenhum gerador de produção passa `todayBrt` (só o
+  // check de CI do #12319, ver `BuildHomeFeedOptions`).
+  const todayBrt = opts.todayBrt ?? brtDateString();
+  const entries = sortSitemapByEditorialDate(sitemapXml, readPageHtml);
   const feed: HomeFeedEntry[] = [];
   for (const { entry, date } of entries) {
     // #7686: edição cuja data de ENVIO ainda não chegou não entra na home.
@@ -692,7 +739,10 @@ export function buildHomeFeed(
     const readingMinutes = estimateReadingMinutes(html);
     // #8360: `date` é a data editorial RESOLVIDA (lastmod ?? página) — o card
     // mostra a data real mesmo quando a entrada do sitemap veio sem lastmod.
-    feed.push({ slug, title, description, url: entry.loc, date, image, readingMinutes });
+    // #13324: D2/D3 estruturados (bullets). Só entra no objeto quando há
+    // itens — página sem a meta produz a mesma entrada de antes.
+    const deks = extractPageDekItems(html);
+    feed.push({ slug, title, description, url: entry.loc, date, image, readingMinutes, ...(deks.length ? { deks } : {}) });
   }
   return feed;
 }
@@ -721,11 +771,216 @@ export function formatDateLong(iso: string | null): string {
   return `${String(d).padStart(2, "0")} ${months[m - 1]} ${y}`;
 }
 
+// ---------------------------------------------------------------------------
+// #13323 — vídeos da diar.ia.br na home e em `/videos`
+// ---------------------------------------------------------------------------
+
+/**
+ * Nº de vídeos na seção "Vídeos" da home (#13323). A página `/videos` lista
+ * todos.
+ */
+export const HOME_VIDEO_LIMIT = 6;
+
+/** Path da página com todos os vídeos (`workers/site/public/videos/index.html`). */
+export const VIDEOS_PAGE_PATH = "/videos";
+
+/** Vídeo horizontal de uma edição, lido da própria página `/p/{slug}`. */
+export interface PageVideo {
+  videoId: string;
+  /** `name` do `VideoObject`; `""` quando a página só tem o player. */
+  name: string;
+  /** `uploadDate` do `VideoObject` (ISO), ou `null`. */
+  uploadDate: string | null;
+}
+
+/** Entrada da lista de vídeos (home e `/videos`), mais recente primeiro. */
+export interface HomeVideoEntry {
+  slug: string;
+  /** URL da página da edição — destino do card (o player está lá). */
+  url: string;
+  videoId: string;
+  /** Título do vídeo; sem metadado gravado, o título da edição (D1). */
+  title: string;
+  /** Data editorial da edição (`YYYY-MM-DD`), a mesma do card da edição. */
+  date: string | null;
+  /** `uploadDate` do vídeo quando a página declara; senão a data editorial. */
+  uploadDate: string | null;
+  /** Descrição da página (`<meta name="description">`), para o JSON-LD. */
+  description: string;
+}
+
+const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+const EMBED_ID_RE = /youtube(?:-nocookie)?\.com\/embed\/([A-Za-z0-9_-]{11})/i;
+const VIDEO_EMBED_CLASS_RE = /\bclass=["']hero-video-embed["']/i;
+
+/** Id do YouTube numa URL de embed (`/embed/{id}`) ou de vídeo (`?v={id}`). */
+function videoIdFromUrl(u: unknown): string | null {
+  if (typeof u !== "string") return null;
+  const embed = EMBED_ID_RE.exec(u)?.[1];
+  if (embed) return embed;
+  try {
+    const v = new URL(u).searchParams.get("v");
+    return v && YOUTUBE_ID_RE.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Vídeo do D1 que a página da edição já embute (#12080): o `VideoObject` do
+ * JSON-LD primeiro (título e data de upload gravados na publicação) e, sem
+ * ele, o id do player `hero-video-embed`. Página sem player = `null`: a
+ * edição sem vídeo fica fora da lista. Lê só o HTML já commitado, nunca
+ * `data/` (ausente no runner do `regen-home.yml`).
+ */
+export function extractPageVideo(html: string): PageVideo | null {
+  for (const m of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi)) {
+    let node: Record<string, unknown>;
+    try {
+      node = JSON.parse(m[1]) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!node || node["@type"] !== "VideoObject") continue;
+    const videoId = videoIdFromUrl(node.contentUrl) ?? videoIdFromUrl(node.embedUrl);
+    if (!videoId) continue;
+    return {
+      videoId,
+      name: typeof node.name === "string" ? node.name.trim() : "",
+      uploadDate: typeof node.uploadDate === "string" ? node.uploadDate : null,
+    };
+  }
+  const at = html.search(VIDEO_EMBED_CLASS_RE);
+  if (at < 0) return null;
+  const videoId = EMBED_ID_RE.exec(html.slice(at))?.[1];
+  return videoId ? { videoId, name: "", uploadDate: null } : null;
+}
+
+/**
+ * Lista de vídeos horizontais, mais recente primeiro, a partir das MESMAS
+ * fontes da home (`sitemap.xml` + `public/p/{slug}/index.html`, ver
+ * `buildHomeFeed`): mesma ordem por data editorial, mesmo corte de edição
+ * futura (#7686: a página sai na noite anterior; o vídeo entra na home junto
+ * com a edição, às 06:00). Edição sem vídeo é pulada sem consumir vaga.
+ */
+export function buildVideoFeed(
+  sitemapXml: string,
+  readPageHtml: (slug: string) => string | null,
+  limit = Number.POSITIVE_INFINITY,
+  opts: Pick<BuildHomeFeedOptions, "todayBrt"> = {},
+): HomeVideoEntry[] {
+  const todayBrt = opts.todayBrt ?? brtDateString();
+  const out: HomeVideoEntry[] = [];
+  for (const { entry, date } of sortSitemapByEditorialDate(sitemapXml, readPageHtml)) {
+    if (out.length >= limit) break;
+    if (isFutureEditorialDate(date, todayBrt)) continue;
+    const slug = slugFromCanonicalUrl(entry.loc);
+    if (!slug) continue;
+    const html = readPageHtml(slug);
+    if (!html) continue;
+    const video = extractPageVideo(html);
+    if (!video) continue;
+    const { title: pageTitle, description } = extractPageMeta(html);
+    const title = video.name || pageTitle;
+    if (!title) continue;
+    out.push({
+      slug,
+      url: entry.loc,
+      videoId: video.videoId,
+      title,
+      date,
+      uploadDate: video.uploadDate ?? date,
+      description,
+    });
+  }
+  return out;
+}
+
+/** Miniatura do YouTube (`hqdefault`) — a mesma do `VideoObject` da página. */
+export function videoThumbnailUrl(videoId: string): string {
+  return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+}
+
+function withSiteVideosUtm(raw: string): string {
+  const u = new URL(raw);
+  u.searchParams.set("utm_source", SITE_VIDEOS_UTM.source);
+  u.searchParams.set("utm_medium", SITE_VIDEOS_UTM.medium);
+  u.searchParams.set("utm_campaign", SITE_VIDEOS_UTM.campaign);
+  return u.toString();
+}
+
+/** "Ver no YouTube" de um card, com a UTM do site (`SITE_VIDEOS_UTM`). */
+export function siteVideoYouTubeUrl(videoId: string): string {
+  return withSiteVideosUtm(`https://www.youtube.com/watch?v=${videoId}`);
+}
+
+/** Botão "Inscreva-se no canal", com a UTM do site. */
+export function siteVideosSubscribeUrl(): string {
+  return withSiteVideosUtm(DIARIA_YOUTUBE_SUBSCRIBE_URL);
+}
+
+/**
+ * CSS da grade de vídeos — compartilhado pela home e por `/videos`. Usa os
+ * tokens `--ink-soft`/`--ink-faint`/`--rule`/`--teal-deep` que as duas
+ * páginas declaram no `:root`.
+ */
+export const VIDEO_GRID_CSS = `.video-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px 28px; margin: 32px 0 0; list-style: none; padding: 0; }
+.video-card { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+.video-media { display: block; }
+.video-media img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: ${CARD_RADIUS}; background: var(--rule); }
+.video-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.video-title { font-family: Georgia, 'Times New Roman', serif; font-size: 19px; line-height: 1.2; letter-spacing: -0.01em; font-weight: 500; margin: 0; }
+.video-title a { text-decoration: none; }
+.video-title a:hover { color: var(--teal-deep); }
+.video-yt { font-size: 13px; color: var(--ink-soft); text-decoration: underline; text-underline-offset: 3px; }
+.video-yt:hover { color: var(--teal-deep); }
+@media (max-width: 860px) { .video-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .video-grid { grid-template-columns: 1fr; } }`;
+
+/**
+ * Cards da grade de vídeos (`<li>`, dentro do `<ul class="video-grid">` do
+ * caller). O card leva à página da edição (`/p/{slug}`, onde estão o player,
+ * a newsletter e o cadastro); "Ver no YouTube" é o link secundário. Sem
+ * iframe: a miniatura é uma imagem `loading="lazy"`, para não pesar a home.
+ */
+export function renderVideoCards(entries: readonly HomeVideoEntry[], headingTag: "h2" | "h3" = "h3"): string {
+  return entries
+    .map((v) => {
+      const dateLabel = formatDateLong(v.date);
+      const meta = dateLabel ? `\n        <div class="video-meta">${escHtml(dateLabel)}</div>` : "";
+      return `        <li class="video-card">
+        <a class="video-media" href="${escHtml(v.url)}" tabindex="-1" aria-hidden="true">
+          <img src="${escHtml(videoThumbnailUrl(v.videoId))}" alt="${escHtml(v.title)}" loading="lazy" width="480" height="270">
+        </a>${meta}
+        <${headingTag} class="video-title"><a href="${escHtml(v.url)}">${escHtml(v.title)}</a></${headingTag}>
+        <a class="video-yt" href="${escHtml(siteVideoYouTubeUrl(v.videoId))}" rel="noopener">Ver no YouTube</a>
+      </li>`;
+    })
+    .join("\n");
+}
+
 export interface BuildIndexHtmlOptions {
   /** Destaque do dia (V1Feature) — edição confirmada mais recente. `null` quando o acervo está vazio (nunca visto em produção, mas o template não deve quebrar). */
   feature: HomeFeedEntry | null;
   /** Edições anteriores (V1Archive) — já sem a `feature`, ordem mais-recente-primeiro. */
   archive: HomeFeedEntry[];
+  /** #13323: vídeos mais recentes (`buildVideoFeed`), cortados em
+   *  `HOME_VIDEO_LIMIT`. Vazio/ausente = a seção "Vídeos" não sai. */
+  videos?: HomeVideoEntry[];
+}
+
+/**
+ * #13324: linha fina do card. Com `deks` (D2/D3 de `<meta name="dek-item">`)
+ * sai uma lista, um título por bullet; sem eles, o `<p>` de antes com a
+ * string `description` ("D2 | D3"), para a linha nunca sumir numa página
+ * antiga.
+ */
+export function renderDek(entry: Pick<HomeFeedEntry, "description" | "deks">, kind: "feature" | "archive"): string {
+  if (entry.deks && entry.deks.length > 0) {
+    const items = entry.deks.map((d) => `<li>${escHtml(d)}</li>`).join("");
+    return `<ul class="${kind}-deks">${items}</ul>`;
+  }
+  return `<p class="${kind}-dek">${escHtml(entry.description)}</p>`;
 }
 
 const FAQS: Array<{ q: string; a: string }> = [
@@ -1081,7 +1336,7 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
     ? `<a class="feature-title-link" href="${escHtml(feature.url)}">
         <h2 class="feature-title">${escHtml(feature.title)}</h2>
       </a>
-      <p class="feature-dek">${escHtml(feature.description)}</p>
+      ${renderDek(feature, "feature")}
       <div class="feature-actions">
         <a class="btn btn-ink" href="${escHtml(feature.url)}">Ler edição</a>
       </div>`
@@ -1129,10 +1384,33 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
         ${media}
         <div class="archive-meta">${metaHtml}</div>
         <h3 class="archive-title"><a href="${escHtml(entry.url)}">${escHtml(entry.title)}</a></h3>
-        <p class="archive-dek">${escHtml(entry.description)}</p>
+        ${renderDek(entry, "archive")}
       </article>`;
     })
     .join("\n");
+
+  // #13323: seção "Vídeos" — só quando há vídeo publicado; corte defensivo
+  // em HOME_VIDEO_LIMIT (mesmo espírito de ARCHIVE_CARD_LIMIT).
+  const videos = (opts.videos ?? []).slice(0, HOME_VIDEO_LIMIT);
+  const videosSection = videos.length
+    ? `
+  <section class="videos" id="videos">
+    <div class="wrap">
+      <div class="videos-head">
+        <h2>Vídeos</h2>
+        <a href="${VIDEOS_PAGE_PATH}">Ver todos os vídeos</a>
+      </div>
+      <hr class="rule">
+      <ul class="video-grid">
+${renderVideoCards(videos)}
+      </ul>
+      <div class="videos-actions">
+        <a class="btn btn-ink" href="${escHtml(siteVideosSubscribeUrl())}" rel="noopener">Inscreva-se no canal</a>
+      </div>
+    </div>
+  </section>
+`
+    : "";
 
   const faqItems = FAQS.map(
     (f, i) => `<div class="faq-item">
@@ -1258,6 +1536,13 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-title { font-size: clamp(28px, 5vw, 52px); line-height: 1.02; letter-spacing: -0.02em; font-weight: 500; }
 .feature-title:hover { color: var(--teal-deep); }
 .feature-dek { font-family: Georgia, serif; font-size: 18px; line-height: 1.45; color: var(--ink-soft); font-style: italic; margin-top: 20px; max-width: 62ch; }
+/* #13324: D2/D3 em bullets — Georgia e --ink-soft como a linha fina; traço
+   em tinta neutra (--ink-faint), nunca teal (teal só na .rule). */
+.feature-deks, .archive-deks { list-style: none; padding: 0; font-family: Georgia, serif; color: var(--ink-soft); font-style: italic; }
+.feature-deks li, .archive-deks li { position: relative; padding-left: 1.1em; }
+.feature-deks li::before, .archive-deks li::before { content: "\\2013"; position: absolute; left: 0; color: var(--ink-faint); font-style: normal; }
+.feature-deks { font-size: 18px; line-height: 1.45; margin: 20px 0 0; max-width: 62ch; }
+.feature-deks li + li { margin-top: 6px; }
 .feature-actions { display: flex; align-items: center; gap: 14px; margin-top: 28px; flex-wrap: wrap; }
 .feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
 .feature-media { display: block; }
@@ -1298,6 +1583,16 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
 .archive-dek { font-family: Georgia, serif; font-size: 13px; line-height: 1.4; color: var(--ink-soft); font-style: italic; margin: 0; }
+.archive-deks { font-size: 13px; line-height: 1.4; margin: 0; }
+.archive-deks li + li { margin-top: 3px; }
+
+/* Vídeos (#13323) */
+.videos { padding: 64px 0; }
+.videos-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.videos-head h2 { font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: -0.02em; }
+.videos-head a { font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
+.videos-actions { margin-top: 32px; }
+${VIDEO_GRID_CSS}
 
 /* Temas (#6411) */
 .topics { padding: 0 0 64px; }
@@ -1394,7 +1689,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       ${featureHtml}
     </div>
   </section>
-
+${videosSection}
   <section class="specials" id="specials">
     <div class="wrap">
       <div class="specials-head">

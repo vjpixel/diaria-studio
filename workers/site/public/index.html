@@ -112,6 +112,13 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-title { font-size: clamp(28px, 5vw, 52px); line-height: 1.02; letter-spacing: -0.02em; font-weight: 500; }
 .feature-title:hover { color: var(--teal-deep); }
 .feature-dek { font-family: Georgia, serif; font-size: 18px; line-height: 1.45; color: var(--ink-soft); font-style: italic; margin-top: 20px; max-width: 62ch; }
+/* #13324: D2/D3 em bullets — Georgia e --ink-soft como a linha fina; traço
+   em tinta neutra (--ink-faint), nunca teal (teal só na .rule). */
+.feature-deks, .archive-deks { list-style: none; padding: 0; font-family: Georgia, serif; color: var(--ink-soft); font-style: italic; }
+.feature-deks li, .archive-deks li { position: relative; padding-left: 1.1em; }
+.feature-deks li::before, .archive-deks li::before { content: "\2013"; position: absolute; left: 0; color: var(--ink-faint); font-style: normal; }
+.feature-deks { font-size: 18px; line-height: 1.45; margin: 20px 0 0; max-width: 62ch; }
+.feature-deks li + li { margin-top: 6px; }
 .feature-actions { display: flex; align-items: center; gap: 14px; margin-top: 28px; flex-wrap: wrap; }
 .feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
 .feature-media { display: block; }
@@ -152,6 +159,27 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
 .archive-dek { font-family: Georgia, serif; font-size: 13px; line-height: 1.4; color: var(--ink-soft); font-style: italic; margin: 0; }
+.archive-deks { font-size: 13px; line-height: 1.4; margin: 0; }
+.archive-deks li + li { margin-top: 3px; }
+
+/* Vídeos (#13323) */
+.videos { padding: 64px 0; }
+.videos-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.videos-head h2 { font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: -0.02em; }
+.videos-head a { font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
+.videos-actions { margin-top: 32px; }
+.video-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px 28px; margin: 32px 0 0; list-style: none; padding: 0; }
+.video-card { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+.video-media { display: block; }
+.video-media img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--rule); }
+.video-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.video-title { font-family: Georgia, 'Times New Roman', serif; font-size: 19px; line-height: 1.2; letter-spacing: -0.01em; font-weight: 500; margin: 0; }
+.video-title a { text-decoration: none; }
+.video-title a:hover { color: var(--teal-deep); }
+.video-yt { font-size: 13px; color: var(--ink-soft); text-decoration: underline; text-underline-offset: 3px; }
+.video-yt:hover { color: var(--teal-deep); }
+@media (max-width: 860px) { .video-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .video-grid { grid-template-columns: 1fr; } }
 
 /* Temas (#6411) */
 .topics { padding: 0 0 64px; }
@@ -300,16 +328,79 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <span class="kicker kicker--teal">● Edição de hoje</span>
       </div>
       <div class="feature-grid">
-        <div class="feature-body"><a class="feature-title-link" href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca">
-        <h2 class="feature-title">Google põe o Gemini 4 Hydrogen na sua Busca</h2>
+        <div class="feature-body"><a class="feature-title-link" href="https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso">
+        <h2 class="feature-title">Deepfake de Drauzio Varella anuncia remédio milagroso</h2>
       </a>
-      <p class="feature-dek">MEC proíbe IA para alunos da educação infantil | ChatGPT Wallet: agentes compram sem ver seu cartão</p>
+      <ul class="feature-deks"><li>Hackers põem robôs para caçar falhas sem parar</li><li>Veterano do Linux recua sob enxurrada de patches</li></ul>
       <div class="feature-actions">
-        <a class="btn btn-ink" href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca">Ler edição</a>
+        <a class="btn btn-ink" href="https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso">Ler edição</a>
       </div></div>
-        <a class="feature-media" href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca" tabindex="-1" aria-hidden="true">
-          <img src="/img/img-261116-04-d1-2x1-46596c83.jpg" alt="Google põe o Gemini 4 Hydrogen na sua Busca" loading="lazy">
+        <a class="feature-media" href="https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso" tabindex="-1" aria-hidden="true">
+          <img src="/img/img-261117-04-d1-2x1-56d2cc3b.jpg" alt="Deepfake de Drauzio Varella anuncia remédio milagroso" loading="lazy">
         </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="videos" id="videos">
+    <div class="wrap">
+      <div class="videos-head">
+        <h2>Vídeos</h2>
+        <a href="/videos">Ver todos os vídeos</a>
+      </div>
+      <hr class="rule">
+      <ul class="video-grid">
+        <li class="video-card">
+        <a class="video-media" href="https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso" tabindex="-1" aria-hidden="true">
+          <img src="https://i.ytimg.com/vi/4HgymlXJrTE/hqdefault.jpg" alt="Deepfake do Drauzio Varella vende remédio falso" loading="lazy" width="480" height="270">
+        </a>
+        <div class="video-meta">17 nov 2026</div>
+        <h3 class="video-title"><a href="https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso">Deepfake do Drauzio Varella vende remédio falso</a></h3>
+        <a class="video-yt" href="https://www.youtube.com/watch?v=4HgymlXJrTE&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Ver no YouTube</a>
+      </li>
+        <li class="video-card">
+        <a class="video-media" href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca" tabindex="-1" aria-hidden="true">
+          <img src="https://i.ytimg.com/vi/MJXHg3HekNE/hqdefault.jpg" alt="Google te dá Gemini 4 Hydrogen de graça" loading="lazy" width="480" height="270">
+        </a>
+        <div class="video-meta">16 nov 2026</div>
+        <h3 class="video-title"><a href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca">Google te dá Gemini 4 Hydrogen de graça</a></h3>
+        <a class="video-yt" href="https://www.youtube.com/watch?v=MJXHg3HekNE&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Ver no YouTube</a>
+      </li>
+        <li class="video-card">
+        <a class="video-media" href="https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github" tabindex="-1" aria-hidden="true">
+          <img src="https://i.ytimg.com/vi/xW7F_84f4Pc/hqdefault.jpg" alt="Claude Code pode ter vazado suas senhas no GitHub" loading="lazy" width="480" height="270">
+        </a>
+        <div class="video-meta">12 nov 2026</div>
+        <h3 class="video-title"><a href="https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github">Claude Code pode ter vazado suas senhas no GitHub</a></h3>
+        <a class="video-yt" href="https://www.youtube.com/watch?v=xW7F_84f4Pc&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Ver no YouTube</a>
+      </li>
+        <li class="video-card">
+        <a class="video-media" href="https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar" tabindex="-1" aria-hidden="true">
+          <img src="https://i.ytimg.com/vi/gXn8Jdw3xBw/hqdefault.jpg" alt="Nubank demite time antifraude e põe IA no lugar" loading="lazy" width="480" height="270">
+        </a>
+        <div class="video-meta">11 nov 2026</div>
+        <h3 class="video-title"><a href="https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar">Nubank demite time antifraude e põe IA no lugar</a></h3>
+        <a class="video-yt" href="https://www.youtube.com/watch?v=gXn8Jdw3xBw&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Ver no YouTube</a>
+      </li>
+        <li class="video-card">
+        <a class="video-media" href="https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia" tabindex="-1" aria-hidden="true">
+          <img src="https://i.ytimg.com/vi/lyh6IZux4FE/hqdefault.jpg" alt="Nvidia: CEO admite caso com suposta espiã" loading="lazy" width="480" height="270">
+        </a>
+        <div class="video-meta">09 nov 2026</div>
+        <h3 class="video-title"><a href="https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia">Nvidia: CEO admite caso com suposta espiã</a></h3>
+        <a class="video-yt" href="https://www.youtube.com/watch?v=lyh6IZux4FE&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Ver no YouTube</a>
+      </li>
+        <li class="video-card">
+        <a class="video-media" href="https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens" tabindex="-1" aria-hidden="true">
+          <img src="https://i.ytimg.com/vi/wf13m63j130/hqdefault.jpg" alt="Justiça do Brasil proíbe Meta de treinar IA com reportagens" loading="lazy" width="480" height="270">
+        </a>
+        <div class="video-meta">05 nov 2026</div>
+        <h3 class="video-title"><a href="https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens">Justiça do Brasil proíbe Meta de treinar IA com reportagens</a></h3>
+        <a class="video-yt" href="https://www.youtube.com/watch?v=wf13m63j130&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Ver no YouTube</a>
+      </li>
+      </ul>
+      <div class="videos-actions">
+        <a class="btn btn-ink" href="https://www.youtube.com/@diariabr?sub_confirmation=1&amp;utm_source=site&amp;utm_medium=web&amp;utm_campaign=site-videos" rel="noopener">Inscreva-se no canal</a>
       </div>
     </div>
   </section>
@@ -360,12 +451,20 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       <hr class="rule">
       <div class="archive-grid">
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca" tabindex="-1" aria-hidden="true">
+          <img src="/img/img-261116-04-d1-2x1-46596c83.jpg" alt="Google põe o Gemini 4 Hydrogen na sua Busca" loading="lazy">
+        </a>
+        <div class="archive-meta">16 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
+        <h3 class="archive-title"><a href="https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca">Google põe o Gemini 4 Hydrogen na sua Busca</a></h3>
+        <ul class="archive-deks"><li>MEC proíbe IA para alunos da educação infantil</li><li>ChatGPT Wallet: agentes compram sem ver seu cartão</li></ul>
+      </article>
+<article class="archive-card">
         <a class="archive-media" href="https://diar.ia.br/p/jensen-huang-deixa-a-nvidia-apos-33-anos" tabindex="-1" aria-hidden="true">
           <img src="/img/img-261113-04-d1-2x1-a8d932b4.jpg" alt="Jensen Huang deixa a NVIDIA após 33 anos" loading="lazy">
         </a>
         <div class="archive-meta">13 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/jensen-huang-deixa-a-nvidia-apos-33-anos">Jensen Huang deixa a NVIDIA após 33 anos</a></h3>
-        <p class="archive-dek">ChatGPT e Gemini indicam lojas falsas para você | Claude agora monta planilhas e lousas com seu time</p>
+        <ul class="archive-deks"><li>ChatGPT e Gemini indicam lojas falsas para você</li><li>Claude agora monta planilhas e lousas com seu time</li></ul>
       </article>
 <article class="archive-card">
         <a class="archive-media" href="https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github" tabindex="-1" aria-hidden="true">
@@ -373,7 +472,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         </a>
         <div class="archive-meta">12 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github">Claude Code pode ter vazado suas senhas no GitHub</a></h3>
-        <p class="archive-dek">Gemini 4 Carbon mira tarefas longas de agentes | Denúncia acusa multinacional de barrar engenheiras</p>
+        <ul class="archive-deks"><li>Gemini 4 Carbon mira tarefas longas de agentes</li><li>Denúncia acusa multinacional de barrar engenheiras</li></ul>
       </article>
 <article class="archive-card">
         <a class="archive-media" href="https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar" tabindex="-1" aria-hidden="true">
@@ -381,7 +480,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         </a>
         <div class="archive-meta">11 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar">Nubank demite time antifraude e põe IA no lugar</a></h3>
-        <p class="archive-dek">Anthropic lança Fable 5.2 perto da bolsa | Você filmaria sua faxina para treinar um robô?</p>
+        <ul class="archive-deks"><li>Anthropic lança Fable 5.2 perto da bolsa</li><li>Você filmaria sua faxina para treinar um robô?</li></ul>
       </article>
 <article class="archive-card">
         <a class="archive-media" href="https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia" tabindex="-1" aria-hidden="true">
@@ -389,7 +488,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         </a>
         <div class="archive-meta">09 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia">Nvidia: CEO admite caso com suposta espiã</a></h3>
-        <p class="archive-dek">Claude passa a ler seu extrato bancário | Google corta 30% do preço do vídeo do Gemini</p>
+        <ul class="archive-deks"><li>Claude passa a ler seu extrato bancário</li><li>Google corta 30% do preço do vídeo do Gemini</li></ul>
       </article>
 <article class="archive-card">
         <a class="archive-media" href="https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair" tabindex="-1" aria-hidden="true">
@@ -397,15 +496,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         </a>
         <div class="archive-meta">06 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair">Google paga até 12 salários para quem sair</a></h3>
-        <p class="archive-dek">Lovable &quot;sonha&quot; e reescreve a memória do seu app | Sua produtividade com IA chega ao caixa da empresa?</p>
-      </article>
-<article class="archive-card">
-        <a class="archive-media" href="https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens" tabindex="-1" aria-hidden="true">
-          <img src="/img/img-261105-04-d1-2x1-2e1ef67c.jpg" alt="Justiça proíbe Meta de treinar IA com reportagens" loading="lazy">
-        </a>
-        <div class="archive-meta">05 nov 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens">Justiça proíbe Meta de treinar IA com reportagens</a></h3>
-        <p class="archive-dek">Anthropic avisa: autoaprimoramento pode estar perto | Seu filho usa o Gemini? O Google prepara um limite</p>
+        <ul class="archive-deks"><li>Lovable &quot;sonha&quot; e reescreve a memória do seu app</li><li>Sua produtividade com IA chega ao caixa da empresa?</li></ul>
       </article>
       </div>
     </div>

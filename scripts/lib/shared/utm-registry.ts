@@ -554,6 +554,20 @@ export const LATEST_VIDEO_BIO_UTM = {
 /** Redes cujo link da bio é o `diar.ia.br/video` (o `utm_source` de cada uma). */
 export const LATEST_VIDEO_BIO_UTM_SOURCES = ["tiktok", "instagram", "threads"] as const;
 
+/**
+ * #13323: links pro YouTube da seção "Vídeos" da home e da página
+ * `diar.ia.br/videos` ("Ver no YouTube" de cada card e o botão "Inscreva-se
+ * no canal"). `source`/`medium` iguais aos da página da edição
+ * (`site-page-video.ts`, #12080: `utm_source=site&utm_medium=web`);
+ * `campaign` próprio para separar o clique da grade do clique no player da
+ * edição. Montado por `siteVideoYouTubeUrl` (`scripts/lib/site-home-page.ts`).
+ */
+export const SITE_VIDEOS_UTM = {
+  source: "site",
+  medium: "web",
+  campaign: "site-videos",
+} as const;
+
 /** `utm_campaign` compartilhado por X e Threads no CTA de `{edition_url}` da
  * seção `# Curto` (#4295) — mesmo texto/link, só `utm_source` difere por canal. */
 const EDICAO_DIARIA_UTM_CAMPAIGN = "edicao-diaria";
@@ -1052,6 +1066,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo" as const,
     noSignupExpected: true as const,
   })),
+  {
+    id: "site-videos-13323",
+    label: "Home e /videos — links pro YouTube (cards e inscrição no canal)",
+    source: SITE_VIDEOS_UTM.source,
+    medium: SITE_VIDEOS_UTM.medium,
+    campaignPattern: SITE_VIDEOS_UTM.campaign,
+    originFile: "scripts/lib/site-home-page.ts",
+    description:
+      "Seção \"Vídeos\" da home e página diar.ia.br/videos (#13323): link \"Ver no YouTube\" de cada card e " +
+      "botão \"Inscreva-se no canal\". O card em si leva à página da edição (/p/{slug}); só estes links saem pro YouTube.",
+    status: "ativo" as const,
+    noSignupExpected: true as const,
+  },
   {
     id: "site-apoiar-redirect",
     label: "Menu/rodapé 'Apoiar' do site → Apoia.se (redirect /apoiar/ir)",

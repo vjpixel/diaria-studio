@@ -194,6 +194,8 @@ describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão,
     "https://diar.ia.br/produto/conteudo-autentico/b",
     "https://diar.ia.br/guia/agente-ia",
     "https://diar.ia.br/evento/agente-ia",
+    // #13323: todos os vídeos horizontais.
+    "https://diar.ia.br/videos",
   ]);
   /**
    * #8353 item 2: o índice paginado do acervo (`/archive`, `/archive/{n}`)
