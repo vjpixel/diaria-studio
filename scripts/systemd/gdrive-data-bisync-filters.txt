@@ -42,3 +42,12 @@
 - drive-cache*.json
 - *safeBackup*
 # END data-local-only, raiz de data/
+#
+# Artefatos de depuracao que nenhuma maquina le de volta (#13404). Um corpo
+# salvo em _internal/_forensic/link-verify-bodies/ foi marcado pelo Google
+# como malware (403 cannotDownloadAbusiveFile): o download falhava em toda
+# rodada, o bisync abortava com erro de I/O sem salvar a listagem, e a rodada
+# seguinte via cada arquivo mexido no Neo como "changed in both paths". Com
+# mtime empatado, o rclone renomeava as duas copias (.conflictN) e o original
+# sumia (blocks.json da montagem, registros dos Shorts, 02-reviewed.md).
+- _forensic/**
