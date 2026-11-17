@@ -108,6 +108,18 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     primary_domain: "openai.com",
   },
   {
+    // #13328: edição 261117, "Introducing Devin Apps" (devin.ai/blog/devin-apps,
+    // post oficial do produto) barrado em LANÇAMENTOS por falta de registro.
+    // Restrito a /blog/ nos dois hosts da Cognition: devin.ai é o produto
+    // (o resto do host é app, pricing, enterprise) e cognition.ai é o site da
+    // empresa, que publica os anúncios em /blog/ também. "cognition" solto não
+    // entra na detecção: colide com a palavra comum em inglês.
+    company: "Cognition / Devin",
+    path_patterns: [/^devin\.ai\/blog\//, /^cognition\.ai\/blog\//],
+    detection_keywords: /\b(devin|cognition (ai|labs))\b/i,
+    primary_domain: "devin.ai",
+  },
+  {
     company: "Hugging Face",
     // /papers/ fica em pesquisa; /blog/ = anúncios/posts HF; /{org}/{model} =
     // model cards de modelos open-weight (ponto oficial de release, ex:
