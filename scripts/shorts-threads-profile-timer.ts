@@ -201,7 +201,7 @@ export type ThreadsVerticalLookup =
   | { kind: "exists" }
   /** `editionFolderSeen` (#11618): a pasta `{AAMMDD}/` existe no Drive — o dia teve vídeo, mesmo sem nada no disco. */
   | { kind: "none"; reason: string; editionFolderSeen?: boolean }
-  | { kind: "needs-editor"; reason: string }
+  | { kind: "needs-editor"; reason: string; selection?: string }
   | { kind: "error"; reason: string };
 
 /** Puro: lê a saída do `fetch-drive-video.ts --orientation vertical`. */
@@ -220,6 +220,9 @@ export function interpretThreadsVerticalLookup(exitCode: number | null, stdout: 
     return { kind: "none", reason: `nenhum vertical "final" no Drive (${out.reason ?? action})`, ...(editionFolderSeen ? { editionFolderSeen } : {}) };
   }
   if (action === "needs-editor") {
+    if (out.selection === "orientation-mismatch") {
+      return { kind: "needs-editor", selection: "orientation-mismatch", reason: `vertical no Drive com a proporção errada (#13389): ${out.reason ?? "sem motivo"}` };
+    }
     return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe` };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
@@ -304,8 +307,15 @@ function hhmmBrt(ms: number): string {
 }
 
 /** Puro: corpo do alarme, por motivo, com os comandos já com a edição. */
-export function buildThreadsTimerAlarm(input: { aammdd: string; key: ThreadsTimerAlarmKey; reason: string; at?: string | null }): { subject: string; body: string } {
-  const { aammdd, key, reason, at } = input;
+export function buildThreadsTimerAlarm(input: {
+  aammdd: string;
+  key: ThreadsTimerAlarmKey;
+  reason: string;
+  at?: string | null;
+  /** #13389: `selection` do `needs-editor` do fetch; `orientation-mismatch` pede reexportar. */
+  selection?: string;
+}): { subject: string; body: string } {
+  const { aammdd, key, reason, at, selection } = input;
   const deadline = at ? hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS) : null;
   const mark = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --mark threads_profile=URL\``;
   const manual = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only threads_profile --threads-timer --publish --now ${publishConfirmSuffix(aammdd)}\``;
@@ -324,7 +334,11 @@ export function buildThreadsTimerAlarm(input: { aammdd: string; key: ThreadsTime
   } else {
     if (key === "late") lines.push("Passadas 3 h do horário do vertical o timer NÃO publica mais sozinho.");
     if (key === "missing-video") lines.push(`Salve o vertical "final" em \`${aammdd}/Final/\` no Drive; a próxima execução baixa e publica${deadline ? ` (até ${deadline} BRT)` : ""}.`);
-    if (key === "drive-needs-editor") lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive; a próxima execução publica.`);
+    if (key === "drive-needs-editor" && selection === "orientation-mismatch") {
+      lines.push(`Reexporte o vertical na proporção vertical (1080x1920) em \`${aammdd}/Final/\` (ou \`Editados/\`) no Drive; a próxima execução publica.`);
+    } else if (key === "drive-needs-editor") {
+      lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive; a próxima execução publica.`);
+    }
     if (key === "public-video") lines.push("A Threads API só recebe o vídeo por URL pública: confira os secrets do R2 (`SHORTS_R2_*`) no `.env` do 300.");
     if (key === "credentials") lines.push("Confira `THREADS_PERSONAL_ACCESS_TOKEN`/`THREADS_PERSONAL_USER_ID` no `.env` do 300 (task `Diaria-Threads-Personal-Token`).");
     if (RETRY_KEYS.has(key)) {
@@ -348,6 +362,7 @@ export async function threadsAlarm(
   reason: string,
   at: string | null,
   notifyDeps: NotifyEditorDeps = { cwd: ROOT },
+  selection?: string,
 ): Promise<boolean> {
   const statePath = join(dir, THREADS_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
@@ -356,7 +371,7 @@ export async function threadsAlarm(
     console.log(`${LOG_PREFIX} ${aammdd}: alarme "${id}" já coberto nesta edição${key === "late" && !alreadyAlarmed(stateRaw, id) ? " (por um motivo que diz que o vídeo pode estar no ar)" : ""} — não repete`);
     return true;
   }
-  const { subject, body } = buildThreadsTimerAlarm({ aammdd, key, reason, at });
+  const { subject, body } = buildThreadsTimerAlarm({ aammdd, key, reason, at, ...(selection ? { selection } : {}) });
   const res = await notifyEditor(
     { check: "shorts-threads-timer", fingerprint: `${aammdd}:${id}`, severity: threadsAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, id) },
     notifyDeps,
@@ -471,7 +486,7 @@ async function runThreadsTimerEdition(aammdd: string, dir: string, dryRun: boole
         if (dryRun) return 0;
         // Ambíguo: o editor precisa escolher, alarma já. Sem vertical: só num dia
         // que teve vertical, e só 1 h depois do horário (pode ainda estar subindo).
-        if (lookup.kind === "needs-editor") return (await threadsAlarm(dir, aammdd, "drive-needs-editor", lookup.reason, at, deps.notify)) ? 0 : 1;
+        if (lookup.kind === "needs-editor") return (await threadsAlarm(dir, aammdd, "drive-needs-editor", lookup.reason, at, deps.notify, lookup.selection)) ? 0 : 1;
         // #11618: a pasta da edição no Drive também conta (sem ela no disco, nada local mostrava o vídeo do dia).
         if ((videoSeen || lookup.editionFolderSeen === true) && now.getTime() - Date.parse(at) >= THREADS_MISSING_VIDEO_ALARM_AFTER_MS) {
           return (await threadsAlarm(dir, aammdd, "missing-video", lookup.reason, at, deps.notify)) ? 0 : 1;

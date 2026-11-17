@@ -311,7 +311,7 @@ export type InstagramCutLookup =
    * proporção (`orientation-unknown`, o Drive ainda processando o metadado):
    * espera, e só alarma depois de `MISSING_VIDEO_ALARM_AFTER_MS`.
    */
-  | { kind: "needs-editor"; reason: string; immediate: boolean }
+  | { kind: "needs-editor"; reason: string; immediate: boolean; selection?: string }
   | { kind: "error"; reason: string };
 
 /** Puro: o Drive mostra um vertical da edição em `Final/` (achado ou ambíguo)? */
@@ -343,6 +343,15 @@ export function interpretInstagramCutLookup(exitCode: number | null, stdout: str
         reason: "o Drive ainda não mostra a proporção do vídeo final (metadado processando, orientation-unknown) — se continuar assim, confira o arquivo em Final/ (Passo B1 do /diaria-publica-video)",
       };
     }
+    if (out.selection === "orientation-mismatch") {
+      // #13389: o vertical subiu com a proporção errada; o editor reexporta.
+      return {
+        kind: "needs-editor",
+        immediate: true,
+        selection: "orientation-mismatch",
+        reason: `vertical no Drive com a proporção errada: ${out.reason ?? "sem motivo"} (Passo B1 do /diaria-publica-video)`,
+      };
+    }
     return {
       kind: "needs-editor",
       immediate: true,
@@ -365,7 +374,8 @@ export type InstagramVideoChoice =
   | { kind: "use-local"; path: string; source: "instagram-cut" | "generic"; note?: string; unverified?: true }
   | { kind: "download"; path: string; fileId: string; name: string; modifiedTime: string | null }
   /** `alarmNow`: avisa já; senão só depois de `MISSING_VIDEO_ALARM_AFTER_MS` (`shouldAlarmMissingVideo`). */
-  | { kind: "wait"; reason: string; alarm: "missing-video" | "drive-needs-editor"; alarmNow: boolean }
+  /** `selection`: o do `needs-editor` do fetch (#13389: `orientation-mismatch` muda a instrução do alarme). */
+  | { kind: "wait"; reason: string; alarm: "missing-video" | "drive-needs-editor"; alarmNow: boolean; selection?: string }
   | { kind: "error"; reason: string };
 
 /**
@@ -393,7 +403,7 @@ export function chooseInstagramVideo(input: {
       return { kind: "download", path: input.instagramCutPath, fileId: lookup.fileId, name: lookup.name, modifiedTime: lookup.modifiedTime };
     }
     case "needs-editor":
-      return { kind: "wait", reason: lookup.reason, alarm: "drive-needs-editor", alarmNow: lookup.immediate };
+      return { kind: "wait", reason: lookup.reason, alarm: "drive-needs-editor", alarmNow: lookup.immediate, ...(lookup.selection ? { selection: lookup.selection } : {}) };
     case "none": {
       // Sem sidecar o corte não veio do Drive pelo timer (posto à mão): segue valendo.
       const staleId = input.instagramCutExists && input.cutSidecar?.fileId ? input.cutSidecar.fileId : null;
@@ -516,8 +526,10 @@ export function buildInstagramTimerAlarm(input: {
   deadlineHhmm?: string | null;
   /** #11389: `HH:MM` BRT do horário do vertical (o lembrete `guided` diz quando postar); null = desconhecido. */
   verticalHhmm?: string | null;
+  /** #13389: `selection` do `needs-editor` do fetch; `orientation-mismatch` pede reexportar. */
+  selection?: string;
 }): { subject: string; body: string } {
-  const { aammdd, key, reason, videoArg, driveFileId, deadlineHhmm, verticalHhmm } = input;
+  const { aammdd, key, reason, videoArg, driveFileId, deadlineHhmm, verticalHhmm, selection } = input;
   const published = PUBLISHED_KEYS.has(key);
   const lines = [
     "Achado automático da task `Diaria-Shorts-Instagram`",
@@ -599,7 +611,9 @@ export function buildInstagramTimerAlarm(input: {
     if (key === "missing-video") {
       lines.push(`Suba o vertical \`_Vertical_\` em \`${aammdd}/Final/\` no Drive; até 3 h depois do horário do vertical${deadlineHhmm ? ` (${deadlineHhmm} BRT)` : ""} a próxima execução (de hora em hora) publica.`);
     }
-    if (key === "drive-needs-editor") {
+    if (key === "drive-needs-editor" && selection === "orientation-mismatch") {
+      lines.push(`Reexporte o vertical na proporção vertical (1080x1920) em \`${aammdd}/Final/\` (ou \`Editados/\`) no Drive; a próxima execução publica.`);
+    } else if (key === "drive-needs-editor") {
       lines.push(
         `Deixe um só \`_Vertical_\` em \`${aammdd}/Final/\` no Drive (ou uma só pasta \`${aammdd}\`; se o Drive ainda não mostra a proporção do arquivo, confira se ele terminou de processar); a próxima execução publica.`,
       );
@@ -733,6 +747,8 @@ interface AlarmContext {
   driveFileId?: string | null;
   /** Horário do vertical (ISO) → `HH:MM` BRT do fim da janela. */
   at?: string | null;
+  /** #13389: `selection` do `needs-editor` do fetch, para a instrução do alarme. */
+  selection?: string;
 }
 
 /**
@@ -791,6 +807,7 @@ export async function alarm(
     driveFileId,
     deadlineHhmm: ctx.at ? instagramTimerDeadlineHhmm(ctx.at) : null,
     verticalHhmm: ctx.at ? hhmmBrt(Date.parse(ctx.at)) : null,
+    ...(ctx.selection ? { selection: ctx.selection } : {}),
   });
   const res = await notifyEditor(
     { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${id}`, severity: alarmSeverity(key), family: "evento", subject, body, forceEmail },
@@ -978,7 +995,7 @@ async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boo
       // Ambíguo alarma já (o editor precisa escolher); corte faltando ou proporção
       // ainda desconhecida, 1 h depois do horário — num dia que teve vertical,
       // inclusive só no Drive.
-      if (choice.alarmNow) return (await alarm(dir, aammdd, choice.alarm, choice.reason, { at }, deps.notify)) ? 0 : 1;
+      if (choice.alarmNow) return (await alarm(dir, aammdd, choice.alarm, choice.reason, { at, ...(choice.selection ? { selection: choice.selection } : {}) }, deps.notify)) ? 0 : 1;
       if (!shouldAlarmMissingVideo(now, at, true)) return 0;
       let seen = videoSeen;
       let reason = choice.reason;

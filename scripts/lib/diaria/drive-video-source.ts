@@ -301,9 +301,21 @@ export function pickHighestVersion(candidates: DriveVideoFile[]): { file: DriveV
 
 export type DriveVideoScope = "final-folder" | "edition-folder" | "root";
 
+/** Um `.mp4` de `Final/`/`Editados/` que não serviu ao destino pedido, com o motivo (#13389). */
+export interface RejectedDriveVideo {
+  file: DriveVideoFile;
+  reason: string;
+}
+
 export type DriveVideoSelection =
   | { kind: "found"; orientation: VideoOrientation; file: DriveVideoFile; premise?: string }
-  | { kind: "none"; orientation: VideoOrientation; reason: string }
+  | { kind: "none"; orientation: VideoOrientation; reason: string; rejected?: RejectedDriveVideo[] }
+  /**
+   * #13389: o nome traz o destino pedido (`_Vertical_V1`), mas a proporção que
+   * o Drive leu é a contrária (1920x1080). Nunca é "o vídeo ainda não subiu":
+   * o editor reexporta ou escolhe à mão (`--from-drive`).
+   */
+  | { kind: "orientation-mismatch"; orientation: VideoOrientation; files: DriveVideoFile[]; reason: string; rejected: RejectedDriveVideo[] }
   | { kind: "ambiguous"; orientation: VideoOrientation; candidates: DriveVideoFile[] }
   | { kind: "orientation-unknown"; orientation: VideoOrientation; files: DriveVideoFile[] };
 
@@ -466,6 +478,46 @@ export function isVerticalCutCandidate(file: DriveVideoFile): boolean {
   return o === "vertical" || o === null;
 }
 
+function dimensions(file: DriveVideoFile): string {
+  return `${file.videoMediaMetadata?.width}x${file.videoMediaMetadata?.height}`;
+}
+
+/**
+ * Por que cada `.mp4` de `Final/`/`Editados/` não serviu ao destino (#13389).
+ * Chamado só quando a escolha não achou nada: a resposta `none` passa a dizer
+ * o que havia na pasta e o motivo de cada recusa, em vez de só "nenhum".
+ */
+export function explainFinalFolderRejections(
+  pool: DriveVideoFile[],
+  orientation: VideoOrientation,
+  cortes: readonly CorteRef[] = [],
+): RejectedDriveVideo[] {
+  return pool.map((file) => {
+    if (orientation === "vertical") {
+      const corte = corteOfName(file.name, cortes);
+      if (corte !== null) return { file, reason: `corte ${corte} (2ª vertical, sai pelo modo --corte ${corte})` };
+    }
+    const t = videoTargetOf(file.name);
+    const o = classifyOrientation(file);
+    if (t !== null && targetOrientation(t) !== orientation) {
+      return { file, reason: `destino ${t} no nome (${targetOrientation(t)})` };
+    }
+    if (t !== null && o !== null && o !== orientation) {
+      return { file, reason: `destino ${t} no nome, mas a proporção no Drive é ${dimensions(file)} (${o === "square" ? "quadrado" : o})` };
+    }
+    if (t === null && orientation === "vertical" && file.editedFolder) {
+      return { file, reason: `sem sufixo de destino em ${file.folderName ?? "Editados"}/ (rascunho, #11423)` };
+    }
+    if (t === null && o !== null && o !== orientation) {
+      return { file, reason: `sem sufixo de destino e proporção ${dimensions(file)} (${o === "square" ? "quadrado" : o})` };
+    }
+    // Sem sufixo e proporção ainda desconhecida: o `pick` devolve
+    // `orientation-unknown` antes de chegar aqui, então o `none` não deveria
+    // listar este caso; se listar, diz o que se sabe do arquivo.
+    return { file, reason: `sem sufixo de destino e proporção ${o === null ? "ainda desconhecida no Drive" : dimensions(file)}` };
+  });
+}
+
 export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVideoOptions): DriveVideoSelection {
   // #11950: o export de um corte é uma 2ª vertical, que sai pelo modo corte.
   const files = opts.orientation === "vertical" ? allFiles.filter((f) => corteOfName(f.name, opts.cortes) === null) : allFiles;
@@ -482,6 +534,31 @@ export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVi
   if (finalFolderPool.length > 0) {
     const fromFinal = pickFromFinalFolder(finalFolderPool, opts.orientation, target);
     if (fromFinal) return fromFinal;
+    // #13389: listar também os cortes, que saíram do pool antes da escolha.
+    const rejected = explainFinalFolderRejections(
+      allFiles.filter((f) => f.scope === "final-folder" && isMp4VideoFile(f)),
+      opts.orientation,
+      opts.cortes,
+    );
+    const listed = rejected.map((r) => `${r.file.name}: ${r.reason}`).join("; ");
+    // Nome com o destino pedido e proporção contrária: o arquivo existe, só
+    // não tem a forma certa. `none` aqui parecia "o vídeo ainda não subiu".
+    const mismatched = finalFolderPool.filter((f) => {
+      const t = videoTargetOf(f.name);
+      const o = classifyOrientation(f);
+      return t !== null && targetOrientation(t) === opts.orientation && o !== null && o !== opts.orientation;
+    });
+    if (mismatched.length > 0) {
+      return {
+        kind: "orientation-mismatch",
+        orientation: opts.orientation,
+        files: mismatched,
+        rejected,
+        reason:
+          `${mismatched.map((f) => `${f.name} tem o destino ${opts.orientation} no nome, mas a proporção no Drive é ${dimensions(f)}`).join("; ")} ` +
+          `— reexportar na proporção ${opts.orientation}, ou o editor escolhe o arquivo à mão (--from-drive)`,
+      };
+    }
     // #12133: nomear a pasta real (na 261104 era `Editado/`, e a mensagem dizia "Final/").
     const folderNames = [...new Set(finalFolderPool.map((f) => f.folderName ?? (f.editedFolder ? "Editado" : "Final")))];
     const where = folderNames.length === 1 ? `a pasta ${folderNames[0]}/` : `as pastas ${folderNames.map((n) => `${n}/`).join(", ")}`;
@@ -490,7 +567,9 @@ export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVi
       orientation: opts.orientation,
       reason:
         `${where} da edição tem ${finalFolderPool.length} .mp4, mas nenhum do destino ${target} ` +
-        `(sufixo no nome, ex.: "Diaria comentada${target === "youtube" ? " horizontal" : target === "instagram" ? "_Instagram" : "_Vertical"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}`,
+        `(sufixo no nome, ex.: "Diaria comentada${target === "youtube" ? " horizontal" : target === "instagram" ? "_Instagram" : "_Vertical"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}` +
+        (listed ? ` — recusados: ${listed}` : ""),
+      rejected,
     };
   }
 

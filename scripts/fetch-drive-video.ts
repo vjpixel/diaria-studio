@@ -132,6 +132,7 @@ import {
   type DriveVideoFile,
   type DriveVideoScope,
   type DriveVideoSelection,
+  type RejectedDriveVideo,
   type VideoOrientation,
   type VideoTarget,
 } from "./lib/diaria/drive-video-source.ts";
@@ -283,7 +284,24 @@ export type FetchDriveVideoOutput =
       video_selection: DriveVideoSelection["kind"];
     })
   | (OutputWithFolder & { action: "error"; phase: "cover-download"; error: string })
-  | (OutputWithFolder & { action: "none"; selection: "none"; reason: string })
+  | (OutputWithFolder & {
+      action: "none";
+      selection: "none";
+      reason: string;
+      /** #13389: o que havia em `Final/`/`Editados/` e por que cada `.mp4` ficou de fora. */
+      rejected?: RejectedDescribedFile[];
+    })
+  /**
+   * #13389: o arquivo com o destino no nome (`_Vertical_V1`) tem a proporção
+   * contrária no Drive. Exit 3, nunca `none`: o vídeo subiu, só não serve.
+   */
+  | (OutputWithFolder & {
+      action: "needs-editor";
+      selection: "orientation-mismatch";
+      reason: string;
+      files: DescribedDriveFile[];
+      rejected: RejectedDescribedFile[];
+    })
   | (OutputWithFolder & {
       action: "needs-editor";
       selection: "ambiguous";
@@ -436,6 +454,12 @@ function describeFile(f: DriveVideoFile): DescribedDriveFile {
     modifiedTime: f.modifiedTime ?? null,
     scope: f.scope ?? "root",
   };
+}
+
+type RejectedDescribedFile = DescribedDriveFile & { reason: string };
+
+function describeRejected(r: RejectedDriveVideo): RejectedDescribedFile {
+  return { ...describeFile(r.file), reason: r.reason };
 }
 
 function describeForLog(f: DriveVideoFile): string {
@@ -648,12 +672,16 @@ export async function runFetchDriveVideo(
       // #11577: a escolha em Final/ é a cópia que o fetch promoveu; uma
       // exportação mais nova em Editados/ (V6 depois do V5) precisa ser vista.
       const promotedPick = probe.kind === "found" && isPromotedCopy(probe.file) ? probe.file : null;
-      if ((probe.kind === "none" && !skipEdited) || promotedPick) {
+      // #13389: `orientation-mismatch` (destino certo, proporção errada) também
+      // desce para Editados/: uma exportação correta lá vence a errada de Final/.
+      if (((probe.kind === "none" || probe.kind === "orientation-mismatch") && !skipEdited) || promotedPick) {
         const edited = subfolders.filter((f) => isEditedFolderName(f.name));
         if (edited.length > 0) {
           const why = promotedPick
             ? `${promotedPick.name} em Final/ é cópia promovida; conferindo exportação mais nova`
-            : finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
+            : probe.kind === "orientation-mismatch"
+              ? `o .mp4 do destino ${target} em Final/ tem a proporção errada`
+              : finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
           log(`[premissa] ${why} — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
           finalFiles = [...finalFiles, ...(await listFinalLike(edited, true))];
         }
@@ -745,7 +773,25 @@ export async function runFetchDriveVideo(
 
   if (sel.kind === "none") {
     log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica ${aammdd}`);
-    return { exitCode: 0, output: { ...withFolder, action: "none", selection: "none", reason: sel.reason } };
+    const rejected = sel.rejected?.map(describeRejected);
+    return {
+      exitCode: 0,
+      output: { ...withFolder, action: "none", selection: "none", reason: sel.reason, ...(rejected && rejected.length > 0 ? { rejected } : {}) },
+    };
+  }
+  if (sel.kind === "orientation-mismatch") {
+    log(`[aviso] ${sel.reason} (#13389) — nada escolhido`);
+    return {
+      exitCode: 3,
+      output: {
+        ...withFolder,
+        action: "needs-editor",
+        selection: "orientation-mismatch",
+        reason: sel.reason,
+        files: sel.files.map(describeFile),
+        rejected: sel.rejected.map(describeRejected),
+      },
+    };
   }
   if (sel.kind === "ambiguous") {
     log(`[aviso] ${sel.candidates.length} .mp4 ${orientation} finais (destino ${target}) — escolha do editor: ${sel.candidates.map(describeForLog).join(" | ")}`);
