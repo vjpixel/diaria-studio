@@ -4427,16 +4427,51 @@ export function segmentCues(words: Word[], opts: { maxChars?: number; commaMinCh
     }
   }
   if (cur.length) cues.push(cur);
+  return rebalanceLoneWords(cues);
+}
+
+/** Fim de frase, também com aspas/parêntese depois da pontuação ou reticências (review da #13327). */
+const SENTENCE_END = /[.?!…]["'”’)\]]*$/;
+const endsSentence = (ws: Word[]) => SENTENCE_END.test(ws[ws.length - 1]?.text.trim() ?? "");
+/** Token que o `joinWordTexts` cola no anterior ("%", ",5"): nunca separar os dois. */
+const gluedToPrev = (w: Word | undefined) => !!w && (/^%/.test(w.text.trim()) || /^[.,]\d/.test(w.text.trim()));
+
+/**
+ * #13319 (pedido do editor na 261117): cue com uma palavra só no meio de uma
+ * frase ("falso." depois de "…por causa de vídeo", quando a última palavra da
+ * frase passa dos `maxChars`) recebe a última palavra da cue anterior; a que
+ * abre uma frase que continua na seguinte puxa a 1ª palavra dela. A doadora
+ * nunca fica com menos de 2 palavras. Frase de uma palavra só ("Não.") fica.
+ */
+export function rebalanceLoneWords(input: Word[][]): Word[][] {
+  const cues = input.map((c) => [...c]);
+  for (let i = 0; i < cues.length; i++) {
+    if (cues[i].length !== 1) continue;
+    const prev = cues[i - 1];
+    const next = cues[i + 1];
+    if (prev && !endsSentence(prev) && prev.length >= 3 && !gluedToPrev(prev[prev.length - 1])) cues[i].unshift(prev.pop()!);
+    else if (next && !endsSentence(cues[i]) && next.length >= 3 && !gluedToPrev(next[1])) cues[i].push(next.shift()!);
+  }
   return cues;
 }
 
-/** Acima de `wrapOver` caracteres, 2 linhas, quebradas no espaço mais perto do meio. */
+/**
+ * Acima de `wrapOver` caracteres, 2 linhas, quebradas no espaço mais perto do
+ * meio entre os que deixam pelo menos 2 palavras de cada lado (#13319: nunca
+ * uma linha de uma palavra só quando dá para evitar).
+ */
 export function wrapCueText(text: string, wrapOver: number = CUE_DEFAULTS.wrapOver): string {
   if (text.length <= wrapOver) return text;
   const spaces = [...text].map((ch, k) => (ch === " " ? k : -1)).filter((k) => k >= 0);
   if (spaces.length === 0) return text;
   const mid = text.length / 2;
-  const k = spaces.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a));
+  const nearest = (xs: number[]) => xs.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a));
+  let k = nearest(spaces);
+  if (spaces.length >= 3) {
+    // Evita a linha de uma palavra só, desde que nenhuma linha passe muito da largura (review da #13327).
+    const kb = nearest(spaces.slice(1, -1));
+    if (Math.max(kb, text.length - kb - 1) <= Math.max(wrapOver, 32)) k = kb;
+  }
   return text.slice(0, k) + "\n" + text.slice(k + 1);
 }
 
