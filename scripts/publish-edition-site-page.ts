@@ -322,7 +322,7 @@ import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-s
 import { readEditionVideoMeta } from "./lib/edition-video-meta.ts"; // #12080
 import type { WebVideoInput } from "./lib/site-page-video.ts"; // #12080
 import { SITE_PAGE_VIDEO_URL_FIELD } from "./lib/site-page-video-republish.ts"; // #12080
-import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
+import { buildHomeFeed, buildIndexHtml, buildVideoFeed, ARCHIVE_CARD_LIMIT, HOME_VIDEO_LIMIT } from "./lib/site-home-page.ts";
 // #10160: `--slug-from-d1` (§5b-site, antes de existir qualquer slug de post).
 import { parseDestaques } from "./extract-destaques.ts";
 import { seoSlug } from "./lib/slug.ts";
@@ -2558,7 +2558,10 @@ export function productionDeps(
         return existsSync(p) ? readFileSync(p, "utf8") : null;
       };
       const feed = buildHomeFeed(newXml, readPageHtml, ARCHIVE_CARD_LIMIT + 1);
-      const homeHtml = buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) });
+      // #13323: a seção "Vídeos" acompanha a home — a página republicada com
+      // o link do vídeo (video-d1-link-watch) já põe o vídeo na home.
+      const videos = buildVideoFeed(newXml, readPageHtml, HOME_VIDEO_LIMIT);
+      const homeHtml = buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1), videos });
       mkdirSync(dirname(homeAbsPath), { recursive: true });
       writeFileSync(homeAbsPath, homeHtml, "utf8");
 

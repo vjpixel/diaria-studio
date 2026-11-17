@@ -26,7 +26,7 @@ import { escHtml } from "./html-escape.ts";
 import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
 import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 import { editionCtaBlock } from "./edition-page-cta.ts";
-import { injectDestaqueAnchors } from "./site-destaque-anchors.ts"; // #11003
+import { injectDestaqueAnchors, extractSecondaryDestaqueTitles, renderDekItemMetas } from "./site-destaque-anchors.ts"; // #11003, #13324
 import { applyWebVideo, buildVideoObjectJsonLd, type WebVideoInput } from "./site-page-video.ts"; // #12080
 import { stripArchiveHero } from "./strip-duplicate-hero.ts";
 import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
@@ -658,6 +658,10 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
   // destaque, ex.: post da Stack). Depois de normalizeHeadingHierarchy porque
   // o alvo é o <h2> da manchete; página sem manchete reconhecível fica igual.
   html = injectDestaqueAnchors(html);
+  // #13324 — D2/D3 em forma estruturada para a home (bullets), lidos dos
+  // <h2 id="d2|d3"> recém-ancorados, nunca da linha fina "D2 | D3" separada
+  // por `|` (um título pode conter `|`).
+  const dekItemMetas = renderDekItemMetas(extractSecondaryDestaqueTitles(html));
 
   // #12080 — vídeo do D1: player no lugar da imagem com link (só na web; o
   // e-mail segue com imagem), UTM própria da web nos links do YouTube e
@@ -725,6 +729,8 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
     // edição não tem D2/D3 (deriveDek devolve undefined) — o HOME trata a
     // ausência sem quebrar (ver extractPageDek/buildHomeFeed).
     (dek ? `<meta name="dek" content="${escHtml(dek)}">` : "") +
+    // #13324: uma <meta name="dek-item"> por destaque secundário (D2, D3).
+    dekItemMetas +
     (newsArticleJsonLd ?? "") +
     (videoJsonLd ?? "");
 
