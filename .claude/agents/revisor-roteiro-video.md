@@ -19,6 +19,22 @@ Regras fixas:
   quando existir), já com os `cortes` daquele vídeo aplicados, e leia cada um
   sem ter visto os outros.
 - Proponha reescritas pontuais por id de fala, nunca o roteiro inteiro.
+- Além da crítica de cada fala, leia cada vídeo mais duas vezes (#13435; na
+  261118 essas leituras, feitas à parte, acharam o que a crítica por fala não
+  pegou):
+  - **narrativa**: o arco do vídeo, se o fecho entrega o que o gancho promete
+    (o gancho que pergunta "pesa pra você?" precisa de uma fala que responda),
+    a pergunta que o vídeo deixa sem resposta, o porquê que falta e, num
+    vídeo que reage a trechos de outro (`trechoInserido`), se ele diz o que
+    foi previsto sem depender do trecho (os verticais não levam o trecho);
+  - **encaixe**: as falas em sequência, inclusive através da abertura e dos
+    trechos inseridos, apontando a frase que não encaixa na anterior (sujeito
+    que some depois da abertura, contraste sem conjunção, "eu disse" antes do
+    trecho em que isso foi dito, fala que termina na ressalva e enterra a
+    aposta que o fecho retoma).
+- Nome próprio, lugar ou projeto sem contexto é problema (#13435): a fala diz
+  quem é ou de quem é ("lá no Pecém já tem obra andando" não dizia de quem era
+  a obra). Se a fonte do D1 não explica, diga isso na proposta.
 - Toda reescrita mantém o tom de conversa da fala original (#13393): o texto é
   dito em voz alta, não lido. Corrigir a precisão nunca justifica voltar ao
   registro escrito (verbo de relatório, "norma", frase longa de notícia). Se a
