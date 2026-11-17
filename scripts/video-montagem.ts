@@ -4618,10 +4618,9 @@ async function writeSubtitleXml(ctx: Ctx, pf: PlanFile, plan: SequencePlan, cues
       const svg = subtitleCueSvg(text, width, height, style);
       const name = subtitleFileName(ctx.edition, i + 1, createHash("sha256").update(svg).digest("hex").slice(0, 12));
       const out = join(dir, name);
-      if (!existsSync(out)) {
-        await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
-        renameSync(`${out}.part`, out);
-      }
+      // Regravado sempre, como os boxes de tela: no modo API o snapshot do out dir é o que sobe (#13204).
+      await sharp(Buffer.from(svg)).png().toFile(`${out}.part`);
+      renameSync(`${out}.part`, out);
       overlays.push({ index: i + 1, text, path: out, xmlPath: `${xmlDir}${name}`, width, height, in: frames[i].in, out: frames[i].out });
     }
     const rate = `<rate><timebase>${pf.source.fps}</timebase><ntsc>FALSE</ntsc></rate>`;
