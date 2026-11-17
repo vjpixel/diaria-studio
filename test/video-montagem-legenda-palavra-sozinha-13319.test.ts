@@ -32,6 +32,20 @@ describe("#13319: cue com uma palavra só", () => {
     assert.deepEqual(texts(rebalanceLoneWords([curta.slice(0, 2), [curta[2]]])), ["Uma duas", "três"]);
   });
 
+  it("fim de frase com aspas ou reticências conta como fim (não rouba palavra da frase anterior)", () => {
+    const w = words("Ele disse: chega.\" Não.");
+    assert.deepEqual(texts(rebalanceLoneWords([w.slice(0, 3), [w[3]]])), ["Ele disse: chega.\"", "Não."]);
+    const r = words("E então… Fim.");
+    assert.deepEqual(texts(rebalanceLoneWords([r.slice(0, 2), [r[2]]])), ["E então…", "Fim."]);
+  });
+
+  it("token colado no anterior (\"%\", \",5\") nunca é separado dele", () => {
+    const w = [...words("subiu para 50"), { start: 1, end: 1.1, text: "%" }];
+    const lone = { start: 2, end: 2.2, text: "hoje." };
+    const out = rebalanceLoneWords([w, [lone]]);
+    assert.deepEqual(texts(out), ["subiu para 50 %", "hoje."]);
+  });
+
   it("os tempos seguem as palavras movidas", () => {
     const srt = cuesToSrt(segmentCues(words("Tem gente largando o remédio por causa de vídeo falso.")));
     assert.match(srt, /\nvídeo falso\.\n/);
@@ -43,6 +57,11 @@ describe("#13319: linha com uma palavra só", () => {
   it("quebra no espaço mais perto do meio que deixa 2 palavras de cada lado", () => {
     const out = wrapCueText("Desinformação generalizada é perigosa demais");
     for (const line of out.split("\n")) assert.ok(line.split(" ").length >= 2, out);
+  });
+
+  it("se evitar a palavra sozinha deixar uma linha longa demais, quebra no meio como antes", () => {
+    const out = wrapCueText("a b desinformaçãogeneralizada perigosamente");
+    for (const line of out.split("\n")) assert.ok(line.length <= 32, out);
   });
 
   it("com 2 ou 3 palavras não há como evitar: quebra no meio como antes", () => {
