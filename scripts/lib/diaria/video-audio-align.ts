@@ -308,7 +308,7 @@ export function labelRuns(
  * nos quadros com som do trecho): o mesmo som pode ter sido gravado/exportado
  * com nível diferente.
  */
-function gainUnder(A: Float64Array, V: Float64Array, a: number, b: number, d: number, floorDb: number): number {
+export function gainUnder(A: Float64Array, V: Float64Array, a: number, b: number, d: number, floorDb: number): number {
   const diffs: number[] = [];
   for (let n = Math.max(0, a); n < Math.min(A.length, b); n++) {
     const m = n + d;

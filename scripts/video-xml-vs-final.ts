@@ -62,7 +62,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,9 @@ import {
   brutoParts,
   brutoSearchDirs,
   brutoTimelineMatches,
+  CACHE_MAX_ZERO_RUN_S,
+  extractionTruncated,
+  longestZeroRunS,
   type BrutoPart,
   type DetectedPattern,
   type EditionRecord,
@@ -341,12 +344,59 @@ function probeDurationS(path: string): number {
   return Number(sh("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.trim());
 }
 
-/** ffmpeg de um arquivo do bruto para 16 kHz mono; com `durationS`, completa com silêncio e corta na duração da linha do tempo. */
+/**
+ * ffmpeg de um arquivo do bruto para 16 kHz mono; com `durationS`, corta e
+ * completa com silêncio na duração da linha do tempo. A extração sai primeiro
+ * sem o `apad` e a duração real é conferida contra a esperada (a da linha do
+ * tempo, ou a do próprio arquivo): faltando mais que `EXTRACT_SHORTFALL_TOL_S`,
+ * a leitura parou no meio e o ffmpeg saiu 0 mesmo assim (#13417). Aí é erro,
+ * e nada é gravado em `out`.
+ */
 function extract16k(src: string, out: string, durationS: number | null): void {
-  const fit = durationS === null ? [] : ["-af", "apad", "-t", durationS.toFixed(6)];
+  const raw = `${out}.raw.tmp.wav`;
   const tmp = `${out}.tmp.wav`;
-  sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...fit, "-c:a", "pcm_s16le", tmp]);
-  renameSync(tmp, out);
+  try {
+    const cut = durationS === null ? [] : ["-t", durationS.toFixed(6)];
+    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...cut, "-c:a", "pcm_s16le", raw]);
+    const got = probeDurationS(raw);
+    const expected = durationS ?? probeDurationS(src);
+    if (extractionTruncated(got, expected)) {
+      throw new Error(`extração truncada do bruto ${src}: ${got.toFixed(2)} s de áudio, esperado ${expected.toFixed(2)} s (leitura interrompida? cache não gravado, #13417)`);
+    }
+    if (durationS !== null && got < durationS) {
+      sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", raw, "-af", "apad", "-t", durationS.toFixed(6), "-c:a", "pcm_s16le", tmp]);
+      renameSync(tmp, out);
+    } else {
+      renameSync(raw, out);
+    }
+  } finally {
+    for (const p of [raw, tmp]) if (existsSync(p)) rmSync(p, { force: true });
+  }
+}
+
+/** Áudio do bruto em cache que serve: duração da linha do tempo e sem trecho longo de zeros digitais (extração truncada antiga, #13417). */
+function cachedBrutoFits(path: string, parts: readonly BrutoPart[], fps: number | undefined): boolean {
+  if (!existsSync(path)) return false;
+  if (!brutoTimelineMatches(probeDurationS(path), parts, fps)) return false;
+  const w = parseWavPcm16(readFileSync(path));
+  const zeros = longestZeroRunS(w.samples, w.sampleRate);
+  if (zeros > CACHE_MAX_ZERO_RUN_S) {
+    log(`[aviso] áudio do bruto em cache com ${zeros.toFixed(1)} s seguidos de zeros digitais (extração truncada): descartado, extraindo de novo (${path})`);
+    rmSync(path, { force: true });
+    return false;
+  }
+  return true;
+}
+
+/** `extract16k` com o erro (extração truncada, ffmpeg falhando) virando motivo de pulo; `null` = ok. */
+function tryExtract(edition: string, src: string, out: string, durationS: number | null): string | null {
+  try {
+    extract16k(src, out, durationS);
+    return null;
+  } catch (e) {
+    log(`[erro] ${edition}: ${(e as Error).message}`);
+    return (e as Error).message.slice(0, 300);
+  }
 }
 
 /**
@@ -360,7 +410,9 @@ function extract16k(src: string, out: string, durationS: number | null): void {
  * na duração que ocupa na linha do tempo (`frames/fps`, `apad` + `-t`), e a
  * concatenação na ordem de `offsetFrames`, como o `ensureMultiAudio` da
  * montagem. Duração final conferida contra a linha do tempo: não bater é pulo,
- * nunca uma comparação com os tempos deslocados. `wav: null` traz o motivo.
+ * nunca uma comparação com os tempos deslocados. Extração truncada (a leitura
+ * parou no meio, #13417) é pulo com o motivo, e o cache com trecho longo de
+ * zeros digitais é descartado. `wav: null` traz o motivo.
  */
 export async function brutoWav(
   edition: string,
@@ -376,17 +428,18 @@ export async function brutoWav(
   if ((pf.source.files?.length ?? 0) > 1 && existsSync(montageConcat)) {
     // Já está na linha do tempo global (a montagem conferiu a duração): só baixa para 16 kHz mono.
     const fromMontage = join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-16k-concat-montagem.wav");
-    if (!existsSync(fromMontage) || (bp.parts !== null && !brutoTimelineMatches(probeDurationS(fromMontage), bp.parts, pf.source.fps))) {
+    if (!existsSync(fromMontage) || (bp.parts !== null && !cachedBrutoFits(fromMontage, bp.parts, pf.source.fps))) {
       mkdirSync(dirname(fromMontage), { recursive: true });
       log(`[video-xml-vs-final] ${edition}: áudio do bruto do concatenado da montagem (${montageConcat})…`);
-      extract16k(montageConcat, fromMontage, null);
+      const err = tryExtract(edition, montageConcat, fromMontage, null);
+      if (err) return { wav: null, reason: err };
     }
     return { wav: fromMontage };
   }
   if (bp.parts === null) return { wav: null, reason: `áudio do bruto ausente (${cached}) e ${bp.reason}` };
   const parts = bp.parts;
   const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, parts.length > 1 ? "bruto-multi-16k.wav" : "bruto-16k.wav");
-  const fits = (p: string) => existsSync(p) && brutoTimelineMatches(probeDurationS(p), parts, pf.source.fps);
+  const fits = (p: string) => cachedBrutoFits(p, parts, pf.source.fps);
   if (fits(own)) return { wav: own };
   const local: string[] = [];
   for (const part of parts) {
@@ -406,8 +459,8 @@ export async function brutoWav(
   mkdirSync(dirname(own), { recursive: true });
   if (parts.length === 1) {
     log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${local[0]})…`);
-    extract16k(local[0], own, null);
-    return { wav: own };
+    const err = tryExtract(edition, local[0], own, null);
+    return err ? { wav: null, reason: err } : { wav: own };
   }
   const dir = join(dirname(own), "bruto-parts");
   mkdirSync(dir, { recursive: true });
@@ -415,7 +468,8 @@ export async function brutoWav(
   for (const [i, part] of parts.entries()) {
     const w = join(dir, `${String(i + 1).padStart(2, "0")}.wav`);
     log(`[video-xml-vs-final] ${edition}: áudio do bruto ${i + 1}/${parts.length} (${local[i]})…`);
-    extract16k(local[i], w, part.durationS);
+    const err = tryExtract(edition, local[i], w, part.durationS);
+    if (err) return { wav: null, reason: err };
     wavs.push(w);
   }
   const list = join(dir, "list.txt");
