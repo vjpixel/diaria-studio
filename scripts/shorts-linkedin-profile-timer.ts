@@ -188,7 +188,10 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
       editionFolderSeen: editionFolderSeen || out.selection === "duplicate-edition-folder",
       ...(typeof out.selection === "string" ? { selection: out.selection } : {}),
       ...(typeof out.video_selection === "string" ? { videoSelection: out.video_selection } : {}),
-      reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe`,
+      reason:
+        out.selection === "orientation-mismatch"
+          ? `vertical no Drive com a proporção errada (#13389): ${out.reason ?? "sem motivo"}`
+          : `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe`,
     };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
@@ -398,6 +401,9 @@ export function buildLinkedinTimerAlarm(input: {
         ? `O vertical já é único; o bloqueio é a capa: ${coverFix}`
         : `O bloqueio agora é a capa: ${coverFix} A escolha do vertical ainda não está resolvida (${videoSelection ?? "não informada"}): confira também que há um só vertical "final" em \`${aammdd}/Final/\`.`,
     );
+  } else if (selection === "orientation-mismatch") {
+    // #13389: o arquivo `_Vertical_` subiu na proporção horizontal.
+    lines.push(`Reexporte o vertical na proporção vertical (1080x1920) em \`${aammdd}/Final/\` (ou \`Editados/\`) no Drive; a próxima execução publica até ${deadline} BRT.`);
   } else {
     lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
   }

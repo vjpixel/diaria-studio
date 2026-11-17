@@ -343,6 +343,10 @@ export function interpretInstagramCutLookup(exitCode: number | null, stdout: str
         reason: "o Drive ainda não mostra a proporção do vídeo final (metadado processando, orientation-unknown) — se continuar assim, confira o arquivo em Final/ (Passo B1 do /diaria-publica-video)",
       };
     }
+    if (out.selection === "orientation-mismatch") {
+      // #13389: o vertical subiu com a proporção errada; o editor reexporta.
+      return { kind: "needs-editor", immediate: true, reason: `vertical no Drive com a proporção errada: ${out.reason ?? "sem motivo"} (Passo B1 do /diaria-publica-video)` };
+    }
     return {
       kind: "needs-editor",
       immediate: true,

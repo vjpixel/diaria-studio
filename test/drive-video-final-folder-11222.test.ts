@@ -79,7 +79,9 @@ test("pasta Final/: o sufixo decide mesmo sem proporção no Drive; proporção 
   const h = selectDriveVideo(noMeta, { orientation: "horizontal", now: NOW, editionFolderPresent: true });
   assert.equal(h.kind, "found");
   const wrong = [V("Diaria comentada_Youtube_V3.mp4")];
-  assert.equal(selectDriveVideo(wrong, { orientation: "horizontal", now: NOW, editionFolderPresent: true }).kind, "none");
+  // #13389: excluído continua (nunca `found`), mas sai `orientation-mismatch`
+  // em vez de `none`: o arquivo subiu, só tem a proporção errada.
+  assert.equal(selectDriveVideo(wrong, { orientation: "horizontal", now: NOW, editionFolderPresent: true }).kind, "orientation-mismatch");
 });
 
 test("pasta Final/: V2 e V3 do mesmo destino → ambiguous (o editor escolhe)", () => {

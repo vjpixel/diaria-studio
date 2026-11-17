@@ -220,6 +220,9 @@ export function interpretThreadsVerticalLookup(exitCode: number | null, stdout: 
     return { kind: "none", reason: `nenhum vertical "final" no Drive (${out.reason ?? action})`, ...(editionFolderSeen ? { editionFolderSeen } : {}) };
   }
   if (action === "needs-editor") {
+    if (out.selection === "orientation-mismatch") {
+      return { kind: "needs-editor", reason: `vertical no Drive com a proporção errada (#13389): ${out.reason ?? "sem motivo"}` };
+    }
     return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe` };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
