@@ -3475,6 +3475,100 @@ export function vinhetaConfigFrom(config: unknown): { path: string } | null {
 }
 
 /**
+ * #13240 (decisão do editor de 17/11/2026): o efeito sonoro que toca a cada
+ * "." do logo, como o ffprobe o mediu. `atS` são os instantes (s) contados do
+ * início da vinheta, um clipitem por instante.
+ */
+export interface VinhetaSfx {
+  /**
+   * O caminho que vai no `pathurl` (traduzido para o `premiere_root`): o do
+   * config, ou, no modo local com raiz explícita (#13308), `{raiz}/_marca/{nome}`.
+   */
+  path: string;
+  durationS: number;
+  atS: number[];
+  audioChannels?: number;
+  audioSampleRate?: number;
+}
+
+/** O que o config diz do efeito (#13240): `cfg` só quando usável; `present` = a chave existe; `problems` = cada coisa descartada ou faltando. */
+export interface VinhetaSfxConfigCheck {
+  present: boolean;
+  cfg: { path: string; atS: number[] } | null;
+  problems: string[];
+}
+
+/**
+ * Confere `publishing.video.vinheta_som` (#13240): o caminho do efeito e os
+ * instantes (`at_s`, s desde o início da vinheta; finitos e >= 0, ordenados).
+ * Cada item de `at_s` descartado vira um problema; chave presente com caminho
+ * vazio ou sem instante válido também, para o aviso dizer isso e não "sem config".
+ */
+export function vinhetaSfxConfigCheck(config: unknown): VinhetaSfxConfigCheck {
+  const v = (config as { publishing?: { video?: { vinheta_som?: { path?: unknown; at_s?: unknown } } } })?.publishing?.video?.vinheta_som;
+  if (v === undefined || v === null) return { present: false, cfg: null, problems: [] };
+  const problems: string[] = [];
+  const path = typeof v.path === "string" ? v.path.trim() : "";
+  if (!path) problems.push("publishing.video.vinheta_som.path vazio ou ausente (#13240)");
+  const raw = Array.isArray(v.at_s) ? v.at_s : null;
+  if (!raw) problems.push("publishing.video.vinheta_som.at_s ausente ou não é lista (#13240)");
+  const atS: number[] = [];
+  (raw ?? []).forEach((t, i) => {
+    if (typeof t === "number" && Number.isFinite(t) && t >= 0) atS.push(t);
+    else problems.push(`publishing.video.vinheta_som.at_s[${i}] = ${JSON.stringify(t) ?? String(t)} descartado: não é número finito >= 0 (#13240)`);
+  });
+  atS.sort((a, b) => a - b);
+  if (raw && !atS.length) problems.push(`publishing.video.vinheta_som.at_s sem nenhum instante válido (${raw.length} item(ns), todos descartados) (#13240)`);
+  return { present: true, cfg: path && atS.length ? { path, atS } : null, problems };
+}
+
+/** `publishing.video.vinheta_som` usável (#13240) ou `null` (ausente, caminho vazio ou nenhum instante válido). Os avisos saem de `vinhetaSfxConfigCheck`. */
+export function vinhetaSfxConfigFrom(config: unknown): { path: string; atS: number[] } | null {
+  return vinhetaSfxConfigCheck(config).cfg;
+}
+
+/** Lê o JSON do `ffprobe -show_streams -show_format` do efeito (#13240). Sem stream de áudio ou duração = erro. */
+export function parseVinhetaSfxProbe(json: string, path: string, atS: number[]): VinhetaSfx {
+  const j = JSON.parse(json) as { streams?: Array<{ codec_type?: string; duration?: string; channels?: number; sample_rate?: string }>; format?: { duration?: string } };
+  const audio = j.streams?.find((s) => s.codec_type === "audio");
+  if (!audio) throw new Error(`som da vinheta sem stream de áudio (${path})`);
+  const durationS = Number(j.format?.duration ?? audio.duration);
+  if (!(durationS > 0)) throw new Error(`som da vinheta sem duração (${path})`);
+  const sr = Number(audio.sample_rate);
+  return {
+    path, durationS, atS: [...atS],
+    ...(isNum(audio.channels) && audio.channels > 0 ? { audioChannels: audio.channels } : {}),
+    ...(sr > 0 ? { audioSampleRate: sr } : {}),
+  };
+}
+
+/** Duração do efeito em quadros (#13240): para cima, no mínimo 1 (0,182 s a 30 fps = 6 quadros, a cauda inteira). */
+export function vinhetaSfxLenFrames(durationS: number, fps: number): number {
+  return Math.max(1, Math.ceil(durationS * fps - 1e-9));
+}
+
+/**
+ * Onde o efeito toca na sequência, em quadros (#13240): `span.start` + cada
+ * instante arredondado ao quadro, com a duração do efeito arredondada PARA
+ * CIMA (no mínimo 1 quadro), para não cortar a cauda. Instante que cai depois
+ * do fim da vinheta (cortada no fim da sequência) fica de fora, e 2 instantes
+ * no mesmo quadro viram 1; cada clipitem para no começo do seguinte, para a
+ * faixa nunca ter clipes sobrepostos.
+ */
+export function vinhetaSfxFrames(
+  span: { start: number; end: number },
+  fps: number,
+  sfx: Pick<VinhetaSfx, "durationS" | "atS">,
+  durationFrames: number,
+): Array<{ start: number; end: number }> {
+  const len = vinhetaSfxLenFrames(sfx.durationS, fps);
+  const starts = [...new Set(sfx.atS.map((t) => span.start + Math.round(t * fps)))]
+    .filter((s) => s < span.end && s < durationFrames)
+    .sort((a, b) => a - b);
+  return starts.map((s, i) => ({ start: s, end: Math.min(s + len, starts[i + 1] ?? Infinity, durationFrames) }));
+}
+
+/**
  * A vinheta entra este tanto depois da última palavra do título, DENTRO do
  * respiro (261028: título até 3,10 s, vinheta em 3,4 s, abertura em 3,79 s).
  */
@@ -3492,6 +3586,8 @@ export interface VinhetaAsset {
   /** Canais e taxa do som do MOV, quando há som e o probe os traz. */
   audioChannels?: number;
   audioSampleRate?: number;
+  /** #13240: o efeito sonoro a cada "." do logo (`publishing.video.vinheta_som`); ausente = sem efeito. */
+  sfx?: VinhetaSfx;
 }
 
 /** Lê o JSON do `ffprobe -show_streams -show_format` do MOV. Sem stream de vídeo ou duração = erro. */
@@ -3552,11 +3648,11 @@ export function vinhetaSpan(
 }
 
 /**
- * #13240: o som do bruto sob a vinheta abaixa este tanto (dB). O MOV não tem
- * faixa de áudio (`hasAudio: false` no plan.json da 261116) e o XML não leva
- * outra faixa no trecho: o "som a cada ponto" que o editor ouviu só pode vir
- * do áudio do bruto por baixo (o respiro depois do título, ou a pausa tirada
- * de outro trecho, #13204), onde não há fala por construção.
+ * O áudio do bruto sob a vinheta abaixa este tanto (dB) (#13240, PR #13246):
+ * o respiro depois do título (ou a pausa tirada de outro trecho, #13204), sem
+ * fala por construção, fica a -20 dB, e por cima dele toca o som de tecla a
+ * cada "." do logo (`vinheta_som`, `VinhetaSfx`, decisão do editor de
+ * 17/11/2026), numa faixa própria e sem abaixamento.
  */
 export const VINHETA_DUCK_DB = -20;
 
@@ -3648,20 +3744,48 @@ export function vinhetaScalePct(asset: Pick<VinhetaAsset, "width" | "height">, s
  * prévia montada, entrada 1 = o MOV. `subtitles` (opcional) entra depois da
  * vinheta, `loudnorm` no fim do áudio; o som do MOV (se houver) é misturado a
  * partir do mesmo instante. `duck` (#13240): o áudio da prévia abaixa no
- * trecho da `vinhetaDuckSpan` (segundos da sequência), como no XML.
+ * trecho da `vinhetaDuckSpan` (segundos da sequência), como no XML. `sfx`
+ * (#13240): o efeito de `vinheta_som` é a entrada 2, misturado uma vez em
+ * cada instante de `atSeqS`: segundos da SEQUÊNCIA (os mesmos quadros do XML,
+ * de `vinhetaSfxFrames`), não os de `VinhetaSfx.atS`, que contam da vinheta.
  */
-export function previewVinhetaFilter(input: { startS: number; scale: number; hasAudio: boolean; subtitles?: string; loudnorm: string; duck?: { startS: number; endS: number; db: number } | null }): string {
+export function previewVinhetaFilter(input: { startS: number; scale: number; hasAudio: boolean; subtitles?: string; loudnorm: string; duck?: { startS: number; endS: number; db: number } | null; sfx?: { atSeqS: number[] } | null }): string {
   const t = Math.max(0, input.startS).toFixed(3);
   const ms = Math.round(Math.max(0, input.startS) * 1000);
   const duck = input.duck && input.duck.endS > input.duck.startS
     ? `volume=${input.duck.db}dB:enable='between(t,${input.duck.startS.toFixed(3)},${input.duck.endS.toFixed(3)})',`
     : "";
-  const parts = [
+  const video = [
     `[1:v]format=yuva420p,scale=iw*${input.scale}:-2,setpts=PTS-STARTPTS+${t}/TB[vin]`,
     `[0:v][vin]overlay=(W-w)/2:(H-h)/2:eof_action=pass${input.subtitles ? `,${input.subtitles}` : ""}[vout]`,
-    input.hasAudio ? `${duck ? `[0:a]${duck.slice(0, -1)}[bru];` : ""}[1:a]adelay=${ms}|${ms},aresample=48000[va];${duck ? "[bru]" : "[0:a]"}[va]amix=inputs=2:duration=first:normalize=0,${input.loudnorm}[aout]` : `[0:a]${duck}${input.loudnorm}[aout]`,
   ];
-  return parts.join(";");
+  const sfxAt = (input.sfx?.atSeqS ?? []).filter((x) => Number.isFinite(x) && x >= 0);
+  if (!sfxAt.length) {
+    return [
+      ...video,
+      input.hasAudio ? `${duck ? `[0:a]${duck.slice(0, -1)}[bru];` : ""}[1:a]adelay=${ms}|${ms},aresample=48000[va];${duck ? "[bru]" : "[0:a]"}[va]amix=inputs=2:duration=first:normalize=0,${input.loudnorm}[aout]` : `[0:a]${duck}${input.loudnorm}[aout]`,
+    ].join(";");
+  }
+  // #13240: o bruto (abaixado sob a vinheta), o som do MOV (se houver) e o efeito, uma cópia por instante.
+  const audio: string[] = [];
+  const mix: string[] = [];
+  if (duck) {
+    audio.push(`[0:a]${duck.slice(0, -1)}[bru]`);
+    mix.push("[bru]");
+  } else mix.push("[0:a]");
+  if (input.hasAudio) {
+    audio.push(`[1:a]adelay=${ms}|${ms},aresample=48000[va]`);
+    mix.push("[va]");
+  }
+  const copies = sfxAt.length > 1 ? sfxAt.map((_, i) => `[sfx${i}]`) : ["[2:a]"];
+  if (sfxAt.length > 1) audio.push(`[2:a]asplit=${sfxAt.length}${copies.join("")}`);
+  sfxAt.forEach((at, i) => {
+    const d = Math.round(at * 1000);
+    audio.push(`${copies[i]}adelay=delays=${d}:all=1,aresample=48000[sx${i}]`);
+    mix.push(`[sx${i}]`);
+  });
+  audio.push(`${mix.join("")}amix=inputs=${mix.length}:duration=first:normalize=0,${input.loudnorm}[aout]`);
+  return [...video, ...audio].join(";");
 }
 
 /** A 1ª vertical que leva título: o tamanho do PNG do fallback e quem define o `<file>` dele no XML. */
@@ -4006,11 +4130,34 @@ export function buildXmeml(
   };
   // #12101: a vinheta (MOV com alpha) acima do bruto e do título; um `<file>` só, definido no 1º uso.
   let vinhetaDefined = false;
+  let sfxDefined = false;
+  // #13240: o efeito a cada "." do logo, numa faixa de áudio própria, um clipitem por instante (sem link, sem ganho).
+  const vinhetaSfxTrack = (plan: SequencePlan, si: number, span: { start: number; end: number }): string => {
+    const sfx = opts.vinheta?.sfx;
+    if (!sfx) return "";
+    const at = vinhetaSfxFrames(span, fps, sfx, plan.durationFrames);
+    if (!at.length) return "";
+    const fileLen = vinhetaSfxLenFrames(sfx.durationS, fps);
+    const items = at.map((f, n) => {
+      const fileRef = sfxDefined
+        ? '<file id="file-vinheta-som"/>'
+        : `<file id="file-vinheta-som"><name>${escapeXml(baseName(sfx.path))}</name><pathurl>${escapeXml(url(sfx.path))}</pathurl>\n${rate}<duration>${fileLen}</duration>\n` +
+          `<media><audio><samplecharacteristics><depth>16</depth><samplerate>${sfx.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${sfx.audioChannels ?? 2}</channelcount></audio></media></file>`;
+      sfxDefined = true;
+      return (
+        `<clipitem id="vinheta-som-${si + 1}-${n + 1}"><name>vinheta-som</name><enabled>TRUE</enabled><duration>${fileLen}</duration>\n` +
+        `${rate}<start>${f.start}</start><end>${f.end}</end><in>0</in><out>${f.end - f.start}</out>\n` +
+        `${fileRef}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n</clipitem>`
+      );
+    });
+    return `<track>${items.join("\n")}</track>`;
+  };
   const vinhetaTracks = (plan: SequencePlan, si: number): { video: string; audio: string } => {
     const vin = opts.vinheta;
     if (!vin) return { video: "", audio: "" };
     const span = vinhetaSpan(plan, fps, vin);
     if (!span) return { video: "", audio: "" };
+    const sfxTrack = vinhetaSfxTrack(plan, si, span);
     const len = Math.round(vin.durationS * fps);
     const vid = `vinheta-v${si + 1}`;
     const aid = `vinheta-a${si + 1}`;
@@ -4037,9 +4184,9 @@ export function buildXmeml(
     const scale = vinhetaScalePct(vin, plan.spec);
     return {
       video: `\n<track><clipitem id="${vid}">${head}${fileRef}${motionFilter(scale, { horiz: 0, vert: 0 })}\n${links}</clipitem></track>`,
-      audio: vin.hasAudio
+      audio: (vin.hasAudio
         ? `<track><clipitem id="${aid}">${head}<file id="file-vinheta"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem></track>`
-        : "",
+        : "") + sfxTrack,
     };
   };
   // #12571: um `<file>` por MP4 do card (vertical e horizontal são arquivos diferentes), definido no 1º uso.

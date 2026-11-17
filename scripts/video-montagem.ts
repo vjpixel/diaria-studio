@@ -398,10 +398,15 @@ import {
   vinhetaScalePct,
   vinhetaSpan,
   vinhetaDuckSpan,
+  vinhetaSfxConfigCheck,
+  vinhetaSfxConfigFrom,
+  vinhetaSfxFrames,
+  parseVinhetaSfxProbe,
   VINHETA_DUCK_DB,
   titleBreathS,
   VINHETA_AFTER_SPEECH_S,
   type VinhetaAsset,
+  type VinhetaSfx,
   type AudioGain,
   clipGeometry,
   fitWarnings,
@@ -803,7 +808,7 @@ async function fetchMarcaFile(drive: DriveSession, name: string, destDir: string
   const folders = await listChildren(drive.deps, root, { name: "_marca", foldersOnly: true });
   if (folders.length !== 1) throw new Error(`${folders.length} pastas _marca/ no Drive; esperada exatamente uma`);
   const found = await findByName(drive.deps, folders[0].id, name);
-  if (!found.file || found.duplicates) throw new Error(`vinheta ${name} ausente ou duplicada em _marca/`);
+  if (!found.file || found.duplicates) throw new Error(`arquivo ${name} ausente ou duplicado em _marca/`);
   return (await ensureCachedFile(drive.deps, found.file, destDir, log)).localPath;
 }
 
@@ -852,6 +857,186 @@ export async function loadVinhetaForLocalRoot(
   }
   warn(`vinheta do logo não encontrada em ${atRoot} nem em ${cfg.path} (sem credenciais OAuth para baixar da _marca/ do Drive): XML sem a vinheta, inserir à mão no Premiere; copie o MOV para ${atRoot} (#13308)`);
   return null;
+}
+
+/** O que falta quando o som da vinheta não entra no `build` (fim do `[aviso]`, #13240). */
+export const SFX_BUILD_CONSEQUENCE = "XML sem o som a cada ponto da vinheta, inserir à mão no Premiere";
+/** O mesmo na prévia, que só reproduz o que o XML já tem (#13240). */
+export const SFX_PREVIEW_CONSEQUENCE = "prévia sem o som (o XML tem)";
+
+/**
+ * Dependências dos loaders do som da vinheta (#13240): as da vinheta, mais
+ * `probePath` (mede outro arquivo, o cache, e mantém o caminho do config no
+ * `path`), `consequence` (o fim do `[aviso]`; default o do `build`) e
+ * `onAbsent` (o motivo, sem a consequência, quando o som CONFIGURADO não entra:
+ * vai para o `plan.json`).
+ */
+export type SfxLoadDeps = Parameters<typeof loadVinheta>[0] & {
+  probePath?: string;
+  consequence?: string;
+  onAbsent?: (reason: string) => void;
+};
+
+function sfxReporter(deps: SfxLoadDeps) {
+  const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
+  const consequence = deps.consequence ?? SFX_BUILD_CONSEQUENCE;
+  return {
+    warn,
+    /** Som configurado que não entra: avisa com a consequência e registra o motivo. */
+    absent: (reason: string): null => {
+      deps.onAbsent?.(reason);
+      warn(`${reason}: ${consequence} (#13240)`);
+      return null;
+    },
+  };
+}
+
+/**
+ * Lê e confere `vinheta_som` (#13240): um `[aviso]` por item de `at_s`
+ * descartado; chave ausente = aviso "sem config" (sem `onAbsent`: nada foi
+ * configurado); chave presente e inutilizável = aviso que diz isso.
+ */
+function readSfxConfig(deps: SfxLoadDeps): { path: string; atS: number[] } | null {
+  const r = sfxReporter(deps);
+  let config: unknown;
+  try {
+    config = deps.readConfig ? deps.readConfig() : JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    return r.absent(`platform.config.json ilegível (${(e as Error).message})`);
+  }
+  const check = vinhetaSfxConfigCheck(config);
+  for (const p of check.problems) r.warn(p);
+  if (!check.present) {
+    r.warn(`sem publishing.video.vinheta_som (path e at_s) no platform.config.json: ${deps.consequence ?? SFX_BUILD_CONSEQUENCE} (#13240)`);
+    return null;
+  }
+  return check.cfg ?? r.absent("publishing.video.vinheta_som configurado, mas sem path ou sem instante válido em at_s");
+}
+
+/** O config só com o efeito já conferido: os wrappers repassam por aqui, sem repetir os avisos de `at_s`. */
+const sfxConfigOf = (path: string, atS: number[]) => ({ publishing: { video: { vinheta_som: { path, at_s: atS } } } });
+
+/**
+ * #13240: o efeito sonoro a cada "." do logo (`publishing.video.vinheta_som`),
+ * medido pelo ffprobe. Como a vinheta, nunca barra o build nem a prévia: config
+ * sem caminho ou sem instante, arquivo ausente ou probe falho = sem o efeito,
+ * com `[aviso]`.
+ */
+export function loadVinhetaSfx(deps: SfxLoadDeps = {}): VinhetaSfx | null {
+  const r = sfxReporter(deps);
+  const cfg = readSfxConfig(deps);
+  if (!cfg) return null;
+  const local = deps.probePath ?? cfg.path;
+  if (!(deps.exists ?? existsSync)(local)) return r.absent(`som da vinheta não encontrado em ${local}`);
+  try {
+    const probe = deps.probe ?? ((p: string) => run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", p]).stdout);
+    return parseVinhetaSfxProbe(probe(local), cfg.path, cfg.atS);
+  } catch (e) {
+    return r.absent(`som da vinheta ilegível (${local}: ${(e as Error).message})`);
+  }
+}
+
+/**
+ * #13240: o registro do som ausente numa sequência (`xmlAssets.{seq}.vinhetaSfx`
+ * do plan.json): o motivo do build inteiro (arquivo, config, sem vinheta) vence
+ * o da sequência (nenhum instante coube). Nenhum motivo = objeto vazio.
+ */
+export function vinhetaSfxAbsentFor(global: string | null, bySeq: Readonly<Record<string, string>>, key: string): { vinhetaSfx?: { ausente: string } } {
+  const why = global ?? bySeq[key];
+  return why ? { vinhetaSfx: { ausente: why } } : {};
+}
+
+/**
+ * #13240: a prévia com a vinheta, primeiro com o som. Se ela falha e há som,
+ * tenta sem ele; só se ESSA passar o som leva a culpa (`[aviso]` com o erro
+ * da 1ª). Se a 2ª também falhar, o erro dela sobe (o chamador refaz sem a
+ * vinheta) e a 1ª mensagem não é registrada como causa.
+ */
+export function runWithSfxFallback(attempt: (withSfx: boolean) => void, hasSfx: boolean, warn: (m: string) => void): void {
+  try {
+    attempt(hasSfx);
+    return;
+  } catch (first) {
+    if (!hasSfx) throw first;
+    attempt(false);
+    warn(`[aviso] misturar o som da vinheta na prévia falhou (${(first as Error).message.split("\n")[0]}): ${SFX_PREVIEW_CONSEQUENCE} (#13240)`);
+  }
+}
+
+/** Instante relativo à vinheta, como o editor o lê ("+0,100 s"). */
+const fmtSfxAt = (t: number) => `+${t.toFixed(3).replace(".", ",")} s`;
+
+/** #13240: o `[aviso]` do `build` quando o som está configurado e a vinheta não entrou (o som sem a vinheta não tem onde ancorar). */
+export function vinhetaSfxSemVinhetaAviso(atS: readonly number[]): string {
+  return `[aviso] sem a vinheta, o som de tecla (${atS.map(fmtSfxAt).join(" e ")} do início dela) também ficou fora: inserir ${atS.length === 2 ? "os dois" : "a vinheta e o som"} à mão no Premiere (#13240)`;
+}
+
+/** #13240: `[aviso]` de uma sequência em que nem todo instante do som entrou (fora da sequência ou no mesmo quadro de outro); null = todos entraram. */
+export function vinhetaSfxPlacedAviso(placed: number, configured: number): string | null {
+  return placed < configured ? `[aviso] ${configured - placed} de ${configured} instantes do som da vinheta fora da sequência ou no mesmo quadro (#13240)` : null;
+}
+
+/**
+ * #13240: a `[premissa]` do `build` sobre o som da vinheta, uma vez por build.
+ * Desde o PR #13246 ela pedia para conferir se o som a cada ponto tinha
+ * SUMIDO; desde 17/11/2026 (#13240) o som é de propósito, e o que falta
+ * conferir é se ele toca em cada ponto. Conta os instantes de fato colocados
+ * em cada sequência (`vinhetaSfxFrames`); nenhum colocado = null (sem premissa).
+ */
+export function vinhetaSfxPremissa(placed: ReadonlyArray<{ name: string; n: number }>): string | null {
+  const ok = placed.filter((p) => p.n > 0);
+  if (!ok.length) return null;
+  const counts = [...new Set(ok.map((p) => p.n))];
+  const where = counts.length === 1
+    ? `nos ${counts[0]} ponto${counts[0] === 1 ? "" : "s"}`
+    : `nos pontos colocados (${ok.map((p) => `${p.n} em ${p.name}`).join(", ")})`;
+  return `[premissa] o som de tecla em cada ponto da vinheta é intencional (decisão do editor de 17/11/2026, #13240): conferir no 1º import se ele toca ${where}`;
+}
+
+/** #13240: o efeito da vinheta resolvido no Drive (cache local para medir e para a prévia), com o caminho do config no XML. */
+export async function loadVinhetaSfxForDrive(
+  drive: DriveSession | null,
+  deps: SfxLoadDeps = {},
+): Promise<(VinhetaSfx & { localPath?: string }) | null> {
+  if (!drive) return loadVinhetaSfx(deps);
+  const r = sfxReporter(deps);
+  const cfg = readSfxConfig(deps);
+  if (!cfg) return null;
+  try {
+    const cachedPath = await fetchMarcaFile(drive, vinhetaFileName(cfg.path), join(drive.cacheDir, "_marca"));
+    const sfx = loadVinhetaSfx({ ...deps, readConfig: () => sfxConfigOf(cfg.path, cfg.atS), exists: () => true, probePath: cachedPath });
+    return sfx ? { ...sfx, localPath: cachedPath } : null;
+  } catch (e) {
+    return r.absent(`som da vinheta no Drive: ${(e as Error).message}`);
+  }
+}
+
+/** #13240: o efeito da vinheta no modo local com raiz explícita, na mesma ordem da vinheta (#13308): `{raiz}/_marca/`, o config, a `_marca/` do Drive. */
+export async function loadVinhetaSfxForLocalRoot(
+  root: string,
+  drive: DriveSession | null,
+  deps: SfxLoadDeps = {},
+): Promise<VinhetaSfx | null> {
+  const r = sfxReporter(deps);
+  const exists = deps.exists ?? existsSync;
+  const cfg = readSfxConfig(deps);
+  if (!cfg) return null;
+  const name = vinhetaFileName(cfg.path);
+  const marcaDir = `${toPosix(root).replace(/\/+$/, "")}/_marca`;
+  const atRoot = `${marcaDir}/${name}`;
+  const at = (path: string, extra: Partial<SfxLoadDeps> = {}) => loadVinhetaSfx({ ...deps, ...extra, readConfig: () => sfxConfigOf(path, cfg.atS) });
+  if (exists(atRoot)) return at(atRoot);
+  if (exists(cfg.path)) return at(cfg.path);
+  if (drive) {
+    try {
+      log(`[drive] som da vinheta ${name} ausente em ${marcaDir}/ e em ${cfg.path}: baixando da _marca/ do Drive (#13240)`);
+      const got = await fetchMarcaFile(drive, name, marcaDir);
+      return at(toPosix(got), { exists: () => true });
+    } catch (e) {
+      return r.absent(`som da vinheta no Drive: ${(e as Error).message}; copie o arquivo para ${atRoot}`);
+    }
+  }
+  return r.absent(`som da vinheta não encontrado em ${atRoot} nem em ${cfg.path} (sem credenciais OAuth para baixar da _marca/ do Drive); copie o arquivo para ${atRoot}`);
 }
 
 /**
@@ -1583,6 +1768,8 @@ export interface SequenceXmlVersion {
 export interface SequenceXmlAssets {
   treatedAudio?: TreatedAudio;
   vinheta?: VinhetaAsset;
+  /** #13240: o som da vinheta configurado que NÃO entrou no XML desta sequência, e por quê; ausente = entrou (em `vinheta.sfx`) ou não foi configurado. */
+  vinhetaSfx?: { ausente: string };
   /** #12571: o card de CTA que o XML desta sequência levou no fim da V1 (a prévia o acrescenta igual). */
   ctaCard?: CtaCardAsset;
   /** #13123: a capa que o XML desta sequência levou nos primeiros quadros (a prévia a sobrepõe igual). */
@@ -3663,12 +3850,38 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const resolvedVinheta: (VinhetaAsset & { localPath?: string }) | null = ctx.mode === "local" && ctx.driveRoot !== undefined
     ? await loadVinhetaForLocalRoot(ctx.driveRoot, ctx.localDrive ?? null)
     : await loadVinhetaForDrive(drive);
-  const vinheta = resolvedVinheta ? (({ localPath, ...asset }) => asset)(resolvedVinheta) : null;
+  // #13240: o som a cada "." do logo, só com a vinheta (os instantes contam do início dela).
+  // O motivo de o som CONFIGURADO não ter entrado vai para o plan.json (xmlAssets.{seq}.vinhetaSfx.ausente).
+  let sfxAbsent: string | null = null;
+  const sfxDeps: SfxLoadDeps = { onAbsent: (reason) => { sfxAbsent = reason; } };
+  const resolvedSfx: (VinhetaSfx & { localPath?: string }) | null = !resolvedVinheta
+    ? null
+    : ctx.mode === "local" && ctx.driveRoot !== undefined
+      ? await loadVinhetaSfxForLocalRoot(ctx.driveRoot, ctx.localDrive ?? null, sfxDeps)
+      : await loadVinhetaSfxForDrive(drive, sfxDeps);
+  if (!resolvedVinheta) {
+    // Sem a vinheta não há onde ancorar o som: o editor insere os dois à mão.
+    let cfgSfx: { atS: number[] } | null = null;
+    try { cfgSfx = vinhetaSfxConfigFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))); }
+    catch { cfgSfx = null; /* config ilegível: o aviso da vinheta já disse */ }
+    if (cfgSfx) {
+      console.error(vinhetaSfxSemVinhetaAviso(cfgSfx.atS));
+      sfxAbsent = "sem a vinheta do logo";
+    }
+  }
+  const vinheta: VinhetaAsset | null = resolvedVinheta
+    ? { ...(({ localPath, ...asset }) => asset)(resolvedVinheta), ...(resolvedSfx ? { sfx: (({ localPath, ...s }) => s)(resolvedSfx) } : {}) }
+    : null;
   if (vinheta) {
     console.error(
       `[premissa] vinheta do logo ${vinheta.path} (${vinheta.durationS.toFixed(2)} s, ${vinheta.width}x${vinheta.height}${vinheta.fps ? `, ${vinheta.fps} fps` : ""}${vinheta.hasAudio ? ", com som numa faixa de áudio própria" : ", sem som"}) ` +
         `na faixa de vídeo do topo, ${VINHETA_AFTER_SPEECH_S} s depois da última palavra do título (sem título: aos 2 s), cabendo no quadro; conferir alpha e tamanho no 1º import (#12101)`,
     );
+    if (vinheta.sfx) {
+      console.error(
+        `[premissa] som da vinheta ${vinheta.sfx.path} (${vinheta.sfx.durationS.toFixed(2)} s) numa faixa de áudio própria, em ${vinheta.sfx.atS.map((t) => `+${t.toFixed(3)} s`).join(" e ")} do início da vinheta (um por "." do logo, arredondado ao quadro), em toda sequência com vinheta; conferir no 1º import (#13240)`,
+      );
+    }
   }
   // #12566: no bruto em vários arquivos, caneca e rosto conferidos por arquivo (tamanho e framing de cada um).
   const framingWarn = framingWarningsByFile(picked, source, framing, file.files);
@@ -3685,6 +3898,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   // #13311: a duração do card vem do config (default 2 s).
   const ctaCardS = configCtaCardS();
+  // #13240: instantes do som da vinheta colocados por sequência, e o motivo de não ter entrado em alguma.
+  const sfxPlaced: Array<{ name: string; n: number }> = [];
+  const sfxAbsentBySeq: Record<string, string> = {};
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes,${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${ctaCardS} s (#12571, #13311)`}`);
@@ -3710,8 +3926,17 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (vinheta) {
       const vs = vinhetaSpan(p, source.fps, vinheta);
       console.error(vs ? `   vinheta do logo em ${(vs.start / source.fps).toFixed(2)}–${(vs.end / source.fps).toFixed(2)} s (${vs.afterTitle ? "depois do título" : "sem título: aos 2 s"})` : "   [aviso] sequência curta demais para a vinheta do logo (#12101)");
+      if (vinheta.sfx) {
+        // #13240: os instantes de fato colocados nesta sequência (a premissa sai uma vez, depois do laço).
+        const at = vs ? vinhetaSfxFrames(vs, source.fps, vinheta.sfx, p.durationFrames) : [];
+        sfxPlaced.push({ name: p.spec.name, n: at.length });
+        if (at.length) console.error(`   som da vinheta nos quadros ${at.map((f) => `${f.start} (${(f.start / source.fps).toFixed(2)} s)`).join(" e ")} (#13240)`);
+        const lost = vinhetaSfxPlacedAviso(at.length, vinheta.sfx.atS.length);
+        if (lost) console.error(`   ${lost}`);
+        if (!at.length) sfxAbsentBySeq[sequenceKey(p.spec)] = vs ? "nenhum instante do som cabe na sequência" : "sequência curta demais para a vinheta do logo";
+      }
       const ds = vinhetaDuckSpan(p, source.fps, vinheta);
-      if (ds) console.error(`   [premissa] áudio do bruto ${VINHETA_DUCK_DB} dB sob a vinheta em ${(ds.start / source.fps).toFixed(2)}–${(ds.end / source.fps).toFixed(2)} s (o respiro sem fala; clipe de áudio partido, só o 1º pedaço linkado ao vídeo): conferir no 1º import se o som a cada ponto sumiu (#13240)`);
+      if (ds) console.error(`   [premissa] áudio do bruto ${VINHETA_DUCK_DB} dB sob a vinheta em ${(ds.start / source.fps).toFixed(2)}–${(ds.end / source.fps).toFixed(2)} s (o respiro sem fala; clipe de áudio partido, só o 1º pedaço linkado ao vídeo) (#13240, PR #13246)`);
     }
     // #12101: a pausa longa depois do título no horizontal é o respiro da vinheta, de propósito.
     if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath && breathBlock ? [breathBlock] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
@@ -3727,6 +3952,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     const target = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: silences(ctx) });
     if (target) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, target)}`);
   }
+  const sfxPremissa = vinhetaSfxPremissa(sfxPlaced);
+  if (sfxPremissa) console.error(sfxPremissa);
   if (problems && !allowMissing) {
     console.error(`[erro] ${problems} problema(s) acima: corrigir o blocks.json (outra tomada, intervalo maior) ou rodar com --allow-missing`);
     return 1;
@@ -3902,6 +4129,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     ...(screenTitle ? [screenTitle.pngPath] : []),
     ...Object.values(screenTitleByCorte).flatMap((t) => (t ? [t.pngPath] : [])),
     ...(vinheta ? [vinheta.path] : []),
+    ...(vinheta?.sfx ? [vinheta.sfx.path] : []),
     ...Object.values(ctaCard).map((c) => c.xmlPath),
     ...Object.values(capaInicio).map((c) => c.xmlPath),
     // #13334: os boxes de tela também são pathurl do XML (faltaram no Drive na 261117).
@@ -3972,7 +4200,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}), ...(telaOverlays[sequenceKey(p.spec)] ? { telaOverlays: telaOverlays[sequenceKey(p.spec)] } : {}) }])) },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(vinhetaSfxAbsentFor(sfxAbsent, sfxAbsentBySeq, sequenceKey(p.spec))), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}), ...(telaOverlays[sequenceKey(p.spec)] ? { telaOverlays: telaOverlays[sequenceKey(p.spec)] } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -4917,6 +5145,19 @@ async function cmdPreview(
     vinheta = null;
   }
   const vs = vinheta ? vinhetaSpan(plan, fps, vinheta) : null;
+  // #13240: o som a cada "." do logo que o XML desta sequência levou, nos mesmos quadros.
+  // `sfx.path` fica o do XML; o arquivo que o ffmpeg lê nesta máquina é `sfxLocalPath` (o cache do Drive, ou o próprio caminho).
+  const sfx: VinhetaSfx | null = vinheta?.sfx ?? null;
+  let sfxLocalPath: string | null = sfx?.path ?? null;
+  if (sfx && drive) {
+    const local = await loadVinhetaSfxForDrive(drive, { readConfig: () => ({ publishing: { video: { vinheta_som: { path: sfx.path, at_s: sfx.atS } } } }), consequence: SFX_PREVIEW_CONSEQUENCE });
+    sfxLocalPath = local ? (local.localPath ?? local.path) : null;
+  }
+  if (sfxLocalPath && !existsSync(sfxLocalPath)) {
+    console.error(`[aviso] som da vinheta do XML não encontrado nesta máquina (${sfxLocalPath}): ${SFX_PREVIEW_CONSEQUENCE} (#13240)`);
+    sfxLocalPath = null;
+  }
+  const sfxAtSeqS = sfx && sfxLocalPath && vs ? vinhetaSfxFrames(vs, fps, sfx, plan.durationFrames).map((x) => x.start / fps) : [];
   const plain = [...(subtitles ? ["-vf", subtitles] : []), "-af", LOUDNORM_TARGET];
   const finalArgs = (filters: string[]) => [
     "-y", "-v", "error", "-i", "joined.mp4", ...filters,
@@ -4927,9 +5168,16 @@ async function cmdPreview(
     // #13240: o mesmo abaixamento do áudio sob a vinheta que o XML leva.
     const ds = vinhetaDuckSpan(plan, fps, vinheta);
     const duck = ds ? { startS: ds.start / fps, endS: ds.end / fps, db: VINHETA_DUCK_DB } : null;
-    const withVinheta = ["-i", vinheta.path, "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET, duck }), "-map", "[vout]", "-map", "[aout]"];
+    const withVinheta = (withSfx: boolean) => [
+      "-i", vinheta!.path,
+      ...(withSfx ? ["-i", sfxLocalPath!] : []),
+      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET, duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
+      "-map", "[vout]", "-map", "[aout]",
+    ];
+    if (sfxAtSeqS.length) console.error(`[video-montagem] prévia com o som da vinheta em ${sfxAtSeqS.map((t) => `${t.toFixed(2)} s`).join(" e ")} (#13240)`);
     try {
-      run("ffmpeg", finalArgs(withVinheta), { cwd: dir });
+      // #13240: o som nunca derruba a vinheta da prévia; só leva a culpa se a prévia sem ele passar.
+      runWithSfxFallback((withSfx) => { run("ffmpeg", finalArgs(withVinheta(withSfx)), { cwd: dir }); }, sfxAtSeqS.length > 0, (m) => console.error(m));
     } catch (e) {
       // #12101: o overlay nunca derruba a prévia: refaz sem a vinheta.
       console.error(`[aviso] sobrepor a vinheta na prévia falhou (${(e as Error).message.split("\n")[0]}): prévia sem a vinheta; o XML a tem (#12101)`);
