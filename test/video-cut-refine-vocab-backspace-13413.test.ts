@@ -16,9 +16,9 @@ import assert from "node:assert/strict";
 import { edgeExtras, edgeWindowsFor, trimEdgeExtras, type Envelope } from "../scripts/lib/diaria/video-cut-refine.ts";
 import {
   applyVocabularyToWords,
-  parseBlocksFile,
   validateVocabRules,
   vocabPatternSource,
+  vocabRuleWarnings,
   type RawClip,
   type VocabRule,
   type Word,
@@ -77,9 +77,19 @@ describe("#13413 — \\b mal escapado no JSON do vocabulário", () => {
     assert.equal(r.clips[0].srcOut, clip.srcOut);
   });
 
-  it("o blocks.json com o \\b mal escapado segue válido", () => {
+  it("a carga avisa (sem erro) a regra com backspace, nomeando-a e a grafia certa no JSON", () => {
+    // Não é erro: a regra segue valendo pelo vocabRegex.
     assert.deepEqual(validateVocabRules(rules, "blocks.json vocabulary"), []);
-    const parsed = parseBlocksFile(JSON.parse(`{"edition": "261116", "blocks": {}, "vocabulary": ${BLOCKS_VOCAB_JSON}}`));
-    if (!parsed.ok) assert.ok(!parsed.errors.some((e) => e.includes("vocabulary")), parsed.errors.join("; "));
+    const mixed = [{ pattern: String.raw`\bSonnet\b`, replacement: "Sonnet" }, ...rules];
+    const w = vocabRuleWarnings(mixed, "blocks.json vocabulary");
+    assert.equal(w.length, 1, w.join("\n"));
+    assert.match(w[0], /^blocks\.json vocabulary\[1\]: /);
+    assert.ok(w[0].includes(String.raw`/\b[Hh]idrog[êe]nio\b/`), w[0]);
+    assert.ok(w[0].includes(String.raw`"\\b"`), w[0]);
+    assert.ok(!w[0].includes("\u0008"), "o aviso não imprime o backspace cru");
+    // Regra bem escapada, lista ausente e item malformado não avisam.
+    assert.deepEqual(vocabRuleWarnings([mixed[0]], "x"), []);
+    assert.deepEqual(vocabRuleWarnings(undefined, "x"), []);
+    assert.deepEqual(vocabRuleWarnings([null, { pattern: 3 }], "x"), []);
   });
 });

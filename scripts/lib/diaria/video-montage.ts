@@ -1518,6 +1518,23 @@ export function vocabRegex(pattern: string, flags: string): RegExp {
   return new RegExp(vocabPatternSource(pattern), flags);
 }
 
+/**
+ * Avisos (não erros) das regras de vocabulário (#13413): pattern com U+0008,
+ * o `"\b"` do JSON que devia ser `"\\b"`. A regra continua valendo
+ * (`vocabRegex` conserta), o aviso só mostra a quem escreveu o arquivo.
+ */
+export function vocabRuleWarnings(raw: unknown, where: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  raw.forEach((r, i) => {
+    if (!isObj(r) || typeof r.pattern !== "string" || !r.pattern.includes("\u0008")) return;
+    out.push(
+      `${where}[${i}]: pattern /${vocabPatternSource(r.pattern)}/ tem um backspace (U+0008) no lugar do \\b: no JSON a fronteira de palavra se escreve "\\\\b", não "\\b"; a regra vale como \\b, mas corrija o arquivo (#13413)`,
+    );
+  });
+  return out;
+}
+
 function validRegex(pattern: unknown, flags: unknown): string | null {
   if (typeof pattern !== "string" || pattern === "") return "pattern vazio ou não-string";
   try {
