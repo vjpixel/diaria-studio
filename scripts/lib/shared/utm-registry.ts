@@ -310,6 +310,20 @@ export const SITE_NAV_UTM = {
 } as const;
 
 /**
+ * #13321: UTM dos ícones de rede do rodapé social global do site
+ * (`scripts/lib/shared/site-social.ts`) — home, `/p/`, arquivo, hubs,
+ * curadorias e demais páginas que recebem o menu global. Os links saem do
+ * projeto (perfil da diar.ia.br em cada rede), então a UTM serve pra quem
+ * lê a origem do outro lado (YouTube Studio, painel do TikTok etc.), não pra
+ * conversão no cadastro — por isso `noSignupExpected` no inventário.
+ */
+export const SITE_SOCIAL_UTM = {
+  source: "diar.ia.br",
+  medium: "site",
+  campaign: "rodape-social",
+} as const;
+
+/**
  * `utm_source`/`utm_medium` da Retrospectiva do Mês (`retrospectiva.diar.ia.br/AAMM`,
  * gate de apoio Conselho R$25+, #7715). Link de saída = CTA "Apoiar a diar.ia.br"
  * (apoia.se) no bloco de conversão do trecho e no paywall seco — os dois pontos
@@ -1092,6 +1106,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "`renderSiteNav`/`renderSiteFooterLinks` com `apexBase`) Edições/Apoiar/CTA Assinar " +
       "de volta pro apex. Sem UTM aqui, navegação interna entraria como tráfego direto.",
     status: "ativo",
+  },
+  {
+    id: "site-rodape-social",
+    label: "Rodapé social do site — ícones das redes",
+    source: SITE_SOCIAL_UTM.source,
+    medium: SITE_SOCIAL_UTM.medium,
+    campaignPattern: SITE_SOCIAL_UTM.campaign,
+    originFile: "scripts/lib/shared/site-social.ts",
+    description:
+      "Ícones de YouTube, TikTok, Instagram, LinkedIn, Threads, Facebook e X no rodapé " +
+      "global do site (#13321): home, /p/, arquivo, hubs, curadorias e especial. O link " +
+      "leva ao perfil da diar.ia.br na rede, fora do cadastro.",
+    status: "ativo",
+    noSignupExpected: true,
   },
   {
     id: "mensal-clarice",

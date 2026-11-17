@@ -58,6 +58,7 @@ import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
 import { SITE_FEED_URL } from "./site-feed.ts";
 import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
+import { renderSiteSocialFooter } from "./shared/site-social.ts"; // #13321: rodapé social global
 import { navNextLinkText, navPrevLinkText } from "./shared/arrow-glyph.ts"; // #9743: seta de direção da paginação
 import {
   buildHomeFeed,
@@ -552,6 +553,7 @@ ${renderEntries(entries)}
       <a href="https://arquivo.diar.ia.br/">Buscar por tema</a>
     </div>
   </main>
+  ${renderSiteSocialFooter({ inheritHostTokens: true })}
 </body>
 </html>
 `;

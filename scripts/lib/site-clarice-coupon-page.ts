@@ -57,6 +57,7 @@ import { escHtml } from "./html-escape.ts";
 import { renderAnalyticsHead } from "./shared/seo-meta.ts";
 import { DIARIA_CLARICE_PRECOS_URL } from "./canonical-urls.ts";
 import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
+import { renderSiteSocialFooter } from "./shared/site-social.ts"; // #13321: rodapé social global
 
 /**
  * URL de destino de TODO CTA desta página que aponta pra Clarice —
@@ -211,6 +212,7 @@ ${renderAnalyticsHead()}
 
     <a class="back" href="https://arquivo.diar.ia.br/privacidade" style="display:block;margin-top:24px;">Privacidade</a>
   </main>
+  ${renderSiteSocialFooter({ inheritHostTokens: true })}
 </body>
 </html>
 `;

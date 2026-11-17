@@ -90,7 +90,10 @@ describe("#12080 — player do vídeo na página web", () => {
   it("hero pro canal + vídeo no disco: o player usa o vídeo do disco (261028, 261103)", () => {
     const html = page(body(null), { video: { videoUrl: `https://youtu.be/${ID}` } });
     assert.ok(html.includes(`/embed/${ID}"`));
-    assert.ok(!html.includes("youtube.com/@diariabr"), "o link pro canal sai junto com a imagem");
+    // #13321: o rodapé social global do site também linka o canal; a
+    // checagem é do corpo da edição, antes do rodapé.
+    const corpo = html.split('<footer class="dsoc"')[0];
+    assert.ok(!corpo.includes("youtube.com/@diariabr"), "o link pro canal sai junto com a imagem");
   });
 
   it("hero pro canal sem vídeo no disco: sem player, link pro canal com UTM da web", () => {

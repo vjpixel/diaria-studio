@@ -47,10 +47,10 @@ describe("#11578 — convite social dos templates vira fileira de ícones", () =
     });
   }
 
-  it("render mensal do convite copiado do template mostra os 6 ícones e nenhum ']' solto", () => {
+  it("render mensal do convite copiado do template mostra os 7 ícones e nenhum ']' solto", () => {
     const [line] = inviteLines("context/templates/newsletter-monthly.md");
     const html = renderEncerramento(`Texto de apoio.\n\n${CURADORIA_PILLS}\n\n${line}`);
-    assert.equal((html.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 6);
+    assert.equal((html.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 7); // #13320: + TikTok
     assert.doesNotMatch(html, /\]/);
   });
 

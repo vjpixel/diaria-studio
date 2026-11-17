@@ -129,6 +129,17 @@ export const DIARIA_YOUTUBE_URL = `https://www.${DIARIA_YOUTUBE_SLUG}`;
 export const DIARIA_YOUTUBE_SUBSCRIBE_URL = `${DIARIA_YOUTUBE_URL}?sub_confirmation=1`;
 
 /**
+ * #13320: slug/URL canônicos do perfil da diar.ia.br no TikTok (`@diar.ia.br`,
+ * onde o vertical sai pela Buffer desde o #11515). Mesmo perfil já cadastrado
+ * em `utm-registry.ts` (`perfil-tiktok`). Usado pelo convite "Siga a
+ * diar.ia.br" (`SOCIAL_INVITE`) e pelo rodapé social do site (#13321).
+ */
+export const DIARIA_TIKTOK_SLUG = "tiktok.com/@diar.ia.br";
+
+/** URL completa (com protocolo + `www.`) derivada do slug acima. */
+export const DIARIA_TIKTOK_URL = `https://www.${DIARIA_TIKTOK_SLUG}`;
+
+/**
  * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à
  * curadoria no bloco ENCERRAMENTO/PARA ENCERRAR (diário e mensal). Ver
  * `data/snippets/encerramento-social-apoio.md`.
@@ -379,6 +390,10 @@ export const FOOTER_DOMAINS = [
   // canal como divergente em todas. Vídeo específico (`youtube.com/watch?v=`)
   // não casa com o slug do canal e segue tratado como conteúdo.
   DIARIA_YOUTUBE_SLUG,
+  // #13320: perfil próprio no TikTok, no mesmo convite "Siga a diar.ia.br" —
+  // mesma razão do X e do YouTube acima (link de rodapé social em toda edição,
+  // nunca artigo de conteúdo).
+  DIARIA_TIKTOK_SLUG,
   "wikipedia.org", // todas as variantes (pt/en/es/...)
   "wikimedia.org", // commons + upload
   "creativecommons.org",

@@ -28,7 +28,7 @@ import { buildParaEncerrar } from "../scripts/stitch-newsletter.ts";
 import { recolorSvg } from "../scripts/gen-social-invite-icons.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const NETWORKS = ["YouTube", "Instagram", "LinkedIn", "Threads", "Facebook", "X"];
+const NETWORKS = ["YouTube", "TikTok", "Instagram", "LinkedIn", "Threads", "Facebook", "X"];
 
 function encerrarWith(invite: string): string {
   return `Texto de apoio qualquer.\n\n${CURADORIA_PILLS}\n\n${invite}`;
@@ -66,7 +66,7 @@ describe("#11483 — render diário", () => {
       const url = socialInviteIconUrl(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       assert.match(box, new RegExp(`<img src="${url}" width="28" height="28" alt="${NETWORKS[i]}"`));
     }
-    assert.equal((box.match(/<img /g) ?? []).length, 6);
+    assert.equal((box.match(/<img /g) ?? []).length, 7); // #13320: + TikTok
     assert.doesNotMatch(box, /<svg/i, "SVG inline não renderiza em Gmail/Outlook");
     assert.doesNotMatch(box, /Para acompanhar/);
     assert.doesNotMatch(box, /\*\*|\]\(/, "markdown cru vazou");
@@ -122,7 +122,7 @@ describe("#11483 — render diário", () => {
 describe("#11483 — render mensal usa os mesmos ícones", () => {
   it("renderEncerramento troca os links do convite pelos ícones", () => {
     const html = renderEncerramento(`Texto de apoio.\n\n${CURADORIA_PILLS}\n\n${SOCIAL_INVITE}`);
-    assert.equal((html.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 6);
+    assert.equal((html.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 7); // #13320: + TikTok
     assert.match(html, /Siga a /);
   });
 
@@ -190,7 +190,7 @@ describe("página da retrospectiva usa os mesmos ícones do e-mail", () => {
 
   it("convite vira ícones centralizados, sem links de texto das redes", () => {
     const { bodyHtml } = draftToWebArticle({ draft, yymm: "2610", utmProfile: APOIADORES_KIT_UTM_PROFILE, leaderboardBrand: "clarice" });
-    assert.equal((bodyHtml.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 6);
+    assert.equal((bodyHtml.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 7); // #13320: + TikTok
     assert.match(bodyHtml, /panel-body" style="text-align:center;"/);
     assert.doesNotMatch(bodyHtml, />LinkedIn<\/a>/);
   });

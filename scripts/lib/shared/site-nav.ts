@@ -35,6 +35,7 @@ import {
   DIARIA_ARQUIVO_URL,
 } from "../canonical-urls.ts";
 import { SITE_NAV_UTM } from "./utm-registry.ts";
+import { injectSiteSocialFooter } from "./site-social.ts"; // #13321: rodapé social global, mesmo caminho do menu
 
 /**
  * Marcador HTML — presente em toda página que já passou por
@@ -309,12 +310,18 @@ export function renderSiteFooterLinks(opts: { apexBase?: string } = {}): string 
   }).join("");
 }
 
-/** Injeta o menu global logo após a tag de abertura `<body ...>` de `html`.
- *  No-op (retorna `html` sem tocar) se a página já carrega o marcador —
- *  chamado tanto pelos geradores quanto pelo backfill idempotente das
- *  páginas `/p/{slug}` já publicadas. */
+/** Injeta o menu global logo após a tag de abertura `<body ...>` de `html`
+ *  e, desde o #13321, o rodapé social global (`injectSiteSocialFooter`)
+ *  antes do `</body>`. Cada um é guardado pelo PRÓPRIO marcador
+ *  (`SITE_NAV_MARKER`, `SITE_SOCIAL_MARKER`): página que já tem o menu mas
+ *  ainda não o rodapé (as `/p/` publicadas antes do #13321) ganha só o
+ *  rodapé. Chamado tanto pelos geradores quanto pelo backfill idempotente
+ *  das páginas `/p/{slug}` já publicadas. */
 export function injectSiteNavAfterBodyOpen(html: string, opts: RenderSiteNavOptions = {}): string {
-  if (html.includes(SITE_NAV_MARKER)) return html;
-  const nav = renderSiteNav(opts);
-  return html.replace(/<body[^>]*>/i, (full) => `${full}\n${nav}`);
+  let out = html;
+  if (!out.includes(SITE_NAV_MARKER)) {
+    const nav = renderSiteNav(opts);
+    out = out.replace(/<body[^>]*>/i, (full) => `${full}\n${nav}`);
+  }
+  return injectSiteSocialFooter(out, { inheritHostTokens: opts.inheritHostTokens });
 }

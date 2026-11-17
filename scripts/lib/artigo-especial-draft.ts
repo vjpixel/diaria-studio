@@ -67,6 +67,7 @@
 import { escHtml } from "./html-escape.ts";
 import { FAVICON_DATA_URI } from "./shared/seo-meta.ts";
 import { renderSiteNav, DIARIA_APEX_URL } from "./shared/site-nav.ts";
+import { renderSiteSocialFooter } from "./shared/site-social.ts"; // #13321: rodapé social global
 import { GATE_CUT_MARKER } from "./shared/html-teaser-split.ts";
 
 export const ESPECIAL_BASE_URL = "https://especial.diar.ia.br";
@@ -693,6 +694,7 @@ ${sectionsHtml}${sourcesHtml}
 
 <script type="application/ld+json">${jsonLdText}</script>
 
+${renderSiteSocialFooter()}
 </body>
 </html>
 `;
