@@ -28,7 +28,7 @@ const D1 = {
 const TITULO_ROTEIRO = "IA rouba carteira: o caso que ninguém viu";
 const URL_H = "https://youtu.be/AbCdEfGhIjK";
 const BIO = /Vídeo completo: link na bio/;
-const NO_BIO_CTA = /Vídeo completo no YouTube: @diariabr/;
+const NO_BIO_CTA = /Vídeo completo no canal diar\.ia\.br do YouTube/;
 
 const REVIEWED = `DESTAQUE 1 | 🔐 SEGURANÇA
 
