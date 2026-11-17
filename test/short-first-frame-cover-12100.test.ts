@@ -320,11 +320,11 @@ describe("#12100 opção 2 — config publishing.shorts", () => {
   // do 1º Short (Hkx35UI-XCM) deu o oar2 como frame automático. O default e o
   // valor do config passam a ~1 s; voltar a 400 ms (ou menos) refaria um
   // teste já reprovado em vez de medir o novo.
-  it("capa inicial alongada para ~1 s: default e config em 1000 ms, 30 frames a 30 fps, +1 s na duração", () => {
+  it("default de 1000 ms (usado se a chave for religada): 30 frames a 30 fps, +1 s na duração", () => {
     assert.equal(SHORT_FIRST_FRAME_COVER_DEFAULT_MS, 1000);
     const config = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
-    assert.ok(config.publishing.shorts.youtube_first_frame_cover_ms > 400, "capa inicial não pode voltar aos 400 ms já reprovados na medição");
-    const plan = planFirstFrameCover({ probe: PROBE, leadMs: config.publishing.shorts.youtube_first_frame_cover_ms });
+    assert.ok(config.publishing.shorts.youtube_first_frame_cover_ms > 400, "ao religar, a capa inicial não volta aos 400 ms já reprovados (1000 ms também foi, 17/11/2026)");
+    const plan = planFirstFrameCover({ probe: PROBE, leadMs: SHORT_FIRST_FRAME_COVER_DEFAULT_MS });
     assert.deepEqual(plan, { ok: true, frames: 30, leadSeconds: 1 });
   });
 
