@@ -521,7 +521,13 @@ export function readRoteiroCortesReserva(editionDir: string, warn: (msg: string)
 export interface TelaDoRoteiro {
   id: string;
   texto: string;
+  /** O texto de tela sem o `**` do título (#13180): é o que vai para o marcador do XML. */
   tela: string;
+  /**
+   * O texto de tela como o roteiro escreve, com o `**` do título (#13363): é o
+   * que o box em PNG recebe, para `telaLines` achar o título e desenhá-lo em negrito.
+   */
+  telaBox: string;
   /** Vídeos da fala no roteiro (#13309); ausente = roteiro sem a lista. */
   videos?: string[];
 }
@@ -547,9 +553,9 @@ export function readRoteiroTelas(editionDir: string, warn: (msg: string) => void
       if (f && f.tela !== undefined) comTela++;
       // Seta nunca chega ao leitor (#9721): a tela com seta fica fora, e o aviso do inválido diz por quê.
       if (!f || typeof f.id !== "string" || typeof f.texto !== "string" || typeof f.tela !== "string" || !f.tela.trim() || SETA.test(f.tela)) continue;
-      // O `**` do título do box (#13180) é marcação da página, não texto da tela.
+      // O `**` do título do box (#13180) sai do marcador do XML; o box em PNG recebe o texto cru e desenha o título em negrito (#13363).
       const videos = Array.isArray(f.videos) ? f.videos.filter((v): v is string => typeof v === "string") : undefined;
-      out.push({ id: f.id, texto: f.texto, tela: f.tela.replace(/\*\*/g, "").trim(), ...(videos ? { videos } : {}) });
+      out.push({ id: f.id, texto: f.texto, tela: f.tela.replace(/\*\*/g, "").trim(), telaBox: f.tela.trim(), ...(videos ? { videos } : {}) });
     }
   }
   const problemas = validarRoteiroFalas(lido.raw);
