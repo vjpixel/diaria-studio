@@ -163,13 +163,17 @@ describe("#11959: espelhamento default e premissa", () => {
     assert.equal(s.camera, "back");
   });
 
-  it("sem metadado: vale o config; sem config, o default do #11208", () => {
+  it("sem metadado: vale o config; sem config, o default (false desde o #13316)", () => {
     assert.deepEqual(
       [parseProbe(probe(), "x", { mirroredDefault: false }).mirrored, parseProbe(probe(), "x", { mirroredDefault: false }).mirroredFrom],
       [false, "config"],
     );
+    assert.deepEqual(
+      [parseProbe(probe(), "x", { mirroredDefault: true }).mirrored, parseProbe(probe(), "x", { mirroredDefault: true }).mirroredFrom],
+      [true, "config"],
+    );
     const d = parseProbe(probe(), "x");
-    assert.equal(d.mirrored, true);
+    assert.equal(d.mirrored, false);
     assert.equal(d.mirroredFrom, "default");
   });
 
@@ -191,6 +195,14 @@ describe("#11959: espelhamento default e premissa", () => {
     assert.equal(typeof mirroredDefaultFrom(cfg), "boolean");
     assert.equal(mirroredDefaultFrom({}), null);
     assert.equal(mirroredDefaultFrom({ publishing: { video: { mirrored_default: "sim" } } }), null);
+  });
+
+  it("#13316: bruto sem metadado da câmera sai NÃO espelhado (config do repo e default do código)", () => {
+    // De 261103 a 261116 todo bruto teve mirrored=false posto à mão; a 261117 sem o override saiu com o rosto deslocado.
+    const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+    assert.equal(mirroredDefaultFrom(cfg), false);
+    assert.deepEqual(resolveMirrored(null, mirroredDefaultFrom(cfg)), { mirrored: false, mirroredFrom: "config" });
+    assert.deepEqual(resolveMirrored(null, null), { mirrored: false, mirroredFrom: "default" });
   });
 
   it("a premissa diz a origem e, quando ambígua, manda conferir o frame lado a lado", () => {
