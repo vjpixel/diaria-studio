@@ -1289,4 +1289,16 @@
       <news:title>Google põe o Gemini 4 Hydrogen na sua Busca</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso</loc>
+    <lastmod>2026-11-17</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-17T00:00:00.000Z</news:publication_date>
+      <news:title>Deepfake de Drauzio Varella anuncia remédio milagroso</news:title>
+    </news:news>
+  </url>
 </urlset>
