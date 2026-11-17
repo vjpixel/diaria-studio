@@ -280,6 +280,8 @@ export function edgeFindings(
   windowS = EDGE_WINDOW_S,
   /** Limites (s globais) dos arquivos do bruto em vários arquivos: a janela nunca lê o arquivo vizinho (borda na emenda não é corte). */
   bounds?: ReadonlyArray<{ start: number; end: number }>,
+  /** Palavras, clipes `filler` e teto: o que o build usa para decidir até onde abre (#13194). */
+  ctx: EdgeOpenContext = {},
 ): EdgeFinding[] {
   // Só o clipe VIZINHO na sequência cobre a borda (fala que segue no próximo clipe); outro clipe qualquer que
   // contenha o trecho não impede o corte audível (review da PR #12563).
@@ -288,7 +290,10 @@ export function edgeFindings(
   const FLOOR = -120;
   const fixedDb = fixedOf(thresholdDb);
   const { minS, stepS, smearS } = SUSTAINED_EDGE;
-  const maxOpen = CUT_EDGE_OPEN.maxS;
+  const limitCtx: EdgeOpenContext = { ...ctx, bounds: ctx.bounds ?? bounds };
+  // #13194: o clipe `filler` (pausa da vinheta, #13239) nasceu de um silêncio a -45 com folga; ele é julgado só
+  // pelo limiar fixo, senão o relativo acusaria (e o build abriria) a cauda de -48 que ele encosta.
+  const thrFor = (i: number, t: number) => (ctx.fixedOnly?.[i] && Number.isFinite(fixedDb) ? fixedDb : thresholdAt(thresholdDb, t));
   // Energia contínua acima do limiar a partir da borda, para fora (dir -1 = antes da entrada), até `limit`.
   const runAbove = (t0: number, dir: 1 | -1, thr: number, limit: number) => {
     let n = 0;
@@ -316,16 +321,20 @@ export function edgeFindings(
     const aHi = Math.min(fs.end, b + windowS);
     const beforeDb = bLo < a - 1e-6 ? levelDb(bLo, a) : FLOOR;
     const afterDb = aHi > b + 1e-6 ? levelDb(b, aHi) : FLOOR;
-    const thrInDb = thresholdAt(thresholdDb, a);
-    const thrOutDb = thresholdAt(thresholdDb, b);
+    const thrInDb = thrFor(i, a);
+    const thrOutDb = thrFor(i, b);
     const overIn = beforeDb > thrInDb && !coveredBy(clips[i - 1], bLo, a);
     const overOut = afterDb > thrOutDb && !coveredBy(clips[i + 1], b, aHi);
-    const inLimit = Math.max(0, fs.start, a - maxOpen);
-    const outLimit = Math.min(fs.end, b + maxOpen);
-    const aboveInS = overIn ? runAbove(a, -1, thrInDb, inLimit) : 0;
-    const aboveOutS = overOut ? runAbove(b, 1, thrOutDb, outLimit) : 0;
-    const cutIn = overIn && (beforeDb > fixedDb || (aboveInS >= minS - 1e-9 && silenceWithin(a, -1, thrInDb, inLimit)));
-    const cutOut = overOut && (afterDb > fixedDb || (aboveOutS >= minS - 1e-9 && silenceWithin(b, 1, thrOutDb, outLimit)));
+    // Entre o relativo e o fixo: só é erro o que o build abriria (os mesmos limites dele: teto, arquivo, palavra
+    // vizinha com folga, clipe vizinho). Calculado só quando precisa (custa uma varredura das palavras).
+    const hardIn = beforeDb > fixedDb;
+    const hardOut = afterDb > fixedDb;
+    const inLimit = overIn && !hardIn ? edgeOpenLimitS(clips, rate, i, "in", limitCtx) : a;
+    const outLimit = overOut && !hardOut ? edgeOpenLimitS(clips, rate, i, "out", limitCtx) : b;
+    const aboveInS = overIn ? runAbove(a, -1, thrInDb, overIn && !hardIn ? inLimit : Math.max(0, fs.start, a - CUT_EDGE_OPEN.maxS)) : 0;
+    const aboveOutS = overOut ? runAbove(b, 1, thrOutDb, overOut && !hardOut ? outLimit : Math.min(fs.end, b + CUT_EDGE_OPEN.maxS)) : 0;
+    const cutIn = overIn && (hardIn || (aboveInS >= minS - 1e-9 && silenceWithin(a, -1, thrInDb, inLimit)));
+    const cutOut = overOut && (hardOut || (aboveOutS >= minS - 1e-9 && silenceWithin(b, 1, thrOutDb, outLimit)));
     return {
       clip: i + 1, inS: a, outS: b, beforeDb, afterDb, cutIn, cutOut, overIn, overOut,
       softIn: overIn && !cutIn, softOut: overOut && !cutOut, aboveInS, aboveOutS, thrInDb, thrOutDb,
@@ -347,6 +356,57 @@ export const NEIGHBOR_WORD_GRACE_S = 0.15;
 /** Palavra de fora a menos disto da borda pode ser a do próprio clipe (`ownWord`). */
 const OWN_WORD_GAP_S = 0.15;
 
+type EdgeWord = { start: number; end: number; text?: string };
+
+/** O que limita a abertura de uma borda (#13194), comum ao build (`openCutSoundEdges`) e ao `verify-xml` (`edgeFindings`). */
+export interface EdgeOpenContext {
+  /** Palavras do bruto (transcript + retranscrição das bordas): a vizinha INTEIRA de fora limita, com folga. */
+  words?: ReadonlyArray<EdgeWord>;
+  /** A palavra de fora colada na borda que é do PRÓPRIO clipe `i` (1ª/última do roteiro dele): não limita. */
+  ownWord?: (clipIndex: number, edge: "in" | "out", w: EdgeWord) => boolean;
+  /** Clipes julgados só pelo limiar fixo e nunca abertos (o `filler` da pausa da vinheta, #13239); seguem limitando os vizinhos. */
+  fixedOnly?: ReadonlyArray<boolean>;
+  maxOpenS?: number;
+  /** Fim do bruto (s); sem ele, só o arquivo e o teto limitam. */
+  durationS?: number;
+  bounds?: ReadonlyArray<{ start: number; end: number }>;
+}
+
+/**
+ * #13194: até onde o build pode abrir a borda `edge` do clipe `i` (s globais):
+ * o teto (`CUT_EDGE_OPEN.maxS`), o arquivo do bruto, a palavra vizinha INTEIRA
+ * de fora (com folga de `NEIGHBOR_WORD_GRACE_S`, nunca mais que metade dela; a
+ * do próprio roteiro colada na borda não conta) e o clipe mais próximo da
+ * sequência do mesmo lado (o áudio nunca se repete).
+ */
+export function edgeOpenLimitS(clips: readonly TimelineClip[], rate: number, i: number, edge: "in" | "out", ctx: EdgeOpenContext = {}): number {
+  const eps = 1e-6;
+  const c = clips[i];
+  const a = c.gIn / rate;
+  const b = c.gOut / rate;
+  const mid = (a + b) / 2;
+  const span = ctx.bounds?.find((s) => mid >= s.start - eps && mid < s.end) ?? { start: 0, end: ctx.durationS ?? Number.POSITIVE_INFINITY };
+  const maxOpen = ctx.maxOpenS ?? CUT_EDGE_OPEN.maxS;
+  const words = ctx.words ?? [];
+  // O Whisper costuma começar a palavra seguinte em cima da cauda da anterior ("No[941,40-942,16]" na 261117, com a
+  // cauda de "ele." caindo até 941,55 s e o piso dali até 942 s). A abertura pode entrar até `NEIGHBOR_WORD_GRACE_S`
+  // (nunca mais que metade da palavra) no tempo dela: ela para no 1º silêncio, então só passa do tempo do Whisper
+  // quando a cauda emenda nele, e o que leva é a cauda, não a palavra.
+  const graceOf = (w: EdgeWord) => Math.min(NEIGHBOR_WORD_GRACE_S, Math.max(0, (w.end - w.start) / 2));
+  let lim = edge === "in" ? Math.max(0, span.start, a - maxOpen) : Math.min(span.end, ctx.durationS ?? Number.POSITIVE_INFINITY, b + maxOpen);
+  for (const w of words) {
+    if (edge === "in") {
+      if (w.end <= a + eps && !(a - w.end < OWN_WORD_GAP_S && ctx.ownWord?.(i, edge, w))) lim = Math.max(lim, w.end - graceOf(w));
+    } else if (w.start >= b - eps && !(w.start - b < OWN_WORD_GAP_S && ctx.ownWord?.(i, edge, w))) lim = Math.min(lim, w.start + graceOf(w));
+  }
+  clips.forEach((o, j) => {
+    if (j === i) return;
+    if (edge === "in" && o.gOut <= c.gIn) lim = Math.max(lim, o.gOut / rate);
+    if (edge === "out" && o.gIn >= c.gOut) lim = Math.min(lim, o.gIn / rate);
+  });
+  return lim;
+}
+
 /** Clipe da sequência como o build monta (s e quadros globais do bruto). */
 export interface OpenableClip {
   block: string;
@@ -354,6 +414,8 @@ export interface OpenableClip {
   srcOut: number;
   frameIn: number;
   frameOut: number;
+  /** Pausa da vinheta (#13239): nunca é aberta e só o limiar fixo vale nas bordas dela (#13194). */
+  filler?: boolean;
 }
 
 export interface OpenedEdge<B extends string = string> {
@@ -408,18 +470,18 @@ export function openCutSoundEdges<T extends OpenableClip>(
     windowS?: number;
   },
 ): { clips: T[]; opened: OpenedEdge<T["block"]>[]; unresolved: UnresolvedEdge<T["block"]>[] } {
-  const maxOpen = opts.maxOpenS ?? CUT_EDGE_OPEN.maxS;
   const windowS = opts.windowS ?? EDGE_WINDOW_S;
-  const words = opts.words ?? [];
   const eps = 1e-6;
   const timeline = (cs: readonly T[]): TimelineClip[] => cs.map((c) => ({ start: 0, end: 0, in: c.frameIn, out: c.frameOut, fileId: "file-1", gIn: c.frameIn, gOut: c.frameOut }));
-  const findings = (cs: readonly T[]) => edgeFindings(timeline(cs), fps, levelDb, thresholdDb, windowS, opts.bounds);
-  const spanOf = (t: number) => opts.bounds?.find((s) => t >= s.start - eps && t < s.end) ?? { start: 0, end: opts.durationS };
-  // #13194: o Whisper costuma começar a palavra seguinte em cima da cauda da anterior ("No[941,40-942,16]" na
-  // 261117, com a cauda de "ele." caindo até 941,55 s e o piso dali até 942 s). A abertura pode entrar até
-  // `NEIGHBOR_WORD_GRACE_S` (nunca mais que metade da palavra) no tempo dela: ela para no 1º silêncio, então só
-  // passa do tempo do Whisper quando a cauda emenda nele, e o que leva é a cauda, não a palavra.
-  const graceOf = (w: { start: number; end: number }) => Math.min(NEIGHBOR_WORD_GRACE_S, Math.max(0, (w.end - w.start) / 2));
+  const ctxOf = (cs: readonly T[]): EdgeOpenContext => ({
+    words: opts.words,
+    ownWord: opts.ownWord ? (j, edge, w) => opts.ownWord!(cs[j], edge, w) : undefined,
+    fixedOnly: cs.map((c) => !!c.filler),
+    maxOpenS: opts.maxOpenS,
+    durationS: opts.durationS,
+    bounds: opts.bounds,
+  });
+  const findings = (cs: readonly T[]) => edgeFindings(timeline(cs), fps, levelDb, thresholdDb, windowS, opts.bounds, ctxOf(cs));
   const cur = clips.map((c) => ({ ...c }));
   const opened: OpenedEdge<T["block"]>[] = [];
   const first = findings(cur);
@@ -428,19 +490,10 @@ export function openCutSoundEdges<T extends OpenableClip>(
       const f0 = first[i];
       if (!(edge === "in" ? f0.overIn : f0.overOut)) continue;
       const c = cur[i];
-      const span = spanOf((c.srcIn + c.srcOut) / 2);
-      const others = cur.filter((_, j) => j !== i);
+      // #13194: a pausa da vinheta nunca é aberta (ela só limita os vizinhos).
+      if (c.filler) continue;
       if (edge === "in") {
-        const a = c.frameIn / fps;
-        const lo = Math.max(
-          0,
-          span.start,
-          a - maxOpen,
-          ...words
-            .filter((w) => w.end <= a + eps && !(a - w.end < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w)))
-            .map((w) => w.end - graceOf(w)),
-          ...others.filter((o) => o.frameOut <= c.frameIn).map((o) => o.frameOut / fps),
-        );
+        const lo = edgeOpenLimitS(timeline(cur), fps, i, edge, ctxOf(cur));
         const loFrame = Math.ceil(lo * fps - eps);
         for (let fr = c.frameIn - 1; fr >= loFrame; fr--) {
           const trial = cur.map((x, j) => (j === i ? { ...x, frameIn: fr, srcIn: fr / fps } : x));
@@ -452,16 +505,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
           }
         }
       } else {
-        const b = c.frameOut / fps;
-        const hi = Math.min(
-          opts.durationS,
-          span.end,
-          b + maxOpen,
-          ...words
-            .filter((w) => w.start >= b - eps && !(w.start - b < OWN_WORD_GAP_S && opts.ownWord?.(c, edge, w)))
-            .map((w) => w.start + graceOf(w)),
-          ...others.filter((o) => o.frameIn >= c.frameOut).map((o) => o.frameIn / fps),
-        );
+        const hi = edgeOpenLimitS(timeline(cur), fps, i, edge, ctxOf(cur));
         const hiFrame = Math.floor(hi * fps + eps);
         for (let fr = c.frameOut + 1; fr <= hiFrame; fr++) {
           const trial = cur.map((x, j) => (j === i ? { ...x, frameOut: fr, srcOut: fr / fps } : x));

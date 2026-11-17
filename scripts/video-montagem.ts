@@ -455,7 +455,7 @@ import {
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
 import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
-import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, softEdgeWarnings, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeOpenContext, softEdgeWarnings, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
@@ -2748,6 +2748,8 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS); entre o relativo e o fixo, erro só com energia sustentada por ${Math.round(SUSTAINED_EDGE.minS * 1000)} ms e silêncio até ${CUT_EDGE_OPEN.maxS} s, senão [aviso] (#13194)`);
   if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
+  // #13194: os limites da abertura do build (palavras vizinhas, roteiro, filler), para erro ser só o que ele abriria.
+  const edgeWords = verifyEdgeWords(ctx);
   let bad = 0;
   let cutTotal = 0;
   const report: Record<string, unknown> = {};
@@ -2762,7 +2764,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const cardFrames = pf.xmlAssets?.[key]?.ctaCard?.frames ?? null;
     const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames }), ...capaInicioXmlIssues(xmlText, capaFramesOf(pf.xmlAssets?.[key]?.capaInicio, plan.durationFrames))];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
-    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thrAt, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined);
+    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thrAt, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined, verifyEdgeContext(plan, clips.length, edgeWords, pf.source.durationS));
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
     const durS = (parsed.clips[parsed.clips.length - 1]?.end ?? 0) / parsed.rate;
     console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)${cardFrames ? ` + card de CTA ${(cardFrames / pf.source.fps).toFixed(2)} s sem fala` : ""}`);
@@ -3337,11 +3339,7 @@ export function openCutEdgesOfPlan(
     durationS: source.durationS,
     words: neighbors,
     bounds: isMultiSource(source) ? fileBounds(source) : undefined,
-    ownWord: (c, edge, w) => {
-      const toks = tokenize(c.script ?? "");
-      const own = edge === "in" ? toks[0] : toks[toks.length - 1];
-      return !!own && !!w.text && normalizeToken(w.text) === own;
-    },
+    ownWord: (c, edge, w) => isOwnEdgeWord(c.script, edge, w),
   });
   const side = (e: "in" | "out") => (e === "in" ? "entrada" : "saída");
   const limiarNote = (db: number) => (db < thresholdDb - 1e-9 ? `, piso local + ${LOCAL_FLOOR_EDGE.marginDb} dB` : "");
@@ -3360,6 +3358,47 @@ export function openCutEdgesOfPlan(
         : `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto acima do piso local (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}, por ${Math.round(u.aboveS * 1000)} ms) sem fala sustentada ou sem silêncio até ${CUT_EDGE_OPEN.maxS} s: fica como estava; o verify-xml só avisa (#13194)`,
     ),
   };
+}
+
+/** A palavra de fora colada na borda é a 1ª (entrada) ou a última (saída) do roteiro do próprio clipe (#13194). */
+export function isOwnEdgeWord(script: string | undefined, edge: "in" | "out", w: { text?: string }): boolean {
+  const toks = tokenize(script ?? "");
+  const own = edge === "in" ? toks[0] : toks[toks.length - 1];
+  return !!own && !!w.text && normalizeToken(w.text) === own;
+}
+
+/**
+ * #13194: os limites que o build usa para abrir as bordas, para o `verify-xml`
+ * julgar como erro só o que o build abriria: as palavras do bruto (transcript +
+ * retranscrição das bordas em cache, quando há), o roteiro de cada clipe do
+ * plano (a 1ª/última palavra dele não limita) e os clipes `filler` (pausa da
+ * vinheta, só limiar fixo). Sem transcript, só teto, arquivo e clipe vizinho.
+ */
+export function verifyEdgeContext(
+  plan: { clips: ReadonlyArray<{ script?: string; filler?: true }> },
+  xmlClips: number,
+  words: ReadonlyArray<Word>,
+  durationS: number,
+): EdgeOpenContext {
+  const same = plan.clips.length === xmlClips;
+  return {
+    words: words.filter((w) => w.text.trim()),
+    ...(same ? { ownWord: (i: number, edge: "in" | "out", w: { text?: string }) => isOwnEdgeWord(plan.clips[i]?.script, edge, w) } : {}),
+    ...(same ? { fixedOnly: plan.clips.map((c) => !!c.filler) } : {}),
+    durationS,
+  };
+}
+
+/** Palavras do bruto que limitam a abertura no `verify-xml`: transcript.json e as janelas do edge-retranscribe.json (#13194). */
+function verifyEdgeWords(ctx: Ctx): Word[] {
+  const t = f(ctx, "transcript.json");
+  const words = existsSync(t) ? nonEmptyWords(t, "transcript.json") : [];
+  const er = f(ctx, "edge-retranscribe.json");
+  if (existsSync(er)) {
+    const c = readJson<{ windows?: Record<string, Word[]> }>(er, "edge-retranscribe.json");
+    for (const ws of Object.values(c.windows ?? {})) words.push(...ws);
+  }
+  return words;
 }
 
 /** Janela do vale de energia quando o corte vem do detector de fala (#12089): afina, não reabre a pausa. */

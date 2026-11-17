@@ -239,3 +239,47 @@ describe("#13194 verify-xml: ruído em rajada é aviso, cauda sustentada é SOM 
     assert.equal(e.cutOut, true);
   });
 });
+
+describe("#13194 filler da vinheta e limites do build no verify-xml", () => {
+  it("filler ao lado de uma cauda de -48: só o limiar fixo vale, não é aberto nem dá SOM CORTADO", () => {
+    // a pausa da vinheta (#13239) começa em 5,6 s, encostada numa cauda de -48 dBFS (5,5 a 5,6 s) com silêncio antes
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.5, 5.6, -48]]);
+    const thr = localEdgeThreshold(env, FIXED);
+    const filler: OpenableClip = { ...clip(5.6, 6.0, "vinheta"), filler: true };
+    const asSpeech = openCutSoundEdges([{ ...filler, filler: false }], FPS, level, thr, { durationS: 10 });
+    assert.equal(asSpeech.opened.length, 1, "pré-condição: sem o flag, a regra nova abriria a entrada do filler");
+    const e = edgeFindings(tl([filler]), FPS, level, thr, undefined, undefined, { fixedOnly: [true] })[0];
+    assert.equal(e.thrInDb, FIXED);
+    assert.equal(e.overIn, false);
+    assert.equal(e.cutIn, false);
+    const r = openCutSoundEdges([filler], FPS, level, thr, { durationS: 10 });
+    assert.deepEqual(r.opened, []);
+    assert.deepEqual(r.unresolved, []);
+    assert.equal(r.clips[0].frameIn, filler.frameIn);
+  });
+
+  it("o filler continua limitando o vizinho: a saída da fala não entra nele", () => {
+    // V2 com a vinheta logo depois no bruto: a fala sai em 5,033 s com a cauda até 5,15; o filler começa em 5,1
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.0, 5.15, -48]]);
+    const filler: OpenableClip = { ...clip(5.1, 5.6, "vinheta"), filler: true };
+    const r = openCutSoundEdges([clip(1.9, OUT), filler], FPS, level, localEdgeThreshold(env, FIXED), { durationS: 10 });
+    assert.ok(r.clips[0].frameOut <= filler.frameIn, `saída da fala até o filler (${r.clips[0].frameOut} <= ${filler.frameIn})`);
+    assert.equal(r.clips[1].frameIn, filler.frameIn, "o filler não se mexe");
+  });
+
+  it("verify-xml: cauda emendada com palavra descartada que o build não abriria é aviso, não erro", () => {
+    // cauda de -47 até 5,12 s emendada na palavra seguinte (fora do roteiro) até 5,5; silêncio só depois dela
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.0, 5.12, -47], [5.12, 5.5, -30]]);
+    const thr = localEdgeThreshold(env, FIXED);
+    const cs = [clip(1.9, OUT)];
+    const blind = edgeFindings(tl(cs), FPS, level, thr)[0];
+    assert.equal(blind.cutOut, true, "pré-condição: sem a palavra, o verify contava com abrir até depois dela");
+    const ctx = { words: [w("outra", OUT + 0.005, 5.5)] };
+    const e = edgeFindings(tl(cs), FPS, level, thr, undefined, undefined, ctx)[0];
+    assert.equal(e.cutOut, false, "o build pararia na palavra (com a folga de 0,15 s): não é erro");
+    assert.equal(e.softOut, true, "fica como aviso");
+    const r = openCutSoundEdges(cs, FPS, level, thr, { durationS: 10, words: ctx.words });
+    assert.deepEqual(r.opened, [], "e o build de fato não abre");
+    assert.equal(r.unresolved[0]?.error, false);
+  });
+});
