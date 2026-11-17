@@ -246,6 +246,15 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  * (--xml-media-root sobrepõe).
  *   upload AAMMDD --file PATH   sobe um arquivo para a pasta da edição (ex.: o decupagem.md)
  *
+ * Modo local com raiz explícita fora do Drive for desktop (#13308, #13334), o 300 com
+ * DIARIA_VIDEO_DRIVE_ROOT=/mnt/hd-sata/.../local-root: a vinheta é procurada em
+ * {raiz}/_marca/{nome do MOV do config} e, faltando lá e no caminho do config, baixada da
+ * _marca/ do Drive para essa pasta. Com data/.credentials.json presente (e sem --no-drive-api),
+ * build/srt/preview sobem o que gravaram na pasta da edição (trechos/ na subpasta de mesmo
+ * nome) como no modo API, em drive-uploads.json, e `upload` funciona; o build confere no fim
+ * se todo arquivo do XML está no Drive e avisa o que falta. A raiz padrão (I:) nunca sobe pela
+ * API: o Drive for desktop já sincroniza.
+ *
  * Cache e HD (#12365): DIARIA_VIDEO_CACHE_DIR aponta para um SUBDIRETÓRIO dentro do ponto de
  * montagem do HD, nunca o ponto em si. No modo API, a variável apontando para um diretório que
  * não existe, ou que está no mesmo disco do home (HD desmontado), para com erro em vez de criar
@@ -268,7 +277,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve, posix, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -501,13 +510,18 @@ import {
 import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark } from "./lib/diaria/video-voice.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
-import { gFetch } from "./google-auth.ts";
+import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
   DEFAULT_DRIVE_ROOT,
   changedFiles,
   driveCacheDir,
   driveModeFor,
+  driveRelativePath,
   ensureCachedFile,
+  ensureChildFolder,
+  localDriveUploadFor,
+  missingInDrive,
+  snapshotDirWithSubdirs,
   workDirDefault,
   fetchFileMeta,
   finalFolders,
@@ -576,7 +590,18 @@ interface Ctx {
   driveRoot?: string;
   /** #12707: a raiz do Neo trocada pela do Mac em todo `pathurl` (`--premiere-root`/`publishing.video.premiere_root`); ausente = caminho do Neo. */
   premierePaths?: PremierePathMap;
+  /**
+   * #13334: sessão OAuth do modo local com raiz explícita fora do Drive for desktop
+   * (`localDriveUploadFor`): sobe as saídas de build/srt/preview e busca a vinheta
+   * em `_marca/` no Drive. Nunca lê o bruto pela API (isso é só do modo API).
+   */
+  localDrive?: DriveSession;
+  /** #13334: os caminhos do XML (raiz do Neo/explícita, antes da troca pelo Mac) que o último build gravou. */
+  buildXmlFiles?: string[];
 }
+
+/** As saídas deste comando sobem para a pasta da edição no Drive (modo API, ou local com `localDrive`, #13334). */
+const uploadsToDrive = (ctx: Pick<Ctx, "mode" | "localDrive">) => ctx.mode === "api" || ctx.localDrive !== undefined;
 
 const f = (ctx: Pick<Ctx, "stateDir">, name: string) => join(ctx.stateDir, name);
 
@@ -700,20 +725,74 @@ export async function loadVinhetaForDrive(
     const config = deps.readConfig ? deps.readConfig() : JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
     const cfg = vinhetaConfigFrom(config);
     if (!cfg) return loadVinheta({ ...deps, readConfig: () => config });
-    const root = drive.rootFolderId?.();
-    if (!root) throw new Error("pasta raiz YouTube indisponível");
-    const folders = await listChildren(drive.deps, root, { name: "_marca", foldersOnly: true });
-    if (folders.length !== 1) throw new Error(`${folders.length} pastas _marca/ no Drive; esperada exatamente uma`);
-    const name = cfg.path.replace(/\\/g, "/").split("/").pop()!;
-    const found = await findByName(drive.deps, folders[0].id, name);
-    if (!found.file || found.duplicates) throw new Error(`vinheta ${name} ausente ou duplicada em _marca/`);
-    const cached = await ensureCachedFile(drive.deps, found.file, join(drive.cacheDir, "_marca"), log);
-    const asset = loadVinheta({ ...deps, readConfig: () => config, exists: () => true, probe: () => deps.probe ? deps.probe(cached.localPath) : run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", cached.localPath]).stdout });
-    return asset ? { ...asset, localPath: cached.localPath } : null;
+    const cachedPath = await fetchMarcaFile(drive, vinhetaFileName(cfg.path), join(drive.cacheDir, "_marca"));
+    const asset = loadVinheta({ ...deps, readConfig: () => config, exists: () => true, probe: () => deps.probe ? deps.probe(cachedPath) : run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", cachedPath]).stdout });
+    return asset ? { ...asset, localPath: cachedPath } : null;
   } catch (e) {
     warn(`vinheta do logo no Drive: ${(e as Error).message}: XML/prévia sem a vinheta (#12232)`);
     return null;
   }
+}
+
+/** O nome do MOV da vinheta, do caminho do config (Windows ou POSIX). */
+const vinhetaFileName = (configPath: string) => toPosix(configPath).split("/").pop()!;
+
+/** Baixa `name` da pasta compartilhada `_marca/` do Drive para `destDir` (cache conferido por id/modifiedTime/tamanho). */
+async function fetchMarcaFile(drive: DriveSession, name: string, destDir: string): Promise<string> {
+  const root = drive.rootFolderId?.();
+  if (!root) throw new Error("pasta raiz YouTube indisponível");
+  const folders = await listChildren(drive.deps, root, { name: "_marca", foldersOnly: true });
+  if (folders.length !== 1) throw new Error(`${folders.length} pastas _marca/ no Drive; esperada exatamente uma`);
+  const found = await findByName(drive.deps, folders[0].id, name);
+  if (!found.file || found.duplicates) throw new Error(`vinheta ${name} ausente ou duplicada em _marca/`);
+  return (await ensureCachedFile(drive.deps, found.file, destDir, log)).localPath;
+}
+
+/**
+ * #13308: a vinheta no modo local com raiz explícita (`--drive-root`/
+ * `DIARIA_VIDEO_DRIVE_ROOT`, o 300 em `/mnt/hd-sata/.../local-root`). O caminho
+ * do config é o do Neo (`I:`), que aqui não existe; a vinheta mora em
+ * `{raiz}/_marca/{nome}`, como o bruto, o título e o card moram na mesma raiz.
+ * Ordem: `{raiz}/_marca/`, o caminho do config, e por fim a `_marca/` do Drive
+ * baixada para `{raiz}/_marca/` (com `drive`, a sessão OAuth do modo local).
+ * O `path` do asset é o da raiz explícita: o `premiere_root` o troca pelo do Mac
+ * no XML, como os demais arquivos da raiz.
+ */
+export async function loadVinhetaForLocalRoot(
+  root: string,
+  drive: DriveSession | null,
+  deps: Parameters<typeof loadVinheta>[0] = {},
+): Promise<VinhetaAsset | null> {
+  const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
+  const exists = deps.exists ?? existsSync;
+  let config: unknown;
+  try {
+    config = deps.readConfig ? deps.readConfig() : JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    warn(`platform.config.json ilegível (${(e as Error).message}): sem vinheta do logo (#12101)`);
+    return null;
+  }
+  const cfg = vinhetaConfigFrom(config);
+  if (!cfg) return loadVinheta({ ...deps, readConfig: () => config });
+  const name = vinhetaFileName(cfg.path);
+  const marcaDir = `${toPosix(root).replace(/\/+$/, "")}/_marca`;
+  const atRoot = `${marcaDir}/${name}`;
+  const at = (path: string, extra: Partial<Parameters<typeof loadVinheta>[0]> = {}) =>
+    loadVinheta({ ...deps, ...extra, readConfig: () => ({ publishing: { video: { vinheta_logo: { path } } } }) });
+  if (exists(atRoot)) return at(atRoot);
+  if (exists(cfg.path)) return at(cfg.path);
+  if (drive) {
+    try {
+      log(`[drive] vinheta ${name} ausente em ${marcaDir}/ e em ${cfg.path}: baixando da _marca/ do Drive (#13308)`);
+      const got = await fetchMarcaFile(drive, name, marcaDir);
+      return at(toPosix(got), { exists: () => true });
+    } catch (e) {
+      warn(`vinheta do logo no Drive: ${(e as Error).message}: XML/prévia sem a vinheta; copie o MOV para ${atRoot} (#13308)`);
+      return null;
+    }
+  }
+  warn(`vinheta do logo não encontrada em ${atRoot} nem em ${cfg.path} (sem credenciais OAuth para baixar da _marca/ do Drive): XML sem a vinheta, inserir à mão no Premiere; copie o MOV para ${atRoot} (#13308)`);
+  return null;
 }
 
 /**
@@ -968,9 +1047,9 @@ export function buildNeedsLocalBruto(o: { apiMode: boolean; audioClean: boolean 
  * o snapshot do upload não a vê. Se o `drive-uploads.json` não registra o
  * envio dela, entra nos pendentes (sobe no fim deste comando).
  */
-export function queueUploadIfMissing(regPath: string, path: string): boolean {
+export function queueUploadIfMissing(regPath: string, path: string, key = basename(path)): boolean {
   const reg = readRegistry(regPath);
-  if (reg.files[basename(path)] || reg.pending.includes(path)) return false;
+  if (reg.files[key] || reg.pending.includes(path)) return false;
   writeJson(regPath, { ...reg, pending: [...reg.pending, path] });
   return true;
 }
@@ -3501,7 +3580,10 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #11935: --seq grava só o XML daquela sequência e só ela barra o build; #11969: e só ela muda no plan.json.
   const picked = pickPlans(ps, seq, false);
   // #12101: a vinheta do logo depois do título; sem o MOV nesta máquina, o build segue sem ela.
-  const resolvedVinheta = await loadVinhetaForDrive(drive);
+  // #13308: no modo local com raiz explícita, a vinheta mora em {raiz}/_marca/ (o caminho do config é o do Neo).
+  const resolvedVinheta: (VinhetaAsset & { localPath?: string }) | null = ctx.mode === "local" && ctx.driveRoot !== undefined
+    ? await loadVinhetaForLocalRoot(ctx.driveRoot, ctx.localDrive ?? null)
+    : await loadVinhetaForDrive(drive);
   const vinheta = resolvedVinheta ? (({ localPath, ...asset }) => asset)(resolvedVinheta) : null;
   if (vinheta) {
     console.error(
@@ -3596,7 +3678,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     );
   }
   // #12102: reaproveitada, a faixa não muda no out dir e o snapshot não a sobe; entra nos pendentes se nunca subiu.
-  if (treatedRun?.reused && ctx.mode === "api" && queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), treatedRun.path)) {
+  if (treatedRun?.reused && uploadsToDrive(ctx) && queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), treatedRun.path)) {
     console.error(`[video-montagem] faixa tratada reaproveitada ainda não está no Drive: entra no upload deste build (#12102)`);
   }
   // #11755: ganho do loudness; #12209: medido na faixa tratada quando é ela que o XML toca, senão o loudness.json do bruto.
@@ -3666,7 +3748,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         const { asset, reused } = await renderCtaCard({ outDir: ctx.outDir, workDir: ctx.workDir, mediaPath, edition: ctx.edition, width: p.spec.width, height: p.spec.height, fps: source.fps, share });
         ctaCard[sequenceKey(p.spec)] = asset;
         // Reaproveitado, o card não muda no out dir e o snapshot não o sobe; entra nos pendentes se nunca subiu.
-        if (reused && ctx.mode === "api") queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), asset.path);
+        if (reused && uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), asset.path);
         console.error(
           `[premissa] card de CTA no fim de ${p.spec.name}: ${basename(asset.path)}${reused ? " (reaproveitado)" : ""}, ${CTA_CARD.durationS} s na V1 depois do último clipe, fade-in de ${CTA_CARD.fadeInS} s do preto no próprio MP4, sem áudio; ` +
             `"${asset.share}"${share ? "" : " (default; ctaShare no blocks.json ou na sequência sobrepõe)"}; conferir no 1º import (#12571)`,
@@ -3733,10 +3815,21 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     ...(vinheta ? [vinheta.path] : []),
     ...Object.values(ctaCard).map((c) => c.xmlPath),
     ...Object.values(capaInicio).map((c) => c.xmlPath),
+    // #13334: os boxes de tela também são pathurl do XML (faltaram no Drive na 261117).
+    ...Object.values(telaOverlays).flatMap((os) => os.map((o) => o.xmlPath)),
   ];
   // #13219: XML leve (trechos em H.264 + PCM) antes da versão, que muda com ele.
   const trechos = buildTrechosOrNull(ctx, picked, source, mediaPath, trechosOpt);
-  if (trechos) xmlFilePaths.push(...trechos.map((t) => t.xmlPath));
+  if (trechos) {
+    xmlFilePaths.push(...trechos.map((t) => t.xmlPath));
+    // #13334: trecho reaproveitado não muda no out dir e o snapshot não o sobe; entra nos pendentes se nunca subiu.
+    if (uploadsToDrive(ctx)) {
+      const reg = f(ctx, DRIVE_UPLOADS_FILE);
+      const queued = trechos.filter((t) => queueUploadIfMissing(reg, join(ctx.outDir, TRECHOS.dirName, t.name), `${TRECHOS.dirName}/${t.name}`)).length;
+      if (queued) console.error(`[video-montagem] ${queued} trecho(s) reaproveitado(s) ainda não estão no Drive: entram no upload deste build (#13334)`);
+    }
+  }
+  ctx.buildXmlFiles = xmlFilePaths;
   console.error(premierePathsLine(ctx.premierePaths, unmappedPremierePaths(xmlFilePaths, ctx.premierePaths)));
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
@@ -5173,6 +5266,13 @@ async function fetchNamed(d: DriveSession, given: string, where: "edition" | "fi
   throw new Error(`${name} não encontrado em ${d.edition}/${where === "final" ? "Final/" : ""} no Drive`);
 }
 
+/** A subpasta direta do out dir onde `path` está (`trechos`), ou `null` (solto no out dir, ou fora dele). */
+export function outDirSubfolder(outDir: string | undefined, path: string): string | null {
+  if (!outDir) return null;
+  const segs = toPosix(relative(outDir, path)).split("/");
+  return segs.length === 2 && segs[0] !== ".." && segs[0] !== "" && !isAbsolute(segs[0]) ? segs[0] : null;
+}
+
 /** `drive-uploads.json`: o que subiu (por nome) e o que ficou pendente de uma falha anterior. */
 export interface DriveUploadRegistry {
   files: Record<string, { id: string; link: string | null; at: string; from: string }>;
@@ -5197,8 +5297,17 @@ function readRegistry(path: string): DriveUploadRegistry {
  * em `pending`, e a próxima execução de build/srt/preview (ou `upload`) os
  * tenta de novo mesmo sem mudança.
  */
-export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: DriveSession, paths: string[]): Promise<{ uploaded: string[]; pending: string[]; error: string | null }> {
+export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition"> & Partial<Pick<Ctx, "outDir">>, d: DriveSession, paths: string[]): Promise<{ uploaded: string[]; pending: string[]; error: string | null }> {
   const regPath = f(ctx, DRIVE_UPLOADS_FILE);
+  // #13334: um arquivo numa subpasta do out dir (`trechos/`) sobe para a subpasta de mesmo nome da edição.
+  const subfolders = new Map<string, Promise<DriveEntry>>();
+  const targetOf = async (folder: DriveEntry, path: string): Promise<{ folderId: string; prefix: string }> => {
+    const sub = outDirSubfolder(ctx.outDir, path);
+    if (!sub) return { folderId: folder.id, prefix: "" };
+    let p = subfolders.get(sub);
+    if (!p) subfolders.set(sub, (p = ensureChildFolder(d.deps, folder.id, sub)));
+    return { folderId: (await p).id, prefix: `${sub}/` };
+  };
   const reg = readRegistry(regPath);
   const queue = [...new Set([...reg.pending.filter((p) => existsSync(p)), ...paths])];
   const uploaded: string[] = [];
@@ -5207,8 +5316,9 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
   try {
     const folder = await d.folder();
     for (let i = 0; i < queue.length; i++) {
-      const r = await uploadToFolder(d.deps, folder.id, queue[i], log);
-      reg.files[r.name] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: queue[i] };
+      const target = await targetOf(folder, queue[i]);
+      const r = await uploadToFolder(d.deps, target.folderId, queue[i], log);
+      reg.files[`${target.prefix}${r.name}`] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: queue[i] };
       uploaded.push(queue[i]);
       if (!reg.previewNamesNoticeShown && [previewFileName(ctx.edition, "youtube"), previewFileName(ctx.edition, "outras-redes")].includes(r.name)) {
         // Preservar possíveis arquivos antigos: podem conter uma revisão do editor.
@@ -5216,7 +5326,7 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
         reg.previewNamesNoticeShown = true;
       }
       save(queue.slice(i + 1));
-      log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${r.name}: ${r.webViewLink ?? r.id}`);
+      log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${target.prefix}${r.name}: ${r.webViewLink ?? r.id}`);
     }
     return { uploaded, pending: [], error: null };
   } catch (e) {
@@ -5228,7 +5338,7 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
 
 async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefined): Promise<number> {
   if (!file) throw new Error("upload exige --file PATH (ex.: o decupagem.md quando o conector do Docs falhar)");
-  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em I:/Meu Drive/diaria-studio-video (nunca na pasta antiga da vjpixel, #12578)");
+  if (!d) throw new Error("upload é do modo API do Drive (o 300), ou do modo local com raiz explícita e OAuth (#13334); no Neo, copie o arquivo para a pasta da edição em I:/Meu Drive/diaria-studio-video (nunca na pasta antiga da vjpixel, #12578)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`arquivo não encontrado: ${path}`);
   const r = await uploadAll(ctx, d, [path]);
@@ -5297,16 +5407,31 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     const stop = audioOnlyStop(ctx, cmd);
     if (stop !== null) return stop;
   }
+  const driveDeps = (): MontageDriveDeps => deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}) };
   const d = mode === "api" && DRIVE_COMMANDS.has(cmd)
-    ? makeDriveSession(edition, cacheDir, deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}) }, configRootFolderId(values["folder-id"]))
+    ? makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]))
     : null;
   if (mode === "api") console.error(`[video-montagem] modo API do Drive (${flags.has("from-drive") ? "--from-drive" : `sem ${driveRoot} nesta máquina`}, #11639); cache em ${cacheDir}`);
-  const uploads = d && DRIVE_UPLOAD_COMMANDS.includes(cmd);
-  const before = uploads ? snapshotDir(ctx.outDir, (dir) => readdirSync(dir)) : null;
+  // #13334: modo local com raiz explícita fora do Drive for desktop: as saídas sobem pela API (o disco não sincroniza).
+  // O cache da sessão é só o da `_marca/` do modo API, que aqui não é usado (a vinheta vai para {raiz}/_marca/, #13308).
+  if (mode === "local" && (DRIVE_UPLOAD_COMMANDS.includes(cmd) || cmd === "upload")) {
+    const local = localDriveUploadFor({ mode, explicitRoot, noDriveApi: flags.has("no-drive-api"), credentials: googleCredentialsPresent() });
+    if (local.enabled) {
+      ctx.localDrive = makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]));
+      console.error(`[premissa] modo local com ${local.reason}: as saídas de ${cmd} sobem para a pasta ${edition}/ do Drive pela API, como no modo API; --no-drive-api desliga (#13334)`);
+    } else if (explicitRoot !== undefined && DRIVE_UPLOAD_COMMANDS.includes(cmd)) {
+      console.error(`[aviso] modo local com raiz explícita, mas as saídas NÃO sobem para o Drive (${local.reason}): suba à mão o que ${cmd} gravar em ${ctx.outDir} (#13334)`);
+    }
+  }
+  const up = d ?? ctx.localDrive ?? null;
+  const uploads = up && DRIVE_UPLOAD_COMMANDS.includes(cmd);
+  // #13334: `trechos/` (o XML leve do build) sobe para a subpasta de mesmo nome da edição.
+  const snap = () => snapshotDirWithSubdirs(ctx.outDir, [TRECHOS.dirName], (dir) => readdirSync(dir));
+  const before = uploads ? snap() : null;
   const code = await runCommand(ctx, cmd, values, flags, seq, d);
-  if (before && d && code === 0) {
-    const changed = changedFiles(before, snapshotDir(ctx.outDir, (dir) => readdirSync(dir))).map((n) => join(ctx.outDir, n));
-    const r = await uploadAll(ctx, d, changed);
+  if (before && up && code === 0) {
+    const changed = changedFiles(before, snap()).map((n) => join(ctx.outDir, n));
+    const r = await uploadAll(ctx, up, changed);
     if (r.error) {
       console.error(
         `[erro] ${cmd} terminou, mas o upload para o Drive falhou: ${r.error}. Subiram: ${r.uploaded.length ? r.uploaded.map((p) => basename(p)).join(", ") : "nenhum"}; ` +
@@ -5314,8 +5439,38 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
       );
       return EXIT_UPLOAD_FAILED;
     }
+    if (cmd === "build" && ctx.buildXmlFiles) await warnXmlFilesMissingInDrive(up, ctx.buildXmlFiles, ctx.mode === "local" ? (ctx.driveRoot ?? DEFAULT_DRIVE_ROOT) : DEFAULT_DRIVE_ROOT);
   }
   return code;
+}
+
+/**
+ * #13334: no fim do build com upload, todo `pathurl` do XML (antes da troca pela
+ * raiz do Mac) tem de existir no Drive, senão o Premiere abre com mídia
+ * offline sem aviso (as telas H5/H7/H10b/H13d da 261117). Só avisa; falha da
+ * conferência também é aviso, nunca muda o exit.
+ */
+export async function warnXmlFilesMissingInDrive(d: DriveSession, files: readonly string[], root: string, warn: (m: string) => void = (m) => console.error(`[aviso] ${m}`)): Promise<string[]> {
+  const rels: string[] = [];
+  const outside: string[] = [];
+  for (const p of new Set(files)) {
+    const rel = driveRelativePath(p, root);
+    if (rel) rels.push(rel);
+    else outside.push(p);
+  }
+  if (outside.length) warn(`${outside.length} caminho(s) do XML fora de ${root}, não conferido(s) no Drive: ${outside.join(", ")} (#13334)`);
+  let missing: string[];
+  try {
+    const rootId = d.rootFolderId?.();
+    if (!rootId) throw new Error("pasta raiz YouTube indisponível");
+    missing = await missingInDrive(d.deps, rootId, rels);
+  } catch (e) {
+    warn(`conferência dos arquivos do XML no Drive falhou (${(e as Error).message}): confira à mão se a mídia abre online no Premiere (#13334)`);
+    return [];
+  }
+  if (missing.length) warn(`${missing.length} arquivo(s) do XML ausente(s) no Drive (o Premiere abre com mídia offline): ${missing.join(", ")}; suba com upload ${d.edition} --file ARQUIVO (#13334)`);
+  else console.error(`[drive] os ${rels.length} arquivo(s) do XML estão no Drive (#13334)`);
+  return missing;
 }
 
 async function runCommand(
@@ -5429,7 +5584,7 @@ async function runCommand(
       return cmdReviewFinal(ctx, file, seq, !flags.has("no-text"));
     }
     case "upload":
-      return cmdUpload(ctx, d, values["file"]);
+      return cmdUpload(ctx, d ?? ctx.localDrive ?? null, values["file"]);
     case "legendar": {
       if (flags.has("video")) throw new Error('legendar exige o caminho do vídeo (ex.: --video "I:/…/261112/20261112_200050.mp4")');
       const video = values["video"];

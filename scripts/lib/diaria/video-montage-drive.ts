@@ -243,6 +243,13 @@ export function snapshotDir(dir: string, list: (d: string) => string[]): Map<str
   return out;
 }
 
+/** `snapshotDir` mais as subpastas pedidas (#13334: `trechos/`), com o nome `{subpasta}/{arquivo}`. */
+export function snapshotDirWithSubdirs(dir: string, subdirs: readonly string[], list: (d: string) => string[]): Map<string, string> {
+  const out = snapshotDir(dir, list);
+  for (const sub of subdirs) for (const [name, sig] of snapshotDir(join(dir, sub), list)) out.set(`${sub}/${name}`, sig);
+  return out;
+}
+
 /** Espaço livre (bytes) no sistema de arquivos de `dir` (ou do ancestral mais próximo que existe); null quando não dá para medir. */
 export function freeBytes(dir: string): number | null {
   let d = dir;
@@ -274,6 +281,80 @@ export function driveModeFor(o: { driveRootExists: boolean; fromDrive: boolean; 
   if (o.fromDrive) return "api";
   if (o.noDriveApi || o.driveRootExists || o.explicitRoot) return "local";
   return "api";
+}
+
+const sameRoot = (a: string, b: string) => toPosix(a).replace(/\/+$/, "").toLowerCase() === toPosix(b).replace(/\/+$/, "").toLowerCase();
+
+/**
+ * #13334: o modo local com raiz explícita (`--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT`)
+ * fora do Drive for desktop, como o cache do 300 (`/mnt/hd-sata/.../local-root`),
+ * grava as saídas num disco que não sincroniza: `build`, `srt` e `preview` sobem o
+ * que gravaram pela API, como no modo API. Liga só com as credenciais OAuth do
+ * projeto presentes; `--no-drive-api` desliga; a raiz padrão do Neo (`I:`, o
+ * próprio Drive for desktop) nunca sobe pela API (o Drive já sincroniza).
+ */
+export function localDriveUploadFor(o: { mode: "local" | "api"; explicitRoot: string | undefined; noDriveApi: boolean; credentials: boolean }): { enabled: boolean; reason: string } {
+  if (o.mode !== "local" || o.explicitRoot === undefined) return { enabled: false, reason: "sem raiz explícita no modo local" };
+  if (o.noDriveApi) return { enabled: false, reason: "--no-drive-api" };
+  if (sameRoot(o.explicitRoot, DEFAULT_DRIVE_ROOT)) return { enabled: false, reason: `raiz ${DEFAULT_DRIVE_ROOT} é a do Drive for desktop` };
+  if (!o.credentials) return { enabled: false, reason: "sem data/.credentials.json (OAuth do projeto)" };
+  return { enabled: true, reason: `raiz explícita ${o.explicitRoot} fora do Drive for desktop` };
+}
+
+/**
+ * O caminho relativo à raiz da pasta de vídeo (`{AAMMDD}/x.xml`, `_marca/logo.mov`),
+ * ou `null` fora dela. Separadores e caixa da letra do drive do Windows não contam.
+ */
+export function driveRelativePath(path: string, root: string): string | null {
+  const r = toPosix(root).replace(/\/+$/, "");
+  const p = toPosix(path);
+  if (p.length <= r.length + 1 || p.slice(0, r.length).toLowerCase() !== r.toLowerCase() || p[r.length] !== "/") return null;
+  const rel = p.slice(r.length + 1);
+  const segs = rel.split("/");
+  return segs.some((s) => s === "" || s === "." || s === "..") ? null : rel;
+}
+
+/** A subpasta `name` de `parentId`, criada se faltar (#13334: `trechos/` da edição). Duas com o mesmo nome é erro. */
+export async function ensureChildFolder(deps: MontageDriveDeps, parentId: string, name: string): Promise<DriveEntry> {
+  const found = await listChildren(deps, parentId, { name, foldersOnly: true });
+  if (found.length === 1) return found[0];
+  if (found.length > 1) throw new Error(`${found.length} pastas ${name}/ no Drive (${found.map((f) => f.id).join(", ")}): junte ou renomeie`);
+  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,name,mimeType" });
+  return okJson<DriveEntry>(
+    await deps.driveFetch(`${DRIVE_API}/files?${params}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=UTF-8" },
+      body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
+      signal: AbortSignal.timeout(30_000),
+    }),
+    `criação da pasta ${name}/ no Drive`,
+  );
+}
+
+/**
+ * #13334: dos caminhos relativos à pasta de vídeo, os que não existem no Drive
+ * (o XML abriria com mídia offline). Uma listagem por pasta, memorizada.
+ */
+export async function missingInDrive(deps: MontageDriveDeps, rootFolderId: string, rels: readonly string[]): Promise<string[]> {
+  const listings = new Map<string, Promise<DriveEntry[]>>();
+  const childrenOf = (id: string) => {
+    let p = listings.get(id);
+    if (!p) listings.set(id, (p = listChildren(deps, id)));
+    return p;
+  };
+  const missing: string[] = [];
+  for (const rel of [...new Set(rels)]) {
+    const segs = rel.split("/");
+    let folderId: string | null = rootFolderId;
+    for (const seg of segs.slice(0, -1)) {
+      const dirs: DriveEntry[] = (await childrenOf(folderId)).filter((c) => c.mimeType === FOLDER_MIME && c.name === seg);
+      folderId = dirs.length === 1 ? dirs[0].id : null;
+      if (!folderId) break;
+    }
+    const name = segs[segs.length - 1];
+    if (!folderId || !(await childrenOf(folderId)).some((c) => c.mimeType !== FOLDER_MIME && c.name === name)) missing.push(rel);
+  }
+  return missing;
 }
 
 /** Por que a raiz de `DIARIA_VIDEO_CACHE_DIR` foi recusada (#12365). */
