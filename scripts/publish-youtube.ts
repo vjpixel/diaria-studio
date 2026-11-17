@@ -182,6 +182,13 @@ import {
 } from "./lib/diaria/youtube-upload.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
 import {
+  checkYouTubeAudio,
+  mp4HasAudioTrack,
+  notifyYouTubeAudioDegraded,
+  reportYouTubeAudioCheck,
+  type YouTubeAudioAlarmFn,
+} from "./lib/diaria/youtube-audio-check.ts";
+import {
   YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT,
   YOUTUBE_CAPTION_LANGUAGE,
   captionBackfillStatus,
@@ -528,6 +535,11 @@ export interface RunUploadInput {
   logRunEvent?: (e: RunLogEvent) => void;
   /** #12077: `publishing.youtube.theme_playlists` lido. Ausente = passo pulado em silêncio (testes antigos). */
   themePlaylists?: ThemePlaylistsConfig;
+  /**
+   * #13403: alarme ao editor quando o áudio registrado pelo YouTube vem
+   * degradado. Ausente (testes) = só o `[aviso]` e o `audio_check` no registro.
+   */
+  notifyAudioDegraded?: YouTubeAudioAlarmFn;
 }
 
 export interface RunUploadOutcome {
@@ -991,6 +1003,8 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
             },
           }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
+      // #13403: guard do áudio registrado pelo YouTube; nunca derruba o upload.
+      checkAudio: (token: string, videoId: string) => checkYouTubeAudio(deps, token, videoId, mp4HasAudioTrack(video)),
       ...((srt || plan.share) ? {
         afterVideo: async (token: string, videoId: string) => {
           if (plan.share) {
@@ -1058,6 +1072,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
     log(`[aviso] vídeo enviado, mas a capa falhou: ${result.thumbnail.error} — suba ${plan.thumbnail?.path} à mão no Studio`);
   }
   if (result.rereadError) log(`[aviso] releitura do estado falhou: ${result.rereadError}`);
+  await reportYouTubeAudioCheck(result.audio_check, { videoId: result.videoId, url: result.url, label: `horizontal da edição ${plan.aammdd}` }, log, input.notifyAudioDegraded);
   const captionLine = captionOut.result ? describeCaptionOutcome(captionOut.result, plan.aammdd) : null;
   if (captionLine) log(captionLine);
   const failed = failedUploadStatus(result.rereadStatus);
@@ -1862,6 +1877,7 @@ async function main(): Promise<number> {
     logRunEvent: (e) => {
       logEvent(e);
     },
+    notifyAudioDegraded: (check, ctx) => notifyYouTubeAudioDegraded(check, ctx, { cwd: ROOT }),
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
   // #12122: com o vídeo no canal (registro gravado), a espera do "pode publicar" acabou.

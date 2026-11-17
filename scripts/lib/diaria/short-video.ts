@@ -49,6 +49,7 @@
  * repost) ainda não entrou: falta o token da conta pessoal.
  */
 
+import type { YouTubeAudioCheck } from "./youtube-audio-check.ts";
 import { TWITTER_CHAR_LIMIT, computeTwitterWeightedLength } from "../twitter-weight.ts";
 import { THREADS_TEXT_MAX_CHARS } from "../threads-api.ts"; // #10772
 import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
@@ -917,6 +918,8 @@ export interface ShortPublishedEntry {
    * destino registrado à mão sem o hash.
    */
   video_sha256?: string;
+  /** #13403: o áudio registrado pelo YouTube depois do upload (só `youtube_shorts`). */
+  audio_check?: YouTubeAudioCheck;
 }
 
 export interface ShortsPublishedFile {

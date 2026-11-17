@@ -62,7 +62,7 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 }
 
 /** Rotas default de um upload bem-sucedido; `overrides` trocam uma etapa. */
-function happyRoutes(overrides: Partial<Record<"token" | "channel" | "existing" | "insert" | "put" | "thumb" | "reread", Route>> = {}): Route[] {
+function happyRoutes(overrides: Partial<Record<"token" | "channel" | "existing" | "insert" | "put" | "thumb" | "reread" | "fileDetails", Route>> = {}): Route[] {
   const r: Record<string, Route> = {
     token: (c) => (c.url === "https://oauth2.googleapis.com/token" ? json(200, { access_token: ACCESS, expires_in: 3599 }) : undefined),
     channel: (c) => (c.url.includes("/youtube/v3/channels") ? json(200, { items: [{ id: SECRETS.YOUTUBE_CHANNEL_ID }] }) : undefined),
@@ -80,9 +80,14 @@ function happyRoutes(overrides: Partial<Record<"token" | "channel" | "existing" 
       c.url.includes("/youtube/v3/videos?part=status")
         ? json(200, { items: [{ id: VIDEO_ID, status: { uploadStatus: "uploaded", privacyStatus: "private", publishAt: PUBLISH_AT } }] })
         : undefined,
+    // #13403: guard do áudio depois da releitura (processamento ainda em curso logo após o upload).
+    fileDetails: (c) =>
+      c.url.includes("/youtube/v3/videos?part=fileDetails,processingDetails")
+        ? json(200, { items: [{ id: VIDEO_ID, processingDetails: { processingStatus: "processing", fileDetailsAvailability: "inProgress" } }] })
+        : undefined,
   };
   for (const [k, v] of Object.entries(overrides)) r[k] = v as Route;
-  return [r.token, r.channel, r.existing, r.insert, r.put, r.thumb, r.reread];
+  return [r.token, r.channel, r.existing, r.insert, r.put, r.thumb, r.reread, r.fileDetails];
 }
 
 function mockDeps(routes: Route[]): { deps: YouTubeUploadDeps; calls: Call[] } {
@@ -147,6 +152,52 @@ function assertNoSecrets(text: string) {
   }
 }
 
+describe("#13403 guard do áudio no horizontal", () => {
+  it("2377 bps registrado: audio_check degradado no registro, [aviso] e alarme; o upload segue exit 0", async () => {
+    const plan = buildPlan(dir);
+    const { deps } = mockDeps(
+      happyRoutes({
+        fileDetails: (c) =>
+          c.url.includes("/videos?part=fileDetails,processingDetails")
+            ? json(200, { items: [{ id: VIDEO_ID, processingDetails: { processingStatus: "succeeded", fileDetailsAvailability: "available" }, fileDetails: { audioStreams: [{ bitrateBps: "2377" }] } }] })
+            : undefined,
+      }),
+    );
+    const logs: string[] = [];
+    let alarms = 0;
+    const outcome = await runYouTubeUpload(deps, {
+      plan,
+      editionDir: dir,
+      env: SECRETS,
+      force: false,
+      readFile: (p) => readFileSync(p),
+      log: (l) => logs.push(l),
+      notifyAudioDegraded: async () => (alarms++, { ok: true, detail: "alarme created" }),
+    });
+    assert.equal(outcome.exitCode, 0, logs.join("\n"));
+    assert.equal(alarms, 1);
+    assert.ok(logs.some((l) => /^\[aviso\] áudio do YouTube degradado/.test(l)), logs.join("\n"));
+    const rec = JSON.parse(readFileSync(join(dir, "_internal", "05-youtube-published.json"), "utf8"));
+    assert.equal(rec.audio_check.status, "degraded");
+    assert.equal(rec.audio_check.bitrate_bps, 2377);
+  });
+
+  it("processamento em curso: audio_check pending e [pendente] com o comando, sem alarme", async () => {
+    const plan = buildPlan(dir);
+    const { deps } = mockDeps(happyRoutes());
+    const logs: string[] = [];
+    let alarms = 0;
+    const outcome = await runYouTubeUpload(deps, {
+      plan, editionDir: dir, env: SECRETS, force: false, readFile: (p) => readFileSync(p), log: (l) => logs.push(l),
+      notifyAudioDegraded: async () => (alarms++, { ok: true, detail: "" }),
+    });
+    assert.equal(outcome.exitCode, 0);
+    assert.equal(alarms, 0);
+    assert.equal(outcome.record?.audio_check?.status, "pending");
+    assert.ok(logs.some((l) => l.includes(`check-youtube-audio.ts --id ${VIDEO_ID}`)), logs.join("\n"));
+  });
+});
+
 describe("upload real — sucesso (#10659)", () => {
   it("token → canal → insert resumable → PUT → capa → releitura; grava o registro em _internal/", async () => {
     const plan = buildPlan(dir);
@@ -165,6 +216,7 @@ describe("upload real — sucesso (#10659)", () => {
         "PUT /upload/youtube/v3/videos",
         "POST /upload/youtube/v3/thumbnails/set",
         "GET /youtube/v3/videos",
+        "GET /youtube/v3/videos", // #13403: fileDetails,processingDetails
       ],
     );
     // Refresh token vai só pro endpoint de token, nunca pra API do YouTube.
