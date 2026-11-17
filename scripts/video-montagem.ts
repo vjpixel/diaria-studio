@@ -104,8 +104,8 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
  *       quadros de 5 ms: sinal cheio acima de -33 dBFS ou 1ª diferença acima de -46 dBFS; pausa
  *       de 0,32 s ou mais sai com 150 ms antes da fala e 120 ms depois; ilha abaixo de 60 ms é
- *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, clipe abaixo de
- *       0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
+ *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, pausa acima de
+ *       0,45 s dentro do clipe (261116), clipe abaixo de 0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
  *       (#12089, medição da 261105) os limiares são os relativos ao bruto (sinal cheio 24 dB
  *       abaixo do topo da fala, 1ª diferença 10 dB acima do piso; só com 90% de quadros com som
  *       entre o 1º e o último som e topo 20 dB acima do piso, senão o fixo com [aviso]); desde o
@@ -115,8 +115,9 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (respiração e ruído de sala saem; a vogal curta fica; #13194: o começo de palavra pouco
  *       vozeado, contínuo até a voz em até 400 ms e 20 dB acima do piso, também fica; com menos
  *       de 20% dos quadros acima do limiar com voz o filtro desliga);
- *       palavra esticada pelo Whisper com metade ou mais em ilhas, ou menos de 150 ms na pausa,
- *       não devolve a pausa ([aviso] por palavra). --speech-full-db/--speech-diff-db sobrepõem os
+ *       palavra esticada pelo Whisper com metade ou mais em ilhas, menos de 150 ms na pausa, ou
+ *       (261116) o trecho na pausa sem som (60 ms acima do piso local + 12 dB, em ±2 s), não
+ *       devolve a pausa ([aviso] por palavra). --speech-full-db/--speech-diff-db sobrepõem os
  *       limiares; --no-speech-voice desliga o filtro pela F0.
  *       (#12263) o começo de cada ilha recua até 120 ms no ataque acima do piso de ruído do bruto
  *       + 12 dB (consoante suave abaixo dos limiares fixos); entrada com som nos 40 ms antes do
@@ -1736,7 +1737,8 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
   if (speech) {
     const words = Object.values(blocks).flatMap((items) => (items ?? []).flatMap((it) => it.words));
     // #12089: palavra esticada pelo Whisper por cima da pausa (já dentro de uma ilha) não devolve a pausa.
-    const guard = protectTranscribedWords(speech.silences, words, { islands: speech.islands });
+    // #12089 (261116): com a energia, a palavra esticada sobre trecho da pausa sem som também não a devolve.
+    const guard = protectTranscribedWords(speech.silences, words, { islands: speech.islands, ...(speech.energy ? { energy: speech.energy } : {}) });
     speechSil = guard.silences;
     stretched = guard.stretchedWords;
     // A proteção sem as ilhas (a de antes) é a rede: sequência que perderia palavra com a nova volta para ela.
