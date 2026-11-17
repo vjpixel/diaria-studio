@@ -317,7 +317,7 @@ describe("#13120: a página gerada do JSON", () => {
     assert.match(html, /Repetição de propósito/);
   });
   it("box Na tela ao lado da fala, e empilhado no celular", () => {
-    assert.match(html, /<div class="row"><p class="fala"><span class="id">H6<\/span>[^<]+<\/p><aside class="tela"><b>Na tela<\/b>Artificial Analysis Intelligence Index<br>Hydrogen 51 × Argon 50<\/aside><\/div>/);
+    assert.match(html, /<div class="row"><span><\/span><p class="fala"><span class="id">H6<\/span>[^<]+<\/p><aside class="tela"><b>Na tela<\/b>Artificial Analysis Intelligence Index<br>Hydrogen 51 × Argon 50<\/aside><\/div>/);
     assert.match(html, /@media \(max-width: 640px\) \{ \.row \{ grid-template-columns: 1fr/);
   });
   it("vertical 1 na ordem declarada, com o corte riscado só nele", () => {

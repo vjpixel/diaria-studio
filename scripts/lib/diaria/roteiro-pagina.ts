@@ -89,7 +89,11 @@ function linhaFala(f: FalaRoteiro, v: VideoRoteiro): string {
   const tag = f.gravarAParte ? `<span class="novo">Gravar à parte</span>` : "";
   // Os verticais saem sem texto de tela (#13180): o box só aparece no horizontal.
   const tela = f.tela && v === "horizontal" ? `<aside class="tela"><b>Na tela</b>${telaHtml(f.tela)}</aside>` : "<span></span>";
-  return `<div class="row"><p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
+  // Tópicos da fala: coluna à esquerda, em todos os vídeos que usam a fala.
+  const topicos = f.topicos?.length
+    ? `<ul class="topicos">${f.topicos.map((t) => `<li>${esc(t.trim())}</li>`).join("")}</ul>`
+    : "<span></span>";
+  return `<div class="row">${topicos}<p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
 }
 
 /** O bloco em que a fala aparece naquele vídeo (o resumo vira resumo curto nos verticais). */
@@ -233,7 +237,9 @@ body { background: var(--bg); color: var(--fg); font-family: var(--body); font-s
 .cover { margin: 0; font-size: 15px; color: var(--muted); line-height: 1.7; }
 .cover b { color: var(--fg); font-weight: 600; }
 .id { display: inline-block; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; margin-right: 7px; vertical-align: 1px; }
-.row { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 14px; align-items: start; }
+.row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 230px; gap: 14px; align-items: start; }
+.topicos { margin: 0; padding: 0 0 0 16px; font-size: 13.5px; line-height: 1.45; font-weight: 600; color: var(--fg); }
+.topicos li + li { margin-top: 2px; }
 .row + .row { margin-top: 10px; }
 .row p.fala { margin: 0; text-wrap: pretty; }
 .tela { font-size: 13.5px; line-height: 1.45; background: var(--sug-bg); color: var(--sug-fg); border-left: 3px solid var(--ink); border-radius: 4px; padding: 7px 10px; font-weight: 400; }
@@ -241,7 +247,7 @@ body { background: var(--bg); color: var(--fg); font-family: var(--body); font-s
 del { color: var(--muted); }
 .reserva { text-decoration: underline dashed var(--warn); text-underline-offset: 3px; }
 .tag-corte { display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; }
-@media (max-width: 640px) { .row { grid-template-columns: 1fr; gap: 6px; } }
+@media (max-width: 640px) { .row { grid-template-columns: 1fr; gap: 6px; } .row > span:empty { display: none; } }
 @media (max-width: 520px) { .sheet { padding: 16px 14px; } body { font-size: 16px; } }`;
 
 const SCRIPT = `(function () {
@@ -287,7 +293,7 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `<main class="wrap">`,
     `  <section class="review" aria-label="Gravação">`,
     `    <h2>Gravação</h2>`,
-    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. O texto de tela fica no box ao lado da fala, só no horizontal.</p>`,
+    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. À esquerda de cada fala, os tópicos para gravar sem ler; o texto de tela fica no box à direita, só no horizontal.</p>`,
     `    <ul>\n${itensGravacao(roteiro, cfg).map((i) => `      <li>${i}</li>`).join("\n")}\n    </ul>`,
     `  </section>`,
     ``,

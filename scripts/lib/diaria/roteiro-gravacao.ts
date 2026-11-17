@@ -54,6 +54,13 @@ export interface FalaRoteiro {
    */
   tela?: string;
   /**
+   * Tópicos da fala, para o editor gravar sem ler: bullets de até
+   * `TOPICO_MAX_PALAVRAS` palavras cada (pedido do editor, 17/11/2026). Só a
+   * página mostra, numa coluna ao lado da fala, em todos os vídeos que a usam;
+   * não vai para o XML nem para a legenda.
+   */
+  topicos?: string[];
+  /**
    * Corte parcial da fala por vertical (#13129): o trecho exato a tirar só
    * naquele vídeo (o horizontal fica intacto: o validador recusa `horizontal`). `reserva: true` = só entra se o
    * vídeo passar do alvo de duração.
@@ -138,6 +145,14 @@ export function segmentosSemTrecho(texto: string, trecho: string): string[] | nu
 
 /** Seta proibida no texto que chega ao leitor (#9721). */
 export const SETA = /[→←]/;
+
+/** Tamanho máximo de cada tópico da fala (`topicos`), em palavras. */
+export const TOPICO_MAX_PALAVRAS = 4;
+
+/** Palavras de um tópico: sequências separadas por espaço; pontuação solta não conta. */
+export function contarPalavrasTopico(t: string): number {
+  return t.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+}
 
 /**
  * As posições em que o trecho aparece no texto como palavras inteiras (#13129):
@@ -723,6 +738,16 @@ export function validarRoteiroFalas(x: unknown): string[] {
     if (o.tela !== undefined) {
       if (typeof o.tela !== "string" || !o.tela.trim()) problemas.push(`${rotulo}.tela deve ser texto não vazio`);
       else if (SETA.test(o.tela)) problemas.push(`${rotulo}.tela usa seta (→/←), proibida no que chega ao leitor (#9721)`);
+    }
+    // Tópicos da fala (coluna da página): lista de textos curtos, até TOPICO_MAX_PALAVRAS palavras cada.
+    if (o.topicos !== undefined) {
+      if (!Array.isArray(o.topicos) || o.topicos.length === 0) problemas.push(`${rotulo}.topicos deve ser lista não vazia de textos`);
+      else {
+        o.topicos.forEach((t, j) => {
+          if (typeof t !== "string" || !t.trim()) problemas.push(`${rotulo}.topicos[${j}] deve ser texto não vazio`);
+          else if (contarPalavrasTopico(t) > TOPICO_MAX_PALAVRAS) problemas.push(`${rotulo}.topicos[${j}] tem ${contarPalavrasTopico(t)} palavras ("${t}"); o máximo é ${TOPICO_MAX_PALAVRAS}`);
+        });
+      }
     }
     // #13129: corte parcial por vídeo, com o trecho exato do texto.
     if (o.cortes !== undefined) {
