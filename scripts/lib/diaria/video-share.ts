@@ -97,7 +97,10 @@ export function shareForRun(o: {
   cue: ShareCue | null; rawSeconds: string | undefined; videoExists: boolean; createsVideo: boolean;
   readVideo: () => Buffer; warn: (msg: string) => void;
 }): SharePublish | undefined {
-  if (!o.cue) return undefined;
+  if (!o.cue) {
+    if (o.rawSeconds !== undefined) o.warn("--share-start recebido, mas o roteiro-falas.json não tem porVideo.horizontal.trechoCompartilhar; o tempo foi ignorado e o plano não muda (#13353). Grave o campo no roteiro (/diaria-video-roteiro) e rode de novo");
+    return undefined;
+  }
   if (!o.createsVideo) {
     o.warn(`trechoCompartilhar ${o.cue.inicio}: este --upload não cria vídeo (registro existente ou --accept-period-match); --share-start não é usado. Link do trecho: conferir o tempo no vídeo do canal e aplicar no Studio, se ainda não estiver lá`);
     return undefined;

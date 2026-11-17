@@ -174,3 +174,18 @@ describe("#13164 upload sem rede", () => {
     await assert.rejects(() => setYouTubeShareDescription(deps, "token", id, { title: "Título", description: "base" }, shareDescription("base", confirmedShare(cue, "61", bytes), id)), /não confirmada/);
   });
 });
+
+describe("#13353 --share-start sem trechoCompartilhar no roteiro", () => {
+  it("avisa e não muda o plano", () => {
+    const avisos: string[] = [];
+    const r = shareForRun({ cue: null, rawSeconds: "150", videoExists: true, createsVideo: true, readVideo: () => bytes, warn: (w) => avisos.push(w) });
+    assert.equal(r, undefined);
+    assert.equal(avisos.length, 1);
+    assert.match(avisos[0], /--share-start.*trechoCompartilhar/);
+  });
+  it("sem --share-start e sem campo, silêncio", () => {
+    const avisos: string[] = [];
+    shareForRun({ cue: null, rawSeconds: undefined, videoExists: true, createsVideo: true, readVideo: () => bytes, warn: (w) => avisos.push(w) });
+    assert.deepEqual(avisos, []);
+  });
+});
