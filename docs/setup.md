@@ -113,6 +113,16 @@ por acaso) e o cache só tinha os modelos `base` e `small`: daí o venv próprio
 Neo segue com o Python do usuário (`python` do PATH); um `~/.venv-video-montagem`
 criado lá passa a ter prioridade sobre ele.
 
+Opcional (#13372): o `verify-xml` usa o OpenTimelineIO (adapter FCP7) como 2º
+leitor do XML, conferindo clipes, in/out e duração contra o leitor próprio. Sem
+ele, avisa "2º leitor indisponível" e segue; divergência nunca reprova o XML.
+Para ligar, no venv da montagem ou num Python à parte apontado por
+`DIARIA_OTIO_PYTHON`:
+
+```bash
+VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/otio-requirements.txt
+```
+
 O lock fixa `av==18.0.0`: com o PyAV 19 (o que o `pip install faster-whisper`
 puxava em 29/10/2026) o decode do áudio quebra com `TypeError: open() got an
 unexpected keyword argument 'metadata_errors'`. Por isso o check do Passo 0
