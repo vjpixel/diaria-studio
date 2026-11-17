@@ -1,0 +1,7 @@
+# 2º leitor do XML no verify-xml (#13372): OPCIONAL. Sem estes pacotes o
+# verify-xml avisa "2º leitor indisponível" e segue com o leitor próprio.
+# Instalar no Python de DIARIA_OTIO_PYTHON, ou no venv da montagem
+# (~/.venv-video-montagem): pip install -r scripts/video/otio-requirements.txt
+# O fcp_xml saiu do pacote principal no OTIO 0.16: o adapter vem à parte.
+opentimelineio==0.18.1
+otio-fcp-adapter==1.0.0
