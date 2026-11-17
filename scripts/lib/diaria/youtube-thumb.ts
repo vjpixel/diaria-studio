@@ -46,11 +46,21 @@
  *   do lettering do título (~3,5 s iniciais) — `ffmpeg -ss {t}`; aqui só os
  *   argumentos e a checagem da janela.
  *
+ *   Modo de teste da "fórmula Van Gogh" (#13235, período de teste da #13192),
+ *   opt-in por `hookStyle: "grande"` / `--hook-style grande`: gancho em Anton
+ *   (fonte OFL versionada em `assets/fonts/anton/`, para o raster sair igual
+ *   em qualquer máquina), caixa alta, até 2 linhas, a última numa tarja teal,
+ *   no canto SUPERIOR direito (à esquerda no layout `right`), com logo
+ *   opcional do protagonista logo abaixo. O padrão (`serif`) não muda.
+ *
  * Referência do padrão (#11942): `data/editions/2610/261021/04-youtube-thumb.jpg`.
  * Também aprovadas: `261022/04-youtube-thumb.jpg` e, no layout `top`,
  * `261027/04-youtube-thumb.jpg`.
  */
 
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { COLORS, FONTS } from "../shared/design-tokens.ts";
 import type { PortraitSide } from "./youtube-thumb-portrait.ts";
@@ -413,9 +423,19 @@ export function portraitRightEdgeInRows(
  * do retrato nas linhas que o gancho ocupa, menos a folga. Nunca passa de
  * `HOOK_MAX_WIDTH`.
  */
-export function hookWidthBeside(portraitRight: number, thumbW = YOUTUBE_THUMB_W): number {
-  if (portraitRight < 0) return HOOK_MAX_WIDTH;
-  return Math.min(HOOK_MAX_WIDTH, thumbW - HOOK_RIGHT_MARGIN - (portraitRight + 1 + HOOK_PORTRAIT_GAP));
+export function hookWidthBeside(portraitRight: number, thumbW = YOUTUBE_THUMB_W, maxWidth = HOOK_MAX_WIDTH): number {
+  if (portraitRight < 0) return maxWidth;
+  return Math.min(maxWidth, thumbW - HOOK_RIGHT_MARGIN - (portraitRight + 1 + HOOK_PORTRAIT_GAP));
+}
+
+/**
+ * Espelho de `hookWidthBeside` para o gancho no topo à ESQUERDA (#13235,
+ * estilo `grande` no layout `right`): da margem esquerda até a parte opaca
+ * mais à esquerda do retrato (coordenada da CAPA, -1 = nada ali), menos a folga.
+ */
+export function hookWidthBesideLeft(portraitLeft: number, maxWidth = HOOK_MAX_WIDTH): number {
+  if (portraitLeft < 0) return maxWidth;
+  return Math.min(maxWidth, portraitLeft - HOOK_PORTRAIT_GAP - HOOK_LEFT_MARGIN);
 }
 
 /**
@@ -469,6 +489,186 @@ export function hookWidthBesideBottomLeft(portraitLeft: number, thumbW = YOUTUBE
   return Math.min(BOTTOM_HOOK_MAX_WIDTH, endX - HOOK_LEFT_MARGIN);
 }
 
+// ─── Estilo de gancho `grande` (#13235, fórmula Van Gogh, opt-in) ───────────
+
+/**
+ * Estilo do gancho da capa horizontal (#13235). `serif` = o padrão (Georgia
+ * bold, só o `?` em teal); `grande` = o modo de teste da #13192 (Anton, caixa
+ * alta, até 2 linhas, a última numa tarja teal, no topo). O padrão não muda.
+ */
+export type HookStyle = "serif" | "grande";
+export const HOOK_STYLES: readonly HookStyle[] = ["serif", "grande"];
+export const DEFAULT_HOOK_STYLE: HookStyle = "serif";
+
+/** Valida o `--hook-style`; ausente → `serif`. Lança com as opções fora delas. */
+export function parseHookStyle(raw: string | undefined): HookStyle {
+  if (raw === undefined) return DEFAULT_HOOK_STYLE;
+  const v = raw.trim().toLowerCase();
+  if ((HOOK_STYLES as readonly string[]).includes(v)) return v as HookStyle;
+  throw new Error(`--hook-style ${JSON.stringify(raw)} inválido: use serif (default) ou grande (#13235)`);
+}
+
+/**
+ * Anton (SIL Open Font License, licença em `assets/fonts/anton/OFL.txt`),
+ * versionada no repo para a capa sair igual no Neo e no 300 (#13235). Entra no
+ * raster pelo `fontfile` do `sharp` (text input do libvips), sem depender da
+ * fonte estar instalada na máquina.
+ */
+export const ANTON_FONT_FILE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "assets", "fonts", "anton", "Anton-Regular.ttf");
+export const ANTON_FONT_FAMILY = "Anton";
+
+/** Gancho `grande`: no máximo ~45% da altura da capa (a referência pede ~40%). */
+export const GRANDE_HOOK_MAX_HEIGHT = Math.round(YOUTUBE_THUMB_H * 0.45);
+/** Largura máxima do bloco do gancho `grande` (o resto é do retrato). */
+export const GRANDE_HOOK_MAX_WIDTH = 620;
+/** Tamanho da fonte do `grande`, em px (dpi 72: ponto = pixel). */
+export const GRANDE_HOOK_MAX_FONT = 200;
+export const GRANDE_HOOK_MIN_FONT = 48;
+/** Tarja da última linha e entrelinha, em fração do tamanho da fonte. */
+const GRANDE_TARJA_PAD_X_EM = 0.16;
+const GRANDE_TARJA_PAD_Y_EM = 0.1;
+const GRANDE_LINE_GAP_EM = 0.1;
+/** Logo do protagonista (#13235): caixa máxima e distância do gancho. */
+export const GRANDE_LOGO_MAX_W = 300;
+export const GRANDE_LOGO_MAX_H = 150;
+const GRANDE_LOGO_GAP = 24;
+/** Abaixo desta largura o logo não cabe ao lado do retrato: vira aviso. */
+const GRANDE_LOGO_MIN_W = 80;
+
+/**
+ * Pure (#13235): as linhas do gancho `grande`, em caixa alta. Usa a validação
+ * do `splitHook` (2 a 4 palavras numa linha, ou 2 linhas de até 4). Gancho de
+ * uma linha só é quebrado em 2 (a 1ª com a metade arredondada para cima),
+ * porque a palavra-chave vai na última linha, na tarja teal: "IA ladra?" vira
+ * ["IA", "LADRA?"]. Quebra explícita do editor (`|`, `\n`) é respeitada.
+ */
+export function grandeHookLines(hook: string): string[] {
+  const parts = splitHook(hook);
+  let lines = hookDrawnLines(parts);
+  if (lines.length === 1) {
+    // Moeda e número ficam juntos na mesma linha (#12278): "R$ 100" nunca quebra.
+    const words = shortHookTokens(lines[0]);
+    const cut = Math.ceil(words.length / 2);
+    lines = words.length > 1 ? [words.slice(0, cut).join(" "), words.slice(cut).join(" ")] : lines;
+  }
+  return lines.map((l) => l.toLocaleUpperCase("pt-BR"));
+}
+
+/** Medidas do bloco do `grande` num tamanho de fonte, a partir das linhas medidas a 100 px. */
+export interface GrandeLineSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * Pure (#13235): bloco do gancho `grande` no tamanho `size`, a partir das
+ * linhas medidas a 100 px (a largura escala linearmente com a fonte). A
+ * última linha ganha a tarja (padding dos dois lados).
+ */
+export function grandeBlockSize(at100: GrandeLineSize[], size: number): { width: number; height: number; padX: number; padY: number; gap: number } {
+  const k = size / 100;
+  const padX = Math.round(size * GRANDE_TARJA_PAD_X_EM);
+  const padY = Math.round(size * GRANDE_TARJA_PAD_Y_EM);
+  const gap = Math.round(size * GRANDE_LINE_GAP_EM);
+  const widths = at100.map((l, i) => Math.ceil(l.width * k) + (i === at100.length - 1 ? 2 * padX : 0));
+  const heights = at100.map((l, i) => Math.ceil(l.height * k) + (i === at100.length - 1 ? 2 * padY : 0));
+  return { width: Math.max(...widths), height: heights.reduce((a, b) => a + b, 0) + gap * (at100.length - 1), padX, padY, gap };
+}
+
+/**
+ * Pure (#13235): o maior tamanho de fonte (entre o mínimo e o máximo do
+ * `grande`) em que o bloco cabe em `maxWidth` x `maxHeight`.
+ */
+export function grandeHookFontSize(at100: GrandeLineSize[], maxWidth: number, maxHeight = GRANDE_HOOK_MAX_HEIGHT): number {
+  for (let size = GRANDE_HOOK_MAX_FONT; size > GRANDE_HOOK_MIN_FONT; size -= 2) {
+    const b = grandeBlockSize(at100, size);
+    if (b.width <= maxWidth && b.height <= maxHeight) return size;
+  }
+  return GRANDE_HOOK_MIN_FONT;
+}
+
+/** Uma linha do `grande` rasterizada pelo libvips com a Anton do repo. */
+async function renderAntonLine(text: string, size: number, color: string): Promise<{ png: Buffer; width: number; height: number }> {
+  const { data, info } = await sharp({
+    text: {
+      text: `<span foreground="${color}">${escapeXml(text)}</span>`,
+      font: `${ANTON_FONT_FAMILY} ${size}`,
+      fontfile: ANTON_FONT_FILE,
+      rgba: true,
+      dpi: 72,
+    },
+  })
+    .png()
+    .toBuffer({ resolveWithObject: true });
+  return { png: data, width: info.width, height: info.height };
+}
+
+/**
+ * Lança se a Anton do repo não está no lugar ou não resolve no rasterizador
+ * (#13235): sem ela o libvips cairia numa fonte de reserva em silêncio, a
+ * mesma classe do guard de Georgia (#4090). A sonda compara com uma família
+ * inexistente: rasters iguais = a Anton não entrou.
+ */
+export async function assertAntonAvailable(): Promise<void> {
+  if (!existsSync(ANTON_FONT_FILE)) {
+    throw new Error(`fonte Anton ausente em ${ANTON_FONT_FILE} — ela é versionada no repo (#13235); restaure com git checkout -- assets/fonts/anton`);
+  }
+  const probe = async (family: string) =>
+    (await sharp({ text: { text: "HANDGLOVES 123", font: `${family} 40`, fontfile: ANTON_FONT_FILE, rgba: true, dpi: 72 } }).png().toBuffer());
+  const [anton, sentinel] = [await probe(ANTON_FONT_FAMILY), await probe("__diaria_sentinel_absent_font__")];
+  if (anton.equals(sentinel)) {
+    throw new Error(`a fonte Anton (${ANTON_FONT_FILE}) não resolveu no rasterizador — o gancho grande sairia numa fonte de reserva (#13235)`);
+  }
+}
+
+/**
+ * Rasteriza o gancho `grande` (#13235): linhas em Anton cor papel, a última
+ * em cor papel sobre a tarja teal, alinhadas à direita (`end`) ou à esquerda
+ * (`start`, layout `right`), no maior tamanho que cabe em `maxWidth`.
+ */
+export async function renderGrandeHookLayer(
+  hook: string,
+  maxWidth = GRANDE_HOOK_MAX_WIDTH,
+  align: "end" | "start" = "end",
+  maxHeight = GRANDE_HOOK_MAX_HEIGHT,
+): Promise<{ png: Buffer; width: number; height: number; fontSize: number }> {
+  const lines = grandeHookLines(hook);
+  // Sequencial de propósito: pango + fontconfig em threads concorrentes do
+  // libuv já deu corrida no 1º uso (d1-play-image.ts).
+  const at100: GrandeLineSize[] = [];
+  for (const l of lines) {
+    const r = await renderAntonLine(l, 100, COLORS.onInk);
+    at100.push({ width: r.width, height: r.height });
+  }
+  const size = grandeHookFontSize(at100, maxWidth, maxHeight);
+  const rendered = [];
+  for (const l of lines) rendered.push(await renderAntonLine(l, size, COLORS.onInk));
+  const { padX, padY, gap } = grandeBlockSize(at100, size);
+  const last = rendered.length - 1;
+  const rowW = rendered.map((r, i) => r.width + (i === last ? 2 * padX : 0));
+  const rowH = rendered.map((r, i) => r.height + (i === last ? 2 * padY : 0));
+  const width = Math.max(...rowW);
+  const height = rowH.reduce((a, b) => a + b, 0) + gap * last;
+  const layers: sharp.OverlayOptions[] = [];
+  let y = 0;
+  for (const [i, r] of rendered.entries()) {
+    const x = align === "end" ? width - rowW[i] : 0;
+    if (i === last) {
+      const tarja = `<svg xmlns="http://www.w3.org/2000/svg" width="${rowW[i]}" height="${rowH[i]}"><rect width="${rowW[i]}" height="${rowH[i]}" fill="${COLORS.brand}"/></svg>`;
+      layers.push({ input: Buffer.from(tarja), left: x, top: y });
+      layers.push({ input: r.png, left: x + padX, top: y + padY });
+    } else {
+      layers.push({ input: r.png, left: x, top: y });
+    }
+    y += rowH[i] + gap;
+  }
+  const png = await sharp({ create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite(layers)
+    .png()
+    .toBuffer();
+  return { png, width, height, fontSize: size };
+}
+
 /** Realce do retrato aprovado pelo editor em 261027 (#11228). */
 export const PORTRAIT_CONTRAST = { a: 1.25, b: -32 } as const;
 export const PORTRAIT_SATURATION = 1.08;
@@ -513,6 +713,13 @@ export interface ComposeThumbInput {
    * vira a cena (#12123): amplia a cena do D1 sem novo outpaint.
    */
   bgCrop?: BgCrop;
+  /**
+   * Estilo do gancho (#13235). Default `serif` (o padrão); `grande` = modo de
+   * teste da fórmula Van Gogh (Anton, caixa alta, tarja teal, no topo).
+   */
+  hookStyle?: HookStyle;
+  /** Logo do protagonista abaixo do gancho (#13235). Só com `hookStyle: "grande"`. */
+  logo?: Buffer;
 }
 
 export interface ComposeThumbResult {
@@ -536,6 +743,10 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
 
   // Valida o gancho antes de qualquer trabalho de imagem.
   splitHook(input.hook);
+  const hookStyle = input.hookStyle ?? DEFAULT_HOOK_STYLE;
+  if (input.logo && hookStyle !== "grande") {
+    throw new Error("logo só no gancho grande (#13235): passe --hook-style grande junto do --logo");
+  }
 
   const bgMeta = await sharp(input.background).metadata();
   if (!bgMeta.width || !bgMeta.height) throw new Error("fundo ilegível (sem dimensões)");
@@ -591,6 +802,25 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
   // #12123: no `right` o retrato cola na borda direita e o gancho vai à esquerda.
   const portraitLeft = mirrored ? W - pw : 0;
   const hookAlign = mirrored ? "start" : "end";
+
+  if (hookStyle === "grande") {
+    const overlays = await grandeOverlays({ hook: input.hook, portrait, ph, portraitLeft, mirrored, logo: input.logo, warnings });
+    // Gancho no topo: gradiente escuro no topo atrás dele; nos layouts com
+    // close-up (`bottom`/`right`) a vinheta segue.
+    const shadingGrande = [
+      ...(bottom ? [{ input: Buffer.from(buildVignetteSvg(W, H, mirrored ? VIGNETTE_CX_RIGHT : VIGNETTE_CX_BOTTOM)), left: 0, top: 0 }] : []),
+      { input: Buffer.from(buildGradientSvg(W, H, "top")), left: 0, top: 0 },
+    ];
+    const jpeg = await encodeThumb((quality) =>
+      sharp(background)
+        .composite([...shadingGrande, { input: portrait, left: portraitLeft, top: H - ph }, ...overlays])
+        .flatten({ background: COLORS.ink })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer(),
+    );
+    return { jpeg, warnings };
+  }
+
   const maxHookWidth = bottom ? BOTTOM_HOOK_MAX_WIDTH : HOOK_MAX_WIDTH;
   let hookLayer = await renderHookLayer(input.hook, maxHookWidth, hookAlign);
   const hookTop = (height: number) => (bottom ? H - HOOK_BOTTOM_MARGIN - height : HOOK_TOP_MARGIN);
@@ -646,6 +876,11 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
       .jpeg({ quality, mozjpeg: true })
       .toBuffer();
 
+  return { jpeg: await encodeThumb(compose), warnings };
+}
+
+/** JPEG ≤ 2 MB: qualidade 90, caindo para 82/74/66 se passar do limite do YouTube. */
+async function encodeThumb(compose: (quality: number) => Promise<Buffer>): Promise<Buffer> {
   let jpeg = await compose(90);
   for (const q of [82, 74, 66]) {
     if (jpeg.length <= YOUTUBE_THUMB_MAX_BYTES) break;
@@ -654,7 +889,64 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
   if (jpeg.length > YOUTUBE_THUMB_MAX_BYTES) {
     throw new Error(`capa com ${jpeg.length} bytes passa do limite de 2 MB do YouTube mesmo em qualidade 66`);
   }
-  return { jpeg, warnings };
+  return jpeg;
+}
+
+/**
+ * Camadas do gancho `grande` e do logo (#13235): gancho no canto SUPERIOR
+ * direito (à esquerda no `right`), encolhido para não invadir a cabeça do
+ * retrato nas linhas que ocupa; o logo logo abaixo, no mesmo lado, encolhido
+ * para não invadir o retrato nas linhas dele.
+ */
+async function grandeOverlays(o: {
+  hook: string;
+  portrait: Buffer;
+  ph: number;
+  portraitLeft: number;
+  mirrored: boolean;
+  logo?: Buffer;
+  warnings: string[];
+}): Promise<sharp.OverlayOptions[]> {
+  const W = YOUTUBE_THUMB_W;
+  const H = YOUTUBE_THUMB_H;
+  await assertAntonAvailable();
+  const align = o.mirrored ? "start" : "end";
+  const raw = await sharp(o.portrait).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const img = { data: raw.data, width: raw.info.width, height: raw.info.height, channels: raw.info.channels };
+  const top = H - o.ph;
+  /** Largura livre ao lado do retrato nas linhas y0..y1 da capa. */
+  const freeWidth = (y0: number, y1: number, max: number) => {
+    if (o.mirrored) {
+      const edge = portraitLeftEdgeInRows(img, top, y0, y1);
+      return hookWidthBesideLeft(edge < 0 ? -1 : o.portraitLeft + edge, max);
+    }
+    return hookWidthBeside(portraitRightEdgeInRows(img, top, y0, y1), W, max);
+  };
+  let hook = await renderGrandeHookLayer(o.hook, GRANDE_HOOK_MAX_WIDTH, align);
+  const available = freeWidth(HOOK_TOP_MARGIN, HOOK_TOP_MARGIN + hook.height, GRANDE_HOOK_MAX_WIDTH);
+  if (hook.width > available) {
+    if (available < HOOK_MIN_WIDTH) {
+      o.warnings.push(
+        `gancho grande encostaria no retrato (só ${available}px livres ao lado da cabeça) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um retrato mais estreito`,
+      );
+    }
+    hook = await renderGrandeHookLayer(o.hook, Math.max(HOOK_MIN_WIDTH, available), align);
+  }
+  const edgeLeft = (width: number) => (o.mirrored ? HOOK_LEFT_MARGIN : W - HOOK_RIGHT_MARGIN - width);
+  const layers: sharp.OverlayOptions[] = [{ input: hook.png, left: edgeLeft(hook.width), top: HOOK_TOP_MARGIN }];
+  if (o.logo) {
+    const logoTop = HOOK_TOP_MARGIN + hook.height + GRANDE_LOGO_GAP;
+    const maxH = Math.min(GRANDE_LOGO_MAX_H, H - HOOK_BOTTOM_MARGIN - logoTop);
+    if (maxH < 40) {
+      o.warnings.push(`logo não coube abaixo do gancho (só ${maxH}px de altura livre) — omitido; encurte o gancho`);
+      return layers;
+    }
+    const maxW = Math.max(GRANDE_LOGO_MIN_W, freeWidth(logoTop, logoTop + maxH, GRANDE_LOGO_MAX_W));
+    if (maxW <= GRANDE_LOGO_MIN_W) o.warnings.push(`logo espremido ao lado do retrato (só ${GRANDE_LOGO_MIN_W}px de largura) — pode sobrepor`);
+    const logo = await sharp(o.logo).rotate().ensureAlpha().trim().resize(maxW, maxH, { fit: "inside" }).png().toBuffer({ resolveWithObject: true });
+    layers.push({ input: logo.data, left: edgeLeft(logo.info.width), top: logoTop });
+  }
+  return layers;
 }
 
 export interface ShortCoverPlan {
