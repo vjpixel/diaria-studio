@@ -7,7 +7,9 @@
  * em `scripts/lib/site-videos-page.ts`.
  *
  * Roda junto da home no `regen-home.yml` (06:00 BRT), com o mesmo corte de
- * edição futura.
+ * edição futura. É o ÚNICO lugar que a escreve (#13382): a home também é
+ * regenerada por `publish-edition-site-page.ts` e `reconcile-site-sitemap.ts`,
+ * `/videos` não — fica até 06:00 sem o vídeo que a home já mostra.
  *
  * Uso:
  *   npx tsx scripts/gen-videos-page.ts [--sitemap workers/site/public/sitemap.xml] [--pages-dir workers/site/public/p] [--out workers/site/public/videos/index.html]
