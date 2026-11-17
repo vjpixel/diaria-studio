@@ -195,7 +195,7 @@ roteiro (`porVideo.vertical1.capa`; `porVideo.vertical2.capa` para o corte
 `guia`), ou `"capa"` no `blocks.json` ou na sequência.
 
 Fica como está: o horizontal (capa pela API), o Instagram (`cover_url`) e o
-YouTube Shorts (capa pelo Studio web e o 1º frame do #12100).
+YouTube Shorts (capa pelo Studio web; o 1º frame do #12100 foi desligado em 17/11/2026).
 
 O teste vale para 2 ou 3 edições, antes de virar regra. Em cada uma, conferir:
 
