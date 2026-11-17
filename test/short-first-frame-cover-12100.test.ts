@@ -306,10 +306,14 @@ describe("#12100 opção 2 — config publishing.shorts", () => {
     assert.equal(loadShortsConfig(undefined).youtubeFirstFrameCoverMs, SHORT_FIRST_FRAME_COVER_DEFAULT_MS);
   });
 
-  it("platform.config.json liga a capa no 1º frame", () => {
+  // Regressão #12100 (decisão do editor de 17/11/2026): duas medições negativas
+  // (400 ms em Hkx35UI-XCM, distância 0,441; 1000 ms em 7OMVoFQNru8, 0,422) e o
+  // Short 7OMVoFQNru8 saiu com áudio registrado pelo YouTube a ~2,4 kbps. A capa
+  // no 1º frame fica DESLIGADA no config: o vertical original sobe para o YouTube.
+  it("platform.config.json desliga a capa no 1º frame (#12100, 17/11/2026)", () => {
     const config = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
-    assert.equal(config.publishing.shorts.youtube_first_frame_cover, true);
-    assert.equal(loadShortsConfig(config).youtubeFirstFrameCoverMs, 1000);
+    assert.equal(config.publishing.shorts.youtube_first_frame_cover, false);
+    assert.equal(loadShortsConfig(config).youtubeFirstFrameCoverMs, null);
   });
 
   // Regressão #12100 (decisão do editor de 16/11/2026): com 400 ms a medição
@@ -320,7 +324,7 @@ describe("#12100 opção 2 — config publishing.shorts", () => {
     assert.equal(SHORT_FIRST_FRAME_COVER_DEFAULT_MS, 1000);
     const config = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
     assert.ok(config.publishing.shorts.youtube_first_frame_cover_ms > 400, "capa inicial não pode voltar aos 400 ms já reprovados na medição");
-    const plan = planFirstFrameCover({ probe: PROBE, leadMs: loadShortsConfig(config).youtubeFirstFrameCoverMs! });
+    const plan = planFirstFrameCover({ probe: PROBE, leadMs: config.publishing.shorts.youtube_first_frame_cover_ms });
     assert.deepEqual(plan, { ok: true, frames: 30, leadSeconds: 1 });
   });
 
