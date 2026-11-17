@@ -49,10 +49,25 @@ export const ROTEIRO_FALAS_FILE = "_internal/roteiro-falas.json";
 export function avisosTomConversacional(roteiro: Pick<RoteiroFalas, "falas">): string[] {
   const avisos: string[] = [];
   for (const fala of roteiro.falas) {
-    const verbos = fala.texto.match(/(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|constatou|verificou-se)(?![\p{L}\p{N}_])/giu);
+    const verbos = fala.texto.match(/(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|constatou|verificou-se|declarou|informou|divulgou)(?![\p{L}\p{N}_])/giu);
     if (verbos) avisos.push(`${fala.id}: verbo de relatório (${[...new Set(verbos.map((v) => v.toLowerCase()))].join(", ")}); considerar verbo de fala, sem mudar o sentido da fonte (#13165).`);
     const maior = Math.max(0, ...fala.texto.split(/[,.;:!?…—\n]+/u).map((trecho) => trecho.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)?.length ?? 0));
     if (maior > 30) avisos.push(`${fala.id}: trecho com ${maior} palavras sem pausa; dividir em frases curtas de conversa (#13165).`);
+  }
+  avisos.push(...avisosSemMarcaDeFala(roteiro));
+  return avisos;
+}
+
+/** Marcas de fala (#13393): uma peça longa sem nenhuma lê como texto escrito. */
+const MARCA_DE_FALA = /(?<![\p{L}\p{N}_])(?:tá|pra|né|a gente|calma|olha|e aí)(?![\p{L}\p{N}_])/iu;
+const MIN_PALAVRAS_SEM_MARCA = 50;
+
+export function avisosSemMarcaDeFala(roteiro: Pick<RoteiroFalas, "falas">): string[] {
+  const avisos: string[] = [];
+  for (const video of VIDEOS_ROTEIRO) {
+    const texto = roteiro.falas.filter((f) => f.videos.includes(video)).map((f) => f.texto).join("\n");
+    const palavras = texto.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+    if (palavras >= MIN_PALAVRAS_SEM_MARCA && !MARCA_DE_FALA.test(texto)) avisos.push(`${VIDEO_LABEL[video]}: ${palavras} palavras sem nenhuma marca de fala (tá, pra, né, a gente, calma...); o registro está escrito, reescrever em tom de conversa (#13393).`);
   }
   return avisos;
 }
