@@ -385,6 +385,7 @@ import {
   transcriptWords,
   reviewTranscriptWords,
   validateVocabRules,
+  vocabRuleWarnings,
   audioCleanArgs,
   audioCleanFilter,
   AUDIO_CLEAN,
@@ -695,7 +696,18 @@ export function loadVocab(path = VOCAB_FILE): Vocab {
     errors.push("vocabulario.json aliases: cada item precisa de heard e written");
   }
   if (errors.length) throw new Error(errors.join("; "));
+  warnVocabOnce(vocabRuleWarnings(v.rules ?? [], "vocabulario.json rules"));
   return { whisper_prompt: v.whisper_prompt, rules: v.rules ?? [], aliases: v.aliases ?? [] };
+}
+
+/** `[aviso]` de vocabulário uma vez por execução (as regras são carregadas várias vezes por comando, #13413). */
+const vocabWarned = new Set<string>();
+function warnVocabOnce(warnings: string[]): void {
+  for (const w of warnings) {
+    if (vocabWarned.has(w)) continue;
+    vocabWarned.add(w);
+    console.error(`[aviso] ${w}`);
+  }
 }
 
 function transcribeWithPython(ctx: Ctx, audio: string, out: string, opts: { vad: boolean; noCondition?: boolean }): void {
@@ -1443,6 +1455,7 @@ function loadBlocks(ctx: Ctx): { file: BlocksFile; text: string } {
   const parsed = parseBlocksFile(JSON.parse(text));
   if (!parsed.ok) throw new Error(`blocks.json inválido:\n  - ${parsed.errors.join("\n  - ")}`);
   if (parsed.file.edition !== ctx.edition) throw new Error(`blocks.json é da edição ${parsed.file.edition}, não ${ctx.edition}`);
+  warnVocabOnce(vocabRuleWarnings(parsed.file.vocabulary, "blocks.json vocabulary"));
   return { file: parsed.file, text };
 }
 
@@ -2407,6 +2420,7 @@ function loadDecupagemPlan(ctx: Ctx, segments: Segment[]): DecupagemPlan | null 
   const parsed = parseDecupagemPlan(JSON.parse(readFileSync(path, "utf8")), segments.length);
   if (!parsed.ok) throw new Error(`decupagem-plan.json inválido:\n  - ${parsed.errors.join("\n  - ")}`);
   if (parsed.plan.edition !== ctx.edition) throw new Error(`decupagem-plan.json é da edição ${parsed.plan.edition}, não ${ctx.edition}`);
+  warnVocabOnce(vocabRuleWarnings(parsed.plan.vocabulary, "decupagem-plan.json vocabulary"));
   return parsed.plan;
 }
 

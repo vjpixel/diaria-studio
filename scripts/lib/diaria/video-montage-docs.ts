@@ -35,6 +35,7 @@ import {
   isBlockKey,
   itemInTarget,
   sequenceInList,
+  vocabRegex,
   sequenceKey,
   speechParts,
   subRetranscribeWindow,
@@ -106,7 +107,7 @@ export function applyVocabularyToText(text: string, rules: VocabRule[], target?:
   let out = text;
   for (const r of rules) {
     if (r.targets && (!target || !sequenceInList(r.targets, target))) continue;
-    out = out.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
+    out = out.replace(vocabRegex(r.pattern, r.flags ?? "g"), r.replacement);
   }
   return out;
 }

@@ -1498,10 +1498,47 @@ const CORTE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 
+/**
+ * Fonte da regex de uma regra de vocabulário, com o `\b` mal escapado no JSON
+ * consertado (#13413). No JSON, `"\b"` é o escape do caractere BACKSPACE
+ * (U+0008), não a barra + b que a regex quer (`"\\b"`): a regra
+ * `"\b[Hh]idrog[êe]nio\b"` do `blocks.json` da 261116 virou uma regex que
+ * exige um backspace antes do "H" e nunca casou, em silêncio, em nenhum lugar
+ * (refino das bordas, legendas, Docs). Fala transcrita nunca tem backspace,
+ * então o caractere só pode ser o `\b` de fronteira de palavra que quem
+ * escreveu a regra quis dizer. Os outros escapes de controle do JSON (`\t`,
+ * `\n`, `\r`, `\f`) já significam o mesmo caractere na regex.
+ */
+export function vocabPatternSource(pattern: string): string {
+  return pattern.replace(/\u0008/g, "\\b");
+}
+
+/** A regex de uma regra de vocabulário (a fonte passa por `vocabPatternSource`). */
+export function vocabRegex(pattern: string, flags: string): RegExp {
+  return new RegExp(vocabPatternSource(pattern), flags);
+}
+
+/**
+ * Avisos (não erros) das regras de vocabulário (#13413): pattern com U+0008,
+ * o `"\b"` do JSON que devia ser `"\\b"`. A regra continua valendo
+ * (`vocabRegex` conserta), o aviso só mostra a quem escreveu o arquivo.
+ */
+export function vocabRuleWarnings(raw: unknown, where: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  raw.forEach((r, i) => {
+    if (!isObj(r) || typeof r.pattern !== "string" || !r.pattern.includes("\u0008")) return;
+    out.push(
+      `${where}[${i}]: pattern /${vocabPatternSource(r.pattern)}/ tem um backspace (U+0008) no lugar do \\b: no JSON a fronteira de palavra se escreve "\\\\b", não "\\b"; a regra vale como \\b, mas corrija o arquivo (#13413)`,
+    );
+  });
+  return out;
+}
+
 function validRegex(pattern: unknown, flags: unknown): string | null {
   if (typeof pattern !== "string" || pattern === "") return "pattern vazio ou não-string";
   try {
-    new RegExp(pattern, typeof flags === "string" ? flags : "g");
+    vocabRegex(pattern, typeof flags === "string" ? flags : "g");
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : String(e);
@@ -4348,7 +4385,7 @@ export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target
     if (r.targets && (!target || !sequenceInList(r.targets, target))) continue;
     const next = applyRuleToWords(cur, r);
     if (next === null) {
-      warn?.(`regra de vocabulário /${r.pattern}/ apagaria palavras; pulada`);
+      warn?.(`regra de vocabulário /${vocabPatternSource(r.pattern)}/ apagaria palavras; pulada`);
       continue;
     }
     cur = next;
@@ -4393,7 +4430,7 @@ function applyRuleToWords(words: Word[], r: VocabRule): Word[] | null {
   }
   const joined = words.map((w) => w.text).join(" ");
   const flags = r.flags ?? "g";
-  const re = new RegExp(r.pattern, flags.includes("g") ? flags : flags + "g");
+  const re = vocabRegex(r.pattern, flags.includes("g") ? flags : flags + "g");
   const matches: Array<{ start: number; end: number; repl: string }> = [];
   for (let m = re.exec(joined); m !== null; m = re.exec(joined)) {
     if (m[0].length === 0) {
