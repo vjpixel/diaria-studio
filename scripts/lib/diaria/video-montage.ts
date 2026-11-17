@@ -1363,8 +1363,8 @@ export interface SourceInfo {
   /**
    * Bruto espelhado (a caneca aparece invertida). O `transcribe` decide pelo
    * metadado da câmera, quando houver (traseira não espelha, #11959), senão
-   * pelo `publishing.video.mirrored_default` do config (true, a premissa do
-   * #11208); `blocks.json` sobrepõe.
+   * pelo `publishing.video.mirrored_default` do config (false desde o #13316;
+   * era true, a premissa do #11208); `blocks.json` sobrepõe.
    */
   mirrored: boolean;
   /** De onde veio o `mirrored` do `transcribe` (#11959); ausente em `source.json` anterior a ele. */
@@ -4689,8 +4689,12 @@ export function parseFrameRate(r: string): number {
 export type CameraFacing = "front" | "back";
 export type MirroredFrom = "camera-metadata" | "config" | "default";
 
-/** Default do espelhamento sem metadado da câmera nem config: a premissa do #11208 (o bruto da 261027 era espelhado). */
-export const MIRRORED_DEFAULT = true;
+/**
+ * Default do espelhamento sem metadado da câmera nem config. Era `true` (a
+ * premissa do #11208, o bruto da 261027 espelhado); `false` desde o #13316: de
+ * 261103 a 261117 o bruto não veio espelhado em nenhuma edição.
+ */
+export const MIRRORED_DEFAULT = false;
 
 /** `publishing.video.mirrored_default` do `platform.config.json` (#11959); `null` = ausente ou não booleano. */
 export function mirroredDefaultFrom(config: unknown): boolean | null {
