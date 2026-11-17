@@ -40,6 +40,11 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       [aviso] `curta` (estalo, respiro, ruído) ou `sem-abertura` (provável fala cortada,
  *       com o limite: palavra vizinha, clipe vizinho ou teto), gravado em `softEdges` no
  *       verify-xml.json, para o editor conferir no Premiere junto com a prévia
+ *       (#13372) 2º leitor independente: o adapter FCP7 do OpenTimelineIO lê o mesmo XML
+ *       e confere clipes de áudio, in/out e duração contra o leitor próprio. Opcional
+ *       (scripts/video/otio-requirements.txt, Python em DIARIA_OTIO_PYTHON ou o da
+ *       montagem) e não bloqueante: sem OTIO avisa e segue; divergência é [aviso] e vai
+ *       em `otio` no verify-xml.json
  *   transcribe AAMMDD --from-audio ARQ [--audio-transcript JSON] [--source VIDEO]
  *       (#11504) o vídeo chegou depois de o áudio separado (o mesmo som, com pausas
  *       cortadas) já estar transcrito: alinha o áudio ao vídeo por correlação do
@@ -470,6 +475,7 @@ import {
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
 import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
+import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
@@ -613,6 +619,8 @@ import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
+/** #13372: 2º leitor do XML no verify-xml (OpenTimelineIO, opcional). */
+const OTIO_PY = join(ROOT, "scripts", "video", "otio_read_xml.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
@@ -2883,10 +2891,25 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
       if (!findings.length) console.log("  sem diferenças");
       for (const x of findings) console.log(`  ${clockTime(x.at)}  ${x.kind}: ${x.detail}`);
     }
+    // #13372: 2º leitor independente (adapter FCP7 do OpenTimelineIO) no mesmo XML: clipes, in/out e duração
+    // contra o leitor próprio. Opcional e NÃO bloqueante (decisão do editor): nunca soma em `bad`.
+    const otio = otioCrossCheck(parsed, xmlPath, {
+      python: resolveOtioPython(process.env.DIARIA_OTIO_PYTHON, ctx.python),
+      script: OTIO_PY,
+      sequenceName: plan.spec.name,
+      expectedTotalFrames: plan.durationFrames + (cardFrames ?? 0),
+    });
+    for (const x of otioCheckLines(otio)) {
+      // "indisponível" é da máquina, não da sequência: uma vez por rodada (o Set de avisos únicos do verify-xml).
+      if (otio.status === "indisponivel" && edgeWarned.has(x.text)) continue;
+      edgeWarned.add(x.text);
+      if (x.level === "aviso") console.error(`[aviso] verify-xml ${key}: ${x.text}`);
+      else console.error(`[video-montagem] verify-xml ${key}: ${x.text}`);
+    }
     bad += issues.length + cut.length + findings.length;
     cutTotal += cut.length;
     softTotal += soft.length;
-    report[key] = { xml: xmlPath, clips: clips.length, issues, cutEdges: cut, softEdges: soft, findings };
+    report[key] = { xml: xmlPath, clips: clips.length, issues, cutEdges: cut, softEdges: soft, findings, otio };
   }
   writeJson(f(ctx, "verify-xml.json"), report);
   if (bad) {
