@@ -2,7 +2,8 @@
  * site-videos-page.ts (#13323)
  *
  * Miolo puro da página `diar.ia.br/videos`: todos os vídeos horizontais da
- * "diar.ia.br comentada", do mais recente ao mais antigo, na mesma grade da
+ * série "diar.ia.br: notícias de IA" (até 16/11/2026, "diar.ia.br comentada",
+ * #13317), do mais recente ao mais antigo, na mesma grade da
  * seção "Vídeos" da home (`renderVideoCards`, `site-home-page.ts`). Gerada
  * por `scripts/gen-videos-page.ts` como static asset do Worker `workers/site`
  * (mesmo padrão de `/archive`), sem rota nova em `src/index.ts`. `/video`
@@ -23,6 +24,7 @@ import { COLORS } from "./shared/design-tokens.ts";
 import { renderSiteNav } from "./shared/site-nav.ts";
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
 import { YOUTUBE_EMBED_BASE } from "./site-page-video.ts";
+import { YOUTUBE_SERIES_NAME } from "./diaria/youtube-video.ts";
 import {
   VIDEOS_PAGE_PATH,
   VIDEO_GRID_CSS,
@@ -77,8 +79,8 @@ export function buildVideosPageHtml(entries: readonly HomeVideoEntry[]): string 
   const title = "Vídeos da diar.ia.br";
   const description =
     entries.length > 0
-      ? `Todos os ${entries.length} vídeos da diar.ia.br comentada: a notícia de IA do dia explicada em poucos minutos, em português.`
-      : "Vídeos da diar.ia.br comentada: a notícia de IA do dia explicada em poucos minutos, em português.";
+      ? `Todos os ${entries.length} vídeos da série “${YOUTUBE_SERIES_NAME}”: o assunto de IA do dia explicado em poucos minutos, em português.`
+      : `Vídeos da série “${YOUTUBE_SERIES_NAME}”: o assunto de IA do dia explicado em poucos minutos, em português.`;
   const seoMeta = renderSeoMeta({ title, description, url: VIDEOS_PAGE_URL });
   const jsonLd = buildVideosItemListJsonLd(entries);
   const grid =
@@ -142,7 +144,7 @@ ${renderAnalyticsHead()}
   <main class="wrap">
     <p class="top"><a href="/">diar<span class="dot">.</span>ia<span class="dot">.</span>br</a></p>
     <h1>Vídeos</h1>
-    <p class="lede">A diar.ia.br comentada: a notícia de IA do dia explicada em poucos minutos. Cada vídeo leva à edição em que ele saiu, com a newsletter completa.</p>
+    <p class="lede">A série “${escHtml(YOUTUBE_SERIES_NAME)}”: o assunto de IA do dia explicado em poucos minutos. Cada vídeo leva à edição em que ele saiu, com a newsletter completa.</p>
     <div class="actions"><a class="btn" href="${escHtml(siteVideosSubscribeUrl())}" rel="noopener">Inscreva-se no canal</a></div>
 ${grid}
     <div class="foot">

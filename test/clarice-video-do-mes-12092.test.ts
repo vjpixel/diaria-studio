@@ -162,7 +162,7 @@ test("injectVideoDoMes: 'O fio condutor' (mesma bolinha teal) não conta como se
 });
 
 test("buildVideoDoMesHtml: domínio no título do YouTube não vira autolink", () => {
-  const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "diar.ia.br comentada", frase: "Frase." });
+  const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "diar.ia.br: notícias de IA", frase: "Frase." });
   const h2 = html.match(/<h2[^>]*>(.*?)<\/h2>/)![1];
   assert.ok(!h2.includes("diar.ia.br"), "domínio quebrado para o Gmail não autolinkar");
 });

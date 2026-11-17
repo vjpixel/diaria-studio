@@ -1,6 +1,6 @@
 /**
  * drive-video-source.ts (#10659, itens 3-4): escolhe, entre os arquivos de uma
- * pasta do Drive, o vídeo "diar.ia.br comentada" do dia — o horizontal
+ * pasta do Drive, o vídeo "diar.ia.br: notícias de IA" do dia — o horizontal
  * (YouTube) ou o vertical (Short/Reels/Story).
  *
  * Puro: recebe a listagem já feita (`scripts/fetch-drive-video.ts` chama a

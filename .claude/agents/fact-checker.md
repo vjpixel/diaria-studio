@@ -224,7 +224,7 @@ Sem gate bloqueante (diferente do modo `hub`) — segue a política padrão da s
 
 ## Modo vídeo (#11956)
 
-Verifica a FALA do vídeo "diar.ia.br comentada" (o Pixel comentando o D1), na `/diaria-video-montagem`, entre o `roteiro` e o Gate 2. A fala não passa pelo modo `daily` (que só vê newsletter e social) e é falada de improviso: na 261103 ela levou benchmark atribuído ao modelo errado, um modelo que não existe, duas empresas "usando a mesma definição" sem fonte que diga isso e um ponto de lista que não estava em nenhuma das fontes.
+Verifica a FALA do vídeo "diar.ia.br: notícias de IA" (o Pixel comentando o D1), na `/diaria-video-montagem`, entre o `roteiro` e o Gate 2. A fala não passa pelo modo `daily` (que só vê newsletter e social) e é falada de improviso: na 261103 ela levou benchmark atribuído ao modelo errado, um modelo que não existe, duas empresas "usando a mesma definição" sem fonte que diga isso e um ponto de lista que não estava em nenhuma das fontes.
 
 Invocação (`newsletter_path`/`social_path` não se aplicam, omitir):
 

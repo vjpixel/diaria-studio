@@ -117,6 +117,13 @@ describe("#12542 — registro da medição", () => {
     assert.equal(cleanTopVideoTitle("Lula promete uma IA brasileira"), "Lula promete uma IA brasileira");
   });
 
+  it("#13317: cleanTopVideoTitle tira também o sufixo com o nome novo da série", () => {
+    assert.equal(cleanTopVideoTitle("Lula promete uma IA brasileira | diar.ia.br: notícias de IA #12"), "Lula promete uma IA brasileira");
+    assert.equal(cleanTopVideoTitle("Lula promete uma IA brasileira | diar.ia.br: noticias de IA"), "Lula promete uma IA brasileira");
+    // Título sem o separador "|" não perde nada, mesmo citando o nome da série.
+    assert.equal(cleanTopVideoTitle("Notícias de IA: o que mudou"), "Notícias de IA: o que mudou");
+  });
+
   it("buildTopVideoRecord: sem medição ou sem título → null", () => {
     const now = new Date("2026-11-10T11:50:00Z");
     assert.equal(buildTopVideoRecord(null, now), null);

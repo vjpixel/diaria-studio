@@ -6,8 +6,8 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
 /**
  * scripts/publish-shorts.ts (#10769)
  *
- * Publica o vídeo CURTO (vertical) da edição — o recorte do "diar.ia.br
- * comentada" — como Reels nas páginas do Facebook e no Instagram, via Graph
+ * Publica o vídeo CURTO (vertical) da edição — o recorte do "diar.ia.br:
+ * notícias de IA" — como Reels nas páginas do Facebook e no Instagram, via Graph
  * API, e monta os passos GUIADOS (Chrome, com o editor) do YouTube Shorts e do
  * perfil pessoal. Miolo puro em `scripts/lib/diaria/short-video.ts`.
  *

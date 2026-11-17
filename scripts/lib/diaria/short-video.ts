@@ -2,7 +2,7 @@
  * scripts/lib/diaria/short-video.ts (#10769)
  *
  * Miolo PURO da publicação do vídeo CURTO (vertical) de cada edição: o recorte
- * de ~2 min do "diar.ia.br comentada" (#10659) que sai como YouTube Shorts e
+ * de ~2 min do "diar.ia.br: notícias de IA" (#10659; nome da série desde o #13317) que sai como YouTube Shorts e
  * como Reels no Facebook e no Instagram. Sem I/O, sem rede — quem lê arquivo e
  * chama a Graph API é `scripts/publish-shorts.ts`.
  *

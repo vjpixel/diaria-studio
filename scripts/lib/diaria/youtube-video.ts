@@ -31,7 +31,7 @@
 import { BEEHIIV_BASE_URL } from "../edition-url.ts";
 import { resolveEditionScheduledAt, DEFAULT_EDITION_SCHEDULE_HHMM } from "../edition-scheduled-at.ts";
 
-/** Edição do 1º vídeo (#1) da série "diar.ia.br comentada". */
+/** Edição do 1º vídeo (#1) da série "diar.ia.br: notícias de IA" ("diar.ia.br comentada" até 16/11/2026, #13317). */
 export const YOUTUBE_FIRST_EPISODE_AAMMDD = "261021";
 
 export const YOUTUBE_TITLE_MAX_CHARS = 100;
@@ -41,13 +41,18 @@ export const YOUTUBE_TAGS_MAX_CHARS = 500;
 /** Categoria 28 = "Science & Technology" (videoCategories, região BR). */
 export const YOUTUBE_CATEGORY_ID = "28";
 
-/** Tags fixas da série; a categoria do D1 entra como 6ª quando cabe. */
+/**
+ * Tags fixas da série; a categoria do D1 entra como 6ª quando cabe. A última é
+ * o nome da série, o mesmo do podcast (#13317).
+ */
+export const YOUTUBE_SERIES_NAME = "diar.ia.br: notícias de IA";
+
 export const YOUTUBE_BASE_TAGS = [
   "diar.ia.br",
   "inteligência artificial",
   "IA",
   "notícias de IA",
-  "diar.ia.br comentada",
+  YOUTUBE_SERIES_NAME,
 ] as const;
 
 export const YOUTUBE_UPLOAD_ENDPOINT =

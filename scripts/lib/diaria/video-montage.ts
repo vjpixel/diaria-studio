@@ -1,7 +1,7 @@
 /**
  * scripts/lib/diaria/video-montage.ts (#11208)
  *
- * Lógica pura da montagem do vídeo diário "diar.ia.br comentada", do bruto do
+ * Lógica pura da montagem do vídeo diário "diar.ia.br: notícias de IA", do bruto do
  * Drive até o ponto de partida no Premiere. Portada dos scripts da sessão
  * manual de 26/10/2026 (edição 261027: `build_xml.py`, `srt_from_seq.py`,
  * `render_preview.py`, `transcribe.py`, preservados no 1º comentário da

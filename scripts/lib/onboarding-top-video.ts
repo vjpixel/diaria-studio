@@ -52,10 +52,11 @@ const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
 /**
  * Título do vídeo como entra na frase: sem o sufixo de série que alguns
- * uploads carregam ("… | diar.ia.br comentada #3").
+ * uploads carregam ("… | diar.ia.br comentada #3"). Desde o #13317 a série se
+ * chama "diar.ia.br: notícias de IA"; os dois nomes saem.
  */
 export function cleanTopVideoTitle(raw: string): string {
-  return raw.replace(/\s*\|\s*diar\.ia\.br\s+comentada\b.*$/i, "").trim();
+  return raw.replace(/\s*\|\s*diar\.ia\.br(?:\s+comentada\b|:\s*not[ií]cias\s+de\s+IA\b).*$/i, "").trim();
 }
 
 /** Pure: registro lido do disco → título + URL, ou `null` se inválido. */

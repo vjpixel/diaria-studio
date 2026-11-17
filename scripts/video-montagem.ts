@@ -1,7 +1,7 @@
 import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-share.ts";
 /**
- * scripts/video-montagem.ts (#11208) — montagem do vídeo diário "diar.ia.br
- * comentada", do bruto no Drive até o ponto de partida no Premiere. Usado pela
+ * scripts/video-montagem.ts (#11208) — montagem do vídeo diário "diar.ia.br:
+ * notícias de IA", do bruto no Drive até o ponto de partida no Premiere. Usado pela
  * skill `/diaria-video-montagem`; a lógica fica em
  * `scripts/lib/diaria/video-montage.ts` (pura, testada), este arquivo só roda
  * ffmpeg/ffprobe e o helper Python e lê/grava os arquivos.
