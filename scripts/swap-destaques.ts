@@ -281,7 +281,7 @@ export function buildSwapNextSteps(editionDir: string, slots: SlotSwap[]): strin
       (s) =>
         `Escrever DESTAQUE ${s.position} em 02-reviewed.md (writer-destaque, item: "${s.title}", source_text_path = path da entrada de sources com destaque === ${s.position} no stdout do refresh)`,
     ),
-    `social-writer + social-curto em escopo reduzido (${ds}), splice em 03-social.md (## d{N} e ## d{N}-cards em # Social, #12094)`,
+    `social-writer + social-curto em escopo reduzido (${ds}), gravando _internal/03-social.tmp.md e _internal/03-curto.tmp.md; splice em 03-social.md (## d{N} e ## d{N}-cards em # Social, #12094) com npx tsx scripts/splice-social-sections.ts --edition-dir ${dir} --destaque ${slots.map((s) => `d${s.position}`).join(",")} (remove os comentários HTML como o merge do Stage 2, #13431)`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9149)`,
     ...slots.map(
       (s) =>

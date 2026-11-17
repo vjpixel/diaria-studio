@@ -1,0 +1,8 @@
+{
+  "label": "calibrate-track-a-weights: coverage_bonus_present",
+  "created_at": "2026-11-17T01:16:18.921Z",
+  "rationale": "Saída de calibrate-track-a-weights.ts (#7980) — regressão logística L2 sobre 122 edições de treino (25 em holdout, nunca usadas no fit) da população Track A (finalistas do LLM aprovados/rejeitados pelo editor). Feature(s) calibrada(s): coverage_bonus_present (coef=0.1931, odds_ratio=1.213, proposto=5pt, âncora atual=5pt). Escala log-odds→pontos: 25.89 (âncora empírica). AUC holdout (shadow): 0.649.",
+  "weights": {
+    "coverage_bonus_present": 5
+  }
+}
