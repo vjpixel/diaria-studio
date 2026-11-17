@@ -320,6 +320,57 @@ export function serieQuedaSemDiaCorrente(medicoes: readonly MedicaoDia[], hoje: 
   return medicoes.filter((m) => m.chave < hoje);
 }
 
+/** Referência do sinal de QUEDA das métricas de aquisição (#13336). */
+export interface ReferenciaQuedaAquisicao {
+  /** A série de queda usa só os dias ANTERIORES a `corte` (o "atual" é o
+   *  dia imediatamente antes dele). */
+  corte: string;
+  /** Gate de `MIN_DIAS_SERIE`: dias com coleta `kit-vivo` bem-sucedida na
+   *  janela de referência. */
+  diasComInsumo: string[];
+  /** `true` quando a coleta de hoje ainda não tem linha e a referência
+   *  recuou um dia (atual = anteontem). */
+  deslocada: boolean;
+}
+
+/**
+ * Escolhe o último dia COMPLETO para o sinal de queda das 4 métricas de
+ * aquisição (#13336). Pelo #10667, o "atual" (ontem) só está completo quando
+ * a coleta de HOJE existe — ela é que vê os cadastros de ontem depois das
+ * 04:25. Desde 12/11/2026 a `Diaria-Kit-Roster-Ingest` passou de ~11 min a
+ * ~3h20 e grava a linha de hoje depois das 04:40 do alarme: o gate saía
+ * 13/14 toda execução, a queda nunca era avaliada e as issues abertas
+ * (#8223, #8225, #8226) ficavam congeladas para sempre (#10662), sem fechar.
+ *
+ * Sem coleta de hoje, a referência recua um dia: atual = anteontem, cuja
+ * completude a coleta de ONTEM prova, e o gate conta a janela de mesmo
+ * tamanho terminando ontem. A prova de completude do #10667 continua
+ * exigida; só muda qual dia ela prova. Se ontem também não tem coleta, a
+ * janela recuada sai curta e a queda segue pulada (congelada), como antes.
+ *
+ * `dias` é a janela do alarme em ordem ascendente, terminando em `hoje`.
+ * @pure
+ */
+export function referenciaQuedaAquisicao(
+  hoje: string,
+  dias: readonly string[],
+  capturaLog: readonly CapturaLogEntry[],
+): ReferenciaQuedaAquisicao {
+  if (dias.length === 0 || hasCaptureOnDay(capturaLog, hoje)) {
+    return { corte: hoje, diasComInsumo: dias.filter((d) => hasCaptureOnDay(capturaLog, d)), deslocada: false };
+  }
+  const [y, m, d] = dias[0].split("-").map(Number);
+  const anterior = new Date(Date.UTC(y, m - 1, d));
+  anterior.setUTCDate(anterior.getUTCDate() - 1);
+  const janelaRecuada = [anterior.toISOString().slice(0, 10), ...dias.filter((dia) => dia < hoje)].slice(-dias.length);
+  const ontem = janelaRecuada[janelaRecuada.length - 1];
+  return {
+    corte: ontem,
+    diasComInsumo: janelaRecuada.filter((dia) => hasCaptureOnDay(capturaLog, dia)),
+    deslocada: true,
+  };
+}
+
 /**
  * Avalia queda pra 1 métrica: baseline = média dos valores numéricos da
  * série MENOS o mais recente; atual = valor mais recente. Alarma só quando
