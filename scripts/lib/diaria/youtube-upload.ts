@@ -534,11 +534,21 @@ export async function updatePublishedVideoText(
     body: JSON.stringify({ id: videoId, snippet }),
   });
   if (!put.ok) throw new Error(explainYouTubeUploadError(put.status, await errorSnippet(put), "update"));
-  const after = await read();
-  if (after.snippet.title !== input.title || after.snippet.description !== input.description) {
-    throw new Error(`videos.update aceitou, mas a releitura do vídeo ${videoId} mostra outro título/descrição — confira no YouTube Studio`);
+  // #13391: o videos.list é eventualmente consistente — logo após o PUT ainda
+  // pode devolver o texto antigo por alguns segundos; só acusa após as tentativas.
+  const sleep = deps.sleep ?? (async () => {});
+  for (let tentativa = 1; ; tentativa++) {
+    const after = await read();
+    if (after.snippet.title === input.title && after.snippet.description === input.description) return;
+    if (tentativa >= VIDEO_TEXT_REREAD_ATTEMPTS) break;
+    await sleep(VIDEO_TEXT_REREAD_WAIT_MS);
   }
+  throw new Error(`videos.update aceitou, mas a releitura do vídeo ${videoId} mostra outro título/descrição — confira no YouTube Studio`);
 }
+
+/** #13391: tentativas e espera (ms) da releitura após o PUT do texto. */
+const VIDEO_TEXT_REREAD_ATTEMPTS = 3;
+const VIDEO_TEXT_REREAD_WAIT_MS = 7000;
 
 /** #13000: campos graváveis do `status` que o `videos.update` preserva (o resto volta ao default se omitido). */
 export const YOUTUBE_WRITABLE_STATUS_FIELDS = ["embeddable", "license", "publicStatsViewable", "selfDeclaredMadeForKids", "containsSyntheticMedia"] as const;
