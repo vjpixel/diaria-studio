@@ -59,6 +59,19 @@
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --pick-portrait N
  *     → copia a opção N para `escolhido.jpg` (entrada do recorte rembg)
  *
+ * Modo de teste da "fórmula Van Gogh" (#13235, período de teste da #13192),
+ * opt-in; sem as flags abaixo a capa sai igual ao padrão:
+ *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --background-prompt-capa --scene "um cadeado aberto de metal" [--layout bottom|top|right]
+ *     → `_internal/youtube-thumb-capa-bg/prompt-capa.json` + o comando
+ *       `node scripts/codex-image.js` que gera `fundo-capa.jpg` (fundo pintado
+ *       escuro, um objeto iluminado no lado oposto ao do retrato, sem pessoas,
+ *       sem texto, sem Noite Estrelada; o script não chama o Codex)
+ *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --hook "IA ladra?" --portrait retrato.png
+ *     --hook-style grande [--logo logo.png] --background {edição}/_internal/youtube-thumb-capa-bg/fundo-capa.jpg
+ *     → gancho em Anton (fonte OFL do repo), caixa alta, em 2 linhas (a última
+ *       numa tarja teal), no canto superior direito (à esquerda no `right`);
+ *       logo do protagonista opcional abaixo do gancho (`--logo` só com `grande`)
+ *
  * Short → `{edição}/04-youtube-short-capa.jpg`. Padrão desde 08/11/2026
  * (#12462): frame do vertical DEPOIS do lettering do título (> 3,5 s), com o
  * rosto no alto, painel escuro cobrindo a legenda queimada e um GANCHO
@@ -73,7 +86,8 @@
  * depois `--cover` no `publish-shorts`.
  *
  * Saída: o caminho gravado no stdout; avisos no stderr com `[aviso]`.
- * Georgia precisa existir na máquina (guard `assertBrandSerifAvailable`, #4090).
+ * Georgia precisa existir na máquina (guard `assertBrandSerifAvailable`, #4090),
+ * exceto no gancho `grande`, que usa a Anton do repo (guard `assertAntonAvailable`).
  */
 
 import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
@@ -91,10 +105,18 @@ import {
   composeShortCover,
   composeYouTubeThumb,
   parseBgCrop,
+  parseHookStyle,
   parseThumbLayout,
   planShortCoverFrame,
   portraitSideForLayout,
 } from "./lib/diaria/youtube-thumb.ts";
+import {
+  THUMB_CAPA_BG_DIR,
+  THUMB_CAPA_BG_OUT,
+  THUMB_CAPA_BG_PROMPT,
+  buildCapaBackgroundPrompt,
+  parseCapaScene,
+} from "./lib/diaria/youtube-thumb-capa-bg.ts";
 import {
   THUMB_PORTRAITS_DIR,
   THUMB_PORTRAITS_META,
@@ -126,7 +148,8 @@ import {
 } from "./lib/diaria/youtube-thumb-frames.ts";
 
 const USAGE =
-  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\") --portrait PNG [--background IMG] [--layout bottom|top|right] [--bg-crop x,y,w,h] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
+  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\") --portrait PNG [--background IMG] [--layout bottom|top|right] [--bg-crop x,y,w,h] [--enhance-portrait] [--hook-style serif|grande] [--logo PNG] [--out PATH] [--edition-dir DIR]\n" +
+  "     gen-youtube-thumb.ts AAMMDD --background-prompt-capa --scene \"um objeto iluminado\" [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
@@ -311,6 +334,28 @@ function pickPortrait(dir: string, raw: string | undefined): number {
   return 0;
 }
 
+/**
+ * #13235: grava o prompt do fundo de capa da fórmula Van Gogh (um objeto
+ * iluminado no lado oposto ao do retrato) e imprime o comando de geração.
+ */
+function backgroundPromptCapa(dir: string, flags: Set<string>, values: Record<string, string>): number {
+  if (flags.has("scene")) throw new Error('--scene exige o valor: o objeto iluminado (ex.: --scene "um cadeado aberto de metal")');
+  const scene = parseCapaScene(values["scene"]);
+  if (flags.has("layout")) throw new Error("--layout exige o valor: bottom (default), top ou right");
+  const side = portraitSideForLayout(parseThumbLayout(values["layout"]));
+  const outDir = join(dir, THUMB_CAPA_BG_DIR);
+  mkdirSync(outDir, { recursive: true });
+  const prompt = join(outDir, THUMB_CAPA_BG_PROMPT);
+  const out = join(outDir, THUMB_CAPA_BG_OUT);
+  writeFileAtomic(prompt, JSON.stringify(buildCapaBackgroundPrompt(scene, side), null, 2) + "\n");
+  const command = `node scripts/codex-image.js ${prompt} ${out}`;
+  console.error(
+    `[ok] prompt do fundo de capa (retrato à ${side === "left" ? "esquerda" : "direita"}, objeto do outro lado) — gere com o comando e passe --background ${out} --hook-style grande na capa`,
+  );
+  console.log(JSON.stringify({ scene, side, prompt, out, command }, null, 2));
+  return 0;
+}
+
 /** Vídeo vertical da edição (convenção usada em 261022). */
 export function youtubeShortVideoFileName(aammdd: string): string {
   return `diaria-comentada-${aammdd}-short.mp4`;
@@ -368,11 +413,12 @@ async function main(): Promise<number> {
 
   // #11942: opções de retrato em close-up pelo Codex, com o frame escolhido
   // como referência de identidade e a expressão variando.
-  for (const k of ["portrait-prompts", "portrait-sheet"]) {
+  for (const k of ["portrait-prompts", "portrait-sheet", "background-prompt-capa"]) {
     if (values[k] !== undefined) throw new Error(`--${k} não leva valor (recebeu ${JSON.stringify(values[k])}): ponha a flag depois do AAMMDD`);
   }
   if (flags.has("portrait-prompts")) return portraitPrompts(dir, flags, values);
   if (flags.has("portrait-sheet")) return portraitSheet(dir);
+  if (flags.has("background-prompt-capa")) return backgroundPromptCapa(dir, flags, values);
   if (values["pick-portrait"] !== undefined || flags.has("pick-portrait")) return pickPortrait(dir, values["pick-portrait"]);
 
   if (flags.has("short-cover")) {
@@ -433,20 +479,27 @@ async function main(): Promise<number> {
   // #12123: recorte do fundo (amplia a cena sem novo outpaint); limites checados na composição.
   if (flags.has("bg-crop")) throw new Error("--bg-crop exige o valor: x,y,largura,altura (ex.: 200,80,1400,788)");
   const bgCrop = values["bg-crop"] !== undefined ? parseBgCrop(values["bg-crop"]) : undefined;
+  // #13235: modo de teste da fórmula Van Gogh (opt-in; default serif, o padrão).
+  if (flags.has("hook-style")) throw new Error("--hook-style exige o valor: serif (default) ou grande");
+  const hookStyle = parseHookStyle(values["hook-style"]);
+  if (flags.has("logo")) throw new Error("--logo exige o caminho do logo do protagonista (PNG, de preferência com transparência)");
+  const logoPath = values["logo"] !== undefined ? resolve(values["logo"]) : undefined;
+  if (logoPath && hookStyle !== "grande") throw new Error("--logo só com --hook-style grande (#13235)");
   const backgroundPath = resolve(values["background"] ?? join(dir, "04-d1-2x1.jpg"));
   // #11162: sem checagem do venv do rembg aqui. Este script só consome o
   // --portrait JÁ recortado; quem exige o ambiente é o passo de recorte
   // (`setup-rembg.py --input/--output` chama `check()` antes de recortar).
   // A garantia de que o recorte rodou é a recusa de retrato sem transparência
   // em `composeYouTubeThumb`, que vale em qualquer máquina.
-  for (const p of [resolve(portraitPath), backgroundPath]) {
+  for (const p of [resolve(portraitPath), backgroundPath, ...(logoPath ? [logoPath] : [])]) {
     if (!existsSync(p)) {
       console.error(`gen-youtube-thumb: ${p} não existe`);
       return 1;
     }
   }
 
-  await assertBrandSerifAvailable("gen-youtube-thumb");
+  // O `grande` usa a Anton do repo (guard próprio na composição), não Georgia.
+  if (hookStyle === "serif") await assertBrandSerifAvailable("gen-youtube-thumb");
   const { jpeg, warnings } = await composeYouTubeThumb({
     background: readFileSync(backgroundPath),
     portrait: readFileSync(resolve(portraitPath)),
@@ -454,6 +507,8 @@ async function main(): Promise<number> {
     enhancePortrait: flags.has("enhance-portrait"),
     layout,
     ...(bgCrop ? { bgCrop } : {}),
+    hookStyle,
+    ...(logoPath ? { logo: readFileSync(logoPath) } : {}),
   });
   for (const w of warnings) console.error(`[aviso] ${w}`);
   const out = resolve(values["out"] ?? join(dir, YOUTUBE_THUMB_FILE));
