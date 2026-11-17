@@ -350,6 +350,14 @@ import {
 } from "./lib/diaria/short-video.ts";
 // #12735: o link do horizontal na legenda e o redirect fixo da bio (diar.ia.br/video).
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
+import {
+  alarmYouTubeAudioDegraded,
+  checkYouTubeAudio,
+  describeYouTubeAudioCheck,
+  mp4HasAudioTrack,
+  notifyYouTubeAudioDegraded,
+  type YouTubeAudioAlarmFn,
+} from "./lib/diaria/youtube-audio-check.ts";
 import { latestVideoBioLink, type LatestVideoBioNetwork } from "./lib/shared/latest-video-redirect.ts";
 import { describeLatestVideoOutcome, pollKvFromEnv, readEditionHorizontalUrl, updateLatestVideoRedirect } from "./set-latest-video-redirect.ts";
 import {
@@ -3939,6 +3947,8 @@ export async function publishYouTubeShort(input: {
       thumbnail: input.cover ?? null,
       ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const, ...(input.matchTitleOnly ? { titleOnly: true } : {}), ...(input.ignoreVideoIds?.length ? { ignoreVideoIds: input.ignoreVideoIds } : {}) } }),
       ...(input.onBeforeBytes ? { beforeVideoBytes: () => input.onBeforeBytes!(unknownEntry()) } : {}),
+      // #13403: guard do áudio registrado pelo YouTube; nunca derruba o upload.
+      checkAudio: (token: string, videoId: string) => checkYouTubeAudio(input.deps, token, videoId, mp4HasAudioTrack(input.file)),
     });
   } catch (e) {
     if (e instanceof ExistingEditionVideoError) {
@@ -3966,6 +3976,10 @@ export async function publishYouTubeShort(input: {
   }
   const warnings: string[] = [];
   if (result.rereadError) warnings.push(`releitura do estado falhou: ${result.rereadError}`);
+  // #13403: a linha do guard vira aviso do destino (o CLI a imprime como `[aviso] youtube_shorts: ...`).
+  // O alarme do degradado sai no CLI, depois de o registro estar gravado (`alarmYouTubeAudioDegraded`).
+  const audioLine = result.audio_check ? describeYouTubeAudioCheck(result.audio_check, result.videoId, input.aammdd) : null;
+  if (audioLine) warnings.push(audioLine.replace(/^\[(aviso|pendente)\] /, ""));
   const failed = failedUploadStatus(result.rereadStatus);
   // #11547: `thumbnails.set` vale para Short (medido em 28/10/2026); falha só vira registro.
   // #12100: o sucesso troca só a miniatura 16:9; a capa do feed de Shorts vira aviso de passo manual.
@@ -3973,7 +3987,14 @@ export async function publishYouTubeShort(input: {
   if (cover && !cover.ok) warnings.push(`capa não aplicada (${cover.error}) — troque no YouTube Studio (Miniatura → Enviar arquivo)`);
   const verticalWarning = youtubeShortsVerticalCoverWarning(result.videoId, cover);
   if (verticalWarning) warnings.push(verticalWarning);
-  const base = { destination: "youtube_shorts", id: result.videoId, url: youtubeShortUrl(result.videoId), at: result.uploadedAt, ...(cover ? { cover } : {}) };
+  const base = {
+    destination: "youtube_shorts",
+    id: result.videoId,
+    url: youtubeShortUrl(result.videoId),
+    at: result.uploadedAt,
+    ...(cover ? { cover } : {}),
+    ...(result.audio_check ? { audio_check: result.audio_check } : {}),
+  };
   if (failed) {
     warnings.push(`o YouTube marcou uploadStatus=${failed} — o Short não vai ao ar; confira no Studio (registro mantido para não re-enviar)`);
     return { entry: { ...base, status: "send_unknown", scheduled_at: null }, warnings };
@@ -5652,6 +5673,8 @@ async function mainUnlocked(): Promise<number> {
   }
   const { flags, values } = parsed;
   let aammdd = parsed.aammdd;
+  // #13403: alarme do áudio degradado do youtube_shorts (disparado depois de gravar o registro).
+  const notifyAudioDegraded: YouTubeAudioAlarmFn = (check, ctx) => notifyYouTubeAudioDegraded(check, ctx, { cwd: ROOT });
   // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
   const corteSlug = values["corte"];
   let corte: CorteSpec | null = null;
@@ -6829,6 +6852,15 @@ async function mainUnlocked(): Promise<number> {
     const where = item.action === "enqueue" ? `na fila do Worker para ${entry.scheduled_at} (key ${entry.id})` : (entry.url ?? entry.id);
     console.error(`[ok] ${item.destination}: ${entry.status} (estado ${state}) ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
     for (const w of outcome.warnings ?? []) console.error(`[aviso] ${item.destination}: ${w}`);
+    // #13403: alarme do áudio degradado só depois de o registro estar gravado.
+    if (item.destination === "youtube_shorts") {
+      await alarmYouTubeAudioDegraded(
+        entry.audio_check,
+        { videoId: entry.id, url: entry.url ?? youtubeShortUrl(entry.id), label: `vertical (Short) da edição ${aammdd}` },
+        notifyAudioDegraded,
+        (l) => console.error(l),
+      );
+    }
   }
   releaseCorteLock();
   const finalItems = blockRepostOnProfileFailure(plan.items, results);

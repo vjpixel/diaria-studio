@@ -182,6 +182,14 @@ import {
 } from "./lib/diaria/youtube-upload.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
 import {
+  checkYouTubeAudio,
+  mp4HasAudioTrack,
+  notifyYouTubeAudioDegraded,
+  alarmYouTubeAudioDegraded,
+  describeYouTubeAudioCheck,
+  type YouTubeAudioAlarmFn,
+} from "./lib/diaria/youtube-audio-check.ts";
+import {
   YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT,
   YOUTUBE_CAPTION_LANGUAGE,
   captionBackfillStatus,
@@ -528,6 +536,11 @@ export interface RunUploadInput {
   logRunEvent?: (e: RunLogEvent) => void;
   /** #12077: `publishing.youtube.theme_playlists` lido. Ausente = passo pulado em silêncio (testes antigos). */
   themePlaylists?: ThemePlaylistsConfig;
+  /**
+   * #13403: alarme ao editor quando o áudio registrado pelo YouTube vem
+   * degradado. Ausente (testes) = só o `[aviso]` e o `audio_check` no registro.
+   */
+  notifyAudioDegraded?: YouTubeAudioAlarmFn;
 }
 
 export interface RunUploadOutcome {
@@ -991,6 +1004,8 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
             },
           }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
+      // #13403: guard do áudio registrado pelo YouTube; nunca derruba o upload.
+      checkAudio: (token: string, videoId: string) => checkYouTubeAudio(deps, token, videoId, mp4HasAudioTrack(video)),
       ...((srt || plan.share) ? {
         afterVideo: async (token: string, videoId: string) => {
           if (plan.share) {
@@ -1058,6 +1073,10 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
     log(`[aviso] vídeo enviado, mas a capa falhou: ${result.thumbnail.error} — suba ${plan.thumbnail?.path} à mão no Studio`);
   }
   if (result.rereadError) log(`[aviso] releitura do estado falhou: ${result.rereadError}`);
+  // #13403: a linha sai já; o alarme só depois de o registro estar gravado (abaixo).
+  const audioLine = result.audio_check ? describeYouTubeAudioCheck(result.audio_check, result.videoId, plan.aammdd) : null;
+  if (audioLine) log(audioLine);
+  const audioAlarmCtx = { videoId: result.videoId, url: result.url, label: `horizontal da edição ${plan.aammdd}` };
   const captionLine = captionOut.result ? describeCaptionOutcome(captionOut.result, plan.aammdd) : null;
   if (captionLine) log(captionLine);
   const failed = failedUploadStatus(result.rereadStatus);
@@ -1083,8 +1102,10 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
       `[erro] vídeo ENVIADO (${result.url}) mas o registro não foi gravado em ${recordPath}: ${(e as Error).message}. ` +
         "NÃO rode --upload de novo sem antes conferir o canal.",
     );
+    await alarmYouTubeAudioDegraded(result.audio_check, audioAlarmCtx, input.notifyAudioDegraded, log);
     return { exitCode: 1, record, skipped: false };
   }
+  await alarmYouTubeAudioDegraded(result.audio_check, audioAlarmCtx, input.notifyAudioDegraded, log);
   // #10865: mesma premissa de auditoria com que o plano foi montado.
   const videoUrlWritten = failed
     ? false
@@ -1862,6 +1883,7 @@ async function main(): Promise<number> {
     logRunEvent: (e) => {
       logEvent(e);
     },
+    notifyAudioDegraded: (check, ctx) => notifyYouTubeAudioDegraded(check, ctx, { cwd: ROOT }),
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
   // #12122: com o vídeo no canal (registro gravado), a espera do "pode publicar" acabou.

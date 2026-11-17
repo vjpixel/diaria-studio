@@ -35,6 +35,7 @@
 import { resolveYouTubeState, type PublishState } from "../publish-state.ts";
 import type { YouTubeInsertRequest } from "./youtube-video.ts";
 import { YOUTUBE_THUMBNAIL_ENDPOINT } from "./youtube-video.ts";
+import type { YouTubeAudioCheck } from "./youtube-audio-check.ts";
 
 export const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 export const YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3";
@@ -884,6 +885,12 @@ export interface YouTubeUploadInput {
    * falha o upload: é engolido (o chamador registra o próprio resultado).
    */
   afterVideo?: (token: string, videoId: string) => Promise<void>;
+  /**
+   * #13403: guard do áudio, depois da releitura (`checkYouTubeAudio` de
+   * `youtube-audio-check.ts`). O resultado vai em `audio_check`; erro aqui
+   * nunca falha o upload (vira `status: "error"`).
+   */
+  checkAudio?: (token: string, videoId: string) => Promise<YouTubeAudioCheck>;
 }
 
 export interface YouTubeUploadResult {
@@ -900,6 +907,8 @@ export interface YouTubeUploadResult {
   rereadError: string | null;
   uploadedAt: string;
   rereadAt: string;
+  /** #13403: o áudio registrado pelo YouTube (só com `checkAudio`). */
+  audio_check?: YouTubeAudioCheck;
 }
 
 /**
@@ -960,6 +969,15 @@ export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTube
   const rereadAt = deps.now();
   const state: PublishState = rereadStatus ? resolveYouTubeState({ status: rereadStatus }, rereadAt) : "unknown";
 
+  let audio_check: YouTubeAudioCheck | undefined;
+  if (input.checkAudio) {
+    try {
+      audio_check = await input.checkAudio(token, videoId);
+    } catch (e) {
+      audio_check = { status: "error", error: (e as Error).message, checked_at: deps.now().toISOString() };
+    }
+  }
+
   return {
     videoId,
     url: `https://youtu.be/${videoId}`,
@@ -974,6 +992,7 @@ export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTube
     rereadError,
     uploadedAt,
     rereadAt: rereadAt.toISOString(),
+    ...(audio_check ? { audio_check } : {}),
   };
 }
 

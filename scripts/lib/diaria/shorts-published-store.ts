@@ -336,6 +336,37 @@ export function recordShortReplacement(editionDir: string, record: ShortReplacem
   );
 }
 
+/**
+ * #13403: altera UMA entrada já gravada no arquivo de `writer`, com o mesmo
+ * lock do `persistShortEntry`: relê o arquivo DENTRO do lock e grava atômico.
+ * `mutate` recebe a entrada atual do destino (lança se não quiser gravar).
+ * Destino ausente nesse arquivo lança.
+ */
+export function updateShortEntry(
+  editionDir: string,
+  aammdd: string,
+  writer: ShortsRegistryWriter,
+  destination: string,
+  mutate: (entry: ShortPublishedEntry) => ShortPublishedEntry,
+  lockTimeoutMs = 30_000,
+): ShortPublishedEntry {
+  const path = shortsRegistryPath(editionDir, writer);
+  if (!existsSync(path)) throw new Error(`registro ${path} não existe`);
+  return withFileLock(
+    `${path}.lock`,
+    () => {
+      const current = readOne(path, aammdd, isCorteDir(editionDir));
+      const entry = current.entries.find((e) => e.destination === destination);
+      if (!entry) throw new Error(`registro ${path} sem a entrada ${destination}`);
+      const next = mutate(entry);
+      if (next.destination !== destination) throw new Error(`a alteração trocou o destino (${destination} → ${next.destination})`);
+      writeFileAtomic(path, JSON.stringify(upsertShortEntry(current, next), null, 2) + "\n");
+      return next;
+    },
+    lockTimeoutMs,
+  );
+}
+
 /** Conteúdo bruto de cada arquivo do registro (pro `decideTimerRun`). */
 export function readShortsRegistryRaws(editionDir: string): Array<{ path: string; raw: string }> {
   return listShortsRegistryFiles(editionDir).map((path) => ({ path, raw: readFileSync(path, "utf8") }));
