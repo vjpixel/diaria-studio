@@ -50,8 +50,12 @@ import type { Word } from "./video-montage.ts";
 
 export const XML_FINAL_SCHEMA = 1;
 
-/** Vão do final sem par a partir do qual a 2ª passada procura o trecho no bruto inteiro (s). */
-export const REORDER_MIN_GAP_S = 2;
+/**
+ * Vão do final sem par a partir do qual a 2ª passada procura o trecho no bruto
+ * inteiro (s). Era 2; desde o #13417 o trecho inserido pelo editor de 1–2 s
+ * sai sem par (`RUN_MIN_SCORE`) e precisa da busca para virar acrescentado.
+ */
+export const REORDER_MIN_GAP_S = 1;
 
 /**
  * Alinhamento final × bruto que aguenta trecho reordenado (self-review da PR
@@ -69,7 +73,7 @@ export function alignWithReorder(
   opts: AlignOptions = {},
   minGapS = REORDER_MIN_GAP_S,
   clips: readonly Pick<XmlClip, "srcIn" | "srcOut">[] = [],
-): { runs: AlignRun[]; coverage: number; reordered: number; guide: "monotonic" | "plan-clips" } {
+): { runs: AlignRun[]; coverage: number; reordered: number; guide: "monotonic" | "plan-clips"; cleanup: AlignCleanupStats | null } {
   // Montagem picotada (#13197, 261104: 42 clipes em 127 s, a ordem do bruto
   // trocada desde o 2º clipe): nenhuma janela de 10 s do final é um trecho
   // contínuo do bruto, a passada monótona acha 0% e a busca dos vãos também
@@ -104,7 +108,7 @@ export function alignWithReorder(
   }
   const runs = [...base.runs, ...extra].sort((x, y) => x.audioStart - y.audioStart);
   const covered = runs.reduce((n, r) => n + (r.audioEnd - r.audioStart), 0);
-  return { runs, coverage: durF > 0 ? covered / durF : 0, reordered: extra.length, guide: useGuided ? "plan-clips" : "monotonic" };
+  return { runs, coverage: durF > 0 ? covered / durF : 0, reordered: extra.length, guide: useGuided ? "plan-clips" : "monotonic", cleanup: useGuided ? guided.cleanup : null };
 }
 
 /** Clipe do XML mais curto que isto (s) não gera deslocamento candidato: o envelope é curto demais para correlacionar. */
@@ -133,7 +137,7 @@ export function alignByPlanClips(
   hopS: number,
   clips: readonly Pick<XmlClip, "srcIn" | "srcOut">[],
   opts: AlignOptions = {},
-): { runs: AlignRun[]; coverage: number; offsets: number[] } {
+): { runs: AlignRun[]; coverage: number; offsets: number[]; cleanup: AlignCleanupStats } {
   const o = { ...ALIGN_DEFAULTS, ...opts };
   const F = clampFloor(finalDb, o.floorDb);
   const B = clampFloor(brutoDb, o.floorDb);
@@ -142,6 +146,8 @@ export function alignByPlanClips(
   const durF = F.length * hopS;
 
   const found: number[] = [];
+  /** O clipe que deu cada deslocamento achado: o trecho com esse deslocamento só se explica perto dele. */
+  const owners: Array<{ off: number; srcIn: number; srcOut: number }> = [];
   for (const c of clips) {
     // O miolo do clipe (#13417): a ponta é onde o editor apara e onde o export põe piso (0,16 s no começo do V10 da
     // 261117), e a ponta diferente derrubava a correlação do clipe inteiro abaixo do mínimo.
@@ -160,12 +166,16 @@ export function alignByPlanClips(
         bestPos = f;
       }
     }
-    if (bestPos >= 0 && best >= PLAN_CLIP_MIN_SCORE) found.push(r3((b0 - bestPos) * hopS));
+    if (bestPos >= 0 && best >= PLAN_CLIP_MIN_SCORE) {
+      const off = r3((b0 - bestPos) * hopS);
+      found.push(off);
+      owners.push({ off, srcIn: c.srcIn, srcOut: c.srcOut });
+    }
   }
   found.sort((x, y) => x - y);
   const offsets: number[] = [];
   for (const off of found) if (!offsets.length || off - offsets[offsets.length - 1] > o.sameOffsetS) offsets.push(off);
-  if (offsets.length === 0) return { runs: [], coverage: 0, offsets };
+  if (offsets.length === 0) return { runs: [], coverage: 0, offsets, cleanup: { dropped: { count: 0, s: 0 }, snappedUndecided: 0 } };
 
   // Rotulagem dos sub-trechos, sem ordem: dp[t][j] = s(t, j) + max(dp[t−1][j], max_i dp[t−1][i] − troca).
   const step = Math.max(1, Math.round(o.stepS / hopS));
@@ -230,16 +240,73 @@ export function alignByPlanClips(
     runs.push({ audioStart, audioEnd, offset: offsets[label[t]] });
     t = u + 1;
   }
-  // #13417: silêncio digital do final (vinheta, card, fim) nunca é bruto; lascas da rotulagem saem; corte na borda do clipe quando o som não decide.
+  // #13417: silêncio digital nas pontas soltas dos trechos (vinheta, card, fim do export) sai do par; lascas da
+  // rotulagem saem; corte na borda do clipe quando o som não decide. O que sai e o que encaixa vai para o registro.
   const trimmed = trimDigitalSilenceEdges(runs, F, hopS, o.floorDb);
   refineCuts(trimmed, F, B, hopS, o.subWinS, o.floorDb);
+  const dropped = { count: 0, s: 0 };
+  const strong = (r: AlignRun) => {
+    const a = Math.round(r.audioStart / hopS);
+    const n = Math.round((r.audioEnd - r.audioStart) / hopS);
+    return pearsonAt(F, pF, a, B, pB, a + Math.round(r.offset / hopS), n) >= STRAY_KEEP_SCORE;
+  };
   // A lasca tirada solta a ponta do vizinho, que pode ter ficado sobre o piso: apara de novo.
-  const clean = trimDigitalSilenceEdges(dropSlivers(trimmed, clips), F, hopS, o.floorDb);
+  const clean = trimDigitalSilenceEdges(dropSlivers(trimmed, clips, { strong, dropped }), F, hopS, o.floorDb);
   refineCuts(clean, F, B, hopS, o.subWinS, o.floorDb);
-  snapCutsToClipEdges(clean, F, B, hopS, clips, o.subWinS, o.floorDb);
-  const kept = clean.filter((r) => r.audioEnd > r.audioStart);
+  const snappedUndecided = snapCutsToClipEdges(clean, F, B, hopS, clips, o.subWinS, o.floorDb);
+  // Trecho que cai quase todo fora do(s) clipe(s) que deram o deslocamento dele e cujo som não bate bem com o bruto sob o deslocamento dele é par falso
+  // (#13417): a rotulagem aceita sub-trecho a partir de r 0,5, e um trecho inserido pelo editor, de fora dos clipes,
+  // ganhava o deslocamento de um clipe qualquer e virava ponta estendida dele. Sem par, ele vai para a busca global
+  // dos vãos. Dentro dos clipes a correlação sozinha não decide (trecho certo do V10 da 261117 deu 0,82).
+  const insideShare = (r: AlignRun) => {
+    const iv = { start: r.audioStart + r.offset, end: r.audioEnd + r.offset };
+    const own = owners.filter((w) => Math.abs(w.off - r.offset) <= 2 * o.sameOffsetS + 1e-9).map((w) => ({ start: w.srcIn, end: w.srcOut }));
+    return union(own).reduce((n, c) => n + overlap(c, iv), 0) / Math.max(1e-9, iv.end - iv.start);
+  };
+  const kept = clean.filter((r) => {
+    if (r.audioEnd <= r.audioStart) return false;
+    if (insideShare(r) >= 0.5) return true;
+    const score = runMatchScore(F, B, r, hopS, o.floorDb);
+    if (score === null || score >= RUN_MIN_SCORE) return true;
+    dropped.count++;
+    dropped.s += r.audioEnd - r.audioStart;
+    return false;
+  });
   const covered = kept.reduce((acc, r) => acc + (r.audioEnd - r.audioStart), 0);
-  return { runs: kept, coverage: durF > 0 ? covered / durF : 0, offsets };
+  return { runs: kept, coverage: durF > 0 ? covered / durF : 0, offsets, cleanup: { dropped: { count: dropped.count, s: r3(dropped.s) }, snappedUndecided } };
+}
+
+/** Correlação mínima do trecho que cai quase todo fora dos clipes, sob o deslocamento dele (o mesmo som exportado dá perto de 1). */
+export const RUN_MIN_SCORE = 0.9;
+
+/**
+ * Pura — correlação do trecho do final com o bruto sob o deslocamento dele,
+ * só nos quadros com som no final (o piso digital do export não é do bruto e
+ * derrubaria a correlação de um trecho certo). `null` = som de menos para
+ * julgar (menos de 0,3 s, ou constante).
+ */
+export function runMatchScore(F: ArrayLike<number>, B: ArrayLike<number>, r: AlignRun, hopS: number, floorDb: number): number | null {
+  const a = Math.round(r.audioStart / hopS);
+  const b = Math.round(r.audioEnd / hopS);
+  const d = Math.round(r.offset / hopS);
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let n = Math.max(0, a); n < Math.min(F.length, b); n++) {
+    const m = n + d;
+    if (m < 0 || m >= B.length || F[n] <= floorDb) continue;
+    xs.push(F[n]);
+    ys.push(Math.max(floorDb, B[m]));
+  }
+  if (xs.length * hopS < 0.3) return null;
+  return pearsonSlice(xs, 0, ys, 0, xs.length);
+}
+
+/** O que a limpeza do alinhamento plan-clips mexeu (#13417), para o registro da sequência. */
+export interface AlignCleanupStats {
+  /** Trechos tirados como lasca ou par falso (quantos e quantos segundos do final). */
+  dropped: { count: number; s: number };
+  /** Cortes encaixados na borda do clipe porque o som não decidia. */
+  snappedUndecided: number;
 }
 
 const touches = (a: AlignRun | undefined, t: number) => a !== undefined && Math.abs(a.audioEnd - t) < 1e-6;
@@ -253,8 +320,10 @@ export const DIGITAL_SILENCE_MIN_S = 0.5;
  * os quadros de silêncio digital do final (envelope no piso, #13417). A
  * rotulagem trata sub-trecho sem variação como neutro e o deixa no rótulo
  * vizinho: os 4 s de fim mudo do V10 da 261117 viravam 4 s do bruto
- * "acrescentados". O bruto da câmera sempre tem ruído de sala, então o piso no
- * final é trecho de fora do bruto. Exceção: o piso de menos de `minS` no
+ * "acrescentados". O bruto da câmera sempre tem ruído de sala, então o piso
+ * numa ponta solta (encostada num vão ou no começo/fim do final) é trecho de
+ * fora do bruto; o piso no meio de um trecho, ou entre dois trechos que se
+ * encostam, fica com eles (o corte entre os dois é do `refineCuts`). Exceção: o piso de menos de `minS` no
  * começo do final fica (o export da 261117 abre com 0,16 s de piso sobre o
  * 1º clipe, atraso do codificador, não corte do editor). Trecho todo mudo sai
  * inteiro. Devolve os que sobram, em ordem. Puro.
@@ -282,8 +351,10 @@ export function trimDigitalSilenceEdges(runs: readonly AlignRun[], F: Float64Arr
 
 /** Trecho mais curto que isto (s) é lasca da rotulagem: sai sempre. */
 export const SLIVER_S = 0.15;
-/** Trecho mais curto que isto (s) cujo bruto não toca clipe do XML: par falso, sai. */
+/** Trecho mais curto que isto (s) cujo bruto não toca clipe do XML: par falso, sai (salvo correlação forte). */
 export const STRAY_MAX_S = 0.5;
+/** Correlação do trecho curto fora dos clipes a partir da qual ele fica: inserção curta de verdade, não par falso. */
+export const STRAY_KEEP_SCORE = 0.9;
 
 /**
  * Tira as lascas da rotulagem (#13417): trecho de poucos centésimos com o
@@ -293,9 +364,17 @@ export const STRAY_MAX_S = 0.5;
  * idêntico ao XML, essas lascas davam inversão de ordem, trecho acrescentado e
  * deixavam o corte vizinho fora da borda do clipe. Os vizinhos que se
  * encostavam na lasca passam a se encostar no meio dela (o corte é refeito
- * depois); vizinhos de mesmo deslocamento viram um trecho só. Puro.
+ * depois); vizinhos de mesmo deslocamento viram um trecho só. O trecho curto
+ * fora dos clipes com correlação forte (`opts.strong`) fica: é inserção curta
+ * do editor. `opts.dropped` soma o que saiu. Puro (fora o contador).
  */
-export function dropSlivers(runs: readonly AlignRun[], clips: readonly Pick<XmlClip, "srcIn" | "srcOut">[], sliverS = SLIVER_S, strayMaxS = STRAY_MAX_S): AlignRun[] {
+export function dropSlivers(
+  runs: readonly AlignRun[],
+  clips: readonly Pick<XmlClip, "srcIn" | "srcOut">[],
+  opts: { sliverS?: number; strayMaxS?: number; strong?: (r: AlignRun) => boolean; dropped?: { count: number; s: number } } = {},
+): AlignRun[] {
+  const sliverS = opts.sliverS ?? SLIVER_S;
+  const strayMaxS = opts.strayMaxS ?? STRAY_MAX_S;
   const stray = (r: AlignRun) => {
     const s = r.audioStart + r.offset;
     const e = r.audioEnd + r.offset;
@@ -305,7 +384,11 @@ export function dropSlivers(runs: readonly AlignRun[], clips: readonly Pick<XmlC
   const out: AlignRun[] = [];
   for (const [i, r0] of src.entries()) {
     const d = r0.audioEnd - r0.audioStart;
-    if (d < sliverS || (d < strayMaxS && stray(r0))) {
+    if (d < sliverS || (d < strayMaxS && stray(r0) && !(opts.strong?.(r0) ?? false))) {
+      if (opts.dropped) {
+        opts.dropped.count++;
+        opts.dropped.s += d;
+      }
       const prev = out[out.length - 1];
       const next = src[i + 1];
       if (touches(prev, r0.audioStart) && touchesStart(next, r0.audioEnd)) {
@@ -327,11 +410,17 @@ export function dropSlivers(runs: readonly AlignRun[], clips: readonly Pick<XmlC
 const SNAP_ERR_MAX = 30;
 /**
  * Folga do encaixe na borda do clipe (dB por quadro de distância): o corte vai
- * para a borda do XML quando o erro a mais lá fica abaixo disto por quadro
- * deslocado. Na pausa os dois deslocamentos explicam o som (erro a mais ≈ 0);
- * na fala o deslocamento errado erra 10–30 dB por quadro.
+ * para a borda do XML quando o erro a mais lá, somado, fica abaixo disto por
+ * quadro deslocado. Na pausa os dois deslocamentos explicam o som (erro a mais
+ * ≈ 0); na fala o deslocamento errado erra 10–30 dB por quadro.
  */
 export const SNAP_DB_PER_FRAME = 6;
+/**
+ * Erro a mais máximo de UM quadro entre o corte e a borda (dB): um único
+ * quadro de fala sob o deslocamento errado já barra o encaixe, mesmo que a
+ * média caiba em `SNAP_DB_PER_FRAME`.
+ */
+export const SNAP_FRAME_MAX_DB = 15;
 
 /**
  * Encaixa cada corte entre dois trechos na borda de um clipe do XML quando o
@@ -342,10 +431,12 @@ export const SNAP_DB_PER_FRAME = 6;
  * recuperada e trecho acrescentado num final idêntico ao XML. Aqui, entre as
  * bordas dos clipes que caem na janela do corte (fim de clipe sob o
  * deslocamento de antes, início sob o de depois), vale a de menor erro, se o
- * erro a mais em relação ao mínimo couber em `dbPerFrame` por quadro de
- * distância; fala de verdade do outro lado (ponta que o editor estendeu) erra
- * muito mais e mantém o corte do `refineCuts`. Muta `runs`; trecho que fica
- * sem duração sai na volta. Puro sobre os vetores.
+ * erro a mais em relação ao do corte do `refineCuts` couber em `dbPerFrame`
+ * por quadro de distância E nenhum quadro entre o corte e a borda passar de
+ * `frameMaxDb` a mais; fala de verdade do outro lado (ponta que o editor
+ * estendeu) erra muito mais e mantém o corte do `refineCuts`. Muta só `runs`
+ * (não muta `F`/`B`); trecho que fica sem duração sai depois, em quem chama.
+ * Devolve quantos cortes encaixou.
  */
 export function snapCutsToClipEdges(
   runs: AlignRun[],
@@ -356,7 +447,9 @@ export function snapCutsToClipEdges(
   subWinS: number,
   floorDb: number,
   dbPerFrame = SNAP_DB_PER_FRAME,
-): void {
+  frameMaxDb = SNAP_FRAME_MAX_DB,
+): number {
+  let snapped = 0;
   for (let i = 0; i + 1 < runs.length; i++) {
     const r1 = runs[i];
     const r2 = runs[i + 1];
@@ -382,8 +475,16 @@ export function snapCutsToClipEdges(
       acc += err(c - 1, d1, g1) - err(c - 1, d2, g2);
       cost[c - a] = acc;
     }
-    let best = Infinity;
-    for (const v of cost) best = Math.min(best, v);
+    if (cut < a || cut > b) continue;
+    const atCut = cost[cut - a];
+    // O quadro que muda de lado entre o corte e a borda: erro sob o deslocamento novo menos o do antigo.
+    const frameExtra = (n: number, toFirst: boolean) => (toFirst ? err(n, d1, g1) - err(n, d2, g2) : err(n, d2, g2) - err(n, d1, g1));
+    const maxFrameExtra = (e: number) => {
+      let m = -Infinity;
+      if (e > cut) for (let n = cut; n < e; n++) m = Math.max(m, frameExtra(n, true));
+      else for (let n = e; n < cut; n++) m = Math.max(m, frameExtra(n, false));
+      return m;
+    };
     const edges = new Set<number>();
     for (const c of clips) {
       const end = Math.round((c.srcOut - r1.offset) / hopS);
@@ -394,8 +495,8 @@ export function snapCutsToClipEdges(
     let snap: number | null = null;
     let snapCost = Infinity;
     for (const e of edges) {
-      const extra = cost[e - a] - best;
-      if (extra <= dbPerFrame * Math.abs(e - cut) + 1e-9 && cost[e - a] < snapCost) {
+      const extra = cost[e - a] - atCut;
+      if (extra <= dbPerFrame * Math.abs(e - cut) + 1e-9 && maxFrameExtra(e) <= frameMaxDb && cost[e - a] < snapCost) {
         snap = e;
         snapCost = cost[e - a];
       }
@@ -404,7 +505,9 @@ export function snapCutsToClipEdges(
     const t = r3(snap * hopS);
     r1.audioEnd = Math.max(r1.audioStart, t);
     r2.audioStart = Math.min(r2.audioEnd, t);
+    snapped++;
   }
+  return snapped;
 }
 
 export const CLIP_GUIDE_DEFAULTS = {
@@ -622,13 +725,15 @@ export function alignFinalToBruto(
   method: "janela" | "guiado-xml";
   guide: "monotonic" | "plan-clips";
   windowCoverage: number;
+  /** Limpeza do plan-clips (#13417); `null` quando a base não foi a dos clipes do plan.json. */
+  cleanup: AlignCleanupStats | null;
 } {
   const win = alignWithReorder(finalDb, brutoDb, hopS, opts, REORDER_MIN_GAP_S, clips);
-  const first = { runs: win.runs, coverage: win.coverage, reordered: win.reordered, guide: win.guide, method: "janela" as const, windowCoverage: win.coverage };
+  const first = { runs: win.runs, coverage: win.coverage, reordered: win.reordered, guide: win.guide, method: "janela" as const, windowCoverage: win.coverage, cleanup: win.cleanup };
   if (win.coverage >= minCoverage || clips.length === 0) return first;
   const guided = alignGuidedByClips(finalDb, brutoDb, hopS, clips, opts);
   return guided.coverage > win.coverage
-    ? { ...guided, method: "guiado-xml", guide: win.guide, windowCoverage: win.coverage }
+    ? { ...guided, method: "guiado-xml", guide: win.guide, windowCoverage: win.coverage, cleanup: null }
     : first;
 }
 
@@ -638,7 +743,12 @@ export const XML_FINAL_TOLERANCE_S = 0.1;
 export const REMOVED_CLIP_MAX_FRACTION = 0.2;
 /** Token mínimo de semelhança (Jaccard) para um trecho acrescentado ser a outra tomada de um clipe removido. */
 export const TAKE_SWAP_MIN_JACCARD = 0.5;
-/** Trecho com menos que isto (s) do clipe não define a posição dele no final (lasca do alinhamento, #13417). */
+/**
+ * Posição do clipe no final (#13417): conta o trecho que leva pelo menos
+ * min(isto, metade do maior pedaço do clipe) segundos dele. Lasca do
+ * alinhamento fica de fora; clipe curto, partido em dois por pausa tirada,
+ * ainda conta os dois pedaços.
+ */
 export const ORDER_MIN_SHARE_S = 0.3;
 
 export interface XmlClip {
@@ -926,7 +1036,14 @@ export function compareSequence(input: {
 
 // ── Registro por edição ──────────────────────────────────────────────────
 
-export type RecordMethod = "audio-envelope-align-v1" | "11670-manual";
+/**
+ * `v2` (#13417): alinhamento plan-clips com busca quadro a quadro, limpeza de
+ * lascas e de silêncio digital e encaixe do corte na borda do clipe. Registro
+ * `v1` é ruído do alinhamento antigo e volta a ser medido (`currentDoneSequences`).
+ */
+export type RecordMethod = "audio-envelope-align-v1" | "audio-envelope-align-v2" | "11670-manual";
+/** Método das medições automáticas de agora. */
+export const CURRENT_METHOD: RecordMethod = "audio-envelope-align-v2";
 
 export interface LoudnessSnapshot {
   inputI: number;
@@ -955,6 +1072,10 @@ export interface SequenceRecord {
   /** Detalhe (clipes, acrescentados, palavras); ausente no registro importado da #11670. */
   detail?: Omit<SequenceComparison, "summary">;
   notes?: string[];
+  /** Trechos que a limpeza do alinhamento tirou (#13417): quantos e quantos segundos do final. */
+  alignDropped?: { count: number; s: number };
+  /** Cortes encaixados na borda do clipe porque o som não decidia (#13417). */
+  snappedUndecided?: number;
 }
 
 export interface EditionRecord {
@@ -984,7 +1105,9 @@ export function mergeEditionRecord(prev: EditionRecord | null, next: EditionReco
   const measured = new Set(sequences.map((s) => s.key));
   const skipped = [...prev.skipped.filter((s) => !keys.has(s.key) && !next.skipped.some((n) => n.key === s.key)), ...next.skipped].filter((s) => !measured.has(s.key));
   // Sem nenhuma sequência medida, o método é o do registro novo: a rodada automática que só pulou não vira "#11670".
-  const method = sequences.length === 0 ? next.method : sequences.some((s) => s.method !== "11670-manual") ? "audio-envelope-align-v1" : "11670-manual";
+  const auto: RecordMethod[] = sequences.map((s) => s.method).filter((m) => m !== "11670-manual");
+  const method: RecordMethod =
+    sequences.length === 0 ? next.method : auto.length === 0 ? "11670-manual" : auto.includes(CURRENT_METHOD) ? CURRENT_METHOD : (auto[0] as RecordMethod);
   return { ...next, method, generatedAt: next.method === method ? next.generatedAt : prev.generatedAt, sequences, skipped };
 }
 
@@ -1405,16 +1528,35 @@ export function editionsToCompare(input: {
   state: RecurringState;
   today: string;
   days: number;
+  /** Método gravado de cada sequência (dos registros no disco); sem ele, o `done` vale como está. */
+  methodOf?: (edition: string, key: string) => RecordMethod | undefined;
 }): string[] {
   const limit = editionDate(input.today).getTime() - input.days * 86_400_000;
   return input.withPlan
     .filter((e) => editionDate(e.edition).getTime() >= limit && editionDate(e.edition).getTime() <= editionDate(input.today).getTime())
     .filter((e) => {
-      const done = new Set(input.state.done[e.edition]?.sequences ?? []);
+      const done = currentDoneSequences(input.state, e.edition, input.methodOf);
       return e.sequences.some((k) => !done.has(k));
     })
     .map((e) => e.edition)
     .sort();
+}
+
+/**
+ * Pura — as sequências da edição já medidas com o método de agora (#13417).
+ * Medida com método automático anterior (ou sem método conhecido no registro)
+ * volta a ser pendente, para a próxima rodada medir de novo; o importado da
+ * #11670 fica (não há como refazer a análise manual).
+ */
+export function currentDoneSequences(state: RecurringState, edition: string, methodOf?: (edition: string, key: string) => RecordMethod | undefined): Set<string> {
+  const keys = state.done[edition]?.sequences ?? [];
+  if (!methodOf) return new Set(keys);
+  return new Set(
+    keys.filter((k) => {
+      const m = methodOf(edition, k);
+      return m === CURRENT_METHOD || m === "11670-manual";
+    }),
+  );
 }
 
 // ── Bruto: onde achar cada arquivo e como montar a linha do tempo ───────────
@@ -1524,21 +1666,44 @@ export const EXTRACT_SHORTFALL_TOL_S = 1;
  * conferência de duração e voltavam do cache em toda rodada.
  */
 export function extractionTruncated(actualS: number, expectedS: number, tolS = EXTRACT_SHORTFALL_TOL_S): boolean {
-  return !Number.isFinite(actualS) || (Number.isFinite(expectedS) && expectedS - actualS > tolS);
+  // Duração esperada ilegível (ffprobe sem número) não é "não truncado": falha explícita.
+  if (!Number.isFinite(expectedS)) throw new Error(`duração esperada ilegível (${expectedS}): não dá para conferir a extração`);
+  return !Number.isFinite(actualS) || expectedS - actualS > tolS;
 }
 
-/** Maior trecho de zeros digitais tolerado (s) num áudio do bruto em cache: mais que isto é extração truncada completada com silêncio (#13417). */
-export const CACHE_MAX_ZERO_RUN_S = 5;
+/**
+ * Maior trecho de zeros digitais tolerado (s) num áudio do bruto, novo ou em
+ * cache (#13417). O `apad` legítimo deixa menos de `EXTRACT_SHORTFALL_TOL_S`
+ * por arquivo; mais que isto é leitura interrompida completada com silêncio.
+ */
+export const MAX_ZERO_RUN_S = 5;
 
-/** Pura — o maior trecho seguido de amostras exatamente zero, em segundos. */
-export function longestZeroRunS(samples: ArrayLike<number>, sampleRate: number): number {
+/** Pura — o maior trecho seguido de amostras exatamente zero: duração e início, em segundos. */
+export function longestZeroRun(samples: ArrayLike<number>, sampleRate: number): { durationS: number; startS: number } {
   let best = 0;
+  let bestAt = 0;
   let cur = 0;
   for (let i = 0; i < samples.length; i++) {
     if (samples[i] === 0) {
       cur++;
-      if (cur > best) best = cur;
+      if (cur > best) {
+        best = cur;
+        bestAt = i - cur + 1;
+      }
     } else cur = 0;
   }
-  return sampleRate > 0 ? best / sampleRate : 0;
+  return sampleRate > 0 ? { durationS: best / sampleRate, startS: bestAt / sampleRate } : { durationS: 0, startS: 0 };
+}
+
+/** Pura — o motivo (neutro) de um áudio com trecho de zeros acima do teto, ou `null` se ele serve. */
+export function zeroRunProblem(samples: ArrayLike<number>, sampleRate: number, maxS = MAX_ZERO_RUN_S): string | null {
+  const z = longestZeroRun(samples, sampleRate);
+  return z.durationS > maxS ? `trecho de ${z.durationS.toFixed(1)} s de zeros digitais em ${z.startS.toFixed(1)} s` : null;
+}
+
+/** Motivo de pulo com no máximo `max` caracteres, preservando o fim (onde fica a dica do que fazer). */
+export function clipReason(reason: string, max = 300): string {
+  if (reason.length <= max) return reason;
+  const tail = Math.floor(max / 2);
+  return `${reason.slice(0, max - tail - 1)}…${reason.slice(reason.length - tail)}`;
 }

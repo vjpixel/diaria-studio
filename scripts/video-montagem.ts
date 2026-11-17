@@ -531,6 +531,7 @@ import {
 } from "./lib/diaria/video-cut-refine.ts";
 import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark } from "./lib/diaria/video-voice.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
+import { extractionTruncated } from "./lib/diaria/video-xml-vs-final.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
@@ -1363,6 +1364,13 @@ export function multiAudioPartArgs(input: { src: string; frames: number; fps: nu
   return ["-hide_banner", "-v", "error", "-y", "-i", input.src, "-map", "0:a:0", "-vn", "-ac", "2", "-ar", "48000", "-af", "apad", "-t", (input.frames / input.fps).toFixed(6), "-c:a", "pcm_s16le", input.out];
 }
 
+/** Os mesmos argumentos sem o `apad`: a extração crua, cuja duração é conferida antes de completar (#13417). */
+export function multiAudioRawPartArgs(input: { src: string; frames: number; fps: number; out: string }): string[] {
+  const a = multiAudioPartArgs(input);
+  const i = a.indexOf("-af");
+  return [...a.slice(0, i), ...a.slice(i + 2)];
+}
+
 /** Lista do concat demuxer (caminhos com `'` escapados). */
 export function concatListText(paths: readonly string[]): string {
   return paths.map((p) => `file '${p.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n") + "\n";
@@ -1388,7 +1396,20 @@ function ensureMultiAudio(ctx: Ctx, source: SourceInfo, redo: boolean): { path: 
     if (redo || !ok(part, file.frames / source.fps)) {
       console.error(`[video-montagem] áudio ${i + 1}/${sourceFiles(source).length}: ${file.id}…`);
       const tmp = `${part}.tmp`;
-      run("ffmpeg", [...multiAudioPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: tmp }).slice(0, -1), "-f", "wav", tmp]);
+      // #13417: extrai sem o apad e confere a duração real antes de completar com silêncio. A leitura que para no
+      // meio (Drive for desktop, arquivo de vários GB) sai com exit 0, e o apad escondia o resto como silêncio.
+      const raw = `${part}.raw.tmp`;
+      const want = file.frames / source.fps;
+      try {
+        run("ffmpeg", [...multiAudioRawPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: raw }).slice(0, -1), "-f", "wav", raw]);
+        const got = probeDurationS(raw);
+        if (extractionTruncated(got, want)) {
+          throw new Error(`áudio do bruto ${file.id} truncado: ${got.toFixed(2)} s de ${want.toFixed(2)} s (leitura interrompida?); nada gravado, rode de novo (#13417)`);
+        }
+        run("ffmpeg", [...multiAudioPartArgs({ src: raw, frames: file.frames, fps: source.fps, out: tmp }).slice(0, -1), "-f", "wav", tmp]);
+      } finally {
+        rmSync(raw, { force: true });
+      }
       renameSync(tmp, part);
       rebuilt = true;
     }
