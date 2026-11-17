@@ -52,10 +52,6 @@ export interface ReservedDestaque {
   category?: string;
 }
 
-export interface ReservedDestaquesFile {
-  reservations: ReservedDestaque[];
-}
-
 /** `"d2"`, `"D2"` ou `"2"` → `"d2"`; `null` fora de 1..3. */
 export function parseDestaqueSlot(value: string | undefined): DestaqueSlot | null {
   if (!value) return null;
