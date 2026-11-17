@@ -20,6 +20,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { stripHtmlComments } from "./merge-social-md.ts";
 import { basename, dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -112,7 +113,22 @@ export interface Platform {
   note?: string;
 }
 
-export function parsePlatforms(text: string): Platform[] {
+/**
+ * #13428: remove comentários HTML (ex: `<!-- char_count: N -->` do social-writer)
+ * antes de renderizar — o splice manual do gate (swap-destaque) não passa pelo
+ * strip do merge-social-md, e o preview os mostraria escapados como texto.
+ * Fail-soft: input mal-formado cai na regex lazy em vez de abortar o preview.
+ */
+function stripPreviewComments(text: string): string {
+  try {
+    return stripHtmlComments(text).stripped;
+  } catch {
+    return text.replace(/<!--[\s\S]*?-->/g, "");
+  }
+}
+
+export function parsePlatforms(rawText: string): Platform[] {
+  const text = stripPreviewComments(rawText);
   const platforms: Platform[] = [];
   const platformBlocks = text.split(/^# /m).filter(Boolean);
 
