@@ -167,7 +167,7 @@ describe("#12262: faixa tratada com redução constante e gate suave", () => {
     const f = audioCleanFilter(audioCleanParams(-35));
     const range = Number(/range=([0-9.]+)/.exec(f)?.[1]);
     assert.ok(range >= 10 ** (-AUDIO_CLEAN_MAX_PAUSE_DROP_DB / 20) - 1e-6, `range linear ${range}`);
-    assert.match(f, /^afftdn=nr=24:nf=-41:tn=1,/);
+    assert.match(f, /^afftdn=nr=24:nf=-41,/);
   });
 });
 
