@@ -24,7 +24,7 @@ export interface BenchmarkChannel {
 
 /**
  * Canais do benchmark: PT-BR e inglês, portes diferentes, com prioridade para
- * notícia e análise de IA (o formato da diar.ia.br comentada) sobre tutorial
+ * notícia e análise de IA (o formato da diar.ia.br: notícias de IA) sobre tutorial
  * puro. Fora da 1ª rodada (16/11/2026): @TecMundo (os vídeos acima da média
  * são resumões de games/hardware, não IA) e @AsimovAcademy (só 7 vídeos longos).
  */

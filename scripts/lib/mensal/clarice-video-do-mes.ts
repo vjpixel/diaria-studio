@@ -131,7 +131,7 @@ export function videoDoMesUrl(videoId: string, cycle: string): string {
 
 export function defaultVideoDoMesFrase(cycle: string): string {
   // Sem "diar.ia.br" em texto puro: o Gmail autolinka o domínio. O título vem
-  // do YouTube e pode trazê-lo ("diar.ia.br comentada"): passa por
+  // do YouTube e pode trazê-lo ("diar.ia.br: notícias de IA"): passa por
   // `breakBrandDomainAutolink` no build.
   return `O episódio mais assistido de ${contentMonthOfCycle(cycle).label} no nosso canal do YouTube.`;
 }

@@ -1,6 +1,6 @@
 /**
  * youtube-capa-hooks.ts (#12737) — miolo puro da sugestão de texto de capa
- * (o "gancho") do vídeo "diar.ia.br comentada".
+ * (o "gancho") do vídeo "diar.ia.br: notícias de IA".
  *
  * Até o #12737 o Passo A2 do `/diaria-publica` mandava "2 a 4 palavras do D1,
  * pergunta ou tensão" e o gancho saía sem apoio: na prática sempre 2 palavras e

@@ -1,5 +1,5 @@
 /**
- * Card de CTA no fim do vídeo "diar.ia.br comentada" (#12571).
+ * Card de CTA no fim do vídeo "diar.ia.br: notícias de IA" (#12571; nome da série desde o #13317).
  *
  * Decisão do editor (09/11/2026, montagem da 261109): "a partir de agora, por
  * padrão, o CTA será o card." O modelo é o card do fim do corte

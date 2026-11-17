@@ -1,6 +1,6 @@
 # Texto da capa do vídeo: benchmark e diretriz (#12737)
 
-Vale para o gancho das duas capas do vídeo "diar.ia.br comentada": a horizontal
+Vale para o gancho das duas capas do vídeo "diar.ia.br: notícias de IA": a horizontal
 (`04-youtube-thumb.jpg`, Passo A2 do `/diaria-publica`) e a do Short
 (`04-youtube-short-capa.jpg`, #12462). Layout, retrato e fundo ficam fora daqui
 (padrão da 261021, #11942: close-up do editor à esquerda, gancho embaixo à

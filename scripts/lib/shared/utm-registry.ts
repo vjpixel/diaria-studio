@@ -2474,7 +2474,8 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     panelUrl: "https://www.youtube.com/playlist?list=PLzBGkwuI2T1qXSt21z_Bk6OVziHQRuTDs",
     field: "Studio → Conteúdo → Podcasts → descrição (ou `playlists.update` pela API)",
     description:
-      "Link da descrição do podcast \"diar.ia.br comentada\" (#12067). Estava sem " +
+      "Link da descrição do podcast \"diar.ia.br: notícias de IA\" (#12067; até " +
+      "16/11/2026, \"diar.ia.br comentada\", #13317). Estava sem " +
       "UTM até 261103, quando a descrição foi atualizada pela API (#12088). " +
       "Compartilha `utm_source=youtube` com `perfil-youtube` (link do canal): é " +
       "a variante `-podcast` do `utm_campaign` que separa as duas, como nos 2 " +

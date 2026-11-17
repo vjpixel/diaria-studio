@@ -3,7 +3,7 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-youtube.ts (#10659)
  *
- * Publisher do vídeo diário "diar.ia.br comentada" (Pixel comentando o D1) no
+ * Publisher do vídeo diário "diar.ia.br: notícias de IA" (Pixel comentando o D1) no
  * canal `@diariabr`, via YouTube Data API v3 (`videos.insert`, resumable
  * upload, scope `youtube.upload`).
  *
