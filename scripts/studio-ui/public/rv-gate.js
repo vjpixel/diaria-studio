@@ -19,6 +19,7 @@ import {
   lintFailureRows,
   formatRenderWarningRow,
   formatGateDecision,
+  formatMultiCitedLine,
 } from "./rv-gate-format.js";
 
 // #6447 Fatia 4 (achado 7): mesmo padrão de SAVE_CONFLICT_CONFIRM_MESSAGE
@@ -44,6 +45,7 @@ const el = {
   factcheck: document.getElementById("rv-gate-factcheck"),
   boxes: document.getElementById("rv-gate-boxes"),
   violations: document.getElementById("rv-gate-violations"),
+  multiCited: document.getElementById("rv-gate-multicited"),
   refreshBtn: document.getElementById("rv-gate-refresh-btn"),
   approveBtn: document.getElementById("rv-gate-approve-btn"),
   approveStatus: document.getElementById("rv-gate-approve-status"),
@@ -148,6 +150,23 @@ function renderBoxes(summary) {
   }
 }
 
+/** #13314: informativo, nunca bloqueia. */
+function renderMultiCited(summary) {
+  clear(el.multiCited);
+  const mc = summary.multiCited;
+  if (!mc || !mc.available || mc.items.length === 0) {
+    el.multiCited.appendChild(el_("p", { className: "rv-gate-empty", text: mc && !mc.available ? mc.note : "nenhum link citado por 2 ou mais newsletters." }));
+    return;
+  }
+  for (const item of mc.items) {
+    const row = el_("p", { className: "rv-gate-kv" });
+    const a = el_("a", { text: formatMultiCitedLine(item) });
+    a.href = item.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+    row.appendChild(a);
+    el.multiCited.appendChild(row);
+  }
+}
+
 function renderViolations(summary) {
   clear(el.violations);
   const rows = [
@@ -244,6 +263,7 @@ function renderGate(summary) {
   renderFactCheck(summary);
   renderBoxes(summary);
   renderViolations(summary);
+  renderMultiCited(summary);
   renderApproveButton(summary);
 }
 

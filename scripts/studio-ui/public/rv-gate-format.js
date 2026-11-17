@@ -103,3 +103,9 @@ export function formatGateDecision(decision, nowMs = Date.now()) {
     : ` (${Math.max(0, Math.round((nowMs - decidedAtMs) / 60000))}min atrás)`;
   return { approved: true, text: `Já aprovado pelo painel${relative}.` };
 }
+
+/** #13314: linha legível de um link citado em 2+ newsletters (painel Gate). */
+export function formatMultiCitedLine(item) {
+  const score = typeof item.score === "number" ? item.score : "PENDENTE";
+  return `${item.count}× ${item.title || item.url} — ${item.newsletters.join(", ")} — destino: ${item.destino} — score ${score}`;
+}
