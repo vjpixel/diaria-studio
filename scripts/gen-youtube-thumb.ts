@@ -9,7 +9,11 @@
  * `--frames-from-drive` lê o Drive (leitura, OAuth do projeto).
  *
  * Horizontal → `{edição}/04-youtube-thumb.jpg` (1280x720, ≤ 2 MB), o arquivo
- * que `publish-youtube.ts` já envia via `thumbnails.set`:
+ * que `publish-youtube.ts` já envia via `thumbnails.set`. Sem `--hook`, o
+ * gancho é o texto da capa do horizontal no roteiro (`porVideo.horizontal.capa`,
+ * #13401, com `[premissa]`): capa de 1 linha com mais de 4 palavras quebra em 2
+ * linhas equilibradas, e a capa que o `splitHook` recusa (ou o roteiro
+ * ilegível, inválido ou sem a capa) para antes da composição, pedindo `--hook`.
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --hook "IA ladra?" --portrait retrato.png
  *     [--background fundo-16x9.png]   (default: {edição}/04-d1-2x1.jpg, com aviso de recorte)
  *     [--layout bottom|top|right]     (default bottom = padrão da 261021, #11942; right = espelho, #12123)
@@ -84,13 +88,14 @@
  *     [--video PATH]   (default: {edição}/diaria-comentada-{AAMMDD}-short.mp4)
  *     [--out PATH] [--edition-dir DIR]
  * Sem `--hook`, o gancho é o texto da capa do vertical 1 no roteiro
- * (`porVideo.vertical1.capa` de `_internal/roteiro-falas.json`, #13401), com
- * `[premissa]`; com `--video` explícito, só com `--roteiro-capa
- * vertical1|vertical2`. Capa do roteiro fora de 2 a 5 palavras é recusada antes
- * do ffmpeg. Sem `--hook` e sem capa no roteiro sai a capa antiga: o frame
- * cru, dentro da janela do lettering do título (0–3,5 s).
- * Na capa horizontal vale o mesmo com `porVideo.horizontal.capa`: capa de uma
- * linha com mais de 4 palavras quebra em 2 linhas equilibradas. Corte avulso (`publish-shorts.ts --corte`): o mesmo
+ * (`porVideo.vertical1.capa` de `_internal/roteiro-falas.json`, #13401), já
+ * quebrado em 2 linhas, com `[premissa]`; com `--video` explícito (qualquer
+ * caminho), só com `--roteiro-capa vertical1|vertical2`. Capa do roteiro fora
+ * de 2 a 5 palavras, roteiro ilegível ou inválido, ou roteiro sem a capa:
+ * recusa antes do ffmpeg, pedindo `--hook`. Só sem roteiro (ou com `--video`
+ * sem `--roteiro-capa`) e sem `--hook` sai a capa antiga: o frame cru, dentro
+ * da janela do lettering do título (0–3,5 s).
+ * Corte avulso (`publish-shorts.ts --corte`): o mesmo
  * comando com `--video` do corte e `--out data/cortes/{slug}/04-youtube-short-capa.jpg`,
  * depois `--cover` no `publish-shorts`.
  *
@@ -159,7 +164,7 @@ import {
 } from "./lib/diaria/youtube-thumb-frames.ts";
 
 const USAGE =
-  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\") --portrait PNG [--background IMG] [--layout bottom|top|right] [--bg-crop x,y,w,h] [--enhance-portrait] [--hook-style serif|grande] [--logo PNG] [--out PATH] [--edition-dir DIR]\n" +
+  "uso: gen-youtube-thumb.ts AAMMDD [--hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\"); sem ele, porVideo.horizontal.capa do roteiro] --portrait PNG [--background IMG] [--layout bottom|top|right] [--bg-crop x,y,w,h] [--enhance-portrait] [--hook-style serif|grande] [--logo PNG] [--out PATH] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --background-prompt-capa --scene \"um objeto iluminado\" [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
@@ -479,7 +484,7 @@ async function main(): Promise<number> {
     }
     const at = atValue;
     if (shortHook === undefined) {
-      console.error("[aviso] --short-cover sem --hook e sem capa no roteiro: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 5 palavras — passe --hook");
+      console.error("[aviso] --short-cover sem --hook e sem capa do roteiro aplicada: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 5 palavras — passe --hook ou --roteiro-capa vertical1|vertical2");
     }
     const video = resolve(values["video"] ?? join(dir, youtubeShortVideoFileName(aammdd)));
     if (!existsSync(video)) {
@@ -514,6 +519,7 @@ async function main(): Promise<number> {
   }
 
   // #13401: sem --hook, o texto da capa do horizontal no roteiro (`--hook` sobrepõe).
+  if (flags.has("roteiro-capa")) throw new Error("--roteiro-capa exige o valor e vale só com --short-cover (#13401)");
   const hook = resolverHookDaCapa({ alvo: "horizontal", hook: values["hook"], editionDir: dir, roteiroCapa: parseRoteiroCapaVideo(values["roteiro-capa"]) }, HOOK_LOG);
   const portraitPath = values["portrait"];
   if (!hook || !portraitPath) {

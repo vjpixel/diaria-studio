@@ -42,20 +42,23 @@ import { corteDaFala, segmentosSemTrecho, SETA, validarRoteiroFalas, VIDEO_LABEL
 export const ROTEIRO_FALAS_FILE = "_internal/roteiro-falas.json";
 
 /**
- * Verbos de relatório (#13165, #13393): o registro de notícia escrita. Os de
- * #13393 vêm da v2 do roteiro da 261118 ("renunciou ao cargo", "publicou uma
- * norma"), que o editor achou formal; a v3 trocou por "largou" e "soltou".
- * Aviso só: quando o verbo é o fato (a fonte anunciou), a fala fica.
+ * Verbos de relatório (#13165, #13393): o registro de notícia escrita.
+ * renunciou e publicou saíram da v2 do roteiro da 261118 ("renunciou ao
+ * cargo", "publicou uma norma"), que o editor achou formal; a v3 trocou por
+ * "largou" e "soltou". anunciou e os plurais são da mesma família, sem caso
+ * real ainda. Aviso só: quando o verbo é o fato (a fonte anunciou), a fala fica.
  */
 const VERBO_DE_RELATORIO = /(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|afirmaram|constatou|verificou-se|declarou|informou|divulgou|renunciou|renunciaram|publicou|publicaram|anunciou|anunciaram)(?![\p{L}\p{N}_])/giu;
 
 /** Substantivos de texto escrito e a troca de conversa que a v3 da 261118 usou (#13393). */
-const TERMO_FALADO: Record<string, string> = { norma: "regra" };
-const TERMO_DE_TEXTO_ESCRITO = /(?<![\p{L}\p{N}_])normas?(?![\p{L}\p{N}_])/giu;
+const TERMO_FALADO: Readonly<Record<string, string>> = { norma: "regra" };
+/** Gerada das chaves de `TERMO_FALADO` (singular ou plural com -s): termo novo entra só no mapa. */
+const TERMO_DE_TEXTO_ESCRITO = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${Object.keys(TERMO_FALADO).join("|")})s?(?![\\p{L}\\p{N}_])`, "giu");
 function trocaFalada(termo: string): string {
-  const plural = termo.endsWith("s");
+  const plural = !(termo in TERMO_FALADO) && termo.endsWith("s");
   const troca = TERMO_FALADO[plural ? termo.slice(0, -1) : termo];
-  return troca ? `${troca}${plural ? "s" : ""}` : "outra palavra";
+  if (troca === undefined) throw new Error(`trocaFalada: "${termo}" casou TERMO_DE_TEXTO_ESCRITO sem entrada em TERMO_FALADO (#13393)`);
+  return `${troca}${plural ? "s" : ""}`;
 }
 
 /** Heurísticas leves de registro falado (#13165): avisam, nunca invalidam o roteiro.
@@ -521,7 +524,7 @@ export function readRoteiroPecas(editionDir: string, warn: (msg: string) => void
   const lido = readRoteiroBruto(editionDir);
   if (lido.estado === "ausente") return null;
   if (lido.estado === "ilegivel") {
-    warn(`${lido.path} ilegível (${lido.erro}): capa dos verticais do roteiro ignorada (#13123)`);
+    warn(`${lido.path} ilegível (${lido.erro}): capa do roteiro ignorada (#13123)`);
     return null;
   }
   const parsed = parseRoteiroFalas(lido.raw);
@@ -529,7 +532,7 @@ export function readRoteiroPecas(editionDir: string, warn: (msg: string) => void
   const tol = porVideoTolerante(lido.raw);
   const pecas = roteiroPecas(tol.roteiro);
   const algum = Object.keys(pecas).length > 0;
-  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${algum ? "uso título e capa de cada vídeo mesmo assim; corrija o resto do roteiro" : "capa dos verticais do roteiro ignorada"}${avisoSeta(tol.comSeta)} (#13149)`);
+  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${algum ? "uso título e capa de cada vídeo mesmo assim; corrija o resto do roteiro" : "capa do roteiro ignorada"}${avisoSeta(tol.comSeta)} (#13149)`);
   return algum ? pecas : null;
 }
 

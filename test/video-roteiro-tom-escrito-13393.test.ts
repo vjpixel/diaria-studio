@@ -6,7 +6,8 @@ import type { RoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
 const roteiro = (texto: string, videos: string[] = ["horizontal"]): RoteiroFalas =>
   ({ falas: [{ id: "H1", bloco: "comentario", texto, videos }] }) as RoteiroFalas;
 
-// Trechos reais da v2 da 261118 (registro escrito).
+// Trechos ADAPTADOS da v2 da 261118 (registro escrito, com declarou/informou inseridos
+// para exercitar os verbos); a v2 real está em fixtures/roteiro-video/roteiro-falas-261118-v2.json.
 const V2 = "O Jensen Huang declarou que deixa o cargo de CEO da Nvidia e saiu do conselho da empresa. O governo Trump publicou uma norma nova sobre a exportação de chips de inteligência artificial. O alvo da norma são data centers fora dos Estados Unidos que deixam empresas chinesas usar esses chips. A empresa informou isso não é proibição.";
 
 it("avisa registro escrito da v2 da 261118: verbo formal e vídeo sem marca de fala", () => {

@@ -17,9 +17,10 @@
  * Também avisa verbos de relatório e trechos com mais de 30 palavras sem
  * pausa (`avisosTomConversacional`, #13165), e o formato do texto de tela
  * (`avisosTela`, #13180), sem bloquear a proposta.
- * Capa de vertical que o `gen-youtube-thumb.ts --short-cover` recusaria (fora
- * de 2 a 5 palavras, a mesma contagem do gerador, `normalizeShortCoverHook`)
- * é ERRO (`[erro]`, exit 2), depois da proposta impressa (#13401).
+ * Capa do roteiro que o `gen-youtube-thumb.ts` recusaria (vertical fora de 2 a
+ * 5 palavras, `normalizeShortCoverHook`; horizontal fora do `splitHook`, com a
+ * quebra de `hookHorizontalDoRoteiro`) é `[erro]` com exit 4, depois da
+ * proposta impressa (#13401, `errosCapaDoRoteiro`).
  * A saída traz a duração estimada de cada vídeo (`duracoes` no `--json`).
  * A validação (`validarRoteiroFalas`, roteiro-gravacao.ts) cobre os campos
  * novos: `tela` (#13120), `cortes` (#13129), `fontes` (#13132),
@@ -35,8 +36,10 @@
  *   --json:   saída JSON (`PropostaBlocos` mais `duracoes`) em vez do Markdown
  *
  * Exit: 0 = proposta impressa; 3 = sem roteiro-falas.json (edição sem roteiro
- * pela skill: seguir a montagem como antes); 2 = uso ou arquivo inválido, ou
- * capa de vertical fora da regra do gerador (#13401, a proposta sai mesmo assim).
+ * pela skill: seguir a montagem como antes); 2 = uso ou arquivo inválido;
+ * 4 = proposta impressa, mas uma capa fora da regra do gerador (#13401): a
+ * montagem segue com a proposta (a capa vai por `--hook` na `/diaria-publica`)
+ * e o roteiro corrige a capa antes de gravar.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -59,8 +62,7 @@ import {
   roteiroDuracaoConfigFrom,
   type RoteiroDuracaoConfig,
 } from "./lib/diaria/roteiro-videos.ts";
-import { VIDEO_LABEL, type RoteiroFalas } from "./lib/diaria/roteiro-gravacao.ts";
-import { normalizeShortCoverHook } from "./lib/diaria/youtube-thumb.ts";
+import { errosCapaDoRoteiro } from "./lib/diaria/youtube-thumb-roteiro.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -79,25 +81,13 @@ export function lerDuracaoConfig(root: string, err: (s: string) => void): Roteir
 export const EXIT_SEM_ROTEIRO = 3;
 
 /**
- * #13401: capa de vertical que o `gen-youtube-thumb.ts --short-cover` recusa.
- * A regra é a do gerador (`normalizeShortCoverHook`: 2 a 5 palavras, moeda
- * colada ao número, até 4 por linha), nunca uma contagem paralela. Caso real:
- * "A voz do Drauzio é falsa" (261117), 6 palavras, passou pelo roteiro e o
- * gerador recusou na publicação.
+ * #13401: proposta válida e impressa, mas uma capa do roteiro (vertical ou
+ * horizontal) fora da regra do `gen-youtube-thumb.ts`. Código próprio, para a
+ * `/diaria-video-montagem` (roteiro já congelado) seguir com a proposta e a
+ * `/diaria-video-roteiro` corrigir a capa antes da gravação. Nunca 2, que é
+ * roteiro inválido.
  */
-export function errosCapaVertical(roteiro: Pick<RoteiroFalas, "porVideo">): string[] {
-  const erros: string[] = [];
-  for (const v of ["vertical1", "vertical2"] as const) {
-    const capa = roteiro.porVideo?.[v]?.capa?.trim();
-    if (!capa) continue;
-    try {
-      normalizeShortCoverHook(capa);
-    } catch (e) {
-      erros.push(`porVideo.${v}.capa (${VIDEO_LABEL[v]}): ${(e as Error).message}; o gen-youtube-thumb.ts --short-cover recusa, encurte a capa (#13401)`);
-    }
-  }
-  return erros;
-}
+export const EXIT_CAPA_FORA_DA_REGRA = 4;
 
 export function main(
   argv: string[] = process.argv.slice(2),
@@ -141,9 +131,9 @@ export function main(
       : `${renderPropostaBlocos(proposta)}
 ${renderDuracoes(lido.roteiro, cfg)}`,
   );
-  const erros = errosCapaVertical(lido.roteiro);
+  const erros = errosCapaDoRoteiro(lido.roteiro);
   for (const e of erros) io.err(`[erro] ${e}`);
-  return erros.length ? 2 : 0;
+  return erros.length ? EXIT_CAPA_FORA_DA_REGRA : 0;
 }
 
 if (isMainModule(import.meta.url)) {

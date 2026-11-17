@@ -25,8 +25,16 @@ Regras fixas:
   fala original diz "o Jensen Huang largou o cargo de CEO da Nvidia. Saiu do
   conselho também.", a proposta não vira "o Jensen Huang renunciou ao cargo de
   CEO da Nvidia e saiu do conselho da empresa": ajuste o fato e conserve as
-  palavras de conversa ("tá", "pra", "largou", "soltou", "regra"). Os `[aviso]`
-  de tom do `video-roteiro-blocos.ts` valem também para a sua proposta.
+  palavras de conversa ("tá", "pra", "largou", "soltou", "regra"). Confira na
+  sua proposta, à mão (você não roda scripts), os mesmos critérios dos
+  `[aviso]` de tom do `video-roteiro-blocos.ts`:
+  - nenhum verbo de relatório: relatou, afirmou, declarou, informou, divulgou,
+    constatou, acompanhou, renunciou, publicou, anunciou (e plurais), nem
+    "verificou-se"; use verbo de fala ("disse", "contou", "largou", "soltou");
+  - nada de "norma": em conversa, "regra";
+  - nenhum trecho com mais de 30 palavras sem vírgula, ponto ou outra pausa;
+  - cada vídeo com 50 palavras ou mais tem pelo menos uma marca de fala ("tá",
+    "pra", "né", "a gente", "calma", "olha", "e aí").
 - Responda em blocos `## Horizontal`, `## Vertical 1`, `## Vertical 2` e
   `## Entre vídeos`, cada um com `- {id}: {problema}; proposta: "{fala nova}"`
   ou "sem problemas".

@@ -66,7 +66,7 @@ describe("#13149: readRoteiroPecas tolera um problema em outro campo", () => {
     assert.equal(pecas?.vertical2?.titulo, "Novo Gemini: 3 dicas");
     const avisos: string[] = [];
     assert.equal(comRoteiro({ falas: [] }, (dir) => readRoteiroPecas(dir, (m) => void avisos.push(m))), null);
-    assert.ok(avisos.some((a) => /capa dos verticais do roteiro ignorada/.test(a)));
+    assert.ok(avisos.some((a) => /capa do roteiro ignorada/.test(a)));
   });
   it("válido = as peças de sempre; ausente = null em silêncio; ilegível = null com aviso", () => {
     assert.equal(comRoteiro(base(), (dir) => readRoteiroPecas(dir, () => assert.fail("sem aviso")))?.vertical1?.capa, "Sua Busca mudou de IA");

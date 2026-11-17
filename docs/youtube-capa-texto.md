@@ -182,6 +182,14 @@ não caber. A pontuação é heurística sobre esta diretriz, não previsão de
 clique: ela ordena a lista, e quem escolhe é o editor. `--json` devolve a lista
 estruturada.
 
+**Com roteiro (#13401):** o texto da capa vem de `porVideo.{video}.capa` do
+`_internal/roteiro-falas.json`, e o `gen-youtube-thumb.ts` o usa sem `--hook`
+(com `[premissa]`). O `video-roteiro-blocos.ts` confere as capas com a regra do
+gerador e sai com **exit 4** quando alguma está fora dela (vertical fora de 2 a
+5 palavras; horizontal que não cabe em 2 linhas de até 4): a proposta de blocos
+saiu inteira. No roteiro, corrigir a capa antes de gravar; na montagem, seguir
+e passar a capa por `--hook` na `/diaria-publica`.
+
 ## Capa no começo dos verticais (#13123, em teste)
 
 Proposta do editor de 15/11/2026: nas redes sem controle de capa (TikTok,
