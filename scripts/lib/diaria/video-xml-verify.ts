@@ -377,11 +377,6 @@ export function edgeOpenLimit(clips: readonly TimelineClip[], rate: number, i: n
   return { s, kind };
 }
 
-/** `edgeOpenLimit` só com o instante. */
-export function edgeOpenLimitS(clips: readonly TimelineClip[], rate: number, i: number, edge: "in" | "out", ctx: EdgeOpenContext = {}): number {
-  return edgeOpenLimit(clips, rate, i, edge, ctx).s;
-}
-
 // ── Bordas: SOM CORTADO, aviso e o que o build abre (#12561, #13194) ──────
 
 /**
