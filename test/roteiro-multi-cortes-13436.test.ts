@@ -55,5 +55,8 @@ describe("#13436: mais de um corte por vídeo na mesma fala", () => {
     const res = p.cortesReserva.find((c) => c.id === "H4")!;
     assert.equal(res.trecho, B);
     assert.ok(!res.segmentos.join(" ").includes("Ásia") && !res.segmentos.join(" ").includes("dia 19"));
+    // O item que a reserva troca é o que já vai ao ar depois do corte fixo (achado do review).
+    assert.equal(res.texto, "Isso vale a partir do dia 19, quando a regra sai oficialmente. Fim.");
+    assert.deepEqual(res.segmentos, ["Fim."]);
   });
 });

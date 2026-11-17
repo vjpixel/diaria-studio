@@ -266,13 +266,15 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
       const cortes = cortesDaFala(f, v);
       const fixos = cortes.filter((c) => !c.reserva).map((c) => c.trecho);
       const segFixos = fixos.length ? segmentosSemTrechos(f.texto, fixos) : null;
-      // O que a reserva economiza é medido sobre o texto que já vai ao ar (sem os cortes fixos).
-      const base = segFixos?.length ? segFixos : [f.texto];
+      // A reserva troca o item que já vai ao ar (o pedaço da fala depois dos cortes fixos, #13436),
+      // senão a montagem não acha a fala nem distingue "já aplicado".
+      const noAr = segFixos?.length ? segFixos : [f.texto];
       for (const c of cortes.filter((x) => x.reserva)) {
-        const segmentos = segmentosSemTrechos(f.texto, [...(segFixos?.length ? fixos : []), c.trecho]);
-        if (!segmentos?.length) continue;
-        const economia = palavrasDe(base.join(" ")).length - palavrasDe(segmentos.join(" ")).length;
-        cortesReserva.push({ video: v, chave: chaveDe[v], id: f.id, texto: f.texto, trecho: c.trecho, segmentos, economiaS: Math.round((economia / ppm) * 60) });
+        const pedaco = noAr.find((p) => segmentosSemTrechos(p, [c.trecho]) !== null);
+        const segmentos = pedaco ? segmentosSemTrechos(pedaco, [c.trecho]) : null;
+        if (!pedaco || !segmentos?.length) continue;
+        const economia = palavrasDe(pedaco).length - palavrasDe(segmentos.join(" ")).length;
+        cortesReserva.push({ video: v, chave: chaveDe[v], id: f.id, texto: pedaco, trecho: c.trecho, segmentos, economiaS: Math.round((economia / ppm) * 60) });
       }
       if (segFixos?.length) falas.push({ id: f.id, bloco, texto: segFixos.join(" "), segmentos: segFixos, cortado: fixos.join(" / ") });
       else falas.push({ id: f.id, bloco, texto: f.texto });
@@ -829,7 +831,7 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
       const base = palavrasDe(textoNoVideo(f, d.video)).length;
       for (const c of cortesDaFala(f, d.video)) {
         if (!c.reserva) continue;
-        const seg = segmentosSemTrechos(textoNoVideo(f, d.video), [c.trecho]) ?? segmentosSemTrechos(f.texto, [c.trecho]);
+        const seg = segmentosSemTrechos(textoNoVideo(f, d.video), [c.trecho]);
         if (!seg) continue;
         const eco = Math.round(((base - palavrasDe(seg.join(" ")).length) / cfg.palavrasPorMinuto) * 60);
         sugestoes.push(`corte de reserva da ${f.id} ("${c.trecho}", ~${eco} s)`);
