@@ -14,7 +14,9 @@
  * issue):
  * - **Vazão:** issues `mergeada` por rodada e por hora de rodada.
  * - **Trechos do ciclo** (p50/p90/n): dispatch → PR aberta, PR aberta → CI
- *   verde, CI verde → merge, dispatch → merge.
+ *   verde, CI verde → merge, dispatch → merge; e, desde que o coordenador
+ *   grava `review_done`/`gate2`, PR aberta → review concluído, CI verde →
+ *   Gate 2, review → Gate 2 e Gate 2 → merge (fila de merge).
  * - **Onde as issues se perdem:** contagem de `pulada` por `motivo`.
  * - **Cobertura da instrumentação:** das unidades mergeadas, quantas têm cada
  *   marco gravado. Trecho medido sobre poucas unidades (ex.: `ci_green` em 124
@@ -49,12 +51,18 @@ export const THROUGHPUT_SEGMENTS = [
   ["pr_opened→ci_green", "pr_opened", "ci_green"],
   ["ci_green→merged", "ci_green", "merged"],
   ["dispatch→merged", "dispatch", "merged"],
+  // #13271 alavanca 4: separa review, espera pelo Gate 2 e fila de merge.
+  // Rodada sem `review_done`/`gate2` gravados sai com n=0 nesses trechos.
+  ["pr_opened→review_done", "pr_opened", "review_done"],
+  ["ci_green→gate2", "ci_green", "gate2"],
+  ["review_done→gate2", "review_done", "gate2"],
+  ["gate2→merged", "gate2", "merged"],
 ] as const;
 
 export type ThroughputSegmentName = (typeof THROUGHPUT_SEGMENTS)[number][0];
 
 /** Marcos cuja cobertura o relatório mostra (alavanca 4 da #13271). */
-export const TIMELINE_MILESTONES = ["dispatch", "pr_opened", "ci_green", "merged"] as const;
+export const TIMELINE_MILESTONES = ["dispatch", "pr_opened", "ci_green", "review_done", "gate2", "merged"] as const;
 
 export interface SegmentStats {
   p50_ms: number | null;
