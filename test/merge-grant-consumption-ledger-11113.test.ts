@@ -90,8 +90,14 @@ describe("#11113 — consumo cross-máquina não escreve no arquivo da coordenad
     const root = freshRoot();
     const coordPath = remoteCoordinator(root);
 
-    for (const pr of [11055, 11021, 10975]) {
-      const granted = grantMergeWindow(root, "overnight", COORD, BENEF, { pr, tag: REMOTE });
+    // A identidade da concessão é grantedBy+grantedTo+grantedAt (resolução de
+    // ms). Sem `now` explícito, duas concessões no mesmo ms (runner rápido do
+    // CI, run 43996040933) recebiam a mesma chave e a 3ª já nascia consumida.
+    // Em produção as concessões ficam minutos separadas por um merge.
+    const base = Date.now() - 60_000;
+    for (const [i, pr] of [11055, 11021, 10975].entries()) {
+      const now = new Date(base + i * 1_000).toISOString();
+      const granted = grantMergeWindow(root, "overnight", COORD, BENEF, { pr, tag: REMOTE, now });
       assert.equal(
         granted.ok,
         true,

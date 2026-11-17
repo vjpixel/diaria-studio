@@ -22,7 +22,10 @@ const TRACKING_PARAM_PREFIXES = ["utm_", "mc_"];
 // #8680: adiciona fbclid, gclid (Facebook/Google click IDs) e mc_ (MailChimp
 // tracking) — URLs de newsletters do inbox carregam estes params e poluem o
 // pool/dedup sem contribuir em nada.
-const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src", "_bhlid", "fbclid", "gclid"]);
+// #13326: _hsenc/_hsmi (HubSpot) chegam no destino dos trackers da Data Points —
+// _hsenc é um token por assinante e muda a cada clique, então sem strippar o
+// mesmo artigo citado 2x na edição nunca colapsa no dedup.
+const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src", "_bhlid", "fbclid", "gclid", "_hsenc", "_hsmi"]);
 
 /**
  * #10973: changelogs que entregam cada entrada como ÂNCORA da mesma página

@@ -227,6 +227,12 @@ export interface CapturedThread {
   // #8668/#8710: URLs do corpo COMPLETO, extraídas antes do truncamento por
   // fetch-newsletter-threads.ts. Unidas às do body abaixo.
   urls_extraidas?: string[];
+  /**
+   * #13326: tracker opaco → destino, resolvido por fetch-newsletter-threads.ts
+   * (AlphaSignal `/c?lid=`, HubSpot `/e3t/`). O destino entra no lugar do
+   * wrapper, como um tracker decodificado.
+   */
+  resolved_redirects?: Record<string, string>;
 }
 
 /**
@@ -407,11 +413,21 @@ export function processThreads(
     // #9365: identidade da newsletter pro bônus de menção — e-mail do
     // remetente (2 edições da mesma newsletter contam 1); domínio como fallback.
     const mentionId = senderEmail(thread.sender) || senderDom;
+    // #13326: chave com a mesma limpeza de cauda aplicada às urls acima.
+    const redirects = new Map(Object.entries(thread.resolved_redirects ?? {}).map(([k, v]) => [cleanUrlTail(k), v]));
 
     for (const rawUrl of urls) {
       // Decode tracker URLs before filtering — sempre, mesmo em always_consider
       // (queremos a URL final, não o wrapper — issue #7662 é explícita nisso).
       let { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
+      // #13326: tracker opaco já resolvido na captura → destino real. Sem isso o
+      // wrapper (no domínio do sender) caía como sender-own e a newsletter
+      // inteira saía com 100% dos links filtrados.
+      const resolvedDest = trackerDecoded ? undefined : redirects.get(rawUrl);
+      if (resolvedDest && /^https?:\/\//i.test(resolvedDest)) {
+        url = resolvedDest;
+        trackerDecoded = true;
+      }
       // #10467: redirect genérico no domínio do próprio sender → destino real.
       // Wrapper que o redirect genérico abriu (pode diferir de rawUrl quando
       // decodeTrackerUrl não decodificou) — usado no filtro de login abaixo.

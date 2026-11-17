@@ -66,6 +66,7 @@ import {
 import { stripHtml as stripHtmlForBody } from "./lib/strip-html.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { extractUrls } from "./lib/url-utils.ts";
+import { resolveOpaqueTrackers } from "./lib/newsletter-opaque-redirect.ts";
 export { stripHtmlForBody };
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
@@ -99,6 +100,12 @@ export interface CapturedThread {
   newsletter_headers?: boolean;
   /** #12188: thread com metadados mas sem conteúdo aproveitável (motivo legível). */
   capture_error?: string;
+  /**
+   * #13326: tracker opaco (destino só no `Location`, sem query param) → destino,
+   * resolvido na captura por `lib/newsletter-opaque-redirect.ts`. Lido por
+   * `processThreads` (capture-newsletter-urls.ts) no lugar do wrapper.
+   */
+  resolved_redirects?: Record<string, string>;
 }
 
 /** #12188: thread achada pela descoberta — só metadados, nunca corpo. */
@@ -118,6 +125,9 @@ export interface FetchSummary {
   skipped_no_body: number;
   /** #12188 (só --discover): a busca bateu DISCOVERY_MAX_THREADS. */
   capped?: boolean;
+  /** #13326: trackers opacos resolvidos / sem destino (ausentes quando não houve nenhum). */
+  redirects_resolved?: number;
+  redirects_failed?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +272,14 @@ export function mergeCaptured(
 ): CapturedThread[] {
   const merged = new Map(existing.map((t) => [t.thread_id, t]));
   for (const t of fresh) {
-    if (!merged.has(t.thread_id) || merged.get(t.thread_id)?.capture_error) merged.set(t.thread_id, t);
+    const prev = merged.get(t.thread_id);
+    if (!prev || prev.capture_error) {
+      merged.set(t.thread_id, t);
+    } else if (t.resolved_redirects && Object.keys(t.resolved_redirects).length > 0) {
+      // #13326: thread gravada antes da resolução (ou com parte dos trackers sem
+      // resposta) ganha os destinos do re-run; o resto da captura fica como estava.
+      merged.set(t.thread_id, { ...prev, resolved_redirects: { ...prev.resolved_redirects, ...t.resolved_redirects } });
+    }
   }
   return [...merged.values()];
 }
@@ -542,7 +559,30 @@ async function runDiscovery(args: CliArgs, request: typeof gmailRequest): Promis
   }
 }
 
-export async function main(argv: string[] = process.argv, request: typeof gmailRequest = gmailRequest): Promise<void> {
+/**
+ * #13326: resolve os trackers opacos de cada thread e grava o mapa em
+ * `resolved_redirects`. Falha de rede nunca derruba a captura: o tracker sem
+ * destino segue filtrado como antes. Muta as threads (são as recém-capturadas).
+ */
+export async function attachResolvedRedirects(
+  threads: CapturedThread[],
+  resolveFn: typeof resolveOpaqueTrackers = resolveOpaqueTrackers,
+): Promise<{ attempted: number; resolved: number; failed: number; skipped_over_cap: number }> {
+  const all = threads.flatMap((t) => t.urls_extraidas ?? []);
+  const { resolved, attempted, failed, skipped_over_cap } = await resolveFn(all);
+  for (const t of threads) {
+    const own: Record<string, string> = {};
+    for (const u of t.urls_extraidas ?? []) if (resolved[u]) own[u] = resolved[u];
+    if (Object.keys(own).length > 0) t.resolved_redirects = own;
+  }
+  return { attempted, resolved: Object.keys(resolved).length, failed, skipped_over_cap };
+}
+
+export async function main(
+  argv: string[] = process.argv,
+  request: typeof gmailRequest = gmailRequest,
+  resolveRedirects: typeof resolveOpaqueTrackers = resolveOpaqueTrackers,
+): Promise<void> {
   const args = parseArgs(argv);
 
   if (args.senders.length === 0 && !args.discover) {
@@ -624,6 +664,20 @@ export async function main(argv: string[] = process.argv, request: typeof gmailR
       threads_written: captured.length,
       skipped_no_body: skippedNoBody,
     };
+
+    // #13326: tracker opaco (AlphaSignal `/c?lid=`, HubSpot `/e3t/`) só revela o
+    // destino no Location — resolvido aqui, onde já há rede, para que o
+    // processThreads (puro) e a auditoria do intake leiam o mesmo destino.
+    if (!args.dryRun) {
+      const r = await attachResolvedRedirects(captured, resolveRedirects);
+      if (r.attempted > 0) {
+        summary.redirects_resolved = r.resolved;
+        summary.redirects_failed = r.failed;
+        if (r.failed > 0 || r.skipped_over_cap > 0) {
+          console.error(`[fetch-newsletter-threads] WARN #13326: ${r.failed} tracker(s) opaco(s) sem destino, ${r.skipped_over_cap} acima do teto — esses links seguem filtrados.`);
+        }
+      }
+    }
 
     if (args.dryRun) {
       console.log("[dry-run] Would write:");
