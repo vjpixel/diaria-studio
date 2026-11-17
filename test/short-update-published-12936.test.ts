@@ -190,7 +190,16 @@ describe("#12936 YouTube: updatePublishedVideoText (fetch falso)", () => {
   it("releitura com outro texto lança (não declara sucesso sem conferir)", async () => {
     const before = { snippet: { title: "Velho", description: "d", categoryId: "28" }, status: { privacyStatus: "public" } };
     const { fetch } = fake([before, before]);
-    await assert.rejects(updatePublishedVideoText({ fetch, now: () => NOW } as any, creds, "yt1", input), /releitura/);
+    await assert.rejects(updatePublishedVideoText({ fetch, now: () => NOW, sleep: async () => {} } as any, creds, "yt1", input), /releitura/);
+  });
+
+  it("#13391: releitura imediata ainda velha, depois nova: espera e não acusa divergência", async () => {
+    const before = { snippet: { title: "Velho", description: "d", categoryId: "28" }, status: { privacyStatus: "public" } };
+    const novo = { snippet: { ...before.snippet, ...input }, status: before.status };
+    const { fetch } = fake([before, before, novo]);
+    const waits: number[] = [];
+    await updatePublishedVideoText({ fetch, now: () => NOW, sleep: async (ms: number) => { waits.push(ms); } } as any, creds, "yt1", input);
+    assert.equal(waits.length, 1);
   });
 });
 
