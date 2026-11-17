@@ -56,6 +56,7 @@ import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { escHtml } from "./html-escape.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { injectSiteNavAfterBodyOpen, SITE_NAV_MARKER } from "./shared/site-nav.ts"; // #8497: menu global
+import { backfillDekItems } from "./site-destaque-anchors.ts"; // #13324
 
 /** Marcador de "já passou pelo bloco de SEO atual" — presente em toda página
  * que já saiu de `renderSeoMeta({ type: "article", ... })` (#8352). */
@@ -93,6 +94,8 @@ export interface BackfillResult {
   addedJsonLdImage: boolean;
   /** #8497 — menu global (`renderSiteNav`) injetado no topo do `<body>`. */
   addedSiteNav: boolean;
+  /** #13324 — `<meta name="dek-item">` (D2/D3) gravadas a partir dos `<h2 id="d2|d3">`. */
+  addedDekItems: boolean;
 }
 
 /**
@@ -396,14 +399,21 @@ export function backfillArchivePageOnDisk(html: string, ctx: BackfillContext): B
     addedSiteNav = siteNavResult.changed;
   }
 
+  // #13324: depois do backfillSeo, que reposiciona a `dek` — as `dek-item`
+  // entram ao lado dela na posição final.
+  const dekItemsResult = backfillDekItems(out);
+  out = dekItemsResult.html;
+
   return {
     html: out,
-    changed: addedSeo || addedNav || robotsResult.changed || jsonLdResult.changed || addedSiteNav,
+    changed:
+      addedSeo || addedNav || robotsResult.changed || jsonLdResult.changed || addedSiteNav || dekItemsResult.changed,
     addedSeo,
     addedNav,
     addedRobots: robotsResult.changed,
     addedJsonLdImage: jsonLdResult.changed,
     addedSiteNav,
+    addedDekItems: dekItemsResult.changed,
   };
 }
 

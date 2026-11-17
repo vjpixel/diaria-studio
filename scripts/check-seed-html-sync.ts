@@ -35,7 +35,7 @@
 import { spawnSync } from "node:child_process";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { brtDateString, buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
+import { brtDateString, buildHomeFeed, buildIndexHtml, buildVideoFeed, HOME_VIDEO_LIMIT } from "./lib/site-home-page.ts";
 
 /** Alias local — mesmo padrão de scripts/check-pr-bugfix.ts (#2699). */
 export type SpawnFn = PrCheckSpawnFn;
@@ -174,7 +174,10 @@ export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn, todayBrt?: st
   const feed = buildHomeFeed(sitemapXml, readPageHtml, HOME_ARCHIVE_LIMIT + 1, todayBrt ? { todayBrt } : {});
   const feature = feed[0] ?? null;
   const archive = feed.slice(1);
-  return buildIndexHtml({ feature, archive });
+  // #13323: mesma seção "Vídeos" do gerador oficial — sem ela o re-render
+  // divergiria da home committed só por isso.
+  const videos = buildVideoFeed(sitemapXml, readPageHtml, HOME_VIDEO_LIMIT, todayBrt ? { todayBrt } : {});
+  return buildIndexHtml({ feature, archive, videos });
 }
 
 /**
