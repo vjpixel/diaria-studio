@@ -123,6 +123,7 @@ import {
   evaluateRegistryMudo,
   closedPaidAcquisitionWindows,
   serieQuedaSemDiaCorrente,
+  referenciaQuedaAquisicao,
   tipoDiaEdicao,
   metricsHealthFingerprint,
   type PaidTestWindowSource,
@@ -622,6 +623,9 @@ async function main(): Promise<void> {
 
   const capturaLog = readCapturaLog(defaultCapturaLogPath(dbPath));
   const diasComColetaCapturaLog = dias.filter((d) => hasCaptureOnDay(capturaLog, d));
+  // #13336: coleta de hoje ainda sem linha às 04:40 (ingestão lenta desde
+  // 12/11) recua a referência da queda de aquisição um dia, em vez de pular.
+  const refQuedaAquisicao = referenciaQuedaAquisicao(hoje, dias, capturaLog);
 
   const findings: MetricsHealthFinding[] = [];
   const skipMotivos: string[] = [];
@@ -916,6 +920,12 @@ async function main(): Promise<void> {
     seriesById,
   );
   for (const { skipMotivo } of quedaAvaliacoes) if (skipMotivo) skipMotivos.push(skipMotivo);
+  if (refQuedaAquisicao.deslocada) {
+    console.log(
+      `${LOG_PREFIX} coleta kit-vivo de ${hoje} ainda sem linha no captura-log — queda de aquisição avaliada ` +
+        `com atual anterior a ${refQuedaAquisicao.corte} (#13336).`,
+    );
+  }
   for (const id of WIRED_METRIC_IDS) {
     const medicoes = seriesById.get(id);
     if (!medicoes) continue; // já registrada em quedaAvaliacoes por quedaAvaliacoesSemSerie (#10994)
@@ -927,14 +937,19 @@ async function main(): Promise<void> {
     // só faz sentido pras 4 de aquisição (e, por extensão de fonte,
     // `doi-confirmacao-dia`, que documenta a MESMA dependência de F2 em
     // registry.ts); `base-ativa`/`leitor-v1` usam a cobertura de snapshot.
-    const diasComInsumo = id === "base-ativa" || id === "leitor-v1" ? diasComSnapshot : diasComColetaCapturaLog;
+    const diasComInsumo =
+      id === "base-ativa" || id === "leitor-v1"
+        ? diasComSnapshot
+        : isAcquisition
+          ? refQuedaAquisicao.diasComInsumo
+          : diasComColetaCapturaLog;
     // #10647: aquisição compara o último dia COMPLETO (o corrente ainda não
     // foi ingerido — ver `serieQuedaSemDiaCorrente`) contra uma baseline sem
     // janela paga encerrada. #12475: e só contra dias do mesmo tipo (útil ×
     // fim de semana) — o cadastro acompanha a edição, que sai seg-sex. As
     // demais métricas seguem como antes.
     const { finding: quedaFinding, skipMotivo } = isAcquisition
-      ? evaluateQueda(def, serieQuedaSemDiaCorrente(medicoes, hoje), diasComInsumo, thresholds, {
+      ? evaluateQueda(def, serieQuedaSemDiaCorrente(medicoes, refQuedaAquisicao.corte), diasComInsumo, thresholds, {
           baselineExcluida: baselineExcluidaAquisicao,
           baselineMesmoTipoDia: tipoDiaEdicao,
         })
