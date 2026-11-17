@@ -1737,9 +1737,21 @@ export class DriveReadInterruptedError extends Error {}
  * vídeo): vale, com `realShortfallS` para quem chama completar com silêncio e
  * avisar; falta diferente e ainda fora da tolerância é leitura interrompida:
  * `DriveReadInterruptedError`. Nunca aborta por falta real.
+ *
+ * Com `acceptUnreadable` (a montagem), duração esperada indefinida ou real
+ * ilegível (ffprobe devolvendo N/A, bruto sintético) não é leitura
+ * interrompida: volta com `unchecked: true`, para quem chama avisar e seguir.
+ * Sem a opção (a ferramenta de comparação), segue sendo erro.
  */
-export function readWithRetry(expectedS: number, read: (attempt: number) => number, label: string): { actualS: number; attempts: number; realShortfallS: number | null } {
+export function readWithRetry(
+  expectedS: number,
+  read: (attempt: number) => number,
+  label: string,
+  opts: { acceptUnreadable?: boolean } = {},
+): { actualS: number; attempts: number; realShortfallS: number | null; unchecked?: true } {
+  if (opts.acceptUnreadable && !Number.isFinite(expectedS)) return { actualS: read(1), attempts: 1, realShortfallS: null, unchecked: true };
   const first = read(1);
+  if (opts.acceptUnreadable && !Number.isFinite(first)) return { actualS: first, attempts: 1, realShortfallS: null, unchecked: true };
   if (!extractionTruncated(first, expectedS)) return { actualS: first, attempts: 1, realShortfallS: null };
   const second = read(2);
   if (!extractionTruncated(second, expectedS)) return { actualS: second, attempts: 2, realShortfallS: null };

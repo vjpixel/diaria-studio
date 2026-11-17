@@ -240,6 +240,13 @@ describe("#13417: readWithRetry (releitura única)", () => {
   it("leitura interrompida nas duas, em pontos diferentes: erro 'leitura do Drive interrompida'", () => {
     assert.throws(() => readWithRetry(1487.9, reads(73, 500), "bruto.mp4"), (e: unknown) => e instanceof DriveReadInterruptedError && /leitura do Drive interrompida/.test((e as Error).message) && /bruto\.mp4/.test((e as Error).message));
   });
+  it("duração ilegível (NaN) na montagem: não conferida, nunca 'leitura interrompida'; na comparação segue erro", () => {
+    assert.deepEqual(readWithRetry(120, reads(Number.NaN), "x", { acceptUnreadable: true }), { actualS: Number.NaN, attempts: 1, realShortfallS: null, unchecked: true });
+    assert.deepEqual(readWithRetry(Number.NaN, reads(10), "x", { acceptUnreadable: true }), { actualS: 10, attempts: 1, realShortfallS: null, unchecked: true });
+    assert.throws(() => readWithRetry(120, reads(Number.NaN, Number.NaN), "x"), DriveReadInterruptedError);
+    assert.throws(() => readWithRetry(Number.NaN, reads(10), "x"), /duração esperada ilegível/);
+  });
+
   it("falta igual nas duas (±0,1 s): falta real do arquivo, vale com a falta para completar", () => {
     assert.deepEqual(readWithRetry(10, reads(7, 7.05), "x"), { actualS: 7.05, attempts: 2, realShortfallS: 2.95 });
   });

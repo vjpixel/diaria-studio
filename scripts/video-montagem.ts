@@ -1402,14 +1402,16 @@ function ensureMultiAudio(ctx: Ctx, source: SourceInfo, redo: boolean): { path: 
       const raw = `${part}.raw.tmp`;
       const want = file.frames / source.fps;
       try {
-        const { realShortfallS } = readWithRetry(
+        const { realShortfallS, unchecked } = readWithRetry(
           want,
           () => {
             run("ffmpeg", [...multiAudioRawPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: raw }).slice(0, -1), "-f", "wav", raw]);
             return probeDurationS(raw);
           },
           file.path,
+          { acceptUnreadable: true },
         );
+        if (unchecked) console.error(`[aviso] duração do áudio de ${file.id} não conferida (ffprobe sem duração legível); seguindo (#13417)`);
         if (realShortfallS !== null) {
           console.error(`[aviso] áudio de ${file.id} tem ${realShortfallS.toFixed(2)} s a menos que o vídeo nas duas leituras (falta do próprio arquivo)`);
           console.error(`[premissa] ${file.id}: completado com ${realShortfallS.toFixed(2)} s de silêncio no fim, para os arquivos seguintes ficarem no tempo certo (#13417)`);
@@ -2359,7 +2361,8 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     else {
       // #13417: bruto de um arquivo só, conferido contra a duração dele; relê uma vez, falta real vira aviso.
       try {
-        const { realShortfallS } = readWithRetry(source.durationS, extract, source.path);
+        const { realShortfallS, unchecked } = readWithRetry(source.durationS, extract, source.path, { acceptUnreadable: true });
+        if (unchecked) console.error("[aviso] duração do áudio do bruto não conferida (ffprobe sem duração legível, ou duração do bruto indefinida); seguindo (#13417)");
         if (realShortfallS !== null) {
           console.error(`[aviso] o áudio do bruto tem ${realShortfallS.toFixed(2)} s a menos que o vídeo nas duas leituras (falta do próprio arquivo)`);
           console.error(`[premissa] áudio usado como está: os ${realShortfallS.toFixed(2)} s finais do vídeo ficam sem som (#13417)`);
