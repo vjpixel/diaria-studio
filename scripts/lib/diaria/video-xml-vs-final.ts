@@ -761,6 +761,10 @@ export interface XmlClip {
   /** No bruto, segundos. */
   srcIn: number;
   srcOut: number;
+  /** Bloco do roteiro do clipe (`PlannedClip.block`), para o detalhe do removido (#13339). */
+  block?: string;
+  /** Pausa da vinheta tirada de outro trecho do bruto (`PlannedClip.filler`): não é fala (#13339). */
+  filler?: true;
 }
 
 /** Um trecho do final com par no bruto: `[finalStart, finalEnd)` no final = `[brutoStart, brutoEnd)` no bruto. */
@@ -864,6 +868,36 @@ export interface ClipComparison {
   /** Início do clipe no final (s), para a ordem. */
   finalStart: number | null;
   touched: boolean;
+  /**
+   * Só no removido (#13339, instrumentação): duração no bruto (s), bloco do
+   * roteiro, se era a pausa da vinheta e a fala do clipe (palavras do
+   * `transcript.json`). Ausente em registro anterior ao #13339.
+   */
+  durationS?: number;
+  block?: string;
+  filler?: true;
+  text?: string;
+}
+
+/** Uma troca de tomada: o clipe do XML saiu e o final usa outro trecho do bruto com a mesma fala. */
+export interface TakeSwap {
+  clip: number;
+  xml: { start: number; end: number };
+  final: { start: number; end: number };
+  similarity: number;
+  /**
+   * Instrumentação do #13340 (ausente em registro anterior): a tomada que o
+   * editor usou veio depois (`posterior`) ou antes (`anterior`) da do XML no
+   * bruto, a distância entre as duas (s, do fim de uma ao começo da outra),
+   * as durações e as falas de cada uma, e o bloco do clipe trocado.
+   */
+  direction?: "posterior" | "anterior";
+  gapS?: number;
+  xmlDurationS?: number;
+  finalDurationS?: number;
+  xmlText?: string;
+  finalText?: string;
+  block?: string;
 }
 
 export interface AddedSpan {
@@ -877,7 +911,7 @@ export interface AddedSpan {
 export interface SequenceComparison {
   clips: ClipComparison[];
   added: AddedSpan[];
-  takeSwaps: Array<{ clip: number; xml: { start: number; end: number }; final: { start: number; end: number }; similarity: number }>;
+  takeSwaps: TakeSwap[];
   /** Pares de clipes mantidos em ordem trocada no final. */
   orderInversions: number;
   wordsRecovered: Array<{ text: string; start: number; end: number }>;
@@ -910,6 +944,28 @@ export interface SequenceSummary {
 }
 
 /**
+ * Detalhe de uma troca de tomada (#13340, só instrumentação): de que lado do
+ * bruto veio a tomada do final em relação à do XML, a distância entre elas e
+ * a fala de cada uma. Puro.
+ */
+export function takeSwapDirection(xml: { start: number; end: number }, final: { start: number; end: number }): { direction: "posterior" | "anterior"; gapS: number } {
+  const posterior = final.start >= xml.start;
+  const gap = posterior ? final.start - xml.end : xml.start - final.end;
+  return { direction: posterior ? "posterior" : "anterior", gapS: r3(Math.max(0, gap)) };
+}
+
+function takeSwapDetail(clip: Pick<ClipComparison, "srcIn" | "srcOut" | "block">, final: Iv, xmlText: string, finalText: string): Omit<TakeSwap, "clip" | "xml" | "final" | "similarity"> {
+  return {
+    ...takeSwapDirection({ start: clip.srcIn, end: clip.srcOut }, final),
+    xmlDurationS: r3(clip.srcOut - clip.srcIn),
+    finalDurationS: r3(final.end - final.start),
+    ...(xmlText ? { xmlText } : {}),
+    ...(finalText ? { finalText } : {}),
+    ...(clip.block !== undefined ? { block: clip.block } : {}),
+  };
+}
+
+/**
  * Compara os clipes do XML com os trechos do final no tempo do bruto. Puro.
  * `durationFinalS` só entra no `finalUnpairedS`.
  */
@@ -934,7 +990,23 @@ export function compareSequence(input: {
     const touching = input.spans.filter((s) => overlap({ start: s.brutoStart, end: s.brutoEnd }, iv) > 0);
     const covered = used.reduce((n, u) => n + overlap(u, iv), 0);
     if (len <= 0 || touching.length === 0 || covered < Math.max(REMOVED_CLIP_MAX_FRACTION * len, tol)) {
-      out.push({ index: c.index, srcIn: c.srcIn, srcOut: c.srcOut, status: "removed", headMs: null, tailMs: null, internalPauses: [], finalStart: null, touched: true });
+      // #13339: só instrumentação; a classificação (removido ou não) não muda.
+      const text = textOf(wordsIn(words, iv));
+      out.push({
+        index: c.index,
+        srcIn: c.srcIn,
+        srcOut: c.srcOut,
+        status: "removed",
+        headMs: null,
+        tailMs: null,
+        internalPauses: [],
+        finalStart: null,
+        touched: true,
+        durationS: r3(Math.max(0, len)),
+        ...(c.block !== undefined ? { block: c.block } : {}),
+        ...(c.filler ? { filler: true as const } : {}),
+        ...(text ? { text } : {}),
+      });
       continue;
     }
     const pos = byBruto.indexOf(c);
@@ -982,13 +1054,14 @@ export function compareSequence(input: {
     const adjacent = xmlGrown.some((g) => (p.start >= g.start && p.start <= g.end) || (p.end >= g.start && p.end <= g.end));
     if (adjacent) continue; // ponta estendida: já está no headMs/tailMs
     const text = textOf(wordsIn(words, p));
-    let best: { clip: ClipComparison; sim: number } | null = null;
+    let best: { clip: ClipComparison; sim: number; text: string } | null = null;
     for (const rc of removed) {
-      const sim = jaccard(text, textOf(wordsIn(words, { start: rc.srcIn, end: rc.srcOut })));
-      if (sim >= TAKE_SWAP_MIN_JACCARD && (!best || sim > best.sim)) best = { clip: rc, sim };
+      const rcText = textOf(wordsIn(words, { start: rc.srcIn, end: rc.srcOut }));
+      const sim = jaccard(text, rcText);
+      if (sim >= TAKE_SWAP_MIN_JACCARD && (!best || sim > best.sim)) best = { clip: rc, sim, text: rcText };
     }
     added.push({ brutoStart: r3(p.start), brutoEnd: r3(p.end), text, ...(best ? { swapOf: best.clip.index } : {}) });
-    if (best) takeSwaps.push({ clip: best.clip.index, xml: { start: best.clip.srcIn, end: best.clip.srcOut }, final: { start: r3(p.start), end: r3(p.end) }, similarity: Math.round(best.sim * 100) / 100 });
+    if (best) takeSwaps.push({ clip: best.clip.index, xml: { start: best.clip.srcIn, end: best.clip.srcOut }, final: { start: r3(p.start), end: r3(p.end) }, similarity: Math.round(best.sim * 100) / 100, ...takeSwapDetail(best.clip, p, best.text, text) });
   }
 
   const kept = out.filter((c) => c.status === "kept" && c.finalStart !== null);
@@ -1141,6 +1214,114 @@ export interface AggregateRow {
   orderInversions: number | null;
   wordsRecovered: number | null;
   loudnessI: number | null;
+  /**
+   * Instrumentação do #13339/#13340, derivada do `detail` (o registro antigo
+   * também tem os clipes e as trocas): `null` sem detalhe (importado da #11670).
+   * Nenhum destes campos entra em regra de padrão: só registram.
+   */
+  removal?: RemovalStats | null;
+  swaps?: SwapStats | null;
+}
+
+/** Clipes removidos de uma sequência, com mais detalhe que a contagem (#13339). */
+export interface RemovalStats {
+  /** Segundos de bruto dos clipes removidos (sem a pausa da vinheta, que não é fala). */
+  removedS: number;
+  /** `removedS` sobre a duração do XML, em %; `null` sem a duração do XML. */
+  removedPctOfXml: number | null;
+  /** Clipe removido mais longo e a mediana (s). */
+  longestS: number | null;
+  medianS: number | null;
+  /** Posição no XML (terço do índice): começo, meio, fim. */
+  byThird: [number, number, number];
+  /** Removidos em sequência (2+ clipes vizinhos no XML): o editor cortou um trecho inteiro. */
+  runs: number;
+  /** Maior sequência de vizinhos removidos. */
+  longestRun: number;
+  /** Por bloco do roteiro (só registro do #13339 em diante); `{}` sem bloco gravado. */
+  byBlock: Record<string, number>;
+  /** Removidos que eram a pausa da vinheta (não entram nos números acima). */
+  fillers: number;
+}
+
+/** Trocas de tomada de uma sequência, com o lado do bruto da tomada usada (#13340). */
+export interface SwapStats {
+  /** A tomada do final é posterior no bruto à do XML (o editor preferiu a refeita). */
+  later: number;
+  /** A tomada do final é anterior (o editor voltou à primeira). */
+  earlier: number;
+  /** Distância média entre as duas tomadas no bruto (s). */
+  meanGapS: number | null;
+  /** Diferença média de duração (final − XML, s): negativo = a tomada usada é mais curta. */
+  meanDurationDeltaS: number | null;
+  /** Por bloco do roteiro (só registro do #13340 em diante). */
+  byBlock: Record<string, number>;
+}
+
+const median = (xs: number[]): number | null => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : r3((s[m - 1] + s[m]) / 2);
+};
+
+/** Pure (#13339): o detalhe dos clipes removidos de uma sequência. `null` sem detalhe. */
+export function removalStats(detail: Pick<SequenceComparison, "clips"> | undefined, xmlDurationS: number | null): RemovalStats | null {
+  if (!detail) return null;
+  const n = detail.clips.length;
+  const removed = detail.clips.filter((c) => c.status === "removed");
+  const speech = removed.filter((c) => !c.filler);
+  const durs = speech.map((c) => c.durationS ?? Math.max(0, c.srcOut - c.srcIn));
+  const removedS = r3(durs.reduce((a, b) => a + b, 0));
+  const byThird: [number, number, number] = [0, 0, 0];
+  const byBlock: Record<string, number> = {};
+  for (const c of speech) {
+    byThird[n > 0 ? Math.min(2, Math.floor((c.index / n) * 3)) : 0]++;
+    if (c.block !== undefined) byBlock[c.block] = (byBlock[c.block] ?? 0) + 1;
+  }
+  const idx = new Set(speech.map((c) => c.index));
+  let runs = 0;
+  let longestRun = 0;
+  let cur = 0;
+  for (const c of [...detail.clips].sort((a, b) => a.index - b.index)) {
+    if (idx.has(c.index)) {
+      cur++;
+      longestRun = Math.max(longestRun, cur);
+      if (cur === 2) runs++;
+    } else cur = 0;
+  }
+  return {
+    removedS,
+    removedPctOfXml: xmlDurationS && xmlDurationS > 0 ? Math.round((removedS / xmlDurationS) * 1000) / 10 : null,
+    longestS: durs.length ? r3(Math.max(...durs)) : null,
+    medianS: median(durs),
+    byThird,
+    runs,
+    longestRun,
+    byBlock,
+    fillers: removed.length - speech.length,
+  };
+}
+
+/** Pure (#13340): o detalhe das trocas de tomada de uma sequência. `null` sem detalhe. */
+export function swapStats(detail: Pick<SequenceComparison, "takeSwaps"> | undefined): SwapStats | null {
+  if (!detail) return null;
+  let later = 0;
+  let earlier = 0;
+  const gaps: number[] = [];
+  const deltas: number[] = [];
+  const byBlock: Record<string, number> = {};
+  for (const t of detail.takeSwaps) {
+    // Registro anterior ao #13340 não tem `direction`: sai das pontas, que sempre foram gravadas.
+    const d = t.direction && t.gapS !== undefined ? { direction: t.direction, gapS: t.gapS } : takeSwapDirection(t.xml, t.final);
+    if (d.direction === "posterior") later++;
+    else earlier++;
+    gaps.push(d.gapS);
+    deltas.push(t.final.end - t.final.start - (t.xml.end - t.xml.start));
+    if (t.block !== undefined) byBlock[t.block] = (byBlock[t.block] ?? 0) + 1;
+  }
+  const mean = (xs: number[]) => (xs.length ? r3(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+  return { later, earlier, meanGapS: mean(gaps), meanDurationDeltaS: mean(deltas), byBlock };
 }
 
 export interface Aggregate {
@@ -1154,6 +1335,9 @@ export interface Aggregate {
     wordsRecovered: number;
     wordsRecoveredPerSequence: number | null;
     internalPausesPerSequence: number | null;
+    /** #13339/#13340: soma das linhas com detalhe; `undefined` em agregado anterior. */
+    removal?: { sequences: number; removedS: number; removedPctOfXml: number | null; byThird: [number, number, number]; runs: number; byBlock: Record<string, number> };
+    swaps?: { sequences: number; later: number; earlier: number; meanGapS: number | null; byBlock: Record<string, number> };
   };
 }
 
@@ -1181,6 +1365,8 @@ export function aggregateRecords(records: readonly EditionRecord[]): Aggregate {
         orderInversions: num(s.summary.orderInversions),
         wordsRecovered: num(s.summary.wordsRecovered),
         loudnessI: num(s.loudness?.inputI),
+        removal: removalStats(s.detail, num(s.xmlDurationS)),
+        swaps: swapStats(s.detail),
       });
     }
   }
@@ -1190,6 +1376,17 @@ export function aggregateRecords(records: readonly EditionRecord[]): Aggregate {
   };
   const recovered = rows.map((r) => r.wordsRecovered).filter((x): x is number => x !== null);
   const pauses = rows.map((r) => r.internalPausesRemoved).filter((x): x is number => x !== null);
+  const addBlocks = (acc: Record<string, number>, b: Record<string, number>) => {
+    for (const [k, v] of Object.entries(b)) acc[k] = (acc[k] ?? 0) + v;
+  };
+  const rem = rows.map((r) => r.removal).filter((x): x is RemovalStats => !!x);
+  const remBlocks: Record<string, number> = {};
+  for (const x of rem) addBlocks(remBlocks, x.byBlock);
+  const sw = rows.map((r) => r.swaps).filter((x): x is SwapStats => !!x);
+  const swBlocks: Record<string, number> = {};
+  for (const x of sw) addBlocks(swBlocks, x.byBlock);
+  const swGaps = sw.filter((x) => x.meanGapS !== null && x.later + x.earlier > 0);
+  const swN = swGaps.reduce((n, x) => n + x.later + x.earlier, 0);
   return {
     rows,
     editions: new Set(rows.map((r) => r.edition)).size,
@@ -1200,6 +1397,24 @@ export function aggregateRecords(records: readonly EditionRecord[]): Aggregate {
       wordsRecovered: recovered.reduce((a, b) => a + b, 0),
       wordsRecoveredPerSequence: recovered.length ? Math.round((recovered.reduce((a, b) => a + b, 0) / recovered.length) * 10) / 10 : null,
       internalPausesPerSequence: pauses.length ? Math.round((pauses.reduce((a, b) => a + b, 0) / pauses.length) * 10) / 10 : null,
+      removal: {
+        sequences: rem.length,
+        removedS: r3(rem.reduce((n, x) => n + x.removedS, 0)),
+        removedPctOfXml: (() => {
+          const v = rem.map((x) => x.removedPctOfXml).filter((x): x is number => x !== null);
+          return v.length ? Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10 : null;
+        })(),
+        byThird: rem.reduce<[number, number, number]>((a, x) => [a[0] + x.byThird[0], a[1] + x.byThird[1], a[2] + x.byThird[2]], [0, 0, 0]),
+        runs: rem.reduce((n, x) => n + x.runs, 0),
+        byBlock: remBlocks,
+      },
+      swaps: {
+        sequences: sw.length,
+        later: sw.reduce((n, x) => n + x.later, 0),
+        earlier: sw.reduce((n, x) => n + x.earlier, 0),
+        meanGapS: swN ? r3(swGaps.reduce((n, x) => n + (x.meanGapS as number) * (x.later + x.earlier), 0) / swN) : null,
+        byBlock: swBlocks,
+      },
     },
   };
 }
@@ -1389,6 +1604,12 @@ export function patternCommentBody(p: DetectedPattern): string {
   ].join("\n");
 }
 
+/** Fala de um clipe no exemplo: no máximo 80 caracteres, aspas trocadas (a linha vai para o corpo da issue). */
+function clipText(t: string | undefined, max = 80): string {
+  const s = (t ?? "").replace(/"/g, "'").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
 /** Exemplos com tempo no bruto, por padrão, tirados do detalhe dos registros. */
 export function patternExamples(records: readonly EditionRecord[], max = 8): Map<string, string[]> {
   const out = new Map<string, string[]>();
@@ -1402,10 +1623,23 @@ export function patternExamples(records: readonly EditionRecord[], max = 8): Map
       const d = s.detail;
       if (!d) continue;
       for (const w of d.wordsRecovered) push("palavras-recuperadas", `${r.edition} ${s.key}: "${w.text}" em ${w.start.toFixed(2)}–${w.end.toFixed(2)} s`);
-      for (const t of d.takeSwaps) push("tomada-trocada", `${r.edition} ${s.key}: clipe ${t.clip} (${t.xml.start}–${t.xml.end} s) trocado por ${t.final.start}–${t.final.end} s`);
+      for (const t of d.takeSwaps) {
+        // #13340: o lado do bruto e a fala de cada tomada, quando o registro os tem.
+        const dir = t.direction && t.gapS !== undefined ? t : { ...t, ...takeSwapDirection(t.xml, t.final) };
+        const fala = t.xmlText || t.finalText ? `; XML "${clipText(t.xmlText)}", final "${clipText(t.finalText)}"` : "";
+        push("tomada-trocada", `${r.edition} ${s.key}: clipe ${t.clip} (${t.xml.start}–${t.xml.end} s) trocado por ${t.final.start}–${t.final.end} s (tomada ${dir.direction}, ${dir.gapS} s de distância${t.block ? `, bloco ${t.block}` : ""}${fala})`);
+      }
       for (const c of d.clips) {
-        if (c.status === "removed") push("clipes-removidos", `${r.edition} ${s.key}: clipe ${c.index} (${c.srcIn}–${c.srcOut} s) fora do final`);
-        else {
+        if (c.status === "removed") {
+          // #13339: duração, bloco e fala do clipe, quando o registro os tem.
+          const extra = [
+            `${(c.durationS ?? c.srcOut - c.srcIn).toFixed(2)} s`,
+            ...(c.block ? [`bloco ${c.block}`] : []),
+            ...(c.filler ? ["pausa da vinheta"] : []),
+            ...(c.text ? [`"${clipText(c.text)}"`] : []),
+          ].join(", ");
+          push("clipes-removidos", `${r.edition} ${s.key}: clipe ${c.index} (${c.srcIn}–${c.srcOut} s) fora do final (${extra})`);
+        } else {
           if ((c.tailMs ?? 0) > 0) push("ponta-saida-estendida", `${r.edition} ${s.key}: clipe ${c.index} saída ${c.srcOut} s, +${c.tailMs} ms`);
           if ((c.headMs ?? 0) > 0) push("ponta-entrada-estendida", `${r.edition} ${s.key}: clipe ${c.index} entrada ${c.srcIn} s, +${c.headMs} ms`);
           if ((c.headMs ?? 0) < 0) push("cabeca-aparada", `${r.edition} ${s.key}: clipe ${c.index} entrada ${c.srcIn} s, ${c.headMs} ms`);
@@ -1420,6 +1654,28 @@ export function patternExamples(records: readonly EditionRecord[], max = 8): Map
 // ── Relatório ────────────────────────────────────────────────────────────
 
 const cell = (x: number | null, suffix = "") => (x === null ? "n/d" : `${x}${suffix}`);
+
+const blocksCell = (b: Record<string, number>) => {
+  const xs = Object.entries(b).sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
+  return xs.length ? xs.map(([k, v]) => `${k} ${v}`).join(", ") : "sem bloco gravado (registro anterior ao #13339)";
+};
+
+/** Linhas do relatório com o detalhe dos removidos e das trocas (#13339/#13340, só instrumentação). */
+function removalSwapLines(agg: Aggregate): string[] {
+  const rem = agg.totals.removal;
+  const sw = agg.totals.swaps;
+  const out: string[] = [];
+  if (rem && rem.sequences) {
+    out.push(
+      `- Clipes removidos (#13339): ${rem.removedS.toFixed(1)} s de fala no total, ${cell(rem.removedPctOfXml, "%")} do XML em média; ` +
+        `por terço do XML ${rem.byThird.join("/")} (começo/meio/fim); ${rem.runs} trecho(s) de 2+ clipes vizinhos; por bloco: ${blocksCell(rem.byBlock)}.`,
+    );
+  }
+  if (sw && sw.later + sw.earlier > 0) {
+    out.push(`- Tomadas trocadas (#13340): ${sw.later} posterior(es), ${sw.earlier} anterior(es) no bruto; distância média ${cell(sw.meanGapS, " s")}; por bloco: ${blocksCell(sw.byBlock)}.`);
+  }
+  return out;
+}
 
 export function renderReport(input: {
   agg: Aggregate;
@@ -1441,6 +1697,7 @@ export function renderReport(input: {
     `- Clipes mexidos: ${cell(agg.totals.touchedPct, "%")} em média.`,
     `- Palavras recuperadas pelo editor: ${agg.totals.wordsRecovered} no total, ${cell(agg.totals.wordsRecoveredPerSequence)} por sequência (deve cair com #13194).`,
     `- Pausas internas removidas: ${cell(agg.totals.internalPausesPerSequence)} por sequência.`,
+    ...removalSwapLines(agg),
     "",
     "## Por edição",
     "",

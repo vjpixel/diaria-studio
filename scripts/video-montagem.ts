@@ -308,7 +308,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvgForMarker, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
-import { cueFrames, parseAssStyle, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
+import { parseTrechoOrigem, readTrechosInseridos, trechoInseridoLine, type TrechoInseridoMarker } from "./lib/diaria/video-trecho-inserido.ts";
+import { cueFrames, parseAssStyle, subtitleBottomY, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -1567,6 +1568,8 @@ export interface XmlBuildOptions {
   trechosFolgaS?: number | null;
   /** #13204: os boxes de tela (PNG) de cada sequência; só entram no hash os da sequência, sem o caminho local. */
   telaOverlays?: Readonly<Record<string, readonly TelaOverlay[]>> | null;
+  /** #13437: os marcadores de trecho inserido de cada sequência; só entram no hash os da sequência (sem eles, o hash de antes). */
+  trechoMarkers?: Readonly<Record<string, readonly TrechoInseridoMarker[]>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1616,6 +1619,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
         ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
+        ...(opts.trechoMarkers?.[sequenceKey(plan.spec)]?.length ? { trechoMarkers: opts.trechoMarkers[sequenceKey(plan.spec)] } : {}),
       }),
     )
     .update("\0plan\0")
@@ -4289,19 +4293,23 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     writeJson(f(ctx, SHARE_FILE), cue ? { ...cue, seconds: shareTimeInPlan(cue, horizontalShare, resolved, source.fps, avisa), requiresFinalCheck: true } : null);
   }
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
-  // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).
+  // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180),
+  // exceto a fala que cita a tela (#13333): ali o box vai abaixo da legenda.
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
   const telaOverlays: Record<string, TelaOverlay[]> = {};
   for (const p of picked) {
-    if (!isYoutubeSpec(p.spec)) continue;
+    const horizontal = isYoutubeSpec(p.spec);
+    if (!horizontal && !isVerticalSpec(p.spec)) continue;
     // #13239 item 1: um box por vez na faixa (o marcador de uma fala não invade o da seguinte).
     const clamped = clampTelaOverlaps(telaMarkersFor(p, resolved, source.fps, telas));
     for (const w of clamped.warnings) console.error(`[aviso] ${p.spec.name}: ${w}`);
     const ms = clamped.items;
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
+    // #13333: no vertical o box começa abaixo da legenda (a do XML e a da prévia usam o mesmo estilo).
+    const placement = horizontal ? {} : { topY: subtitleBottomY(p.spec.width, p.spec.height, parseAssStyle(PREVIEW_SUBTITLE_STYLE)) };
     // #13309: fala do horizontal com tela e sem marcador é box sumido (aviso); a de outro vídeo fica na premissa.
-    const { semCasamento, foraDaVersao: fora } = telaSemMarcador(telas, ms);
+    const { semCasamento, foraDaVersao: fora } = horizontal ? telaSemMarcador(telas, ms) : { semCasamento: [] as string[], foraDaVersao: [] as string[] };
     if (semCasamento.length) {
       console.error(
         `[aviso] ${p.spec.name}: ${semCasamento.length} texto(s) de tela de fala do horizontal sem item casado (${semCasamento.join(", ")}): o box sai fora do XML; ` +
@@ -4313,7 +4321,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       for (const m of ms) {
         try {
           // #13363: o box recebe o texto com o `**` do título (o marcador segue sem ele, #13180).
-          const svg = telaBoxSvgForMarker(m, p.spec.width, p.spec.height);
+          const svg = telaBoxSvgForMarker(m, p.spec.width, p.spec.height, placement);
           const name = telaFileName(ctx.edition, m.id, createHash("sha256").update(svg).digest("hex").slice(0, 12));
           const out = join(ctx.outDir, name);
           // Regravado sempre, como capa e título: no modo API o snapshot do out dir é o que sobe (#13204).
@@ -4326,10 +4334,31 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       }
       if (overlays.length) {
         telaOverlays[sequenceKey(p.spec)] = overlays;
-        console.error(`[premissa] ${p.spec.name}: ${overlays.length} box(es) de tela (PNG) numa faixa acima do bruto, no tempo da fala (${overlays.map((o) => `${o.id} ${(o.in / source.fps).toFixed(1)}–${(o.out / source.fps).toFixed(1)} s`).join(", ")}); conferir no 1º import (#13204)`);
+        console.error(`[premissa] ${p.spec.name}: ${overlays.length} box(es) de tela (PNG) numa faixa acima do bruto, no tempo da fala (${overlays.map((o) => `${o.id} ${(o.in / source.fps).toFixed(1)}–${(o.out / source.fps).toFixed(1)} s`).join(", ")}); conferir no 1º import (#13204)${horizontal ? "" : "; no vertical, só fala que cita a tela, com o box abaixo da legenda (#13333)"}`);
       }
     }
-    if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
+    if (ms.length && !horizontal) console.error(`[premissa] ${p.spec.name}: ${ms.length} fala(s) que citam a tela levam o texto de tela também neste vertical (${ms.map((m) => m.id).join(", ")}), exceção à regra dos verticais sem tela (#13333)`);
+    else if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186), exceto a fala que cita a tela (#13333)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
+  }
+  // #13437: trecho de outro vídeo (formato react) vira marcador no fim da fala, no horizontal; o clipe segue à mão.
+  const trechosInseridos = readTrechosInseridos(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
+  const trechoMarkers: Record<string, TrechoInseridoMarker[]> = {};
+  for (const p of picked) {
+    if (!trechosInseridos.length || !isYoutubeSpec(p.spec)) continue;
+    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: t.origem })));
+    const ms: TrechoInseridoMarker[] = [];
+    for (const t of trechosInseridos) {
+      const at = pos.find((m) => m.id === t.id);
+      if (!at) {
+        console.error(`[aviso] ${p.spec.name}: trecho inserido depois da fala ${t.id} sem item casado no blocks.json (pôr "fala": "${t.id}" no item): fora do XML (#13437)`);
+        continue;
+      }
+      const m: TrechoInseridoMarker = { id: t.id, origem: t.origem, trecho: t.trecho, at: at.out, parsed: parseTrechoOrigem(t.origem) };
+      ms.push(m);
+      const line = trechoInseridoLine(m, source.fps);
+      console.error(`[${line.level}] ${p.spec.name}: ${line.text}`);
+    }
+    if (ms.length) trechoMarkers[sequenceKey(p.spec)] = ms;
   }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
   const xmlFilePaths = [
@@ -4377,6 +4406,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     telaMarkers,
     trechosFolgaS: trechos ? trechosOpt.folgaS : null,
     telaOverlays,
+    trechoMarkers,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -4396,7 +4426,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechos }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechoMarkers, trechos }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
