@@ -3,7 +3,7 @@ import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts
 import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
 import { findStudySourceRecurrences, formatStudySourceWarning, STUDY_RECURRENCE_WINDOW_DAYS } from "../study-source-recurrence.ts"; // #11763
 import { findStoryContinuations, formatStoryContinuationWarning, STORY_CONTINUATION_WINDOW_DAYS } from "../story-continuation.ts"; // #11897
-import { findStaleHighlightRepeats, formatStaleHighlightWarning, findSourceStaleDates, STALE_HIGHLIGHT_WINDOW_DAYS } from "../stale-highlight.ts"; // #13313
+import { findStaleHighlightRepeats, formatStaleHighlightWarning, findSourceStaleDate, STALE_HIGHLIGHT_WINDOW_DAYS } from "../stale-highlight.ts"; // #13313, #13364
 import { contentJaccard, REPEAT_THEME_WARN_THRESHOLD } from "../repeat-theme-check.ts"; // #11517
 import { readPossibleRepeatWarnings, formatPossibleRepeat } from "../secondary-theme-repeat.ts"; // #13143
 import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
@@ -2540,7 +2540,8 @@ export function checkHighlightDateUnverified(editionDir: string): InvariantViola
  * #13313: o texto bruto da fonte do destaque (`_internal/fact-check-sources/
  * d{N}.txt`, mapeado pela URL do `manifest.json`) declara uma data de
  * atualização/publicação mais de 30 dias antes da edição ("Update on
- * September 29, 2026" no D2 de 261117).
+ * September 29, 2026" no D2 de 261117). Só a data declarada mais recente
+ * conta (#13364).
  */
 export function checkHighlightSourceStaleDate(editionDir: string): InvariantViolation[] {
   const reviewed = resolve(editionDir, "02-reviewed.md");
@@ -2564,14 +2565,16 @@ export function checkHighlightSourceStaleDate(editionDir: string): InvariantViol
     } catch {
       continue;
     }
-    const hits = findSourceStaleDates(text, aammdd);
-    if (hits.length === 0) continue;
-    const oldest = hits[0];
+    // #13364: vale a data declarada mais RECENTE. A mais antiga (publicação
+    // original, matéria da barra lateral) disparava aviso em página atualizada
+    // há 2 dias.
+    const latest = findSourceStaleDate(text, aammdd);
+    if (!latest) continue;
     out.push({
       rule: "highlight-source-stale-date", source_issue: "#13313", severity: "warning" as const, file: txt,
       message:
-        `🚨 A fonte do destaque [${h.label}] “${h.title}” (${h.url}) parece ser de ${oldest.iso} ` +
-        `(${oldest.days} dias antes da edição; trecho: “${oldest.text}”). Conferir se a notícia é desta semana; ` +
+        `🚨 A fonte do destaque [${h.label}] “${h.title}” (${h.url}) parece ser de ${latest.iso} ` +
+        `(data declarada mais recente, ${latest.days} dias antes da edição; trecho: “${latest.text}”). Conferir se a notícia é desta semana; ` +
         `se não houver fato novo, trocar o destaque no gate.`,
     });
   }

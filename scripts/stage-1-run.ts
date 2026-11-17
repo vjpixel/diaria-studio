@@ -114,7 +114,9 @@
  *     (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup
  *     intra-edição + evergreen) → §1u-quater (rebaixa destaque com MESMO
  *     FATO, #9100, fail-soft) → §1u-quinquies (penalidade de estudo/case
- *     genérico, #9462, flag + fail-soft) → §1u-sexies (busca ativa de fonte
+ *     genérico, #9462, flag + fail-soft) → §1u-quinquies-b (rebaixa destaque
+ *     sem data verificada cuja página declara data de mais de 30 dias,
+ *     #13341, fail-soft) → §1u-sexies (busca ativa de fonte
  *     primária dos destaques D1-D3, #10137, fail-soft) → §1v (render MD) → §1v-scoring-features
  *     (feature store de scoring, fail-soft) → §1v-bis..1v-quinquies
  *     (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis
@@ -1499,6 +1501,26 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
     internalPath(editionDir, "01-generic-study-demoted.json"),
   ]);
   for (const line of ((genericStudy.json as { notes?: unknown } | undefined)?.notes as unknown[] | undefined) ?? []) {
+    if (typeof line === "string") report.note(line);
+  }
+
+  // --- §1u-quinquies-b rebaixa destaque com data velha declarada na fonte (#13341) ---
+  // Top-3 com date_unverified: lê o texto da página (corpo do 1i, ou GET) e,
+  // se a data de publicação/atualização declarada mais recente tiver mais de
+  // 30 dias, o destaque sai do top-3 (fica no pool). Depois dos outros
+  // rebaixamentos e antes da busca de fonte primária (§1u-sexies), que pode
+  // trocar a URL. Fail-soft.
+  const staleDate = softStep(deps, report, "demote-stale-date-highlights (1u-quinquies-b, #13341)", "scripts/demote-stale-date-highlights.ts", [
+    "--categorized",
+    categorizedPath,
+    "--edition",
+    opts.edition,
+    "--bodies-dir",
+    internalPath(editionDir, "_forensic/link-verify-bodies"),
+    "--out-log",
+    internalPath(editionDir, "01-stale-date-demoted.json"),
+  ]);
+  for (const line of ((staleDate.json as { notes?: unknown } | undefined)?.notes as unknown[] | undefined) ?? []) {
     if (typeof line === "string") report.note(line);
   }
 
