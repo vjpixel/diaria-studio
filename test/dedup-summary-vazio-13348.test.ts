@@ -17,6 +17,7 @@ describe("dedup Pass 2a prefere cópia com summary (#13348)", () => {
       const r = dedup(input, new Set(), 0.85);
       assert.equal(r.kept.length, 1);
       assert.equal(r.kept[0].summary, "Resumo real do artigo.");
+      assert.equal(r.kept[0].title, rss.title); // critério antigo (título mais longo) preservado
     });
   }
 });

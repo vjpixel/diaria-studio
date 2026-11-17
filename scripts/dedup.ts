@@ -680,12 +680,9 @@ export function dedup(
       continue;
     }
     // Keep the best: prefer registered source (no discovered_source flag) + longest title
-    // #13348: cópia com summary vence a vazia (RSS sem summary + Brave com
-    // summary da mesma URL) — senão verify-summary-integrity aborta depois.
+    // #13348: vencedor (critério antigo) herda summary de cópia irmã quando vazio
+    // (RSS sem summary + Brave com summary) — senão verify-summary-integrity aborta.
     const sorted = [...group].sort((a, b) => {
-      const aEmpty = String(a.summary ?? "").trim() ? 0 : 1;
-      const bEmpty = String(b.summary ?? "").trim() ? 0 : 1;
-      if (aEmpty !== bEmpty) return aEmpty - bEmpty;
       const aDisc = a.discovered_source ? 1 : 0;
       const bDisc = b.discovered_source ? 1 : 0;
       if (aDisc !== bDisc) return aDisc - bDisc; // non-discovered first
