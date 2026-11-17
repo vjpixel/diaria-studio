@@ -106,7 +106,7 @@ describe("#10983 comentário como página", () => {
   const D1_AT = "2026-11-09T20:00:00.000Z";
   const D1_MS = Date.parse(D1_AT);
 
-  it("com target_post_urn → POST /rest/socialActions/{urn}/comments com actor = página", async () => {
+  it("com target_post_urn → POST /v2/socialActions/{urn}/comments com actor = página (#13101)", async () => {
     const calls = installFetch(() => new Response("", { status: 201 }));
     const out = await fireQueueEntry(
       entry({ action: "comment", destaque: "d1", parent_destaque: "d1", text: "Assista no YouTube: https://youtu.be/abcdefghijk", target_post_urn: "urn:li:share:42" }),
@@ -114,7 +114,7 @@ describe("#10983 comentário como página", () => {
     );
     assert.equal(out.status, "fired");
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, `https://api.linkedin.com/rest/socialActions/${encodeURIComponent("urn:li:share:42")}/comments`);
+    assert.equal(calls[0].url, `https://api.linkedin.com/v2/socialActions/${encodeURIComponent("urn:li:share:42")}/comments`);
     const body = JSON.parse(calls[0].body);
     assert.deepEqual(body, {
       actor: CREDS.authorUrn,
@@ -146,7 +146,7 @@ describe("#10983 comentário como página", () => {
     assert.match(calls[0].url, /q=author/);
     assert.ok(calls[0].url.includes(`author=${encodeURIComponent(CREDS.authorUrn)}`));
     assert.equal(calls[0].headers.get("X-RestLi-Method"), "FINDER");
-    assert.equal(calls[1].url, `https://api.linkedin.com/rest/socialActions/${encodeURIComponent("urn:li:ugcPost:902")}/comments`);
+    assert.equal(calls[1].url, `https://api.linkedin.com/v2/socialActions/${encodeURIComponent("urn:li:ugcPost:902")}/comments`);
   });
 
   it("post ainda não publicado (nada na janela) → failed retentável, sem comentar", async () => {
@@ -209,7 +209,7 @@ describe("#10983 comentário como página", () => {
       config(),
     );
     assert.equal(out.status, "fired");
-    assert.equal(calls[1].url, `https://api.linkedin.com/rest/socialActions/${encodeURIComponent("urn:li:share:961")}/comments`);
+    assert.equal(calls[1].url, `https://api.linkedin.com/v2/socialActions/${encodeURIComponent("urn:li:share:961")}/comments`);
   });
 
   it("regressão PR #12407: parent_text_hint sem post correspondente na janela → failed (retenta, depois DLQ), nunca comenta", async () => {

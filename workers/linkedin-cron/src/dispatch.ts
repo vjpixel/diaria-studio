@@ -643,6 +643,22 @@ function linkedInRestHeaders(creds: LinkedInCreds): Record<string, string> {
 }
 
 /**
+ * #13101 — headers do endpoint legado `/v2` (comentário da página): mesmos do
+ * `/rest`, SEM `LinkedIn-Version`. O `/rest/socialActions` exige o produto
+ * Community Management API, que o app da página não tem.
+ */
+function linkedInV2Headers(creds: LinkedInCreds): Record<string, string> {
+  return {
+    Authorization: `Bearer ${creds.accessToken}`,
+    "Content-Type": "application/json",
+    "X-Restli-Protocol-Version": "2.0.0",
+  };
+}
+
+/** #13101 — base do comentário da página (ver `linkedInV2Headers`). */
+export const LINKEDIN_PAGE_COMMENT_BASE = "https://api.linkedin.com/v2/socialActions";
+
+/**
  * Classifica a resposta de um POST que CRIA algo no LinkedIn (post de repost,
  * comentário): 2xx = `fired`; 4xx = rejeição definitiva, nada criado = `dlq`;
  * 5xx = ambíguo (pode ter criado) = `send_unknown`, que nenhum caminho refaz
@@ -814,7 +830,14 @@ export async function findPagePostNear(
  * comentário do D1). Alvo: `target_post_urn` explícito ou, sem ele, o post
  * achado por `findPagePostNear(parent_scheduled_at, parent_text_hint)`. Post ainda não achado =
  * `failed` (retentável: o cron re-tenta até `MAX_RETRIES`, depois DLQ).
- * Comentário: `POST /rest/socialActions/{urn}/comments` com `actor` = página.
+ * Comentário: `POST /v2/socialActions/{urn}/comments` com `actor` = página.
+ *
+ * #13101 — endpoint LEGADO `/v2`, não o `/rest` versionado: o app da página
+ * não tem o produto Community Management API, e o `/rest/socialActions` exige
+ * esse produto (403 `partnerApiSocialActions.CREATE.20260901`, medido em
+ * 17/11/2026; nenhum comentário saiu de 07/11 a 17/11). O mesmo token passa
+ * na permissão do `/v2` (GET 200; POST com corpo inválido devolve 500, não
+ * 403). Por isso sem `LinkedIn-Version`: o header é do `/rest`.
  */
 async function fireLinkedInPageComment(entry: QueueEntry, creds: LinkedInCreds): Promise<FireOutcome> {
   let target = entry.target_post_urn ?? null;
@@ -825,17 +848,17 @@ async function fireLinkedInPageComment(entry: QueueEntry, creds: LinkedInCreds):
     target = lookup.urn;
   }
   try {
-    const res = await fetch(`https://api.linkedin.com/rest/socialActions/${encodeURIComponent(target)}/comments`, {
+    const res = await fetch(`${LINKEDIN_PAGE_COMMENT_BASE}/${encodeURIComponent(target)}/comments`, {
       method: "POST",
-      headers: linkedInRestHeaders(creds),
+      headers: linkedInV2Headers(creds),
       body: JSON.stringify({ actor: creds.authorUrn, object: target, message: { text: entry.text } }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    return classifyLinkedInCreate(res, `LinkedIn comentário da página em ${target}: POST /rest/socialActions/comments`);
+    return classifyLinkedInCreate(res, `LinkedIn comentário da página em ${target}: POST /v2/socialActions/comments`);
   } catch (e) {
     return {
       status: "send_unknown",
-      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn comentário da página em ${target}: fetch ${fetchFailure(e as Error)} — o comentário pode ter saído; confira o post antes de refazer`,
+      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn comentário da página em ${target}: POST /v2/socialActions/comments fetch ${fetchFailure(e as Error)} — o comentário pode ter saído; confira o post antes de refazer`,
     };
   }
 }
