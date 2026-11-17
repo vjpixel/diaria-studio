@@ -240,7 +240,7 @@ ordem:
    labela a PR na 1ª vez que ela é rejeitada (mesmo mecanismo de
    `continuo-escalado`, #7446 item 2) — antes disso `reject` não tinha
    NENHUM sinal persistente além de um comentário que se deduplica sozinho a
-   partir da 2ª vez (achado ao vivo: PR #7593, rejeitada e esquecida). Ao
+   partir da 2ª vez. Ao
    achar uma PR com esse label neste passo, decidir e agir, nunca só contar
    no relatório: (a) branch `continuo/*` com causa consertável (mesma
    disciplina do §3b — CI vermelho, achado pontual, diff pequeno) → push do

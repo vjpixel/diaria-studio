@@ -322,11 +322,12 @@ describe("receitas de PR usam os arquivos remotos (#12884)", { skip: process.pla
           `${quote(process.execPath)} --import ${quote(import.meta.resolve("tsx"))} ${quote(resolve(root, "scripts/lib/sensitive-path-guard.ts"))}`);
         const result = spawnSync("bash", ["-c", `
           gh() {
-            [ "$*" = "api repos/vjpixel/diaria-studio/pulls/12731/files --paginate --jq .[].filename" ] || return 99
+            [ "$*" = "api repos/vjpixel/diaria-studio/pulls/12731/files --paginate --jq .[].filename" ] \\
+              || [ "$*" = "pr diff 12731 --name-only" ] || return 99
             printf '%s' "$PR_FILES"
             return "$GH_STATUS"
           }
-          ${command.replace("pulls/N/files", "pulls/12731/files")}
+          ${command.replace("pulls/N/files", "pulls/12731/files").replace("gh pr diff N ", "gh pr diff 12731 ")}
         `], { cwd, encoding: "utf8", env: { ...process.env, PR_FILES: files, GH_STATUS: String(ghStatus) } });
         assert.equal(result.error, undefined);
         return result;
