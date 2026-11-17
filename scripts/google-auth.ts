@@ -31,6 +31,11 @@ function credentialsPath(): string {
   return process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] || resolve(ROOT, "data", ".credentials.json");
 }
 
+/** Se as credenciais OAuth do projeto existem nesta máquina (sem ler nem renovar o token, #13334). */
+export function googleCredentialsPresent(): boolean {
+  return existsSync(credentialsPath());
+}
+
 export interface GoogleCredentials {
   client_id: string;
   client_secret: string;
