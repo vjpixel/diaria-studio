@@ -749,7 +749,10 @@ export function mergeTrainBatch(
   prInfos: readonly TrainPrInfo[],
   opts: { sessionId: string; kind: string; commitTitle: string; commitBody: string },
 ): MergeTrainBatchResult {
-  for (const pr of batch.prs) {
+  // #13388: PR mergeada fora do trem entre a descoberta e o merge é terminal
+  // ok — fora da revalidação do Gate 2 e do fechamento (já está MERGED).
+  const pendingPrs = batch.prs.filter((pr) => !confirmMerged(runner, pr));
+  for (const pr of pendingPrs) {
     const gate = revalidateGate2(runner, pr, opts.sessionId);
     if (!gate.ok) {
       return {
@@ -818,7 +821,7 @@ export function mergeTrainBatch(
   // diferentes). Best-effort por PR: uma falha aqui não desfaz o merge que
   // já aconteceu, só fica sem o comentário/close — reportado, não fatal.
   const closeFailures: string[] = [];
-  for (const pr of batch.prs) {
+  for (const pr of pendingPrs) {
     const comment = runner.exec("gh", [
       "pr",
       "comment",
