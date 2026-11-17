@@ -21,7 +21,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
+import { buildHomeFeed, buildIndexHtml, buildVideoFeed, HOME_VIDEO_LIMIT } from "./lib/site-home-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_SITEMAP_PATH = resolve(ROOT, "workers", "site", "public", "sitemap.xml");
@@ -65,11 +65,14 @@ function main() {
   const feature = feed[0] ?? null;
   const archive = feed.slice(1);
 
-  const html = buildIndexHtml({ feature, archive });
+  // #13323: seção "Vídeos" — mesmas fontes e mesmo corte de data da home.
+  const videos = buildVideoFeed(sitemapXml, readPageHtml, HOME_VIDEO_LIMIT);
+
+  const html = buildIndexHtml({ feature, archive, videos });
   writeFileSync(outPath, html, "utf8");
 
   console.log(
-    `gen-home-page: ${outPath} escrito (feature=${feature?.slug ?? "nenhuma"}, ${archive.length} edições no arquivo)`,
+    `gen-home-page: ${outPath} escrito (feature=${feature?.slug ?? "nenhuma"}, ${archive.length} edições no arquivo, ${videos.length} vídeos)`,
   );
 }
 
