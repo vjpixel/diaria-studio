@@ -3756,7 +3756,10 @@ export function pickXmlVersion(existing: ReadonlyArray<{ version: number; hash: 
 export interface TelaMarker {
   /** Id da fala no roteiro. */
   id: string;
+  /** Texto do marcador do XML, sem o `**` do título (#13180). */
   tela: string;
+  /** Texto do box em PNG, com o `**` do título (#13363); ausente = o mesmo de `tela`. */
+  telaBox?: string;
   in: number;
   out: number;
 }
@@ -3784,7 +3787,7 @@ export function telaMarkersFor(
   plan: Pick<SequencePlan, "spec" | "clips">,
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   fps: number,
-  telas: ReadonlyArray<{ id: string; texto: string; tela: string }>,
+  telas: ReadonlyArray<{ id: string; texto: string; tela: string; telaBox?: string }>,
 ): TelaMarker[] {
   if (!isYoutubeSpec(plan.spec)) return [];
   const norm = (t: string) => tokenize(t).join(" ");
@@ -3814,7 +3817,7 @@ export function telaMarkersFor(
         outF = Math.max(outF, c.seqEnd - Math.round(Math.max(0, c.srcOut - it.interval.end) * fps));
       }
     }
-    if (Number.isFinite(inF) && outF > inF) out.push({ id: t.id, tela: t.tela, in: inF, out: outF });
+    if (Number.isFinite(inF) && outF > inF) out.push({ id: t.id, tela: t.tela, ...(t.telaBox !== undefined ? { telaBox: t.telaBox } : {}), in: inF, out: outF });
   }
   return out.sort((a, b) => a.in - b.in);
 }

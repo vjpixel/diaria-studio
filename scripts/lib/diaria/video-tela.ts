@@ -108,6 +108,15 @@ export function telaBoxSvg(tela: string, width: number, height: number): string 
   );
 }
 
+/**
+ * SVG do box de um marcador de tela (#13363): usa o texto com o `**` do título
+ * (`telaBox`, de `readRoteiroTelas`), não o do marcador do XML, que já vem sem
+ * ele (#13180) e faria o título sair com peso normal. Sem `telaBox`, o `tela`.
+ */
+export function telaBoxSvgForMarker(m: { tela: string; telaBox?: string }, width: number, height: number): string {
+  return telaBoxSvg(m.telaBox ?? m.tela, width, height);
+}
+
 /** Nome do PNG na pasta da edição: id da fala + hash do conteúdo (um XML antigo segue achando o dele). */
 export function telaFileName(edition: string, id: string, hash: string): string {
   return `${edition}_tela_${id.replace(/[^A-Za-z0-9-]/g, "")}-${hash}.png`;
