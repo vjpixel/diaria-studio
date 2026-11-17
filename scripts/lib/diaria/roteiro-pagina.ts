@@ -85,11 +85,27 @@ export function telaHtml(s: string): string {
     .join("<br>");
 }
 
-function linhaFala(f: FalaRoteiro, v: VideoRoteiro): string {
+function linhaFala(f: FalaRoteiro, v: VideoRoteiro, comTopicos: boolean): string {
   const tag = f.gravarAParte ? `<span class="novo">Gravar à parte</span>` : "";
   // Os verticais saem sem texto de tela (#13180): o box só aparece no horizontal.
   const tela = f.tela && v === "horizontal" ? `<aside class="tela"><b>Na tela</b>${telaHtml(f.tela)}</aside>` : "<span></span>";
-  return `<div class="row"><p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
+  // Tópicos da fala: coluna à esquerda, em todos os vídeos que usam a fala. A coluna só existe
+  // quando o roteiro tem tópicos; sem eles a linha fica como antes (fala + tela).
+  const topicos = !comTopicos
+    ? ""
+    : f.topicos?.length
+      ? `<ul class="topicos">${f.topicos.map((t) => `<li>${esc(t.trim())}</li>`).join("")}</ul>`
+      : "<span></span>";
+  const classe = comTopicos ? "row com-topicos" : "row";
+  const linha = `<div class="${classe}">${topicos}<p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
+  return linha + trechoInseridoHtml(f, v);
+}
+
+/** Trecho de outro vídeo inserido depois da fala (react): só no horizontal, entre aspas, com a origem. */
+function trechoInseridoHtml(f: FalaRoteiro, v: VideoRoteiro): string {
+  const t = f.trechoInserido;
+  if (!t || v !== "horizontal") return "";
+  return `<figure class="insercao"><figcaption>Entra o trecho: ${esc(t.origem.trim())}</figcaption><blockquote>“${esc(t.texto.trim())}”</blockquote></figure>`;
 }
 
 /** O bloco em que a fala aparece naquele vídeo (o resumo vira resumo curto nos verticais). */
@@ -119,6 +135,7 @@ function grupos(roteiro: RoteiroFalas, v: VideoRoteiro): Array<{ bloco: BlockKey
 }
 
 function secaoVideo(roteiro: RoteiroFalas, v: VideoRoteiro, seg: number | undefined, ctaCardS: number): string {
+  const comTopicos = roteiro.falas.some((f) => (f.topicos?.length ?? 0) > 0);
   const peca = roteiroPecas(roteiro)[v] ?? {};
   const spec = seg !== undefined ? `cerca de ${fmtDuracao(seg)}` : "";
   const papel = v === "horizontal" ? "notícia completa · " : "";
@@ -132,7 +149,7 @@ function secaoVideo(roteiro: RoteiroFalas, v: VideoRoteiro, seg: number | undefi
   if (cover.length) partes.push(`<p class="cover">${cover.join("<br>")}</p>`);
   for (const g of grupos(roteiro, v)) {
     const rotulo = g.bloco ? ROTULO_BLOCO[g.bloco] : "Sem bloco";
-    partes.push(`<div class="label">${esc(rotulo)}</div><div class="${classeDoGrupo(g.bloco)}">${g.falas.map((f) => linhaFala(f, v)).join("")}</div>`);
+    partes.push(`<div class="label">${esc(rotulo)}</div><div class="${classeDoGrupo(g.bloco)}">${g.falas.map((f) => linhaFala(f, v, comTopicos)).join("")}</div>`);
   }
   const cta = roteiro.porVideo?.[v]?.cta?.trim() || CTA_CARD_PADRAO[v];
   partes.push(`<div class="close"><b>CTA (card, cerca de ${ctaCardS} s):</b> ${esc(cta)}</div>`);
@@ -234,6 +251,12 @@ body { background: var(--bg); color: var(--fg); font-family: var(--body); font-s
 .cover b { color: var(--fg); font-weight: 600; }
 .id { display: inline-block; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; margin-right: 7px; vertical-align: 1px; }
 .row { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 14px; align-items: start; }
+.row.com-topicos { grid-template-columns: 150px minmax(0, 1fr) 210px; }
+.topicos { margin: 0; padding: 0 0 0 16px; font-size: 13.5px; line-height: 1.45; font-weight: 600; color: var(--fg); }
+.topicos li + li { margin-top: 2px; }
+.insercao { margin: 10px 0; padding: 8px 12px; border-left: 3px dashed var(--warn); background: var(--sug-bg); border-radius: 4px; }
+.insercao figcaption { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--warn); font-weight: 600; margin-bottom: 4px; }
+.insercao blockquote { margin: 0; font-style: italic; color: var(--fg); }
 .row + .row { margin-top: 10px; }
 .row p.fala { margin: 0; text-wrap: pretty; }
 .tela { font-size: 13.5px; line-height: 1.45; background: var(--sug-bg); color: var(--sug-fg); border-left: 3px solid var(--ink); border-radius: 4px; padding: 7px 10px; font-weight: 400; }
@@ -241,14 +264,20 @@ body { background: var(--bg); color: var(--fg); font-family: var(--body); font-s
 del { color: var(--muted); }
 .reserva { text-decoration: underline dashed var(--warn); text-underline-offset: 3px; }
 .tag-corte { display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; }
-@media (max-width: 640px) { .row { grid-template-columns: 1fr; gap: 6px; } }
+@media (max-width: 640px) { .row { grid-template-columns: 1fr; gap: 6px; } .row > span:empty { display: none; } }
+@media (max-width: 760px) { .row.com-topicos { grid-template-columns: 1fr; gap: 6px; } }
 @media (max-width: 520px) { .sheet { padding: 16px 14px; } body { font-size: 16px; } }`;
 
 const SCRIPT = `(function () {
   var btn = document.getElementById('copiar');
   btn.addEventListener('click', function () {
     var el = document.getElementById('roteiro');
-    var txt = el.innerText;
+    var copia = el.cloneNode(true);
+    copia.querySelectorAll('.topicos').forEach(function (t) { t.remove(); });
+    copia.style.position = 'absolute'; copia.style.left = '-9999px';
+    document.body.appendChild(copia);
+    var txt = copia.innerText;
+    copia.remove();
     var done = function () { btn.textContent = 'Copiado'; setTimeout(function () { btn.textContent = 'Copiar roteiro'; }, 1600); };
     try { navigator.clipboard.writeText(txt).then(done, function () { sel(el); }); } catch (e) { sel(el); }
   });
@@ -287,7 +316,7 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `<main class="wrap">`,
     `  <section class="review" aria-label="Gravação">`,
     `    <h2>Gravação</h2>`,
-    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. O texto de tela fica no box ao lado da fala, só no horizontal.</p>`,
+    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. À esquerda de cada fala, os tópicos para gravar sem ler; o texto de tela fica no box à direita, só no horizontal.</p>`,
     `    <ul>\n${itensGravacao(roteiro, cfg).map((i) => `      <li>${i}</li>`).join("\n")}\n    </ul>`,
     `  </section>`,
     ``,

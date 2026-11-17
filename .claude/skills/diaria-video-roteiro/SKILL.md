@@ -110,7 +110,7 @@ Vêm de decisões do editor. Não reabrir.
 npx tsx scripts/render-roteiro-video.ts {AAMMDD}
 ```
 
-Ele valida o JSON (inválido = exit 2, nada gravado), repete os `[aviso]` do `video-roteiro-blocos.ts` e grava `_internal/roteiro-d1.html` no layout da 261116: caixa "Gravação" no topo (duração calculada e falas de cada vídeo, o que gravar à parte, os itens de `gravacao`), botão "Copiar roteiro", uma seção por vídeo com título, texto da capa, blocos e falas numeradas, o box **"Na tela"** ao lado de cada fala do horizontal que tem `tela` (empilhado no celular; os verticais saem sem tela, #13180), os verticais na ordem de `ordem`, o corte parcial riscado e o de reserva sublinhado, e as "Notas para a edição" no fim (cortes, ordem diferente do horizontal, fontes de fora do D1 e os itens de `notas`). Nunca escrever nem editar o HTML à mão: a mesma fala aparece em cada vídeo que a usa, e só gerando do JSON as cópias não divergem. O texto de tela não lista mais nas notas: vai no box da fala.
+Ele valida o JSON (inválido = exit 2, nada gravado), repete os `[aviso]` do `video-roteiro-blocos.ts` e grava `_internal/roteiro-d1.html` no layout da 261116: caixa "Gravação" no topo (duração calculada e falas de cada vídeo, o que gravar à parte, os itens de `gravacao`), botão "Copiar roteiro", uma seção por vídeo com título, texto da capa, blocos e falas numeradas, a coluna de tópicos à esquerda de cada fala (quando o roteiro tem `topicos`), o box **"Na tela"** ao lado de cada fala do horizontal que tem `tela` (empilhado no celular; os verticais saem sem tela, #13180), os verticais na ordem de `ordem`, o corte parcial riscado e o de reserva sublinhado, e as "Notas para a edição" no fim (cortes, ordem diferente do horizontal, fontes de fora do D1 e os itens de `notas`). Nunca escrever nem editar o HTML à mão: a mesma fala aparece em cada vídeo que a usa, e só gerando do JSON as cópias não divergem. O texto de tela não lista mais nas notas: vai no box da fala.
 
 Publicar a página com a ferramenta Artifact, seguindo o que ela pede para uma página nova, e gerar de novo com `--artifact-url {URL}`: o link fica num comentário na primeira linha (`<!-- artifact: URL -->`), que as gerações seguintes preservam sozinhas. Uma sessão retomada lê esse link e republica no mesmo endereço, em vez de criar outro.
 
@@ -128,7 +128,7 @@ Na resposta, dar o link e citar só o que mudou.
     "vertical2": { "titulo": "…", "capa": "…" }
   },
   "falas": [
-    { "id": "H1", "bloco": "gancho", "texto": "…", "videos": ["horizontal", "vertical1"], "gravarAParte": false },
+    { "id": "H1", "bloco": "gancho", "texto": "…", "videos": ["horizontal", "vertical1"], "gravarAParte": false, "topicos": ["Previ três coisas", "Duas aconteceram"] },
     {
       "id": "H4", "bloco": "resumo", "texto": "… na Busca do Google e em outros serviços da empresa.", "videos": ["horizontal", "vertical1"],
       "tela": "App do Gemini · Busca do Google · AI Studio",
@@ -157,6 +157,8 @@ Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da 
   - **Nada que não valha para todo o público da fala** (na 261116 o "Sheets" saiu da lista porque não é para todos).
 
   Os `[aviso]` do `video-roteiro-blocos.ts` e do render apontam o que dá para conferir sem ler: tela num vertical, " · ", `**` fora de uma linha inteira, empresa entre parênteses, "(padrão)".
+- **`topicos`** (por fala, pedido do editor em 17/11/2026): lista de bullets de até 4 palavras cada, com as ideias da fala na ordem em que ela as diz, para o editor gravar sem ler. A página mostra numa coluna à esquerda da fala, em todos os vídeos que a usam; não vai para o XML nem para a legenda. Escrever para toda fala, inclusive as gravadas à parte, e atualizar junto quando a fala mudar. A coluna só aparece quando o roteiro tem tópicos, e o "Copiar roteiro" copia as falas sem eles. Tópico sem palavra, com mais de 4 palavras, com quebra de linha ou com seta invalida o JSON.
+- **`trechoInserido`** (por fala, pedido do editor em 17/11/2026): `{ "origem": "Vídeo de 10/11, youtu.be/…, 3:42 a 4:00", "texto": "…" }` quando um trecho de outro vídeo entra logo depois da fala, no horizontal (formato react). `texto` é a fala do trecho, transcrita (do SRT do vídeo publicado, nunca de memória); `origem` diz de onde vem e o intervalo. A página mostra o trecho entre aspas, depois da fala; a montagem insere o vídeo à mão. Só vale em fala do horizontal; seta ou campo vazio invalida o JSON.
 - **`cortes`** (por fala, #13129): `{ "vertical1": "trecho exato" }` tira o trecho só naquele vídeo (só nos verticais: o horizontal fica com a fala inteira, e o validador recusa `cortes.horizontal`); `{ "trecho": "…", "reserva": true }` marca o corte que só entra se o vídeo passar do alvo. O trecho tem de estar no texto como palavras inteiras, aparecer uma vez só, e o vídeo tem de usar a fala.
 - **`fontes`** (por fala, #13132): `[{ "url", "sustenta" }]` para cada fato de fora da fonte do D1 (Passo 1).
 - **`porVideo.{vertical1,vertical2}.ordem`** (#13128): a sequência daquele corte, por id, quando ela difere da ordem do horizontal. Tem de trazer exatamente as falas do vídeo. Dentro de um bloco a montagem segue essa ordem; entre blocos ela ordena pelo bloco (gancho, resumo, comentário…), e o `video-roteiro-blocos.ts` e o render avisam uma ordem que cruze blocos.
@@ -193,7 +195,7 @@ Aplicar no JSON e gerar a página de novo (Passo 6, item 1). Revisor indisponív
 
 O editor dita ajustes por voz, um de cada vez. Para cada um:
 
-1. Aplicar com `Edit` no `roteiro-falas.json` (fala, título, capa, quais vídeos usam a fala, `tela`, `cortes`, `ordem`, `notas`), gerar a página de novo (`render-roteiro-video.ts {AAMMDD}`) e republicar no mesmo link, com um rótulo de versão. A página sai do JSON, então todas as cópias da fala mudam juntas; conferir só os `[aviso]` e as notas livres (`notas`, `gravacao`), que não se atualizam sozinhas.
+1. Aplicar com `Edit` no `roteiro-falas.json` (fala, título, capa, quais vídeos usam a fala, `topicos`, `tela`, `cortes`, `ordem`, `notas`), gerar a página de novo (`render-roteiro-video.ts {AAMMDD}`) e republicar no mesmo link, com um rótulo de versão. A página sai do JSON, então todas as cópias da fala mudam juntas; conferir só os `[aviso]` e as notas livres (`notas`, `gravacao`), que não se atualizam sozinhas.
 2. Responder com a fala nova entre aspas.
 3. Se o ajuste criar um problema (um fato errado, uma fala que perdeu a referência), dizer e propor a saída, sem aplicar por conta própria o que muda o sentido.
 
