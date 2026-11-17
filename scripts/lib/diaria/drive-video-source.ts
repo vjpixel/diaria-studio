@@ -511,7 +511,10 @@ export function explainFinalFolderRejections(
     if (t === null && o !== null && o !== orientation) {
       return { file, reason: `sem sufixo de destino e proporção ${dimensions(file)} (${o === "square" ? "quadrado" : o})` };
     }
-    return { file, reason: "não escolhido (empate ou outro candidato preferido)" };
+    // Sem sufixo e proporção ainda desconhecida: o `pick` devolve
+    // `orientation-unknown` antes de chegar aqui, então o `none` não deveria
+    // listar este caso; se listar, diz o que se sabe do arquivo.
+    return { file, reason: `sem sufixo de destino e proporção ${o === null ? "ainda desconhecida no Drive" : dimensions(file)}` };
   });
 }
 

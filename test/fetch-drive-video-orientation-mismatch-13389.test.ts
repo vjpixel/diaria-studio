@@ -15,9 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { explainFinalFolderRejections, selectDriveVideo, type DriveVideoFile } from "../scripts/lib/diaria/drive-video-source.ts";
 import { runFetchDriveVideo, type FetchDriveVideoDeps, type FetchDriveVideoInput } from "../scripts/fetch-drive-video.ts";
-import { interpretInstagramCutLookup } from "../scripts/shorts-instagram-timer.ts";
+import { buildInstagramTimerAlarm, chooseInstagramVideo, interpretInstagramCutLookup } from "../scripts/shorts-instagram-timer.ts";
 import { buildLinkedinTimerAlarm, interpretDriveLookup } from "../scripts/shorts-linkedin-profile-timer.ts";
-import { interpretThreadsVerticalLookup } from "../scripts/shorts-threads-profile-timer.ts";
+import { buildThreadsTimerAlarm, interpretThreadsVerticalLookup } from "../scripts/shorts-threads-profile-timer.ts";
 
 const NOW = new Date("2026-11-17T00:57:00Z");
 const FOLDER = "application/vnd.google-apps.folder";
@@ -168,4 +168,84 @@ test("timers: orientation-mismatch vira needs-editor com o motivo real, não 'ma
   });
   assert.match(alarm.body, /Reexporte o vertical na proporção vertical/);
   assert.doesNotMatch(alarm.body, /Deixe um só vertical/);
+});
+
+const FINAL_ID = "final";
+
+/** `{AAMMDD}/` com `Final/` e `Editados/` (review #13399): a errada em Final/, a certa em Editados/. */
+function mockDriveFinalAndEdited(finals: DriveVideoFile[], editados: DriveVideoFile[]): FetchDriveVideoDeps {
+  return {
+    async driveFetch(url) {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/files")) {
+        const q = u.searchParams.get("q") ?? "";
+        if (q.includes(`'${FINAL_ID}'`)) return Response.json({ files: finals });
+        if (q.includes(`'${EDITADOS_ID}'`)) return Response.json({ files: editados });
+        if (q.includes(`'${EDITION_ID}'`)) {
+          return Response.json({
+            files: [
+              { id: FINAL_ID, name: "Final", mimeType: FOLDER },
+              { id: EDITADOS_ID, name: "Editados", mimeType: FOLDER },
+            ],
+          });
+        }
+        return Response.json({ files: [{ id: EDITION_ID, name: "261117", mimeType: FOLDER }] });
+      }
+      return Response.json({ id: decodeURIComponent(u.pathname.split("/").pop() ?? ""), mimeType: FOLDER });
+    },
+  };
+}
+
+for (const c of [
+  { orientation: "vertical" as const, wrong: file("v1", "Diaria comentada_Vertical_V1.mp4", H), right: file("v2", "Diaria comentada_Vertical_V2.mp4", V) },
+  { orientation: "horizontal" as const, wrong: file("h1", "Diaria comentada horizontal_V1.mp4", V), right: file("h2", "Diaria comentada horizontal_V2.mp4", H) },
+]) {
+  test(`${c.orientation}: errada em Final/ e certa em Editados/ → a de Editados/, exit 0 (review #13399)`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fdv-13389-fe-"));
+    try {
+      const input: FetchDriveVideoInput = {
+        aammdd: "261117",
+        orientation: c.orientation,
+        folderId: "root",
+        editionDir: dir,
+        now: NOW,
+        windowHours: 36,
+        dryRun: true,
+        force: false,
+        cortes: [],
+      };
+      const out = await runFetchDriveVideo(mockDriveFinalAndEdited([c.wrong], [c.right]), input, () => {});
+      assert.equal(out.exitCode, 0, JSON.stringify(out.output));
+      const o = out.output;
+      assert.ok(o.action === "print-id" || o.action === "dry-run", JSON.stringify(o));
+      if (o.action === "print-id" || o.action === "dry-run") assert.equal(o.file.id, c.right.id);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("alarmes de Instagram e Threads: orientation-mismatch pede reexportar, não 'deixe um só'", () => {
+  const stdout = JSON.stringify({ action: "needs-editor", selection: "orientation-mismatch", reason: `${REAL_V} ... 1920x1080` });
+  const choice = chooseInstagramVideo({
+    instagramCutPath: "/x/ig.mp4",
+    instagramCutExists: false,
+    cutSidecar: null,
+    genericPath: "/x/g.mp4",
+    genericExists: false,
+    lookup: interpretInstagramCutLookup(3, stdout),
+  });
+  assert.equal(choice.kind === "wait" ? choice.selection : null, "orientation-mismatch");
+
+  const ig = buildInstagramTimerAlarm({ aammdd: "261117", key: "drive-needs-editor", reason: "x", videoArg: null, selection: "orientation-mismatch" });
+  assert.match(ig.body, /Reexporte o vertical na proporção vertical/);
+  assert.doesNotMatch(ig.body, /Deixe um só/);
+  assert.match(buildInstagramTimerAlarm({ aammdd: "261117", key: "drive-needs-editor", reason: "x", videoArg: null }).body, /Deixe um só/);
+
+  const th = interpretThreadsVerticalLookup(3, stdout);
+  assert.equal(th.kind === "needs-editor" ? th.selection : null, "orientation-mismatch");
+  const thAlarm = buildThreadsTimerAlarm({ aammdd: "261117", key: "drive-needs-editor", reason: "x", selection: "orientation-mismatch" });
+  assert.match(thAlarm.body, /Reexporte o vertical na proporção vertical/);
+  assert.doesNotMatch(thAlarm.body, /Deixe um só/);
+  assert.match(buildThreadsTimerAlarm({ aammdd: "261117", key: "drive-needs-editor", reason: "x" }).body, /Deixe um só/);
 });

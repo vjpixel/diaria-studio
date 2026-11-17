@@ -672,12 +672,16 @@ export async function runFetchDriveVideo(
       // #11577: a escolha em Final/ é a cópia que o fetch promoveu; uma
       // exportação mais nova em Editados/ (V6 depois do V5) precisa ser vista.
       const promotedPick = probe.kind === "found" && isPromotedCopy(probe.file) ? probe.file : null;
-      if ((probe.kind === "none" && !skipEdited) || promotedPick) {
+      // #13389: `orientation-mismatch` (destino certo, proporção errada) também
+      // desce para Editados/: uma exportação correta lá vence a errada de Final/.
+      if (((probe.kind === "none" || probe.kind === "orientation-mismatch") && !skipEdited) || promotedPick) {
         const edited = subfolders.filter((f) => isEditedFolderName(f.name));
         if (edited.length > 0) {
           const why = promotedPick
             ? `${promotedPick.name} em Final/ é cópia promovida; conferindo exportação mais nova`
-            : finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
+            : probe.kind === "orientation-mismatch"
+              ? `o .mp4 do destino ${target} em Final/ tem a proporção errada`
+              : finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
           log(`[premissa] ${why} — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
           finalFiles = [...finalFiles, ...(await listFinalLike(edited, true))];
         }
