@@ -74,9 +74,11 @@ export interface FalaRoteiro {
   /**
    * Corte parcial da fala por vertical (#13129): o trecho exato a tirar só
    * naquele vídeo (o horizontal fica intacto: o validador recusa `horizontal`). `reserva: true` = só entra se o
-   * vídeo passar do alvo de duração.
+   * vídeo passar do alvo de duração. Aceita uma lista, para mais de um corte
+   * na mesma fala (#13436): cada trecho é palavras inteiras, uma ocorrência, sem
+   * sobreposição aos outros.
    */
-  cortes?: Partial<Record<VideoRoteiro, string | CorteFala>>;
+  cortes?: Partial<Record<VideoRoteiro, string | CorteFala | Array<string | CorteFala>>>;
   /** Fontes do que a fala afirma, quando o fato não está na fonte do D1 (#13132). */
   fontes?: FonteFala[];
 }
@@ -118,11 +120,29 @@ export interface PecaVideo {
   pertenceAoHorizontal?: boolean;
 }
 
-/** O corte de uma fala num vídeo, normalizado (string vira `{ trecho }`). */
-export function corteDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): CorteFala | null {
+/** Os cortes de uma fala num vídeo, normalizados (string vira `{ trecho }`; um item só vira lista de um, #13436). */
+export function cortesDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): CorteFala[] {
   const c = f.cortes?.[v];
-  if (c === undefined) return null;
-  return typeof c === "string" ? { trecho: c } : c;
+  if (c === undefined) return [];
+  return (Array.isArray(c) ? c : [c]).map((x) => (typeof x === "string" ? { trecho: x } : x));
+}
+
+/**
+ * Como `segmentosSemTrecho`, para vários trechos na mesma fala (#13436): cada
+ * trecho sai do pedaço que o contém, na ordem dada. `null` se algum não
+ * aparece como palavras inteiras (ou sobrepõe um corte anterior); lista vazia
+ * se nada sobra.
+ */
+export function segmentosSemTrechos(texto: string, trechos: string[]): string[] | null {
+  let segs = [texto];
+  for (const t of trechos) {
+    const i = segs.findIndex((s) => posicoesDoTrecho(s, t).length > 0);
+    if (i < 0) return null;
+    const resto = segmentosSemTrecho(segs[i], t);
+    if (resto === null) return null;
+    segs = [...segs.slice(0, i), ...resto, ...segs.slice(i + 1)];
+  }
+  return segs;
 }
 
 /**
@@ -790,18 +810,33 @@ export function validarRoteiroFalas(x: unknown): string[] {
             continue;
           }
           if (Array.isArray(o.videos) && !o.videos.includes(v)) problemas.push(`${rotulo}.cortes.${v}: a fala não está no ${VIDEO_LABEL[v as VideoRoteiro]}`);
-          const co = (typeof c === "string" ? { trecho: c } : c) as Record<string, unknown> | null;
-          if (!co || typeof co !== "object" || typeof co.trecho !== "string" || !co.trecho.trim()) {
-            problemas.push(`${rotulo}.cortes.${v} deve ser o trecho (texto) ou { trecho, reserva }`);
-            continue;
-          }
-          if (co.reserva !== undefined && typeof co.reserva !== "boolean") problemas.push(`${rotulo}.cortes.${v}.reserva deve ser true/false`);
-          if (typeof o.texto === "string") {
-            const seg = segmentosSemTrecho(o.texto, co.trecho);
-            const n = ocorrenciasDoTrecho(o.texto, co.trecho);
-            if (seg === null || n === 0) problemas.push(`${rotulo}.cortes.${v}: trecho não aparece no texto da fala como palavras inteiras ("${co.trecho}")`);
-            else if (n > 1) problemas.push(`${rotulo}.cortes.${v}: o trecho aparece ${n} vezes na fala; use um trecho que só apareça uma vez ("${co.trecho}")`);
-            else if (seg.length === 0) problemas.push(`${rotulo}.cortes.${v}: o trecho é a fala inteira (tire a fala do vídeo em \`videos\`)`);
+          const itens = Array.isArray(c) ? c : [c];
+          if (!itens.length) problemas.push(`${rotulo}.cortes.${v}: lista vazia (tire o campo ou ponha ao menos um trecho)`);
+          const validos: string[] = [];
+          itens.forEach((item, k) => {
+            const onde = Array.isArray(c) ? `${rotulo}.cortes.${v}[${k}]` : `${rotulo}.cortes.${v}`;
+            const co = (typeof item === "string" ? { trecho: item } : item) as Record<string, unknown> | null;
+            if (!co || typeof co !== "object" || typeof co.trecho !== "string" || !co.trecho.trim()) {
+              problemas.push(`${onde} deve ser o trecho (texto) ou { trecho, reserva }`);
+              return;
+            }
+            if (co.reserva !== undefined && typeof co.reserva !== "boolean") problemas.push(`${onde}.reserva deve ser true/false`);
+            if (typeof o.texto === "string") {
+              const seg = segmentosSemTrecho(o.texto, co.trecho);
+              const n = ocorrenciasDoTrecho(o.texto, co.trecho);
+              if (seg === null || n === 0) problemas.push(`${onde}: trecho não aparece no texto da fala como palavras inteiras ("${co.trecho}")`);
+              else if (n > 1) problemas.push(`${onde}: o trecho aparece ${n} vezes na fala; use um trecho que só apareça uma vez ("${co.trecho}")`);
+              else if (seg.length === 0) problemas.push(`${onde}: o trecho é a fala inteira (tire a fala do vídeo em \`videos\`)`);
+              else validos.push(co.trecho);
+            }
+          });
+          if (typeof o.texto === "string" && validos.length > 1) {
+            const pos = validos.map((t) => ({ t, i: posicoesDoTrecho(o.texto as string, t)[0], f: posicoesDoTrecho(o.texto as string, t)[0] + t.trim().length }));
+            pos.sort((a, b) => a.i - b.i);
+            for (let k = 1; k < pos.length; k++) {
+              if (pos[k].i < pos[k - 1].f) problemas.push(`${rotulo}.cortes.${v}: os trechos "${pos[k - 1].t}" e "${pos[k].t}" se sobrepõem`);
+            }
+            if (segmentosSemTrechos(o.texto, validos)?.length === 0) problemas.push(`${rotulo}.cortes.${v}: os trechos juntos são a fala inteira (tire a fala do vídeo em \`videos\`)`);
           }
         }
       }
