@@ -170,6 +170,8 @@ describe("filtro real do rclone, bisync de data/ (#12478)", { skip: existsSync(R
         "keep.json",
         "editions/2611/261108/02-reviewed.md",
         "sessions/s.json.conflict1",
+        "editions/2611/261118/_internal/_forensic/link-verify-bodies/1556c48b4a10e438.html",
+        "editions/2611/261118/_internal/_Forensic/x.html",
       ];
       for (const f of files) {
         mkdirSync(join(sb, "t", dirname(f)), { recursive: true });
