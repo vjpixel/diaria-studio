@@ -103,6 +103,7 @@ class FakeTrainRunner implements TrainRunner {
    * sobrescreve o que importa pro caso específico. */
   withGate2Green(): this {
     return this.on("npx", (a) => a.includes("scripts/check-pr-session-claims.ts"), () => ok())
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "OPEN", mergedAt: null })))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(noThreadsJson()))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()))
@@ -209,6 +210,7 @@ describe("revalidateGate2", () => {
 
   it("reprova se a condição 1 (CI) não está pass", () => {
     const runner = new FakeTrainRunner();
+    runner.on("gh", (a) => a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "OPEN", mergedAt: null })));
     runner.on("gh", (a) => a.includes("statusCheckRollup"), () =>
       ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: "FAILURE", status: "COMPLETED" }] })),
     );
@@ -493,8 +495,25 @@ describe("mergeTrainBatch", () => {
     assert.equal(runner.calls.filter((c) => c.cmd === "gh" && c.args[1] === "comment").length, 2);
   });
 
+  it("PR do lote mergeada fora do trem (#13388): fora do Gate 2 e do fechamento, sem erro", () => {
+    const runner = new FakeTrainRunner().withGate2Green().withLockOk();
+    runner
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "100" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-11-17T12:00:00Z" })))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok())
+      .on("gh", (a) => a[0] === "pr" && a[1] === "comment", () => ok())
+      .on("gh", (a) => a[0] === "pr" && a[1] === "close", () => ok());
+
+    const result = mergeTrainBatch(runner, 6400, batch, prInfos, { sessionId: "s", kind: "develop", commitTitle: "t", commitBody: "b" });
+    assert.deepEqual(result, { ok: true });
+    const closed = runner.calls.filter((c) => c.cmd === "gh" && c.args[1] === "close").map((c) => c.args[2]);
+    assert.deepEqual(closed, ["101"]);
+    assert.equal(runner.calls.filter((c) => c.cmd === "gh" && c.args[1] === "comment" && c.args[2] === "100").length, 0);
+  });
+
   it("revalidação de Gate 2 falhando pra 1 PR do lote: NÃO tenta lock nem merge", () => {
     const runner = new FakeTrainRunner();
+    runner.on("gh", (a) => a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "OPEN", mergedAt: null })));
     runner.on("gh", (a) => a.includes("statusCheckRollup"), () =>
       ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: "FAILURE", status: "COMPLETED" }] })),
     );
@@ -536,7 +555,7 @@ describe("mergeTrainBatch", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
     runner
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => fail("timeout local, mas pode ter ido"))
-      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-08-26T12:00:00Z" })))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "6400" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-08-26T12:00:00Z" })))
       .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok())
       .on("gh", (a) => a[0] === "pr" && (a[1] === "comment" || a[1] === "close"), () => ok());
 
@@ -547,7 +566,7 @@ describe("mergeTrainBatch", () => {
   it("#11630 — merge confirmado via GitHub e fetch falho ainda fecha o lote e preserva os dois avisos", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk()
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => fail("timeout"))
-      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-10-29T12:00:00Z" })))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "6400" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-10-29T12:00:00Z" })))
       .withLocalOnMaster("continuo/fix-11630")
       .on("git", (a) => a[0] === "fetch", () => fail("offline"))
       .on("gh", (a) => a[0] === "pr" && a[1] === "comment", () => ok())
