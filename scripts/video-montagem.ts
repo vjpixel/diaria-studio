@@ -6,6 +6,12 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  * `scripts/lib/diaria/video-montage.ts` (pura, testada), este arquivo só roda
  * ffmpeg/ffprobe e o helper Python e lê/grava os arquivos.
  *
+ * Flag de todos os subcomandos: `--restore-conflict NOME[,NOME]` (#13404)
+ * copia de volta, para cada arquivo NOMEADO e ausente em `_internal/video-montagem/`,
+ * a cópia de conflito do sync (`{nome}.conflictN`) que o erro de "ausente"
+ * mostrou, com `[premissa]`. Nunca sobrescreve o original nem decide empate
+ * de mtime. Sem ela, o erro só aponta a cópia e o comando `cp` (Git Bash).
+ *
  * Subcomandos e flags próprias:
  *   transcribe AAMMDD [--source PATH] [--force] [--silence-db DB]
  *       bruto → `source.json`, áudio 16 kHz (Whisper) e banda alta 48 kHz (cortes), `loudness.json`, `silences.json`,
@@ -285,6 +291,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { brtStamp, chooseConflictCopy, conflictCopiesOf, missingFileConflictHint, restoreFromConflictCopy, type ConflictCopyFs } from "./lib/sync-conflict-copy.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -616,8 +623,37 @@ const uploadsToDrive = (ctx: Pick<Ctx, "mode" | "localDrive">) => ctx.mode === "
 const f = (ctx: Pick<Ctx, "stateDir">, name: string) => join(ctx.stateDir, name);
 
 function readJson<T>(path: string, what: string): T {
-  if (!existsSync(path)) throw new Error(`${what} ausente: ${path}`);
+  if (!existsSync(path)) throw new Error(missingWorkFileMessage(path, what));
   return JSON.parse(readFileSync(path, "utf8")) as T;
+}
+
+/** #13404: o `stateDir` da execução em curso; `--restore-conflict NOME` só alcança arquivos dele. */
+let activeStateDir: string | undefined;
+
+/** A flag que restauraria `path`, ou nada se ele não está no `stateDir` (a flag não o alcança). */
+function restoreFlagFor(path: string, stateDir: string | undefined): string | undefined {
+  return stateDir !== undefined && resolve(dirname(path)) === resolve(stateDir) ? `--restore-conflict ${basename(path)}` : undefined;
+}
+
+/**
+ * #13404: "{what} ausente: {path}" e, se o sync de `data/` deixou cópias de
+ * conflito no lugar (`blocks.json.conflictN`), a mais nova e o comando para
+ * restaurá-la. Não restaura: a cópia certa é o editor quem confere
+ * (`--restore-conflict {nome}` copia a mesma que a mensagem mostra, quando ele pede).
+ */
+export function missingWorkFileMessage(path: string, what: string, fs?: ConflictCopyFs, stateDir: string | undefined = activeStateDir): string {
+  const hint = missingFileConflictHint(path, chooseConflictCopy(path, fs), restoreFlagFor(path, stateDir));
+  return [`${what} ausente: ${path}`, ...hint].join("\n  ");
+}
+
+/**
+ * #13404: arquivo de trabalho OPCIONAL (lido só se existir) que sumiu no sync:
+ * o comando segue como se ele não existisse, então avisar em vez de calar.
+ */
+export function warnConflictOnly(path: string, log: (line: string) => void = (l) => console.error(l), fs?: ConflictCopyFs, stateDir: string | undefined = activeStateDir): void {
+  if ((fs?.exists ?? existsSync)(path)) return;
+  const hint = missingFileConflictHint(path, chooseConflictCopy(path, fs), restoreFlagFor(path, stateDir));
+  if (hint.length) log(`[aviso] ${basename(path)} ausente, seguindo sem ele: ${hint.join("; ")}`);
 }
 
 function writeJson(path: string, data: unknown): void {
@@ -1087,6 +1123,7 @@ function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
   const t = Number(at);
   if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
   const measured = measuredSource(ctx);
+  // Sem o aviso de cópia de conflito aqui: o `frame` roda o cmdFrame antes, que já o deu (#13404).
   const override = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file.mirrored : undefined;
   const out = f(ctx, `frame-${t.toFixed(1)}-orientacoes.jpg`);
   const vf = "scale=960:-2,split[a][b];[b]hflip[m];[a][m]hstack=inputs=2,drawgrid=w=iw/20:h=ih/10:t=1:c=white@0.4";
@@ -1216,7 +1253,7 @@ export function audioOnlyStop(ctx: Pick<Ctx, "stateDir">, cmd: string): number |
 
 function loadBlocks(ctx: Ctx): { file: BlocksFile; text: string } {
   const path = f(ctx, "blocks.json");
-  if (!existsSync(path)) throw new Error(`blocks.json (gate da decupagem) ausente: ${path}`);
+  if (!existsSync(path)) throw new Error(missingWorkFileMessage(path, "blocks.json (gate da decupagem)"));
   const text = readFileSync(path, "utf8");
   const parsed = parseBlocksFile(JSON.parse(text));
   if (!parsed.ok) throw new Error(`blocks.json inválido:\n  - ${parsed.errors.join("\n  - ")}`);
@@ -2366,6 +2403,7 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   const t = Number(at);
   if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
   // Antes do gate 1 não há blocks.json: vale o mirrored do source.json (e o framing da 261027).
+  warnConflictOnly(f(ctx, "blocks.json"));
   const blocks = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file : null;
   const source = blocks ? sourceFor(ctx, blocks) : sourceFor(ctx);
   const base = effectiveFraming(blocks ?? {}).framing;
@@ -2666,6 +2704,16 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
   console.log(out);
   console.error(`[video-montagem] folha de olhar de ${plan.spec.name}: ${plan.clips.length} clipe(s); olhar fora, olhos fechados ou careta = trocar a tomada (#12560)`);
   return 0;
+}
+
+/**
+ * #13404: o `roteiro` que falha não regrava o `roteiro.md`, e o da rodada
+ * anterior continua no disco com cara de atual (na 261116 o Doc do Gate 2 saiu
+ * defasado sem erro visível). A linha diz que o arquivo NÃO é desta rodada.
+ */
+export function roteiroNotRewrittenNotice(path: string, mtimeMs: number | null): string {
+  if (mtimeMs === null) return `[erro] roteiro falhou: ${path} não foi gravado (#13404)`;
+  return `[erro] roteiro falhou: ${path} NÃO foi regravado; o que está no disco é de ${brtStamp(mtimeMs)}, defasado: não usar no Gate 2 até o roteiro rodar sem erro (#13404)`;
 }
 
 function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
@@ -3582,6 +3630,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { readJson<PlanFile>(f(ctx, "plan.json"), "plan.json"); }
     catch { throw new Error("build --seq recusado: plan.json anterior ilegível; rode build sem --seq para reconstruir todas as sequências (#12902)"); }
   }
+  // #13404: plan.json que só existe como cópia de conflito do sync é o plano anterior ilegível do #12902:
+  // o build --seq gravaria um plano só com a sequência pedida, e as outras sumiriam.
+  if (seq && !existsSync(f(ctx, "plan.json")) && conflictCopiesOf(f(ctx, "plan.json")).length) {
+    throw new Error(`build --seq recusado: ${missingWorkFileMessage(f(ctx, "plan.json"), "plan.json anterior")}`);
+  }
   // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
   let speech: ReturnType<typeof speechDetection> = { cut: null, reason: "--no-speech-detect" };
   if (speechDetect) {
@@ -3913,6 +3966,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #11969: com --seq, só as sequências reconstruídas (e conferidas acima) mudam no plan.json.
   const planPath = f(ctx, "plan.json");
   let prevPlan: PlanFile | null = null;
+  warnConflictOnly(planPath);
   // #12285: sem --seq o plano anterior também é lido, só para a versão do XML de cada sequência (o `since` de um rebuild com o mesmo id).
   if (existsSync(planPath)) {
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
@@ -4438,7 +4492,10 @@ function exportDurationS(path: string): number {
 
 /** O vocabulário do blocks.json da edição; sem ele (ou ilegível), só o do projeto. */
 function blockVocabRules(ctx: Ctx, quietWhenMissing = false): VocabRule[] {
-  if (quietWhenMissing && !existsSync(f(ctx, "blocks.json"))) return [];
+  if (quietWhenMissing && !existsSync(f(ctx, "blocks.json"))) {
+    warnConflictOnly(f(ctx, "blocks.json"));
+    return [];
+  }
   try {
     return loadBlocks(ctx).file.vocabulary ?? [];
   } catch (e) {
@@ -4504,6 +4561,7 @@ function finishExportSrt(
  */
 function checkNoPlanAgainstPlan(ctx: Ctx): void {
   const planPath = f(ctx, "plan.json");
+  warnConflictOnly(planPath);
   if (!existsSync(planPath)) return;
   let hasHorizontal = false;
   try {
@@ -5446,6 +5504,34 @@ async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefi
   return 0;
 }
 
+/**
+ * `--restore-conflict NOME[,NOME]` (#13404): só os arquivos nomeados (os que a
+ * mensagem de "ausente" cita), nunca uma varredura do `stateDir`, que
+ * ressuscitaria cópias velhas de arquivos que o pipeline apagou de propósito.
+ * A cópia restaurada é a mesma que a mensagem mostra (`chooseConflictCopy`).
+ * Original presente nunca é sobrescrito, empate de mtime não restaura, e as
+ * cópias ficam no disco. A escolha é premissa, por isso o log. Nome inválido
+ * (caminho, `..`) lança.
+ */
+export function restoreConflictCopies(stateDir: string, namesArg: string, fs?: ConflictCopyFs, log: (line: string) => void = (l) => console.error(l)): number {
+  const names = namesArg.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!names.length) throw new Error("--restore-conflict exige o nome do arquivo (ex.: --restore-conflict blocks.json), o que a mensagem de ausente cita");
+  const bad = names.filter((n) => n !== basename(n) || n.includes("/") || n.includes("\\") || n === "." || n === "..");
+  if (bad.length) throw new Error(`--restore-conflict aceita só o nome do arquivo em ${stateDir}, sem caminho: ${bad.join(", ")}`);
+  let restored = 0;
+  for (const name of names) {
+    const target = join(stateDir, name);
+    const r = restoreFromConflictCopy(target, fs);
+    if (r.status === "restored") {
+      restored++;
+      log(`[premissa] ${name} restaurado de ${basename(r.from)}, a cópia de conflito mais nova${r.others.length ? ` (ficaram no disco: ${r.others.map((p) => basename(p)).join(", ")})` : ""}; conferir antes de seguir (#13404)`);
+    } else if (r.status === "present") log(`[aviso] --restore-conflict: ${name} existe, nada sobrescrito (#13404)`);
+    else if (r.status === "no-copy") log(`[aviso] --restore-conflict: ${name} sem cópia de conflito em ${stateDir}, nada restaurado (#13404)`);
+    else log(`[aviso] --restore-conflict: ${name} não restaurado: ${r.tied.map((p) => basename(p)).join(", ")} têm o mesmo horário e a escolha seria arbitrária; copiar à mão a certa (#13404)`);
+  }
+  return restored;
+}
+
 export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps): Promise<number> {
   const { values, flags, positional } = parseArgs(argv);
   const [cmd, edition] = positional;
@@ -5499,6 +5585,16 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
     ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
   };
+  // #13404: só com o pedido do editor; sem a flag, a mensagem de "ausente" aponta a cópia e o comando.
+  activeStateDir = ctx.stateDir;
+  if (flags.has("restore-conflict") || values["restore-conflict"] !== undefined) {
+    try {
+      restoreConflictCopies(ctx.stateDir, values["restore-conflict"] ?? "");
+    } catch (e) {
+      console.error(`video-montagem: ${(e as Error).message}`);
+      return 2;
+    }
+  }
   const seq = values["seq"];
   if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
     const stop = audioOnlyStop(ctx, cmd);
@@ -5626,8 +5722,16 @@ async function runCommand(
     }
     case "retranscribe":
       return cmdRetranscribe(ctx, values["from"], values["to"], flags.has("sub"));
-    case "roteiro":
-      return cmdRoteiro(ctx, !flags.has("no-short-word-check"));
+    case "roteiro": {
+      const roteiroPath = f(ctx, "roteiro.md");
+      try {
+        return cmdRoteiro(ctx, !flags.has("no-short-word-check"));
+      } catch (e) {
+        // #13404: o roteiro.md anterior fica no disco; sem este aviso ele parece o atual.
+        console.error(roteiroNotRewrittenNotice(roteiroPath, existsSync(roteiroPath) ? mtime(roteiroPath) : null));
+        throw e;
+      }
+    }
     case "fact-check-input":
       return cmdFactCheckInput(ctx);
     case "build":
