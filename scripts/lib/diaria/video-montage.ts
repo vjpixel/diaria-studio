@@ -3252,13 +3252,19 @@ function audioLevelsFilter(linear: number): string {
  * #12262 (relato do editor na 261105, gravação ao ar livre): com `nr` 12 o
  * ruído de fundo seguia sob a fala, e o gate de -40 dB com 10/150 ms zerava
  * as pausas, um liga-desliga do ambiente audível a cada pausa. Agora a
- * redução é mais forte e a MESMA em todo o áudio (`nrDb` 24, `tn=1`
- * acompanhando o ruído), e o gate só abaixa o fundo: no máximo `rangeDb`
+ * redução é mais forte e a MESMA em todo o áudio (`nrDb` 24), e o gate só abaixa o fundo: no máximo `rangeDb`
  * (-10 dB, o teto de queda do piso nas pausas em relação ao da fala), razão
  * baixa e `attackMs`/`releaseMs` longos, para o ambiente seguir presente e
  * homogêneo.
+ *
+ * #13312 (relato do editor na 261117): o `afftdn` não leva `tn=1`. Com o
+ * rastreamento adaptativo, o ruído começa sem estimativa e muda ao longo do
+ * arquivo: na 261117 os primeiros ~15 min do bruto saíram quase sem redução
+ * (0 a 0,9 dB a menos em 8–12 kHz) e o resto até 7,5 dB mais abafado, o mesmo
+ * vídeo com dois timbres. Com o piso fixo (`nf`, do limiar de silêncio), a
+ * redução fica uniforme do começo ao fim (2 a 4,5 dB em 8–12 kHz: o chiado).
  */
-export const AUDIO_CLEAN = { nrDb: 24, belowThresholdDb: 6, rangeDb: -10, ratio: 2, attackMs: 50, releaseMs: 400, sampleRate: 48000 } as const;
+export const AUDIO_CLEAN ={ nrDb: 24, belowThresholdDb: 6, rangeDb: -10, ratio: 2, attackMs: 50, releaseMs: 400, sampleRate: 48000 } as const;
 
 /** #12262: o gate nunca baixa as pausas mais que isto (dB) em relação à fala. */
 export const AUDIO_CLEAN_MAX_PAUSE_DROP_DB = 10;
@@ -3283,7 +3289,7 @@ const dbToLinear = (db: number) => Math.round(10 ** (db / 20) * 1e6) / 1e6;
 /** O `-af` da faixa tratada: redução de ruído e depois o gate nas pausas. */
 export function audioCleanFilter(p: AudioCleanParams): string {
   return (
-    `afftdn=nr=${AUDIO_CLEAN.nrDb}:nf=${p.noiseFloorDb}:tn=1,` +
+    `afftdn=nr=${AUDIO_CLEAN.nrDb}:nf=${p.noiseFloorDb},` +
     `agate=threshold=${dbToLinear(p.gateThresholdDb)}:range=${dbToLinear(AUDIO_CLEAN.rangeDb)}:ratio=${AUDIO_CLEAN.ratio}:attack=${AUDIO_CLEAN.attackMs}:release=${AUDIO_CLEAN.releaseMs}`
   );
 }

@@ -48,7 +48,16 @@ describe("#12102: comando do ffmpeg da faixa tratada", () => {
   it("bruto quente da 261028 (limiar de silêncio -35 dBFS): piso do afftdn e gate 6 dB abaixo, em -41; gate suave desde o #12262", () => {
     const p = audioCleanParams(-35);
     assert.deepEqual(p, { noiseFloorDb: -41, gateThresholdDb: -41 });
-    assert.equal(audioCleanFilter(p), "afftdn=nr=24:nf=-41:tn=1,agate=threshold=0.008913:range=0.316228:ratio=2:attack=50:release=400");
+    assert.equal(audioCleanFilter(p), "afftdn=nr=24:nf=-41,agate=threshold=0.008913:range=0.316228:ratio=2:attack=50:release=400");
+  });
+
+  it("#13312: o afftdn não rastreia o ruído (sem tn=1), para a redução ser a mesma do começo ao fim do bruto", () => {
+    // Na 261117, com tn=1, os primeiros ~15 min saíram sem redução e o resto até 7,5 dB mais abafado em 8–12 kHz.
+    for (const t of [-45, -35, -25]) {
+      const afftdn = audioCleanFilter(audioCleanParams(t)).split(",")[0];
+      assert.doesNotMatch(afftdn, /(^|[:=])tn=/, `limiar ${t}: ${afftdn}`);
+      assert.match(afftdn, /^afftdn=nr=24:nf=-?\d+$/, `limiar ${t}: ${afftdn}`);
+    }
   });
 
   it("o gate fica abaixo do limiar de silêncio (consoante suave perto dele não é cortada)", () => {
