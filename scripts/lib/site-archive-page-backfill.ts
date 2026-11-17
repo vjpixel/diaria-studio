@@ -56,6 +56,7 @@ import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { escHtml } from "./html-escape.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { injectSiteNavAfterBodyOpen, SITE_NAV_MARKER } from "./shared/site-nav.ts"; // #8497: menu global
+import { SITE_SOCIAL_MARKER } from "./shared/site-social.ts"; // #13321: rodapé social global
 
 /** Marcador de "já passou pelo bloco de SEO atual" — presente em toda página
  * que já saiu de `renderSeoMeta({ type: "article", ... })` (#8352). */
@@ -390,7 +391,10 @@ export function backfillArchivePageOnDisk(html: string, ctx: BackfillContext): B
   out = jsonLdResult.html;
 
   let addedSiteNav = false;
-  if (!out.includes(SITE_NAV_MARKER)) {
+  // #13321: `injectSiteNavAfterBodyOpen` também põe o rodapé social; a
+  // página que já tem o menu (todas as publicadas antes do #13321) entra
+  // aqui só por falta do rodapé.
+  if (!out.includes(SITE_NAV_MARKER) || !out.includes(SITE_SOCIAL_MARKER)) {
     const siteNavResult = backfillSiteNav(out);
     out = siteNavResult.html;
     addedSiteNav = siteNavResult.changed;

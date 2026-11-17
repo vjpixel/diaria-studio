@@ -27,6 +27,7 @@ import {
 } from "../scripts/lib/site-archive-page-backfill.ts";
 import { parseSitemapPageEntries, lastmodToUnixSeconds, runBackfill } from "../scripts/backfill-archive-page-links-seo.ts";
 import { renderSiteNav, SITE_NAV_MARKER } from "../scripts/lib/shared/site-nav.ts";
+import { injectSiteSocialFooter } from "../scripts/lib/shared/site-social.ts";
 
 /** Mimetiza o HTML real das 11 páginas Kit legadas (medido ao vivo, #8354) —
  * <head> com title/description/dek/canonical mas sem OG/h1/JSON-LD. */
@@ -179,7 +180,8 @@ describe("backfillArchivePageOnDisk — página legada estilo Kit (#8352/#8354/#
     const expected = broken.replace("</title>", '</title><meta name="robots" content="max-image-preview:large">');
     assert.equal(
       result.html,
-      expected.replace(/<body[^>]*>/i, (full) => `${full}\n${renderSiteNav({ active: "edicoes" })}`),
+      // #13321: o mesmo caminho do menu põe o rodapé social antes do </body>.
+      injectSiteSocialFooter(expected.replace(/<body[^>]*>/i, (full) => `${full}\n${renderSiteNav({ active: "edicoes" })}`)),
     );
   });
 });

@@ -34,6 +34,7 @@ import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação; #7358: evento de conversão no sucesso do cadastro
 import { fbCookieValueFromDocumentCookieJs } from "./shared/meta-fbc-bootstrap.ts"; // #8978: fbc/fbp no corpo do POST cross-origin (achado 1 do fleet review, #8983)
+import { renderSiteSocialIcons } from "./shared/site-social.ts"; // #13321: ícones das redes no rodapé
 import { renderSiteNav, renderSiteFooterLinks } from "./shared/site-nav.ts"; // #8497: menu global + rodapé alinhado — a home consome os MESMOS helpers que as demais páginas, em vez do markup próprio que só ela tinha
 
 /**
@@ -1323,6 +1324,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .footer-headline .accent { font-style: italic; color: var(--teal); }
 .footer-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.16em; color: rgba(244,239,226,0.6); }
 .footer .rule { background: rgba(244,239,226,0.2); opacity: 1; margin-top: 48px; }
+.footer-social { margin-top: 24px; color: var(--paper); }
 .footer-bottom { display: flex; justify-content: space-between; margin-top: 20px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(244,239,226,0.55); flex-wrap: wrap; gap: 10px; }
 .footer-bottom a { text-decoration: none; color: var(--teal); }
 .footer-bottom a:hover { text-decoration: underline; }
@@ -1482,6 +1484,7 @@ ${faqItems}
         </div>
       </div>
       <hr class="rule">
+      <div class="footer-social">${renderSiteSocialIcons()}</div>
       <div class="footer-bottom">
         <span>&copy; ${new Date().getUTCFullYear()} diar.ia.br · São Paulo, Brasil</span>
         <span>${renderSiteFooterLinks()}</span>

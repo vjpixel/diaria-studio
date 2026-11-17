@@ -27,6 +27,7 @@
  * test/lib-boundary.test.ts (#2747).
  */
 import { readSnippetFile } from "./snippet-loader.ts";
+import { DIARIA_SOCIAL_NETWORKS, SOCIAL_INVITE_ICON_KEYS, type SocialInviteIconKey } from "./social-networks.ts";
 import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_INSTAGRAM_URL,
@@ -53,7 +54,7 @@ import {
  * #4413: convite social FIXO — texto único, idêntico em diário e mensal,
  * nunca editável por edição (decisão do editor, 260801, comentário do
  * #4413/#4421 — já publicado no ciclo 2607-08, 9 campanhas #102–#110,
- * ~30 mil pessoas). Ordem das redes: YouTube → Instagram → LinkedIn → Threads →
+ * ~30 mil pessoas). Ordem das redes: YouTube → TikTok (#13320) → Instagram → LinkedIn → Threads →
  * Facebook → X (redação original: LinkedIn → Instagram → Threads → Facebook → X → YouTube; reordenada a pedido do editor, 261101. Antes dela, o Facebook caiu do 2º pro 4º lugar em relação à redação
  * anterior). Sempre o ÚLTIMO parágrafo da seção `PARA ENCERRAR`
  * (invariante do #3219/#3368, preservada). O TEXTO mudou no #11483 (ver
@@ -75,8 +76,14 @@ export const SOCIAL_INVITE_PREFIX = "Siga a **diar.ia.br**:";
  * pop-up "Inscrever-se"). As redações legadas abaixo continuam com
  * `DIARIA_YOUTUBE_URL`: é o texto que as edições já costuradas carregam.
  */
-export const SOCIAL_INVITE =
-  `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_SUBSCRIBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
+/**
+ * #13320: TikTok logo depois do YouTube (as duas redes de vídeo juntas).
+ * Ordem: YouTube, TikTok, Instagram, LinkedIn, Threads, Facebook, X. A
+ * redação anterior, sem o TikTok, ficou em `SOCIAL_INVITE_NO_TIKTOK_LEGACY`.
+ * Montado de `DIARIA_SOCIAL_NETWORKS` (`social-networks.ts`), a mesma lista
+ * do rodapé social do site (#13321): ordem e URLs não divergem entre as duas.
+ */
+export const SOCIAL_INVITE = `${SOCIAL_INVITE_PREFIX} ${DIARIA_SOCIAL_NETWORKS.map(({ label, url }) => `[${label}](${url})`).join(" ")}`;
 
 /** Prefixo da redação anterior ao #11483 (#4413), em texto corrido. Edições
  * costuradas até a 261029 têm este texto em `02-reviewed.md`. */
@@ -104,6 +111,12 @@ export const SOCIAL_INVITE_ICONS_ORDER_LEGACY =
 export const SOCIAL_INVITE_PLAIN_YOUTUBE_LEGACY =
   `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
 
+/** `SOCIAL_INVITE` antes do TikTok entrar (#13320): do #12069 até este PR,
+ * com o YouTube de inscrição. Edições costuradas nesse intervalo carregam
+ * este texto; o drift não deve acusá-las. */
+export const SOCIAL_INVITE_NO_TIKTOK_LEGACY =
+  `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_SUBSCRIBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
+
 /**
  * #10781: o parágrafo é o convite social? Casa pelo PREFIXO estável
  * (`SOCIAL_INVITE_PREFIX`), não pela igualdade com a constante atual — toda
@@ -122,20 +135,16 @@ export function isSocialInviteParagraph(text: string): boolean {
   );
 }
 
-/** #11483: chave do ícone (nome do arquivo em `assets/social-icons/` e em
- * `workers/site/public/icons/social/`), na ordem do convite. */
-export const SOCIAL_INVITE_ICON_KEYS = ["youtube", "instagram", "linkedin", "threads", "facebook", "x"] as const;
-export type SocialInviteIconKey = (typeof SOCIAL_INVITE_ICON_KEYS)[number];
+/** #11483: chave do ícone, na ordem do convite. Mora em `social-networks.ts`
+ * desde o #13321 (o rodapé do site roda em Worker e não pode importar este
+ * módulo, que lê disco); reexportado aqui pelos consumidores de sempre. */
+export { SOCIAL_INVITE_ICON_KEYS };
+export type { SocialInviteIconKey };
 
 /** Rótulo do link no markdown → chave do ícone. */
-const SOCIAL_INVITE_ICON_BY_LABEL: Record<string, SocialInviteIconKey> = {
-  LinkedIn: "linkedin",
-  Instagram: "instagram",
-  Threads: "threads",
-  Facebook: "facebook",
-  X: "x",
-  YouTube: "youtube",
-};
+const SOCIAL_INVITE_ICON_BY_LABEL: Record<string, SocialInviteIconKey> = Object.fromEntries(
+  DIARIA_SOCIAL_NETWORKS.map(({ label, key }) => [label, key]),
+);
 
 /** Tamanho exibido do ícone no e-mail (px). O PNG tem 3x isso. */
 export const SOCIAL_INVITE_ICON_PX = 28;
@@ -208,7 +217,7 @@ export function renderSocialInviteIconsHtml(
 
 /** Rótulos dos links de rede no convite social — usados pra reconhecer um
  * parágrafo que TENTA ser o convite (#10835). */
-const SOCIAL_INVITE_NETWORK_LABELS = ["LinkedIn", "Instagram", "Threads", "Facebook", "X", "YouTube"] as const;
+const SOCIAL_INVITE_NETWORK_LABELS = DIARIA_SOCIAL_NETWORKS.map(({ label }) => label);
 
 export type SocialInviteDrift =
   /** Parece o convite (cita a diar.ia.br + ≥2 redes) mas o renderer não o
@@ -236,6 +245,7 @@ export function detectSocialInviteDrift(markdown: string): SocialInviteDrift | n
     if (p === SOCIAL_INVITE_LEGACY) return null;
     if (p === SOCIAL_INVITE_ICONS_ORDER_LEGACY) return null;
     if (p === SOCIAL_INVITE_PLAIN_YOUTUBE_LEGACY) return null;
+    if (p === SOCIAL_INVITE_NO_TIKTOK_LEGACY) return null;
     if (isSocialInviteParagraph(p)) {
       // Redação legada "Agora que chegou…" é aceita pelo renderer de propósito
       // (#1148) — não reclamar de edição antiga só por isso.
