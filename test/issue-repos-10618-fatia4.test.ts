@@ -1155,9 +1155,12 @@ describe("#10618 fatia 4 — claims de outro repo fora do session-registry", () 
   });
 
   it("watch-continuo-health: checagem de claims presos soma claimed_foreign_issues", () => {
+    // #13418: a soma saiu do python inline e vive em check-continuo-claim-leaks.ts.
     const source = readFileSync(join(ROOT, "hermes", "scripts", "watch-continuo-health.sh"), "utf8");
     const snippet = source.slice(source.indexOf("# ── 3. claims vazando"), source.indexOf("# ── 4."));
-    assert.match(snippet, /s\.get\('claimed_issues'\) or \[\]\) \+ \(s\.get\('claimed_foreign_issues'\) or \[\]\)/);
+    assert.match(snippet, /check-continuo-claim-leaks\.ts/);
+    const checker = readFileSync(join(ROOT, "scripts", "check-continuo-claim-leaks.ts"), "utf8");
+    assert.match(checker, /claimed_foreign_issues/);
   });
 });
 
