@@ -47,7 +47,20 @@ export function sessionsFromRegistry(json: string, now = Date.now()): LeakSessio
 if (isMainModule(import.meta.url)) {
   try {
     const sessions = sessionsFromRegistry(readFileSync(0, "utf8"));
-    for (const l of planClaimLeaks(sessions, lookupClaim)) {
+    let indeterminate = false;
+    const tracked = (c: string): ClaimLookup => {
+      const l = lookupClaim(c);
+      if (l.state === null || l.hasOpenPr === null) indeterminate = true;
+      return l;
+    };
+    const leaks = planClaimLeaks(sessions, tracked);
+    // gh fora do ar não pode virar "ok" em silêncio (review #13421): sem vazamento
+    // confirmado e com lookup indeterminado, o watch conta INDETERMINADO.
+    if (leaks.length === 0 && indeterminate) {
+      console.log("__ERR__");
+      process.exit(0);
+    }
+    for (const l of leaks) {
       console.log(`${l.sessionId}: claims=${JSON.stringify(l.leaked)} heartbeat parado há ${Math.round(l.heartbeatAgeMin)}min`);
     }
   } catch {
