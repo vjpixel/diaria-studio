@@ -543,3 +543,32 @@ describe("hierarquia tipográfica do preview: título/label >= corpo (achado ao 
     );
   });
 });
+
+describe("preview não mostra <!-- char_count --> literal (#13428)", () => {
+  const MD_COMMENTS = `# LinkedIn
+
+## d2
+
+<!-- char_count: 790 -->
+Texto do D2 sem comentário.
+
+# Curto
+
+## d2
+
+<!-- char_count: 210 -->
+Curto do D2.
+`;
+
+  it("parsePlatforms remove comentários HTML do corpo", () => {
+    const platforms = parsePlatforms(MD_COMMENTS);
+    for (const p of platforms) for (const post of p.posts) assert.ok(!post.main.includes("<!--"));
+  });
+
+  it("HTML do preview não contém o comentário nem escapado", () => {
+    const html = buildSocialHtml(parsePlatforms(MD_COMMENTS), {}, "260101");
+    assert.ok(!html.includes("char_count"));
+    assert.ok(html.includes("Texto do D2 sem comentário."));
+    assert.ok(html.includes("Curto do D2."));
+  });
+});
