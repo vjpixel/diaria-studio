@@ -522,6 +522,8 @@ export interface TelaDoRoteiro {
   id: string;
   texto: string;
   tela: string;
+  /** Vídeos da fala no roteiro (#13309); ausente = roteiro sem a lista. */
+  videos?: string[];
 }
 
 /**
@@ -546,7 +548,8 @@ export function readRoteiroTelas(editionDir: string, warn: (msg: string) => void
       // Seta nunca chega ao leitor (#9721): a tela com seta fica fora, e o aviso do inválido diz por quê.
       if (!f || typeof f.id !== "string" || typeof f.texto !== "string" || typeof f.tela !== "string" || !f.tela.trim() || SETA.test(f.tela)) continue;
       // O `**` do título do box (#13180) é marcação da página, não texto da tela.
-      out.push({ id: f.id, texto: f.texto, tela: f.tela.replace(/\*\*/g, "").trim() });
+      const videos = Array.isArray(f.videos) ? f.videos.filter((v): v is string => typeof v === "string") : undefined;
+      out.push({ id: f.id, texto: f.texto, tela: f.tela.replace(/\*\*/g, "").trim(), ...(videos ? { videos } : {}) });
     }
   }
   const problemas = validarRoteiroFalas(lido.raw);

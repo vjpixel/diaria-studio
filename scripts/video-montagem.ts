@@ -296,6 +296,7 @@ import {
   buildSequencePlan,
   buildXmeml,
   telaMarkersFor,
+  telaSemMarcador,
   type TelaMarker,
   clockTime,
   collapsedTakeSuspects,
@@ -3719,7 +3720,14 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     for (const w of clamped.warnings) console.error(`[aviso] ${p.spec.name}: ${w}`);
     const ms = clamped.items;
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
-    const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
+    // #13309: fala do horizontal com tela e sem marcador é box sumido (aviso); a de outro vídeo fica na premissa.
+    const { semCasamento, foraDaVersao: fora } = telaSemMarcador(telas, ms);
+    if (semCasamento.length) {
+      console.error(
+        `[aviso] ${p.spec.name}: ${semCasamento.length} texto(s) de tela de fala do horizontal sem item casado (${semCasamento.join(", ")}): o box sai fora do XML; ` +
+          `pôr "falaId"/"fala" com o id no item do blocks.json, ou conferir se o corte tirou a fala (#13309)`,
+      );
+    }
     if (ms.length) {
       const overlays: TelaOverlay[] = [];
       for (const m of ms) {
