@@ -179,6 +179,25 @@ export interface GateChecklistItem {
   detail: string;
 }
 
+/** #13314: links citados em 2+ newsletters (informativo), lidos do relatório do intake. */
+export interface GateMultiCited {
+  available: boolean;
+  note?: string;
+  items: Array<{ url: string; title: string; score: number | null; destino: string; count: number; newsletters: string[] }>;
+}
+
+export function buildMultiCited(editionDir: string): GateMultiCited {
+  const path = resolve(editionDir, "_internal", "newsletter-link-scores.json");
+  if (!existsSync(path)) return { available: false, note: "intake de newsletters ainda não rodou nesta edição", items: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { cited_multi?: unknown };
+    if (!Array.isArray(parsed.cited_multi)) return { available: false, note: "relatório do intake sem a seção (rodar a auditoria de novo)", items: [] };
+    return { available: true, items: parsed.cited_multi as GateMultiCited["items"] };
+  } catch {
+    return { available: false, note: "relatório do intake ilegível", items: [] };
+  }
+}
+
 export interface GateSummary {
   ok: boolean; // agregado: true quando TODO item do checklist está ok
   aammdd: string;
@@ -202,6 +221,8 @@ export interface GateSummary {
   /** #9673: pergunta explícita sim/não por item 🔎 (modo sombra da penalidade
    * de estudo/case genérico, #9462). Vazio = nada a perguntar. */
   genericStudy: GateGenericStudyQuestion[];
+  /** #13314: links citados em 2+ newsletters distintas. */
+  multiCited: GateMultiCited;
 }
 
 export interface GateGenericStudyQuestion {
@@ -557,6 +578,7 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
       checklist: [],
       decision: null,
       genericStudy: [],
+      multiCited: { available: false, note: "edição não encontrada", items: [] },
     };
   }
 
@@ -586,5 +608,6 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
     checklist,
     decision: readStage4Decision(editionDir),
     genericStudy: buildGenericStudyQuestions(editionDir),
+    multiCited: buildMultiCited(editionDir),
   };
 }

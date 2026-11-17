@@ -19,6 +19,7 @@ import {
 } from "./lib/newsletter-senders.ts";
 import { computeIntakeFingerprint, reviewedEntries } from "./lib/newsletter-intake-fingerprint.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { buildMultiCited, renderMultiCitedSection } from "./lib/newsletter-multi-cited.ts";
 import { linkMissing, linkMissingBlocks, linkMissingScore, linkMissingTitle, OUT_OF_EDITION } from "./lib/newsletter-intake-link-rules.ts";
 
 export interface IntakeThread extends CapturedThread { capture_error?: string }
@@ -187,7 +188,8 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     pendingSenders.add(senderKey(thread.sender));
     discovery.oferecidos.push({thread_id: thread.thread_id, remetente: thread.sender, assunto: thread.subject, data: thread.date, servico: service});
   }
-  return {rows, links, pending_senders: [...pendingSenders].sort(), discovery, fingerprint_keys: [...fingerprintKeys].sort()};
+  const citedMulti = buildMultiCited(links, joinKey); // #13314
+  return {rows, links, cited_multi: citedMulti, pending_senders: [...pendingSenders].sort(), discovery, fingerprint_keys: [...fingerprintKeys].sort()};
 }
 function json(path: string): unknown { return JSON.parse(readFileSync(path, "utf8")); }
 function optional(path: string): unknown { return existsSync(path) ? json(path) : undefined; }
@@ -399,13 +401,13 @@ export function main(argv = process.argv.slice(2)): void {
   writeFileSync(resolve(internal, "newsletter-link-scores.json"), JSON.stringify({...result, warnings, input_fingerprint: fingerprint, registry_path: portableRegistryPath(registryPath)}, null, 2) + "\n");
   const cell = (value: unknown) => String(value).replace(/[\r\n|]/g, " ");
   const scoreCell = (l: LinkAudit) => l.score ?? (l.fetch_error ? `FALHA FETCH (${cell(l.fetch_error)})` : "PENDENTE");
-  const report = ["## Intake de newsletters de IA", ...warnings.map((w) => `⚠️ ${w}`),
+  const report = ["## Intake de newsletters de IA", ...warnings.map((w) => `⚠️ ${w}`), "", ...renderMultiCitedSection(result.cited_multi),
     `Remetentes novos pendentes (decidir em um lote): ${result.pending_senders.join(", ") || "nenhum"}`,
     `Descoberta: ${result.discovery.threads} thread(s) fora da captura; ${result.discovery.oferecidos.length} de serviço de envio conhecido (oferecidas acima), ${result.discovery.fora_de_servico_conhecido} sem serviço conhecido (só contagem), ${result.discovery.rejeitados} de remetente rejeitado`,
     "", "| Score | Título | Newsletter | Destino | URL |", "| --- | --- | --- | --- | --- |",
     ...result.links.map((l) => `| ${scoreCell(l)} | ${cell(l.title)} | ${cell(l.newsletter)} | ${cell(l.destino)} | ${cell(l.url)} |`)];
   writeFileSync(resolve(internal, "newsletter-intake-gate.md"), report.join("\n") + "\n");
-  console.log(JSON.stringify({threads: result.rows.length, links: result.links.length, missing_scores: result.links.filter((l) => l.score === null).length, missing_titles: result.links.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length,
+  console.log(JSON.stringify({threads: result.rows.length, links: result.links.length, cited_multi: result.cited_multi.length, missing_scores: result.links.filter((l) => l.score === null).length, missing_titles: result.links.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length,
     blocking_missing: blocking.length, fetch_failed: fetchFailedLinks.length, out_of_pool_missing: outOfPool.length, scored_untitled_out_of_edition: scoredUntitled.length,
     pending_senders: result.pending_senders, discovery: {...result.discovery, oferecidos: result.discovery.oferecidos.length}, warnings}));
   // #12188: só "ninguém tentou" reprova — falha de fetch registrada e link fora do pool não.
