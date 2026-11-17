@@ -680,13 +680,22 @@ export function dedup(
       continue;
     }
     // Keep the best: prefer registered source (no discovered_source flag) + longest title
+    // #13348: cópia com summary vence a vazia (RSS sem summary + Brave com
+    // summary da mesma URL) — senão verify-summary-integrity aborta depois.
     const sorted = [...group].sort((a, b) => {
+      const aEmpty = String(a.summary ?? "").trim() ? 0 : 1;
+      const bEmpty = String(b.summary ?? "").trim() ? 0 : 1;
+      if (aEmpty !== bEmpty) return aEmpty - bEmpty;
       const aDisc = a.discovered_source ? 1 : 0;
       const bDisc = b.discovered_source ? 1 : 0;
       if (aDisc !== bDisc) return aDisc - bDisc; // non-discovered first
       return (b.title?.length ?? 0) - (a.title?.length ?? 0);
     });
     const winner = sorted[0];
+    if (!String(winner.summary ?? "").trim()) {
+      const withSummary = sorted.find((a) => String(a.summary ?? "").trim());
+      if (withSummary) winner.summary = withSummary.summary;
+    }
     // #4193: mesma URL canônica capturada 2x (ex: editor mandou um link que o
     // crawler também achou) — se o vencedor escolhido por completude não é a
     // cópia editor_submitted mas outro membro do grupo é, o vencedor herda a
