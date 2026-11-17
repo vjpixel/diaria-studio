@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 147 invariants.
+**Total**: 150 invariants.
 
 ## Static (estrutura do repo)
 
@@ -99,6 +99,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
 | `fact-recurrence` | Possível mesmo fato em todas as seções (heurístico, warning-only) | #11083 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
+| `highlight-date-unverified` | Destaque final com date_unverified: true em 01-approved.json — a data do pipeline pode não ser a do anúncio (warning-only) | #13313 |
+| `highlight-source-stale-date` | Texto da fonte do destaque declara atualização/publicação mais de 30 dias antes da edição (warning-only) | #13313 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `image-crop-warn` | revisor de crop (Stage 3) sinaliza sujeito cortado/composição sem sentido no card 4:5 (#3951, warning-only; o 1:1 não chega ao leitor e não avisa, #12226) | #3951 |
 | `image-starry-night-detected` | revisor de imagem (Stage 3) acusou Noite Estrelada na imagem ATUAL do destaque — regra invariável, error; Stage 3 regenera sozinho antes (#10312) | #10312 |
@@ -131,6 +133,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
 | `source-not-read` | lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258) | #12258 |
 | `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
+| `stale-highlight-repeat` | Destaque que é notícia velha: URL publicada há 31-84 dias ou mesmo incidente contado de novo depois de 30 dias (heurístico, warning-only) | #13313 |
 | `story-continuation` | Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only) | #11897 |
 | `story-twice-in-edition` | Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only) | #11496 |
 | `study-source-recurrence` | Item que é cobertura secundária de estudo/relatório já publicado nos últimos 30 dias (mesmo publicador + documento + número-chave; heurístico, warning-only) | #11763 |

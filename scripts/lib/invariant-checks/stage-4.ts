@@ -3,6 +3,7 @@ import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts
 import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
 import { findStudySourceRecurrences, formatStudySourceWarning, STUDY_RECURRENCE_WINDOW_DAYS } from "../study-source-recurrence.ts"; // #11763
 import { findStoryContinuations, formatStoryContinuationWarning, STORY_CONTINUATION_WINDOW_DAYS } from "../story-continuation.ts"; // #11897
+import { findStaleHighlightRepeats, formatStaleHighlightWarning, findSourceStaleDates, STALE_HIGHLIGHT_WINDOW_DAYS } from "../stale-highlight.ts"; // #13313
 import { contentJaccard, REPEAT_THEME_WARN_THRESHOLD } from "../repeat-theme-check.ts"; // #11517
 import { readPossibleRepeatWarnings, formatPossibleRepeat } from "../secondary-theme-repeat.ts"; // #13143
 import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
@@ -2466,6 +2467,117 @@ export function checkStoryContinuation(
     }));
 }
 
+/**
+ * #13313: DESTAQUE do `02-reviewed.md` final que é notícia velha — mesma URL
+ * publicada há 31-84 dias (o dedup por URL só olha 30) ou o mesmo incidente
+ * contado de novo depois de 30 dias. Caso 261117: D2 com a URL do D2 de
+ * 260923, D3 repetindo o caso dos agentes da OpenAI de 260928. Warning: o
+ * editor troca o destaque no gate.
+ */
+export function checkStaleHighlightRepeat(
+  editionDir: string,
+  editionsRoot: string = resolve(ROOT, "data/editions"),
+): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const { highlights } = readIntraEditionItems(readFileSync(file, "utf8"));
+  if (highlights.length === 0) return [];
+  const aammdd = basename(editionDir);
+  const past = readPastStoryItems(editionsRoot, aammdd, 0, STALE_HIGHLIGHT_WINDOW_DAYS);
+  return findStaleHighlightRepeats(highlights, past, aammdd).map((w) => ({
+    rule: "stale-highlight-repeat", source_issue: "#13313", severity: "warning" as const, file,
+    message: formatStaleHighlightWarning(w),
+  }));
+}
+
+/**
+ * #13313: destaques aprovados (`_internal/01-approved.json`) que seguem como
+ * destaque no `02-reviewed.md` final, com o campo `date` e `date_unverified`.
+ */
+function readFinalApprovedHighlights(editionDir: string): Array<{ label: string; url: string; title: string; date?: string; date_unverified: boolean }> {
+  const reviewed = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewed)) return [];
+  const finals = readIntraEditionItems(readFileSync(reviewed, "utf8")).highlights;
+  const j = readJsonSafe(resolve(editionDir, "_internal", "01-approved.json")) as
+    | { highlights?: Array<Record<string, unknown> & { article?: Record<string, unknown> }> }
+    | undefined;
+  const out: Array<{ label: string; url: string; title: string; date?: string; date_unverified: boolean }> = [];
+  for (const h of j?.highlights ?? []) {
+    const a = (h?.article ?? h) as Record<string, unknown>;
+    if (typeof a?.url !== "string") continue;
+    const final = finals.find((f) => urlsMatch(f.url, a.url as string));
+    if (!final) continue;
+    out.push({
+      label: final.label,
+      url: a.url,
+      title: final.title,
+      date: typeof a.date === "string" ? a.date : undefined,
+      date_unverified: a.date_unverified === true,
+    });
+  }
+  return out;
+}
+
+/**
+ * #13313: destaque com `date_unverified: true` não passa em silêncio. Caso
+ * 261117: a página da OpenAI não tem data, o pipeline atribuiu 14/11 a um
+ * anúncio de 22/09 e o item passou pela janela de data como se fosse recente.
+ */
+export function checkHighlightDateUnverified(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "_internal", "01-approved.json");
+  return readFinalApprovedHighlights(editionDir)
+    .filter((h) => h.date_unverified)
+    .map((h) => ({
+      rule: "highlight-date-unverified", source_issue: "#13313", severity: "warning" as const, file,
+      message:
+        `🚨 Data do destaque não verificada: [${h.label}] “${h.title}” (${h.url}) entrou com date=${h.date ?? "?"} ` +
+        `e date_unverified=true — a página não mostra a data e a do pipeline pode não ser a do anúncio. ` +
+        `Conferir a data da 1ª cobertura na imprensa antes de publicar; se for de mais de 30 dias, trocar o destaque.`,
+    }));
+}
+
+/**
+ * #13313: o texto bruto da fonte do destaque (`_internal/fact-check-sources/
+ * d{N}.txt`, mapeado pela URL do `manifest.json`) declara uma data de
+ * atualização/publicação mais de 30 dias antes da edição ("Update on
+ * September 29, 2026" no D2 de 261117).
+ */
+export function checkHighlightSourceStaleDate(editionDir: string): InvariantViolation[] {
+  const reviewed = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewed)) return [];
+  const dir = resolve(editionDir, "_internal", "fact-check-sources");
+  const manifest = readJsonSafe(resolve(dir, "manifest.json"));
+  if (!Array.isArray(manifest)) return [];
+  const { highlights } = readIntraEditionItems(readFileSync(reviewed, "utf8"));
+  const aammdd = basename(editionDir);
+  const out: InvariantViolation[] = [];
+  for (const h of highlights) {
+    const entry = (manifest as Array<{ destaque?: unknown; url?: unknown }>).find(
+      (e) => typeof e?.url === "string" && typeof e?.destaque === "number" && urlsMatch(e.url, h.url),
+    );
+    if (!entry) continue;
+    const txt = resolve(dir, `d${entry.destaque}.txt`);
+    if (!existsSync(txt)) continue;
+    let text: string;
+    try {
+      text = readFileSync(txt, "utf8");
+    } catch {
+      continue;
+    }
+    const hits = findSourceStaleDates(text, aammdd);
+    if (hits.length === 0) continue;
+    const oldest = hits[0];
+    out.push({
+      rule: "highlight-source-stale-date", source_issue: "#13313", severity: "warning" as const, file: txt,
+      message:
+        `🚨 A fonte do destaque [${h.label}] “${h.title}” (${h.url}) parece ser de ${oldest.iso} ` +
+        `(${oldest.days} dias antes da edição; trecho: “${oldest.text}”). Conferir se a notícia é desta semana; ` +
+        `se não houver fato novo, trocar o destaque no gate.`,
+    });
+  }
+  return out;
+}
+
 export interface DuplicateUrlMatch {
   url: string;
   line: number;
@@ -4698,6 +4810,21 @@ export const STAGE_4_RULES: InvariantRule[] = [
     id: "story-continuation",
     description: "Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only)",
     source_issue: "#11897", stage: 4, run: (dir: string) => checkStoryContinuation(dir),
+  },
+  {
+    id: "stale-highlight-repeat",
+    description: "Destaque que é notícia velha: URL publicada há 31-84 dias ou mesmo incidente contado de novo depois de 30 dias (heurístico, warning-only)",
+    source_issue: "#13313", stage: 4, run: (dir: string) => checkStaleHighlightRepeat(dir),
+  },
+  {
+    id: "highlight-date-unverified",
+    description: "Destaque final com date_unverified: true em 01-approved.json — a data do pipeline pode não ser a do anúncio (warning-only)",
+    source_issue: "#13313", stage: 4, run: checkHighlightDateUnverified,
+  },
+  {
+    id: "highlight-source-stale-date",
+    description: "Texto da fonte do destaque declara atualização/publicação mais de 30 dias antes da edição (warning-only)",
+    source_issue: "#13313", stage: 4, run: checkHighlightSourceStaleDate,
   },
   {
     id: "no-duplicate-urls-vs-past-editions",
