@@ -35,10 +35,15 @@
  * externa), então não há degradação fail-soft aqui: se não dá pra calcular,
  * é um erro real de uso do comando, não uma condição externa indisponível.
  *
+ * Sem `--head`, faz `git fetch origin` e mede contra `origin/master` quando
+ * HEAD está atrás dele (#13425 — senão a rodada vira `+0/-0` falso); se o
+ * fetch falha e HEAD está atrás do `origin/master` local, recusa.
+ *
  * Também falha ALTA (exit 1, nada persistido, inclusive em `--dry-run`)
  * quando `--base` não é ancestral de `--head` (#10422) — o diff sairia
  * invertido. Ver o comentário no ponto da checagem.
  */
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { checkIsAncestor, getDiffLineStats } from "./lib/diff-line-stats.ts";
@@ -51,11 +56,46 @@ import {
 } from "./lib/round-diff-stats.ts";
 
 const LOG_PREFIX = "[measure-round-diff-stats]";
+const REMOTE_HEAD = "origin/master";
+
+/**
+ * #13425: sem `--head` explícito, o HEAD do checkout pode estar parado na
+ * própria base (ff recusado por sujeira de outra sessão) ou atrás do que a
+ * rodada mergeou — `base..HEAD` daria `+0/-0` falso. Faz `git fetch origin`
+ * e, se HEAD é ancestral ESTRITO de `origin/master`, mede contra ele. Se o
+ * fetch falha e o `origin/master` local (possivelmente defasado) está à
+ * frente de HEAD, recusa em vez de gravar zero falso; fetch falho sem nada à
+ * frente só avisa.
+ */
+export function resolveDefaultHead(cwd: string): { head: string; error?: string } {
+  const git = (args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
+  const fetch = git(["fetch", "--quiet", "origin"]);
+  const fetchOk = fetch.status === 0;
+  if (git(["rev-parse", "--verify", "--quiet", REMOTE_HEAD]).status !== 0) {
+    if (!fetchOk) console.warn(`${LOG_PREFIX} aviso: git fetch origin falhou e ${REMOTE_HEAD} não existe; medindo contra HEAD.`);
+    return { head: "HEAD" };
+  }
+  const same = git(["rev-parse", "HEAD"]).stdout.trim() === git(["rev-parse", REMOTE_HEAD]).stdout.trim();
+  const behind = !same && git(["merge-base", "--is-ancestor", "HEAD", REMOTE_HEAD]).status === 0;
+  if (behind && fetchOk) {
+    console.warn(`${LOG_PREFIX} aviso: HEAD está atrás de ${REMOTE_HEAD}; medindo contra ${REMOTE_HEAD}.`);
+    return { head: REMOTE_HEAD };
+  }
+  if (behind) {
+    return {
+      head: "HEAD",
+      error: `git fetch origin falhou (${String(fetch.stderr ?? "").trim() || `exit ${fetch.status}`}) e HEAD está atrás de ${REMOTE_HEAD} (local, possivelmente defasado); ` +
+        `o diff subestimaria a rodada. Corrija o acesso ao remoto ou passe --head explícito.`,
+    };
+  }
+  if (!fetchOk) console.warn(`${LOG_PREFIX} aviso: git fetch origin falhou; ${REMOTE_HEAD} local pode estar defasado.`);
+  return { head: "HEAD" };
+}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const base = getArg(argv, "base");
-  const head = getArg(argv, "head") || "HEAD";
+  const explicitHead = getArg(argv, "head");
   const sessionKind = getArg(argv, "session-kind");
   const edition = getArg(argv, "edition") || null;
   const dryRun = hasFlag(argv, "dry-run");
@@ -78,6 +118,16 @@ async function main(): Promise<void> {
   // a ancestralidade é o invariante que torna `base..head` uma medida válida
   // em qualquer cenário, e recusar é melhor que adivinhar outra ref.
   const cwd = resolve(process.cwd());
+  let head = explicitHead || "HEAD";
+  if (!explicitHead) {
+    const resolved = resolveDefaultHead(cwd);
+    if (resolved.error) {
+      console.error(`${LOG_PREFIX} recusado, nada persistido: ${resolved.error}`);
+      process.exit(1);
+      return;
+    }
+    head = resolved.head;
+  }
   const ancestry = checkIsAncestor(base, head, { cwd });
   if (ancestry.verdict !== "ancestor") {
     const why =
