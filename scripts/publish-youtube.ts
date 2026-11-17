@@ -1002,7 +1002,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
               shareResult.error = (e as Error).message;
               log(`[aviso] vídeo enviado, mas o link na descrição falhou: ${shareResult.error}; aplicar no Studio: ${shareResult.line}. Não repetir o upload.`);
             }
-            log(`[pendente] comentário para publicar e fixar no Studio: ${shareResult.line}`);
+            log(pinnedCommentPendingLine(plan.request.body.status, shareResult.line));
           }
           if (srt) captionOut.result = await uploadCaptionSafely(deps, token, videoId, srt, plan.captions?.path ?? null);
         },
@@ -1521,7 +1521,49 @@ function loadD1SlotAt(aammdd: string): Date | null {
  * `plan_sha256` que o editor aprova; o `--upload` recalcula e consome a
  * autorização antes de qualquer efeito externo.
  */
-export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: string, generatedAt?: string): VideoPlanManifest {
+/**
+ * Pure (#13352): a pendência do comentário fixado do trecho. Em vídeo privado
+ * ou agendado o YouTube não aceita comentário (Studio, 261117: "Esta conta não
+ * tem permissão para criar comentários"), então a linha diz quando dá para
+ * publicar: depois do `publishAt`, ou quando o vídeo for publicado.
+ */
+export function pinnedCommentPendingLine(status: { privacyStatus: string; publishAt?: string }, line: string): string {
+  if (status.privacyStatus === "public") return `[pendente] comentário para publicar e fixar no Studio: ${line}`;
+  const when = status.publishAt ? `depois de ${status.publishAt}, quando o vídeo agendado ficar público` : "quando o vídeo (privado) for publicado";
+  return `[pendente] comentário para publicar e fixar no Studio só ${when}: em vídeo privado ou agendado o YouTube não aceita comentário (#13352). Texto: ${line}`;
+}
+
+/**
+ * #13351: flags do CLI que mudam o plano e precisam ir no comando do dono
+ * (`destinations[youtube].owner.command`), para o comando "oficial" reproduzir
+ * o plano aprovado quando o dry-run teve override (ex.: `--title`). Fora daqui
+ * de propósito: `--video`/`--captions` (a mídia já entra no plano pelo hash
+ * dos bytes, e o caminho muda entre o Drive e a pasta da edição sem mudar o
+ * vídeo) e `--edition-dir` (o `commandShape` já o ignora).
+ */
+const PLAN_OVERRIDE_VALUE_FLAGS = ["title", "publish-at", "episode", "edition-url"] as const;
+const PLAN_OVERRIDE_BOOLEAN_FLAGS = ["no-captions"] as const;
+
+/** Aspas de shell POSIX só quando o valor precisa (espaço, aspas, `$`...). */
+function shellQuote(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Pure (#13351): os overrides do CLI que entram no comando do dono, na ordem
+ * fixa, já como texto de shell. `values`/`flags` são os do `parseArgs`.
+ */
+export function planOverrideArgs(values: Record<string, string>, flags: Set<string>): string {
+  const parts: string[] = [];
+  for (const f of PLAN_OVERRIDE_VALUE_FLAGS) {
+    const v = values[f];
+    if (v !== undefined && v !== "") parts.push(`--${f} ${shellQuote(v)}`);
+  }
+  for (const f of PLAN_OVERRIDE_BOOLEAN_FLAGS) if (flags.has(f)) parts.push(`--${f}`);
+  return parts.length ? ` ${parts.join(" ")}` : "";
+}
+
+export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: string, generatedAt?: string, overrides = ""): VideoPlanManifest {
   return buildHorizontalManifest({
     aammdd: plan.aammdd,
     metadata: plan.metadata,
@@ -1533,7 +1575,7 @@ export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: s
       captions_sha256: plan.captions ? sha256File(plan.captions.path) : null,
     },
     sources: readVideoPlanSources(editionDir),
-    command: `npx tsx scripts/publish-youtube.ts ${plan.aammdd} --upload --confirm-publish ${plan.aammdd}${plan.share ? ` --share-start ${plan.share.seconds}` : ""}`,
+    command: `npx tsx scripts/publish-youtube.ts ${plan.aammdd} --upload --confirm-publish ${plan.aammdd}${plan.share ? ` --share-start ${plan.share.seconds}` : ""}${overrides}`,
     ...(generatedAt ? { generatedAt } : {}),
   });
 }
@@ -1723,7 +1765,7 @@ async function main(): Promise<number> {
     for (const w of themeCfg.warnings) console.error(w);
     const themePlaylists = planThemePlaylists(plan.themes, themeCfg);
     // #12654: o plano que o editor aprova é este manifesto; o hash vai no JSON e no comando do grant.
-    const manifest = buildYouTubePlanManifest(plan, dir, new Date().toISOString());
+    const manifest = buildYouTubePlanManifest(plan, dir, new Date().toISOString(), planOverrideArgs(values, flags));
     const planHash = planSha256(manifest);
     try {
       const manifestPath = writeVideoPlanManifest(dir, manifest);
@@ -1747,7 +1789,7 @@ async function main(): Promise<number> {
         console.error(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);
         return 1;
       }
-      const manifest = buildYouTubePlanManifest(plan, dir);
+      const manifest = buildYouTubePlanManifest(plan, dir, undefined, planOverrideArgs(values, flags));
       const auth = consumeBeforeExternalEffects({
         editionDir: dir, edition: aammdd, manifest, destinations: ["youtube"],
         now: new Date(), pid: process.pid, by: "publish-youtube --upload",

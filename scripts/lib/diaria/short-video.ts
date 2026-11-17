@@ -348,12 +348,28 @@ export const VERTICAL_BIO_CTA_LINE = "Vídeo completo: link na bio";
 /**
  * #13274: chamada do TikTok enquanto a bio não tem link (conta pessoal sem o
  * campo Site; o TikTok libera a partir de 1.000 seguidores ou em conta
- * comercial). Não depende de link: aponta o canal do YouTube pelo @. Curta de
- * propósito (teto de 80 caracteres, `TIKTOK_NO_BIO_CTA_MAX_CHARS`).
+ * comercial). Não depende de link: aponta o canal do YouTube pelo nome. Curta
+ * de propósito (teto de 80 caracteres, `TIKTOK_NO_BIO_CTA_MAX_CHARS`, conferido
+ * em `buildTikTokPost`).
+ * #13362: sem `@`. Numa legenda do TikTok, `@handle` é menção a um usuário do
+ * TikTok, e `@diariabr` é o handle do YouTube e do X (a conta do TikTok é
+ * `@diar.ia.br`): a menção marcaria um terceiro ou sairia quebrada, e em
+ * nenhum caso levaria ao YouTube.
  */
-export const TIKTOK_NO_BIO_CTA_LINE = "Vídeo completo no YouTube: @diariabr";
+export const TIKTOK_NO_BIO_CTA_LINE = "Vídeo completo no canal diar.ia.br do YouTube";
 /** #13274: teto da chamada sem link do TikTok. */
 export const TIKTOK_NO_BIO_CTA_MAX_CHARS = 80;
+
+/**
+ * #13362: a chamada sem link do TikTok cabe no teto e não menciona ninguém
+ * (`@` na legenda do TikTok marca um usuário do TikTok). Lança se não.
+ */
+export function assertTikTokNoBioCtaLine(line: string): void {
+  if (Array.from(line).length > TIKTOK_NO_BIO_CTA_MAX_CHARS) {
+    throw new Error(`chamada sem link do TikTok passou de ${TIKTOK_NO_BIO_CTA_MAX_CHARS} caracteres: ${line}`);
+  }
+  if (line.includes("@")) throw new Error(`chamada sem link do TikTok com menção (@), que marca um usuário do TikTok: ${line}`);
+}
 
 /** #13209: título comparável (sem markdown, espaços colapsados, NFC, sem caixa). */
 export function normalizeVideoTitle(title: string): string {
@@ -454,6 +470,8 @@ export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const bioLine = input.ctaVertical !== true ? "" : input.tiktokBioLink === true ? VERTICAL_BIO_CTA_LINE : TIKTOK_NO_BIO_CTA_LINE;
+  // #13362: o teto da chamada sem link e a ausência de menção (`@`) valem para a linha que de fato sai.
+  if (bioLine === TIKTOK_NO_BIO_CTA_LINE) assertTikTokNoBioCtaLine(bioLine);
   const caption = [title, hook, bioLine, REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (Array.from(caption).length > TIKTOK_CAPTION_MAX_CHARS) throw new Error(`legenda do TikTok passou de ${TIKTOK_CAPTION_MAX_CHARS} caracteres`);
   const chars = Array.from(title);

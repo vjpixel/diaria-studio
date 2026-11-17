@@ -30,7 +30,7 @@ const D1 = {
 };
 const URL_H = "https://youtu.be/AbCdEfGhIjK";
 const BIO = /Vídeo completo: link na bio/;
-const NO_BIO_CTA = /Vídeo completo no YouTube: @diariabr/; // #13274
+const NO_BIO_CTA = /Vídeo completo no canal diar\.ia\.br do YouTube/; // #13274, sem @ desde o #13362
 
 const REVIEWED = `DESTAQUE 1 | 🔐 SEGURANÇA
 
