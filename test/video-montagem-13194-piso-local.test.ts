@@ -241,7 +241,7 @@ describe("#13194 verify-xml: ruído em rajada é aviso, cauda sustentada é SOM 
 });
 
 describe("#13194 filler da vinheta e limites do build no verify-xml", () => {
-  it("filler ao lado de uma cauda de -48: só o limiar fixo vale, não é aberto nem dá SOM CORTADO", () => {
+  it("filler ao lado de uma cauda de -48: só o limiar fixo vale, a regra relativa não o abre nem dá SOM CORTADO", () => {
     // a pausa da vinheta (#13239) começa em 5,6 s, encostada numa cauda de -48 dBFS (5,5 a 5,6 s) com silêncio antes
     const { env, level } = synth(10, [[2.0, 5.0, -24], [5.5, 5.6, -48]]);
     const thr = localEdgeThreshold(env, FIXED);
@@ -281,5 +281,18 @@ describe("#13194 filler da vinheta e limites do build no verify-xml", () => {
     const r = openCutSoundEdges(cs, FPS, level, thr, { durationS: 10, words: ctx.words });
     assert.deepEqual(r.opened, [], "e o build de fato não abre");
     assert.equal(r.unresolved[0]?.error, false);
+  });
+});
+
+describe("#13194 filler sem regressão: acima do -45 fixo segue abrindo como antes", () => {
+  it("filler encostado numa cauda acima de -45 é aberto até o silêncio (regra antiga)", () => {
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.5, 5.6, -40]]);
+    const filler: OpenableClip = { ...clip(5.6, 6.0, "vinheta"), filler: true };
+    const r = openCutSoundEdges([filler], FPS, level, localEdgeThreshold(env, FIXED), { durationS: 10 });
+    assert.equal(r.opened.length, 1, "acima do fixo: abre, como antes da PR");
+    assert.equal(r.opened[0].edge, "in");
+    assert.equal(r.opened[0].thresholdDb, FIXED, "no limiar fixo, não no relativo");
+    assert.ok(r.clips[0].srcIn <= 5.5, `entrada antes da cauda (${r.clips[0].srcIn})`);
+    assert.deepEqual(r.unresolved, []);
   });
 });

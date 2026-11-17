@@ -364,7 +364,7 @@ export interface EdgeOpenContext {
   words?: ReadonlyArray<EdgeWord>;
   /** A palavra de fora colada na borda que é do PRÓPRIO clipe `i` (1ª/última do roteiro dele): não limita. */
   ownWord?: (clipIndex: number, edge: "in" | "out", w: EdgeWord) => boolean;
-  /** Clipes julgados só pelo limiar fixo e nunca abertos (o `filler` da pausa da vinheta, #13239); seguem limitando os vizinhos. */
+  /** Clipes julgados só pelo limiar fixo (o `filler` da pausa da vinheta, #13239): o build os abre só acima do fixo, como antes do #13194; seguem limitando os vizinhos. */
   fixedOnly?: ReadonlyArray<boolean>;
   maxOpenS?: number;
   /** Fim do bruto (s); sem ele, só o arquivo e o teto limitam. */
@@ -414,7 +414,7 @@ export interface OpenableClip {
   srcOut: number;
   frameIn: number;
   frameOut: number;
-  /** Pausa da vinheta (#13239): nunca é aberta e só o limiar fixo vale nas bordas dela (#13194). */
+  /** Pausa da vinheta (#13239): só o limiar fixo vale nas bordas dela, então ela só abre acima do fixo, como antes do #13194. */
   filler?: boolean;
 }
 
@@ -490,8 +490,6 @@ export function openCutSoundEdges<T extends OpenableClip>(
       const f0 = first[i];
       if (!(edge === "in" ? f0.overIn : f0.overOut)) continue;
       const c = cur[i];
-      // #13194: a pausa da vinheta nunca é aberta (ela só limita os vizinhos).
-      if (c.filler) continue;
       if (edge === "in") {
         const lo = edgeOpenLimitS(timeline(cur), fps, i, edge, ctxOf(cur));
         const loFrame = Math.ceil(lo * fps - eps);
