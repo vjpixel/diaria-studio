@@ -110,12 +110,14 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
     // #13328: edição 261117, "Introducing Devin Apps" (devin.ai/blog/devin-apps,
     // post oficial do produto) barrado em LANÇAMENTOS por falta de registro.
-    // Restrito a /blog/ nos dois hosts da Cognition: devin.ai é o produto
-    // (o resto do host é app, pricing, enterprise) e cognition.ai é o site da
-    // empresa, que publica os anúncios em /blog/ também. "cognition" solto não
-    // entra na detecção: colide com a palavra comum em inglês.
+    // Restrito a /blog/ nos hosts da Cognition: devin.ai é o produto (o resto
+    // do host é app, pricing, enterprise) e cognition.com é o site da empresa,
+    // que publica os anúncios em /blog/ também (ex: cognition.com/blog/swe-2-flash).
+    // cognition.ai redireciona para cognition.com (conferido em 17/11/2026) e
+    // fica para os links antigos. "cognition" solto não entra na detecção:
+    // colide com a palavra comum em inglês.
     company: "Cognition / Devin",
-    path_patterns: [/^devin\.ai\/blog\//, /^cognition\.ai\/blog\//],
+    path_patterns: [/^devin\.ai\/blog\//, /^cognition\.com\/blog\//, /^cognition\.ai\/blog\//],
     detection_keywords: /\b(devin|cognition (ai|labs))\b/i,
     primary_domain: "devin.ai",
   },

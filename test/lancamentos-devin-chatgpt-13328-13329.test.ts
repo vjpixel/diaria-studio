@@ -30,7 +30,8 @@ describe("#13328 Cognition / Devin no registro oficial", () => {
     assert.equal(isOfficialLancamentoUrl(url), true);
   });
 
-  it("o blog da Cognition também conta", () => {
+  it("o blog da Cognition também conta (cognition.com e o domínio antigo cognition.ai)", () => {
+    assert.equal(isOfficialLancamentoUrl("https://cognition.com/blog/swe-2-flash"), true);
     assert.equal(isOfficialLancamentoUrl("https://cognition.ai/blog/introducing-devin-2"), true);
   });
 
