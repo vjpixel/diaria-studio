@@ -28,13 +28,19 @@ import { registerReport } from "./studio-ui/studio-reports.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
+/** Nome de arquivo seguro no Windows (`data/` sincroniza com máquinas Windows, #13387): troca `<>:"/\\|?*` por `-`. O título do registro mantém o nome original (ex: prefixo `track-a:`). */
+export function safeReportFileName(feature: string, prNumber: string): string {
+  return `${feature.replace(/[<>:"/\\|?*]/g, "-")}-${prNumber}.md`;
+}
+
 export function generate(rootDir: string, input: CalibrationEvidenceInput, prNumber: string): { markdown: string; outPath: string } {
   const markdown = renderCalibrationEvidenceReport(input);
   const outDir = resolve(rootDir, "data", "reports", "calibration");
   mkdirSync(outDir, { recursive: true });
-  const outPath = join(outDir, `${input.feature}-${prNumber}.md`);
+  const fileName = safeReportFileName(input.feature, prNumber);
+  const outPath = join(outDir, fileName);
   writeFileSync(outPath, markdown, "utf8");
-  return { markdown, outPath: `data/reports/calibration/${input.feature}-${prNumber}.md` };
+  return { markdown, outPath: `data/reports/calibration/${fileName}` };
 }
 
 if (isMainModule(import.meta.url)) {
