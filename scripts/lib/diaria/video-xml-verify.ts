@@ -150,8 +150,18 @@ export interface EdgeFinding {
   outS: number;
   beforeDb: number;
   afterDb: number;
+  /** SOM CORTADO (erro do verify-xml): acima do limiar fixo, ou acima do relativo com energia sustentada que o build abriria (#13194). */
   cutIn: boolean;
   cutOut: boolean;
+  /** Energia logo fora acima do limiar da borda, sustentada ou não: o que o build tenta abrir (#13194). */
+  overIn: boolean;
+  overOut: boolean;
+  /** Acima só do limiar relativo, sem ser SOM CORTADO (rajada curta ou sem silêncio até o teto): [aviso], não erro (#13194). */
+  softIn: boolean;
+  softOut: boolean;
+  /** Quanto tempo (s) a energia fica acima do limiar, contínua, a partir da borda para fora (0 quando não passa). */
+  aboveInS: number;
+  aboveOutS: number;
   /** Limiar aplicado em cada borda (dBFS): o fixo do bruto ou o relativo ao piso local, o menor (#13194). */
   thrInDb: number;
   thrOutDb: number;
@@ -164,9 +174,24 @@ export const EDGE_WINDOW_S = 0.04;
  * Limiar das bordas: um dBFS só para o bruto inteiro, ou um por instante
  * (`localEdgeThreshold`, relativo ao piso de ruído em volta da borda, #13194).
  */
-export type EdgeThreshold = number | ((t: number) => number);
+export type EdgeThreshold = number | (((t: number) => number) & { fixedDb?: number });
 
 const thresholdAt = (thr: EdgeThreshold, t: number) => (typeof thr === "number" ? thr : thr(t));
+/** O limiar fixo do bruto por trás do relativo: acima dele é SOM CORTADO como sempre foi (nunca afrouxa). */
+const fixedOf = (thr: EdgeThreshold) => (typeof thr === "number" ? thr : (thr.fixedDb ?? Number.NEGATIVE_INFINITY));
+
+/**
+ * #13194: acima só do limiar relativo (entre o piso local + 3 dB e o fixo), a
+ * borda é SOM CORTADO quando a energia de fora é SUSTENTADA (contínua acima do
+ * limiar por pelo menos `minS`, perfil de fala e não de clique ou rajada de
+ * ruído) e o build acharia silêncio para abri-la até `CUT_EDGE_OPEN.maxS`. Fora
+ * disso vira [aviso] no verify-xml, com o limiar e a duração: sala ruidosa nunca
+ * reprova o XML. Acima do fixo, nada muda: segue erro. `smearS` desconta
+ * metade da janela do envelope (30 ms, `ENVELOPE_DEFAULTS.winS`), o quanto ele
+ * estica o fim de cada som. Na 261117 as 4 caudas medidas ficam entre 65 e
+ * 75 ms (erro); um estalo de 30 ms sai com ~45 ms (aviso).
+ */
+export const SUSTAINED_EDGE = { minS: 0.06, stepS: 0.01, smearS: 0.015 } as const;
 
 /**
  * #13194 (decisão do editor de 15/11: na dúvida, silêncio a palavra cortada):
@@ -223,11 +248,11 @@ export function localEdgeThreshold(
   env: LevelEnvelope,
   fixedDb: number,
   opts: { windowS?: number; percentile?: number; marginDb?: number; minThresholdDb?: number } = {},
-): (t: number) => number {
+): ((t: number) => number) & { fixedDb: number } {
   const margin = opts.marginDb ?? LOCAL_FLOOR_EDGE.marginDb;
   const minDb = opts.minThresholdDb ?? LOCAL_FLOOR_EDGE.minThresholdDb;
   const cache = new Map<number, number>();
-  return (t: number) => {
+  const at = (t: number) => {
     const k = Math.round(t / env.hopS);
     let v = cache.get(k);
     if (v === undefined) {
@@ -237,6 +262,7 @@ export function localEdgeThreshold(
     }
     return v;
   };
+  return Object.assign(at, { fixedDb });
 }
 
 /**
@@ -260,6 +286,28 @@ export function edgeFindings(
   const coveredBy = (k: TimelineClip | undefined, a: number, b: number) => !!k && k.gIn / rate <= a + 1e-6 && k.gOut / rate >= b - 1e-6;
   const spanOf = (t: number) => bounds?.find((s) => t >= s.start - 1e-6 && t < s.end) ?? { start: 0, end: Number.POSITIVE_INFINITY };
   const FLOOR = -120;
+  const fixedDb = fixedOf(thresholdDb);
+  const { minS, stepS, smearS } = SUSTAINED_EDGE;
+  const maxOpen = CUT_EDGE_OPEN.maxS;
+  // Energia contínua acima do limiar a partir da borda, para fora (dir -1 = antes da entrada), até `limit`.
+  const runAbove = (t0: number, dir: 1 | -1, thr: number, limit: number) => {
+    let n = 0;
+    for (let t = t0; dir > 0 ? t < limit - 1e-9 : t > limit + 1e-9; t += dir * stepS) {
+      const x = dir > 0 ? levelDb(t, Math.min(limit, t + stepS)) : levelDb(Math.max(limit, t - stepS), t);
+      if (!(x > thr)) break;
+      n++;
+    }
+    // Desconta o quanto a janela do envelope estica o fim do som: a duração do som, não a do envelope.
+    return Math.max(0, Math.min(n * stepS, Math.abs(limit - t0)) - smearS);
+  };
+  // O build acharia silêncio (janela inteira abaixo do limiar) antes do teto? Quadro a quadro, como ele abre.
+  const frameS = 1 / rate;
+  const silenceWithin = (t0: number, dir: 1 | -1, thr: number, limit: number) => {
+    for (let t = t0 + dir * frameS; dir > 0 ? t <= limit + 1e-9 : t >= limit - 1e-9; t += dir * frameS) {
+      if (!((dir > 0 ? levelDb(t, t + windowS) : levelDb(t - windowS, t)) > thr)) return true;
+    }
+    return false;
+  };
   return clips.map((c, i) => {
     const a = c.gIn / rate;
     const b = c.gOut / rate;
@@ -270,9 +318,18 @@ export function edgeFindings(
     const afterDb = aHi > b + 1e-6 ? levelDb(b, aHi) : FLOOR;
     const thrInDb = thresholdAt(thresholdDb, a);
     const thrOutDb = thresholdAt(thresholdDb, b);
-    const cutIn = beforeDb > thrInDb && !coveredBy(clips[i - 1], bLo, a);
-    const cutOut = afterDb > thrOutDb && !coveredBy(clips[i + 1], b, aHi);
-    return { clip: i + 1, inS: a, outS: b, beforeDb, afterDb, cutIn, cutOut, thrInDb, thrOutDb };
+    const overIn = beforeDb > thrInDb && !coveredBy(clips[i - 1], bLo, a);
+    const overOut = afterDb > thrOutDb && !coveredBy(clips[i + 1], b, aHi);
+    const inLimit = Math.max(0, fs.start, a - maxOpen);
+    const outLimit = Math.min(fs.end, b + maxOpen);
+    const aboveInS = overIn ? runAbove(a, -1, thrInDb, inLimit) : 0;
+    const aboveOutS = overOut ? runAbove(b, 1, thrOutDb, outLimit) : 0;
+    const cutIn = overIn && (beforeDb > fixedDb || (aboveInS >= minS - 1e-9 && silenceWithin(a, -1, thrInDb, inLimit)));
+    const cutOut = overOut && (afterDb > fixedDb || (aboveOutS >= minS - 1e-9 && silenceWithin(b, 1, thrOutDb, outLimit)));
+    return {
+      clip: i + 1, inS: a, outS: b, beforeDb, afterDb, cutIn, cutOut, overIn, overOut,
+      softIn: overIn && !cutIn, softOut: overOut && !cutOut, aboveInS, aboveOutS, thrInDb, thrOutDb,
+    };
   });
 }
 
@@ -317,6 +374,9 @@ export interface UnresolvedEdge<B extends string = string> {
   atS: number;
   db: number;
   thresholdDb: number;
+  /** O verify-xml acusa como erro (SOM CORTADO); `false` = só [aviso] (rajada curta, sem silêncio até o teto). */
+  error: boolean;
+  aboveS: number;
 }
 
 /**
@@ -366,7 +426,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
   for (let i = 0; i < cur.length; i++) {
     for (const edge of ["in", "out"] as const) {
       const f0 = first[i];
-      if (!(edge === "in" ? f0.cutIn : f0.cutOut)) continue;
+      if (!(edge === "in" ? f0.overIn : f0.overOut)) continue;
       const c = cur[i];
       const span = spanOf((c.srcIn + c.srcOut) / 2);
       const others = cur.filter((_, j) => j !== i);
@@ -385,7 +445,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
         for (let fr = c.frameIn - 1; fr >= loFrame; fr--) {
           const trial = cur.map((x, j) => (j === i ? { ...x, frameIn: fr, srcIn: fr / fps } : x));
           const e = findings(trial)[i];
-          if (!e.cutIn) {
+          if (!e.overIn) {
             opened.push({ block: c.block, edge, from: c.srcIn, to: fr / fps, fromDb: f0.beforeDb, toDb: e.beforeDb, thresholdDb: e.thrInDb });
             cur[i] = trial[i];
             break;
@@ -406,7 +466,7 @@ export function openCutSoundEdges<T extends OpenableClip>(
         for (let fr = c.frameOut + 1; fr <= hiFrame; fr++) {
           const trial = cur.map((x, j) => (j === i ? { ...x, frameOut: fr, srcOut: fr / fps } : x));
           const e = findings(trial)[i];
-          if (!e.cutOut) {
+          if (!e.overOut) {
             opened.push({ block: c.block, edge, from: c.srcOut, to: fr / fps, fromDb: f0.afterDb, toDb: e.afterDb, thresholdDb: e.thrOutDb });
             cur[i] = trial[i];
             break;
@@ -417,8 +477,8 @@ export function openCutSoundEdges<T extends OpenableClip>(
   }
   const unresolved: UnresolvedEdge<T["block"]>[] = [];
   findings(cur).forEach((e, i) => {
-    if (e.cutIn) unresolved.push({ block: cur[i].block, edge: "in", atS: e.inS, db: e.beforeDb, thresholdDb: e.thrInDb });
-    if (e.cutOut) unresolved.push({ block: cur[i].block, edge: "out", atS: e.outS, db: e.afterDb, thresholdDb: e.thrOutDb });
+    if (e.overIn) unresolved.push({ block: cur[i].block, edge: "in", atS: e.inS, db: e.beforeDb, thresholdDb: e.thrInDb, error: e.cutIn, aboveS: e.aboveInS });
+    if (e.overOut) unresolved.push({ block: cur[i].block, edge: "out", atS: e.outS, db: e.afterDb, thresholdDb: e.thrOutDb, error: e.cutOut, aboveS: e.aboveOutS });
   });
   return { clips: cur, opened, unresolved };
 }
@@ -433,10 +493,27 @@ export function sequenceCutsS(clips: readonly XmlAudioClip[], rate: number): num
   return clips.slice(1).map((c) => c.start / rate);
 }
 
+const edgeMark = (cut: boolean, soft: boolean, thr: number, aboveS: number) =>
+  cut
+    ? ` ← SOM CORTADO (limiar ${thr.toFixed(0)} dB)`
+    : soft
+      ? ` ← [aviso] acima do piso local (limiar ${thr.toFixed(0)} dB) por ${Math.round(aboveS * 1000)} ms, sem fala sustentada ou sem silêncio até ${CUT_EDGE_OPEN.maxS} s`
+      : "";
+
+/** Bordas que viram só [aviso] no verify-xml (#13194): acima do limiar relativo, sem ser SOM CORTADO. */
+export function softEdgeWarnings(edges: readonly EdgeFinding[], clock: (s: number) => string): string[] {
+  const out: string[] = [];
+  for (const e of edges) {
+    if (e.softIn) out.push(`clipe ${e.clip}: entrada em ${clock(e.inS)} com ${e.beforeDb.toFixed(0)} dB fora, acima do limiar relativo ${e.thrInDb.toFixed(0)} dB por ${Math.round(e.aboveInS * 1000)} ms (rajada curta ou sem silêncio até ${CUT_EDGE_OPEN.maxS} s): conferir no Premiere (#13194)`);
+    if (e.softOut) out.push(`clipe ${e.clip}: saída em ${clock(e.outS)} com ${e.afterDb.toFixed(0)} dB fora, acima do limiar relativo ${e.thrOutDb.toFixed(0)} dB por ${Math.round(e.aboveOutS * 1000)} ms (rajada curta ou sem silêncio até ${CUT_EDGE_OPEN.maxS} s): conferir no Premiere (#13194)`);
+  }
+  return out;
+}
+
 export function edgeLine(e: EdgeFinding, clock: (s: number) => string): string {
   return (
-    `${String(e.clip).padStart(2)}  ${clock(e.inS)}–${clock(e.outS)}  antes da entrada ${e.beforeDb.toFixed(0)} dB${e.cutIn ? ` ← SOM CORTADO (limiar ${e.thrInDb.toFixed(0)} dB)` : ""}` +
-    `  depois da saída ${e.afterDb.toFixed(0)} dB${e.cutOut ? ` ← SOM CORTADO (limiar ${e.thrOutDb.toFixed(0)} dB)` : ""}`
+    `${String(e.clip).padStart(2)}  ${clock(e.inS)}–${clock(e.outS)}  antes da entrada ${e.beforeDb.toFixed(0)} dB${edgeMark(e.cutIn, e.softIn, e.thrInDb, e.aboveInS)}` +
+    `  depois da saída ${e.afterDb.toFixed(0)} dB${edgeMark(e.cutOut, e.softOut, e.thrOutDb, e.aboveOutS)}`
   );
 }
 

@@ -455,7 +455,7 @@ import {
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
 import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
-import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, softEdgeWarnings, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
@@ -2745,7 +2745,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   console.error(`[video-montagem] verify-xml: bordas a ${thr} dBFS (${edgeThreshold.from}, o limiar do refino do build); piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "não medido"} dBFS (#12903, #12969)`);
   // #13194: em cada borda vale o menor entre o fixo e o piso de ruído LOCAL + margem (localEdgeThreshold, o mesmo critério do build).
   const thrAt = localEdgeThreshold(env, thr);
-  console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS) (#13194)`);
+  console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS); entre o relativo e o fixo, erro só com energia sustentada por ${Math.round(SUSTAINED_EDGE.minS * 1000)} ms e silêncio até ${CUT_EDGE_OPEN.maxS} s, senão [aviso] (#13194)`);
   if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
   let bad = 0;
@@ -2768,6 +2768,8 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)${cardFrames ? ` + card de CTA ${(cardFrames / pf.source.fps).toFixed(2)} s sem fala` : ""}`);
     for (const x of issues) console.log(`[erro] ${x}`);
     for (const e of edges) console.log(edgeLine(e, clockTime));
+    // #13194: acima só do limiar relativo sem fala sustentada (rajada de ruído) ou sem silêncio até o teto: aviso, nunca erro.
+    for (const x of softEdgeWarnings(edges, clockTime)) console.error(`[aviso] verify-xml ${key}: ${x}`);
     let findings: ReviewFinding[] = [];
     if (transcribe && clips.length) {
       // Áudio montado SÓ pelo XML (cortes secos, sem fades): o que o Premiere tocaria.
@@ -3352,7 +3354,11 @@ export function openCutEdgesOfPlan(
       to: Math.round(o.to * 1000) / 1000,
       reason: `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${Math.round(o.thresholdDb)} dB${limiarNote(o.thresholdDb)}): aberto até o silêncio (${Math.round(o.toDb)} dB) (#13194)`,
     })),
-    warnings: r.unresolved.map((u) => `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}) sem silêncio até a palavra vizinha ou ${CUT_EDGE_OPEN.maxS} s: o verify-xml vai acusar; conferir no Premiere (#13194)`),
+    warnings: r.unresolved.map((u) =>
+      u.error
+        ? `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}) sem silêncio até a palavra vizinha ou ${CUT_EDGE_OPEN.maxS} s: o verify-xml vai acusar; conferir no Premiere (#13194)`
+        : `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto acima do piso local (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}, por ${Math.round(u.aboveS * 1000)} ms) sem fala sustentada ou sem silêncio até ${CUT_EDGE_OPEN.maxS} s: fica como estava; o verify-xml só avisa (#13194)`,
+    ),
   };
 }
 

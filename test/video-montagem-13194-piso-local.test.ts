@@ -23,6 +23,8 @@ import {
   localFloorDb,
   NEIGHBOR_WORD_GRACE_S,
   openCutSoundEdges,
+  softEdgeWarnings,
+  SUSTAINED_EDGE,
   type OpenableClip,
 } from "../scripts/lib/diaria/video-xml-verify.ts";
 import { openCutEdgesOfPlan } from "../scripts/video-montagem.ts";
@@ -163,14 +165,19 @@ describe("#13194 cauda acima do piso local não pode ser cortada", () => {
 
 describe("#13194 sala ruidosa: o limiar relativo nunca estica a borda além do teto", () => {
   it("ruído que nunca cai ao piso + 3 dB: a borda fica onde estava e vira pendência (não anda maxOpenS)", () => {
-    // piso -55, mas rajadas de -48 a cada 50 ms (gate da sala abrindo): nenhum trecho de 40 ms abaixo do limiar
-    const { env, level } = synth(10, CAIR, (t) => (Math.floor(t / 0.05) % 2 === 0 ? -55 : -48));
+    // piso -55, mas rajadas de -49 a cada 50 ms (gate da sala abrindo): nenhum trecho de 40 ms abaixo do limiar, e nada acima do -45 fixo
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.0, 5.15, -51]], (t) => (Math.floor(t / 0.05) % 2 === 0 ? -55 : -49));
     const thr = localEdgeThreshold(env, FIXED);
     const r = openCutSoundEdges([clip(1.9, OUT)], FPS, level, thr, { durationS: 10 });
     assert.equal(r.clips[0].frameOut, 151, "a saída não se mexe");
     assert.equal(r.clips[0].frameIn, Math.round(1.9 * FPS), "nem a entrada (também no ruído)");
     assert.deepEqual(r.opened, []);
-    assert.ok(r.unresolved.some((u) => u.edge === "out"), "e o verify-xml segue acusando a saída");
+    const out = r.unresolved.find((u) => u.edge === "out");
+    assert.ok(out, "a saída fica pendente no build");
+    assert.equal(out.error, false, "rajadas sem silêncio até o teto: aviso, não erro do verify-xml");
+    const e = edgeFindings(tl(r.clips), FPS, level, thr)[0];
+    assert.equal(e.cutOut, false);
+    assert.equal(e.softOut, true);
   });
 
   it("silêncio só depois do teto (`CUT_EDGE_OPEN.maxS`): não abre", () => {
@@ -199,5 +206,36 @@ describe("#13194 sala ruidosa: o limiar relativo nunca estica a borda além do t
     const { env, level } = synth(10, [[2.0, 5.0, -24], [5.0, 5.2, -47]]);
     const r = openCutSoundEdges([clip(1.9, OUT)], FPS, level, localEdgeThreshold(env, FIXED), { durationS: 10, words: [w("e", OUT + 0.005, OUT + 0.085)] });
     assert.deepEqual(r.opened, [], "\"e\" de 80 ms: folga de 40 ms, sem silêncio até lá");
+  });
+});
+
+describe("#13194 verify-xml: ruído em rajada é aviso, cauda sustentada é SOM CORTADO", () => {
+  it("rajada curta (30 ms) de ruído logo fora da borda: aviso com limiar e duração, sem erro", () => {
+    // fala até 5,0 s; a saída em 5,033 s; um estalo de 30 ms a -47 dBFS em 5,04 s e depois a sala a -55
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.04, 5.07, -47]]);
+    const e = edgeFindings(tl([clip(1.9, OUT)]), FPS, level, localEdgeThreshold(env, FIXED))[0];
+    assert.equal(e.overOut, true, "passa do limiar relativo");
+    assert.equal(e.cutOut, false, "mas não é sustentado: não é SOM CORTADO");
+    assert.equal(e.softOut, true);
+    assert.ok(e.aboveOutS < SUSTAINED_EDGE.minS, `duração acima do limiar (${e.aboveOutS})`);
+    const warns = softEdgeWarnings([e], (s) => s.toFixed(2));
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /saída em 5\.03 com -4\d dB fora, acima do limiar relativo -5\d dB por \d+ ms/);
+    assert.match(edgeLine(e, (s) => s.toFixed(2)), /\[aviso\] acima do piso local/);
+  });
+
+  it("cauda sustentada (150 ms) acima do piso local: SOM CORTADO", () => {
+    const { env, level } = synth(10, CAIR);
+    const e = edgeFindings(tl([clip(1.9, OUT)]), FPS, level, localEdgeThreshold(env, FIXED))[0];
+    assert.equal(e.cutOut, true);
+    assert.equal(e.softOut, false);
+    assert.ok(e.aboveOutS >= SUSTAINED_EDGE.minS, `sustentada (${e.aboveOutS})`);
+  });
+
+  it("acima do -45 fixo segue erro mesmo curto (não afrouxa o que já se pegava)", () => {
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.04, 5.07, -30]]);
+    const e = edgeFindings(tl([clip(1.9, OUT)]), FPS, level, localEdgeThreshold(env, FIXED))[0];
+    assert.ok(e.afterDb > FIXED);
+    assert.equal(e.cutOut, true);
   });
 });
