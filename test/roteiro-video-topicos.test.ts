@@ -25,6 +25,13 @@ import { renderRoteiroPagina } from "../scripts/lib/diaria/roteiro-pagina.ts";
 const FIXTURE = join(import.meta.dirname, "fixtures", "roteiro-video", "roteiro-falas-261116.json");
 const base = (): RoteiroFalas => JSON.parse(readFileSync(FIXTURE, "utf8"));
 
+/** A fixture sem tópicos em nenhuma fala, mesmo que ela venha a ganhar tópicos. */
+function semTopicos(): RoteiroFalas {
+  const r = base();
+  for (const f of r.falas) delete f.topicos;
+  return r;
+}
+
 /** Uma fala da fixture que está no horizontal e em algum vertical. */
 function falaCompartilhada(r: RoteiroFalas) {
   const f = r.falas.find((x) => x.videos.includes("horizontal") && x.videos.some((v) => v !== "horizontal"));
@@ -46,19 +53,24 @@ describe("topicos da fala", () => {
     assert.deepEqual(validarRoteiroFalas(r), []);
   });
 
-  it("recusa tópico com mais de 4 palavras, vazio ou lista vazia", () => {
-    const longo = base();
-    const f = falaCompartilhada(longo);
-    f.topicos = ["Um dois três quatro cinco"];
-    assert.ok(validarRoteiroFalas(longo).some((p) => p.includes(`${f.id}.topicos[0]`) && p.includes("5 palavras")));
-
-    const vazio = base();
-    falaCompartilhada(vazio).topicos = ["  "];
-    assert.ok(validarRoteiroFalas(vazio).some((p) => p.includes("topicos[0] deve ser texto não vazio")));
-
-    const lista = base();
-    falaCompartilhada(lista).topicos = [];
-    assert.ok(validarRoteiroFalas(lista).some((p) => p.includes("topicos deve ser lista não vazia")));
+  it("recusa tópico longo, sem palavra, com quebra de linha, com seta, não-texto e lista vazia ou não-lista", () => {
+    const casos: Array<[unknown, string]> = [
+      [["Um dois três quatro cinco"], "5 palavras"],
+      [["  "], "pelo menos uma palavra"],
+      [["—"], "pelo menos uma palavra"],
+      [[42], "pelo menos uma palavra"],
+      [["Antes\ndepois"], "em uma linha"],
+      [["Antes → depois"], "seta"],
+      [[], "lista não vazia"],
+      ["Só um texto", "lista não vazia"],
+    ];
+    for (const [topicos, trecho] of casos) {
+      const r = base();
+      const f = falaCompartilhada(r);
+      (f as { topicos?: unknown }).topicos = topicos;
+      const problemas = validarRoteiroFalas(r);
+      assert.ok(problemas.some((p) => p.startsWith(`${f.id}.topicos`) && p.includes(trecho)), `${JSON.stringify(topicos)}: esperado "${trecho}", veio ${JSON.stringify(problemas)}`);
+    }
   });
 
   it("a página mostra os tópicos no horizontal e no vertical da fala", () => {
@@ -71,9 +83,26 @@ describe("topicos da fala", () => {
     assert.ok(html.includes('<ul class="topicos"><li>Tópico único da fala</li><li>Segundo bullet</li></ul>'));
   });
 
-  it("fala sem tópicos não ganha lista", () => {
-    const html = renderRoteiroPagina(base());
+  it("com tópicos no roteiro, toda linha ganha a coluna (célula vazia quando a fala não tem)", () => {
+    const r = semTopicos();
+    falaCompartilhada(r).topicos = ["Só nesta fala"];
+    const html = renderRoteiroPagina(r);
+    assert.ok(html.includes('<div class="row com-topicos"><span></span><p class="fala">'), "fala sem tópicos fica com a célula vazia");
+    assert.match(html, /<div class="row com-topicos"><ul class="topicos"><li>Só nesta fala<\/li><\/ul><p class="fala">[\s\S]*?<\/p><span><\/span><\/div>/, "vertical sem tela: tópicos, fala e célula de tela vazia");
+    assert.match(html, /\.row\.com-topicos \{ grid-template-columns: 150px/);
+    assert.match(html, /\.row > span:empty \{ display: none; \}/);
+  });
+
+  it("sem tópicos no roteiro, a linha fica como antes, sem a coluna", () => {
+    const html = renderRoteiroPagina(semTopicos());
     assert.ok(!html.includes('<ul class="topicos">'));
+    assert.ok(!html.includes('class="row com-topicos"'));
+    assert.match(html, /<div class="row"><p class="fala">/);
+  });
+
+  it("o botão Copiar roteiro deixa os tópicos de fora", () => {
+    const html = renderRoteiroPagina(base());
+    assert.match(html, /querySelectorAll\('\.topicos'\)\.forEach\(function \(t\) \{ t\.remove\(\); \}\)/);
   });
 
   it("o Passo 5 da skill documenta o campo", () => {

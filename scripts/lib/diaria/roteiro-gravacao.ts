@@ -744,8 +744,11 @@ export function validarRoteiroFalas(x: unknown): string[] {
       if (!Array.isArray(o.topicos) || o.topicos.length === 0) problemas.push(`${rotulo}.topicos deve ser lista não vazia de textos`);
       else {
         o.topicos.forEach((t, j) => {
-          if (typeof t !== "string" || !t.trim()) problemas.push(`${rotulo}.topicos[${j}] deve ser texto não vazio`);
-          else if (contarPalavrasTopico(t) > TOPICO_MAX_PALAVRAS) problemas.push(`${rotulo}.topicos[${j}] tem ${contarPalavrasTopico(t)} palavras ("${t}"); o máximo é ${TOPICO_MAX_PALAVRAS}`);
+          const n = typeof t === "string" ? contarPalavrasTopico(t) : 0;
+          if (n === 0) problemas.push(`${rotulo}.topicos[${j}] deve ser texto com pelo menos uma palavra`);
+          else if (n > TOPICO_MAX_PALAVRAS) problemas.push(`${rotulo}.topicos[${j}] tem ${n} palavras ("${t}"); o máximo é ${TOPICO_MAX_PALAVRAS}`);
+          else if (/[\r\n]/.test(t)) problemas.push(`${rotulo}.topicos[${j}] deve ficar em uma linha`);
+          else if (SETA.test(t)) problemas.push(`${rotulo}.topicos[${j}] usa seta (→/←), proibida na página (#9721)`);
         });
       }
     }
