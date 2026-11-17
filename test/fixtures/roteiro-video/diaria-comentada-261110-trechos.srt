@@ -1,0 +1,96 @@
+76
+00:03:37,220 --> 00:03:38,540
+controles de exportação.
+
+77
+00:03:38,540 --> 00:03:41,820
+Com esse incidente, obviamente
+o que vai acontecer
+
+78
+00:03:41,820 --> 00:03:42,660
+é o contrário.
+
+79
+00:03:42,660 --> 00:03:46,200
+E ele pode chegar a perder
+o cargo atual dele.
+
+80
+00:03:47,340 --> 00:03:51,240
+É provável que haja
+um fortalecimento da
+
+81
+00:03:51,240 --> 00:03:54,880
+fiscalização de
+exportação de GPUs.
+
+82
+00:03:54,880 --> 00:03:58,300
+E isso pode causar um
+aumento do preço desses
+
+83
+00:03:58,300 --> 00:04:00,660
+componentes fora
+dos Estados Unidos.
+
+84
+00:04:00,660 --> 00:04:04,080
+E isso se conecta diretamente
+com a consequência
+
+85
+00:04:04,080 --> 00:04:04,760
+para o Brasil.
+
+86
+00:04:04,760 --> 00:04:07,540
+Se o preço desse
+componente aumenta aqui no
+
+87
+00:04:07,540 --> 00:04:11,760
+Brasil, isso impacta
+em startups e empresas
+
+88
+00:04:11,760 --> 00:04:14,580
+brasileiras que treinam
+o modelo de inteligência
+
+89
+00:04:14,580 --> 00:04:19,020
+artificial e eventualmente
+pode impactar o plano
+
+90
+00:04:19,020 --> 00:04:20,880
+brasileiro de
+inteligência artificial,
+
+91
+00:04:20,920 --> 00:04:23,940
+que é um plano do governo
+de criar um ecossistema
+
+92
+00:04:23,940 --> 00:04:26,820
+soberano de inteligência
+artificial no Brasil.
+
+93
+00:04:27,600 --> 00:04:32,080
+Para mim, o que esse episódio
+evidencia é o quanto
+
+94
+00:04:32,080 --> 00:04:35,660
+é importante que o ecossistema
+internacional de IA
+
+95
+00:04:35,660 --> 00:04:39,200
+não dependa de governos
+e empresas específicos.

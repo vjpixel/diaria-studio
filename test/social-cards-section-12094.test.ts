@@ -254,7 +254,7 @@ describe("reorder-destaques move `## d{N}-cards` junto com o `## d{N}` (#12094)"
   });
 });
 
-describe("preview social (render-social-html) mostra os cards à parte (#12094)", () => {
+describe("preview social (render-social-html) agrupa os cards no destaque sem repetir o texto (#12094, #13422)", () => {
   it("`## d1-cards` entra no grupo D1, não vira um 4º post", () => {
     const groups = groupByDestaque(parsePlatforms(socialMd()), {});
     const keys = groups.map((g) => g.key);
@@ -264,7 +264,11 @@ describe("preview social (render-social-html) mostra os cards à parte (#12094)"
     assert.ok(d1.blocks.every((b) => !b.post.main.includes("Card um")));
     assert.deepEqual(cardBoldSpans(d1), ["Resumo do slide um.", "Resumo do slide dois.", "Resumo do slide três."]);
     const html = renderDestaqueGroup(d1, "#000");
-    assert.match(html, /Texto dos cards do carrossel/);
+    // #13422: o bloco com o texto dos cards saiu do preview (repetia os slides);
+    // o texto dos cards não aparece no HTML, só o negrito na nota.
+    assert.doesNotMatch(html, /Texto dos cards do carrossel/);
+    assert.doesNotMatch(html, /cards-text/);
+    assert.doesNotMatch(html, /Card um do destaque 1/);
     assert.match(html, /<strong>Resumo do slide um\.<\/strong>/);
   });
 });

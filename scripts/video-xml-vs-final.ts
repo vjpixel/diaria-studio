@@ -601,7 +601,8 @@ export async function compareEdition(
       const fa = parseWavPcm16(readFileSync(fwav));
       const fe = energyEnvelope(fa.samples, fa.sampleRate);
       const finalDurationS = fa.samples.length / fa.sampleRate;
-      const xmlClips = plan.clips.map((c, i) => ({ index: i, srcIn: c.srcIn, srcOut: c.srcOut }));
+      // #13339: bloco e pausa da vinheta só para o detalhe do removido (o alinhamento não os lê).
+      const xmlClips = plan.clips.map((c, i) => ({ index: i, srcIn: c.srcIn, srcOut: c.srcOut, ...(c.block ? { block: c.block } : {}), ...(c.filler ? { filler: true as const } : {}) }));
       // Camada 1: janela × clipes do plan.json (#13197); camada 2, só abaixo de MIN_COVERAGE: guiado pelos clipes do XML (#12089).
       const al = alignFinalToBruto(fe.db, brutoEnv.db, brutoEnv.hopS, xmlClips, ALIGN_OPTS, MIN_COVERAGE);
       const pct = (x: number) => `${(x * 100).toFixed(0)}%`;

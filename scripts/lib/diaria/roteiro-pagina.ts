@@ -23,7 +23,7 @@
  */
 
 import type { BlockKey } from "./video-montage.ts";
-import { corteDaFala, posicoesDoTrecho, SETA, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
+import { cortesDaFala, posicoesDoTrecho, SETA, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 import { blocoNaVertical, duracaoPorVideo, falasDoVideo, fmtDuracao, roteiroPecas, ROTEIRO_DURACAO_DEFAULT, type RoteiroDuracaoConfig } from "./roteiro-videos.ts";
 
 /** Formato e papel de cada vídeo, no cabeçalho da seção. */
@@ -58,16 +58,24 @@ export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** A fala com o corte do vídeo marcado: riscado (corte) ou sublinhado (reserva), #13129. */
+/** A fala com os cortes do vídeo marcados: riscado (corte) ou sublinhado (reserva), #13129, #13436. */
 function textoComCorte(f: FalaRoteiro, v: VideoRoteiro): string {
-  const c = corteDaFala(f, v);
-  const i = c ? posicoesDoTrecho(f.texto, c.trecho)[0] ?? -1 : -1;
-  if (!c || i < 0) return esc(f.texto);
-  const t = c.trecho.trim();
-  const marca = c.reserva
-    ? `<span class="reserva" title="Corte de reserva: só sai se o vídeo passar do alvo">${esc(t)}</span><span class="tag-corte">reserva</span>`
-    : `<del title="Cortado neste vídeo">${esc(t)}</del><span class="tag-corte">cortado aqui</span>`;
-  return `${esc(f.texto.slice(0, i))}${marca}${esc(f.texto.slice(i + t.length))}`;
+  const marcas = cortesDaFala(f, v)
+    .map((c) => ({ c, i: posicoesDoTrecho(f.texto, c.trecho)[0] ?? -1, t: c.trecho.trim() }))
+    .filter((m) => m.i >= 0)
+    .sort((a, b) => a.i - b.i);
+  if (!marcas.length) return esc(f.texto);
+  let out = "";
+  let pos = 0;
+  for (const { c, i, t } of marcas) {
+    if (i < pos) continue;
+    const marca = c.reserva
+      ? `<span class="reserva" title="Corte de reserva: só sai se o vídeo passar do alvo">${esc(t)}</span><span class="tag-corte">reserva</span>`
+      : `<del title="Cortado neste vídeo">${esc(t)}</del><span class="tag-corte">cortado aqui</span>`;
+    out += esc(f.texto.slice(pos, i)) + marca;
+    pos = i + t.length;
+  }
+  return out + esc(f.texto.slice(pos));
 }
 
 /**
@@ -181,10 +189,10 @@ export function itensNotas(roteiro: RoteiroFalas): string[] {
   const reservas: string[] = [];
   for (const f of roteiro.falas) {
     for (const v of VIDEOS_ROTEIRO) {
-      const c = corteDaFala(f, v);
-      if (!c) continue;
-      const txt = `no ${VIDEO_LABEL[v]}, tirar da ${f.id} "${c.trecho.trim()}"`;
-      (c.reserva ? reservas : cortes).push(txt);
+      for (const c of cortesDaFala(f, v)) {
+        const txt = `no ${VIDEO_LABEL[v]}, tirar da ${f.id} "${c.trecho.trim()}"`;
+        (c.reserva ? reservas : cortes).push(txt);
+      }
     }
   }
   if (cortes.length) itens.push(`<b>Cortes por vídeo:</b> ${esc(cortes.join("; "))}. O horizontal fica com a fala inteira.`);

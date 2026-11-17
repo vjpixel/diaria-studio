@@ -1,0 +1,426 @@
+{
+  "edicao": "261118",
+  "veiculos": [
+    "Exame",
+    "CNN Brasil",
+    "G1",
+    "Reuters"
+  ],
+  "porVideo": {
+    "horizontal": {
+      "titulo": "Chips de IA: Brasil vai precisar de licença",
+      "capa": "Eu previ isso há 8 dias"
+    },
+    "vertical1": {
+      "capa": "Eu previ o aperto dos EUA",
+      "ordem": [
+        "H1",
+        "H4",
+        "H5",
+        "H7",
+        "H10",
+        "V1-CTA"
+      ],
+      "pertenceAoHorizontal": true
+    },
+    "vertical2": {
+      "titulo": "Exigência nova dos EUA: o que muda pra você",
+      "capa": "Brasil não foi proibido",
+      "ordem": [
+        "V2-G",
+        "H8",
+        "H7b",
+        "H11",
+        "H11b",
+        "H13"
+      ]
+    }
+  },
+  "falas": [
+    {
+      "id": "H1",
+      "bloco": "gancho",
+      "texto": "Oito dias atrás eu fiz três previsões aqui no canal. Duas já aconteceram. E o Brasil, como eu disse, ia sentir.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false,
+      "cortes": {
+        "vertical1": "aqui no canal"
+      },
+      "topicos": [
+        "Oito dias atrás",
+        "Três previsões",
+        "Duas aconteceram",
+        "O Brasil ia sentir"
+      ]
+    },
+    {
+      "id": "H2",
+      "bloco": "abertura",
+      "texto": "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Abertura fixa"
+      ]
+    },
+    {
+      "id": "H3",
+      "bloco": "resumo",
+      "texto": "Essas previsões foram no vídeo do dia 10, sobre o CEO da Nvidia. Bora ver uma por uma. A primeira:",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "tela": "**Vídeo de 10/11**\nTrês previsões",
+      "topicos": [
+        "Vídeo do dia 10",
+        "CEO da Nvidia",
+        "Uma por uma",
+        "A primeira"
+      ],
+      "trechoInserido": {
+        "origem": "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 3:42 a 3:46",
+        "texto": "E ele pode chegar a perder o cargo atual dele."
+      }
+    },
+    {
+      "id": "H4",
+      "bloco": "resumo",
+      "texto": "Dois dias depois, o Jensen Huang saiu mesmo do comando da Nvidia. Pediu pra sair. Essa eu acertei.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false,
+      "tela": "**12/11**\nJensen Huang renuncia",
+      "topicos": [
+        "Dois dias depois",
+        "Saiu mesmo",
+        "Pediu pra sair",
+        "Acertei"
+      ],
+      "fontes": [
+        {
+          "url": "https://nvidianews.nvidia.com/news/nvidia-announces-ceo-transition",
+          "sustenta": "renúncia ao cargo de CEO e ao conselho, com efeito imediato, em 12/11"
+        }
+      ],
+      "cortes": {
+        "vertical1": "Pediu pra sair."
+      }
+    },
+    {
+      "id": "H4b",
+      "bloco": "resumo",
+      "texto": "Agora, a segunda:",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "A segunda"
+      ],
+      "trechoInserido": {
+        "origem": "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 3:47 a 3:55",
+        "texto": "É provável que haja um fortalecimento da fiscalização de exportação de GPUs."
+      }
+    },
+    {
+      "id": "H5",
+      "bloco": "resumo",
+      "texto": "No dia 16, o governo Trump veio com uma regra nova que aperta a venda de chips de IA pra outros países. Acertei essa também.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Dia 16",
+        "Regra nova de Trump",
+        "Aperta a venda",
+        "Acertei também"
+      ],
+      "cortes": {
+        "vertical1": "pra outros países"
+      }
+    },
+    {
+      "id": "H6",
+      "bloco": "resumo",
+      "texto": "A regra quer fechar uma brecha. Do jeito que tá, empresa chinesa pode contratar um data center em outro país e usar os chips de lá pra treinar IA.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Fechar uma brecha",
+        "Chinesa contrata data center",
+        "Em outro país",
+        "Treina IA lá"
+      ]
+    },
+    {
+      "id": "H9b",
+      "bloco": "comentario",
+      "texto": "E a terceira, que é onde eu falei do Brasil:",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "A terceira",
+        "Onde falei do Brasil"
+      ],
+      "trechoInserido": {
+        "origem": "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 3:54 a 4:27",
+        "texto": "E isso pode causar um aumento do preço desses componentes fora dos Estados Unidos. E isso se conecta diretamente com a consequência para o Brasil. Se o preço desse componente aumenta aqui no Brasil, isso impacta em startups e empresas brasileiras que treinam o modelo de inteligência artificial e eventualmente pode impactar o plano brasileiro de inteligência artificial, que é um plano do governo de criar um ecossistema soberano de inteligência artificial no Brasil."
+      }
+    },
+    {
+      "id": "H7",
+      "bloco": "comentario",
+      "texto": "Eu disse que ia ter consequência pro Brasil. E já teve uma: o Brasil tá nessa regra nova. Mais quatro países da Ásia também. A compra dos chips de IA mais avançados pra cá vai precisar de licença dos Estados Unidos. Isso vale a partir do dia 19, quando a regra sai oficialmente.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false,
+      "tela": "**Precisam de licença dos EUA**\nBrasil\nIndonésia\nMalásia\nSingapura\nTailândia",
+      "topicos": [
+        "Eu disse: Brasil",
+        "Brasil na regra",
+        "Oficial no dia 19",
+        "Licença pros avançados"
+      ],
+      "cortes": {
+        "vertical1": {
+          "trecho": "Isso vale a partir do dia 19, quando a regra sai oficialmente.",
+          "reserva": false
+        }
+      }
+    },
+    {
+      "id": "H8",
+      "bloco": "comentario",
+      "texto": "Calma, não é proibição. O governo americano vai olhar pedido por pedido. E empresa americana tem uma exceção.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Não é proibição",
+        "Pedido por pedido",
+        "Americana tem exceção"
+      ],
+      "cortes": {
+        "vertical2": "E empresa americana tem uma exceção."
+      }
+    },
+    {
+      "id": "H7b",
+      "bloco": "comentario",
+      "texto": "Por que o Brasil? Pros Estados Unidos, o Brasil tem risco acima do normal de o chip ir parar na China.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Por que o Brasil?",
+        "Risco de desvio",
+        "Chip na China"
+      ],
+      "fontes": [
+        {
+          "url": "https://exame.com/inteligencia-artificial/eua-brasil-regra-chips-ia-acesso-remoto-china/",
+          "sustenta": "o BIS classifica os cinco destinos como locais com risco acima do normal de desvio de tecnologia (para a China)"
+        }
+      ]
+    },
+    {
+      "id": "H10",
+      "bloco": "comentario",
+      "texto": "Já o preço desses chips subir fora dos Estados Unidos, que era a terceira, ainda não dá pra cravar. A regra nem saiu oficialmente, e eu acho que preço demora pra mexer. Mas aposto que vou acertar.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ],
+      "gravarAParte": false,
+      "tela": "**Placar das previsões**\nCEO perde o cargo: aconteceu\nVenda de chips aperta: aconteceu\nPreço sobe fora dos EUA: em aberto",
+      "topicos": [
+        "Terceira: preço",
+        "Ainda não dá",
+        "Nem saiu oficialmente",
+        "Aposto que acerto"
+      ]
+    },
+    {
+      "id": "H10b",
+      "bloco": "comentario",
+      "texto": "Enquanto isso, tem coisa grande sendo construída aqui. Tem um data center da ByteDance, a dona do TikTok, em construção no Pecém, no Ceará. Só a primeira fase tá estimada em 10 bilhões de dólares. E ela ainda estuda crescer aqui.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Enquanto isso",
+        "ByteDance no Pecém",
+        "10 bilhões, 1ª fase",
+        "Estuda crescer"
+      ],
+      "fontes": [
+        {
+          "url": "https://exame.com/inteligencia-artificial/bytedance-dona-do-tiktok-estuda-ampliar-operacao-de-data-centers-no-brasil/",
+          "sustenta": "data center da ByteDance na ZPE do Pecém (CE), obras desde jan/2026, operação prevista no 3º tri de 2027, 1ª fase estimada em US$ 10 bi, estuda 2ª fase"
+        },
+        {
+          "url": "https://exame.com/inteligencia-artificial/eua-brasil-regra-chips-ia-acesso-remoto-china/",
+          "sustenta": "ByteDance estuda ampliar data centers no Brasil; 1ª fase do complexo do Pecém em construção"
+        }
+      ],
+      "tela": "**Data center da ByteDance no Pecém (CE)**\nObras desde janeiro de 2026\n1ª fase: US$ 10 bilhões\nOperação prevista: 2027"
+    },
+    {
+      "id": "H11",
+      "bloco": "comentario",
+      "texto": "A regra mira quem vende e quem opera os chips, não quem usa IA no dia a dia. Quem pode ter que pedir licença é quem monta data center aqui. Depende do equipamento e de quem vai usar. A regra, sozinha, não barra um projeto. Cada um vai ser olhado caso a caso.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Mira quem vende",
+        "Data center: talvez licença",
+        "Depende do caso",
+        "Caso a caso"
+      ],
+      "cortes": {
+        "vertical2": "Depende do equipamento e de quem vai usar."
+      }
+    },
+    {
+      "id": "H11b",
+      "bloco": "comentario",
+      "texto": "Mas é uma etapa a mais, né? E etapa a mais costuma virar demora e custo. Isso é leitura minha, tá? Não tá escrito na regra.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Etapa a mais",
+        "Demora e custo",
+        "Leitura minha"
+      ]
+    },
+    {
+      "id": "H12",
+      "bloco": "comentario",
+      "texto": "Naquele vídeo eu terminei dizendo que a IA não devia depender de governos e empresas específicos. Taí o porquê. Bastou um governo mudar uma regra pra mexer com quem quer fazer IA aqui no Brasil.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "Eu terminei dizendo",
+        "Governos e empresas específicos",
+        "Uma regra bastou"
+      ]
+    },
+    {
+      "id": "H14",
+      "bloco": "comentario",
+      "texto": "E o preço, você acha que sobe? Aposta comigo nos comentários. Daqui a uns meses eu volto pra conferir. Acertando ou não, você fica sabendo aqui.",
+      "videos": [
+        "horizontal"
+      ],
+      "gravarAParte": false,
+      "topicos": [
+        "O preço sobe?",
+        "Aposta comigo",
+        "Volto pra conferir",
+        "Acertando ou não"
+      ]
+    },
+    {
+      "id": "H13",
+      "bloco": "comentario",
+      "texto": "E aí, a sua empresa usa algum serviço de IA que roda aqui no Brasil? Ou nem sabe onde ele roda? Me conta nos comentários.",
+      "videos": [
+        "vertical2"
+      ],
+      "gravarAParte": false,
+      "cortes": {
+        "vertical2": "Ou nem sabe onde ele roda?"
+      },
+      "topicos": [
+        "IA roda no Brasil?",
+        "Ou nem sabe?",
+        "Conta nos comentários"
+      ]
+    },
+    {
+      "id": "V1-CTA",
+      "bloco": "cta_vertical",
+      "texto": "Você acha que eu acerto a terceira? O vídeo completo tá no YouTube da diar.ia.br.",
+      "videos": [
+        "vertical1"
+      ],
+      "gravarAParte": true,
+      "topicos": [
+        "Acerto a terceira?",
+        "Vídeo completo no YouTube"
+      ]
+    },
+    {
+      "id": "V2-G",
+      "bloco": "gancho",
+      "texto": "O Brasil entrou na regra nova dos chips de IA. A compra dos mais avançados vai precisar de licença dos Estados Unidos. Pesa pra você?",
+      "videos": [
+        "vertical2"
+      ],
+      "gravarAParte": true,
+      "topicos": [
+        "Brasil entrou na regra",
+        "Licença pros avançados",
+        "Pesa pra você?"
+      ]
+    }
+  ],
+  "gravacao": [
+    "Formato react, uma previsão por vez: depois da H3 entra o trecho 1 do vídeo de 10/11 (3:42 a 3:46), depois da H4b o trecho 2 (3:47 a 3:55) e depois da H9b o trecho 3 (3:54 a 4:27, começa no \"E isso pode causar\"). O texto de cada trecho está na página, logo depois da fala que o apresenta. Tempos do SRT do vídeo publicado.",
+    "H4, H5 e H10 são as reações: cada uma retoma a previsão como pergunta e diz o que aconteceu. Elas também entram no vertical 1, que não tem os trechos.",
+    "\"Oito dias atrás\" (H1) e a capa \"Eu previ isso há 8 dias\" valem para a publicação em 18/11. Se atrasar, ajustar os dois.",
+    "Antes de gravar: conferir se apareceu notícia de preço de chip ou de efeito da regra no Brasil entre 16/11 e a gravação (muda o H10)."
+  ],
+  "notas": [
+    "v5 (17/11, pedido do editor): o foco saiu da renúncia do Jensen Huang. O vídeo gira em torno de (1) duas previsões certas, com a aposta do editor na terceira, e (2) o impacto da regra no Brasil, que é o D1. A renúncia virou uma linha do placar (H4). Falas renumeradas (nada gravado ainda). Cópia anterior: roteiro-falas-v4.json.",
+    "As três previsões, do vídeo da 261110 (_internal/video-montagem/roteiro.md da 261110): (1) \"ele pode chegar a perder o cargo\"; (2) \"É provável que haja um fortalecimento da fiscalização de exportação de GPUs\"; (3) \"isso pode causar um aumento do preço desses componentes fora dos Estados Unidos\", com o impacto no Brasil logo em seguida.",
+    "Batendo com a notícia: (1) confirmada pelo comunicado da Nvidia de 12/11 (renúncia de CEO e do conselho, sem motivo declarado); (2) confirmada pela regra de 16/11 (CNN Brasil e G1, via Reuters), que inclui o Brasil; (3) nenhuma fonte fala de preço. H10 diz que o editor acha que vai acertar, mas que o preço demora a aparecer: opinião dele, marcada na fala.",
+    "Nenhuma fonte liga a renúncia à regra. O roteiro conta os dois fatos como previsões separadas, sem dizer que um causou o outro.",
+    "H11 é leitura do editor, marcada na própria fala. H14 é promessa do editor de voltar ao assunto.",
+    "H8 vem do G1: \"Isso não significa que o Brasil esteja proibido de comprar chips dos Estados Unidos\" e \"sua aplicação depende do tipo de produto e das condições de cada operação\". H6 vem do G1 (\"essas companhias podem contratar serviços de processamento de dados em data centers instalados em outros países\").",
+    "Títulos: o horizontal (e o vertical 1, que herda) agora fala do Brasil, que é o D1, a pedido do editor. A pesquisa no YouTube mostrou volume em \"Jensen Huang\", mas o foco do vídeo deixou de ser a renúncia. A busca por chips e licença no Brasil não trouxe vídeo relevante, então o título não tem concorrência direta.",
+    "D1 ainda é o reservado em _internal/d1-reservado-chips (sem 02-reviewed.md nem fact-check da edição). Se o D1 mudar na /diaria-edicao, rever H5 a H9.",
+    "Trecho do vídeo de 10/11: começa em \"E ele pode chegar a perder o cargo\" (3:42). Começar antes (\"Com esse incidente… o contrário\") deixaria \"o contrário\" sem referência e puxaria o foco para o caso; a frase \"Jensen era o principal lobista\", que o fact-check daquela edição marcou como sem fonte, também fica de fora.",
+    "v5.1 (revisão por vídeo): H7 diz que o Brasil entrou junto com quatro países da Ásia (a fala anterior dava a entender que só o Brasil). H5 troca \"Na segunda, dia 16\" por \"No dia 16\" (ambíguo com \"Segunda:\" da previsão). H9 saiu (repetia o gancho do vertical 2). H12 segue a frase do vídeo de 10/11 (\"não dependa de governos e empresas específicos\"). H14 promete voltar ao assunto acertando ou não.",
+    "v5.2 (pedido do editor): o trecho do vídeo de 10/11 foi estendido até 4:27 para incluir o impacto no Brasil (startups, empresas e o plano brasileiro de IA). Com o trecho, o horizontal fica em ~2 min 10 s de fala + ~45 s de trecho.",
+    "v6 (pedido do editor): o horizontal foi separado por previsão, cada uma com o trecho do vídeo de 10/11 e o comentário logo depois. P1 (perder o cargo): H4. P2 (fiscalização aperta): H5 a H8. P3 (preço e impacto no Brasil): H10, H10b e H11. H4b e H9b são falas curtas que apresentam o trecho, só no horizontal. Cópia anterior: roteiro-falas-v5.json.",
+    "v6: o D1 da edição saiu da Exame (17/11), não mais do reservado CNN/G1. Alinhado com ela: H5 diz que o governo anunciou a regra na segunda, 16 (a publicação oficial está prevista para 19/11); H8 diz que a análise é caso a caso e que empresa com sede nos EUA fica isenta (no lugar de \"depende do chip e de cada negócio\"); a tela da H7 usa Singapura, como o D1. H10b (ByteDance e Pecém) vem da Exame.",
+    "v7 (revisão independente de tom, pedido do editor): 12 falas reescritas para soar faladas (menos aposto entre vírgulas e verbo de relatório, frases de um fôlego). H8 fala em \"exceção\" para empresa americana (a Exame condiciona a isenção aos relatórios exigidos). H11 não depende mais da H10b, então funciona no vertical 2. Cópia anterior: roteiro-falas-v6.json.",
+    "v7.1 (pedido do editor): saíram as perguntas do início de H4, H5 e H10; no horizontal o trecho do vídeo de 10/11 já diz a previsão.",
+    "v7.2 (pedido do editor): H1, H7 e H9b retomam que o vídeo de 10/11 já dizia que ia ter consequência pro Brasil, em vez de apresentar o Brasil como surpresa. No vídeo de 10/11, o Brasil aparece ligado ao preço (\"isso se conecta diretamente com a consequência para o Brasil\", no trecho 3); as falas dizem que ele previu consequência pro Brasil, não que previu a lista de países da regra.",
+    "v7.3 (pergunta do editor): H10b dizia \"lá no Pecém já tem obra andando\" sem contexto. A matéria que a Exame linka (09/11) diz que o data center no Pecém é da ByteDance (Omnia, do Pátria, com a Casa dos Ventos), em obra desde janeiro de 2026, 1ª fase estimada em US$ 10 bilhões, operação prevista para 2027. H11 diz \"pode ter que pedir licença… depende do equipamento e de quem vai usar\", porque a Exame diz que a inclusão do Brasil não determina o bloqueio de um projeto específico.",
+    "v8 (revisão independente da narrativa, sessão própria; detalhes em _internal/revisao-narrativa.md): H7 e H8 foram para depois do trecho 3, onde o editor de 10/11 fala do Brasil, então o \"eu disse\" vem logo depois de quem assiste ouvir. A previsão 2 fica H4b, trecho 2, H5, H6; a previsão 3 fica H9b, trecho 3, H7, H7b, H8, H10, H10b, H11, H11b, H12. H4, H5 e H10 dizem a previsão na própria fala (\"saiu mesmo\", \"aperta a venda\", \"A terceira era o preço\"), para o vertical 1, que não tem trechos. H7b é nova: o porquê do Brasil (Exame). H11 foi dividida em H11 e H11b; \"pra quem só usa IA no dia a dia, a regra não pede nada\" é leitura nossa da fonte (a exigência cai sobre exportação, transferência e data center). H14 fecha chamando a aposta no preço; H13 ficou só no vertical 2 (segue gravada em sequência). Vertical 2: V2-G, H8, H7b, H11, H11b, H13 (H6 saiu). Cópia anterior: roteiro-falas-v7.json.",
+    "v8: cortes só nos verticais para caber em 1 min. Vertical 1: \"Pediu pra sair.\" (H4) e \"Mais quatro países da Ásia também.\" (H7); CTA mais curto. Vertical 2: \"Ou nem sabe onde ele roda?\" (H13) e \"Depende do equipamento e de quem vai usar.\" (H11).",
+    "v8.1 (encaixe entre falas, mesma sessão de revisão; _internal/revisao-narrativa-encaixe.md): H3 retoma \"essas previsões\"; H5 diz \"pra outros países\"; H7 sem \"antes mesmo do preço\" (no vertical 1 o preço ainda não apareceu); ordem H7, H8, H7b; H10 termina na aposta (\"Mas eu acho que vou acertar\"), que o CTA retoma; H11b começa com \"Mas\"; H14 volta ao preço. H1 mantém \"como eu disse\" (pedido do editor na v7.2), mesmo repetindo a ideia da H7 no vertical 1. Cópia anterior: roteiro-falas-v8.json.",
+    "v9 (fact-check do roteiro, _internal/fact-check-roteiro.md: 36 SUSTAINED, 15 PARTIAL, 2 NOT_SUPPORTED, 0 CONTRADICTED): a regra foi anunciada em 16/11 e só vale com a publicação prevista para 19/11, então H7, H10, V2-G e o título dizem \"vai precisar\"/\"nem saiu oficialmente\"; H11 diz que a regra mira quem vende e opera os chips e que cada projeto vai ser olhado caso a caso (a Exame diz que a inclusão do Brasil não determina o bloqueio de um projeto específico); H7b usa \"risco acima do normal\" (Exame); H10b diz que o data center é da ByteDance, em construção (quem constrói é a Omnia, do Pátria, com a Casa dos Ventos); H12 cita o editor (\"governos e empresas específicos\"); H1 diz que o Brasil \"ia sentir\" (no vídeo de 10/11 a consequência vinha pelo preço); capa do vertical 1 virou \"Eu previ o aperto dos EUA\". O \"três previsões\" é recorte editorial: no vídeo de 10/11 o editor também previu um incidente diplomático. Cópia anterior: roteiro-falas-v8_1.json."
+  ]
+}

@@ -107,8 +107,8 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
  *       quadros de 5 ms: sinal cheio acima de -33 dBFS ou 1ª diferença acima de -46 dBFS; pausa
  *       de 0,32 s ou mais sai com 150 ms antes da fala e 120 ms depois; ilha abaixo de 60 ms é
- *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, clipe abaixo de
- *       0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
+ *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, pausa acima de
+ *       0,45 s dentro do clipe (261116), clipe abaixo de 0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
  *       (#12089, medição da 261105) os limiares são os relativos ao bruto (sinal cheio 24 dB
  *       abaixo do topo da fala, 1ª diferença 10 dB acima do piso; só com 90% de quadros com som
  *       entre o 1º e o último som e topo 20 dB acima do piso, senão o fixo com [aviso]); desde o
@@ -118,8 +118,10 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (respiração e ruído de sala saem; a vogal curta fica; #13194: o começo de palavra pouco
  *       vozeado, contínuo até a voz em até 400 ms e 20 dB acima do piso, também fica; com menos
  *       de 20% dos quadros acima do limiar com voz o filtro desliga);
- *       palavra esticada pelo Whisper com metade ou mais em ilhas, ou menos de 150 ms na pausa,
- *       não devolve a pausa ([aviso] por palavra). --speech-full-db/--speech-diff-db sobrepõem os
+ *       palavra esticada pelo Whisper com metade ou mais em ilhas, menos de 150 ms na pausa, ou
+ *       (261116) o trecho na pausa sem som (60 ms acima do piso local + 12 dB, em ±2 s; piso no
+ *       p25 só dos quadros de pausa, limiar nunca acima de 3 dB abaixo dos do detector), não
+ *       devolve a pausa ([aviso] por palavra). --speech-full-db/--speech-diff-db sobrepõem os
  *       limiares; --no-speech-voice desliga o filtro pela F0.
  *       (#12263) o começo de cada ilha recua até 120 ms no ataque acima do piso de ruído do bruto
  *       + 12 dB (consoante suave abaixo dos limiares fixos); entrada com som nos 40 ms antes do
@@ -222,7 +224,8 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (também no verify-xml e no review-final). (#12712) corte sem gancho = [aviso].
  *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text] [--retranscribe]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
- *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
+ *       faixa preta, fps, teto do vertical), trecho preto e quadro congelado fora da
+ *       vinheta e do card de CTA (#13368), loudness/true peak, estalos e fragmentos
  *       nas emendas e, com `plan.json` válido, o texto contra o roteiro da versão
  *       (transcreve o export, em cache por arquivo + Whisper desde o #12078, o mesmo do
  *       `srt --from-final`; `--retranscribe` refaz; `--no-text` pula). Destino pelo nome do arquivo
@@ -310,13 +313,20 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvgForMarker, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
-import { cueFrames, parseAssStyle, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
+import { parseTrechoOrigem, readTrechosInseridos, trechoInseridoLine, type TrechoInseridoMarker } from "./lib/diaria/video-trecho-inserido.ts";
+import { cueFrames, parseAssStyle, subtitleBottomY, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
   LOUDNORM_TARGET,
+  PREVIEW_LOUDNORM,
+  PREVIEW_RAW_NAME,
+  loudnormSecondPassFilter,
+  parseLoudnormFirstPass,
+  previewLoudnormApplyArgs,
+  previewLoudnormMeasureArgs,
   PREVIEW_SUBTITLE_STYLE,
   PREVIEW_SUBTITLE_STYLE_HORIZONTAL,
   SILENCE_DETECT,
@@ -493,6 +503,12 @@ import {
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
 import {
+  BLACK_FREEZE_FILTER,
+  OPENING_FALLBACK_S,
+  blackFreezeWindows,
+  checkBlackFreeze,
+  parseBlackdetect,
+  parseFreezedetect,
   checkFormat,
   checkLoudness,
   checkText,
@@ -1559,6 +1575,8 @@ export interface XmlBuildOptions {
   trechosFolgaS?: number | null;
   /** #13204: os boxes de tela (PNG) de cada sequência; só entram no hash os da sequência, sem o caminho local. */
   telaOverlays?: Readonly<Record<string, readonly TelaOverlay[]>> | null;
+  /** #13437: os marcadores de trecho inserido de cada sequência; só entram no hash os da sequência (sem eles, o hash de antes). */
+  trechoMarkers?: Readonly<Record<string, readonly TrechoInseridoMarker[]>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1610,6 +1628,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         // #13414: a vertical ancorada pela boca muda o Center sem mudar o plano: versão nova, nunca o _V{n} já importado regravado.
         ...(sequenceAnchor(plan.spec).mouthFraction !== undefined ? { anchor: { mouthFraction: sequenceAnchor(plan.spec).mouthFraction } } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
+        ...(opts.trechoMarkers?.[sequenceKey(plan.spec)]?.length ? { trechoMarkers: opts.trechoMarkers[sequenceKey(plan.spec)] } : {}),
       }),
     )
     .update("\0plan\0")
@@ -1666,7 +1685,7 @@ function silences(ctx: Ctx): Interval[] {
  * sempre o `silences.json` (é o que o transcript e o roteiro viram).
  */
 /** #12263: `energy` = os quadros do detector, para a checagem de entrada que corta som. */
-type SpeechCut = { silences: Interval[]; islands: Interval[]; energy?: FrameEnergy };
+type SpeechCut = { silences: Interval[]; islands: Interval[]; energy?: FrameEnergy; detectDb?: { fullDb: number; diffDb: number } };
 
 /** #12089: limiares do detector de fala no `build` (`--speech-full-db`/`--speech-diff-db` sobrepõem os de `speechThresholds`; `--no-speech-voice` desliga o filtro de respiração pela F0). */
 export interface SpeechDetectOptions {
@@ -1743,7 +1762,9 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
   if (speech) {
     const words = Object.values(blocks).flatMap((items) => (items ?? []).flatMap((it) => it.words));
     // #12089: palavra esticada pelo Whisper por cima da pausa (já dentro de uma ilha) não devolve a pausa.
-    const guard = protectTranscribedWords(speech.silences, words, { islands: speech.islands });
+    // #12089 (261116): com a energia, a palavra esticada sobre trecho da pausa sem som também não a devolve.
+    // Review da PR #13450: os limiares do detector seguram o limiar de som (nunca acima do que o detector descartou).
+    const guard = protectTranscribedWords(speech.silences, words, { islands: speech.islands, ...(speech.energy ? { energy: speech.energy } : {}), ...(speech.detectDb ? { detectDb: speech.detectDb } : {}) });
     speechSil = guard.silences;
     stretched = guard.stretchedWords;
     // A proteção sem as ilhas (a de antes) é a rede: sequência que perderia palavra com a nova volta para ela.
@@ -3256,7 +3277,7 @@ function speechDetection(ctx: Ctx, source: SourceInfo, opts: SpeechDetectOptions
   });
   // #12263: o começo de cada ilha recua até o ataque medido contra o piso do bruto, não só o limiar fixo.
   const islands = extendIslandAttacks(energy, speechIslands(energy, { thresholds: th }), { speechFullDb: th.fullDb });
-  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS), energy }, thresholds: th, voice };
+  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS), energy, detectDb: { fullDb: th.fullDb, diffDb: th.diffDb } }, thresholds: th, voice };
 }
 
 /** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
@@ -4346,19 +4367,23 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     writeJson(f(ctx, SHARE_FILE), cue ? { ...cue, seconds: shareTimeInPlan(cue, horizontalShare, resolved, source.fps, avisa), requiresFinalCheck: true } : null);
   }
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
-  // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).
+  // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180),
+  // exceto a fala que cita a tela (#13333): ali o box vai abaixo da legenda.
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
   const telaOverlays: Record<string, TelaOverlay[]> = {};
   for (const p of picked) {
-    if (!isYoutubeSpec(p.spec)) continue;
+    const horizontal = isYoutubeSpec(p.spec);
+    if (!horizontal && !isVerticalSpec(p.spec)) continue;
     // #13239 item 1: um box por vez na faixa (o marcador de uma fala não invade o da seguinte).
     const clamped = clampTelaOverlaps(telaMarkersFor(p, resolved, source.fps, telas));
     for (const w of clamped.warnings) console.error(`[aviso] ${p.spec.name}: ${w}`);
     const ms = clamped.items;
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
+    // #13333: no vertical o box começa abaixo da legenda (a do XML e a da prévia usam o mesmo estilo).
+    const placement = horizontal ? {} : { topY: subtitleBottomY(p.spec.width, p.spec.height, parseAssStyle(PREVIEW_SUBTITLE_STYLE)) };
     // #13309: fala do horizontal com tela e sem marcador é box sumido (aviso); a de outro vídeo fica na premissa.
-    const { semCasamento, foraDaVersao: fora } = telaSemMarcador(telas, ms);
+    const { semCasamento, foraDaVersao: fora } = horizontal ? telaSemMarcador(telas, ms) : { semCasamento: [] as string[], foraDaVersao: [] as string[] };
     if (semCasamento.length) {
       console.error(
         `[aviso] ${p.spec.name}: ${semCasamento.length} texto(s) de tela de fala do horizontal sem item casado (${semCasamento.join(", ")}): o box sai fora do XML; ` +
@@ -4370,7 +4395,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       for (const m of ms) {
         try {
           // #13363: o box recebe o texto com o `**` do título (o marcador segue sem ele, #13180).
-          const svg = telaBoxSvgForMarker(m, p.spec.width, p.spec.height);
+          const svg = telaBoxSvgForMarker(m, p.spec.width, p.spec.height, placement);
           const name = telaFileName(ctx.edition, m.id, createHash("sha256").update(svg).digest("hex").slice(0, 12));
           const out = join(ctx.outDir, name);
           // Regravado sempre, como capa e título: no modo API o snapshot do out dir é o que sobe (#13204).
@@ -4383,10 +4408,31 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       }
       if (overlays.length) {
         telaOverlays[sequenceKey(p.spec)] = overlays;
-        console.error(`[premissa] ${p.spec.name}: ${overlays.length} box(es) de tela (PNG) numa faixa acima do bruto, no tempo da fala (${overlays.map((o) => `${o.id} ${(o.in / source.fps).toFixed(1)}–${(o.out / source.fps).toFixed(1)} s`).join(", ")}); conferir no 1º import (#13204)`);
+        console.error(`[premissa] ${p.spec.name}: ${overlays.length} box(es) de tela (PNG) numa faixa acima do bruto, no tempo da fala (${overlays.map((o) => `${o.id} ${(o.in / source.fps).toFixed(1)}–${(o.out / source.fps).toFixed(1)} s`).join(", ")}); conferir no 1º import (#13204)${horizontal ? "" : "; no vertical, só fala que cita a tela, com o box abaixo da legenda (#13333)"}`);
       }
     }
-    if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
+    if (ms.length && !horizontal) console.error(`[premissa] ${p.spec.name}: ${ms.length} fala(s) que citam a tela levam o texto de tela também neste vertical (${ms.map((m) => m.id).join(", ")}), exceção à regra dos verticais sem tela (#13333)`);
+    else if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186), exceto a fala que cita a tela (#13333)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
+  }
+  // #13437: trecho de outro vídeo (formato react) vira marcador no fim da fala, no horizontal; o clipe segue à mão.
+  const trechosInseridos = readTrechosInseridos(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
+  const trechoMarkers: Record<string, TrechoInseridoMarker[]> = {};
+  for (const p of picked) {
+    if (!trechosInseridos.length || !isYoutubeSpec(p.spec)) continue;
+    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: t.origem })));
+    const ms: TrechoInseridoMarker[] = [];
+    for (const t of trechosInseridos) {
+      const at = pos.find((m) => m.id === t.id);
+      if (!at) {
+        console.error(`[aviso] ${p.spec.name}: trecho inserido depois da fala ${t.id} sem item casado no blocks.json (pôr "fala": "${t.id}" no item): fora do XML (#13437)`);
+        continue;
+      }
+      const m: TrechoInseridoMarker = { id: t.id, origem: t.origem, trecho: t.trecho, at: at.out, parsed: parseTrechoOrigem(t.origem) };
+      ms.push(m);
+      const line = trechoInseridoLine(m, source.fps);
+      console.error(`[${line.level}] ${p.spec.name}: ${line.text}`);
+    }
+    if (ms.length) trechoMarkers[sequenceKey(p.spec)] = ms;
   }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
   const xmlFilePaths = [
@@ -4434,6 +4480,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     telaMarkers,
     trechosFolgaS: trechos ? trechosOpt.folgaS : null,
     telaOverlays,
+    trechoMarkers,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -4453,7 +4500,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechos }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechoMarkers, trechos }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -5424,10 +5471,11 @@ async function cmdPreview(
     sfxLocalPath = null;
   }
   const sfxAtSeqS = sfx && sfxLocalPath && vs ? vinhetaSfxFrames(vs, fps, sfx, plan.durationFrames).map((x) => x.start / fps) : [];
-  const plain = [...(subtitles ? ["-vf", subtitles] : []), "-af", LOUDNORM_TARGET];
+  // #13371: o render sai com o áudio sem normalizar (PCM); o loudnorm em duas passadas vem depois, em normalizePreviewAudio.
+  const plain = [...(subtitles ? ["-vf", subtitles] : []), "-af", "anull"];
   const finalArgs = (filters: string[]) => [
     "-y", "-v", "error", "-i", "joined.mp4", ...filters,
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "previa.mp4",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "pcm_s16le", "-ar", "48000", PREVIEW_RAW_NAME,
   ];
   if (vinheta && vs) {
     console.error(`[video-montagem] prévia com a vinheta do logo em ${(vs.start / fps).toFixed(2)} s (#12101)`);
@@ -5437,7 +5485,7 @@ async function cmdPreview(
     const withVinheta = (withSfx: boolean) => [
       "-i", vinheta!.path,
       ...(withSfx ? ["-i", sfxLocalPath!] : []),
-      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET, duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
+      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio, subtitles, loudnorm: "anull", duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
       "-map", "[vout]", "-map", "[aout]",
     ];
     if (sfxAtSeqS.length) console.error(`[video-montagem] prévia com o som da vinheta em ${sfxAtSeqS.map((t) => `${t.toFixed(2)} s`).join(" e ")} (#13240)`);
@@ -5450,6 +5498,7 @@ async function cmdPreview(
       run("ffmpeg", finalArgs(plain), { cwd: dir });
     }
   } else run("ffmpeg", finalArgs(plain), { cwd: dir });
+  normalizePreviewAudio(dir);
   copyFileSync(join(dir, "previa.mp4"), out);
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
   const dur = Math.max(1, plan.durationFrames / fps + cardS);
@@ -5457,6 +5506,27 @@ async function cmdPreview(
   run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=${isVerticalSpec(plan.spec) ? 270 : 480}:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
   return 0;
+}
+
+/**
+ * #13371: `loudnorm` em duas passadas no áudio do render da prévia
+ * (`PREVIEW_RAW_NAME` → `previa.mp4`), com o alvo do export. Medida ilegível
+ * (sem resumo, áudio todo em silêncio) cai na passada única de antes, com aviso.
+ */
+function normalizePreviewAudio(dir: string): void {
+  let measured: ReturnType<typeof parseLoudnormFirstPass> = null;
+  let why = "o loudnorm não imprimiu o resumo";
+  try {
+    measured = parseLoudnormFirstPass(run("ffmpeg", previewLoudnormMeasureArgs(PREVIEW_RAW_NAME), { cwd: dir }).stderr);
+  } catch (e) {
+    why = (e as Error).message.split("\n")[0];
+  }
+  if (measured) {
+    console.error(`[video-montagem] prévia: ${measured.inputI.toFixed(1)} LUFS medidos, normalizada a ${PREVIEW_LOUDNORM.i} LUFS em duas passadas (#13371)`);
+  } else {
+    console.error(`[aviso] medida de loudness da prévia falhou (${why}): loudnorm em uma passada, a ${PREVIEW_LOUDNORM.i} LUFS (#13371)`);
+  }
+  run("ffmpeg", previewLoudnormApplyArgs({ src: PREVIEW_RAW_NAME, out: "previa.mp4", filter: measured ? loudnormSecondPassFilter(measured) : LOUDNORM_TARGET }), { cwd: dir });
 }
 
 /**
@@ -5630,6 +5700,16 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   );
   findings.push(...checkFormat(probe, target, { crop, expectedFps: planFps }));
 
+  // #13368: trecho preto e quadro congelado, fora da vinheta e do card de CTA.
+  const detectLog = run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vf", BLACK_FREEZE_FILTER, "-an", "-f", "null", "-"]).stderr;
+  const blackFreeze = {
+    black: parseBlackdetect(detectLog),
+    freeze: parseFreezedetect(detectLog, probe.durationS),
+    windows: blackFreezeWindows({ durationS: probe.durationS, ctaCardS: configCtaCardS(), plan, fps: planFps, vinhetaS: loadVinheta({ warn: () => {} })?.durationS ?? null }),
+  };
+  if (!plan || !planFps) console.error(`[aviso] sem plano da sequência: preto/congelado nos primeiros ${OPENING_FALLBACK_S} s sai como achado de baixa certeza (pode ser a vinheta) e o card de CTA presumido no fim fica fora (#13368, #13440)`);
+  findings.push(...checkBlackFreeze({ black: blackFreeze.black, freeze: blackFreeze.freeze, exclude: blackFreeze.windows, plan, fps: planFps }));
+
   const loud = parseLoudnormJson(
     run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vn", "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"]).stderr,
   );
@@ -5657,7 +5737,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   const table = finalReviewTable(findings);
   mkdirSync(ctx.stateDir, { recursive: true });
   writeFileAtomic(f(ctx, `review-final-${key}.md`), `# Revisão do export: ${basename(path)}\n\n${table}`);
-  writeJson(f(ctx, `review-final-${key}.json`), { file: path, target, sequence: key, probe, crop, loudness: loud, findings });
+  writeJson(f(ctx, `review-final-${key}.json`), { file: path, target, sequence: key, probe, crop, blackFreeze, loudness: loud, findings });
   process.stdout.write(table);
   console.error(`[video-montagem] review-final: ${findings.length} achado(s) em ${basename(path)} (sequência ${key}, destino ${target}); tabela em ${f(ctx, `review-final-${key}.md`)}`);
   return 0;

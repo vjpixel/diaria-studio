@@ -32,7 +32,8 @@ import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
 import { findTrecho, type TrechoXml } from "./video-xml-trechos.ts";
-import { telaTrack, type TelaOverlay } from "./video-tela.ts";
+import { falaCitaTela, telaTrack, type TelaOverlay } from "./video-tela.ts";
+import { trechoInseridoMarkersXml, type TrechoInseridoMarker } from "./video-trecho-inserido.ts";
 import {
   coverScalePct,
   displaySize,
@@ -3482,7 +3483,7 @@ export function isVerticalSpec(spec: Pick<SequenceSpec, "width" | "height">): bo
   return spec.height > spec.width;
 }
 
-/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957) e a única com texto de tela (#13186). */
+/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957) e a única com texto de tela em toda fala (#13186; no vertical, só a que cita a tela, #13333). */
 export const isYoutubeSpec = (s: Pick<SequenceSpec, "target" | "corte" | "width" | "height">) => s.target === "youtube" && s.corte === undefined && !isVerticalSpec(s);
 
 /**
@@ -4063,6 +4064,9 @@ const TELA_MIN_TOKENS_TRECHO = 3;
  * tela quando o editor diz "o endereço está aqui na tela" (#13309).
  * Só o horizontal leva texto de tela (#13180/#13186): os verticais saem sem
  * marcador, mesmo com a fala também neles (a página do roteiro esconde o box ali).
+ * Exceção (#13333, decisão do editor no briefing 261117b): no vertical, a fala
+ * que cita a tela (`falaCitaTela`, no texto do roteiro ou no gravado do item)
+ * leva o marcador, e o `build` desenha o box abaixo da legenda.
  */
 export function telaMarkersFor(
   plan: Pick<SequencePlan, "spec" | "clips">,
@@ -4070,7 +4074,8 @@ export function telaMarkersFor(
   fps: number,
   telas: ReadonlyArray<{ id: string; texto: string; tela: string; telaBox?: string }>,
 ): TelaMarker[] {
-  if (!isYoutubeSpec(plan.spec)) return [];
+  const horizontal = isYoutubeSpec(plan.spec);
+  if (!horizontal && !isVerticalSpec(plan.spec)) return [];
   const norm = (t: string) => tokenize(t).join(" ");
   const items = plan.spec.order.flatMap((b) => (resolved[b] ?? []).filter((it) => itemInTarget(it, plan.spec)));
   const out: TelaMarker[] = [];
@@ -4087,6 +4092,8 @@ export function telaMarkersFor(
       if (x === fala) return true;
       return x.split(" ").length >= TELA_MIN_TOKENS_TRECHO && ` ${fala} `.includes(` ${x} `);
     });
+    // #13333: no vertical, só a fala que aponta para a tela (o roteiro ou o que foi dito nos itens dela).
+    if (!horizontal && !falaCitaTela(t.texto) && !meus.some((it) => falaCitaTela(it.text))) continue;
     let inF = Infinity;
     let outF = -Infinity;
     for (const it of meus) {
@@ -4194,6 +4201,8 @@ export function buildXmeml(
      * editor pôr a faixa de texto no Premiere. Ausente (ou sem a chave) = sem marcador.
      */
     telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
+    /** #13437: onde entra o trecho de outro vídeo (formato react), marcador `trecho {id}` por sequência. */
+    trechoMarkers?: Readonly<Record<string, readonly TrechoInseridoMarker[]>> | null;
     /**
      * #13219: XML leve. Os clipes do bruto (vídeo, fundo do `blur-fill` e o
      * áudio quando não há faixa tratada) apontam para o trecho que os contém
@@ -4456,6 +4465,7 @@ export function buildXmeml(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
         telaMarkersXml(opts.telaMarkers?.[sequenceKey(spec)] ?? []) +
+        trechoInseridoMarkersXml(opts.trechoMarkers?.[sequenceKey(spec)] ?? []) +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${telaTrackXml}${vin.video}${capaTrack}</video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
@@ -5090,13 +5100,68 @@ export const LOUDNESS_WARN_LUFS = -24;
 export const LOUDNESS_HOT_LUFS = -14;
 /** True peak a partir disso = provável clipping no bruto (#11351). */
 export const TRUE_PEAK_CLIP_DBTP = 0;
-/** Alvo do `loudnorm` da prévia. */
-export const LOUDNORM_TARGET = "loudnorm=I=-16:TP=-1.5:LRA=11";
+/**
+ * Alvo do `loudnorm` da prévia (#13371): o mesmo do export, que o
+ * `review-final` cobra (-14 LUFS, true peak -1 dBTP; `FINAL_TARGET_LUFS` e
+ * `FINAL_MAX_TRUE_PEAK_DBTP` em `video-final-review.ts`). Era -16 LUFS/-1,5
+ * dBTP em uma passada: o editor ouvia a prévia num nível e o export era medido
+ * em outro (decisão do editor de 17/11/2026: alvo da prévia igual ao do export).
+ */
+export const PREVIEW_LOUDNORM = { i: -14, tp: -1, lra: 11 } as const;
+/** O filtro de medida (com `:print_format=json`) e o de uma passada só (fallback). */
+export const LOUDNORM_TARGET = `loudnorm=I=${PREVIEW_LOUDNORM.i}:TP=${PREVIEW_LOUDNORM.tp}:LRA=${PREVIEW_LOUDNORM.lra}`;
 
 export interface LoudnessMeasure {
   inputI: number;
   inputTp: number;
   inputLra: number;
+}
+
+/** O que a 1ª passada do `loudnorm` mede e a 2ª precisa receber (#13371). */
+export interface LoudnormFirstPass extends LoudnessMeasure {
+  inputThresh: number;
+  targetOffset: number;
+}
+
+/** Resumo JSON da 1ª passada; `null` sem resumo ou com algum valor não finito (silêncio digital mede `-inf`). */
+export function parseLoudnormFirstPass(stderr: string): LoudnormFirstPass | null {
+  const m = /\{[^{}]*"input_i"[^{}]*\}/s.exec(stderr);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]) as Record<string, string>;
+    const num = (k: string) => Number(j[k]);
+    const r = { inputI: num("input_i"), inputTp: num("input_tp"), inputLra: num("input_lra"), inputThresh: num("input_thresh"), targetOffset: num("target_offset") };
+    return Object.values(r).every(Number.isFinite) ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 2ª passada do `loudnorm` (#13371): o mesmo alvo com os valores medidos e
+ * `linear=true`, um ganho só no arquivo inteiro (o próprio `loudnorm` cai no
+ * modo dinâmico se o ganho linear estourar o true peak).
+ */
+export function loudnormSecondPassFilter(m: LoudnormFirstPass): string {
+  const n = (x: number) => String(Math.round(x * 100) / 100);
+  return `${LOUDNORM_TARGET}:measured_I=${n(m.inputI)}:measured_TP=${n(m.inputTp)}:measured_LRA=${n(m.inputLra)}:measured_thresh=${n(m.inputThresh)}:offset=${n(m.targetOffset)}:linear=true`;
+}
+
+/**
+ * Prévia em duas passadas (#13371): o render sai com o áudio sem normalizar,
+ * em PCM (`PREVIEW_RAW_NAME`); a 1ª passada mede esse áudio (só áudio, sem
+ * decodificar o vídeo) e a 2ª aplica o ganho, copiando o vídeo.
+ */
+export const PREVIEW_RAW_NAME = "previa-raw.mkv";
+
+/** ffmpeg da 1ª passada: mede o áudio do render sem normalizar. */
+export function previewLoudnormMeasureArgs(input: string): string[] {
+  return ["-hide_banner", "-nostats", "-i", input, "-vn", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-"];
+}
+
+/** ffmpeg da 2ª passada: aplica o filtro no áudio e copia o vídeo do render. */
+export function previewLoudnormApplyArgs(input: { src: string; out: string; filter: string }): string[] {
+  return ["-y", "-v", "error", "-i", input.src, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", input.filter, "-c:a", "aac", "-b:a", "160k", "-ar", "48000", input.out];
 }
 
 /** Bloco JSON que o `loudnorm=print_format=json` imprime no stderr. */
@@ -5116,7 +5181,7 @@ export function parseLoudnormJson(stderr: string): LoudnessMeasure | null {
 export function loudnessWarning(m: LoudnessMeasure | null): string | null {
   if (!m) return "loudness do bruto não medido (o loudnorm não imprimiu o resumo)";
   if (m.inputI < LOUDNESS_WARN_LUFS) {
-    return `bruto em ${m.inputI.toFixed(1)} LUFS, abaixo de ${LOUDNESS_WARN_LUFS} LUFS: normalizar no Premiere (a prévia já sai com loudnorm I=-16)`;
+    return `bruto em ${m.inputI.toFixed(1)} LUFS, abaixo de ${LOUDNESS_WARN_LUFS} LUFS: normalizar no Premiere (a prévia já sai normalizada a ${PREVIEW_LOUDNORM.i} LUFS)`;
   }
   const hot = m.inputI > LOUDNESS_HOT_LUFS;
   const clip = Number.isFinite(m.inputTp) && m.inputTp >= TRUE_PEAK_CLIP_DBTP;
