@@ -185,7 +185,8 @@ import {
   checkYouTubeAudio,
   mp4HasAudioTrack,
   notifyYouTubeAudioDegraded,
-  reportYouTubeAudioCheck,
+  alarmYouTubeAudioDegraded,
+  describeYouTubeAudioCheck,
   type YouTubeAudioAlarmFn,
 } from "./lib/diaria/youtube-audio-check.ts";
 import {
@@ -1072,7 +1073,10 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
     log(`[aviso] vídeo enviado, mas a capa falhou: ${result.thumbnail.error} — suba ${plan.thumbnail?.path} à mão no Studio`);
   }
   if (result.rereadError) log(`[aviso] releitura do estado falhou: ${result.rereadError}`);
-  await reportYouTubeAudioCheck(result.audio_check, { videoId: result.videoId, url: result.url, label: `horizontal da edição ${plan.aammdd}` }, log, input.notifyAudioDegraded);
+  // #13403: a linha sai já; o alarme só depois de o registro estar gravado (abaixo).
+  const audioLine = result.audio_check ? describeYouTubeAudioCheck(result.audio_check, result.videoId, plan.aammdd) : null;
+  if (audioLine) log(audioLine);
+  const audioAlarmCtx = { videoId: result.videoId, url: result.url, label: `horizontal da edição ${plan.aammdd}` };
   const captionLine = captionOut.result ? describeCaptionOutcome(captionOut.result, plan.aammdd) : null;
   if (captionLine) log(captionLine);
   const failed = failedUploadStatus(result.rereadStatus);
@@ -1098,8 +1102,10 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
       `[erro] vídeo ENVIADO (${result.url}) mas o registro não foi gravado em ${recordPath}: ${(e as Error).message}. ` +
         "NÃO rode --upload de novo sem antes conferir o canal.",
     );
+    await alarmYouTubeAudioDegraded(result.audio_check, audioAlarmCtx, input.notifyAudioDegraded, log);
     return { exitCode: 1, record, skipped: false };
   }
+  await alarmYouTubeAudioDegraded(result.audio_check, audioAlarmCtx, input.notifyAudioDegraded, log);
   // #10865: mesma premissa de auditoria com que o plano foi montado.
   const videoUrlWritten = failed
     ? false

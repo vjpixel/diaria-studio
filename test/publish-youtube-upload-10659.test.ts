@@ -172,11 +172,18 @@ describe("#13403 guard do áudio no horizontal", () => {
       force: false,
       readFile: (p) => readFileSync(p),
       log: (l) => logs.push(l),
-      notifyAudioDegraded: async () => (alarms++, { ok: true, detail: "alarme created" }),
+      // O alarme sai depois de o registro estar gravado (#13403): ele já vê o audio_check no disco.
+      notifyAudioDegraded: async () => {
+        alarms++;
+        const onDisk = JSON.parse(readFileSync(join(dir, "_internal", "05-youtube-published.json"), "utf8"));
+        assert.equal(onDisk.audio_check?.status, "degraded");
+        return { ok: true, detail: "alarme created" };
+      },
     });
     assert.equal(outcome.exitCode, 0, logs.join("\n"));
     assert.equal(alarms, 1);
     assert.ok(logs.some((l) => /^\[aviso\] áudio do YouTube degradado/.test(l)), logs.join("\n"));
+    assert.ok(logs.some((l) => /^\[alarme\] áudio degradado/.test(l)), logs.join("\n"));
     const rec = JSON.parse(readFileSync(join(dir, "_internal", "05-youtube-published.json"), "utf8"));
     assert.equal(rec.audio_check.status, "degraded");
     assert.equal(rec.audio_check.bitrate_bps, 2377);
@@ -194,7 +201,7 @@ describe("#13403 guard do áudio no horizontal", () => {
     assert.equal(outcome.exitCode, 0);
     assert.equal(alarms, 0);
     assert.equal(outcome.record?.audio_check?.status, "pending");
-    assert.ok(logs.some((l) => l.includes(`check-youtube-audio.ts --id ${VIDEO_ID}`)), logs.join("\n"));
+    assert.ok(logs.some((l) => l.includes(`check-youtube-audio.ts --id ${VIDEO_ID} --edition 261022`)), logs.join("\n"));
   });
 });
 
