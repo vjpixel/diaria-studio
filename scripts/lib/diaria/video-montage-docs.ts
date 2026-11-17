@@ -550,7 +550,7 @@ export function shortsWarning(plan: Pick<SequencePlan, "spec" | "durationFrames"
  * Duração-alvo da vertical, em segundos de fala (#12694, decisão do editor
  * 10/11/2026 na montagem da 261111; era 85 s desde o #11757): toda vertical, a
  * da edição e os cortes/Shorts avulsos, chega à prévia com até 75 s de fala. O
- * card de CTA (~4 s) fica fora da conta: `durationFrames` do plano é só a
+ * card de CTA (2 s desde o #13311) fica fora da conta: `durationFrames` do plano é só a
  * montagem. Passou do alvo, o roteiro (Gate 2) propõe o corte e a prévia fica
  * bloqueada (`verticalPreviewGate`); quem decide os cortes é o editor.
  * `verticalTargetS` no `blocks.json` pode REDUZIR o alvo da edição, nunca
@@ -880,6 +880,8 @@ export function roteiroMarkdown(
      * tabela). Ausente = sem card (`ctaCard: false` no blocks.json).
      */
     ctaCardShare?: Readonly<Record<string, string>>;
+    /** Duração do card de CTA (#13311); ausente = o default `CTA_CARD.durationS`. */
+    ctaCardS?: number;
     /**
      * #12585: o título de cada vídeo (chave = `sequenceKey`), já com a
      * origem entre parênteses, numa linha logo abaixo do cabeçalho da versão.
@@ -976,7 +978,7 @@ export function roteiroMarkdown(
     }
     // #12571: o card de CTA, último clipe de toda versão (sem fala).
     const share = opts.ctaCardShare?.[sequenceKey(p.spec)];
-    if (share !== undefined) lines.push(`| Card de CTA (${CTA_CARD.durationS} s) | ${mdCell(`${CTA_CARD.title} ${CTA_CARD.like}. ${share}. ${CTA_CARD.follow}.`)} | card, sem fala (fade-in de ${CTA_CARD.fadeInS} s) |`);
+    if (share !== undefined) lines.push(`| Card de CTA (${opts.ctaCardS ?? CTA_CARD.durationS} s) | ${mdCell(`${CTA_CARD.title} ${CTA_CARD.like}. ${share}. ${CTA_CARD.follow}.`)} | card, sem fala (fade-in de ${CTA_CARD.fadeInS} s) |`);
     // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
     const differs = p.spec.order.flatMap((key) =>
       (resolved[key] ?? []).flatMap((it, i) =>

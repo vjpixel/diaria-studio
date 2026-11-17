@@ -1951,7 +1951,19 @@ export function resolveBlocks(
   const guard = TAKE_DEFAULTS.guardS;
   const blocks: Partial<Record<BlockKey, ResolvedItem[]>> = {};
   const errors: string[] = [];
-  const limitAfter = (idx: number) => (idx < words.length ? words[idx].start - guard : opts.durationS);
+  // #13310: o início CRU da palavra (antes do `trimWordsToSilences`). Com o limiar de silêncio relativo, a
+  // inspiração e o ataque da palavra contam como silêncio e o início aparado anda até o fim dele; o respiro
+  // da vinheta (e o do fecho), limitado por esse início, invadia a preparação da tomada seguinte (261117, V9).
+  const rawSorted = [...rawWords].sort((a, b) => a.start - b.start);
+  const rawStartAt = (t: number): number => {
+    let best = t;
+    for (const w of rawSorted) {
+      if (w.start > t + 1e-6) break;
+      if (w.end >= t - 1e-6) best = w.start;
+    }
+    return Math.min(best, t);
+  };
+  const limitAfter = (idx: number) => (idx < words.length ? rawStartAt(words[idx].start) - guard : opts.durationS);
   // A fala ouvida, quando ela difere do texto pedido (#11362); undefined quando bate.
   const heardIfDiffers = (label: string, wanted: string | undefined, ws: Word[]): string | undefined => {
     if (wanted === undefined || ws.length === 0) return undefined;
@@ -3759,6 +3771,12 @@ const TELA_MIN_TOKENS_TRECHO = 3;
  * fala inteira, ou um trecho dela com 3+ palavras: o corte parcial do #13129
  * vira os trechos que sobram); o tempo sai dos clipes que cobrem o intervalo do
  * item no bruto, já com os cortes de pausa. Fala sem item nesta versão fica fora.
+ * O id da fala no item vence o texto: `fala` (#13204) e, na falta dele, o
+ * `falaId` que a decupagem grava (#13309: na 261117 os itens só tinham
+ * `falaId`, o texto gravado começava com "E " ou foi dito de outro jeito, e 4
+ * de 6 boxes sumiram do horizontal em silêncio). O box cobre a fala inteira
+ * (todos os itens dela), não só a frase que cita a tela: assim ele já está na
+ * tela quando o editor diz "o endereço está aqui na tela" (#13309).
  * Só o horizontal leva texto de tela (#13180/#13186): os verticais saem sem
  * marcador, mesmo com a fala também neles (a página do roteiro esconde o box ali).
  */
@@ -3776,7 +3794,9 @@ export function telaMarkersFor(
     const fala = norm(t.texto);
     const meus = items.filter((it) => {
       // #13204: o id da fala no item vence o casamento por texto (a fala gravada pode diferir do roteiro).
-      if (it.fala !== undefined) return it.fala === t.id;
+      // #13309: `falaId` (gravado pela decupagem) é o fallback de `fala`.
+      const id = it.fala ?? it.falaId;
+      if (id !== undefined) return id === t.id;
       if (!fala) return false;
       const x = norm(it.text);
       if (!x) return false;
@@ -3797,6 +3817,27 @@ export function telaMarkersFor(
     if (Number.isFinite(inF) && outF > inF) out.push({ id: t.id, tela: t.tela, in: inF, out: outF });
   }
   return out.sort((a, b) => a.in - b.in);
+}
+
+/**
+ * Pure (#13309): as falas com `tela` que ficaram sem marcador nesta sequência,
+ * separadas em duas. `semCasamento`: o roteiro põe a fala no horizontal, mas
+ * nenhum item do `blocks.json` casou com ela (sem `fala`/`falaId` e o texto
+ * gravado difere do roteiro, ou o corte tirou a fala inteira) — o box some e
+ * isso é `[aviso]`. `foraDaVersao`: a fala não é do horizontal (ou o roteiro
+ * não lista os vídeos dela) — `[premissa]`, como antes.
+ */
+export function telaSemMarcador(
+  telas: ReadonlyArray<{ id: string; videos?: readonly string[] }>,
+  markers: ReadonlyArray<{ id: string }>,
+): { semCasamento: string[]; foraDaVersao: string[] } {
+  const semCasamento: string[] = [];
+  const foraDaVersao: string[] = [];
+  for (const t of telas) {
+    if (markers.some((m) => m.id === t.id)) continue;
+    (t.videos?.includes("horizontal") ? semCasamento : foraDaVersao).push(t.id);
+  }
+  return { semCasamento, foraDaVersao };
 }
 
 /** Os marcadores de tela no `<sequence>` (#13140): nome "tela {id}", o texto proposto no comentário. */

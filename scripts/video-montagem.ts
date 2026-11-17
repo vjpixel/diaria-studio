@@ -305,6 +305,7 @@ import {
   buildSequencePlan,
   buildXmeml,
   telaMarkersFor,
+  telaSemMarcador,
   type TelaMarker,
   clockTime,
   collapsedTakeSuspects,
@@ -431,7 +432,7 @@ import {
 } from "./lib/diaria/video-multi-source.ts";
 import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
 import { assemblySegments, edgeFindings, edgeLine, longPauses, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
-import { CTA_CARD, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
+import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
   alternativesFromDecupagem,
@@ -680,6 +681,19 @@ function configMirroredDefault(): boolean | null {
     console.error(`[aviso] platform.config.json ilegível (${(e as Error).message}): espelhamento pelo default do código (#11959)`);
     return null;
   }
+}
+
+/** `publishing.video.cta_card_s` do config (#13311); config ilegível ou valor inválido = o default do código, com aviso. */
+let ctaCardSCache: number | null = null;
+function configCtaCardS(): number {
+  if (ctaCardSCache !== null) return ctaCardSCache;
+  try {
+    ctaCardSCache = ctaCardDurationFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")), (m) => console.error(`[aviso] ${m}`));
+  } catch (e) {
+    console.error(`[aviso] platform.config.json ilegível (${(e as Error).message}): card de CTA com o default de ${CTA_CARD.durationS} s (#13311)`);
+    ctaCardSCache = CTA_CARD.durationS;
+  }
+  return ctaCardSCache;
 }
 
 /**
@@ -2669,7 +2683,7 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   });
   // #13140: os cortes de reserva do roteiro abrem a sugestão da vertical acima do alvo.
   const cortesReserva = readRoteiroCortesReserva(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`), { corteSlug: VERTICAL2_CORTE_SLUG });
-  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { falasPlanejadas: readRoteiroFalas(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`)), alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles, cortesReserva });
+  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { falasPlanejadas: readRoteiroFalas(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`)), alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, ctaCardS: configCtaCardS(), videoTitles, cortesReserva });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
   let fc: ReturnType<typeof parseVideoFactCheck> | null = null;
@@ -3352,10 +3366,13 @@ async function renderCapaInicioAssets(ctx: Ctx, file: BlocksFile, picked: Sequen
 export async function renderCtaCard(input: {
   outDir: string; workDir: string; mediaPath: string; edition: string;
   width: number; height: number; fps: number; share?: string | null;
+  /** Duração do card (#13311); ausente = o default `CTA_CARD.durationS`. */
+  durationS?: number;
   render?: (png: string, out: string) => void;
 }): Promise<{ asset: CtaCardAsset; reused: boolean }> {
+  const durationS = input.durationS ?? CTA_CARD.durationS;
   const svg = ctaCardSvg({ width: input.width, height: input.height, share: input.share });
-  const hash = createHash("sha256").update(svg).update(`\0${input.fps}\0${CTA_CARD.durationS}\0${CTA_CARD.fadeInS}`).digest("hex").slice(0, 16);
+  const hash = createHash("sha256").update(svg).update(`\0${input.fps}\0${durationS}\0${CTA_CARD.fadeInS}`).digest("hex").slice(0, 16);
   const name = ctaCardFileName(input.edition, ctaCardOrientation(input.width, input.height), hash);
   const out = join(input.outDir, name);
   const reused = existsSync(out);
@@ -3365,14 +3382,14 @@ export async function renderCtaCard(input: {
     await sharp(Buffer.from(svg)).png().toFile(png);
     // Render no work dir e cópia para .part + rename: um build interrompido nunca deixa MP4 pela metade no out dir.
     const tmp = join(input.workDir, name);
-    (input.render ?? ((a, b) => { run("ffmpeg", ctaCardRenderArgs({ png: a, out: b, fps: input.fps })); }))(png, tmp);
+    (input.render ?? ((a, b) => { run("ffmpeg", ctaCardRenderArgs({ png: a, out: b, fps: input.fps, durationS })); }))(png, tmp);
     copyFileSync(tmp, `${out}.part`);
     renameSync(`${out}.part`, out);
   }
   const p = input.mediaPath.replace(/\\/g, "/");
   const xmlPath = `${p.slice(0, p.lastIndexOf("/") + 1)}${name}`;
   return {
-    asset: { path: out, xmlPath, width: input.width, height: input.height, fps: input.fps, frames: ctaCardFrames(input.fps), share: ctaShareLine(input.share) },
+    asset: { path: out, xmlPath, width: input.width, height: input.height, fps: input.fps, frames: ctaCardFrames(input.fps, durationS), share: ctaShareLine(input.share) },
     reused,
   };
 }
@@ -3604,9 +3621,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const w of framingWarn.face) console.error(`[aviso] ${w}`);
   const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
   if (targetOverride) console.error(`[aviso] ${targetOverride}`);
+  // #13311: a duração do card vem do config (default 2 s).
+  const ctaCardS = configCtaCardS();
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
-    console.error(`== ${p.spec.name}: ${p.clips.length} clipes,${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
+    console.error(`== ${p.spec.name}: ${p.clips.length} clipes,${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${ctaCardS} s (#12571, #13311)`}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
     // #12712: o corte sem gancho de publicação avisa já na montagem, com o mesmo erro do video-extra-verticals.ts.
@@ -3641,7 +3660,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     for (const a of p.cutAdjustments ?? []) console.error(adjustmentLine(a));
     problems += p.missingBlocks.length + p.dropped.length;
     // #12571: o limite de 3:00 do Shorts conta o card de CTA do fim.
-    const over = shortsWarning(file.ctaCard === false ? p : { ...p, durationFrames: p.durationFrames + ctaCardFrames(source.fps) }, source.fps);
+    const over = shortsWarning(file.ctaCard === false ? p : { ...p, durationFrames: p.durationFrames + ctaCardFrames(source.fps, ctaCardS) }, source.fps);
     if (over) console.error(`[aviso] ${over}`);
     const target = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: silences(ctx) });
     if (target) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, target)}`);
@@ -3745,12 +3764,12 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     for (const p of picked) {
       const share = p.spec.ctaShare ?? file.ctaShare;
       try {
-        const { asset, reused } = await renderCtaCard({ outDir: ctx.outDir, workDir: ctx.workDir, mediaPath, edition: ctx.edition, width: p.spec.width, height: p.spec.height, fps: source.fps, share });
+        const { asset, reused } = await renderCtaCard({ outDir: ctx.outDir, workDir: ctx.workDir, mediaPath, edition: ctx.edition, width: p.spec.width, height: p.spec.height, fps: source.fps, share, durationS: ctaCardS });
         ctaCard[sequenceKey(p.spec)] = asset;
         // Reaproveitado, o card não muda no out dir e o snapshot não o sobe; entra nos pendentes se nunca subiu.
         if (reused && uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), asset.path);
         console.error(
-          `[premissa] card de CTA no fim de ${p.spec.name}: ${basename(asset.path)}${reused ? " (reaproveitado)" : ""}, ${CTA_CARD.durationS} s na V1 depois do último clipe, fade-in de ${CTA_CARD.fadeInS} s do preto no próprio MP4, sem áudio; ` +
+          `[premissa] card de CTA no fim de ${p.spec.name}: ${basename(asset.path)}${reused ? " (reaproveitado)" : ""}, ${ctaCardS} s na V1 depois do último clipe, fade-in de ${CTA_CARD.fadeInS} s do preto no próprio MP4, sem áudio; ` +
             `"${asset.share}"${share ? "" : " (default; ctaShare no blocks.json ou na sequência sobrepõe)"}; conferir no 1º import (#12571)`,
         );
       } catch (e) {
@@ -3783,7 +3802,14 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     for (const w of clamped.warnings) console.error(`[aviso] ${p.spec.name}: ${w}`);
     const ms = clamped.items;
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
-    const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
+    // #13309: fala do horizontal com tela e sem marcador é box sumido (aviso); a de outro vídeo fica na premissa.
+    const { semCasamento, foraDaVersao: fora } = telaSemMarcador(telas, ms);
+    if (semCasamento.length) {
+      console.error(
+        `[aviso] ${p.spec.name}: ${semCasamento.length} texto(s) de tela de fala do horizontal sem item casado (${semCasamento.join(", ")}): o box sai fora do XML; ` +
+          `pôr "falaId"/"fala" com o id no item do blocks.json, ou conferir se o corte tirou a fala (#13309)`,
+      );
+    }
     if (ms.length) {
       const overlays: TelaOverlay[] = [];
       for (const m of ms) {
