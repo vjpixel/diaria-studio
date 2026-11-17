@@ -11,7 +11,7 @@ const V2 = "O Jensen Huang declarou que deixa o cargo de CEO da Nvidia e saiu do
 
 it("avisa registro escrito da v2 da 261118: verbo formal e vídeo sem marca de fala", () => {
   const avisos = avisosTomConversacional(roteiro(V2));
-  assert.ok(avisos.some((a) => /^H1: verbo de relatório \(declarou, informou\)/.test(a)));
+  assert.ok(avisos.some((a) => /^H1: verbo de relatório \(declarou, publicou, informou\)/.test(a)));
   assert.ok(avisos.some((a) => /sem nenhuma marca de fala/.test(a)));
 });
 

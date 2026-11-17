@@ -41,6 +41,23 @@ import { corteDaFala, segmentosSemTrecho, SETA, validarRoteiroFalas, VIDEO_LABEL
 /** Caminho do JSON do roteiro, relativo à pasta da edição. */
 export const ROTEIRO_FALAS_FILE = "_internal/roteiro-falas.json";
 
+/**
+ * Verbos de relatório (#13165, #13393): o registro de notícia escrita. Os de
+ * #13393 vêm da v2 do roteiro da 261118 ("renunciou ao cargo", "publicou uma
+ * norma"), que o editor achou formal; a v3 trocou por "largou" e "soltou".
+ * Aviso só: quando o verbo é o fato (a fonte anunciou), a fala fica.
+ */
+const VERBO_DE_RELATORIO = /(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|afirmaram|constatou|verificou-se|declarou|informou|divulgou|renunciou|renunciaram|publicou|publicaram|anunciou|anunciaram)(?![\p{L}\p{N}_])/giu;
+
+/** Substantivos de texto escrito e a troca de conversa que a v3 da 261118 usou (#13393). */
+const TERMO_FALADO: Record<string, string> = { norma: "regra" };
+const TERMO_DE_TEXTO_ESCRITO = /(?<![\p{L}\p{N}_])normas?(?![\p{L}\p{N}_])/giu;
+function trocaFalada(termo: string): string {
+  const plural = termo.endsWith("s");
+  const troca = TERMO_FALADO[plural ? termo.slice(0, -1) : termo];
+  return troca ? `${troca}${plural ? "s" : ""}` : "outra palavra";
+}
+
 /** Heurísticas leves de registro falado (#13165): avisam, nunca invalidam o roteiro.
  * Pausa = vírgula, ponto, dois-pontos, ponto e vírgula, interrogação,
  * exclamação, reticências, travessão ou quebra de linha. Examina só a fala,
@@ -49,8 +66,13 @@ export const ROTEIRO_FALAS_FILE = "_internal/roteiro-falas.json";
 export function avisosTomConversacional(roteiro: Pick<RoteiroFalas, "falas">): string[] {
   const avisos: string[] = [];
   for (const fala of roteiro.falas) {
-    const verbos = fala.texto.match(/(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|constatou|verificou-se|declarou|informou|divulgou)(?![\p{L}\p{N}_])/giu);
-    if (verbos) avisos.push(`${fala.id}: verbo de relatório (${[...new Set(verbos.map((v) => v.toLowerCase()))].join(", ")}); considerar verbo de fala, sem mudar o sentido da fonte (#13165).`);
+    const verbos = fala.texto.match(VERBO_DE_RELATORIO);
+    if (verbos) avisos.push(`${fala.id}: verbo de relatório (${[...new Set(verbos.map((v) => v.toLowerCase()))].join(", ")}); considerar verbo de fala, sem mudar o sentido da fonte (#13165, #13393).`);
+    const termos = fala.texto.match(TERMO_DE_TEXTO_ESCRITO);
+    if (termos) {
+      const vistos = [...new Set(termos.map((t) => t.toLowerCase()))];
+      avisos.push(`${fala.id}: palavra de texto escrito (${vistos.map((t) => `${t}: em conversa, "${trocaFalada(t)}"`).join("; ")}) (#13393).`);
+    }
     const maior = Math.max(0, ...fala.texto.split(/[,.;:!?…—\n]+/u).map((trecho) => trecho.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)?.length ?? 0));
     if (maior > 30) avisos.push(`${fala.id}: trecho com ${maior} palavras sem pausa; dividir em frases curtas de conversa (#13165).`);
   }

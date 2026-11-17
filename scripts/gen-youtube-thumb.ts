@@ -83,8 +83,14 @@
  *       painel logo abaixo da caixa da legenda; com os dois à mão, só avisa)
  *     [--video PATH]   (default: {edição}/diaria-comentada-{AAMMDD}-short.mp4)
  *     [--out PATH] [--edition-dir DIR]
- * Sem `--hook` sai a capa antiga: o frame cru, dentro da janela do lettering
- * do título (0–3,5 s). Corte avulso (`publish-shorts.ts --corte`): o mesmo
+ * Sem `--hook`, o gancho é o texto da capa do vertical 1 no roteiro
+ * (`porVideo.vertical1.capa` de `_internal/roteiro-falas.json`, #13401), com
+ * `[premissa]`; com `--video` explícito, só com `--roteiro-capa
+ * vertical1|vertical2`. Capa do roteiro fora de 2 a 5 palavras é recusada antes
+ * do ffmpeg. Sem `--hook` e sem capa no roteiro sai a capa antiga: o frame
+ * cru, dentro da janela do lettering do título (0–3,5 s).
+ * Na capa horizontal vale o mesmo com `porVideo.horizontal.capa`: capa de uma
+ * linha com mais de 4 palavras quebra em 2 linhas equilibradas. Corte avulso (`publish-shorts.ts --corte`): o mesmo
  * comando com `--video` do corte e `--out data/cortes/{slug}/04-youtube-short-capa.jpg`,
  * depois `--cover` no `publish-shorts`.
  *
@@ -121,6 +127,7 @@ import {
   parseCapaScene,
 } from "./lib/diaria/youtube-thumb-capa-bg.ts";
 import { parseSrtCues, planShortCoverCaption, shortCoverCaptionWarnings } from "./lib/diaria/short-cover-caption.ts";
+import { parseRoteiroCapaVideo, resolverHookDaCapa, type ResolverHookLog } from "./lib/diaria/youtube-thumb-roteiro.ts";
 import {
   THUMB_PORTRAITS_DIR,
   THUMB_PORTRAITS_META,
@@ -159,7 +166,7 @@ const USAGE =
   "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-sheet [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-portrait N [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) --hook \"Gancho de 2 a 5 palavras?\" [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
+  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) [--hook \"Gancho de 2 a 5 palavras?\" | --roteiro-capa vertical1|vertical2] [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
 
 /**
  * #11228: extrai N frames do vídeo BRUTO direto da Drive API (sem baixar o
@@ -365,6 +372,12 @@ export function youtubeShortVideoFileName(aammdd: string): string {
   return `diaria-comentada-${aammdd}-short.mp4`;
 }
 
+/** Log do gancho vindo do roteiro (#13401). */
+const HOOK_LOG: ResolverHookLog = {
+  warn: (m) => console.error(`[aviso] ${m}`),
+  premissa: (m) => console.error(`[premissa] ${m}`),
+};
+
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = values["edition"] ?? positional[0];
@@ -429,7 +442,12 @@ async function main(): Promise<number> {
     // #12462: gancho próprio na capa vertical (2 a 5 palavras), validado antes do ffmpeg.
     if (flags.has("hook")) throw new Error('--hook exige o valor: o gancho de 2 a 5 palavras (ex.: --hook "IA ladra?")');
     if (flags.has("srt")) throw new Error("--srt exige o caminho do SRT do vertical (`Diaria comentada_Vertical_V1 - legendas.srt`, da montagem)");
-    const shortHook = values["hook"];
+    // #13401: sem --hook, o texto da capa do vertical no roteiro (`--hook` sobrepõe).
+    if (flags.has("roteiro-capa")) throw new Error("--roteiro-capa exige o valor: vertical1 ou vertical2");
+    const shortHook = resolverHookDaCapa(
+      { alvo: "short", hook: values["hook"], editionDir: dir, videoExplicito: values["video"] !== undefined, roteiroCapa: parseRoteiroCapaVideo(values["roteiro-capa"]) },
+      HOOK_LOG,
+    );
     let panelTop = values["panel-top"] !== undefined ? Number(values["panel-top"]) : undefined;
     let atValue = values["at"] !== undefined ? Number(values["at"]) : undefined;
     // #13256: com o SRT do vertical, a capa mostra a 1ª legenda: sugere o --at e põe o painel abaixo dela.
@@ -461,7 +479,7 @@ async function main(): Promise<number> {
     }
     const at = atValue;
     if (shortHook === undefined) {
-      console.error("[aviso] --short-cover sem --hook: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 5 palavras — passe --hook");
+      console.error("[aviso] --short-cover sem --hook e sem capa no roteiro: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 5 palavras — passe --hook");
     }
     const video = resolve(values["video"] ?? join(dir, youtubeShortVideoFileName(aammdd)));
     if (!existsSync(video)) {
@@ -495,10 +513,11 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const hook = values["hook"];
+  // #13401: sem --hook, o texto da capa do horizontal no roteiro (`--hook` sobrepõe).
+  const hook = resolverHookDaCapa({ alvo: "horizontal", hook: values["hook"], editionDir: dir, roteiroCapa: parseRoteiroCapaVideo(values["roteiro-capa"]) }, HOOK_LOG);
   const portraitPath = values["portrait"];
   if (!hook || !portraitPath) {
-    console.error("gen-youtube-thumb: a capa horizontal exige --hook e --portrait (retrato recortado, PNG com transparência)");
+    console.error("gen-youtube-thumb: a capa horizontal exige --hook (ou o texto da capa do horizontal no roteiro, #13401) e --portrait (retrato recortado, PNG com transparência)");
     console.error(USAGE);
     return 2;
   }

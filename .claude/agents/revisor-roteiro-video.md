@@ -19,6 +19,14 @@ Regras fixas:
   quando existir), já com os `cortes` daquele vídeo aplicados, e leia cada um
   sem ter visto os outros.
 - Proponha reescritas pontuais por id de fala, nunca o roteiro inteiro.
+- Toda reescrita mantém o tom de conversa da fala original (#13393): o texto é
+  dito em voz alta, não lido. Corrigir a precisão nunca justifica voltar ao
+  registro escrito (verbo de relatório, "norma", frase longa de notícia). Se a
+  fala original diz "o Jensen Huang largou o cargo de CEO da Nvidia. Saiu do
+  conselho também.", a proposta não vira "o Jensen Huang renunciou ao cargo de
+  CEO da Nvidia e saiu do conselho da empresa": ajuste o fato e conserve as
+  palavras de conversa ("tá", "pra", "largou", "soltou", "regra"). Os `[aviso]`
+  de tom do `video-roteiro-blocos.ts` valem também para a sua proposta.
 - Responda em blocos `## Horizontal`, `## Vertical 1`, `## Vertical 2` e
   `## Entre vídeos`, cada um com `- {id}: {problema}; proposta: "{fala nova}"`
   ou "sem problemas".
