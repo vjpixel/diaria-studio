@@ -62,7 +62,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,14 @@ import {
   brutoParts,
   brutoSearchDirs,
   brutoTimelineMatches,
+  clipReason,
+  CURRENT_METHOD,
+  currentDoneSequences,
+  DriveReadInterruptedError,
+  readWithRetry,
+  remeasureGaveUp,
+  zeroRunProblem,
+  type SequenceLookup,
   type BrutoPart,
   type DetectedPattern,
   type EditionRecord,
@@ -341,12 +349,76 @@ function probeDurationS(path: string): number {
   return Number(sh("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.trim());
 }
 
-/** ffmpeg de um arquivo do bruto para 16 kHz mono; com `durationS`, completa com silêncio e corta na duração da linha do tempo. */
+/**
+ * ffmpeg de um arquivo do bruto para 16 kHz mono; com `durationS`, corta e
+ * completa com silêncio na duração da linha do tempo. A extração sai primeiro
+ * sem o `apad` e a duração real é conferida contra a esperada (a da linha do
+ * tempo, ou a do próprio arquivo) por `readWithRetry` (#13417): falta acima
+ * de `EXTRACT_SHORTFALL_TOL_S` relê uma vez; falta igual nas duas leituras é
+ * do arquivo (completa com silêncio, com aviso e premissa); falta diferente é
+ * leitura interrompida (`DriveReadInterruptedError`, nada gravado em `out`).
+ * Duração esperada ilegível lança erro comum.
+ */
 function extract16k(src: string, out: string, durationS: number | null): void {
-  const fit = durationS === null ? [] : ["-af", "apad", "-t", durationS.toFixed(6)];
+  const raw = `${out}.raw.tmp.wav`;
   const tmp = `${out}.tmp.wav`;
-  sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...fit, "-c:a", "pcm_s16le", tmp]);
-  renameSync(tmp, out);
+  try {
+    const cut = durationS === null ? [] : ["-t", durationS.toFixed(6)];
+    const expected = durationS ?? probeDurationS(src);
+    const read = () => {
+      sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...cut, "-c:a", "pcm_s16le", raw]);
+      return probeDurationS(raw);
+    };
+    const { actualS: got, realShortfallS } = readWithRetry(expected, read, src);
+    if (realShortfallS !== null) {
+      log(`[aviso] ${src}: o áudio tem ${realShortfallS.toFixed(2)} s a menos que o esperado nas duas leituras (falta do próprio arquivo, não da leitura)`);
+      log(`[premissa] ${src}: ${durationS === null ? "usado como está" : `completado com ${realShortfallS.toFixed(2)} s de silêncio no fim`} (#13417)`);
+    }
+    if (durationS !== null && got < durationS) {
+      sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", raw, "-af", "apad", "-t", durationS.toFixed(6), "-c:a", "pcm_s16le", tmp]);
+      renameSync(tmp, out);
+    } else {
+      renameSync(raw, out);
+    }
+  } finally {
+    for (const p of [raw, tmp]) if (existsSync(p)) rmSync(p, { force: true });
+  }
+}
+
+/** Trecho de zeros digitais acima do teto num WAV (#13417), com o motivo neutro; `null` = serve. */
+function zeroRunIn(path: string): string | null {
+  const w = parseWavPcm16(readFileSync(path));
+  return zeroRunProblem(w.samples, w.sampleRate);
+}
+
+/**
+ * Confere o áudio do bruto (em cache ou recém-montado) e, se não servir, APAGA
+ * o arquivo (é cache nosso) e devolve o motivo. Duração fora da linha do tempo
+ * e trecho longo de zeros digitais (#13417) são motivos distintos; nenhuma
+ * conferência roda sobre arquivo já apagado. `null` = serve.
+ */
+function validateOrEvictCachedBruto(path: string, parts: readonly BrutoPart[], fps: number | undefined): string | null {
+  const d = probeDurationS(path);
+  let problem: string | null = null;
+  if (!brutoTimelineMatches(d, parts, fps)) problem = `áudio do bruto com ${d} s, a linha do tempo do plan.json não bate (#12559)`;
+  else problem = zeroRunIn(path);
+  if (problem) {
+    log(`[aviso] áudio do bruto descartado (${path}): ${problem}`);
+    rmSync(path, { force: true });
+  }
+  return problem;
+}
+
+/** `extract16k` com a leitura interrompida virando motivo de pulo; `null` = ok. Qualquer outro erro sobe (#13417). */
+function tryExtract(edition: string, src: string, out: string, durationS: number | null): string | null {
+  try {
+    extract16k(src, out, durationS);
+    return null;
+  } catch (e) {
+    if (!(e instanceof DriveReadInterruptedError)) throw e;
+    log(`[erro] ${edition}: ${e.message}`);
+    return clipReason(e.message);
+  }
 }
 
 /**
@@ -360,7 +432,12 @@ function extract16k(src: string, out: string, durationS: number | null): void {
  * na duração que ocupa na linha do tempo (`frames/fps`, `apad` + `-t`), e a
  * concatenação na ordem de `offsetFrames`, como o `ensureMultiAudio` da
  * montagem. Duração final conferida contra a linha do tempo: não bater é pulo,
- * nunca uma comparação com os tempos deslocados. `wav: null` traz o motivo.
+ * nunca uma comparação com os tempos deslocados. Extração truncada (a leitura
+ * parou no meio, #13417) é pulo com o motivo; todo áudio, o da montagem
+ * inclusive, passa pela conferência de zeros digitais (o `apad` da montagem
+ * esconde a mesma truncagem): acima do teto é pulo, e o cache nosso é
+ * descartado. `wav: null` traz o motivo. Erro que não é de dado (ffmpeg
+ * ausente, disco cheio) sobe; o `compareEdition` o registra por sequência.
  */
 export async function brutoWav(
   edition: string,
@@ -369,25 +446,41 @@ export async function brutoWav(
   finder: Finder,
   lookup: BrutoLookup = defaultBrutoLookup(),
 ): Promise<{ wav: string } | { wav: null; reason: string }> {
+  const montageRedo = (what: string, problem: string) => ({ wav: null, reason: clipReason(`${what} com ${problem}: refazer o áudio da montagem (#13417)`) }) as const;
   const cached = join(workDir, "audio.wav");
-  if (existsSync(cached)) return { wav: cached };
   const bp = brutoParts(pf.source);
+  if (existsSync(cached)) {
+    // O audio.wav é da montagem: nunca apagado aqui, só recusado. Duração conferida contra a linha do tempo quando o
+    // plan.json a dá (bruto em vários arquivos); zeros digitais sempre.
+    if (bp.parts !== null) {
+      const d = probeDurationS(cached);
+      if (!brutoTimelineMatches(d, bp.parts, pf.source.fps)) return montageRedo(`áudio da montagem (${cached})`, `${d} s, fora da linha do tempo do plan.json`);
+    }
+    const problem = zeroRunIn(cached);
+    return problem ? montageRedo(`áudio da montagem (${cached})`, problem) : { wav: cached };
+  }
   const montageConcat = join(workDir, MULTI_AUDIO_FILE);
   if ((pf.source.files?.length ?? 0) > 1 && existsSync(montageConcat)) {
     // Já está na linha do tempo global (a montagem conferiu a duração): só baixa para 16 kHz mono.
     const fromMontage = join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-16k-concat-montagem.wav");
-    if (!existsSync(fromMontage) || (bp.parts !== null && !brutoTimelineMatches(probeDurationS(fromMontage), bp.parts, pf.source.fps))) {
+    const reusable = existsSync(fromMontage) && (bp.parts === null || validateOrEvictCachedBruto(fromMontage, bp.parts, pf.source.fps) === null);
+    if (!reusable) {
       mkdirSync(dirname(fromMontage), { recursive: true });
       log(`[video-xml-vs-final] ${edition}: áudio do bruto do concatenado da montagem (${montageConcat})…`);
-      extract16k(montageConcat, fromMontage, null);
+      const err = tryExtract(edition, montageConcat, fromMontage, null);
+      if (err) return { wav: null, reason: err };
+    }
+    const problem = zeroRunIn(fromMontage);
+    if (problem) {
+      rmSync(fromMontage, { force: true });
+      return montageRedo(`concatenado da montagem (${montageConcat})`, problem);
     }
     return { wav: fromMontage };
   }
   if (bp.parts === null) return { wav: null, reason: `áudio do bruto ausente (${cached}) e ${bp.reason}` };
   const parts = bp.parts;
   const own = join(tmpdir(), "diaria-video-xml-vs-final", edition, parts.length > 1 ? "bruto-multi-16k.wav" : "bruto-16k.wav");
-  const fits = (p: string) => existsSync(p) && brutoTimelineMatches(probeDurationS(p), parts, pf.source.fps);
-  if (fits(own)) return { wav: own };
+  if (existsSync(own) && validateOrEvictCachedBruto(own, parts, pf.source.fps) === null) return { wav: own };
   const local: string[] = [];
   for (const part of parts) {
     let p: string | null;
@@ -406,27 +499,28 @@ export async function brutoWav(
   mkdirSync(dirname(own), { recursive: true });
   if (parts.length === 1) {
     log(`[video-xml-vs-final] ${edition}: extraindo o áudio do bruto (${local[0]})…`);
-    extract16k(local[0], own, null);
-    return { wav: own };
+    const err = tryExtract(edition, local[0], own, null);
+    if (err) return { wav: null, reason: err };
+  } else {
+    const dir = join(dirname(own), "bruto-parts");
+    mkdirSync(dir, { recursive: true });
+    const wavs: string[] = [];
+    for (const [i, part] of parts.entries()) {
+      const w = join(dir, `${String(i + 1).padStart(2, "0")}.wav`);
+      log(`[video-xml-vs-final] ${edition}: áudio do bruto ${i + 1}/${parts.length} (${local[i]})…`);
+      const err = tryExtract(edition, local[i], w, part.durationS);
+      if (err) return { wav: null, reason: err };
+      wavs.push(w);
+    }
+    const list = join(dir, "list.txt");
+    writeFileSync(list, concatListText(wavs));
+    const tmp = `${own}.tmp.wav`;
+    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", tmp]);
+    renameSync(tmp, own);
   }
-  const dir = join(dirname(own), "bruto-parts");
-  mkdirSync(dir, { recursive: true });
-  const wavs: string[] = [];
-  for (const [i, part] of parts.entries()) {
-    const w = join(dir, `${String(i + 1).padStart(2, "0")}.wav`);
-    log(`[video-xml-vs-final] ${edition}: áudio do bruto ${i + 1}/${parts.length} (${local[i]})…`);
-    extract16k(local[i], w, part.durationS);
-    wavs.push(w);
-  }
-  const list = join(dir, "list.txt");
-  writeFileSync(list, concatListText(wavs));
-  const tmp = `${own}.tmp.wav`;
-  sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", tmp]);
-  renameSync(tmp, own);
-  if (!fits(own)) {
-    return { wav: null, reason: `áudio do bruto em ${parts.length} arquivos com ${probeDurationS(own)} s, a linha do tempo do plan.json não bate (#12559)` };
-  }
-  return { wav: own };
+  // Mesma conferência do cache sobre o áudio recém-montado (#13417): uma só política de duração e de zeros.
+  const problem = validateOrEvictCachedBruto(own, parts, pf.source.fps);
+  return problem ? { wav: null, reason: clipReason(parts.length > 1 ? `áudio do bruto em ${parts.length} arquivos: ${problem}` : problem) } : { wav: own };
 }
 
 /** Compara uma edição. `null` = sem plan.json (fora da rodada). */
@@ -446,7 +540,7 @@ export async function compareEdition(
       return null;
     }
   };
-  const record: EditionRecord = { schema: XML_FINAL_SCHEMA, edition, method: "audio-envelope-align-v1", generatedAt: new Date().toISOString(), sequences: [], skipped: [] };
+  const record: EditionRecord = { schema: XML_FINAL_SCHEMA, edition, method: CURRENT_METHOD, generatedAt: new Date().toISOString(), sequences: [], skipped: [] };
   const plans = pf.plans.filter((p) => {
     const k = sequenceKey(p.spec);
     return !pf.stale?.[k] && (!opts.seq || k === opts.seq) && !opts.skip?.has(k);
@@ -479,7 +573,15 @@ export async function compareEdition(
       record.skipped.push({ key, reason: "sem final exportado em Final/" });
       continue;
     }
-    brutoRes ??= await brutoWav(edition, wd, pf, finder, opts.brutoLookup);
+    if (brutoRes === null) {
+      try {
+        brutoRes = await brutoWav(edition, wd, pf, finder, opts.brutoLookup);
+      } catch (e) {
+        // Erro que não é de dado (ffmpeg ausente, disco cheio): registrado por sequência como erro, nunca como pulo de bruto.
+        log(`[erro] ${edition}: áudio do bruto: ${(e as Error).message}`);
+        brutoRes = { wav: null, reason: clipReason(`erro: áudio do bruto: ${(e as Error).message}`) };
+      }
+    }
     if (brutoRes.wav === null) {
       record.skipped.push({ key, reason: brutoRes.reason });
       continue;
@@ -532,6 +634,7 @@ export async function compareEdition(
         captions: null,
         detail,
         ...(alignNote ? { notes: [alignNote] } : {}),
+        ...(al.cleanup ? { alignDropped: al.cleanup.dropped, snappedUndecided: al.cleanup.snappedUndecided } : {}),
       };
       record.sequences.push(seqRec);
       log(`[video-xml-vs-final] ${edition} ${key}: ${summary.clipsRemoved}/${summary.clips} clipes fora, ${summary.clipsTouched} mexidos, ${summary.wordsRecovered} palavra(s) recuperada(s)`);
@@ -544,6 +647,13 @@ export async function compareEdition(
 
 function loadState(): RecurringState {
   return { ...EMPTY_STATE, ...(readJsonSafe<RecurringState>(out("state.json")) ?? {}) };
+}
+
+/** Método e falhas de remedição de cada sequência, pelos registros no disco (#13417). */
+export function methodLookup(records: readonly EditionRecord[]): SequenceLookup {
+  const m = new Map<string, ReturnType<SequenceLookup>>();
+  for (const r of records) for (const s of r.sequences) m.set(`${r.edition}/${s.key}`, { method: s.method ?? r.method, remeasureFailed: s.remeasureFailed });
+  return (edition, key) => m.get(`${edition}/${key}`);
 }
 
 /** Registros no disco, com os desta rodada por cima (no `--dry-run` eles não foram gravados). */
@@ -637,7 +747,9 @@ async function finish(opts: { openIssues: boolean; dryRun: boolean; register: bo
   const agg = aggregateRecords(records);
   const patterns = detectPatterns(agg);
   const skipped = records.flatMap((r) => r.skipped.map((s) => ({ edition: r.edition, ...s })));
-  const report = renderReport({ agg, patterns, skipped, generatedAt: new Date().toISOString() });
+  const gaveUp = remeasureGaveUp(records);
+  for (const g of gaveUp) log(`[aviso] ${g.edition} ${g.key}: remedição desistida depois de ${g.failure.count} falhas (último motivo: ${g.failure.reason}); seguem os números do ${g.method}`);
+  const report = renderReport({ agg, patterns, skipped, generatedAt: new Date().toISOString(), gaveUp });
   if (opts.dryRun) {
     process.stdout.write(report);
     for (const p of patterns) log(`[dry-run] padrão ${p.id} (${p.priority}) em ${p.editions.join(", ")}`);
@@ -725,12 +837,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         console.error(`--days deve ser inteiro >= 1 (veio ${values.days})`);
         return 2;
       }
-      const todo = editionsToCompare({ withPlan: editionsWithPlan(), state, today, days });
+      // Sequência medida com método anterior (v1, alinhamento ruidoso, #13417) volta a ser pendente.
+      const methodOf = methodLookup(loadRecords());
+      const todo = editionsToCompare({ withPlan: editionsWithPlan(), state, today, days, methodOf });
       log(`[video-xml-vs-final] ${todo.length} edição(ões) a comparar: ${todo.join(", ") || "nenhuma"}`);
       if (todo.length) {
         const finder = await getFinder();
         for (const e of todo) {
-          const rec = await compareEdition(e, finder, { skip: new Set(state.done[e]?.sequences ?? []), brutoLookup });
+          const rec = await compareEdition(e, finder, { skip: currentDoneSequences(state, e, methodOf), brutoLookup });
           if (rec) {
             round.push(rec);
             saveRecord(rec, state, dryRun, fresh);

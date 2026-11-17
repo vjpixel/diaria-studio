@@ -45,7 +45,22 @@ describe("#13225: fallback do áudio do bruto em vários arquivos", () => {
 
   it("audio.wav do cache da montagem continua valendo no bruto multi-arquivo", async () => {
     const dir = tmp();
-    writeFileSync(join(dir, "audio.wav"), "");
+    // WAV de verdade com som: desde o #13417 o audio.wav também passa pela conferência de zeros digitais.
+    const pcm = Buffer.alloc(44 + 3200);
+    pcm.write("RIFF", 0);
+    pcm.writeUInt32LE(36 + 3200, 4);
+    pcm.write("WAVEfmt ", 8);
+    pcm.writeUInt32LE(16, 16);
+    pcm.writeUInt16LE(1, 20);
+    pcm.writeUInt16LE(1, 22);
+    pcm.writeUInt32LE(16000, 24);
+    pcm.writeUInt32LE(32000, 28);
+    pcm.writeUInt16LE(2, 32);
+    pcm.writeUInt16LE(16, 34);
+    pcm.write("data", 36);
+    pcm.writeUInt32LE(3200, 40);
+    for (let i = 0; i < 1600; i++) pcm.writeInt16LE(100 + (i % 7), 44 + 2 * i);
+    writeFileSync(join(dir, "audio.wav"), pcm);
     const finder: Finder = { mode: "local", list: async () => [], workDir: () => dir, brutoFile: noDrive };
     const res = await brutoWav("261110", dir, multiPlan(dir), finder, NO_LOOKUP);
     assert.deepEqual(res, { wav: join(dir, "audio.wav") });
