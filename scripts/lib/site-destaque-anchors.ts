@@ -39,6 +39,8 @@
  * pop-up na chegada que a decisão de 07/09/2026 (#7576) proíbe.
  */
 import { editionCtaScript } from "./edition-page-cta.ts";
+import { stripHtmlBasic } from "./strip-html.ts";
+import { escHtml } from "./html-escape.ts";
 
 /**
  * Folga acima da manchete quando o navegador rola até a âncora. A barra de
@@ -63,6 +65,71 @@ const HEADLINE_RE = /<a\b([^>]*\bclass="headline"[^>]*)>(\s*)(?:<h2\b([^>]*)>)?/
 
 /** Qualquer elemento que já use um dos ids das âncoras. */
 const ANCHOR_ID_PRESENT_RE = /\bid\s*=\s*["']d[1-3]["']/i;
+
+/**
+ * #13324: título dos destaques D2 e D3 (nessa ordem), lido do `<h2 id="d2">`
+ * e do `<h2 id="d3">` que `injectDestaqueAnchors` grava na página. É a forma
+ * estruturada dos títulos, sem separar a "linha fina" `"D2 | D3"` por `|`
+ * (um título pode conter `|`). Texto plano: tags internas removidas e
+ * entidades comuns decodificadas.
+ *
+ * Só o `<h2>` conta: a âncora no próprio `<a class="headline">` (render
+ * antigo, sem h2) não tem um fim de título confiável. Lista vazia quando a
+ * página não tem o h2 do D2; para no 1º destaque ausente (D3 sem D2 nunca
+ * vira um bullet solto) e ignora título vazio.
+ */
+export function extractSecondaryDestaqueTitles(html: string): string[] {
+  const titles: string[] = [];
+  for (const n of [2, 3]) {
+    const re = new RegExp(`<h2\\b[^>]*\\bid\\s*=\\s*["']${destaqueAnchorId(n)}["'][^>]*>([\\s\\S]*?)<\\/h2>`, "i");
+    const m = re.exec(html);
+    if (!m) break;
+    const text = stripHtmlBasic(m[1]);
+    if (!text) break;
+    titles.push(text);
+  }
+  return titles;
+}
+
+/**
+ * #13324: `<meta name="dek-item">`, uma por destaque secundário (D2, D3), na
+ * ordem. Forma estruturada da linha fina que a home lê para mostrar os
+ * títulos em bullets (`extractPageDekItems`, `site-home-page.ts`). A `<meta
+ * name="dek">` (`"D2 | D3"`, #7921) continua na página, para compatibilidade.
+ */
+export const DEK_ITEM_META_NAME = "dek-item";
+
+const DEK_ITEM_META_PRESENT_RE = new RegExp(`<meta\\s+name=["']${DEK_ITEM_META_NAME}["']`, "i");
+
+/** A página já declara alguma `<meta name="dek-item">`? */
+export function hasDekItemMetas(html: string): boolean {
+  return DEK_ITEM_META_PRESENT_RE.test(html);
+}
+
+/** As `<meta name="dek-item">` dos títulos dados (`""` para lista vazia). */
+export function renderDekItemMetas(titles: readonly string[]): string {
+  return titles.map((t) => `<meta name="${DEK_ITEM_META_NAME}" content="${escHtml(t)}">`).join("");
+}
+
+/**
+ * Backfill idempotente das `/p/` já publicadas: grava as `dek-item` a partir
+ * dos `<h2 id="d2|d3">` da própria página, logo depois da `<meta name="dek">`
+ * (ou do `</title>`, sem ela). Página que já tem `dek-item`, ou sem o h2 do
+ * D2, volta igual.
+ */
+export function backfillDekItems(html: string): { html: string; changed: boolean } {
+  if (hasDekItemMetas(html)) return { html, changed: false };
+  const titles = extractSecondaryDestaqueTitles(html);
+  if (titles.length === 0) return { html, changed: false };
+  const metas = renderDekItemMetas(titles);
+  const dekTag = /<meta\s+name=["']dek["'][^>]*>/i.exec(html);
+  if (dekTag) {
+    const at = dekTag.index + dekTag[0].length;
+    return { html: html.slice(0, at) + metas + html.slice(at), changed: true };
+  }
+  if (!/<\/title>/i.test(html)) return { html, changed: false };
+  return { html: html.replace(/<\/title>/i, (m) => `${m}${metas}`), changed: true };
+}
 
 /** A página já tem âncoras de destaque (ou algo usando os mesmos ids)? */
 export function hasDestaqueAnchors(html: string): boolean {

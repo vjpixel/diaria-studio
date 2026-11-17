@@ -41,11 +41,15 @@
  * Uso:
  *   npx tsx scripts/backfill-archive-page-links-seo.ts [--pages-dir workers/site/public/p] [--sitemap workers/site/public/sitemap.xml] [--dry-run]
  *   npx tsx scripts/backfill-archive-page-links-seo.ts --refresh-nav-only [--pages-dir ...] [--dry-run]
+ *   npx tsx scripts/backfill-archive-page-links-seo.ts --dek-items-only [--pages-dir ...] [--dry-run]
  *
  * `--refresh-nav-only` (#9723): só re-renderiza a nav prev/next que a página
  * JÁ tem com o `buildArchiveNeighborNavHtml` atual (`refreshArchiveNeighborNav`),
  * sem nenhum dos outros backfills. Foi como a seta `←` saiu das ~270 páginas
  * já gravadas; serve pra qualquer mudança futura de marcação da nav.
+ *
+ * `--dek-items-only` (#13324): só grava as `<meta name="dek-item">` (D2/D3)
+ * que a home lê para mostrar a linha fina em bullets (`backfillDekItems`).
  *
  * Saída (stdout): contagem de páginas alteradas (SEO / nav / total) sobre o
  * total de páginas listadas no sitemap. Exit 0 sempre que o processo
@@ -58,6 +62,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { backfillArchivePageOnDisk, extractPageTitle, refreshArchiveNeighborNav } from "./lib/site-archive-page-backfill.ts";
+import { backfillDekItems } from "./lib/site-destaque-anchors.ts";
 import type { ArchiveNeighbor } from "./lib/site-archive-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -116,6 +121,8 @@ export interface BackfillRunResult {
   /** #8390 — páginas cujo JSON-LD ganhou `image`. */
   jsonLdImageChanged: number;
   siteNavChanged: number;
+  /** #13324 */
+  dekItemsChanged: number;
 }
 
 /**
@@ -174,6 +181,7 @@ export function runBackfill(
       robotsChanged: 0,
       jsonLdImageChanged: 0,
       siteNavChanged: 0,
+      dekItemsChanged: 0,
     };
   }
 
@@ -220,6 +228,7 @@ export function runBackfill(
   let robotsChanged = 0;
   let jsonLdImageChanged = 0;
   let siteNavChanged = 0;
+  let dekItemsChanged = 0;
 
   for (const i of targetIndices) {
     const { slug, lastmod } = order[i];
@@ -252,6 +261,7 @@ export function runBackfill(
       if (result.addedRobots) robotsChanged++;
       if (result.addedJsonLdImage) jsonLdImageChanged++;
       if (result.addedSiteNav) siteNavChanged++;
+      if (result.addedDekItems) dekItemsChanged++;
       if (!opts.dryRun) writePage(p, result.html);
     }
   }
@@ -266,6 +276,7 @@ export function runBackfill(
     robotsChanged,
     jsonLdImageChanged,
     siteNavChanged,
+    dekItemsChanged,
   };
 }
 
@@ -275,14 +286,32 @@ export function runBackfill(
  * #8497, por exemplo, ainda não foi aplicado às páginas gravadas e não deve
  * entrar de carona). Devolve quantas páginas mudaram.
  */
-export function runRefreshNav(
+export function runRefreshNav(pagesDir: string, opts: PageTransformOptions = {}): { scanned: number; changed: number } {
+  return runPageTransform(pagesDir, refreshArchiveNeighborNav, opts);
+}
+
+/**
+ * #13324 — `--dek-items-only`: grava as `<meta name="dek-item">` (D2/D3, a
+ * partir dos `<h2 id="d2|d3">` da própria página) em toda página que ainda
+ * não as tem, sem os demais backfills (mesma razão do `--refresh-nav-only`:
+ * o menu global do #8497 não entra de carona). Idempotente.
+ */
+export function runDekItemsBackfill(pagesDir: string, opts: PageTransformOptions = {}): { scanned: number; changed: number } {
+  return runPageTransform(pagesDir, backfillDekItems, opts);
+}
+
+export interface PageTransformOptions {
+  dryRun?: boolean;
+  readPage?: (path: string) => string;
+  writePage?: (path: string, html: string) => void;
+  listSlugs?: () => string[];
+}
+
+/** Aplica `transform` a toda `{pagesDir}/{slug}/index.html`; grava só as que mudaram. */
+function runPageTransform(
   pagesDir: string,
-  opts: {
-    dryRun?: boolean;
-    readPage?: (path: string) => string;
-    writePage?: (path: string, html: string) => void;
-    listSlugs?: () => string[];
-  } = {},
+  transform: (html: string) => { html: string; changed: boolean },
+  opts: PageTransformOptions,
 ): { scanned: number; changed: number } {
   const readPage = opts.readPage ?? ((p: string) => readFileSync(p, "utf8"));
   const writePage = opts.writePage ?? ((p: string, html: string) => writeFileSync(p, html, "utf8"));
@@ -293,7 +322,7 @@ export function runRefreshNav(
     const p = join(pagesDir, slug, "index.html");
     if (!opts.listSlugs && !existsSync(p)) continue;
     scanned++;
-    const result = refreshArchiveNeighborNav(readPage(p));
+    const result = transform(readPage(p));
     if (!result.changed) continue;
     changed++;
     if (!opts.dryRun) writePage(p, result.html);
@@ -318,13 +347,22 @@ async function main() {
     return;
   }
 
+  if (hasFlag(args, "dek-items-only")) {
+    const r = runDekItemsBackfill(pagesDir, { dryRun });
+    console.log(
+      `backfill-archive-page-links-seo --dek-items-only: ${r.changed}/${r.scanned} páginas com dek-item gravado` +
+        `${dryRun ? " [dry-run]" : ""}`,
+    );
+    return;
+  }
+
   const sitemapXml = readFileSync(sitemapPath, "utf8");
   const result = runBackfill(pagesDir, sitemapXml, { dryRun });
 
   console.log(
     `backfill-archive-page-links-seo: ${result.changed}/${result.pagesFound} páginas alteradas ` +
       `(${result.seoChanged} SEO, ${result.navChanged} nav, ${result.robotsChanged} robots, ` +
-        `${result.jsonLdImageChanged} JSON-LD image, ${result.siteNavChanged} menu global) de ${result.totalInSitemap} no sitemap` +
+        `${result.jsonLdImageChanged} JSON-LD image, ${result.siteNavChanged} menu global, ${result.dekItemsChanged} dek-item) de ${result.totalInSitemap} no sitemap` +
       `${dryRun ? " [dry-run]" : ""}`,
   );
   if (result.pagesMissing.length > 0) {
