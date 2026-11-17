@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Mon, 16 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Tue, 17 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Deepfake de Drauzio Varella anuncia remédio milagroso</title>
+      <link>https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso</guid>
+      <pubDate>Tue, 17 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Hackers põem robôs para caçar falhas sem parar | Veterano do Linux recua sob enxurrada de patches</description>
+    </item>
     <item>
       <title>Google põe o Gemini 4 Hydrogen na sua Busca</title>
       <link>https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez</guid>
       <pubDate>Thu, 03 Sep 2026 09:00:00 GMT</pubDate>
       <description>Anthropic lança Fable e Mythos 5.1 | OpenAI diz que Astra cruzou limite crítico</description>
-    </item>
-    <item>
-      <title>Banco da Inglaterra teme colapso econômico global</title>
-      <link>https://diar.ia.br/p/banco-da-inglaterra-teme-colapso-economico-global</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/banco-da-inglaterra-teme-colapso-economico-global</guid>
-      <pubDate>Wed, 02 Sep 2026 09:00:00 GMT</pubDate>
-      <description>Google Antigravity resolve problemas de matemática | Plataformas passam a sinalizar conteúdo de IA</description>
     </item>
   </channel>
 </rss>
