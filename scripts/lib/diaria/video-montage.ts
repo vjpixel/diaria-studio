@@ -1951,7 +1951,19 @@ export function resolveBlocks(
   const guard = TAKE_DEFAULTS.guardS;
   const blocks: Partial<Record<BlockKey, ResolvedItem[]>> = {};
   const errors: string[] = [];
-  const limitAfter = (idx: number) => (idx < words.length ? words[idx].start - guard : opts.durationS);
+  // #13310: o início CRU da palavra (antes do `trimWordsToSilences`). Com o limiar de silêncio relativo, a
+  // inspiração e o ataque da palavra contam como silêncio e o início aparado anda até o fim dele; o respiro
+  // da vinheta (e o do fecho), limitado por esse início, invadia a preparação da tomada seguinte (261117, V9).
+  const rawSorted = [...rawWords].sort((a, b) => a.start - b.start);
+  const rawStartAt = (t: number): number => {
+    let best = t;
+    for (const w of rawSorted) {
+      if (w.start > t + 1e-6) break;
+      if (w.end >= t - 1e-6) best = w.start;
+    }
+    return Math.min(best, t);
+  };
+  const limitAfter = (idx: number) => (idx < words.length ? rawStartAt(words[idx].start) - guard : opts.durationS);
   // A fala ouvida, quando ela difere do texto pedido (#11362); undefined quando bate.
   const heardIfDiffers = (label: string, wanted: string | undefined, ws: Word[]): string | undefined => {
     if (wanted === undefined || ws.length === 0) return undefined;
