@@ -85,3 +85,23 @@ describe("previewClipAudioArgs (#13303)", () => {
     }
   });
 });
+
+describe("previewClipArgs: clipe além do fim do vídeo do arquivo (#13335)", () => {
+  it("vídeo-só sempre tem os quadros do plano, mesmo com o arquivo mais curto (2º arquivo do bruto)", { skip: !hasFfmpeg }, () => {
+    const dir = mkdtempSync(join(tmpdir(), "drift13335-"));
+    try {
+      const src = join(dir, "f2.mp4");
+      assert.equal(spawnSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=240x320:r=30:d=5", "-c:v", "libx264", "-preset", "ultrafast", src]).status, 0);
+      const crop = { x: 0, y: 0, w: 240, h: 320 };
+      const frames = 47;
+      for (const fit of [undefined, "fit", "blur-fill"] as const) {
+        const out = join(dir, `o-${fit ?? "fill"}.mp4`);
+        // começa 0,5 s antes do fim do arquivo: sem o preenchimento sobram ~15 quadros
+        const start = 4.5;
+        assert.equal(spawnSync("ffmpeg", previewClipArgs({ src, start, end: start + frames / FPS, crop, mirrored: false, fps: FPS, out, width: 320, height: 240, ...(fit ? { fit } : {}), videoOnly: true })).status, 0);
+        const n = Number(spawnSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", out], { encoding: "utf8" }).stdout.trim());
+        assert.equal(n, frames, `fit=${fit ?? "fill"}`);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
