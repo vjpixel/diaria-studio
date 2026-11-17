@@ -7,7 +7,9 @@ Vale para o gancho das duas capas do vídeo "diar.ia.br: notícias de IA": a hor
 direita).
 
 Visual da capa (fonte, tamanho do texto, fundo, logo, alerta): benchmark em
-`docs/youtube-capa-visual.md` (#13217).
+`docs/youtube-capa-visual.md` (#13217). Modelos de texto nas capas de 12 canais
+de IA e proposta de revisão desta diretriz (pendente de decisão do editor):
+`docs/youtube-capa-texto-benchmark.md` (#13253).
 
 Ferramenta: `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file F`
 pontua os candidatos contra esta diretriz e imprime o `--hook` pronto de cada
