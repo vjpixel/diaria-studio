@@ -454,6 +454,8 @@ export function resumeClarice(
     edition?: string;
     acceptIntentionalErrorChange?: boolean;
     retryNow?: boolean;
+    /** #13330 — teto total (`--deadline-ms`) repassado ao clarice-correct.ts; ausente = default dele (8 min). */
+    deadlineMs?: number;
     now?: () => Date;
     warn?: (msg: string) => void;
   } = {},
@@ -529,6 +531,7 @@ export function resumeClarice(
     // com o default, Stage 2, e pareciam do Stage 2).
     "--stage", "4",
     ...(opts.edition ? ["--edition", opts.edition] : []),
+    ...(opts.deadlineMs !== undefined ? ["--deadline-ms", String(Math.round(opts.deadlineMs))] : []),
   ];
   const raw = runner(args);
   const run: ClariceRunResult = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
@@ -672,4 +675,131 @@ export function classifyPostSteps(steps: PostStepRun[]): { hardFailures: PostSte
     else hardFailures.push(s);
   }
   return { hardFailures, attention };
+}
+
+// ---------------------------------------------------------------------------
+// Retry espaçado do resume (#13330)
+// ---------------------------------------------------------------------------
+
+/**
+ * #13330 — edição 261117: o Stage 2 seguiu sem a Clarice e o único `resume` do
+ * Stage 4 falhou ("não respondeu em 60s", payload de 3,8 KB). Dentro de UMA
+ * chamada do `clarice-correct.ts` as 3 tentativas por chunk ficam a 5 s e 10 s
+ * uma da outra: indisponibilidade de alguns minutos derruba todas. O resume
+ * passa a fazer rodadas espaçadas (default 2, 2 min de intervalo), cada uma com
+ * o teto total do filho (`--deadline-ms`) cortado para caber no orçamento.
+ *
+ * Orçamento: 9 min no total, abaixo dos 10 min em que o harness mata o comando
+ * Bash (`timeout: 600000`), deixando ~1 min para os passos pós-Clarice. A 1ª
+ * rodada ganha 4,5 min (uma falha típica de API, 3 tentativas de 60 s com
+ * backoff, sai em ~3min15s); a seguinte ganha o que sobrar, e só acontece se
+ * sobrarem ao menos `RESUME_MIN_ROUND_MS`.
+ */
+export const RESUME_SPACED_BUDGET_MS = 540_000;
+export const RESUME_SPACING_MS = 120_000;
+export const RESUME_FIRST_ROUND_DEADLINE_MS = 270_000;
+export const RESUME_MIN_ROUND_MS = 120_000;
+export const RESUME_DEFAULT_ROUNDS = 2;
+
+export interface ResumeRound {
+  /** 1-based. */
+  round: number;
+  /** ISO 8601 do início da rodada. */
+  startedAt: string;
+  /** Teto total repassado ao clarice-correct.ts nesta rodada; ausente = default dele (8 min). */
+  deadlineMs?: number;
+  status: ResumeOutcome["status"];
+  exitCode?: number;
+  reason?: string;
+}
+
+/** Só falha de API (exit 3/6 do clarice-correct.ts numa chamada que de fato rodou) merece outra rodada. */
+function isApiFailure(o: ResumeOutcome): o is Extract<ResumeOutcome, { status: "failed" }> {
+  return o.status === "failed" && COOLDOWN_EXITS.has(o.exitCode);
+}
+
+/**
+ * `resumeClarice` em rodadas espaçadas (#13330). Rodada seguinte só depois de
+ * falha de API (exit 3/6) — qualquer outro desfecho (aplicado, parcial, sem
+ * chave, editor mexeu no texto, cooldown `recently-attempted`) devolve na hora.
+ * As rodadas a partir da 2ª passam `retryNow` (a 1ª acabou de gravar o
+ * cooldown). `sleep` e `clock` injetáveis para teste sem espera real.
+ */
+export function resumeClariceSpaced(
+  editionDir: string,
+  runner: ClariceRunner,
+  opts: Parameters<typeof resumeClarice>[2] & {
+    rounds?: number;
+    spacingMs?: number;
+    budgetMs?: number;
+    firstRoundDeadlineMs?: number;
+    minRoundMs?: number;
+    sleep?: (ms: number) => void;
+    clock?: () => number;
+    onRetry?: (failed: ResumeRound, waitMs: number, next: number, total: number) => void;
+  } = {},
+): { outcome: ResumeOutcome; rounds: ResumeRound[] } {
+  const total = Math.max(1, Math.floor(opts.rounds ?? RESUME_DEFAULT_ROUNDS));
+  const spacing = opts.spacingMs ?? RESUME_SPACING_MS;
+  const budget = opts.budgetMs ?? RESUME_SPACED_BUDGET_MS;
+  const firstDeadline = opts.firstRoundDeadlineMs ?? RESUME_FIRST_ROUND_DEADLINE_MS;
+  const minRound = opts.minRoundMs ?? RESUME_MIN_ROUND_MS;
+  const clock = opts.clock ?? Date.now;
+  const sleep = opts.sleep ?? sleepSync;
+  const iso = (): string => (opts.now ? opts.now() : new Date(clock())).toISOString();
+  const start = clock();
+  const rounds: ResumeRound[] = [];
+  // Falha de API depois de 2+ rodadas: o `last_reason` do marcador (que os
+  // invariantes dos Stages 4 e 5 levam ao gate) diz que houve retry espaçado.
+  const finish = (outcome: ResumeOutcome): { outcome: ResumeOutcome; rounds: ResumeRound[] } => {
+    const marker = rounds.length > 1 && isApiFailure(outcome) ? readClaricePending(editionDir) : null;
+    if (marker?.last_reason) {
+      const when = rounds.map((x) => x.startedAt.slice(11, 16)).join(", ");
+      writeMarker(editionDir, { ...marker, last_reason: `${marker.last_reason} (${rounds.length} rodadas espaçadas: ${when} UTC)` });
+    }
+    return { outcome, rounds };
+  };
+
+  // Uma rodada só: comportamento de antes (teto default do filho, sem corte).
+  const single = total === 1;
+  let deadline = single ? undefined : Math.min(firstDeadline, budget);
+  for (let i = 1; ; i++) {
+    const startedAt = iso();
+    const outcome = resumeClarice(editionDir, runner, {
+      ...opts,
+      ...(i > 1 ? { retryNow: true } : {}),
+      ...(deadline !== undefined ? { deadlineMs: deadline } : {}),
+    });
+    const r: ResumeRound = {
+      round: i,
+      startedAt,
+      ...(deadline !== undefined ? { deadlineMs: deadline } : {}),
+      status: outcome.status,
+      ...(outcome.status === "failed" ? { exitCode: outcome.exitCode, reason: outcome.reason } : {}),
+    };
+    rounds.push(r);
+    if (!isApiFailure(outcome) || i >= total) return finish(outcome);
+    const remaining = budget - (clock() - start) - spacing;
+    if (remaining < minRound) return finish(outcome);
+    opts.onRetry?.(r, spacing, i + 1, total);
+    sleep(spacing);
+    deadline = remaining;
+  }
+}
+
+function sleepSync(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Aviso final quando a Clarice segue fora depois das rodadas (#13330): vai ao stderr e ao gate. */
+export function spacedFailureMessage(rounds: ResumeRound[]): string | null {
+  if (rounds.length < 2) return null;
+  const last = rounds[rounds.length - 1];
+  if (last.status !== "failed") return null;
+  const when = rounds.map((r) => r.startedAt.slice(11, 16)).join(", ");
+  return (
+    `Clarice segue fora depois de ${rounds.length} rodadas espaçadas (início ${when} UTC); ` +
+    `último motivo: ${last.reason ?? `exit ${last.exitCode}`}. ` +
+    "A edição vai ao gate sem a revisão da Clarice: o editor decide entre aprovar assim ou esperar a API."
+  );
 }
