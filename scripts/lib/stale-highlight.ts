@@ -24,9 +24,13 @@
  *           menos uma que não seja empresa de IA/produto dela.
  *      Até 30 dias, `fact-recurrence`, `story-twice-in-edition` e o dedup
  *      por URL já cobrem; repetir o aviso só somaria ruído.
- *   2. `findSourceStaleDates` — data de atualização/publicação declarada no
+ *   2. `findSourceStaleDate` — data de atualização/publicação declarada no
  *      texto da fonte ("Update on September 29, 2026", "Atualizado em
  *      29/09/2026") mais de `STALE_SOURCE_DATE_MAX_DAYS` dias antes da edição.
+ *      Vale a data declarada mais RECENTE (#13364): uma página publicada em
+ *      março e atualizada anteontem não é velha. O Stage 1 usa o mesmo
+ *      critério para rebaixar destaque com `date_unverified` (#13341,
+ *      `scripts/lib/stale-date-demotion.ts`).
  *   3. destaque com `date_unverified: true` em `01-approved.json` (a invariante
  *      lê o arquivo; aqui só a mensagem).
  *
@@ -308,24 +312,37 @@ export function extractDeclaredSourceDates(text: string): Array<{ text: string; 
 }
 
 /**
- * Datas declaradas na fonte mais de `maxDays` dias antes da edição. Data
- * POSTERIOR à edição ou dentro da janela não conta. Ordenadas da mais antiga
- * para a mais recente, sem repetir a mesma data.
+ * A data declarada mais RECENTE da fonte (#13364), com a distância em dias
+ * até a edição (negativa se for posterior a ela). `undefined` sem nenhuma
+ * data declarada válida.
+ *
+ * É a mais recente, não a mais antiga, que diz a idade da página: "Published
+ * March 3, 2026 … Updated November 15, 2026" é uma página atualizada há 2
+ * dias, e a data de uma matéria relacionada na barra lateral não envelhece a
+ * página quando ela mesma declara uma data nova.
  */
-export function findSourceStaleDates(
+export function latestDeclaredSourceDate(text: string, edition: string): SourceDateHit | undefined {
+  let latest: SourceDateHit | undefined;
+  for (const d of extractDeclaredSourceDates(text)) {
+    if (latest && d.iso <= latest.iso) continue;
+    const aammdd = d.iso.slice(2, 4) + d.iso.slice(5, 7) + d.iso.slice(8, 10);
+    const days = editionDaysBefore(aammdd, edition);
+    if (days === undefined) continue;
+    latest = { ...d, days };
+  }
+  return latest;
+}
+
+/**
+ * A data declarada mais recente da fonte, se até ela tiver mais de `maxDays`
+ * dias antes da edição (#13364). Data mais recente dentro da janela ou
+ * posterior à edição → `undefined`, mesmo havendo datas antigas no texto.
+ */
+export function findSourceStaleDate(
   text: string,
   edition: string,
   maxDays: number = STALE_SOURCE_DATE_MAX_DAYS,
-): SourceDateHit[] {
-  const seen = new Set<string>();
-  const hits: SourceDateHit[] = [];
-  for (const d of extractDeclaredSourceDates(text)) {
-    if (seen.has(d.iso)) continue;
-    seen.add(d.iso);
-    const aammdd = d.iso.slice(2, 4) + d.iso.slice(5, 7) + d.iso.slice(8, 10);
-    const days = editionDaysBefore(aammdd, edition);
-    if (days === undefined || days <= maxDays) continue;
-    hits.push({ ...d, days });
-  }
-  return hits.sort((a, b) => a.iso.localeCompare(b.iso));
+): SourceDateHit | undefined {
+  const latest = latestDeclaredSourceDate(text, edition);
+  return latest && latest.days > maxDays ? latest : undefined;
 }

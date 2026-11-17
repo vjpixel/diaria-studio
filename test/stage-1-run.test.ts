@@ -1232,6 +1232,53 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // #13341: antes, nenhum passo do Stage 1 lia a data declarada na página de
+  // um destaque com date_unverified; o D2 velho de 261117 só foi acusado no
+  // gate 4.
+  it("§1u-quinquies-b: demote-stale-date roda depois dos rebaixamentos e antes da fonte primária/dedup/render (#13341)", async () => {
+    return withTmpRoot("stage-1-run-p4-stale-date-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(
+        happyHandlers({ "demote-stale-date-highlights.ts": () => ok(JSON.stringify({ examined: 1, resolved: 1, demoted: 1, kept: 0, notes: ["⬇️ nota-13341"] })) }),
+      );
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const idx = (name: string) => calls.findIndex((c) => c.script.endsWith(name));
+        const generic = idx("demote-generic-study-highlights.ts");
+        const stale = idx("demote-stale-date-highlights.ts");
+        const lookup = idx("primary-source-active-lookup.ts");
+        const dedup = idx("dedup-intra-edition.ts");
+        const render = idx("render-categorized-md.ts");
+        assert.ok(stale >= 0, "demote-stale-date-highlights.ts tem que ser executado pelo runner");
+        assert.ok(generic < stale, "depois da penalidade de estudo genérico");
+        assert.ok(stale < lookup && stale < dedup && stale < render, "antes da fonte primária, do dedup intra-edição e do render");
+        const args = calls[stale].args;
+        assert.ok(args[args.indexOf("--categorized") + 1].endsWith("_internal/01-categorized.json"));
+        assert.equal(args[args.indexOf("--edition") + 1], "260423");
+        assert.ok(args[args.indexOf("--bodies-dir") + 1].endsWith("_internal/_forensic/link-verify-bodies"));
+        assert.ok(args[args.indexOf("--out-log") + 1].endsWith("_internal/01-stale-date-demoted.json"));
+        assert.ok(result.notes.includes("⬇️ nota-13341"), "notas do passo vão pro relatório do Stage 1");
+      });
+    });
+  });
+
+  it("§1u-quinquies-b falhando NÃO bloqueia o Stage 1 (fail-soft, #13341)", async () => {
+    return withTmpRoot("stage-1-run-p4-stale-date-soft-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(happyHandlers({ "demote-stale-date-highlights.ts": () => fail(1, "boom") }));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(!result.haltRequired);
+        assert.ok(result.notes.some((n) => n.includes("demote-stale-date-highlights") && n.includes("fail-soft")));
+        assert.ok(calls.some((c) => c.script.endsWith("render-categorized-md.ts")), "render segue depois da falha");
+      });
+    });
+  });
+
   // Regressão #10137: §1m-ter/§1y ficaram em DELEGATED_STEPS (#5415) e nada
   // os executava — zero `primary_source_substituted` desde 260818. Antes do
   // fix, primary-source-active-lookup.ts nunca era chamado pelo runner.

@@ -15,7 +15,8 @@ import { join } from "node:path";
 import {
   findStaleHighlightRepeats,
   formatStaleHighlightWarning,
-  findSourceStaleDates,
+  findSourceStaleDate,
+  latestDeclaredSourceDate,
   extractDeclaredSourceDates,
   extractStaleEntities,
 } from "../scripts/lib/stale-highlight.ts";
@@ -111,11 +112,11 @@ test("#13313: entidade que só abre frase não conta, a não ser com maiúscula 
 
 test("#13313: datas declaradas na fonte — 'Update on September 29, 2026' do D2 de 261117", () => {
   const src = "Introducing GPT-6 Sol and Luna\n\nUpdate on September 29, 2026: GPT-6.1 Sol is now available.\n\nToday we are releasing...";
-  const hits = findSourceStaleDates(src, "261117");
-  assert.equal(hits.length, 1);
-  assert.equal(hits[0].iso, "2026-09-29");
-  assert.equal(hits[0].days, 49);
-  assert.match(hits[0].text, /Update on September 29, 2026/);
+  const hit = findSourceStaleDate(src, "261117");
+  assert.ok(hit);
+  assert.equal(hit.iso, "2026-09-29");
+  assert.equal(hit.days, 49);
+  assert.match(hit.text, /Update on September 29, 2026/);
 });
 
 test("#13313: formatos de data declarada e o que não conta", () => {
@@ -127,8 +128,8 @@ test("#13313: formatos de data declarada e o que não conta", () => {
   // Data solta (contexto) não conta.
   assert.deepEqual(extractDeclaredSourceDates("Em março de 2024 a empresa lançou o modelo, em 29/09/2026 outro."), []);
   // Data recente ou posterior à edição não gera aviso.
-  assert.deepEqual(findSourceStaleDates("Atualizado em 15/11/2026", "261117"), []);
-  assert.deepEqual(findSourceStaleDates("Update on December 1, 2026", "261117"), []);
+  assert.equal(findSourceStaleDate("Atualizado em 15/11/2026", "261117"), undefined);
+  assert.equal(findSourceStaleDate("Update on December 1, 2026", "261117"), undefined);
   // Mês inválido é descartado.
   assert.deepEqual(extractDeclaredSourceDates("Updated on Foo 12, 2026"), []);
 });
@@ -185,6 +186,49 @@ test("#13313 regressão de ponta a ponta: as 3 invariantes acusam a edição 261
     const stale = checkHighlightSourceStaleDate(cur);
     assert.equal(stale.length, 1);
     assert.match(stale[0].message, /\[D2\].*2026-09-29.*49 dias/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// #13364: a data mais ANTIGA da fonte disparava o aviso mesmo com a página
+// atualizada há 2 dias. Antes do fix, estes casos geravam "parece ser de
+// 2026-03-03".
+test("#13364: publicação antiga + atualização recente na mesma fonte não avisa", () => {
+  const src = "Published March 3, 2026\n\nO texto da página.\n\nUpdated November 15, 2026: novos números.";
+  assert.equal(findSourceStaleDate(src, "261117"), undefined);
+  const latest = latestDeclaredSourceDate(src, "261117");
+  assert.equal(latest?.iso, "2026-11-15");
+  assert.equal(latest?.days, 2);
+  // Ordem no texto não importa.
+  assert.equal(findSourceStaleDate("Atualizado em 15/11/2026. Publicado em 03/03/2026.", "261117"), undefined);
+  // Data mais nova em outro ponto do texto (barra lateral) também conta como recente.
+  assert.equal(findSourceStaleDate("Published March 3, 2026. Related: Published November 16, 2026", "261117"), undefined);
+});
+
+test("#13364: com todas as datas antigas, o aviso cita a mais recente delas", () => {
+  const hit = findSourceStaleDate("Published March 3, 2026 ... Updated September 29, 2026", "261117");
+  assert.equal(hit?.iso, "2026-09-29");
+  assert.equal(hit?.days, 49);
+});
+
+test("#13364 ponta a ponta: a invariante não avisa fonte com atualização recente", () => {
+  const root = mkdtempSync(join(tmpdir(), "stale-highlight-13364-"));
+  try {
+    const cur = join(root, "editions", "2611", "261117");
+    mkdirSync(join(cur, "_internal", "fact-check-sources"), { recursive: true });
+    writeFileSync(join(cur, "02-reviewed.md"), block(1, "Título atual", "https://exemplo.com/a", "Corpo."));
+    writeFileSync(
+      join(cur, "_internal", "fact-check-sources", "manifest.json"),
+      JSON.stringify([{ destaque: 1, url: "https://exemplo.com/a", status: "ok" }]),
+    );
+    const d1 = join(cur, "_internal", "fact-check-sources", "d1.txt");
+    writeFileSync(d1, "Published March 3, 2026. Updated November 15, 2026: dado novo.");
+    assert.deepEqual(checkHighlightSourceStaleDate(cur), []);
+    writeFileSync(d1, "Published March 3, 2026. Updated September 29, 2026: dado novo.");
+    const stale = checkHighlightSourceStaleDate(cur);
+    assert.equal(stale.length, 1);
+    assert.match(stale[0].message, /2026-09-29.*mais recente.*49 dias/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
