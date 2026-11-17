@@ -4,11 +4,28 @@ import { isStudioIssueKey, issueKeyOfPlanEntry, toIssueKey } from "./issue-key.t
 import { readPlanJson } from "./plan-safe-backup.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 
+/**
+ * Marcos de timeline que `recordUnitTimeline` grava (#12011). Fonte ÚNICA: o
+ * `log-event.ts` usa o mesmo predicado para decidir se persiste o evento, em
+ * vez de repetir a regex (#13271: duas cópias divergentes deixariam um marco
+ * novo aceito por uma e descartado em silêncio pela outra).
+ *
+ * `review_done` (#13271): review e tratamento dos findings concluídos sobre o
+ * HEAD avaliado. `gate2` (#13271): as condições do Gate 2 passaram sobre o
+ * mesmo HEAD (CI, threads, retido). Separados de `ci_green` para medir onde
+ * vai o tempo entre a PR aberta e o merge.
+ */
+export const TIMELINE_EVENT_RE = /^(dispatch|pr_opened|ci_green|review_done|gate2|merged|draft|pulada|fix_iteration_[1-9]\d*)$/;
+
+export function isTimelineEvent(event: string): boolean {
+  return TIMELINE_EVENT_RE.test(event);
+}
+
 export function recordUnitTimeline(
   plan: Record<string, unknown>, ids: readonly (number | string)[],
   event: string, timestamp: string,
 ): Record<string, unknown> {
-  if (!/^(dispatch|pr_opened|ci_green|merged|draft|pulada|fix_iteration_[1-9]\d*)$/.test(event) ||
+  if (!isTimelineEvent(event) ||
       !Number.isFinite(Date.parse(timestamp))) return plan;
   const keys = new Set(ids.map(toIssueKey).filter(Boolean));
   const normalized = normalizeIssues<Record<string, unknown>>(plan as import("./plan-issues-normalize.ts").IssuesBearing<Record<string, unknown>>);

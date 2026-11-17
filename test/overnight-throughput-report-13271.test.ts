@@ -98,7 +98,7 @@ describe("aggregateThroughput", () => {
     assert.equal(r.segments["dispatch→merged"].n, 2);
     assert.equal(r.segments["dispatch→merged"].p50_ms, 60 * MIN);
     assert.equal(r.merged_units, 2);
-    assert.deepEqual(r.milestone_coverage, { dispatch: 2, pr_opened: 1, ci_green: 1, merged: 2 });
+    assert.deepEqual(r.milestone_coverage, { dispatch: 2, pr_opened: 1, ci_green: 1, review_done: 0, gate2: 0, merged: 2 });
     assert.equal(r.pulada_total, 4);
     assert.deepEqual(r.pulada_by_motivo, { "requer-sessao-local": 2, "pr-em-voo": 1, "(sem motivo)": 1 });
   });
@@ -107,9 +107,36 @@ describe("aggregateThroughput", () => {
     const md = renderThroughputMarkdown(aggregateThroughput([round]), 1);
     assert.match(md, /Mergeadas: 3 \| por rodada: 3,0 \| por hora: 1,0/);
     assert.match(md, /\| dispatch→merged \| 1h00m \| 1h00m \| 2 \|/);
-    assert.match(md, /Cobertura do timeline \(de 2 unidades com merged\): dispatch 2, pr_opened 1, ci_green 1, merged 2/);
+    assert.match(md, /Cobertura do timeline \(de 2 unidades com merged\): dispatch 2, pr_opened 1, ci_green 1, review_done 0, gate2 0, merged 2/);
     assert.match(md, /\| requer-sessao-local \| 2 \|/);
     assert.match(md, /\| \(outros 2 motivos\) \| 2 \|/);
+  });
+
+  it("separa review, espera pelo Gate 2 e fila de merge, sem pesar o lote 2x (#13271 alavanca 4)", () => {
+    const timeline = {
+      pr_opened: "2026-11-16T00:00:00Z",
+      ci_green: "2026-11-16T00:01:00Z",
+      review_done: "2026-11-16T00:10:00Z",
+      gate2: "2026-11-16T00:12:00Z",
+      merged: "2026-11-16T00:13:00Z",
+    };
+    const r = aggregateThroughput([{ dir: "261116", issues: [
+      issue({ number: 1, pr: 100, status: "mergeada", timeline }),
+      issue({ number: 2, pr: 100, status: "mergeada", timeline }),
+    ] }]);
+    for (const [name, minutes] of [
+      ["pr_opened→review_done", 10], ["ci_green→gate2", 11],
+      ["review_done→gate2", 2], ["gate2→merged", 1],
+    ] as const) {
+      assert.deepEqual(r.segments[name], { p50_ms: minutes * MIN, p90_ms: minutes * MIN, n: 1 });
+    }
+    assert.equal(r.milestone_coverage.review_done, 1);
+    assert.equal(r.milestone_coverage.gate2, 1);
+    assert.match(renderThroughputMarkdown(r), /\| gate2→merged \| 1m \| 1m \| 1 \|/);
+    // Rodada sem os marcos novos: trechos vazios, nunca chute.
+    const legacy = aggregateThroughput([round]);
+    assert.equal(legacy.segments["gate2→merged"].n, 0);
+    assert.equal(legacy.segments["pr_opened→review_done"].p50_ms, null);
   });
 
   it("nenhuma rodada: taxas nulas, sem lançar", () => {
