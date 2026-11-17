@@ -302,7 +302,7 @@ import {
   PREVIEW_SUBTITLE_STYLE_HORIZONTAL,
   SILENCE_DETECT,
   SPEECH_DEFAULTS,
-  alignPunctuationToScript,
+  alignHeardTextToScript,
   applyVocabularyToWords,
   horizontalSequenceName,
   sequenceKey,
@@ -4218,7 +4218,7 @@ export function exportSrtProblems(input: {
  * roteiro (#11960), alinhado à fala transcrita do export; sem os cortes da
  * montagem (os tempos do export não são os da sequência), o fim é a duração do export.
  * #12198: `text: "ouvido"` faz a legenda da fala do export (grafia e pontuação
- * do roteiro onde casa, `alignPunctuationToScript`), para export reeditado
+ * do roteiro onde casa e nos trechos curtos ancorados, `alignHeardTextToScript`, #13257), para export reeditado
  * depois do build; `problems` não vazio = legenda imprópria, o chamador não grava.
  */
 export function srtFromExport(input: {
@@ -4234,9 +4234,12 @@ export function srtFromExport(input: {
   const label = `${input.plan.spec.name} (export)`;
   if (input.text === "ouvido") {
     const inVideo = heard.filter((w) => w.start < input.durationS);
-    const words = alignPunctuationToScript(inVideo, input.plan.script, input.aliases);
+    // #13257: a grafia do roteiro também nos trechos curtos que o Whisper errou, e o ruído do fim sai.
+    const { words, fixes, droppedTail } = alignHeardTextToScript(inVideo, input.plan.script, input.aliases);
     const cues = segmentCues(words);
     const notes = [`[premissa] ${label}: legenda com o texto ouvido no export (--heard-text), não o roteiro do plan.json; conferir grafia e números antes de subir (#12198)`];
+    for (const fx of fixes) notes.push(`[premissa] ${label}: ouvido "${fx.heard}", legenda com o roteiro "${fx.script}" (${fx.start.toFixed(2)} s, grafia, #13257)`);
+    if (droppedTail.length) notes.push(`[aviso] ${label}: ${droppedTail.length} palavra(s) de ruído depois do fim da fala descartada(s): "${joinWordTexts(droppedTail.map((w) => w.text))}" (#13257)`);
     const dropped = heard.length - inVideo.length;
     if (dropped) notes.push(`[aviso] ${label}: ${dropped} palavra(s) ouvida(s) depois do fim do export descartada(s)`);
     return { srt: cuesToSrt(cues), notes, problems: exportSrtProblems({ cues: cueTimings(cues), text: "ouvido" }) };

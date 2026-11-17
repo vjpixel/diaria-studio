@@ -129,6 +129,11 @@ título do vídeo (o do roteiro), que pode não ser o do D1.
 3. **A capa do vertical também se explica sozinha.** Na grade do perfil ela
    aparece sem título, então precisa de sujeito reconhecível ("Sua Busca",
    "Google").
+   **O frame da capa vertical mostra a 1ª legenda da fala**, legível acima do
+   painel do gancho (preferência do editor na 261116, #13256: "a capa deve
+   incluir a 1a legenda"). `gen-youtube-thumb.ts --short-cover --srt {SRT do
+   vertical}` sugere o instante dela e põe o painel logo abaixo da caixa da
+   legenda; sem `--srt`, o painel default (0,62) a cobre.
 4. **O título do vertical 1 é sempre o do horizontal** (decisão do editor no
    mesmo dia). O vertical 1 termina chamando para o "vídeo completo no
    YouTube": com o mesmo título a pessoa reconhece o vídeo, e no Short o vídeo
