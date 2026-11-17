@@ -60,3 +60,52 @@ describe("#13436: mais de um corte por vídeo na mesma fala", () => {
     assert.deepEqual(res.segmentos, ["Fim."]);
   });
 });
+
+describe("#13436 (review): trechos com vírgula encostada, em qualquer ordem", () => {
+  const VIRG = "Primeiro isto, depois aquilo, por fim o resto.";
+  const VIRG_MEIO = "Primeiro isto, depois aquilo, e mais isso, por fim o resto.";
+  function comTexto(texto: string, cortes: unknown): RoteiroFalas {
+    const r = roteiro(cortes);
+    r.falas.find((x) => x.id === "H4")!.texto = texto;
+    return r;
+  }
+  const h4 = (r: RoteiroFalas) => propostaBlocosDoRoteiro(r).sequencias.find((s) => s.video === "vertical1")!.falas.find((x) => x.id === "H4")!;
+
+  it("o resultado não depende da ordem da lista", () => {
+    assert.deepEqual(segmentosSemTrechos(VIRG, ["por fim o resto.", "depois aquilo,"]), ["Primeiro isto."]);
+    assert.deepEqual(segmentosSemTrechos(VIRG, ["depois aquilo,", "por fim o resto."]), ["Primeiro isto."]);
+    assert.deepEqual(segmentosSemTrechos(VIRG_MEIO, ["e mais isso,", "depois aquilo,"]), ["Primeiro isto", "por fim o resto."]);
+    assert.deepEqual(segmentosSemTrechos(VIRG_MEIO, ["depois aquilo,", "e mais isso,"]), ["Primeiro isto", "por fim o resto."]);
+  });
+
+  it("validador aceita e a montagem aplica os dois cortes (nunca a fala inteira)", () => {
+    for (const cortes of [["por fim o resto.", "depois aquilo,"], ["depois aquilo,", "por fim o resto."]]) {
+      const r = comTexto(VIRG, { vertical1: cortes });
+      assert.deepEqual(validarRoteiroFalas(r), []);
+      assert.equal(h4(r).texto, "Primeiro isto.");
+      const d = duracaoPorVideo(r).find((x) => x.video === "vertical1")!;
+      const sem = duracaoPorVideo(comTexto(VIRG, undefined)).find((x) => x.video === "vertical1")!;
+      assert.equal(sem.palavras - d.palavras, 6);
+    }
+  });
+
+  it("reserva encostada no corte fixo é localizada no texto original", () => {
+    const r = comTexto(VIRG, { vertical1: ["por fim o resto.", { trecho: "depois aquilo,", reserva: true }] });
+    assert.deepEqual(validarRoteiroFalas(r), []);
+    const p = propostaBlocosDoRoteiro(r);
+    const res = p.cortesReserva.filter((c) => c.id === "H4" && c.video === "vertical1");
+    assert.equal(res.length, 1);
+    assert.equal(res[0].texto, "Primeiro isto, depois aquilo.");
+    assert.deepEqual(res[0].segmentos, ["Primeiro isto."]);
+    assert.ok(!p.avisos.some((a) => a.startsWith("H4:")));
+  });
+
+  it("duas reservas no mesmo pedaço viram uma entrada só (achado P3 do review)", () => {
+    const r = roteiro({ vertical1: [{ trecho: A, reserva: true }, { trecho: B, reserva: true }] });
+    const res = propostaBlocosDoRoteiro(r).cortesReserva.filter((c) => c.id === "H4" && c.video === "vertical1");
+    assert.equal(res.length, 1);
+    assert.equal(res[0].texto, TEXTO);
+    assert.equal(res[0].trecho, `${A} / ${B}`);
+    assert.deepEqual(res[0].segmentos, ["O programa abre hoje.", "Fim."]);
+  });
+});

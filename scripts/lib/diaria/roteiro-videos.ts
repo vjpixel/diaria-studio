@@ -181,6 +181,7 @@ export interface CorteReserva {
   id: string;
   /** A fala inteira, como está no roteiro: o item do `blocks.json` que o corte troca (#13140). */
   texto: string;
+  /** O trecho da reserva; duas reservas no mesmo pedaço saem juntas, separadas por " / " (#13436). */
   trecho: string;
   /** Os itens que substituem a fala inteira quando o corte entra. */
   segmentos: string[];
@@ -227,6 +228,54 @@ export function falasDoVideo(roteiro: Pick<RoteiroFalas, "falas" | "porVideo">, 
   return { falas: ordenadas, declarada: true };
 }
 
+/** O trecho de `antes` que muda em `depois` (prefixo e sufixo iguais de fora): `antes[de..ate)` vira `novos`. */
+function trechoQueMuda(antes: readonly string[], depois: readonly string[]): { de: number; ate: number; novos: string[] } {
+  let p = 0;
+  while (p < antes.length && p < depois.length && antes[p] === depois[p]) p++;
+  let s = 0;
+  while (s < antes.length - p && s < depois.length - p && antes[antes.length - 1 - s] === depois[depois.length - 1 - s]) s++;
+  return { de: p, ate: antes.length - s, novos: depois.slice(p, depois.length - s) };
+}
+
+/**
+ * Os cortes de reserva de uma fala num vídeo, juntos por pedaço do que já vai
+ * ao ar (#13436). Cada reserva é localizada no texto ORIGINAL, aplicada junto
+ * com os cortes fixos, e o pedaço de `noAr` que ela troca sai da comparação;
+ * as reservas que caem no mesmo pedaço viram uma entrada só (uma troca, a
+ * economia das duas), para a montagem nunca receber duas instruções para o
+ * mesmo item. O que não dá para localizar vira `erro`, para o aviso.
+ */
+export function reservasPorPedaco(
+  texto: string,
+  fixos: readonly string[],
+  noAr: readonly string[],
+  reservas: readonly string[],
+): Array<{ pedaco: string; trechos: string[]; segmentos: string[] } | { trechos: string[]; erro: string }> {
+  const out: Array<{ pedaco: string; trechos: string[]; segmentos: string[] } | { trechos: string[]; erro: string }> = [];
+  const porPedaco = new Map<number, string[]>();
+  for (const r of reservas) {
+    const depois = segmentosSemTrechos(texto, [...fixos, r]);
+    if (depois === null) {
+      out.push({ trechos: [r], erro: "não pôde ser localizado na fala junto com os cortes fixos" });
+      continue;
+    }
+    const d = trechoQueMuda(noAr, depois);
+    if (d.ate - d.de !== 1) {
+      out.push({ trechos: [r], erro: "não cabe num pedaço só do que vai ao ar" });
+      continue;
+    }
+    porPedaco.set(d.de, [...(porPedaco.get(d.de) ?? []), r]);
+  }
+  for (const [k, trechos] of [...porPedaco].sort((a, b) => a[0] - b[0])) {
+    const depois = segmentosSemTrechos(texto, [...fixos, ...trechos]);
+    const d = depois ? trechoQueMuda(noAr, depois) : null;
+    if (!d || d.de !== k || d.ate !== k + 1) out.push({ trechos, erro: "não podem ser aplicados juntos no mesmo pedaço" });
+    else if (!d.novos.length) out.push({ trechos, erro: "tira o pedaço inteiro que vai ao ar" });
+    else out.push({ pedaco: noAr[k], trechos, segmentos: d.novos });
+  }
+  return out;
+}
+
 /**
  * A proposta de blocos da montagem a partir do roteiro (#12751): cada fala no
  * bloco dela, com os `targets` das sequências que a usam (omitidos quando são
@@ -266,15 +315,17 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
       const cortes = cortesDaFala(f, v);
       const fixos = cortes.filter((c) => !c.reserva).map((c) => c.trecho);
       const segFixos = fixos.length ? segmentosSemTrechos(f.texto, fixos) : null;
+      if (fixos.length && segFixos === null) avisos.push(`${f.id}: os cortes do ${VIDEO_LABEL[v]} não puderam ser aplicados juntos; a fala foi inteira (rode o validador do roteiro)`);
       // A reserva troca o item que já vai ao ar (o pedaço da fala depois dos cortes fixos, #13436),
       // senão a montagem não acha a fala nem distingue "já aplicado".
       const noAr = segFixos?.length ? segFixos : [f.texto];
-      for (const c of cortes.filter((x) => x.reserva)) {
-        const pedaco = noAr.find((p) => segmentosSemTrechos(p, [c.trecho]) !== null);
-        const segmentos = pedaco ? segmentosSemTrechos(pedaco, [c.trecho]) : null;
-        if (!pedaco || !segmentos?.length) continue;
-        const economia = palavrasDe(pedaco).length - palavrasDe(segmentos.join(" ")).length;
-        cortesReserva.push({ video: v, chave: chaveDe[v], id: f.id, texto: pedaco, trecho: c.trecho, segmentos, economiaS: Math.round((economia / ppm) * 60) });
+      for (const r of reservasPorPedaco(f.texto, fixos, noAr, cortes.filter((x) => x.reserva).map((x) => x.trecho))) {
+        if ("erro" in r) {
+          avisos.push(`${f.id}: corte de reserva do ${VIDEO_LABEL[v]} (${r.trechos.map((t) => `"${t}"`).join(", ")}) ${r.erro}; aplicar à mão se o vídeo passar do alvo`);
+          continue;
+        }
+        const economia = palavrasDe(r.pedaco).length - palavrasDe(r.segmentos.join(" ")).length;
+        cortesReserva.push({ video: v, chave: chaveDe[v], id: f.id, texto: r.pedaco, trecho: r.trechos.join(" / "), segmentos: r.segmentos, economiaS: Math.round((economia / ppm) * 60) });
       }
       if (segFixos?.length) falas.push({ id: f.id, bloco, texto: segFixos.join(" "), segmentos: segFixos, cortado: fixos.join(" / ") });
       else falas.push({ id: f.id, bloco, texto: f.texto });
@@ -829,10 +880,15 @@ export function avisosDuracao(roteiro: Pick<RoteiroFalas, "falas">, cfg: Roteiro
     for (const f of roteiro.falas) {
       if (!f.videos.includes(d.video)) continue;
       const base = palavrasDe(textoNoVideo(f, d.video)).length;
+      const fixos = cortesDaFala(f, d.video).filter((c) => !c.reserva).map((c) => c.trecho);
       for (const c of cortesDaFala(f, d.video)) {
         if (!c.reserva) continue;
-        const seg = segmentosSemTrechos(textoNoVideo(f, d.video), [c.trecho]);
-        if (!seg) continue;
+        // #13436: a reserva sai do texto ORIGINAL junto com os cortes fixos, nunca do texto já limpo.
+        const seg = segmentosSemTrechos(f.texto, [...fixos, c.trecho]);
+        if (!seg) {
+          sugestoes.push(`corte de reserva da ${f.id} ("${c.trecho}", não localizado junto com os cortes fixos: conferir à mão)`);
+          continue;
+        }
         const eco = Math.round(((base - palavrasDe(seg.join(" ")).length) / cfg.palavrasPorMinuto) * 60);
         sugestoes.push(`corte de reserva da ${f.id} ("${c.trecho}", ~${eco} s)`);
       }
