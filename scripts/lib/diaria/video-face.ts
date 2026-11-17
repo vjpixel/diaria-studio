@@ -9,9 +9,12 @@
  *   - `pickFace`: o maior rosto com centro nos 2/3 de cima do quadro (o botão
  *     do microfone no peito vira falso rosto); nenhum lá em cima = sem rosto;
  *   - `itemFramings`: 3 frames por item (25/50/75% da fala); a mediana dos
- *     achados dá `faceX` (centro do rosto) e `eyeY` (40% da altura do rosto a
- *     partir do topo), em fração do quadro já desespelhado. Item com rosto em
- *     menos de 2 frames não ganha framing (o do arquivo continua valendo).
+ *     achados dá `faceX` (centro do rosto), `eyeY` (40% da altura do rosto a
+ *     partir do topo) e `mouthY` (`MOUTH_IN_FACE` da altura do rosto, #13414),
+ *     em fração do quadro já desespelhado. Detector que devolve os pontos dos
+ *     olhos e da boca (MediaPipe, medição da #13370) tem os pontos usados no
+ *     lugar das frações da caixa. Item com rosto em menos de 2 frames não
+ *     ganha framing (o do arquivo continua valendo).
  *
  * Diferença do edicao-video: lá o `face --write` grava também `zoom` por item;
  * aqui as escalas são por sequência (`scales`, alternância nos cortes), então
@@ -23,6 +26,13 @@ export interface FaceBox {
   y: number;
   w: number;
   h: number;
+  /**
+   * Linha dos olhos e centro da boca (px do frame), quando o detector devolve
+   * pontos do rosto (MediaPipe, #13370). O Haar não devolve: valem as frações
+   * da caixa (`EYE_IN_FACE`, `MOUTH_IN_FACE`).
+   */
+  eyeY?: number;
+  mouthY?: number;
 }
 
 export interface FrameDetection {
@@ -55,6 +65,15 @@ export const FACE_SAMPLE_FRACTIONS = [0.25, 0.5, 0.75] as const;
 /** Linha dos olhos a 40% da altura da caixa do rosto (Haar), como no edicao-video. */
 export const EYE_IN_FACE = 0.4;
 
+/**
+ * Centro da boca na caixa do rosto do Haar, em fração da altura dela (#13414).
+ * [premissa] calibrada em 17/11/2026 em 2 frames do bruto da 261117 (720 px,
+ * desespelhado), com o ponto da boca do MediaPipe dentro da caixa do Haar:
+ * 0,737 e 0,814; os olhos, no mesmo cálculo, deram 0,397 e 0,409, batendo com
+ * `EYE_IN_FACE`. Recalibrar com mais edições pela medição da #13370.
+ */
+export const MOUTH_IN_FACE = 0.775;
+
 const median = (xs: number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[Math.floor(s.length / 2)] : NaN;
@@ -66,7 +85,7 @@ export interface ItemFaceResult {
   /** Frames com rosto achado / frames analisados. */
   found: number;
   total: number;
-  framing: { faceX: number; eyeY: number } | null;
+  framing: { faceX: number; eyeY: number; mouthY: number } | null;
   /** Altura do rosto em fração do quadro (mediana); null sem rosto. */
   faceH: number | null;
 }
@@ -86,9 +105,10 @@ export function itemFramings(dets: readonly FrameDetection[], keys: readonly str
     });
     if (hits.length < Math.min(MIN_FACE_FRAMES, mine.length) || !hits.length) return { key, found: hits.length, total: mine.length, framing: null, faceH: null };
     const faceX = median(hits.map(({ d, f }) => (f.x + f.w / 2) / d.w));
-    const eyeY = median(hits.map(({ d, f }) => (f.y + f.h * EYE_IN_FACE) / d.h));
+    const eyeY = median(hits.map(({ d, f }) => (f.eyeY ?? f.y + f.h * EYE_IN_FACE) / d.h));
+    const mouthY = median(hits.map(({ d, f }) => (f.mouthY ?? f.y + f.h * MOUTH_IN_FACE) / d.h));
     const faceH = median(hits.map(({ d, f }) => f.h / d.h));
-    return { key, found: hits.length, total: mine.length, framing: { faceX: r3(faceX), eyeY: r3(eyeY) }, faceH: r3(faceH) };
+    return { key, found: hits.length, total: mine.length, framing: { faceX: r3(faceX), eyeY: r3(eyeY), mouthY: r3(mouthY) }, faceH: r3(faceH) };
   });
 }
 
@@ -102,23 +122,31 @@ export function itemFramings(dets: readonly FrameDetection[], keys: readonly str
  */
 export function applyItemFramings(
   raw: { blocks: Record<string, Array<Record<string, unknown>>> },
-  results: readonly ItemFaceResult[],
+  results: ReadonlyArray<Omit<ItemFaceResult, "framing"> & { framing: { faceX: number; eyeY: number; mouthY?: number } | null }>,
   opts: { overwrite?: boolean } = {},
-): { changed: number; kept: Array<{ key: string; measured: { faceX: number; eyeY: number } }> } {
+): { changed: number; kept: Array<{ key: string; measured: { faceX: number; eyeY: number; mouthY?: number } }> } {
   let changed = 0;
-  const kept: Array<{ key: string; measured: { faceX: number; eyeY: number } }> = [];
+  const kept: Array<{ key: string; measured: { faceX: number; eyeY: number; mouthY?: number } }> = [];
   for (const r of results) {
     if (!r.framing) continue;
     const [block, idx] = r.key.split("#");
     const it = raw.blocks[block]?.[Number(idx)];
     if (!it) continue;
-    const prev = it.framing as { faceX?: number; eyeY?: number } | undefined;
-    if (prev && prev.faceX === r.framing.faceX && prev.eyeY === r.framing.eyeY) continue;
+    const prev = it.framing as { faceX?: number; eyeY?: number; mouthY?: number } | undefined;
+    if (prev && prev.faceX === r.framing.faceX && prev.eyeY === r.framing.eyeY) {
+      // #13414: mesmo rosto e olhos de um `face --write` anterior, sem a boca: a boca entra (só acrescenta).
+      if (prev.mouthY === undefined && r.framing.mouthY !== undefined) {
+        it.framing = { ...prev, mouthY: r.framing.mouthY };
+        changed++;
+      }
+      continue;
+    }
     if (prev && !opts.overwrite) {
       kept.push({ key: r.key, measured: r.framing });
       continue;
     }
-    it.framing = { faceX: r.framing.faceX, eyeY: r.framing.eyeY };
+    // #13414: a boca medida vai junto (a vertical ancora por ela); sem ela, a estimativa olhos + 0,10.
+    it.framing = { faceX: r.framing.faceX, eyeY: r.framing.eyeY, ...(r.framing.mouthY !== undefined ? { mouthY: r.framing.mouthY } : {}) };
     changed++;
   }
   return { changed, kept };

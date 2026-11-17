@@ -29,6 +29,9 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#12559) os vídeos da pasta na ordem de gravação e o papel proposto de cada um
  *       (mestre horizontal em partes, vertical nativa) e a edição pela fala (--listen).
  *   face AAMMDD [--write]  (#12560) rosto (OpenCV) em 3 frames por item -> framing do item
+ *   face-compare AAMMDD --mp-python PY --mp-model TFLITE
+ *       (#13370) MEDIÇÃO: Haar x MediaPipe nos mesmos frames do `face`, contra o framing
+ *       aprovado do blocks.json; grava `face-compare.json` no work dir, não muda nada.
  *   gaze AAMMDD [--seq K]  (#12560) folha de olhar/expressão por clipe (`gaze-{seq}.jpg`)
  *   verify-xml AAMMDD [--seq K] [--no-transcribe]
  *       (#12561) lê o áudio do PRÓPRIO XML, mede as bordas (SOM CORTADO) e compara a fala
@@ -364,6 +367,7 @@ import {
   frameCropLegend,
   loudnessWarning,
   framingWarningsByFile,
+  sequenceAnchor,
   makeMatcher,
   mapWordsToSequence,
   trimWordsToSilences,
@@ -473,6 +477,7 @@ import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEn
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
+import { compareFaceDetectors, FACE_COMPARE_TOL, FACE_DETECTORS, type FaceReference } from "./lib/diaria/video-face-compare.ts";
 import {
   alternativesFromDecupagem,
   blocksFromDecupagem,
@@ -616,7 +621,7 @@ const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|retranscribe|frame|face|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -1481,7 +1486,7 @@ export function audioDurationMatches(actualS: number, expectS: number, fps: numb
 }
 
 /** Passos que precisam de imagem: no modo áudio (#11552) param antes, dizendo o motivo. */
-export const VIDEO_ONLY_COMMANDS = ["frame", "face", "gaze", "build", "verify-xml", "srt", "preview", "review"] as const;
+export const VIDEO_ONLY_COMMANDS = ["frame", "face", "face-compare", "gaze", "build", "verify-xml", "srt", "preview", "review"] as const;
 
 /**
  * Modo áudio (#11552): com `source.json` de bruto só de áudio, os passos que
@@ -1618,6 +1623,8 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
         ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS } : {}),
+        // #13414: a vertical ancorada pela boca muda o Center sem mudar o plano: versão nova, nunca o _V{n} já importado regravado.
+        ...(sequenceAnchor(plan.spec).mouthFraction !== undefined ? { anchor: { mouthFraction: sequenceAnchor(plan.spec).mouthFraction } } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
         ...(opts.trechoMarkers?.[sequenceKey(plan.spec)]?.length ? { trechoMarkers: opts.trechoMarkers[sequenceKey(plan.spec)] } : {}),
       }),
@@ -2695,7 +2702,8 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-vf", vf, out]);
   console.log(out);
   for (const w of overlays.warnings) console.error(`[aviso] ${w}`);
-  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX), linha dos olhos (eyeY) e caixa da caneca (framing.mug) em fração do quadro, no framing do blocks.json; recortes: ${frameCropLegend()} (#11939, #12565)`);
+  for (const w of overlays.premises) console.error(`[premissa] ${w}`);
+  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX), linha dos olhos (eyeY), linha da boca (mouthY) e caixa da caneca (framing.mug) em fração do quadro, no framing do blocks.json; recortes: ${frameCropLegend()} (#11939, #12565)`);
   return 0;
 }
 
@@ -2922,17 +2930,18 @@ const FACE_PY = join(ROOT, "scripts", "video", "face_detect.py");
  * relato com a medida nova; `--overwrite` troca também esses. Rodar de novo
  * ao trocar uma tomada (com `--overwrite`, se o `face` já gravou antes).
  */
-function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
-  const { source, resolved } = plans(ctx);
-  const dir = join(ctx.workDir, "face-tmp");
+/** Os frames do `face` (25/50/75% de cada item) em `dir`, com o `in.json` do face_detect.py; devolve as chaves `{bloco}#{i}`. */
+function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>, dir: string): { keys: string[]; items: Map<string, ResolvedItem> } {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const jobs: Array<{ key: string; path: string }> = [];
   const keys: string[] = [];
+  const byKey = new Map<string, ResolvedItem>();
   for (const [block, items] of Object.entries(resolved) as Array<[string, ResolvedItem[]]>) {
     items.forEach((it, i) => {
       const key = `${block}#${i}`;
       keys.push(key);
+      byKey.set(key, it);
       FACE_SAMPLE_FRACTIONS.forEach((q, k) => {
         const path = join(dir, `${block}-${i}-${k}.png`);
         grabFrame(source, it.interval.start + (it.interval.end - it.interval.start) * q, path);
@@ -2941,12 +2950,19 @@ function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
     });
   }
   writeJson(join(dir, "in.json"), jobs);
+  return { keys, items: byKey };
+}
+
+function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
+  const { source, resolved } = plans(ctx);
+  const dir = join(ctx.workDir, "face-tmp");
+  const { keys } = grabItemFaceFrames(source, resolved, dir);
   run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "out.json")], { inheritStderr: true });
   const results = itemFramings(readJson<FrameDetection[]>(join(dir, "out.json"), "face_detect"), keys);
   for (const r of results) {
     const [block, idx] = r.key.split("#");
     if (!r.framing) console.error(`[aviso] ${block}[${idx}]: rosto não detectado em ${r.total} frame(s); mantém o framing atual`);
-    else console.log(`${block}[${idx}]  ${r.found}/${r.total} frames  faceX ${r.framing.faceX}  eyeY ${r.framing.eyeY}  rosto ${((r.faceH ?? 0) * 100).toFixed(1)}% da altura`);
+    else console.log(`${block}[${idx}]  ${r.found}/${r.total} frames  faceX ${r.framing.faceX}  eyeY ${r.framing.eyeY}  mouthY ${r.framing.mouthY}  rosto ${((r.faceH ?? 0) * 100).toFixed(1)}% da altura`);
   }
   rmSync(dir, { recursive: true, force: true });
   if (!write) {
@@ -2959,9 +2975,60 @@ function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
   if (changed) writeFileAtomic(path, JSON.stringify(raw, null, 2) + "\n");
   for (const k of kept) {
     const [block, idx] = k.key.split("#");
-    console.error(`[premissa] ${block}[${idx}]: já tinha framing no blocks.json; mantido (medido agora: ${k.measured.faceX}/${k.measured.eyeY}; --overwrite troca)`);
+    console.error(`[premissa] ${block}[${idx}]: já tinha framing no blocks.json; mantido (medido agora: ${k.measured.faceX}/${k.measured.eyeY}${k.measured.mouthY !== undefined ? `, boca ${k.measured.mouthY}` : ""}; --overwrite troca)`);
   }
   console.error(`[video-montagem] face --write: framing de ${changed} item(ns) gravado em ${path}${kept.length ? `, ${kept.length} mantido(s)` : ""} (a caneca segue a do framing do arquivo, #12560)`);
+  return 0;
+}
+
+/**
+ * `face-compare AAMMDD --mp-python PY --mp-model TFLITE` (#13370, R3 da
+ * #13199): MEDIÇÃO do Haar contra o MediaPipe nos MESMOS frames do `face`, cada
+ * item comparado com o framing aprovado no blocks.json (o do item, ou o do
+ * arquivo). Não grava framing nenhum: o relatório vai para
+ * `{work}/face-compare.json` (agregar várias edições com `video-medicoes.ts
+ * rosto-agrega`). O MediaPipe roda com o Python de um venv próprio
+ * (`--mp-python`), fora do venv da montagem: dependência só da medição.
+ */
+function cmdFaceCompare(ctx: Ctx, mpPython: string | undefined, mpModel: string | undefined): number {
+  if (!mpPython || !mpModel) throw new Error("face-compare exige --mp-python (Python com mediapipe 0.10.x) e --mp-model (blaze_face_short_range.tflite); ver docs/video-medicoes-r2-r3.md (#13370)");
+  if (!existsSync(mpModel)) throw new Error(`face-compare: modelo do MediaPipe não encontrado: ${mpModel}`);
+  const { file, source, resolved } = plans(ctx);
+  const { framing: base, assumed } = effectiveFraming(file);
+  const dir = join(ctx.workDir, "face-compare-tmp");
+  const { keys, items } = grabItemFaceFrames(source, resolved, dir);
+  run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "haar.json")], { inheritStderr: true });
+  run(mpPython, ["-P", FACE_PY, "--detector", "mediapipe", "--model", mpModel, join(dir, "in.json"), join(dir, "mediapipe.json")], { inheritStderr: true });
+  const refs: FaceReference[] = [];
+  const skipped: Array<{ key: string; reason: string }> = [];
+  for (const key of keys) {
+    const it = items.get(key)!;
+    if (it.framing) refs.push({ key, faceX: it.framing.faceX, eyeY: it.framing.eyeY, fonte: "item" });
+    else if (assumed) skipped.push({ key, reason: "blocks.json sem framing (default da 261027): sem referência aprovada" });
+    else {
+      const fr = isMultiSource(source) ? framingOfFile(base, file, it.source) : base;
+      refs.push({ key, faceX: fr.faceX, eyeY: fr.eyeY, fonte: "arquivo" });
+    }
+  }
+  const report = compareFaceDetectors({
+    edition: ctx.edition,
+    haar: readJson<FrameDetection[]>(join(dir, "haar.json"), "face_detect haar"),
+    mediapipe: readJson<FrameDetection[]>(join(dir, "mediapipe.json"), "face_detect mediapipe"),
+    refs,
+    skipped,
+  });
+  rmSync(dir, { recursive: true, force: true });
+  const out = join(ctx.workDir, "face-compare.json");
+  writeJson(out, report);
+  for (const fonte of ["arquivo", "item"] as const) {
+    for (const det of FACE_DETECTORS) {
+      const s = report.summary[fonte][det];
+      if (!s.items) continue;
+      console.log(`${fonte.padEnd(7)} ${det.padEnd(9)} itens com rosto ${s.itemsWithFace}/${s.items}  frames ${s.frameHits}/${s.frames}  erro mediano faceX ${s.medianErrFaceX ?? "n/d"} eyeY ${s.medianErrEyeY ?? "n/d"}  dentro de ${FACE_COMPARE_TOL}: ${s.withinTol}`);
+    }
+  }
+  if (skipped.length) console.error(`[premissa] ${skipped.length} item(ns) sem referência ficaram de fora (${skipped[0].reason})`);
+  console.error(`[video-montagem] face-compare: ${out} (medição da #13370; nada gravado no blocks.json)`);
   return 0;
 }
 
@@ -4107,6 +4174,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const w of framingWarn.mug) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
   for (const w of framingWarn.face) console.error(`[aviso] ${w}`);
+  // #13414: as verticais ancoram pela boca; boca fora do centro (clamp na borda) e boca estimada saem no relato.
+  for (const w of framingWarn.mouth) console.error(`[aviso] ${w}`);
+  for (const w of framingWarn.mouthAssumed) console.error(`[premissa] ${w}`);
   const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
   if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   // #13311: a duração do card vem do config (default 2 s).
@@ -5533,11 +5603,16 @@ function cmdReview(ctx: Ctx, target: string | undefined, overTarget = false): nu
     ?? ["build sem verificação de banda alta: rode build com o bruto disponível (#11940)"];
   for (const warning of highBandWarnings) console.error(`[aviso] ${warning}`);
   // #11939: a caneca na folha de frames da prévia; o cálculo diz em que escala ela não sai inteira.
-  const mugWarnings = framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug;
+  const framingWarn = framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides);
+  const mugWarnings = framingWarn.mug;
   for (const warning of mugWarnings) console.error(`[aviso] ${warning}`);
+  // #13414: clipe com a boca a mais de 2% do centro da vertical (e a boca estimada, sem medida do face).
+  const mouthWarnings = framingWarn.mouth;
+  for (const warning of mouthWarnings) console.error(`[aviso] ${warning}`);
+  for (const w of framingWarn.mouthAssumed) console.error(`[premissa] ${w}`);
   const card = scope.cardS > 0 ? { cardS: scope.cardS, warnings: scope.warnings } : undefined;
-  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings, pauses, ...(card ? { ctaCard: card } : {}) });
-  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings, mugWarnings, pauses, ...(card ? { ctaCard: card } : {}) }, null, 2));
+  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings, mouthWarnings, pauses, ...(card ? { ctaCard: card } : {}) });
+  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings, mugWarnings, mouthWarnings, pauses, ...(card ? { ctaCard: card } : {}) }, null, 2));
   return 0;
 }
 
@@ -5765,7 +5840,7 @@ export const DRIVE_UPLOADS_FILE = "drive-uploads.json";
 /** Saída quando o comando deu certo e só o upload para o Drive falhou (as saídas estão no out dir). */
 export const EXIT_UPLOAD_FAILED = 4;
 
-export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "retranscribe", "frame", "face", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
+export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 /** Subcomandos cujas saídas sobem para a pasta da edição no modo API. */
 export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview"];
@@ -6230,6 +6305,9 @@ async function runCommand(
     case "face":
       await needLocalBruto();
       return cmdFace(ctx, flags.has("write"), flags.has("overwrite"));
+    case "face-compare":
+      await needLocalBruto();
+      return cmdFaceCompare(ctx, values["mp-python"], values["mp-model"]);
     case "gaze":
       await needLocalBruto();
       return cmdGaze(ctx, seq);
