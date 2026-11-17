@@ -74,9 +74,11 @@ export interface FalaRoteiro {
   /**
    * Corte parcial da fala por vertical (#13129): o trecho exato a tirar só
    * naquele vídeo (o horizontal fica intacto: o validador recusa `horizontal`). `reserva: true` = só entra se o
-   * vídeo passar do alvo de duração.
+   * vídeo passar do alvo de duração. Aceita uma lista, para mais de um corte
+   * na mesma fala (#13436): cada trecho é palavras inteiras, uma ocorrência, sem
+   * sobreposição aos outros.
    */
-  cortes?: Partial<Record<VideoRoteiro, string | CorteFala>>;
+  cortes?: Partial<Record<VideoRoteiro, string | CorteFala | Array<string | CorteFala>>>;
   /** Fontes do que a fala afirma, quando o fato não está na fonte do D1 (#13132). */
   fontes?: FonteFala[];
 }
@@ -118,11 +120,60 @@ export interface PecaVideo {
   pertenceAoHorizontal?: boolean;
 }
 
-/** O corte de uma fala num vídeo, normalizado (string vira `{ trecho }`). */
-export function corteDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): CorteFala | null {
+/** Os cortes de uma fala num vídeo, normalizados (string vira `{ trecho }`; um item só vira lista de um, #13436). */
+export function cortesDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): CorteFala[] {
   const c = f.cortes?.[v];
-  if (c === undefined) return null;
-  return typeof c === "string" ? { trecho: c } : c;
+  if (c === undefined) return [];
+  return (Array.isArray(c) ? c : [c]).map((x) => (typeof x === "string" ? { trecho: x } : x));
+}
+
+/**
+ * Como `segmentosSemTrecho`, para vários trechos na mesma fala (#13436). Todos
+ * os trechos são localizados no texto ORIGINAL (primeira ocorrência como
+ * palavras inteiras) e saem numa passada só: o resultado não depende da ordem
+ * da lista nem da limpeza de pontuação que um corte faz na emenda do outro.
+ * Cada pedaço que sobra entre os cortes vira um item, limpo como no corte
+ * único (vírgula solta na emenda sai; corte no fim passa a pontuação final ao
+ * último pedaço). `null` se algum trecho é vazio, não aparece como palavras
+ * inteiras ou se sobrepõe a outro; lista vazia se nada sobra.
+ */
+export function segmentosSemTrechos(texto: string, trechos: string[]): string[] | null {
+  if (!trechos.length) return [texto];
+  const cortes: Array<{ i: number; f: number; t: string }> = [];
+  for (const bruto of trechos) {
+    const t = bruto.trim();
+    if (!t) return null;
+    const i = posicoesDoTrecho(texto, t)[0] ?? -1;
+    if (i < 0) return null;
+    cortes.push({ i, f: i + t.length, t });
+  }
+  cortes.sort((a, b) => a.i - b.i);
+  for (let k = 1; k < cortes.length; k++) if (cortes[k].i < cortes[k - 1].f) return null;
+
+  const letra = /[\p{L}\p{N}]/u;
+  const limpa = (s: string) => s.replace(/\s+([.,;:!?…])/g, "$1").replace(/\s+/g, " ").trim();
+  const pedacos: string[] = [];
+  for (let k = 0; k < cortes.length; k++) {
+    const ini = k === 0 ? 0 : cortes[k - 1].f;
+    let p = limpa(texto.slice(ini, cortes[k].i)).replace(/[\s,;:]+$/, "");
+    if (k > 0) p = p.replace(/^[\s,;:]+/, "");
+    if (letra.test(p)) pedacos.push(p);
+  }
+  const ultimo = cortes[cortes.length - 1];
+  const depois = texto.slice(ultimo.f);
+  // Corte no fim: o último pedaço que sobra ganha a pontuação final do texto original.
+  if (!letra.test(depois)) {
+    if (!pedacos.length) return [];
+    // A pontuação final vem do que sobrou depois do trecho, ou do próprio trecho; sem nenhuma, ponto.
+    const fim = depois.match(/[.!?…]/u)?.[0] ?? ultimo.t.match(/[.!?…]$/u)?.[0] ?? ".";
+    const u = pedacos[pedacos.length - 1];
+    if (!/[.!?…]$/u.test(u)) pedacos[pedacos.length - 1] = u + fim;
+    return pedacos;
+  }
+  // Corte no meio: os lados ficam como estavam (sem ponto nem maiúscula forçados),
+  // porque a fala gravada é contínua; cada um vira um item que casa sozinho na decupagem.
+  pedacos.push(limpa(depois).replace(/^[\s,;:]+/, ""));
+  return pedacos;
 }
 
 /**
@@ -134,24 +185,7 @@ export function corteDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): Co
  * validador recusa trecho que aparece mais de uma vez (`ocorrenciasDoTrecho`).
  */
 export function segmentosSemTrecho(texto: string, trecho: string): string[] | null {
-  const t = trecho.trim();
-  if (!t) return null;
-  const i = posicoesDoTrecho(texto, t)[0] ?? -1;
-  if (i < 0) return null;
-  const limpa = (s: string) => s.replace(/\s+([.,;:!?…])/g, "$1").replace(/\s+/g, " ").trim();
-  const antes = limpa(texto.slice(0, i)).replace(/[\s,;:]+$/, "");
-  const depois = texto.slice(i + t.length);
-  // Corte no fim: o que sobra antes ganha a pontuação final do texto original.
-  if (!/[\p{L}\p{N}]/u.test(depois)) {
-    if (!antes) return [];
-    // A pontuação final vem do que sobrou depois do trecho, ou do próprio trecho; sem nenhuma, ponto.
-    const fim = depois.match(/[.!?…]/u)?.[0] ?? t.match(/[.!?…]$/u)?.[0] ?? ".";
-    return [/[.!?…]$/u.test(antes) ? antes : antes + fim];
-  }
-  // Corte no meio: os dois lados ficam como estavam (sem ponto nem maiúscula forçados),
-  // porque a fala gravada é contínua; cada um vira um item que casa sozinho na decupagem.
-  const resto = limpa(depois).replace(/^[\s,;:]+/, "");
-  return [antes, resto].filter(Boolean);
+  return segmentosSemTrechos(texto, [trecho]);
 }
 
 /** Seta proibida no texto que chega ao leitor (#9721). */
@@ -790,18 +824,42 @@ export function validarRoteiroFalas(x: unknown): string[] {
             continue;
           }
           if (Array.isArray(o.videos) && !o.videos.includes(v)) problemas.push(`${rotulo}.cortes.${v}: a fala não está no ${VIDEO_LABEL[v as VideoRoteiro]}`);
-          const co = (typeof c === "string" ? { trecho: c } : c) as Record<string, unknown> | null;
-          if (!co || typeof co !== "object" || typeof co.trecho !== "string" || !co.trecho.trim()) {
-            problemas.push(`${rotulo}.cortes.${v} deve ser o trecho (texto) ou { trecho, reserva }`);
-            continue;
-          }
-          if (co.reserva !== undefined && typeof co.reserva !== "boolean") problemas.push(`${rotulo}.cortes.${v}.reserva deve ser true/false`);
-          if (typeof o.texto === "string") {
-            const seg = segmentosSemTrecho(o.texto, co.trecho);
-            const n = ocorrenciasDoTrecho(o.texto, co.trecho);
-            if (seg === null || n === 0) problemas.push(`${rotulo}.cortes.${v}: trecho não aparece no texto da fala como palavras inteiras ("${co.trecho}")`);
-            else if (n > 1) problemas.push(`${rotulo}.cortes.${v}: o trecho aparece ${n} vezes na fala; use um trecho que só apareça uma vez ("${co.trecho}")`);
-            else if (seg.length === 0) problemas.push(`${rotulo}.cortes.${v}: o trecho é a fala inteira (tire a fala do vídeo em \`videos\`)`);
+          const itens = Array.isArray(c) ? c : [c];
+          if (!itens.length) problemas.push(`${rotulo}.cortes.${v}: lista vazia (tire o campo ou ponha ao menos um trecho)`);
+          const validos: string[] = [];
+          itens.forEach((item, k) => {
+            const onde = Array.isArray(c) ? `${rotulo}.cortes.${v}[${k}]` : `${rotulo}.cortes.${v}`;
+            const co = (typeof item === "string" ? { trecho: item } : item) as Record<string, unknown> | null;
+            if (!co || typeof co !== "object" || typeof co.trecho !== "string" || !co.trecho.trim()) {
+              problemas.push(`${onde} deve ser o trecho (texto) ou { trecho, reserva }`);
+              return;
+            }
+            if (co.reserva !== undefined && typeof co.reserva !== "boolean") problemas.push(`${onde}.reserva deve ser true/false`);
+            if (typeof o.texto === "string") {
+              const seg = segmentosSemTrecho(o.texto, co.trecho);
+              const n = ocorrenciasDoTrecho(o.texto, co.trecho);
+              if (seg === null || n === 0) problemas.push(`${onde}: trecho não aparece no texto da fala como palavras inteiras ("${co.trecho}")`);
+              else if (n > 1) problemas.push(`${onde}: o trecho aparece ${n} vezes na fala; use um trecho que só apareça uma vez ("${co.trecho}")`);
+              else if (seg.length === 0) problemas.push(`${onde}: o trecho é a fala inteira (tire a fala do vídeo em \`videos\`)`);
+              else validos.push(co.trecho);
+            }
+          });
+          if (typeof o.texto === "string" && validos.length > 1) {
+            const pos = validos.map((t) => ({ t, i: posicoesDoTrecho(o.texto as string, t)[0], f: posicoesDoTrecho(o.texto as string, t)[0] + t.trim().length }));
+            pos.sort((a, b) => a.i - b.i);
+            let sobrepoe = false;
+            for (let k = 1; k < pos.length; k++) {
+              if (pos[k].i < pos[k - 1].f) {
+                sobrepoe = true;
+                problemas.push(`${rotulo}.cortes.${v}: os trechos "${pos[k - 1].t}" e "${pos[k].t}" se sobrepõem`);
+              }
+            }
+            // #13436: a montagem aplica os trechos juntos; o que não dá para aplicar junto reprova aqui,
+            // nunca vira a fala inteira em silêncio na montagem.
+            const juntos = segmentosSemTrechos(o.texto, validos);
+            if (juntos === null) {
+              if (!sobrepoe) problemas.push(`${rotulo}.cortes.${v}: os trechos não podem ser aplicados juntos na fala`);
+            } else if (juntos.length === 0) problemas.push(`${rotulo}.cortes.${v}: os trechos juntos são a fala inteira (tire a fala do vídeo em \`videos\`)`);
           }
         }
       }
