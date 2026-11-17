@@ -49,7 +49,7 @@ export const ROTEIRO_FALAS_FILE = "_internal/roteiro-falas.json";
 export function avisosTomConversacional(roteiro: Pick<RoteiroFalas, "falas">): string[] {
   const avisos: string[] = [];
   for (const fala of roteiro.falas) {
-    const verbos = fala.texto.match(/(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|constatou|verificou-se|declarou|informou|divulgou|renunciou|norma|normas)(?![\p{L}\p{N}_])/giu);
+    const verbos = fala.texto.match(/(?<![\p{L}\p{N}_])(?:relatou|relataram|acompanhou|afirmou|constatou|verificou-se|declarou|informou|divulgou)(?![\p{L}\p{N}_])/giu);
     if (verbos) avisos.push(`${fala.id}: verbo de relatório (${[...new Set(verbos.map((v) => v.toLowerCase()))].join(", ")}); considerar verbo de fala, sem mudar o sentido da fonte (#13165).`);
     const maior = Math.max(0, ...fala.texto.split(/[,.;:!?…—\n]+/u).map((trecho) => trecho.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)?.length ?? 0));
     if (maior > 30) avisos.push(`${fala.id}: trecho com ${maior} palavras sem pausa; dividir em frases curtas de conversa (#13165).`);
@@ -59,7 +59,7 @@ export function avisosTomConversacional(roteiro: Pick<RoteiroFalas, "falas">): s
 }
 
 /** Marcas de fala (#13393): uma peça longa sem nenhuma lê como texto escrito. */
-const MARCA_DE_FALA = /(?<![\p{L}\p{N}_])(?:tá|pra|né|a gente|calma|olha|bom|então|beleza|vamos|e aí|sabe|tipo)(?![\p{L}\p{N}_])/iu;
+const MARCA_DE_FALA = /(?<![\p{L}\p{N}_])(?:tá|pra|né|a gente|calma|olha|e aí)(?![\p{L}\p{N}_])/iu;
 const MIN_PALAVRAS_SEM_MARCA = 50;
 
 export function avisosSemMarcaDeFala(roteiro: Pick<RoteiroFalas, "falas">): string[] {
