@@ -2560,6 +2560,12 @@ export function productionDeps(
       const feed = buildHomeFeed(newXml, readPageHtml, ARCHIVE_CARD_LIMIT + 1);
       // #13323: a seção "Vídeos" acompanha a home — a página republicada com
       // o link do vídeo (video-d1-link-watch) já põe o vídeo na home.
+      // #13382 item 2: `/videos` (`gen-videos-page.ts`) NÃO é regenerada
+      // aqui, só no `regen-home.yml` (06:00 BRT) — de propósito: escrevê-la
+      // exigiria pôr `public/videos/` no commit único desta publicação
+      // (`pathsToStage`/`optionalPaths`, worktree isolado #11673) só para
+      // adiantar uma página secundária em poucas horas. Até as 06:00 a home
+      // pode mostrar um card que `/videos` ainda não lista.
       const videos = buildVideoFeed(newXml, readPageHtml, HOME_VIDEO_LIMIT);
       const homeHtml = buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1), videos });
       mkdirSync(dirname(homeAbsPath), { recursive: true });

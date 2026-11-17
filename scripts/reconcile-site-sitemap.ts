@@ -68,7 +68,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { addSitemapEntry, archiveUrlForSlug } from "./lib/site-archive-pages.ts";
-import { ARCHIVE_CARD_LIMIT, buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
+import { ARCHIVE_CARD_LIMIT, HOME_VIDEO_LIMIT, buildHomeFeed, buildIndexHtml, buildVideoFeed } from "./lib/site-home-page.ts";
 import {
   DEFAULT_PAGES_DIR,
   DEFAULT_PUBLIC_DIR,
@@ -230,7 +230,12 @@ export function main(argv = process.argv.slice(2)): number {
         `a eleição do hero degradaria para ordem alfabética. Re-rodar com data/ montada para datar as entradas.`,
     );
   } else {
-    writeFileSync(homePath, buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) }), "utf8");
+    // #13382: `videos` é opcional em `buildIndexHtml`, então omiti-lo não
+    // quebra o tsc — mas reescreve a home SEM a seção "Vídeos" até o regen
+    // das 06:00, e o `check-seed-html-sync` passa a discordar do arquivo
+    // commitado. Mesma chamada de `gen-home-page.ts`/`publish-edition-site-page.ts`.
+    const videos = buildVideoFeed(next, readPageHtml, HOME_VIDEO_LIMIT);
+    writeFileSync(homePath, buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1), videos }), "utf8");
     console.log(
       `[reconcile-site-sitemap] ${orphans.length + landingOrphans.length} entrada(s) acrescentada(s), 0 órfãs restantes; home regenerada` +
         (semData > 0
