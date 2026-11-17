@@ -222,7 +222,7 @@ describe("runStage2SocialLintReport (#5416)", () => {
     return dir;
   }
 
-  it("7 checks presentes, severities batem com a prosa do playbook (#2b/#2c, #9619, #10180)", () => {
+  it("8 checks presentes, severities batem com a prosa do playbook (#2b/#2c, #9619, #10180, #13427)", () => {
     const editionDir = makeEditionDir();
     const report = runStage2SocialLintReport(editionDir);
     const byId = new Map(report.checks.map((c) => [c.id, c]));
@@ -233,6 +233,7 @@ describe("runStage2SocialLintReport (#5416)", () => {
         "linkedin-schema",
         "no-email-cta-instagram",
         "no-trailing-question",
+        "no-unanchored-opening",
         "personal-post-no-newsletter-deixis",
         "relative-time",
         "use-melhor-um-fail-soft",
@@ -249,6 +250,8 @@ describe("runStage2SocialLintReport (#5416)", () => {
     assert.equal(byId.get("personal-post-no-newsletter-deixis")?.severity, "warn-only");
     // #9619: `## um` é fail-soft — só aviso.
     assert.equal(byId.get("use-melhor-um-fail-soft")?.severity, "warn-only");
+    // #13427: abertura sem antecedente — warn-only no início (#7401).
+    assert.equal(byId.get("no-unanchored-opening")?.severity, "warn-only");
     // #10180: post do # Curto acima de 280 no X → o Stage 5 pularia; bloqueia.
     assert.equal(byId.get("curto-x-weight")?.severity, "gate-blocking");
     rmSync(editionDir, { recursive: true, force: true });

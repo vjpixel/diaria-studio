@@ -77,6 +77,9 @@ import {
   type TrailingEditorialHookMatch,
   type TrailingEditorialHookResult,
   lintTrailingEditorialHook,
+  type UnanchoredOpeningMatch,
+  type UnanchoredOpeningResult,
+  lintUnanchoredOpening,
   EDITORIAL_HOOK_TRIGGER_RE,
   type TrailingQuestionMatch,
   type TrailingQuestionResult,
@@ -137,6 +140,8 @@ export type { AntithesisRevealMatch, AntithesisRevealResult };
 export { lintAntithesisReveal };
 export type { TrailingEditorialHookMatch, TrailingEditorialHookResult };
 export { lintTrailingEditorialHook };
+export type { UnanchoredOpeningMatch, UnanchoredOpeningResult };
+export { lintUnanchoredOpening };
 export { EDITORIAL_HOOK_TRIGGER_RE };
 export type { TrailingQuestionMatch, TrailingQuestionResult };
 export type { PostPixelMatchResult };
@@ -380,6 +385,18 @@ export function runStage2SocialLintReport(editionDir: string): SocialStageLintRe
     checkCurtoXWeight(md),
   );
 
+  // #13427: 1ª frase de legenda/card sem antecedente ("O estudo parte de...").
+  // Relatório (`ok: true` sempre) — o aviso vem de `matches`, como nos checks
+  // acima; warn-only no início (#7401), o editor decide a reescrita.
+  try {
+    const unanchored = lintUnanchoredOpening(md);
+    push("no-unanchored-opening", "#13427", "warn-only", unanchored.matches.length === 0, unanchored);
+  } catch (err) {
+    push("no-unanchored-opening", "#13427", "warn-only", false, {
+      error: `exceção não tratada em no-unanchored-opening: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
   const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
   return { stage: 2, passed, checks };
 }
@@ -428,6 +445,7 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>\n" +
         "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
         "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-unanchored-opening --md <path>\n" +
         "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>\n" +
         "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>\n" +
         "  ou: lint-social-md.ts --check banned-lexicon --md <path>\n" +
@@ -700,6 +718,22 @@ function main(): void {
         );
       }
       process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-unanchored-opening (#13427, WARN-ONLY) — 1ª frase de
+  // `## d{N}`/`## d{N}-cards` sem antecedente. Sai 0 sempre, só avisa.
+  if (args.check === "no-unanchored-opening") {
+    const result = lintUnanchoredOpening(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (result.matches.length > 0) {
+      console.error(
+        `\n⚠️ ${result.matches.length} abertura(s) sem antecedente (#13427 — a 1ª frase precisa se sustentar sozinha):`,
+      );
+      for (const m of result.matches) {
+        console.error(`  linha ${m.line} [${m.section}] '${m.opener}': "${m.sentence}"`);
+      }
     }
     return;
   }

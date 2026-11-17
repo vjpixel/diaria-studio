@@ -1282,6 +1282,99 @@ export function lintTrailingEditorialHook(md: string): TrailingEditorialHookResu
 // Exportar o regex de gatilho pra testes de não-disparo
 export { EDITORIAL_HOOK_TRIGGER_RE };
 
+// ── #13427: 1ª frase da legenda/card precisa se sustentar sozinha ───────────
+
+export interface UnanchoredOpeningMatch {
+  /** Seção (`d1`, `d2-cards`, ...). */
+  section: string;
+  line: number;
+  /** Termo que abre a frase sem antecedente ("O estudo", "Isso"). */
+  opener: string;
+  sentence: string;
+}
+
+export interface UnanchoredOpeningResult {
+  /** Sempre true — WARN-ONLY (#7401), o editor decide a reescrita. */
+  ok: true;
+  matches: UnanchoredOpeningMatch[];
+}
+
+// Substantivos genéricos que, com artigo definido logo na 1ª frase, apontam
+// para algo que o leitor ainda não viu (a capa do carrossel não traz o título).
+const GENERIC_OPENER_NOUNS =
+  "estudo|pesquisa|levantamento|relat[óo]rio|an[áa]lise|artigo|paper|empresa|companhia|startup|modelo|ferramenta|sistema|plataforma|produto|regra|lei|norma|decis[ãa]o|projeto|an[úu]ncio|acordo|medida|proposta|resultado|teste|experimento|iniciativa|novidade|atualiza[çc][ãa]o";
+// Artigo/demonstrativo + substantivo genérico, SEGUIDO de verbo/pontuação.
+// Se o substantivo vem qualificado ("O estudo da Anthropic", "A regra de
+// Nova York", "O modelo GPT-5"), a frase já se apresenta e não é flagada.
+const ARTICLE_NOUN_OPENER_RE = new RegExp(
+  `^(?:o|a|os|as|este|esta|estes|estas|esse|essa|esses|essas|aquele|aquela)\\s+(?:${GENERIC_OPENER_NOUNS})(?![\\p{L}\\d])`,
+  "iu",
+);
+// Palavra logo após o substantivo que o qualifica ("da Anthropic", "GPT-5").
+const QUALIFIER_AFTER_NOUN_RE = /^\s+(?:d[aeo]s?|em|sobre|para|com)\b|^\s+(?:\p{Lu}|\d)/u;
+// Pronome demonstrativo sozinho abrindo a frase ("Isso muda...", "Essa regra").
+const DEMONSTRATIVE_OPENER_RE = /^(?:isso|isto|aquilo|essa|esse|essas|esses)\b/i;
+
+function firstSentenceOf(text: string): string {
+  const m = /^(.*?[.!?:])(?:\s|$)/s.exec(text);
+  return (m ? m[1] : text).trim();
+}
+
+/**
+ * #13427: a 1ª frase de cada `## d{N}` e `## d{N}-cards` abre sem antecedente
+ * ("O estudo parte de um alerta", "Isso muda tudo"). O leitor vê a legenda sob
+ * a capa do carrossel, que é só imagem; o artigo definido + substantivo
+ * genérico aponta para algo que ele nunca viu. Caso real: edição 261118, D3 —
+ * a passada do humanizador trocou "Pesquisas recentes mostram que" por
+ * "O estudo parte de um alerta", criando o defeito.
+ *
+ * Só olha a 1ª frase da seção (negrito `**` inicial ignorado). WARN-ONLY.
+ */
+export function lintUnanchoredOpening(md: string): UnanchoredOpeningResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const matches: UnanchoredOpeningMatch[] = [];
+  let section: string | null = null;
+  let waitingFirst = false;
+  let inSocial = false; // só `# Social` (ou `# LinkedIn` legado); `# Curto` fica de fora
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const h1 = /^#\s+(.+?)\s*$/.exec(line);
+    if (h1) {
+      inSocial = /^(social|linkedin)$/i.test(h1[1]);
+      section = null;
+      waitingFirst = false;
+      continue;
+    }
+    const header = inSocial ? /^##\s+(d\d+(?:-cards)?)(?![\w-])/i.exec(line) : null;
+    if (header) {
+      section = header[1].toLowerCase();
+      waitingFirst = true;
+      continue;
+    }
+    if (/^#{1,3}\s/.test(line)) {
+      section = null;
+      waitingFirst = false;
+      continue;
+    }
+    if (!waitingFirst || section === null) continue;
+    const text = line.trim();
+    if (text === "" || /^<!--/.test(text)) continue;
+    waitingFirst = false;
+
+    const sentence = firstSentenceOf(text.replace(/^\*\*/, ""));
+    const art = ARTICLE_NOUN_OPENER_RE.exec(sentence);
+    const qualified = art !== null && QUALIFIER_AFTER_NOUN_RE.test(sentence.slice(art[0].length));
+    const dem = art ? null : DEMONSTRATIVE_OPENER_RE.exec(sentence);
+    const hit = qualified ? null : (art ?? dem);
+    if (hit) {
+      matches.push({ section, line: i + 1, opener: hit[0], sentence });
+    }
+  }
+
+  return { ok: true, matches };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
