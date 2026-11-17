@@ -253,7 +253,7 @@ ordem:
    sem custo deixar) — ele só existe pra tornar a PR rejeitada BUSCÁVEL
    (`gh pr list --label continuo-rejeitado`), nunca precisa ser limpo.
 2. **Guard de caminho sensível** (fail-closed, #12884): `npx tsx
-   scripts/lib/sensitive-path-guard.ts --files "$(gh pr diff N --name-only | paste -sd, -)" --json`.
+   scripts/lib/sensitive-path-guard.ts --files "$(gh api repos/vjpixel/diaria-studio/pulls/N/files --paginate --jq '.[].filename' | paste -sd, -)" --json`.
    PR `N`: lista vazia, `"sensitive": true` ou erro/saída inválida
    (gh) → NÃO mergear; comentar e encaminhar.
 3. **Review independente pré-merge** (pipeline `requesting-code-review`,
