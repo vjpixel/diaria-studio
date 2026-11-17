@@ -65,7 +65,8 @@ describe("#13363: o título do box de tela chega em negrito ao PNG", () => {
 
   it("o build desenha o box pelo helper, nunca pelo texto do marcador", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
-    assert.ok(src.includes("telaBoxSvgForMarker(m, p.spec.width, p.spec.height)"));
+    // #13333: o vertical passa a posição abaixo da legenda (`placement`); o horizontal, `{}`.
+    assert.ok(src.includes("telaBoxSvgForMarker(m, p.spec.width, p.spec.height, placement)"));
     assert.ok(!/telaBoxSvg\(m\.tela\b/.test(src));
   });
 });

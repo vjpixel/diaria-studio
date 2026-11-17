@@ -32,7 +32,8 @@ import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
 import { findTrecho, type TrechoXml } from "./video-xml-trechos.ts";
-import { telaTrack, type TelaOverlay } from "./video-tela.ts";
+import { falaCitaTela, telaTrack, type TelaOverlay } from "./video-tela.ts";
+import { trechoInseridoMarkersXml, type TrechoInseridoMarker } from "./video-trecho-inserido.ts";
 import {
   coverScalePct,
   displaySize,
@@ -3362,7 +3363,7 @@ export function isVerticalSpec(spec: Pick<SequenceSpec, "width" | "height">): bo
   return spec.height > spec.width;
 }
 
-/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957) e a única com texto de tela (#13186). */
+/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957) e a única com texto de tela em toda fala (#13186; no vertical, só a que cita a tela, #13333). */
 export const isYoutubeSpec = (s: Pick<SequenceSpec, "target" | "corte" | "width" | "height">) => s.target === "youtube" && s.corte === undefined && !isVerticalSpec(s);
 
 /**
@@ -3943,6 +3944,9 @@ const TELA_MIN_TOKENS_TRECHO = 3;
  * tela quando o editor diz "o endereço está aqui na tela" (#13309).
  * Só o horizontal leva texto de tela (#13180/#13186): os verticais saem sem
  * marcador, mesmo com a fala também neles (a página do roteiro esconde o box ali).
+ * Exceção (#13333, decisão do editor no briefing 261117b): no vertical, a fala
+ * que cita a tela (`falaCitaTela`, no texto do roteiro ou no gravado do item)
+ * leva o marcador, e o `build` desenha o box abaixo da legenda.
  */
 export function telaMarkersFor(
   plan: Pick<SequencePlan, "spec" | "clips">,
@@ -3950,7 +3954,8 @@ export function telaMarkersFor(
   fps: number,
   telas: ReadonlyArray<{ id: string; texto: string; tela: string; telaBox?: string }>,
 ): TelaMarker[] {
-  if (!isYoutubeSpec(plan.spec)) return [];
+  const horizontal = isYoutubeSpec(plan.spec);
+  if (!horizontal && !isVerticalSpec(plan.spec)) return [];
   const norm = (t: string) => tokenize(t).join(" ");
   const items = plan.spec.order.flatMap((b) => (resolved[b] ?? []).filter((it) => itemInTarget(it, plan.spec)));
   const out: TelaMarker[] = [];
@@ -3967,6 +3972,8 @@ export function telaMarkersFor(
       if (x === fala) return true;
       return x.split(" ").length >= TELA_MIN_TOKENS_TRECHO && ` ${fala} `.includes(` ${x} `);
     });
+    // #13333: no vertical, só a fala que aponta para a tela (o roteiro ou o que foi dito nos itens dela).
+    if (!horizontal && !falaCitaTela(t.texto) && !meus.some((it) => falaCitaTela(it.text))) continue;
     let inF = Infinity;
     let outF = -Infinity;
     for (const it of meus) {
@@ -4074,6 +4081,8 @@ export function buildXmeml(
      * editor pôr a faixa de texto no Premiere. Ausente (ou sem a chave) = sem marcador.
      */
     telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
+    /** #13437: onde entra o trecho de outro vídeo (formato react), marcador `trecho {id}` por sequência. */
+    trechoMarkers?: Readonly<Record<string, readonly TrechoInseridoMarker[]>> | null;
     /**
      * #13219: XML leve. Os clipes do bruto (vídeo, fundo do `blur-fill` e o
      * áudio quando não há faixa tratada) apontam para o trecho que os contém
@@ -4336,6 +4345,7 @@ export function buildXmeml(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
         telaMarkersXml(opts.telaMarkers?.[sequenceKey(spec)] ?? []) +
+        trechoInseridoMarkersXml(opts.trechoMarkers?.[sequenceKey(spec)] ?? []) +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${telaTrackXml}${vin.video}${capaTrack}</video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,

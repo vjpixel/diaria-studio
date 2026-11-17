@@ -156,6 +156,16 @@ export function subtitleLayout(text: string, width: number, height: number, styl
   };
 }
 
+/**
+ * Base da caixa da legenda (px) num quadro `width`x`height` (#13333): onde
+ * começa o box de tela do vertical, que vai abaixo da legenda. Com a legenda
+ * embaixo (alinhamento 1-3), a base não depende do número de linhas.
+ */
+export function subtitleBottomY(width: number, height: number, style: SubtitleStyle): number {
+  const { lines } = subtitleLayout("x", width, height, style);
+  return Math.max(...lines.map((l) => l.box.y + l.box.h));
+}
+
 /** SVG da legenda de uma cue, transparente fora da caixa (o PNG que entra na faixa do XML). */
 export function subtitleCueSvg(text: string, width: number, height: number, style: SubtitleStyle): string {
   const { fontPx, anchor, lines } = subtitleLayout(text, width, height, style);
