@@ -189,7 +189,7 @@ function utf8Bytes(s: string): number {
 
 /**
  * Ator principal do D1 (#12077): a empresa/produto que a notícia cita primeiro,
- * no título e depois no corpo. Vira o termo da 1ª linha da descrição, as
+ * no título e depois na 1ª frase do corpo (#13390). Vira o termo da 1ª linha da descrição, as
  * hashtags e a playlist temática. Ordem da tabela = desempate quando dois
  * casam na mesma posição.
  */
@@ -220,10 +220,18 @@ function plainD1(d1: Pick<YouTubeD1Input, "title" | "body">): { title: string; b
   return { title: stripInlineMarkdown(d1.title), body: stripInlineMarkdown(d1.body) };
 }
 
-/** Puro (#12077): ator principal do D1, ou `null`. O título pesa antes do corpo. */
+/**
+ * Puro (#12077): ator principal do D1, ou `null`. O título pesa antes da 1ª
+ * frase do corpo.
+ *
+ * Só o título e a 1ª frase contam (#13390): ator citado mais adiante no corpo
+ * não é o tema da notícia. Na 261117 (deepfake de Drauzio Varella) a Meta
+ * aparecia só no 3º parágrafo e virou prefixo "Meta:" na descrição e `#Meta`
+ * nas hashtags.
+ */
 export function detectYouTubeD1Actor(d1: Pick<YouTubeD1Input, "title" | "body">): YouTubeD1Actor | null {
   const { title, body } = plainD1(d1);
-  for (const text of [title, body]) {
+  for (const text of [title, firstSentenceOf(body)]) {
     let best: { idx: number; order: number; actor: YouTubeD1Actor } | null = null;
     YOUTUBE_ACTORS.forEach((a, order) => {
       const m = a.re.exec(text);
