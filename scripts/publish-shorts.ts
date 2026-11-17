@@ -1116,6 +1116,17 @@ export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; pe
 }
 
 /**
+ * #13210 item 1: o aviso de `roteiro-falas.json` ilegível nas rotas de troca
+ * de texto (`--update-scheduled`, `--update-published`). O plano de
+ * publicação já o põe em `plan.warnings`; sem isto, no update a linha
+ * "Vídeo completo: link na bio" sumia sem aviso. Corte (`null`) não avisa:
+ * não tem horizontal nem roteiro da edição.
+ */
+export function horizontalRoteiroWarnings(horizontal: { roteiroWarning?: string } | null): string[] {
+  return horizontal?.roteiroWarning ? [horizontal.roteiroWarning] : [];
+}
+
+/**
  * #13209: a linha da bio nas rotas de troca de texto (`--update-scheduled`,
  * `--update-published`), com a mesma regra do plano: fala `cta_vertical`,
  * horizontal publicado e a marcação do roteiro (#13280) ou, sem ela, o mesmo
@@ -5148,6 +5159,7 @@ async function runUpdateScheduled(input: {
     known = knownDestinationIds(shortsCfg);
     // #12191: a troca da descrição do Short mantém a citação do horizontal (o corte não tem horizontal).
     const horizontal = corte ? null : readHorizontalVideoForShort(dir);
+    for (const w of horizontalRoteiroWarnings(horizontal)) console.error(`[aviso] ${w}`); // #13210 item 1
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
     items = planScheduledUpdates({
       entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
@@ -5449,6 +5461,7 @@ async function runUpdatePublished(input: {
     entries = readShortsRegistry(dir, aammdd).entries;
     const shortsCfg = loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
     const horizontal = spec ? null : readHorizontalVideoForShort(dir);
+    for (const w of horizontalRoteiroWarnings(horizontal)) console.error(`[aviso] ${w}`); // #13210 item 1
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
     items = planPublishedTextUpdates({
       entries, d1, now: new Date(), horizontalTitle, horizontalLink: horizontal?.url ?? null, only: input.only, known: knownDestinationIds(shortsCfg),

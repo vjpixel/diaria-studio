@@ -122,16 +122,83 @@ describe("#12191 citação do horizontal na descrição do Short", () => {
     const dir = mkdtempSync(join(tmpdir(), "short-12191-"));
     try {
       // #12735: `url` = o 05-video-url.txt (ausente aqui).
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null, ...readVerticalCta(dir) });
+      // #13210 item 3: esperado fixo. Sem roteiro-falas.json não há ctaVertical nem aviso
+      // (antes o esperado espalhava `...readVerticalCta(dir)`, comparando a função com ela mesma).
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null });
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal", "05-youtube-published.json"), JSON.stringify({ videoId: "v1", title: " Do registro " }));
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: "Do registro", noVideo: false, url: null, ...readVerticalCta(dir) });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: "Do registro", noVideo: false, url: null });
       writeFileSync(join(dir, "_internal", "05-youtube-published.json"), "{nao-json");
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null, ...readVerticalCta(dir) });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null });
+      // Roteiro com cta_vertical e a marcação do vertical 1: os dois campos entram, sem aviso.
+      writeFileSync(
+        join(dir, "_internal", "roteiro-falas.json"),
+        JSON.stringify({ falas: [{ bloco: "cta_vertical", texto: "Completo no YouTube" }], porVideo: { vertical1: { pertenceAoHorizontal: true } } }),
+      );
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null, ctaVertical: true, pertenceAoHorizontal: true });
+      // Roteiro ilegível: só o aviso fixo, sem ctaVertical.
+      writeFileSync(join(dir, "_internal", "roteiro-falas.json"), "{inválido");
+      assert.deepEqual(readHorizontalVideoForShort(dir), {
+        recordTitle: null,
+        noVideo: false,
+        url: null,
+        roteiroWarning: "roteiro-falas.json ilegível ou inválido: não foi possível conferir cta_vertical; comportamento anterior preservado (#13117)",
+      });
       writeFileSync(join(dir, "_internal", "no-video.json"), "{}");
       assert.equal(readHorizontalVideoForShort(dir).noVideo, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#13210 item 3: o aviso do roteiro ilegível chega a plan.warnings (edição), nunca no corte", () => {
+    const dir = mkdtempSync(join(tmpdir(), "short-13210-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "roteiro-falas.json"), "{inválido");
+      const horizontalVideo = readHorizontalVideoForShort(dir);
+      const aviso = "roteiro-falas.json ilegível ou inválido: não foi possível conferir cta_vertical; comportamento anterior preservado (#13117)";
+      assert.ok(planShortsPublish({ ...base, horizontalVideo }).warnings.includes(aviso));
+      const corte = planShortsPublish({ ...corteBase, horizontalVideo });
+      assert.ok(!corte.warnings.includes(aviso), corte.warnings.join("\n"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#13210 item 3: um corte nunca liga ctaVertical, nem com fala cta_vertical, título igual e marcação do roteiro", () => {
+    const BIO = /Vídeo completo: link na bio/;
+    // Tudo o que liga a linha da bio na edição: fala, título igual ao do horizontal publicado, marcação do vertical 1.
+    const horizontalVideo = { recordTitle: CORTE.title, noVideo: false, url: "https://youtu.be/abc123XYZ_9", ctaVertical: true, pertenceAoHorizontal: true };
+    const plan = planShortsPublish({ ...corteBase, horizontalVideo });
+    assert.equal(plan.horizontalLinks, undefined);
+    const threads = plan.items.find((i) => i.destination === "threads_profile") as { caption?: string; text?: string } | undefined;
+    assert.ok(threads, plan.items.map((i) => i.destination).join(","));
+    assert.doesNotMatch(threads!.caption ?? threads!.text ?? "", BIO);
+    assert.ok(!plan.warnings.some((w) => /bio NÃO conferida/.test(w)), plan.warnings.join("\n"));
+    assert.ok(!plan.premises.some((p) => /chamada ao vídeo completo/.test(p)), plan.premises.join("\n"));
+  });
 });
+
+const CORTE = { slug: "corte-13210", hhmm: "08:00", title: "Tratar IA como humano", hook: "Por que dar nome ao chatbot muda o jeito que você usa." };
+const corteBase = {
+  aammdd: "261102",
+  reviewedMd: "",
+  config: {
+    publishing: {
+      shorts: {
+        facebook_pages: ["diaria"],
+        instagram: false,
+        threads_profile: true,
+        schedule: { rotation_times: ["12:00"], rotation_start: "2026-10-26", rotation_end: "2026-11-13", default_time: "12:00" },
+      },
+    },
+  },
+  pages: [page("diaria")],
+  instagramReady: false,
+  threadsPersonal: { ready: true } as const,
+  published: { aammdd: "261102", entries: [] },
+  video: { path: "/videos/corte.mp4", exists: true, sizeBytes: 10 },
+  corte: CORTE,
+  now: new Date("2026-11-02T03:00:00Z"),
+};

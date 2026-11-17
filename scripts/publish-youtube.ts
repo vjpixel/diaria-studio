@@ -1583,6 +1583,78 @@ export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: s
 const USAGE =
   "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--video-id VIDEO_ID] [--dry-run] [--force] [--captions-reviewed] | --captions-list [--video-id VIDEO_ID] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO] [--share-start SEGUNDOS]";
 
+/**
+ * #13210 item 2: a parte do `main()` entre a leitura do `02-reviewed.md` e o
+ * plano do horizontal — registro do upload, `canInsert`, trecho compartilhável
+ * (`shareForRun`) e `planYouTubePublish`. Fora do `main()` para o rerun depois
+ * da limpeza do MP4 (registro `done` ou `--accept-period-match`, vídeo já
+ * apagado) ter teste com a fiação real, sem chegar à rede: o `main()` segue
+ * daqui para `loadProjectEnv` e as chamadas do YouTube. Sem efeito externo.
+ */
+export function prepareHorizontalPlan(o: {
+  dir: string;
+  aammdd: string;
+  values: Record<string, string>;
+  flags: ReadonlySet<string>;
+  dryRun: boolean;
+  upload: boolean;
+  captionsPath: string;
+  captionsFromMontage: boolean;
+  log: (line: string) => void;
+}): { ok: true; plan: YouTubePublishPlan; canInsert: boolean } | { ok: false; exitCode: number } {
+  const { dir, aammdd, values, flags, dryRun, upload, captionsPath, captionsFromMontage } = o;
+  const reviewedPath = join(dir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) {
+    o.log(`publish-youtube: ${reviewedPath} não existe`);
+    return { ok: false, exitCode: 1 };
+  }
+  const videoPath = resolve(values["video"] ?? join(dir, youtubeVideoFileName(aammdd)));
+  const videoExists = existsSync(videoPath);
+  const thumbPath = join(dir, YOUTUBE_THUMB_FILE);
+  // #12751: título e capa do horizontal no roteiro do vídeo, quando a /diaria-video-roteiro gravou o JSON.
+  const roteiro = readRoteiroHorizontal(dir, (w) => o.log(`[aviso] ${w}`));
+
+  // O registro decide se este --upload pode criar vídeo (videos.insert). Ilegível recusa antes de consumir.
+  // Lido antes do plano: o trecho compartilhável (#13164) só é conferido no caminho que cria o vídeo.
+  let record: ReturnType<typeof readPublishedRecord> | null = null;
+  if (upload && values["accept-period-match"] === undefined) {
+    try {
+      record = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd);
+    } catch (e) {
+      o.log(`publish-youtube: registro do upload ilegível (${(e as Error).message}): nenhuma autorização consumida e nada enviado — conferir o canal e o arquivo antes de qualquer nova chamada (#12654)`);
+      return { ok: false, exitCode: 1 };
+    }
+  }
+  // Sem --force, registro "done" (retomada do podcast/playlists) ou "pending" (recusa no miolo) não chega ao
+  // videos.insert: não exige nem gasta autorização. Só a chamada que pode criar vídeo passa pela trava.
+  const canInsert = record !== null && (flags.has("force") || record.kind === "none");
+  const share = shareForRun({
+    cue: readShareCue(dir, (w) => o.log(`[aviso] ${w}`)),
+    rawSeconds: values["share-start"],
+    videoExists,
+    createsVideo: dryRun || canInsert,
+    readVideo: () => readFileSync(videoPath),
+    warn: (w) => o.log(`[aviso] ${w}`),
+  });
+  const plan = planYouTubePublish({
+    aammdd,
+    ...(share ? { share } : {}),
+    // #13051: título/descrição do vídeo saem sem o erro intencional da edição.
+    reviewedMd: readReviewedMdScrubbed(dir, aammdd),
+    now: new Date(),
+    episode: parseEpisode(values["episode"]),
+    editionUrl: values["edition-url"],
+    publishAt: values["publish-at"],
+    title: values["title"],
+    ...(roteiro ? { roteiro } : {}),
+    video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
+    thumb: { path: thumbPath, exists: existsSync(thumbPath) },
+    ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath), fromMontage: captionsFromMontage } }),
+    mode: dryRun ? "dry-run" : "upload",
+  });
+  return { ok: true, plan, canInsert };
+}
+
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = values["edition"] ?? positional[0];
@@ -1698,55 +1770,9 @@ async function main(): Promise<number> {
     }
     return outcome.exitCode;
   }
-  const reviewedPath = join(dir, "02-reviewed.md");
-  if (!existsSync(reviewedPath)) {
-    console.error(`publish-youtube: ${reviewedPath} não existe`);
-    return 1;
-  }
-  const videoPath = resolve(values["video"] ?? join(dir, youtubeVideoFileName(aammdd)));
-  const videoExists = existsSync(videoPath);
-  const thumbPath = join(dir, YOUTUBE_THUMB_FILE);
-  // #12751: título e capa do horizontal no roteiro do vídeo, quando a /diaria-video-roteiro gravou o JSON.
-  const roteiro = readRoteiroHorizontal(dir, (w) => console.error(`[aviso] ${w}`));
-
-  // O registro decide se este --upload pode criar vídeo (videos.insert). Ilegível recusa antes de consumir.
-  // Lido antes do plano: o trecho compartilhável (#13164) só é conferido no caminho que cria o vídeo.
-  let record: ReturnType<typeof readPublishedRecord> | null = null;
-  if (upload && values["accept-period-match"] === undefined) {
-    try {
-      record = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd);
-    } catch (e) {
-      console.error(`publish-youtube: registro do upload ilegível (${(e as Error).message}): nenhuma autorização consumida e nada enviado — conferir o canal e o arquivo antes de qualquer nova chamada (#12654)`);
-      return 1;
-    }
-  }
-  // Sem --force, registro "done" (retomada do podcast/playlists) ou "pending" (recusa no miolo) não chega ao
-  // videos.insert: não exige nem gasta autorização. Só a chamada que pode criar vídeo passa pela trava.
-  const canInsert = record !== null && (flags.has("force") || record.kind === "none");
-  const share = shareForRun({
-    cue: readShareCue(dir, (w) => console.error(`[aviso] ${w}`)),
-    rawSeconds: values["share-start"],
-    videoExists,
-    createsVideo: dryRun || canInsert,
-    readVideo: () => readFileSync(videoPath),
-    warn: (w) => console.error(`[aviso] ${w}`),
-  });
-  const plan = planYouTubePublish({
-    aammdd,
-    ...(share ? { share } : {}),
-    // #13051: título/descrição do vídeo saem sem o erro intencional da edição.
-    reviewedMd: readReviewedMdScrubbed(dir, aammdd),
-    now: new Date(),
-    episode: parseEpisode(values["episode"]),
-    editionUrl: values["edition-url"],
-    publishAt: values["publish-at"],
-    title: values["title"],
-    ...(roteiro ? { roteiro } : {}),
-    video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
-    thumb: { path: thumbPath, exists: existsSync(thumbPath) },
-    ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath), fromMontage: captionsFromMontage } }),
-    mode: dryRun ? "dry-run" : "upload",
-  });
+  const prepared = prepareHorizontalPlan({ dir, aammdd, values, flags, dryRun, upload, captionsPath, captionsFromMontage, log: (l) => console.error(l) });
+  if (!prepared.ok) return prepared.exitCode;
+  const { plan, canInsert } = prepared;
 
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);

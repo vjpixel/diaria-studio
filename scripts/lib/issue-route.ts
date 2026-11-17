@@ -68,6 +68,10 @@
  * separadamente quando `--until` é passado (e recusa `--track agendada` sem
  * `--until` — sem data não tem como produzir esse veredito).
  *
+ * Desde o #13248 o plano de `agendada` também não REMOVE as labels de
+ * máquina/sessão interativa (`AGENDADA_PRESERVED_LABELS`): elas dizem pra
+ * onde a issue volta quando o marcador desarmar.
+ *
  * ─── Idempotência ────────────────────────────────────────────────────────
  *
  * `applyRouteLabelPlan` (função pura auxiliar, usada só em teste/preview) é
@@ -177,6 +181,28 @@ export const PROVENIENCE_LABELS: readonly string[] = [
   "alarm",
   "alarm-evento",
   "decisao-registrada",
+];
+
+/**
+ * #13248 — labels que `--track agendada` PRESERVA em vez de remover.
+ *
+ * `agendada` é temporário por definição: o marcador `aguardando-ate:` desarma
+ * sozinho na data, e a issue volta ao track que as labels dela dizem. Se o
+ * roteamento pra `agendada` tirasse as labels de máquina/sessão interativa, a
+ * issue que depende do Chrome logado (`windows`), do editor presente
+ * (`develop-track`) ou de escrita em `.claude/` (`claude-dir`) cairia no
+ * default `overnight` depois da data, num servidor que não consegue fazer o
+ * passo que falta (caso real: #13237, `labelsRemoved: ["windows"]`).
+ *
+ * Preservá-las não muda o veredito enquanto o marcador valer: em
+ * `classifyExecTrackWithRule` o marcador futuro (passo 4) vence as três
+ * labels de develop (passo 5). O dry-run e a validação pós-escrita do
+ * `routeIssue` conferem isso a cada chamada.
+ */
+export const AGENDADA_PRESERVED_LABELS: readonly string[] = [
+  "windows",
+  "develop-track",
+  CLAUDE_DIR_LABEL,
 ];
 
 /**
@@ -370,7 +396,10 @@ export function planRouteLabels(track: RouteTrack, motivo?: RouteMotivo): RouteL
   const addLabel = motivo ? MOTIVO_LABEL[motivo] : TRACK_ADD_LABEL[track];
   const addList = addLabel ? [addLabel] : [];
   const remove = ROUTABLE_LABELS.filter(
-    (l) => !addList.includes(l) && !(PROVENIENCE_LABELS as readonly string[]).includes(l),
+    (l) =>
+      !addList.includes(l) &&
+      !(PROVENIENCE_LABELS as readonly string[]).includes(l) &&
+      !(track === "agendada" && (AGENDADA_PRESERVED_LABELS as readonly string[]).includes(l)),
   );
   return { add: addList, remove };
 }
