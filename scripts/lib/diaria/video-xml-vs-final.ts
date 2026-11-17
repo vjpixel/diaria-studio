@@ -92,6 +92,7 @@ export function alignWithReorder(
   }
   if (durF - cur >= minGapS) gaps.push({ start: cur, end: durF });
   const extra: AlignRun[] = [];
+  const floorDb = opts.floorDb ?? ALIGN_DEFAULTS.floorDb;
   for (const g of gaps) {
     const a = Math.round(g.start / hopS);
     const b = Math.min(finalDb.length, Math.round(g.end / hopS));
@@ -103,7 +104,11 @@ export function alignWithReorder(
     for (const r of sub.runs) {
       const s = r3(Math.max(g.start, r.audioStart + t0));
       const e = r3(Math.min(g.end, r.audioEnd + t0));
-      if (e > s) extra.push({ audioStart: s, audioEnd: e, offset: r3(r.offset - t0) });
+      const run = { audioStart: s, audioEnd: e, offset: r3(r.offset - t0) };
+      // O par da busca global precisa bater com o bruto no trecho inteiro (#13417): vinheta, música ou som de fora
+      // do bruto num vão de 1–2 s achava um par falso e virava "acrescentado".
+      const score = e > s ? runMatchScore(finalDb, brutoDb, run, hopS, floorDb) : null;
+      if (e > s && score !== null && score >= RUN_MIN_SCORE) extra.push(run);
     }
   }
   const runs = [...base.runs, ...extra].sort((x, y) => x.audioStart - y.audioStart);
@@ -475,7 +480,6 @@ export function snapCutsToClipEdges(
       acc += err(c - 1, d1, g1) - err(c - 1, d2, g2);
       cost[c - a] = acc;
     }
-    if (cut < a || cut > b) continue;
     const atCut = cost[cut - a];
     // O quadro que muda de lado entre o corte e a borda: erro sob o deslocamento novo menos o do antigo.
     const frameExtra = (n: number, toFirst: boolean) => (toFirst ? err(n, d1, g1) - err(n, d2, g2) : err(n, d2, g2) - err(n, d1, g1));
@@ -1076,6 +1080,8 @@ export interface SequenceRecord {
   alignDropped?: { count: number; s: number };
   /** Cortes encaixados na borda do clipe porque o som não decidia (#13417). */
   snappedUndecided?: number;
+  /** Medição de método anterior cuja remedição falhou (a sequência fica com os números antigos), #13417. */
+  remeasureFailed?: RemeasureFailure;
 }
 
 export interface EditionRecord {
@@ -1101,6 +1107,12 @@ export function mergeEditionRecord(prev: EditionRecord | null, next: EditionReco
   // Sequência medida automaticamente nunca é substituída pelo importado da #11670.
   const nextSeqs = stamp(next).filter((s) => !(s.method === "11670-manual" && prevSeqs.some((p) => p.key === s.key && p.method !== "11670-manual")));
   const keys = new Set(nextSeqs.map((s) => s.key));
+  // Remedição (#13417): sequência de método automático anterior que a rodada nova pulou guarda o motivo e a contagem.
+  for (const ps of prevSeqs) {
+    if (keys.has(ps.key) || ps.method === CURRENT_METHOD || ps.method === "11670-manual") continue;
+    const sk = next.skipped.find((x) => x.key === ps.key);
+    if (sk) ps.remeasureFailed = { at: next.generatedAt, reason: sk.reason, count: (ps.remeasureFailed?.count ?? 0) + 1 };
+  }
   const sequences = [...prevSeqs.filter((s) => !keys.has(s.key)), ...nextSeqs].sort((a, b) => a.key.localeCompare(b.key));
   const measured = new Set(sequences.map((s) => s.key));
   const skipped = [...prev.skipped.filter((s) => !keys.has(s.key) && !next.skipped.some((n) => n.key === s.key)), ...next.skipped].filter((s) => !measured.has(s.key));
@@ -1409,7 +1421,14 @@ export function patternExamples(records: readonly EditionRecord[], max = 8): Map
 
 const cell = (x: number | null, suffix = "") => (x === null ? "n/d" : `${x}${suffix}`);
 
-export function renderReport(input: { agg: Aggregate; patterns: readonly DetectedPattern[]; skipped: ReadonlyArray<{ edition: string; key: string; reason: string }>; generatedAt: string }): string {
+export function renderReport(input: {
+  agg: Aggregate;
+  patterns: readonly DetectedPattern[];
+  skipped: ReadonlyArray<{ edition: string; key: string; reason: string }>;
+  generatedAt: string;
+  /** Remedições que desistiram (#13417): os números dessas sequências são do método anterior. */
+  gaveUp?: ReturnType<typeof remeasureGaveUp>;
+}): string {
   const { agg } = input;
   const lines = [
     `# Vídeo: XML gerado × final publicado`,
@@ -1439,6 +1458,16 @@ export function renderReport(input: { agg: Aggregate; patterns: readonly Detecte
   ];
   if (input.skipped.length) {
     lines.push("## Sem par (puladas)", "", "| Edição | Sequência | Motivo |", "|---|---|---|", ...input.skipped.map((s) => `| ${s.edition} | ${s.key} | ${s.reason} |`), "");
+  }
+  if (input.gaveUp?.length) {
+    lines.push(
+      `## Remedição desistida (${REMEASURE_MAX_FAILURES} falhas, números do método anterior)`,
+      "",
+      "| Edição | Sequência | Método | Última falha | Motivo |",
+      "|---|---|---|---|---|",
+      ...input.gaveUp.map((g) => `| ${g.edition} | ${g.key} | ${g.method} | ${g.failure.at} | ${g.failure.reason} |`),
+      "",
+    );
   }
   lines.push("Enquadramento e legenda: fora da medição automática (v1); a #11670 conferiu à mão e não achou mudança.");
   return lines.join("\n") + "\n";
@@ -1529,7 +1558,7 @@ export function editionsToCompare(input: {
   today: string;
   days: number;
   /** Método gravado de cada sequência (dos registros no disco); sem ele, o `done` vale como está. */
-  methodOf?: (edition: string, key: string) => RecordMethod | undefined;
+  methodOf?: SequenceLookup;
 }): string[] {
   const limit = editionDate(input.today).getTime() - input.days * 86_400_000;
   return input.withPlan
@@ -1548,14 +1577,37 @@ export function editionsToCompare(input: {
  * volta a ser pendente, para a próxima rodada medir de novo; o importado da
  * #11670 fica (não há como refazer a análise manual).
  */
-export function currentDoneSequences(state: RecurringState, edition: string, methodOf?: (edition: string, key: string) => RecordMethod | undefined): Set<string> {
+export function currentDoneSequences(state: RecurringState, edition: string, methodOf?: SequenceLookup): Set<string> {
   const keys = state.done[edition]?.sequences ?? [];
   if (!methodOf) return new Set(keys);
   return new Set(
     keys.filter((k) => {
-      const m = methodOf(edition, k);
-      return m === CURRENT_METHOD || m === "11670-manual";
+      const seq = methodOf(edition, k);
+      const m = seq?.method;
+      // Remedição que já falhou REMEASURE_MAX_FAILURES vezes para de tentar: fica no relatório, não na fila.
+      return m === CURRENT_METHOD || m === "11670-manual" || (seq?.remeasureFailed?.count ?? 0) >= REMEASURE_MAX_FAILURES;
     }),
+  );
+}
+
+/** Método e falhas de remedição de uma sequência gravada (dos registros no disco). */
+export type SequenceLookup = (edition: string, key: string) => { method?: RecordMethod; remeasureFailed?: RemeasureFailure } | undefined;
+
+/** Remedições seguidas que falham antes de a sequência sair da fila (#13417). */
+export const REMEASURE_MAX_FAILURES = 3;
+
+export interface RemeasureFailure {
+  at: string;
+  reason: string;
+  count: number;
+}
+
+/** Pura — as sequências cuja remedição desistiu (para o relatório da rodada). */
+export function remeasureGaveUp(records: readonly EditionRecord[]): Array<{ edition: string; key: string; method: RecordMethod; failure: RemeasureFailure }> {
+  return records.flatMap((r) =>
+    r.sequences
+      .filter((s) => (s.remeasureFailed?.count ?? 0) >= REMEASURE_MAX_FAILURES)
+      .map((s) => ({ edition: r.edition, key: s.key, method: s.method ?? r.method, failure: s.remeasureFailed as RemeasureFailure })),
   );
 }
 
@@ -1669,6 +1721,34 @@ export function extractionTruncated(actualS: number, expectedS: number, tolS = E
   // Duração esperada ilegível (ffprobe sem número) não é "não truncado": falha explícita.
   if (!Number.isFinite(expectedS)) throw new Error(`duração esperada ilegível (${expectedS}): não dá para conferir a extração`);
   return !Number.isFinite(actualS) || expectedS - actualS > tolS;
+}
+
+/** Diferença (s) entre duas leituras com falta abaixo da qual a falta é do próprio arquivo, não da leitura. */
+export const SAME_SHORTFALL_TOL_S = 0.1;
+
+/** Leitura do arquivo interrompida (duas extrações com falta diferente, a 2ª ainda curta): nada é gravado. */
+export class DriveReadInterruptedError extends Error {}
+
+/**
+ * Lê um arquivo do bruto conferindo a duração, com UMA releitura (#13417).
+ * `read(n)` extrai (tentativa n) e devolve a duração real. Falta acima da
+ * tolerância relê; a 2ª leitura dentro da tolerância vale; falta IGUAL nas
+ * duas (±`SAME_SHORTFALL_TOL_S`) é do próprio arquivo (áudio mais curto que o
+ * vídeo): vale, com `realShortfallS` para quem chama completar com silêncio e
+ * avisar; falta diferente e ainda fora da tolerância é leitura interrompida:
+ * `DriveReadInterruptedError`. Nunca aborta por falta real.
+ */
+export function readWithRetry(expectedS: number, read: (attempt: number) => number, label: string): { actualS: number; attempts: number; realShortfallS: number | null } {
+  const first = read(1);
+  if (!extractionTruncated(first, expectedS)) return { actualS: first, attempts: 1, realShortfallS: null };
+  const second = read(2);
+  if (!extractionTruncated(second, expectedS)) return { actualS: second, attempts: 2, realShortfallS: null };
+  if (Number.isFinite(first) && Number.isFinite(second) && Math.abs(second - first) <= SAME_SHORTFALL_TOL_S) {
+    return { actualS: second, attempts: 2, realShortfallS: r3(expectedS - second) };
+  }
+  throw new DriveReadInterruptedError(
+    `leitura do Drive interrompida: ${label} deu ${first.toFixed(2)} s e ${second.toFixed(2)} s de áudio, esperado ${expectedS.toFixed(2)} s (nada gravado, rodar de novo, #13417)`,
+  );
 }
 
 /**

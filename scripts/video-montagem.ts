@@ -531,7 +531,7 @@ import {
 } from "./lib/diaria/video-cut-refine.ts";
 import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark } from "./lib/diaria/video-voice.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
-import { extractionTruncated } from "./lib/diaria/video-xml-vs-final.ts";
+import { readWithRetry } from "./lib/diaria/video-xml-vs-final.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
@@ -1397,14 +1397,22 @@ function ensureMultiAudio(ctx: Ctx, source: SourceInfo, redo: boolean): { path: 
       console.error(`[video-montagem] áudio ${i + 1}/${sourceFiles(source).length}: ${file.id}…`);
       const tmp = `${part}.tmp`;
       // #13417: extrai sem o apad e confere a duração real antes de completar com silêncio. A leitura que para no
-      // meio (Drive for desktop, arquivo de vários GB) sai com exit 0, e o apad escondia o resto como silêncio.
+      // meio (Drive for desktop, arquivo de vários GB) sai com exit 0, e o apad escondia o resto como silêncio. Relê
+      // uma vez: falta igual nas duas leituras é do arquivo (completa, com aviso); diferente é leitura interrompida.
       const raw = `${part}.raw.tmp`;
       const want = file.frames / source.fps;
       try {
-        run("ffmpeg", [...multiAudioRawPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: raw }).slice(0, -1), "-f", "wav", raw]);
-        const got = probeDurationS(raw);
-        if (extractionTruncated(got, want)) {
-          throw new Error(`áudio do bruto ${file.id} truncado: ${got.toFixed(2)} s de ${want.toFixed(2)} s (leitura interrompida?); nada gravado, rode de novo (#13417)`);
+        const { realShortfallS } = readWithRetry(
+          want,
+          () => {
+            run("ffmpeg", [...multiAudioRawPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: raw }).slice(0, -1), "-f", "wav", raw]);
+            return probeDurationS(raw);
+          },
+          file.path,
+        );
+        if (realShortfallS !== null) {
+          console.error(`[aviso] áudio de ${file.id} tem ${realShortfallS.toFixed(2)} s a menos que o vídeo nas duas leituras (falta do próprio arquivo)`);
+          console.error(`[premissa] ${file.id}: completado com ${realShortfallS.toFixed(2)} s de silêncio no fim, para os arquivos seguintes ficarem no tempo certo (#13417)`);
         }
         run("ffmpeg", [...multiAudioPartArgs({ src: raw, frames: file.frames, fps: source.fps, out: tmp }).slice(0, -1), "-f", "wav", tmp]);
       } finally {
@@ -2338,11 +2346,29 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (multiAudio?.rebuilt) redo = true;
   if (redo || !existsSync(audio) || !existsSync(loudPath)) {
     console.error("[video-montagem] extraindo o áudio (16 kHz mono) e medindo o loudness do bruto…");
-    const { stderr } = run("ffmpeg", [
-      "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
-      "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
-      "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
-    ]);
+    let stderr = "";
+    const extract = () => {
+      stderr = run("ffmpeg", [
+        "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
+        "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
+        "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
+      ]).stderr;
+      return probeDurationS(audio);
+    };
+    if (multiAudio) extract();
+    else {
+      // #13417: bruto de um arquivo só, conferido contra a duração dele; relê uma vez, falta real vira aviso.
+      try {
+        const { realShortfallS } = readWithRetry(source.durationS, extract, source.path);
+        if (realShortfallS !== null) {
+          console.error(`[aviso] o áudio do bruto tem ${realShortfallS.toFixed(2)} s a menos que o vídeo nas duas leituras (falta do próprio arquivo)`);
+          console.error(`[premissa] áudio usado como está: os ${realShortfallS.toFixed(2)} s finais do vídeo ficam sem som (#13417)`);
+        }
+      } catch (e) {
+        rmSync(audio, { force: true });
+        throw e;
+      }
+    }
     writeJson(loudPath, parseLoudnormJson(stderr));
     redo = true;
   }

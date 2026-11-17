@@ -107,8 +107,11 @@ import {
   clipReason,
   CURRENT_METHOD,
   currentDoneSequences,
-  extractionTruncated,
+  DriveReadInterruptedError,
+  readWithRetry,
+  remeasureGaveUp,
   zeroRunProblem,
+  type SequenceLookup,
   type BrutoPart,
   type DetectedPattern,
   type EditionRecord,
@@ -346,28 +349,30 @@ function probeDurationS(path: string): number {
   return Number(sh("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.trim());
 }
 
-/** Extração do bruto que parou no meio (#13417): o único erro de extração que vira pulo; o resto (ffmpeg ausente, disco cheio) sobe. */
-export class ExtractionTruncatedError extends Error {}
-
 /**
  * ffmpeg de um arquivo do bruto para 16 kHz mono; com `durationS`, corta e
  * completa com silêncio na duração da linha do tempo. A extração sai primeiro
  * sem o `apad` e a duração real é conferida contra a esperada (a da linha do
- * tempo, ou a do próprio arquivo): faltando mais que `EXTRACT_SHORTFALL_TOL_S`,
- * a leitura parou no meio e o ffmpeg saiu 0 mesmo assim (#13417). Aí lança
- * `ExtractionTruncatedError`, e nada é gravado em `out`. Duração esperada
- * ilegível lança erro comum.
+ * tempo, ou a do próprio arquivo) por `readWithRetry` (#13417): falta acima
+ * de `EXTRACT_SHORTFALL_TOL_S` relê uma vez; falta igual nas duas leituras é
+ * do arquivo (completa com silêncio, com aviso e premissa); falta diferente é
+ * leitura interrompida (`DriveReadInterruptedError`, nada gravado em `out`).
+ * Duração esperada ilegível lança erro comum.
  */
 function extract16k(src: string, out: string, durationS: number | null): void {
   const raw = `${out}.raw.tmp.wav`;
   const tmp = `${out}.tmp.wav`;
   try {
     const cut = durationS === null ? [] : ["-t", durationS.toFixed(6)];
-    sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...cut, "-c:a", "pcm_s16le", raw]);
-    const got = probeDurationS(raw);
     const expected = durationS ?? probeDurationS(src);
-    if (extractionTruncated(got, expected)) {
-      throw new ExtractionTruncatedError(`extração truncada do bruto ${src}: ${got.toFixed(2)} s de áudio, esperado ${expected.toFixed(2)} s (leitura interrompida? nada gravado no cache, rodar de novo, #13417)`);
+    const read = () => {
+      sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", ...cut, "-c:a", "pcm_s16le", raw]);
+      return probeDurationS(raw);
+    };
+    const { actualS: got, realShortfallS } = readWithRetry(expected, read, src);
+    if (realShortfallS !== null) {
+      log(`[aviso] ${src}: o áudio tem ${realShortfallS.toFixed(2)} s a menos que o esperado nas duas leituras (falta do próprio arquivo, não da leitura)`);
+      log(`[premissa] ${src}: ${durationS === null ? "usado como está" : `completado com ${realShortfallS.toFixed(2)} s de silêncio no fim`} (#13417)`);
     }
     if (durationS !== null && got < durationS) {
       sh("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", raw, "-af", "apad", "-t", durationS.toFixed(6), "-c:a", "pcm_s16le", tmp]);
@@ -404,13 +409,13 @@ function validateOrEvictCachedBruto(path: string, parts: readonly BrutoPart[], f
   return problem;
 }
 
-/** `extract16k` com a extração truncada virando motivo de pulo; `null` = ok. Qualquer outro erro sobe (#13417). */
+/** `extract16k` com a leitura interrompida virando motivo de pulo; `null` = ok. Qualquer outro erro sobe (#13417). */
 function tryExtract(edition: string, src: string, out: string, durationS: number | null): string | null {
   try {
     extract16k(src, out, durationS);
     return null;
   } catch (e) {
-    if (!(e instanceof ExtractionTruncatedError)) throw e;
+    if (!(e instanceof DriveReadInterruptedError)) throw e;
     log(`[erro] ${edition}: ${e.message}`);
     return clipReason(e.message);
   }
@@ -443,12 +448,17 @@ export async function brutoWav(
 ): Promise<{ wav: string } | { wav: null; reason: string }> {
   const montageRedo = (what: string, problem: string) => ({ wav: null, reason: clipReason(`${what} com ${problem}: refazer o áudio da montagem (#13417)`) }) as const;
   const cached = join(workDir, "audio.wav");
+  const bp = brutoParts(pf.source);
   if (existsSync(cached)) {
-    // O audio.wav é da montagem: nunca apagado aqui, só recusado.
+    // O audio.wav é da montagem: nunca apagado aqui, só recusado. Duração conferida contra a linha do tempo quando o
+    // plan.json a dá (bruto em vários arquivos); zeros digitais sempre.
+    if (bp.parts !== null) {
+      const d = probeDurationS(cached);
+      if (!brutoTimelineMatches(d, bp.parts, pf.source.fps)) return montageRedo(`áudio da montagem (${cached})`, `${d} s, fora da linha do tempo do plan.json`);
+    }
     const problem = zeroRunIn(cached);
     return problem ? montageRedo(`áudio da montagem (${cached})`, problem) : { wav: cached };
   }
-  const bp = brutoParts(pf.source);
   const montageConcat = join(workDir, MULTI_AUDIO_FILE);
   if ((pf.source.files?.length ?? 0) > 1 && existsSync(montageConcat)) {
     // Já está na linha do tempo global (a montagem conferiu a duração): só baixa para 16 kHz mono.
@@ -639,14 +649,14 @@ function loadState(): RecurringState {
   return { ...EMPTY_STATE, ...(readJsonSafe<RecurringState>(out("state.json")) ?? {}) };
 }
 
-/** Registros no disco, com os desta rodada por cima (no `--dry-run` eles não foram gravados). */
-/** Método gravado de cada sequência, pelos registros no disco (#13417). */
-export function methodLookup(records: readonly EditionRecord[]): (edition: string, key: string) => EditionRecord["method"] | undefined {
-  const m = new Map<string, EditionRecord["method"]>();
-  for (const r of records) for (const s of r.sequences) m.set(`${r.edition}/${s.key}`, s.method ?? r.method);
+/** Método e falhas de remedição de cada sequência, pelos registros no disco (#13417). */
+export function methodLookup(records: readonly EditionRecord[]): SequenceLookup {
+  const m = new Map<string, ReturnType<SequenceLookup>>();
+  for (const r of records) for (const s of r.sequences) m.set(`${r.edition}/${s.key}`, { method: s.method ?? r.method, remeasureFailed: s.remeasureFailed });
   return (edition, key) => m.get(`${edition}/${key}`);
 }
 
+/** Registros no disco, com os desta rodada por cima (no `--dry-run` eles não foram gravados). */
 function loadRecords(fresh: ReadonlyMap<string, EditionRecord> = new Map()): EditionRecord[] {
   const dir = join(ROOT, OUT_DIR);
   const onDisk = existsSync(dir)
@@ -737,7 +747,9 @@ async function finish(opts: { openIssues: boolean; dryRun: boolean; register: bo
   const agg = aggregateRecords(records);
   const patterns = detectPatterns(agg);
   const skipped = records.flatMap((r) => r.skipped.map((s) => ({ edition: r.edition, ...s })));
-  const report = renderReport({ agg, patterns, skipped, generatedAt: new Date().toISOString() });
+  const gaveUp = remeasureGaveUp(records);
+  for (const g of gaveUp) log(`[aviso] ${g.edition} ${g.key}: remedição desistida depois de ${g.failure.count} falhas (último motivo: ${g.failure.reason}); seguem os números do ${g.method}`);
+  const report = renderReport({ agg, patterns, skipped, generatedAt: new Date().toISOString(), gaveUp });
   if (opts.dryRun) {
     process.stdout.write(report);
     for (const p of patterns) log(`[dry-run] padrão ${p.id} (${p.priority}) em ${p.editions.join(", ")}`);

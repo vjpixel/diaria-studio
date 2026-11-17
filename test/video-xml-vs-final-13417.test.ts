@@ -28,8 +28,13 @@ import {
   compareSequence,
   currentDoneSequences,
   CURRENT_METHOD,
+  aggregateRecords,
+  DriveReadInterruptedError,
   dropSlivers,
   editionsToCompare,
+  readWithRetry,
+  remeasureGaveUp,
+  renderReport,
   extractionTruncated,
   finalSpansFromRuns,
   longestZeroRun,
@@ -103,22 +108,39 @@ describe("#13417 bug 1: extração truncada do bruto", () => {
   });
 
   describe("com ffmpeg", { skip: !hasFfmpeg && "ffmpeg ausente" }, () => {
-    it("mp4 curto com duração esperada maior: pulo com motivo de extração truncada, sem cache gravado", async () => {
+    it("falta real (igual nas duas leituras) de até 5 s: completa com silêncio e segue, nunca pula", async () => {
       const dir = mkdtempSync(join(tmpdir(), "xml-vs-final-13417-"));
       const a = join(dir, "a.mp4");
       const b = join(dir, "b.mp4");
-      tone(a, 1.0, 440); // 1 s de áudio, 4 s (120 quadros) na linha do tempo: a leitura "parou" em 1 s
+      tone(a, 1.0, 440); // 1 s de áudio, 4 s (120 quadros) na linha do tempo, nas duas leituras
       tone(b, 1.0, 880);
-      const edition = fakeEdition();
       const pf = plan([
         { id: "a", path: "/nao-existe/a.mp4", frames: 120, offsetFrames: 0 },
         { id: "b", path: "/nao-existe/b.mp4", frames: 30, offsetFrames: 120 },
       ]);
       const local: Record<string, string> = { "a.mp4": a, "b.mp4": b };
+      const res = await brutoWav(fakeEdition(), join(dir, "work"), pf, finderWith(async (_e, name) => local[name] ?? null), NO_LOOKUP);
+      assert.ok(res.wav, JSON.stringify(res));
+      const w = parseWavPcm16(readFileSync(res.wav as string));
+      assert.ok(Math.abs(w.samples.length / w.sampleRate - 5) < 0.05);
+    });
+
+    it("falta real maior que o teto de zeros: pulo com motivo neutro, sem cache gravado", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "xml-vs-final-13417-"));
+      const a = join(dir, "a.mp4");
+      const b = join(dir, "b.mp4");
+      tone(a, 1.0, 440); // 1 s de áudio, 8 s na linha do tempo: a cópia da 261117 (73 s em 1488 s) em miniatura
+      tone(b, 1.0, 880);
+      const edition = fakeEdition();
+      const pf = plan([
+        { id: "a", path: "/nao-existe/a.mp4", frames: 240, offsetFrames: 0 },
+        { id: "b", path: "/nao-existe/b.mp4", frames: 30, offsetFrames: 240 },
+      ]);
+      const local: Record<string, string> = { "a.mp4": a, "b.mp4": b };
       const res = await brutoWav(edition, join(dir, "work"), pf, finderWith(async (_e, name) => local[name] ?? null), NO_LOOKUP);
-      assert.equal(res.wav, null, "antes do #13417 o apad completava 3 s de silêncio e o cache valia");
-      assert.ok(res.wav === null && /extração truncada/.test(res.reason) && /a\.mp4/.test(res.reason), JSON.stringify(res));
-      assert.equal(existsSync(join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-multi-16k.wav")), false, "nada vai para o cache");
+      assert.equal(res.wav, null, "antes do #13417 o apad completava 7 s de silêncio e o cache valia");
+      assert.ok(res.wav === null && /trecho de 7\.0 s de zeros digitais/.test(res.reason), JSON.stringify(res));
+      assert.equal(existsSync(join(tmpdir(), "diaria-video-xml-vs-final", edition, "bruto-multi-16k.wav")), false, "nada fica no cache");
     });
 
     it("cache com trecho longo de zeros digitais é descartado e o bruto é extraído de novo", async () => {
@@ -189,7 +211,7 @@ describe("#13417 bug 1: extração truncada do bruto", () => {
       const junk = join(dir, "a.mp4");
       writeFileSync(junk, "não é vídeo");
       const pf = plan([{ id: "a", path: junk, frames: 30, offsetFrames: 0 }]);
-      await assert.rejects(brutoWav(fakeEdition(), join(dir, "work"), pf, finderWith(async () => null), NO_LOOKUP), /ffmpeg saiu/);
+      await assert.rejects(brutoWav(fakeEdition(), join(dir, "work"), pf, finderWith(async () => null), NO_LOOKUP), /(ffmpeg|ffprobe) saiu/);
     });
   });
 
@@ -201,6 +223,46 @@ describe("#13417 bug 1: extração truncada do bruto", () => {
     const res = await brutoWav(fakeEdition(), work, plan([{ id: "a", path: "/x/a.mp4", frames: 30 }]), finderWith(async () => null), NO_LOOKUP);
     assert.ok(res.wav === null && /áudio da montagem/.test(res.reason) && /trecho de 8\.0 s de zeros digitais em 0\.0 s/.test(res.reason), JSON.stringify(res));
     assert.ok(existsSync(join(work, "audio.wav")), "o audio.wav é da montagem: recusado, nunca apagado");
+  });
+});
+
+describe("#13417: readWithRetry (releitura única)", () => {
+  const reads = (...xs: number[]) => {
+    let i = 0;
+    return () => xs[i++];
+  };
+  it("leitura certa de primeira: não relê", () => {
+    assert.deepEqual(readWithRetry(100, reads(99.8), "x"), { actualS: 99.8, attempts: 1, realShortfallS: null });
+  });
+  it("leitura interrompida que a 2ª corrige: vale a 2ª", () => {
+    assert.deepEqual(readWithRetry(1487.9, reads(73, 1487.6), "x"), { actualS: 1487.6, attempts: 2, realShortfallS: null });
+  });
+  it("leitura interrompida nas duas, em pontos diferentes: erro 'leitura do Drive interrompida'", () => {
+    assert.throws(() => readWithRetry(1487.9, reads(73, 500), "bruto.mp4"), (e: unknown) => e instanceof DriveReadInterruptedError && /leitura do Drive interrompida/.test((e as Error).message) && /bruto\.mp4/.test((e as Error).message));
+  });
+  it("falta igual nas duas (±0,1 s): falta real do arquivo, vale com a falta para completar", () => {
+    assert.deepEqual(readWithRetry(10, reads(7, 7.05), "x"), { actualS: 7.05, attempts: 2, realShortfallS: 2.95 });
+  });
+});
+
+describe("#13417: remedição que falha", () => {
+  const seqOf = (key: string, method: EditionRecord["method"], extra: Partial<EditionRecord["sequences"][number]> = {}) => ({ key, method, target: null, finalFile: null, xmlVersion: null, xmlDurationS: null, finalDurationS: null, coverage: null, summary: {}, loudness: null, framing: null, captions: null, ...extra });
+  it("cada pulo da remedição de um v1 guarda motivo e contagem; na 3ª sai da fila e vai para o relatório", () => {
+    let rec: EditionRecord = { schema: XML_FINAL_SCHEMA, edition: "261117", method: "audio-envelope-align-v1", generatedAt: "t0", sequences: [seqOf("youtube", "audio-envelope-align-v1")], skipped: [] };
+    const state: RecurringState = { lastRunAt: null, patterns: {}, done: { "261117": { at: "t0", sequences: ["youtube"] } } };
+    const withPlan = [{ edition: "261117", sequences: ["youtube"] }];
+    for (let i = 1; i <= 3; i++) {
+      assert.deepEqual(editionsToCompare({ withPlan, state, today: "261117", days: 14, methodOf: methodLookup([rec]) }), ["261117"], `tentativa ${i} ainda na fila`);
+      rec = mergeEditionRecord(rec, { schema: XML_FINAL_SCHEMA, edition: "261117", method: CURRENT_METHOD, generatedAt: `t${i}`, sequences: [], skipped: [{ key: "youtube", reason: "drive-indisponivel: x" }] });
+      assert.deepEqual(rec.sequences[0].remeasureFailed, { at: `t${i}`, reason: "drive-indisponivel: x", count: i });
+    }
+    assert.deepEqual(editionsToCompare({ withPlan, state, today: "261117", days: 14, methodOf: methodLookup([rec]) }), [], "depois de 3 falhas, para de tentar");
+    const gaveUp = remeasureGaveUp([rec]);
+    assert.equal(gaveUp.length, 1);
+    const agg = aggregateRecords([rec]);
+    const report = renderReport({ agg, patterns: [], skipped: [], generatedAt: "g", gaveUp });
+    assert.match(report, /Remedição desistida/);
+    assert.match(report, /\| 261117 \| youtube \| audio-envelope-align-v1 \| t3 \| drive-indisponivel: x \|/);
   });
 });
 
@@ -299,6 +361,8 @@ interface Edits {
   swap?: [number, number];
   /** Trecho do bruto de fora dos clipes inserido depois do clipe `after`. */
   insert?: { after: number; srcIn: number; srcOut: number };
+  /** Som de fora do bruto (vinheta, música) de `s` segundos depois do clipe `after`. */
+  foreign?: { after: number; s: number; seed?: number };
 }
 
 function finalFromXml(bruto: Float64Array, clips: readonly XmlClip[], edits: Edits = {}): Float64Array {
@@ -320,6 +384,11 @@ function finalFromXml(bruto: Float64Array, clips: readonly XmlClip[], edits: Edi
     const head = edits.extendHead?.index === c.index ? edits.extendHead.s : 0;
     copy(c.srcIn - head, c.srcOut + tail);
     if (edits.insert?.after === c.index) copy(edits.insert.srcIn, edits.insert.srcOut);
+    if (edits.foreign?.after === c.index) {
+      // Fala de outra gravação (mesma estatística do bruto, outra fonte): o par falso mais provável.
+      const other = syntheticBruto(edits.foreign.seed ?? 777, 30).db;
+      for (let i = 0; i < Math.round(edits.foreign.s / HOP); i++) parts.push(other[500 + i]);
+    }
   }
   for (let i = 0; i < Math.round(0.2 / HOP); i++) parts[i] = -120;
   silence(4);
@@ -392,6 +461,15 @@ describe("#13417 bug 2: auto-comparação (final = o próprio XML)", () => {
     assert.equal(cmp.summary.clipsRemoved, 0);
   });
 
+  for (const seed of [11, 23, 37]) {
+    it(`seed ${seed}: vão de 1,5 s com som de fora do bruto não vira acrescentado`, () => {
+      const base = compare(seed);
+      const { cmp } = compare(seed, { foreign: { after: base.clips[4].index, s: 1.5 } });
+      assert.equal(cmp.summary.added, 0, JSON.stringify(cmp.added));
+      assert.equal(cmp.summary.clipsRemoved, 0);
+    });
+  }
+
   it("clipe tirado pelo editor sai como removido, e só ele", () => {
     const base = compare(23);
     const drop = base.clips[5].index;
@@ -448,6 +526,27 @@ describe("#13417: snapCutsToClipEdges", () => {
     assert.equal(loose[0].audioEnd, 2);
     const defaults = runsAt();
     assert.equal(snapCutsToClipEdges(defaults, F, B, HOP, onlyA, 1, -80), 0, "com os limites padrão, a ponta estendida segue medida");
+  });
+
+  it("não mexe em trechos que não se encostam, de mesmo deslocamento, ou com janela curta demais", () => {
+    const { F, B } = build();
+    const gap = [
+      { audioStart: 0, audioEnd: 2.2, offset: 10 },
+      { audioStart: 2.5, audioEnd: 4, offset: 48 },
+    ];
+    const same = [
+      { audioStart: 0, audioEnd: 2.2, offset: 10 },
+      { audioStart: 2.2, audioEnd: 4, offset: 10 },
+    ];
+    const tiny = [
+      { audioStart: 2.19, audioEnd: 2.2, offset: 10 },
+      { audioStart: 2.2, audioEnd: 2.21, offset: 48 },
+    ];
+    for (const runs of [gap, same, tiny]) {
+      const before = JSON.stringify(runs);
+      assert.equal(snapCutsToClipEdges(runs, F, B, HOP, clips, 1, -80), 0);
+      assert.equal(JSON.stringify(runs), before);
+    }
   });
 });
 
