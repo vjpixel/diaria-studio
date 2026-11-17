@@ -1,0 +1,180 @@
+{
+  "edicao": "261118",
+  "porVideo": {
+    "horizontal": {
+      "titulo": "Jensen Huang saiu, e o Brasil entrou na lista",
+      "capa": "Eu avisei há 8 dias"
+    },
+    "vertical1": {
+      "capa": "Jensen saiu. Eu tinha avisado",
+      "ordem": [
+        "H1",
+        "H4",
+        "H6",
+        "H8",
+        "H10",
+        "V1-CTA"
+      ],
+      "pertenceAoHorizontal": true
+    },
+    "vertical2": {
+      "titulo": "Chips de IA: o que muda com a regra de Trump",
+      "capa": "Brasil não foi proibido",
+      "ordem": [
+        "V2-G",
+        "H7",
+        "H9",
+        "H12",
+        "H13",
+        "H14"
+      ]
+    }
+  },
+  "falas": [
+    {
+      "id": "H1",
+      "bloco": "gancho",
+      "texto": "Previ três coisas sobre a Nvidia. Foi há oito dias, aqui no canal. Duas já aconteceram, e o Brasil entrou na história.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ]
+    },
+    {
+      "id": "H2",
+      "bloco": "abertura",
+      "texto": "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida.",
+      "videos": [
+        "horizontal"
+      ]
+    },
+    {
+      "id": "H3",
+      "bloco": "resumo",
+      "texto": "Vamos ver o que eu disse no vídeo do dia 10.",
+      "videos": [
+        "horizontal"
+      ]
+    },
+    {
+      "id": "H4",
+      "bloco": "resumo",
+      "texto": "Dois dias depois da minha previsão, o Jensen Huang renunciou ao cargo de CEO da Nvidia e saiu do conselho da empresa.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ]
+    },
+    {
+      "id": "H5",
+      "bloco": "resumo",
+      "texto": "O comunicado da Nvidia não diz o motivo. A saída veio poucos dias depois das reportagens sobre o caso dele com uma executiva que o governo americano suspeita de espionar pra China.",
+      "videos": [
+        "horizontal"
+      ]
+    },
+    {
+      "id": "H6",
+      "bloco": "resumo",
+      "texto": "Na segunda-feira, dia 16, o governo Trump publicou uma norma nova sobre a exportação de chips de inteligência artificial.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ]
+    },
+    {
+      "id": "H7",
+      "bloco": "resumo",
+      "texto": "O alvo da norma são data centers fora dos Estados Unidos que deixam empresas chinesas usar esses chips pra treinar os modelos delas.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ]
+    },
+    {
+      "id": "H8",
+      "bloco": "resumo",
+      "texto": "O Brasil tá na lista de países da norma. Empresas aqui vão precisar de licença dos Estados Unidos pra comprar os chips de IA mais avançados.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ]
+    },
+    {
+      "id": "H9",
+      "bloco": "resumo",
+      "texto": "A licença não é proibição. O Brasil continua podendo comprar chips dos Estados Unidos. A exigência depende do chip e de cada operação.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ]
+    },
+    {
+      "id": "H10",
+      "bloco": "comentario",
+      "texto": "Então, o placar. O Jensen perder o cargo: aconteceu. Os Estados Unidos apertarem a venda de chips: aconteceu, e com o Brasil dentro. Se uma coisa levou à outra, ninguém confirmou.",
+      "videos": [
+        "horizontal",
+        "vertical1"
+      ]
+    },
+    {
+      "id": "H11",
+      "bloco": "comentario",
+      "texto": "O preço desses chips vai subir fora dos Estados Unidos? Essa ainda não dá pra cravar. A norma acabou de sair, e eu ainda não vi nenhum dado de preço.",
+      "videos": [
+        "horizontal"
+      ]
+    },
+    {
+      "id": "H12",
+      "bloco": "comentario",
+      "texto": "Na prática, uma empresa no Brasil que quiser os chips de IA mais avançados vai depender de uma autorização do governo americano.",
+      "videos": [
+        "vertical2"
+      ]
+    },
+    {
+      "id": "H13",
+      "bloco": "comentario",
+      "texto": "Licença é mais uma etapa. Etapa a mais costuma virar espera e custo pros serviços de IA que rodam aqui. Isso é leitura minha, não tá escrito na norma.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ]
+    },
+    {
+      "id": "H14",
+      "bloco": "comentario",
+      "texto": "A sua empresa usa algum serviço de IA que roda aqui no Brasil? Ou nem sabe onde ele roda? Me conta nos comentários.",
+      "videos": [
+        "horizontal",
+        "vertical2"
+      ]
+    },
+    {
+      "id": "H15",
+      "bloco": "comentario",
+      "texto": "Naquele vídeo eu terminei dizendo que a IA não devia depender de poucos governos e empresas. Esses últimos dias mostraram por quê: bastou um governo mudar uma regra pro Brasil entrar na conta.",
+      "videos": [
+        "horizontal"
+      ]
+    },
+    {
+      "id": "V1-CTA",
+      "bloco": "cta_vertical",
+      "texto": "A terceira previsão ainda tá em aberto. Você acha que ela acontece? No vídeo completo, no YouTube da diar.ia.br, tem o trecho em que eu fiz as três.",
+      "videos": [
+        "vertical1"
+      ]
+    },
+    {
+      "id": "V2-G",
+      "bloco": "gancho",
+      "texto": "Empresa no Brasil agora precisa de licença. É dos Estados Unidos, pra comprar chip de IA avançado, numa norma nova do governo Trump. Isso pesa pra você?",
+      "videos": [
+        "vertical2"
+      ]
+    }
+  ]
+}

@@ -17,6 +17,10 @@
  * Também avisa verbos de relatório e trechos com mais de 30 palavras sem
  * pausa (`avisosTomConversacional`, #13165), e o formato do texto de tela
  * (`avisosTela`, #13180), sem bloquear a proposta.
+ * Capa do roteiro que o `gen-youtube-thumb.ts` recusaria (vertical fora de 2 a
+ * 5 palavras, `normalizeShortCoverHook`; horizontal fora do `splitHook`, com a
+ * quebra de `hookHorizontalDoRoteiro`) é `[erro]` com exit 4, depois da
+ * proposta impressa (#13401, `errosCapaDoRoteiro`).
  * A saída traz a duração estimada de cada vídeo (`duracoes` no `--json`).
  * A validação (`validarRoteiroFalas`, roteiro-gravacao.ts) cobre os campos
  * novos: `tela` (#13120), `cortes` (#13129), `fontes` (#13132),
@@ -32,7 +36,10 @@
  *   --json:   saída JSON (`PropostaBlocos` mais `duracoes`) em vez do Markdown
  *
  * Exit: 0 = proposta impressa; 3 = sem roteiro-falas.json (edição sem roteiro
- * pela skill: seguir a montagem como antes); 2 = uso ou arquivo inválido.
+ * pela skill: seguir a montagem como antes); 2 = uso ou arquivo inválido;
+ * 4 = proposta impressa, mas uma capa fora da regra do gerador (#13401): a
+ * montagem segue com a proposta (a capa vai por `--hook` na `/diaria-publica`)
+ * e o roteiro corrige a capa antes de gravar.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -55,6 +62,7 @@ import {
   roteiroDuracaoConfigFrom,
   type RoteiroDuracaoConfig,
 } from "./lib/diaria/roteiro-videos.ts";
+import { errosCapaDoRoteiro } from "./lib/diaria/youtube-thumb-roteiro.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -71,6 +79,15 @@ export function lerDuracaoConfig(root: string, err: (s: string) => void): Roteir
 }
 
 export const EXIT_SEM_ROTEIRO = 3;
+
+/**
+ * #13401: proposta válida e impressa, mas uma capa do roteiro (vertical ou
+ * horizontal) fora da regra do `gen-youtube-thumb.ts`. Código próprio, para a
+ * `/diaria-video-montagem` (roteiro já congelado) seguir com a proposta e a
+ * `/diaria-video-roteiro` corrigir a capa antes da gravação. Nunca 2, que é
+ * roteiro inválido.
+ */
+export const EXIT_CAPA_FORA_DA_REGRA = 4;
 
 export function main(
   argv: string[] = process.argv.slice(2),
@@ -114,7 +131,9 @@ export function main(
       : `${renderPropostaBlocos(proposta)}
 ${renderDuracoes(lido.roteiro, cfg)}`,
   );
-  return 0;
+  const erros = errosCapaDoRoteiro(lido.roteiro);
+  for (const e of erros) io.err(`[erro] ${e}`);
+  return erros.length ? EXIT_CAPA_FORA_DA_REGRA : 0;
 }
 
 if (isMainModule(import.meta.url)) {

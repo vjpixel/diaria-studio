@@ -12,7 +12,9 @@
  * O JSON é validado antes (o mesmo `validarRoteiroFalas` do
  * `video-roteiro-blocos.ts`); inválido = exit 2, nada gravado. Os mesmos
  * `[aviso]` do `video-roteiro-blocos.ts` (proposta de blocos, gancho, título,
- * capa, duração) saem no stderr, sem mudar o exit. A página é gravada num
+ * capa, duração) saem no stderr, sem mudar o exit; capa que o
+ * `gen-youtube-thumb.ts` recusaria sai como `[erro]` (#13401), também sem mudar
+ * o exit (o `video-roteiro-blocos.ts` dá exit 4 para ela). A página é gravada num
  * arquivo temporário e renomeada, para o Drive nunca sincronizar uma pela metade.
  *
  * O link do artefato (`<!-- artifact: URL -->`, 1ª linha) é preservado da
@@ -37,6 +39,7 @@ import { editionDir } from "./lib/edition-paths.ts";
 import { artifactUrlDe, artifactUrlSegura, renderRoteiroPagina } from "./lib/diaria/roteiro-pagina.ts";
 import { avisosTomConversacional, avisosDuracao, avisosTela, avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
 import { lerDuracaoConfig } from "./video-roteiro-blocos.ts";
+import { errosCapaDoRoteiro } from "./lib/diaria/youtube-thumb-roteiro.ts";
 
 export const ROTEIRO_PAGINA_FILE = "_internal/roteiro-d1.html";
 export const EXIT_SEM_ROTEIRO = 3;
@@ -83,6 +86,8 @@ export function main(
   const cfg = lerDuracaoConfig(root, io.err);
   const proposta = propostaBlocosDoRoteiro(lido.roteiro, { palavrasPorMinuto: cfg.palavrasPorMinuto });
   for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro), ...avisosTela(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  // #13401: capa que o gen-youtube-thumb.ts recusaria, visível já na página (o exit fica; o blocos dá 4).
+  for (const e of errosCapaDoRoteiro(lido.roteiro)) io.err(`[erro] ${e}`);
   let html: string;
   try {
     html = renderRoteiroPagina(lido.roteiro, { cfg, ...(artifactUrl ? { artifactUrl } : {}) });

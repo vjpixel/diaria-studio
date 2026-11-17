@@ -1056,6 +1056,22 @@ export function normalizeShortCoverHook(hook: string): string {
   return normalized;
 }
 
+/**
+ * Pure (#13401): o texto da capa do horizontal no roteiro vem numa linha só,
+ * com até 6 palavras, e o `splitHook` aceita até 4 por linha. Capa de 1 linha
+ * acima disso quebra em 2 linhas equilibradas (a primeira com a metade
+ * arredondada para cima, moeda colada ao número), como o
+ * `normalizeShortCoverHook`; quebra explícita e capa curta voltam iguais. A
+ * validação continua no `splitHook`, na composição.
+ */
+export function hookHorizontalDoRoteiro(capa: string): string {
+  const lines = capa.split(HOOK_LINE_BREAK_RE).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (lines.length !== 1 || hookWords(lines[0]).length <= HOOK_MAX_WORDS) return capa;
+  const words = shortHookTokens(lines[0]);
+  const cut = Math.ceil(words.length / 2);
+  return `${words.slice(0, cut).join(" ")}|${words.slice(cut).join(" ")}`;
+}
+
 /** Pure (#12462): painel escuro na base da capa vertical, atrás do gancho. */
 export function buildShortCoverPanelSvg(panelTopRatio = SHORT_COVER_PANEL_TOP_RATIO, w = SHORT_COVER_W, h = SHORT_COVER_H): string {
   if (!(panelTopRatio > 0 && panelTopRatio < 1)) throw new Error(`--panel-top inválido: ${panelTopRatio} (fração da altura entre 0 e 1, ex.: 0.62)`);

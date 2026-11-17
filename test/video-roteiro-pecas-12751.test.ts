@@ -36,7 +36,7 @@ const ROTEIRO: RoteiroFalas = {
   veiculos: ["The Verge"],
   porVideo: {
     horizontal: { titulo: "Claude Code vazou senhas: 3 dicas para não cair nessa", capa: "Senha vazou?" },
-    vertical1: { titulo: "Mais de 500 senhas vazadas pelo Claude Code", capa: "Vazou?" },
+    vertical1: { titulo: "Mais de 500 senhas vazadas pelo Claude Code", capa: "Senhas vazaram?" },
     vertical2: { titulo: "3 dicas para não vazar senha no Claude Code", capa: "Proteja suas senhas" },
   },
   falas: [

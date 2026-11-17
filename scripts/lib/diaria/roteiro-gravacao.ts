@@ -24,6 +24,9 @@ import { isBlockKey, normalizeToken, type BlockKey } from "./video-montage.ts";
 
 export type VideoRoteiro = "horizontal" | "vertical1" | "vertical2";
 export const VIDEOS_ROTEIRO: readonly VideoRoteiro[] = ["horizontal", "vertical1", "vertical2"];
+/** Os verticais do roteiro (#13401): os que têm capa de Short e `ordem` própria. */
+export type VerticalRoteiro = Exclude<VideoRoteiro, "horizontal">;
+export const VERTICAIS_ROTEIRO: readonly VerticalRoteiro[] = ["vertical1", "vertical2"];
 
 export const VIDEO_LABEL: Record<VideoRoteiro, string> = {
   horizontal: "horizontal",
