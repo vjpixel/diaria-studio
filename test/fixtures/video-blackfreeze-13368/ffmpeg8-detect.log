@@ -1,0 +1,6 @@
+[blackdetect @ 0x793870002f80] black_start:8 black_end:9 black_duration:1
+[freezedetect @ 0x793870003200] lavfi.freezedetect.freeze_start: 9
+[freezedetect @ 0x793870003200] lavfi.freezedetect.freeze_duration: 3
+[freezedetect @ 0x793870003200] lavfi.freezedetect.freeze_end: 12
+[freezedetect @ 0x793870003200] lavfi.freezedetect.freeze_start: 12.5
+[blackdetect @ 0x793870002f80] black_start:12 black_end:15.966667 black_duration:3.966667

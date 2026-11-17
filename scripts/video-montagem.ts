@@ -219,7 +219,8 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (também no verify-xml e no review-final). (#12712) corte sem gancho = [aviso].
  *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text] [--retranscribe]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
- *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
+ *       faixa preta, fps, teto do vertical), trecho preto e quadro congelado fora da
+ *       vinheta e do card de CTA (#13368), loudness/true peak, estalos e fragmentos
  *       nas emendas e, com `plan.json` válido, o texto contra o roteiro da versão
  *       (transcreve o export, em cache por arquivo + Whisper desde o #12078, o mesmo do
  *       `srt --from-final`; `--retranscribe` refaz; `--no-text` pula). Destino pelo nome do arquivo
@@ -314,6 +315,12 @@ import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
   LOUDNORM_TARGET,
+  PREVIEW_LOUDNORM,
+  PREVIEW_RAW_NAME,
+  loudnormSecondPassFilter,
+  parseLoudnormFirstPass,
+  previewLoudnormApplyArgs,
+  previewLoudnormMeasureArgs,
   PREVIEW_SUBTITLE_STYLE,
   PREVIEW_SUBTITLE_STYLE_HORIZONTAL,
   SILENCE_DETECT,
@@ -488,6 +495,12 @@ import {
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
 import {
+  BLACK_FREEZE_FILTER,
+  OPENING_FALLBACK_S,
+  blackFreezeWindows,
+  checkBlackFreeze,
+  parseBlackdetect,
+  parseFreezedetect,
   checkFormat,
   checkLoudness,
   checkText,
@@ -5354,10 +5367,11 @@ async function cmdPreview(
     sfxLocalPath = null;
   }
   const sfxAtSeqS = sfx && sfxLocalPath && vs ? vinhetaSfxFrames(vs, fps, sfx, plan.durationFrames).map((x) => x.start / fps) : [];
-  const plain = [...(subtitles ? ["-vf", subtitles] : []), "-af", LOUDNORM_TARGET];
+  // #13371: o render sai com o áudio sem normalizar (PCM); o loudnorm em duas passadas vem depois, em normalizePreviewAudio.
+  const plain = [...(subtitles ? ["-vf", subtitles] : []), "-af", "anull"];
   const finalArgs = (filters: string[]) => [
     "-y", "-v", "error", "-i", "joined.mp4", ...filters,
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "previa.mp4",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "pcm_s16le", "-ar", "48000", PREVIEW_RAW_NAME,
   ];
   if (vinheta && vs) {
     console.error(`[video-montagem] prévia com a vinheta do logo em ${(vs.start / fps).toFixed(2)} s (#12101)`);
@@ -5367,7 +5381,7 @@ async function cmdPreview(
     const withVinheta = (withSfx: boolean) => [
       "-i", vinheta!.path,
       ...(withSfx ? ["-i", sfxLocalPath!] : []),
-      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET, duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
+      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio, subtitles, loudnorm: "anull", duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
       "-map", "[vout]", "-map", "[aout]",
     ];
     if (sfxAtSeqS.length) console.error(`[video-montagem] prévia com o som da vinheta em ${sfxAtSeqS.map((t) => `${t.toFixed(2)} s`).join(" e ")} (#13240)`);
@@ -5380,6 +5394,7 @@ async function cmdPreview(
       run("ffmpeg", finalArgs(plain), { cwd: dir });
     }
   } else run("ffmpeg", finalArgs(plain), { cwd: dir });
+  normalizePreviewAudio(dir);
   copyFileSync(join(dir, "previa.mp4"), out);
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
   const dur = Math.max(1, plan.durationFrames / fps + cardS);
@@ -5387,6 +5402,27 @@ async function cmdPreview(
   run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=${isVerticalSpec(plan.spec) ? 270 : 480}:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
   return 0;
+}
+
+/**
+ * #13371: `loudnorm` em duas passadas no áudio do render da prévia
+ * (`PREVIEW_RAW_NAME` → `previa.mp4`), com o alvo do export. Medida ilegível
+ * (sem resumo, áudio todo em silêncio) cai na passada única de antes, com aviso.
+ */
+function normalizePreviewAudio(dir: string): void {
+  let measured: ReturnType<typeof parseLoudnormFirstPass> = null;
+  let why = "o loudnorm não imprimiu o resumo";
+  try {
+    measured = parseLoudnormFirstPass(run("ffmpeg", previewLoudnormMeasureArgs(PREVIEW_RAW_NAME), { cwd: dir }).stderr);
+  } catch (e) {
+    why = (e as Error).message.split("\n")[0];
+  }
+  if (measured) {
+    console.error(`[video-montagem] prévia: ${measured.inputI.toFixed(1)} LUFS medidos, normalizada a ${PREVIEW_LOUDNORM.i} LUFS em duas passadas (#13371)`);
+  } else {
+    console.error(`[aviso] medida de loudness da prévia falhou (${why}): loudnorm em uma passada, a ${PREVIEW_LOUDNORM.i} LUFS (#13371)`);
+  }
+  run("ffmpeg", previewLoudnormApplyArgs({ src: PREVIEW_RAW_NAME, out: "previa.mp4", filter: measured ? loudnormSecondPassFilter(measured) : LOUDNORM_TARGET }), { cwd: dir });
 }
 
 /**
@@ -5555,6 +5591,16 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   );
   findings.push(...checkFormat(probe, target, { crop, expectedFps: planFps }));
 
+  // #13368: trecho preto e quadro congelado, fora da vinheta e do card de CTA.
+  const detectLog = run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vf", BLACK_FREEZE_FILTER, "-an", "-f", "null", "-"]).stderr;
+  const blackFreeze = {
+    black: parseBlackdetect(detectLog),
+    freeze: parseFreezedetect(detectLog, probe.durationS),
+    windows: blackFreezeWindows({ durationS: probe.durationS, ctaCardS: configCtaCardS(), plan, fps: planFps, vinhetaS: loadVinheta({ warn: () => {} })?.durationS ?? null }),
+  };
+  if (!plan || !planFps) console.error(`[aviso] sem plano da sequência: preto/congelado nos primeiros ${OPENING_FALLBACK_S} s sai como achado de baixa certeza (pode ser a vinheta) e o card de CTA presumido no fim fica fora (#13368, #13440)`);
+  findings.push(...checkBlackFreeze({ black: blackFreeze.black, freeze: blackFreeze.freeze, exclude: blackFreeze.windows, plan, fps: planFps }));
+
   const loud = parseLoudnormJson(
     run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vn", "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"]).stderr,
   );
@@ -5582,7 +5628,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   const table = finalReviewTable(findings);
   mkdirSync(ctx.stateDir, { recursive: true });
   writeFileAtomic(f(ctx, `review-final-${key}.md`), `# Revisão do export: ${basename(path)}\n\n${table}`);
-  writeJson(f(ctx, `review-final-${key}.json`), { file: path, target, sequence: key, probe, crop, loudness: loud, findings });
+  writeJson(f(ctx, `review-final-${key}.json`), { file: path, target, sequence: key, probe, crop, blackFreeze, loudness: loud, findings });
   process.stdout.write(table);
   console.error(`[video-montagem] review-final: ${findings.length} achado(s) em ${basename(path)} (sequência ${key}, destino ${target}); tabela em ${f(ctx, `review-final-${key}.md`)}`);
   return 0;

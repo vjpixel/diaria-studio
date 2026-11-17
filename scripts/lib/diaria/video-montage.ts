@@ -4970,13 +4970,68 @@ export const LOUDNESS_WARN_LUFS = -24;
 export const LOUDNESS_HOT_LUFS = -14;
 /** True peak a partir disso = provável clipping no bruto (#11351). */
 export const TRUE_PEAK_CLIP_DBTP = 0;
-/** Alvo do `loudnorm` da prévia. */
-export const LOUDNORM_TARGET = "loudnorm=I=-16:TP=-1.5:LRA=11";
+/**
+ * Alvo do `loudnorm` da prévia (#13371): o mesmo do export, que o
+ * `review-final` cobra (-14 LUFS, true peak -1 dBTP; `FINAL_TARGET_LUFS` e
+ * `FINAL_MAX_TRUE_PEAK_DBTP` em `video-final-review.ts`). Era -16 LUFS/-1,5
+ * dBTP em uma passada: o editor ouvia a prévia num nível e o export era medido
+ * em outro (decisão do editor de 17/11/2026: alvo da prévia igual ao do export).
+ */
+export const PREVIEW_LOUDNORM = { i: -14, tp: -1, lra: 11 } as const;
+/** O filtro de medida (com `:print_format=json`) e o de uma passada só (fallback). */
+export const LOUDNORM_TARGET = `loudnorm=I=${PREVIEW_LOUDNORM.i}:TP=${PREVIEW_LOUDNORM.tp}:LRA=${PREVIEW_LOUDNORM.lra}`;
 
 export interface LoudnessMeasure {
   inputI: number;
   inputTp: number;
   inputLra: number;
+}
+
+/** O que a 1ª passada do `loudnorm` mede e a 2ª precisa receber (#13371). */
+export interface LoudnormFirstPass extends LoudnessMeasure {
+  inputThresh: number;
+  targetOffset: number;
+}
+
+/** Resumo JSON da 1ª passada; `null` sem resumo ou com algum valor não finito (silêncio digital mede `-inf`). */
+export function parseLoudnormFirstPass(stderr: string): LoudnormFirstPass | null {
+  const m = /\{[^{}]*"input_i"[^{}]*\}/s.exec(stderr);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]) as Record<string, string>;
+    const num = (k: string) => Number(j[k]);
+    const r = { inputI: num("input_i"), inputTp: num("input_tp"), inputLra: num("input_lra"), inputThresh: num("input_thresh"), targetOffset: num("target_offset") };
+    return Object.values(r).every(Number.isFinite) ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 2ª passada do `loudnorm` (#13371): o mesmo alvo com os valores medidos e
+ * `linear=true`, um ganho só no arquivo inteiro (o próprio `loudnorm` cai no
+ * modo dinâmico se o ganho linear estourar o true peak).
+ */
+export function loudnormSecondPassFilter(m: LoudnormFirstPass): string {
+  const n = (x: number) => String(Math.round(x * 100) / 100);
+  return `${LOUDNORM_TARGET}:measured_I=${n(m.inputI)}:measured_TP=${n(m.inputTp)}:measured_LRA=${n(m.inputLra)}:measured_thresh=${n(m.inputThresh)}:offset=${n(m.targetOffset)}:linear=true`;
+}
+
+/**
+ * Prévia em duas passadas (#13371): o render sai com o áudio sem normalizar,
+ * em PCM (`PREVIEW_RAW_NAME`); a 1ª passada mede esse áudio (só áudio, sem
+ * decodificar o vídeo) e a 2ª aplica o ganho, copiando o vídeo.
+ */
+export const PREVIEW_RAW_NAME = "previa-raw.mkv";
+
+/** ffmpeg da 1ª passada: mede o áudio do render sem normalizar. */
+export function previewLoudnormMeasureArgs(input: string): string[] {
+  return ["-hide_banner", "-nostats", "-i", input, "-vn", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-"];
+}
+
+/** ffmpeg da 2ª passada: aplica o filtro no áudio e copia o vídeo do render. */
+export function previewLoudnormApplyArgs(input: { src: string; out: string; filter: string }): string[] {
+  return ["-y", "-v", "error", "-i", input.src, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", input.filter, "-c:a", "aac", "-b:a", "160k", "-ar", "48000", input.out];
 }
 
 /** Bloco JSON que o `loudnorm=print_format=json` imprime no stderr. */
@@ -4996,7 +5051,7 @@ export function parseLoudnormJson(stderr: string): LoudnessMeasure | null {
 export function loudnessWarning(m: LoudnessMeasure | null): string | null {
   if (!m) return "loudness do bruto não medido (o loudnorm não imprimiu o resumo)";
   if (m.inputI < LOUDNESS_WARN_LUFS) {
-    return `bruto em ${m.inputI.toFixed(1)} LUFS, abaixo de ${LOUDNESS_WARN_LUFS} LUFS: normalizar no Premiere (a prévia já sai com loudnorm I=-16)`;
+    return `bruto em ${m.inputI.toFixed(1)} LUFS, abaixo de ${LOUDNESS_WARN_LUFS} LUFS: normalizar no Premiere (a prévia já sai normalizada a ${PREVIEW_LOUDNORM.i} LUFS)`;
   }
   const hot = m.inputI > LOUDNESS_HOT_LUFS;
   const clip = Number.isFinite(m.inputTp) && m.inputTp >= TRUE_PEAK_CLIP_DBTP;
