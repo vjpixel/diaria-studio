@@ -33,7 +33,13 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   verify-xml AAMMDD [--seq K] [--no-transcribe]
  *       (#12561) lê o áudio do PRÓPRIO XML, mede as bordas (SOM CORTADO) e compara a fala
  *       montada com o roteiro; exit 1 com problema. O build já abre a borda com SOM
- *       CORTADO até o silêncio no mesmo critério (#13194); a que sobra é aviso do build
+ *       CORTADO até o silêncio no mesmo critério (#13194); a que sobra é aviso do build.
+ *       (#13194) limiar de cada borda: min(fixo do bruto, max(-60, p10 em ±4 s + 3 dB)).
+ *       Acima do fixo = SOM CORTADO, como sempre. Entre o relativo e o fixo: SOM CORTADO só
+ *       com energia sustentada (60 ms) que o build abriria (mesmos limites dele); senão
+ *       [aviso] `curta` (estalo, respiro, ruído) ou `sem-abertura` (provável fala cortada,
+ *       com o limite: palavra vizinha, clipe vizinho ou teto), gravado em `softEdges` no
+ *       verify-xml.json, para o editor conferir no Premiere junto com a prévia
  *   transcribe AAMMDD --from-audio ARQ [--audio-transcript JSON] [--source VIDEO]
  *       (#11504) o vídeo chegou depois de o áudio separado (o mesmo som, com pausas
  *       cortadas) já estar transcrito: alinha o áudio ao vídeo por correlação do
@@ -127,11 +133,12 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       `edge-retranscribe.json`), corte ainda em plena fala vira [aviso]; cada ajuste sai no
  *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS ou mais com o piso do bruto, #11968) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
- *       (#13194) por último, a borda que o verify-xml acusaria como SOM CORTADO (40 ms de
- *       fora acima do limiar da borda: o menor entre o do bruto e o piso de ruído LOCAL + 3 dB,
- *       nunca abaixo de -60 dBFS) abre quadro a quadro até o silêncio, até 0,6 s, sem
- *       passar da palavra vizinha de fora (folga de 0,15 s para a cauda que o Whisper deu a
- *       ela) nem de outro clipe; sem silêncio, [aviso].
+ *       (#13194) por último, abre a borda com fala logo fora (40 ms de fora acima do fixo do
+ *       bruto, ou acima do relativo, min(fixo, max(-60, p10 em ±4 s + 3 dB)), com energia
+ *       sustentada por 60 ms; estalo e respiro curto não abrem) quadro a quadro até o 1º
+ *       ponto abaixo do limiar da borda, até 0,6 s, sem passar da palavra vizinha de fora
+ *       (folga de 0,15 s para a cauda que o Whisper deu a ela) nem de outro clipe; sem
+ *       silêncio antes do limite, [aviso] com o limite. O filler da vinheta só abre acima do fixo.
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       (#12711) item com fala demais para o texto (ritmo da gravação) ou frase repetida no
  *       intervalo = [aviso] de tomada repetida (o Whisper colapsa a repetição); o roteiro confere
@@ -455,7 +462,7 @@ import {
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
 import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
-import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeOpenContext, softEdgeWarnings, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
@@ -2745,13 +2752,15 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   console.error(`[video-montagem] verify-xml: bordas a ${thr} dBFS (${edgeThreshold.from}, o limiar do refino do build); piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "não medido"} dBFS (#12903, #12969)`);
   // #13194: em cada borda vale o menor entre o fixo e o piso de ruído LOCAL + margem (localEdgeThreshold, o mesmo critério do build).
   const thrAt = localEdgeThreshold(env, thr);
-  console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS); entre o relativo e o fixo, erro só com energia sustentada por ${Math.round(SUSTAINED_EDGE.minS * 1000)} ms e silêncio até ${CUT_EDGE_OPEN.maxS} s, senão [aviso] (#13194)`);
+  console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS); entre o relativo e o fixo, erro só com energia sustentada por ${Math.round(SUSTAINED_EDGE.minS * 1000)} ms que o build abriria (silêncio antes do limite dele: teto de ${CUT_EDGE_OPEN.maxS} s, palavra vizinha, clipe vizinho), senão [aviso] (#13194)`);
   if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
   // #13194: os limites da abertura do build (palavras vizinhas, roteiro, filler), para erro ser só o que ele abriria.
-  const edgeWords = verifyEdgeWords(ctx);
+  const edgeWordsInput = readVerifyEdgeWordsInput(ctx, audio);
+  const edgeWarned = new Set<string>();
   let bad = 0;
   let cutTotal = 0;
+  let softTotal = 0;
   const report: Record<string, unknown> = {};
   for (const plan of chosen) {
     const key = sequenceKey(plan.spec);
@@ -2764,13 +2773,18 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const cardFrames = pf.xmlAssets?.[key]?.ctaCard?.frames ?? null;
     const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames }), ...capaInicioXmlIssues(xmlText, capaFramesOf(pf.xmlAssets?.[key]?.capaInicio, plan.durationFrames))];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
-    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thrAt, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined, verifyEdgeContext(plan, clips.length, edgeWords, pf.source.durationS));
+    const edgeWords = verifyEdgeWords({ ...edgeWordsInput, planClips: plan.clips, durationS: pf.source.durationS });
+    const edgeCtx = verifyEdgeContext(plan, clips, { fps: pf.source.fps, rate: parsed.rate, words: edgeWords.words, durationS: pf.source.durationS, bounds: isMultiSource(pf.source) ? fileBounds(pf.source) : undefined });
+    for (const w of edgeWords.warnings) if (!edgeWarned.has(w)) (edgeWarned.add(w), console.error(`[aviso] verify-xml: ${w}`));
+    for (const w of edgeCtx.warnings) console.error(`[aviso] verify-xml ${key}: ${w}`);
+    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thrAt, edgeCtx.ctx);
+    const soft = softEdges(edges);
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
     const durS = (parsed.clips[parsed.clips.length - 1]?.end ?? 0) / parsed.rate;
     console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)${cardFrames ? ` + card de CTA ${(cardFrames / pf.source.fps).toFixed(2)} s sem fala` : ""}`);
     for (const x of issues) console.log(`[erro] ${x}`);
     for (const e of edges) console.log(edgeLine(e, clockTime));
-    // #13194: acima só do limiar relativo sem fala sustentada (rajada de ruído) ou sem silêncio até o teto: aviso, nunca erro.
+    // #13194: acima só do limiar relativo, curta (estalo, respiro, ruído) ou sem abertura pelo build: aviso, nunca erro.
     for (const x of softEdgeWarnings(edges, clockTime)) console.error(`[aviso] verify-xml ${key}: ${x}`);
     let findings: ReviewFinding[] = [];
     if (transcribe && clips.length) {
@@ -2804,16 +2818,19 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     }
     bad += issues.length + cut.length + findings.length;
     cutTotal += cut.length;
-    report[key] = { xml: xmlPath, clips: clips.length, issues, cutEdges: cut, findings };
+    softTotal += soft.length;
+    report[key] = { xml: xmlPath, clips: clips.length, issues, cutEdges: cut, softEdges: soft, findings };
   }
   writeJson(f(ctx, "verify-xml.json"), report);
   if (bad) {
     console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura, fala divergente ou tomada colapsada, #12711): corrigir o blocks.json/build antes da prévia (#12561)`);
     // #13194: o build já abre sozinho a borda com SOM CORTADO até o silêncio; a que sobra é a que ele não conseguiu (ou um XML anterior).
-    if (cutTotal) console.error(`[erro] verify-xml: ${cutTotal} borda(s) com SOM CORTADO: rode build de novo (ele abre a borda até o silêncio, #13194); a que sobrar depois do build não tem silêncio até a palavra vizinha (aviso do build): abrir o item no blocks.json ou conferir no Premiere`);
+    if (cutTotal) console.error(`[erro] verify-xml: ${cutTotal} borda(s) com SOM CORTADO: rode build de novo (ele abre a borda até o silêncio, #13194); a que sobrar depois do build não tem silêncio antes do limite da abertura (aviso do build, com o limite): abrir o item no blocks.json ou conferir no Premiere`);
+    if (softTotal) console.error(`[aviso] verify-xml: ${softTotal} borda(s) com [aviso] (verify-xml.json, softEdges): levar ao editor com a prévia, para conferir no Premiere (#13194)`);
     return 1;
   }
-  console.error(`[video-montagem] verify-xml: zero bordas cortadas${transcribe ? " e áudio do XML batendo com o roteiro" : "; fala NÃO conferida (--no-transcribe)"} (#12561)`);
+  const softNote = softTotal ? `, ${softTotal} borda(s) com [aviso] (verify-xml.json, softEdges: levar ao editor com a prévia, #13194)` : ", 0 borda(s) com [aviso]";
+  console.error(`[video-montagem] verify-xml: zero bordas cortadas${softNote}${transcribe ? "; áudio do XML batendo com o roteiro" : "; fala NÃO conferida (--no-transcribe)"} (#12561)`);
   return 0;
 }
 
@@ -3320,11 +3337,14 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
  * #13194: aplica `openCutSoundEdges` (o critério das bordas do `verify-xml`)
  * aos clipes montados de uma sequência. As palavras vizinhas que limitam a
  * abertura são as do transcript e as da retranscrição das bordas (o som fora
- * do roteiro que a passada B tirou só aparece nelas, #11968). Borda que não
- * achou silêncio vira aviso: o `verify-xml` vai acusar e o editor decide.
- * O limiar de cada borda é o menor entre `thresholdDb` (o fixo do bruto) e o
- * piso de ruído local + 3 dB (`localEdgeThreshold`): a borda só fecha onde a
- * energia caiu ao piso em volta dela, não num dBFS fixo.
+ * do roteiro que a passada B tirou só aparece nelas, #11968). O limiar de cada
+ * borda é o menor entre `thresholdDb` (o fixo do bruto, `noiseDb`) e
+ * max(-60, piso de ruído local + 3 dB) (`localEdgeThreshold`). Abre a borda
+ * `open` do `edgeFindings`: acima do fixo (como antes), ou acima do relativo
+ * com energia sustentada (fala; estalo e respiro curto ficam), até o 1º ponto
+ * abaixo do limiar. Borda que não achou silêncio antes do limite vira aviso
+ * com o limite: SOM CORTADO no `verify-xml` se acima do fixo, senão aviso
+ * `sem-abertura`. O `filler` da vinheta só abre acima do fixo.
  */
 export function openCutEdgesOfPlan(
   clips: PlannedClip[],
@@ -3354,8 +3374,8 @@ export function openCutEdgesOfPlan(
     })),
     warnings: r.unresolved.map((u) =>
       u.error
-        ? `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}) sem silêncio até a palavra vizinha ou ${CUT_EDGE_OPEN.maxS} s: o verify-xml vai acusar; conferir no Premiere (#13194)`
-        : `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto acima do piso local (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}, por ${Math.round(u.aboveS * 1000)} ms) sem fala sustentada ou sem silêncio até ${CUT_EDGE_OPEN.maxS} s: fica como estava; o verify-xml só avisa (#13194)`,
+        ? `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com SOM CORTADO (${Math.round(u.db)} dB fora, limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}) sem silêncio antes do limite da abertura (${u.limit} em ${u.limitS.toFixed(2)} s): o verify-xml vai acusar; conferir no Premiere (#13194)`
+        : `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com ${Math.round(u.db)} dB fora (limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}): ${softReasonText({ reason: "sem-abertura", aboveMs: Math.round(u.aboveS * 1000), thresholdDb: u.thresholdDb, limit: u.limit, limitS: u.limitS }, (x) => `${x.toFixed(2)} s`)}; o verify-xml avisa (#13194)`,
     ),
   };
 }
@@ -3369,36 +3389,94 @@ export function isOwnEdgeWord(script: string | undefined, edge: "in" | "out", w:
 
 /**
  * #13194: os limites que o build usa para abrir as bordas, para o `verify-xml`
- * julgar como erro só o que o build abriria: as palavras do bruto (transcript +
- * retranscrição das bordas em cache, quando há), o roteiro de cada clipe do
- * plano (a 1ª/última palavra dele não limita) e os clipes `filler` (pausa da
- * vinheta, só limiar fixo). Sem transcript, só teto, arquivo e clipe vizinho.
+ * julgar como erro só o que o build abriria: as palavras do bruto
+ * (`verifyEdgeWords`), o roteiro de cada clipe do plano (a 1ª/última palavra
+ * dele não limita) e os clipes `filler` (pausa da vinheta, só limiar fixo).
+ * Roteiro e `filler` valem só no clipe do XML cujas bordas batem com as do
+ * plano (±1 quadro): clipe divergente (XML de outro build, editado à mão) vira
+ * [aviso] e é julgado sem eles.
  */
 export function verifyEdgeContext(
-  plan: { clips: ReadonlyArray<{ script?: string; filler?: true }> },
-  xmlClips: number,
-  words: ReadonlyArray<Word>,
-  durationS: number,
-): EdgeOpenContext {
-  const same = plan.clips.length === xmlClips;
+  plan: { clips: ReadonlyArray<{ frameIn: number; frameOut: number; script?: string; filler?: true }> },
+  xmlClips: ReadonlyArray<Pick<TimelineClip, "gIn" | "gOut">>,
+  opts: { fps: number; rate: number; words: ReadonlyArray<Word>; durationS: number; bounds?: ReadonlyArray<{ start: number; end: number }> },
+): { ctx: EdgeFindingsContext; warnings: string[] } {
+  const warnings: string[] = [];
+  const tol = 1 / opts.fps + 1e-6;
+  let aligned: boolean[];
+  if (plan.clips.length !== xmlClips.length) {
+    aligned = xmlClips.map(() => false);
+    warnings.push(`${xmlClips.length} clipes no XML, ${plan.clips.length} no plano: roteiro e filler do plano não aplicados nas bordas (#13194)`);
+  } else {
+    aligned = xmlClips.map((x, i) => {
+      const p = plan.clips[i];
+      const ok = Math.abs(p.frameIn / opts.fps - x.gIn / opts.rate) <= tol && Math.abs(p.frameOut / opts.fps - x.gOut / opts.rate) <= tol;
+      if (!ok) warnings.push(`clipe ${i + 1}: bordas do XML (${(x.gIn / opts.rate).toFixed(3)}–${(x.gOut / opts.rate).toFixed(3)} s) diferentes das do plano (${(p.frameIn / opts.fps).toFixed(3)}–${(p.frameOut / opts.fps).toFixed(3)} s): roteiro e filler do plano não aplicados nele (#13194)`);
+      return ok;
+    });
+  }
   return {
-    words: words.filter((w) => w.text.trim()),
-    ...(same ? { ownWord: (i: number, edge: "in" | "out", w: { text?: string }) => isOwnEdgeWord(plan.clips[i]?.script, edge, w) } : {}),
-    ...(same ? { fixedOnly: plan.clips.map((c) => !!c.filler) } : {}),
-    durationS,
+    ctx: {
+      words: opts.words.filter((w) => w.text.trim()),
+      ownWord: (i, edge, w) => aligned[i] && isOwnEdgeWord(plan.clips[i]?.script, edge, w),
+      fixedOnly: xmlClips.map((_, i) => aligned[i] && !!plan.clips[i]?.filler),
+      durationS: opts.durationS,
+      ...(opts.bounds ? { bounds: opts.bounds } : {}),
+    },
+    warnings,
   };
 }
 
-/** Palavras do bruto que limitam a abertura no `verify-xml`: transcript.json e as janelas do edge-retranscribe.json (#13194). */
-function verifyEdgeWords(ctx: Ctx): Word[] {
-  const t = f(ctx, "transcript.json");
-  const words = existsSync(t) ? nonEmptyWords(t, "transcript.json") : [];
-  const er = f(ctx, "edge-retranscribe.json");
-  if (existsSync(er)) {
-    const c = readJson<{ windows?: Record<string, Word[]> }>(er, "edge-retranscribe.json");
-    for (const ws of Object.values(c.windows ?? {})) words.push(...ws);
+/** O que `verifyEdgeWords` lê do disco: o transcript e o cache da retranscrição das bordas, com a identidade do `audio.wav`. */
+export interface VerifyEdgeWordsInput {
+  /** `null` = transcript.json ausente ou ilegível. */
+  transcript: Word[] | null;
+  /** `null` = edge-retranscribe.json ausente ou ilegível. */
+  cache: { audio?: { size?: number; mtimeMs?: number }; windows?: Record<string, Word[]> } | null;
+  /** `statSync` do `audio.wav` desta máquina. */
+  audio: { size: number; mtimeMs: number };
+}
+
+/**
+ * #13194: as palavras do bruto que limitam a abertura no `verify-xml`, como no
+ * build: o transcript e as janelas da retranscrição das bordas. Do cache só
+ * entram as janelas de `edgeWindowsFor` dos clipes do plano atual, e só se ele
+ * é do MESMO `audio.wav` (tamanho + mtime, como `windowTranscripts`). Cache
+ * ausente, inválido ou de outro áudio, e transcript ausente ou vazio, viram
+ * [aviso] e o verify segue com o que há (nunca aborta).
+ */
+export function verifyEdgeWords(input: VerifyEdgeWordsInput & { planClips: ReadonlyArray<Pick<RawClip, "srcIn" | "srcOut">>; durationS: number }): { words: Word[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const words: Word[] = [];
+  if (!input.transcript?.length) warnings.push("transcript.json ausente ou sem palavras: limites de palavra do build não aplicados (só teto, arquivo e clipe vizinho) (#13194)");
+  else words.push(...input.transcript);
+  const c = input.cache;
+  if (!c || !c.windows || typeof c.windows !== "object") warnings.push("edge-retranscribe.json ausente ou inválido: palavras da retranscrição das bordas não aplicadas (#13194)");
+  else if (c.audio?.size !== input.audio.size || c.audio?.mtimeMs !== input.audio.mtimeMs) warnings.push("edge-retranscribe.json é de outro audio.wav: palavras da retranscrição das bordas não aplicadas; rode build de novo nesta máquina (#13194)");
+  else {
+    const keys = new Set(input.planClips.flatMap((x) => edgeWindowsFor(x, input.durationS).map((w) => w.key)));
+    for (const [k, ws] of Object.entries(c.windows)) if (keys.has(k) && Array.isArray(ws)) words.push(...ws.filter((w) => typeof w?.start === "number" && typeof w?.end === "number" && typeof w?.text === "string"));
   }
-  return words;
+  return { words, warnings };
+}
+
+/** Lê o que `verifyEdgeWords` precisa; arquivo ausente ou ilegível vira `null`, nunca erro (#13194). */
+function readVerifyEdgeWordsInput(ctx: Ctx, audio: string): VerifyEdgeWordsInput {
+  const tryRead = <T,>(path: string, what: string): T | null => {
+    if (!existsSync(path)) return null;
+    try {
+      return readJson<T>(path, what);
+    } catch {
+      return null;
+    }
+  };
+  const t = tryRead<Transcript>(f(ctx, "transcript.json"), "transcript.json");
+  const st = statSync(audio);
+  return {
+    transcript: t ? transcriptWords(t) : null,
+    cache: tryRead<VerifyEdgeWordsInput["cache"] & object>(f(ctx, "edge-retranscribe.json"), "edge-retranscribe.json"),
+    audio: { size: st.size, mtimeMs: st.mtimeMs },
+  };
 }
 
 /** Janela do vale de energia quando o corte vem do detector de fala (#12089): afina, não reabre a pausa. */

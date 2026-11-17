@@ -12,7 +12,7 @@
  */
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { energyEnvelope, maxDbIn } from "../scripts/lib/diaria/video-cut-refine.ts";
+import { edgeWindowsFor, energyEnvelope, maxDbIn } from "../scripts/lib/diaria/video-cut-refine.ts";
 import { assembleClips, type PlannedClip, type SourceInfo, type Word } from "../scripts/lib/diaria/video-montage.ts";
 import {
   CUT_EDGE_OPEN,
@@ -27,7 +27,7 @@ import {
   SUSTAINED_EDGE,
   type OpenableClip,
 } from "../scripts/lib/diaria/video-xml-verify.ts";
-import { openCutEdgesOfPlan } from "../scripts/video-montagem.ts";
+import { openCutEdgesOfPlan, verifyEdgeContext, verifyEdgeWords } from "../scripts/video-montagem.ts";
 
 const SR = 16000;
 const FPS = 30;
@@ -220,8 +220,10 @@ describe("#13194 verify-xml: ruído em rajada é aviso, cauda sustentada é SOM 
     assert.ok(e.aboveOutS < SUSTAINED_EDGE.minS, `duração acima do limiar (${e.aboveOutS})`);
     const warns = softEdgeWarnings([e], (s) => s.toFixed(2));
     assert.equal(warns.length, 1);
-    assert.match(warns[0], /saída em 5\.03 com -4\d dB fora, acima do limiar relativo -5\d dB por \d+ ms/);
-    assert.match(edgeLine(e, (s) => s.toFixed(2)), /\[aviso\] acima do piso local/);
+    assert.match(warns[0], /saída em 5\.03 com -4\d dB fora: curta: \d+ ms acima do limiar -5\d dB/);
+    assert.match(edgeLine(e, (s) => s.toFixed(2)), /\[aviso\] curta, \d+ ms acima do limiar -5\d dB/);
+    assert.equal(e.softReasonOut, "curta");
+    assert.equal(e.openOut, false, "estalo não é fala: o build não abre");
   });
 
   it("cauda sustentada (150 ms) acima do piso local: SOM CORTADO", () => {
@@ -248,7 +250,7 @@ describe("#13194 filler da vinheta e limites do build no verify-xml", () => {
     const filler: OpenableClip = { ...clip(5.6, 6.0, "vinheta"), filler: true };
     const asSpeech = openCutSoundEdges([{ ...filler, filler: false }], FPS, level, thr, { durationS: 10 });
     assert.equal(asSpeech.opened.length, 1, "pré-condição: sem o flag, a regra nova abriria a entrada do filler");
-    const e = edgeFindings(tl([filler]), FPS, level, thr, undefined, undefined, { fixedOnly: [true] })[0];
+    const e = edgeFindings(tl([filler]), FPS, level, thr, { fixedOnly: [true] })[0];
     assert.equal(e.thrInDb, FIXED);
     assert.equal(e.overIn, false);
     assert.equal(e.cutIn, false);
@@ -275,12 +277,17 @@ describe("#13194 filler da vinheta e limites do build no verify-xml", () => {
     const blind = edgeFindings(tl(cs), FPS, level, thr)[0];
     assert.equal(blind.cutOut, true, "pré-condição: sem a palavra, o verify contava com abrir até depois dela");
     const ctx = { words: [w("outra", OUT + 0.005, 5.5)] };
-    const e = edgeFindings(tl(cs), FPS, level, thr, undefined, undefined, ctx)[0];
+    const e = edgeFindings(tl(cs), FPS, level, thr, ctx)[0];
     assert.equal(e.cutOut, false, "o build pararia na palavra (com a folga de 0,15 s): não é erro");
     assert.equal(e.softOut, true, "fica como aviso");
     const r = openCutSoundEdges(cs, FPS, level, thr, { durationS: 10, words: ctx.words });
     assert.deepEqual(r.opened, [], "e o build de fato não abre");
     assert.equal(r.unresolved[0]?.error, false);
+    assert.equal(e.softReasonOut, "sem-abertura", "sustentada, mas sem abertura: provável fala cortada");
+    assert.equal(e.limitOut, "palavra vizinha", "nomeia o limite");
+    assert.ok(Math.abs(e.limitOutS! - (OUT + 0.005 + NEIGHBOR_WORD_GRACE_S)) < 1e-6);
+    assert.match(softEdgeWarnings([e], (x) => x.toFixed(2))[0], /sem-abertura: .*limite da abertura \(palavra vizinha em 5\.19\); provável fala cortada, conferir no Premiere/);
+    assert.equal(r.unresolved[0]?.limit, "palavra vizinha");
   });
 });
 
@@ -294,5 +301,136 @@ describe("#13194 filler sem regressão: acima do -45 fixo segue abrindo como ant
     assert.equal(r.opened[0].thresholdDb, FIXED, "no limiar fixo, não no relativo");
     assert.ok(r.clips[0].srcIn <= 5.5, `entrada antes da cauda (${r.clips[0].srcIn})`);
     assert.deepEqual(r.unresolved, []);
+  });
+});
+
+/** Limiar relativo fixo em -52 sobre o fixo de -45, sem envelope: a duração acima dele é exata (passos de 10 ms). */
+const REL = Object.assign(() => -52, { fixedDb: FIXED });
+/** Energia: fala até 5,0 s, cauda a -47 de 5,0 a `tailEnd`, sala a -55 depois. */
+const stepLevel = (tailEnd: number) => (a: number, _b: number) => (a < 5.0 - 1e-9 ? -24 : a < tailEnd - 1e-9 ? -47 : -55);
+
+describe("#13194 fronteira da energia sustentada (60 ms)", () => {
+  it("~50 ms acima do relativo: aviso curta; 75 ms: SOM CORTADO", () => {
+    const c = [{ start: 0, end: 0, in: 57, out: 150, fileId: "file-1", gIn: 57, gOut: 150 }];
+    // a saída em 5,0 s (quadro 150); `aboveS` = cauda em passos de 10 ms menos 15 ms do envelope
+    // 7 passos acima (5,00 a 5,06) menos 15 ms = 55 ms, logo abaixo dos 60 ms
+    const short = edgeFindings(c, FPS, stepLevel(5.065), REL)[0];
+    assert.ok(short.aboveOutS >= 0.045 && short.aboveOutS < SUSTAINED_EDGE.minS, `~50 ms (${short.aboveOutS})`);
+    assert.equal(short.cutOut, false);
+    assert.equal(short.softReasonOut, "curta");
+    // 9 passos acima (5,00 a 5,08) menos 15 ms = 75 ms
+    const long = edgeFindings(c, FPS, stepLevel(5.085), REL)[0];
+    assert.ok(Math.abs(long.aboveOutS - 0.075) < 1e-6, `75 ms (${long.aboveOutS})`);
+    assert.equal(long.cutOut, true);
+    assert.equal(long.openOut, true);
+  });
+});
+
+describe("#13194 o build só abre por fala: estalo e respiro curto ficam", () => {
+  it("estalo de 30 ms a -47 em sala de -55: o build não abre", () => {
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.04, 5.07, -47]]);
+    const r = openCutSoundEdges([clip(1.9, OUT)], FPS, level, localEdgeThreshold(env, FIXED), { durationS: 10 });
+    assert.deepEqual(r.opened, []);
+    assert.deepEqual(r.unresolved, [], "curta não é pendência do build (o verify-xml avisa)");
+  });
+
+  it("bruto quieto (piso -85) com respiro curto de -52: o build não abre", () => {
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.05, 5.08, -52]], -85);
+    const thr = localEdgeThreshold(env, FIXED);
+    assert.equal(thr(5.0), LOCAL_FLOOR_EDGE.minThresholdDb, "limiar no piso mínimo de -60");
+    const r = openCutSoundEdges([clip(1.9, OUT)], FPS, level, thr, { durationS: 10 });
+    assert.deepEqual(r.opened, []);
+  });
+
+  it("controle: montagem normal com as bordas no silêncio não abre nada", () => {
+    const { env, level } = synth(12, [[2.0, 4.0, -24], [6.0, 8.0, -24]]);
+    const r = openCutSoundEdges([clip(1.85, 4.15), clip(5.85, 8.15)], FPS, level, localEdgeThreshold(env, FIXED), { durationS: 12 });
+    assert.deepEqual(r.opened, []);
+    assert.deepEqual(r.unresolved, []);
+  });
+
+  it("palavra vizinha que começa com um vale de ~50 ms (oclusão de um \"t\"): não abre e vira aviso sem-abertura (comportamento documentado)", () => {
+    // cauda de -47 até 5,1; o Whisper deu a "Tem" o tempo desde a borda, mas o som dela só vem em 5,15 (vale de 50 ms).
+    // O envelope (30 ms) estica as duas pontas do vale: sobram ~20 ms abaixo do limiar, menos que a janela de 40 ms.
+    // Então o vale não conta como silêncio, a abertura não acha onde parar antes do limite (palavra + 0,15 s) e a
+    // borda fica: nada do som de "Tem" entra, e o verify-xml avisa sem-abertura (provável fala cortada).
+    const { env, level } = synth(10, [[2.0, 5.0, -24], [5.0, 5.1, -47], [5.15, 5.6, -30]]);
+    const r = openCutSoundEdges([clip(1.9, OUT)], FPS, level, localEdgeThreshold(env, FIXED), { durationS: 10, words: [w("Tem", OUT + 0.005, 5.6)] });
+    assert.deepEqual(r.opened, []);
+    assert.equal(r.clips[0].frameOut, 151);
+    assert.equal(r.unresolved.length, 1);
+    assert.equal(r.unresolved[0].error, false);
+    assert.equal(r.unresolved[0].limit, "palavra vizinha");
+  });
+});
+
+describe("#13194 filler pelo openCutEdgesOfPlan (PlannedClip)", () => {
+  const source: SourceInfo = { path: "G:/x/bruto.mp4", fps: FPS, durationS: 10, width: 1920, height: 1080, mirrored: false };
+  const plannedWithFiller = () =>
+    assembleClips(
+      { scales: [100, 115] as [number, number] },
+      [
+        { block: "comentario" as const, srcIn: 1.9, srcOut: OUT, script: "veja como não cair" },
+        { block: "comentario" as const, srcIn: 5.6, srcOut: 6.0, filler: true as const },
+      ],
+      FPS,
+    ).clips;
+
+  it("cauda de -48 encostada no filler: não abre", () => {
+    const { env } = synth(10, [[2.0, 5.0, -24], [5.5, 5.6, -48]]);
+    const clips = plannedWithFiller();
+    assert.equal(clips[1].filler, true, "pré-condição: o assembleClips mantém o filler");
+    const r = openCutEdgesOfPlan(clips, env, FIXED, source, [], null);
+    assert.ok(!r.adjustments.some((a) => Math.abs(a.from - 5.6) < 1e-6), "a entrada do filler fica");
+  });
+
+  it("cauda acima do fixo encostada no filler: abre como antes do #13194", () => {
+    const { env } = synth(10, [[2.0, 5.0, -24], [5.5, 5.6, -40]]);
+    const r = openCutEdgesOfPlan(plannedWithFiller(), env, FIXED, source, [], null);
+    const a = r.adjustments.find((x) => x.edge === "in" && Math.abs(x.from - 5.6) < 1e-6);
+    assert.ok(a, "abre a entrada do filler");
+    assert.ok(a.to <= 5.5);
+  });
+});
+
+describe("#13194 verifyEdgeContext e verifyEdgeWords", () => {
+  const plan = {
+    clips: [
+      { frameIn: 57, frameOut: 151, script: "veja como não cair" },
+      { frameIn: 168, frameOut: 180, filler: true as const },
+    ],
+  };
+
+  it("clipe alinhado com o plano (±1 quadro) leva filler e roteiro; desalinhado com a mesma contagem vira aviso", () => {
+    const ok = verifyEdgeContext(plan, [{ gIn: 57, gOut: 152 }, { gIn: 168, gOut: 180 }], { fps: FPS, rate: FPS, words: [], durationS: 10 });
+    assert.deepEqual(ok.warnings, []);
+    assert.deepEqual(ok.ctx.fixedOnly, [false, true]);
+    assert.equal(ok.ctx.ownWord?.(0, "out", { start: 0, end: 0, text: "cair." }), true);
+    const off = verifyEdgeContext(plan, [{ gIn: 57, gOut: 151 }, { gIn: 172, gOut: 184 }], { fps: FPS, rate: FPS, words: [], durationS: 10 });
+    assert.equal(off.warnings.length, 1);
+    assert.match(off.warnings[0], /clipe 2: bordas do XML .* diferentes das do plano/);
+    assert.deepEqual(off.ctx.fixedOnly, [false, false], "o filler do plano não vale no clipe desalinhado");
+    const count = verifyEdgeContext(plan, [{ gIn: 57, gOut: 151 }], { fps: FPS, rate: FPS, words: [], durationS: 10 });
+    assert.match(count.warnings[0], /1 clipes no XML, 2 no plano/);
+  });
+
+  it("palavras: transcript + só as janelas do plano atual do cache do MESMO audio.wav; o resto vira aviso, sem abortar", () => {
+    const planClips = [{ srcIn: 1.9, srcOut: OUT }];
+    const keys = edgeWindowsFor(planClips[0], 10).map((x) => x.key);
+    const audio = { size: 1000, mtimeMs: 1794840358425.008 };
+    // formato real do edge-retranscribe.json: { audio: { size, mtimeMs }, windows: { "a-b": Word[] } }
+    const cache = { audio: { ...audio }, windows: { [keys[0]]: [w("veja", 1.95, 2.2)], "7.000-8.000": [w("velha", 7.1, 7.5)] } };
+    const ok = verifyEdgeWords({ transcript: [w("cair.", 4.5, 5.0)], cache, audio, planClips, durationS: 10 });
+    assert.deepEqual(ok.warnings, []);
+    assert.deepEqual(ok.words.map((x) => x.text), ["cair.", "veja"], "a janela de outro plano fica de fora");
+    const other = verifyEdgeWords({ transcript: [w("cair.", 4.5, 5.0)], cache, audio: { size: 1000, mtimeMs: 1 }, planClips, durationS: 10 });
+    assert.deepEqual(other.words.map((x) => x.text), ["cair."]);
+    assert.match(other.warnings[0], /de outro audio\.wav/);
+    const none = verifyEdgeWords({ transcript: null, cache: null, audio, planClips, durationS: 10 });
+    assert.deepEqual(none.words, []);
+    assert.equal(none.warnings.length, 2);
+    assert.match(none.warnings[0], /limites de palavra do build não aplicados/);
+    const empty = verifyEdgeWords({ transcript: [], cache: { audio }, audio, planClips, durationS: 10 });
+    assert.equal(empty.warnings.length, 2, "transcript vazio e cache sem windows: dois avisos");
   });
 });

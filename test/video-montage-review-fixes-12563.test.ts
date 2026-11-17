@@ -96,7 +96,7 @@ describe("review #12563: verify-xml mais estrito", () => {
     const level = (a: number, b: number) => (b > 30 && a < 30.5 ? -20 : -80);
     const clip = { start: 0, end: 60, in: 840, out: 900, fileId: "file-1", gIn: 840, gOut: 900 };
     assert.equal(edgeFindings([clip], 30, level, -45)[0].cutOut, true, "sem os limites: falso SOM CORTADO");
-    assert.equal(edgeFindings([clip], 30, level, -45, undefined, [{ start: 0, end: 30 }, { start: 30, end: 40 }])[0].cutOut, false);
+    assert.equal(edgeFindings([clip], 30, level, -45, { bounds: [{ start: 0, end: 30 }, { start: 30, end: 40 }] })[0].cutOut, false);
   });
 });
 
