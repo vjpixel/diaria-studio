@@ -674,24 +674,11 @@ function renderCardBoldNote(group: DestaqueGroup): string {
     .join(" · ")}</div>`;
 }
 
-/** #12094: o texto dos cards (`## d{N}-cards`), com o negrito que o card
- *  renderiza. Nunca sai na legenda — só nos slides do carrossel. */
-function renderCardsText(group: DestaqueGroup): string {
-  if (!group.cardsPost) return "";
-  const paras = group.cardsPost.main
-    .split(/\n\n+/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => `<p>${escHtml(p).replace(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")}</p>`)
-    .join("\n");
-  return `
-      <div class="channel-block cards-text">
-        <div class="channel-label">Texto dos cards do carrossel (só nas imagens, não na legenda)</div>
-        <div class="post-body">
-          ${paras}
-        </div>
-      </div>`;
-}
+/* #13422: o bloco "Texto dos cards do carrossel" (#12094, `renderCardsText`)
+ * saiu do preview a pedido do editor: repetia em texto o que os slides do
+ * carrossel já mostram. `## d{N}-cards` segue em 03-social.md (fonte dos
+ * slides e dos invariantes `carousel-text-overflow`/`carousel-cards-stale`)
+ * e ainda alimenta o negrito de `renderCardBoldNote` via `cardsPost`. */
 
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
   // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
@@ -709,7 +696,6 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
     ${imgHtml}
     ${renderCardBoldNote(group)}
     ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
-    ${renderCardsText(group)}
   </div>`;
 }
 
