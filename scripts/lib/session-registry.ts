@@ -1770,6 +1770,14 @@ export interface RegisterSessionResult {
    * em `"promoted"`, `"promoted-orphan-left"` e `"promotion-failed-unreadable"`,
    * ausente em `"created"`/`"reregistered"`. */
   promotedFrom?: string;
+  /**
+   * #13596: kind do registro de onde a sessão veio na promoção (lido do
+   * conteúdo, ou do prefixo do nome `{kind}-{tag}-{id}.json` quando o conteúdo
+   * está ilegível). Presente junto de `promotedFrom` quando dá para saber. O
+   * `register` CLI usa para apagar a presença no D1 quando a sessão perde a
+   * autoridade de merge (overnight/develop rebaixada a continuo/interactive).
+   */
+  previousKind?: string;
 }
 
 /**
@@ -1945,8 +1953,18 @@ export function registerSession(
   );
 
   if (unreadablePromotionSource) {
-    return { record, outcome: "promotion-failed-unreadable", promotedFrom: unreadablePromotionSource };
+    const parsedKind = parseSessionFileName(basename(unreadablePromotionSource))?.kind;
+    return {
+      record,
+      outcome: "promotion-failed-unreadable",
+      promotedFrom: unreadablePromotionSource,
+      ...(parsedKind !== undefined ? { previousKind: parsedKind } : {}),
+    };
   }
+  // #13596: kind de onde a sessão veio, para o `register` CLI reconciliar a presença no D1.
+  const previousKind = promotedFrom
+    ? (typeof previous?.kind === "string" ? previous.kind : parseSessionFileName(basename(promotedFrom))?.kind)
+    : undefined;
 
   if (promotedFrom) {
     // #7028: carimba `endedAt` no CONTEÚDO do registro antigo ANTES de
@@ -1987,7 +2005,12 @@ export function registerSession(
       removed = false;
       warnIoError(promotedFrom, e);
     }
-    return { record, outcome: removed ? "promoted" : "promoted-orphan-left", promotedFrom };
+    return {
+      record,
+      outcome: removed ? "promoted" : "promoted-orphan-left",
+      promotedFrom,
+      ...(previousKind !== undefined ? { previousKind } : {}),
+    };
   }
 
   return { record, outcome: hadOwnFile ? "reregistered" : "created" };
@@ -5124,10 +5147,83 @@ export async function clearCoordinatorPresenceShared(
   opts: SharedLockOptions = {},
 ): Promise<void> {
   if (!hasMergeAuthorityKind(kind)) return;
+  await clearPresenceRow(repoRoot, sessionId, "coordinator-presence (end)", opts);
+}
+
+/** Apaga a linha `coordinator:{id}` sem olhar kind (#13596). Fail-soft, com aviso. */
+async function clearPresenceRow(
+  repoRoot: string,
+  sessionId: string,
+  what: string,
+  opts: SharedLockOptions,
+): Promise<boolean | null> {
   const d1 = resolveD1ForRepo(repoRoot, opts);
-  if (!d1) return;
+  if (!d1) return null;
   const r = await d1ClearCoordinatorPresence(d1, sessionId);
-  if (!r.ok) reportD1Failure(repoRoot, "coordinator-presence (end)", r, opts.warn ?? stderrWarn);
+  if (!r.ok) {
+    reportD1Failure(repoRoot, what, r, opts.warn ?? stderrWarn);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Presença no D1 depois do `register` (#13596). Kind com autoridade de merge
+ * grava/renova (`registerCoordinatorPresenceShared`, como no #13577). Sessão
+ * PROMOVIDA de um kind com autoridade para um sem (overnight/develop →
+ * continuo/interactive/continuo-review) apaga a linha: sem isso ela seguia
+ * atestando a concedente por até 90 min (`COORDINATOR_PRESENCE_D1_TTL_MS`),
+ * e numa máquina onde o registro novo ainda não sincronizou a concessão
+ * antiga continuaria valendo. Fail-soft: falha do D1 vira aviso (o registro
+ * local já valeu). `true` = gravada/apagada; `false` = o D1 falhou; `null` =
+ * nada a fazer (sem D1, ou kind sem autoridade que não veio de um com).
+ */
+export async function reconcileCoordinatorPresenceOnRegister(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  result: Pick<RegisterSessionResult, "previousKind"> & { record: Pick<SessionRecord, "machineTag"> },
+  opts: SharedLockOptions = {},
+): Promise<boolean | null> {
+  if (hasMergeAuthorityKind(kind)) {
+    return registerCoordinatorPresenceShared(repoRoot, kind, sessionId, { tag: result.record.machineTag }, opts);
+  }
+  if (result.previousKind === undefined || !hasMergeAuthorityKind(result.previousKind)) return null;
+  return clearPresenceRow(repoRoot, sessionId, "coordinator-presence (rebaixamento de kind)", opts);
+}
+
+/**
+ * Apaga a presença no D1 das coordenadoras com autoridade de merge cujo
+ * registro o GC removeu (#13596). O GC só remove registro parado muito além
+ * do TTL da presença, então quase sempre a linha já venceu; esta limpeza
+ * cobre a que foi renovada por último perto do fim (ou a de sessão que nunca
+ * chamou `end`). Fail-soft por linha: falha do D1 vira aviso e segue. Devolve
+ * quantas linhas o D1 confirmou apagar (inclusive as que já não existiam).
+ */
+export async function clearPresenceForGcRemovals(
+  repoRoot: string,
+  plan: readonly SessionGcResult[],
+  opts: SharedLockOptions = {},
+): Promise<number> {
+  const ids = new Set<string>();
+  for (const entry of plan) {
+    if (entry.action !== "removed" || entry.sessionId === undefined || entry.kind === undefined) continue;
+    if (hasMergeAuthorityKind(entry.kind)) ids.add(entry.sessionId);
+  }
+  // Sessão que segue viva noutro registro (outro arquivo, outra máquina) não
+  // perde a presença por causa de uma cópia velha recolhida.
+  for (const s of listActiveSessions(repoRoot, opts.now)) {
+    if (!s.stale && isCoordinatorKind(s.kind)) ids.delete(s.sessionId);
+  }
+  if (ids.size === 0) return 0;
+  // Uma resolução do D1 para todas as linhas (sem D1 configurado: nada a fazer).
+  const d1 = resolveD1ForRepo(repoRoot, opts);
+  if (!d1) return 0;
+  let cleared = 0;
+  for (const id of ids) {
+    if ((await clearPresenceRow(repoRoot, id, "coordinator-presence (gc)", { ...opts, d1 })) === true) cleared++;
+  }
+  return cleared;
 }
 
 /**
@@ -5191,6 +5287,40 @@ export async function grantMergeWindowShared(
 }
 
 /**
+ * #13596: a presença do D1 que se diz DESTA máquina (`machineTag === localTag`)
+ * só atesta a concedente com algum registro coordenador da mesma sessão em
+ * `sessions` (`listActiveSessions`, janela de 24h, inclusive stale): a
+ * coordenadora desta máquina grava o registro no disco local, sem depender de
+ * sync, então presença local sem registro é sobra (`end` que não limpou o D1)
+ * ou linha escrita sem registro. Presença de outra máquina (ou sem
+ * `machineTag`) passa — é o caso que a presença existe para cobrir. Mesma
+ * regra de `presenceMachineConsistent` do guard. Pura.
+ */
+export function presenceMachineConsistent(
+  presence: Pick<D1CoordinatorPresence, "sessionId" | "machineTag">,
+  sessions: ReadonlyArray<Pick<SessionRecord, "sessionId" | "kind">>,
+  localTag: string,
+): boolean {
+  if (typeof presence.machineTag !== "string" || presence.machineTag !== localTag) return true;
+  return sessions.some((s) => s.sessionId === presence.sessionId && isCoordinatorKind(s.kind));
+}
+
+/**
+ * #13596: aviso de stderr do `check-merge-grant`/`consume-merge-grant` quando a
+ * concessão do D1 vale pela PRESENÇA da concedente. A linha `coordinator:` é
+ * autodeclarada (quem tem a credencial do D1 grava para qualquer id), então o
+ * aceite por ela nunca passa em silêncio. Pura.
+ */
+export function d1PresenceGrantNotice(grantor: D1PresenceGrantor): string {
+  const where = grantor.machineTag !== undefined ? `máquina ${grantor.machineTag}` : "máquina não declarada";
+  return (
+    `session-registry (#13596): concessão do D1 aceita pela PRESENÇA de ${grantor.sessionId} no D1 ` +
+    `(grantorVia: d1-presence, ${grantor.kind}, ${where}) — o registro dela não está ativo nesta máquina. ` +
+    "Se essa coordenadora não existe, a linha foi forjada com a credencial do D1.\n"
+  );
+}
+
+/**
  * Concedente atestada só pelo D1 (#13577): a presença viva dela, sem registro
  * ativo nesta máquina. Mesma forma mínima que o JSON de `check-merge-grant`
  * mostra em `grantedBy`.
@@ -5200,6 +5330,11 @@ export interface D1PresenceGrantor {
   kind: SessionKind;
   machineTag?: string;
   via: "d1-presence";
+}
+
+/** #13596: a concedente veio da presença do D1 (e não de um registro desta máquina). */
+export function isD1PresenceGrantor(g: ActiveSessionRecord | D1PresenceGrantor): g is D1PresenceGrantor {
+  return (g as Partial<D1PresenceGrantor>).via === "d1-presence";
 }
 
 /** Concessão do D1 que existe mas não vale aqui (#13577): o motivo, para o aviso. */
@@ -5228,7 +5363,7 @@ export async function findLiveMergeGrantInD1(
   repoRoot: string,
   sessionId: string,
   repo: string = DEFAULT_ISSUE_REPO,
-  opts: SharedLockOptions = {},
+  opts: SharedLockOptions & { localTag?: string } = {},
 ): Promise<
   | { grant: MergeGrant; grantedBy: ActiveSessionRecord | D1PresenceGrantor }
   | { error: { error: string; permanent: boolean } }
@@ -5264,6 +5399,9 @@ export async function findLiveMergeGrantInD1(
     if (!p.ok) return { error: p };
     if (!p.value) return reject("grantor-unknown");
     if (!hasMergeAuthorityKind(p.value.kind)) return reject("grantor-not-coordinator");
+    // #13596: presença que se diz desta máquina sem registro coordenador da
+    // concedente aqui é sobra ou linha escrita sem registro — mesma regra do guard.
+    if (!presenceMachineConsistent(p.value, sessions, opts.localTag ?? machineTag())) return reject("grantor-unknown");
     grantor = {
       sessionId: p.value.sessionId,
       kind: p.value.kind,
@@ -5517,6 +5655,10 @@ export interface SessionGcResult {
    * `end` (carimbo numa cópia de conflito). `garbageCollectSessions` não
    * registra `gc-removed-without-end` nesse caso: o `ended` já está no log. */
   endedAt?: string;
+  /** #13596 — sessão e kind do registro avaliado, quando legível. Usados para
+   * apagar a presença no D1 de coordenadora removida (`clearPresenceForGcRemovals`). */
+  sessionId?: string;
+  kind?: string;
 }
 
 /**
@@ -5794,6 +5936,7 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       continue;
     }
     const identity = `${records[0]!.kind}-${records[0]!.machineTag}-${records[0]!.sessionId}`;
+    const who = { sessionId: records[0]!.sessionId, kind: records[0]!.kind };
     // #13114: sessão que já chamou `end` e teve o real ressuscitado pelo sync.
     // O read-path já a ignora; o GC recolhe os arquivos sem esperar a janela
     // conservadora, porque o próprio carimbo é o sinal positivo de fim.
@@ -5807,11 +5950,12 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
           `#13114: a sessão chamou \`end\` (endedAt=${endedAt} numa cópia de conflito) e nenhum registro do grupo tem ` +
           "heartbeat posterior — o arquivo real é ressurreição do sync, não sessão viva",
         endedAt,
+        ...who,
       });
       continue;
     }
     const decision = decideSessionGc(records, now, conservativeMaxAgeMs, isPidAlive, localTag);
-    results.push({ identity, files: groupPaths, ...decision });
+    results.push({ identity, files: groupPaths, ...decision, ...who });
   }
 
   for (const backup of orphanBackups) {
@@ -5827,7 +5971,13 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       continue;
     }
     const decision = decideSessionGc([record], now, conservativeMaxAgeMs, isPidAlive, localTag, /* isOrphan */ true);
-    results.push({ identity: `orphan-backup:${backup}`, files: [path], ...decision });
+    results.push({
+      identity: `orphan-backup:${backup}`,
+      files: [path],
+      ...decision,
+      ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
+      ...(typeof record.kind === "string" ? { kind: record.kind } : {}),
+    });
   }
 
   return results;
@@ -8062,7 +8212,8 @@ async function main(): Promise<void> {
         // #13577: coordenadora com autoridade de merge publica a presença no
         // D1, para que a concessão dela valha em outra máquina antes do sync
         // do registro. Falha vira aviso no stderr; o registro local já valeu.
-        await registerCoordinatorPresenceShared(repoRoot, kind, sessionId, { tag: result.record.machineTag });
+        // #13596: sessão rebaixada para kind sem autoridade apaga a presença.
+        await reconcileCoordinatorPresenceOnRegister(repoRoot, kind, sessionId, result);
         break;
       }
       case "heartbeat": {
@@ -8690,6 +8841,7 @@ async function main(): Promise<void> {
             process.stderr.write(d1GrantRejectionMessage(inD1.rejected));
           } else if (inD1) {
             found = { ...inD1, source: "d1" };
+            if (isD1PresenceGrantor(inD1.grantedBy)) process.stderr.write(d1PresenceGrantNotice(inD1.grantedBy));
           }
         }
         if (consumedInD1) {
@@ -8778,6 +8930,7 @@ async function main(): Promise<void> {
           } else if (inD1 && "rejected" in inD1) {
             process.stderr.write(d1GrantRejectionMessage(inD1.rejected));
           } else if (inD1) {
+            if (isD1PresenceGrantor(inD1.grantedBy)) process.stderr.write(d1PresenceGrantNotice(inD1.grantedBy));
             toConsume = inD1.grant;
             ok = recordMergeGrantConsumption(repoRoot, inD1.grant, new Date().toISOString());
           }
@@ -8893,6 +9046,8 @@ async function main(): Promise<void> {
           const verb = isDryRun && entry.action === "removed" ? "would-remove" : entry.action;
           process.stdout.write(`session-registry: gc ${verb} ${entry.identity} (${entry.files.length} arquivo(s)) — ${entry.reason}\n`);
         }
+        // #13596: coordenadora removida pelo GC não deixa a presença no D1 viva.
+        if (!isDryRun) await clearPresenceForGcRemovals(repoRoot, plan);
         const removedCount = plan.filter((e) => e.action === "removed").length;
         process.stdout.write(
           `session-registry: gc ${isDryRun ? "--dry-run: " : ""}${removedCount}/${plan.length} identidade(s) ${isDryRun ? "seriam removidas" : "removidas"}\n`,
