@@ -24,9 +24,11 @@
 //      and the old regex matched it because it only looked as far as the PR
 //      number, ignoring the fragment after); (b) when
 //      `payload.tool_input.command` is available, it must actually be a `gh
-//      pr create` invocation (`isGhPrCreateCommand`, duplicated from — but no
-//      longer contract-identical to — `isGhPrMergeCommand` in the sibling
-//      hook `block-gh-pr-merge-subagent.mjs`: this one returns a 3-state
+//      pr create` invocation (`isGhPrCreateCommand`, which since #13550
+//      delegates detection to `runsGhPrCreate` in the shared
+//      `lib/gh-pr-create-command.mjs` — same lexer as the merge detector, so
+//      env prefixes, wrappers, subshells and gh global flags count — and
+//      wraps it in a 3-state
 //      `"create" | "not-create" | "unknown"`, never a boolean, precisely so
 //      "command absent" can never collapse into "definitely not a create"
 //      again — the ambiguity a fleet review flagged after #6298 shipped) —

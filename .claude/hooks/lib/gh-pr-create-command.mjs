@@ -121,11 +121,24 @@ function wordsRunPrCreate(words, depth) {
       if (w.startsWith("-") && w.length > 1) {
         const flag = w.includes("=") ? w.slice(0, w.indexOf("=")) : w;
         // `env -S 'gh pr create'` / `--split-string=…`: a string vira o comando.
-        if (name === "env" && (flag === "--split-string" || flag === "-S")) {
-          const value = w.includes("=") ? w.slice(w.indexOf("=") + 1) : words[i + 1];
+        // Cluster de flags curtas com S (`env -iS 'gh pr create'`) e valor
+        // colado (`env -S'gh pr create'` → palavra `-Sgh pr create`): o S
+        // consome o resto do cluster ou, vazio, a próxima palavra — mesmo
+        // tratamento de `shortS` do detector de merge.
+        const shortS = !w.startsWith("--") ? /^-[A-Za-z]*?S/.exec(w) : null;
+        let sTakesNext = false;
+        if (name === "env" && (flag === "--split-string" || shortS)) {
+          let value;
+          if (flag === "--split-string") value = w.includes("=") ? w.slice(w.indexOf("=") + 1) : words[i + 1];
+          else {
+            const rest = w.slice(shortS[0].length);
+            sTakesNext = rest === "";
+            value = sTakesNext ? words[i + 1] : rest;
+          }
           if (typeof value === "string" && commandRunsPrCreate(value, depth + 1)) return true;
         }
-        i += wrapper.valueFlags.has(w) && !w.includes("=") ? 2 : 1;
+        if (sTakesNext || (wrapper.valueFlags.has(w) && !w.includes("="))) i += 2;
+        else i++;
         continue;
       }
       if (wrapper.assignments && ASSIGNMENT_RE.test(w)) {

@@ -55,6 +55,14 @@ const SHOULD_GUARD = [
   "/usr/bin/gh pr create --fill",
   "URL=$(gh pr create --fill)",
   "bash -c 'FOO=1 gh pr create --fill'",
+  // `env -S` em todas as formas (review do PR #13562): separado, cluster com
+  // outras flags curtas, valor colado e `--split-string`.
+  "env -S 'gh pr create --fill'",
+  "env -iS 'gh pr create --fill'",
+  "env -S'gh pr create --fill'",
+  "env -iS'gh pr create --fill'",
+  "env --split-string='gh pr create --fill'",
+  "env --split-string 'gh pr create --fill'",
   // as formas de antes continuam valendo
   "gh pr create --fill",
   "git push -u origin x && gh pr create --fill",
@@ -69,6 +77,8 @@ const SHOULD_NOT_GUARD = [
   "gh issue create --title x",
   "ghx pr create",
   "command -v gh",
+  "env -iS 'gh pr view 5'",
+  "env -S'echo gh pr create'",
 ];
 
 describe("detector compartilhado runsGhPrCreate (#13550)", () => {
