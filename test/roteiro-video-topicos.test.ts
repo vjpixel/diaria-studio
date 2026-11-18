@@ -148,4 +148,19 @@ describe("topicos da fala", () => {
     const skill = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-video-roteiro", "SKILL.md"), "utf8");
     assert.match(skill, /\*\*`topicos`\*\*/);
   });
+
+  it("os Passos 5 e 6 geram e regeram as duas páginas (#13447)", () => {
+    const skill = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-video-roteiro", "SKILL.md"), "utf8");
+    const passo = (titulo: string, proximo: string) => {
+      const ini = skill.indexOf(titulo);
+      assert.ok(ini >= 0, `falta a seção ${titulo}`);
+      const fim = skill.indexOf(proximo, ini);
+      return skill.slice(ini, fim < 0 ? undefined : fim);
+    };
+    for (const trecho of [passo("## Passo 5 — ", "## Passo 5a"), passo("## Passo 6 — ", "## Passo 7")]) {
+      assert.match(trecho, /render-roteiro-video\.ts \{AAMMDD\} --sem-topicos/);
+      assert.match(trecho, /render-roteiro-video\.ts \{AAMMDD\} --topicos/);
+    }
+    assert.match(passo("## Passo 5 — ", "## Passo 5a"), /_internal\/topicos-gravacao\.html/);
+  });
 });
