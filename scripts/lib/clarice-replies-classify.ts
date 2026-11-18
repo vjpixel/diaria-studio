@@ -76,7 +76,8 @@ export function normalizeText(s: string): string {
  * Remove a parte citada do e-mail original e a assinatura: corta no 1º
  * marcador de citação ("Em ... escreveu:", "On ... wrote:", "-----Original
  * Message-----", bloco "De:/From:" do Outlook, linha de sublinhados) e
- * descarta linhas `>` e "Enviado do meu iPhone"/"Sent from my ...".
+ * descarta linhas `>` e "Enviado do meu iPhone"/"Sent from my ...", inclusive
+ * quando a assinatura vem colada no fim da linha ("Eu queroEnviado do meu Galaxy").
  */
 /** Rodapé fixo da newsletter (ver `stripQuoted`). */
 const FOOTER_CUT_RES: RegExp[] = [
