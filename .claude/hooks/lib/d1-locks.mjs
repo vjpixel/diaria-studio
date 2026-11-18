@@ -41,6 +41,10 @@ export const ACQUIRE_SQL =
 
 export const READ_SQL = `SELECT holder, acquired_at, expires_at, ${nowParam(2)} AS now_ms FROM locks WHERE name = ?1`;
 
+/** Leitura com `meta` (concessão de merge no D1, #13242). Mesmo texto do `.ts`. */
+export const READ_META_SQL =
+  `SELECT holder, acquired_at, expires_at, meta, ${nowParam(2)} AS now_ms FROM locks WHERE name = ?1`;
+
 /** Timeout por chamada nos hooks (o hook inteiro tem 10 s no settings). */
 export const D1_HOOK_TIMEOUT_MS = 3_000;
 export const MERGE_GRANT_CONSUMED_D1_TTL_MS = 24 * 60 * 60 * 1000;
@@ -51,6 +55,68 @@ export function mergeLockD1Name(repo) {
 
 export function mergeGrantConsumedD1Name(grant) {
   return `merge-grant-consumed:${grant.grantedBy}|${grant.grantedTo}|${grant.grantedAt}`;
+}
+
+const DEFAULT_GRANT_REPO = "vjpixel/diaria-studio";
+
+/**
+ * #13242: concessão de merge no D1, uma linha por (repo, beneficiária). A
+ * `holder` é a coordenadora concedente; `meta` é o `merge_grant` inteiro
+ * (JSON). Existe porque o arquivo da concedente só chega à máquina da
+ * beneficiária pelo sync do Drive, mais lento que o TTL de 10 min.
+ */
+export function mergeGrantD1Name(grantedTo, repo = DEFAULT_GRANT_REPO) {
+  return `merge-grant:${String(repo).toLowerCase()}|${grantedTo}`;
+}
+
+/**
+ * Concessão lida de uma linha `merge-grant:` do D1 (#13242), ou `null` quando
+ * a linha não descreve uma concessão válida PARA `sessionId` NESTE `repo`.
+ * Pura. Só confere a forma e a identidade; TTL, consumo e "a concedente é
+ * coordenadora ativa" ficam com quem chama (mesmas regras do arquivo).
+ *   - `meta` precisa ser o JSON de uma concessão com os 3 campos de identidade;
+ *   - `grantedTo === sessionId` e `grantedBy === holder` (a linha não pode
+ *     dizer uma concedente e o JSON outra);
+ *   - auto-concessão (`grantedBy === grantedTo`) nunca vale;
+ *   - o repo do JSON (ausente = diaria-studio) bate com o `repo` pedido.
+ */
+export function grantFromD1Row(row, sessionId, repo = DEFAULT_GRANT_REPO) {
+  if (!row || typeof row.holder !== "string" || typeof row.meta !== "string") return null;
+  if (typeof sessionId !== "string" || sessionId === "") return null;
+  let g;
+  try {
+    g = JSON.parse(row.meta);
+  } catch {
+    return null;
+  }
+  if (!g || typeof g !== "object") return null;
+  if (typeof g.grantedBy !== "string" || typeof g.grantedTo !== "string" || typeof g.grantedAt !== "string") return null;
+  if (g.grantedTo !== sessionId || g.grantedBy !== row.holder || g.grantedBy === g.grantedTo) return null;
+  const grantRepo = g.repo === undefined ? DEFAULT_GRANT_REPO : String(g.repo).toLowerCase();
+  if (grantRepo !== String(repo).toLowerCase()) return null;
+  const grant = { grantedTo: g.grantedTo, grantedBy: g.grantedBy, grantedAt: g.grantedAt };
+  if (Number.isSafeInteger(g.pr)) grant.pr = g.pr;
+  if (g.repo !== undefined) grant.repo = g.repo;
+  return grant;
+}
+
+/**
+ * Concessão viva no D1 para `sessionId` em `repo` (#13242):
+ * `{ ok: true, value: grant | null }`; falha = `{ ok: false, error, permanent }`.
+ * Linha vencida (relógio do D1) volta `null`.
+ */
+export async function d1ReadMergeGrant(client, sessionId, repo = DEFAULT_GRANT_REPO) {
+  try {
+    const { results } = await client.query(READ_META_SQL, [mergeGrantD1Name(sessionId, repo), ""]);
+    const row = results[0];
+    if (!row) return { ok: true, value: null };
+    const expiresAt = Number(row.expires_at);
+    const nowMs = Number(row.now_ms);
+    if (Number.isFinite(expiresAt) && Number.isFinite(nowMs) && expiresAt <= nowMs) return { ok: true, value: null };
+    return { ok: true, value: grantFromD1Row(row, sessionId, repo) };
+  } catch (e) {
+    return failure(e);
+  }
 }
 
 /**

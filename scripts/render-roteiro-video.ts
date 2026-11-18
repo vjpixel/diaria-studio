@@ -12,7 +12,8 @@
  * O JSON é validado antes (o mesmo `validarRoteiroFalas` do
  * `video-roteiro-blocos.ts`); inválido = exit 2, nada gravado. Os mesmos
  * `[aviso]` do `video-roteiro-blocos.ts` (proposta de blocos, gancho, título,
- * capa, duração) saem no stderr, sem mudar o exit; capa que o
+ * capa, duração, formato react e fact-check do roteiro defasado, #13433/#13434)
+ * saem no stderr, sem mudar o exit; capa que o
  * `gen-youtube-thumb.ts` recusaria sai como `[erro]` (#13401), também sem mudar
  * o exit (o `video-roteiro-blocos.ts` dá exit 4 para ela). A página é gravada num
  * arquivo temporário e renomeada, para o Drive nunca sincronizar uma pela metade.
@@ -21,10 +22,13 @@
  * página que já existe no destino, para a skill republicar no mesmo endereço;
  * `--artifact-url` sobrepõe.
  *
- * Uso: npx tsx scripts/render-roteiro-video.ts AAMMDD [--falas PATH] [--out PATH] [--artifact-url URL] [--stdout]
+ * Uso: npx tsx scripts/render-roteiro-video.ts AAMMDD [--topicos | --sem-topicos] [--falas PATH] [--out PATH] [--artifact-url URL] [--stdout]
+ *   --topicos:       gera a página só de tópicos (#13447, `_internal/topicos-gravacao.html`): ordem do
+ *                    horizontal, fonte grande, faixa dos `trechoInserido`, gravadas à parte no fim
+ *   --sem-topicos:   o roteiro completo sem a coluna de tópicos (a página de tópicos vai à parte)
  *   AAMMDD:          edição (lê e grava em `data/editions/{AAMM}/{AAMMDD}/_internal/`)
  *   --falas:         outro caminho para o JSON do roteiro
- *   --out:           outro caminho para a página (default `_internal/roteiro-d1.html`)
+ *   --out:           outro caminho para a página (default `_internal/roteiro-d1.html`, ou `_internal/topicos-gravacao.html` com --topicos)
  *   --artifact-url:  link do artefato a gravar na 1ª linha
  *   --stdout:        imprime a página em vez de gravar
  *
@@ -36,12 +40,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
-import { artifactUrlDe, artifactUrlSegura, renderRoteiroPagina } from "./lib/diaria/roteiro-pagina.ts";
+import { artifactUrlDe, artifactUrlSegura, renderRoteiroPagina, renderTopicosPagina } from "./lib/diaria/roteiro-pagina.ts";
 import { avisosTomConversacional, avisosDuracao, avisosTela, avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
-import { lerDuracaoConfig } from "./video-roteiro-blocos.ts";
+import { avisosRoteiroReact, lerDuracaoConfig } from "./video-roteiro-blocos.ts";
 import { errosCapaDoRoteiro } from "./lib/diaria/youtube-thumb-roteiro.ts";
 
 export const ROTEIRO_PAGINA_FILE = "_internal/roteiro-d1.html";
+export const TOPICOS_PAGINA_FILE = "_internal/topicos-gravacao.html";
 export const EXIT_SEM_ROTEIRO = 3;
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -54,7 +59,7 @@ export function main(
   const { values, flags, positional } = parseArgs(argv);
   const edition = positional[0];
   if (!edition || !/^\d{6}$/.test(edition)) {
-    io.err("uso: render-roteiro-video.ts AAMMDD [--falas PATH] [--out PATH] [--artifact-url URL] [--stdout]");
+    io.err("uso: render-roteiro-video.ts AAMMDD [--topicos | --sem-topicos] [--falas PATH] [--out PATH] [--artifact-url URL] [--stdout]");
     return 2;
   }
   const dir = editionDir(edition);
@@ -75,22 +80,37 @@ export function main(
     io.err(`[render-roteiro-video] ${falasPath} inválido:\n  ${lido.problemas.join("\n  ")}`);
     return 2;
   }
+  if (flags.has("topicos") && flags.has("sem-topicos")) {
+    io.err("[render-roteiro-video] --topicos e --sem-topicos não combinam: um gera a página de tópicos, o outro tira a coluna do roteiro");
+    return 2;
+  }
+  const soTopicos = flags.has("topicos");
   const artifactFlag = values["artifact-url"];
   if (artifactFlag !== undefined && !artifactUrlSegura(artifactFlag)) {
     io.err("[render-roteiro-video] --artifact-url precisa ser uma URL https (sem espaço, <, > ou --)");
     return 2;
   }
-  const outPath = values["out"] ?? join(dir, ROTEIRO_PAGINA_FILE);
+  const outPath = values["out"] ?? join(dir, soTopicos ? TOPICOS_PAGINA_FILE : ROTEIRO_PAGINA_FILE);
   const paginaExistia = existsSync(outPath);
   const artifactUrl = artifactFlag ?? (paginaExistia ? artifactUrlDe(readFileSync(outPath, "utf8")) ?? undefined : undefined);
   const cfg = lerDuracaoConfig(root, io.err);
   const proposta = propostaBlocosDoRoteiro(lido.roteiro, { palavrasPorMinuto: cfg.palavrasPorMinuto });
-  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro), ...avisosTela(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  for (const a of [
+    ...proposta.avisos,
+    ...avisosGanchoETitulo(lido.roteiro),
+    ...avisosDuracao(lido.roteiro, cfg),
+    ...avisosTomConversacional(lido.roteiro),
+    ...avisosTela(lido.roteiro),
+    ...avisosRoteiroReact(lido.roteiro, root, edition, falasPath),
+  ])
+    io.err(`[aviso] ${a}`);
   // #13401: capa que o gen-youtube-thumb.ts recusaria, visível já na página (o exit fica; o blocos dá 4).
   for (const e of errosCapaDoRoteiro(lido.roteiro)) io.err(`[erro] ${e}`);
   let html: string;
   try {
-    html = renderRoteiroPagina(lido.roteiro, { cfg, ...(artifactUrl ? { artifactUrl } : {}) });
+    html = soTopicos
+      ? renderTopicosPagina(lido.roteiro, artifactUrl ? { artifactUrl } : {})
+      : renderRoteiroPagina(lido.roteiro, { cfg, semTopicos: flags.has("sem-topicos"), ...(artifactUrl ? { artifactUrl } : {}) });
   } catch (e) {
     io.err(`[render-roteiro-video] ${(e as Error).message}`);
     return 2;

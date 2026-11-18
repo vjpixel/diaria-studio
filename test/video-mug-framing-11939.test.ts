@@ -128,13 +128,15 @@ describe("mugFramingWarnings / frameCropOverlays (#11939)", () => {
 
   it("frame desenha os 4 recortes e a caixa da caneca", () => {
     const o = frameCropOverlays(source, { ...face, mug: mug261103 });
-    assert.equal(o.filters.length, 5);
-    assert.ok(o.filters.every((x) => /^drawbox=x=\d+:y=\d+:w=\d+:h=\d+:color=\w+@[\d.]+:t=\d+$/.test(x)), o.filters.join("\n"));
+    // 4 recortes + caneca + a linha da boca (#13414).
+    assert.equal(o.filters.length, 6);
+    assert.ok(o.filters.slice(0, 5).every((x) => /^drawbox=x=\d+:y=\d+:w=\d+:h=\d+:color=\w+@[\d.]+:t=\d+$/.test(x)), o.filters.join("\n"));
     assert.equal(o.filters.filter((x) => x.includes("yellow")).length, 2);
     assert.equal(o.filters.filter((x) => x.includes("cyan")).length, 2);
     assert.ok(o.filters[4].includes("magenta"));
+    assert.match(o.filters[5], /^drawbox=x=0:y=\d+:w=\d+:h=4:color=red@0\.8:t=fill$/);
     assert.equal(o.warnings.length, 2);
-    assert.equal(frameCropOverlays(source, face).filters.length, 4);
+    assert.equal(frameCropOverlays(source, face).filters.length, 5);
   });
 });
 

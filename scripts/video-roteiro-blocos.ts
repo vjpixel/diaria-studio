@@ -16,7 +16,11 @@
  * #13130; alvos em `publishing.video.roteiro` do `platform.config.json`).
  * Também avisa verbos de relatório e trechos com mais de 30 palavras sem
  * pausa (`avisosTomConversacional`, #13165), e o formato do texto de tela
- * (`avisosTela`, #13180), sem bloquear a proposta.
+ * (`avisosTela`, #13180), sem bloquear a proposta. Formato react (#13433,
+ * `avisosRoteiroReact`): fala de vertical que se apoia num trecho que só o
+ * horizontal leva, reação que repete a previsão em pergunta e `trechoInserido`
+ * que não bate com o SRT do vídeo citado; e `02-reviewed.md` mais novo que o
+ * roteiro ou que o fact-check do roteiro (#13434).
  * Capa do roteiro que o `gen-youtube-thumb.ts` recusaria (vertical fora de 2 a
  * 5 palavras, `normalizeShortCoverHook`; horizontal fora do `splitHook`, com a
  * quebra de `hookHorizontalDoRoteiro`) é `[erro]` com exit 4, depois da
@@ -46,7 +50,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { editionDir } from "./lib/edition-paths.ts";
+import { editionDir, editionsRoot } from "./lib/edition-paths.ts";
+import { avisosFactCheckRoteiroDefasado, avisosFormatoReact } from "./lib/diaria/roteiro-react.ts";
+import type { RoteiroFalas } from "./lib/diaria/roteiro-gravacao.ts";
 import {
   avisosDuracao,
   avisosTela,
@@ -76,6 +82,18 @@ export function lerDuracaoConfig(root: string, err: (s: string) => void): Roteir
     err(`[aviso] ${path} ilegível (${(e as Error).message}): alvos de duração default (#13130)`);
     return ROTEIRO_DURACAO_DEFAULT;
   }
+}
+
+/**
+ * Avisos do formato react e do fact-check do roteiro (#13433, #13434), comuns
+ * a este CLI e ao `render-roteiro-video.ts`: vertical que depende do trecho,
+ * reação em pergunta, trecho contra o SRT do vídeo citado (procurado em
+ * `{root}/data/editions`) e `02-reviewed.md` mais novo que o roteiro ou que o
+ * fact-check do roteiro.
+ */
+export function avisosRoteiroReact(roteiro: RoteiroFalas, root: string, edition: string, falasPath: string): string[] {
+  const dir = join(root, editionDir(edition));
+  return [...avisosFormatoReact(roteiro, join(root, editionsRoot())), ...avisosFactCheckRoteiroDefasado(dir, falasPath)];
 }
 
 export const EXIT_SEM_ROTEIRO = 3;
@@ -124,7 +142,15 @@ export function main(
   }
   const cfg = lerDuracaoConfig(root, io.err);
   const proposta = propostaBlocosDoRoteiro(lido.roteiro, { ...(corte ? { corteSlug: corte } : {}), palavrasPorMinuto: cfg.palavrasPorMinuto });
-  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg), ...avisosTomConversacional(lido.roteiro), ...avisosTela(lido.roteiro)]) io.err(`[aviso] ${a}`);
+  for (const a of [
+    ...proposta.avisos,
+    ...avisosGanchoETitulo(lido.roteiro),
+    ...avisosDuracao(lido.roteiro, cfg),
+    ...avisosTomConversacional(lido.roteiro),
+    ...avisosTela(lido.roteiro),
+    ...avisosRoteiroReact(lido.roteiro, root, edition, path),
+  ])
+    io.err(`[aviso] ${a}`);
   io.out(
     flags.has("json")
       ? JSON.stringify({ ...proposta, duracoes: duracaoPorVideo(lido.roteiro, cfg) }, null, 2)

@@ -8,11 +8,15 @@
  * tamanho da sequência, com o box (fundo escuro a 75%, fio teal à esquerda,
  * Georgia, a 1ª linha em negrito quando vem como `**…**`), numa faixa de vídeo
  * acima do bruto e do título, do começo ao fim da fala na sequência (o mesmo
- * intervalo do marcador). Só no horizontal (os verticais saem sem texto de
- * tela, #13186).
+ * intervalo do marcador). Os verticais saem sem texto de tela (#13186), com uma
+ * exceção (#13333, decisão do editor no briefing 261117b): a fala que cita a
+ * tela ("o endereço está aqui na tela") leva o box também no vertical, abaixo
+ * da legenda (`falaCitaTela`, `telaBoxLayout` com `topY`).
  *
- * O box fica no terço da direita, centrado na altura: o rosto do editor no
- * horizontal fica no centro do quadro (`faceX` ~0,5 a 60/85%).
+ * No horizontal o box fica no terço da direita, centrado na altura: o rosto
+ * do editor fica no centro do quadro (`faceX` ~0,5 a 60/85%). No vertical, ele
+ * vai centrado na largura, logo abaixo da legenda (o caso da 261117, feito à
+ * mão no guia).
  *
  * Puro: monta SVG, nome de arquivo, faixa do xmeml e argumentos do ffmpeg da
  * prévia. Quem rasteriza (sharp) e grava é o `build` de `video-montagem.ts`.
@@ -37,6 +41,37 @@ export const TELA_BOX = {
   backgroundOpacity: 0.75,
   teal: "#00A0A0",
 } as const;
+
+/**
+ * O box no vertical (#13333), em px de um quadro de 1080 de largura: a mesma
+ * cara do horizontal (Georgia, fundo a 75%, fio teal), com a letra no tamanho
+ * da legenda e a largura de quase todo o quadro.
+ */
+export const TELA_BOX_VERTICAL = {
+  refWidth: 1080,
+  fontPx: 46,
+  padX: 36,
+  padY: 26,
+  barPx: 8,
+  /** Largura máxima do box (fração do quadro). */
+  maxWidthFrac: 0.84,
+  /** Espaço entre o fim da legenda e o topo do box. */
+  gapPx: 28,
+  /** Margem mínima do box até a base do quadro. */
+  marginBottom: 80,
+} as const;
+
+/**
+ * Fala que cita a tela (#13333): "aqui na tela", "está na tela", "nesta tela".
+ * Só essas levam o box no vertical; o resto do texto de tela segue só no
+ * horizontal (#13186). "Telas" (plural) e "tela" sem preposição ("a tela do
+ * celular") não contam: a fala precisa apontar para o que está escrito no vídeo.
+ */
+export const CITA_TELA_RE = /\b(?:na|nessa|nesta)\s+tela\b/iu;
+
+export function falaCitaTela(texto: string): boolean {
+  return CITA_TELA_RE.test(texto);
+}
 
 const escapeXml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
@@ -75,28 +110,50 @@ function wrapLines(lines: Array<{ text: string; head: boolean }>, fontPx: number
   return out;
 }
 
-/** Geometria do box num quadro `width`x`height`. Linha mais larga que o box quebra nas palavras (#13204). */
-export function telaBoxLayout(tela: string, width: number, height: number) {
-  const k = width / TELA_BOX.refWidth;
-  const fontPx = TELA_BOX.fontPx * k;
+/** Onde o box vai no quadro vertical (#13333): `topY` = fim da legenda (px), o box começa logo abaixo. */
+export interface TelaBoxPlacement {
+  topY?: number;
+}
+
+/**
+ * Geometria do box num quadro `width`x`height`. Linha mais larga que o box
+ * quebra nas palavras (#13204). Quadro vertical (#13333): centrado na largura,
+ * logo abaixo de `placement.topY` (o fim da legenda); sem `topY`, a 2/3 da
+ * altura. O box nunca passa da base do quadro (sobe o que for preciso).
+ */
+export function telaBoxLayout(tela: string, width: number, height: number, placement: TelaBoxPlacement = {}) {
+  const vertical = height > width;
+  const d = vertical
+    ? { ref: TELA_BOX_VERTICAL.refWidth, fontPx: TELA_BOX_VERTICAL.fontPx, padX: TELA_BOX_VERTICAL.padX, padY: TELA_BOX_VERTICAL.padY, barPx: TELA_BOX_VERTICAL.barPx, maxWidthFrac: TELA_BOX_VERTICAL.maxWidthFrac }
+    : { ref: TELA_BOX.refWidth, fontPx: TELA_BOX.fontPx, padX: TELA_BOX.padX, padY: TELA_BOX.padY, barPx: TELA_BOX.barPx, maxWidthFrac: TELA_BOX.maxWidthFrac };
+  const k = width / d.ref;
+  const fontPx = d.fontPx * k;
   const lineH = fontPx * TELA_BOX.lineHeightEm;
-  const maxW = width * TELA_BOX.maxWidthFrac;
-  const chrome = 2 * TELA_BOX.padX * k + TELA_BOX.barPx * k;
+  const maxW = width * d.maxWidthFrac;
+  const chrome = 2 * d.padX * k + d.barPx * k;
   const lines = wrapLines(telaLines(tela), fontPx, maxW - chrome);
   const textW = Math.max(...lines.map((l) => telaLineWidth(l, fontPx)), fontPx * 6);
   const w = Math.min(maxW, textW + chrome);
-  const h = lines.length * lineH + 2 * TELA_BOX.padY * k;
-  const x = width - TELA_BOX.marginRight * k - w;
-  const y = (height - h) / 2;
-  return { lines, fontPx, lineH, box: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }, k };
+  const h = lines.length * lineH + 2 * d.padY * k;
+  let x: number;
+  let y: number;
+  if (vertical) {
+    x = (width - w) / 2;
+    const want = placement.topY !== undefined ? placement.topY + TELA_BOX_VERTICAL.gapPx * k : (height * 2) / 3;
+    y = Math.max(0, Math.min(want, height - TELA_BOX_VERTICAL.marginBottom * k - h));
+  } else {
+    x = width - TELA_BOX.marginRight * k - w;
+    y = (height - h) / 2;
+  }
+  return { lines, fontPx, lineH, box: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }, k, padX: d.padX, padY: d.padY, barPx: d.barPx };
 }
 
 /** SVG do box de tela, transparente fora dele. */
-export function telaBoxSvg(tela: string, width: number, height: number): string {
-  const { lines, fontPx, lineH, box, k } = telaBoxLayout(tela, width, height);
-  const bar = Math.round(TELA_BOX.barPx * k);
-  const tx = box.x + bar + Math.round(TELA_BOX.padX * k);
-  const first = box.y + Math.round(TELA_BOX.padY * k) + fontPx * 0.95;
+export function telaBoxSvg(tela: string, width: number, height: number, placement: TelaBoxPlacement = {}): string {
+  const { lines, fontPx, lineH, box, k, padX, padY, barPx } = telaBoxLayout(tela, width, height, placement);
+  const bar = Math.round(barPx * k);
+  const tx = box.x + bar + Math.round(padX * k);
+  const first = box.y + Math.round(padY * k) + fontPx * 0.95;
   const texts = lines
     .map((l, i) => `<text x="${tx}" y="${Math.round(first + i * lineH)}"${l.head ? ' font-weight="700"' : ""}>${escapeXml(l.text)}</text>`)
     .join("\n  ");
@@ -113,8 +170,8 @@ export function telaBoxSvg(tela: string, width: number, height: number): string 
  * (`telaBox`, de `readRoteiroTelas`), não o do marcador do XML, que já vem sem
  * ele (#13180) e faria o título sair com peso normal. Sem `telaBox`, o `tela`.
  */
-export function telaBoxSvgForMarker(m: { tela: string; telaBox?: string }, width: number, height: number): string {
-  return telaBoxSvg(m.telaBox ?? m.tela, width, height);
+export function telaBoxSvgForMarker(m: { tela: string; telaBox?: string }, width: number, height: number, placement: TelaBoxPlacement = {}): string {
+  return telaBoxSvg(m.telaBox ?? m.tela, width, height, placement);
 }
 
 /** Nome do PNG na pasta da edição: id da fala + hash do conteúdo (um XML antigo segue achando o dele). */

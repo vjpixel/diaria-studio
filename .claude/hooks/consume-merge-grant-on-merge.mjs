@@ -123,6 +123,7 @@ import {
   d1ClaimOnce,
   d1HookFailureNotice,
   d1LocksClientForHook,
+  d1ReadMergeGrant,
   mergeGrantConsumedD1Name,
 } from "./lib/d1-locks.mjs";
 import { execFileSync } from "node:child_process";
@@ -604,6 +605,36 @@ export async function markConsumedGrantsInD1(repoRoot, sessionId, grants, env = 
   }
 }
 
+/**
+ * #13242: concessão viva para `sessionId` que só o D1 conhece (o `grant-merge`
+ * da coordenadora de outra máquina gravou lá e o arquivo dela ainda não
+ * sincronizou). Consumir só FECHA janela, então aqui não se exige que a
+ * concedente esteja na varredura (o guard exige, antes do merge): basta a
+ * linha válida (`d1ReadMergeGrant`), dentro do TTL, sem consumo no registro da
+ * beneficiária. `null` = nenhuma, ou o D1 não respondeu (rastro no run-log).
+ * `env`/`fetchFn` são seams de teste.
+ */
+export async function findLiveMergeGrantInD1ForHook(repoRoot, sessionId, repo, now = Date.now(), env = process.env, fetchFn = undefined) {
+  const d1 = d1LocksClientForHook(repoRoot, env, fetchFn);
+  if (!d1.client) return null;
+  const r = await d1ReadMergeGrant(d1.client, sessionId, repo);
+  if (!r.ok) {
+    appendHookRunLog(repoRoot, "consume-merge-grant", r.permanent ? "error" : "warn", "d1_grant_read_failed", {
+      error: r.error,
+      permanent: r.permanent,
+    });
+    return null;
+  }
+  const grant = r.value;
+  if (!grant) return null;
+  if (ledgerConsumedAt(readMergeGrantConsumptions(repoRoot), grant)) return null;
+  const grantedMs = Date.parse(grant.grantedAt);
+  if (!Number.isFinite(grantedMs)) return null;
+  const ageMs = now - grantedMs;
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > MERGE_GRANT_TTL_MS) return null;
+  return grant;
+}
+
 /** Espelho de `machineTag()` de session-registry.ts / block-gh-pr-merge-subagent.mjs. */
 export function machineTag() {
   try {
@@ -736,11 +767,18 @@ if (
       // O repo vai explícito pra consulta do estado sempre que foi
       // DETERMINADO (inclusive o diaria-studio via -R de um cwd de outro repo);
       // indeterminado/ilegível/fora da allowlist segue com `{owner}/{repo}` do cwd.
+      // #13242: sem concessão em arquivo, a do D1 (concedente de outra máquina).
+      const d1Grant = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, resolution.pr ?? undefined, targetRepo)
+        ? null
+        : await findLiveMergeGrantInD1ForHook(repoRoot, sessionId, targetRepo);
+      const d1GrantCovers = (pr) =>
+        d1Grant !== null && (d1Grant.pr === undefined || pr === undefined || d1Grant.pr === pr) ? d1Grant : null;
       const decision = decideConsumeAfterBash(command, {
         repo: stateQueryRepo(resolution),
         // Mesmo nº de PR que o guard usou pra aceitar a concessão (#10681).
         targetPr: resolution.pr ?? undefined,
-        findLiveGrant: (pr) => findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr, targetRepo)?.grant ?? null,
+        findLiveGrant: (pr) =>
+          findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr, targetRepo)?.grant ?? d1GrantCovers(pr),
         log: (level, message, details) => appendHookRunLog(repoRoot, "consume-merge-grant", level, message, details),
       });
       if (!decision.consume) return;
@@ -754,6 +792,13 @@ if (
         repo: targetRepo,
         onConsumed: (g) => consumedGrants.push(g),
       });
+      // #13242: a concessão só do D1 não tem arquivo a carimbar — o consumo é
+      // o registro da beneficiária + a marca de uso único no D1.
+      const d1Covered = d1GrantCovers(targetPr);
+      if (consumedGrants.length === 0 && d1Covered !== null) {
+        recordMergeGrantConsumption(repoRoot, d1Covered, new Date().toISOString());
+        consumedGrants.push(d1Covered);
+      }
       await markConsumedGrantsInD1(repoRoot, sessionId, consumedGrants);
       // Nunca emitir saída — PostToolUse aqui é side-effect puro, nunca decisão.
     } catch {

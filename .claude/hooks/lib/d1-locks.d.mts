@@ -41,3 +41,24 @@ export function d1ClaimOnce(
   holder: string,
   ttlMs: number,
 ): Promise<HookD1Result<"claimed" | "already">>;
+
+// #13242: concessão de merge no D1.
+export const READ_META_SQL: string;
+export interface HookD1MergeGrant {
+  grantedTo: string;
+  grantedBy: string;
+  grantedAt: string;
+  pr?: number;
+  repo?: string;
+}
+export function mergeGrantD1Name(grantedTo: string, repo?: string): string;
+export function grantFromD1Row(
+  row: { holder?: unknown; meta?: unknown } | null | undefined,
+  sessionId: string,
+  repo?: string,
+): HookD1MergeGrant | null;
+export function d1ReadMergeGrant(
+  client: HookD1Client,
+  sessionId: string,
+  repo?: string,
+): Promise<HookD1Result<HookD1MergeGrant | null>>;

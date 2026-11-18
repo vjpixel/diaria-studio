@@ -21,6 +21,12 @@ const clip = (block: PlannedClip["block"], seqStart: number, len: number, frameI
 });
 const CLIPS = [clip("titulo", 0, 105, 30), clip("comentario", 105, 300, 300)];
 const PLANS = [{ spec: SPEC_H, clips: CLIPS, durationFrames: 405 }, { spec: SPEC_V, clips: CLIPS, durationFrames: 405 }] as SequencePlan[];
+/**
+ * #13414: a vertical sem eyeFraction passou a ancorar pela boca (o Center
+ * vertical muda). Com os olhos a 40% fixados na sequência, o XML do PNG é o
+ * mesmo byte a byte de antes do #12104: o que este teste guarda.
+ */
+const PLANS_OLHOS = [PLANS[0], { ...PLANS[1], spec: { ...SPEC_V, eyeFraction: 0.4 } }] as SequencePlan[];
 const TITLE = "Golpe da selfie: criminosos usam IA para copiar seu rosto";
 const PNG = "G:/x/261104/261104_titulo_vertical.png";
 /** sha256 (16 hex) do XML deste caso, gerado com o código anterior ao #12104. */
@@ -43,7 +49,7 @@ describe("#12104 --title-mode text removido", () => {
   });
 
   it("o padrão PNG sai como antes: nenhum gerador, Color, Crop ou Text no XML", () => {
-    const xml = buildXmeml(PLANS, SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: screenTitleXmlFor(TITLE, PNG) });
+    const xml = buildXmeml(PLANS_OLHOS, SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: screenTitleXmlFor(TITLE, PNG) });
     assert.doesNotMatch(xml, /generatoritem|titulo-fundo|<effectid>(?:Color|crop|Text)<\/effectid>/);
     assert.match(xml, /<clipitem id="titulo-2"><name>titulo-tela<\/name>/);
     // Fixado com o código anterior ao #12104 (mesmo SOURCE/PLANS/título): o XML do PNG não mudou nem um byte.
@@ -53,8 +59,10 @@ describe("#12104 --title-mode text removido", () => {
 
   it("a versão do XML (_V{n}) do PNG e do off não muda com a remoção", () => {
     const base = { speechDetect: true, audioRefine: true, audioGain: true } as const;
-    assert.equal(xmlVersionHashOf("abc", PLANS[1], { ...base, titleMode: "png", screenTitle: screenTitleXmlFor(TITLE, PNG) }), "9003f1038c4e45cb");
-    assert.equal(xmlVersionHashOf("abc", PLANS[1], { ...base, titleMode: "off" }), "0dc82e2b85ed995b");
+    // #13414: refixados com a âncora da boca no hash da vertical (era 9003f1038c4e45cb / 0dc82e2b85ed995b): o Center
+    // mudou sem o plano mudar, e o build abre um _V{n} novo em vez de regravar o XML já importado.
+    assert.equal(xmlVersionHashOf("abc", PLANS[1], { ...base, titleMode: "png", screenTitle: screenTitleXmlFor(TITLE, PNG) }), "4d902e8a08543390");
+    assert.equal(xmlVersionHashOf("abc", PLANS[1], { ...base, titleMode: "off" }), "aafb95944c80868d");
   });
 
   it("as constantes só do gerador saíram do estilo e do layout", () => {
