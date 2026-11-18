@@ -1103,7 +1103,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "Itens do menu global (#8497) que saem do host atual pra outro host do projeto — " +
       "Especiais/Livros/Cursos/É IA? a partir do apex, e (quando um host IRMÃO consome " +
-      "`renderSiteNav`/`renderSiteFooterLinks` com `apexBase`) Edições/Apoiar/CTA Assinar " +
+      "`renderSiteNav`/`renderSiteFooterLinks` com `apexBase`) Edições/Vídeos/Apoiar/CTA Assinar " +
       "de volta pro apex. Sem UTM aqui, navegação interna entraria como tráfego direto.",
     status: "ativo",
   },
