@@ -178,7 +178,7 @@ describe("#13234: render da faixa com o DeepFilterNet (deps injetadas)", () => {
       assert.ok(r);
       assert.equal(r.engine, "deepfilternet");
       assert.equal(r.filter, deepFilterDescriptor("0.5.6", 18));
-      assert.equal(basename(r.path), `261116_audio_tratado-${cleanAudioKey(deepFilterDescriptor("0.5.6", 18))}.wav`);
+      assert.equal(basename(r.path), `261116_audio_tratado-${cleanAudioKey(deepFilterDescriptor("0.5.6", 18), 5)}.wav`);
       assert.ok(df[0].includes("--compensate-delay") && df[0].includes("18"));
       assert.equal(existsSync(join(d.stateDir, "deepfilter-tmp")), false, "temporário limpo");
       assert.equal(renderCleanAudio(input(d, 18), deps)?.reused, true);

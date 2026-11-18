@@ -350,6 +350,10 @@ import {
   trechoClipFrames,
   trechoInseridoLine,
   trechoRipple,
+  trechoExportSpans,
+  wordsSemTrechos,
+  intervalsSemTrechos,
+  planTimeToExport,
   trechosInseridosSection,
   unrippleXmlClips,
   type TrechoInseridoClip,
@@ -653,7 +657,8 @@ export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
 import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
-import { PROXY, proxyOutputArgs, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
+import { falasSemTomada, falasSemTomadaAviso, readRoteiroFalasLista, videosForaDoBruto, videosForaDoBrutoAviso } from "./lib/diaria/video-roteiro-cobertura.ts";
+import { PROXY, cropOnProxy, proxyOutputArgs, proxySize, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
   deepFilterArgs,
   deepFilterBin,
@@ -1165,10 +1170,15 @@ export async function loadVinhetaSfxForLocalRoot(
  * Chave curta da faixa tratada (#12102): hash dos args do ffmpeg (filtro +
  * formato de saída, sem os caminhos). Vai no nome do arquivo: mudar o
  * tratamento grava um WAV novo em vez de sobrescrever o que um projeto do
- * Premiere aberto pode estar usando.
+ * Premiere aberto pode estar usando. Desde o #13544 o tamanho do áudio de
+ * entrada (`srcBytes`) também entra: na 261118 o 2º bruto juntado regravou a
+ * faixa com o MESMO nome (992 s para 1186 s), e no Mac a cópia offline velha,
+ * mais curta que o in/out dos clipes novos, fez o Premiere não importar nada.
+ * Entrada de outro tamanho = WAV novo; o que um XML anterior aponta fica.
  */
-export function cleanAudioKey(filter: string): string {
-  return createHash("sha256").update(JSON.stringify(audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter }))).digest("hex").slice(0, 8);
+export function cleanAudioKey(filter: string, srcBytes?: number): string {
+  const args = audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter });
+  return createHash("sha256").update(JSON.stringify(srcBytes === undefined ? args : { args, srcBytes })).digest("hex").slice(0, 8);
 }
 
 /** Nome da faixa de áudio tratada na pasta da edição (#12102). */
@@ -1237,17 +1247,20 @@ export function renderCleanAudio(
       warn(`DeepFilterNet (${bin}) não encontrado: a faixa tratada sai no ffmpeg (afftdn + agate); instalar: docs/setup.md, seção "Vídeo: montagem" (#13234)`);
     }
   }
-  const key = cleanAudioKey(filter);
-  const out = join(input.outDir, cleanAudioFileName(input.edition, key));
-  const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition, key);
-  const metaPath = join(input.stateDir, "audio-tratado.meta.json");
-  let id: { src: string; size: number; mtimeMs: number; out: string; args: string[] } | null = null;
+  let st: { size: number; mtimeMs: number } | null = null;
   try {
-    const st = statSync(input.src);
-    id = { src: input.src, size: st.size, mtimeMs: Math.round(st.mtimeMs), out: basename(out), args: audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter }) };
+    st = statSync(input.src);
   } catch (e) {
     debug(`faixa tratada: bruto sem stat (${(e as Error).message}); o render abaixo decide`);
   }
+  // #13544: o tamanho da entrada no nome (2º bruto juntado = faixa nova, nunca a velha regravada).
+  const key = cleanAudioKey(filter, st?.size);
+  const out = join(input.outDir, cleanAudioFileName(input.edition, key));
+  const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition, key);
+  const metaPath = join(input.stateDir, "audio-tratado.meta.json");
+  const id: { src: string; size: number; mtimeMs: number; out: string; args: string[] } | null = st
+    ? { src: input.src, size: st.size, mtimeMs: Math.round(st.mtimeMs), out: basename(out), args: audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter }) }
+    : null;
   if (id && existsSync(out) && existsSync(metaPath)) {
     try {
       if (JSON.stringify(JSON.parse(readFileSync(metaPath, "utf8"))) === JSON.stringify(id)) {
@@ -2487,11 +2500,13 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (redo || !existsSync(audio) || !existsSync(loudPath)) {
     console.error("[video-montagem] extraindo o áudio (16 kHz mono) e medindo o loudness do bruto…");
     let stderr = "";
-    const baseArgs = [
-      "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
-      "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
-      "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
-    ];
+    const extractInput = multiAudio ? multiAudio.path : source.path;
+    // #13508: a banda alta de 48 kHz (#11940) sai na MESMA leitura do bruto; a meta só é gravada
+    // depois que a leitura deu certo (antes dela, a meta velha sai: banda alta sem meta é refeita).
+    const highWav = join(ctx.workDir, HIGH_BAND.file);
+    const highMeta = join(ctx.workDir, HIGH_BAND.meta);
+    rmSync(highMeta, { force: true });
+    const baseArgs = transcribeExtractArgs({ input: extractInput, audio, highBand: highWav });
     // #13508: o proxy 1440p na mesma leitura (bruto de um arquivo de vídeo, GPU + NVENC); só na 1ª leitura.
     let proxyPlan = multiAudio || source.audioOnly ? null : transcribeProxyPlan(ctx, source);
     const extract = () => {
@@ -2524,6 +2539,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
       }
     }
     writeJson(loudPath, parseLoudnormJson(stderr));
+    if (existsSync(highWav)) writeFileAtomic(highMeta, highBandKey(extractInput, statSync(extractInput)) + "\n");
     redo = true;
   }
   const loud = readJson<ReturnType<typeof parseLoudnormJson>>(loudPath, "loudness.json");
@@ -2661,6 +2677,8 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   // Tomada colapsada (#11754): avisar antes de decidir, com a janela do retranscribe.
   const silPath = f(ctx, "silences.json");
   for (const line of collapsedSegmentWarnings(ctx.edition, segments, existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : [], tr.duration)) console.error(`[aviso] ${line}`);
+  // #13544: outro vídeo solto na pasta além do bruto (o CTA gravado à parte, na 261118): avisar nas duas passadas.
+  warnLooseVideos(ctx, measuredSource(ctx));
   const plan = loadDecupagemPlan(ctx, segments);
   if (!plan) {
     // 1ª passada: a listagem numerada e o molde do plano, para a skill classificar (#11361).
@@ -3141,6 +3159,52 @@ function finishProxy(ctx: Pick<Ctx, "workDir">, source: SourceInfo, part: string
   writeJson(join(ctx.workDir, PROXY.meta), meta);
 }
 
+/**
+ * #13544: os vídeos soltos na pasta da edição fora do bruto do `source.json`,
+ * com `[aviso]` e o comando do transcribe com todos. Pasta ausente ou ilegível
+ * (modo API, outra máquina) = nada a dizer.
+ */
+function warnLooseVideos(ctx: Pick<Ctx, "driveDir" | "edition">, source: SourceInfo): string[] {
+  if (source.audioOnly || !existsSync(ctx.driveDir)) return [];
+  let files: Array<{ name: string; size: number }>;
+  try {
+    files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+  } catch (e) {
+    console.error(`[debug] ${ctx.driveDir} não listada (${(e as Error).message}): vídeos fora do bruto não conferidos (#13544)`);
+    return [];
+  }
+  const raw = pickRawSource(files);
+  if (!raw || raw.audioOnly) return [];
+  const extras = videosForaDoBruto(raw.candidates, source);
+  const msg = videosForaDoBrutoAviso(ctx.edition, extras, source);
+  if (msg) console.error(`[aviso] ${msg}`);
+  return extras;
+}
+
+/** #13544: no `build`, as falas do roteiro sem item resolvido no blocks.json, por id. */
+function warnFalasSemTomada(ctx: Pick<Ctx, "driveDir" | "edition">, source: SourceInfo, resolved: Partial<Record<BlockKey, ResolvedItem[]>>): void {
+  const extras = warnLooseVideos(ctx, source);
+  const falas = readRoteiroFalasLista(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
+  if (!falas.length) return;
+  const items = Object.values(resolved).flatMap((xs) => xs ?? []);
+  const msg = falasSemTomadaAviso(falasSemTomada(falas, items), extras);
+  if (msg) console.error(`[aviso] ${msg}`);
+}
+
+/**
+ * #13508: o proxy da prévia, com o tamanho dele, ou `null` (prévia do 4K, como
+ * antes): bruto em vários arquivos, só áudio, sem proxy válido, ou
+ * `DIARIA_VIDEO_PROXY=0`.
+ */
+function previewProxy(ctx: Pick<Ctx, "workDir">, source: SourceInfo): { path: string; size: { width: number; height: number } } | null {
+  if ((process.env.DIARIA_VIDEO_PROXY ?? "").trim() === "0" || isMultiSource(source) || source.audioOnly) return null;
+  const path = proxyFor(ctx, source);
+  const size = path ? proxySize(source.width, source.height) : null;
+  if (!path || !size) return null;
+  console.error(`[video-montagem] prévia lida do proxy ${PROXY.shortSide}p (${path}); o XML segue no bruto (#13508)`);
+  return { path, size };
+}
+
 /** `proxyFor` com a linha do relato dizendo de onde os frames saem (#13508). */
 function proxyNotice(ctx: Pick<Ctx, "workDir">, source: SourceInfo): string | null {
   const p = proxyFor(ctx, source);
@@ -3536,19 +3600,50 @@ function speechDetection(ctx: Ctx, source: SourceInfo, opts: SpeechDetectOptions
 }
 
 /** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
+/**
+ * A leitura do `transcribe` (#13508): UM ffmpeg sobre o áudio do bruto grava o
+ * WAV de 16 kHz (Whisper), a banda alta de 48 kHz (#11940, antes uma 2ª leitura
+ * do bruto inteiro no `highBandEnvelope`) e mede o loudness (resumo no stderr).
+ * O proxy 1440p, quando há, é pendurado depois (`runExtractWithProxy`).
+ */
+export function transcribeExtractArgs(input: { input: string; audio: string; highBand: string }): string[] {
+  return [
+    "-hide_banner", "-nostats", "-y", "-i", input.input,
+    "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", input.audio,
+    ...highBandOutputArgs(input.highBand),
+    "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
+  ];
+}
+
+/** O WAV da banda alta (48 kHz, #11940) e a meta que diz de qual entrada ele saiu. */
+export const HIGH_BAND = { file: "audio-high-48k.wav", meta: "audio-high-48k.meta.json" } as const;
+
+/**
+ * A chave da banda alta (#11940): a entrada (caminho, tamanho, mtime) e os
+ * parâmetros que mudam o WAV. Só os campos do #11940 (na mesma ordem): os do
+ * limiar relativo (#11968) não mudam o WAV, e entrar na chave obrigaria a
+ * reextrair do bruto à toa.
+ */
+export function highBandKey(input: string, st: { size: number; mtimeMs: number }): string {
+  const S = SIBILANTS;
+  return JSON.stringify({ path: input, size: st.size, mtimeMs: st.mtimeMs, sampleRate: S.sampleRate, highpassHz: S.highpassHz, thresholdDb: S.thresholdDb, quietS: S.quietS, airS: S.airS, windowS: S.windowS });
+}
+
+/** A saída da banda alta para um ffmpeg cuja entrada 0 é o áudio do bruto (#11940; na leitura do `transcribe` desde o #13508). */
+export function highBandOutputArgs(out: string): string[] {
+  return ["-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(SIBILANTS.sampleRate), "-af", `highpass=f=${SIBILANTS.highpassHz}`, "-c:a", "pcm_s16le", out];
+}
+
 function highBandEnvelope(ctx: Ctx, source: SourceInfo) {
   const input = audioInputOf(ctx, source);
-  const audio = join(ctx.workDir, "audio-high-48k.wav");
-  const meta = join(ctx.workDir, "audio-high-48k.meta.json");
-  const st = statSync(input);
-  // Só os campos do #11940 (na mesma ordem): os do limiar relativo (#11968) não
-  // mudam o WAV, e entrar na chave obrigaria a reextrair do bruto à toa.
-  const S = SIBILANTS;
-  const key = JSON.stringify({ path: input, size: st.size, mtimeMs: st.mtimeMs, sampleRate: S.sampleRate, highpassHz: S.highpassHz, thresholdDb: S.thresholdDb, quietS: S.quietS, airS: S.airS, windowS: S.windowS });
+  const audio = join(ctx.workDir, HIGH_BAND.file);
+  const meta = join(ctx.workDir, HIGH_BAND.meta);
+  const key = highBandKey(input, statSync(input));
+  // #13508: o `transcribe` já grava a banda alta na mesma leitura do bruto; aqui só quando falta ou mudou.
   if (ctx.force || !existsSync(audio) || !existsSync(meta) || readFileSync(meta, "utf8").trim() !== key) {
     mkdirSync(ctx.workDir, { recursive: true });
     rmSync(meta, { force: true });
-    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", input, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(SIBILANTS.sampleRate), "-af", `highpass=f=${SIBILANTS.highpassHz}`, "-c:a", "pcm_s16le", audio]);
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", input, ...highBandOutputArgs(audio)]);
     writeFileAtomic(meta, key + "\n");
   }
   const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
@@ -4752,6 +4847,24 @@ export function cutTrechoInserido(
 }
 
 /**
+ * #13536: o ganho do Audio Levels do clipe de um trecho inserido, pelo loudness
+ * medido nele (`audioGainFor`: -14 LUFS, teto de true peak), como o bruto
+ * recebe o dele. Falha na medida = sem ganho, com o motivo.
+ */
+export function measureTrechoGain(path: string, measure: (p: string) => string = (p) => run("ffmpeg", ["-hide_banner", "-nostats", "-i", p, "-vn", "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"]).stderr): { gain: AudioGain | null; detail: string } {
+  let m: ReturnType<typeof parseLoudnormJson>;
+  try {
+    m = parseLoudnormJson(measure(path));
+  } catch (e) {
+    return { gain: null, detail: `loudness do clipe não medido: ${(e as Error).message.split(/\r?\n/)[0]}` };
+  }
+  if (!m) return { gain: null, detail: "loudness do clipe ilegível (sem áudio, ou só silêncio)" };
+  const g = audioGainFor(m);
+  if (!g) return { gain: null, detail: `clipe a ${m.inputI.toFixed(1)} LUFS sem true peak medido: ganho positivo não aplicado` };
+  return { gain: g, detail: `clipe a ${m.inputI.toFixed(1)} LUFS, alvo -14` };
+}
+
+/**
  * #13219: o XML leve do build, ou `null` para o XML do bruto (`--xml-bruto`,
  * modo API, ou ffmpeg que falhou), sempre dito no relato.
  */
@@ -5132,6 +5245,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
   // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180),
   // exceto a fala que cita a tela (#13333): ali o box vai abaixo da legenda.
+  // #13544: fala do roteiro sem tomada (gravada noutro arquivo, ou cortada) e vídeo solto fora do bruto: aviso, nunca para o build.
+  warnFalasSemTomada(ctx, source, resolved);
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
   const telaOverlays: Record<string, TelaOverlay[]> = {};
@@ -5199,6 +5314,12 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       const m: TrechoInseridoMarker = { id: t.id, trecho: t.trecho, at };
       ms.push(m);
       const clip = cutTrechoInserido(ctx, t, m.at, p.spec, source.fps, mediaPath);
+      // #13536: o ganho do trecho, medido no clipe cortado (o do bruto não vale para outro vídeo).
+      if (clip && audioGain) {
+        const g = measureTrechoGain(clip.path);
+        if (g.gain) clip.gain = g.gain;
+        console.error(g.gain ? `[premissa] ${p.spec.name}: trecho ${t.id} com ${g.gain.db > 0 ? "+" : ""}${g.gain.db.toFixed(2)} dB (Audio Levels, ${g.detail}) (#13536)` : `[aviso] ${p.spec.name}: trecho ${t.id} sem ganho no XML (${g.detail}): conferir o nível no Premiere (#13536)`);
+      }
       if (clip) clips.push(clip);
       const line = trechoInseridoLine(m, source.fps, clip);
       console.error(`[${line.level}] ${p.spec.name}: ${line.text}`);
@@ -6133,6 +6254,9 @@ async function cmdPreview(
   const size = previewSize(plan.spec);
   // #12101/#12102: o que o XML DESTA sequência levou (gravado no build dela), não o que o config diz agora.
   const assets = pf.xmlAssets?.[sequenceKey(plan.spec)] ?? {};
+  // #13536: a prévia segue o plano, sem os trechos inseridos do XML (formato react): dito aqui, nunca em silêncio.
+  const semTrechos = previewTrechosAviso(assets.trechosInseridos ?? [], fps);
+  if (semTrechos) console.error(`[aviso] ${semTrechos}`);
   const treated = assets.treatedAudio;
   const audioSrc = treated && existsSync(treated.path) ? treated.path : undefined;
   if (treated && !audioSrc) console.error(`[aviso] faixa de áudio tratada ausente (${treated.path}): prévia com o áudio cru do bruto; rode build nesta máquina (#12102)`);
@@ -6145,6 +6269,8 @@ async function cmdPreview(
   const decodeClip = (args: string[], what: string): void => {
     clipJobs.push({ args, what, device: runDecode(args, what) });
   };
+  // #13508: o proxy 1440p do transcribe (bruto de um arquivo só; a meta confere caminho, tamanho e duração).
+  const proxy = previewProxy(ctx, pf.source);
   plan.clips.forEach((c, i) => {
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // #13303: o áudio exato do clipe (PCM, amostras por quadro), regravado sobre o concat no fim.
@@ -6165,11 +6291,13 @@ async function cmdPreview(
       return;
     }
     // #12096: o recorte do XML (framingFor com a escala e o eyeFraction da sequência).
-    const crop = previewCropFor(pf.source, plan.spec, clipFraming(pf.framing, c), c.scale);
+    const srcCrop = previewCropFor(pf.source, plan.spec, clipFraming(pf.framing, c), c.scale);
+    // #13508: com o proxy 1440p válido, a prévia lê dele (o mesmo recorte, em px do proxy); o XML segue no 4K.
+    const crop = proxy ? cropOnProxy(srcCrop, pf.source, proxy.size) : srcCrop;
     // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
     const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    decodeClip(previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
+    decodeClip(previewClipArgs({ src: proxy?.path ?? pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
@@ -6297,6 +6425,19 @@ async function cmdPreview(
   run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=${isVerticalSpec(plan.spec) ? 270 : 480}:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
   return 0;
+}
+
+/**
+ * #13536: o aviso da prévia de uma sequência com trecho inserido no XML: a
+ * prévia segue o plano (sem o trecho e sem o deslocamento dele), então cada
+ * tempo depois do ponto de inserção difere do export. `null` sem trecho.
+ */
+export function previewTrechosAviso(trechos: readonly Pick<TrechoInseridoClip, "id" | "at" | "frames">[], fps: number): string | null {
+  const ts = trechos.filter((t) => t.frames > 0);
+  if (!ts.length) return null;
+  const total = ts.reduce((k, t) => k + t.frames, 0) / fps;
+  const onde = ts.map((t) => `${t.id} em ${(t.at / fps).toFixed(1)} s (${(t.frames / fps).toFixed(1)} s)`).join(", ");
+  return `prévia SEM ${ts.length} trecho(s) inserido(s) que o XML tem (${onde}; ${total.toFixed(1)} s no total): depois de cada ponto, o tempo da prévia fica atrás do export; conferir o trecho no Premiere (#13536)`;
 }
 
 /**
@@ -6450,6 +6591,33 @@ export function reviewFinalSequence(file: string, seq: string | undefined, specs
   return { target: t, key: t };
 }
 
+/**
+ * #13536: o `checkText` do `review-final` num export com trecho inserido
+ * (formato react). A fala do vídeo citado não é do roteiro: as palavras dentro
+ * do trecho saem, e o resto volta ao tempo do plano (sem o deslocamento) antes
+ * de comparar; o tempo de cada achado volta ao do export. Sem trecho, o
+ * `checkText` de sempre.
+ */
+export function checkTextWithTrechos(input: Parameters<typeof checkText>[0], trechos: readonly TrechoInseridoClip[]): FinalReviewFinding[] {
+  const spans = trechoExportSpans(trechos, input.fps);
+  if (!spans.length) return checkText(input);
+  const total = spans.reduce((k, s) => k + (s.end - s.start), 0);
+  const words = wordsSemTrechos(input.words, spans).words;
+  const unripple = (t: number) => {
+    const inside = spans.find((s) => t >= s.start && t < s.end);
+    const at = inside ? inside.start : t;
+    return at - spans.reduce((k, s) => k + (s.end <= at ? s.end - s.start : 0), 0);
+  };
+  const found = checkText({
+    ...input,
+    words,
+    durationS: Math.max(0, input.durationS - total),
+    ...(input.audioEndS !== undefined ? { audioEndS: unripple(input.audioEndS) } : {}),
+    ...(input.silences ? { silences: intervalsSemTrechos(input.silences, spans) } : {}),
+  });
+  return found.map((f) => (f.at === null ? f : { ...f, at: planTimeToExport(f.at, trechos, input.fps) }));
+}
+
 function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefined, withText: boolean): number {
   if (!file) throw new Error("review-final exige --file PATH (o export do Premiere)");
   const path = resolve(file);
@@ -6475,12 +6643,15 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   // Plano da montagem, quando existe e está em dia: fps esperado, roteiro e tempo no bruto.
   let plan: SequencePlan | null = null;
   let planFps: number | null = null;
+  // #13536: os trechos inseridos que o XML desta sequência levou (o export os tem; o plano não).
+  let trechosXml: TrechoInseridoClip[] = [];
   try {
     const pf = loadPlan(ctx);
     // Pela identidade; sem ela, o único plano do destino (`--seq instagram` num blocks.json de 1 extra).
     const sameTarget = pf.plans.filter((p) => p.spec.target === target);
     plan = pf.plans.find((p) => sequenceKey(p.spec) === key) ?? (sameTarget.length === 1 ? sameTarget[0] : null);
     planFps = pf.source.audioOnly ? null : pf.source.fps;
+    if (plan) trechosXml = pf.xmlAssets?.[sequenceKey(plan.spec)]?.trechosInseridos ?? [];
     if (!plan) console.error(`[aviso] plan.json sem a sequência ${key}: texto não comparado com o roteiro`);
   } catch (e) {
     console.error(`[aviso] sem plan.json válido (${(e as Error).message}): texto não comparado, sem tempo no bruto`);
@@ -6522,7 +6693,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases, silences: sil }));
+    findings.push(...checkTextWithTrechos({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases, silences: sil }, trechosXml));
   }
 
   const table = finalReviewTable(findings);

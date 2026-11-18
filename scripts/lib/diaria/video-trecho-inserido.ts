@@ -152,6 +152,12 @@ export interface TrechoInseridoClip {
   fimS: number;
   /** O arquivo de origem de onde o clipe foi cortado (para o relato). */
   fonte: string;
+  /**
+   * #13536: o ganho do Audio Levels do clipe do trecho, medido no próprio
+   * clipe (loudness integrado a -14 LUFS, teto de true peak), como os clipes do
+   * bruto recebem o deles. Ausente = sem medida (o XML sai sem ganho no trecho).
+   */
+  gain?: { db: number; linear: number };
 }
 
 /** Quadros da sequência de um intervalo do vídeo de origem (o corte recodifica em CFR no fps da sequência). */
@@ -263,6 +269,8 @@ export function trechoInseridoTracksXml(input: {
   url: (p: string) => string;
   /** Índice (1-based) da faixa de áudio do trecho entre as faixas de áudio da sequência, para o `<link>`. */
   audioTrackIndex: number;
+  /** #13536: o filtro do Audio Levels (o mesmo dos clipes do bruto); ausente = sem ganho (`--no-audio-gain`). */
+  levels?: (linear: number) => string;
 }): { video: string; audio: string } {
   if (!input.placed.length) return { video: "", audio: "" };
   const v: string[] = [];
@@ -284,7 +292,8 @@ export function trechoInseridoTracksXml(input: {
       `<link><linkclipref>${aid}</linkclipref><mediatype>audio</mediatype><trackindex>${input.audioTrackIndex}</trackindex><clipindex>${n + 1}</clipindex></link>`;
     const label = "<labels><label2>Mango</label2></labels>";
     v.push(`<clipitem id="${vid}">${head}${file}\n${label}${links}</clipitem>`);
-    a.push(`<clipitem id="${aid}">${head}<file id="${fileId}"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${label}${links}</clipitem>`);
+    const gain = clip.gain && input.levels ? input.levels(clip.gain.linear) : "";
+    a.push(`<clipitem id="${aid}">${head}<file id="${fileId}"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${label}${links}</clipitem>`);
   });
   return { video: `\n<track>${v.join("\n")}</track>`, audio: `<track>${a.join("\n")}</track>` };
 }
@@ -317,6 +326,67 @@ export function unrippleXmlClips<C extends { start: number; end: number; in: num
     } else out.push(back);
   }
   return out;
+}
+
+/**
+ * #13536: os trechos inseridos no tempo do EXPORT (segundos): onde cada clipe
+ * do trecho fica no XML (`trechoRipple`). O `review-final` lê o export, que
+ * tem os trechos; o plano não os tem.
+ */
+export function trechoExportSpans(trechos: readonly TrechoInseridoClip[], fps: number): Array<{ id: string; start: number; end: number }> {
+  return trechoRipple(trechos).placed.map((p) => ({ id: p.clip.id, start: p.pos / fps, end: (p.pos + p.clip.frames) / fps }));
+}
+
+type Span = { start: number; end: number };
+
+/** Segundos de trecho antes de `t` (só os trechos que já terminaram). */
+const shiftBefore = (t: number, spans: readonly Span[]): number => spans.reduce((k, s) => k + (s.end <= t ? s.end - s.start : 0), 0);
+
+/**
+ * #13536: as palavras do export levadas ao tempo do PLANO: a palavra dentro de
+ * um trecho (a fala do vídeo citado, pelo meio dela) sai; as seguintes voltam a
+ * duração dos trechos anteriores. Sem trecho, as mesmas palavras.
+ */
+export function wordsSemTrechos<W extends { start: number; end: number }>(words: readonly W[], spans: readonly Span[]): { words: W[]; dropped: W[] } {
+  if (!spans.length) return { words: [...words], dropped: [] };
+  const kept: W[] = [];
+  const dropped: W[] = [];
+  for (const w of words) {
+    const mid = (w.start + w.end) / 2;
+    if (spans.some((s) => mid >= s.start && mid < s.end)) {
+      dropped.push(w);
+      continue;
+    }
+    const k = shiftBefore(mid, spans);
+    kept.push({ ...w, start: Math.max(0, w.start - k), end: Math.max(0, w.end - k) });
+  }
+  return { words: kept, dropped };
+}
+
+/** #13536: intervalos do export (silêncios) no tempo do plano: o pedaço dentro de um trecho sai, os vizinhos emendam. */
+export function intervalsSemTrechos(intervals: readonly Span[], spans: readonly Span[]): Span[] {
+  if (!spans.length) return intervals.map((x) => ({ ...x }));
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  const out: Span[] = [];
+  for (const iv of intervals) {
+    let pieces: Span[] = [{ start: iv.start, end: iv.end }];
+    for (const s of sorted) pieces = pieces.flatMap((p) => (p.end <= s.start || p.start >= s.end ? [p] : [...(p.start < s.start ? [{ start: p.start, end: s.start }] : []), ...(p.end > s.end ? [{ start: s.end, end: p.end }] : [])]));
+    for (const p of pieces) {
+      const k = shiftBefore(p.start + 1e-9, sorted);
+      const moved = { start: p.start - k, end: p.end - k };
+      const prev = out[out.length - 1];
+      if (prev && Math.abs(prev.end - moved.start) < 1e-6) prev.end = moved.end;
+      else out.push(moved);
+    }
+  }
+  return out;
+}
+
+/** #13536: um tempo do plano levado ao export (o que vem a partir do ponto de inserção anda o trecho). */
+export function planTimeToExport(t: number, trechos: readonly TrechoInseridoClip[], fps: number): number {
+  const r = trechoRipple(trechos);
+  if (!r.placed.length) return t;
+  return t + r.placed.reduce((k, p) => k + (p.clip.at / fps <= t ? p.clip.frames / fps : 0), 0);
 }
 
 /** Um trecho do roteiro com a fonte achada (ou os lugares onde ela foi procurada), para o `roteiro.md`. */

@@ -42,6 +42,39 @@ export function proxyScaleFilter(width: number, height: number): string | null {
 }
 
 /**
+ * O tamanho do proxy (#13508): lado menor em 1440 e o outro na proporção do
+ * bruto, par, como o `scale=-2` do ffmpeg (arredonda para o par mais perto).
+ * `null` = o bruto já cabe, sem proxy.
+ */
+export function proxySize(width: number, height: number): { width: number; height: number } | null {
+  if (!proxyScaleFilter(width, height)) return null;
+  const even = (x: number) => Math.max(2, Math.round(x / 2) * 2);
+  return width >= height
+    ? { width: even((width * PROXY.shortSide) / height), height: PROXY.shortSide }
+    : { width: PROXY.shortSide, height: even((height * PROXY.shortSide) / width) };
+}
+
+/**
+ * O recorte da prévia (#13508), em px do bruto, levado aos px do proxy: mesma
+ * fração do quadro, arredondada para dentro dele (largura e altura pares, como
+ * o `crop` do bruto). A prévia lê o proxy e o XML segue no bruto 4K.
+ */
+export function cropOnProxy(
+  crop: { x: number; y: number; w: number; h: number },
+  src: { width: number; height: number },
+  proxy: { width: number; height: number },
+): { x: number; y: number; w: number; h: number } {
+  const sx = proxy.width / src.width;
+  const sy = proxy.height / src.height;
+  const even = (v: number) => Math.max(2, Math.floor(v / 2) * 2);
+  const w = Math.min(even(crop.w * sx), proxy.width - (proxy.width % 2));
+  const h = Math.min(even(crop.h * sy), proxy.height - (proxy.height % 2));
+  const x = Math.min(Math.max(0, Math.round(crop.x * sx)), proxy.width - w);
+  const y = Math.min(Math.max(0, Math.round(crop.y * sy)), proxy.height - h);
+  return { x, y, w, h };
+}
+
+/**
  * A saída do proxy, para pendurar no ffmpeg que extrai o áudio (entrada 0 = o
  * bruto): só vídeo, NVENC, GOP curto (seek de frame barato), carimbos do bruto
  * preservados (o tempo do proxy é o tempo do bruto).
