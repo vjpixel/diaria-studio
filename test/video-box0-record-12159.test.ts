@@ -18,7 +18,9 @@ import { readVideoBox0Shown, videoBox0RecordPath, writeVideoBox0Record } from ".
 import { extractContent, resolveVideoBox0 } from "../scripts/lib/newsletter-parse.ts";
 
 const ID = "abcdefghijk";
-const EIA = "**É IA?**\n\nFoto teste. [Autor](https://example.com/a) / CC.\n\nResultado da última edição: 40% das pessoas acertaram.\n";
+/** #13555: o box saiu por padrão; estes testes travam a regra da cota com ele ligado. */
+const ON = { videoBox0Enabled: true };
+const EIA ="**É IA?**\n\nFoto teste. [Autor](https://example.com/a) / CC.\n\nResultado da última edição: 40% das pessoas acertaram.\n";
 const d = (n: number) => `**DESTAQUE ${n} | 💼 MERCADO**\n\n**[Título D${n}](https://example.com/d${n})**\n\nCorpo ${n}.\n\nPor que isso importa:\n\nWhy ${n}.\n`;
 const REVIEWED = `TÍTULO: Edição de teste\n\n---\n\nOlá! Eu sou o [Pixel](https://example.com/pixel). Hoje li 80 notícias.\n\n---\n\n${d(1)}\n\n---\n\n${d(2)}\n\n---\n\n${d(3)}\n\n---\n\n${EIA}\n`;
 
@@ -43,13 +45,13 @@ describe("#12159 cota do box do vídeo conta o que foi enviado", () => {
   it("terça saiu sem box e o vídeo chegou depois: a quarta leva o box", () => {
     withWeek(["261103", "261104"], (dirOf) => {
       // Stage 5 de terça: ainda sem vídeo, o render não leva box e o registro diz isso.
-      const tue = extractContent(dirOf("261103"));
+      const tue = extractContent(dirOf("261103"), undefined, ON);
       assert.equal(tue.videoBox0, false);
       writeVideoBox0Record(dirOf("261103"), Boolean(tue.videoBox0));
       // Depois do envio, o upload grava o link na pasta de terça.
       addVideo(dirOf("261103"));
       addVideo(dirOf("261104"));
-      assert.match(resolveVideoBox0(dirOf("261104"), false) ?? "", /video-box0-261104/, "quarta herda a vaga que a terça não usou");
+      assert.match(resolveVideoBox0(dirOf("261104"), false, true) ?? "", /video-box0-261104/, "quarta herda a vaga que a terça não usou");
     });
   });
 
@@ -57,7 +59,7 @@ describe("#12159 cota do box do vídeo conta o que foi enviado", () => {
     withWeek(["261103", "261104"], (dirOf) => {
       addVideo(dirOf("261103"));
       addVideo(dirOf("261104"));
-      assert.equal(resolveVideoBox0(dirOf("261104"), false), null);
+      assert.equal(resolveVideoBox0(dirOf("261104"), false, true), null);
     });
   });
 
@@ -65,14 +67,14 @@ describe("#12159 cota do box do vídeo conta o que foi enviado", () => {
     withWeek(["261103", "261104"], (dirOf) => {
       writeVideoBox0Record(dirOf("261103"), true);
       addVideo(dirOf("261104"));
-      assert.equal(resolveVideoBox0(dirOf("261104"), false), null);
+      assert.equal(resolveVideoBox0(dirOf("261104"), false, true), null);
     });
   });
 
   it("render com o box marca videoBox0; registro ilegível conta como ausente", () => {
     withWeek(["261103"], (dirOf) => {
       addVideo(dirOf("261103"));
-      assert.equal(extractContent(dirOf("261103")).videoBox0, true);
+      assert.equal(extractContent(dirOf("261103"), undefined, ON).videoBox0, true);
       assert.equal(readVideoBox0Shown(dirOf("261103")), undefined);
       writeFileSync(videoBox0RecordPath(dirOf("261103")), "{não é json");
       assert.equal(readVideoBox0Shown(dirOf("261103")), undefined);

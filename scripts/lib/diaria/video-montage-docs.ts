@@ -125,6 +125,13 @@ export interface DecupagemRow {
   reason?: string;
   /** Texto limpo da fala, quando o do Whisper não serve ("PNI" → "PIB"). Sem ele, o do transcript com o vocabulário. */
   text?: string;
+  /**
+   * Id da fala no `roteiro-falas.json` (`H6`), quando a edição tem roteiro de
+   * gravação (#13463): vai para o item do `blocks.template.json` e é o vínculo
+   * que o `blocks --from-plan` usa para pôr os `targets` da proposta. Fala
+   * improvisada fica sem id.
+   */
+  falaId?: string;
 }
 
 export interface DecupagemBlock {
@@ -209,6 +216,7 @@ export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: tr
         }
         if (r.reason !== undefined && typeof r.reason !== "string") errors.push(`${label}: reason precisa ser string`);
         if (r.text !== undefined && (typeof r.text !== "string" || !r.text.trim())) errors.push(`${label}: text, se presente, não pode ser vazio`);
+        if (r.falaId !== undefined && (typeof r.falaId !== "string" || !r.falaId.trim())) errors.push(`${label}: falaId, se presente, precisa ser o id da fala no roteiro (texto não vazio)`);
       });
     });
   }
@@ -219,19 +227,20 @@ export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: tr
 }
 
 /** Lista numerada dos segmentos (1-based), com a decisão por critério de cada tomada (#11364): o insumo da classificação. */
-export function segmentListing(segments: Segment[], voices?: Array<VoiceMark | null>): string {
-  return segmentLines(segments, voices).join("\n") + "\n";
+export function segmentListing(segments: Segment[], voices?: Array<VoiceMark | null>, notes?: ReadonlyArray<string | undefined>): string {
+  return segmentLines(segments, voices, notes).join("\n") + "\n";
 }
 
 /**
  * Uma linha por segmento: tempo, fala, a decisão da tomada (#11364) e, numa
  * gravação com duas vozes (#11507), a voz provável pela F0 ("voz: entrevistadora,
- * 214 Hz: cortar (fala da entrevistadora)", "voz: ouvir" na faixa ambígua).
+ * 214 Hz: cortar (fala da entrevistadora)", "voz: ouvir" na faixa ambígua) e,
+ * por fim, a nota da tomada colapsada (#13587: "retranscrito: parte 2 de 3…").
  */
-function segmentLines(segments: Segment[], voices?: Array<VoiceMark | null>): string[] {
+function segmentLines(segments: Segment[], voices?: Array<VoiceMark | null>, extra?: ReadonlyArray<string | undefined>): string[] {
   const hint = takeHints(segments);
   return segments.map((s, i) => {
-    const notes = [hint[i], voiceHint(voices?.[i] ?? null)].filter(Boolean);
+    const notes = [hint[i], voiceHint(voices?.[i] ?? null), extra?.[i]].filter(Boolean);
     return `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${notes.length ? `  (${notes.join("; ")})` : ""}`;
   });
 }
@@ -336,12 +345,12 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
 }
 
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
-export function decupagemPlanTemplate(edition: string, segments: Segment[], voices?: Array<VoiceMark | null>): Record<string, unknown> {
+export function decupagemPlanTemplate(edition: string, segments: Segment[], voices?: Array<VoiceMark | null>, notes?: ReadonlyArray<string | undefined>): Record<string, unknown> {
   return {
-    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs. A frase falada que abre o vídeo vai em gancho (abre as duas versões); titulo só quando o título é lido em voz alta (#12586).",
+    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs. A frase falada que abre o vídeo vai em gancho (abre as duas versões); titulo só quando o título é lido em voz alta (#12586). falaId = id da fala no roteiro-falas.json (H6) na linha 'usar', quando a edição tem roteiro: o blocks --from-plan monta o blocks.json por ele (#13463).",
     _criterio:
       "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
-    _segmentos: segmentLines(segments, voices),
+    _segmentos: segmentLines(segments, voices, notes),
     edition,
     blocks: BLOCK_KEYS.filter((key) => key !== "cta_ig" && key !== "cta_out").map((key) => ({ key, rows: [] })),
     vocabulary: [],
@@ -358,6 +367,8 @@ export interface DecupagemTableRow {
   /** A sugestão crua (bastidor = cortar). */
   suggestion: DecupagemSuggestion;
   segments: number[];
+  /** O `falaId` da linha do plano (#13463), levado ao molde do `blocks.json`. */
+  falaId?: string;
 }
 
 export interface DecupagemDoc {
@@ -395,6 +406,7 @@ export function buildDecupagemDoc(plan: DecupagemPlan, segments: Segment[], rule
         bastidor: false,
         suggestion: r.suggestion,
         segments: segs,
+        ...(r.falaId?.trim() ? { falaId: r.falaId.trim() } : {}),
       });
     }
   }
@@ -726,13 +738,13 @@ export function suggestedDurations(doc: DecupagemDoc, sequences: SequenceSpec[] 
  * INTERVALO explícito no bruto (os tempos dos segmentos da linha) com o texto
  * limpo. Frase solta não serviria: o `roteiro` casaria a ÚLTIMA tomada
  * completa, que pode ser justo a cortada ou a alternativa da mesma frase.
+ * O `falaId` da linha (#13463) vai junto, para o `blocks --from-plan`.
  */
-export function blocksFromDecupagem(doc: DecupagemDoc): Record<BlockKey, Array<{ start: number; end: number; text: string }>> {
-  const out = Object.fromEntries(BLOCK_KEYS.map((k) => [k, [] as Array<{ start: number; end: number; text: string }>])) as Record<
-    BlockKey,
-    Array<{ start: number; end: number; text: string }>
-  >;
-  for (const b of doc.blocks) for (const r of b.rows) if (!r.bastidor && r.suggestion === "usar") out[b.key].push({ start: r.start, end: r.end, text: r.fala });
+type TemplateItem = { start: number; end: number; text: string; falaId?: string };
+export function blocksFromDecupagem(doc: DecupagemDoc): Record<BlockKey, TemplateItem[]> {
+  const out = Object.fromEntries(BLOCK_KEYS.map((k) => [k, [] as TemplateItem[]])) as Record<BlockKey, TemplateItem[]>;
+  for (const b of doc.blocks)
+    for (const r of b.rows) if (!r.bastidor && r.suggestion === "usar") out[b.key].push({ start: r.start, end: r.end, text: r.fala, ...(r.falaId ? { falaId: r.falaId } : {}) });
   return out;
 }
 

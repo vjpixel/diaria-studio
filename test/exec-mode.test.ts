@@ -165,6 +165,18 @@ describe("commandExistsSync (#4811)", () => {
     assert.equal(warned, false);
   });
 
+  it("#13575: a sondagem passa windowsHide:true (roda dentro de processo destacado, sem console)", () => {
+    let seenOpts: unknown = null;
+    commandExistsSync(
+      "schtasks",
+      (_cmd, _args, opts) => {
+        seenOpts = opts;
+      },
+      () => {},
+    );
+    assert.deepEqual(seenOpts, { stdio: "ignore", windowsHide: true });
+  });
+
   it("ENOENT (comando ausente) → false, sem warning", () => {
     let warned = false;
     const execFn = () => {

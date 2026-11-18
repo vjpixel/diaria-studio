@@ -811,11 +811,12 @@ export function formatClariceRepliesReport(clariceReplies: ClariceNewsReply[]): 
     if (r.kind === "saida") {
       lines.push(
         `  ⚠️  PEDIDO DE SAÍDA da Clarice News: ${r.from} — ${subj(r)}` +
-          (r.data_deletion ? " (pede exclusão de DADOS, tratar à mão)" : ""),
+          (r.data_deletion ? " (pede exclusão de DADOS: o --apply da triagem a registra na lista de esquecimento, #13573)" : ""),
       );
     } else if (r.data_deletion) {
       lines.push(
-        `  ⚠️  PEDIDO DE EXCLUSÃO DE DADOS da Clarice News (classificado ${r.kind}: ${r.reason}): ${r.from} — ${subj(r)} — tratar à mão`,
+        `  ⚠️  PEDIDO DE EXCLUSÃO DE DADOS da Clarice News (classificado ${r.kind}: ${r.reason}): ${r.from} — ${subj(r)} — ` +
+          `confirmar e registrar com npx tsx scripts/clarice-forget.ts add --email ${r.from} (#13573)`,
       );
     }
   }
