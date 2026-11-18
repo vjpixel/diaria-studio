@@ -466,6 +466,7 @@ import {
   vinhetaSfxConfigCheck,
   vinhetaSfxConfigFrom,
   vinhetaSfxFrames,
+  vinhetaUsesMovAudio,
   parseVinhetaSfxProbe,
   VINHETA_DUCK_DB,
   titleBreathS,
@@ -4482,7 +4483,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     : null;
   if (vinheta) {
     console.error(
-      `[premissa] vinheta do logo ${vinheta.path} (${vinheta.durationS.toFixed(2)} s, ${vinheta.width}x${vinheta.height}${vinheta.fps ? `, ${vinheta.fps} fps` : ""}${vinheta.hasAudio ? ", com som numa faixa de áudio própria" : ", sem som"}) ` +
+      `[premissa] vinheta do logo ${vinheta.path} (${vinheta.durationS.toFixed(2)} s, ${vinheta.width}x${vinheta.height}${vinheta.fps ? `, ${vinheta.fps} fps` : ""}${vinhetaUsesMovAudio(vinheta) ? ", com som numa faixa de áudio própria" : vinheta.hasAudio ? ", com o som do MOV fora (o efeito de vinheta_som substitui, #13522)" : ", sem som"}) ` +
         `na faixa de vídeo do topo, ${VINHETA_AFTER_SPEECH_S} s depois da última palavra do título (sem título: aos 2 s), cabendo no quadro; conferir alpha e tamanho no 1º import (#12101)`,
     );
     if (vinheta.sfx) {
@@ -5825,7 +5826,7 @@ async function cmdPreview(
     const withVinheta = (withSfx: boolean) => [
       "-i", vinheta!.path,
       ...(withSfx ? ["-i", sfxLocalPath!] : []),
-      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio, subtitles, loudnorm: "anull", duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
+      "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta!, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta!.hasAudio && !withSfx, subtitles, loudnorm: "anull", duck, ...(withSfx ? { sfx: { atSeqS: sfxAtSeqS } } : {}) }),
       "-map", "[vout]", "-map", "[aout]",
     ];
     if (sfxAtSeqS.length) console.error(`[video-montagem] prévia com o som da vinheta em ${sfxAtSeqS.map((t) => `${t.toFixed(2)} s`).join(" e ")} (#13240)`);

@@ -28,6 +28,7 @@ import {
   vinhetaSfxFrames,
   vinhetaSfxLenFrames,
   vinhetaSpan,
+  vinhetaUsesMovAudio,
   type PlannedClip,
   type SequencePlan,
   type SequenceSpec,
@@ -139,14 +140,14 @@ describe("#13240: config do som da vinheta", () => {
 });
 
 describe("#13240: onde o efeito toca, em quadros", () => {
-  it("duração arredondada para cima: 0,182 s a 30 fps = 6 quadros (a cauda inteira); exato não sobe", () => {
-    assert.equal(vinhetaSfxLenFrames(0.182146, 30), 6);
+  it("#13522: duração arredondada para BAIXO: 0,182 s a 30 fps = 5 quadros (nunca mais mídia do que o arquivo tem); exato não desce", () => {
+    assert.equal(vinhetaSfxLenFrames(0.182146, 30), 5);
     assert.equal(vinhetaSfxLenFrames(0.2, 30), 6);
     assert.equal(vinhetaSfxLenFrames(0.001, 30), 1);
   });
 
-  it("vinheta no quadro 100: efeitos nos quadros 103 e 110 (0,100 e 0,333 s arredondados), 6 quadros cada", () => {
-    assert.deepEqual(vinhetaSfxFrames({ start: 100, end: 139 }, 30, SFX, 1000), [{ start: 103, end: 109 }, { start: 110, end: 116 }]);
+  it("vinheta no quadro 100: efeitos nos quadros 103 e 110 (0,100 e 0,333 s arredondados), 5 quadros cada", () => {
+    assert.deepEqual(vinhetaSfxFrames({ start: 100, end: 139 }, 30, SFX, 1000), [{ start: 103, end: 108 }, { start: 110, end: 115 }]);
   });
 
   it("vinheta cortada no fim da sequência: o instante depois do fim fica de fora, o efeito para no fim", () => {
@@ -159,7 +160,7 @@ describe("#13240: onde o efeito toca, em quadros", () => {
 
   it("2 instantes que arredondam para o mesmo quadro viram 1 clipitem (e o aviso conta 1 de 2)", () => {
     const at = vinhetaSfxFrames({ start: 0, end: 39 }, 30, { durationS: 0.182146, atS: [0.1, 0.11] }, 1000);
-    assert.deepEqual(at, [{ start: 3, end: 9 }]);
+    assert.deepEqual(at, [{ start: 3, end: 8 }]);
     assert.equal(vinhetaSfxPlacedAviso(at.length, 2), "[aviso] 1 de 2 instantes do som da vinheta fora da sequência ou no mesmo quadro (#13240)");
     assert.equal(vinhetaSfxPlacedAviso(2, 2), null);
   });
@@ -171,31 +172,50 @@ describe("#13240: o efeito no XML", () => {
   const V = plan(SPEC_V, [clip("titulo", 0, 60, 300), clip("abertura", 60, 300, 900)]);
   const MAC = "/Users/Shared/diaria-studio-video";
 
-  it("horizontal: faixa de áudio própria com 2 clipitems, na vinheta +3 e +10 quadros, 6 quadros cada", () => {
+  it("horizontal: faixa de áudio própria com 2 clipitems, na vinheta +3 e +10 quadros, 5 quadros cada", () => {
     const span = vinhetaSpan(H, 30, VIN)!;
     const xml = buildXmeml([H], SOURCE, FRAMING, { vinheta: { ...VIN, sfx: SFX } });
     const audio = audioTracks(xml);
     assert.equal(audio.length, 2, "A1 bruto, A2 som da vinheta (o MOV não tem som)");
     const items = [...audio[1].matchAll(/<clipitem id="(vinheta-som-1-\d)"><name>vinheta-som<\/name><enabled>TRUE<\/enabled><duration>(\d+)<\/duration>[\s\S]*?<start>(\d+)<\/start><end>(\d+)<\/end><in>0<\/in><out>(\d+)<\/out>/g)];
     assert.deepEqual(items.map((m) => [m[1], Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])]), [
-      ["vinheta-som-1-1", 6, span.start + 3, span.start + 9, 6],
-      ["vinheta-som-1-2", 6, span.start + 10, span.start + 16, 6],
+      ["vinheta-som-1-1", 5, span.start + 3, span.start + 8, 5],
+      ["vinheta-som-1-2", 5, span.start + 10, span.start + 15, 5],
     ]);
     assert.equal(xml.match(/<file id="file-vinheta-som"><name>/g)?.length, 1, "o <file> do efeito definido uma vez");
     assert.equal(xml.match(/<file id="file-vinheta-som"\/>/g)?.length, 1, "o 2º clipitem só referencia");
-    assert.match(xml, /<file id="file-vinheta-som"><name>[^<]*<\/name><pathurl>[^<]*<\/pathurl>\n<rate><timebase>30<\/timebase><ntsc>FALSE<\/ntsc><\/rate><duration>6<\/duration>/);
+    assert.match(xml, /<file id="file-vinheta-som"><name>[^<]*<\/name><pathurl>[^<]*<\/pathurl>\n<rate><timebase>30<\/timebase><ntsc>FALSE<\/ntsc><\/rate><duration>5<\/duration>/);
     assert.match(audio[1], /<channelcount>2<\/channelcount>/);
     assert.match(audio[1], /<sourcetrack><mediatype>audio<\/mediatype><trackindex>1<\/trackindex><\/sourcetrack>/);
     assert.doesNotMatch(audio[1], /<link>/, "o efeito não se liga a clipe nenhum");
   });
 
-  it("vertical e MOV com som: o efeito vem depois da faixa do som do MOV, que mantém o link na A2", () => {
+  it("#13522: MOV com som E efeito: o som do MOV (clique no quadro 0) fica fora; só os 2 cliques do efeito", () => {
     const xml = buildXmeml([V], SOURCE, FRAMING, { vinheta: { ...VIN, hasAudio: true, sfx: SFX } });
     const audio = audioTracks(xml);
-    assert.equal(audio.length, 3, "A1 bruto, A2 som do MOV, A3 efeito");
+    assert.equal(audio.length, 2, "A1 bruto, A2 efeito (sem a faixa do som do MOV)");
+    assert.doesNotMatch(xml, /<clipitem id="vinheta-a1">/);
+    assert.doesNotMatch(xml, /<linkclipref>vinheta-a1</);
+    assert.equal(audio[1].match(/<clipitem id="vinheta-som-1-\d">/g)?.length, 2, "um clique por \".\" do logo");
+    assert.equal(vinhetaUsesMovAudio({ hasAudio: true, sfx: SFX }), false);
+  });
+
+  it("#13522: MOV com som SEM efeito: o som do MOV segue na A2 com o link, como antes", () => {
+    const xml = buildXmeml([V], SOURCE, FRAMING, { vinheta: { ...VIN, hasAudio: true } });
+    const audio = audioTracks(xml);
+    assert.equal(audio.length, 2, "A1 bruto, A2 som do MOV");
     assert.match(audio[1], /<clipitem id="vinheta-a1">/);
-    assert.match(audio[2], /<clipitem id="vinheta-som-1-1">/);
     assert.match(xml, /<linkclipref>vinheta-a1<\/linkclipref><mediatype>audio<\/mediatype><trackindex>2<\/trackindex>/);
+    assert.equal(vinhetaUsesMovAudio({ hasAudio: true }), true);
+  });
+
+  it("#13522: nenhum clipitem do efeito pede mais quadros do que o arquivo tem (o Premiere não importava nada)", () => {
+    const xml = buildXmeml([H, V], SOURCE, FRAMING, { vinheta: { ...VIN, sfx: SFX } });
+    const fileLen = Number(xml.match(/<file id="file-vinheta-som"><name>[\s\S]*?<duration>(\d+)<\/duration>/)![1]);
+    assert.ok(fileLen <= SFX.durationS * 30, `<file> declara ${fileLen} quadros, o arquivo tem ${SFX.durationS * 30}`);
+    for (const m of xml.matchAll(/<clipitem id="vinheta-som-[^"]+">[\s\S]*?<in>(\d+)<\/in><out>(\d+)<\/out>/g)) {
+      assert.ok(Number(m[2]) <= fileLen, `out ${m[2]} > ${fileLen}`);
+    }
   });
 
   it("pathurl traduzido para o premiere_root, com o nome do arquivo codificado (#12707)", () => {

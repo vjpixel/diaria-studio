@@ -3752,15 +3752,31 @@ export function parseVinhetaSfxProbe(json: string, path: string, atS: number[]):
   };
 }
 
-/** Duração do efeito em quadros (#13240): para cima, no mínimo 1 (0,182 s a 30 fps = 6 quadros, a cauda inteira). */
+/**
+ * Duração do efeito em quadros (#13240): PARA BAIXO, no mínimo 1. #13522: para
+ * cima (0,182 s a 30 fps = 6 quadros) o clipitem pedia mais mídia do que o
+ * arquivo tem, e o Premiere do Mac não importava NADA do XML, sem erro
+ * (261118). Perder até 1 quadro da cauda do efeito é inaudível.
+ */
 export function vinhetaSfxLenFrames(durationS: number, fps: number): number {
-  return Math.max(1, Math.ceil(durationS * fps - 1e-9));
+  return Math.max(1, Math.floor(durationS * fps + 1e-9));
+}
+
+/**
+ * #13522: o som do MOV da vinheta só entra quando não há o efeito de
+ * `vinheta_som`. O `vinheta-logo-diaria.mov` traz um clique embutido no quadro
+ * 0, fora dos "." do logo; com o efeito, ele virava um 3º clique no lugar
+ * errado (o editor quer exatamente um por "."). Sem o efeito, o MOV segue
+ * como antes.
+ */
+export function vinhetaUsesMovAudio(vin: Pick<VinhetaAsset, "hasAudio" | "sfx">): boolean {
+  return vin.hasAudio && !vin.sfx;
 }
 
 /**
  * Onde o efeito toca na sequência, em quadros (#13240): `span.start` + cada
  * instante arredondado ao quadro, com a duração do efeito arredondada PARA
- * CIMA (no mínimo 1 quadro), para não cortar a cauda. Instante que cai depois
+ * CIMA (no mínimo 1 quadro); desde o #13522, para BAIXO. Instante que cai depois
  * do fim da vinheta (cortada no fim da sequência) fica de fora, e 2 instantes
  * no mesmo quadro viram 1; cada clipitem para no começo do seguinte, para a
  * faixa nunca ter clipes sobrepostos.
@@ -4433,13 +4449,14 @@ export function buildXmeml(
     const head =
       `<name>vinheta-logo</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
       `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${span.end - span.start}</out>\n`;
-    const links = vin.hasAudio
+    const movAudio = vinhetaUsesMovAudio(vin);
+    const links = movAudio
       ? `<link><linkclipref>${vid}</linkclipref><mediatype>video</mediatype></link><link><linkclipref>${aid}</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex></link>`
       : "";
     const scale = vinhetaScalePct(vin, plan.spec);
     return {
       video: `\n<track><clipitem id="${vid}">${head}${fileRef}${motionFilter(scale, { horiz: 0, vert: 0 })}\n${links}</clipitem></track>`,
-      audio: (vin.hasAudio
+      audio: (movAudio
         ? `<track><clipitem id="${aid}">${head}<file id="file-vinheta"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem></track>`
         : "") + sfxTrack,
     };
