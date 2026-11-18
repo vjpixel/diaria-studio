@@ -175,6 +175,11 @@ const TARGET_EFFECTIVE_MODEL_PROBE = "effective-model-probe.ts";
 // identifica o detentor pelo `session_id` (um fork de sessão ganha id novo).
 // Incondicional: acquire/release exigem a flag; `status` a ignora.
 const TARGET_EDITION_LOCK = "edition-lock.ts";
+// #13444: `session-close-check.ts` é o 8º alvo — o `/diaria-encerra` roda o
+// script pra saber se a sessão pode encerrar, e ele aborta sem `--session-id`
+// (fora do elo Codex, que usa `DIARIA_INJECTED_SESSION_ID`). Incondicional:
+// o script não tem subcomando.
+const TARGET_SESSION_CLOSE_CHECK = "session-close-check.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -258,6 +263,10 @@ const SESSION_ID_TARGETS = [
   },
   {
     match: TARGET_EDITION_LOCK,
+    needsSessionId: () => true,
+  },
+  {
+    match: TARGET_SESSION_CLOSE_CHECK,
     needsSessionId: () => true,
   },
 ];
