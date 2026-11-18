@@ -93,7 +93,10 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S] [--trecho-fonte "CHAVE=caminho;…"]
  *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
  *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
- *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir),
+ *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir,
+ *       reaproveitado no rebuild só com os quadros do intervalo conferidos no ffprobe; o truncado
+ *       é cortado de novo; corte numa pasta temporária fora do Drive, copiado e conferido de novo;
+ *       o verify-xml confere o clipe contra a mídia real, #13500),
  *       numa faixa própria do XML (clipitems trecho-{seq}-v{n}/trecho-{seq}-a{n}, nome "trecho
  *       {fala}", label Mango, marcador cobrindo o clipe), logo depois da fala; o que vem depois
  *       anda a duração do trecho (só no XML: plan.json e prévia seguem sem ele; o verify-xml
@@ -2920,7 +2923,9 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   let softTotal = 0;
   // #13488: os trechos do XML leve contra a mídia real (o resto confere contra a <duration> do <file>, a do nome).
   const xmlTexts = chosen.map((p) => join(ctx.outDir, xmlFileName(p.spec.name))).filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
-  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName));
+  // #13500: e os trechos inseridos de cada sequência escolhida, contra o arquivo no out dir.
+  const inseridosXml = chosen.flatMap((p) => pf.xmlAssets?.[sequenceKey(p.spec)]?.trechosInseridos ?? []);
+  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), probeTrechoFrames, { dir: ctx.outDir, clips: inseridosXml });
   for (const x of mediaIssues) console.log(`[erro] ${x}`);
   bad += mediaIssues.length;
   const report: Record<string, unknown> = {};
@@ -4077,9 +4082,28 @@ export function probeTrechoFrames(path: string): number | null {
  * confere in/out contra a `<duration>` do `<file>`, que é a do nome, não a do
  * arquivo; sem isto, o trecho truncado da 261118 passava.
  */
-export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, probe: (path: string) => number | null = probeTrechoFrames): string[] {
+export function trechoMediaIssues(
+  xmlTexts: readonly string[],
+  dir: string,
+  probe: (path: string) => number | null = probeTrechoFrames,
+  /** #13500: os trechos inseridos (`xmlAssets[key].trechosInseridos`), conferidos pelo nome do `xmlPath` em `inseridos.dir` (o out dir). */
+  inseridos: { dir: string; clips: readonly Pick<TrechoInseridoClip, "id" | "xmlPath" | "frames">[] } | null = null,
+): string[] {
   const names = [...new Set(xmlTexts.flatMap((x) => trechoNamesInXml(x)))];
   const issues: string[] = [];
+  const seen = new Set<string>();
+  for (const c of inseridos?.clips ?? []) {
+    const name = c.xmlPath.split(/[\\/]/).pop() || c.xmlPath;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const path = join(inseridos!.dir, name);
+    if (!existsSync(path)) {
+      issues.push(`trecho inserido ${c.id} (${name}) ausente em ${inseridos!.dir}: o XML aponta um arquivo que não está no disco; rode build (#13500)`);
+      continue;
+    }
+    const got = probe(path);
+    if (!trechoFramesOk(c.frames, got)) issues.push(`trecho inserido ${c.id} (${name}) com ${fmtTrechoFrames(got)} no disco, o XML pede ${c.frames}: imagem preta ou congelada no Premiere; rode build (ele corta o trecho de novo, #13500)`);
+  }
   for (const name of names) {
     const want = parseTrechoName(name);
     if (!want) continue;
@@ -4093,6 +4117,53 @@ export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, prob
     if (!trechoFramesOk(expected, got)) issues.push(`trecho ${name} com ${got === null ? "quadros ilegíveis (ffprobe sem contagem)" : `${got} quadro(s)`} no disco, o XML pede ${expected}: imagem preta ou congelada no Premiere; rode build (ele refaz o trecho, #13488)`);
   }
   return issues;
+}
+
+/** #13488/#13500: quadros para o relato; null = ffprobe que não contou. */
+function fmtTrechoFrames(n: number | null): string {
+  return n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`;
+}
+
+/**
+ * #13488/#13500: o render de um arquivo cujo número de quadros é sabido
+ * (trecho do XML leve, trecho inserido). `render` grava num `.part` da pasta
+ * temporária `tmp` (FORA do out dir: o Drive for desktop subia o `.part` e não
+ * propagava o rename); os quadros são conferidos ali, o arquivo é copiado para
+ * `out` e conferido de novo na cópia. Divergência tenta mais uma vez e depois
+ * lança, sem deixar `out` com o arquivo curto. `render` que lança, lança.
+ */
+export function renderFramesConferidos(input: {
+  out: string;
+  expected: number;
+  tmp: string;
+  render: (part: string) => void;
+  probeFrames: (path: string) => number | null;
+  /** Começo das mensagens (`trecho X.mov`, `trecho inserido H5`). */
+  label: string;
+  /** O que promete os quadros (`o nome pede`, `o intervalo pede`). */
+  pede: string;
+  tag: string;
+  log: (line: string) => void;
+}): void {
+  const part = join(input.tmp, `${basename(input.out)}.part`);
+  for (let attempt = 1; ; attempt++) {
+    rmSync(part, { force: true });
+    input.render(part);
+    const gotPart = input.probeFrames(part);
+    let bad = trechoFramesOk(input.expected, gotPart) ? null : `o render saiu com ${fmtTrechoFrames(gotPart)}`;
+    if (!bad) {
+      copyFileSync(part, input.out);
+      const gotOut = input.probeFrames(input.out);
+      if (!trechoFramesOk(input.expected, gotOut)) {
+        rmSync(input.out, { force: true });
+        bad = `a cópia em ${input.out} ficou com ${fmtTrechoFrames(gotOut)}`;
+      }
+    }
+    rmSync(part, { force: true });
+    if (!bad) return;
+    if (attempt >= 2) throw new Error(`${input.label}: ${bad}, ${input.pede} ${input.expected} (2 tentativas, ${input.tag})`);
+    input.log(`[aviso] ${input.label}: ${bad}, ${input.pede} ${input.expected}; refazendo (${input.tag})`);
+  }
 }
 
 /**
@@ -4145,7 +4216,6 @@ export function renderTrechos(input: {
   let reused = 0;
   let redone = 0;
   let tmp: string | null = null;
-  const fmt = (n: number | null) => (n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`);
   try {
     const trechos = planned.map((t) => {
       const out = join(dir, t.name);
@@ -4157,40 +4227,34 @@ export function renderTrechos(input: {
           return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
         }
         // #13488: o nome promete os quadros, o arquivo no disco não os tem (encode interrompido, Drive que não gravou tudo).
-        log(`[aviso] trecho ${t.name} no disco com ${fmt(got)}, o nome pede ${expected}: apagado e refeito (#13488)`);
+        log(`[aviso] trecho ${t.name} no disco com ${fmtTrechoFrames(got)}, o nome pede ${expected}: apagado e refeito (#13488)`);
         rmSync(out, { force: true });
         redone++;
       }
       tmp ??= mkdtempSync(join(input.tmpRoot ?? tmpdir(), "diaria-trechos-"));
-      const part = join(tmp, `${t.name}.part`);
-      const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
-      for (let attempt = 1; ; attempt++) {
-        rmSync(part, { force: true });
-        try {
-          encode(args(encoder));
-        } catch (e) {
-          if (encoder !== "h264_nvenc") throw e;
-          // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
-          log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
-          encoder = "libx264";
-          encode(args(encoder));
-        }
-        // #13488: os quadros no render local e, depois da cópia, no nome final (a pasta do Drive).
-        const gotPart = probeFrames(part);
-        let bad = trechoFramesOk(expected, gotPart) ? null : `o render saiu com ${fmt(gotPart)}`;
-        if (!bad) {
-          copyFileSync(part, out);
-          const gotOut = probeFrames(out);
-          if (!trechoFramesOk(expected, gotOut)) {
-            rmSync(out, { force: true });
-            bad = `a cópia em ${out} ficou com ${fmt(gotOut)}`;
+      // #13488: os quadros no render local e, depois da cópia, no nome final (a pasta do Drive).
+      renderFramesConferidos({
+        out,
+        expected,
+        tmp,
+        probeFrames,
+        label: `trecho ${t.name}`,
+        pede: "o nome pede",
+        tag: "#13488",
+        log,
+        render: (part) => {
+          const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
+          try {
+            encode(args(encoder));
+          } catch (e) {
+            if (encoder !== "h264_nvenc") throw e;
+            // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
+            log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
+            encoder = "libx264";
+            encode(args(encoder));
           }
-        }
-        rmSync(part, { force: true });
-        if (!bad) break;
-        if (attempt >= 2) throw new Error(`trecho ${t.name}: ${bad}, o nome pede ${expected} (2 tentativas, #13488)`);
-        log(`[aviso] trecho ${t.name}: ${bad}, o nome pede ${expected}; refazendo (#13488)`);
-      }
+        },
+      });
       made++;
       return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
     });
@@ -4200,9 +4264,6 @@ export function renderTrechos(input: {
   }
 }
 
-/** #13437: folga mínima (s) para o clipe cortado sair mais curto que o intervalo (além de 5% dele) antes de ser recusado. */
-const TRECHO_CLIP_SHORT_TOL_S = 0.5;
-
 /** #13437 (PR 2): a fonte do trecho nesta máquina (ordem em `video-trecho-fonte.ts`). */
 export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">, t: Pick<TrechoInseridoRoteiro, "id" | "trecho">): FonteTrecho {
   return resolverFonteTrecho({ id: t.id, trecho: t.trecho, fontes: ctx.trechoFontes ?? {}, editionsRootDir: editionsRootDir(), driveRoot: ctx.trechoDriveRoot ?? null });
@@ -4211,11 +4272,18 @@ export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">
 /**
  * #13437 (PR 2): o clipe de um trecho inserido, cortado do export do vídeo de
  * origem no intervalo do roteiro, no tamanho e fps da sequência, no out dir
- * (`trechoInseridoFileName`, reaproveitado no rebuild: o hash muda com a fonte e
- * o intervalo). Sem fonte, intervalo de menos de 1 quadro ou além do fim do
- * vídeo, fonte ilegível, ffmpeg falho ou clipe cortado bem mais curto que o
- * intervalo: `null` com `[aviso]` (o trecho fica só no marcador), nunca para
- * o build. ffprobe que falha (na fonte ou no clipe) é `[aviso]`, sem recusar.
+ * (`trechoInseridoFileName`; o hash muda com a fonte e o intervalo). Arquivo já
+ * presente é reaproveitado só se tiver os quadros do intervalo; o que diverge é
+ * apagado e cortado de novo, com [aviso] (#13500, a mesma disciplina do
+ * `renderTrechos`, #13488: o hash não muda com um corte interrompido, e o
+ * truncado era reaproveitado em todo rebuild). O corte vai para uma pasta
+ * temporária FORA do out dir e é copiado (`renderFramesConferidos`), com os
+ * quadros conferidos no temporário e na cópia. Sem fonte, intervalo de menos de
+ * 1 quadro ou além do fim do vídeo, fonte ilegível, ffmpeg falho ou clipe com
+ * outro número de quadros (2 tentativas; inclui o ffprobe que não conta e a
+ * fonte que acaba antes do fim do trecho): `null` com `[aviso]` (o trecho fica
+ * só no marcador), nunca para o build. ffprobe que falha na duração da fonte é
+ * `[aviso]`, sem recusar. `probeFrames`/`tmpRoot` são injetáveis para o teste.
  */
 export function cutTrechoInserido(
   ctx: Ctx,
@@ -4224,7 +4292,15 @@ export function cutTrechoInserido(
   spec: Pick<SequenceSpec, "width" | "height" | "name">,
   fps: number,
   mediaPath: string,
-  deps: { encode?: (args: string[]) => void; probeDurationS?: (src: string) => number | null; listEncoders?: () => string } = {},
+  deps: {
+    encode?: (args: string[]) => void;
+    probeDurationS?: (src: string) => number | null;
+    listEncoders?: () => string;
+    /** #13500: os quadros de vídeo do arquivo (null = ilegível); padrão `probeTrechoFrames`. */
+    probeFrames?: (path: string) => number | null;
+    /** #13500: onde fica a pasta temporária do corte (padrão `os.tmpdir()`), fora do out dir sincronizado. */
+    tmpRoot?: string;
+  } = {},
 ): TrechoInseridoClip | null {
   const fonte = fonteDoTrecho(ctx, t);
   const where = `${spec.name}: trecho depois da fala ${t.id} (${rotuloTrecho(t.trecho)})`;
@@ -4279,35 +4355,52 @@ export function cutTrechoInserido(
     fimS: t.trecho.fimS,
     fonte: fonte.fonte,
   };
+  const probeFrames = deps.probeFrames ?? probeTrechoFrames;
   if (existsSync(out)) {
-    if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
-    return clip;
+    const got = probeFrames(out);
+    if (trechoFramesOk(frames, got)) {
+      if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
+      return clip;
+    }
+    // #13500: o hash promete o intervalo, o arquivo no disco não tem os quadros (corte interrompido, Drive que não gravou tudo).
+    console.error(`[aviso] ${where}: ${name} no disco com ${fmtTrechoFrames(got)}, o intervalo pede ${frames}: apagado e cortado de novo (#13500)`);
+    rmSync(out, { force: true });
   }
   const encode = deps.encode ?? ((args: string[]) => { run("ffmpeg", args); });
-  const part = `${out}.part`;
-  const args = (encoder: TrechoEncoder) => trechoInseridoEncodeArgs({ src: fonte.fonte!, out: part, inicioS: t.trecho.inicioS, frames, fps, width: spec.width, height: spec.height, encoder });
+  let tmp: string | null = null;
   try {
     let encoder: TrechoEncoder = "libx264";
     try {
       encoder = pickTrechoEncoder(deps.listEncoders ? deps.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
     } catch { /* sem a lista: libx264 */ }
-    try {
-      encode(args(encoder));
-    } catch (e) {
-      if (encoder !== "h264_nvenc") throw e;
-      console.error(`[aviso] h264_nvenc falhou no trecho ${t.id} (${(e as Error).message.split(/\r?\n/)[0]}): segue em libx264 (#13437)`);
-      encode(args("libx264"));
-    }
-    // O clipe cortado tem de ter a duração do intervalo: mais curto = a fonte acabou antes (o probe dela pode ter falhado).
-    const esperado = frames / fps;
-    const got = probe(part);
-    if (got === null) console.error(`[aviso] ${where}: a duração do clipe cortado não foi medida (ffprobe falhou); conferir no 1º import que ele tem ${esperado.toFixed(2)} s (#13437)`);
-    else if (got < esperado - Math.max(TRECHO_CLIP_SHORT_TOL_S, esperado * 0.05)) throw new Error(`o clipe saiu com ${got.toFixed(2)} s, e o intervalo pede ${esperado.toFixed(2)} s (a fonte acaba antes do fim do trecho?)`);
-    renameSync(part, out);
+    tmp = mkdtempSync(join(deps.tmpRoot ?? tmpdir(), "diaria-trecho-inserido-"));
+    // #13500: o clipe tem de ter os quadros do intervalo; menos = a fonte acabou antes, ou o arquivo ficou curto.
+    renderFramesConferidos({
+      out,
+      expected: frames,
+      tmp,
+      probeFrames,
+      label: `trecho inserido ${t.id}`,
+      pede: "o intervalo pede",
+      tag: "#13500",
+      log: (m) => console.error(m),
+      render: (part) => {
+        const args = (enc: TrechoEncoder) => trechoInseridoEncodeArgs({ src: fonte.fonte!, out: part, inicioS: t.trecho.inicioS, frames, fps, width: spec.width, height: spec.height, encoder: enc });
+        try {
+          encode(args(encoder));
+        } catch (e) {
+          if (encoder !== "h264_nvenc") throw e;
+          console.error(`[aviso] h264_nvenc falhou no trecho ${t.id} (${(e as Error).message.split(/\r?\n/)[0]}): segue em libx264 (#13437)`);
+          encoder = "libx264";
+          encode(args(encoder));
+        }
+      },
+    });
   } catch (e) {
-    rmSync(part, { force: true });
-    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}); fica só o marcador (#13437)`);
+    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}; a fonte acaba antes do fim do trecho?); fica só o marcador (#13437)`);
     return null;
+  } finally {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
   }
   return clip;
 }
