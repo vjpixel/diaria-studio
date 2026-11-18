@@ -87,7 +87,7 @@ Fontes:
    título é proibido; repetir a maior parte das palavras dele também.
 2. **Tamanho: 2 a 6 palavras, alvo 3 a 6.** Moeda + número contam como uma
    palavra ("R$ 1 milhão por dia" = 4). No horizontal, mais de 4 palavras vão em
-   2 linhas (`|`, até 4 por linha, #11740). No Short o teto é 5 (#12462). Até
+   2 linhas (`|`, até 4 por linha, #11740). No Short o teto é 7 (#12462; era 5 até 18/11/2026). Até
    ~34 caracteres, para ler no celular.
 3. **Variar a forma.** Pergunta curta e afirmação concreta são as duas formas
    válidas, e a lista proposta ao editor traz as duas. "IA {palavra}?" de duas
@@ -188,7 +188,7 @@ estruturada.
 `_internal/roteiro-falas.json`, e o `gen-youtube-thumb.ts` o usa sem `--hook`
 (com `[premissa]`). O `video-roteiro-blocos.ts` confere as capas com a regra do
 gerador e sai com **exit 4** quando alguma está fora dela (vertical fora de 2 a
-5 palavras; horizontal que não cabe em 2 linhas de até 4): a proposta de blocos
+7 palavras; horizontal que não cabe em 2 linhas de até 4): a proposta de blocos
 saiu inteira. No roteiro, corrigir a capa antes de gravar; na montagem, seguir
 e passar a capa por `--hook` na `/diaria-publica`.
 

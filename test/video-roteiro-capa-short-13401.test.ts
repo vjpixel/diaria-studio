@@ -14,8 +14,8 @@ import { errosCapaDoRoteiro, hookDaCapa, parseRoteiroCapaVideo, resolverHookDaCa
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/roteiro-video/roteiro-falas-261117.json", import.meta.url), "utf8"));
-/** A capa real do vertical 1 da 261117: 6 palavras, recusada pelo gerador na publicação. */
-const CAPA_REAL_261117 = "A voz do Drauzio é falsa";
+/** Capa do vertical 1 da 261117 esticada para 8 palavras (a real tinha 6, que o teto 7 de 18/11/2026 passou a aceitar). */
+const CAPA_REAL_261117 = "A voz do Drauzio no vídeo é falsa";
 const NOVE_PALAVRAS = "Seu pai pode cair nesse golpe com voz falsa";
 
 function roteiroCom(capas: Partial<Record<"horizontal" | "vertical1" | "vertical2", string>>) {
@@ -47,11 +47,11 @@ function logs() {
 }
 
 describe("capas do roteiro com a regra do gerador (#13401)", () => {
-  it("vertical: a capa real da 261117 (6 palavras) é erro, com a contagem do gerador", () => {
-    assert.throws(() => normalizeShortCoverHook(CAPA_REAL_261117), /6 palavra/);
+  it("vertical: a capa real da 261117 (8 palavras) é erro, com a contagem do gerador", () => {
+    assert.throws(() => normalizeShortCoverHook(CAPA_REAL_261117), /8 palavra/);
     const erros = errosCapaDoRoteiro(roteiroCom({ vertical1: CAPA_REAL_261117 }));
     assert.equal(erros.length, 1);
-    assert.match(erros[0], /^porVideo\.vertical1\.capa \(vertical 1\): .*6 palavra\(s\).*--short-cover recusa/);
+    assert.match(erros[0], /^porVideo\.vertical1\.capa \(vertical 1\): .*8 palavra\(s\).*--short-cover recusa/);
   });
 
   it("vertical: 5 palavras passam, moeda + número contam como 1, 1 palavra é erro", () => {
@@ -81,7 +81,7 @@ describe("video-roteiro-blocos: capa fora da regra é exit 4, nunca 2 (#13401)",
     return { code, err, out };
   };
 
-  it("contrato: JSON válido + capa de vertical de 6 palavras = exit 4 com a proposta impressa", () => {
+  it("contrato: JSON válido + capa de vertical de 8 palavras = exit 4 com a proposta impressa", () => {
     assert.equal(EXIT_CAPA_FORA_DA_REGRA, 4);
     comEdicao(roteiroCom({ vertical1: CAPA_REAL_261117 }), (dir) => {
       const r = rodar(dir);
@@ -175,7 +175,7 @@ describe("gen-youtube-thumb: gancho da capa vindo do roteiro (#13401)", () => {
 
   it("capa do roteiro que o gerador recusa falha já na resolução, nomeando o campo (Short e horizontal)", () => {
     comEdicao(roteiroCom({ vertical1: CAPA_REAL_261117, horizontal: NOVE_PALAVRAS }), (dir) => {
-      assert.throws(() => resolverHookDaCapa({ alvo: "short", editionDir: dir }, logs().log), /porVideo\.vertical1\.capa.*6 palavra.*passe --hook/);
+      assert.throws(() => resolverHookDaCapa({ alvo: "short", editionDir: dir }, logs().log), /porVideo\.vertical1\.capa.*8 palavra.*passe --hook/);
       assert.throws(() => resolverHookDaCapa({ alvo: "horizontal", editionDir: dir }, logs().log), /porVideo\.horizontal\.capa\).*passe --hook/);
     });
   });

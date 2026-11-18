@@ -1,6 +1,6 @@
 /**
  * #12462 itens 3 e 4 (decisão do editor de 08/11/2026): a capa vertical do
- * Short traz um gancho próprio de 2 a 5 palavras, como o horizontal, e não
+ * Short traz um gancho próprio de 2 a 7 palavras (2 a 5 até 18/11/2026), como o horizontal, e não
  * repete o título do D1. Vale para o corte avulso (`publish-shorts --corte`).
  */
 import { describe, it } from "node:test";
@@ -33,9 +33,14 @@ describe("normalizeShortCoverHook (#12462)", () => {
     assert.equal(normalizeShortCoverHook("Confiou no chatbot|e morreu"), "Confiou no chatbot|e morreu");
   });
 
-  it("fora de 2 a 5 palavras recusa", () => {
-    assert.throws(() => normalizeShortCoverHook("IA?"), /1 palavra\(s\); a regra é 2 a 5/);
-    assert.throws(() => normalizeShortCoverHook("um dois três quatro cinco seis"), /6 palavra\(s\); a regra é 2 a 5/);
+  it("6 e 7 palavras quebram em 2 linhas de até 4 (teto 7 desde 18/11/2026)", () => {
+    assert.equal(normalizeShortCoverHook("GPT-6.2 Sol faz slide no seu modelo"), "GPT-6.2 Sol faz slide|no seu modelo");
+    assert.equal(normalizeShortCoverHook("um dois três quatro cinco seis"), "um dois três|quatro cinco seis");
+  });
+
+  it("fora de 2 a 7 palavras recusa", () => {
+    assert.throws(() => normalizeShortCoverHook("IA?"), /1 palavra\(s\); a regra é 2 a 7/);
+    assert.throws(() => normalizeShortCoverHook("um dois três quatro cinco seis sete oito"), /8 palavra\(s\); a regra é 2 a 7/);
     assert.throws(() => normalizeShortCoverHook("   "), /gancho vazio/);
   });
 
@@ -91,6 +96,6 @@ describe("composeShortCover (#12462)", () => {
   });
 
   it("gancho inválido recusa antes de qualquer trabalho de imagem", async () => {
-    await assert.rejects(composeShortCover({ frame: Buffer.from("x"), hook: "IA?" }), /a regra é 2 a 5/);
+    await assert.rejects(composeShortCover({ frame: Buffer.from("x"), hook: "IA?" }), /a regra é 2 a 7/);
   });
 });

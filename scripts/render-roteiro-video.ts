@@ -35,7 +35,7 @@
  *   --stdout:        imprime a página em vez de gravar
  *
  * Exit: 0 = página gerada (o caminho no stdout); 3 = sem roteiro-falas.json; 2 = uso, JSON inválido ou seta no texto;
- *       4 = capa fora da regra do gerador (vertical fora de 2 a 5 palavras, horizontal fora de 2 linhas de até 4), nada gravado (#13569).
+ *       4 = capa fora da regra do gerador (vertical fora de 2 a 7 palavras, horizontal fora de 2 linhas de até 4), nada gravado (#13569).
  */
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";

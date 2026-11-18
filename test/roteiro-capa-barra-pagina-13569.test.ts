@@ -1,4 +1,4 @@
-// #13569: o roteiro da 261118 saiu com a capa do vertical 1 de 6 palavras
+// #13569: o roteiro da 261118 saiu com a capa do vertical 1 de 8 palavras
 // ("Eu previ o aperto dos EUA"); o render-roteiro-video só avisava com [erro]
 // e gravava a página, e a capa foi recusada só na publicação. Agora a capa fora
 // da regra do gerador barra a página (exit 4, nada gravado), inclusive na
@@ -12,8 +12,8 @@ import { main as renderMain } from "../scripts/render-roteiro-video.ts";
 import { EXIT_CAPA_FORA_DA_REGRA } from "../scripts/video-roteiro-blocos.ts";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/roteiro-video/roteiro-falas-261117.json", import.meta.url), "utf8"));
-/** A capa real do vertical 1 da 261118: 6 palavras, recusada só na publicação. */
-const CAPA_REAL_261118 = "Eu previ o aperto dos EUA";
+/** Capa do vertical 1 da 261118 esticada para 8 palavras (a real tinha 6, que o teto 7 de 18/11/2026 passou a aceitar). */
+const CAPA_REAL_261118 = "Eu previ o aperto dos EUA em 2026";
 
 function comEdicao(capaV1: string, fn: (dir: string, falas: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "capa-13569-"));
@@ -37,19 +37,19 @@ function render(dir: string, args: string[]) {
 }
 
 describe("render-roteiro-video barra capa fora da regra (#13569)", () => {
-  it("capa de vertical com 6 palavras: exit 4, [erro] com a contagem, página não gravada", () => {
+  it("capa de vertical com 8 palavras: exit 4, [erro] com a contagem, página não gravada", () => {
     comEdicao(CAPA_REAL_261118, (dir, falas) => {
       const pagina = join(dir, "pagina.html");
       const r = render(dir, ["--falas", falas, "--out", pagina, "--sem-topicos"]);
       assert.equal(r.code, EXIT_CAPA_FORA_DA_REGRA);
-      assert.ok(r.err.some((s) => /^\[erro\] porVideo\.vertical1\.capa .*6 palavra\(s\); a regra é 2 a 5/.test(s)), r.err.join("\n"));
+      assert.ok(r.err.some((s) => /^\[erro\] porVideo\.vertical1\.capa .*8 palavra\(s\); a regra é 2 a 7/.test(s)), r.err.join("\n"));
       assert.ok(r.err.some((s) => /página não gerada.*#13569/.test(s)));
       assert.equal(existsSync(pagina), false);
       assert.deepEqual(r.out, []);
     });
   });
 
-  it("na iteração (editor ajustou a capa para 6 palavras), a página publicada antes fica intacta", () => {
+  it("na iteração (editor ajustou a capa para 8 palavras), a página publicada antes fica intacta", () => {
     comEdicao(CAPA_REAL_261118, (dir, falas) => {
       const pagina = join(dir, "pagina.html");
       const anterior = "<!-- artifact: https://claude.ai/artifact/x -->\n<p>versão anterior</p>";

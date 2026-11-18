@@ -94,7 +94,7 @@ export interface CapaHookScore {
   /** `--hook` pronto para a capa horizontal, ou `null` (motivo em `horizontal_reason`). */
   horizontal_hook: string | null;
   horizontal_reason: string | null;
-  /** `--hook` pronto para a capa do Short (2 a 5 palavras, #12462), ou `null`. */
+  /** `--hook` pronto para a capa do Short (2 a 7 palavras, #12462), ou `null`. */
   short_hook: string | null;
   short_reason: string | null;
   /**
@@ -209,7 +209,7 @@ export function horizontalHookArg(hook: string): { hook: string | null; reason: 
   return { hook: null, reason: "não cabe nas regras da capa horizontal" };
 }
 
-/** `--hook` da capa do Short (2 a 5 palavras, #12462). */
+/** `--hook` da capa do Short (2 a 7 palavras, #12462). */
 export function shortHookArg(hook: string): { hook: string | null; reason: string | null } {
   try {
     return { hook: normalizeShortCoverHook(hook), reason: null };

@@ -38,7 +38,7 @@ export function parseRoteiroCapaVideo(v: string | undefined): VerticalRoteiro | 
 
 /**
  * O gancho pronto para o gerador a partir do texto da capa do roteiro, ou
- * lança com a mensagem do gerador. Vertical: `normalizeShortCoverHook` (2 a 5
+ * lança com a mensagem do gerador. Vertical: `normalizeShortCoverHook` (2 a 7
  * palavras, já com a quebra em 2 linhas). Horizontal: `hookHorizontalDoRoteiro`
  * (capa de 1 linha com mais de 4 palavras em 2 linhas) validado pelo
  * `splitHook` (até 4 por linha, 2 a 8 no total).

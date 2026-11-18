@@ -992,13 +992,13 @@ export function planShortCoverFrame(video: string, atSeconds: number, out: strin
 export const SHORT_COVER_W = 1080;
 export const SHORT_COVER_H = 1920;
 /**
- * Gancho da capa vertical: 2 a 5 palavras (decisão do editor de 08/11/2026,
- * #12462 item 3). Um a mais que o horizontal (2 a 4), porque a capa vertical
+ * Gancho da capa vertical: 2 a 7 palavras (2 a 5 na decisão do editor de 08/11/2026,
+ * #12462 item 3; teto 7 desde 18/11/2026). Mais que o horizontal (2 a 4), porque a capa vertical
  * quebra o gancho em 2 linhas. A palavra-chave fica no título (#12463/#12464);
  * a capa traz o gancho, nunca repete o título do D1.
  */
 export const SHORT_HOOK_MIN_WORDS = 2;
-export const SHORT_HOOK_MAX_WORDS = 5;
+export const SHORT_HOOK_MAX_WORDS = 7;
 /**
  * Onde começa o painel escuro do gancho, em fração da altura. Cobre a
  * legenda queimada do vertical (terço de baixo) e deixa o rosto no alto
@@ -1030,7 +1030,7 @@ function shortHookWords(line: string): string[] {
 }
 
 /**
- * Pure (#12462): valida o gancho da capa vertical (2 a 5 palavras no total) e
+ * Pure (#12462): valida o gancho da capa vertical (2 a 7 palavras no total) e
  * devolve no formato de linhas do `splitHook` (`"linha 1|linha 2"`). Gancho
  * em 1 linha com mais de 3 palavras quebra em 2 linhas equilibradas (a
  * primeira fica com a metade arredondada para cima); quebra explícita do
@@ -1038,7 +1038,7 @@ function shortHookWords(line: string): string[] {
  */
 export function normalizeShortCoverHook(hook: string): string {
   const lines = hook.split(HOOK_LINE_BREAK_RE).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
-  if (lines.length === 0) throw new Error('gancho vazio — passe --hook "IA ladra?" (2 a 5 palavras, #12462)');
+  if (lines.length === 0) throw new Error('gancho vazio — passe --hook "IA ladra?" (2 a 7 palavras, #12462)');
   const total = lines.reduce((acc, l) => acc + shortHookWords(l).length, 0);
   if (total < SHORT_HOOK_MIN_WORDS || total > SHORT_HOOK_MAX_WORDS) {
     throw new Error(
@@ -1090,7 +1090,7 @@ export function buildShortCoverPanelSvg(panelTopRatio = SHORT_COVER_PANEL_TOP_RA
  * mesmo desenho do `composeShortCover`, sem o frame por baixo, para a montagem
  * sobrepor nos primeiros quadros do vertical (o vídeo é o fundo). Desenhado em
  * 1080x1920 e redimensionado para `width`x`height` (vertical de outro
- * tamanho). Gancho fora de 2 a 5 palavras lança (`normalizeShortCoverHook`).
+ * tamanho). Gancho fora de 2 a 7 palavras lança (`normalizeShortCoverHook`).
  */
 export async function composeShortCoverOverlay(input: { hook: string; width?: number; height?: number; panelTopRatio?: number }): Promise<{ png: Buffer; warnings: string[] }> {
   const warnings: string[] = [];

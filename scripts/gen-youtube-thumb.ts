@@ -79,7 +79,7 @@
  * Short → `{edição}/04-youtube-short-capa.jpg`. Padrão desde 08/11/2026
  * (#12462): frame do vertical DEPOIS do lettering do título (> 3,5 s), com o
  * rosto no alto, painel escuro cobrindo a legenda queimada e um GANCHO
- * PRÓPRIO de 2 a 5 palavras em Georgia (a capa não repete o título do D1):
+ * PRÓPRIO de 2 a 7 palavras em Georgia (a capa não repete o título do D1):
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --short-cover --at 6.2 --hook "IA ladra?"
  *     [--panel-top 0.62]   (fração da altura onde começa o painel)
  *     [--srt "Diaria comentada_Vertical_V1 - legendas.srt"]   (#13256: a capa mostra a 1ª
@@ -97,7 +97,7 @@
  * (`porVideo.vertical1.capa` de `_internal/roteiro-falas.json`, #13401), já
  * quebrado em 2 linhas, com `[premissa]`; com `--video` explícito (qualquer
  * caminho), só com `--roteiro-capa vertical1|vertical2`. Capa do roteiro fora
- * de 2 a 5 palavras, roteiro ilegível ou inválido, ou roteiro sem a capa:
+ * de 2 a 7 palavras, roteiro ilegível ou inválido, ou roteiro sem a capa:
  * recusa antes do ffmpeg, pedindo `--hook`. Só sem roteiro (ou com `--video`
  * sem `--roteiro-capa`) e sem `--hook` sai a capa antiga: o frame cru, dentro
  * da janela do lettering do título (0–3,5 s).
@@ -185,7 +185,7 @@ const USAGE =
   "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-sheet [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-portrait N [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) [--plan PLAN_JSON_DA_MONTAGEM | --lettering-end SEGUNDOS] [--hook \"Gancho de 2 a 5 palavras?\" | --roteiro-capa vertical1|vertical2] [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
+  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) [--plan PLAN_JSON_DA_MONTAGEM | --lettering-end SEGUNDOS] [--hook \"Gancho de 2 a 7 palavras?\" | --roteiro-capa vertical1|vertical2] [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
 
 /**
  * #11228: extrai N frames do vídeo BRUTO direto da Drive API (sem baixar o
@@ -473,8 +473,8 @@ async function main(): Promise<number> {
   if (values["pick-portrait"] !== undefined || flags.has("pick-portrait")) return pickPortrait(dir, values["pick-portrait"]);
 
   if (flags.has("short-cover")) {
-    // #12462: gancho próprio na capa vertical (2 a 5 palavras), validado antes do ffmpeg.
-    if (flags.has("hook")) throw new Error('--hook exige o valor: o gancho de 2 a 5 palavras (ex.: --hook "IA ladra?")');
+    // #12462: gancho próprio na capa vertical (2 a 7 palavras), validado antes do ffmpeg.
+    if (flags.has("hook")) throw new Error('--hook exige o valor: o gancho de 2 a 7 palavras (ex.: --hook "IA ladra?")');
     if (flags.has("srt")) throw new Error("--srt exige o caminho do SRT do vertical (`Diaria comentada_Vertical_V1 - legendas.srt`, da montagem)");
     // #13401: sem --hook, o texto da capa do vertical no roteiro (`--hook` sobrepõe).
     if (flags.has("roteiro-capa")) throw new Error("--roteiro-capa exige o valor: vertical1 ou vertical2");
@@ -542,7 +542,7 @@ async function main(): Promise<number> {
     }
     const at = atValue;
     if (shortHook === undefined) {
-      console.error("[aviso] --short-cover sem --hook e sem capa do roteiro aplicada: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 5 palavras — passe --hook ou --roteiro-capa vertical1|vertical2");
+      console.error("[aviso] --short-cover sem --hook e sem capa do roteiro aplicada: capa antiga (frame com o lettering do título do D1). Desde #12462 a capa vertical traz um gancho próprio de 2 a 7 palavras — passe --hook ou --roteiro-capa vertical1|vertical2");
     }
     const video = resolve(values["video"] ?? join(dir, youtubeShortVideoFileName(aammdd)));
     if (!existsSync(video)) {

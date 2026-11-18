@@ -74,10 +74,10 @@ test("número do D1 ganha ponto; número que o D1 não traz vira alerta", () => 
   assert.ok(ok.score > inventado.score);
 });
 
-test("--hook pronto: horizontal quebra acima de 4 palavras, Short recusa 6", () => {
+test("--hook pronto: horizontal quebra acima de 4 palavras, Short recusa 8", () => {
   assert.deepEqual(horizontalHookArg("IA ladra?"), { hook: "IA ladra?", reason: null });
   assert.equal(horizontalHookArg("Ensinaram a IA e foram demitidos").hook, "Ensinaram a IA|e foram demitidos");
-  assert.equal(shortHookArg("Ensinaram a IA e foram demitidos").hook, null);
+  assert.equal(shortHookArg("Ensinaram a IA e foram demitidos ontem cedo").hook, null);
   assert.equal(shortHookArg("Treinou o próprio substituto?").hook, "Treinou o|próprio substituto?");
 });
 

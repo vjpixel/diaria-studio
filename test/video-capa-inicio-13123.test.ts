@@ -194,8 +194,8 @@ describe("prévia e PNG da capa (#13123)", () => {
     assert.ok(alphaAt(10, 940) > 200, "painel na base");
   });
 
-  it("gancho fora de 2 a 5 palavras é recusado (mesma regra da capa do Short)", async () => {
-    await assert.rejects(composeShortCoverOverlay({ hook: "Uma duas três quatro cinco seis sete" }), /palavra/);
+  it("gancho fora de 2 a 7 palavras é recusado (mesma regra da capa do Short)", async () => {
+    await assert.rejects(composeShortCoverOverlay({ hook: "Uma duas três quatro cinco seis sete oito" }), /palavra/);
   });
 
   it("renderCapaInicio grava o PNG no out dir com o hash no nome e devolve o asset do XML", async () => {
