@@ -14,7 +14,7 @@
  *   - `avisosReacaoPergunta`: a reação abre repetindo o trecho em forma de
  *     pergunta ("Perder o cargo?", v6 da 261118, cortado pelo editor na v7.1).
  *   - `avisosTrechoContraSrt`: o `texto` do trecho não bate com o SRT do vídeo
- *     citado, ou o início da `origem` come a primeira palavra (na 261118 o
+ *     citado, ou o `inicio` do trecho come a primeira palavra (na 261118 o
  *     trecho 3 começava em 3:54,88, e não em 3:55). Só quando o SRT existe.
  *   - `avisosFactCheckRoteiroDefasado` (#13434): o `02-reviewed.md` mudou
  *     depois do roteiro ou do fact-check do roteiro (na 261118 o D1 trocou
@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { VERTICAIS_ROTEIRO, VIDEO_LABEL, type FalaRoteiro, type RoteiroFalas } from "./roteiro-gravacao.ts";
 import { contentWords } from "./youtube-title-research.ts";
 import { parseSrtCues, type SrtCue } from "./short-cover-caption.ts";
+import { fmtTempoTrecho, lerTrechoInserido, type TrechoInseridoLido } from "./trecho-inserido-formato.ts";
 
 /** Saída do fact-check do roteiro antes da gravação (#13434), relativa à pasta da edição. */
 export const FACT_CHECK_ROTEIRO_FILE = "_internal/fact-check-roteiro.md";
@@ -107,27 +108,7 @@ export function avisosReacaoPergunta(roteiro: Pick<RoteiroFalas, "falas">): stri
   return avisos;
 }
 
-/** O id do vídeo do YouTube citado na `origem` ("youtu.be/ID", "youtube.com/watch?v=ID", "/shorts/ID"). */
-export function videoIdDaOrigem(origem: string): string | null {
-  return origem.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:[^\s)]*&)?v=|shorts\/))([\w-]{11})(?![\w-])/u)?.[1] ?? null;
-}
-
-/** Tempo `M:SS`, `H:MM:SS` ou com fração (`3:54,88`, `3:54.88`), em segundos. */
-function segundos(t: string): number | null {
-  const m = t.match(/^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?:[,.](\d{1,3}))?$/u);
-  if (!m) return null;
-  return Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) + (m[4] ? Number(m[4].padEnd(3, "0")) / 1000 : 0);
-}
-
-/** O intervalo da `origem` ("de 3:42 a 3:46", "3:42 a 4:00", "3:42-4:00"), em segundos. */
-export function intervaloDaOrigem(origem: string): { inicio: number; fim: number } | null {
-  const tempo = String.raw`\d{1,2}(?::\d{2}){1,2}(?:[,.]\d{1,3})?`;
-  const m = origem.match(new RegExp(`(${tempo})\\s*(?:a|até|-|–)\\s*(${tempo})`, "u"));
-  if (!m) return null;
-  const inicio = segundos(m[1]);
-  const fim = segundos(m[2]);
-  return inicio === null || fim === null || fim <= inicio ? null : { inicio, fim };
-}
+export { intervaloDaOrigem, videoIdDaOrigem } from "./trecho-inserido-formato.ts";
 
 /** Texto para comparar: minúsculas, sem acento, só letras e dígitos separados por espaço. */
 function normalizar(s: string): string {
@@ -139,53 +120,47 @@ function normalizar(s: string): string {
     .trim();
 }
 
-function fmtTempo(s: number): string {
-  const min = Math.floor(s / 60);
-  const seg = s - min * 60;
-  const inteiro = Math.floor(seg);
-  const frac = Math.round((seg - inteiro) * 100);
-  return `${min}:${String(inteiro).padStart(2, "0")}${frac ? `,${String(frac).padStart(2, "0")}` : ""}`;
-}
-
-/** Folga (s) do intervalo da origem ao escolher as legendas que ele cobre. */
+/** Folga (s) do intervalo do trecho ao escolher as legendas que ele cobre. */
 const FOLGA_INTERVALO_S = 1;
 
 /**
  * #13433, decisão 2: o `texto` do trecho é o do SRT do vídeo publicado, e o
- * início da `origem` não come a primeira palavra. `srtDoVideo(id)` devolve o
- * conteúdo do SRT do vídeo citado, ou `null` (sem SRT: nada a conferir).
+ * `inicio` não come a primeira palavra. `srtDoVideo(ref)` devolve o conteúdo
+ * do SRT do vídeo citado (pelo id do YouTube ou pela edição, #13437), ou
+ * `null` (sem SRT: nada a conferir). Trecho que não passa na leitura do
+ * formato fica para o validador, que já o recusa.
  */
-export function avisosTrechoContraSrt(roteiro: Pick<RoteiroFalas, "falas">, srtDoVideo: (videoId: string) => string | null): string[] {
+export function avisosTrechoContraSrt(
+  roteiro: Pick<RoteiroFalas, "falas">,
+  srtDoVideo: (ref: Pick<TrechoInseridoLido, "youtubeId" | "edicao">) => string | null,
+): string[] {
   const avisos: string[] = [];
   for (const f of falasDoHorizontal(roteiro)) {
-    const t = f.trechoInserido;
-    if (!t) continue;
-    const id = videoIdDaOrigem(t.origem);
-    if (!id) continue;
-    const srt = srtDoVideo(id);
+    if (!f.trechoInserido) continue;
+    const lido = lerTrechoInserido(f.trechoInserido);
+    if (!lido.ok) continue;
+    const t = lido.trecho;
+    const nome = t.youtubeId ?? t.edicao;
+    const srt = srtDoVideo(t);
     if (srt === null) continue;
     const cues = parseSrtCues(srt);
     if (!cues.length) continue;
     const alvo = normalizar(t.texto);
     if (!alvo) continue;
-    const intervalo = intervaloDaOrigem(t.origem);
+    const intervalo = { inicio: t.inicioS, fim: t.fimS };
     const todas = normalizar(cues.map((c) => c.text).join(" "));
-    if (!intervalo) {
-      if (!todas.includes(alvo)) avisos.push(`${f.id}: trechoInserido.texto não aparece no SRT do vídeo ${id}; transcrever do SRT, nunca de memória (#13433).`);
-      continue;
-    }
     const janela = cues.filter((c) => c.end > intervalo.inicio - FOLGA_INTERVALO_S && c.start < intervalo.fim + FOLGA_INTERVALO_S);
     if (!normalizar(janela.map((c) => c.text).join(" ")).includes(alvo)) {
       avisos.push(
         todas.includes(alvo)
-          ? `${f.id}: trechoInserido.texto está no SRT do vídeo ${id}, mas fora do intervalo da origem (${fmtTempo(intervalo.inicio)} a ${fmtTempo(intervalo.fim)}); conferir o tempo (#13433).`
-          : `${f.id}: trechoInserido.texto não bate com o SRT do vídeo ${id} entre ${fmtTempo(intervalo.inicio)} e ${fmtTempo(intervalo.fim)}; transcrever do SRT, nunca de memória (#13433).`,
+          ? `${f.id}: trechoInserido.texto está no SRT do vídeo ${nome}, mas fora do intervalo do trecho (${fmtTempoTrecho(intervalo.inicio)} a ${fmtTempoTrecho(intervalo.fim)}); conferir o tempo (#13433).`
+          : `${f.id}: trechoInserido.texto não bate com o SRT do vídeo ${nome} entre ${fmtTempoTrecho(intervalo.inicio)} e ${fmtTempoTrecho(intervalo.fim)}; transcrever do SRT, nunca de memória (#13433).`,
       );
       continue;
     }
     const primeira = primeiraLegendaDoTrecho(janela, alvo);
     if (primeira && intervalo.inicio > primeira.start) {
-      avisos.push(`${f.id}: a origem começa em ${fmtTempo(intervalo.inicio)}, mas a legenda com a primeira palavra do trecho começa em ${fmtTempo(primeira.start)}; o corte come o começo da fala (#13433).`);
+      avisos.push(`${f.id}: o trecho começa em ${fmtTempoTrecho(intervalo.inicio)}, mas a legenda com a primeira palavra começa em ${fmtTempoTrecho(primeira.start)}; o corte come o começo da fala (#13433).`);
     }
   }
   return avisos;
@@ -207,9 +182,10 @@ function primeiraLegendaDoTrecho(janela: SrtCue[], alvo: string): SrtCue | null 
 export function avisosFormatoReact(roteiro: Pick<RoteiroFalas, "falas">, editionsRootDir: string): string[] {
   if (!roteiro.falas.some((f) => f.trechoInserido)) return [];
   const cache = new Map<string, string | null>();
-  const srt = (id: string) => {
-    if (!cache.has(id)) cache.set(id, srtDoVideoPublicado(editionsRootDir, id));
-    return cache.get(id) ?? null;
+  const srt = (ref: Pick<TrechoInseridoLido, "youtubeId" | "edicao">) => {
+    const chave = ref.edicao ? `ed:${ref.edicao}` : `yt:${ref.youtubeId}`;
+    if (!cache.has(chave)) cache.set(chave, ref.edicao ? srtDaEdicao(editionsRootDir, ref.edicao) : ref.youtubeId ? srtDoVideoPublicado(editionsRootDir, ref.youtubeId) : null);
+    return cache.get(chave) ?? null;
   };
   return [...avisosReactVertical(roteiro), ...avisosReacaoPergunta(roteiro), ...avisosTrechoContraSrt(roteiro, srt)];
 }
@@ -249,6 +225,19 @@ export function srtDoVideoPublicado(editionsRootDir: string, videoId: string): s
     }
   }
   return null;
+}
+
+/**
+ * O SRT do horizontal da edição `aammdd` (`video` do trecho como edição,
+ * #13437): `{AAMM}/{AAMMDD}/diaria-comentada-{AAMMDD}.srt`. Sem arquivo, `null`.
+ */
+export function srtDaEdicao(editionsRootDir: string, aammdd: string): string | null {
+  const srt = join(editionsRootDir, aammdd.slice(0, 4), aammdd, `diaria-comentada-${aammdd}.srt`);
+  try {
+    return existsSync(srt) ? readFileSync(srt, "utf8") : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

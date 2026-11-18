@@ -318,7 +318,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvgForMarker, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
-import { parseTrechoOrigem, readTrechosInseridos, trechoInseridoLine, type TrechoInseridoMarker } from "./lib/diaria/video-trecho-inserido.ts";
+import { readTrechosInseridos, trechoInseridoLine, type TrechoInseridoMarker } from "./lib/diaria/video-trecho-inserido.ts";
+import { rotuloTrecho } from "./lib/diaria/trecho-inserido-formato.ts";
 import { cueFrames, parseAssStyle, subtitleBottomY, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
@@ -4470,7 +4471,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const trechoMarkers: Record<string, TrechoInseridoMarker[]> = {};
   for (const p of picked) {
     if (!trechosInseridos.length || !isYoutubeSpec(p.spec)) continue;
-    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: t.origem })));
+    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: rotuloTrecho(t.trecho) })));
     const ms: TrechoInseridoMarker[] = [];
     for (const t of trechosInseridos) {
       const at = pos.find((m) => m.id === t.id);
@@ -4478,7 +4479,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] ${p.spec.name}: trecho inserido depois da fala ${t.id} sem item casado no blocks.json (pôr "fala": "${t.id}" no item): fora do XML (#13437)`);
         continue;
       }
-      const m: TrechoInseridoMarker = { id: t.id, origem: t.origem, trecho: t.trecho, at: at.out, parsed: parseTrechoOrigem(t.origem) };
+      const m: TrechoInseridoMarker = { id: t.id, trecho: t.trecho, at: at.out };
       ms.push(m);
       const line = trechoInseridoLine(m, source.fps);
       console.error(`[${line.level}] ${p.spec.name}: ${line.text}`);

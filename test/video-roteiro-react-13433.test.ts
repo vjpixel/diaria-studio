@@ -15,6 +15,7 @@ import {
   avisosReactVertical,
   avisosTrechoContraSrt,
   intervaloDaOrigem,
+  srtDaEdicao,
   srtDoVideoPublicado,
   videoIdDaOrigem,
 } from "../scripts/lib/diaria/roteiro-react.ts";
@@ -27,7 +28,7 @@ const V7 = fixture("roteiro-falas-261118-v7.json");
 const V9 = fixture("roteiro-falas-261118-v9.json");
 const SRT_261110 = readFileSync(new URL("./fixtures/roteiro-video/diaria-comentada-261110-trechos.srt", import.meta.url), "utf8");
 const VIDEO_ID = "lyh6IZux4FE";
-const srtSo = (id: string) => (id === VIDEO_ID ? SRT_261110 : null);
+const srtSo = (ref: { youtubeId: string | null; edicao: string | null }) => (ref.youtubeId === VIDEO_ID ? SRT_261110 : null);
 
 const TRECHO_CARGO = { origem: "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 3:42 a 3:46", texto: "E ele pode chegar a perder o cargo atual dele." };
 const roteiro = (falas: RoteiroFalas["falas"]): RoteiroFalas => ({ falas }) as RoteiroFalas;
@@ -113,13 +114,13 @@ describe("origem do trecho", () => {
 });
 
 describe("avisosTrechoContraSrt (decisão 2)", () => {
-  const comTrecho = (trechoInserido: { origem: string; texto: string }) =>
+  const comTrecho = (trechoInserido: NonNullable<RoteiroFalas["falas"][number]["trechoInserido"]>) =>
     roteiro([{ id: "H9b", bloco: "comentario", texto: "E a terceira:", videos: ["horizontal"], trechoInserido }]);
   const PRECO = "E isso pode causar um aumento do preço desses componentes fora dos Estados Unidos.";
 
   it("início depois da legenda com a 1ª palavra avisa (3:55 contra 3:54,88, na 261118)", () => {
     const avisos = avisosTrechoContraSrt(comTrecho({ origem: "youtu.be/lyh6IZux4FE, de 3:55 a 4:00", texto: PRECO }), srtSo);
-    assert.deepEqual(avisos, ["H9b: a origem começa em 3:55, mas a legenda com a primeira palavra do trecho começa em 3:54,88; o corte come o começo da fala (#13433)."]);
+    assert.deepEqual(avisos, ["H9b: o trecho começa em 3:55, mas a legenda com a primeira palavra começa em 3:54,88; o corte come o começo da fala (#13433)."]);
   });
 
   it("início antes da 1ª palavra não avisa", () => {
@@ -133,7 +134,13 @@ describe("avisosTrechoContraSrt (decisão 2)", () => {
 
   it("texto certo em intervalo errado avisa o tempo", () => {
     const avisos = avisosTrechoContraSrt(comTrecho({ origem: "youtu.be/lyh6IZux4FE, de 3:42 a 3:46", texto: PRECO }), srtSo);
-    assert.match(avisos[0], /está no SRT do vídeo lyh6IZux4FE, mas fora do intervalo da origem/);
+    assert.match(avisos[0], /está no SRT do vídeo lyh6IZux4FE, mas fora do intervalo do trecho/);
+  });
+
+  it("formato estruturado (#13437): mesmo aviso, com inicio/fim nos campos", () => {
+    const avisos = avisosTrechoContraSrt(comTrecho({ video: "youtu.be/lyh6IZux4FE", inicio: "3:55", fim: "4:00", texto: PRECO }), srtSo);
+    assert.match(avisos[0], /^H9b: o trecho começa em 3:55, mas a legenda com a primeira palavra começa em 3:54,88/);
+    assert.deepEqual(avisosTrechoContraSrt(comTrecho({ video: "youtu.be/lyh6IZux4FE", inicio: "3:54,80", fim: "4:00", texto: PRECO }), srtSo), []);
   });
 
   it("sem SRT ou sem id na origem, nada a conferir", () => {
@@ -159,6 +166,16 @@ describe("SRT do vídeo publicado", () => {
     assert.equal(srtDoVideoPublicado(join(root, "data", "editions"), VIDEO_ID), SRT_261110);
     assert.equal(srtDoVideoPublicado(join(root, "data", "editions"), "BBBBBBBBBBB"), null);
     assert.equal(srtDoVideoPublicado(join(root, "nao-existe"), VIDEO_ID), null);
+  });
+
+  it("video como edição (AAMMDD, #13437): o SRT vem da pasta da edição", () => {
+    const root = raizComVideo();
+    const editions = join(root, "data", "editions");
+    assert.equal(srtDaEdicao(editions, "261110"), SRT_261110);
+    assert.equal(srtDaEdicao(editions, "261109"), null);
+    const r = roteiro([{ id: "H9b", bloco: "comentario", texto: "E a terceira:", videos: ["horizontal"], trechoInserido: { video: "261110", inicio: "3:42", fim: "3:46", texto: "Ele pode perder o cargo." } }]);
+    const avisos = avisosFormatoReact(r, editions);
+    assert.match(avisos[0], /^H9b: trechoInserido\.texto não bate com o SRT do vídeo 261110 entre 3:42 e 3:46/);
   });
 
   it("avisosFormatoReact junta os três e lê o SRT do disco", () => {

@@ -6,7 +6,7 @@
  * - #13339/#13340: só instrumentação na comparação XML × final; os clipes
  *   removidos e as trocas de tomada ganham detalhe no registro e no agregado,
  *   sem mudar a classificação.
- * - #13437 (1ª fatia): `trechoInserido` vira marcador do XML no fim da fala.
+ * - #13437: `trechoInserido` (formato estruturado, PR 1) vira marcador do XML no fim da fala.
  */
 
 import { describe, it } from "node:test";
@@ -29,7 +29,8 @@ import {
   type EditionRecord,
   type FinalSpan,
 } from "../scripts/lib/diaria/video-xml-vs-final.ts";
-import { parseTempo, parseTrechoOrigem, readTrechosInseridos, ROTEIRO_FALAS_PATH, trechoInseridoLine, trechoInseridoMarkersXml } from "../scripts/lib/diaria/video-trecho-inserido.ts";
+import { readTrechosInseridos, ROTEIRO_FALAS_PATH, trechoInseridoLine, trechoInseridoMarkersXml } from "../scripts/lib/diaria/video-trecho-inserido.ts";
+import { lerTrechoInserido } from "../scripts/lib/diaria/trecho-inserido-formato.ts";
 import { ROTEIRO_FALAS_FILE } from "../scripts/lib/diaria/roteiro-videos.ts";
 
 const item = (start: number, end: number, text: string, fala?: string): ResolvedItem =>
@@ -231,47 +232,43 @@ describe("#13339/#13340: agregado, relatório e exemplos; padrões intactos", ()
   });
 });
 
-describe("#13437: trechoInserido vira marcador do XML (1ª fatia)", () => {
-  it("parseTrechoOrigem lê o link do YouTube e o intervalo da convenção da doc", () => {
-    assert.deepEqual(parseTrechoOrigem("Vídeo de 10/11, youtu.be/lyh6IZux4FE, 3:42 a 4:00"), { youtubeId: "lyh6IZux4FE", inicioS: 222, fimS: 240 });
-    assert.deepEqual(parseTrechoOrigem("https://www.youtube.com/watch?v=lyh6IZux4FE 1:02:03-1:02:10"), { youtubeId: "lyh6IZux4FE", inicioS: 3723, fimS: 3730 });
-    assert.deepEqual(parseTrechoOrigem("Vídeo de 10/11, 3:42 a 4:00"), { youtubeId: null, inicioS: 222, fimS: 240 });
-    assert.deepEqual(parseTrechoOrigem("Vídeo de 10/11"), { youtubeId: null, inicioS: null, fimS: null });
-    assert.deepEqual(parseTrechoOrigem("youtu.be/lyh6IZux4FE, 4:00 a 3:42"), { youtubeId: "lyh6IZux4FE", inicioS: null, fimS: null }, "intervalo invertido não vira tempo");
-    assert.equal(parseTempo("3:75"), null);
-  });
-
+describe("#13437: trechoInserido vira marcador do XML", () => {
   it("o caminho do roteiro é o mesmo de roteiro-videos.ts (cópia para não fechar ciclo de import)", () => {
     assert.equal(ROTEIRO_FALAS_PATH, ROTEIRO_FALAS_FILE);
   });
 
-  it("readTrechosInseridos lê o roteiro; fala só de vertical fica fora; campo vazio avisa", () => {
+  it("readTrechosInseridos lê os dois formatos; fala só de vertical fica fora; trecho inválido avisa", () => {
     const dir = mkdtempSync(join(tmpdir(), "trecho-13437-"));
     mkdirSync(join(dir, "_internal"), { recursive: true });
     writeFileSync(
       join(dir, "_internal", "roteiro-falas.json"),
       JSON.stringify({
         falas: [
-          { id: "H5", texto: "Olha o que eu disse no dia 10.", videos: ["horizontal"], trechoInserido: { origem: "youtu.be/lyh6IZux4FE, 3:42 a 4:00", texto: "E ele pode chegar a perder o cargo." } },
-          { id: "V2", texto: "Só no vertical.", videos: ["vertical1"], trechoInserido: { origem: "x", texto: "y" } },
-          { id: "H6", texto: "Vazio.", videos: ["horizontal"], trechoInserido: { origem: "", texto: "y" } },
+          { id: "H5", texto: "Olha o que eu disse no dia 10.", videos: ["horizontal"], trechoInserido: { video: "youtu.be/lyh6IZux4FE", inicio: "3:42", fim: "4:00", texto: "E ele pode chegar a perder o cargo." } },
+          { id: "H5b", texto: "E mais.", videos: ["horizontal"], trechoInserido: { origem: "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 4:01 a 4:05", texto: "Antigo." } },
+          { id: "V2", texto: "Só no vertical.", videos: ["vertical1"], trechoInserido: { video: "261110", inicio: "1:00", fim: "1:05", texto: "y" } },
+          { id: "H6", texto: "Sem intervalo.", videos: ["horizontal"], trechoInserido: { origem: "Vídeo de 10/11", texto: "y" } },
           { id: "H7", texto: "Sem trecho.", videos: ["horizontal"] },
         ],
       }),
     );
     const avisos: string[] = [];
     const ts = readTrechosInseridos(dir, (m) => void avisos.push(m));
-    assert.deepEqual(ts.map((t) => t.id), ["H5"]);
-    assert.equal(ts[0].trecho, "E ele pode chegar a perder o cargo.");
-    assert.ok(avisos.some((a) => /fala H6: trechoInserido sem origem ou texto/.test(a)));
+    assert.deepEqual(ts.map((t) => t.id), ["H5", "H5b"]);
+    assert.equal(ts[0].trecho.texto, "E ele pode chegar a perder o cargo.");
+    assert.deepEqual([ts[0].trecho.inicioS, ts[0].trecho.fimS, ts[0].trecho.migrado], [222, 240, false]);
+    assert.deepEqual([ts[1].trecho.inicioS, ts[1].trecho.fimS, ts[1].trecho.migrado], [241, 245, true]);
+    assert.ok(avisos.some((a) => /^fala H6: trechoInserido inválido \(origem "Vídeo de 10\/11"/.test(a)), avisos.join("\n"));
     assert.deepEqual(readTrechosInseridos(join(dir, "nada"), () => assert.fail("sem aviso")), []);
   });
 
-  it("o marcador vai no fim da fala, no <sequence> do horizontal, com origem e texto escapados", () => {
+  it("o marcador vai no fim da fala, no <sequence> do horizontal, com vídeo, intervalo e texto escapados", () => {
     const spec: SequenceSpec = { target: "youtube", name: "Diaria comentada horizontal_V1", width: 1920, height: 1080, order: ["comentario"], scales: [60, 85] };
     const plan = { spec, clips: [clip(10, 20, 0)], durationFrames: 300, script: "", missingBlocks: [], dropped: [] } as unknown as SequencePlan;
     const fim = telaMarkersFor(plan, { comentario: [item(10, 20, "x", "H5")] }, 30, [{ id: "H5", texto: "Olha o que eu disse", tela: "origem" }]);
-    const m = { id: "H5", origem: "youtu.be/lyh6IZux4FE, 3:42 a 4:00", trecho: "perder o <cargo>", at: fim[0].out, parsed: parseTrechoOrigem("youtu.be/lyh6IZux4FE, 3:42 a 4:00") };
+    const lido = lerTrechoInserido({ video: "youtu.be/lyh6IZux4FE", inicio: "3:42", fim: "4:00", texto: "perder o <cargo>" });
+    assert.ok(lido.ok);
+    const m = { id: "H5", trecho: lido.trecho, at: fim[0].out };
     assert.equal(m.at, 300);
     assert.equal(trechoInseridoMarkersXml([m]), `<marker><name>trecho H5</name><comment>youtu.be/lyh6IZux4FE, 3:42 a 4:00: &quot;perder o &lt;cargo&gt;&quot;</comment><in>300</in><out>301</out></marker>\n`);
     const source = { path: "/b/bruto.mp4", fps: 30, durationS: 1000, width: 1920, height: 1080 } as Parameters<typeof buildXmeml>[1];
@@ -281,7 +278,14 @@ describe("#13437: trechoInserido vira marcador do XML (1ª fatia)", () => {
     assert.equal(com.replace(/<marker><name>trecho H5<\/name>.*<\/marker>\n/, ""), sem, "sem marcador, o XML de antes");
     const line = trechoInseridoLine(m, 30);
     assert.equal(line.level, "premissa");
-    assert.match(line.text, /em 10\.0 s .*youtu\.be\/lyh6IZux4FE, 222–240 s, soma 18\.0 s ao horizontal/);
-    assert.equal(trechoInseridoLine({ ...m, parsed: parseTrechoOrigem("Vídeo de 10/11") }, 30).level, "aviso");
+    assert.match(line.text, /em 10\.0 s .*youtu\.be\/lyh6IZux4FE, 3:42 a 4:00, soma 18\.0 s ao horizontal/);
+    assert.doesNotMatch(line.text, /formato antigo/);
+    const antigo = lerTrechoInserido({ origem: "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 3:42 a 4:00", texto: "x" });
+    assert.ok(antigo.ok);
+    assert.match(trechoInseridoLine({ ...m, trecho: antigo.trecho }, 30).text, /formato antigo .*migrar-trecho-inserido\.ts/);
+    const ed = lerTrechoInserido({ video: "261110", inicio: 222, fim: 240, texto: "x" });
+    assert.ok(ed.ok);
+    assert.match(trechoInseridoMarkersXml([{ ...m, trecho: ed.trecho }]), /<comment>Vídeo de 10\/11 \(261110\), 3:42 a 4:00: /);
+    assert.match(trechoInseridoLine({ ...m, trecho: ed.trecho }, 30).text, /vídeo da edição 261110, 3:42 a 4:00/);
   });
 });

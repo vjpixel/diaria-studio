@@ -21,6 +21,7 @@
  */
 
 import { isBlockKey, normalizeToken, type BlockKey } from "./video-montage.ts";
+import { lerTrechoInserido, type TrechoInseridoCampo } from "./trecho-inserido-formato.ts";
 
 export type VideoRoteiro = "horizontal" | "vertical1" | "vertical2";
 export const VIDEOS_ROTEIRO: readonly VideoRoteiro[] = ["horizontal", "vertical1", "vertical2"];
@@ -65,12 +66,14 @@ export interface FalaRoteiro {
   topicos?: string[];
   /**
    * Trecho de outro vídeo que entra logo depois desta fala, no horizontal
-   * (formato react, pedido do editor em 17/11/2026): `origem` diz de onde
-   * vem e o intervalo ("Vídeo de 10/11, youtu.be/…, 3:42 a 4:00") e `texto`
-   * é a fala do trecho, transcrita. Só a página mostra, entre aspas, depois
-   * da fala; a montagem insere o trecho à mão.
+   * (formato react, pedido do editor em 17/11/2026). Formato estruturado
+   * desde a #13437: `{ video, inicio, fim, texto }`, com `video` = link do
+   * YouTube ou a edição do vídeo (AAMMDD), `inicio`/`fim` em "m:ss" e `texto`
+   * = a fala do trecho, transcrita do SRT. O formato antigo (`origem` em texto
+   * livre) segue lido por migração (`trecho-inserido-formato.ts`). A página
+   * mostra o trecho entre aspas, depois da fala; a montagem marca o ponto no XML.
    */
-  trechoInserido?: { origem: string; texto: string };
+  trechoInserido?: TrechoInseridoCampo;
   /**
    * Corte parcial da fala por vertical (#13129): o trecho exato a tirar só
    * naquele vídeo (o horizontal fica intacto: o validador recusa `horizontal`). `reserva: true` = só entra se o
@@ -798,17 +801,11 @@ export function validarRoteiroFalas(x: unknown): string[] {
       }
     }
     // Trecho de outro vídeo inserido depois da fala (react): só no horizontal.
+    // #13437: formato estruturado { video, inicio, fim, texto }; o antigo (origem em texto livre) passa por migração.
     if (o.trechoInserido !== undefined) {
-      const ti = o.trechoInserido as { origem?: unknown; texto?: unknown } | null;
-      if (!ti || typeof ti !== "object" || Array.isArray(ti)) problemas.push(`${rotulo}.trechoInserido deve ser objeto com origem e texto`);
-      else {
-        for (const k of ["origem", "texto"] as const) {
-          const val = ti[k];
-          if (typeof val !== "string" || !val.trim()) problemas.push(`${rotulo}.trechoInserido.${k} deve ser texto não vazio`);
-          else if (SETA.test(val)) problemas.push(`${rotulo}.trechoInserido.${k} usa seta (→/←), proibida na página (#9721)`);
-        }
-        if (Array.isArray(o.videos) && !o.videos.includes("horizontal")) problemas.push(`${rotulo}.trechoInserido só vale em fala do horizontal`);
-      }
+      const lido = lerTrechoInserido(o.trechoInserido);
+      if (!lido.ok) for (const p of lido.problemas) problemas.push(`${rotulo}.trechoInserido${/^(?:video|inicio|fim|texto|origem)\b/u.test(p) ? "." : ": "}${p}`);
+      if (Array.isArray(o.videos) && !o.videos.includes("horizontal")) problemas.push(`${rotulo}.trechoInserido só vale em fala do horizontal`);
     }
     // #13129: corte parcial por vídeo, com o trecho exato do texto.
     if (o.cortes !== undefined) {
