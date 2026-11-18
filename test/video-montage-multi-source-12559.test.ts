@@ -13,6 +13,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { resolve } from "node:path";
 import {
   buildSequencePlan,
   buildXmeml,
@@ -410,6 +411,15 @@ describe("#12559 CLI: lista de arquivos e áudio por arquivo", () => {
     const exists = (p: string) => /G:[\\/]YouTube[\\/]261109[\\/]C0001\.MP4$/.test(p);
     assert.deepEqual(resolveSourceList(["C0001.MP4"], "G:/YouTube/261109", exists), ["G:/YouTube/261109/C0001.MP4"]);
     assert.throws(() => resolveSourceList(["X.MP4"], "G:/YouTube/261109", exists), /não encontrado: X\.MP4/);
+  });
+  it("#13462: --source com um nome solto resolve na pasta da edição e o erro nomeia os dois lugares", () => {
+    const exists = (p: string) => p.replace(/\\/g, "/") === "G:/YouTube/261118/solto.mp4";
+    assert.deepEqual(resolveSourceList(["solto.mp4"], "G:/YouTube/261118", exists), ["G:/YouTube/261118/solto.mp4"]);
+    assert.throws(() => resolveSourceList(["nada.mp4"], "G:/YouTube/261118", exists), (e: Error) => /nada\.mp4/.test(e.message) && e.message.includes(resolve("nada.mp4")) && /261118[\\/]nada\.mp4/.test(e.message));
+  });
+  it("#13462: cmdTranscribe passa o --source único por resolveSourceList", () => {
+    const src = readFileSync(new URL("../scripts/video-montagem.ts", import.meta.url), "utf8");
+    assert.match(src, /sourceArg \? resolveSourceList\(\[sourceArg\], ctx\.driveDir\)\[0\]/);
   });
   it("áudio de cada arquivo com a duração exata (apad + -t) e lista do concat escapada", () => {
     const a = multiAudioPartArgs({ src: "v.mov", frames: 300, fps: 30, out: "p.wav" });
