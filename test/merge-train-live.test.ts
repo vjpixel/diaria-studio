@@ -47,7 +47,7 @@ import {
   type TrainRunner,
   type ExecResult,
 } from "../scripts/lib/merge-train-live.ts";
-import type { TrainBatch, TrainPrInfo } from "../scripts/lib/merge-train.ts";
+import { summarizeTrainCiRuns, type TrainBatch, type TrainPrInfo } from "../scripts/lib/merge-train.ts";
 import { extractRevertedSha } from "../scripts/track-quality-report.ts";
 
 const MAIN_CWD = "C:/repo";
@@ -1184,6 +1184,27 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === "102"), "PR original fechado com apontamento pro trem");
     });
 
+    it("#13509: a métrica de CI conta o PR-trem de 1 do piso da bissecção (3 PR-trens com CI = 3 runs, não 2)", async () => {
+      const { runner, created } = scenario({ "9001": "fail" });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+      const s = summarizeTrainCiRuns(outcomes, prInfos3);
+
+      assert.equal(created.length, 3, "9001 (lote de 3, vermelho), 9002 (lote de 2), 9003 (PR 102 sozinho)");
+      assert.equal(s.ciRunsUsed, created.length, "um run de CI por PR-trem aberto; antes do #13509 saía 2");
+      assert.equal(s.soloPrs, 0, "o 102 passou pelo PR-trem de 1, não ficou fora do trem");
+    });
+
+    it("#13509: lote que só falhou na INTEGRAÇÃO não conta run de CI (nenhum PR-trem aberto)", async () => {
+      const runner = fullRunner();
+      runner.on("git", (a, cwd) => a[0] === "merge" && !a.includes("--abort") && cwd !== MAIN_CWD, () => fail("CONFLICT"));
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok());
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+      const s = summarizeTrainCiRuns(outcomes, prInfos3);
+
+      assert.equal(s.ciRunsUsed, 0, "antes do #13509 o lote de 2 abandonado contava 1 run que nunca existiu");
+      assert.equal(s.soloPrs, 2);
+    });
+
     it("timeout do CI do lote também conta como lote vermelho pro piso", async () => {
       const runner = fullRunner();
       runner.advanceMs = 10_000;
@@ -1277,6 +1298,17 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       assert.deepEqual(outcomes.map((o) => o.status), ["solo-merged"]);
       assert.match(outcomes[0].detail, /revalidado sobre a base atual \(PR-trem #9001, CI verde\).*#13461/);
       assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === String(B)), "B fechada com apontamento pro trem");
+    });
+
+    it("#13509: o PR-trem de 1 da B atrás da base conta 1 run de CI, verde ou vermelho", async () => {
+      for (const verdict of ["pass", "fail"] as const) {
+        const { runner, created } = scenario(verdict);
+        const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+        const s = summarizeTrainCiRuns(outcomes, [infoB]);
+        assert.equal(created.length, 1, verdict);
+        assert.equal(s.ciRunsUsed, 1, `${verdict}: antes do #13509 saía 0 (lote de 1 lido como merge solo)`);
+        assert.equal(s.soloPrs, 0, verdict);
+      }
     });
 
     it("B já contém a base atual: merge solo direto, base relida SOB o lock e --match-head-commit com o HEAD validado", async () => {
