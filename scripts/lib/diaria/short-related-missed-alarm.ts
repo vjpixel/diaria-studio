@@ -312,7 +312,7 @@ export function buildShortRelatedMissedAlarm(ev: ShortRelatedMissedEvaluation, s
       ...(ev.verdict === "record-unconfirmed"
         ? ["Incerteza: o KV não respondeu e o arquivo replicado não tem registro. Isto NÃO afirma que a task falhou; conferir o Short no Studio resolve."]
         : ev.verdict === "missing-record" && ev.shortAfterTaskDeadline
-          ? [`Short publicado depois do prazo: foi ao ar em ${ev.shortAfterTaskDeadline}, e a task do Neo roda uma vez por dia (06:05 BRT) e desiste no prazo acima. Ela não vincula este Short; o vínculo é à mão (passo acima), conferindo antes no Studio.`]
+          ? [`Short publicado depois do prazo: foi ao ar em ${ev.shortAfterTaskDeadline}, e a task do Neo roda uma vez por dia, de manhã, e desiste no prazo acima. Ela não vincula este Short; o vínculo é à mão (passo acima), conferindo antes no Studio.`]
           : ev.verdict === "missing-record"
           ? ["Ressalva: a task só grava no KV depois que o Neo tem o token Cloudflare no `.env` e o passo final do roteiro; antes disso, sem registro no KV vale o arquivo replicado em `data/`, que pode atrasar. Conferir o Short no Studio resolve as duas hipóteses."]
           : []),
