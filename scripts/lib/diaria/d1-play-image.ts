@@ -113,7 +113,7 @@ export async function renderD1PlayImage(heroBytes: Buffer): Promise<Buffer> {
   const meta = await img.metadata();
   if (!meta.width || !meta.height) throw new Error("hero do D1 sem dimensões legíveis");
   const metrics = await measureInviteText(meta.width);
-  const { data } = await sharp(heroBytes).toColourspace("b-w").raw().toBuffer({ resolveWithObject: true });
+  const { data } = await sharp(heroBytes).removeAlpha().toColourspace("b-w").raw().toBuffer({ resolveWithObject: true });
   const corner = pickInviteCorner(data, meta.width, meta.height, metrics);
   const svg = Buffer.from(buildInviteSvg(meta.width, meta.height, metrics, D1_INVITE_FONT_FAMILY, corner));
   return img.composite([{ input: svg, top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer();

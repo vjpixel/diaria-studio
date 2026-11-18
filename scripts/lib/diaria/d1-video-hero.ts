@@ -172,6 +172,7 @@ export const INVITE_CORNERS: readonly InviteCorner[] = ["br", "bl", "tr", "tl"];
  * da ordem de preferência (`br`).
  */
 export function pickInviteCorner(gray: Uint8Array, width: number, height: number, m: InviteTextMetrics): InviteCorner {
+  if (gray.length !== width * height) throw new Error(`pickInviteCorner: buffer ${gray.length} != ${width}x${height} (1 canal esperado)`);
   let best: InviteCorner = "br";
   let bestEnergy = Infinity;
   for (const corner of INVITE_CORNERS) {
@@ -234,7 +235,7 @@ export function inviteGeometry(
   const h = padY * 2 + Math.max(blockH, iconD);
   const x = corner === "bl" || corner === "tl" ? margin : width - margin - w;
   const y = corner === "tl" || corner === "tr" ? margin : height - margin - h;
-  if (x < margin || y < margin) {
+  if (w + 2 * margin > width || h + 2 * margin > height) {
     throw new Error(`buildInviteSvg: convite (${w.toFixed(0)}x${h.toFixed(0)}) não cabe na imagem ${width}x${height} (#12747)`);
   }
   const cyMid = y + h / 2;
