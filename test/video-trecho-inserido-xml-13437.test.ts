@@ -486,7 +486,7 @@ describe("#13437 PR 2: faixas, vinheta e boxes de tela com o trecho", () => {
     ["vinheta sem áudio nem efeito", vinheta(false, false), 2],
     ["vinheta com áudio, sem efeito", vinheta(true, false), 3],
     ["vinheta sem áudio, com efeito", vinheta(false, true), 3],
-    ["vinheta com áudio e efeito", vinheta(true, true), 4],
+    ["vinheta com áudio e efeito (#13522: o som do MOV sai, o efeito fica)", vinheta(true, true), 3],
   ] as const) {
     it(`trackindex do áudio do trecho = a posição real da faixa dele em <audio> (${nome})`, () => {
       const xml = buildXmeml([plan], source, framing, { trechoClips: { youtube: [tc("H5", 300, 90)] }, vinheta: vin });
@@ -494,7 +494,7 @@ describe("#13437 PR 2: faixas, vinheta e boxes de tela com o trecho", () => {
       const real = tracks.findIndex((x) => x.includes('<clipitem id="trecho-1-a1">')) + 1;
       assert.equal(real, faixa, tracks.map((x) => x.slice(0, 40)).join(" | "));
       assert.equal(trechoLinkIndex(xml), real);
-      if (vin?.hasAudio) assert.ok(tracks[1].includes('<clipitem id="vinheta-a1">'), "o link da vinheta (faixa 2) segue apontando a faixa dela");
+      if (vin?.hasAudio && !vin.sfx) assert.ok(tracks[1].includes('<clipitem id="vinheta-a1">'), "o link da vinheta (faixa 2) segue apontando a faixa dela");
     });
   }
 

@@ -3735,8 +3735,19 @@ export function vinhetaSfxConfigCheck(config: unknown): VinhetaSfxConfigCheck {
     else problems.push(`publishing.video.vinheta_som.at_s[${i}] = ${JSON.stringify(t) ?? String(t)} descartado: não é número finito >= 0 (#13240)`);
   });
   atS.sort((a, b) => a - b);
+  // #13522: o Premiere do Mac não importa NADA (sem erro) de um XML cujo efeito tem `&` ou `,` no nome
+  // (o mp3 da Epidemic Sound, medido em 18/11/2026: o mesmo som com nome simples importa). Melhor
+  // XML sem o som e com aviso do que XML que não importa.
+  const bad = premiereUnsafeNameChars(path);
+  if (bad.length) problems.push(`publishing.video.vinheta_som.path com ${bad.map((c) => `"${c}"`).join(", ")} no nome do arquivo: o Premiere não importa o XML; renomear o arquivo em _marca/ (#13522)`);
   if (raw && !atS.length) problems.push(`publishing.video.vinheta_som.at_s sem nenhum instante válido (${raw.length} item(ns), todos descartados) (#13240)`);
-  return { present: true, cfg: path && atS.length ? { path, atS } : null, problems };
+  return { present: true, cfg: path && atS.length && !bad.length ? { path, atS } : null, problems };
+}
+
+/** Caracteres no NOME do arquivo que fazem o Premiere do Mac não importar o XML, em silêncio (#13522). */
+export function premiereUnsafeNameChars(path: string): string[] {
+  const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+  return [...new Set([...name].filter((c) => "&,#%;".includes(c)))];
 }
 
 /** `publishing.video.vinheta_som` usável (#13240) ou `null` (ausente, caminho vazio ou nenhum instante válido). Os avisos saem de `vinhetaSfxConfigCheck`. */
@@ -3759,15 +3770,34 @@ export function parseVinhetaSfxProbe(json: string, path: string, atS: number[]):
   };
 }
 
-/** Duração do efeito em quadros (#13240): para cima, no mínimo 1 (0,182 s a 30 fps = 6 quadros, a cauda inteira). */
+/**
+ * Duração do efeito em quadros (#13240): PARA BAIXO, no mínimo 1. #13522: para
+ * cima (0,182 s a 30 fps = 6 quadros) o clipitem pedia mais mídia do que o
+ * arquivo tem, e o Premiere do Mac não importava NADA do XML, sem erro
+ * (261118). Perder até 1 quadro da cauda do efeito é inaudível.
+ */
 export function vinhetaSfxLenFrames(durationS: number, fps: number): number {
-  return Math.max(1, Math.ceil(durationS * fps - 1e-9));
+  return Math.max(1, Math.floor(durationS * fps + 1e-9));
+}
+
+/**
+ * #13522: o som do MOV da vinheta só entra quando não há o efeito de
+ * `vinheta_som`. O `vinheta-logo-diaria.mov` traz um clique embutido no quadro
+ * 0, fora dos "." do logo; com o efeito, ele virava um 3º clique no lugar
+ * errado (o editor quer exatamente um por "."). Sem o efeito, o MOV segue
+ * como antes. Decide pela CONFIGURAÇÃO, não pelo que coube na sequência: com
+ * o efeito configurado e nenhum instante dentro da vinheta (cortada no fim), a
+ * vinheta fica sem som nenhum, e a prévia segue o mesmo critério do XML.
+ */
+export function vinhetaUsesMovAudio(vin: Pick<VinhetaAsset, "hasAudio" | "sfx">): boolean {
+  return vin.hasAudio && !vin.sfx;
 }
 
 /**
  * Onde o efeito toca na sequência, em quadros (#13240): `span.start` + cada
  * instante arredondado ao quadro, com a duração do efeito arredondada PARA
- * CIMA (no mínimo 1 quadro), para não cortar a cauda. Instante que cai depois
+ * BAIXO, no mínimo 1 quadro (#13522: para cima, o clipitem pedia mais mídia
+ * do que o arquivo tem e o Premiere do Mac não importava o XML). Instante que cai depois
  * do fim da vinheta (cortada no fim da sequência) fica de fora, e 2 instantes
  * no mesmo quadro viram 1; cada clipitem para no começo do seguinte, para a
  * faixa nunca ter clipes sobrepostos.
@@ -3959,8 +3989,9 @@ export function vinhetaScalePct(asset: Pick<VinhetaAsset, "width" | "height">, s
 /**
  * Filtros do ffmpeg da prévia com a vinheta por cima (#12101): entrada 0 = a
  * prévia montada, entrada 1 = o MOV. `subtitles` (opcional) entra depois da
- * vinheta, `loudnorm` no fim do áudio; o som do MOV (se houver) é misturado a
- * partir do mesmo instante. `duck` (#13240): o áudio da prévia abaixa no
+ * vinheta, `loudnorm` no fim do áudio; o som do MOV (se `hasAudio`) é misturado a
+ * partir do mesmo instante. A função é genérica: quem chama decide se o som
+ * do MOV entra (`vinhetaUsesMovAudio`, #13522: com o efeito configurado, não). `duck` (#13240): o áudio da prévia abaixa no
  * trecho da `vinhetaDuckSpan` (segundos da sequência), como no XML. `sfx`
  * (#13240): o efeito de `vinheta_som` é a entrada 2, misturado uma vez em
  * cada instante de `atSeqS`: segundos da SEQUÊNCIA (os mesmos quadros do XML,
@@ -4432,6 +4463,7 @@ export function buildXmeml(
       ? '<file id="file-vinheta"/>'
       : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(url(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
         `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
+        // O <file> descreve o MOV como ele é (com som, se tiver); só o clipitem do som sai quando o efeito substitui (#13522).
         (vin.hasAudio
           ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
           : "") +
@@ -4440,13 +4472,14 @@ export function buildXmeml(
     const head =
       `<name>vinheta-logo</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
       `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${span.end - span.start}</out>\n`;
-    const links = vin.hasAudio
+    const movAudio = vinhetaUsesMovAudio(vin);
+    const links = movAudio
       ? `<link><linkclipref>${vid}</linkclipref><mediatype>video</mediatype></link><link><linkclipref>${aid}</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex></link>`
       : "";
     const scale = vinhetaScalePct(vin, plan.spec);
     return {
       video: `\n<track><clipitem id="${vid}">${head}${fileRef}${motionFilter(scale, { horiz: 0, vert: 0 })}\n${links}</clipitem></track>`,
-      audio: (vin.hasAudio
+      audio: (movAudio
         ? `<track><clipitem id="${aid}">${head}<file id="file-vinheta"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem></track>`
         : "") + sfxTrack,
     };
