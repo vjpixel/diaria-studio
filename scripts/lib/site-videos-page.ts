@@ -22,6 +22,7 @@ import { escHtml } from "./html-escape.ts";
 import { renderAnalyticsHead, renderSeoMeta } from "./shared/seo-meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { renderSiteNav } from "./shared/site-nav.ts";
+import { renderSiteSocialFooter } from "./shared/site-social.ts"; // #13480: rodapé social global, como as demais páginas com o menu (#13321)
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
 import { YOUTUBE_EMBED_BASE } from "./site-page-video.ts";
 import { YOUTUBE_SERIES_NAME } from "./diaria/youtube-video.ts";
@@ -153,6 +154,7 @@ ${grid}
       <a href="/assinar">Assinar</a>
     </div>
   </main>
+  ${renderSiteSocialFooter({ inheritHostTokens: true })}
 </body>
 </html>
 `;
