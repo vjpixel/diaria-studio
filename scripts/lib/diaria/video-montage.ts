@@ -33,7 +33,7 @@ import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
 import { findTrecho, type TrechoXml } from "./video-xml-trechos.ts";
 import { falaCitaTela, telaTrack, type TelaOverlay } from "./video-tela.ts";
-import { trechoInseridoMarkersXml, type TrechoInseridoMarker } from "./video-trecho-inserido.ts";
+import { planComTrechos, trechoInseridoMarkersXml, trechoInseridoTracksXml, type TrechoInseridoClip, type TrechoInseridoMarker } from "./video-trecho-inserido.ts";
 import {
   coverScalePct,
   displaySize,
@@ -4204,6 +4204,14 @@ export function buildXmeml(
     /** #13437: onde entra o trecho de outro vídeo (formato react), marcador `trecho {id}` por sequência. */
     trechoMarkers?: Readonly<Record<string, readonly TrechoInseridoMarker[]>> | null;
     /**
+     * #13437 (PR 2): os clipes dos trechos por sequência (chave = `sequenceKey`),
+     * cortados do export do vídeo de origem. Cada um entra numa faixa própria
+     * no ponto `at` do plano, e o que vem depois anda a duração dele
+     * (`planComTrechos`); marcadores e boxes de tela andam junto. Ausente (ou
+     * sem a chave) = o XML de antes.
+     */
+    trechoClips?: Readonly<Record<string, readonly TrechoInseridoClip[]>> | null;
+    /**
      * #13219: XML leve. Os clipes do bruto (vídeo, fundo do `blur-fill` e o
      * áudio quando não há faixa tratada) apontam para o trecho que os contém
      * (H.264 + PCM, `video-xml-trechos.ts`), com in/out no tempo do trecho.
@@ -4379,7 +4387,9 @@ export function buildXmeml(
     return capaInicioTrack({ asset: { ...capa, frames }, rate, total, id: `capa-inicio-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: url(capa.xmlPath) });
   };
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
-  plans.forEach((plan, si) => {
+  plans.forEach((planoSemTrecho, si) => {
+    // #13437 (PR 2): com trecho inserido, o plano do XML abre espaço para ele; sem trecho, o mesmo plano.
+    const { plan, ripple } = planComTrechos(planoSemTrecho, opts.trechoClips?.[sequenceKey(planoSemTrecho.spec)] ?? [], fps);
     const { spec } = plan;
     const v: string[] = [];
     const a: string[] = [];
@@ -4457,18 +4467,29 @@ export function buildXmeml(
     const titleTrack = screenTitleTrack(plan, si);
     const vin = vinhetaTracks(plan, si);
     const capaTrack = capaInicioOf(plan, si);
+    // #13437 (PR 2): marcadores e boxes calculados sobre o plano sem trecho andam com ele (início no ponto de inserção anda, fim fica).
     const telaOverlays = (opts.telaOverlays?.[sequenceKey(spec)] ?? [])
+      .map((o) => ({ ...o, in: ripple.start(o.in), out: ripple.end(o.out) }))
       .filter((o) => o.in < plan.durationFrames)
       .map((o) => ({ ...o, out: Math.min(o.out, plan.durationFrames) }));
     const telaTrackXml = telaOverlays.length ? telaTrack({ overlays: telaOverlays, rate, idPrefix: `tela-${si + 1}`, url, fileIdOf: telaFileIdOf }) : "";
+    const telaMarkers = (opts.telaMarkers?.[sequenceKey(spec)] ?? []).map((m) => ({ ...m, in: ripple.start(m.in), out: ripple.end(m.out) }));
+    // O marcador do trecho com clipe cobre o clipe; sem clipe (fonte ausente), fica no ponto de inserção.
+    const trechoMarkers = (opts.trechoMarkers?.[sequenceKey(spec)] ?? []).map((m) => {
+      const placed = ripple.placed.find((p) => p.clip.id === m.id);
+      return placed ? { ...m, at: placed.pos, frames: placed.clip.frames } : { ...m, at: ripple.end(m.at) };
+    });
+    // A faixa de áudio do trecho vem depois das da vinheta (o link da vinheta aponta a faixa 2): o índice dela é contado.
+    const audioTrackIndex = 2 + (vin.audio.match(/<track>/g)?.length ?? 0);
+    const trechoTracks = trechoInseridoTracksXml({ placed: ripple.placed, rate, idPrefix: `trecho-${si + 1}`, url, audioTrackIndex });
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
-        telaMarkersXml(opts.telaMarkers?.[sequenceKey(spec)] ?? []) +
-        trechoInseridoMarkersXml(opts.trechoMarkers?.[sequenceKey(spec)] ?? []) +
+        telaMarkersXml(telaMarkers) +
+        trechoInseridoMarkersXml(trechoMarkers) +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
-        `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${telaTrackXml}${vin.video}${capaTrack}</video>\n` +
-        `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
+        `${bgTrack}<track>${v.join("\n")}</track>${trechoTracks.video}${titleTrack}${telaTrackXml}${vin.video}${capaTrack}</video>\n` +
+        `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}${trechoTracks.audio}</audio></media></sequence>`,
     );
   });
   out.push("</xmeml>");
