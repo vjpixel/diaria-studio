@@ -180,8 +180,10 @@ export function r2PublicUrl(config: R2UploadConfig, key: string): string {
 export interface R2UploadDeps {
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   now: () => Date;
-  /** Aviso não-fatal (limpeza de retenção, #10923). Default: console.warn. */
+  /** Aviso não-fatal (limpeza de retenção, #10923; nova tentativa de rede, #13566). Default: console.warn. */
   warn?: (msg: string) => void;
+  /** Espera entre tentativas de rede do `reuseOrUploadToR2` (#13566). Default: setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -371,11 +373,13 @@ export async function uploadToR2(
     secretAccessKey: config.secretAccessKey,
     now: deps.now(),
   });
-  const res = await deps.fetch(`https://${host}${encodePath(path)}`, { method: "PUT", headers, body: new Uint8Array(body), signal: AbortSignal.timeout(R2_PUT_TIMEOUT_MS) });
+  const res = await withNetworkStep(`R2 PUT ${key}`, () =>
+    deps.fetch(`https://${host}${encodePath(path)}`, { method: "PUT", headers, body: new Uint8Array(body), signal: AbortSignal.timeout(R2_PUT_TIMEOUT_MS) }),
+  );
   if (!res.ok) throw new Error(`R2 PUT ${key}: HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 300)}`);
 
   const url = r2PublicUrl(config, key);
-  const head = await deps.fetch(url, { method: "HEAD", signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) });
+  const head = await withNetworkStep(`R2 HEAD ${url}`, () => deps.fetch(url, { method: "HEAD", signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) }));
   if (!head.ok) throw new Error(`R2: ${url} não está público (HEAD ${head.status}) — confira o acesso público do bucket (R2_PUBLIC_BASE/SHORTS_R2_PUBLIC_BASE)`);
   const len = head.headers.get("content-length");
   if (len !== null && Number(len) !== body.length) {
@@ -455,5 +459,78 @@ export async function reuseOrUploadToR2(
   opts: { keep?: readonly string[] } = {},
 ): Promise<{ url: string; reused: boolean }> {
   if (await r2ObjectHasBody(deps, config, key, body)) return { url: r2PublicUrl(config, key), reused: true };
-  return { url: await uploadToR2(deps, config, key, body, contentType, opts.keep ? { keep: opts.keep } : {}), reused: false };
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const warn = deps.warn ?? ((m: string) => console.warn(m));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return { url: await uploadToR2(deps, config, key, body, contentType, opts.keep ? { keep: opts.keep } : {}), reused: false };
+    } catch (e) {
+      // #13566/#13567: só erro de REDE (o fetch lançou, sem resposta HTTP) tenta de novo.
+      // HTTP 4xx/5xx, URL não pública, tamanho/ETag divergente e timeout seguem lançando na hora.
+      if (!(e instanceof R2NetworkError) || attempt >= R2_NETWORK_ATTEMPTS) throw e;
+      const wait = R2_NETWORK_BACKOFF_MS[Math.min(attempt - 1, R2_NETWORK_BACKOFF_MS.length - 1)];
+      warn(`[r2] ${e.message} — tentativa ${attempt}/${R2_NETWORK_ATTEMPTS}; nova tentativa em ${Math.round(wait / 1000)} s (#13566)`);
+      await sleep(wait);
+      // O PUT pode ter gravado o objeto e só a resposta se perdeu (261118: a rodada seguinte achou o
+      // objeto do dia com o mesmo ETag). Reconfere antes de reenviar o arquivo inteiro.
+      if (await r2ObjectHasBody(deps, config, key, body)) return { url: r2PublicUrl(config, key), reused: true };
+    }
+  }
+}
+
+/**
+ * #13566/#13567: tentativas do upload do vertical quando a falha é de rede.
+ * Em 18/11/2026 os timers do Threads pessoal e do Instagram falharam com um
+ * `fetch failed` seco depois de ~6 min de rodada, e a rodada seguinte (1 h
+ * depois) achou o objeto do dia já no bucket com o mesmo conteúdo: o PUT
+ * gravou e a resposta se perdeu. O PUT do mesmo arquivo na mesma chave é
+ * idempotente, e cada nova tentativa reconfere o objeto antes de reenviar.
+ */
+export const R2_NETWORK_ATTEMPTS = 3;
+export const R2_NETWORK_BACKOFF_MS: readonly number[] = [10_000, 30_000];
+
+/**
+ * #13566/#13567: falha de rede de um request ao R2 (o `fetch` lançou, sem
+ * resposta HTTP). A mensagem nomeia o request e a causa do undici, que o
+ * `fetch failed` sozinho esconde (o alarme do timer só dizia "fetch failed").
+ */
+export class R2NetworkError extends Error {
+  constructor(
+    readonly step: string,
+    readonly original: unknown,
+  ) {
+    super(`${step}: ${describeNetworkError(original)}`);
+    this.name = "R2NetworkError";
+  }
+}
+
+/**
+ * `fetch failed (ECONNRESET: read ECONNRESET)`: a mensagem do erro mais a
+ * causa encadeada (`cause.code` e `cause.message`), que é onde o undici põe o
+ * motivo real. Puro.
+ */
+export function describeNetworkError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const cause = (e as Error & { cause?: unknown }).cause;
+  if (!(cause instanceof Error) && !(cause && typeof cause === "object")) return e.message;
+  const c = cause as { code?: unknown; message?: unknown };
+  const code = typeof c.code === "string" ? c.code : null;
+  const msg = typeof c.message === "string" && c.message ? c.message : null;
+  const detail = [code, msg && msg !== code ? msg : null].filter(Boolean).join(": ");
+  return detail ? `${e.message} (${detail})` : e.message;
+}
+
+/** Timeout e abort não viram `R2NetworkError`: repetir um PUT que estourou 15 min só seguraria o lock do timer. */
+function isTimeoutOrAbort(e: unknown): boolean {
+  const name = (e as { name?: unknown })?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+async function withNetworkStep(step: string, run: () => Promise<Response>): Promise<Response> {
+  try {
+    return await run();
+  } catch (e) {
+    if (isTimeoutOrAbort(e)) throw e;
+    throw new R2NetworkError(step, e);
+  }
 }
