@@ -158,6 +158,12 @@ const DATA_DELETION_RES: RegExp[] = [
   /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(meus|todos os meus|os meus) dados\b/,
   /\bexclusao (dos |de )?(meus )?dados\b/,
   /\bdireito ao esquecimento\b/,
+  // "deletar meu contato de todos os seus bancos de dados" (#13533). Só "banco de dados", ou "todos os
+  // seus cadastros/bases/registros/sistemas", viram exclusão de dados: "removam meu e-mail da base" é
+  // saída simples da lista, e "de todas as listas" também.
+  /\b(exclu|apag|delet|remov|elimin|retir)\w*\b[^.!?\n]{0,60}\bbancos? de dados\b/,
+  /\b(exclu|apag|delet|remov|elimin|retir)\w*\b[^.!?\n]{0,60}\btod[oa]s (os |as )?(seus |suas |vossos |vossas )?(bancos de dados|bases( de dados)?|cadastros|registros|sistemas)\b/,
+  /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(minhas|todas as minhas) informac(ao|oes)\b/,
 ];
 
 const SAIDA_RES: RegExp[] = [
