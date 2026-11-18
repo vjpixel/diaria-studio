@@ -46,6 +46,7 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { checkIsAncestor, getDiffLineStats } from "./lib/diff-line-stats.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
@@ -92,7 +93,7 @@ export function resolveDefaultHead(cwd: string): { head: string; error?: string 
   return { head: "HEAD" };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   const base = getArg(argv, "base");
   const explicitHead = getArg(argv, "head");
@@ -102,11 +103,11 @@ async function main(): Promise<void> {
 
   if (!base || !sessionKind) {
     console.error(`${LOG_PREFIX} uso: --base <sha> --session-kind ${VALID_ROUND_SESSION_KINDS.join("|")} [--head <sha>] [--edition AAMMDD] [--dry-run]`);
-    process.exit(1);
+    return 1;
   }
   if (!isValidRoundSessionKind(sessionKind)) {
     console.error(`${LOG_PREFIX} --session-kind inválido: '${sessionKind}' (esperado: ${VALID_ROUND_SESSION_KINDS.join(", ")})`);
-    process.exit(1);
+    return 1;
   }
 
   // #10422: `base` precisa ser ancestral de `head`. Se o checkout local está
@@ -123,8 +124,7 @@ async function main(): Promise<void> {
     const resolved = resolveDefaultHead(cwd);
     if (resolved.error) {
       console.error(`${LOG_PREFIX} recusado, nada persistido: ${resolved.error}`);
-      process.exit(1);
-      return;
+      return 1;
     }
     head = resolved.head;
   }
@@ -136,8 +136,7 @@ async function main(): Promise<void> {
           `o diff sairia invertido. Atualize o checkout (git fetch && git merge --ff-only) ou passe --head origin/master.`
         : `não foi possível verificar se ${base} é ancestral de ${head}: ${ancestry.detail}`;
     console.error(`${LOG_PREFIX} recusado, nada persistido: ${why}`);
-    process.exit(1);
-    return;
+    return 1;
   }
 
   let stats;
@@ -145,8 +144,7 @@ async function main(): Promise<void> {
     stats = getDiffLineStats(base, head, { cwd });
   } catch (e) {
     console.error(`${LOG_PREFIX} ${(e as Error).message}`);
-    process.exit(1);
-    return;
+    return 1;
   }
 
   const record = buildRoundDiffStatsRecord({ sessionKind, base, head, stats });
@@ -166,8 +164,5 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`${LOG_PREFIX} erro inesperado: ${(e as Error).message}`);
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error(`${LOG_PREFIX} erro inesperado: ${(e as Error).message}`) });
 }
