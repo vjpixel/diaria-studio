@@ -77,6 +77,21 @@ test("#12227 a citação do e-mail original (que tem 'descadastre-se' e 'quero')
   assert.equal(classifyReply(msg(QUOTE)).kind, "ruido");
 });
 
+test("#13520 assinatura de celular colada na palavra anterior não esconde o \"quero\"", () => {
+  // Texto real da triagem de 18/11/2026 (lote 23fe14313cf3).
+  const real = classifyReply(msg("Eu queroEnviado do meu Galaxy"));
+  assert.equal(real.kind, "quero", real.reason);
+  assert.equal(real.cleaned, "Eu quero");
+  assert.equal(classifyReply(msg("QueroEnviado do meu iPhone" + QUOTE)).kind, "quero");
+  assert.equal(classifyReply(msg("quero!Sent from my iPhone")).kind, "quero");
+  assert.equal(stripQuoted("Sim, quero Enviado do meu smartphone Samsung Galaxy."), "Sim, quero");
+  assert.equal(stripQuoted("queroObter o Outlook para Android"), "quero");
+  // Sem aparelho nomeado, ou no meio da frase, o texto do assinante fica intacto.
+  assert.equal(stripQuoted("O relatório enviado do meu trabalho chegou"), "O relatório enviado do meu trabalho chegou");
+  const meio = "Foi enviado do meu iPhone ontem à noite, quando voltei do trabalho e resolvi responder";
+  assert.equal(stripQuoted(meio), meio);
+});
+
 test("#12227 resposta automática de férias é ruído (header, assunto ou texto)", () => {
   assert.equal(
     classifyReply(msg("Estou de férias até dia 20. Quero dizer, retorno no dia 20.", {
