@@ -27,13 +27,13 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getIntArg, isMainModule } from "./lib/cli-args.ts";
-import { planSessionGc, garbageCollectSessions } from "./lib/session-registry.ts";
+import { planSessionGc, garbageCollectSessions, clearPresenceForGcRemovals } from "./lib/session-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const LOG_PREFIX = "[session-registry-gc]";
 
-function main(): void {
+async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");
@@ -54,8 +54,14 @@ function main(): void {
   console.log(
     `${LOG_PREFIX} ${isDryRun ? "--dry-run: " : ""}${removedCount}/${plan.length} identidade(s) ${isDryRun ? "seriam removidas" : "removidas"}.`,
   );
+  // #13596: coordenadora removida pelo GC não deixa a presença no D1 viva
+  // (fail-soft: falha do D1 vira aviso no stderr).
+  if (!isDryRun) await clearPresenceForGcRemovals(ROOT, plan);
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    console.error(`${LOG_PREFIX} erro: ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 1;
+  });
 }

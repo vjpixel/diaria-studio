@@ -467,6 +467,33 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo
 }
 
 /**
+ * #13596: a presença do D1 que se diz DESTA máquina só vale com algum registro
+ * coordenador da mesma sessão na varredura (`scan.knownIds`, janela de 24h).
+ * Presença de outra máquina (ou sem `machineTag`) passa: é o caso que a
+ * presença existe para cobrir. Mesma regra de `presenceMachineConsistent` do
+ * TS (`session-registry.ts`). Puro.
+ */
+export function presenceMachineConsistent(presence, scan, localTag) {
+  if (!presence || typeof presence.machineTag !== "string" || presence.machineTag !== localTag) return true;
+  return scan?.knownIds?.has(presence.sessionId) === true;
+}
+
+/**
+ * #13596: aviso de stderr quando a concessão do D1 vale pela PRESENÇA da
+ * concedente (sem registro dela nesta máquina). A linha `coordinator:` é
+ * autodeclarada — quem tem a credencial do D1 grava para qualquer id —, então
+ * o aceite nunca passa em silêncio. Puro.
+ */
+export function d1PresenceGrantNotice(grantedBy, presence) {
+  const where = typeof presence?.machineTag === "string" ? `máquina ${presence.machineTag}` : "máquina não declarada";
+  return (
+    `merge-guard (#13596): concessão do D1 aceita pela PRESENÇA de ${grantedBy} no D1 (grantorVia: d1-presence, ` +
+    `${presence?.kind ?? "?"}, ${where}) — o registro dela não está nesta máquina. Se essa coordenadora não ` +
+    "existe, a linha foi forjada com a credencial do D1."
+  );
+}
+
+/**
  * #13242: aceita a concessão lida do D1 (`d1ReadMergeGrant`, já conferida em
  * forma, identidade, auto-concessão e repo) só com as MESMAS regras do arquivo
  * que dependem desta máquina. Pura.
@@ -485,15 +512,36 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo
  * autoridade de merge e `sessionId` igual ao `grantedBy`. Concedente que a
  * varredura TEM decide pela varredura: continuo segue recusada mesmo com
  * presença no D1.
+ *
+ * #13596 (paridade com `findLiveMergeGrantInD1`, fail-closed):
+ *   - registro coordenador SEM autoridade (continuo) da concedente em
+ *     qualquer ponto da janela de 24h (`scan.nonAuthorityIds`, inclusive
+ *     PARADO) recusa, antes de olhar a presença. Antes, o hook descartava o
+ *     registro stale e aceitava pela presença, onde o TS já recusava;
+ *   - presença que diz ser DESTA máquina (`machineTag === localTag`) sem
+ *     nenhum registro coordenador da concedente aqui (`scan.knownIds`) não
+ *     atesta nada: a coordenadora desta máquina escreve o registro no disco
+ *     local, sem depender de sync, então a linha é sobra (`end` que não
+ *     limpou o D1) ou foi escrita sem registro.
  */
-export function acceptD1MergeGrant(d1Grant, sessionId, scan, ledger, now = Date.now(), d1Presence = null) {
+export function acceptD1MergeGrant(
+  d1Grant,
+  sessionId,
+  scan,
+  ledger,
+  now = Date.now(),
+  d1Presence = null,
+  localTag = machineTag(),
+) {
   if (!d1Grant || typeof sessionId !== "string" || sessionId === "") return null;
   if (d1Grant.grantedTo !== sessionId || d1Grant.grantedBy === d1Grant.grantedTo) return null;
+  if (scan?.nonAuthorityIds?.has(d1Grant.grantedBy)) return null;
   if (scan?.ids?.has(d1Grant.grantedBy)) {
     if (!MERGE_AUTHORITY_KINDS.has(scan.kinds?.get(d1Grant.grantedBy))) return null;
   } else {
     if (!d1Presence || d1Presence.sessionId !== d1Grant.grantedBy) return null;
     if (!MERGE_AUTHORITY_KINDS.has(d1Presence.kind)) return null;
+    if (!presenceMachineConsistent(d1Presence, scan, localTag)) return null;
   }
   if (ledger && ledgerConsumedAt(ledger, d1Grant)) return null;
   const grantedMs = Date.parse(d1Grant.grantedAt);
@@ -891,6 +939,17 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
   // estava ausente na listagem). Aditivo, para o run-log dizer quando a
   // identidade da coordenadora veio da cópia.
   const viaConflictCopy = new Set();
+  // #13596: coordenadoras CONHECIDAS na janela de 24h (`MAX_SESSION_AGE_MS`),
+  // inclusive paradas além de `SOFT_STALE_MS` e fora de `ids`. Aditivo, só
+  // para a concessão do D1 (`acceptD1MergeGrant`), com a mesma régua de
+  // `findLiveMergeGrantInD1` (`listActiveSessions` lista as stale também):
+  //   - `knownIds`: qualquer registro coordenador não encerrado da sessão;
+  //   - `nonAuthorityIds`: algum desses registros é coordenadora SEM
+  //     autoridade de merge (continuo). O TS recusa a concedente nesse caso
+  //     mesmo com o registro parado; antes, o hook descartava o registro
+  //     stale e aceitava pela presença no D1.
+  const knownIds = new Set();
+  const nonAuthorityIds = new Set();
   /** Mesmos filtros para o arquivo real e para a cópia de conflito. */
   const admit = (record) => {
     if (!record || typeof record !== "object") return false;
@@ -906,6 +965,12 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
     if (!Number.isFinite(heartbeatMs)) return false;
     const ageMs = now - heartbeatMs;
+    // #13596: mesma janela de `listActiveSessions` (24h, skew tolerado),
+    // antes do corte de liveness — o registro parado também conta aqui.
+    if (ageMs >= -CLOCK_SKEW_TOLERANCE_MS && ageMs <= MAX_SESSION_AGE_MS && !recordIsEnded(record)) {
+      knownIds.add(record.sessionId);
+      if (!MERGE_AUTHORITY_KINDS.has(record.kind)) nonAuthorityIds.add(record.sessionId);
+    }
     if (ageMs < 0 || ageMs > MAX_SESSION_AGE_MS) return false;
     // #5787 Defeito 1: janela de liveness prática (90 min). Uma sessão que
     // não bateu heartbeat há mais de SOFT_STALE_MS está morta para efeito
@@ -951,7 +1016,20 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
     if (record === null || ids.has(record.sessionId)) continue;
     if (admit(record)) viaConflictCopy.add(record.sessionId);
   }
-  return { ids, kinds, attended, degraded, viaConflictCopy };
+  return { ids, kinds, attended, degraded, viaConflictCopy, knownIds, nonAuthorityIds };
+}
+
+/**
+ * #13596: registro encerrado pelo próprio conteúdo — `endedAt` legível, a
+ * mesma regra de `endedAfterLastHeartbeat` do TS aplicada a um registro só
+ * (ali o carimbo só perde para um heartbeat de OUTRO registro do grupo, sem
+ * `endedAt`). É o carimbo que a promoção de kind grava no registro antigo
+ * (#7028): um continuo promovido a overnight não pode seguir contando como
+ * continuo. Puro.
+ */
+export function recordIsEnded(record) {
+  if (!record?.endedAt) return false;
+  return Number.isFinite(Date.parse(record.endedAt));
 }
 
 /**
@@ -2099,12 +2177,19 @@ if (
             Date.now(),
             d1Presence,
           );
+          const grantorVia = scan.ids.has(d1GrantRead.value.grantedBy) ? "scan" : d1Presence ? "d1-presence" : "none";
           appendHookRunLog(repoRoot, "merge-guard", "info", "d1_grant_found", {
             grantedBy: d1GrantRead.value.grantedBy,
             grantedAt: d1GrantRead.value.grantedAt,
             accepted: accepted !== null,
-            grantorVia: scan.ids.has(d1GrantRead.value.grantedBy) ? "scan" : d1Presence ? "d1-presence" : "none",
+            grantorVia,
+            ...(grantorVia === "d1-presence" ? { presenceMachineTag: d1Presence?.machineTag ?? null } : {}),
           });
+          if (accepted !== null && grantorVia === "d1-presence") {
+            // #13596: a presença é autodeclarada (quem tem a credencial do D1
+            // a grava para qualquer id). Aceitar por ela nunca passa calado.
+            d1Notices.push(d1PresenceGrantNotice(d1GrantRead.value.grantedBy, d1Presence));
+          }
           if (accepted !== null) {
             grant = accepted;
             grantFromD1 = true;

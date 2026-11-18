@@ -78,8 +78,8 @@ const silent = { warn: () => {} };
 /** A overnight do `300` concede pela rota real (`grant-merge`): arquivo + presença + linha do D1. */
 async function grantFrom300(d1: FakeD1) {
   const root300 = freshRoot();
-  registerSession(root300, "overnight", COORD, { tag: "300" });
-  const r = await grantMergeWindowShared(root300, "overnight", COORD, NEO, { pr: 13561, tag: "300" }, { d1, ...silent });
+  registerSession(root300, "overnight", COORD, { tag: GRANTOR_TAG });
+  const r = await grantMergeWindowShared(root300, "overnight", COORD, NEO, { pr: 13561, tag: GRANTOR_TAG }, { d1, ...silent });
   assert.equal(r.backend, "d1");
   return r;
 }
@@ -94,7 +94,7 @@ describe("grant-merge grava a presença da concedente (#13577)", () => {
     const presence = await ts.d1ReadCoordinatorPresence(d1, COORD);
     assert.ok(presence.ok && presence.value, "presença no D1");
     assert.equal(presence.value.kind, "overnight");
-    assert.equal(presence.value.machineTag, "300");
+    assert.equal(presence.value.machineTag, GRANTOR_TAG);
     // A chave gravada pelo grant-merge é a mesma que o leitor monta para o
     // mesmo repo/PR (hipótese 2 da issue, descartada com teste).
     const rows = d1.db.prepare("SELECT name FROM locks WHERE name LIKE 'merge-grant:%'").all() as Array<{ name: string }>;
@@ -350,15 +350,20 @@ describe("guard + CLI com a concedente ausente no Neo (#13577, ponta a ponta)", 
   it("com a presença da concedente no D1: check-merge-grant granted e o guard permite", async () => {
     srv.d1.db.exec("DELETE FROM locks");
     const root = neoRoot();
-    await ts.d1WriteCoordinatorPresence(srv.d1, { sessionId: COORD, kind: "overnight", machineTag: "300" });
+    await ts.d1WriteCoordinatorPresence(srv.d1, { sessionId: COORD, kind: "overnight", machineTag: GRANTOR_TAG });
     await ts.d1WriteMergeGrant(srv.d1, grantRow(), MERGE_GRANT_TTL_MS);
     const check = await runCli(root, ["check-merge-grant", "--session-id", NEO]);
     const checked = JSON.parse(check.stdout);
     assert.equal(checked.granted, true, check.stderr);
     assert.equal(checked.source, "d1");
     assert.equal(checked.grantedBy.via, "d1-presence");
+    // #13596: o aceite pela presença nunca passa calado (stderr do CLI).
+    assert.match(check.stderr, /grantorVia: d1-presence/);
     const allowed = await runGuard(root);
-    assert.equal(allowed.stdout.trim(), "", `concessão do D1 + presença + lock: permite. ${allowed.stdout}`);
+    // #13596: permite (sem `deny`), com o aviso da presença no systemMessage.
+    const out = allowed.stdout.trim() === "" ? {} : JSON.parse(allowed.stdout);
+    assert.equal(out.hookSpecificOutput?.permissionDecision, undefined, `concessão do D1 + presença + lock: permite. ${allowed.stdout}`);
+    assert.match(out.systemMessage ?? "", /grantorVia: d1-presence/);
     const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
     assert.match(log, /"accepted":true,"grantorVia":"d1-presence"/);
   });
