@@ -4124,17 +4124,28 @@ function fmtTrechoFrames(n: number | null): string {
   return n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`;
 }
 
+/** #13500: os quadros do arquivo entre `min` e `max`, com a folga de `trechoFramesOk` nas duas pontas; null = não. */
+export function trechoFramesInRange(min: number, max: number, got: number | null): boolean {
+  return got !== null && (trechoFramesOk(min, got) || trechoFramesOk(max, got) || (got >= min && got <= max));
+}
+
+/** #13500: os quadros do render divergem do esperado (o resto do erro do corte é outro: ffmpeg, disco). */
+export class TrechoFramesError extends Error {}
+
 /**
  * #13488/#13500: o render de um arquivo cujo número de quadros é sabido
  * (trecho do XML leve, trecho inserido). `render` grava num `.part` da pasta
  * temporária `tmp` (FORA do out dir: o Drive for desktop subia o `.part` e não
  * propagava o rename); os quadros são conferidos ali, o arquivo é copiado para
  * `out` e conferido de novo na cópia. Divergência tenta mais uma vez e depois
- * lança, sem deixar `out` com o arquivo curto. `render` que lança, lança.
+ * lança `TrechoFramesError`, sem deixar `out` com o arquivo curto. `render`
+ * que lança, lança o erro dele. Devolve os quadros da cópia.
  */
 export function renderFramesConferidos(input: {
   out: string;
   expected: number;
+  /** #13500: o mínimo aceito (padrão `expected`): o trecho inserido que vai até o fim da fonte pode sair uns quadros mais curto. */
+  minExpected?: number;
   tmp: string;
   render: (part: string) => void;
   probeFrames: (path: string) => number | null;
@@ -4144,24 +4155,26 @@ export function renderFramesConferidos(input: {
   pede: string;
   tag: string;
   log: (line: string) => void;
-}): void {
+}): number {
   const part = join(input.tmp, `${basename(input.out)}.part`);
+  const ok = (got: number | null) => trechoFramesInRange(input.minExpected ?? input.expected, input.expected, got);
   for (let attempt = 1; ; attempt++) {
     rmSync(part, { force: true });
     input.render(part);
     const gotPart = input.probeFrames(part);
-    let bad = trechoFramesOk(input.expected, gotPart) ? null : `o render saiu com ${fmtTrechoFrames(gotPart)}`;
+    let bad = ok(gotPart) ? null : `o render saiu com ${fmtTrechoFrames(gotPart)}`;
+    let gotOut: number | null = null;
     if (!bad) {
       copyFileSync(part, input.out);
-      const gotOut = input.probeFrames(input.out);
-      if (!trechoFramesOk(input.expected, gotOut)) {
+      gotOut = input.probeFrames(input.out);
+      if (!ok(gotOut)) {
         rmSync(input.out, { force: true });
         bad = `a cópia em ${input.out} ficou com ${fmtTrechoFrames(gotOut)}`;
       }
     }
     rmSync(part, { force: true });
-    if (!bad) return;
-    if (attempt >= 2) throw new Error(`${input.label}: ${bad}, ${input.pede} ${input.expected} (2 tentativas, ${input.tag})`);
+    if (!bad) return gotOut!;
+    if (attempt >= 2) throw new TrechoFramesError(`${input.label}: ${bad}, ${input.pede} ${input.expected} (2 tentativas, ${input.tag})`);
     input.log(`[aviso] ${input.label}: ${bad}, ${input.pede} ${input.expected}; refazendo (${input.tag})`);
   }
 }
@@ -4270,6 +4283,48 @@ export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">
 }
 
 /**
+ * #13500: o quanto um trecho inserido pode passar do fim do vídeo de origem, e
+ * sair mais curto que o intervalo, sem ser recusado: o stream de vídeo costuma
+ * acabar antes do container (padding do AAC), e um `fim` = fim do vídeo rende
+ * de 1 a 3 quadros a menos.
+ */
+export const TRECHO_END_SHORT_TOL_S = 0.1;
+
+/**
+ * #13500: o mínimo de quadros aceito no clipe do trecho inserido. O intervalo
+ * inteiro, salvo quando o fim do trecho chega ao fim do vídeo de origem
+ * (`durS`, a do stream de vídeo): aí até `TRECHO_END_SHORT_TOL_S` a menos.
+ */
+export function trechoInseridoMinFrames(frames: number, fimS: number, durS: number | null, fps: number): number {
+  if (durS === null || fimS < durS - TRECHO_END_SHORT_TOL_S) return frames;
+  return Math.max(1, frames - Math.ceil(TRECHO_END_SHORT_TOL_S * fps));
+}
+
+/** #13500: a saída do ffprobe de uma duração (`csv=p=0`) → segundos; vazia, `N/A` ou não positiva = null. */
+export function parseProbeDurationS(stdout: string): number | null {
+  const d = Number(stdout.trim().split(/\r?\n/)[0]?.replace(/,$/, ""));
+  return Number.isFinite(d) && d > 0 ? d : null;
+}
+
+/**
+ * #13500: a duração do vídeo de origem para conferir o fim do trecho: a do
+ * stream de vídeo (`v:0`), que acaba antes do container quando o áudio tem
+ * padding; sem ela, a do container (`format`). ffprobe falho = null.
+ */
+export function probeVideoDurationS(src: string, ffprobe: (args: string[]) => string = (args) => run("ffprobe", args).stdout): number | null {
+  for (const args of [
+    ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", src],
+    ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src],
+  ]) {
+    try {
+      const d = parseProbeDurationS(ffprobe(args));
+      if (d !== null) return d;
+    } catch { /* tenta o próximo */ }
+  }
+  return null;
+}
+
+/**
  * #13437 (PR 2): o clipe de um trecho inserido, cortado do export do vídeo de
  * origem no intervalo do roteiro, no tamanho e fps da sequência, no out dir
  * (`trechoInseridoFileName`; o hash muda com a fonte e o intervalo). Arquivo já
@@ -4278,12 +4333,16 @@ export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">
  * `renderTrechos`, #13488: o hash não muda com um corte interrompido, e o
  * truncado era reaproveitado em todo rebuild). O corte vai para uma pasta
  * temporária FORA do out dir e é copiado (`renderFramesConferidos`), com os
- * quadros conferidos no temporário e na cópia. Sem fonte, intervalo de menos de
- * 1 quadro ou além do fim do vídeo, fonte ilegível, ffmpeg falho ou clipe com
- * outro número de quadros (2 tentativas; inclui o ffprobe que não conta e a
- * fonte que acaba antes do fim do trecho): `null` com `[aviso]` (o trecho fica
- * só no marcador), nunca para o build. ffprobe que falha na duração da fonte é
- * `[aviso]`, sem recusar. `probeFrames`/`tmpRoot` são injetáveis para o teste.
+ * quadros conferidos no temporário e na cópia. Arquivo cujos quadros o ffprobe
+ * não conta é reaproveitado com [aviso] (nunca apagado por falha do ffprobe).
+ * Trecho que chega ao fim do vídeo de origem (duração do stream de vídeo) pode
+ * sair até `TRECHO_END_SHORT_TOL_S` mais curto: entra com os quadros reais em
+ * `frames`, com [premissa]. Sem fonte, intervalo de menos de 1 quadro ou além
+ * do fim do vídeo (mais que a folga), fonte ilegível, ffmpeg falho ou clipe
+ * com outro número de quadros (2 tentativas; inclui o render que o ffprobe não
+ * conta): `null` com `[aviso]` (o trecho fica só no marcador), nunca para o
+ * build. ffprobe que falha na duração da fonte é `[aviso]`, sem recusar.
+ * `probeDurationS`/`probeFrames`/`tmpRoot` são injetáveis para o teste.
  */
 export function cutTrechoInserido(
   ctx: Ctx,
@@ -4317,18 +4376,11 @@ export function cutTrechoInserido(
     console.error(`[aviso] ${where} NÃO inserido: o intervalo do roteiro (${t.trecho.inicioS.toFixed(2)} a ${t.trecho.fimS.toFixed(2)} s) não chega a 1 quadro a ${fps} fps; conferir o intervalo no roteiro (#13437)`);
     return null;
   }
-  const probe = deps.probeDurationS ?? ((src: string) => {
-    try {
-      const d = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src]).stdout.trim());
-      return Number.isFinite(d) && d > 0 ? d : null;
-    } catch {
-      return null;
-    }
-  });
+  const probe = deps.probeDurationS ?? probeVideoDurationS;
   const dur = probe(fonte.fonte);
   if (dur === null) {
     console.error(`[aviso] ${where}: a duração de ${fonte.fonte} não foi medida (ffprobe falhou); o fim do trecho não foi conferido contra o fim do vídeo, e o clipe cortado é conferido depois do corte (#13437)`);
-  } else if (t.trecho.fimS > dur + 0.05) {
+  } else if (t.trecho.fimS > dur + TRECHO_END_SHORT_TOL_S) {
     console.error(`[aviso] ${where} NÃO inserido: o fim do trecho (${t.trecho.fimS.toFixed(2)} s) passa do fim de ${fonte.fonte} (${dur.toFixed(2)} s); conferir o intervalo no roteiro, ou a fonte (#13437)`);
     return null;
   }
@@ -4356,9 +4408,25 @@ export function cutTrechoInserido(
     fonte: fonte.fonte,
   };
   const probeFrames = deps.probeFrames ?? probeTrechoFrames;
+  // #13500: trecho que vai até o fim do vídeo de origem pode sair até TRECHO_END_SHORT_TOL_S mais curto
+  // (o stream de vídeo acaba antes do container); aceito com os quadros reais, nunca recusado por isso.
+  const minFrames = trechoInseridoMinFrames(frames, t.trecho.fimS, dur, fps);
+  const usarQuadros = (got: number, onde: string) => {
+    if (minFrames < frames && got < frames) {
+      console.error(`[premissa] ${where}: ${onde} tem ${got} quadro(s), ${frames - got} a menos que o intervalo (a fonte acaba antes do fim do trecho, dentro de ${TRECHO_END_SHORT_TOL_S} s): o XML usa os ${got} (#13500)`);
+      clip.frames = got;
+    }
+  };
   if (existsSync(out)) {
     const got = probeFrames(out);
-    if (trechoFramesOk(frames, got)) {
+    if (got === null) {
+      // #13500: ffprobe que não conta (ausente, falho) não apaga o corte existente; reaproveitado como antes.
+      console.error(`[aviso] ${where}: os quadros de ${name} não foram contados (ffprobe falhou): reaproveitado sem conferir; conferir no 1º import (#13500)`);
+      if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
+      return clip;
+    }
+    if (trechoFramesInRange(minFrames, frames, got)) {
+      usarQuadros(got, `o ${name} reaproveitado`);
       if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
       return clip;
     }
@@ -4366,6 +4434,8 @@ export function cutTrechoInserido(
     console.error(`[aviso] ${where}: ${name} no disco com ${fmtTrechoFrames(got)}, o intervalo pede ${frames}: apagado e cortado de novo (#13500)`);
     rmSync(out, { force: true });
   }
+  // #13500: o código antigo cortava para `.part` dentro do out dir (o Drive); o órfão sai antes do corte.
+  rmSync(`${out}.part`, { force: true });
   const encode = deps.encode ?? ((args: string[]) => { run("ffmpeg", args); });
   let tmp: string | null = null;
   try {
@@ -4375,9 +4445,10 @@ export function cutTrechoInserido(
     } catch { /* sem a lista: libx264 */ }
     tmp = mkdtempSync(join(deps.tmpRoot ?? tmpdir(), "diaria-trecho-inserido-"));
     // #13500: o clipe tem de ter os quadros do intervalo; menos = a fonte acabou antes, ou o arquivo ficou curto.
-    renderFramesConferidos({
+    const got = renderFramesConferidos({
       out,
       expected: frames,
+      minExpected: minFrames,
       tmp,
       probeFrames,
       label: `trecho inserido ${t.id}`,
@@ -4396,8 +4467,11 @@ export function cutTrechoInserido(
         }
       },
     });
+    usarQuadros(got, "o clipe cortado");
   } catch (e) {
-    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}; a fonte acaba antes do fim do trecho?); fica só o marcador (#13437)`);
+    // #13500: a dica da fonte curta só quando o que falhou foi a contagem de quadros, não o ffmpeg.
+    const dica = e instanceof TrechoFramesError ? "; a fonte acaba antes do fim do trecho?" : "";
+    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}${dica}); fica só o marcador (#13437)`);
     return null;
   } finally {
     if (tmp) rmSync(tmp, { recursive: true, force: true });
