@@ -80,6 +80,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { ghPrSegments, repoFromCwdOrigin } from "./lib/gh-target-repo.mjs";
+import { runsGhPrCreate } from "./lib/gh-pr-create-command.mjs";
 
 /**
  * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
@@ -117,11 +118,17 @@ export function containsShellWrappedGhPrCreate(command) {
   );
 }
 
+/**
+ * Desde o #13550 a leitura pela posição de comando vem de `runsGhPrCreate`
+ * (`lib/gh-pr-create-command.mjs`): atribuição de ambiente, `env`/`command`/
+ * `time`/`nohup`, `&`, subshell e flag global do gh na frente do `gh pr
+ * create` deixaram de tirar o comando deste guard (e dos que importam esta
+ * função: typecheck, import de test runner, snapshot do orchestrator).
+ */
 export function isGhPrCreateCommand(command) {
   if (typeof command !== "string") return false;
   if (containsShellWrappedGhPrCreate(command)) return true;
-  const stripped = stripQuotedSpans(command);
-  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped);
+  return runsGhPrCreate(command);
 }
 
 /** Padrões de path que nunca deveriam estar versionados — artefato de

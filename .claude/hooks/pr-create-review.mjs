@@ -119,6 +119,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { ANY_NON_STUDIO_REPO, isForeignRepo } from "./lib/gh-target-repo.mjs";
+import { runsGhPrCreate } from "./lib/gh-pr-create-command.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1252,10 +1253,11 @@ export { stripQuotedSpans };
  */
 export function isGhPrCreateCommand(command) {
   if (typeof command !== "string") return "unknown";
-  const stripped = stripQuotedSpans(command);
-  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped)
-    ? "create"
-    : "not-create";
+  // #13550: leitura pela posição de comando, compartilhada com os guards
+  // PreToolUse — `GH_TOKEN=x gh pr create`, `env … gh pr create`, `(… gh pr
+  // create)`, `make & gh pr create` respondiam "not-create" e a PR saía sem
+  // o review automático.
+  return runsGhPrCreate(command) ? "create" : "not-create";
 }
 
 /**
