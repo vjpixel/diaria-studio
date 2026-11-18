@@ -12,8 +12,8 @@ Invariante `edition-sync-conflicts` (Stage 4, `error`): roda em `check-invariant
 ## Restaurar com segurança
 
 1. Pare a escrita na edição (nenhuma outra sessão ou máquina rodando Stage 2-4 nela).
-2. Liste: `npx tsx scripts/triage-conflict-copies.ts --root data/editions/{AAMMDD}` (dry-run, não move nada).
-3. Original presente e válido: compare com a cópia (`diff`, mtime). Se a cópia é a versão boa, guarde o original em `_conflitos-{AAMMDD}/` ao lado e só então ponha a cópia no nome original. Se o original é o bom, arquive a cópia (`--apply --plan`, ver o cabeçalho do script).
+2. Liste: `npx tsx scripts/triage-conflict-copies.ts --root data/editions/{AAMM}/{AAMMDD} --out /tmp/plano.json` (dry-run, grava o plano, não move nada).
+3. Original presente e válido: compare com a cópia (`diff`, mtime). Se a cópia é a versão boa, guarde o original em `_conflitos-{AAMMDD}/` ao lado e só então ponha a cópia no nome original. Se o original é o bom, arquive a cópia (`npx tsx scripts/triage-conflict-copies.ts --root data/editions/{AAMM}/{AAMMDD} --apply --plan /tmp/plano.json`).
 4. Original ausente: a `.conflictN` de maior N costuma ser a mais recente; confira o conteúdo antes de copiar (`cp`, nunca `mv`) e deixe a cópia em `_conflitos-{AAMMDD}/`.
 5. Depois de restaurar `02-reviewed.md` ou `06-public-images.json`, refaça o que dependia deles (pré-render, embed do mapa de imagens, preview do social) e rode `npx tsx scripts/check-invariants.ts --stage 4 --edition-dir data/editions/.../{AAMMDD}/`.
 
