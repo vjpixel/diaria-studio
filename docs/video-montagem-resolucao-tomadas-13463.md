@@ -224,6 +224,12 @@ wav2vec2/MMS-FA, aeneas ou `whisperx align` contra o `roteiro-falas.json`.
   trocada); sem o diff, o fact-check sairia defasado sem aviso.
 - **Medível aqui:** os tempos (tabela acima).
 - **Veredito:** recomendação 4.
+- **Feito (#13597, 18/11/2026):** o fact-check sai logo depois do
+  `blocks.json`, com o agent em background enquanto `face` e `roteiro` rodam,
+  e o `fact-check-input` refaz só os itens com texto ou fala nova
+  (`fact-check.delta.json` + `fact-check-merge`). Junto, o #13600 tirou o
+  Gate 1 como parada obrigatória. O ganho de 2 a 6 min por edição é estimativa
+  a partir dos tempos da tabela, não medida numa montagem inteira.
 
 ### 8. Cache entre voltas para intervalo que encolheu
 

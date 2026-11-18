@@ -103,6 +103,14 @@ export interface ListingOrigin {
   retranscribed?: { file: string };
   /** Nota da linha na listagem (tomada separada, falso começo, suspeita que ficou). */
   note?: string;
+  /**
+   * Segmento suspeito de tomada colapsada que a retranscrição NÃO separou
+   * (#13600): `nao-separada` = conferir no áudio (a parada do Gate 1);
+   * `falso-comeco` = as subjanelas acharam o falso começo e o `roteiro`
+   * propõe o corte no Gate 2. Ausente na linha resolvida e na listagem
+   * gravada antes do #13600 (aí vale a nota, `collapsedStatus`).
+   */
+  collapsed?: "nao-separada" | "falso-comeco";
 }
 
 export interface CollapsedExpansion {
@@ -151,7 +159,7 @@ export function expandCollapsedSegments(
     const fail = (reason: UnresolvedReason) => {
       unresolved.push({ job, reason });
       out.push(seg);
-      origin.push({ original: i + 1, note: unresolvedNote(job, reason) });
+      origin.push({ original: i + 1, note: unresolvedNote(job, reason), collapsed: "nao-separada" });
     };
     const patch = windowOf(job.key);
     if (!patch) return fail("sem-retranscricao");
@@ -361,7 +369,10 @@ export function resolveCollapsedListing(
       if (!subs.length) continue;
       const seg = segments[u.job.segment];
       const at = exp.origin.findIndex((o) => o.original === u.job.segment + 1 && !o.retranscribed);
-      if (at >= 0) exp.origin[at] = { ...exp.origin[at], note: repetitionNote(repetitionFor(seg, u.job, subs, silences), u.job) };
+      if (at >= 0) {
+        const rep = repetitionFor(seg, u.job, subs, silences);
+        exp.origin[at] = { ...exp.origin[at], note: repetitionNote(rep, u.job), collapsed: rep ? "falso-comeco" : "nao-separada" };
+      }
     }
   }
   return { ...exp, jobs, transcribed, audioMissing };

@@ -70,7 +70,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       transcrição do áudio fica em `transcript-audio.json` (vem de --audio-transcript,
  *       ou do `transcript.json` quando o `source.json` era o áudio); `audio-align.json`
  *       guarda os deslocamentos e o que foi retranscrito.
- *   decupagem AAMMDD [--pixel-f0 HZ] [--no-retranscribe]
+ *   decupagem AAMMDD [--pixel-f0 HZ] [--no-retranscribe] [--espelho-ambiguo]
  *                           (#13587) na 1ª passada, cada segmento com tomada colapsada é retranscrito
  *                           (a janela do aviso, todas numa chamada só do Whisper; a já gravada é
  *                           reaproveitada) e, onde a janela separou as tomadas, a listagem traz as
@@ -91,6 +91,11 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *                           referência do Pixel (default: a voz com mais tempo de fala). Sem título
  *                           nem resumo "usar", o molde sai com `format: "entrevista"` e as
  *                           sequências abertura → comentário → CTA → fecho.
+ *                           #13600: a 2ª passada não é parada obrigatória (o Gate 1 saiu): grava
+ *                           `decupagem-gate.json` e imprime o banner das premissas; exit 5 só numa
+ *                           exceção (tomada colapsada que o retranscribe não separou numa linha que
+ *                           vai ao ar, "usar" contra a direção sem reason, ou --espelho-ambiguo:
+ *                           o frame lado a lado não decidiu o espelhamento de um bruto sem metadado).
  *   blocks AAMMDD --from-plan [--force]
  *                           (#13463) grava o `blocks.json` do `blocks.template.json` da decupagem e da
  *                           proposta do roteiro de gravação (`_internal/roteiro-falas.json`, a mesma do
@@ -119,7 +124,14 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *                           quando difere), o hash deles e o caminho das fontes do D1 do Stage 4, em
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
- *                           Gate 2, com o trecho do bruto e a proposta de corte
+ *                           Gate 2, com o trecho do bruto e a proposta de corte.
+ *                           #13597: roda logo depois do blocks.json, em paralelo com face/roteiro; com
+ *                           `fact-check.json` anterior, o input traz só os itens com texto/fala novos
+ *                           (out `fact-check.delta.json`) e os achados dos que não mudaram em
+ *                           `incremental.carried_claims`; nada novo = não despachar. --full refaz tudo
+ *   fact-check-merge AAMMDD (#13597)
+ *                           junta o `fact-check.delta.json` do agent com os achados mantidos no
+ *                           `fact-check.json` (delta de outra versão é recusado)
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S] [--trecho-fonte "CHAVE=caminho;…"]
  *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
  *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
@@ -696,7 +708,21 @@ import { parseDestaques } from "./extract-destaques.ts";
 import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
 import { youtubeCaptionFileName, youtubeCaptionNoPlanMarkerPath, type YoutubeCaptionNoPlanMarker } from "./lib/diaria/youtube-captions.ts";
 import { applyProperNounLexicon, properNounLexicon, summarizeLexiconChanges } from "./lib/diaria/video-caption-lexicon.ts";
-import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck, type FactCheckItem } from "./lib/diaria/video-fact-check.ts";
+import {
+  checkedSnapshotFrom,
+  factCheckFontesSha256,
+  factCheckItemHash,
+  factCheckItems,
+  factCheckItemsSha256,
+  factCheckSection,
+  mergeVideoFactCheck,
+  parseVideoFactCheck,
+  planVideoFactCheck,
+  type FactCheckItem,
+  type VideoFactClaim,
+} from "./lib/diaria/video-fact-check.ts";
+import { decupagemGate, decupagemGateBanner, decupagemTakeLines } from "./lib/diaria/video-decupagem-gate.ts";
+import { decideTakes } from "./lib/diaria/video-montage.ts";
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
 import { stretchedWordFindings, takeRepeatItems, takeRepeatLine, takeRepeatWarnings, windowHeardSuspects, type TakeRepeatSuspect } from "./lib/diaria/video-montage-repeat.ts";
 import { corteHookLine } from "./lib/diaria/extra-verticals.ts";
@@ -712,7 +738,7 @@ const OTIO_PY = join(ROOT, "scripts", "video", "otio_read_xml.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|blocks|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|blocks|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|fact-check-merge|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -2743,7 +2769,17 @@ function decupagemListing(ctx: Ctx, tr: Transcript): { segments: Segment[]; orig
   return listingSegments(tr.segments, existsSync(p) ? readJson<unknown>(p, DECUPAGEM_SEGMENTS_FILE) : null, ctx.edition);
 }
 
-function cmdDecupagem(ctx: Ctx, pixelF0?: number, retranscribe = true): number {
+/**
+ * `decupagem` 2ª passada com uma exceção do #13600 (tomada colapsada não
+ * separada, "usar" contra a direção sem motivo, espelhamento ambíguo que o
+ * `frame` não decidiu): os arquivos saem gravados, mas a skill para e resolve
+ * com o editor antes do `blocks.json`. Sem exceção, exit 0 e segue.
+ */
+export const EXIT_DECUPAGEM_PARADA = 5;
+/** Decisão do Gate 1 (#13600), no state dir: `{ decision, stops, premissas }`. */
+export const DECUPAGEM_GATE_FILE = "decupagem-gate.json";
+
+function cmdDecupagem(ctx: Ctx, pixelF0?: number, retranscribe = true, espelhoAmbiguo = false): number {
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
   const silPath = f(ctx, "silences.json");
   const sil = existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : [];
@@ -2797,7 +2833,8 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number, retranscribe = true): number {
   const opening = decupagemOpeningBlock(planned);
   if (format === "monologo" && opening === "gancho") console.error("[premissa] decupagem sem título falado e com gancho: o gancho abre as duas versões, com o PNG do título, o respiro e a vinheta nele (#12586)");
   const sequences = defaultSequences("V1", format, opening);
-  for (const d of suggestedDurations(doc, sequences)) {
+  const durations = suggestedDurations(doc, sequences);
+  for (const d of durations) {
     if (d.overS > 0) console.error(`[aviso] ${d.spec.name}: ~${d.totalS.toFixed(1)} s na montagem sugerida, ${d.overS.toFixed(1)} s acima do teto do Shorts (${SHORTS_MAX_S} s, antes de tirar os silêncios): propor o corte no Doc`);
   }
   const alts = plan.blocks.reduce((n, b) => n + b.rows.filter((r) => r.suggestion === "alternativa").length, 0);
@@ -2816,7 +2853,32 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number, retranscribe = true): number {
   writeJson(tpl, template);
   process.stdout.write(md);
   console.error(`[video-montagem] decupagem: ${f(ctx, "decupagem.md")}; molde do blocks.json (falas "usar"): ${tpl}`);
-  return 0;
+  // #13600: o Gate 1 não é mais parada obrigatória; só para numa exceção que o Gate 2 não resolve.
+  const loudPath = f(ctx, "loudness.json");
+  let loudness: string | null = null;
+  if (existsSync(loudPath)) {
+    const l = readJson<{ inputI?: number; inputTp?: number } | null>(loudPath, "loudness.json");
+    if (l && Number.isFinite(l.inputI)) loudness = `${l.inputI!.toFixed(1)} LUFS integrado${Number.isFinite(l.inputTp) ? `, true peak ${l.inputTp!.toFixed(1)} dBTP` : ""} (a prévia sai normalizada; o build aplica o ganho)`;
+  }
+  const gate = decupagemGate({
+    plan,
+    origin,
+    legacyCollapsed: origin ? [] : segments.flatMap((s, i) => (collapsedTakeSuspects(s.words ?? [], sil, { durationS: tr.duration }).length ? [i + 1] : [])),
+    contraDirecao: crit.contraDirecao,
+    mirror: {
+      premise: mirroredPremise(source),
+      ambiguous: !source.audioOnly && source.mirroredFrom !== "camera-metadata",
+      frameUnresolved: espelhoAmbiguo,
+    },
+    takes: decupagemTakeLines(plan, decideTakes(segments).bySegment),
+    durations: durations.map((d) => ({ name: d.spec.name, totalS: d.totalS, overS: d.overS })),
+    verticalMaxS: SHORTS_MAX_S,
+    loudness,
+    alternativas: alts,
+  });
+  writeJson(f(ctx, DECUPAGEM_GATE_FILE), gate);
+  for (const line of decupagemGateBanner(gate, f(ctx, "decupagem.md"))) console.error(line);
+  return gate.decision === "para" ? EXIT_DECUPAGEM_PARADA : 0;
 }
 
 /** `blocks --from-plan` sem `roteiro-falas.json`: a edição não tem roteiro de gravação (mesmo código do `video-roteiro-blocos.ts`). */
@@ -3617,8 +3679,8 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
     // Ilegível não é "não rodou": o Doc diz o motivo, e o roteiro sai assim mesmo.
     section.lines.splice(2, 1, `**[aviso] fact-check ilegível (${mdCell(fcError)}):** rodar o agent de novo antes de aprovar o Gate 2.`);
     console.error(`[aviso] ${fcPath} ilegível: ${fcError}; rode o agent fact-checker (mode video) de novo (#11956)`);
-  } else if (!fc) console.error(`[aviso] sem ${fcPath}: rode o fact-check da fala (Passo 3a, fact-check-input + agent fact-checker mode video) antes do Gate 2 (#11956)`);
-  else if (section.stale) console.error("[aviso] o roteiro mudou depois do fact-check: frases novas não foram checadas; rode o Passo 3a de novo (#11956)");
+  } else if (!fc) console.error(`[aviso] sem ${fcPath}: o fact-check da fala (Passo 2b, fact-check-input + agent fact-checker mode video) não rodou ou o agent ainda não voltou; rodar o roteiro de novo com ele antes do Gate 2 (#11956, #13597)`);
+  else if (section.stale) console.error("[aviso] o roteiro mudou depois do fact-check: frases novas não foram checadas; rode fact-check-input de novo, que refaz só os itens que mudaram (+ fact-check-merge) (#11956, #13597)");
   if (section.graves) console.error(`[aviso] fact-check: ${section.graves} achado(s) grave(s) em aberto na fala (seção "Fact-check da fala" do roteiro, #11956)`);
   const short = shortWordChecks(ctx, factCheckItems(ps, resolved), shortWordCheck);
   if (short.skipped) console.error(`[aviso] palavras curtas do roteiro não conferidas (${short.skipped}): conferir no áudio os artigos e preposições antes do Gate 2 (#12093)`);
@@ -3697,18 +3759,43 @@ export const VIDEO_FACT_CHECK_INPUT_FILE = "fact-check-input.json";
  * fontes do D1 baixadas no Stage 4 (`_internal/fact-check-sources/`), mais
  * as fontes por fala do roteiro (`roteiro_fontes`, #13132).
  */
-function cmdFactCheckInput(ctx: Ctx): number {
+function cmdFactCheckInput(ctx: Ctx, full = false): number {
   const { plans: ps, resolved } = plans(ctx);
   const items = factCheckItems(ps, resolved);
   const sourcesDir = join(editionDirFor(ctx.edition), "_internal", "fact-check-sources");
   const manifest = join(sourcesDir, "manifest.json");
   const roteiro = readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   if (!existsSync(manifest)) console.error(`[aviso] sem ${manifest}: as fontes do D1 não foram baixadas (Stage 4, run-fact-checker.ts); o agent cai no WebFetch da URL do D1 (#11956)`);
+  const itemsSha = factCheckItemsSha256(items, roteiro.fontes);
+  const path = f(ctx, VIDEO_FACT_CHECK_INPUT_FILE);
+  // #13597: com fact-check anterior, só os itens cujo texto/fala mudou vão ao agent.
+  const plan = full ? ({ mode: "full", reason: "--full", check: items } as const) : planFactCheckFromDisk(ctx, items, roteiro.fontes);
+  if (plan.mode === "em-dia") {
+    console.error(`[video-montagem] fact-check-input: fact-check.json já cobre os ${items.length} item(ns) da versão atual; nada a checar, não despachar o agent (#13597)`);
+    return 0;
+  }
+  const allItems = items.map((i) => ({ id: i.id, hash: factCheckItemHash(i) }));
+  if (plan.mode === "delta" && plan.check.length === 0) {
+    // Só saiu item (ou mudou a numeração): os achados dos que ficaram seguem, sem agent.
+    const merged = mergeVideoFactCheck({ mode: "video", edition: ctx.edition, items_sha256: itemsSha, claims: [] }, plan.carried, itemsSha);
+    writeJson(f(ctx, VIDEO_FACT_CHECK_FILE), merged);
+    writeJson(path, { mode: "video", edition: ctx.edition, items_sha256: itemsSha, all_items: allItems, fontes_sha256: factCheckFontesSha256(roteiro.fontes), items: [], incremental: { reused: plan.reused, carried_claims: plan.carried }, dispatch: false });
+    console.error(`[video-montagem] fact-check-input: nenhuma fala nova (${plan.reused} item(ns) já checado(s), ${plan.carried.length} achado(s) mantido(s)); fact-check.json atualizado sem o agent, nada a despachar (#13597)`);
+    return 0;
+  }
+  if (plan.mode === "full" && existsSync(f(ctx, VIDEO_FACT_CHECK_FILE))) console.error(`[video-montagem] fact-check-input: fact-check inteiro (${plan.reason}) (#13597)`);
+  const delta = plan.mode === "delta";
   const input = {
     mode: "video" as const,
     edition: ctx.edition,
-    items_sha256: factCheckItemsSha256(items, roteiro.fontes),
-    items,
+    items_sha256: itemsSha,
+    // #13597: todos os itens da versão (o que o fact-check.json passa a cobrir) e o hash das fontes,
+    // para a próxima volta saber o que já foi checado.
+    all_items: allItems,
+    fontes_sha256: factCheckFontesSha256(roteiro.fontes),
+    dispatch: true,
+    ...(delta ? { incremental: { reused: plan.reused, carried_claims: plan.carried } } : {}),
+    items: plan.check,
     sources_dir: sourcesDir,
     // #13132: fontes de fora do D1 declaradas por fala no roteiro-falas.json
     // (fatos do rascunho do editor checados na web); o agent as usa além do D1.
@@ -3717,12 +3804,61 @@ function cmdFactCheckInput(ctx: Ctx): number {
     roteiro_fontes_status: roteiro.status,
     ...(roteiro.problemas.length ? { roteiro_fontes_problemas: roteiro.problemas } : {}),
     approved_json_path: join(editionDirFor(ctx.edition), "_internal", "01-approved.json"),
-    out_path: f(ctx, VIDEO_FACT_CHECK_FILE),
+    // #13597: o delta vai para outro arquivo; o fact-check-merge junta com os achados mantidos.
+    out_path: f(ctx, delta ? VIDEO_FACT_CHECK_DELTA_FILE : VIDEO_FACT_CHECK_FILE),
   };
-  const path = f(ctx, VIDEO_FACT_CHECK_INPUT_FILE);
   writeJson(path, input);
-  console.error(`[video-montagem] fact-check-input: ${items.length} item(ns) da fala; agent fact-checker com mode "video", input ${path}, out ${input.out_path}`);
+  if (delta) rmSync(f(ctx, VIDEO_FACT_CHECK_DELTA_FILE), { force: true });
+  console.error(
+    delta
+      ? `[video-montagem] fact-check-input: ${plan.check.length} item(ns) com fala nova de ${items.length} (${plan.reused} já checado(s), ${plan.carried.length} achado(s) mantido(s)); agent fact-checker com mode "video", input ${path}, out ${input.out_path}; depois, fact-check-merge ${ctx.edition} (#13597)`
+      : `[video-montagem] fact-check-input: ${items.length} item(ns) da fala; agent fact-checker com mode "video", input ${path}, out ${input.out_path}`,
+  );
   console.log(path);
+  return 0;
+}
+
+/** Saída do agent no fact-check incremental (#13597): só os itens com fala nova. */
+export const VIDEO_FACT_CHECK_DELTA_FILE = "fact-check.delta.json";
+
+/** O plano do fact-check (#13597) a partir do `fact-check.json` e do `fact-check-input.json` em disco. */
+function planFactCheckFromDisk(ctx: Ctx, items: FactCheckItem[], fontes: ReadonlyArray<{ fala: string; url: string; sustenta: string }>) {
+  const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
+  if (!existsSync(fcPath)) return planVideoFactCheck(items, fontes, null, null);
+  let fc: ReturnType<typeof parseVideoFactCheck>;
+  try {
+    fc = parseVideoFactCheck(readJson<unknown>(fcPath, VIDEO_FACT_CHECK_FILE));
+  } catch (e) {
+    console.error(`[aviso] ${fcPath} ilegível (${(e as Error).message}): fact-check inteiro (#13597)`);
+    return planVideoFactCheck(items, fontes, null, null);
+  }
+  const inPath = f(ctx, VIDEO_FACT_CHECK_INPUT_FILE);
+  let prev: unknown = null;
+  if (existsSync(inPath)) {
+    try { prev = readJson<unknown>(inPath, VIDEO_FACT_CHECK_INPUT_FILE); } catch { prev = null; }
+  }
+  return planVideoFactCheck(items, fontes, fc, checkedSnapshotFrom(prev, fc));
+}
+
+/**
+ * `fact-check-merge` (#13597): junta o `fact-check.delta.json` do agent com os
+ * achados mantidos (`incremental.carried_claims` do `fact-check-input.json`)
+ * no `fact-check.json`, que o `roteiro` lê. O delta de outra versão (o editor
+ * mudou a fala de novo depois do `fact-check-input`) é recusado.
+ */
+function cmdFactCheckMerge(ctx: Ctx): number {
+  const inPath = f(ctx, VIDEO_FACT_CHECK_INPUT_FILE);
+  const input = readJson<{ items_sha256?: string; incremental?: { carried_claims?: VideoFactClaim[] } }>(inPath, "fact-check-input.json (rode fact-check-input)");
+  if (!input.incremental) {
+    console.error("[video-montagem] fact-check-merge: o fact-check-input atual é inteiro (o agent grava direto o fact-check.json); nada a juntar (#13597)");
+    return 0;
+  }
+  if (typeof input.items_sha256 !== "string") throw new Error(`${inPath}: items_sha256 ausente; rode fact-check-input de novo`);
+  const deltaPath = f(ctx, VIDEO_FACT_CHECK_DELTA_FILE);
+  const delta = parseVideoFactCheck(readJson<unknown>(deltaPath, `${VIDEO_FACT_CHECK_DELTA_FILE} (rode o agent fact-checker com o fact-check-input.json)`));
+  const merged = mergeVideoFactCheck(delta, input.incremental.carried_claims ?? [], input.items_sha256);
+  writeJson(f(ctx, VIDEO_FACT_CHECK_FILE), merged);
+  console.error(`[video-montagem] fact-check-merge: ${merged.claims.length} achado(s) no fact-check.json (${(input.incremental.carried_claims ?? []).length} mantido(s), ${delta.claims.length} do delta); rodar o roteiro de novo (#13597)`);
   return 0;
 }
 
@@ -6992,7 +7128,7 @@ export const DRIVE_UPLOADS_FILE = "drive-uploads.json";
 /** Saída quando o comando deu certo e só o upload para o Drive falhou (as saídas estão no out dir). */
 export const EXIT_UPLOAD_FAILED = 4;
 
-export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "blocks", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
+export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "blocks", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "fact-check-merge", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 /** Subcomandos cujas saídas sobem para a pasta da edição no modo API. */
 export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview"];
@@ -7474,7 +7610,7 @@ async function runCommand(
       await needLocalBruto();
       return cmdGaze(ctx, seq);
     case "decupagem":
-      return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]), !flags.has("no-retranscribe"));
+      return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]), !flags.has("no-retranscribe"), flags.has("espelho-ambiguo"));
     case "blocks":
       return cmdBlocks(ctx, flags.has("from-plan"), ctx.force, values["falas"]);
     case "frame": {
@@ -7495,7 +7631,9 @@ async function runCommand(
       }
     }
     case "fact-check-input":
-      return cmdFactCheckInput(ctx);
+      return cmdFactCheckInput(ctx, flags.has("full"));
+    case "fact-check-merge":
+      return cmdFactCheckMerge(ctx);
     case "build":
       if (flags.has("xml-flop") || "xml-flop" in values) {
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
