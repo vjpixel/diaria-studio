@@ -1104,11 +1104,15 @@ export type LockRunner = (args: string[], cwd: string) => { ok: boolean; stdout:
 const LOCK_RUNNER_TIMEOUT_MS = 60_000;
 
 /** Assinatura mínima de `execFileSync` usada por `createExecFileSyncLockRunner` —
- * injetável pra teste de regressão do #6630 sem tocar o subprocesso real. */
-type ExecFileSyncFn = (
+ * injetável pra teste de regressão do #6630 sem tocar o subprocesso real.
+ * `windowsHide: true` literal (não `boolean`) desde o #13592: este runner roda
+ * dentro do waiter destacado, e o tipo é que garante a flag em toda chamada.
+ * Nome próprio (era `ExecFileSyncFn`, homônimo do tipo de `lib/exec-mode.ts`
+ * com outro rigor). */
+export type LockRunnerExecFn = (
   cmd: string,
   args: string[],
-  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; windowsHide: boolean; shell?: boolean },
+  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; windowsHide: true; shell?: boolean },
 ) => Buffer | string;
 
 /**
@@ -1136,7 +1140,7 @@ export function needsShellForNpx(platform: NodeJS.Platform): boolean {
  * real; teste passa `"win32"`/`"linux"` explícito pra ser determinístico
  * em qualquer SO que rode o CI). */
 export function createExecFileSyncLockRunner(
-  exec: ExecFileSyncFn = execFileSync,
+  exec: LockRunnerExecFn = execFileSync,
   platform: NodeJS.Platform = process.platform,
 ): LockRunner {
   const shell = needsShellForNpx(platform);
