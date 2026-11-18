@@ -25,6 +25,7 @@
 import type { BlockKey } from "./video-montage.ts";
 import { cortesDaFala, posicoesDoTrecho, SETA, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 import { blocoNaVertical, duracaoPorVideo, falasDoVideo, fmtDuracao, roteiroPecas, ROTEIRO_DURACAO_DEFAULT, type RoteiroDuracaoConfig } from "./roteiro-videos.ts";
+import { lerTrechoInserido, rotuloTrecho } from "./trecho-inserido-formato.ts";
 
 /** Formato e papel de cada vídeo, no cabeçalho da seção. */
 const CABECALHO: Record<VideoRoteiro, string> = {
@@ -109,11 +110,12 @@ function linhaFala(f: FalaRoteiro, v: VideoRoteiro, comTopicos: boolean): string
   return linha + trechoInseridoHtml(f, v);
 }
 
-/** Trecho de outro vídeo inserido depois da fala (react): só no horizontal, entre aspas, com a origem. */
+/** Trecho de outro vídeo inserido depois da fala (react): só no horizontal, entre aspas, com vídeo e intervalo (#13437). */
 function trechoInseridoHtml(f: FalaRoteiro, v: VideoRoteiro): string {
-  const t = f.trechoInserido;
-  if (!t || v !== "horizontal") return "";
-  return `<figure class="insercao"><figcaption>Entra o trecho: ${esc(t.origem.trim())}</figcaption><blockquote>“${esc(t.texto.trim())}”</blockquote></figure>`;
+  if (!f.trechoInserido || v !== "horizontal") return "";
+  const lido = lerTrechoInserido(f.trechoInserido);
+  if (!lido.ok) return "";
+  return `<figure class="insercao"><figcaption>Entra o trecho: ${esc(rotuloTrecho(lido.trecho))}</figcaption><blockquote>“${esc(lido.trecho.texto)}”</blockquote></figure>`;
 }
 
 /** O bloco em que a fala aparece naquele vídeo (o resumo vira resumo curto nos verticais). */

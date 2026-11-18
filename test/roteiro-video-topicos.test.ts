@@ -105,31 +105,42 @@ describe("topicos da fala", () => {
     assert.match(html, /querySelectorAll\('\.topicos'\)\.forEach\(function \(t\) \{ t\.remove\(\); \}\)/);
   });
 
-  it("trechoInserido: aparece entre aspas depois da fala, só no horizontal", () => {
+  it("trechoInserido: aparece entre aspas depois da fala, só no horizontal, com vídeo e intervalo (#13437)", () => {
     const r = semTopicos();
     const f = falaCompartilhada(r);
-    f.trechoInserido = { origem: "Vídeo de 10/11, 3:42 a 4:00", texto: "E ele pode chegar a perder o cargo." };
+    f.trechoInserido = { video: "261110", inicio: "3:42", fim: "4:00", texto: "E ele pode chegar a perder o cargo." };
     assert.deepEqual(validarRoteiroFalas(r), []);
     const html = renderRoteiroPagina(r);
-    const bloco = '<figure class="insercao"><figcaption>Entra o trecho: Vídeo de 10/11, 3:42 a 4:00</figcaption><blockquote>“E ele pode chegar a perder o cargo.”</blockquote></figure>';
+    const bloco = '<figure class="insercao"><figcaption>Entra o trecho: Vídeo de 10/11 (261110), 3:42 a 4:00</figcaption><blockquote>“E ele pode chegar a perder o cargo.”</blockquote></figure>';
     assert.equal(html.split(bloco).length - 1, 1, "uma vez só, no horizontal");
     const h = html.slice(html.indexOf('aria-label="horizontal"'), html.indexOf('aria-label="vertical 1"'));
     assert.ok(h.includes(bloco));
   });
 
-  it("trechoInserido: recusa campo vazio, seta e fala fora do horizontal", () => {
+  it("trechoInserido no formato antigo (origem em texto livre) é migrado na página", () => {
+    const r = semTopicos();
+    falaCompartilhada(r).trechoInserido = { origem: "Vídeo de 10/11 (youtu.be/lyh6IZux4FE), de 3:42 a 3:46", texto: "Trecho." };
+    assert.deepEqual(validarRoteiroFalas(r), []);
+    assert.ok(renderRoteiroPagina(r).includes("<figcaption>Entra o trecho: youtu.be/lyh6IZux4FE, 3:42 a 3:46</figcaption>"));
+  });
+
+  it("trechoInserido: recusa campo vazio, seta, origem sem intervalo e fala fora do horizontal", () => {
     const vazio = semTopicos();
     falaCompartilhada(vazio).trechoInserido = { origem: "", texto: "x" };
-    assert.ok(validarRoteiroFalas(vazio).some((p) => p.includes("trechoInserido.origem deve ser texto não vazio")));
+    assert.ok(validarRoteiroFalas(vazio).some((p) => p.includes("trechoInserido.origem (formato antigo) deve ser texto não vazio")));
 
     const seta = semTopicos();
-    falaCompartilhada(seta).trechoInserido = { origem: "Vídeo", texto: "antes → depois" };
+    falaCompartilhada(seta).trechoInserido = { video: "youtu.be/lyh6IZux4FE", inicio: "1:00", fim: "1:05", texto: "antes → depois" };
     assert.ok(validarRoteiroFalas(seta).some((p) => p.includes("trechoInserido.texto usa seta")));
+
+    const livre = semTopicos();
+    falaCompartilhada(livre).trechoInserido = { origem: "Vídeo de 10/11", texto: "Trecho" };
+    assert.ok(validarRoteiroFalas(livre).some((p) => p.includes("use { video, inicio, fim, texto }")));
 
     const vertical = semTopicos();
     const fv = vertical.falas.find((x) => !x.videos.includes("horizontal"));
     assert.ok(fv, "a fixture precisa de uma fala só de vertical");
-    fv.trechoInserido = { origem: "Vídeo", texto: "Trecho" };
+    fv.trechoInserido = { video: "261110", inicio: "1:00", fim: "1:05", texto: "Trecho" };
     assert.ok(validarRoteiroFalas(vertical).some((p) => p.includes("trechoInserido só vale em fala do horizontal")));
   });
 

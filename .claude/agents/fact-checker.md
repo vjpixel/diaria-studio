@@ -269,7 +269,7 @@ Invocação (`newsletter_path`/`social_path`/`approved_json_path` não se aplica
 - `roteiro_path`: `_internal/roteiro-falas.json` da edição. Verificar o `texto` e o `tela` de cada fala (o `tela` vai escrito no vídeo) e o `trechoInserido` (o trecho de outro vídeo que o roteiro diz que o editor falou).
 - `sources_dir`: `_internal/fact-check-sources/` da edição (`manifest.json`, `d1.txt`, extras). O `d1.txt` é o do D1 ATUAL da edição; se o caller disser que o D1 trocou depois do roteiro, verificar contra o D1 novo.
 - As `fontes` de cada fala (`[{url, sustenta}]`, no próprio JSON): abrir com `WebFetch`; valem para o fato que `sustenta`.
-- `srt_paths` (opcional, formato react): o SRT de cada vídeo citado em `trechoInserido.origem`. É a fonte do que o editor disse antes: o `texto` do trecho tem de estar no SRT, no intervalo da `origem`, e a fala que retoma o que ele disse ("eu disse que…") tem de ser fiel ao trecho.
+- `srt_paths` (opcional, formato react): o SRT de cada vídeo citado em `trechoInserido.video` (link do YouTube ou edição AAMMDD; em roteiro antigo, na `origem` em texto livre). É a fonte do que o editor disse antes: o `texto` do trecho tem de estar no SRT, entre `inicio` e `fim` (no roteiro antigo, no intervalo da `origem`), e a fala que retoma o que ele disse ("eu disse que…") tem de ser fiel ao trecho.
 - `out_path`: `_internal/fact-check-roteiro.md`.
 
 Processo:
