@@ -84,7 +84,9 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
   for (const block of worktrees?.split("\n\n") ?? []) {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    if (path && branch && branches.has(branch)) paths.add(path);
+    // Same form as the session paths above: on Windows git prints `C:/x` and resolve() gives `C:\x`;
+    // without this the session's own worktree was checked twice, doubling every pending entry (#13537).
+    if (path && branch && branches.has(branch)) paths.add(resolve(path));
   }
   if (!paths.size) report.errors.push("Nenhum worktree atribuído; informe --worktree pelo histórico da sessão.");
   for (const path of paths) {
