@@ -489,6 +489,11 @@ export function mergeInjectedIntoPool<P extends { url: string; [k: string]: unkn
     const request = a.editor_destaque_request;
     if (request && !poolOut[idx].editor_destaque_request) {
       poolOut[idx] = { ...poolOut[idx], editor_destaque_request: request };
+      // #13478: a origem da reserva (`reserve-destaque.ts`) acompanha o pedido.
+      const reservedFrom = (a as { reserved_from?: unknown }).reserved_from;
+      if (typeof reservedFrom === "string" && reservedFrom && !poolOut[idx].reserved_from) {
+        poolOut[idx] = { ...poolOut[idx], reserved_from: reservedFrom };
+      }
     }
   }
   return { merged: [...poolOut, ...newInjected], newInjected };
