@@ -7,19 +7,23 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
 import { renderRoteiroPagina, renderTopicosPagina } from "../scripts/lib/diaria/roteiro-pagina.ts";
 import { main } from "../scripts/render-roteiro-video.ts";
 
 const FIXTURE = join(import.meta.dirname, "fixtures", "roteiro-video", "roteiro-falas-261116.json");
-function roteiro(): RoteiroFalas {
+// Formato estruturado da #13437 (o que o roteiro grava hoje); o hotfix pós-#13456
+// existe porque a página de tópicos lia `trechoInserido.origem` direto e lançava
+// TypeError com este formato.
+function roteiro(trecho: RoteiroFalas["falas"][number]["trechoInserido"] = { video: "261110", inicio: "3:42", fim: "4:00", texto: "trecho citado" }): RoteiroFalas {
   const r: RoteiroFalas = JSON.parse(readFileSync(FIXTURE, "utf8"));
   const h = r.falas.filter((f) => f.videos.includes("horizontal") && !f.gravarAParte);
   h[0].topicos = ["primeiro tópico", "segundo tópico"];
   h[1].topicos = ["tópico da H2"];
-  h[1].trechoInserido = { origem: "Vídeo de 10/11, 3:42 a 4:00", texto: "trecho citado" };
+  h[1].trechoInserido = trecho;
   return r;
 }
 
@@ -27,9 +31,13 @@ describe("renderTopicosPagina (#13447)", () => {
   it("lista os tópicos na ordem do horizontal, com a faixa do trecho inserido", () => {
     const html = renderTopicosPagina(roteiro());
     assert.ok(html.indexOf("primeiro tópico") < html.indexOf("tópico da H2"));
-    assert.match(html, /class="faixa"><b>Entra o trecho<\/b>Vídeo de 10\/11, 3:42 a 4:00/);
+    assert.match(html, /class="faixa"><b>Entra o trecho<\/b>Vídeo de 10\/11 \(261110\), 3:42 a 4:00/);
     assert.ok(html.indexOf("tópico da H2") < html.indexOf("Entra o trecho"));
     assert.doesNotMatch(html, /class="fala"/);
+  });
+  it("lê o formato antigo { origem, texto } com link do YouTube e intervalo (#13437)", () => {
+    const html = renderTopicosPagina(roteiro({ origem: "Vídeo de 10/11, youtu.be/abcdefghijk, 3:42 a 4:00", texto: "trecho citado" }));
+    assert.match(html, /class="faixa"><b>Entra o trecho<\/b>youtu\.be\/abcdefghijk, 3:42 a 4:00/);
   });
   it("põe as falas gravadas à parte no fim, depois do separador", () => {
     const r = roteiro();
@@ -77,6 +85,14 @@ describe("render-roteiro-video CLI (#13447)", () => {
     const { io, out } = cap();
     assert.equal(main(["261116", "--topicos", "--stdout", "--falas", FIXTURE], io), 0);
     assert.match(out.join("\n"), /<title>Tópicos /);
+  });
+  it("--topicos com trechoInserido no formato estruturado não lança (#13437)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topicos-13447-"));
+    const falas = join(dir, "roteiro-falas.json");
+    writeFileSync(falas, JSON.stringify(roteiro()));
+    const { io, out } = cap();
+    assert.equal(main(["261116", "--topicos", "--stdout", "--falas", falas], io), 0);
+    assert.match(out.join("\n"), /Entra o trecho<\/b>Vídeo de 10\/11 \(261110\), 3:42 a 4:00/);
   });
   it("--sem-topicos --stdout imprime o roteiro sem a coluna", () => {
     const { io, out } = cap();

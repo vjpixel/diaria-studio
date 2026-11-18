@@ -388,8 +388,11 @@ export function renderTopicosPagina(roteiro: RoteiroFalas, opts: { artifactUrl?:
   const corpo: string[] = [];
   for (const f of principais) {
     corpo.push(blocoTopicos(f, false));
-    if (f.trechoInserido)
-      corpo.push(`  <div class="faixa"><b>Entra o trecho</b>${esc(f.trechoInserido.origem.trim())}<span>${esc(f.id)} termina; depois do trecho, a próxima fala</span></div>`);
+    if (!f.trechoInserido) continue;
+    // Os dois formatos do campo (#13437): estruturado e o legado { origem, texto }.
+    const lido = lerTrechoInserido(f.trechoInserido);
+    if (lido.ok)
+      corpo.push(`  <div class="faixa"><b>Entra o trecho</b>${esc(rotuloTrecho(lido.trecho))}<span>${esc(f.id)} termina; depois do trecho, a próxima fala</span></div>`);
   }
   if (aparte.length) {
     corpo.push(`  <div class="separador">Gravadas à parte</div>`);
