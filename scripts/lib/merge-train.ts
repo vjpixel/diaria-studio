@@ -604,6 +604,9 @@ export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly T
  * - `batch.prs.length === 1` → `mergeSoloPr`: o PR já estava verde ANTES de
  *   entrar no trem (Gate 2) — merge direto, ZERO run de CI novo disparado
  *   por este mecanismo. Não entra no "antes/depois" (não foi afetado).
+ *   Exceção (#10997, #13461): PR solo vindo de lote vermelho, ou com a base
+ *   atual fora do HEAD, passa por um PR-trem de 1 (1 run de CI) e também
+ *   conta aqui como solo.
  * - `batch.prs.length >= 2` → exatamente 1 `pollTrainCi` por outcome,
  *   disparando exatamente 1 run de CI real sobre o PR-trem descartável —
  *   verdadeiro tanto pro terminal `"merged"` quanto pro `"abandoned"`

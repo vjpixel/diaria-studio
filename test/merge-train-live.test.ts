@@ -85,6 +85,16 @@ function isRetidoView(pr: number) {
   return (a: string[]) => a[0] === "pr" && a[1] === "view" && a[2] === String(pr) && a.includes("labels,body");
 }
 
+/** #13461: HEAD sintético (40 hex) estável por número de PR. */
+function headShaOf(pr: string | number): string {
+  return String(pr).padStart(40, "a").slice(-40).replace(/[^0-9a-f]/g, "a");
+}
+const BASE_SHA = "b".repeat(40);
+/** Saída do `gh api compare/{base}...{head} --jq ...`: `behindBy` commits da base fora do HEAD. */
+function compareJson(behindBy: number): string {
+  return JSON.stringify({ status: behindBy > 0 ? "diverged" : "ahead", behind_by: behindBy, base_sha: BASE_SHA });
+}
+
 class FakeTrainRunner implements TrainRunner {
   readonly calls: { cmd: string; args: string[]; cwd?: string }[] = [];
   readonly warnings: string[] = [];
@@ -107,7 +117,15 @@ class FakeTrainRunner implements TrainRunner {
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(noThreadsJson()))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()))
-      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: exemplo", body: "Closes #10" })));
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: exemplo", body: "Closes #10" })))
+      .withBaseFresh();
+  }
+
+  /** #13461: HEAD de cada PR (`headRefOid`) e a comparação com a base. Por
+   * padrão o HEAD já contém a base atual (CI dele vale pra base de agora). */
+  withBaseFresh(): this {
+    return this.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("headRefOid"), (a) => ok(JSON.stringify({ headRefOid: headShaOf(a[2]) })))
+      .on("gh", (a) => a[0] === "api" && /\/compare\//.test(a[1] ?? ""), () => ok(compareJson(0)));
   }
 
   withLockOk(): this {
@@ -1205,6 +1223,142 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       assert.deepEqual(merged, ["100", "101"]);
       assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "create"));
       assert.deepEqual(outcomes.map((o) => o.status), ["abandoned", "solo-merged", "solo-merged"]);
+    });
+  });
+
+  // #13461 (regressão #633): rodada 261117b. A #13458 entrou no master; a
+  // #13456, verde sobre a base de ANTES, foi pelo merge solo do trem ("sem
+  // trem — merge solo") e as duas juntas deixaram o `tsc` do master vermelho.
+  // Merge solo só confia no CI da PR quando o HEAD dela já contém a base atual
+  // (relida sob o lock); senão revalida pelo PR-trem de 1 sobre a base nova.
+  describe("#13461 — merge solo revalida contra a base atual", () => {
+    const A = 13458; // já mergeada: está na base atual
+    const B = 13456; // verde sobre a base antiga, quebra só junto com A
+    const infoB = makePrInfo({ pr: B, headRefName: "continuo/fix-13447", issueNumbers: [13447] });
+    const red = () => ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: "FAILURE", status: "COMPLETED" }] }));
+    const isCompareFor = (pr: string | number) => (a: string[]) => a[0] === "api" && (a[1] ?? "").endsWith(`...${headShaOf(pr)}`);
+
+    /** B está atrás da base (A entrou depois do último push de B). PR-trem 9001 = [B] sobre a base nova. */
+    function scenario(trainCi: "pass" | "fail") {
+      const runner = fullRunner();
+      const created: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", (a) => {
+        created.push(a[a.indexOf("--head") + 1]);
+        return ok(`https://github.com/x/y/pull/900${created.length}\n`);
+      });
+      runner.on("gh", isCompareFor(B), () => ok(compareJson(1)));
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "9001" && a.includes("statusCheckRollup"), () => (trainCi === "fail" ? red() : ok(ciPassJson())));
+      const merged: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a[2]);
+        return ok();
+      });
+      return { runner, created, merged };
+    }
+
+    it(`B atrás da base (A=#${A} já em master) e a combinação quebra: B NUNCA é mergeada, termina 'solo-failed'`, async () => {
+      const { runner, created, merged } = scenario("fail");
+      const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(merged, [], "nada entra em master: nem a B direto, nem o PR-trem vermelho");
+      assert.equal(created.length, 1, "a B ganha um PR-trem próprio sobre a base atual");
+      assert.equal(outcomes.at(-1)?.status, "solo-failed");
+      assert.match(outcomes.at(-1)?.detail ?? "", /base atual/);
+      assert.equal(trainHasRealFailure(outcomes), true);
+      assert.ok(runner.warnings.some((w) => /atrás da base atual.*#13461/.test(w)), "o desvio do merge solo fica no log");
+      assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === String(B)), "a B fica aberta pro coordenador");
+    });
+
+    it("B atrás da base e a combinação passa: entra via PR-trem de 1, nunca pelo merge solo com o CI velho", async () => {
+      const { runner, merged } = scenario("pass");
+      const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(merged, ["9001"], "só o PR-trem validado sobre a base atual é mergeado");
+      assert.deepEqual(outcomes.map((o) => o.status), ["solo-merged"]);
+      assert.match(outcomes[0].detail, /revalidado sobre a base atual \(PR-trem #9001, CI verde\).*#13461/);
+      assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === String(B)), "B fechada com apontamento pro trem");
+    });
+
+    it("B já contém a base atual: merge solo direto, base relida SOB o lock e --match-head-commit com o HEAD validado", async () => {
+      const runner = fullRunner();
+      const merged: string[][] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a);
+        return ok();
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD });
+
+      assert.deepEqual(outcomes.map((o) => o.status), ["solo-merged"]);
+      assert.equal(merged.length, 1);
+      assert.equal(merged[0][2], String(B));
+      assert.equal(merged[0][merged[0].indexOf("--match-head-commit") + 1], headShaOf(B));
+      const lockAt = runner.calls.findIndex((c) => c.args.includes("merge-lock-acquire"));
+      const compareAt = runner.calls.findIndex((c) => c.cmd === "gh" && c.args[0] === "api" && /\/compare\/master\.\.\./.test(c.args[1] ?? ""));
+      const mergeAt = runner.calls.findIndex((c) => c.cmd === "gh" && c.args[1] === "merge");
+      assert.ok(lockAt >= 0 && compareAt > lockAt && mergeAt > compareAt, "a base é relida depois de pegar o lock e antes do merge");
+    });
+
+    it("base não verificável (gh api compare falhou): sem merge, lock liberado, 'solo-failed'", async () => {
+      const runner = fullRunner();
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
+        throw new Error("não deveria mergear sem base verificada");
+      });
+      runner.on("gh", isCompareFor(B), () => fail("HTTP 502"));
+      const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD });
+
+      assert.deepEqual(outcomes.map((o) => o.status), ["solo-failed"]);
+      assert.match(outcomes[0].detail, /não verificável.*#13461/);
+      assert.ok(runner.calls.some((c) => c.args.includes("merge-lock-release")));
+    });
+
+    it("HEAD ilegível: sem lock e sem merge", () => {
+      const runner = new FakeTrainRunner().withGate2Green().withLockOk();
+      runner.on("gh", (a) => a.includes("headRefOid"), () => ok(JSON.stringify({ headRefOid: "curto" })));
+      const result = mergeSoloPr(runner, B, { sessionId: "s", kind: "overnight" });
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? "", /HEAD.*ilegível/);
+      assert.ok(!runner.calls.some((c) => c.args.includes("merge-lock-acquire") || c.args[1] === "merge"));
+    });
+
+    it("lote: a base anda entre o CI do PR-trem e o merge — integração refeita, só o 2º PR-trem é mergeado", async () => {
+      const runner = fullRunner();
+      let createCalls = 0;
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+        createCalls++;
+        return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+      });
+      runner.on("gh", isCompareFor(9001), () => ok(compareJson(1)));
+      const merged: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a[2]);
+        return ok();
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(outcomes.map((o) => o.status), ["abandoned", "merged"]);
+      assert.match(outcomes[0].detail, /base andou.*#13461/);
+      assert.deepEqual(merged, ["9002"]);
+      const squash = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
+      assert.equal(squash?.args[squash.args.indexOf("--match-head-commit") + 1], headShaOf(9002));
+      assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === "9001"), "o PR-trem da base velha é fechado");
+    });
+
+    it("lote: a base anda a cada tentativa — 'lock-blocked' depois do teto, nunca mergeia", async () => {
+      const runner = fullRunner();
+      let createCalls = 0;
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+        createCalls++;
+        return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+      });
+      runner.on("gh", (a) => a[0] === "api" && /\/compare\//.test(a[1] ?? ""), () => ok(compareJson(2)));
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
+        throw new Error("não deveria mergear sobre base antiga");
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(outcomes.map((o) => o.status), ["abandoned", "abandoned", "lock-blocked"]);
+      assert.equal(createCalls, 3);
+      assert.equal(trainHasRealFailure(outcomes), true);
     });
   });
 });
