@@ -201,6 +201,18 @@ export function foldCluster(members: ClusterArticle[]): {
     }
   }
 
+  // #13487: pedido de destaque do editor (reserva, #13478) também sobrevive
+  // quando outra cobertura da mesma história vence o cluster.
+  if (canonical.editor_destaque_request === undefined) {
+    const requester = others.find((o) => o.editor_destaque_request !== undefined);
+    if (requester) {
+      canonical.editor_destaque_request = requester.editor_destaque_request;
+      if (requester.reserved_from !== undefined) {
+        canonical.reserved_from = requester.reserved_from;
+      }
+    }
+  }
+
   return { canonical, others };
 }
 
