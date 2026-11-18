@@ -7,6 +7,7 @@
  *   npx tsx scripts/clarice-forget.ts add --email E [--source S] [--note N]
  *       [--requested-at ISO] [--no-brevo] [--db P] [--ledger P]
  *   npx tsx scripts/clarice-forget.ts list [--db P]
+ *   npx tsx scripts/clarice-forget.ts sync-ledger [--db P] [--ledger P]
  *
  * `add`:
  *   1. grava o pedido na tabela `forget_requests` do store E no ledger
@@ -19,6 +20,14 @@
  *   4. minimiza o contato na Brevo da Clarice SEM apagá-lo (apagar tiraria a
  *      blacklist): blacklist, sai de todas as listas, atributos de texto
  *      zerados. `--no-brevo` pula esta etapa (ex.: Brevo já tratada à mão).
+ *      Cada variante do mesmo Gmail que o store tem vira um contato minimizado.
+ *
+ * `sync-ledger`: acrescenta ao ledger os pedidos da tabela que faltam nele
+ * (o rebuild aborta enquanto o ledger não cobre a tabela). Rodar só depois de
+ * conferir que o Drive terminou de sincronizar o ledger.
+ *
+ * Ledger: `DEFAULT_FORGET_LEDGER_PATH` (o mesmo que a triagem e o rebuild
+ * leem), salvo `--ledger` explícito.
  *
  * O rebuild (`clarice-build-db.ts`) e o sync da Brevo respeitam a lista daí em
  * diante — o pedido não se desfaz no próximo rebuild.
@@ -29,7 +38,6 @@
  */
 
 import { existsSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getArg, hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -42,8 +50,12 @@ import {
 } from "./lib/clarice-db.ts";
 import {
   DEFAULT_FORGET_LEDGER_PATH,
+  forgetBrevoTargets,
   forgetInStore,
   makeBrevoMinimizer,
+  minimizeBrevoTargets,
+  syncLedgerFromStore,
+  type BrevoForgetOutcome,
   type BrevoMinimizeResult,
 } from "./lib/clarice-forget.ts";
 import { resolveOptinEmail } from "./clarice-optin.ts";
@@ -73,8 +85,26 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ForgetC
     return 0;
   }
 
+  const ledgerPath = getArg(argv, "ledger") || DEFAULT_FORGET_LEDGER_PATH;
+
+  if (cmd === "sync-ledger") {
+    if (!existsSync(dbPath)) {
+      console.error(`❌ store não encontrado: ${dbPath}`);
+      return 1;
+    }
+    const db = openDb(dbPath);
+    try {
+      const added = syncLedgerFromStore(db, ledgerPath);
+      console.error(`📝 ledger ${ledgerPath}: ${added.length} pedido(s) acrescentado(s) a partir do store`);
+      console.log(JSON.stringify({ ledger: ledgerPath, added }, null, 2));
+    } finally {
+      db.close();
+    }
+    return 0;
+  }
+
   if (cmd !== "add") {
-    console.error("uso: clarice-forget.ts <add|list> --email E [--source S] [--note N] [--requested-at ISO] [--no-brevo] [--db P] [--ledger P]");
+    console.error("uso: clarice-forget.ts <add|list|sync-ledger> --email E [--source S] [--note N] [--requested-at ISO] [--no-brevo] [--db P] [--ledger P]");
     return 1;
   }
 
@@ -90,8 +120,6 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ForgetC
   }
   const source = getArg(argv, "source") || "clarice-forget.ts";
   const note = getArg(argv, "note") || null;
-  // Default: o ledger mora ao lado do store (= DEFAULT_FORGET_LEDGER_PATH com o store padrão).
-  const ledgerPath = getArg(argv, "ledger") || resolve(dirname(dbPath), basename(DEFAULT_FORGET_LEDGER_PATH));
   const noBrevo = hasFlag(argv, "no-brevo");
 
   let brevoMinimize = deps.brevoMinimize;
@@ -112,14 +140,15 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ForgetC
   const t0 = Date.now();
   console.error(`📂 abrindo o store em ${dbPath} (${describeStoreFile(dbPath)})…`);
   const db = openDb(dbPath);
-  let target = email;
+  let targets: string[] = [email];
   let store;
   try {
     // Endereço que a Brevo conhece = forma canônica do store (#2861), como na triagem.
     const r = resolveOptinEmail(db, email);
     if (r.notice) console.error(r.notice);
-    target = r.email;
     store = forgetInStore(db, { email, requestedAt, source, note }, ledgerPath);
+    // Todas as variantes do mesmo Gmail que o store minimizou (review da PR #13583).
+    targets = forgetBrevoTargets(db, r.email);
     console.error(
       `🔒 store: pedido ${store.new_request ? "registrado" : "já registrado"} · ` +
         `${store.minimized} linha(s) minimizada(s) · opt-in removido: ${store.optin_removed}`,
@@ -131,31 +160,41 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ForgetC
     db.close();
   }
 
-  let brevo: BrevoMinimizeResult | { status: "skipped" } = { status: "skipped" };
+  let brevo: BrevoForgetOutcome | { status: "skipped" } = { status: "skipped" };
   if (!noBrevo && brevoMinimize) {
-    console.error(`🌐 Brevo: minimizando ${target}…`);
+    console.error(`🌐 Brevo: minimizando ${targets.join(", ")}…`);
     try {
-      brevo = await brevoMinimize(target);
+      brevo = await minimizeBrevoTargets(brevoMinimize, targets);
     } catch (e) {
-      console.error(`❌ Brevo: ${target} falhou — ${(e as Error).message}. O store já está minimizado; repita o add para retentar.`);
-      console.log(JSON.stringify({ email, brevo_target: target, store, brevo: { status: "error", error: (e as Error).message } }, null, 2));
+      console.error(`❌ Brevo: falhou — ${(e as Error).message}. O store já está minimizado; repita o add para retentar.`);
+      console.log(JSON.stringify({ email, brevo_targets: targets, store, brevo: { status: "error", error: (e as Error).message } }, null, 2));
       return 1;
     }
-    if (brevo.status === "not_found") {
-      console.error(`🔎 Brevo: ${target} não existe na Brevo — nada a minimizar lá; confira à mão o endereço que recebe a newsletter.`);
-    } else if (brevo.status === "ok") {
-      console.error(
-        `🚫 Brevo: ${target} blacklisted, fora de ${brevo.lists_unlinked.length} lista(s), ` +
-          `atributos zerados: ${brevo.attributes_cleared.join(", ") || "(nenhum)"}`,
-      );
-      if (brevo.attributes_kept.length > 0) {
-        console.error(`⚠️  Brevo: atributos não-texto mantidos (revise à mão): ${brevo.attributes_kept.join(", ")}`);
-      }
-    }
+    for (const [target, res] of Object.entries(brevo.results)) logBrevoResult(target, res);
   }
 
-  console.log(JSON.stringify({ email, brevo_target: target, store, brevo }, null, 2));
+  console.log(JSON.stringify({ email, brevo_targets: targets, store, brevo }, null, 2));
   return 0;
+}
+
+function logBrevoResult(target: string, res: BrevoMinimizeResult): void {
+  if (res.status === "not_found") {
+    console.error(`🔎 Brevo: ${target} não existe na Brevo — nada a minimizar lá; confira à mão o endereço que recebe a newsletter.`);
+    return;
+  }
+  console.error(
+    `🚫 Brevo: ${target} blacklisted, fora de ${res.lists_unlinked.length} lista(s), ` +
+      `atributos zerados: ${res.attributes_cleared.join(", ") || "(nenhum)"}`,
+  );
+  if (res.attributes_failed && res.attributes_failed.length > 0) {
+    console.error(
+      `⚠️  Brevo: ${target} — a Brevo recusou zerar ${res.attributes_failed.join(", ")} (${res.attributes_error}); ` +
+        `blacklist e listas já valeram, limpe esses atributos à mão.`,
+    );
+  }
+  if (res.attributes_kept.length > 0) {
+    console.error(`⚠️  Brevo: ${target} — atributos não-texto mantidos (revise à mão): ${res.attributes_kept.join(", ")}`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {

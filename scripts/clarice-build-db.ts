@@ -18,7 +18,8 @@
  * `priority_optin` (manual) e as colunas Brevo já sincronizadas são preservadas
  * (upserts cirúrgicos por bloco de colunas, nunca um DELETE geral).
  *
- * Lista de esquecimento (LGPD, #13573): o ledger `{data-dir}/forget-requests.jsonl`
+ * Lista de esquecimento (LGPD, #13573): o ledger `data/clarice-subscribers/forget-requests.jsonl`
+ * (`DEFAULT_FORGET_LEDGER_PATH`, ou `--forget-ledger`)
  * é importado pra tabela `forget_requests` antes do Stripe; e-mail nela não
  * tem nome/ids/cohort/MV regravados (ver `lib/clarice-forget.ts`).
  *
@@ -29,7 +30,8 @@
  */
 
 import { readdirSync, statSync, existsSync, readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import Papa from "papaparse";
 import { buildUniverse } from "./merge-clarice-subscribers.ts";
 import { classifyResult } from "./verify-emails-mv.ts";
@@ -309,6 +311,31 @@ export function ingestMv(
   return { rows, files, skipped };
 }
 
+/**
+ * O store já recebeu um sync da Brevo? Sinal: alguma linha com engajamento ou
+ * supressão. Linhas da lista de esquecimento (#13573) NÃO contam: a
+ * minimização liga `unsubscribed`/`email_blacklisted` antes de qualquer sync,
+ * e num store novo isso fazia o check dizer "sincronizado" (review da PR
+ * #13583) — escondendo o aviso de que `send_eligible` ainda não é gate de envio.
+ */
+export function isBrevoSynced(db: DatabaseSync): boolean {
+  const engaged = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM clarice_users WHERE opens_count > 0 OR sends_count > 0")
+      .get() as { n: number }
+  ).n;
+  if (engaged > 0) return true;
+  const isForgotten = makeForgetMatcher(db);
+  const suppressed = db
+    .prepare(
+      `SELECT email FROM clarice_users
+        WHERE email_blacklisted = 1 OR unsubscribed = 1
+           OR hard_bounced = 1 OR complained = 1`,
+    )
+    .all() as Array<{ email: string }>;
+  return suppressed.some((r) => !isForgotten(r.email));
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -329,24 +356,27 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const db = openClariceDb(dbPath);
 
   // #13573: ledger da lista de esquecimento → tabela, ANTES de ingerir o
-  // Stripe (store recriado do zero não perde os pedidos). Ledger ilegível
-  // aborta: seguir sem ele pode regravar dado pessoal de quem pediu exclusão.
-  // Default: o ledger do próprio data-dir (= DEFAULT_FORGET_LEDGER_PATH no data-dir padrão).
-  const ledgerPath = getArg(argv, "forget-ledger") || resolve(dataDir, basename(DEFAULT_FORGET_LEDGER_PATH));
+  // Stripe (store recriado do zero não perde os pedidos). Falha FECHADA (review
+  // da PR #13583): ledger ilegível, com linha inválida, ou que não cobre algum
+  // pedido já na tabela (ausente porque o Drive ainda não sincronizou) aborta —
+  // seguir pode regravar dado pessoal de quem pediu exclusão. Caminho único
+  // (CLI, triagem e build): DEFAULT_FORGET_LEDGER_PATH, salvo --forget-ledger.
+  const ledgerPath = getArg(argv, "forget-ledger") || DEFAULT_FORGET_LEDGER_PATH;
   let forget: ReturnType<typeof importForgetLedger>;
   try {
     forget = importForgetLedger(db, ledgerPath);
   } catch (e) {
     db.close();
     console.error(
-      `❌ lista de esquecimento (LGPD) ilegível em ${ledgerPath}: ${(e as Error).message}. ` +
+      `❌ lista de esquecimento (LGPD): ${(e as Error).message}. ` +
         `Nada reconstruído. ${UNREADABLE_SOURCE_HINT}`,
     );
     process.exit(1);
   }
-  if (forget.invalid.length > 0) {
+  if (!forget.ledger_exists) {
     console.error(
-      `⚠️  ${ledgerPath}: linha(s) inválida(s) ignorada(s) na lista de esquecimento: ${forget.invalid.join(", ")}`,
+      `⚠️  lista de esquecimento (LGPD): ledger ${ledgerPath} não existe — seguindo sem pedidos de exclusão. ` +
+        `Se já houve pedido, confira se o Drive terminou de sincronizar antes de usar o store.`,
     );
   }
   const forgetMin = minimizeForgottenRows(db);
@@ -383,17 +413,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   }
 
   // Brevo nunca sincronizado? (toda coluna de engajamento/supressão no default)
-  const brevoSynced =
-    (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM clarice_users
-            WHERE opens_count > 0 OR sends_count > 0
-               OR email_blacklisted = 1 OR unsubscribed = 1
-               OR hard_bounced = 1 OR complained = 1`,
-        )
-        .get() as { n: number }
-    ).n > 0;
+  const brevoSynced = isBrevoSynced(db);
 
   if (!brevoSynced) {
     console.error(
@@ -432,7 +452,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
         send_eligible_authoritative: brevoSynced,
         brevo_synced: brevoSynced,
         priority_optin: optin,
-        forget_requests: { ledger_total: forget.total, imported: forget.imported, invalid_lines: forget.invalid },
+        forget_requests: { ledger: ledgerPath, ledger_exists: forget.ledger_exists, ledger_total: forget.total, imported: forget.imported },
         // csvIndex é um Map interno (não serializa útil via JSON.stringify) —
         // exclui do resumo impresso, só passa adiante pro recomputeDerived acima.
         stripe: { ...stripe, csvIndex: undefined },

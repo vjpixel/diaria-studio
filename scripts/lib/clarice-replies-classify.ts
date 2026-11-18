@@ -348,6 +348,12 @@ export interface TriageApplyState {
   forget_brevo_done?: string[];
   /** Pedido de exclusão cujo contato não existe na Brevo (nada a minimizar lá; revisar à mão). */
   forget_brevo_not_found?: string[];
+  /**
+   * Quando o `recomputeDerived` do último --apply que escreveu no store terminou. `null` = houve escrita
+   * e o recompute não terminou: o próximo --apply recomputa mesmo sem escrever nada (review da PR #13583).
+   * Ausente em planos antigos: tratado como pendente se o store já foi escrito.
+   */
+  recompute_done_at?: string | null;
   failures: Array<{ email: string; step: "brevo" | "store" | "optin" | "forget_store" | "forget_brevo"; error: string }>;
   last_applied_at: string | null;
 }

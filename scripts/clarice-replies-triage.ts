@@ -62,6 +62,8 @@
  * --query Q (substitui a query inteira), --input P, --plan-dir P
  * (data/clarice-replies), --db P (store da Clarice), --apply, --confirm ID,
  * --skip E1,E2 (com --apply: exclui esses e-mails desta aplicação, #12283).
+ * --forget-ledger P (com --apply: ledger da lista de esquecimento; default
+ *   `DEFAULT_FORGET_LEDGER_PATH`, o mesmo do `clarice-forget.ts` e do rebuild, #13573).
  *
  * Salvaguardas do --apply (#12265): o plano gravado é conferido contra os
  * próprios itens (id recalculado + ações refeitas; divergência recusa); um
@@ -74,7 +76,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -100,8 +102,10 @@ import { addPriorityOptins, resolveOptinEmail } from "./clarice-optin.ts";
 import { isTestAccount } from "./lib/cohorts.ts";
 import {
   DEFAULT_FORGET_LEDGER_PATH,
+  forgetBrevoTargets,
   forgetInStore,
   makeBrevoMinimizer,
+  minimizeBrevoTargets,
   type BrevoMinimizeResult,
 } from "./lib/clarice-forget.ts";
 
@@ -386,9 +390,17 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
     }
   }
 
-  if (storeWritten) {
+  // Recompute: roda se houve escrita nesta execução OU se uma execução anterior escreveu no store e o
+  // recompute dela não terminou (review da PR #13583 — sem isso, um recompute que falhou nunca era
+  // refeito no re-run, porque o re-run não escreve nada). `recompute_done_at` é zerado a cada escrita e
+  // carimbado só quando o recompute termina.
+  if (storeWritten) applied.recompute_done_at = null;
+  const storeEverWritten =
+    applied.optin_done.length + applied.saida_store_done.length + forgetStoreDone.length > 0;
+  if (storeWritten || (storeEverWritten && !applied.recompute_done_at)) {
     const done = phase("recomputando send_eligible no store inteiro");
     recomputeDerived(deps.db);
+    applied.recompute_done_at = now;
     done();
   }
 
@@ -419,29 +431,43 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
   }
 
   for (const email of forgetBrevoTodo) {
-    const target = canonical.get(email) ?? email;
     if (!deps.minimizeBrevo) {
       applied.failures.push({ email, step: "forget_brevo", error: "sem cliente Brevo para minimizar o contato" });
       continue;
     }
+    // Todas as variantes do mesmo Gmail que o store minimizou viram contatos minimizados na Brevo
+    // (review da PR #13583), não só a forma canônica.
+    const targets = forgetBrevoTargets(deps.db, canonical.get(email) ?? email);
     try {
-      const r = await deps.minimizeBrevo(target);
-      if (r.status === "not_found") {
+      const out = await minimizeBrevoTargets(deps.minimizeBrevo, targets);
+      if (!out.found) {
         forgetNotFound.push(email);
-        log(`🔎 Brevo: ${target} não existe na Brevo — exclusão feita só no store; revise à mão o endereço que recebe a newsletter`);
+        log(
+          `🔎 Brevo: ${targets.join(", ")} não existe(m) na Brevo — exclusão feita só no store; ` +
+            `revise à mão o endereço que recebe a newsletter`,
+        );
         continue;
       }
       forgetBrevoDone.push(email);
-      log(
-        `🔒 Brevo: ${target} minimizado (fora de ${r.lists_unlinked.length} lista(s), atributos zerados: ` +
-          `${r.attributes_cleared.join(", ") || "nenhum"})`,
-      );
-      if (r.attributes_kept.length > 0) {
-        log(`⚠️  Brevo: ${target} — atributos não-texto mantidos, revise à mão: ${r.attributes_kept.join(", ")}`);
+      for (const [target, r] of Object.entries(out.results)) {
+        if (r.status !== "ok") continue;
+        log(
+          `🔒 Brevo: ${target} minimizado (fora de ${r.lists_unlinked.length} lista(s), atributos zerados: ` +
+            `${r.attributes_cleared.join(", ") || "nenhum"})`,
+        );
+        if (r.attributes_failed && r.attributes_failed.length > 0) {
+          log(
+            `⚠️  Brevo: ${target} — a Brevo recusou zerar ${r.attributes_failed.join(", ")} (${r.attributes_error}); ` +
+              `blacklist e listas já valeram, limpe esses atributos à mão`,
+          );
+        }
+        if (r.attributes_kept.length > 0) {
+          log(`⚠️  Brevo: ${target} — atributos não-texto mantidos, revise à mão: ${r.attributes_kept.join(", ")}`);
+        }
       }
     } catch (err) {
       applied.failures.push({ email, step: "forget_brevo", error: (err as Error).message });
-      log(`❌ Brevo: minimização LGPD de ${target} falhou — ${(err as Error).message}`);
+      log(`❌ Brevo: minimização LGPD de ${targets.join(", ")} falhou — ${(err as Error).message}`);
     }
   }
   brevoDone();
@@ -583,8 +609,8 @@ export async function main(
         db,
         blacklist: blacklist ?? (async () => {}),
         minimizeBrevo,
-        // Ledger da lista de esquecimento ao lado do store (= data/clarice-subscribers/ no store padrão).
-        forgetLedgerPath: resolve(dirname(dbPath), basename(DEFAULT_FORGET_LEDGER_PATH)),
+        // Ledger da lista de esquecimento: o MESMO que o CLI e o rebuild leem (review da PR #13583).
+        forgetLedgerPath: getArg(argv, "forget-ledger") || DEFAULT_FORGET_LEDGER_PATH,
         skip,
         log: (m) => console.error(m),
       });
