@@ -11,7 +11,8 @@ diretórios `bin` desses pacotes com `os.add_dll_directory` antes de carregar o 
 
 Cache da sonda (#13504): o veredito da sonda da GPU (ok ou falho, com o motivo) fica em
 `diaria-whisper-cuda-probe.json` no diretório temporário do sistema (`DIARIA_WHISPER_PROBE_CACHE_DIR`
-troca o diretório), chaveado por `sys.executable` + versão do CTranslate2 + modelo, por 6 h. Só a 1ª
+troca o diretório), chaveado por `sys.executable` + versões do CTranslate2, do nvidia-cublas-cu12 e do nvidia-cudnn-cu12
++ modelo, por 6 h (instalar ou remover as DLLs pelo pip troca a chave). Só a 1ª
 chamada da janela paga a sonda (~10 s); veredito falho cacheado vai direto para a CPU. Se a sonda
 passou e a carga ou o encode na GPU falharem no processo principal, a entrada é apagada e a próxima
 chamada sonda de novo. Arquivo ilegível = sem cache. `DIARIA_WHISPER_PROBE_CACHE=0` desliga.
@@ -104,15 +105,24 @@ def probe_cache_path():
     return os.path.join(d, PROBE_CACHE_FILE)
 
 
-def probe_cache_key(model_name: str) -> str:
-    # Pelos metadados do pacote: não carrega o código nativo do CTranslate2 só para ler a versão.
+def _dist_version(name: str) -> str:
+    """Versão do pacote pelos metadados (sem carregar código nativo); "none" se não instalado."""
     try:
         from importlib.metadata import version
 
-        ct2 = version("ctranslate2")
-    except Exception:  # noqa: BLE001 — sem CTranslate2 instalado a chave só não leva a versão
-        ct2 = "ausente"
-    return f"{sys.executable}|ctranslate2={ct2}|{model_name}"
+        return version(name)
+    except Exception:  # noqa: BLE001 — pacote ausente ou metadados ilegíveis
+        return "none"
+
+
+# Pacotes cuja troca muda o veredito da GPU: instalar ou desinstalar as DLLs pelo pip
+# (nvidia-cublas-cu12, nvidia-cudnn-cu12) muda a chave e a próxima chamada sonda de novo.
+PROBE_CACHE_KEY_DISTS = ("ctranslate2", "nvidia-cublas-cu12", "nvidia-cudnn-cu12")
+
+
+def probe_cache_key(model_name: str) -> str:
+    dists = "|".join(f"{d}={_dist_version(d)}" for d in PROBE_CACHE_KEY_DISTS)
+    return f"{sys.executable}|{dists}|{model_name}"
 
 
 def _read_probe_cache(path) -> dict:

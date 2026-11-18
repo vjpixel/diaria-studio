@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -257,6 +257,27 @@ describe("#13504 cache do veredito da sonda da GPU", { skip: PY ? false : "sem p
     const r = runDelta(env, []);
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(r.loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+  });
+
+  it("trocar a versão do nvidia-cudnn-cu12 (DLLs pelo pip) muda a chave: veredito ok em cache não vale, roda a sonda", () => {
+    const env = fakeEnv("ok");
+    // dist-info falso no PYTHONPATH: vem antes do site-packages, então importlib.metadata lê este
+    const fakeDist = (v: string) => {
+      const d = join(env.dir, `nvidia_cudnn_cu12-${v}.dist-info`);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "METADATA"), `Metadata-Version: 2.1\nName: nvidia-cudnn-cu12\nVersion: ${v}\n`);
+      return d;
+    };
+    const d1 = fakeDist("9.1.0");
+    assert.deepEqual(runDelta(env, []).loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+    assert.deepEqual(runDelta(env, []).loads, ["cuda:int8_float16"]); // mesma versão: cache vale
+    rmSync(d1, { recursive: true, force: true });
+    fakeDist("9.5.1");
+    const r = runDelta(env, []);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+    const keys = Object.keys(JSON.parse(readFileSync(cacheFile(env), "utf8")));
+    assert.ok(keys.some((k) => k.includes("nvidia-cudnn-cu12=9.5.1")), keys.join("\n"));
   });
 
   it("DIARIA_WHISPER_PROBE_CACHE=0 desliga o cache: toda chamada sonda", () => {
