@@ -12,13 +12,17 @@
  *
  *   # Retomar a revisão (início do Stage 4, antes do fact-check e dos lints):
  *   npx tsx scripts/clarice-pending.ts resume --edition-dir data/editions/AAMMDD/ \
- *     [--edition AAMMDD] [--accept-intentional-error-change] [--retry-now]
+ *     [--edition AAMMDD] [--accept-intentional-error-change] [--retry-now] \
+ *     [--rounds N] [--spacing-ms N]
+ *
+ *   # #13330: falha de API (exit 3/6) ganha outra rodada depois de --spacing-ms
+ *   # (default 2 rodadas, 120000 ms), tudo dentro de 9 min; --rounds 1 desliga.
  *
  *   # Conferir se há revisão pendente:
  *   npx tsx scripts/clarice-pending.ts status --edition-dir data/editions/AAMMDD/
  *
- * O `resume` chama `clarice-correct.ts` e pode levar até o teto dele (8 min):
- * chamar a Bash tool com `timeout: 600000`.
+ * O `resume` chama `clarice-correct.ts` e pode levar até 9 min (rodadas
+ * espaçadas, #13330; 8 min com `--rounds 1`): chamar a Bash tool com `timeout: 600000`.
  *
  * Exit codes:
  *   0 — sucesso (skip gravado; clear feito; resume concluído ou nada pendente; status lido)
@@ -66,7 +70,8 @@ import {
   isClaricePending,
   postResumeSteps,
   readClaricePending,
-  resumeClarice,
+  resumeClariceSpaced,
+  spacedFailureMessage,
   resumeCommandFor,
   skipClarice,
   type ClariceRunResult,
@@ -210,7 +215,7 @@ function main(): void {
   const edition = flag(argv, "--edition");
   if (!editionDirArg || !["skip", "resume", "status", "clear"].includes(cmd ?? "")) {
     console.error(
-      "Uso: clarice-pending.ts skip|resume|status|clear --edition-dir <dir> [--reason motivo] [--edition AAMMDD] [--force] [--accept-intentional-error-change] [--retry-now]",
+      "Uso: clarice-pending.ts skip|resume|status|clear --edition-dir <dir> [--reason motivo] [--edition AAMMDD] [--force] [--accept-intentional-error-change] [--retry-now] [--rounds N] [--spacing-ms N]",
     );
     process.exit(1);
   }
@@ -274,12 +279,34 @@ function main(): void {
     return;
   }
 
-  const outcome = resumeClarice(editionDir, spawnClariceCorrect, {
+  const roundsArg = flag(argv, "--rounds");
+  const spacingArg = flag(argv, "--spacing-ms");
+  const rounds = roundsArg === undefined ? undefined : Number(roundsArg);
+  const spacingMs = spacingArg === undefined ? undefined : Number(spacingArg);
+  if (
+    (rounds !== undefined && !(Number.isInteger(rounds) && rounds >= 1)) ||
+    (spacingMs !== undefined && !(Number.isInteger(spacingMs) && spacingMs >= 0))
+  ) {
+    console.error("[clarice-pending] --rounds precisa ser inteiro ≥ 1 e --spacing-ms inteiro ≥ 0");
+    process.exit(1);
+  }
+  // #13330: rodadas espaçadas (default 2, 2 min de intervalo) quando a falha é de API.
+  const spaced = resumeClariceSpaced(editionDir, spawnClariceCorrect, {
     edition,
     acceptIntentionalErrorChange: argv.includes("--accept-intentional-error-change"),
     retryNow: argv.includes("--retry-now"),
+    ...(rounds !== undefined ? { rounds } : {}),
+    ...(spacingMs !== undefined ? { spacingMs } : {}),
     warn: (msg) => console.error(`[clarice-pending] ⚠️ ${msg}`),
+    onRetry: (failed, waitMs, next, total) =>
+      console.error(
+        `[clarice-pending] rodada ${failed.round}/${total} falhou (${failed.reason ?? `exit ${failed.exitCode}`}); ` +
+          `rodada ${next} em ${Math.round(waitMs / 1000)}s.`,
+      ),
   });
+  const outcome = spaced.outcome;
+  const roundsInfo = spaced.rounds.length > 1 ? { rounds: spaced.rounds } : {};
+  const spacedWarning = spacedFailureMessage(spaced.rounds);
 
   if (outcome.status !== "resumed") {
     const code = resumeExitCode(outcome);
@@ -290,11 +317,12 @@ function main(): void {
         agent: "clarice-pending",
         level: "warn",
         message: "clarice_resume",
-        details: { ...outcome, exit: code },
+        details: { ...outcome, ...roundsInfo, exit: code },
       });
       console.error(`[clarice-pending] ${resumeMessage(outcome)}`);
+      if (spacedWarning) console.error(`[clarice-pending] ⚠️ ${spacedWarning}`);
     }
-    console.log(JSON.stringify({ ...outcome, exit: code }));
+    console.log(JSON.stringify({ ...outcome, ...roundsInfo, exit: code }));
     if (code !== 0) process.exit(code);
     return;
   }
@@ -312,6 +340,7 @@ function main(): void {
       : 0;
   const result = {
     ...outcome,
+    ...roundsInfo,
     post_steps: steps,
     attention: attention.map((s) => s.name),
     hard_failures: hardFailures.map((s) => s.name),

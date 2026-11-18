@@ -48,6 +48,12 @@ describe("renderTopicosPagina (#13447)", () => {
     assert.ok(sep > html.indexOf("tópico da H2"));
     assert.ok(html.indexOf(`>${aparte.id}<`, sep) > sep);
   });
+  it("inclui à parte a fala só do vertical sem gravarAParte (#13479)", () => {
+    const r = roteiro();
+    r.falas.push({ ...r.falas[0], id: "V1-SOLTA", videos: ["vertical1"], gravarAParte: false, topicos: ["tópico solto"] });
+    const html = renderTopicosPagina(r);
+    assert.ok(html.indexOf(">V1-SOLTA<") > html.indexOf("Gravadas à parte"));
+  });
   it("usa fonte grande e o mesmo esquema de temas do roteiro", () => {
     const html = renderTopicosPagina(roteiro());
     assert.match(html, /font-size: 30px/);

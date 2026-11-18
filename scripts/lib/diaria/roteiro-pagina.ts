@@ -384,7 +384,8 @@ function blocoTopicos(f: FalaRoteiro, aparte: boolean): string {
 export function renderTopicosPagina(roteiro: RoteiroFalas, opts: { artifactUrl?: string } = {}): string {
   if (opts.artifactUrl && !artifactUrlSegura(opts.artifactUrl)) throw new Error(`link de artefato inválido para o comentário HTML: ${opts.artifactUrl}`);
   const principais = falasDoVideo(roteiro, "horizontal").falas.filter((f) => !f.gravarAParte);
-  const aparte = roteiro.falas.filter((f) => f.gravarAParte);
+  // Fala fora do horizontal também é gravada à parte (#13479), com ou sem a marca.
+  const aparte = roteiro.falas.filter((f) => f.gravarAParte || !f.videos.includes("horizontal"));
   const corpo: string[] = [];
   for (const f of principais) {
     corpo.push(blocoTopicos(f, false));

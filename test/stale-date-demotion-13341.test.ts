@@ -75,6 +75,28 @@ test("#13341: pedido do editor nunca sai (só aviso)", () => {
   assert.match(r.kept[0].reason, /pedido do editor/);
 });
 
+// #13497: o campo guarda o slot ("d1"/"d2"/"d3", ou "destaque" sem posição),
+// nunca `true` — o teste `=== true` não casava e a reserva era rebaixada.
+for (const request of ["d1", "d2", "d3", "destaque"]) {
+  test(`#13497: editor_destaque_request="${request}" é pedido do editor (só aviso)`, () => {
+    const h = HIGHLIGHTS();
+    h[1] = hl(2, GPT6, "Reserva do editor", { date_unverified: true, editor_destaque_request: request });
+    const r = demoteStaleDateHighlights(h, new Map([[GPT6, hit("2026-09-29", 49)]]));
+    assert.equal(r.highlights[1].article?.url, GPT6);
+    assert.equal(r.demoted.length, 0);
+    assert.equal(r.kept.length, 1);
+    assert.match(r.kept[0].reason, /pedido do editor/);
+  });
+}
+
+test("#13497: editor_destaque_request vazio não protege (o item velho sai)", () => {
+  const h = HIGHLIGHTS();
+  h[1] = hl(2, GPT6, "Sem pedido", { date_unverified: true, editor_destaque_request: "" });
+  const r = demoteStaleDateHighlights(h, new Map([[GPT6, hit("2026-09-29", 49)]]));
+  assert.equal(r.demoted.length, 1);
+  assert.equal(r.demoted[0].url, GPT6);
+});
+
 test("#13341 / #3916: o único negativo do top-3 não sai sem substituto negativo", () => {
   const h = [
     hl(1, LUPA, "Negativo velho", { date_unverified: true, negative_impact: true }),

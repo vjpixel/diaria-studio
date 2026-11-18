@@ -22,6 +22,7 @@ import { escHtml } from "./html-escape.ts";
 import { renderAnalyticsHead, renderSeoMeta } from "./shared/seo-meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { renderSiteNav } from "./shared/site-nav.ts";
+import { renderSiteSocialFooter } from "./shared/site-social.ts"; // #13480: rodapé social global, como as demais páginas com o menu (#13321)
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
 import { YOUTUBE_EMBED_BASE } from "./site-page-video.ts";
 import { YOUTUBE_SERIES_NAME } from "./diaria/youtube-video.ts";
@@ -140,7 +141,7 @@ ${VIDEO_GRID_CSS}
 ${renderAnalyticsHead()}
 </head>
 <body>
-  ${renderSiteNav({ inheritHostTokens: true })}
+  ${renderSiteNav({ active: "videos", inheritHostTokens: true })}
   <main class="wrap">
     <p class="top"><a href="/">diar<span class="dot">.</span>ia<span class="dot">.</span>br</a></p>
     <h1>Vídeos</h1>
@@ -153,6 +154,7 @@ ${grid}
       <a href="/assinar">Assinar</a>
     </div>
   </main>
+  ${renderSiteSocialFooter({ inheritHostTokens: true })}
 </body>
 </html>
 `;
