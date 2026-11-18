@@ -2,7 +2,7 @@
  * scripts/lib/shared/site-social.ts (#13321)
  *
  * Rodapé social global do site: os ícones de todas as redes da diar.ia.br
- * (YouTube, TikTok, Instagram, LinkedIn, Threads, Facebook, X), na MESMA
+ * (YouTube, Instagram, LinkedIn, TikTok, Threads, X, Facebook; #13557), na MESMA
  * ordem e com as MESMAS URLs do convite "Siga a diar.ia.br:" da edição — as
  * duas superfícies leem `DIARIA_SOCIAL_NETWORKS` (`social-networks.ts`).
  *

@@ -66,7 +66,7 @@ describe("#13321 — renderSiteSocialIcons", () => {
     }
     // YouTube segue sendo o link de inscrição (#12069).
     assert.equal(new URL(hrefs[0]).searchParams.get("sub_confirmation"), "1");
-    assert.equal(new URL(hrefs[1]).host + new URL(hrefs[1]).pathname, "www.tiktok.com/@diar.ia.br");
+    assert.equal(new URL(hrefs[3]).host + new URL(hrefs[3]).pathname, "www.tiktok.com/@diar.ia.br"); // #13557: TikTok depois do LinkedIn
     for (const { label } of DIARIA_SOCIAL_NETWORKS) {
       assert.ok(html.includes(`aria-label="diar.ia.br no ${label}"`), `${label} sem aria-label`);
     }

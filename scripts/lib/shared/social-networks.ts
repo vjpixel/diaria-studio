@@ -22,9 +22,11 @@ import {
 } from "../canonical-urls.ts";
 
 /** Chave do ícone (nome do arquivo em `assets/social-icons/` e em
- * `workers/site/public/icons/social/`), na ordem do convite. #13320: TikTok
- * logo depois do YouTube, as duas redes de vídeo juntas. */
-export const SOCIAL_INVITE_ICON_KEYS = ["youtube", "tiktok", "instagram", "linkedin", "threads", "facebook", "x"] as const;
+ * `workers/site/public/icons/social/`), na ordem do convite. #13557 (pedido
+ * do editor, edição 261118): YouTube, Instagram, LinkedIn, TikTok, Threads, X,
+ * Facebook. A ordem anterior (#13320, TikTok logo depois do YouTube) ficou em
+ * `SOCIAL_INVITE_TIKTOK_SECOND_LEGACY` (`encerramento-snippet.ts`). */
+export const SOCIAL_INVITE_ICON_KEYS = ["youtube", "instagram", "linkedin", "tiktok", "threads", "x", "facebook"] as const;
 export type SocialInviteIconKey = (typeof SOCIAL_INVITE_ICON_KEYS)[number];
 
 export interface DiariaSocialNetwork {

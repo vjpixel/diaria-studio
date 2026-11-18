@@ -6,6 +6,10 @@
  * com vídeo; edição sem vídeo nunca leva o box (nem link pro canal).
  *
  * Semana usada: segunda 261102 ... sexta 261106.
+ *
+ * #13555: o box saiu do e-mail por padrão (`platform.config.json >
+ * video_box0.enabled: false`). Os testes da regra ligam o box explicitamente
+ * (`ON` / 3º argumento `true`); o bloco do fim trava o default desligado.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -22,8 +26,11 @@ import {
   weekEditionsBefore,
   VIDEO_BOX0_CATEGORIA,
 } from "../scripts/lib/diaria/video-box0.ts";
-import { extractContent, resolveVideoBox0, BOX0_SENTINEL } from "../scripts/lib/newsletter-parse.ts";
+import { d1VideoHeroFields, extractContent, isVideoBox0Enabled, resolveVideoBox0, BOX0_SENTINEL } from "../scripts/lib/newsletter-parse.ts";
+import { D1_PLAY_HERO_FILE } from "../scripts/lib/diaria/d1-video-hero.ts";
 import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
+
+const ON = { videoBox0Enabled: true };
 
 const EIA = `**É IA?**
 
@@ -156,7 +163,7 @@ describe("#12073 — box do vídeo no render", () => {
     withWeek(
       { "261103": { video: true, record: { videoId: ID, title: "Vídeo da terça", uploadedAt: "2026-11-03T02:00:00Z" } } },
       (dirOf) => {
-        const content = extractContent(dirOf("261103"));
+        const content = extractContent(dirOf("261103"), undefined, ON);
         assert.match(content.boxDivulgacao0 ?? "", /\*\*Vídeo da terça\*\*/);
         assert.equal(content.boxDivulgacao0Categoria, VIDEO_BOX0_CATEGORIA);
         const html = renderHTML(content);
@@ -169,7 +176,7 @@ describe("#12073 — box do vídeo no render", () => {
   it("edição sem vídeo (ou marcada sem vídeo) não leva box, nem link pro canal", () => {
     withWeek({ "261103": {}, "261105": { video: true, noVideo: true } }, (dirOf) => {
       for (const day of ["261103", "261105"]) {
-        const content = extractContent(dirOf(day));
+        const content = extractContent(dirOf(day), undefined, ON);
         assert.equal(content.boxDivulgacao0, null, `${day} sem box`);
         assert.ok(!renderHTML(content).includes("video-box0"), `${day} sem link do box`);
       }
@@ -180,36 +187,36 @@ describe("#12073 — box do vídeo no render", () => {
     withWeek(
       { "261103": { video: true, box0: APOIO }, "261104": { video: true } },
       (dirOf) => {
-        const tue = extractContent(dirOf("261103"));
+        const tue = extractContent(dirOf("261103"), undefined, ON);
         assert.match(tue.boxDivulgacao0 ?? "", /Apoie a diar\.ia\.br/);
         assert.ok(!renderHTML(tue).includes("video-box0"));
-        assert.match(resolveVideoBox0(dirOf("261104"), false) ?? "", /video-box0-261104/);
+        assert.match(resolveVideoBox0(dirOf("261104"), false, true) ?? "", /video-box0-261104/);
       },
     );
   });
 
   it("marcador _internal/no-video-box0.json tira o box só desta edição", () => {
     withWeek({ "261103": { video: true }, "261105": { video: true } }, (dirOf) => {
-      assert.ok(resolveVideoBox0(dirOf("261103"), false), "sem marcador a terça leva o box");
+      assert.ok(resolveVideoBox0(dirOf("261103"), false, true), "sem marcador a terça leva o box");
       writeFileSync(join(dirOf("261103"), "_internal", "no-video-box0.json"), "{}");
-      assert.equal(resolveVideoBox0(dirOf("261103"), false), null);
-      assert.ok(resolveVideoBox0(dirOf("261105"), false), "outra edição segue com a cota");
+      assert.equal(resolveVideoBox0(dirOf("261103"), false, true), null);
+      assert.ok(resolveVideoBox0(dirOf("261105"), false, true), "outra edição segue com a cota");
     });
   });
 
   it("terça com marcador e sem registro: a vaga passa para a quarta (#12899)", () => {
     withWeek({ "261103": { video: true }, "261104": { video: true } }, (dirOf) => {
       writeFileSync(join(dirOf("261103"), "_internal", "no-video-box0.json"), "{}");
-      assert.equal(resolveVideoBox0(dirOf("261103"), false), null);
-      assert.ok(resolveVideoBox0(dirOf("261104"), false), "a quarta leva o box que a terça cedeu");
+      assert.equal(resolveVideoBox0(dirOf("261103"), false, true), null);
+      assert.ok(resolveVideoBox0(dirOf("261104"), false, true), "a quarta leva o box que a terça cedeu");
     });
   });
 
   it("callout de sorteio no topo também ocupa o slot: a terça cede", () => {
     const callout = "**🎥 Hoje às 19h tem sorteio ao vivo: [participe](https://example.com/live).**";
     withWeek({ "261103": { video: true, callout }, "261104": { video: true } }, (dirOf) => {
-      assert.equal(extractContent(dirOf("261103")).boxDivulgacao0, null);
-      assert.ok(resolveVideoBox0(dirOf("261104"), false), "a quarta leva o box que a terça cedeu");
+      assert.equal(extractContent(dirOf("261103"), undefined, ON).boxDivulgacao0, null);
+      assert.ok(resolveVideoBox0(dirOf("261104"), false, true), "a quarta leva o box que a terça cedeu");
     });
   });
 
@@ -217,11 +224,11 @@ describe("#12073 — box do vídeo no render", () => {
     withWeek(
       { "261102": { video: true }, "261103": { video: true }, "261104": { video: true }, "261105": { video: true } },
       (dirOf) => {
-        assert.equal(resolveVideoBox0(dirOf("261102"), false), null);
-        assert.ok(resolveVideoBox0(dirOf("261103"), false));
-        assert.equal(resolveVideoBox0(dirOf("261104"), false), null);
-        assert.ok(resolveVideoBox0(dirOf("261105"), false));
-        assert.equal(resolveVideoBox0(dirOf("261105"), true), null, "slot 0 ocupado no próprio dia");
+        assert.equal(resolveVideoBox0(dirOf("261102"), false, true), null);
+        assert.ok(resolveVideoBox0(dirOf("261103"), false, true));
+        assert.equal(resolveVideoBox0(dirOf("261104"), false, true), null);
+        assert.ok(resolveVideoBox0(dirOf("261105"), false, true));
+        assert.equal(resolveVideoBox0(dirOf("261105"), true, true), null, "slot 0 ocupado no próprio dia");
       },
     );
   });
@@ -232,9 +239,54 @@ describe("#12073 — box do vídeo no render", () => {
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal", "05-video-url.txt"), `https://youtu.be/${ID}\n`);
-      assert.ok(resolveVideoBox0(dir, false));
+      assert.ok(resolveVideoBox0(dir, false, true));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("#13555 — box do vídeo desligado por padrão", () => {
+  it("platform.config.json do repo: video_box0.enabled é false", () => {
+    assert.equal(isVideoBox0Enabled(), false);
+  });
+
+  it("config de fixture: chave ausente, false ou ilegível = desligado; só true liga", () => {
+    const root = mkdtempSync(join(tmpdir(), "video-box0-cfg-13555-"));
+    const cfg = join(root, "platform.config.json");
+    try {
+      assert.equal(isVideoBox0Enabled(root), false, "sem arquivo");
+      writeFileSync(cfg, JSON.stringify({ newsletter: "kit" }));
+      assert.equal(isVideoBox0Enabled(root), false, "sem a chave");
+      writeFileSync(cfg, JSON.stringify({ video_box0: { enabled: false } }));
+      assert.equal(isVideoBox0Enabled(root), false);
+      writeFileSync(cfg, JSON.stringify({ video_box0: { enabled: "true" } }));
+      assert.equal(isVideoBox0Enabled(root), false, "string não liga");
+      writeFileSync(cfg, "{ não é json");
+      assert.equal(isVideoBox0Enabled(root), false, "ilegível");
+      writeFileSync(cfg, JSON.stringify({ video_box0: { enabled: true } }));
+      assert.equal(isVideoBox0Enabled(root), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("terça com vídeo e slot 0 livre: sem box no e-mail, videoBox0 = false, imagem do D1 segue com o vídeo", () => {
+    withWeek(
+      { "261103": { video: true, record: { videoId: ID, title: "Vídeo da terça", uploadedAt: "2026-11-03T02:00:00Z" } } },
+      (dirOf) => {
+        assert.equal(resolveVideoBox0(dirOf("261103"), false), null, "default do config");
+        const content = extractContent(dirOf("261103"));
+        assert.equal(content.boxDivulgacao0, null);
+        assert.equal(content.videoBox0, false, "Stage 5 grava shown:false (#12159)");
+        const html = renderHTML(content);
+        assert.ok(!html.includes("video-box0"), "sem link do box");
+        assert.ok(!html.includes("Assista no YouTube"), "sem o botão do box");
+        writeFileSync(join(dirOf("261103"), D1_PLAY_HERO_FILE), "jpg");
+        const hero = d1VideoHeroFields(dirOf("261103"));
+        assert.equal(hero.videoLink?.kind, "video", "o link do vídeo na imagem do D1 continua");
+        assert.ok(hero.videoLink?.href.includes(ID));
+      },
+    );
   });
 });
