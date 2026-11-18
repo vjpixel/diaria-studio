@@ -128,6 +128,20 @@ describe("pickCanonical (#3920)", () => {
 });
 
 describe("foldCluster (#3920)", () => {
+  it("herda editor_destaque_request/reserved_from da reserva perdedora (#13487)", () => {
+    const winner = art({ url: "https://w", summary: "x".repeat(300), source: "A" });
+    const reserved = art({
+      url: "https://r",
+      summary: "x".repeat(10),
+      editor_destaque_request: "d1",
+      reserved_from: "261101/d1",
+    });
+    const { canonical } = foldCluster([winner, reserved]);
+    assert.equal(canonical.url, "https://w");
+    assert.equal(canonical.editor_destaque_request, "d1");
+    assert.equal(canonical.reserved_from, "261101/d1");
+  });
+
   it("anexa perdedores como cluster_sources[] no canônico", () => {
     const winner = art({ url: "https://w", summary: "x".repeat(300), source: "A" });
     const l1 = art({ url: "https://l1", summary: "x".repeat(100), source: "B", title: "B t" });
