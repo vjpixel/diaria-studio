@@ -43,9 +43,6 @@
  */
 import { COLORS } from "./design-tokens.ts";
 
-/** Fundo do canvas em dark mode — o INK do DS, o mesmo de `darkCanvasMediaRule`. */
-export const DARK_CANVAS_BG = COLORS.ink;
-
 /** Cor clara (hex maiúsculo) → cor no modo escuro, por papel da propriedade. */
 export interface DarkModeMap {
   /** `color:` — texto. */
