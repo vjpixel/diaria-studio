@@ -213,8 +213,12 @@ describe("#13240: o efeito no XML", () => {
     const xml = buildXmeml([H, V], SOURCE, FRAMING, { vinheta: { ...VIN, sfx: SFX } });
     const fileLen = Number(xml.match(/<file id="file-vinheta-som"><name>[\s\S]*?<duration>(\d+)<\/duration>/)![1]);
     assert.ok(fileLen <= SFX.durationS * 30, `<file> declara ${fileLen} quadros, o arquivo tem ${SFX.durationS * 30}`);
-    for (const m of xml.matchAll(/<clipitem id="vinheta-som-[^"]+">[\s\S]*?<in>(\d+)<\/in><out>(\d+)<\/out>/g)) {
-      assert.ok(Number(m[2]) <= fileLen, `out ${m[2]} > ${fileLen}`);
+    const real = SFX.durationS * 30;
+    const clips = [...xml.matchAll(/<clipitem id="vinheta-som-[^"]+"><name>vinheta-som<\/name><enabled>TRUE<\/enabled><duration>(\d+)<\/duration>[\s\S]*?<in>(\d+)<\/in><out>(\d+)<\/out>/g)];
+    assert.equal(clips.length, 4, "2 cliques por sequência (horizontal e vertical)");
+    for (const m of clips) {
+      assert.ok(Number(m[1]) <= real, `clipitem <duration> ${m[1]} > ${real} quadros reais`);
+      assert.ok(Number(m[3]) - Number(m[2]) <= real, `out-in ${Number(m[3]) - Number(m[2])} > ${real} quadros reais`);
     }
   });
 

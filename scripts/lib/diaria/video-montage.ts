@@ -3767,7 +3767,9 @@ export function vinhetaSfxLenFrames(durationS: number, fps: number): number {
  * `vinheta_som`. O `vinheta-logo-diaria.mov` traz um clique embutido no quadro
  * 0, fora dos "." do logo; com o efeito, ele virava um 3º clique no lugar
  * errado (o editor quer exatamente um por "."). Sem o efeito, o MOV segue
- * como antes.
+ * como antes. Decide pela CONFIGURAÇÃO, não pelo que coube na sequência: com
+ * o efeito configurado e nenhum instante dentro da vinheta (cortada no fim), a
+ * vinheta fica sem som nenhum, e a prévia segue o mesmo critério do XML.
  */
 export function vinhetaUsesMovAudio(vin: Pick<VinhetaAsset, "hasAudio" | "sfx">): boolean {
   return vin.hasAudio && !vin.sfx;
@@ -3776,7 +3778,8 @@ export function vinhetaUsesMovAudio(vin: Pick<VinhetaAsset, "hasAudio" | "sfx">)
 /**
  * Onde o efeito toca na sequência, em quadros (#13240): `span.start` + cada
  * instante arredondado ao quadro, com a duração do efeito arredondada PARA
- * CIMA (no mínimo 1 quadro); desde o #13522, para BAIXO. Instante que cai depois
+ * BAIXO, no mínimo 1 quadro (#13522: para cima, o clipitem pedia mais mídia
+ * do que o arquivo tem e o Premiere do Mac não importava o XML). Instante que cai depois
  * do fim da vinheta (cortada no fim da sequência) fica de fora, e 2 instantes
  * no mesmo quadro viram 1; cada clipitem para no começo do seguinte, para a
  * faixa nunca ter clipes sobrepostos.
@@ -3968,8 +3971,9 @@ export function vinhetaScalePct(asset: Pick<VinhetaAsset, "width" | "height">, s
 /**
  * Filtros do ffmpeg da prévia com a vinheta por cima (#12101): entrada 0 = a
  * prévia montada, entrada 1 = o MOV. `subtitles` (opcional) entra depois da
- * vinheta, `loudnorm` no fim do áudio; o som do MOV (se houver) é misturado a
- * partir do mesmo instante. `duck` (#13240): o áudio da prévia abaixa no
+ * vinheta, `loudnorm` no fim do áudio; o som do MOV (se `hasAudio`) é misturado a
+ * partir do mesmo instante. A função é genérica: quem chama decide se o som
+ * do MOV entra (`vinhetaUsesMovAudio`, #13522: com o efeito configurado, não). `duck` (#13240): o áudio da prévia abaixa no
  * trecho da `vinhetaDuckSpan` (segundos da sequência), como no XML. `sfx`
  * (#13240): o efeito de `vinheta_som` é a entrada 2, misturado uma vez em
  * cada instante de `atSeqS`: segundos da SEQUÊNCIA (os mesmos quadros do XML,
@@ -4441,6 +4445,7 @@ export function buildXmeml(
       ? '<file id="file-vinheta"/>'
       : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(url(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
         `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
+        // O <file> descreve o MOV como ele é (com som, se tiver); só o clipitem do som sai quando o efeito substitui (#13522).
         (vin.hasAudio
           ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
           : "") +
