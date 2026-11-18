@@ -16,7 +16,8 @@ import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { parseUseMelhorItems, readTempoArtifact, estimateMinutes } from "../use-melhor-tempo-refresh.ts"; // #10765
-import { resolve, dirname, basename } from "node:path";
+import { resolve, dirname, basename, relative, sep } from "node:path";
+import { findConflictCopies } from "../conflict-copy-triage.ts"; // #13545
 import { detectBoxSelectionConfigDrift, formatBoxSelectionDrift } from "../box-selection-drift.ts"; // #9253
 import { aammddToIsoDate, readSnippetExpiry } from "../shared/snippet-header.ts"; // #10174
 import { readSnippetFileRaw } from "../shared/snippet-loader.ts"; // #10174
@@ -4550,7 +4551,45 @@ function checkClaricePending(editionDir: string): InvariantViolation[] {
   ];
 }
 
+/** Arquivos sem os quais o Stage 4 não tem o que revisar nem publicar (#13545). */
+export const EDITION_REQUIRED_FILES = ["02-reviewed.md", "_internal/01-approved.json", "06-public-images.json"] as const;
+
+/**
+ * #13545: o sync de `data/` (rclone bisync) renomeou para `.conflictN` e fez
+ * sumir arquivos da edição em curso (02-reviewed, 01-approved, 06-public-images).
+ * Acusa cópia `.conflictN` dentro da edição (fora de `_conflitos-*`) e arquivo
+ * obrigatório ausente. Restaurar: `docs/sync-conflict-restore.md`.
+ */
+export function checkEditionSyncConflicts(editionDir: string): InvariantViolation[] {
+  const out: InvariantViolation[] = [];
+  const base = { rule: "edition-sync-conflicts", source_issue: "#13545", severity: "error" as const };
+  for (const copy of findConflictCopies(editionDir)) {
+    const rel = relative(editionDir, copy).split(sep).join("/");
+    out.push({
+      ...base,
+      file: rel,
+      message: `cópia de conflito do sync em ${rel}. NÃO copie por cima nem apague: compare com o original e restaure como em docs/sync-conflict-restore.md (npx tsx scripts/triage-conflict-copies.ts).`,
+    });
+  }
+  for (const rel of EDITION_REQUIRED_FILES) {
+    if (existsSync(resolve(editionDir, rel))) continue;
+    out.push({
+      ...base,
+      file: rel,
+      message: `${rel} ausente na edição. Se há ${rel}.conflictN ao lado, o sync renomeou o original: restaure como em docs/sync-conflict-restore.md.`,
+    });
+  }
+  return out;
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
+  {
+    id: "edition-sync-conflicts",
+    description: "pasta da edição sem cópia .conflictN do sync e com os arquivos obrigatórios presentes (#13545)",
+    source_issue: "#13545",
+    stage: 4,
+    run: checkEditionSyncConflicts,
+  },
   {
     id: "newsletter-html-not-behind-reviewed",
     description: "newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa)",
