@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 150 invariants.
+**Total**: 151 invariants.
 
 ## Static (estrutura do repo)
 
@@ -95,6 +95,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
 | `clarice-pending` | revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only) | #12257 |
 | `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
+| `edition-sync-conflicts` | pasta da edição sem cópia .conflictN do sync e com os arquivos obrigatórios presentes (#13545) | #13545 |
 | `editor-destaque-request` | link enviado pelo editor com pedido explícito de destaque (inbox) que ficou fora dos destaques ou em outra posição, com o motivo (#12193, warning-only) | #12193 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
 | `fact-recurrence` | Possível mesmo fato em todas as seções (heurístico, warning-only) | #11083 |
