@@ -15,7 +15,7 @@ function run(extra: string[]) {
     const r = spawnSync(
       process.execPath,
       ["--import", "tsx", "scripts/clarice-pending.ts", "resume", "--edition-dir", dir, ...extra],
-      { encoding: "utf8" },
+      { encoding: "utf8", cwd: join(import.meta.dirname, ".."), timeout: 30000 },
     );
     return { status: r.status, stderr: r.stderr ?? "" };
   } finally {
