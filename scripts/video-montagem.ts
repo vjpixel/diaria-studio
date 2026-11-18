@@ -2965,7 +2965,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   const xmlTexts = chosen.map((p) => join(ctx.outDir, xmlFileName(p.spec.name))).filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
   // #13500: e os trechos inseridos de cada sequência escolhida, contra o arquivo no out dir.
   const inseridosXml = chosen.flatMap((p) => pf.xmlAssets?.[sequenceKey(p.spec)]?.trechosInseridos ?? []);
-  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), probeTrechoFrames, { dir: ctx.outDir, clips: inseridosXml });
+  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), cachedTrechoProbe(trechoFramesCachePath(ctx.workDir)), { dir: ctx.outDir, clips: inseridosXml });
   for (const x of mediaIssues) console.log(`[erro] ${x}`);
   bad += mediaIssues.length;
   const report: Record<string, unknown> = {};
@@ -4213,6 +4213,72 @@ export function probeTrechoFrames(path: string): number | null {
   }
 }
 
+/** #13512: o arquivo do cache da contagem de quadros. */
+export const TRECHO_FRAMES_CACHE = "trechos-quadros-cache.json";
+
+/**
+ * #13512: onde o cache mora, no work dir da edição (local: `tmp` no Neo, o
+ * cache em disco no modo API). Nunca no out dir nem na `trechos/`: a pasta do
+ * Drive sincroniza entre máquinas, e o mtime de um arquivo baixado pelo Drive
+ * em outra máquina não é o desta, então a chave não valeria lá.
+ */
+export function trechoFramesCachePath(workDir: string): string {
+  return join(workDir, TRECHO_FRAMES_CACHE);
+}
+
+/**
+ * #13512: `probe` com cache em `cachePath`, chave caminho absoluto do
+ * arquivo + tamanho + mtime. O mesmo arquivo, intacto, não é relido a cada
+ * rebuild do XML leve (~1,6 GB de trechos); mudou tamanho ou mtime, sonda de
+ * novo. Só contagem válida é guardada (null = ilegível, sempre reprobe);
+ * entrada de arquivo que não existe mais é podada ao carregar; cache ausente,
+ * corrompido ou que não grava vira sonda direta, nunca erro. Não usar para o
+ * `.part` temporário do render (`renderFramesConferidos.probePart`).
+ */
+export function cachedTrechoProbe(cachePath: string, probe: (path: string) => number | null = probeTrechoFrames): (path: string) => number | null {
+  type Entry = { size: number; mtimeMs: number; frames: number };
+  const cache: Record<string, Entry> = {};
+  let pruned = false;
+  try {
+    const raw: unknown = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw as Record<string, Entry>)) {
+        if (existsSync(k)) cache[k] = v;
+        else pruned = true;
+      }
+    }
+  } catch { /* sem cache */ }
+  const save = () => {
+    try {
+      mkdirSync(dirname(cachePath), { recursive: true });
+      writeFileSync(cachePath, JSON.stringify(cache));
+    } catch { /* cache é otimização */ }
+  };
+  if (pruned) save();
+  return (path: string) => {
+    const key = resolve(path);
+    let st: { size: number; mtimeMs: number };
+    try {
+      st = statSync(key);
+    } catch {
+      return probe(path);
+    }
+    const hit = cache[key];
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs && Number.isInteger(hit.frames)) return hit.frames;
+    const frames = probe(path);
+    if (frames === null) {
+      if (key in cache) {
+        delete cache[key];
+        save();
+      }
+      return null;
+    }
+    cache[key] = { size: st.size, mtimeMs: st.mtimeMs, frames };
+    save();
+    return frames;
+  };
+}
+
 /**
  * #13488: os trechos que os XMLs leves apontam, conferidos contra a mídia
  * REAL em `dir` (a `trechos/` do out dir): ausente, ilegível ou com menos (ou
@@ -4337,6 +4403,8 @@ export function renderFramesConferidos(input: {
   tmp: string;
   render: (part: string) => void;
   probeFrames: (path: string) => number | null;
+  /** #13512: a sonda do `.part` temporário (padrão `probeFrames`); nunca a com cache, que guardaria um arquivo descartável. */
+  probePart?: (path: string) => number | null;
   /** Começo das mensagens (`trecho X.mov`, `trecho inserido H5`). */
   label: string;
   /** O que promete os quadros (`o nome pede`, `o intervalo pede`). */
@@ -4349,7 +4417,7 @@ export function renderFramesConferidos(input: {
   for (let attempt = 1; ; attempt++) {
     rmSync(part, { force: true });
     input.render(part);
-    const gotPart = input.probeFrames(part);
+    const gotPart = (input.probePart ?? input.probeFrames)(part);
     let bad = ok(gotPart) ? null : `o render saiu com ${fmtTrechoFrames(gotPart)}`;
     let gotOut: number | null = null;
     if (!bad) {
@@ -4392,6 +4460,8 @@ export function renderTrechos(input: {
   listEncoders?: () => string;
   /** #13488: os quadros de vídeo do arquivo (null = ilegível); padrão `probeTrechoFrames`. */
   probeFrames?: (path: string) => number | null;
+  /** #13512: o cache local da contagem de quadros (`trechoFramesCachePath(workDir)`); ausente = sem cache. */
+  framesCachePath?: string | null;
   /** #13488: onde fica a pasta temporária do render (padrão `os.tmpdir()`), fora do out dir sincronizado. */
   tmpRoot?: string;
   log?: (line: string) => void;
@@ -4399,7 +4469,6 @@ export function renderTrechos(input: {
   const log = input.log ?? ((m: string) => console.error(m));
   // #13507: o decode do bruto pela GPU quando der (a queda para a CPU fica no runDecode; a do NVENC, abaixo).
   const encode = input.encode ?? ((args: string[]) => runDecode(args, "trecho do XML leve"));
-  const probeFrames = input.probeFrames ?? probeTrechoFrames;
   const files = sourceFiles(input.source);
   const uses = input.plans.flatMap((p) =>
     p.clips.map((c) => {
@@ -4411,6 +4480,10 @@ export function renderTrechos(input: {
   const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
   const dir = join(input.outDir, TRECHOS.dirName);
   mkdirSync(dir, { recursive: true });
+  // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild; o cache fica no
+  // work dir (local), nunca no out dir sincronizado. O `.part` do render é sempre sondado sem cache.
+  const rawProbe = input.probeFrames ?? probeTrechoFrames;
+  const probeFrames = input.framesCachePath ? cachedTrechoProbe(input.framesCachePath, rawProbe) : rawProbe;
   let encoder: TrechoEncoder = pickTrechoEncoder(input.listEncoders ? input.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
   const p = input.mediaPath.replace(/\\/g, "/");
   const xmlDir = `${p.slice(0, p.lastIndexOf("/") + 1)}${TRECHOS.dirName}/`;
@@ -4440,6 +4513,7 @@ export function renderTrechos(input: {
         expected,
         tmp,
         probeFrames,
+        probePart: rawProbe,
         label: `trecho ${t.name}`,
         pede: "o nome pede",
         tag: "#13488",
@@ -4691,7 +4765,7 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
     return null;
   }
   try {
-    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS });
+    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir) });
     const cov = trechosCoverage(r.trechos, sourceFiles(source));
     console.error(
       `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +

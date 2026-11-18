@@ -14,7 +14,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -27,7 +27,7 @@ import {
   trechoFramesOk,
   trechoNamesInXml,
 } from "../scripts/lib/diaria/video-xml-trechos.ts";
-import { probeTrechoFrames, renderTrechos, trechoMediaIssues } from "../scripts/video-montagem.ts";
+import { cachedTrechoProbe, probeTrechoFrames, renderTrechos, TRECHO_FRAMES_CACHE, trechoFramesCachePath, trechoMediaIssues } from "../scripts/video-montagem.ts";
 
 // Clipe 30-60 a 30 fps com folga de 1 s: trecho 0-90 (b_q000000-000090.mov).
 const NAME = "b_q000000-000090.mov";
@@ -213,7 +213,8 @@ describe("#13488 verify-xml confere os trechos contra a mídia real", () => {
   it("o cmdVerifyXml soma os problemas de mídia em `bad`", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
     const body = src.slice(src.indexOf("function cmdVerifyXml("), src.indexOf("// ── Rosto automático"));
-    assert.match(body, /const mediaIssues = trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), probeTrechoFrames, \{ dir: ctx\.outDir, clips: inseridosXml \}\);/);
+    // #13512: a sonda com o cache local (work dir), não a do out dir sincronizado.
+    assert.match(body, /const mediaIssues = trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), cachedTrechoProbe\(trechoFramesCachePath\(ctx\.workDir\)\), \{ dir: ctx\.outDir, clips: inseridosXml \}\);/);
     assert.match(body, /bad \+= mediaIssues\.length;/);
   });
 });
@@ -256,6 +257,125 @@ describe("#13488 com ffmpeg real: trecho truncado de propósito", { skip: !hasFf
       assert.equal(probeTrechoFrames(join(tdir, name)), 90);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#13512 cache da contagem de quadros", () => {
+  it("não reprobe arquivo intacto; reprobe se mudar; null não é guardado", () => {
+    const d = mkdtempSync(join(tmpdir(), "t13512-"));
+    try {
+      const f = join(d, NAME);
+      const cp = join(d, TRECHO_FRAMES_CACHE);
+      writeFileSync(f, "aaaa");
+      const seen: string[] = [];
+      let ret: number | null = 90;
+      const probe = (p: string) => { seen.push(p); return ret; };
+      const c1 = cachedTrechoProbe(cp, probe);
+      assert.equal(c1(f), 90);
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 90, "nova instância lê o cache em disco");
+      assert.equal(seen.length, 1, "segunda leitura veio do cache");
+      writeFileSync(f, "aaaaaaaa");
+      ret = 20;
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 20, "tamanho mudou: reprobe");
+      ret = null;
+      writeFileSync(f, "bb");
+      assert.equal(cachedTrechoProbe(cp, probe)(f), null);
+      assert.equal(cachedTrechoProbe(cp, probe)(f), null);
+      assert.equal(seen.length, 4, "null nunca é cacheado");
+      writeFileSync(cp, "{lixo");
+      ret = 7;
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 7, "cache corrompido não derruba");
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("mudança só de mtime (mesmo tamanho) força nova sonda", () => {
+    const d = mkdtempSync(join(tmpdir(), "t13512-"));
+    try {
+      const f = join(d, NAME);
+      const cp = join(d, TRECHO_FRAMES_CACHE);
+      writeFileSync(f, "aaaa");
+      utimesSync(f, new Date("2026-11-01T00:00:00Z"), new Date("2026-11-01T00:00:00Z"));
+      let n = 0;
+      const probe = () => { n++; return 90; };
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 90);
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 90);
+      assert.equal(n, 1);
+      utimesSync(f, new Date("2026-11-02T00:00:00Z"), new Date("2026-11-02T00:00:00Z"));
+      assert.equal(statSync(f).size, 4, "mesmo tamanho");
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 90);
+      assert.equal(n, 2, "mtime mudou: reprobe");
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("entrada de arquivo que não existe mais é podada do cache ao carregar", () => {
+    const d = mkdtempSync(join(tmpdir(), "t13512-"));
+    try {
+      const a = join(d, "a_q000000-000090.mov");
+      const b = join(d, "b_q000000-000090.mov");
+      const cp = join(d, "work", TRECHO_FRAMES_CACHE);
+      writeFileSync(a, "x");
+      writeFileSync(b, "y");
+      const c = cachedTrechoProbe(cp, () => 90);
+      c(a);
+      c(b);
+      assert.equal(Object.keys(JSON.parse(readFileSync(cp, "utf8"))).length, 2, "cria o diretório do cache");
+      rmSync(a);
+      cachedTrechoProbe(cp, () => 90);
+      assert.deepEqual(Object.keys(JSON.parse(readFileSync(cp, "utf8"))), [b]);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("o cache fica no work dir: trechoFramesCachePath não aponta a pasta do Drive", () => {
+    assert.equal(trechoFramesCachePath("/tmp/diaria-video-montagem/261118"), join("/tmp/diaria-video-montagem/261118", TRECHO_FRAMES_CACHE));
+    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
+    assert.match(src, /renderTrechos\(\{[^}]*framesCachePath: trechoFramesCachePath\(ctx\.workDir\)/);
+    assert.doesNotMatch(src, /cachedTrechoProbe\(join\([^)]*outDir/);
+  });
+
+  it("renderTrechos: o 2º run com o cache não sonda o trecho intacto, e o .part nunca entra no cache", () => {
+    const dir = mkdtempSync(join(tmpdir(), "trechos-13512-"));
+    const work = mkdtempSync(join(tmpdir(), "trechos-13512-work-"));
+    try {
+      const probed: string[] = [];
+      const probeFrames = (p: string) => { probed.push(p); return 90; };
+      const cp = trechoFramesCachePath(work);
+      const run1 = renderTrechos({ plans, source: sourceIn(dir), outDir: dir, mediaPath: "I:/v/b.mp4", folgaS: 1, listEncoders: () => "", encode: fakeEncode([]), probeFrames, framesCachePath: cp, log: () => {} });
+      assert.equal(run1.made, 1);
+      assert.equal(probed.length, 2, "o .part e a cópia");
+      const cached = Object.keys(JSON.parse(readFileSync(cp, "utf8")));
+      assert.deepEqual(cached, [join(dir, TRECHOS.dirName, NAME)], "só o nome final no cache, sem o .part");
+      assert.ok(!existsSync(join(dir, TRECHO_FRAMES_CACHE)) && readdirSync(join(dir, TRECHOS.dirName)).length === 1, "nada de cache no out dir");
+      probed.length = 0;
+      const run2 = renderTrechos({ plans, source: sourceIn(dir), outDir: dir, mediaPath: "I:/v/b.mp4", folgaS: 1, listEncoders: () => "", encode: () => assert.fail("não devia recodificar"), probeFrames, framesCachePath: cp, log: () => {} });
+      assert.deepEqual([run2.reused, run2.made], [1, 0]);
+      assert.deepEqual(probed, [], "2º run sem sonda");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it("trechoMediaIssues com o cache: o 2º verify-xml não sonda o trecho intacto", () => {
+    const dir = mkdtempSync(join(tmpdir(), "trechos-13512-"));
+    const work = mkdtempSync(join(tmpdir(), "trechos-13512-work-"));
+    try {
+      writeFileSync(join(dir, NAME), "ok");
+      const xml = `<name>${NAME}</name>`;
+      let n = 0;
+      const probe = () => { n++; return 90; };
+      assert.deepEqual(trechoMediaIssues([xml], dir, cachedTrechoProbe(trechoFramesCachePath(work), probe)), []);
+      assert.deepEqual(trechoMediaIssues([xml], dir, cachedTrechoProbe(trechoFramesCachePath(work), probe)), []);
+      assert.equal(n, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(work, { recursive: true, force: true });
     }
   });
 });
