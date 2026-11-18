@@ -11,10 +11,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildXmeml, type PlannedClip, type SequencePlan, type SequenceSpec, type SourceInfo } from "../scripts/lib/diaria/video-montage.ts";
+import { buildXmeml, type PlannedClip, type SequencePlan, type SequenceSpec, type SourceInfo, type VinhetaAsset } from "../scripts/lib/diaria/video-montage.ts";
 import {
   planComTrechos,
   splitClipsAt,
@@ -139,11 +139,11 @@ describe("#13437 PR 2: o trecho no XML", () => {
     const raw = parseXmlAudio(xml);
     assert.deepEqual(raw.clips.map((c) => [c.start, c.end, c.in, c.out]), [[0, 120, 300, 420], [180, 360, 420, 600]]);
     assert.ok(xmlStructureIssues(raw.clips).some((x) => /buraco/.test(x)), "sem desfazer, é buraco");
-    const back = { ...raw, clips: unrippleXmlClips(raw.clips, [tc("H5", 120, 60)]) };
+    const back = { ...raw, clips: unrippleXmlClips(raw.clips, [tc("H5", 120, 60)], one.clips) };
     assert.deepEqual(back.clips.map((c) => [c.start, c.end, c.in, c.out]), [[0, 300, 300, 600]]);
     assert.deepEqual(xmlStructureIssues(back.clips), []);
     assert.deepEqual(xmlPlanIssues(back, { clips: one.clips.length, durationFrames: one.durationFrames }), []);
-    assert.deepEqual(unrippleXmlClips(raw.clips, []), raw.clips, "sem trecho, os mesmos clipes");
+    assert.deepEqual(unrippleXmlClips(raw.clips, [], one.clips), raw.clips, "sem trecho, os mesmos clipes");
   });
 
   it("dois trechos: o 2º fica depois do 1º somado; verify volta ao plano", () => {
@@ -153,7 +153,7 @@ describe("#13437 PR 2: o trecho no XML", () => {
     const raw = parseXmlAudio(xml);
     assert.deepEqual(raw.clips.map((c) => [c.start, c.end]), [[0, 300], [390, 630], [660, 720]]);
     assert.match(xml, /<clipitem id="trecho-1-v2"><name>trecho H9<\/name>[\s\S]*?<start>630<\/start><end>660<\/end>/);
-    const back = { ...raw, clips: unrippleXmlClips(raw.clips, ins) };
+    const back = { ...raw, clips: unrippleXmlClips(raw.clips, ins, p3.clips) };
     assert.deepEqual(xmlStructureIssues(back.clips), []);
     assert.deepEqual(xmlPlanIssues(back, { clips: 3, durationFrames: 600 }), []);
   });
@@ -214,7 +214,7 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
     assert.match(srtDoVideoPublicado(root, "lyh6IZux4FE") ?? "", /perder o cargo/);
   });
 
-  it("--trecho-fonte vence (pela fala, pelo id ou pela edição); caminho ausente é dito e a procura segue", () => {
+  it("--trecho-fonte vence (pela fala, pelo id ou pela edição); caminho ausente é dito e a procura PARA ali", () => {
     const root = editionsWithRegistry(null);
     const fs = fakeFs({ "/m/x.mp4": 1 }, []);
     const base = { trecho: ytTrecho, editionsRootDir: root, driveRoot: null, fs };
@@ -223,9 +223,9 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
     assert.equal(resolverFonteTrecho({ ...base, id: "H5", trecho: edTrecho, fontes: { "261110": "/m/x.mp4" } }).fonte, "/m/x.mp4");
     const r = resolverFonteTrecho({ ...base, id: "H5", fontes: { H5: "/nao/existe.mp4" } });
     assert.equal(r.fonte, null);
-    assert.equal(r.edicao, "261110");
+    assert.equal(r.explicitoAusente, true);
     assert.ok(r.procurado[0].includes("--trecho-fonte H5=/nao/existe.mp4 (não existe"), r.procurado.join("\n"));
-    assert.ok(r.procurado.some((p) => /sem a raiz nesta máquina/.test(p)), "sem Drive local, a linha diz onde rodar");
+    assert.equal(r.procurado.length, 1, "nada da busca automática depois do caminho explícito");
   });
 
   it("video_path do registro, depois diaria-comentada-{AAMMDD}.mp4 da edição de origem", () => {
@@ -348,9 +348,162 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
       { id: "H9", trecho: lido({ video: "261110", inicio: "5:00", fim: "5:02", texto: "y" }), fonte: null, procurado: ["/a (ausente)"] },
     ]);
     assert.equal(lines[0], "## Trechos inseridos (horizontal)");
-    assert.match(lines.join("\n"), /2 trecho\(s\) de outro vídeo, 20\.0 s somados ao horizontal/);
+    assert.match(lines.join("\n"), /2 trecho\(s\) de outro vídeo, 18\.0 s somados ao horizontal no XML \(até 20\.0 s com o trecho sem fonte inserido à mão\)/);
     assert.match(lines.join("\n"), /depois da fala H5: Vídeo de 10\/11 \(261110\), 3:42 a 4:00 \(18\.0 s\), "perder o cargo"; fonte: I:\/d\/261110\/Final\/x\.mp4/);
     assert.match(lines.join("\n"), /depois da fala H9: .*\*\*\[aviso\] fonte não encontrada\*\* \(procurado: \/a \(ausente\)\).*--trecho-fonte "H9=caminho"/);
     assert.deepEqual(trechosInseridosSection([]), []);
+  });
+
+  it("roteiro.md: todos com fonte, a soma é a de todos, sem o 'até' (fix 7)", () => {
+    const lines = trechosInseridosSection([{ id: "H5", trecho: lido({ video: "261110", inicio: "3:42", fim: "4:00", texto: "x" }), fonte: "/f.mp4", procurado: [] }]);
+    assert.match(lines.join("\n"), /1 trecho\(s\) de outro vídeo, 18\.0 s somados ao horizontal, fora/);
+    const nenhum = trechosInseridosSection([
+      { id: "H5", trecho: lido({ video: "261110", inicio: "3:42", fim: "4:00", texto: "x" }), fonte: null, procurado: [] },
+      { id: "H9", trecho: lido({ video: "261110", inicio: "5:00", fim: "5:02", texto: "y" }), fonte: null, procurado: [] },
+    ]);
+    assert.match(nenhum.join("\n"), /0\.0 s somados ao horizontal no XML \(até 20\.0 s com os 2 trechos sem fonte inseridos à mão\)/);
+  });
+
+  it("trecho que cita a edição AAMMDD lê o video_path do registro dela; registro ausente ou sem video_path entra no procurado (fix 1)", () => {
+    const root = editionsWithRegistry("C:/videos/diaria-comentada-261110.mp4");
+    const base = { id: "H5", trecho: edTrecho, fontes: {}, editionsRootDir: root, driveRoot: null };
+    assert.equal(resolverFonteTrecho({ ...base, fs: fakeFs({ "C:/videos/diaria-comentada-261110.mp4": 1 }, []) }).fonte, "C:/videos/diaria-comentada-261110.mp4");
+    const ausente = resolverFonteTrecho({ ...base, fs: fakeFs({}, []) });
+    assert.equal(ausente.fonte, null);
+    assert.ok(ausente.procurado.some((p) => p.includes("C:/videos/diaria-comentada-261110.mp4 (video_path do 05-youtube-published.json de 261110, ausente")), ausente.procurado.join("\n"));
+    const vazio = mkdtempSync(join(tmpdir(), "trecho-fonte-sem-reg-13437-"));
+    const semReg = resolverFonteTrecho({ ...base, editionsRootDir: vazio, fs: fakeFs({}, []) });
+    assert.ok(semReg.procurado[0].includes("05-youtube-published.json (registro de publicação ausente ou ilegível)"), semReg.procurado.join("\n"));
+    const semPath = resolverFonteTrecho({ ...base, editionsRootDir: editionsWithRegistry(null), fs: fakeFs({}, []) });
+    assert.ok(semPath.procurado[0].includes("(registro sem video_path)"), semPath.procurado.join("\n"));
+  });
+
+  it("--trecho-fonte explícito ausente não cai na busca automática, mesmo com o export local presente (fix 2)", () => {
+    const root = editionsWithRegistry("C:/videos/v.mp4");
+    const local = join(root, "2611", "261110", "diaria-comentada-261110.mp4");
+    const fs = fakeFs({ [local]: 1, "C:/videos/v.mp4": 1 }, []);
+    const r = resolverFonteTrecho({ id: "H5", trecho: edTrecho, fontes: { "261110": "/errado.mp4" }, editionsRootDir: root, driveRoot: "/drive", fs });
+    assert.equal(r.fonte, null);
+    assert.equal(r.edicao, "261110");
+    assert.equal(r.explicitoAusente, true);
+    // O mesmo pela chave AAMMDD de um trecho youtu.be (a edição sai do registro).
+    const yt = resolverFonteTrecho({ id: "H5", trecho: ytTrecho, fontes: { "261110": "/errado.mp4" }, editionsRootDir: root, driveRoot: "/drive", fs });
+    assert.equal(yt.fonte, null);
+    assert.equal(yt.explicitoAusente, true);
+    // No build, o aviso diz que o caminho explícito não existe.
+    const out = mkdtempSync(join(tmpdir(), "trecho-cut-expl-13437-"));
+    const ctx = { edition: "261118", outDir: out, stateDir: out, mode: "local", trechoFontes: { H5: "/nao/existe.mp4" }, trechoDriveRoot: null } as unknown as Parameters<typeof cutTrechoInserido>[0];
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (m: string) => void errs.push(String(m));
+    try {
+      assert.equal(cutTrechoInserido(ctx, { id: "H5", texto: "x", trecho: ytTrecho }, 300, spec, 30, "I:/v/261118/b.mp4", { encode: () => assert.fail("não corta") }), null);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(errs.some((e) => /\[aviso\] .*NÃO inserido: o --trecho-fonte aponta um arquivo que não existe nesta máquina/.test(e)), errs.join("\n"));
+  });
+
+  it("a chave AAMMDD de --trecho-fonte casa com trecho youtu.be, e vence o video_path do registro (fix 3)", () => {
+    const root = editionsWithRegistry("C:/videos/v.mp4");
+    const r = resolverFonteTrecho({ id: "H5", trecho: ytTrecho, fontes: { "261110": "/m/x.mp4" }, editionsRootDir: root, driveRoot: null, fs: fakeFs({ "/m/x.mp4": 1, "C:/videos/v.mp4": 1 }, []) });
+    assert.equal(r.fonte, "/m/x.mp4");
+    assert.equal(r.edicao, "261110");
+  });
+
+  it("cutTrechoInserido: ffprobe falho avisa; clipe bem mais curto que o intervalo é recusado; menos de 1 quadro é null (fix 4)", () => {
+    const mk = () => mkdtempSync(join(tmpdir(), "trecho-cut4-13437-"));
+    const dir = mk();
+    const src = join(dir, "fonte.mp4");
+    writeFileSync(src, "x");
+    const ctx = { edition: "261118", outDir: dir, stateDir: dir, mode: "local", trechoFontes: { H5: src }, trechoDriveRoot: null } as unknown as Parameters<typeof cutTrechoInserido>[0];
+    const t = { id: "H5", texto: "Olha", trecho: ytTrecho };
+    const write = (a: string[]) => writeFileSync(a[a.length - 1], "mov");
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (m: string) => void errs.push(String(m));
+    try {
+      const semProbe = cutTrechoInserido(ctx, t, 300, spec, 30, "I:/v/261118/b.mp4", { probeDurationS: () => null, listEncoders: () => "", encode: write });
+      assert.ok(semProbe, "sem probe, o clipe entra com aviso");
+      assert.ok(errs.some((e) => /\[aviso\] .*não foi medida \(ffprobe falhou\); o fim do trecho não foi conferido/.test(e)), errs.join("\n"));
+      assert.ok(errs.some((e) => /\[aviso\] .*a duração do clipe cortado não foi medida/.test(e)), errs.join("\n"));
+      errs.length = 0;
+      const curtoDir = mk();
+      const curto = cutTrechoInserido({ ...ctx, outDir: curtoDir } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", {
+        probeDurationS: (p) => (p.endsWith(".part") ? 5 : null),
+        listEncoders: () => "",
+        encode: write,
+      });
+      assert.equal(curto, null);
+      assert.ok(errs.some((e) => /NÃO inserido: o corte de .* falhou \(o clipe saiu com 5\.00 s, e o intervalo pede 18\.00 s/.test(e)), errs.join("\n"));
+      assert.deepEqual(readdirSync(curtoDir), [], "nem o .part nem o .mov ficam");
+      const quase = cutTrechoInserido({ ...ctx, outDir: mk() } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: (p) => (p.endsWith(".part") ? 17.6 : 600), listEncoders: () => "", encode: write });
+      assert.ok(quase, "dentro da folga (0,5 s), o clipe entra");
+      errs.length = 0;
+      const tiny = { ...t, trecho: { ...ytTrecho, fimS: ytTrecho.inicioS + 0.01 } };
+      assert.equal(cutTrechoInserido(ctx, tiny, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => assert.fail("nem mede"), encode: () => assert.fail("nem corta") }), null);
+      assert.ok(errs.some((e) => /NÃO inserido: o intervalo do roteiro .* não chega a 1 quadro a 30 fps/.test(e)), errs.join("\n"));
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it("SRT presente mas sem nenhuma legenda: o mesmo aviso de texto não conferido (fix 5)", () => {
+    const t = { id: "H5", trecho: lido({ video: "261110", inicio: "3:42", fim: "3:45", texto: "x" }) };
+    assert.match(avisosTrechosNaMontagem([t], "/x", () => "").join("\n"), /H5: o SRT do vídeo 261110 não tem legenda legível .*não conferido contra a legenda/);
+    assert.match(avisosTrechosNaMontagem([t], "/x", () => "lixo sem tempo nenhum\n").join("\n"), /não tem legenda legível/);
+  });
+});
+
+describe("#13437 PR 2: faixas, vinheta e boxes de tela com o trecho", () => {
+  const plan = planOf([clip(10, 20, 0), clip(30, 38, 300)]);
+  const audioTracks = (xml: string): string[] => {
+    const audio = xml.slice(xml.indexOf("<audio><numOutputChannels>"), xml.indexOf("</audio></media></sequence>"));
+    return [...audio.matchAll(/<track>([\s\S]*?)<\/track>/g)].map((m) => m[1]);
+  };
+  const trechoLinkIndex = (xml: string): number => Number(/<linkclipref>trecho-1-a1<\/linkclipref><mediatype>audio<\/mediatype><trackindex>(\d+)<\/trackindex>/.exec(xml)?.[1]);
+  const vinheta = (hasAudio: boolean, sfx: boolean): VinhetaAsset => ({
+    path: "I:/m/vinheta.mov",
+    durationS: 2,
+    width: 1920,
+    height: 1080,
+    hasAudio,
+    ...(sfx ? { sfx: { path: "I:/m/tecla.wav", durationS: 0.2, atS: [0.5] } } : {}),
+  });
+
+  for (const [nome, vin, faixa] of [
+    ["sem vinheta", null, 2],
+    ["vinheta sem áudio nem efeito", vinheta(false, false), 2],
+    ["vinheta com áudio, sem efeito", vinheta(true, false), 3],
+    ["vinheta sem áudio, com efeito", vinheta(false, true), 3],
+    ["vinheta com áudio e efeito", vinheta(true, true), 4],
+  ] as const) {
+    it(`trackindex do áudio do trecho = a posição real da faixa dele em <audio> (${nome})`, () => {
+      const xml = buildXmeml([plan], source, framing, { trechoClips: { youtube: [tc("H5", 300, 90)] }, vinheta: vin });
+      const tracks = audioTracks(xml);
+      const real = tracks.findIndex((x) => x.includes('<clipitem id="trecho-1-a1">')) + 1;
+      assert.equal(real, faixa, tracks.map((x) => x.slice(0, 40)).join(" | "));
+      assert.equal(trechoLinkIndex(xml), real);
+      if (vin?.hasAudio) assert.ok(tracks[1].includes('<clipitem id="vinheta-a1">'), "o link da vinheta (faixa 2) segue apontando a faixa dela");
+    });
+  }
+
+  it("boxes de tela: o que começa no ponto de inserção anda; o que termina nele fica", () => {
+    const box = (id: string, a: number, b: number) => ({ id, tela: id, path: `/o/${id}.png`, xmlPath: `I:/x/${id}.png`, width: 1920, height: 1080, in: a, out: b });
+    const xml = buildXmeml([plan], source, framing, { trechoClips: { youtube: [tc("H5", 300, 90)] }, telaOverlays: { youtube: [box("H4", 0, 300), box("H7", 300, 540)] } });
+    assert.match(xml, /<clipitem id="tela-1-1"><name>tela H4<\/name>[\s\S]*?<start>0<\/start><end>300<\/end>/);
+    assert.match(xml, /<clipitem id="tela-1-2"><name>tela H7<\/name>[\s\S]*?<start>390<\/start><end>630<\/end>/);
+    const sem = buildXmeml([plan], source, framing, { telaOverlays: { youtube: [box("H4", 0, 300), box("H7", 300, 540)] } });
+    assert.match(sem, /<clipitem id="tela-1-2"><name>tela H7<\/name>[\s\S]*?<start>300<\/start><end>540<\/end>/, "sem trecho, o box de antes");
+  });
+
+  it("verify-xml: dois clipes do plano já contíguos no ponto de inserção seguem dois (fix 6)", () => {
+    const two = planOf([clip(10, 14, 0), clip(14, 20, 120)]);
+    const ins = [tc("H5", 120, 60)];
+    const raw = parseXmlAudio(buildXmeml([two], source, framing, { trechoClips: { youtube: ins } }));
+    assert.deepEqual(raw.clips.map((c) => [c.start, c.end]), [[0, 120], [180, 360]]);
+    const back = unrippleXmlClips(raw.clips, ins, two.clips);
+    assert.deepEqual(back.map((c) => [c.start, c.end, c.in, c.out]), [[0, 120, 300, 420], [120, 300, 420, 600]]);
+    assert.deepEqual(xmlPlanIssues({ ...raw, clips: back }, { clips: 2, durationFrames: two.durationFrames }), []);
   });
 });

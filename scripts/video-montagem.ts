@@ -94,13 +94,16 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
  *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
  *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir),
- *       numa faixa própria do XML ("trecho {fala}", label Mango, marcador cobrindo o clipe),
- *       logo depois da fala; o que vem depois anda a duração do trecho (só no XML: plan.json e
- *       prévia seguem sem ele; o verify-xml desfaz o deslocamento). Fonte: --trecho-fonte (CHAVE
- *       = id da fala, id do YouTube ou AAMMDD) > video_path do 05-youtube-published.json da
- *       edição de origem > diaria-comentada-{AAMMDD}.mp4 dela > Final/ (ou Editado/) da pasta de
- *       vídeo dela no Drive. Sem fonte: [aviso] com os caminhos procurados, só o marcador, e o
- *       build segue. Texto do trecho contra o SRT do vídeo de origem: divergência é [aviso].
+ *       numa faixa própria do XML (clipitems trecho-{seq}-v{n}/trecho-{seq}-a{n}, nome "trecho
+ *       {fala}", label Mango, marcador cobrindo o clipe), logo depois da fala; o que vem depois
+ *       anda a duração do trecho (só no XML: plan.json e prévia seguem sem ele; o verify-xml
+ *       desfaz o deslocamento). Fonte: --trecho-fonte (CHAVE = id da fala, id do YouTube ou
+ *       AAMMDD; caminho explícito ausente = [aviso] e para ali, sem busca automática) >
+ *       video_path do 05-youtube-published.json da edição de origem (o trecho cite youtu.be ou
+ *       AAMMDD) > diaria-comentada-{AAMMDD}.mp4 dela > Final/ (ou Editado/) da pasta de vídeo
+ *       dela no Drive. Sem fonte: [aviso] com os caminhos procurados, só o marcador, e o build
+ *       segue. Texto do trecho contra o SRT do vídeo de origem: divergência, SRT ausente ou sem
+ *       legenda legível é [aviso]. A lista dos trechos no roteiro.md é do subcomando `roteiro`.
  *       (#13219) XML LEVE por padrão: os clipes apontam trechos do bruto em H.264 4K + PCM 48 kHz
  *       (`trechos/` na pasta da edição, só o que as sequências usam, folga de 1 s de cada lado,
  *       trechos a menos de 3 s um do outro viram um só; nome = arquivo + quadros de início e fim,
@@ -2921,7 +2924,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     // #13437 (PR 2): o trecho inserido abre espaço só no XML; a conferência contra o plano é sem ele.
     const trechosXml = pf.xmlAssets?.[key]?.trechosInseridos ?? [];
     const trechoTotal = trechoRipple(trechosXml).total;
-    const parsed = trechosXml.length ? { ...parsedXml, clips: unrippleXmlClips(parsedXml.clips, trechosXml) } : parsedXml;
+    const parsed = trechosXml.length ? { ...parsedXml, clips: unrippleXmlClips(parsedXml.clips, trechosXml, plan.clips) } : parsedXml;
     if (trechosXml.length) console.error(`[video-montagem] verify-xml ${key}: ${trechosXml.length} trecho(s) inserido(s) (${(trechoTotal / pf.source.fps).toFixed(1)} s) tirados da conta; a fala deles não é conferida contra o roteiro (#13437)`);
     const { clips, errors } = toTimeline(parsed, offsets);
     // #12571: o card de CTA no fim da V1 (sem áudio): logo depois da fala, com a duração do plano.
@@ -4095,6 +4098,9 @@ export function renderTrechos(input: {
   return { trechos, encoder, made, reused };
 }
 
+/** #13437: folga mínima (s) para o clipe cortado sair mais curto que o intervalo (além de 5% dele) antes de ser recusado. */
+const TRECHO_CLIP_SHORT_TOL_S = 0.5;
+
 /** #13437 (PR 2): a fonte do trecho nesta máquina (ordem em `video-trecho-fonte.ts`). */
 export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">, t: Pick<TrechoInseridoRoteiro, "id" | "trecho">): FonteTrecho {
   return resolverFonteTrecho({ id: t.id, trecho: t.trecho, fontes: ctx.trechoFontes ?? {}, editionsRootDir: editionsRootDir(), driveRoot: ctx.trechoDriveRoot ?? null });
@@ -4104,8 +4110,10 @@ export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">
  * #13437 (PR 2): o clipe de um trecho inserido, cortado do export do vídeo de
  * origem no intervalo do roteiro, no tamanho e fps da sequência, no out dir
  * (`trechoInseridoFileName`, reaproveitado no rebuild: o hash muda com a fonte e
- * o intervalo). Sem fonte, intervalo além do fim do vídeo ou ffmpeg falho:
- * `null` com `[aviso]` (o trecho fica só no marcador), nunca para o build.
+ * o intervalo). Sem fonte, intervalo de menos de 1 quadro ou além do fim do
+ * vídeo, fonte ilegível, ffmpeg falho ou clipe cortado bem mais curto que o
+ * intervalo: `null` com `[aviso]` (o trecho fica só no marcador), nunca para
+ * o build. ffprobe que falha (na fonte ou no clipe) é `[aviso]`, sem recusar.
  */
 export function cutTrechoInserido(
   ctx: Ctx,
@@ -4119,11 +4127,18 @@ export function cutTrechoInserido(
   const fonte = fonteDoTrecho(ctx, t);
   const where = `${spec.name}: trecho depois da fala ${t.id} (${rotuloTrecho(t.trecho)})`;
   if (!fonte.fonte) {
-    console.error(`[aviso] ${where} NÃO inserido: o export do vídeo de origem não foi achado (procurado: ${fonte.procurado.join("; ")}); fica só o marcador "trecho ${t.id}" para inserir à mão, ou passe --trecho-fonte "${t.id}=caminho" (nunca baixar do YouTube) (#13437)`);
+    const porque = fonte.explicitoAusente
+      ? `o --trecho-fonte aponta um arquivo que não existe nesta máquina (${fonte.procurado.join("; ")}); a busca automática não roda com caminho explícito: corrigir o caminho`
+      : `o export do vídeo de origem não foi achado (procurado: ${fonte.procurado.join("; ")})`;
+    console.error(`[aviso] ${where} NÃO inserido: ${porque}; fica só o marcador "trecho ${t.id}" para inserir à mão, ou passe --trecho-fonte "${t.id}=caminho" (nunca baixar do YouTube) (#13437)`);
     return null;
   }
   if (fonte.premissa) console.error(`[premissa] ${where}: ${fonte.premissa} (#13437)`);
   const frames = trechoClipFrames(t.trecho.inicioS, t.trecho.fimS, fps);
+  if (frames < 1) {
+    console.error(`[aviso] ${where} NÃO inserido: o intervalo do roteiro (${t.trecho.inicioS.toFixed(2)} a ${t.trecho.fimS.toFixed(2)} s) não chega a 1 quadro a ${fps} fps; conferir o intervalo no roteiro (#13437)`);
+    return null;
+  }
   const probe = deps.probeDurationS ?? ((src: string) => {
     try {
       const d = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src]).stdout.trim());
@@ -4133,11 +4148,19 @@ export function cutTrechoInserido(
     }
   });
   const dur = probe(fonte.fonte);
-  if (dur !== null && t.trecho.fimS > dur + 0.05) {
+  if (dur === null) {
+    console.error(`[aviso] ${where}: a duração de ${fonte.fonte} não foi medida (ffprobe falhou); o fim do trecho não foi conferido contra o fim do vídeo, e o clipe cortado é conferido depois do corte (#13437)`);
+  } else if (t.trecho.fimS > dur + 0.05) {
     console.error(`[aviso] ${where} NÃO inserido: o fim do trecho (${t.trecho.fimS.toFixed(2)} s) passa do fim de ${fonte.fonte} (${dur.toFixed(2)} s); conferir o intervalo no roteiro, ou a fonte (#13437)`);
     return null;
   }
-  const st = statSync(fonte.fonte);
+  let st: { size: number; mtimeMs: number };
+  try {
+    st = statSync(fonte.fonte);
+  } catch (e) {
+    console.error(`[aviso] ${where} NÃO inserido: ${fonte.fonte} não pôde ser lido (${(e as Error).message.split(/\r?\n/)[0]}); fica só o marcador (#13437)`);
+    return null;
+  }
   const hash = createHash("sha256").update(JSON.stringify({ src: toPosix(fonte.fonte), size: st.size, mtimeMs: st.mtimeMs, i: t.trecho.inicioS, f: t.trecho.fimS, fps, w: spec.width, h: spec.height })).digest("hex").slice(0, 12);
   const name = trechoInseridoFileName(ctx.edition, t.id, hash);
   const out = join(ctx.outDir, name);
@@ -4173,6 +4196,11 @@ export function cutTrechoInserido(
       console.error(`[aviso] h264_nvenc falhou no trecho ${t.id} (${(e as Error).message.split(/\r?\n/)[0]}): segue em libx264 (#13437)`);
       encode(args("libx264"));
     }
+    // O clipe cortado tem de ter a duração do intervalo: mais curto = a fonte acabou antes (o probe dela pode ter falhado).
+    const esperado = frames / fps;
+    const got = probe(part);
+    if (got === null) console.error(`[aviso] ${where}: a duração do clipe cortado não foi medida (ffprobe falhou); conferir no 1º import que ele tem ${esperado.toFixed(2)} s (#13437)`);
+    else if (got < esperado - Math.max(TRECHO_CLIP_SHORT_TOL_S, esperado * 0.05)) throw new Error(`o clipe saiu com ${got.toFixed(2)} s, e o intervalo pede ${esperado.toFixed(2)} s (a fonte acaba antes do fim do trecho?)`);
     renameSync(part, out);
   } catch (e) {
     rmSync(part, { force: true });

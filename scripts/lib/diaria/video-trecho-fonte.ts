@@ -6,9 +6,13 @@
  * do canal: risco de ToS, CLAUDE.md). Ordem de procura, a 1ª que existe vence:
  *
  *   1. `--trecho-fonte "CHAVE=caminho;…"`, com a CHAVE sendo o id da fala, o
- *      id do vídeo no YouTube ou a edição AAMMDD;
+ *      id do vídeo no YouTube ou a edição AAMMDD (a chave AAMMDD vale também
+ *      para o trecho que cita youtu.be, depois de achar a edição pelo
+ *      registro). Caminho explícito que não existe para ali, com `[aviso]`:
+ *      a busca automática não o troca em silêncio por outro arquivo;
  *   2. o `video_path` do `_internal/05-youtube-published.json` da edição de
- *      origem (o arquivo que subiu para o canal);
+ *      origem (o arquivo que subiu para o canal), lido tanto quando o trecho
+ *      cita o id do YouTube quanto quando cita a edição AAMMDD;
  *   3. `diaria-comentada-{AAMMDD}.mp4` na pasta da edição de origem;
  *   4. a pasta de vídeo no Drive (`{raiz}/{AAMMDD}/`): `Final/` e variações,
  *      e, sem `.mp4` lá, `Editado/`/`Editados/`, com a escolha do horizontal
@@ -20,12 +24,17 @@
  * YouTube no `05-youtube-published.json`. Sem fonte, o trecho fica só no
  * marcador do XML, com os caminhos procurados no aviso: a montagem segue.
  *
+ * O `texto` do trecho é conferido contra o SRT do vídeo de origem
+ * (`avisosTrechosNaMontagem`): divergência, SRT ausente e SRT sem legenda
+ * legível viram `[aviso]`; o tempo é sempre o do roteiro.
+ *
  * Puro, salvo os defaults de `FonteFs` (o disco desta máquina).
  */
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { edicaoDoVideoPublicado, srtDaEdicao, srtDoVideoPublicado, avisosTrechoContraSrt } from "./roteiro-react.ts";
+import { edicaoDoVideoPublicado, registroDaEdicao, srtDaEdicao, srtDoVideoPublicado, avisosTrechoContraSrt } from "./roteiro-react.ts";
+import { parseSrtCues } from "./short-cover-caption.ts";
 import { isEditedFolderName, isFinalFolderName, isMp4VideoFile, selectDriveVideo, type DriveVideoFile } from "./drive-video-source.ts";
 import type { TrechoInseridoLido } from "./trecho-inserido-formato.ts";
 import type { TrechoEncoder } from "./video-xml-trechos.ts";
@@ -89,6 +98,8 @@ export interface FonteTrecho {
   procurado: string[];
   /** Premissa da escolha no Drive (versão mais alta em `Editados/`), quando houver. */
   premissa?: string;
+  /** `--trecho-fonte` apontou um arquivo que não existe: a procura parou ali, sem a busca automática. */
+  explicitoAusente?: true;
 }
 
 /** A pasta da edição AAMMDD sob a raiz das edições (`{AAMM}/{AAMMDD}`). */
@@ -112,12 +123,20 @@ export function resolverFonteTrecho(input: {
   const fs = input.fs ?? DEFAULT_FONTE_FS;
   const procurado: string[] = [];
   const t = input.trecho;
-  for (const k of [input.id, t.youtubeId, t.edicao]) {
-    if (!k || input.fontes[k] === undefined) continue;
-    const p = input.fontes[k];
-    if (fs.exists(p)) return { fonte: p, edicao: t.edicao, procurado };
-    procurado.push(`--trecho-fonte ${k}=${p} (não existe nesta máquina)`);
-  }
+  // `--trecho-fonte` explícito: existe = vence; ausente = para ali (o editor apontou um arquivo, a busca
+  // automática não o substitui em silêncio por outro).
+  const explicito = (keys: ReadonlyArray<string | null | undefined>, edicao: string | null): FonteTrecho | null => {
+    for (const k of keys) {
+      if (!k || input.fontes[k] === undefined) continue;
+      const p = input.fontes[k];
+      if (fs.exists(p)) return { fonte: p, edicao, procurado };
+      procurado.push(`--trecho-fonte ${k}=${p} (não existe nesta máquina; com caminho explícito a busca automática não roda: corrigir o caminho)`);
+      return { fonte: null, edicao, procurado, explicitoAusente: true };
+    }
+    return null;
+  };
+  const direto = explicito([input.id, t.youtubeId, t.edicao], t.edicao);
+  if (direto) return direto;
   let edicao = t.edicao;
   let registro: string | null = null;
   if (!edicao && t.youtubeId) {
@@ -128,6 +147,16 @@ export function resolverFonteTrecho(input: {
     }
     edicao = pub.edicao;
     registro = pub.videoPath;
+    // A chave AAMMDD de `--trecho-fonte` também vale para o trecho que cita youtu.be (a edição veio do registro).
+    const porEdicao = explicito([edicao], edicao);
+    if (porEdicao) return porEdicao;
+    if (!registro) procurado.push(`o video_path do 05-youtube-published.json de ${edicao} (registro sem video_path)`);
+  } else if (edicao) {
+    // Trecho que cita a edição AAMMDD: o registro de publicação dela também diz qual export subiu.
+    const reg = registroDaEdicao(input.editionsRootDir, edicao);
+    registro = reg.videoPath;
+    if (!reg.registro) procurado.push(`${reg.path} (registro de publicação ausente ou ilegível)`);
+    else if (!registro) procurado.push(`${reg.path} (registro sem video_path)`);
   }
   if (!edicao) return { fonte: null, edicao: null, procurado: [...procurado, `o vídeo ${t.video} (nem id do YouTube nem edição)`] };
   if (registro) {
@@ -225,8 +254,8 @@ export function trechoInseridoEncodeArgs(input: {
 /**
  * O `texto` de cada trecho contra o SRT do vídeo de origem (`avisosTrechoContraSrt`
  * do roteiro, #13433), na montagem: divergência é `[aviso]`, nunca muda o
- * intervalo (o tempo é o do roteiro, nunca inventado). Sem SRT, o aviso diz
- * que o texto não foi conferido.
+ * intervalo (o tempo é o do roteiro, nunca inventado). Sem SRT, ou com SRT
+ * sem nenhuma legenda legível, o aviso diz que o texto não foi conferido.
  */
 export function avisosTrechosNaMontagem(
   trechos: ReadonlyArray<{ id: string; trecho: TrechoInseridoLido }>,
@@ -241,7 +270,11 @@ export function avisosTrechosNaMontagem(
     trechoInserido: { video: t.trecho.video, inicio: t.trecho.inicioS, fim: t.trecho.fimS, texto: t.trecho.texto },
   })) as unknown as FalaRoteiro[];
   for (const t of trechos) {
-    if (srt(t.trecho) === null) avisos.push(`${t.id}: sem o SRT do vídeo ${t.trecho.youtubeId ?? t.trecho.edicao} (diaria-comentada-{AAMMDD}.srt na edição de origem): trechoInserido.texto não conferido contra a legenda (#13437)`);
+    const s = srt(t.trecho);
+    const nome = t.trecho.youtubeId ?? t.trecho.edicao;
+    // SRT ausente ou sem legenda legível: `avisosTrechoContraSrt` pula os dois em silêncio, então o aviso é daqui.
+    if (s === null) avisos.push(`${t.id}: sem o SRT do vídeo ${nome} (diaria-comentada-{AAMMDD}.srt na edição de origem): trechoInserido.texto não conferido contra a legenda (#13437)`);
+    else if (!parseSrtCues(s).length) avisos.push(`${t.id}: o SRT do vídeo ${nome} não tem legenda legível (nenhum cue): trechoInserido.texto não conferido contra a legenda (#13437)`);
   }
   return [...avisos, ...avisosTrechoContraSrt({ falas }, srt)];
 }

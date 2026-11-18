@@ -231,16 +231,35 @@ export function edicaoDoVideoPublicado(editionsRootDir: string, videoId: string)
       const dir = join(editionsRootDir, mes, ed);
       const reg = join(dir, "_internal", "05-youtube-published.json");
       if (!existsSync(reg)) continue;
-      try {
-        const r = JSON.parse(readFileSync(reg, "utf8")) as { videoId?: unknown; video_path?: unknown };
-        if (r?.videoId !== videoId) continue;
-        return { edicao: ed, dir, videoPath: typeof r.video_path === "string" && r.video_path.trim() ? r.video_path : null };
-      } catch {
-        continue;
-      }
+      const r = lerRegistroPublicado(reg);
+      if (!r || r.videoId !== videoId) continue;
+      return { edicao: ed, dir, videoPath: r.videoPath };
     }
   }
   return null;
+}
+
+/** O `05-youtube-published.json` lido (`videoId` e `video_path`); ilegível = `null`. */
+function lerRegistroPublicado(reg: string): { videoId: unknown; videoPath: string | null } | null {
+  try {
+    const r = JSON.parse(readFileSync(reg, "utf8")) as { videoId?: unknown; video_path?: unknown } | null;
+    if (!r || typeof r !== "object") return null;
+    return { videoId: r.videoId, videoPath: typeof r.video_path === "string" && r.video_path.trim() ? r.video_path : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * O registro de publicação da edição `aammdd` (`video` do trecho como edição,
+ * #13437): `{AAMM}/{AAMMDD}/_internal/05-youtube-published.json`, com o
+ * caminho dele e o `video_path` (o export que subiu). `registro: false` =
+ * arquivo ausente ou ilegível; `videoPath: null` = registro sem `video_path`.
+ */
+export function registroDaEdicao(editionsRootDir: string, aammdd: string): { path: string; registro: boolean; videoPath: string | null } {
+  const path = join(editionsRootDir, aammdd.slice(0, 4), aammdd, "_internal", "05-youtube-published.json");
+  const r = existsSync(path) ? lerRegistroPublicado(path) : null;
+  return { path, registro: r !== null, videoPath: r?.videoPath ?? null };
 }
 
 /**

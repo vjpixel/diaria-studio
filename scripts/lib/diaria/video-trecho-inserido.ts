@@ -15,8 +15,9 @@
  *
  * PR 2 da #13437: o clipe cortado do export do vídeo de origem
  * (`TrechoInseridoClip`, achado por `video-trecho-fonte.ts` e cortado no
- * `build`) entra no XML numa faixa própria (vídeo e áudio, `trecho-v*`/
- * `trecho-a*`, com label de cor e o marcador cobrindo o clipe), logo depois
+ * `build`) entra no XML numa faixa própria (vídeo e áudio, clipitems
+ * `trecho-{seq}-v{n}`/`trecho-{seq}-a{n}` com o nome `trecho {fala}`, label
+ * de cor e o marcador cobrindo o clipe), logo depois
  * da fala. A sequência abre espaço para ele (`trechoRipple`): o que vem
  * depois da fala anda a duração do trecho, só no XML. O plano (`plan.json`)
  * segue sem o trecho, e a prévia também; o `verify-xml` desfaz o deslocamento
@@ -292,15 +293,19 @@ export function trechoInseridoTracksXml(input: {
  * `verify-xml` com trecho inserido (#13437, PR 2): os clipes de áudio da faixa
  * principal voltam ao tempo do plano (tira a duração de cada trecho que
  * termina antes do clipe), e o clipe que o build partiu no ponto de inserção
- * volta a ser um só (mesmo `<file>`, mídia emendada). Sem trecho, os mesmos clipes.
+ * volta a ser um só (mesmo `<file>`, mídia emendada). Só junta nos pontos que
+ * caem DENTRO de um clipe do plano (`planClips`, os mesmos que `splitClipsAt`
+ * parte): dois clipes do plano que já eram contíguos no ponto seguem dois.
+ * Sem trecho, os mesmos clipes.
  */
 export function unrippleXmlClips<C extends { start: number; end: number; in: number; out: number; fileId: string }>(
   clips: readonly C[],
   trechos: readonly TrechoInseridoClip[],
+  planClips: ReadonlyArray<Pick<RippleableClip, "seqStart" | "seqEnd">>,
 ): C[] {
   const ripple = trechoRipple(trechos);
   if (!ripple.placed.length) return [...clips];
-  const ats = new Set(ripple.placed.map((p) => p.clip.at));
+  const ats = new Set(ripple.placed.map((p) => p.clip.at).filter((a) => planClips.some((c) => a > c.seqStart && a < c.seqEnd)));
   const out: C[] = [];
   for (const c of clips) {
     const shift = ripple.placed.reduce((k, p) => k + (p.pos + p.clip.frames <= c.start ? p.clip.frames : 0), 0);
@@ -328,19 +333,25 @@ export interface TrechoComFonte {
  */
 export function trechosInseridosSection(trechos: readonly TrechoComFonte[]): string[] {
   if (!trechos.length) return [];
-  const total = trechos.reduce((k, t) => k + (t.trecho.fimS - t.trecho.inicioS), 0);
+  const dur = (xs: readonly TrechoComFonte[]) => xs.reduce((k, t) => k + (t.trecho.fimS - t.trecho.inicioS), 0);
+  // Só o trecho com fonte entra no XML: o sem fonte fica no marcador, e a duração dele só soma se o editor o puser à mão.
+  const comFonte = trechos.filter((t) => t.fonte);
+  const semFonte = trechos.length - comFonte.length;
+  const soma = semFonte
+    ? `${dur(comFonte).toFixed(1)} s somados ao horizontal no XML (até ${dur(trechos).toFixed(1)} s com ${semFonte === 1 ? "o trecho sem fonte inserido" : `os ${semFonte} trechos sem fonte inseridos`} à mão)`
+    : `${dur(trechos).toFixed(1)} s somados ao horizontal`;
   const lines = [
     "## Trechos inseridos (horizontal)",
     "",
-    `${trechos.length} trecho(s) de outro vídeo, ${total.toFixed(1)} s somados ao horizontal, fora da duração do plano acima: o build corta cada um do export do vídeo de origem e o põe no XML, numa faixa própria, logo depois da fala (#13437).`,
+    `${trechos.length} trecho(s) de outro vídeo, ${soma}, fora da duração do plano acima: o build corta cada um do export do vídeo de origem e o põe no XML, numa faixa própria, logo depois da fala (#13437).`,
     "",
   ];
   for (const t of trechos) {
-    const dur = (t.trecho.fimS - t.trecho.inicioS).toFixed(1);
+    const d = (t.trecho.fimS - t.trecho.inicioS).toFixed(1);
     const fonte = t.fonte
       ? `fonte: ${t.fonte}`
       : `**[aviso] fonte não encontrada** (procurado: ${t.procurado.join("; ") || "nada"}); o build deixa só o marcador: passar --trecho-fonte "${t.id}=caminho"`;
-    lines.push(`- depois da fala ${t.id}: ${rotuloTrecho(t.trecho)} (${dur} s), "${t.trecho.texto}"; ${fonte}`);
+    lines.push(`- depois da fala ${t.id}: ${rotuloTrecho(t.trecho)} (${d} s), "${t.trecho.texto}"; ${fonte}`);
   }
   return lines;
 }
