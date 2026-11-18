@@ -142,10 +142,10 @@ describe("#11956: o passo existe na skill, no CLI e no agent", () => {
   it("subcomando fact-check-input registrado", () => {
     assert.ok((SUBCOMMANDS as readonly string[]).includes("fact-check-input"));
   });
-  it("a skill roda o fact-check entre o roteiro e o Gate 2", () => {
+  it("a skill roda o fact-check antes do Gate 2 (desde o #13597, logo depois do blocks.json, em paralelo com o roteiro)", () => {
     const skill = read(".claude/skills/diaria-video-montagem/SKILL.md");
     const i = skill.indexOf("scripts/video-montagem.ts fact-check-input");
-    assert.ok(i > skill.indexOf("scripts/video-montagem.ts roteiro"), "depois do roteiro");
+    assert.ok(i > skill.indexOf("scripts/video-montagem.ts blocks"), "depois do blocks.json");
     assert.ok(i < skill.indexOf("## Passo 4"), "antes do XML (o Gate 2 é no Passo 3)");
     assert.match(skill, /mode: "video"/);
   });

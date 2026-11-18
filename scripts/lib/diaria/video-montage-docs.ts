@@ -285,9 +285,10 @@ export const DUPLICATE_MIN_SIMILARITY = 0.9;
  * - aviso: comentário da direção dentro de uma linha "usar"/"alternativa" (é bastidor).
  * Segmentos são os 1-based do plano.
  */
-export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[]): { errors: string[]; warnings: string[] } {
+export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[]): { errors: string[]; warnings: string[]; contraDirecao: ContraDirecao[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const contraDirecao: ContraDirecao[] = [];
   const { bySegment, cues } = decideTakes(segments);
   const cueSegs = new Set(cues.map((c) => c.segment));
   const toks = segments.map((s) => tokenize(s.text));
@@ -319,6 +320,7 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
         if (r.suggestion === "usar") {
           if (approvedSeg !== undefined && approvedSeg !== s) {
             warnings.push(`${label}: "usar" no segmento ${s1}, mas a direção aprovou o segmento ${approvedSeg + 1} (contrariar a direção pede motivo no reason)`);
+            contraDirecao.push({ label, segment: s1, approved: approvedSeg + 1, ...(r.reason?.trim() ? { reason: r.reason.trim() } : {}) });
           }
           const key = d.group.join(",");
           const list = usedTakes.get(key) ?? [];
@@ -341,7 +343,19 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
       }
     }
   }
-  return { errors, warnings };
+  return { errors, warnings, contraDirecao };
+}
+
+/** Linha "usar" numa tomada diferente da que a direção aprovou (#11364); sem `reason`, é a parada do Gate 1 (#13600). */
+export interface ContraDirecao {
+  /** `{bloco}.rows[{j}]` do `decupagem-plan.json`. */
+  label: string;
+  /** Segmento "usar" (1-based). */
+  segment: number;
+  /** Segmento que a direção aprovou (1-based). */
+  approved: number;
+  /** O motivo escrito na linha, quando há. */
+  reason?: string;
 }
 
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */

@@ -147,11 +147,11 @@ export function factCheckSection(
 ): { lines: string[]; graves: number; stale: boolean } {
   const lines = ["## Fact-check da fala (#11956)", ""];
   if (!fc) {
-    lines.push("**[aviso] fact-check não rodou:** rodar o Passo 3a (`fact-check-input` + agent `fact-checker` em `mode: \"video\"`) antes de aprovar o Gate 2.", "");
+    lines.push("**[aviso] fact-check não rodou (ou o agent ainda não voltou):** rodar o Passo 2b (`fact-check-input` + agent `fact-checker` em `mode: \"video\"`) e esperar o resultado antes de aprovar o Gate 2.", "");
     return { lines, graves: 0, stale: false };
   }
   const stale = fc.items_sha256 !== factCheckItemsSha256(items, fontes);
-  if (stale) lines.push("**[aviso] o roteiro mudou depois do fact-check:** os achados abaixo são da versão anterior; frases ou fontes novas não foram checadas (rodar o Passo 3a de novo).", "");
+  if (stale) lines.push("**[aviso] o roteiro mudou depois do fact-check:** os achados abaixo são da versão anterior; frases ou fontes novas não foram checadas (rodar `fact-check-input` de novo: refaz só os itens que mudaram, #13597).", "");
   const graves = fc.claims.filter((c) => GRAVE_VERDICTS.has(c.verdict));
   const unreachable = fc.claims.filter((c) => c.verdict === "SOURCE_UNREACHABLE");
   const ok = fc.claims.length - graves.length - unreachable.length;
@@ -184,4 +184,110 @@ export function factCheckSection(
   if (unreachable.length) lines.push("");
   lines.push(`${open} achado(s) grave(s) em aberto, ${unreachable.length} não verificado(s), ${ok} sustentado(s) ou inferido(s).`, "");
   return { lines, graves: open, stale };
+}
+
+// ── Fact-check incremental (#13597) ─────────────────────────────────────────
+//
+// O fact-check da fala passou a rodar logo depois da decupagem, em paralelo
+// com `face`/`roteiro`. Quando o editor muda a fala no Gate 2 (tomada trocada,
+// corte de repetição, texto corrigido), refazer só os itens cujo texto/fala
+// mudou: o `fact-check-input` grava o delta e os achados dos itens que não
+// mudaram (`carried_claims`), o agent checa só o delta e o `fact-check-merge`
+// junta os dois no `fact-check.json`.
+
+type Fonte = { fala: string; url: string; sustenta: string };
+
+/** Hash do que o fact-check checa num item: o texto pedido e a fala ouvida (o tempo e o índice não mudam o fato). */
+export function factCheckItemHash(item: Pick<FactCheckItem, "text" | "heard">): string {
+  return createHash("sha256").update(JSON.stringify([item.text, item.heard ?? null])).digest("hex");
+}
+
+/** Hash só das fontes do roteiro: trocar uma fonte refaz o fact-check inteiro. */
+export function factCheckFontesSha256(fontes: ReadonlyArray<Fonte> = []): string {
+  return createHash("sha256").update(JSON.stringify(fontes.map((f) => [f.fala, f.url, f.sustenta]))).digest("hex");
+}
+
+/** O que o `fact-check-input` anterior registrou: o hash de todos os itens daquela versão e o das fontes. */
+export interface CheckedSnapshot {
+  /** `items_sha256` daquela versão (o mesmo que o agent copiou para o `fact-check.json`). */
+  items_sha256: string;
+  /** Um por item da versão inteira (não só do delta). */
+  all_items: Array<{ id: string; hash: string }>;
+  fontes_sha256: string;
+}
+
+/**
+ * O snapshot que o `fact-check.json` atual cobre, a partir do
+ * `fact-check-input.json` que o gerou (`items_sha256` igual). `null` = não dá
+ * para saber o que foi checado (sem fact-check, input ausente ou de outra
+ * versão, formato ilegível): aí o fact-check é inteiro.
+ */
+export function checkedSnapshotFrom(prevInput: unknown, fc: VideoFactCheck | null): CheckedSnapshot | null {
+  if (!fc) return null;
+  const o = prevInput as { items_sha256?: unknown; all_items?: unknown; items?: unknown; fontes_sha256?: unknown; roteiro_fontes?: unknown } | null;
+  if (!o || typeof o !== "object" || o.items_sha256 !== fc.items_sha256) return null;
+  let all: Array<{ id: string; hash: string }> | null = null;
+  if (Array.isArray(o.all_items)) {
+    const raw = o.all_items as Array<{ id?: unknown; hash?: unknown }>;
+    if (raw.some((x) => typeof x?.id !== "string" || typeof x?.hash !== "string")) return null;
+    all = raw as Array<{ id: string; hash: string }>;
+  } else if (Array.isArray(o.items)) {
+    // Input anterior ao #13597: era sempre o fact-check inteiro, `items` = todos.
+    const items = o.items as Array<Partial<FactCheckItem>>;
+    if (items.some((i) => typeof i?.id !== "string" || typeof i?.text !== "string")) return null;
+    all = items.map((i) => ({ id: i.id!, hash: factCheckItemHash({ text: i.text!, heard: i.heard }) }));
+  }
+  if (!all) return null;
+  const fontesSha =
+    typeof o.fontes_sha256 === "string" ? o.fontes_sha256 : factCheckFontesSha256(Array.isArray(o.roteiro_fontes) ? (o.roteiro_fontes as Fonte[]) : []);
+  return { items_sha256: o.items_sha256 as string, all_items: all, fontes_sha256: fontesSha };
+}
+
+export type FactCheckPlan =
+  | { mode: "full"; reason: string; check: FactCheckItem[] }
+  | { mode: "em-dia" }
+  | { mode: "delta"; check: FactCheckItem[]; carried: VideoFactClaim[]; reused: number };
+
+/**
+ * O que checar agora (#13597). `full` sem fact-check anterior utilizável, com
+ * as fontes do roteiro trocadas ou com achado que não se liga a item nenhum da
+ * versão checada (o agent citou um id de fora: não dá para saber se segue
+ * valendo). `em-dia` com o hash inteiro igual. `delta` = só os itens com texto
+ * ou fala novos; os achados dos itens que não mudaram seguem, com o `item`
+ * trocado pelo id atual (inserir um item renumera o bloco), e os dos itens
+ * que mudaram ou saíram caem (o agent checa o texto novo).
+ */
+export function planVideoFactCheck(items: FactCheckItem[], fontes: ReadonlyArray<Fonte>, fc: VideoFactCheck | null, snapshot: CheckedSnapshot | null): FactCheckPlan {
+  if (!fc) return { mode: "full", reason: "sem fact-check anterior", check: items };
+  if (fc.items_sha256 === factCheckItemsSha256(items, fontes)) return { mode: "em-dia" };
+  if (!snapshot) return { mode: "full", reason: "fact-check anterior sem o registro do que foi checado (fact-check-input.json ausente, de outra versão ou ilegível)", check: items };
+  if (snapshot.fontes_sha256 !== factCheckFontesSha256(fontes)) return { mode: "full", reason: "as fontes do roteiro mudaram", check: items };
+  const oldHashById = new Map(snapshot.all_items.map((x) => [x.id, x.hash]));
+  const checked = new Set(snapshot.all_items.map((x) => x.hash));
+  const curIdByHash = new Map<string, string>();
+  for (const it of items) {
+    const h = factCheckItemHash(it);
+    if (!curIdByHash.has(h)) curIdByHash.set(h, it.id);
+  }
+  const carried: VideoFactClaim[] = [];
+  for (const c of fc.claims) {
+    const h = oldHashById.get(c.item);
+    if (h === undefined) return { mode: "full", reason: `achado com item "${c.item}" fora da versão checada`, check: items };
+    const now = curIdByHash.get(h);
+    if (now !== undefined) carried.push({ ...c, item: now });
+  }
+  const check = items.filter((it) => !checked.has(factCheckItemHash(it)));
+  return { mode: "delta", check, carried, reused: items.length - check.length };
+}
+
+/**
+ * Junta o delta que o agent checou com os achados carregados (#13597). O
+ * `items_sha256` do delta é o da versão inteira (o `fact-check-input` grava
+ * esse, o agent copia): diferente do esperado = delta de outra versão, erro.
+ */
+export function mergeVideoFactCheck(delta: VideoFactCheck, carried: VideoFactClaim[], expectedSha: string): VideoFactCheck {
+  if (delta.items_sha256 !== expectedSha) {
+    throw new Error(`fact-check do delta é de outra versão (items_sha256 ${delta.items_sha256.slice(0, 12)}…, esperado ${expectedSha.slice(0, 12)}…): rodar fact-check-input e o agent de novo`);
+  }
+  return { mode: "video", edition: delta.edition, items_sha256: expectedSha, claims: [...carried, ...delta.claims] };
 }

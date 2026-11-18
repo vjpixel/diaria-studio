@@ -232,7 +232,7 @@ describe("decisão por critério: usar na tomada decidida, cortar nas outras (#1
 
 describe("plano conferido contra o critério (#11364)", () => {
   it("o plano que segue o critério passa sem erro nem aviso", () => {
-    assert.deepEqual(checkDecupagemCriteria(GOOD_PLAN, SEGMENTS), { errors: [], warnings: [] });
+    assert.deepEqual(checkDecupagemCriteria(GOOD_PLAN, SEGMENTS), { errors: [], warnings: [], contraDirecao: [] });
   });
 
   it("regressão 261028: tomadas da mesma frase como 'usar' em sequência é erro (o XML sai com UMA montagem)", () => {
@@ -259,10 +259,12 @@ describe("plano conferido contra o critério (#11364)", () => {
         },
       ],
     };
-    const { errors, warnings } = checkDecupagemCriteria(plan, SEGMENTS);
+    const { errors, warnings, contraDirecao } = checkDecupagemCriteria(plan, SEGMENTS);
     assert.equal(errors.filter((e) => /a direção aprovou o segmento 5/.test(e)).length, 2);
     // E o "usar" na 3ª contraria a direção: aviso.
     assert.ok(warnings.some((w) => /"usar" no segmento 7, mas a direção aprovou o segmento 5/.test(w)), warnings.join(" | "));
+    // #13600: sem reason, o contra-direção estruturado vira a parada do Gate 1.
+    assert.deepEqual(contraDirecao.map((c) => [c.segment, c.approved, c.reason]), [[7, 5, undefined]]);
   });
 
   it("comentário da direção numa linha 'usar' é aviso (a conversa com a direção não vai para o vídeo)", () => {
