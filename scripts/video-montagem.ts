@@ -4070,6 +4070,45 @@ export function probeTrechoFrames(path: string): number | null {
   }
 }
 
+/** #13512: o cache da contagem de quadros, no out dir (fora da `trechos/`, que só guarda mídia). */
+export const TRECHO_FRAMES_CACHE = ".trechos-quadros-cache.json";
+
+/**
+ * #13512: `probe` com cache em `cachePath`, chave nome do
+ * arquivo + tamanho + mtime. O mesmo arquivo, intacto, não é relido a cada
+ * rebuild do XML leve (~1,6 GB de trechos); mudou tamanho ou mtime, sonda de
+ * novo. Só contagem válida é guardada (null = ilegível, sempre reprobe), e
+ * cache ausente, corrompido ou que não grava vira sonda direta, nunca erro.
+ */
+export function cachedTrechoProbe(cachePath: string, probe: (path: string) => number | null = probeTrechoFrames): (path: string) => number | null {
+  let cache: Record<string, { size: number; mtimeMs: number; frames: number }> = {};
+  try {
+    const raw = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) cache = raw;
+  } catch { /* sem cache */ }
+  return (path: string) => {
+    const key = basename(path);
+    let st: { size: number; mtimeMs: number };
+    try {
+      st = statSync(path);
+    } catch {
+      return probe(path);
+    }
+    const hit = cache[key];
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs && Number.isInteger(hit.frames)) return hit.frames;
+    const frames = probe(path);
+    if (frames === null) {
+      delete cache[key];
+      return null;
+    }
+    cache[key] = { size: st.size, mtimeMs: st.mtimeMs, frames };
+    try {
+      writeFileSync(cachePath, JSON.stringify(cache));
+    } catch { /* cache é otimização */ }
+    return frames;
+  };
+}
+
 /**
  * #13488: os trechos que os XMLs leves apontam, conferidos contra a mídia
  * REAL em `dir` (a `trechos/` do out dir): ausente, ilegível ou com menos (ou
@@ -4077,7 +4116,7 @@ export function probeTrechoFrames(path: string): number | null {
  * confere in/out contra a `<duration>` do `<file>`, que é a do nome, não a do
  * arquivo; sem isto, o trecho truncado da 261118 passava.
  */
-export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, probe: (path: string) => number | null = probeTrechoFrames): string[] {
+export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, probe: (path: string) => number | null = cachedTrechoProbe(join(dirname(dir), TRECHO_FRAMES_CACHE))): string[] {
   const names = [...new Set(xmlTexts.flatMap((x) => trechoNamesInXml(x)))];
   const issues: string[] = [];
   for (const name of names) {
@@ -4126,7 +4165,6 @@ export function renderTrechos(input: {
 }): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number; redone: number } {
   const log = input.log ?? ((m: string) => console.error(m));
   const encode = input.encode ?? ((args: string[]) => { run("ffmpeg", args); });
-  const probeFrames = input.probeFrames ?? probeTrechoFrames;
   const files = sourceFiles(input.source);
   const uses = input.plans.flatMap((p) =>
     p.clips.map((c) => {
@@ -4138,6 +4176,8 @@ export function renderTrechos(input: {
   const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
   const dir = join(input.outDir, TRECHOS.dirName);
   mkdirSync(dir, { recursive: true });
+  // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild.
+  const probeFrames = input.probeFrames ?? cachedTrechoProbe(join(input.outDir, TRECHO_FRAMES_CACHE));
   let encoder: TrechoEncoder = pickTrechoEncoder(input.listEncoders ? input.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
   const p = input.mediaPath.replace(/\\/g, "/");
   const xmlDir = `${p.slice(0, p.lastIndexOf("/") + 1)}${TRECHOS.dirName}/`;

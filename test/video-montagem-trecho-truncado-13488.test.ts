@@ -27,7 +27,7 @@ import {
   trechoFramesOk,
   trechoNamesInXml,
 } from "../scripts/lib/diaria/video-xml-trechos.ts";
-import { probeTrechoFrames, renderTrechos, trechoMediaIssues } from "../scripts/video-montagem.ts";
+import { cachedTrechoProbe, probeTrechoFrames, renderTrechos, TRECHO_FRAMES_CACHE, trechoMediaIssues } from "../scripts/video-montagem.ts";
 
 // Clipe 30-60 a 30 fps com folga de 1 s: trecho 0-90 (b_q000000-000090.mov).
 const NAME = "b_q000000-000090.mov";
@@ -256,6 +256,37 @@ describe("#13488 com ffmpeg real: trecho truncado de propósito", { skip: !hasFf
       assert.equal(probeTrechoFrames(join(tdir, name)), 90);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#13512 cache da contagem de quadros", () => {
+  it("não reprobe arquivo intacto; reprobe se mudar; null não é guardado", () => {
+    const d = mkdtempSync(join(tmpdir(), "t13512-"));
+    try {
+      const f = join(d, NAME);
+      const cp = join(d, TRECHO_FRAMES_CACHE);
+      writeFileSync(f, "aaaa");
+      const seen: string[] = [];
+      let ret: number | null = 90;
+      const probe = (p: string) => { seen.push(p); return ret; };
+      const c1 = cachedTrechoProbe(cp, probe);
+      assert.equal(c1(f), 90);
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 90, "nova instância lê o cache em disco");
+      assert.equal(seen.length, 1, "segunda leitura veio do cache");
+      writeFileSync(f, "aaaaaaaa");
+      ret = 20;
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 20, "tamanho mudou: reprobe");
+      ret = null;
+      writeFileSync(f, "bb");
+      assert.equal(cachedTrechoProbe(cp, probe)(f), null);
+      assert.equal(cachedTrechoProbe(cp, probe)(f), null);
+      assert.equal(seen.length, 4, "null nunca é cacheado");
+      writeFileSync(cp, "{lixo");
+      ret = 7;
+      assert.equal(cachedTrechoProbe(cp, probe)(f), 7, "cache corrompido não derruba");
+    } finally {
+      rmSync(d, { recursive: true, force: true });
     }
   });
 });
