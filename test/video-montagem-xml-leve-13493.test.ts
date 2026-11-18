@@ -8,6 +8,7 @@
  * acima de um limiar configurável.
  */
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,13 +21,14 @@ import {
   parseXmlLeveChoice,
   planTrechos,
   silencesPerFile,
+  TRECHOS,
   trechoEndFor,
   trechosPendentesNaNuvem,
   trechoStartFor,
   XML_LEVE_LIMIAR_DEFAULT,
   xmlLeveLimiarFrom,
 } from "../scripts/lib/diaria/video-xml-trechos.ts";
-import { brutoTotalBytes, main, renderTrechos, reportTrechosNaNuvem } from "../scripts/video-montagem.ts";
+import { brutoTotalBytes, main, renderTrechos, reportTrechosNaNuvem, xmlVersionHashOf, type XmlBuildOptions } from "../scripts/video-montagem.ts";
 
 const GIB = 1024 ** 3;
 const limiar = { minGb: 15, maxArquivos: 8 };
@@ -215,5 +217,36 @@ describe("#13493 XML pronto só com os trechos na nuvem (opção 4)", () => {
     const m = src.slice(src.indexOf("const code = await runCommand(ctx, cmd, values, flags, seq, d);"));
     assert.match(m.slice(0, 800), /cmd === "build" && code === 0 && !uploads && ctx\.buildTrechos\?\.length/);
     assert.match(m.slice(0, 800), /reportTrechosNaNuvem\(/);
+  });
+});
+
+describe("#13493 versão do XML leva a regra de limite dos trechos (review P2 da PR #13616)", () => {
+  // Plano mínimo horizontal (sem âncora de boca): só o que `xmlVersionHashOf` lê.
+  const plan = {
+    spec: { target: "youtube", name: "Diaria comentada_Youtube_V1", width: 1920, height: 1080, order: ["comentario"], scales: [100] },
+    clips: [],
+    durationFrames: 300,
+  } as unknown as Parameters<typeof xmlVersionHashOf>[1];
+  const opts: XmlBuildOptions = { speechDetect: true, audioRefine: true, audioGain: true, titleMode: "png" };
+  const { name: _n, ...specSemNome } = plan.spec;
+  const hashManual = (optsJson: object): string =>
+    createHash("sha256")
+      .update("h")
+      .update("\0opts\0")
+      .update(JSON.stringify(optsJson))
+      .update("\0plan\0")
+      .update(JSON.stringify({ spec: specSemNome, clips: plan.clips, durationFrames: plan.durationFrames }))
+      .digest("hex")
+      .slice(0, 16);
+
+  it("sanidade: a fórmula manual reproduz o hash do XML do bruto (sem trechos, o de antes)", () => {
+    assert.equal(xmlVersionHashOf("h", plan, { ...opts, trechosFolgaS: null }), hashManual(opts));
+  });
+
+  it("com trechos, mesmo plano e mesma folga dão versão diferente da regra anterior (o 1º build pós-merge abre _V nova)", () => {
+    assert.ok(TRECHOS.anchorRule, "TRECHOS.anchorRule precisa existir");
+    // A fórmula de antes da correção: com trechos, só a folga entrava no hash.
+    assert.notEqual(xmlVersionHashOf("h", plan, { ...opts, trechosFolgaS: 1 }), hashManual({ ...opts, trechosFolgaS: 1 }));
+    assert.equal(xmlVersionHashOf("h", plan, { ...opts, trechosFolgaS: 1 }), hashManual({ ...opts, trechosFolgaS: 1, trechosAnchor: TRECHOS.anchorRule }));
   });
 });

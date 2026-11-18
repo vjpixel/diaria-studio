@@ -58,6 +58,13 @@ export const TRECHOS = {
   silenceMaxS: 3,
   /** #13493: o corte do refino pode cair uns quadros depois do fim do silêncio detectado (ou antes do começo). */
   silenceTolS: 0.25,
+  /**
+   * #13493: marcador da regra que decide os limites (e portanto os nomes) dos
+   * trechos. Entra na versão do XML (`xmlVersionHashOf`) quando há trechos:
+   * mudar a regra com o mesmo plano e a mesma folga gera trechos novos, e o
+   * `<sequence id>`/`_V{n}` precisa mudar junto. Trocar ao mudar a regra.
+   */
+  anchorRule: "silencio-13493",
 } as const;
 
 /**

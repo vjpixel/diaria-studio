@@ -1779,7 +1779,8 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
-        ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS } : {}),
+        // #13493: a regra de limite dos trechos entra junto com a folga — mesma folga e regra nova = trechos com outro nome, versão nova.
+        ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS, trechosAnchor: TRECHOS.anchorRule } : {}),
         // #13414: a vertical ancorada pela boca muda o Center sem mudar o plano: versão nova, nunca o _V{n} já importado regravado.
         ...(sequenceAnchor(plan.spec).mouthFraction !== undefined ? { anchor: { mouthFraction: sequenceAnchor(plan.spec).mouthFraction } } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
