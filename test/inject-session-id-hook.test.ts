@@ -460,6 +460,34 @@ describe("buildUpdatedCommand (#5156)", () => {
     );
   });
 
+  it("injeta --session-id em session-close-check.ts standalone (#13444 — /diaria-encerra)", () => {
+    assert.equal(needsSessionId("npx tsx scripts/session-close-check.ts"), true);
+    assert.equal(
+      buildUpdatedCommand("npx tsx scripts/session-close-check.ts", "sess-abc", 4242),
+      "npx tsx scripts/session-close-check.ts --session-id 'sess-abc'",
+    );
+    assert.equal(
+      buildUpdatedCommand("npx tsx scripts/session-close-check.ts --worktree '/x/wt'", "sess-abc"),
+      "npx tsx scripts/session-close-check.ts --worktree '/x/wt' --session-id 'sess-abc'",
+    );
+  });
+
+  it("session-close-check.ts já com --session-id → null, nunca sobrescreve (#13444)", () => {
+    assert.equal(
+      buildUpdatedCommand("npx tsx scripts/session-close-check.ts --session-id ja-presente", "sess-abc"),
+      null,
+    );
+  });
+
+  it("session-close-check.ts encadeado → null, e o guard nega citando o script (#13444)", () => {
+    const chained = "git fetch && npx tsx scripts/session-close-check.ts";
+    assert.equal(needsSessionId(chained), false);
+    assert.equal(buildUpdatedCommand(chained, "sess-abc"), null);
+    const risk = detectChainedSessionIdRisk(chained);
+    assert.notEqual(risk, null);
+    assert.ok(risk.includes("session-close-check.ts"), risk);
+  });
+
   it("effective-model-probe.ts encadeado → null (#9527)", () => {
     assert.equal(buildUpdatedCommand("cd x && npx tsx scripts/lib/effective-model-probe.ts", "sess-abc"), null);
   });

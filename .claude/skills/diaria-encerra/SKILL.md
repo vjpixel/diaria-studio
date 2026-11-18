@@ -29,11 +29,12 @@ que foi conferido. Prossiga para a segunda etapa mesmo se houver checagem inconc
 
 ## 2. Pode encerrar?
 
-Obtenha o ID real desta sessão do runtime/beacon/registry, nunca de outra sessão
-nem inventado. Rode no repositório:
+Rode no repositório, como comando standalone (sem `&&`, `;`, pipe ou heredoc):
+o hook `inject-session-id.mjs` injeta o `--session-id` real desta sessão
+(#13444). Não escreva nem invente o ID; encadeado, o hook nega o comando.
 
 ```bash
-npx tsx scripts/session-close-check.ts --session-id '<ID real>'
+npx tsx scripts/session-close-check.ts
 ```
 
 No elo Codex do contínuo, o script aceita `DIARIA_INJECTED_SESSION_ID` sem flag.
