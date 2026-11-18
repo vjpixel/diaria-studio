@@ -233,7 +233,7 @@ const COMMAND_PROBE_ARGS: Record<string, string[]> = {
 
 /** Substituto injetável de `execFileSync` para testar `commandExistsSync`
  * sem spawnar processos reais. Em runtime, omitir (usa `execFileSync` real). */
-export type ExecFileSyncFn = (cmd: string, args: string[], opts: { stdio: "ignore" }) => unknown;
+export type ExecFileSyncFn = (cmd: string, args: string[], opts: { stdio: "ignore"; windowsHide: true }) => unknown;
 
 /**
  * Checa se `cmd` existe no PATH tentando executá-lo com um argumento de
@@ -251,7 +251,9 @@ export function commandExistsSync(
   warnFn: (message: string) => void = console.warn,
 ): boolean {
   try {
-    execFn(cmd, COMMAND_PROBE_ARGS[cmd] ?? [], { stdio: "ignore" });
+    // #13575: windowsHide porque este módulo roda também dentro de processos
+    // destacados (sem console); lá o `schtasks /?` abriria uma janela.
+    execFn(cmd, COMMAND_PROBE_ARGS[cmd] ?? [], { stdio: "ignore", windowsHide: true });
     return true;
   } catch (e: unknown) {
     const err = e as { code?: string };
