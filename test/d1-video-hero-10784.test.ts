@@ -201,7 +201,7 @@ describe("#10784 — cópia do hero com play", () => {
       // #11475: cópia com a copy anterior regera mesmo com o hero igual.
       const stampPath = join(dir, D1_PLAY_STAMP_FILE);
       const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
-      assert.equal(D1_INVITE_VERSION, "invite-v7");
+      assert.equal(D1_INVITE_VERSION, "invite-v8");
       assert.equal(stamp.overlay, D1_INVITE_VERSION);
       stamp.overlay = "invite-v6";
       writeFileSync(stampPath, JSON.stringify(stamp));
