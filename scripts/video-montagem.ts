@@ -90,7 +90,20 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S] [--trecho-fonte "CHAVE=caminho;…"]
+ *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
+ *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
+ *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir),
+ *       numa faixa própria do XML (clipitems trecho-{seq}-v{n}/trecho-{seq}-a{n}, nome "trecho
+ *       {fala}", label Mango, marcador cobrindo o clipe), logo depois da fala; o que vem depois
+ *       anda a duração do trecho (só no XML: plan.json e prévia seguem sem ele; o verify-xml
+ *       desfaz o deslocamento). Fonte: --trecho-fonte (CHAVE = id da fala, id do YouTube ou
+ *       AAMMDD; caminho explícito ausente = [aviso] e para ali, sem busca automática) >
+ *       video_path do 05-youtube-published.json da edição de origem (o trecho cite youtu.be ou
+ *       AAMMDD) > diaria-comentada-{AAMMDD}.mp4 dela > Final/ (ou Editado/) da pasta de vídeo
+ *       dela no Drive. Sem fonte: [aviso] com os caminhos procurados, só o marcador, e o build
+ *       segue. Texto do trecho contra o SRT do vídeo de origem: divergência, SRT ausente ou sem
+ *       legenda legível é [aviso]. A lista dos trechos no roteiro.md é do subcomando `roteiro`.
  *       (#13219) XML LEVE por padrão: os clipes apontam trechos do bruto em H.264 4K + PCM 48 kHz
  *       (`trechos/` na pasta da edição, só o que as sequências usam, folga de 1 s de cada lado,
  *       trechos a menos de 3 s um do outro viram um só; nome = arquivo + quadros de início e fim,
@@ -315,10 +328,28 @@ import { brtStamp, chooseConflictCopy, conflictCopiesOf, missingFileConflictHint
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
+import { editionDir as editionDirFor, editionsRoot as editionsRootDir } from "./lib/edition-paths.ts";
 import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvgForMarker, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
-import { readTrechosInseridos, trechoInseridoLine, type TrechoInseridoMarker } from "./lib/diaria/video-trecho-inserido.ts";
+import {
+  readTrechosInseridos,
+  trechoClipFrames,
+  trechoInseridoLine,
+  trechoRipple,
+  trechosInseridosSection,
+  unrippleXmlClips,
+  type TrechoInseridoClip,
+  type TrechoInseridoMarker,
+  type TrechoInseridoRoteiro,
+} from "./lib/diaria/video-trecho-inserido.ts";
+import {
+  avisosTrechosNaMontagem,
+  parseTrechoFonteArg,
+  resolverFonteTrecho,
+  trechoInseridoEncodeArgs,
+  trechoInseridoFileName,
+  type FonteTrecho,
+} from "./lib/diaria/video-trecho-fonte.ts";
 import { rotuloTrecho } from "./lib/diaria/trecho-inserido-formato.ts";
 import { cueFrames, parseAssStyle, subtitleBottomY, subtitleCueSvg, subtitleDirName, subtitleFileName, subtitleTrack, withSubtitleTrack, type SubtitleOverlay } from "./lib/diaria/video-legenda-xml.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
@@ -662,6 +693,10 @@ interface Ctx {
   localDrive?: DriveSession;
   /** #13334: os caminhos do XML (raiz do Neo/explícita, antes da troca pelo Mac) que o último build gravou. */
   buildXmlFiles?: string[];
+  /** #13437: `--trecho-fonte` (CHAVE → caminho do export do vídeo de origem de um trecho inserido). */
+  trechoFontes?: Record<string, string>;
+  /** #13437: a raiz da pasta de vídeo NESTA máquina, onde o export do vídeo de origem é procurado; `null` = sem Drive local (modo API). */
+  trechoDriveRoot?: string | null;
 }
 
 /** As saídas deste comando sobem para a pasta da edição no Drive (modo API, ou local com `localDrive`, #13334). */
@@ -1587,6 +1622,8 @@ export interface XmlBuildOptions {
   telaOverlays?: Readonly<Record<string, readonly TelaOverlay[]>> | null;
   /** #13437: os marcadores de trecho inserido de cada sequência; só entram no hash os da sequência (sem eles, o hash de antes). */
   trechoMarkers?: Readonly<Record<string, readonly TrechoInseridoMarker[]>> | null;
+  /** #13437 (PR 2): os clipes dos trechos inseridos de cada sequência; só entram no hash os da sequência, sem o caminho local. */
+  trechoClips?: Readonly<Record<string, readonly TrechoInseridoClip[]>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1639,6 +1676,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(sequenceAnchor(plan.spec).mouthFraction !== undefined ? { anchor: { mouthFraction: sequenceAnchor(plan.spec).mouthFraction } } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
         ...(opts.trechoMarkers?.[sequenceKey(plan.spec)]?.length ? { trechoMarkers: opts.trechoMarkers[sequenceKey(plan.spec)] } : {}),
+        ...(opts.trechoClips?.[sequenceKey(plan.spec)]?.length ? { trechoClips: opts.trechoClips[sequenceKey(plan.spec)].map(({ path: _p, fonte: _f, ...rest }) => rest) } : {}),
       }),
     )
     .update("\0plan\0")
@@ -1867,6 +1905,12 @@ export interface SequenceXmlAssets {
   capaInicio?: CapaInicioAsset;
   /** #13204: os boxes de tela que o XML desta sequência levou (a prévia os sobrepõe igual). */
   telaOverlays?: TelaOverlay[];
+  /**
+   * #13437 (PR 2): os trechos de outro vídeo que o XML desta sequência levou,
+   * numa faixa própria, com o deslocamento (`trechoRipple`) que o plano não
+   * tem. O `verify-xml` desfaz o deslocamento com eles; a prévia não os leva.
+   */
+  trechosInseridos?: TrechoInseridoClip[];
 }
 
 /**
@@ -2876,11 +2920,16 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const xmlPath = join(ctx.outDir, xmlFileName(plan.spec.name));
     if (!existsSync(xmlPath)) throw new Error(`verify-xml: ${xmlPath} ausente (rode build)`);
     const xmlText = readFileSync(xmlPath, "utf8");
-    const parsed = parseXmlAudio(xmlText);
+    const parsedXml = parseXmlAudio(xmlText);
+    // #13437 (PR 2): o trecho inserido abre espaço só no XML; a conferência contra o plano é sem ele.
+    const trechosXml = pf.xmlAssets?.[key]?.trechosInseridos ?? [];
+    const trechoTotal = trechoRipple(trechosXml).total;
+    const parsed = trechosXml.length ? { ...parsedXml, clips: unrippleXmlClips(parsedXml.clips, trechosXml, plan.clips) } : parsedXml;
+    if (trechosXml.length) console.error(`[video-montagem] verify-xml ${key}: ${trechosXml.length} trecho(s) inserido(s) (${(trechoTotal / pf.source.fps).toFixed(1)} s) tirados da conta; a fala deles não é conferida contra o roteiro (#13437)`);
     const { clips, errors } = toTimeline(parsed, offsets);
     // #12571: o card de CTA no fim da V1 (sem áudio): logo depois da fala, com a duração do plano.
     const cardFrames = pf.xmlAssets?.[key]?.ctaCard?.frames ?? null;
-    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames }), ...capaInicioXmlIssues(xmlText, capaFramesOf(pf.xmlAssets?.[key]?.capaInicio, plan.durationFrames))];
+    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames + trechoTotal, cardFrames }), ...capaInicioXmlIssues(xmlText, capaFramesOf(pf.xmlAssets?.[key]?.capaInicio, plan.durationFrames))];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
     const edgeWords = verifyEdgeWords({ ...edgeWordsInput, planClips: plan.clips, durationS: pf.source.durationS });
     const edgeCtx = verifyEdgeContext(plan, clips, { fps: pf.source.fps, rate: parsed.rate, words: edgeWords.words, durationS: pf.source.durationS, bounds: isMultiSource(pf.source) ? fileBounds(pf.source) : undefined });
@@ -2934,11 +2983,12 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     }
     // #13372: 2º leitor independente (adapter FCP7 do OpenTimelineIO) no mesmo XML: clipes, in/out e duração
     // contra o leitor próprio. Opcional e NÃO bloqueante (decisão do editor): nunca soma em `bad`.
-    const otio = otioCrossCheck(parsed, xmlPath, {
+    // #13437: o 2º leitor lê o XML como ele é (com o trecho), contra o leitor próprio sem desfazer o deslocamento.
+    const otio = otioCrossCheck(parsedXml, xmlPath, {
       python: resolveOtioPython(process.env.DIARIA_OTIO_PYTHON, ctx.python),
       script: OTIO_PY,
       sequenceName: plan.spec.name,
-      expectedTotalFrames: plan.durationFrames + (cardFrames ?? 0),
+      expectedTotalFrames: plan.durationFrames + trechoTotal + (cardFrames ?? 0),
     });
     for (const x of otioCheckLines(otio)) {
       // "indisponível" é da máquina, não da sequência: uma vez por rodada (o Set de avisos únicos do verify-xml).
@@ -3184,7 +3234,15 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   // #12711: a retranscrição da janela de cada item (sem o roteiro no prompt) contra a tomada repetida que o Whisper colapsa.
   const repeat = short.heard ? windowRepeatSuspects(factCheckItems(ps, resolved), short.heard, sil, makeMatcher(loadVocab().aliases)) : [];
   for (const x of repeat) console.error(`[aviso] ${takeRepeatLine(x)}`);
-  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n${takeRepeatSection(repeat)}`;
+  // #13437: os trechos de outro vídeo do horizontal, com a fonte que o build vai cortar (ou onde ela foi procurada).
+  const trechosMd = trechosInseridosSection(
+    readTrechosInseridos(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`)).map((t) => {
+      const fonte = fonteDoTrecho(ctx, t);
+      if (!fonte.fonte) console.error(`[aviso] trecho depois da fala ${t.id}: export do vídeo de origem não achado (procurado: ${fonte.procurado.join("; ")}); o build deixa só o marcador (#13437)`);
+      return { id: t.id, trecho: t.trecho, fonte: fonte.fonte, procurado: fonte.procurado };
+    }),
+  );
+  const md = `${base.trimEnd()}\n\n${trechosMd.length ? `${trechosMd.join("\n")}\n\n` : ""}${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n${takeRepeatSection(repeat)}`;
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
   return 0;
@@ -4040,6 +4098,118 @@ export function renderTrechos(input: {
   return { trechos, encoder, made, reused };
 }
 
+/** #13437: folga mínima (s) para o clipe cortado sair mais curto que o intervalo (além de 5% dele) antes de ser recusado. */
+const TRECHO_CLIP_SHORT_TOL_S = 0.5;
+
+/** #13437 (PR 2): a fonte do trecho nesta máquina (ordem em `video-trecho-fonte.ts`). */
+export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">, t: Pick<TrechoInseridoRoteiro, "id" | "trecho">): FonteTrecho {
+  return resolverFonteTrecho({ id: t.id, trecho: t.trecho, fontes: ctx.trechoFontes ?? {}, editionsRootDir: editionsRootDir(), driveRoot: ctx.trechoDriveRoot ?? null });
+}
+
+/**
+ * #13437 (PR 2): o clipe de um trecho inserido, cortado do export do vídeo de
+ * origem no intervalo do roteiro, no tamanho e fps da sequência, no out dir
+ * (`trechoInseridoFileName`, reaproveitado no rebuild: o hash muda com a fonte e
+ * o intervalo). Sem fonte, intervalo de menos de 1 quadro ou além do fim do
+ * vídeo, fonte ilegível, ffmpeg falho ou clipe cortado bem mais curto que o
+ * intervalo: `null` com `[aviso]` (o trecho fica só no marcador), nunca para
+ * o build. ffprobe que falha (na fonte ou no clipe) é `[aviso]`, sem recusar.
+ */
+export function cutTrechoInserido(
+  ctx: Ctx,
+  t: TrechoInseridoRoteiro,
+  at: number,
+  spec: Pick<SequenceSpec, "width" | "height" | "name">,
+  fps: number,
+  mediaPath: string,
+  deps: { encode?: (args: string[]) => void; probeDurationS?: (src: string) => number | null; listEncoders?: () => string } = {},
+): TrechoInseridoClip | null {
+  const fonte = fonteDoTrecho(ctx, t);
+  const where = `${spec.name}: trecho depois da fala ${t.id} (${rotuloTrecho(t.trecho)})`;
+  if (!fonte.fonte) {
+    const porque = fonte.explicitoAusente
+      ? `o --trecho-fonte aponta um arquivo que não existe nesta máquina (${fonte.procurado.join("; ")}); a busca automática não roda com caminho explícito: corrigir o caminho`
+      : `o export do vídeo de origem não foi achado (procurado: ${fonte.procurado.join("; ")})`;
+    console.error(`[aviso] ${where} NÃO inserido: ${porque}; fica só o marcador "trecho ${t.id}" para inserir à mão, ou passe --trecho-fonte "${t.id}=caminho" (nunca baixar do YouTube) (#13437)`);
+    return null;
+  }
+  if (fonte.premissa) console.error(`[premissa] ${where}: ${fonte.premissa} (#13437)`);
+  const frames = trechoClipFrames(t.trecho.inicioS, t.trecho.fimS, fps);
+  if (frames < 1) {
+    console.error(`[aviso] ${where} NÃO inserido: o intervalo do roteiro (${t.trecho.inicioS.toFixed(2)} a ${t.trecho.fimS.toFixed(2)} s) não chega a 1 quadro a ${fps} fps; conferir o intervalo no roteiro (#13437)`);
+    return null;
+  }
+  const probe = deps.probeDurationS ?? ((src: string) => {
+    try {
+      const d = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src]).stdout.trim());
+      return Number.isFinite(d) && d > 0 ? d : null;
+    } catch {
+      return null;
+    }
+  });
+  const dur = probe(fonte.fonte);
+  if (dur === null) {
+    console.error(`[aviso] ${where}: a duração de ${fonte.fonte} não foi medida (ffprobe falhou); o fim do trecho não foi conferido contra o fim do vídeo, e o clipe cortado é conferido depois do corte (#13437)`);
+  } else if (t.trecho.fimS > dur + 0.05) {
+    console.error(`[aviso] ${where} NÃO inserido: o fim do trecho (${t.trecho.fimS.toFixed(2)} s) passa do fim de ${fonte.fonte} (${dur.toFixed(2)} s); conferir o intervalo no roteiro, ou a fonte (#13437)`);
+    return null;
+  }
+  let st: { size: number; mtimeMs: number };
+  try {
+    st = statSync(fonte.fonte);
+  } catch (e) {
+    console.error(`[aviso] ${where} NÃO inserido: ${fonte.fonte} não pôde ser lido (${(e as Error).message.split(/\r?\n/)[0]}); fica só o marcador (#13437)`);
+    return null;
+  }
+  const hash = createHash("sha256").update(JSON.stringify({ src: toPosix(fonte.fonte), size: st.size, mtimeMs: st.mtimeMs, i: t.trecho.inicioS, f: t.trecho.fimS, fps, w: spec.width, h: spec.height })).digest("hex").slice(0, 12);
+  const name = trechoInseridoFileName(ctx.edition, t.id, hash);
+  const out = join(ctx.outDir, name);
+  const clip: TrechoInseridoClip = {
+    id: t.id,
+    at,
+    frames,
+    path: out,
+    xmlPath: capaInicioXmlPath(mediaPath, name),
+    width: spec.width,
+    height: spec.height,
+    video: t.trecho.video,
+    inicioS: t.trecho.inicioS,
+    fimS: t.trecho.fimS,
+    fonte: fonte.fonte,
+  };
+  if (existsSync(out)) {
+    if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
+    return clip;
+  }
+  const encode = deps.encode ?? ((args: string[]) => { run("ffmpeg", args); });
+  const part = `${out}.part`;
+  const args = (encoder: TrechoEncoder) => trechoInseridoEncodeArgs({ src: fonte.fonte!, out: part, inicioS: t.trecho.inicioS, frames, fps, width: spec.width, height: spec.height, encoder });
+  try {
+    let encoder: TrechoEncoder = "libx264";
+    try {
+      encoder = pickTrechoEncoder(deps.listEncoders ? deps.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
+    } catch { /* sem a lista: libx264 */ }
+    try {
+      encode(args(encoder));
+    } catch (e) {
+      if (encoder !== "h264_nvenc") throw e;
+      console.error(`[aviso] h264_nvenc falhou no trecho ${t.id} (${(e as Error).message.split(/\r?\n/)[0]}): segue em libx264 (#13437)`);
+      encode(args("libx264"));
+    }
+    // O clipe cortado tem de ter a duração do intervalo: mais curto = a fonte acabou antes (o probe dela pode ter falhado).
+    const esperado = frames / fps;
+    const got = probe(part);
+    if (got === null) console.error(`[aviso] ${where}: a duração do clipe cortado não foi medida (ffprobe falhou); conferir no 1º import que ele tem ${esperado.toFixed(2)} s (#13437)`);
+    else if (got < esperado - Math.max(TRECHO_CLIP_SHORT_TOL_S, esperado * 0.05)) throw new Error(`o clipe saiu com ${got.toFixed(2)} s, e o intervalo pede ${esperado.toFixed(2)} s (a fonte acaba antes do fim do trecho?)`);
+    renameSync(part, out);
+  } catch (e) {
+    rmSync(part, { force: true });
+    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}); fica só o marcador (#13437)`);
+    return null;
+  }
+  return clip;
+}
+
 /**
  * #13219: o XML leve do build, ou `null` para o XML do bruto (`--xml-bruto`,
  * modo API, ou ffmpeg que falhou), sempre dito no relato.
@@ -4466,13 +4636,19 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (ms.length && !horizontal) console.error(`[premissa] ${p.spec.name}: ${ms.length} fala(s) que citam a tela levam o texto de tela também neste vertical (${ms.map((m) => m.id).join(", ")}), exceção à regra dos verticais sem tela (#13333)`);
     else if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186), exceto a fala que cita a tela (#13333)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
   }
-  // #13437: trecho de outro vídeo (formato react) vira marcador no fim da fala, no horizontal; o clipe segue à mão.
+  // #13437: trecho de outro vídeo (formato react) vira marcador no fim da fala, no horizontal; com a fonte
+  // achada (o export do vídeo de origem, nunca o YouTube), o clipe cortado entra numa faixa própria (PR 2).
   const trechosInseridos = readTrechosInseridos(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const trechoMarkers: Record<string, TrechoInseridoMarker[]> = {};
+  const trechoClips: Record<string, TrechoInseridoClip[]> = {};
+  if (trechosInseridos.length && picked.some((p) => isYoutubeSpec(p.spec))) {
+    for (const a of avisosTrechosNaMontagem(trechosInseridos, editionsRootDir())) console.error(`[aviso] ${a}`);
+  }
   for (const p of picked) {
     if (!trechosInseridos.length || !isYoutubeSpec(p.spec)) continue;
     const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: rotuloTrecho(t.trecho) })));
     const ms: TrechoInseridoMarker[] = [];
+    const clips: TrechoInseridoClip[] = [];
     for (const t of trechosInseridos) {
       const at = pos.find((m) => m.id === t.id);
       if (!at) {
@@ -4481,10 +4657,17 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       }
       const m: TrechoInseridoMarker = { id: t.id, trecho: t.trecho, at: at.out };
       ms.push(m);
-      const line = trechoInseridoLine(m, source.fps);
+      const clip = cutTrechoInserido(ctx, t, m.at, p.spec, source.fps, mediaPath);
+      if (clip) clips.push(clip);
+      const line = trechoInseridoLine(m, source.fps, clip);
       console.error(`[${line.level}] ${p.spec.name}: ${line.text}`);
     }
     if (ms.length) trechoMarkers[sequenceKey(p.spec)] = ms;
+    if (clips.length) {
+      trechoClips[sequenceKey(p.spec)] = clips;
+      const total = trechoRipple(clips).total;
+      console.error(`[premissa] ${p.spec.name}: ${clips.length} trecho(s) inserido(s) no XML, ${(total / source.fps).toFixed(1)} s a mais na sequência (${((p.durationFrames + total) / source.fps).toFixed(1)} s no XML, ${(p.durationFrames / source.fps).toFixed(1)} s no plano e na prévia, que saem sem o trecho) (#13437)`);
+    }
   }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
   const xmlFilePaths = [
@@ -4498,6 +4681,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     ...Object.values(capaInicio).map((c) => c.xmlPath),
     // #13334: os boxes de tela também são pathurl do XML (faltaram no Drive na 261117).
     ...Object.values(telaOverlays).flatMap((os) => os.map((o) => o.xmlPath)),
+    // #13437: os clipes dos trechos inseridos.
+    ...Object.values(trechoClips).flatMap((cs) => cs.map((c) => c.xmlPath)),
   ];
   // #13219: XML leve (trechos em H.264 + PCM) antes da versão, que muda com ele.
   const trechos = buildTrechosOrNull(ctx, picked, source, mediaPath, trechosOpt);
@@ -4533,6 +4718,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     trechosFolgaS: trechos ? trechosOpt.folgaS : null,
     telaOverlays,
     trechoMarkers,
+    trechoClips,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -4552,7 +4738,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechoMarkers, trechos }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechoMarkers, trechoClips, trechos }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -4565,7 +4751,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(vinhetaSfxAbsentFor(sfxAbsent, sfxAbsentBySeq, sequenceKey(p.spec))), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}), ...(telaOverlays[sequenceKey(p.spec)] ? { telaOverlays: telaOverlays[sequenceKey(p.spec)] } : {}) }])) },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(vinhetaSfxAbsentFor(sfxAbsent, sfxAbsentBySeq, sequenceKey(p.spec))), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}), ...(telaOverlays[sequenceKey(p.spec)] ? { telaOverlays: telaOverlays[sequenceKey(p.spec)] } : {}), ...(trechoClips[sequenceKey(p.spec)] ? { trechosInseridos: trechoClips[sequenceKey(p.spec)] } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -6219,7 +6405,17 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   // inexistente (ou no disco do home) não para nada; no modo API, para aqui, antes de qualquer acesso ao Drive.
   const cacheDir = driveCacheDir(edition, values["cache-dir"], process.env.DIARIA_VIDEO_CACHE_DIR, homedir(), mode === "api" ? undefined : () => "ok");
   const py = resolveVideoPython({ flag: values["python"], env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
+  let trechoFontes: Record<string, string>;
+  try {
+    trechoFontes = parseTrechoFonteArg(values["trecho-fonte"]);
+  } catch (e) {
+    console.error(`video-montagem: ${(e as Error).message}`);
+    return 2;
+  }
   const ctx: Ctx = {
+    trechoFontes,
+    // #13437: o export do vídeo de origem é procurado na pasta de vídeo desta máquina (no modo API ela não existe aqui).
+    trechoDriveRoot: existsSync(driveRoot) ? driveRoot : null,
     edition,
     stateDir: resolve(values["state-dir"] ?? join(editionDirFor(edition), "_internal", "video-montagem")),
     workDir: resolve(values["work-dir"] ?? workDirDefault(mode, cacheDir, tmpdir(), edition)),
