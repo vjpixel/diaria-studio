@@ -25,6 +25,16 @@ import { commitAndPushSitePage, homePageRelPathFromSitemap } from "../scripts/pu
 import type { GhRunner, LockRunner, SleepFn } from "../scripts/publish-edition-site-page.ts";
 import { syncCode, discardCollisionsIdenticalToUpstream, classifyFfRefusal, type SpawnFn, type SyncLock } from "../scripts/lib/git-sync.ts";
 
+// #13576: com `core.autocrlf=true` (padrão do Git for Windows) o checkout/stash
+// dos repos temporários troca LF por CRLF e a comparação de conteúdo cru falha
+// só no Windows. Fixar `autocrlf=false` por variável de ambiente alcança todo
+// git filho deste processo (inclusive os de `syncCode`/`commitAndPushSitePage`
+// e os clones, que não herdam config de repo). O node --test roda cada arquivo
+// num processo próprio, então isto não vaza para outros testes.
+process.env.GIT_CONFIG_COUNT = "1";
+process.env.GIT_CONFIG_KEY_0 = "core.autocrlf";
+process.env.GIT_CONFIG_VALUE_0 = "false";
+
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 }
