@@ -4125,6 +4125,8 @@ export function telaMarkersFor(
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   fps: number,
   telas: ReadonlyArray<{ id: string; texto: string; tela: string; telaBox?: string }>,
+  /** #13489: `out` no fim do clipe já ajustado pela borda de energia (até o começo do próximo item), não no fim da palavra do transcript. */
+  opts: { toClipEnd?: boolean } = {},
 ): TelaMarker[] {
   const horizontal = isYoutubeSpec(plan.spec);
   if (!horizontal && !isVerticalSpec(plan.spec)) return [];
@@ -4154,7 +4156,13 @@ export function telaMarkersFor(
         if (c.filler) continue;
         if (c.srcOut <= it.interval.start || c.srcIn >= it.interval.end) continue;
         inF = Math.min(inF, c.seqStart + Math.round(Math.max(0, it.interval.start - c.srcIn) * fps));
-        outF = Math.max(outF, c.seqEnd - Math.round(Math.max(0, c.srcOut - it.interval.end) * fps));
+        let wordEnd = it.interval.end;
+        if (opts.toClipEnd) {
+          // #13489: a borda de energia abre o clipe além da palavra; a cauda vale até a fala do próximo item.
+          const next = items.filter((o) => o !== it && o.interval.start >= it.interval.end - 1e-6).reduce((m, o) => Math.min(m, o.interval.start), Infinity);
+          wordEnd = Math.max(wordEnd, Math.min(c.srcOut, next));
+        }
+        outF = Math.max(outF, c.seqEnd - Math.round(Math.max(0, c.srcOut - wordEnd) * fps));
       }
     }
     if (Number.isFinite(inF) && outF > inF) out.push({ id: t.id, tela: t.tela, ...(t.telaBox !== undefined ? { telaBox: t.telaBox } : {}), in: inF, out: outF });

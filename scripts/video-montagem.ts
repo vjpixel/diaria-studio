@@ -4661,7 +4661,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   }
   for (const p of picked) {
     if (!trechosInseridos.length || !isYoutubeSpec(p.spec)) continue;
-    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: rotuloTrecho(t.trecho) })));
+    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: rotuloTrecho(t.trecho) })), { toClipEnd: true });
     const ms: TrechoInseridoMarker[] = [];
     const clips: TrechoInseridoClip[] = [];
     for (const t of trechosInseridos) {
