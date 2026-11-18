@@ -24,9 +24,11 @@
 //      and the old regex matched it because it only looked as far as the PR
 //      number, ignoring the fragment after); (b) when
 //      `payload.tool_input.command` is available, it must actually be a `gh
-//      pr create` invocation (`isGhPrCreateCommand`, duplicated from — but no
-//      longer contract-identical to — `isGhPrMergeCommand` in the sibling
-//      hook `block-gh-pr-merge-subagent.mjs`: this one returns a 3-state
+//      pr create` invocation (`isGhPrCreateCommand`, which since #13550
+//      delegates detection to `runsGhPrCreate` in the shared
+//      `lib/gh-pr-create-command.mjs` — same lexer as the merge detector, so
+//      env prefixes, wrappers, subshells and gh global flags count — and
+//      wraps it in a 3-state
 //      `"create" | "not-create" | "unknown"`, never a boolean, precisely so
 //      "command absent" can never collapse into "definitely not a create"
 //      again — the ambiguity a fleet review flagged after #6298 shipped) —
@@ -119,6 +121,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { ANY_NON_STUDIO_REPO, isForeignRepo } from "./lib/gh-target-repo.mjs";
+import { runsGhPrCreate } from "./lib/gh-pr-create-command.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1252,10 +1255,11 @@ export { stripQuotedSpans };
  */
 export function isGhPrCreateCommand(command) {
   if (typeof command !== "string") return "unknown";
-  const stripped = stripQuotedSpans(command);
-  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped)
-    ? "create"
-    : "not-create";
+  // #13550: leitura pela posição de comando, compartilhada com os guards
+  // PreToolUse — `GH_TOKEN=x gh pr create`, `env … gh pr create`, `(… gh pr
+  // create)`, `make & gh pr create` respondiam "not-create" e a PR saía sem
+  // o review automático.
+  return runsGhPrCreate(command) ? "create" : "not-create";
 }
 
 /**

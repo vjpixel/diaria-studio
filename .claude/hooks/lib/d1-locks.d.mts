@@ -62,3 +62,19 @@ export function d1ReadMergeGrant(
   sessionId: string,
   repo?: string,
 ): Promise<HookD1Result<HookD1MergeGrant | null>>;
+
+// #13577: presença da coordenadora no D1.
+export interface HookD1CoordinatorPresence {
+  sessionId: string;
+  kind: string;
+  machineTag?: string;
+}
+export function coordinatorPresenceD1Name(sessionId: string): string;
+export function presenceFromD1Row(
+  row: { holder?: unknown; meta?: unknown } | null | undefined,
+  sessionId: string,
+): HookD1CoordinatorPresence | null;
+export function d1ReadCoordinatorPresence(
+  client: HookD1Client,
+  sessionId: string,
+): Promise<HookD1Result<HookD1CoordinatorPresence | null>>;

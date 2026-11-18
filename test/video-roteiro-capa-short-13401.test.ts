@@ -3,7 +3,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,14 +101,17 @@ describe("video-roteiro-blocos: capa fora da regra é exit 4, nunca 2 (#13401)",
     comEdicao({ falas: "x" }, (dir) => assert.equal(rodar(dir).code, 2));
   });
 
-  it("render-roteiro-video mostra o mesmo [erro] e grava a página", () => {
+  it("render-roteiro-video mostra o mesmo [erro] e, desde o #13569, não grava a página (exit 4)", () => {
     comEdicao(roteiroCom({ vertical1: CAPA_REAL_261117, horizontal: NOVE_PALAVRAS }), (dir) => {
       const err: string[] = [];
       const out: string[] = [];
-      const code = renderMain(["261117", "--falas", join(dir, "_internal", "roteiro-falas.json"), "--out", join(dir, "pagina.html")], { err: (s) => err.push(s), out: (s) => out.push(s) }, dir);
-      assert.equal(code, 0);
+      const pagina = join(dir, "pagina.html");
+      const code = renderMain(["261117", "--falas", join(dir, "_internal", "roteiro-falas.json"), "--out", pagina], { err: (s) => err.push(s), out: (s) => out.push(s) }, dir);
+      assert.equal(code, EXIT_CAPA_FORA_DA_REGRA);
       assert.ok(err.some((s) => /^\[erro\] porVideo\.vertical1\.capa/.test(s)));
       assert.ok(err.some((s) => /^\[erro\] porVideo\.horizontal\.capa/.test(s)));
+      assert.equal(existsSync(pagina), false);
+      assert.deepEqual(out, []);
     });
   });
 });

@@ -561,7 +561,10 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
   return n;
 }
 
-const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
+// Exportados (com SHELLS, RESERVED_PREFIX, WRAPPERS e shellDashCScript) para o
+// detector de `gh pr create` (`gh-pr-create-command.mjs`, #13550) andar pela
+// posição de comando com as mesmas tabelas.
+export const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
 
 /**
  * #11513: variáveis cujo VALOR o git/gh (ou o pager/navegador que eles abrem)
@@ -641,11 +644,11 @@ function shellValueRunsExpansion(value, depth) {
   }
   return false;
 }
-const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
+export const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
 /** Palavra que faz um here-string (`<<<`) ser EXECUTADO (lido como comandos). */
 const BODY_RUNNERS = new Set([...SHELLS, "source", ".", "eval"]);
 /** Palavras reservadas que podem anteceder um comando simples. */
-const RESERVED_PREFIX = new Set(["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until"]);
+export const RESERVED_PREFIX = new Set(["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until"]);
 
 /**
  * Wrappers que executam o resto da linha como comando. `valueFlags` são as
@@ -654,7 +657,7 @@ const RESERVED_PREFIX = new Set(["!", "{", "}", "then", "do", "else", "elif", "i
  * antes do comando (ex.: a duração do `timeout`); `assignments` diz se o
  * wrapper aceita `X=y` antes do comando (o `env`).
  */
-const WRAPPERS = {
+export const WRAPPERS = {
   env: { valueFlags: new Set(["-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string"]), assignments: true },
   command: { valueFlags: new Set() },
   exec: { valueFlags: new Set(["-a"]) },
@@ -1516,7 +1519,7 @@ function recordAliasDefinition(args, env) {
 }
 
 /** Script de `bash -c 'script'` (e `-lc`, `-ec`, ...), ou `null`. */
-function shellDashCScript(words, from) {
+export function shellDashCScript(words, from) {
   let hasC = false;
   let i = from;
   while (i < words.length) {

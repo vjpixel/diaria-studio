@@ -31,22 +31,22 @@ describe("#13320 — TikTok no convite da edição", () => {
     assert.equal(DIARIA_TIKTOK_URL, "https://www.tiktok.com/@diar.ia.br");
   });
 
-  it("o convite traz o TikTok logo depois do YouTube", () => {
+  it("o convite traz o TikTok (depois do LinkedIn desde o #13557)", () => {
     const parsed = parseSocialInviteIcons(SOCIAL_INVITE);
     assert.ok(parsed);
     assert.deepEqual(
       parsed.links.map((l) => l.label),
-      ["YouTube", "TikTok", "Instagram", "LinkedIn", "Threads", "Facebook", "X"],
+      ["YouTube", "Instagram", "LinkedIn", "TikTok", "Threads", "X", "Facebook"],
     );
-    const tiktok = parsed.links[1];
+    const tiktok = parsed.links[3];
     assert.equal(tiktok.url, DIARIA_TIKTOK_URL);
     assert.equal(tiktok.icon, "tiktok");
-    assert.deepEqual([...SOCIAL_INVITE_ICON_KEYS], ["youtube", "tiktok", "instagram", "linkedin", "threads", "facebook", "x"]);
+    assert.deepEqual([...SOCIAL_INVITE_ICON_KEYS], ["youtube", "instagram", "linkedin", "tiktok", "threads", "x", "facebook"]);
   });
 
   it("o e-mail diário sai com 7 ícones e o do TikTok linka o perfil", () => {
     const html = renderEncerrar(`Texto de apoio.\n\n${SOCIAL_INVITE}`);
-    assert.deepEqual(iconOrder(html), ["youtube", "tiktok", "instagram", "linkedin", "threads", "facebook", "x"]);
+    assert.deepEqual(iconOrder(html), ["youtube", "instagram", "linkedin", "tiktok", "threads", "x", "facebook"]);
     assert.match(html, /<a href="https:\/\/www\.tiktok\.com\/@diar\.ia\.br"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/tiktok\.png"[^>]*alt="TikTok"/);
   });
 

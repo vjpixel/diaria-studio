@@ -121,6 +121,14 @@ export interface ShortRelatedMissedEvaluation {
   recordSource: "kv" | "file" | null;
   /** Erro da leitura do KV, quando houve (o veredito pode ter vindo do arquivo). */
   kvError: string | null;
+  /**
+   * #13571: quando o Short foi ao ar (registro do vertical: `scheduled_at`,
+   * senão `at`), se DEPOIS do prazo da task do Neo. A task roda uma vez por dia
+   * (06:05 BRT) e desiste em `shortAt + 60 min`; um Short publicado depois
+   * disso nunca é vinculado por ela, e a falta de registro não é atraso de
+   * replicação. `null` = no horário, ou sem horário para comparar.
+   */
+  shortAfterTaskDeadline: string | null;
   reason: string;
 }
 
@@ -133,6 +141,7 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
     shortAt: input.shortAt ? input.shortAt.toISOString() : null,
   };
   let shortRef: string | null = null;
+  let shortAfterTaskDeadline: string | null = null;
   let recordSource: "kv" | "file" | null = null;
   const kv: ShortRelatedKvRead = input.kvRecord ?? { kind: "absent" };
   const kvError = kv.kind === "error" ? kv.error : null;
@@ -141,6 +150,7 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
     shortRef,
     recordSource,
     kvError,
+    shortAfterTaskDeadline,
     verdict,
     reason,
   });
@@ -168,6 +178,7 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
   const entry = reg.value.entries.find((e) => e.destination === YOUTUBE_SHORTS_DESTINATION);
   if (!entry) return out("no-short", "registro do vertical sem o destino youtube_shorts");
   shortRef = entry.url ?? entry.id;
+  shortAfterTaskDeadline = shortWentLiveAfter(entry, deadline);
 
   if (deadline && input.now.getTime() < deadline.getTime()) {
     return out("before-deadline", `prazo da task (${base.deadline}) ainda não passou`);
@@ -217,10 +228,30 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
       `KV ilegível (${kv.error}) e sem _internal/06-short-related.json no 300: não dá para saber se a task rodou; nada confirma falha`,
     );
   }
+  if (shortAfterTaskDeadline) {
+    return out(
+      "missing-record",
+      `sem registro no KV nem _internal/06-short-related.json no 300, e o Short foi ao ar em ${shortAfterTaskDeadline}, depois do prazo da task do Neo (${base.deadline}): a task não vincula este Short, o vínculo é à mão`,
+    );
+  }
   return out(
     "missing-record",
     "sem registro no KV nem _internal/06-short-related.json no 300 depois do prazo: execução da task e vínculo não confirmados; possível atraso de replicação do arquivo em data/ (ou o Neo ainda sem gravar no KV)",
   );
+}
+
+/**
+ * #13571: instante em que o Short foi ao ar, quando é depois de `deadline`.
+ * Usa `scheduled_at` (Short agendado) e, sem ele, `at` (publicado na hora).
+ * Instante ilegível ou sem prazo → `null` (sem afirmar atraso).
+ */
+function shortWentLiveAfter(entry: { at?: string; scheduled_at?: string | null }, deadline: Date | null): string | null {
+  if (!deadline) return null;
+  const raw = entry.scheduled_at || entry.at;
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t) || t <= deadline.getTime()) return null;
+  return new Date(t).toISOString();
 }
 
 /** Quão avançado é o registro: 2 vinculado, 1 alerta enviado, 0 falha sem alerta. */
@@ -280,7 +311,9 @@ export function buildShortRelatedMissedAlarm(ev: ShortRelatedMissedEvaluation, s
       "",
       ...(ev.verdict === "record-unconfirmed"
         ? ["Incerteza: o KV não respondeu e o arquivo replicado não tem registro. Isto NÃO afirma que a task falhou; conferir o Short no Studio resolve."]
-        : ev.verdict === "missing-record"
+        : ev.verdict === "missing-record" && ev.shortAfterTaskDeadline
+          ? [`Short publicado depois do prazo: foi ao ar em ${ev.shortAfterTaskDeadline}, e a task do Neo roda uma vez por dia, de manhã, e desiste no prazo acima. Ela não vincula este Short; o vínculo é à mão (passo acima), conferindo antes no Studio.`]
+          : ev.verdict === "missing-record"
           ? ["Ressalva: a task só grava no KV depois que o Neo tem o token Cloudflare no `.env` e o passo final do roteiro; antes disso, sem registro no KV vale o arquivo replicado em `data/`, que pode atrasar. Conferir o Short no Studio resolve as duas hipóteses."]
           : []),
     ].join("\n"),

@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 17 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 18 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>EUA exigem licença para chips de IA no Brasil</title>
+      <link>https://diar.ia.br/p/eua-exigem-licenca-para-chips-de-ia-no-brasil</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/eua-exigem-licenca-para-chips-de-ia-no-brasil</guid>
+      <pubDate>Wed, 18 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Atores britânicos poderão barrar réplica sem aval | Qwen4-Max custa cerca de 60% menos, diz a Alibaba</description>
+    </item>
     <item>
       <title>Deepfake de Drauzio Varella anuncia remédio milagroso</title>
       <link>https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/nvidia-agora-controla-onde-voce-baixa-modelos</guid>
       <pubDate>Fri, 04 Sep 2026 09:00:00 GMT</pubDate>
       <description>GPT-6 Astra: modelo mais capaz vira arma crítica | Brasil lidera pressa por IA, mas ensino atrasa</description>
-    </item>
-    <item>
-      <title>Google lança dois modelos Gemini de uma vez</title>
-      <link>https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez</guid>
-      <pubDate>Thu, 03 Sep 2026 09:00:00 GMT</pubDate>
-      <description>Anthropic lança Fable e Mythos 5.1 | OpenAI diz que Astra cruzou limite crítico</description>
     </item>
   </channel>
 </rss>

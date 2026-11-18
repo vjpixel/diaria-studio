@@ -214,6 +214,10 @@
     "convite_amigo": "convite-amigo-whatsapp.md",
     "note": "#5999 (item 3) — caixas FIXAS (renderizam em toda edição, fora do sistema de slots 0-3 de boxes_divulgacao e fora do DIVULGACAO_BOX_CAP) cujo arquivo era hardcoded no código antes desta chave existir. convite_amigo: filename em data/snippets/ do bloco 'Convide um amigo' (#5794/#5817/#5882/#5999) — lido por resolveConviteAmigoFilename() em scripts/lib/newsletter-render-html.ts, fail-soft pro mesmo valor default se a chave/o arquivo faltar. archiveBox/saveBoxSlots (scripts/studio-ui/studio-boxes.ts) reconhecem este valor pra bloquear arquivamento e atribuição a slot — ver docstrings de ambos."
   },
+  "video_box0": {
+    "enabled": false,
+    "note": "#13555 (18/11/2026, pedido do editor no gate 6 da 261118) — o box do vídeo no slot 0 da newsletter (#12073: kicker 'Vídeo', título, frase e botão 'Assista no YouTube', 2x/semana) saiu do e-mail. enabled:false (ou chave ausente) = resolveVideoBox0 em scripts/lib/newsletter-parse.ts nunca monta o box, e o Stage 5 grava _internal/video-box0.json com shown:false. O link do vídeo na imagem do D1 (04-d1-2x1-play.jpg) não depende desta chave. enabled:true volta à regra de 2x/semana de scripts/lib/diaria/video-box0.ts; o opt-out por edição _internal/no-video-box0.json (#12899) segue valendo nesse caso."
+  },
   "para_encerrar": {
     "slot_a": null,
     "slot_b": null

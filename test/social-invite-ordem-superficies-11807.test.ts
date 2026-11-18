@@ -33,7 +33,7 @@ import { buildArticleHtml } from "../scripts/lib/mensal/build-article-page.ts";
 import { buildArchivePageHtml, type ArchivePost } from "../scripts/lib/site-archive-pages.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const ORDEM = ["youtube", "tiktok", "instagram", "linkedin", "threads", "facebook", "x"]; // #13320: TikTok depois do YouTube
+const ORDEM = ["youtube", "instagram", "linkedin", "tiktok", "threads", "x", "facebook"]; // #13557 (antes, #13320: TikTok depois do YouTube)
 
 /** Chaves dos ícones sociais na ordem em que aparecem no HTML. */
 function iconOrder(html: string): string[] {
@@ -46,7 +46,7 @@ const DRAFT = readFileSync(resolve(__dir, "fixtures/publish-monthly/2604/draft.m
 );
 
 describe("#11791 — ordem canônica do convite", () => {
-  it("SOCIAL_INVITE_ICON_KEYS é YouTube, TikTok, Instagram, LinkedIn, Threads, Facebook, X", () => {
+  it("SOCIAL_INVITE_ICON_KEYS é YouTube, Instagram, LinkedIn, TikTok, Threads, X, Facebook (#13557)", () => {
     assert.deepEqual([...SOCIAL_INVITE_ICON_KEYS], ORDEM);
   });
 
