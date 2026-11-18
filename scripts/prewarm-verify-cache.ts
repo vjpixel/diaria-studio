@@ -130,7 +130,8 @@ function main(): void {
       "--browser-concurrency",
       "8",
     ],
-    { cwd: ROOT, stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32" },
+    // windowsHide (#13559): roda como filho destacado do stage-1-run, sem console.
+    { cwd: ROOT, stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true },
   );
   const elapsedMs = Date.now() - startMs;
 

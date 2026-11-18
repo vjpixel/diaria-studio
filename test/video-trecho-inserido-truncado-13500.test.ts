@@ -290,7 +290,8 @@ describe("#13500 verify-xml confere os trechos inseridos contra a mídia real", 
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
     const body = src.slice(src.indexOf("function cmdVerifyXml("), src.indexOf("// ── Rosto automático"));
     assert.match(body, /const inseridosXml = chosen\.flatMap\(\(p\) => pf\.xmlAssets\?\.\[sequenceKey\(p\.spec\)\]\?\.trechosInseridos \?\? \[\]\);/);
-    assert.match(body, /trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), probeTrechoFrames, \{ dir: ctx\.outDir, clips: inseridosXml \}\)/);
+    // #13512: a sonda vai com o cache local do work dir.
+    assert.match(body, /trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), cachedTrechoProbe\(trechoFramesCachePath\(ctx\.workDir\)\), \{ dir: ctx\.outDir, clips: inseridosXml \}\)/);
   });
 });
 

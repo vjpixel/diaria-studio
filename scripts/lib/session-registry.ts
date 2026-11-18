@@ -215,11 +215,15 @@ import { SESSION_ID_REQUIRED_SUBCOMMANDS, resolveEnvInjectedSessionId } from "./
 import {
   MERGE_GRANT_CONSUMED_D1_TTL_MS,
   type D1Client,
+  type D1CoordinatorPresence,
   type D1LockResult,
   d1AcquireLock,
+  d1ClearCoordinatorPresence,
   d1LocksClientFromRepo,
+  d1ReadCoordinatorPresence,
   d1ReadLock,
   d1ReadMergeGrant,
+  d1WriteCoordinatorPresence,
   d1ReleaseLock,
   d1WriteMergeGrant,
   d1RenewLock,
@@ -2460,6 +2464,7 @@ export function checkRepoTreeClean(repoRoot: string): RepoTreeCleanResult {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true, // #13559: chamado também do waiter destacado, sem console
     });
     if (res.status !== 0) return { clean: true, files: [] };
     const files = (res.stdout ?? "")
@@ -5046,15 +5051,83 @@ function reportMergeGrantDoubleConsumed(repoRoot: string, grant: MergeGrant, ses
 //
 // O que NÃO muda (#5716): só `grantMergeWindow` escreve (coordenadora com
 // autoridade de merge, nunca para si, nunca para outra coordenadora); quem lê
-// exige que a concedente seja coordenadora com autoridade de merge ATIVA no
-// registro desta máquina (qualquer versão sincronizada dela, não a que traz a
-// concessão), TTL de 10 min a partir de `grantedAt`, uso único (marca de
-// consumo no D1 + registro da beneficiária), e o merge lock segue valendo.
+// exige que a concedente seja coordenadora com autoridade de merge ATIVA,
+// TTL de 10 min a partir de `grantedAt`, uso único (marca de consumo no D1 +
+// registro da beneficiária), e o merge lock segue valendo.
+//
+// #13577: "coordenadora ativa" também sai do D1. Até aqui a leitura exigia o
+// registro da concedente em `data/sessions/` desta máquina — o mesmo sync do
+// Drive que a concessão do D1 existe para contornar. Em 18/11/2026 a linha
+// `merge-grant:` estava no D1 com a chave certa e o Neo a descartou: o
+// registro da overnight do `300` não estava lá a tempo (o bisync re-sobe o
+// arquivo a cada heartbeat e a conferência de hash falha). Agora a
+// coordenadora grava a PRÓPRIA presença no D1 (`coordinator:{id}`, kind +
+// máquina, TTL = `SOFT_STALE_MS`) no `register` e a cada `grant-merge`, e a
+// apaga no `end`. Quem lê aceita a concedente pelo registro local (como
+// antes) OU, se o registro local não a mostra ativa, pela presença viva no D1
+// com kind de autoridade de merge. Registro local que a mostra com kind SEM
+// autoridade (continuo) segue recusando. Nada disso abre caminho de
+// autoconcessão: as duas linhas só saem de `grantMergeWindowShared` e
+// `registerCoordinatorPresenceShared`, depois das recusas do arquivo.
 
 /** Resultado de `grantMergeWindowShared`: o de `grantMergeWindow` + onde ficou visível. */
 export interface SharedGrantMergeResult extends GrantMergeResult {
   /** `d1` = gravada também no D1; `local` = sem D1; `local-fallback` = o D1 não gravou (aviso emitido). */
   backend?: MergeLockBackend;
+  /**
+   * #13577: a presença da concedente no D1 foi gravada/renovada (`true`) ou
+   * não (`false`, aviso emitido). Sem ela, a beneficiária de outra máquina só
+   * aceita a concessão do D1 com o registro da concedente já sincronizado lá.
+   * Ausente quando o D1 nem foi tentado (`backend` `local`).
+   */
+  presence?: boolean;
+}
+
+/**
+ * Grava/renova a presença da coordenadora no D1 (#13577). Só para kind com
+ * autoridade de merge; qualquer outro kind é no-op (`null`). Falha do D1 vira
+ * aviso, nunca exceção: a presença só amplia quem enxerga a concessão.
+ * `false` = o D1 não gravou (aviso emitido); `true` = gravada.
+ */
+export async function registerCoordinatorPresenceShared(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  meta: { tag?: string } = {},
+  opts: SharedLockOptions = {},
+): Promise<boolean | null> {
+  if (!hasMergeAuthorityKind(kind)) return null;
+  const d1 = resolveD1ForRepo(repoRoot, opts);
+  if (!d1) return null;
+  const warn = opts.warn ?? stderrWarn;
+  const presence: D1CoordinatorPresence = { sessionId, kind, machineTag: meta.tag ?? machineTag() };
+  const w = await d1WriteCoordinatorPresence(d1, presence, undefined, opts.d1Now !== undefined ? { now: opts.d1Now } : {});
+  if (!w.ok) {
+    reportD1Failure(repoRoot, "coordinator-presence", w, warn);
+    return false;
+  }
+  if (!w.value.written) {
+    warn(
+      `⚠️  session-registry (#13577): o D1 tem a linha de presença de ${sessionId} com OUTRO holder — não ` +
+        "sobrescrita. Concessões desta coordenadora só valem em outra máquina depois do sync do registro.\n",
+    );
+    return false;
+  }
+  return true;
+}
+
+/** Apaga a presença da coordenadora no D1 (#13577, `end`). Fail-soft, com aviso. */
+export async function clearCoordinatorPresenceShared(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  opts: SharedLockOptions = {},
+): Promise<void> {
+  if (!hasMergeAuthorityKind(kind)) return;
+  const d1 = resolveD1ForRepo(repoRoot, opts);
+  if (!d1) return;
+  const r = await d1ClearCoordinatorPresence(d1, sessionId);
+  if (!r.ok) reportD1Failure(repoRoot, "coordinator-presence (end)", r, opts.warn ?? stderrWarn);
 }
 
 /**
@@ -5078,6 +5151,17 @@ export async function grantMergeWindowShared(
   if (!d1) return { ...local, backend: "local" };
   const d1Opts = opts.d1Now !== undefined ? { now: opts.d1Now } : {};
   const grant = local.grant;
+  // #13577: renova a presença da concedente ANTES da linha da concessão, para
+  // a beneficiária nunca ler uma concessão cuja concedente o D1 ainda não
+  // atesta. Rodada registrada antes do #13577 ganha a presença aqui.
+  const presence = await registerCoordinatorPresenceShared(repoRoot, kind, sessionId, { tag: meta.tag }, { ...opts, d1, warn });
+  if (presence === false) {
+    warn(
+      "⚠️  session-registry (#13577): a presença desta coordenadora não foi gravada no D1 — numa beneficiária de " +
+        "OUTRA máquina a concessão do D1 só vale depois que o registro desta sessão sincronizar lá.\n",
+    );
+  }
+  const withPresence = <T extends SharedGrantMergeResult>(r: T): T => (presence === null ? r : { ...r, presence });
   let w = await d1WriteMergeGrant(d1, grant, MERGE_GRANT_TTL_MS, { ...d1Opts, ...(meta.force ? { force: true } : {}) });
   if (w.ok && !w.value.written) {
     // Linha viva de OUTRA concedente. Se ela já foi consumida, não protege
@@ -5094,31 +5178,63 @@ export async function grantMergeWindowShared(
       "⚠️  session-registry (#13242): a concessão foi gravada só no arquivo de data/sessions/ — numa beneficiária " +
         "de OUTRA máquina ela só aparece quando o sync replicar, e pode vencer antes (TTL de 10 min).\n",
     );
-    return { ...local, backend: "local-fallback" };
+    return withPresence({ ...local, backend: "local-fallback" });
   }
   if (!w.value.written) {
     warn(
       `⚠️  session-registry (#13242): o D1 já tem concessão viva de ${w.value.holder ?? "outra coordenadora"} para ` +
         `${grantedTo}; a sua ficou só no arquivo (visível em outra máquina só depois do sync). Use --force para substituir.\n`,
     );
-    return { ...local, backend: "local-fallback" };
+    return withPresence({ ...local, backend: "local-fallback" });
   }
-  return { ...local, backend: "d1" };
+  return withPresence({ ...local, backend: "d1" });
+}
+
+/**
+ * Concedente atestada só pelo D1 (#13577): a presença viva dela, sem registro
+ * ativo nesta máquina. Mesma forma mínima que o JSON de `check-merge-grant`
+ * mostra em `grantedBy`.
+ */
+export interface D1PresenceGrantor {
+  sessionId: string;
+  kind: SessionKind;
+  machineTag?: string;
+  via: "d1-presence";
+}
+
+/** Concessão do D1 que existe mas não vale aqui (#13577): o motivo, para o aviso. */
+export interface D1GrantRejection {
+  grantedBy: string;
+  grantedAt: string;
+  reason: "grantor-not-coordinator" | "grantor-unknown";
 }
 
 /**
  * Concessão viva para `sessionId` que só o D1 conhece (#13242): a linha
  * `merge-grant:` existe, a concedente é coordenadora com autoridade de merge
- * ATIVA no registro desta máquina (`listActiveSessions`, não stale), dentro do
- * TTL de `grantedAt`, sem consumo no registro da beneficiária nem marca de
- * consumo no D1. `null` = nenhuma (ou o D1 não respondeu; `error` diz qual).
+ * ATIVA, dentro do TTL de `grantedAt`, sem consumo no registro da beneficiária
+ * nem marca de consumo no D1. `null` = nenhuma (ou o D1 não respondeu; `error`
+ * diz qual).
+ *
+ * "Ativa" (#13577): pelo registro desta máquina (`listActiveSessions`, não
+ * stale), como antes; ou, quando esse registro não a mostra ativa (ausente ou
+ * parado no sync), pela presença viva dela no D1 com kind de autoridade de
+ * merge. Registro desta máquina com a concedente como coordenadora SEM
+ * autoridade (continuo) recusa mesmo com presença no D1. Concessão que existe
+ * no D1 e não vale por causa da concedente volta como `rejected`, para quem
+ * chama dizer isso em vez de responder só `granted: false`.
  */
 export async function findLiveMergeGrantInD1(
   repoRoot: string,
   sessionId: string,
   repo: string = DEFAULT_ISSUE_REPO,
   opts: SharedLockOptions = {},
-): Promise<{ grant: MergeGrant; grantedBy: ActiveSessionRecord } | { error: { error: string; permanent: boolean } } | null> {
+): Promise<
+  | { grant: MergeGrant; grantedBy: ActiveSessionRecord | D1PresenceGrantor }
+  | { error: { error: string; permanent: boolean } }
+  | { rejected: D1GrantRejection }
+  | null
+> {
   const d1 = resolveD1ForRepo(repoRoot, opts);
   if (!d1) return null;
   const d1Opts = opts.d1Now !== undefined ? { now: opts.d1Now } : {};
@@ -5127,16 +5243,72 @@ export async function findLiveMergeGrantInD1(
   const raw = r.value;
   if (!raw) return null;
   const now = opts.now ?? Date.now();
-  const grantor = listActiveSessions(repoRoot, now).find(
-    (s) => s.sessionId === raw.grantedBy && hasMergeAuthorityKind(s.kind) && !s.stale,
-  );
-  if (!grantor) return null;
+  // TTL e consumo no registro da beneficiária primeiro: concessão vencida ou
+  // usada é "nenhuma", nunca "recusada pela concedente".
   const grant = withLedgerConsumption(raw as MergeGrant, readMergeGrantConsumptions(repoRoot));
   if (!isMergeGrantLive(grant, sessionId, now)) return null;
+  const sessions = listActiveSessions(repoRoot, now);
+  const reject = (reason: D1GrantRejection["reason"]) => ({
+    rejected: { grantedBy: raw.grantedBy, grantedAt: raw.grantedAt, reason },
+  });
+  // Registro local com a concedente como coordenadora sem autoridade de merge:
+  // o D1 nunca a promove.
+  if (sessions.some((s) => s.sessionId === raw.grantedBy && isCoordinatorKind(s.kind) && !hasMergeAuthorityKind(s.kind))) {
+    return reject("grantor-not-coordinator");
+  }
+  let grantor: ActiveSessionRecord | D1PresenceGrantor | undefined = sessions.find(
+    (s) => s.sessionId === raw.grantedBy && hasMergeAuthorityKind(s.kind) && !s.stale,
+  );
+  if (!grantor) {
+    const p = await d1ReadCoordinatorPresence(d1, raw.grantedBy, d1Opts);
+    if (!p.ok) return { error: p };
+    if (!p.value) return reject("grantor-unknown");
+    if (!hasMergeAuthorityKind(p.value.kind)) return reject("grantor-not-coordinator");
+    grantor = {
+      sessionId: p.value.sessionId,
+      kind: p.value.kind,
+      ...(p.value.machineTag !== undefined ? { machineTag: p.value.machineTag } : {}),
+      via: "d1-presence",
+    };
+  }
   const consumed = await isMergeGrantConsumedInD1(d1, grant!, d1Opts);
   if (consumed?.ok && consumed.value) return null;
   if (consumed && !consumed.ok) return { error: consumed };
   return { grant: grant!, grantedBy: grantor };
+}
+
+/**
+ * Sufixo da linha de sucesso do `grant-merge` (#13577): diz SEMPRE onde a
+ * concessão ficou visível. Antes, só o caso bom tinha sufixo, e "não gravou no
+ * D1" era a ausência dele, fácil de não notar no stdout. Pura.
+ */
+export function grantVisibilitySuffix(result: Pick<SharedGrantMergeResult, "backend" | "presence">): string {
+  if (result.backend === "d1") {
+    return result.presence === false
+      ? " (gravada no D1, mas SEM a presença desta coordenadora no D1: em outra máquina só vale depois do sync do registro)"
+      : " (gravada também no D1: visível em todas as máquinas)";
+  }
+  if (result.backend === "local-fallback") {
+    return " (SÓ no arquivo de data/sessions/: o D1 NÃO gravou, ver o aviso acima; em outra máquina só depois do sync)";
+  }
+  return " (SÓ no arquivo de data/sessions/: D1 não configurado nesta máquina; em outra máquina só depois do sync)";
+}
+
+/**
+ * Aviso de `check-merge-grant`/`consume-merge-grant` quando o D1 TEM a
+ * concessão e ela não vale por causa da concedente (#13577). Pura.
+ */
+export function d1GrantRejectionMessage(r: D1GrantRejection): string {
+  const why =
+    r.reason === "grantor-not-coordinator"
+      ? "a concedente não tem autoridade de merge (continuo ou kind sem autoridade)"
+      : "a concedente não aparece ativa no registro desta máquina nem tem presença viva no D1 " +
+        "(rodada registrada antes do #13577 e ainda sem grant-merge novo, ou a presença venceu)";
+  return (
+    `session-registry (#13577): o D1 tem concessão de ${r.grantedBy} (grantedAt ${r.grantedAt}) para esta sessão, ` +
+    `mas ela NÃO vale aqui: ${why}. Peça à concedente para repetir o grant-merge (renova a presença) ou espere o ` +
+    "sync do registro dela.\n"
+  );
 }
 
 /**
@@ -7822,6 +7994,7 @@ export function resolveRepoRoot(cwd: string = process.cwd()): string {
       cwd,
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true, // #13559
     });
     if (res.status === 0 && res.stdout && res.stdout.trim()) {
       return dirname(res.stdout.trim());
@@ -7886,6 +8059,10 @@ async function main(): Promise<void> {
           suffix = " (reregistered)";
         }
         process.stdout.write(`session-registry: registered ${path}${suffix}\n`);
+        // #13577: coordenadora com autoridade de merge publica a presença no
+        // D1, para que a concessão dela valha em outra máquina antes do sync
+        // do registro. Falha vira aviso no stderr; o registro local já valeu.
+        await registerCoordinatorPresenceShared(repoRoot, kind, sessionId, { tag: result.record.machineTag });
         break;
       }
       case "heartbeat": {
@@ -7962,6 +8139,9 @@ async function main(): Promise<void> {
         const removed = endSession(repoRoot, kind, sessionId, tag);
         if (removed) {
           process.stdout.write("session-registry: ended\n");
+          // #13577: sem a presença no D1, nenhuma concessão desta sessão vale
+          // mais em outra máquina pelo caminho do D1.
+          await clearCoordinatorPresenceShared(repoRoot, kind, sessionId);
         } else {
           process.stdout.write(
             "session-registry: nothing to end (registro não encontrado — tag/session-id conferem?)\n",
@@ -8397,7 +8577,7 @@ async function main(): Promise<void> {
             process.stdout.write(
               `session-registry: grant-merge ok — janela concedida a ${grantedTo}` +
                 `${pr !== undefined ? ` (PR #${pr})` : ""}, TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min, uso único` +
-                `${result.backend === "d1" ? " (gravada também no D1: visível em todas as máquinas)" : ""}\n`,
+                `${grantVisibilitySuffix(result)}\n`,
             );
             // #7857: `grantedTo` não bate NENHUMA sessão ativa no registry —
             // aviso, não recusa (a beneficiária pode ainda não ter se
@@ -8496,12 +8676,18 @@ async function main(): Promise<void> {
         const consumedInD1 = consumedRead?.ok === true && consumedRead.value;
         // #13242: sem janela no arquivo, a concessão pode estar só no D1 (a
         // concedente é de outra máquina e o registro dela ainda não sincronizou).
-        let found: { grant: MergeGrant; grantedBy: ActiveSessionRecord; source: MergeGrantSource | "d1" } | null =
-          consumedInD1 ? null : foundLocal;
+        let found: {
+          grant: MergeGrant;
+          grantedBy: ActiveSessionRecord | D1PresenceGrantor;
+          source: MergeGrantSource | "d1";
+        } | null = consumedInD1 ? null : foundLocal;
         if (!found && !consumedInD1) {
           const inD1 = await findLiveMergeGrantInD1(repoRoot, sessionId, checkRepo);
           if (inD1 && "error" in inD1) {
             reportD1Failure(repoRoot, "check-merge-grant (concessão no D1 não conferida)", inD1.error, stderrWarn);
+          } else if (inD1 && "rejected" in inD1) {
+            // #13577: a concessão existe no D1 — dizer por que não vale, nunca calar.
+            process.stderr.write(d1GrantRejectionMessage(inD1.rejected));
           } else if (inD1) {
             found = { ...inD1, source: "d1" };
           }
@@ -8589,6 +8775,8 @@ async function main(): Promise<void> {
           const inD1 = await findLiveMergeGrantInD1(repoRoot, sessionId, requireRepoFlag(values, flags));
           if (inD1 && "error" in inD1) {
             reportD1Failure(repoRoot, "consume-merge-grant (concessão no D1 não conferida)", inD1.error, stderrWarn);
+          } else if (inD1 && "rejected" in inD1) {
+            process.stderr.write(d1GrantRejectionMessage(inD1.rejected));
           } else if (inD1) {
             toConsume = inD1.grant;
             ok = recordMergeGrantConsumption(repoRoot, inD1.grant, new Date().toISOString());

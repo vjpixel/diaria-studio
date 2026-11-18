@@ -580,6 +580,105 @@ export async function d1WriteMergeGrant(
   return { ok: true, value: { written: r.value.acquired, holder: r.value.current?.holder ?? null } };
 }
 
+/**
+ * #13577: presença da coordenadora no D1, uma linha por sessão. `holder` = a
+ * própria coordenadora; `meta` = `{ sessionId, kind, machineTag }`. A concessão
+ * do D1 (#13242) ainda exigia o REGISTRO da concedente em `data/sessions/` na
+ * máquina da beneficiária, e esse registro viaja pelo mesmo sync do Drive que a
+ * concessão contorna: em 18/11/2026 a linha `merge-grant:` estava no D1 com a
+ * chave certa e o Neo a descartou porque o registro da overnight do `300` não
+ * estava lá (o bisync re-sobe o arquivo a cada heartbeat e falha a conferência
+ * de hash). Gravada pelo `register` e renovada a cada `grant-merge`, apagada
+ * pelo `end`; o TTL é a janela de liveness da coordenadora (`SOFT_STALE_MS`).
+ */
+export function coordinatorPresenceD1Name(sessionId: string): string {
+  return `coordinator:${sessionId}`;
+}
+
+/** TTL da presença: o mesmo `SOFT_STALE_MS` (90 min) do registro local. */
+export const COORDINATOR_PRESENCE_D1_TTL_MS = 90 * 60 * 1000;
+
+/** Presença da coordenadora vinda do D1 (#13577). */
+export interface D1CoordinatorPresence {
+  sessionId: string;
+  kind: string;
+  machineTag?: string;
+}
+
+/**
+ * Presença de uma linha `coordinator:` (#13577), ou `null` se a linha não
+ * descreve a presença de `sessionId`. Pura; mesma regra de `presenceFromD1Row`
+ * do hook: `holder` e `meta.sessionId` são a própria sessão, `kind` é string.
+ * Se o `kind` tem autoridade de merge, decide quem chama.
+ */
+export function presenceFromD1Row(
+  row: { holder?: unknown; meta?: unknown } | null | undefined,
+  sessionId: string,
+): D1CoordinatorPresence | null {
+  if (!row || typeof row.holder !== "string" || typeof row.meta !== "string") return null;
+  if (typeof sessionId !== "string" || sessionId === "" || row.holder !== sessionId) return null;
+  let p: Record<string, unknown>;
+  try {
+    p = JSON.parse(row.meta) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!p || typeof p !== "object" || p.sessionId !== sessionId || typeof p.kind !== "string") return null;
+  const presence: D1CoordinatorPresence = { sessionId, kind: p.kind };
+  if (typeof p.machineTag === "string") presence.machineTag = p.machineTag;
+  return presence;
+}
+
+/** Presença viva da coordenadora `sessionId` no D1 (`null` = nenhuma, ou vencida no relógio do D1). */
+export async function d1ReadCoordinatorPresence(
+  client: D1Client,
+  sessionId: string,
+  opts: { now?: number } = {},
+): Promise<D1LockResult<D1CoordinatorPresence | null>> {
+  try {
+    const rows = await run(client, READ_META_SQL, [
+      coordinatorPresenceD1Name(sessionId),
+      opts.now === undefined ? "" : String(opts.now),
+    ]);
+    const row = rows[0];
+    if (!row) return { ok: true, value: null };
+    const expiresAt = Number(row.expires_at);
+    const nowMs = Number(row.now_ms);
+    if (Number.isFinite(expiresAt) && Number.isFinite(nowMs) && expiresAt <= nowMs) return { ok: true, value: null };
+    return { ok: true, value: presenceFromD1Row(row, sessionId) };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+/**
+ * Grava (ou renova) a presença da coordenadora `sessionId` (#13577). Linha viva
+ * de OUTRO holder com o mesmo nome (só uma linha forjada teria isso) nunca é
+ * sobrescrita: `written: false`.
+ */
+export async function d1WriteCoordinatorPresence(
+  client: D1Client,
+  presence: D1CoordinatorPresence,
+  ttlMs: number = COORDINATOR_PRESENCE_D1_TTL_MS,
+  opts: { now?: number } = {},
+): Promise<D1LockResult<{ written: boolean }>> {
+  const r = await d1AcquireLock(client, coordinatorPresenceD1Name(presence.sessionId), presence.sessionId, ttlMs, {
+    meta: JSON.stringify(presence),
+    reentrant: true,
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  });
+  if (!r.ok) return r;
+  return { ok: true, value: { written: r.value.acquired } };
+}
+
+/** Apaga a presença da coordenadora `sessionId` (#13577, `end`). Só a própria. */
+export async function d1ClearCoordinatorPresence(
+  client: D1Client,
+  sessionId: string,
+): Promise<D1LockResult<D1ReleaseOutcome>> {
+  return d1ReleaseLock(client, coordinatorPresenceD1Name(sessionId), sessionId);
+}
+
 /** Retenção da marca de consumo (igual à do registro local, `MERGE_GRANT_LEDGER_RETENTION_MS`). */
 export const MERGE_GRANT_CONSUMED_D1_TTL_MS = 24 * 60 * 60 * 1000;
 

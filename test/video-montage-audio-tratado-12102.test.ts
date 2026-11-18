@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -131,7 +131,8 @@ describe("#12102: render fail-soft e reaproveitamento", () => {
     return { root, src, outDir: join(root, "out"), stateDir: join(root, "state") };
   };
 
-  const key = cleanAudioKey(audioCleanFilter(audioCleanParams(-35)));
+  // #13544: o tamanho da entrada entra na chave ("bruto" = 5 bytes).
+  const key = cleanAudioKey(audioCleanFilter(audioCleanParams(-35)), 5);
   const name = `261103_audio_tratado-${key}.wav`;
   const input = (d: ReturnType<typeof dirs>) => ({ src: d.src, outDir: d.outDir, stateDir: d.stateDir, edition: "261103", mediaPath: SOURCE.path, thresholdDb: -35 });
   const quiet = { info: () => {}, debug: () => {} };
@@ -221,17 +222,36 @@ describe("#12102: render fail-soft e reaproveitamento", () => {
     } finally { rmSync(d.root, { recursive: true, force: true }); }
   });
 
-  it("bruto trocado (tamanho/mtime): renderiza de novo, sobrescrevendo com log", () => {
+  it("bruto do mesmo tamanho com mtime novo: renderiza de novo, sobrescrevendo com log", () => {
     const d = dirs();
     try {
       const calls: string[][] = [];
       renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg(calls) });
-      writeFileSync(d.src, "outro bruto, maior");
+      writeFileSync(d.src, "BRUTO");
+      utimesSync(d.src, new Date(2030, 0, 1), new Date(2030, 0, 1));
       const infos: string[] = [];
       const r = renderCleanAudio(input(d), { debug: () => {}, info: (m) => infos.push(m), ffmpeg: fakeFfmpeg(calls) });
       assert.equal(calls.length, 2);
       assert.equal(r?.reused, false);
       assert.ok(infos.some((m) => /sobrescrita/.test(m)), infos.join("\n"));
+    } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+
+  it("#13544: entrada de outro tamanho (2º bruto juntado): faixa com NOME novo, a do XML anterior fica intacta", () => {
+    const d = dirs();
+    try {
+      const calls: string[][] = [];
+      const first = renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg(calls) });
+      writeFileSync(first!.path, "wav do V1");
+      writeFileSync(d.src, "bruto com o 2º arquivo, maior");
+      const infos: string[] = [];
+      const r = renderCleanAudio(input(d), { debug: () => {}, info: (m) => infos.push(m), ffmpeg: fakeFfmpeg(calls) });
+      assert.equal(calls.length, 2);
+      assert.equal(r?.reused, false);
+      assert.notEqual(r!.path, first!.path);
+      assert.notEqual(r!.xmlPath, first!.xmlPath);
+      assert.equal(readFileSync(first!.path, "utf8"), "wav do V1", "a faixa que o XML anterior aponta não foi regravada");
+      assert.ok(!infos.some((m) => /sobrescrita/.test(m)), infos.join("\n"));
     } finally { rmSync(d.root, { recursive: true, force: true }); }
   });
 

@@ -85,6 +85,12 @@
  *     [--srt "Diaria comentada_Vertical_V1 - legendas.srt"]   (#13256: a capa mostra a 1ª
  *       legenda da fala; sem --at, sugere o instante dela e, sem --panel-top, põe o
  *       painel logo abaixo da caixa da legenda; com os dois à mão, só avisa)
+ *     [--plan PATH | --lettering-end SEGUNDOS]   (#13570: o fim do lettering do título
+ *       do vertical; sem os dois, lido do plan.json da montagem no work dir default,
+ *       pela sequência do nome do SRT; sem plan.json, os 3,5 s fixos, com [aviso]).
+ *       Depois do ffmpeg, a legenda escolhida é conferida nos pixels do frame:
+ *       [premissa] se aparece, [aviso] se não (export sem legenda queimada, ou o
+ *       título ainda na tela); nunca barra a capa.
  *     [--video PATH]   (default: {edição}/diaria-comentada-{AAMMDD}-short.mp4)
  *     [--out PATH] [--edition-dir DIR]
  * Sem `--hook`, o gancho é o texto da capa do vertical 1 no roteiro
@@ -107,7 +113,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
@@ -115,6 +121,7 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { YOUTUBE_THUMB_FILE } from "./lib/diaria/youtube-video.ts";
 import {
+  SHORT_COVER_LETTERING_WINDOW_S,
   YOUTUBE_SHORT_COVER_FILE,
   composeShortCover,
   composeYouTubeThumb,
@@ -131,7 +138,14 @@ import {
   buildCapaBackgroundPrompt,
   parseCapaScene,
 } from "./lib/diaria/youtube-thumb-capa-bg.ts";
-import { parseSrtCues, planShortCoverCaption, shortCoverCaptionWarnings } from "./lib/diaria/short-cover-caption.ts";
+import {
+  captionVisibleInFrame,
+  letteringEndForSrt,
+  montagemPlanPathsDefault,
+  parseSrtCues,
+  planShortCoverCaption,
+  shortCoverCaptionWarnings,
+} from "./lib/diaria/short-cover-caption.ts";
 import { parseRoteiroCapaVideo, resolverHookDaCapa, type ResolverHookLog } from "./lib/diaria/youtube-thumb-roteiro.ts";
 import {
   THUMB_PORTRAITS_DIR,
@@ -171,7 +185,7 @@ const USAGE =
   "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-sheet [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-portrait N [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) [--hook \"Gancho de 2 a 5 palavras?\" | --roteiro-capa vertical1|vertical2] [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
+  "     gen-youtube-thumb.ts AAMMDD --short-cover (--at SEGUNDOS | --srt SRT_DO_VERTICAL) [--plan PLAN_JSON_DA_MONTAGEM | --lettering-end SEGUNDOS] [--hook \"Gancho de 2 a 5 palavras?\" | --roteiro-capa vertical1|vertical2] [--panel-top 0.62] [--video MP4] [--out PATH] [--edition-dir DIR]";
 
 /**
  * #11228: extrai N frames do vídeo BRUTO direto da Drive API (sem baixar o
@@ -383,6 +397,21 @@ const HOOK_LOG: ResolverHookLog = {
   premissa: (m) => console.error(`[premissa] ${m}`),
 };
 
+/** O `plan.json` da montagem lido, ou `undefined` se ausente ou ilegível (#13570: aí o aviso diz qual faltou). */
+function readJsonOrUndefined(p: string): unknown {
+  if (!existsSync(p)) return undefined;
+  try {
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Os `plan.json` default da montagem desta máquina (#13570). */
+function montagemPlanPathsDefaultHere(aammdd: string): string[] {
+  return montagemPlanPathsDefault(aammdd, { tmp: tmpdir(), home: homedir(), cacheEnv: process.env.DIARIA_VIDEO_CACHE_DIR });
+}
+
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = values["edition"] ?? positional[0];
@@ -455,6 +484,18 @@ async function main(): Promise<number> {
     );
     let panelTop = values["panel-top"] !== undefined ? Number(values["panel-top"]) : undefined;
     let atValue = values["at"] !== undefined ? Number(values["at"]) : undefined;
+    // #13570: o fim do lettering do título, medido (--lettering-end, ou o plan.json da montagem) em vez dos 3,5 s fixos.
+    if (flags.has("lettering-end") || flags.has("plan")) throw new Error("--lettering-end e --plan exigem o valor (segundos / caminho do plan.json da montagem)");
+    let letteringS: number | undefined;
+    if (values["lettering-end"] !== undefined) {
+      letteringS = Number(values["lettering-end"]);
+      if (!Number.isFinite(letteringS) || letteringS < 0) throw new Error(`--lettering-end inválido: ${values["lettering-end"]} (segundos, ex.: 5.2)`);
+    }
+    if (values["plan"] !== undefined && (values["srt"] === undefined || letteringS !== undefined)) {
+      console.error(`[aviso] --plan ignorado: ele só vale com --srt (a sequência sai do nome do SRT) e sem --lettering-end (#13570)`);
+    }
+    // A legenda que o frame deve mostrar, conferida nos pixels depois do ffmpeg (#13570).
+    let expectedCaption: { text: string; srtPath: string } | undefined;
     // #13256: com o SRT do vertical, a capa mostra a 1ª legenda: sugere o --at e põe o painel abaixo dela.
     if (values["srt"] !== undefined) {
       const srtPath = resolve(values["srt"]);
@@ -462,7 +503,23 @@ async function main(): Promise<number> {
         console.error(`gen-youtube-thumb: SRT do vertical não encontrado em ${srtPath}`);
         return 1;
       }
-      const cap = planShortCoverCaption(parseSrtCues(readFileSync(srtPath, "utf8")));
+      if (letteringS === undefined) {
+        const explicitPlan = values["plan"] !== undefined ? resolve(values["plan"]) : undefined;
+        if (explicitPlan !== undefined && !existsSync(explicitPlan)) {
+          console.error(`gen-youtube-thumb: plan.json da montagem não encontrado em ${explicitPlan}`);
+          return 1;
+        }
+        const lettering = letteringEndForSrt(srtPath, explicitPlan ? [explicitPlan] : montagemPlanPathsDefaultHere(aammdd), readJsonOrUndefined);
+        if (lettering.endS !== null) {
+          letteringS = lettering.endS;
+          console.error(`[premissa] lettering do título até ${lettering.endS}s, medido no plan.json da montagem (${lettering.from}) (#13570)`);
+        } else {
+          console.error(
+            `[aviso] duração do lettering do título não medida (${lettering.reason}): assumidos ${SHORT_COVER_LETTERING_WINDOW_S}s fixos, e o título pode durar mais; passe --plan {work dir da montagem}/plan.json ou --lettering-end SEGUNDOS (#13570)`,
+          );
+        }
+      }
+      const cap = planShortCoverCaption(parseSrtCues(readFileSync(srtPath, "utf8")), letteringS !== undefined ? { letteringS } : {});
       if (!cap) {
         console.error(`[aviso] ${srtPath}: nenhuma legenda depois do lettering do título; a capa segue sem a 1ª legenda (#13256)`);
       } else {
@@ -470,8 +527,9 @@ async function main(): Promise<number> {
         const cueText = cap.cue.text.replace(/\n/g, " ");
         if (atValue === undefined) {
           atValue = cap.at;
-          console.error(`[premissa] --at ${cap.at}: a 1ª legenda da fala ("${cueText}", ${cap.cue.start}–${cap.cue.end}s, do SRT) no frame (#13256)`);
+          console.error(`[premissa] --at ${cap.at}: o instante da 1ª legenda da fala depois do lettering ("${cueText}", ${cap.cue.start}–${cap.cue.end}s, do SRT); a presença dela no frame é conferida depois do ffmpeg (#13256, #13570)`);
         }
+        if (atValue >= cap.cue.start && atValue < cap.cue.end) expectedCaption = { text: cap.cue.text, srtPath };
         if (panelTop === undefined) {
           panelTop = cap.panelTopRatio;
           console.error(`[premissa] --panel-top ${cap.panelTopRatio}: o painel começa abaixo da legenda (base em ${cap.captionBottomPx}px), que fica legível acima do gancho (#13256)`);
@@ -496,7 +554,7 @@ async function main(): Promise<number> {
     // Com gancho, o frame cru vai para o tmpdir do sistema (nunca para a pasta da
     // edição, que o OneDrive sincroniza) e a capa é composta por cima.
     const frameOut = shortHook === undefined ? out : join(tmpdir(), `diaria-short-cover-frame-${process.pid}-${Date.now()}.jpg`);
-    const plan = planShortCoverFrame(video, at, frameOut, { withHook: shortHook !== undefined });
+    const plan = planShortCoverFrame(video, at, frameOut, { withHook: shortHook !== undefined, ...(letteringS !== undefined ? { letteringS } : {}) });
     for (const w of plan.warnings) console.error(`[aviso] ${w}`);
     if (shortHook !== undefined) await assertBrandSerifAvailable("gen-youtube-thumb");
     const r = spawnSync("ffmpeg", plan.args, { encoding: "utf8" });
@@ -504,6 +562,20 @@ async function main(): Promise<number> {
       console.error(`gen-youtube-thumb: ffmpeg falhou: ${r.error?.message ?? r.stderr?.trim() ?? `exit ${r.status}`}`);
       if (shortHook !== undefined) rmSync(frameOut, { force: true }); // frame parcial não fica no tmpdir
       return 1;
+    }
+    // #13570: a legenda está mesmo no frame cru (antes do painel)? Só avisa: a capa sai do mesmo jeito.
+    if (expectedCaption) {
+      try {
+        const seen = await captionVisibleInFrame(readFileSync(frameOut), expectedCaption.text);
+        const cueText = expectedCaption.text.replace(/\n/g, " ");
+        if (seen.visible) console.error(`[premissa] a legenda "${cueText}" aparece no frame aos ${at}s (conferido nos pixels da caixa da legenda) (#13570)`);
+        else
+          console.error(
+            `[aviso] a legenda "${cueText}" não aparece no frame aos ${at}s (caixa da legenda: claro ${seen.bright}, fundo escuro ${seen.dark}, desvio ${seen.stdDark}): o export pode não ter a legenda queimada, ou o lettering do título ainda está na tela; confira a capa e, se preciso, passe --at depois do título (#13570)`,
+          );
+      } catch (e) {
+        console.error(`[aviso] não conferi a legenda no frame (${(e as Error).message}): confira a capa a olho (#13570)`);
+      }
     }
     if (shortHook !== undefined) {
       try {

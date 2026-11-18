@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { checkSessionClose } from "../scripts/session-close-check.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
@@ -30,7 +30,8 @@ describe("session closure evidence", () => {
       seen.push(cwd); return clean(cmd, args);
     });
     assert.equal(result.canClose, true);
-    assert.deepEqual(result.checkedWorktrees, ["/repo/own"]);
+    // The script resolves paths, so on Windows "/repo/own" becomes "C:\repo\own" (#13537).
+    assert.deepEqual(result.checkedWorktrees, [resolve("/repo/own")]);
     assert.ok(!seen.includes("/repo/peer"));
     assert.equal(result.manualChecks.length, 2);
   });
@@ -63,7 +64,43 @@ describe("session closure evidence", () => {
       if (args[0] === "worktree") return "worktree /repo/moved\nbranch refs/heads/feature/own\n\n";
       return clean(cmd, args);
     });
-    assert.deepEqual(result.checkedWorktrees, ["/repo/extra", "/repo/moved"]);
+    assert.deepEqual(result.checkedWorktrees, [resolve("/repo/extra"), resolve("/repo/moved")]);
+  });
+  it("checks the session's own worktree once when git lists it with forward slashes (#13537)", () => {
+    // On Windows `git worktree list` prints `C:/repo/own` while the registry path resolves to `C:\repo\own`.
+    const gitForm = resolve("/repo/own").replace(/\\/g, "/");
+    const result = checkSessionClose("/repo", session, [], (cmd, args) => {
+      if (args[0] === "worktree") return `worktree ${gitForm}\nbranch refs/heads/feature/own\n\n`;
+      if (args[0] === "status") return "?? forgotten.txt\n";
+      return clean(cmd, args);
+    });
+    assert.deepEqual(result.checkedWorktrees, [resolve("/repo/own")]);
+    assert.equal(result.pending.filter(p => p.startsWith("mudanças não commitadas")).length, 1);
+  });
+  it("checks the session's own worktree once when git lists it in a non-normalized form, on any OS (#13537)", () => {
+    // `/repo/./own/` differs from `/repo/own` as a raw string on Linux too, so this case discriminates in CI.
+    for (const gitForm of ["/repo/./own", "/repo/own/", "/repo/x/../own/"]) {
+      const result = checkSessionClose("/repo", session, [], (cmd, args) => {
+        if (args[0] === "worktree") return `worktree ${gitForm}\nbranch refs/heads/feature/own\n\n`;
+        if (args[0] === "status") return "?? forgotten.txt\n";
+        return clean(cmd, args);
+      });
+      assert.deepEqual(result.checkedWorktrees, [resolve("/repo/own")], gitForm);
+      assert.equal(result.pending.filter(p => p.startsWith("mudanças não commitadas")).length, 1, gitForm);
+    }
+  });
+  it("checks the worktree once when only the drive letter case differs (#13537)", () => {
+    // Harness hands `c:\repo\own`, git prints `C:/repo/own`. Only discriminates on Windows; on Linux it is a no-op.
+    const registryForm = resolve("/repo/own").replace(/^[A-Z]:/, d => d.toLowerCase());
+    const gitForm = resolve("/repo/own").replace(/\\/g, "/").replace(/^[a-z]:/, d => d.toUpperCase());
+    const result = checkSessionClose("/repo", { ...session, worktrees: [{ path: registryForm }] }, [], (cmd, args) => {
+      if (args[0] === "worktree") return `worktree ${gitForm}\nbranch refs/heads/feature/own\n\n`;
+      if (args[0] === "status") return "?? forgotten.txt\n";
+      return clean(cmd, args);
+    });
+    // The readable form kept is the first one seen (the registry's).
+    assert.deepEqual(result.checkedWorktrees, [resolve(registryForm)]);
+    assert.equal(result.pending.filter(p => p.startsWith("mudanças não commitadas")).length, 1);
   });
   it("does not block on line-ending-only diffs nor routine audience snapshots (#11733)", () => {
     const status = " M scripts/lib/crlf.ts\nM  scripts/lib/real.ts\n M context/audience-profile.md\n"
@@ -138,7 +175,8 @@ describe("session closure evidence", () => {
     const run = (cmd: string, args: string[]) =>
       args[0] === "status" ? "?? old.ts\n?? new.ts\n M mod-old.ts\n?? unknown.ts\n?? dir/\n" : clean(cmd, args);
     const mtimes: Record<string, number> = {
-      "/repo/own/old.ts": started - 1000, "/repo/own/new.ts": started + 1000, "/repo/own/mod-old.ts": started - 1,
+      [resolve("/repo/own", "old.ts")]: started - 1000, [resolve("/repo/own", "new.ts")]: started + 1000,
+      [resolve("/repo/own", "mod-old.ts")]: started - 1,
     };
     const result = checkSessionClose("/repo", session, [], run, abs => mtimes[abs], () => null);
     // old.ts by mtime (preExisting); mod-old.ts has no content diff in this mock, so it is EOL-only (ignored).

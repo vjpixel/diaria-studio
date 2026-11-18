@@ -10,6 +10,12 @@ import {
   buildTscDenyMessage,
   buildTscUnavailableDenyMessage,
   logTscGuardEvent,
+  applyTscGuardBypass,
+  bypassSource,
+  commandHasBypassAssignment,
+  isEnvPrefixedGhPrCreate,
+  isTscGuardedPrCreate,
+  handlePayload,
 } from "../.claude/hooks/block-pr-create-tsc-failure.mjs";
 
 // #8482: guard mecânico que bloqueia `gh pr create` quando `npx tsc --noEmit`
@@ -168,5 +174,184 @@ describe("logTscGuardEvent (#8482) — fail-soft e nunca silencioso quando usado
       } as never,
     );
     assert.equal(called, false);
+  });
+});
+
+// #13539: o escape hatch documentado é `DIARIA_ALLOW_PR_WITH_TSC_ERRORS=1 gh pr
+// create ...`, mas o hook roda no processo do harness — a atribuição inline
+// nunca chega ao `process.env` dele. Antes do fix o prefixo nem era lido como
+// `gh pr create` (o hook saía sem typecheck e sem log), então o bypass passava
+// em silêncio e `tsc_pr_guard_bypassed` nunca era registrado.
+describe("escape hatch inline (#13539)", () => {
+  const BYPASS = `${TSC_PR_GUARD_BYPASS_ENV}=1`;
+
+  function captureLog() {
+    const calls: Array<{ message: string; details: Record<string, unknown>; repoRoot: unknown }> = [];
+    const logFn = (message: string, details: Record<string, unknown>, opts: { repoRoot?: unknown }) => {
+      calls.push({ message, details, repoRoot: opts?.repoRoot });
+    };
+    return { calls, logFn };
+  }
+
+  it("(a) prefixo inline passa o guard e registra tsc_pr_guard_bypassed com source=inline", () => {
+    const command = `${BYPASS} gh pr create --title "x" --body-file /tmp/pr-body-13539-1.md`;
+    assert.equal(isTscGuardedPrCreate(command), true, "o comando prefixado tem que entrar no guard");
+    const { calls, logFn } = captureLog();
+    const bypassed = applyTscGuardBypass(command, { env: {}, logRoot: "/repo", logFn } as never);
+    assert.equal(bypassed, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].message, "tsc_pr_guard_bypassed");
+    assert.equal(calls[0].details.source, "inline");
+    assert.equal(calls[0].repoRoot, "/repo");
+  });
+
+  it("(a) prefixo depois de cd/&&, de ; e de outras atribuições também conta", () => {
+    for (const command of [
+      `cd /c/repo/wt && ${BYPASS} gh pr create --fill`,
+      `true; ${BYPASS} gh pr create --fill`,
+      `GH_REPO=vjpixel/diaria-studio ${BYPASS} gh pr create --fill`,
+      `${BYPASS} GH_PROMPT_DISABLED=1 gh pr create --fill`,
+    ]) {
+      assert.equal(commandHasBypassAssignment(command), true, command);
+      assert.equal(bypassSource(command, {}), "inline", command);
+    }
+  });
+
+  it("(b) a string só dentro do --body NÃO faz bypass", () => {
+    const command = `gh pr create --title "x" --body "use ${BYPASS} gh pr create em falso positivo"`;
+    assert.equal(commandHasBypassAssignment(command), false);
+    const { calls, logFn } = captureLog();
+    assert.equal(applyTscGuardBypass(command, { env: {}, logRoot: "/repo", logFn } as never), false);
+    assert.equal(calls.length, 0);
+  });
+
+  it("(b) a string só dentro de corpo de heredoc NÃO faz bypass", () => {
+    const command = [
+      "gh pr create --title x --body-file - <<'EOF'",
+      `${BYPASS} gh pr create --fill`,
+      "EOF",
+    ].join("\n");
+    assert.equal(isTscGuardedPrCreate(command), true);
+    assert.equal(commandHasBypassAssignment(command), false);
+    assert.equal(bypassSource(command, {}), null);
+  });
+
+  it("(b) valor diferente de 1, ou a var citada fora de posição de atribuição, não faz bypass", () => {
+    for (const command of [
+      `${TSC_PR_GUARD_BYPASS_ENV}=0 gh pr create --fill`,
+      `${TSC_PR_GUARD_BYPASS_ENV}=10 gh pr create --fill`,
+      `echo ${BYPASS} gh pr create`,
+      `${BYPASS} echo ok && gh pr create --fill`,
+    ]) {
+      assert.equal(commandHasBypassAssignment(command), false, command);
+    }
+  });
+
+  it("(c) process.env continua funcionando, com source=env", () => {
+    const command = "gh pr create --fill";
+    const { calls, logFn } = captureLog();
+    const bypassed = applyTscGuardBypass(command, {
+      env: { [TSC_PR_GUARD_BYPASS_ENV]: "1" },
+      logRoot: "/repo",
+      logFn,
+    } as never);
+    assert.equal(bypassed, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].message, "tsc_pr_guard_bypassed");
+    assert.equal(calls[0].details.source, "env");
+  });
+
+  it("sem bypass nenhum, nada é logado e o guard segue", () => {
+    const { calls, logFn } = captureLog();
+    assert.equal(applyTscGuardBypass("gh pr create --fill", { env: {}, logRoot: "/repo", logFn } as never), false);
+    assert.equal(calls.length, 0);
+  });
+
+  it("outra atribuição na frente do gh pr create agora entra no guard (antes saía sem typecheck)", () => {
+    assert.equal(isEnvPrefixedGhPrCreate("GH_TOKEN=abc gh pr create --fill"), true);
+    assert.equal(isTscGuardedPrCreate("GH_TOKEN=abc gh pr create --fill"), true);
+    assert.equal(isTscGuardedPrCreate('git commit -m "FOO=1 gh pr create"'), false);
+    assert.equal(isTscGuardedPrCreate("gh pr view 1"), false);
+  });
+});
+
+// #13539 (review do PR #13549, F1): o fluxo real do hook, via handlePayload,
+// com tudo que toca processo/disco injetado. Reverter o uso de
+// isTscGuardedPrCreate ou a leitura inline do bypass faz estes testes falharem.
+describe("handlePayload (#13539) — fluxo do hook", () => {
+  function makeDeps(overrides: Record<string, unknown> = {}) {
+    const logs: Array<{ message: string; details: Record<string, unknown> }> = [];
+    let typecheckCalls = 0;
+    const deps = {
+      env: {},
+      hookDir: "/studio/.claude/hooks",
+      resolveRepoRoot: () => "/studio",
+      isForeignRepo: () => false,
+      isStudio: () => true,
+      resolveLogRoot: () => "/studio",
+      checkTscAvailableFn: () => true,
+      runTypecheckFn: () => {
+        typecheckCalls++;
+        return { infra: false, ok: false, output: "scripts/x.ts(1,1): error TS2304: Cannot find name 'y'." };
+      },
+      logFn: (message: string, details: Record<string, unknown>) => {
+        logs.push({ message, details });
+      },
+      ...overrides,
+    };
+    return { deps, logs, typecheckCalls: () => typecheckCalls };
+  }
+  const payload = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
+
+  it("(a) GH_TOKEN=x gh pr create --fill com typecheck falhando → deny", () => {
+    const { deps, typecheckCalls } = makeDeps();
+    const out = handlePayload(payload("GH_TOKEN=x gh pr create --fill"), deps as never) as {
+      hookSpecificOutput?: { permissionDecision?: string };
+    } | undefined;
+    assert.equal(out?.hookSpecificOutput?.permissionDecision, "deny");
+    assert.equal(typecheckCalls(), 1);
+  });
+
+  it("(b) prefixo inline com env vazio → sem typecheck e log tsc_pr_guard_bypassed source=inline", () => {
+    const { deps, logs, typecheckCalls } = makeDeps();
+    const out = handlePayload(payload(`${TSC_PR_GUARD_BYPASS_ENV}=1 gh pr create --fill`), deps as never);
+    assert.equal(out, undefined);
+    assert.equal(typecheckCalls(), 0);
+    assert.deepEqual(
+      logs.map((l) => [l.message, l.details.source]),
+      [["tsc_pr_guard_bypassed", "inline"]],
+    );
+  });
+
+  it("sem prefixo, typecheck limpo → null (fluxo normal)", () => {
+    const { deps } = makeDeps({ runTypecheckFn: () => ({ infra: false, ok: true, output: "" }) });
+    assert.equal(handlePayload(payload("gh pr create --fill"), deps as never), undefined);
+  });
+
+  it("ferramenta que não é Bash, ou comando que não é gh pr create → null sem typecheck", () => {
+    const { deps, typecheckCalls } = makeDeps();
+    assert.equal(handlePayload({ tool_name: "Edit", tool_input: { command: "gh pr create" } }, deps as never), undefined);
+    assert.equal(handlePayload(payload("gh pr view 1"), deps as never), undefined);
+    assert.equal(typecheckCalls(), 0);
+  });
+});
+
+describe("liveCommandText — comentário e escape (#13539, F3/F4)", () => {
+  it("F3: bypass citado só em comentário de shell não conta", () => {
+    const command = `gh pr create --fill  # se falhar: ; ${TSC_PR_GUARD_BYPASS_ENV}=1 gh pr create`;
+    assert.equal(commandHasBypassAssignment(command), false);
+  });
+
+  it("F3: comentário em linha própria não conta; # no meio de palavra não é comentário", () => {
+    assert.equal(
+      commandHasBypassAssignment(`gh pr create --fill\n# ${TSC_PR_GUARD_BYPASS_ENV}=1 gh pr create`),
+      false,
+    );
+    assert.equal(commandHasBypassAssignment(`X=a#b ${TSC_PR_GUARD_BYPASS_ENV}=1 gh pr create --fill`), true);
+  });
+
+  it("F4: \\; escapado não é separador", () => {
+    const command = `gh pr create --body x\\;${TSC_PR_GUARD_BYPASS_ENV}=1 gh pr create`;
+    assert.equal(commandHasBypassAssignment(command), false);
   });
 });

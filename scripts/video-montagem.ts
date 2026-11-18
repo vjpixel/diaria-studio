@@ -37,10 +37,15 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   inventory AAMMDD [--dir PASTA] [--editions A,B] [--listen]
  *       (#12559) os vídeos da pasta na ordem de gravação e o papel proposto de cada um
  *       (mestre horizontal em partes, vertical nativa) e a edição pela fala (--listen).
- *   face AAMMDD [--write]  (#12560) rosto (OpenCV) em 3 frames por item -> framing do item
- *   face-compare AAMMDD --mp-python PY --mp-model TFLITE
+ *   face AAMMDD [--write] [--all] [--um-frame]  (#12560) rosto (OpenCV) em 3 frames por item -> framing do item
+ *       (#13588) incremental: a medida de cada item fica em `face-cache.json` (state dir, chave =
+ *       hash do intervalo), e só o item com intervalo novo (tomada trocada) vai ao detector;
+ *       --all mede tudo. --um-frame: o frame do meio, com 25/75% só onde ele não achou rosto
+ *       (opcional até o face-compare --um-frame mostrar que não piora).
+ *   face-compare AAMMDD --mp-python PY --mp-model TFLITE [--um-frame]
  *       (#13370) MEDIÇÃO: Haar x MediaPipe nos mesmos frames do `face`, contra o framing
  *       aprovado do blocks.json; grava `face-compare.json` no work dir, não muda nada.
+ *       --um-frame (#13588): nos frames do `face --um-frame`, para comparar com os 3 frames.
  *   gaze AAMMDD [--seq K]  (#12560) folha de olhar/expressão por clipe (`gaze-{seq}.jpg`)
  *   verify-xml AAMMDD [--seq K] [--no-transcribe]
  *       (#12561) lê o áudio do PRÓPRIO XML, mede as bordas (SOM CORTADO) e compara a fala
@@ -65,7 +70,15 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       transcrição do áudio fica em `transcript-audio.json` (vem de --audio-transcript,
  *       ou do `transcript.json` quando o `source.json` era o áudio); `audio-align.json`
  *       guarda os deslocamentos e o que foi retranscrito.
- *   decupagem AAMMDD [--pixel-f0 HZ]
+ *   decupagem AAMMDD [--pixel-f0 HZ] [--no-retranscribe]
+ *                           (#13587) na 1ª passada, cada segmento com tomada colapsada é retranscrito
+ *                           (a janela do aviso, todas numa chamada só do Whisper; a já gravada é
+ *                           reaproveitada) e, onde a janela separou as tomadas, a listagem traz as
+ *                           tomadas como segmentos próprios ("retranscrito: parte k de n"), com a
+ *                           borda da palavra retranscrita; onde achou uma tomada só, as subjanelas
+ *                           (--sub) dizem o falso começo na linha. A listagem fica congelada em
+ *                           `decupagem-segments.json`, que a 2ª passada e o roteiro numeram.
+ *                           --no-retranscribe: sem Whisper (só o que já está gravado).
  *                           sem `decupagem-plan.json`: lista numerada dos segmentos + molde do plano
  *                           (a skill classifica); com ele: o Markdown do Doc da decupagem (gate 1, por
  *                           bloco, curado, com "Montagem sugerida") + `blocks.template.json` (sempre refaz).
@@ -78,6 +91,14 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *                           referência do Pixel (default: a voz com mais tempo de fala). Sem título
  *                           nem resumo "usar", o molde sai com `format: "entrevista"` e as
  *                           sequências abertura → comentário → CTA → fecho.
+ *   blocks AAMMDD --from-plan [--force]
+ *                           (#13463) grava o `blocks.json` do `blocks.template.json` da decupagem e da
+ *                           proposta do roteiro de gravação (`_internal/roteiro-falas.json`, a mesma do
+ *                           `video-roteiro-blocos.ts`): bloco, `targets`, `falaId`, sequências e título
+ *                           da vertical, pelo `falaId` das linhas "usar" do `decupagem-plan.json`
+ *                           (`lib/diaria/video-blocks-from-plan.ts`). Sem o roteiro: exit 3. Com
+ *                           `blocks.json` já gravado, recusa sem --force (o anterior vai para
+ *                           `blocks.antes-from-plan.json`).
  *   retranscribe AAMMDD --from S --to S
  *                           retranscreve só o trecho (até 60 s; sem VAD, sem condition_on_previous_text)
  *                           antes de declarar dúvida (#11364); não mexe no transcript.json. Com --sub (#11958),
@@ -343,13 +364,18 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor, editionsRoot as editionsRootDir } from "./lib/edition-paths.ts";
-import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { parseRoteiroFalas, propostaBlocosDoRoteiro, readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, ROTEIRO_FALAS_FILE, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { blocksFromPlan } from "./lib/diaria/video-blocks-from-plan.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvgForMarker, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
 import {
   readTrechosInseridos,
   trechoClipFrames,
   trechoInseridoLine,
   trechoRipple,
+  trechoExportSpans,
+  wordsSemTrechos,
+  intervalsSemTrechos,
+  planTimeToExport,
   trechosInseridosSection,
   unrippleXmlClips,
   type TrechoInseridoClip,
@@ -653,7 +679,8 @@ export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
 import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
-import { PROXY, proxyOutputArgs, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
+import { falasSemTomada, falasSemTomadaAviso, readRoteiroFalasLista, videosForaDoBruto, videosForaDoBrutoAviso } from "./lib/diaria/video-roteiro-cobertura.ts";
+import { PROXY, cropOnProxy, proxyOutputArgs, proxySize, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
   deepFilterArgs,
   deepFilterBin,
@@ -673,6 +700,8 @@ import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactC
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
 import { stretchedWordFindings, takeRepeatItems, takeRepeatLine, takeRepeatWarnings, windowHeardSuspects, type TakeRepeatSuspect } from "./lib/diaria/video-montage-repeat.ts";
 import { corteHookLine } from "./lib/diaria/extra-verticals.ts";
+import { FACE_CACHE_FILE, emptyFaceCache, parseFaceCache, runFaceMeasurement, type FaceFrameRequest, type FaceItem, type FaceSampling } from "./lib/diaria/video-face-incremental.ts";
+import { DECUPAGEM_SEGMENTS_FILE, freezeListing, listingSegments, resolveCollapsedListing, retranscribeKey, subWindowFileName, windowFileName, type ListingOrigin } from "./lib/diaria/video-decupagem-collapsed.ts";
 import { captionCoverageFindings, speechWithoutWords, speechWithoutWordsWarnings } from "./lib/diaria/video-caption-coverage.ts";
 import sharp from "sharp";
 
@@ -683,7 +712,7 @@ const OTIO_PY = join(ROOT, "scripts", "video", "otio_read_xml.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|blocks|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -1165,10 +1194,15 @@ export async function loadVinhetaSfxForLocalRoot(
  * Chave curta da faixa tratada (#12102): hash dos args do ffmpeg (filtro +
  * formato de saída, sem os caminhos). Vai no nome do arquivo: mudar o
  * tratamento grava um WAV novo em vez de sobrescrever o que um projeto do
- * Premiere aberto pode estar usando.
+ * Premiere aberto pode estar usando. Desde o #13544 o tamanho do áudio de
+ * entrada (`srcBytes`) também entra: na 261118 o 2º bruto juntado regravou a
+ * faixa com o MESMO nome (992 s para 1186 s), e no Mac a cópia offline velha,
+ * mais curta que o in/out dos clipes novos, fez o Premiere não importar nada.
+ * Entrada de outro tamanho = WAV novo; o que um XML anterior aponta fica.
  */
-export function cleanAudioKey(filter: string): string {
-  return createHash("sha256").update(JSON.stringify(audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter }))).digest("hex").slice(0, 8);
+export function cleanAudioKey(filter: string, srcBytes?: number): string {
+  const args = audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter });
+  return createHash("sha256").update(JSON.stringify(srcBytes === undefined ? args : { args, srcBytes })).digest("hex").slice(0, 8);
 }
 
 /** Nome da faixa de áudio tratada na pasta da edição (#12102). */
@@ -1237,17 +1271,20 @@ export function renderCleanAudio(
       warn(`DeepFilterNet (${bin}) não encontrado: a faixa tratada sai no ffmpeg (afftdn + agate); instalar: docs/setup.md, seção "Vídeo: montagem" (#13234)`);
     }
   }
-  const key = cleanAudioKey(filter);
-  const out = join(input.outDir, cleanAudioFileName(input.edition, key));
-  const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition, key);
-  const metaPath = join(input.stateDir, "audio-tratado.meta.json");
-  let id: { src: string; size: number; mtimeMs: number; out: string; args: string[] } | null = null;
+  let st: { size: number; mtimeMs: number } | null = null;
   try {
-    const st = statSync(input.src);
-    id = { src: input.src, size: st.size, mtimeMs: Math.round(st.mtimeMs), out: basename(out), args: audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter }) };
+    st = statSync(input.src);
   } catch (e) {
     debug(`faixa tratada: bruto sem stat (${(e as Error).message}); o render abaixo decide`);
   }
+  // #13544: o tamanho da entrada no nome (2º bruto juntado = faixa nova, nunca a velha regravada).
+  const key = cleanAudioKey(filter, st?.size);
+  const out = join(input.outDir, cleanAudioFileName(input.edition, key));
+  const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition, key);
+  const metaPath = join(input.stateDir, "audio-tratado.meta.json");
+  const id: { src: string; size: number; mtimeMs: number; out: string; args: string[] } | null = st
+    ? { src: input.src, size: st.size, mtimeMs: Math.round(st.mtimeMs), out: basename(out), args: audioCleanArgs({ src: "<bruto>", out: "<faixa>", filter }) }
+    : null;
   if (id && existsSync(out) && existsSync(metaPath)) {
     try {
       if (JSON.stringify(JSON.parse(readFileSync(metaPath, "utf8"))) === JSON.stringify(id)) {
@@ -2282,7 +2319,7 @@ function rollbackSourceSwitch(ctx: Ctx, prevSourceText: string | null, newPath: 
 }
 
 /** Arquivos que dependem dos números de segmento ou dos tempos do `transcript.json` (#11603). */
-export const TRANSCRIPT_DERIVED = ["decupagem-plan.json", "decupagem-plan.template.json", "decupagem.md", "blocks.json", "blocks.template.json", "plan.json"] as const;
+export const TRANSCRIPT_DERIVED = ["decupagem-plan.json", "decupagem-plan.template.json", DECUPAGEM_SEGMENTS_FILE, "decupagem.md", "blocks.json", "blocks.template.json", "plan.json"] as const;
 
 /**
  * Quando o `transcript.json` muda (#11603, ex.: `transcribe --from-audio` depois
@@ -2487,11 +2524,13 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (redo || !existsSync(audio) || !existsSync(loudPath)) {
     console.error("[video-montagem] extraindo o áudio (16 kHz mono) e medindo o loudness do bruto…");
     let stderr = "";
-    const baseArgs = [
-      "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
-      "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
-      "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
-    ];
+    const extractInput = multiAudio ? multiAudio.path : source.path;
+    // #13508: a banda alta de 48 kHz (#11940) sai na MESMA leitura do bruto; a meta só é gravada
+    // depois que a leitura deu certo (antes dela, a meta velha sai: banda alta sem meta é refeita).
+    const highWav = join(ctx.workDir, HIGH_BAND.file);
+    const highMeta = join(ctx.workDir, HIGH_BAND.meta);
+    rmSync(highMeta, { force: true });
+    const baseArgs = transcribeExtractArgs({ input: extractInput, audio, highBand: highWav });
     // #13508: o proxy 1440p na mesma leitura (bruto de um arquivo de vídeo, GPU + NVENC); só na 1ª leitura.
     let proxyPlan = multiAudio || source.audioOnly ? null : transcribeProxyPlan(ctx, source);
     const extract = () => {
@@ -2524,6 +2563,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
       }
     }
     writeJson(loudPath, parseLoudnormJson(stderr));
+    if (existsSync(highWav)) writeFileAtomic(highMeta, highBandKey(extractInput, statSync(extractInput)) + "\n");
     redo = true;
   }
   const loud = readJson<ReturnType<typeof parseLoudnormJson>>(loudPath, "loudness.json");
@@ -2655,22 +2695,89 @@ export function parsePixelF0Arg(raw: string | undefined): number | undefined {
   return n;
 }
 
-function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
+/**
+ * #13587: retranscreve as janelas pedidas numa chamada só do Whisper
+ * (`--windows`, sem VAD e sem `condition_on_previous_text`; o residente da
+ * #13506 atende) e grava cada uma como o `retranscribe` gravaria:
+ * `retranscribe-{de}-{até}.json` (janela) ou `retranscribe-sub-{de}-{até}.json`
+ * (subjanela, com `sub.window`). Sem o `audio.wav` nesta máquina, false.
+ */
+function retranscribeWindowsBatch(ctx: Ctx, wins: Array<{ key: string; start: number; end: number }>, kind: "janela" | "sub"): boolean {
+  const audio = join(ctx.workDir, "audio.wav");
+  if (!existsSync(audio)) return false;
+  if (!wins.length) return true;
+  mkdirSync(ctx.workDir, { recursive: true });
+  const tag = kind === "sub" ? "sub" : "janelas";
+  const winFile = join(ctx.workDir, `retranscribe-${tag}-windows.json`);
+  const raw = join(ctx.workDir, `retranscribe-${tag}.raw.json`);
+  writeFileSync(winFile, JSON.stringify(wins));
+  console.error(`[video-montagem] retranscrevendo ${wins.length} ${kind === "sub" ? "subjanela(s)" : "janela(s)"} numa chamada só (sem VAD, ${kind === "sub" ? "#11958" : "#13587"})…`);
+  const vocab = loadVocab();
+  run(ctx.python, ["-P", PY_HELPER, audio, raw, "--windows", winFile, "--no-condition", "--initial-prompt", vocab.whisper_prompt ?? ""], {
+    env: { ...process.env, HF_HUB_OFFLINE: "1" },
+    inheritStderr: true,
+  });
+  const out = readJson<{ windows: Array<{ key: string; start: number; end: number; segments: Segment[] }> }>(raw, kind === "sub" ? "retranscrição das subjanelas" : "retranscrição das janelas");
+  for (const w of out.windows) {
+    // Prefixo próprio na subjanela: nunca sobrescreve a retranscrição da janela inteira de mesmo intervalo.
+    const t: Transcript = kind === "sub" ? { segments: w.segments, sub: { window: { start: w.start, end: w.end } } } : { segments: w.segments };
+    writeJson(f(ctx, kind === "sub" ? subWindowFileName(w.key) : windowFileName(w.key)), t);
+    if (kind === "sub") console.log(`== ${w.key} s: ${w.segments.map((s) => s.text.trim()).join(" ") || "(nada)"}`);
+  }
+  return true;
+}
+
+/** A retranscrição gravada (`retranscribe-*.json`) daquele nome, ou null. */
+function readRetranscribed(ctx: Ctx, name: string): Transcript | null {
+  const p = f(ctx, name);
+  return existsSync(p) ? readJson<Transcript>(p, name) : null;
+}
+
+/**
+ * #13587: os segmentos numerados da decupagem. Com `decupagem-segments.json`
+ * (a listagem congelada da 1ª passada), eles; sem ele (plano anterior ao
+ * #13587), os do transcript.
+ */
+function decupagemListing(ctx: Ctx, tr: Transcript): { segments: Segment[]; origin: ListingOrigin[] | null } {
+  const p = f(ctx, DECUPAGEM_SEGMENTS_FILE);
+  return listingSegments(tr.segments, existsSync(p) ? readJson<unknown>(p, DECUPAGEM_SEGMENTS_FILE) : null, ctx.edition);
+}
+
+function cmdDecupagem(ctx: Ctx, pixelF0?: number, retranscribe = true): number {
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
-  const segments = tr.segments;
-  // Tomada colapsada (#11754): avisar antes de decidir, com a janela do retranscribe.
   const silPath = f(ctx, "silences.json");
-  for (const line of collapsedSegmentWarnings(ctx.edition, segments, existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : [], tr.duration)) console.error(`[aviso] ${line}`);
-  const plan = loadDecupagemPlan(ctx, segments);
-  if (!plan) {
-    // 1ª passada: a listagem numerada e o molde do plano, para a skill classificar (#11361).
+  const sil = existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : [];
+  // #13544: outro vídeo solto na pasta além do bruto (o CTA gravado à parte, na 261118): avisar nas duas passadas.
+  warnLooseVideos(ctx, measuredSource(ctx));
+  const planExists = existsSync(f(ctx, "decupagem-plan.json"));
+  if (!planExists) {
+    // 1ª passada: a listagem numerada e o molde do plano, para a skill classificar (#11361). #13587: a tomada
+    // colapsada já sai resolvida pela retranscrição da janela (numa chamada só), com as tomadas separadas.
+    const res = resolveCollapsedListing(tr.segments, sil, tr.duration, {
+      readWindow: (k) => readRetranscribed(ctx, windowFileName(k)),
+      readSub: (k) => readRetranscribed(ctx, subWindowFileName(k)),
+      transcribeWindows: (wins, kind) => retranscribeWindowsBatch(ctx, wins, kind),
+    }, { retranscribe });
+    if (res.audioMissing) console.error(`[aviso] áudio do bruto ausente (${join(ctx.workDir, "audio.wav")}): tomada colapsada sem retranscrição nesta máquina; rode transcribe aqui ou retranscribe à mão (#13587)`);
+    for (const u of res.unresolved) {
+      const s = tr.segments[u.job.segment];
+      console.error(`[aviso] segmento ${u.job.segment + 1} do transcript (${clockTime(s.start)}–${clockTime(s.end)}): ${res.origin.find((o) => o.original === u.job.segment + 1 && !o.retranscribed)?.note ?? "possível tomada colapsada"}`);
+    }
+    if (res.jobs.length) console.error(`[video-montagem] decupagem: ${res.jobs.length} segmento(s) com tomada colapsada, ${res.resolved} separado(s) pela retranscrição (${res.transcribed.windows} janela(s) e ${res.transcribed.subs} subjanela(s) retranscritas agora, #13587)`);
+    const segments = res.segments;
+    writeJson(f(ctx, DECUPAGEM_SEGMENTS_FILE), freezeListing(ctx.edition, tr.segments, res));
+    const notes = res.origin.map((o) => o.note);
     const voices = segmentVoices(ctx, segments, pixelF0);
     const tplPath = f(ctx, "decupagem-plan.template.json");
-    writeJson(tplPath, decupagemPlanTemplate(ctx.edition, segments, voices));
-    process.stdout.write(segmentListing(segments, voices));
+    writeJson(tplPath, decupagemPlanTemplate(ctx.edition, segments, voices, notes));
+    process.stdout.write(segmentListing(segments, voices, notes));
     console.error(`[video-montagem] decupagem: classificar os segmentos acima em ${f(ctx, "decupagem-plan.json")} (molde: ${tplPath}) e rodar decupagem de novo`);
     return 0;
   }
+  const { segments, origin } = decupagemListing(ctx, tr);
+  // Tomada colapsada (#11754): sem a listagem do #13587 (plano anterior), o aviso de antes, com a janela do retranscribe.
+  if (!origin) for (const line of collapsedSegmentWarnings(ctx.edition, segments, sil, tr.duration)) console.error(`[aviso] ${line}`);
+  const plan = loadDecupagemPlan(ctx, segments)!;
   // Decisão por critério (#11364): uma tomada por frase, a direção decide antes da "alternativa".
   const crit = checkDecupagemCriteria(plan, segments);
   for (const w of crit.warnings) console.error(`[aviso] ${w}`);
@@ -2709,6 +2816,45 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   writeJson(tpl, template);
   process.stdout.write(md);
   console.error(`[video-montagem] decupagem: ${f(ctx, "decupagem.md")}; molde do blocks.json (falas "usar"): ${tpl}`);
+  return 0;
+}
+
+/** `blocks --from-plan` sem `roteiro-falas.json`: a edição não tem roteiro de gravação (mesmo código do `video-roteiro-blocos.ts`). */
+export const EXIT_BLOCKS_SEM_ROTEIRO = 3;
+
+/**
+ * `blocks AAMMDD --from-plan [--force] [--falas PATH]` (#13463): o `blocks.json`
+ * do molde da decupagem + a proposta do roteiro de gravação, no lugar do script
+ * ad-hoc. Valida o resultado inteiro (`parseBlocksFile`) antes de gravar; nunca
+ * sobrescreve um `blocks.json` sem `--force` (o anterior fica em
+ * `blocks.antes-from-plan.json`).
+ */
+function cmdBlocks(ctx: Ctx, fromPlan: boolean, force: boolean, falasArg: string | undefined): number {
+  if (!fromPlan) throw new Error("blocks exige --from-plan (o blocks.json do molde da decupagem + a proposta do roteiro, #13463)");
+  const tplPath = f(ctx, "blocks.template.json");
+  const tplParsed = parseBlocksFile(readJson<unknown>(tplPath, "blocks.template.json (rode decupagem com o decupagem-plan.json)"));
+  if (!tplParsed.ok) throw new Error(`blocks.template.json inválido:\n  - ${tplParsed.errors.join("\n  - ")}`);
+  if (tplParsed.file.edition !== ctx.edition) throw new Error(`blocks.template.json é da edição ${tplParsed.file.edition}, não ${ctx.edition}`);
+  const falasPath = falasArg ?? join(editionDirFor(ctx.edition), ROTEIRO_FALAS_FILE);
+  if (!existsSync(falasPath)) {
+    console.error(`[video-montagem] blocks: sem ${falasPath} (edição sem roteiro pela /diaria-video-roteiro): escrever o blocks.json a partir do molde, como antes (#13463)`);
+    return EXIT_BLOCKS_SEM_ROTEIRO;
+  }
+  const roteiro = parseRoteiroFalas(readJson<unknown>(falasPath, "roteiro-falas.json"));
+  if (!roteiro.ok) throw new Error(`${falasPath} inválido:\n  - ${roteiro.problemas.join("\n  - ")}`);
+  const proposta = propostaBlocosDoRoteiro(roteiro.roteiro);
+  const { file, avisos } = blocksFromPlan(tplParsed.file, proposta);
+  for (const a of avisos) console.error(`[aviso] ${a}`);
+  const parsed = parseBlocksFile(JSON.parse(JSON.stringify(file)));
+  if (!parsed.ok) throw new Error(`o blocks.json montado não passa na validação (nada gravado):\n  - ${parsed.errors.join("\n  - ")}`);
+  const path = f(ctx, "blocks.json");
+  if (existsSync(path)) {
+    if (!force) throw new Error(`${path} já existe: blocks --from-plan não sobrescreve sem --force (o atual vai para blocks.antes-from-plan.json)`);
+    copyFileSync(path, f(ctx, "blocks.antes-from-plan.json"));
+  }
+  writeFileAtomic(path, JSON.stringify(file, null, 2) + "\n");
+  const n = Object.values(file.blocks).reduce((s, l) => s + (l?.length ?? 0), 0);
+  console.error(`[video-montagem] blocks --from-plan: ${n} item(ns) em ${path}${avisos.length ? `, ${avisos.length} aviso(s) acima` : ""}; conferir o diff antes do face/roteiro (#13463)`);
   return 0;
 }
 
@@ -2765,25 +2911,9 @@ function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefi
  * tomada colapsada e procuram o falso começo (`findRepetitionCut`).
  */
 function retranscribeSubWindows(ctx: Ctx, audio: string, window: Interval): number {
-  const wins = subWindows(window).map((w) => ({ key: `${w.start.toFixed(1)}-${w.end.toFixed(1)}`, start: w.start, end: w.end }));
-  mkdirSync(ctx.workDir, { recursive: true });
-  const winFile = join(ctx.workDir, "retranscribe-sub-windows.json");
-  const raw = join(ctx.workDir, "retranscribe-sub.raw.json");
-  writeFileSync(winFile, JSON.stringify(wins));
-  console.error(`[video-montagem] retranscrevendo ${wins.length} subjanela(s) de ${window.start.toFixed(1)}–${window.end.toFixed(1)} s (sem VAD, #11958)…`);
-  const vocab = loadVocab();
-  run(ctx.python, ["-P", PY_HELPER, audio, raw, "--windows", winFile, "--no-condition", "--initial-prompt", vocab.whisper_prompt ?? ""], {
-    env: { ...process.env, HF_HUB_OFFLINE: "1" },
-    inheritStderr: true,
-  });
-  const out = readJson<{ windows: Array<{ key: string; start: number; end: number; segments: Segment[] }> }>(raw, "retranscrição das subjanelas");
-  for (const w of out.windows) {
-    // Prefixo próprio: nunca sobrescreve a retranscrição da janela inteira de mesmo intervalo.
-    const path = f(ctx, `retranscribe-sub-${w.key}.json`);
-    const t: Transcript = { segments: w.segments, sub: { window: { start: w.start, end: w.end } } };
-    writeJson(path, t);
-    console.log(`== ${w.key} s: ${w.segments.map((s) => s.text.trim()).join(" ") || "(nada)"}`);
-  }
+  const wins = subWindows(window).map((w) => ({ key: retranscribeKey(w), start: w.start, end: w.end }));
+  console.error(`[video-montagem] subjanelas de ${window.start.toFixed(1)}–${window.end.toFixed(1)} s (#11958)`);
+  if (!retranscribeWindowsBatch(ctx, wins, "sub")) throw new Error(`áudio do bruto ausente (${audio}): rode transcribe de novo nesta máquina`);
   console.error("[video-montagem] subjanelas gravadas como retranscribe-sub-*.json: o roteiro/build procuram o falso começo nelas e propõem o corte na linha repetição (#11958)");
   return 0;
 }
@@ -2965,7 +3095,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   const xmlTexts = chosen.map((p) => join(ctx.outDir, xmlFileName(p.spec.name))).filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
   // #13500: e os trechos inseridos de cada sequência escolhida, contra o arquivo no out dir.
   const inseridosXml = chosen.flatMap((p) => pf.xmlAssets?.[sequenceKey(p.spec)]?.trechosInseridos ?? []);
-  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), probeTrechoFrames, { dir: ctx.outDir, clips: inseridosXml });
+  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), cachedTrechoProbe(trechoFramesCachePath(ctx.workDir)), { dir: ctx.outDir, clips: inseridosXml });
   for (const x of mediaIssues) console.log(`[erro] ${x}`);
   bad += mediaIssues.length;
   const report: Record<string, unknown> = {};
@@ -3141,6 +3271,52 @@ function finishProxy(ctx: Pick<Ctx, "workDir">, source: SourceInfo, part: string
   writeJson(join(ctx.workDir, PROXY.meta), meta);
 }
 
+/**
+ * #13544: os vídeos soltos na pasta da edição fora do bruto do `source.json`,
+ * com `[aviso]` e o comando do transcribe com todos. Pasta ausente ou ilegível
+ * (modo API, outra máquina) = nada a dizer.
+ */
+function warnLooseVideos(ctx: Pick<Ctx, "driveDir" | "edition">, source: SourceInfo): string[] {
+  if (source.audioOnly || !existsSync(ctx.driveDir)) return [];
+  let files: Array<{ name: string; size: number }>;
+  try {
+    files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+  } catch (e) {
+    console.error(`[debug] ${ctx.driveDir} não listada (${(e as Error).message}): vídeos fora do bruto não conferidos (#13544)`);
+    return [];
+  }
+  const raw = pickRawSource(files);
+  if (!raw || raw.audioOnly) return [];
+  const extras = videosForaDoBruto(raw.candidates, source);
+  const msg = videosForaDoBrutoAviso(ctx.edition, extras, source);
+  if (msg) console.error(`[aviso] ${msg}`);
+  return extras;
+}
+
+/** #13544: no `build`, as falas do roteiro sem item resolvido no blocks.json, por id. */
+function warnFalasSemTomada(ctx: Pick<Ctx, "driveDir" | "edition">, source: SourceInfo, resolved: Partial<Record<BlockKey, ResolvedItem[]>>): void {
+  const extras = warnLooseVideos(ctx, source);
+  const falas = readRoteiroFalasLista(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
+  if (!falas.length) return;
+  const items = Object.values(resolved).flatMap((xs) => xs ?? []);
+  const msg = falasSemTomadaAviso(falasSemTomada(falas, items), extras);
+  if (msg) console.error(`[aviso] ${msg}`);
+}
+
+/**
+ * #13508: o proxy da prévia, com o tamanho dele, ou `null` (prévia do 4K, como
+ * antes): bruto em vários arquivos, só áudio, sem proxy válido, ou
+ * `DIARIA_VIDEO_PROXY=0`.
+ */
+function previewProxy(ctx: Pick<Ctx, "workDir">, source: SourceInfo): { path: string; size: { width: number; height: number } } | null {
+  if ((process.env.DIARIA_VIDEO_PROXY ?? "").trim() === "0" || isMultiSource(source) || source.audioOnly) return null;
+  const path = proxyFor(ctx, source);
+  const size = path ? proxySize(source.width, source.height) : null;
+  if (!path || !size) return null;
+  console.error(`[video-montagem] prévia lida do proxy ${PROXY.shortSide}p (${path}); o XML segue no bruto (#13508)`);
+  return { path, size };
+}
+
 /** `proxyFor` com a linha do relato dizendo de onde os frames saem (#13508). */
 function proxyNotice(ctx: Pick<Ctx, "workDir">, source: SourceInfo): string | null {
   const p = proxyFor(ctx, source);
@@ -3201,18 +3377,65 @@ function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, Resolve
   return { keys, items: byKey };
 }
 
-function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
+/**
+ * #13588: tira os frames pedidos (em lote, do proxy quando houver) e roda o
+ * `face_detect.py` (Haar, ou o `python`/`extra` do MediaPipe no face-compare);
+ * uma detecção por frame, com a `key` do item.
+ */
+function detectFaceFrames(ctx: Ctx, source: SourceInfo, frames: readonly FaceFrameRequest[], dir: string, tag: string, proxy: string | null, detector: { python?: string; extra?: string[] } = {}): FrameDetection[] {
+  mkdirSync(dir, { recursive: true });
+  const jobs = frames.map((fr, i) => ({ key: fr.key, path: join(dir, `${tag}-${i}.png`) }));
+  grabFrames(source, frames.map((fr, i) => ({ t: fr.t, out: jobs[i].path })), proxy);
+  const inJson = join(dir, `${tag}-in.json`);
+  const outJson = join(dir, `${tag}-out.json`);
+  writeJson(inJson, jobs);
+  run(detector.python ?? ctx.python, ["-P", FACE_PY, ...(detector.extra ?? []), inJson, outJson], { inheritStderr: true });
+  return readJson<FrameDetection[]>(outJson, "face_detect");
+}
+
+/**
+ * Os itens resolvidos do blocks.json como entrada do `face` (#13588): chave
+ * `{bloco}#{i}`, intervalo, arquivo e o `mirrored` efetivo do arquivo no meio
+ * da fala (o mesmo que `frameJobOf` usa para desespelhar; review da PR #13595).
+ */
+function faceItemsOf(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>): FaceItem[] {
+  return (Object.entries(resolved) as Array<[string, ResolvedItem[] | undefined]>).flatMap(([block, items]) =>
+    (items ?? []).map((it, i) => ({
+      key: `${block}#${i}`,
+      interval: { start: it.interval.start, end: it.interval.end },
+      ...(it.source !== undefined ? { source: it.source } : {}),
+      mirrored: frameAt(source, (it.interval.start + it.interval.end) / 2).view.mirrored,
+    })),
+  );
+}
+
+/** Impressão do `face_detect.py` (parâmetros do Haar): mudar o detector invalida o `face-cache.json` (review da PR #13595). */
+function faceDetectorFingerprint(): string {
+  return createHash("sha256").update(readFileSync(FACE_PY)).digest("hex").slice(0, 12);
+}
+
+function cmdFace(ctx: Ctx, write: boolean, overwrite = false, opts: { all?: boolean; oneFrame?: boolean } = {}): number {
   const { source, resolved } = plans(ctx);
   const dir = join(ctx.workDir, "face-tmp");
-  const { keys } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source));
-  run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "out.json")], { inheritStderr: true });
-  const results = itemFramings(readJson<FrameDetection[]>(join(dir, "out.json"), "face_detect"), keys);
+  rmSync(dir, { recursive: true, force: true });
+  const proxy = proxyNotice(ctx, source);
+  // #13588: só o item sem medida no cache (tomada nova ou trocada) vai ao detector; --all mede tudo.
+  const cachePath = f(ctx, FACE_CACHE_FILE);
+  const cache = parseFaceCache(existsSync(cachePath) ? readJson<unknown>(cachePath, FACE_CACHE_FILE) : null);
+  const sampling: FaceSampling = opts.oneFrame ? "um-frame" : "tres-frames";
+  let batch = 0;
+  const m = runFaceMeasurement(faceItemsOf(source, resolved), cache, { detect: (frames) => detectFaceFrames(ctx, source, frames, dir, `f${batch++}`, proxy) }, { bruto: source.path, sampling, all: opts.all, detector: faceDetectorFingerprint() });
+  rmSync(dir, { recursive: true, force: true });
+  writeJson(cachePath, m.cache);
+  console.error(`[video-montagem] face: ${m.measured.length} item(ns) medido(s) agora (${m.frames} frame(s)${sampling === "um-frame" ? ", 1 por item com 25/75% onde o do meio não achou rosto" : ""}), ${m.fromCache.length} do ${FACE_CACHE_FILE}${opts.all ? " (--all)" : "; --all mede tudo"} (#13588)`);
+  const results = m.results;
+  const cachedKeys = new Set(m.fromCache);
   for (const r of results) {
     const [block, idx] = r.key.split("#");
-    if (!r.framing) console.error(`[aviso] ${block}[${idx}]: rosto não detectado em ${r.total} frame(s); mantém o framing atual`);
-    else console.log(`${block}[${idx}]  ${r.found}/${r.total} frames  faceX ${r.framing.faceX}  eyeY ${r.framing.eyeY}  mouthY ${r.framing.mouthY}  rosto ${((r.faceH ?? 0) * 100).toFixed(1)}% da altura`);
+    const from = cachedKeys.has(r.key) ? "  (cache)" : "";
+    if (!r.framing) console.error(`[aviso] ${block}[${idx}]: rosto não detectado em ${r.total} frame(s); mantém o framing atual${from}`);
+    else console.log(`${block}[${idx}]  ${r.found}/${r.total} frames  faceX ${r.framing.faceX}  eyeY ${r.framing.eyeY}  mouthY ${r.framing.mouthY}  rosto ${((r.faceH ?? 0) * 100).toFixed(1)}% da altura${from}`);
   }
-  rmSync(dir, { recursive: true, force: true });
   if (!write) {
     console.error("[video-montagem] sem --write: nada gravado (#12560)");
     return 0;
@@ -3238,15 +3461,40 @@ function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
  * rosto-agrega`). O MediaPipe roda com o Python de um venv próprio
  * (`--mp-python`), fora do venv da montagem: dependência só da medição.
  */
-function cmdFaceCompare(ctx: Ctx, mpPython: string | undefined, mpModel: string | undefined): number {
+function cmdFaceCompare(ctx: Ctx, mpPython: string | undefined, mpModel: string | undefined, oneFrame = false): number {
   if (!mpPython || !mpModel) throw new Error("face-compare exige --mp-python (Python com mediapipe 0.10.x) e --mp-model (blaze_face_short_range.tflite); ver docs/video-medicoes-r2-r3.md (#13370)");
   if (!existsSync(mpModel)) throw new Error(`face-compare: modelo do MediaPipe não encontrado: ${mpModel}`);
   const { file, source, resolved } = plans(ctx);
   const { framing: base, assumed } = effectiveFraming(file);
   const dir = join(ctx.workDir, "face-compare-tmp");
-  const { keys, items } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source));
-  run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "haar.json")], { inheritStderr: true });
-  run(mpPython, ["-P", FACE_PY, "--detector", "mediapipe", "--model", mpModel, join(dir, "in.json"), join(dir, "mediapipe.json")], { inheritStderr: true });
+  let keys: string[];
+  let items: Map<string, ResolvedItem>;
+  if (oneFrame) {
+    // #13588: os frames do `face --um-frame` (o do meio; 25/75% onde o Haar não achou rosto nele), os mesmos nos dois detectores.
+    rmSync(dir, { recursive: true, force: true });
+    const proxy = proxyNotice(ctx, source);
+    const fitems = faceItemsOf(source, resolved);
+    keys = fitems.map((it) => it.key);
+    items = new Map((Object.entries(resolved) as Array<[string, ResolvedItem[] | undefined]>).flatMap(([b, xs]) => (xs ?? []).map((it, i) => [`${b}#${i}`, it] as const)));
+    const asked: FaceFrameRequest[] = [];
+    const haar: FrameDetection[] = [];
+    let batch = 0;
+    runFaceMeasurement(fitems, emptyFaceCache(), {
+      detect: (frames) => {
+        asked.push(...frames);
+        const d = detectFaceFrames(ctx, source, frames, dir, `h${batch++}`, proxy);
+        haar.push(...d);
+        return d;
+      },
+    }, { bruto: source.path, sampling: "um-frame" });
+    writeJson(join(dir, "haar.json"), haar);
+    writeJson(join(dir, "mediapipe.json"), detectFaceFrames(ctx, source, asked, dir, "mp", proxy, { python: mpPython, extra: ["--detector", "mediapipe", "--model", mpModel] }));
+    console.error(`[video-montagem] face-compare --um-frame: ${asked.length} frame(s) para ${keys.length} item(ns) (#13588)`);
+  } else {
+    ({ keys, items } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source)));
+    run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "haar.json")], { inheritStderr: true });
+    run(mpPython, ["-P", FACE_PY, "--detector", "mediapipe", "--model", mpModel, join(dir, "in.json"), join(dir, "mediapipe.json")], { inheritStderr: true });
+  }
   const refs: FaceReference[] = [];
   const skipped: Array<{ key: string; reason: string }> = [];
   for (const key of keys) {
@@ -3333,8 +3581,10 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   printTakeRepeatWarnings(ctx, resolved);
   // As linhas "alternativa" da decupagem viram as opções B, C… do roteiro (#11361).
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
-  const dplan = loadDecupagemPlan(ctx, tr.segments);
-  const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, tr.segments, loadVocab().rules)) : undefined;
+  // #13587: os números do plano são os da listagem congelada da decupagem (com as tomadas separadas).
+  const dsegs = decupagemListing(ctx, tr).segments;
+  const dplan = loadDecupagemPlan(ctx, dsegs);
+  const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, dsegs, loadVocab().rules)) : undefined;
   const sil = silences(ctx);
   const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
   if (targetOverride) console.error(`[aviso] ${targetOverride}`);
@@ -3536,19 +3786,50 @@ function speechDetection(ctx: Ctx, source: SourceInfo, opts: SpeechDetectOptions
 }
 
 /** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
+/**
+ * A leitura do `transcribe` (#13508): UM ffmpeg sobre o áudio do bruto grava o
+ * WAV de 16 kHz (Whisper), a banda alta de 48 kHz (#11940, antes uma 2ª leitura
+ * do bruto inteiro no `highBandEnvelope`) e mede o loudness (resumo no stderr).
+ * O proxy 1440p, quando há, é pendurado depois (`runExtractWithProxy`).
+ */
+export function transcribeExtractArgs(input: { input: string; audio: string; highBand: string }): string[] {
+  return [
+    "-hide_banner", "-nostats", "-y", "-i", input.input,
+    "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", input.audio,
+    ...highBandOutputArgs(input.highBand),
+    "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
+  ];
+}
+
+/** O WAV da banda alta (48 kHz, #11940) e a meta que diz de qual entrada ele saiu. */
+export const HIGH_BAND = { file: "audio-high-48k.wav", meta: "audio-high-48k.meta.json" } as const;
+
+/**
+ * A chave da banda alta (#11940): a entrada (caminho, tamanho, mtime) e os
+ * parâmetros que mudam o WAV. Só os campos do #11940 (na mesma ordem): os do
+ * limiar relativo (#11968) não mudam o WAV, e entrar na chave obrigaria a
+ * reextrair do bruto à toa.
+ */
+export function highBandKey(input: string, st: { size: number; mtimeMs: number }): string {
+  const S = SIBILANTS;
+  return JSON.stringify({ path: input, size: st.size, mtimeMs: st.mtimeMs, sampleRate: S.sampleRate, highpassHz: S.highpassHz, thresholdDb: S.thresholdDb, quietS: S.quietS, airS: S.airS, windowS: S.windowS });
+}
+
+/** A saída da banda alta para um ffmpeg cuja entrada 0 é o áudio do bruto (#11940; na leitura do `transcribe` desde o #13508). */
+export function highBandOutputArgs(out: string): string[] {
+  return ["-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(SIBILANTS.sampleRate), "-af", `highpass=f=${SIBILANTS.highpassHz}`, "-c:a", "pcm_s16le", out];
+}
+
 function highBandEnvelope(ctx: Ctx, source: SourceInfo) {
   const input = audioInputOf(ctx, source);
-  const audio = join(ctx.workDir, "audio-high-48k.wav");
-  const meta = join(ctx.workDir, "audio-high-48k.meta.json");
-  const st = statSync(input);
-  // Só os campos do #11940 (na mesma ordem): os do limiar relativo (#11968) não
-  // mudam o WAV, e entrar na chave obrigaria a reextrair do bruto à toa.
-  const S = SIBILANTS;
-  const key = JSON.stringify({ path: input, size: st.size, mtimeMs: st.mtimeMs, sampleRate: S.sampleRate, highpassHz: S.highpassHz, thresholdDb: S.thresholdDb, quietS: S.quietS, airS: S.airS, windowS: S.windowS });
+  const audio = join(ctx.workDir, HIGH_BAND.file);
+  const meta = join(ctx.workDir, HIGH_BAND.meta);
+  const key = highBandKey(input, statSync(input));
+  // #13508: o `transcribe` já grava a banda alta na mesma leitura do bruto; aqui só quando falta ou mudou.
   if (ctx.force || !existsSync(audio) || !existsSync(meta) || readFileSync(meta, "utf8").trim() !== key) {
     mkdirSync(ctx.workDir, { recursive: true });
     rmSync(meta, { force: true });
-    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", input, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(SIBILANTS.sampleRate), "-af", `highpass=f=${SIBILANTS.highpassHz}`, "-c:a", "pcm_s16le", audio]);
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", input, ...highBandOutputArgs(audio)]);
     writeFileAtomic(meta, key + "\n");
   }
   const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
@@ -4213,6 +4494,72 @@ export function probeTrechoFrames(path: string): number | null {
   }
 }
 
+/** #13512: o arquivo do cache da contagem de quadros. */
+export const TRECHO_FRAMES_CACHE = "trechos-quadros-cache.json";
+
+/**
+ * #13512: onde o cache mora, no work dir da edição (local: `tmp` no Neo, o
+ * cache em disco no modo API). Nunca no out dir nem na `trechos/`: a pasta do
+ * Drive sincroniza entre máquinas, e o mtime de um arquivo baixado pelo Drive
+ * em outra máquina não é o desta, então a chave não valeria lá.
+ */
+export function trechoFramesCachePath(workDir: string): string {
+  return join(workDir, TRECHO_FRAMES_CACHE);
+}
+
+/**
+ * #13512: `probe` com cache em `cachePath`, chave caminho absoluto do
+ * arquivo + tamanho + mtime. O mesmo arquivo, intacto, não é relido a cada
+ * rebuild do XML leve (~1,6 GB de trechos); mudou tamanho ou mtime, sonda de
+ * novo. Só contagem válida é guardada (null = ilegível, sempre reprobe);
+ * entrada de arquivo que não existe mais é podada ao carregar; cache ausente,
+ * corrompido ou que não grava vira sonda direta, nunca erro. Não usar para o
+ * `.part` temporário do render (`renderFramesConferidos.probePart`).
+ */
+export function cachedTrechoProbe(cachePath: string, probe: (path: string) => number | null = probeTrechoFrames): (path: string) => number | null {
+  type Entry = { size: number; mtimeMs: number; frames: number };
+  const cache: Record<string, Entry> = {};
+  let pruned = false;
+  try {
+    const raw: unknown = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw as Record<string, Entry>)) {
+        if (existsSync(k)) cache[k] = v;
+        else pruned = true;
+      }
+    }
+  } catch { /* sem cache */ }
+  const save = () => {
+    try {
+      mkdirSync(dirname(cachePath), { recursive: true });
+      writeFileSync(cachePath, JSON.stringify(cache));
+    } catch { /* cache é otimização */ }
+  };
+  if (pruned) save();
+  return (path: string) => {
+    const key = resolve(path);
+    let st: { size: number; mtimeMs: number };
+    try {
+      st = statSync(key);
+    } catch {
+      return probe(path);
+    }
+    const hit = cache[key];
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs && Number.isInteger(hit.frames)) return hit.frames;
+    const frames = probe(path);
+    if (frames === null) {
+      if (key in cache) {
+        delete cache[key];
+        save();
+      }
+      return null;
+    }
+    cache[key] = { size: st.size, mtimeMs: st.mtimeMs, frames };
+    save();
+    return frames;
+  };
+}
+
 /**
  * #13488: os trechos que os XMLs leves apontam, conferidos contra a mídia
  * REAL em `dir` (a `trechos/` do out dir): ausente, ilegível ou com menos (ou
@@ -4337,6 +4684,8 @@ export function renderFramesConferidos(input: {
   tmp: string;
   render: (part: string) => void;
   probeFrames: (path: string) => number | null;
+  /** #13512: a sonda do `.part` temporário (padrão `probeFrames`); nunca a com cache, que guardaria um arquivo descartável. */
+  probePart?: (path: string) => number | null;
   /** Começo das mensagens (`trecho X.mov`, `trecho inserido H5`). */
   label: string;
   /** O que promete os quadros (`o nome pede`, `o intervalo pede`). */
@@ -4349,7 +4698,7 @@ export function renderFramesConferidos(input: {
   for (let attempt = 1; ; attempt++) {
     rmSync(part, { force: true });
     input.render(part);
-    const gotPart = input.probeFrames(part);
+    const gotPart = (input.probePart ?? input.probeFrames)(part);
     let bad = ok(gotPart) ? null : `o render saiu com ${fmtTrechoFrames(gotPart)}`;
     let gotOut: number | null = null;
     if (!bad) {
@@ -4392,6 +4741,8 @@ export function renderTrechos(input: {
   listEncoders?: () => string;
   /** #13488: os quadros de vídeo do arquivo (null = ilegível); padrão `probeTrechoFrames`. */
   probeFrames?: (path: string) => number | null;
+  /** #13512: o cache local da contagem de quadros (`trechoFramesCachePath(workDir)`); ausente = sem cache. */
+  framesCachePath?: string | null;
   /** #13488: onde fica a pasta temporária do render (padrão `os.tmpdir()`), fora do out dir sincronizado. */
   tmpRoot?: string;
   log?: (line: string) => void;
@@ -4399,7 +4750,6 @@ export function renderTrechos(input: {
   const log = input.log ?? ((m: string) => console.error(m));
   // #13507: o decode do bruto pela GPU quando der (a queda para a CPU fica no runDecode; a do NVENC, abaixo).
   const encode = input.encode ?? ((args: string[]) => runDecode(args, "trecho do XML leve"));
-  const probeFrames = input.probeFrames ?? probeTrechoFrames;
   const files = sourceFiles(input.source);
   const uses = input.plans.flatMap((p) =>
     p.clips.map((c) => {
@@ -4411,6 +4761,10 @@ export function renderTrechos(input: {
   const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
   const dir = join(input.outDir, TRECHOS.dirName);
   mkdirSync(dir, { recursive: true });
+  // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild; o cache fica no
+  // work dir (local), nunca no out dir sincronizado. O `.part` do render é sempre sondado sem cache.
+  const rawProbe = input.probeFrames ?? probeTrechoFrames;
+  const probeFrames = input.framesCachePath ? cachedTrechoProbe(input.framesCachePath, rawProbe) : rawProbe;
   let encoder: TrechoEncoder = pickTrechoEncoder(input.listEncoders ? input.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
   const p = input.mediaPath.replace(/\\/g, "/");
   const xmlDir = `${p.slice(0, p.lastIndexOf("/") + 1)}${TRECHOS.dirName}/`;
@@ -4440,6 +4794,7 @@ export function renderTrechos(input: {
         expected,
         tmp,
         probeFrames,
+        probePart: rawProbe,
         label: `trecho ${t.name}`,
         pede: "o nome pede",
         tag: "#13488",
@@ -4678,6 +5033,24 @@ export function cutTrechoInserido(
 }
 
 /**
+ * #13536: o ganho do Audio Levels do clipe de um trecho inserido, pelo loudness
+ * medido nele (`audioGainFor`: -14 LUFS, teto de true peak), como o bruto
+ * recebe o dele. Falha na medida = sem ganho, com o motivo.
+ */
+export function measureTrechoGain(path: string, measure: (p: string) => string = (p) => run("ffmpeg", ["-hide_banner", "-nostats", "-i", p, "-vn", "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"]).stderr): { gain: AudioGain | null; detail: string } {
+  let m: ReturnType<typeof parseLoudnormJson>;
+  try {
+    m = parseLoudnormJson(measure(path));
+  } catch (e) {
+    return { gain: null, detail: `loudness do clipe não medido: ${(e as Error).message.split(/\r?\n/)[0]}` };
+  }
+  if (!m) return { gain: null, detail: "loudness do clipe ilegível (sem áudio, ou só silêncio)" };
+  const g = audioGainFor(m);
+  if (!g) return { gain: null, detail: `clipe a ${m.inputI.toFixed(1)} LUFS sem true peak medido: ganho positivo não aplicado` };
+  return { gain: g, detail: `clipe a ${m.inputI.toFixed(1)} LUFS, alvo -14` };
+}
+
+/**
  * #13219: o XML leve do build, ou `null` para o XML do bruto (`--xml-bruto`,
  * modo API, ou ffmpeg que falhou), sempre dito no relato.
  */
@@ -4691,7 +5064,7 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
     return null;
   }
   try {
-    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS });
+    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir) });
     const cov = trechosCoverage(r.trechos, sourceFiles(source));
     console.error(
       `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
@@ -5058,6 +5431,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
   // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180),
   // exceto a fala que cita a tela (#13333): ali o box vai abaixo da legenda.
+  // #13544: fala do roteiro sem tomada (gravada noutro arquivo, ou cortada) e vídeo solto fora do bruto: aviso, nunca para o build.
+  warnFalasSemTomada(ctx, source, resolved);
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
   const telaOverlays: Record<string, TelaOverlay[]> = {};
@@ -5125,6 +5500,12 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       const m: TrechoInseridoMarker = { id: t.id, trecho: t.trecho, at };
       ms.push(m);
       const clip = cutTrechoInserido(ctx, t, m.at, p.spec, source.fps, mediaPath);
+      // #13536: o ganho do trecho, medido no clipe cortado (o do bruto não vale para outro vídeo).
+      if (clip && audioGain) {
+        const g = measureTrechoGain(clip.path);
+        if (g.gain) clip.gain = g.gain;
+        console.error(g.gain ? `[premissa] ${p.spec.name}: trecho ${t.id} com ${g.gain.db > 0 ? "+" : ""}${g.gain.db.toFixed(2)} dB (Audio Levels, ${g.detail}) (#13536)` : `[aviso] ${p.spec.name}: trecho ${t.id} sem ganho no XML (${g.detail}): conferir o nível no Premiere (#13536)`);
+      }
       if (clip) clips.push(clip);
       const line = trechoInseridoLine(m, source.fps, clip);
       console.error(`[${line.level}] ${p.spec.name}: ${line.text}`);
@@ -6059,6 +6440,9 @@ async function cmdPreview(
   const size = previewSize(plan.spec);
   // #12101/#12102: o que o XML DESTA sequência levou (gravado no build dela), não o que o config diz agora.
   const assets = pf.xmlAssets?.[sequenceKey(plan.spec)] ?? {};
+  // #13536: a prévia segue o plano, sem os trechos inseridos do XML (formato react): dito aqui, nunca em silêncio.
+  const semTrechos = previewTrechosAviso(assets.trechosInseridos ?? [], fps);
+  if (semTrechos) console.error(`[aviso] ${semTrechos}`);
   const treated = assets.treatedAudio;
   const audioSrc = treated && existsSync(treated.path) ? treated.path : undefined;
   if (treated && !audioSrc) console.error(`[aviso] faixa de áudio tratada ausente (${treated.path}): prévia com o áudio cru do bruto; rode build nesta máquina (#12102)`);
@@ -6071,6 +6455,8 @@ async function cmdPreview(
   const decodeClip = (args: string[], what: string): void => {
     clipJobs.push({ args, what, device: runDecode(args, what) });
   };
+  // #13508: o proxy 1440p do transcribe (bruto de um arquivo só; a meta confere caminho, tamanho e duração).
+  const proxy = previewProxy(ctx, pf.source);
   plan.clips.forEach((c, i) => {
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // #13303: o áudio exato do clipe (PCM, amostras por quadro), regravado sobre o concat no fim.
@@ -6091,11 +6477,13 @@ async function cmdPreview(
       return;
     }
     // #12096: o recorte do XML (framingFor com a escala e o eyeFraction da sequência).
-    const crop = previewCropFor(pf.source, plan.spec, clipFraming(pf.framing, c), c.scale);
+    const srcCrop = previewCropFor(pf.source, plan.spec, clipFraming(pf.framing, c), c.scale);
+    // #13508: com o proxy 1440p válido, a prévia lê dele (o mesmo recorte, em px do proxy); o XML segue no 4K.
+    const crop = proxy ? cropOnProxy(srcCrop, pf.source, proxy.size) : srcCrop;
     // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
     const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    decodeClip(previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
+    decodeClip(previewClipArgs({ src: proxy?.path ?? pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
@@ -6223,6 +6611,19 @@ async function cmdPreview(
   run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=${isVerticalSpec(plan.spec) ? 270 : 480}:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
   return 0;
+}
+
+/**
+ * #13536: o aviso da prévia de uma sequência com trecho inserido no XML: a
+ * prévia segue o plano (sem o trecho e sem o deslocamento dele), então cada
+ * tempo depois do ponto de inserção difere do export. `null` sem trecho.
+ */
+export function previewTrechosAviso(trechos: readonly Pick<TrechoInseridoClip, "id" | "at" | "frames">[], fps: number): string | null {
+  const ts = trechos.filter((t) => t.frames > 0);
+  if (!ts.length) return null;
+  const total = ts.reduce((k, t) => k + t.frames, 0) / fps;
+  const onde = ts.map((t) => `${t.id} em ${(t.at / fps).toFixed(1)} s (${(t.frames / fps).toFixed(1)} s)`).join(", ");
+  return `prévia SEM ${ts.length} trecho(s) inserido(s) que o XML tem (${onde}; ${total.toFixed(1)} s no total): depois de cada ponto, o tempo da prévia fica atrás do export; conferir o trecho no Premiere (#13536)`;
 }
 
 /**
@@ -6376,6 +6777,33 @@ export function reviewFinalSequence(file: string, seq: string | undefined, specs
   return { target: t, key: t };
 }
 
+/**
+ * #13536: o `checkText` do `review-final` num export com trecho inserido
+ * (formato react). A fala do vídeo citado não é do roteiro: as palavras dentro
+ * do trecho saem, e o resto volta ao tempo do plano (sem o deslocamento) antes
+ * de comparar; o tempo de cada achado volta ao do export. Sem trecho, o
+ * `checkText` de sempre.
+ */
+export function checkTextWithTrechos(input: Parameters<typeof checkText>[0], trechos: readonly TrechoInseridoClip[]): FinalReviewFinding[] {
+  const spans = trechoExportSpans(trechos, input.fps);
+  if (!spans.length) return checkText(input);
+  const total = spans.reduce((k, s) => k + (s.end - s.start), 0);
+  const words = wordsSemTrechos(input.words, spans).words;
+  const unripple = (t: number) => {
+    const inside = spans.find((s) => t >= s.start && t < s.end);
+    const at = inside ? inside.start : t;
+    return at - spans.reduce((k, s) => k + (s.end <= at ? s.end - s.start : 0), 0);
+  };
+  const found = checkText({
+    ...input,
+    words,
+    durationS: Math.max(0, input.durationS - total),
+    ...(input.audioEndS !== undefined ? { audioEndS: unripple(input.audioEndS) } : {}),
+    ...(input.silences ? { silences: intervalsSemTrechos(input.silences, spans) } : {}),
+  });
+  return found.map((f) => (f.at === null ? f : { ...f, at: planTimeToExport(f.at, trechos, input.fps) }));
+}
+
 function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefined, withText: boolean): number {
   if (!file) throw new Error("review-final exige --file PATH (o export do Premiere)");
   const path = resolve(file);
@@ -6401,12 +6829,15 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   // Plano da montagem, quando existe e está em dia: fps esperado, roteiro e tempo no bruto.
   let plan: SequencePlan | null = null;
   let planFps: number | null = null;
+  // #13536: os trechos inseridos que o XML desta sequência levou (o export os tem; o plano não).
+  let trechosXml: TrechoInseridoClip[] = [];
   try {
     const pf = loadPlan(ctx);
     // Pela identidade; sem ela, o único plano do destino (`--seq instagram` num blocks.json de 1 extra).
     const sameTarget = pf.plans.filter((p) => p.spec.target === target);
     plan = pf.plans.find((p) => sequenceKey(p.spec) === key) ?? (sameTarget.length === 1 ? sameTarget[0] : null);
     planFps = pf.source.audioOnly ? null : pf.source.fps;
+    if (plan) trechosXml = pf.xmlAssets?.[sequenceKey(plan.spec)]?.trechosInseridos ?? [];
     if (!plan) console.error(`[aviso] plan.json sem a sequência ${key}: texto não comparado com o roteiro`);
   } catch (e) {
     console.error(`[aviso] sem plan.json válido (${(e as Error).message}): texto não comparado, sem tempo no bruto`);
@@ -6448,7 +6879,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases, silences: sil }));
+    findings.push(...checkTextWithTrechos({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases, silences: sil }, trechosXml));
   }
 
   const table = finalReviewTable(findings);
@@ -6561,7 +6992,7 @@ export const DRIVE_UPLOADS_FILE = "drive-uploads.json";
 /** Saída quando o comando deu certo e só o upload para o Drive falhou (as saídas estão no out dir). */
 export const EXIT_UPLOAD_FAILED = 4;
 
-export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
+export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "blocks", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 /** Subcomandos cujas saídas sobem para a pasta da edição no modo API. */
 export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview"];
@@ -7035,15 +7466,17 @@ async function runCommand(
       return cmdVerifyXml(ctx, seq, !flags.has("no-transcribe"));
     case "face":
       await needLocalBruto();
-      return cmdFace(ctx, flags.has("write"), flags.has("overwrite"));
+      return cmdFace(ctx, flags.has("write"), flags.has("overwrite"), { all: flags.has("all"), oneFrame: flags.has("um-frame") });
     case "face-compare":
       await needLocalBruto();
-      return cmdFaceCompare(ctx, values["mp-python"], values["mp-model"]);
+      return cmdFaceCompare(ctx, values["mp-python"], values["mp-model"], flags.has("um-frame"));
     case "gaze":
       await needLocalBruto();
       return cmdGaze(ctx, seq);
     case "decupagem":
-      return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]));
+      return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]), !flags.has("no-retranscribe"));
+    case "blocks":
+      return cmdBlocks(ctx, flags.has("from-plan"), ctx.force, values["falas"]);
     case "frame": {
       await needLocalBruto();
       const code = cmdFrame(ctx, values["at"]);

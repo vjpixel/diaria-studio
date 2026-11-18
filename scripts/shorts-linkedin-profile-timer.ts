@@ -79,6 +79,7 @@ import {
   SHORTS_LINKEDIN_TIMER_LOCK_FILE,
   SHORTS_THREADS_TIMER_LOCK_FILE,
   SHORTS_TIMER_LOCK_STALE_MS,
+  driveNotReadyWait,
   verticalDownloadBusy,
 } from "./lib/diaria/vertical-download-guard.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
@@ -567,10 +568,16 @@ async function runLinkedinTimerEdition(aammdd: string, dir: string, dryRun: bool
     // #11631: o stdout (JSON do publish-shorts) é lido para alarmar skip_late e falha, como nos timers do Threads e do Instagram.
     const r = deps.runScript(publishArgs, true);
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
+    const { at } = linkedinVerticalTime(config, aammdd);
+    // #13540: vertical ainda subindo para o Drive (download vazio) — espera a próxima hora, sem alarme.
+    const notReady = driveNotReadyWait({ exitCode: r.status, stdout: r.stdout, nowMs: now.getTime(), at });
+    if (notReady) {
+      console.log(`[shorts-linkedin-timer] ${aammdd}: ${notReady} — tenta de novo na próxima execução`);
+      return 0;
+    }
     const outcome = interpretLinkedinTimerOutput(r.status, r.stdout);
     console.log(`[shorts-linkedin-timer] ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
     if (outcome.kind !== "alarm") return r.status === 0 ? 0 : 1;
-    const { at } = linkedinVerticalTime(config, aammdd);
     const alarmed = await linkedinAlarm(dir, aammdd, outcome.key, outcome.detail, at, deps.notify);
     return outcome.failed || !alarmed ? 1 : 0;
   } finally {

@@ -2472,6 +2472,23 @@ function siblingEditionDir(editionDir: string, aammdd: string): string | null {
   return resolve(parent, "..", aammdd.slice(0, 4), aammdd);
 }
 
+/**
+ * #13555: o box do vídeo no slot 0 só existe com `platform.config.json >
+ * video_box0.enabled === true`. Chave ausente, `false` ou config ilegível =
+ * desligado (pedido do editor, 261118). O link do vídeo na imagem do D1 não
+ * passa por aqui.
+ */
+export function isVideoBox0Enabled(rootDir: string = REPO_ROOT_FROM_MODULE): boolean {
+  try {
+    const configPath = resolve(rootDir, "platform.config.json");
+    if (!existsSync(configPath)) return false;
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    return cfg?.video_box0?.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Marcador por edição que tira o box do vídeo do slot 0 (#12899). */
 export const VIDEO_BOX0_OPTOUT_FILE = "no-video-box0.json";
 export function isVideoBox0OptOut(editionDir: string): boolean {
@@ -2502,8 +2519,16 @@ function videoBox0DayState(editionDir: string): { hasVideo: boolean; slot0Busy: 
  * e premissas em `lib/diaria/video-box0.ts`. Montado na hora do render, a
  * partir do mesmo `_internal/05-video-url.txt` que o link da imagem do D1 lê:
  * o vídeo é gravado depois do gate 4, e o Kit re-renderiza no Stage 5.
+ *
+ * #13555: desligado por padrão (`isVideoBox0Enabled`); `enabled` existe para
+ * teste e para quem já leu o config.
  */
-export function resolveVideoBox0(editionDir: string, slot0Busy: boolean): string | null {
+export function resolveVideoBox0(
+  editionDir: string,
+  slot0Busy: boolean,
+  enabled: boolean = isVideoBox0Enabled(),
+): string | null {
+  if (!enabled) return null;
   const aammdd = editionFromDir(editionDir);
   if (!aammdd) return null;
   const video = readEditionVideoMeta(editionDir);
@@ -2535,7 +2560,12 @@ export function resolveVideoBox0(editionDir: string, slot0Busy: boolean): string
   return buildVideoBox0Markdown({ title: video.title, href: buildVideoBox0Href(video.videoUrl, aammdd) });
 }
 
-export function extractContent(editionDir: string, overrideReviewedText?: string): NewsletterContent {
+export function extractContent(
+  editionDir: string,
+  overrideReviewedText?: string,
+  /** #13555: liga/desliga o box do vídeo no slot 0; default = `platform.config.json > video_box0.enabled`. */
+  opts: { videoBox0Enabled?: boolean } = {},
+): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
 
@@ -2647,7 +2677,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   // #12073: slot 0 livre → box do vídeo, quando a edição tem vídeo e a cota
   // da semana permite. Outro aviso no topo (box0 escrito no `.md`, callout de
   // sorteio/CTA) sempre vence: o vídeo cede a vez.
-  const videoBox0 = writtenBox0 ? null : resolveVideoBox0(editionDir, introCallout !== null);
+  const videoBox0 = writtenBox0 ? null : resolveVideoBox0(editionDir, introCallout !== null, opts.videoBox0Enabled);
   const boxDivulgacao0 = writtenBox0 ?? videoBox0;
   const boxDivulgacao0Image = videoBox0 ? null : readBoxDivulgacao0Image(editionDir, boxDivulgacao0);
   const boxDivulgacao0Bold = videoBox0 ? false : isBoxDivulgacao0Bold(reviewedText);

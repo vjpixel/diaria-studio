@@ -22,7 +22,11 @@
  *   (token opaco, ainda vivo lá, #4517; `@` percent-encoded desde #4692). kit
  *   (#464) usa `{{ subscriber.email_address }}` (Liquid, cru — mesmo eixo de
  *   identidade do beehiiv, sem token) — só relevante pro modo --format html
- *   sem --split (É IA? standalone/split fica sempre Beehiiv).
+ *   sem --split (É IA? standalone/split fica sempre Beehiiv). #13568: --esp
+ *   diferente de beehiiv com --out em _internal/newsletter-{draft,final}.html
+ *   é recusado (exit 1) — esses são a variante neutra que vira a página do
+ *   site; a variante Kit vive em _internal/newsletter-final-kit.html
+ *   (render-kit-html-preview.ts).
  *
  * Image references use {{IMG:filename}} placeholders. The publish agent
  * uploads images to Beehiiv CDN first, then replaces placeholders with URLs.
@@ -115,6 +119,7 @@ import {
   type Esp,
 } from "./lib/newsletter-render-html.ts";
 import { applyPatronosBoxes } from "./lib/newsletter-patronos.ts"; // #4275
+import { checkRenderEspForOut } from "./lib/diaria/newsletter-final-esp-guard.ts"; // #13568
 import { writeRenderSourceStamp, sha256Hex, REVIEWED_MD } from "./lib/newsletter-html-freshness.ts"; // #10258, #10268
 import {
   buildLinkLayout,
@@ -248,6 +253,18 @@ function main(): void {
     process.exit(1);
   }
   const esp = espRaw as Esp;
+
+  // #13568 — `newsletter-draft.html`/`newsletter-final.html` são a variante
+  // neutra (`{{email}}`), de onde sai a página do site. Recusa ANTES de
+  // qualquer escrita (inclusive link-layout.json/carimbo) gravar ali a merge
+  // tag de Kit/Brevo, que faz `publish-edition-site-page.ts` sair com exit 5.
+  if (format === "html" && !split) {
+    const espOutError = checkRenderEspForOut(esp, outPath ? resolve(ROOT, outPath) : undefined);
+    if (espOutError) {
+      console.error(espOutError);
+      process.exit(1);
+    }
+  }
 
   // #4266 — modo --split sempre emite È IA? standalone Beehiiv-only
   // (renderEiaStandalone não aceita esp, ver lib/newsletter-render-html.ts) —

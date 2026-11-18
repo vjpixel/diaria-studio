@@ -64,7 +64,8 @@ test("clarice-build-db main(): linha nua re-entrada via MV ganha cohort correto 
       "leitora-sem-stripe@gmail.com,ok,good,1\n",
   );
 
-  buildDb(["--db", dbPath, "--data-dir", dataDir]);
+  // Ledger da lista de esquecimento isolado no tmp (o default é o de data/, #13583).
+  buildDb(["--db", dbPath, "--data-dir", dataDir, "--forget-ledger", resolve(dataDir, "forget-requests.jsonl")]);
 
   const contato = cohortRow(dbPath, "contato@empresa.com");
   assert.ok(contato, "linha da conta role deve existir no store (via ingestMv)");
@@ -91,7 +92,8 @@ test("clarice-build-db main(): linha nua re-entrada via MV ganha cohort correto 
 
   // Idempotência (#2857 preserve-then-backfill): rodar de novo não duplica
   // nem perde o cohort já backfillado, nem promove a linha sem-match.
-  buildDb(["--db", dbPath, "--data-dir", dataDir]);
+  // Ledger da lista de esquecimento isolado no tmp (o default é o de data/, #13583).
+  buildDb(["--db", dbPath, "--data-dir", dataDir, "--forget-ledger", resolve(dataDir, "forget-requests.jsonl")]);
   const contato2 = cohortRow(dbPath, "contato@empresa.com");
   const semStripe2 = cohortRow(dbPath, "leitora-sem-stripe@gmail.com");
   assert.equal(contato2!.cohort, "leads-2026-06", "2ª rodada é idempotente — sem drift");

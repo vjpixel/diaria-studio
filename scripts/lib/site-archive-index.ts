@@ -224,7 +224,7 @@ export function resolveLastArchiveRegenTimestamp(
 }
 
 function defaultRunGit(args: string[], cwd: string): { status: number | null; stdout: string } {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true }); // #13559
   return { status: result.status, stdout: result.stdout ?? "" };
 }
 

@@ -171,27 +171,37 @@ describe("findLiveMergeGrantInD1 (#13242) — o Neo com o registro da concedente
     writeGrantorAsSeenFromNeo(neo);
     assert.equal(findLiveMergeGrant(neo, NEO), null, "pelo arquivo, o Neo não vê nada (o bug)");
     const found = await findLiveMergeGrantInD1(neo, NEO, undefined, { d1 });
-    assert.ok(found && !("error" in found), "o D1 resolve");
+    assert.ok(found && "grant" in found, "o D1 resolve");
     assert.equal(found.grant.grantedAt, grant.grantedAt);
     assert.equal(found.grantedBy.sessionId, COORD);
   });
 
-  it("concedente desconhecida nesta máquina: não vale (nenhuma versão do registro dela chegou)", async () => {
+  // #13577: o `grant-merge` grava também a presença da concedente no D1; aqui
+  // ela é apagada para isolar a regra "sem registro E sem presença não vale".
+  const dropPresence = (d1: FakeD1) => d1.db.exec("DELETE FROM locks WHERE name LIKE 'coordinator:%'");
+
+  it("concedente desconhecida nesta máquina e sem presença no D1: não vale (#13577: diz por quê)", async () => {
     const d1 = createFakeD1();
     await grantIn300(d1);
+    dropPresence(d1);
     const neo = freshRoot();
-    assert.equal(await findLiveMergeGrantInD1(neo, NEO, undefined, { d1 }), null);
+    const r = await findLiveMergeGrantInD1(neo, NEO, undefined, { d1 });
+    assert.ok(r && "rejected" in r, "não vale, e o motivo volta para o aviso");
+    assert.equal(r.rejected.reason, "grantor-unknown");
   });
 
-  it("concedente sem autoridade de merge (continuo) ou stale: não vale", async () => {
+  it("concedente sem autoridade de merge (continuo), ou stale sem presença: não vale", async () => {
     const d1 = createFakeD1();
     await grantIn300(d1);
     const neoContinuo = freshRoot();
     writeGrantorAsSeenFromNeo(neoContinuo, "continuo");
-    assert.equal(await findLiveMergeGrantInD1(neoContinuo, NEO, undefined, { d1 }), null);
+    const c = await findLiveMergeGrantInD1(neoContinuo, NEO, undefined, { d1 });
+    assert.ok(c && "rejected" in c && c.rejected.reason === "grantor-not-coordinator", "continuo: nem a presença a promove");
+    dropPresence(d1);
     const neoStale = freshRoot();
     writeGrantorAsSeenFromNeo(neoStale, "overnight", 3 * 60 * 60_000);
-    assert.equal(await findLiveMergeGrantInD1(neoStale, NEO, undefined, { d1 }), null);
+    const s = await findLiveMergeGrantInD1(neoStale, NEO, undefined, { d1 });
+    assert.ok(s && "rejected" in s && s.rejected.reason === "grantor-unknown");
   });
 
   it("consumida no D1, vencida pelo TTL, ou de outro repo: não vale", async () => {

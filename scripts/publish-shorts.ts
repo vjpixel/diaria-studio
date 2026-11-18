@@ -400,7 +400,8 @@ import {
 import { isNoVideoEdition } from "./lib/diaria/d1-no-video.ts";
 import { resolveYouTubeState } from "./lib/publish-state.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
-import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, downloadDriveFileById } from "./lib/drive-download.ts";
+import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, DriveDownloadEmptyError, downloadDriveFileById } from "./lib/drive-download.ts";
+import { PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT } from "./lib/diaria/vertical-download-guard.ts";
 import {
   gridFromLinkedInPersonalIntent,
   gridFromShortsPublished,
@@ -6017,7 +6018,8 @@ async function mainUnlocked(): Promise<number> {
       console.error(`[ok] vídeo curto baixado do Drive (${(bytes / 1e6).toFixed(1)} MB) → ${videoPath}`);
     } catch (e) {
       console.error(`publish-shorts: ${(e as Error).message}`);
-      return 1;
+      // #13540/#13541: arquivo ainda subindo para o Drive — exit próprio, que os timers leem como espera.
+      return e instanceof DriveDownloadEmptyError ? PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT : 1;
     }
     // #11912: outro arquivo no lugar do vídeo aprovado não herda o "pode publicar".
     if (corte && !requireCorteAuth) corte = syncCorteAuthorizationWithContent(dir, new Date().toISOString(), { log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r) });

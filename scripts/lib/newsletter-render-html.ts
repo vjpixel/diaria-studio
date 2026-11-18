@@ -12,6 +12,7 @@ import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS, LAYOUT } from "./shared/design-tokens.ts"; // #1936; LAYOUT #5176
 import { applyBrandWordmark, breakBrandDomainAutolink } from "./shared/brand-wordmark.ts"; // #4797 — extraído daqui, re-exportado abaixo (back-compat)
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
+import { applyDarkModeClasses, darkModeMediaRules } from "./shared/email-dark-mode.ts"; // #13525 — modo escuro do conteúdo (fullDocument-only)
 import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "./shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, extraído daqui
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
@@ -423,7 +424,7 @@ export function extractRepeatedInlineStyles(
 
 // #3104: <style> de dark-canvas, fullDocument-only (ver renderHTML). Precomputado
 // uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
-const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
+const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR, darkModeMediaRules()); // #13525: + conteúdo
 
 /**
  * #4266 — provedor de destino do envio. Usado só pela merge tag de voto do
@@ -3066,7 +3067,7 @@ ${DARK_CANVAS_STYLE_BLOCK}
 <body style="margin:0; padding:0; background:${PAGE_BG};">
 <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
 <table role="presentation" class="ds-canvas" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
-${container}
+${applyDarkModeClasses(container)}
 </td></tr></table>
 </body>
 </html>`;

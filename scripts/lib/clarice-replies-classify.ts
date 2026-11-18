@@ -158,7 +158,28 @@ const DATA_DELETION_RES: RegExp[] = [
   /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(meus|todos os meus|os meus) dados\b/,
   /\bexclusao (dos |de )?(meus )?dados\b/,
   /\bdireito ao esquecimento\b/,
+  // "Como excluo minhas informações de pagamento?" é pergunta de conta, não pedido LGPD (review da PR #13552).
+  /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(minhas|todas as minhas) informac(ao|oes)\b(?! (de|do|da|dos|das) (pagamento|cobranca|faturamento|cartao|conta|login|acesso|assinatura|plano)\b)/,
 ];
+
+/**
+ * "deletar meu contato de todos os seus bancos de dados" (#13533). Só "banco de dados", ou "todos os
+ * seus cadastros/bases/registros/sistemas", viram exclusão de dados: "removam meu e-mail da base" é
+ * saída simples da lista, e "de todas as listas" também. Exige marca de 1ª pessoa ("me tirem", "meu
+ * contato", "deletem-me"), como `REMOVAL_PRODUCT_OBJECT_RE` (#12283): "Apaguei um texto, ele continua no
+ * banco de dados?" é pergunta de produto e não pode ir pra blacklist (review da PR #13552).
+ */
+const DATA_DELETION_STORE_RES: RegExp[] = [
+  /\b(me )?(exclu|apag|delet|remov|elimin|retir)\w*\b([^.!?\n]{0,60})\bbancos? de dados\b/g,
+  /\b(me )?(exclu|apag|delet|remov|elimin|retir)\w*\b([^.!?\n]{0,60})\btod[oa]s (os |as )?(seus |suas |vossos |vossas )?(bancos de dados|bases( de dados)?|cadastros|registros|sistemas)\b/g,
+];
+
+function isDataDeletionRequest(norm: string): boolean {
+  if (DATA_DELETION_RES.some((re) => re.test(norm))) return true;
+  return DATA_DELETION_STORE_RES.some((re) =>
+    [...norm.matchAll(re)].some((m) => !!m[1] || REMOVAL_PERSONAL_RE.test(m[3])),
+  );
+}
 
 const SAIDA_RES: RegExp[] = [
   /\bdescadastr/,
@@ -251,7 +272,7 @@ export function classifyReply(msg: ReplyMessage): ReplyClassification {
     return out("ruido", "resposta vazia (só citação)");
   }
 
-  const dataDeletion = anyMatch(DATA_DELETION_RES, norm);
+  const dataDeletion = isDataDeletionRequest(norm);
   const removal = removalOfProductObject(norm);
   const saida = dataDeletion || anyMatch(SAIDA_RES, norm) || removal === "saida";
   const suporte = anyMatch(SUPORTE_RES, norm);
@@ -296,7 +317,10 @@ export interface TriageActions {
   optin: string[];
   /** Emails que vão pra blacklist da Brevo + supressão no store. */
   saida: string[];
-  /** Subconjunto de `saida` que também pediu exclusão de dados — tratado à mão. */
+  /**
+   * Subconjunto de `saida` que também pediu exclusão de dados — o `--apply` registra na lista de
+   * esquecimento e minimiza no store e na Brevo (#13573; antes era tratado à mão).
+   */
   data_deletion: string[];
   /** Respostas a encaminhar à Clarice (o script nunca encaminha sozinho). */
   suporte: Array<{ email: string; subject: string; date: string; thread_id: string; snippet: string }>;
@@ -316,7 +340,21 @@ export interface TriageApplyState {
    * Opcional: planos gravados antes do #12265 não têm o campo.
    */
   saida_brevo_not_found?: string[];
-  failures: Array<{ email: string; step: "brevo" | "store" | "optin"; error: string }>;
+  /**
+   * Exclusão de DADOS (LGPD, #13573): registrada na lista de esquecimento e minimizada no store /
+   * na Brevo. Opcionais: planos gravados antes do #13573 não têm os campos.
+   */
+  forget_store_done?: string[];
+  forget_brevo_done?: string[];
+  /** Pedido de exclusão cujo contato não existe na Brevo (nada a minimizar lá; revisar à mão). */
+  forget_brevo_not_found?: string[];
+  /**
+   * Quando o `recomputeDerived` do último --apply que escreveu no store terminou. `null` = houve escrita
+   * e o recompute não terminou: o próximo --apply recomputa mesmo sem escrever nada (review da PR #13583).
+   * Ausente em planos antigos: tratado como pendente se o store já foi escrito.
+   */
+  recompute_done_at?: string | null;
+  failures: Array<{ email: string; step: "brevo" | "store" | "optin" | "forget_store" | "forget_brevo"; error: string }>;
   last_applied_at: string | null;
 }
 
@@ -337,6 +375,9 @@ export function emptyApplyState(): TriageApplyState {
     saida_store_done: [],
     saida_brevo_done: [],
     saida_brevo_not_found: [],
+    forget_store_done: [],
+    forget_brevo_done: [],
+    forget_brevo_not_found: [],
     failures: [],
     last_applied_at: null,
   };

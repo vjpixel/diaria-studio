@@ -42,6 +42,7 @@ export function runTsx(script: string, args: string[], opts: RunTsxOpts = {}): s
     env: opts.env,
     stdio: tsxStdio(mode),
     encoding: mode === "capture" ? "utf8" : undefined,
+    windowsHide: true, // #13559: eia-compose roda destacado, sem console
   });
   return mode === "capture" ? (out as string) ?? "" : "";
 }

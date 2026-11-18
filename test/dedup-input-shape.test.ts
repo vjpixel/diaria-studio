@@ -41,6 +41,7 @@ function runDedup(articlesPath: string, dir: string): { code: number; stderr: st
     "--articles", articlesPath,
     "--past-editions", join(dir, "past-editions.md"),
     "--window", "3",
+    "--current-edition", "261118", // #13546: sem edição corrente o dedup recusa
     "--out", join(dir, "out/dedup-output.json"),
     // #3311: isola o logEvent de auditoria (`dedup: N artigos removidos...`)
     // pro tmpdir do teste — sem isso, main() cai no default de logEvent

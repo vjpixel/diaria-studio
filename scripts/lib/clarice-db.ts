@@ -38,6 +38,7 @@
 // depois de `assertSupportedNodeVersion()` já ter dado a mensagem clara.
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { assertSupportedNodeVersion } from "./check-node-version.ts";
 import type { BrevoColumns } from "./brevo-stats.ts";
@@ -159,6 +160,18 @@ CREATE TABLE IF NOT EXISTS derived_meta (
   value  TEXT
 );
 
+-- #13573: lista de esquecimento (LGPD). Pedido de exclusão de dados registrado
+-- aqui sobrevive ao rebuild (mesma garantia de priority_optin: o builder nunca
+-- apaga esta tabela). E-mail nela fica no store SÓ com as flags de supressão:
+-- ingestStripe/ingestMv/makeBrevoUpsert não regravam dado pessoal dele, e
+-- recomputeDerived minimiza a linha a cada build/sync (minimizeForgottenRows).
+CREATE TABLE IF NOT EXISTS forget_requests (
+  email         TEXT PRIMARY KEY,
+  requested_at  TEXT NOT NULL,
+  source        TEXT,
+  note          TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_tier        ON clarice_users(tier);
 CREATE INDEX IF NOT EXISTS idx_users_eligible    ON clarice_users(send_eligible);
 CREATE INDEX IF NOT EXISTS idx_users_points       ON clarice_users(priority_points);
@@ -189,6 +202,20 @@ export function resolveBusyTimeoutMs(
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_BUSY_TIMEOUT_MS;
   return parsed;
+}
+
+/**
+ * Tamanho legível do arquivo do store, para mensagens de progresso (#13574):
+ * aberto pelo Drive, o store de ~1,6 GB leva minutos — o operador precisa ver
+ * o que está acontecendo antes da etapa cara.
+ */
+export function describeStoreFile(path: string): string {
+  try {
+    const mb = statSync(path).size / (1024 * 1024);
+    return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
+  } catch {
+    return "tamanho desconhecido";
+  }
 }
 
 /** Abre (ou cria) o DB e garante o schema. */
@@ -1085,6 +1112,14 @@ export function recomputeDerived(
     for (const email of testEmails) del.run(email);
   }
 
+  // #13573: lista de esquecimento (LGPD) — minimiza ANTES de recomputar, em
+  // todo build/sync. Mesma lógica da purga acima: o rebuild/sync pode ter
+  // regravado dado pessoal por um caminho que não consultou a lista; aqui ele
+  // sai de novo, e o recompute abaixo já enxerga a linha mínima.
+  const testSet = new Set(testEmails);
+  minimizeForgottenRows(db, { allEmails: allEmails.filter((e) => !testSet.has(e)) });
+  const isForgotten = makeForgetMatcher(db);
+
   const optin = new Set<string>(
     (db.prepare("SELECT email FROM priority_optin").all() as Array<{
       email: string;
@@ -1095,7 +1130,9 @@ export function recomputeDerived(
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
               mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort, stripe_ids,
-              brevo_modified_at, clicks_count
+              brevo_modified_at, clicks_count,
+              priority_optin AS cur_optin, priority_points AS cur_points,
+              send_eligible AS cur_eligible, ineligible_reason AS cur_reason
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -1119,7 +1156,13 @@ export function recomputeDerived(
     // #11793: clique sem abertura registrada impede o sunset e conta como
     // abertura no priority_points.
     clicks_count: number | null;
+    // #13574: derivados ATUAIS da linha — o UPDATE só roda quando algum muda.
+    cur_optin: number | null;
+    cur_points: number | null;
+    cur_eligible: number | null;
+    cur_reason: string | null;
   }>;
+  const current = new Map(rows.map((r) => [r.email, r]));
 
   const update = db.prepare(
     `UPDATE clarice_users
@@ -1158,7 +1201,9 @@ export function recomputeDerived(
       // Gated nas DUAS condições pra nunca sobrescrever um cohort já derivado
       // (preserve-then-backfill, #2857) nem gastar o lookup em linhas que
       // ingestStripe já classificou (stripe_ids presente, mesmo `[]`).
-      if (cohort == null && r.stripe_ids == null && csvIndex) {
+      // #13573: linha da lista de esquecimento fica sem cohort — o backfill
+      // pelos CSVs do Stripe repovoaria justamente o dado que ela pediu pra apagar.
+      if (cohort == null && r.stripe_ids == null && csvIndex && !isForgotten(r.email)) {
         const csvMatch = lookupCsvBackfill(csvIndex, r.email);
         if (csvMatch) {
           cohort = computeCohort(null, csvMatch.created);
@@ -1192,9 +1237,23 @@ export function recomputeDerived(
     // em `resolveMailboxCoherence`) — comportamento pré-existente preservado.
     const resolved = resolveMailboxCoherence(baseline);
 
-    // Passo 3: grava.
+    // Passo 3: grava — só as linhas cujo derivado mudou (#13574). Reescrever a
+    // base inteira a cada recompute (dezenas de milhares de linhas iguais)
+    // multiplicava a escrita no store, que vive no Drive; o estado final é o
+    // mesmo. `n` segue contando as linhas recomputadas, não as gravadas.
     for (const b of baseline) {
       const res = resolved.get(b.email)!;
+      const cur = current.get(b.email)!;
+      n++;
+      if (
+        cur.cur_optin === (b.isOptin ? 1 : 0) &&
+        cur.cur_points === b.priority_points &&
+        cur.cur_eligible === (res.send_eligible ? 1 : 0) &&
+        (cur.cur_reason ?? null) === (res.ineligible_reason ?? null) &&
+        (cur.cohort ?? null) === (res.cohort ?? null)
+      ) {
+        continue;
+      }
       update.run(
         b.isOptin ? 1 : 0,
         b.priority_points, // #2876 — engajamento>0 sobrepõe veredito MV (per-row, não afetado pela coerência de caixa)
@@ -1203,7 +1262,6 @@ export function recomputeDerived(
         res.cohort, // #2888/#4249 — assinantes-ativos (próprio ou promovido pela caixa) isento de mv_unverified
         b.email,
       );
-      n++;
     }
     // #4205: carimba QUANDO este recompute rodou — isDerivedStale() abaixo
     // compara contra MAX(brevo_modified_at) pra detectar defasagem sem
@@ -1314,12 +1372,30 @@ export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void 
        updated_at = ?
      WHERE email = ?`,
   );
+  // #13573: e-mail na lista de esquecimento recebe da Brevo só a supressão
+  // (MAX-merge, nunca des-suprime) — engajamento, listas e datas são dado
+  // pessoal que ele pediu pra apagar. unsubscribed/email_blacklisted ficam
+  // ligados mesmo se a Brevo ainda não refletir a blacklist.
+  const isForgotten = makeForgetMatcher(db);
+  const updateSuppressionOnly = db.prepare(
+    `UPDATE clarice_users SET
+       email_blacklisted = 1,
+       unsubscribed      = 1,
+       hard_bounced      = MAX(hard_bounced, ?),
+       complained        = MAX(complained, ?),
+       send_eligible     = 0
+     WHERE email = ?`,
+  );
   return (c: BrevoColumns) => {
     if (!c.email) return; // sem email → ignora (evita colisão na key "")
     // #2895: conta de teste do editor (vjpixel+test*@gmail.com) — nunca
     // insere/mantém no store, mesmo vindo do Brevo (clarice-sync-brevo.ts).
     if (isTestAccount(c.email)) return;
     ensure.run(c.email);
+    if (isForgotten(c.email)) {
+      updateSuppressionOnly.run(c.hard_bounced, c.complained, c.email);
+      return;
+    }
     update.run(
       c.email_blacklisted,
       c.unsubscribed,
@@ -1354,8 +1430,11 @@ export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void 
 //
 // Só LIGA flags (`MAX(..., 1)`), mesma garantia do upsert do sync: um sync
 // posterior em que a Brevo ainda não reflita a blacklist nunca des-suprime
-// (o upsert faz MAX-merge). Idempotente. Não recomputa os derivados — o
-// chamador roda `recomputeDerived` uma vez no fim do lote.
+// (o upsert faz MAX-merge). Idempotente. Já grava `send_eligible=0` na própria
+// linha (#13574: um --apply interrompido antes do recompute, ou um re-run que
+// não recomputa, não deixa a linha elegível — mesmo veredito que
+// `classifyEligibility` dá pra unsub/blacklist). A propagação pras irmãs de
+// caixa canônica segue no `recomputeDerived` que o chamador roda no fim do lote.
 // Devolve false (sem gravar) pra conta de teste do editor (#2895).
 // ---------------------------------------------------------------------------
 
@@ -1371,8 +1450,188 @@ export function markSuppressedNow(
     `UPDATE clarice_users SET
        unsubscribed      = MAX(unsubscribed, 1),
        email_blacklisted = MAX(email_blacklisted, 1),
+       send_eligible     = 0,
+       ineligible_reason = 'unsubscribed',
        updated_at        = ?
      WHERE email = ?`,
   ).run(nowIso, e);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Lista de esquecimento (LGPD, #13573)
+//
+// Pedido de exclusão de dados de quem recebe a Clarice News. A exclusão feita
+// à mão no store não durava: o rebuild (`clarice-build-db.ts`) regravava nome,
+// ids do Stripe, cohort etc. a partir do export do Stripe, que continua tendo
+// a pessoa. Aqui o pedido vira registro durável (`forget_requests`), e todo
+// caminho que escreve dado pessoal em `clarice_users` o respeita:
+//   - `ingestStripe`/`ingestMv` (clarice-build-db.ts) pulam o e-mail;
+//   - `makeBrevoUpsert` (sync da Brevo) só mescla as flags de supressão;
+//   - `recomputeDerived` roda `minimizeForgottenRows` antes de recomputar
+//     (rede de segurança, mesmo padrão da purga de conta de teste, #2895).
+//
+// PREMISSA (conservadora): a linha NÃO é apagada. Fica o e-mail com
+// `unsubscribed=1` + `email_blacklisted=1` (+ hard_bounced/complained, que já
+// são supressão), para a pessoa nunca voltar a ser elegível se reaparecer num
+// export. Apagar a linha tiraria a supressão — o mesmo motivo de a Brevo
+// manter o contato blacklisted em vez de excluí-lo.
+//
+// A correspondência é pela caixa canônica (`canonicalizeGmail`): variante com
+// ponto/+tag do mesmo Gmail é a mesma pessoa e também é minimizada.
+// ---------------------------------------------------------------------------
+
+export interface ForgetRequest {
+  email: string;
+  requested_at: string;
+  source: string | null;
+  note: string | null;
+}
+
+/** Colunas de dado pessoal zeradas pra NULL na minimização. */
+export const FORGET_NULL_COLUMNS = [
+  "name",
+  "stripe_ids",
+  "status",
+  "created",
+  "delinquent",
+  "tier",
+  "cohort",
+  "mv_result",
+  "mv_resultcode",
+  "mv_quality",
+  "mv_subresult",
+  "mv_bucket",
+  "mv_last_verified_at",
+  "mv_cycle",
+  "recency_quartil",
+  "brevo_list_ids",
+  "last_open_at",
+  "last_click_at",
+  "last_sent_at",
+  "brevo_created_at",
+  "brevo_modified_at",
+] as const;
+
+/** Colunas numéricas zeradas na minimização. */
+export const FORGET_ZERO_COLUMNS = [
+  "dispute_losses",
+  "refunded_volume",
+  "opens_count",
+  "clicks_count",
+  "sends_count",
+  "soft_bounce_count",
+  "priority_optin",
+  "priority_points",
+  "send_eligible",
+] as const;
+
+function normalizeForgetEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/**
+ * Registra o pedido de esquecimento. Idempotente: um pedido já registrado
+ * mantém a data ORIGINAL (`requested_at` do primeiro registro). Devolve `true`
+ * se o pedido é novo. Lança em e-mail vazio/sem `@` — registrar lixo daria a
+ * falsa impressão de pedido atendido.
+ */
+export function recordForgetRequest(
+  db: DatabaseSync,
+  req: { email: string; requestedAt: string; source?: string | null; note?: string | null },
+): boolean {
+  const e = normalizeForgetEmail(req.email);
+  if (!e || !e.includes("@")) throw new Error(`e-mail inválido para a lista de esquecimento: "${req.email}"`);
+  const r = db
+    .prepare(
+      `INSERT INTO forget_requests (email, requested_at, source, note) VALUES (?, ?, ?, ?)
+         ON CONFLICT(email) DO NOTHING`,
+    )
+    .run(e, req.requestedAt, req.source ?? null, req.note ?? null);
+  return Number(r.changes) > 0;
+}
+
+export function listForgetRequests(db: DatabaseSync): ForgetRequest[] {
+  return db
+    .prepare("SELECT email, requested_at, source, note FROM forget_requests ORDER BY requested_at, email")
+    .all() as unknown as ForgetRequest[];
+}
+
+/**
+ * Predicado "este e-mail está na lista de esquecimento?" (caixa canônica).
+ * Carrega a lista UMA vez — criar de novo depois de registrar pedido novo.
+ */
+export function makeForgetMatcher(db: DatabaseSync): (email: string) => boolean {
+  const keys = new Set(listForgetRequests(db).map((r) => canonicalizeGmail(r.email)));
+  if (keys.size === 0) return () => false;
+  return (email: string) => {
+    const e = normalizeForgetEmail(email);
+    return !!e && keys.has(canonicalizeGmail(e));
+  };
+}
+
+/**
+ * Minimiza no store toda linha que bate com a lista de esquecimento: zera o
+ * dado pessoal (`FORGET_NULL_COLUMNS`/`FORGET_ZERO_COLUMNS`), liga
+ * `unsubscribed`/`email_blacklisted`, marca `send_eligible=0`
+ * (`ineligible_reason='unsubscribed'`) e tira o e-mail de `priority_optin`.
+ * Pedido sem linha no store ganha uma linha mínima já suprimida (se a pessoa
+ * reaparecer num export, entra suprimida). Só grava linha que ainda não está
+ * mínima, então rodar a cada recompute não mexe em `updated_at` à toa.
+ *
+ * `allEmails`: e-mails do store, se o chamador já os tem (recomputeDerived);
+ * omitido, lê da tabela.
+ */
+export function minimizeForgottenRows(
+  db: DatabaseSync,
+  opts: { allEmails?: string[]; nowIso?: string } = {},
+): { minimized: number; inserted: number; optin_removed: number } {
+  const requests = listForgetRequests(db);
+  if (requests.length === 0) return { minimized: 0, inserted: 0, optin_removed: 0 };
+  const isForgotten = makeForgetMatcher(db);
+  const nowIso = opts.nowIso ?? new Date().toISOString();
+  const allEmails =
+    opts.allEmails ??
+    (db.prepare("SELECT email FROM clarice_users").all() as Array<{ email: string }>).map((r) => r.email);
+  const targets = new Set(allEmails.filter((e) => isForgotten(e)));
+
+  let inserted = 0;
+  const targetKeys = new Set([...targets].map((e) => canonicalizeGmail(e)));
+  const ensure = db.prepare("INSERT OR IGNORE INTO clarice_users (email) VALUES (?)");
+  for (const r of requests) {
+    if (targetKeys.has(canonicalizeGmail(r.email))) continue;
+    if (isTestAccount(r.email)) continue; // conta de teste nunca entra no store (#2895)
+    if (Number(ensure.run(r.email).changes) > 0) inserted++;
+    targets.add(r.email);
+    targetKeys.add(canonicalizeGmail(r.email));
+  }
+
+  const setNull = FORGET_NULL_COLUMNS.map((c) => `${c} = NULL`).join(", ");
+  const setZero = FORGET_ZERO_COLUMNS.map((c) => `${c} = 0`).join(", ");
+  const notMinimal = [
+    ...FORGET_NULL_COLUMNS.map((c) => `${c} IS NOT NULL`),
+    ...FORGET_ZERO_COLUMNS.map((c) => `COALESCE(${c}, 1) <> 0`),
+    "COALESCE(unsubscribed, 0) <> 1",
+    "COALESCE(email_blacklisted, 0) <> 1",
+    "COALESCE(ineligible_reason, '') <> 'unsubscribed'",
+  ].join(" OR ");
+  const update = db.prepare(
+    `UPDATE clarice_users SET ${setNull}, ${setZero},
+       unsubscribed = 1, email_blacklisted = 1,
+       ineligible_reason = 'unsubscribed', updated_at = ?
+     WHERE email = ? AND (${notMinimal})`,
+  );
+  let minimized = 0;
+  for (const email of targets) minimized += Number(update.run(nowIso, email).changes);
+  // priority_optin pela caixa canônica também (o opt-in pode ter sido gravado
+  // com outra variante do mesmo Gmail).
+  const delOptin = db.prepare("DELETE FROM priority_optin WHERE email = ?");
+  let optinRemoved = 0;
+  const optinEmails = (db.prepare("SELECT email FROM priority_optin").all() as Array<{ email: string }>).map(
+    (r) => r.email,
+  );
+  for (const email of optinEmails) {
+    if (isForgotten(email)) optinRemoved += Number(delOptin.run(email).changes);
+  }
+  return { minimized, inserted, optin_removed: optinRemoved };
 }

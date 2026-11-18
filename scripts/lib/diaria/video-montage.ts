@@ -2064,6 +2064,7 @@ export function resolveBlocks(
     text: string | undefined,
     ws: Word[],
     mayPick: boolean,
+    explicit = false,
   ): { info?: NonNullable<ResolvedItem["collapsed"]>; picked?: { interval: Interval; words: Word[] } } => {
     const suspects = collapsedTakeSuspects(ws, opts.silences ?? [], { durationS: opts.durationS });
     if (suspects.length === 0) return {};
@@ -2084,6 +2085,12 @@ export function resolveBlocks(
     }
     const inside = patch.words.filter((w) => (w.start + w.end) / 2 >= span.start - tol && (w.start + w.end) / 2 <= span.end + tol);
     const pick = pickCollapsedTake(inside, patch.segments, text, { match });
+    // #13587: intervalo explícito que já é a tomada separada (o molde da decupagem com a borda da palavra
+    // retranscrita): na retranscrição o trecho tem uma tomada só e nenhum vão; o vão era do transcript longo.
+    // Review da PR #13595: só quando o intervalo cabe na tomada retranscrita (pontas a até `tol` das palavras
+    // dela, o ar do molde é 0,3 s); intervalo explícito largo em que a retranscrição ouviu uma tomada só segue avisando.
+    const fitsTake = inside.length > 0 && span.start >= inside[0].start - tol && span.end <= inside[inside.length - 1].end + tol;
+    if (!pick.ok && explicit && pick.completeTakes <= 1 && fitsTake && collapsedTakeSuspects(inside, opts.silences ?? [], { durationS: opts.durationS }).length === 0) return {};
     if (!pick.ok) {
       if (sub.repetition) warnings.push(repetitionWarning(label, sub.repetition));
       else {
@@ -2130,7 +2137,7 @@ export function resolveBlocks(
         const inside = idx.map(([w]) => w);
         const lastIdx = idx.length ? idx[idx.length - 1][1] : -1;
         const nextIdx = lastIdx >= 0 ? lastIdx + 1 : words.findIndex((w) => w.start >= it.end);
-        const col = collapse(label, { start: it.start, end: it.end }, it.text, inside, true);
+        const col = collapse(label, { start: it.start, end: it.end }, it.text, inside, true, true);
         const ws = col.picked ? col.picked.words : inside;
         const heard = heardIfDiffers(label, it.text, ws);
         const holdIdx = col.picked ? firstWordAfter(col.picked.interval.end) : nextIdx;
@@ -4562,7 +4569,8 @@ export function buildXmeml(
     });
     // A faixa de áudio do trecho vem depois das da vinheta (o link da vinheta aponta a faixa 2): o índice dela é contado.
     const audioTrackIndex = 2 + (vin.audio.match(/<track>/g)?.length ?? 0);
-    const trechoTracks = trechoInseridoTracksXml({ placed: ripple.placed, rate, idPrefix: `trecho-${si + 1}`, url, audioTrackIndex });
+    // #13536: o trecho recebe o ganho medido nele (Audio Levels), como os clipes do bruto; `--no-audio-gain` tira os dois.
+    const trechoTracks = trechoInseridoTracksXml({ placed: ripple.placed, rate, idPrefix: `trecho-${si + 1}`, url, audioTrackIndex, ...(opts.audioGain ? { levels: audioLevelsFilter } : {}) });
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
@@ -5304,8 +5312,18 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
  * podem ser partes da gravação; `--source` seleciona explicitamente). Sem nenhum vídeo,
  * o maior áudio solto (`audioOnly: true`, #11552).
  */
+/**
+ * Os vídeos que a própria montagem grava na pasta da edição (#13544): o card de
+ * CTA (`{AAMMDD}_cta_card_*`, #12571) e o trecho inserido (`{AAMMDD}_trecho_*`,
+ * #13437). Nunca são bruto: o `inventory --listen` quebrava no MP4 sem áudio do
+ * card, e o `--all` os juntava à gravação.
+ */
+export function isMontageArtifact(name: string): boolean {
+  return /^\d{6}_(?:cta_card|trecho)_/i.test(name);
+}
+
 export function pickRawSource<T extends { name: string; size: number }>(files: T[]): { pick: T; candidates: T[]; audioOnly?: true } | null {
-  const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name);
+  const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name) && !isMontageArtifact(f.name);
   const vids = files.filter((f) => /\.(mp4|mov)$/i.test(f.name) && usable(f));
   if (vids.length > 0) return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
   // #11552: sem vídeo solto, um arquivo de áudio (os comentários gravados à parte).

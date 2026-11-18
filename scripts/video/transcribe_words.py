@@ -55,6 +55,7 @@ import time
 
 CUDA_ERROR_MARKERS = ("cuda", "cublas", "cudnn", "cudart")
 PROBE_FLAG = "--probe-cuda"
+VERDICT_FLAG = "--gpu-verdict"  # #13535: veredito (cache ou sonda) em JSON, para o check-video-env
 PROBE_OK = "cuda-ok"
 PROBE_TIMEOUT_S = 300
 PROBE_CACHE_FILE = "diaria-whisper-cuda-probe.json"
@@ -260,6 +261,19 @@ def gpu_verdict(model_name: str):
     if ok or not is_transient_probe_failure(why):
         store_probe_verdict(model_name, ok, why)
     return ok, why
+
+
+def gpu_verdict_main(model_name: str) -> int:
+    """Modo `--gpu-verdict` (#13535): imprime em JSON onde a transcrição `--device auto` vai rodar.
+
+    Lê o veredito em cache (#13504) ou roda a sonda (que é então cacheada, como numa transcrição).
+    Para o `check-video-env.ts --montagem`; sai 0 nos dois casos (a CPU é um caminho válido).
+    """
+    register_nvidia_dll_dirs()
+    cached = cached_probe_verdict(model_name) is not None
+    ok, why = gpu_verdict(model_name)
+    print(json.dumps({"device": "cuda" if ok else "cpu", "why": why, "cached": cached}))
+    return 0
 
 
 def register_nvidia_dll_dirs() -> list:
@@ -855,4 +869,6 @@ if __name__ == "__main__":
         sys.exit(serve_main(sys.argv[2:]))
     if sys.argv[1:2] == [PROBE_FLAG]:
         sys.exit(probe_cuda(sys.argv[2] if len(sys.argv) > 2 else "large-v3-turbo"))
+    if sys.argv[1:2] == [VERDICT_FLAG]:
+        sys.exit(gpu_verdict_main(sys.argv[2] if len(sys.argv) > 2 else "large-v3-turbo"))
     sys.exit(main())

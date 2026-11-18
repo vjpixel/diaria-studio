@@ -59,6 +59,22 @@ export const SHELL_VALUE_VARS: ReadonlySet<string>;
 export const UNSAFE_ASSIGN_NAMES: ReadonlySet<string>;
 /** Prefixos de nome que nunca são atribuição inócua na whitelist de heredoc (#11522). */
 export const UNSAFE_ASSIGN_PREFIXES: readonly string[];
+/** Atribuição de ambiente (`X=y`, `X+=y`, `X[i]=y`) — compartilhado com o detector de `gh pr create` (#13550). */
+export const ASSIGNMENT_RE: RegExp;
+/** Shells cujo `-c 'script'` é analisado como comando (#13550). */
+export const SHELLS: ReadonlySet<string>;
+/** Palavras reservadas puladas antes da palavra de comando (`!`, `{`, `if`, …) (#13550). */
+export const RESERVED_PREFIX: ReadonlySet<string>;
+/** Spec de um wrapper (`env`, `command`, `timeout`, …) na posição de comando. */
+export interface GhCommandWrapperSpec {
+  readonly valueFlags: ReadonlySet<string>;
+  readonly positional?: number;
+  readonly assignments?: boolean;
+}
+/** Wrappers pulados antes da palavra de comando (#13550). */
+export const WRAPPERS: Readonly<Record<string, GhCommandWrapperSpec>>;
+/** Script de `bash -c '…'` a partir da palavra `from`, ou `null` sem `-c`. */
+export function shellDashCScript(words: readonly string[], from: number): string | null;
 export function parseGhAliasesYaml(text: unknown): LoadedGhAliases;
 export function loadGhAliases(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): LoadedGhAliases;
 export function ghConfigPath(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string;

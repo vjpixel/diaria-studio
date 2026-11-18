@@ -155,11 +155,14 @@ export function segmentosSemTrechos(texto: string, trechos: string[]): string[] 
 
   const letra = /[\p{L}\p{N}]/u;
   const limpa = (s: string) => s.replace(/\s+([.,;:!?…])/g, "$1").replace(/\s+/g, " ").trim();
+  // O que sobra DEPOIS de um corte nunca começa com pontuação solta (#13589):
+  // trecho que para antes do ponto deixa ". Duas já aconteceram…" no item.
+  const semPontuacaoInicial = (s: string) => s.replace(/^[\s.,;:!?…—–]+/u, "");
   const pedacos: string[] = [];
   for (let k = 0; k < cortes.length; k++) {
     const ini = k === 0 ? 0 : cortes[k - 1].f;
     let p = limpa(texto.slice(ini, cortes[k].i)).replace(/[\s,;:]+$/, "");
-    if (k > 0) p = p.replace(/^[\s,;:]+/, "");
+    if (k > 0) p = semPontuacaoInicial(p);
     if (letra.test(p)) pedacos.push(p);
   }
   const ultimo = cortes[cortes.length - 1];
@@ -175,7 +178,7 @@ export function segmentosSemTrechos(texto: string, trechos: string[]): string[] 
   }
   // Corte no meio: os lados ficam como estavam (sem ponto nem maiúscula forçados),
   // porque a fala gravada é contínua; cada um vira um item que casa sozinho na decupagem.
-  pedacos.push(limpa(depois).replace(/^[\s,;:]+/, ""));
+  pedacos.push(semPontuacaoInicial(limpa(depois)));
   return pedacos;
 }
 
@@ -183,7 +186,8 @@ export function segmentosSemTrechos(texto: string, trechos: string[]): string[] 
  * Os trechos que sobram da fala depois de tirar `trecho` (#13129): um, se o
  * corte está no começo ou no fim (no fim, o que sobra ganha a pontuação final);
  * dois, se está no meio, sem pontuação nem maiúscula forçadas. Espaço antes de
- * pontuação e vírgula solta na emenda saem. Trecho vazio ou ausente no texto =
+ * pontuação e vírgula solta na emenda saem; o que sobra depois do corte nunca
+ * começa com pontuação solta (#13589). Trecho vazio ou ausente no texto =
  * `null`; trecho que é a fala inteira = `[]`. Corta a primeira ocorrência: o
  * validador recusa trecho que aparece mais de uma vez (`ocorrenciasDoTrecho`).
  */

@@ -1307,6 +1307,7 @@ describe("#6630 defaultLockRunner nunca trava indefinidamente", () => {
 
     assert.ok(capturedOptions, "o exec injetado foi de fato chamado");
     assert.equal(capturedOptions?.timeout, 60_000, "timeout precisa bater com merge-train-live.ts (60s)");
+    assert.equal(capturedOptions?.windowsHide, true, "#13559: sem windowsHide o npx abre janela no Windows");
     assert.equal(result.ok, true);
   });
 

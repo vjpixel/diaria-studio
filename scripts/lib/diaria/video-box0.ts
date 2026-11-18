@@ -4,6 +4,11 @@
  * Miolo PURO do box do vídeo no slot 0 da newsletter (topo, antes do D1).
  * Sem I/O: quem lê o disco é `resolveVideoBox0` em `newsletter-parse.ts`.
  *
+ * DESLIGADO desde o #13555 (pedido do editor, 18/11/2026): o box só existe com
+ * `platform.config.json > video_box0.enabled: true`. A regra abaixo fica como
+ * está para quando for religado; o link do vídeo na imagem do D1 não depende
+ * dela.
+ *
  * Por que existe: nas edições 261021 e 261029, com um box do vídeo no slot 0,
  * o horizontal teve 151 e 176 views; sem box, de 7 a 65 (YouTube Data API,
  * 03/11/2026, #12073). A imagem do D1 já linkava o vídeo em todas.

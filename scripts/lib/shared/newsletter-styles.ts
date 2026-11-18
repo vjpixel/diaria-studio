@@ -133,13 +133,20 @@ export function darkCanvasMediaRule(darkCanvasBg: string): string {
  * — o conteúdo do container (cores INK/SURFACE/TEAL fixas dos outros render*)
  * permanece inalterado, mesma decisão de escopo do #2645 mensal.
  *
+ * #13525: esse escopo só de canvas deixou a mensal ilegível no Mail do iOS em
+ * modo escuro (card escurecido, texto continuando escuro). O conteúdo agora
+ * ganha modo escuro próprio: o caller passa `contentDarkRules`
+ * (`darkModeMediaRules()` de `email-dark-mode.ts`) e marca o HTML com
+ * `applyDarkModeClasses`. Sem o argumento, o output é o de antes.
+ *
  * @param darkCanvasBg — cor do canvas em dark mode (INK do DS, #171411 — o
  *   caller passa TEXT_COLOR, que já É esse valor; módulo não importa
  *   design-tokens por princípio arquitetural, ver nota de topo do arquivo).
  */
-export function buildDarkCanvasStyleBlock(darkCanvasBg: string): string {
+export function buildDarkCanvasStyleBlock(darkCanvasBg: string, contentDarkRules: string = ""): string {
+  const content = contentDarkRules ? `\n  /* #13525: dark mode do conteúdo (card, texto, boxes). */\n  ${contentDarkRules}` : "";
   return `<style>
-  ${darkCanvasMediaRule(darkCanvasBg)}
+  ${darkCanvasMediaRule(darkCanvasBg)}${content}
 </style>`;
 }
 
@@ -165,6 +172,12 @@ export function buildDarkCanvasStyleBlock(darkCanvasBg: string): string {
  * que já são claros e não devem escurecer. O canvas escuro ao redor do card claro é
  * sinal real de dark mode sem esse risco.
  *
+ * #13525: na prática o card NÃO ficou claro (Mail do iOS escureceu o fundo e
+ * manteve o texto escuro: conteúdo sumiu). `contentDarkRules` leva as regras de
+ * `darkModeMediaRules()` (`email-dark-mode.ts`), com fundos, texto e boxes
+ * remapeados para a paleta escura; wrapEmail marca o corpo com
+ * `applyDarkModeClasses`.
+ *
  * @param _reservedPageBg — reservado para a futura adoção da base (paridade de
  *   assinatura com buildDiariaStyleBlock, #2709 decide se/quando a mensal adota
  *   emailBaseRules). Deliberadamente ignorado hoje pra preservar o output atual;
@@ -175,14 +188,17 @@ export function buildDarkCanvasStyleBlock(darkCanvasBg: string): string {
  *   design-tokens por princípio arquitetural (valores entram via argumento do
  *   caller) — default espelha COLORS.ink (#171411) pra callers que não passam
  *   explicitamente (ex: chamadas diretas em teste).
+ * @param contentDarkRules — regras de dark mode do conteúdo (#13525), vazias
+ *   por default (output idêntico ao de antes).
  */
-export function buildMensalStyleBlock(_reservedPageBg: string, darkCanvasBg: string = "#171411"): string {
+export function buildMensalStyleBlock(_reservedPageBg: string, darkCanvasBg: string = "#171411", contentDarkRules: string = ""): string {
+  const content = contentDarkRules ? `\n  /* #13525: dark mode do conteúdo (card, texto, boxes). */\n  ${contentDarkRules}` : "";
   return `<style>
   /* #1918: empilha as imagens A/B do É IA? em telas estreitas, como na diária. */
   @media only screen and (max-width: 480px) {
     .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
   }
   /* #2645: dark theme — escurece o canvas externo ao card; conteúdo interno preservado. */
-  ${darkCanvasMediaRule(darkCanvasBg)}
+  ${darkCanvasMediaRule(darkCanvasBg)}${content}
 </style>`;
 }

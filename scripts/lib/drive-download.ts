@@ -164,6 +164,20 @@ export function claimPartFile(tmp: string, staleMs: number, now: number = Date.n
   return retry;
 }
 
+/**
+ * Corpo vazio no `alt=media` (#13540/#13541). Visto ao vivo em 18/11/2026: o
+ * upload do editor criou o arquivo no Drive às 14:59:19Z e o conteúdo (137 MB)
+ * só ficou completo às 14:59:30Z; o timer das 15:00Z achou o arquivo e baixou
+ * zero bytes. Tipado para quem chama separar "ainda está subindo" (transitório)
+ * de uma falha de download.
+ */
+export class DriveDownloadEmptyError extends Error {
+  constructor(public readonly fileId: string) {
+    super(`download do Drive veio vazio (${fileId}) — nada gravado; o arquivo provavelmente ainda está subindo para o Drive`);
+    this.name = "DriveDownloadEmptyError";
+  }
+}
+
 /** Apenas divergência de tamanho autoriza repetir o download (#12900). */
 class DriveDownloadSizeMismatchError extends Error {}
 
@@ -255,7 +269,7 @@ async function downloadDriveFileAttempt(
     );
     const bytes = statSync(tmp).size;
     const expected = file.size !== undefined ? Number(file.size) : null;
-    if (bytes === 0) throw new Error(`download do Drive veio vazio (${file.id}) — nada gravado`);
+    if (bytes === 0) throw new DriveDownloadEmptyError(file.id);
     if (expected !== null && Number.isFinite(expected) && expected !== bytes) {
       throw new DriveDownloadSizeMismatchError(`download incompleto (${bytes} de ${expected} bytes, ${file.id}) — nada gravado`);
     }
