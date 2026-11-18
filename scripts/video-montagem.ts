@@ -519,7 +519,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
+import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
 import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
@@ -4124,9 +4124,59 @@ function fmtTrechoFrames(n: number | null): string {
   return n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`;
 }
 
-/** #13500: os quadros do arquivo entre `min` e `max`, com a folga de `trechoFramesOk` nas duas pontas; null = não. */
+/**
+ * #13500: os quadros do arquivo batem? Com `min >= max`, é o `trechoFramesOk(max)`
+ * (±1 quadro). Com `min < max` (trecho inserido que chega ao fim da fonte), de
+ * `min` exato a `max` + `TRECHO_FRAME_TOL`: a folga para menos é só a de `min`
+ * (`TRECHO_END_SHORT_TOL_S`), sem quadro extra. null = não.
+ */
 export function trechoFramesInRange(min: number, max: number, got: number | null): boolean {
-  return got !== null && (trechoFramesOk(min, got) || trechoFramesOk(max, got) || (got >= min && got <= max));
+  if (got === null || !Number.isFinite(got)) return false;
+  return min >= max ? trechoFramesOk(max, got) : got >= min && got <= max + TRECHO_FRAME_TOL;
+}
+
+let ffprobeAvailableCache: boolean | null = null;
+/**
+ * #13500: o ffprobe roda nesta máquina? Conferido uma vez por processo
+ * (`ffprobe -version`). Separa "ffprobe ausente" (não dá para contar nada) de
+ * "ffprobe roda e não conta o arquivo" (arquivo ilegível, sem `moov`).
+ */
+export function ffprobeAvailable(): boolean {
+  if (ffprobeAvailableCache === null) {
+    try {
+      ffprobeAvailableCache = spawnSync("ffprobe", ["-version"], { stdio: "ignore", windowsHide: true }).status === 0;
+    } catch {
+      ffprobeAvailableCache = false;
+    }
+  }
+  return ffprobeAvailableCache;
+}
+
+const trechoPartsSwept = new Set<string>();
+/**
+ * #13500: apaga, uma vez por out dir e processo, os `{AAMMDD}_trecho_*.mov.part`
+ * órfãos que o código antigo deixava no out dir (o Drive). Devolve quantos.
+ */
+export function sweepTrechoInseridoParts(outDir: string, edition: string): number {
+  const key = `${resolve(outDir)}|${edition}`;
+  if (trechoPartsSwept.has(key)) return 0;
+  trechoPartsSwept.add(key);
+  const prefix = trechoInseridoFileName(edition, "", "").replace(/-\.mov$/, "");
+  let n = 0;
+  let names: string[] = [];
+  try {
+    names = readdirSync(outDir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".mov.part")) continue;
+    try {
+      rmSync(join(outDir, name), { force: true });
+      n++;
+    } catch { /* fica para o próximo build */ }
+  }
+  return n;
 }
 
 /** #13500: os quadros do render divergem do esperado (o resto do erro do corte é outro: ffmpeg, disco). */
@@ -4333,8 +4383,11 @@ export function probeVideoDurationS(src: string, ffprobe: (args: string[]) => st
  * `renderTrechos`, #13488: o hash não muda com um corte interrompido, e o
  * truncado era reaproveitado em todo rebuild). O corte vai para uma pasta
  * temporária FORA do out dir e é copiado (`renderFramesConferidos`), com os
- * quadros conferidos no temporário e na cópia. Arquivo cujos quadros o ffprobe
- * não conta é reaproveitado com [aviso] (nunca apagado por falha do ffprobe).
+ * quadros conferidos no temporário e na cópia. Arquivo que o ffprobe roda e não
+ * conta (sem `moov`) é ilegível e também é cortado de novo; só com o ffprobe
+ * INDISPONÍVEL nesta máquina (`ffprobeAvailable`) o corte existente é
+ * reaproveitado sem conferir, com [aviso]. Os `.part` órfãos do código antigo
+ * no out dir são varridos uma vez (`sweepTrechoInseridoParts`).
  * Trecho que chega ao fim do vídeo de origem (duração do stream de vídeo) pode
  * sair até `TRECHO_END_SHORT_TOL_S` mais curto: entra com os quadros reais em
  * `frames`, com [premissa]. Sem fonte, intervalo de menos de 1 quadro ou além
@@ -4359,6 +4412,8 @@ export function cutTrechoInserido(
     probeFrames?: (path: string) => number | null;
     /** #13500: onde fica a pasta temporária do corte (padrão `os.tmpdir()`), fora do out dir sincronizado. */
     tmpRoot?: string;
+    /** #13500: o ffprobe roda nesta máquina? Padrão `ffprobeAvailable` (uma vez por processo). */
+    ffprobeAvailable?: () => boolean;
   } = {},
 ): TrechoInseridoClip | null {
   const fonte = fonteDoTrecho(ctx, t);
@@ -4417,20 +4472,24 @@ export function cutTrechoInserido(
       clip.frames = got;
     }
   };
+  // #13500: os `.part` órfãos que o código antigo deixava no out dir (o Drive), uma vez por out dir.
+  const orfaos = sweepTrechoInseridoParts(ctx.outDir, ctx.edition);
+  if (orfaos) console.error(`[video-montagem] ${orfaos} .part órfão(s) de trecho inserido apagado(s) de ${ctx.outDir} (#13500)`);
   if (existsSync(out)) {
     const got = probeFrames(out);
-    if (got === null) {
-      // #13500: ffprobe que não conta (ausente, falho) não apaga o corte existente; reaproveitado como antes.
-      console.error(`[aviso] ${where}: os quadros de ${name} não foram contados (ffprobe falhou): reaproveitado sem conferir; conferir no 1º import (#13500)`);
+    if (got === null && !(deps.ffprobeAvailable ?? ffprobeAvailable)()) {
+      // #13500: sem ffprobe nesta máquina não dá para contar nada: o corte existente não é apagado por isso.
+      console.error(`[aviso] ${where}: ffprobe indisponível, os quadros de ${name} não foram contados: reaproveitado sem conferir, com a contagem assumida pelo intervalo (${frames} quadros); conferir no 1º import (#13500)`);
       if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
       return clip;
     }
-    if (trechoFramesInRange(minFrames, frames, got)) {
+    if (got !== null && trechoFramesInRange(minFrames, frames, got)) {
       usarQuadros(got, `o ${name} reaproveitado`);
       if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
       return clip;
     }
-    // #13500: o hash promete o intervalo, o arquivo no disco não tem os quadros (corte interrompido, Drive que não gravou tudo).
+    // #13500: o hash promete o intervalo, o arquivo no disco não tem os quadros (corte interrompido, Drive que não
+    // gravou tudo); o ffprobe roda e não conta (sem `moov`) = ilegível, também cortado de novo.
     console.error(`[aviso] ${where}: ${name} no disco com ${fmtTrechoFrames(got)}, o intervalo pede ${frames}: apagado e cortado de novo (#13500)`);
     rmSync(out, { force: true });
   }

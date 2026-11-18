@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { SequenceSpec } from "../scripts/lib/diaria/video-montage.ts";
 import { lerTrechoInserido } from "../scripts/lib/diaria/trecho-inserido-formato.ts";
-import { cutTrechoInserido, probeTrechoFrames, probeVideoDurationS, trechoMediaIssues } from "../scripts/video-montagem.ts";
+import { cutTrechoInserido, probeTrechoFrames, probeVideoDurationS, trechoFramesInRange, trechoInseridoMinFrames, trechoMediaIssues } from "../scripts/video-montagem.ts";
 
 const spec: SequenceSpec = { target: "youtube", name: "Diaria comentada horizontal_V1", width: 1920, height: 1080, order: ["comentario"], scales: [100, 115] };
 type CutCtx = Parameters<typeof cutTrechoInserido>[0];
@@ -88,30 +88,69 @@ describe("#13500 cutTrechoInserido confere os quadros (ffmpeg e ffprobe injetado
     }
   });
 
-  it("ffprobe que não conta o .mov existente: reaproveitado com [aviso], nunca apagado (review)", () => {
+  it("o .mov ilegível no disco (ffprobe roda e não conta: sem moov) também é cortado de novo no rebuild", () => {
     const s = setup();
     try {
       const c = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => FRAMES, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot })).value;
       assert.ok(c);
-      const again = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => null, encode: () => assert.fail("não corta de novo por falha do ffprobe") }));
-      assert.equal(again.value?.path, c.path);
-      assert.equal(again.value?.frames, FRAMES);
-      assert.equal(readFileSync(c.path, "utf8"), "mov", "o corte existente fica");
-      assert.ok(again.errs.some((e) => /\[aviso\] .*os quadros de .* não foram contados \(ffprobe falhou\): reaproveitado sem conferir/.test(e)), again.errs.join("\n"));
+      writeFileSync(c.path, "");
+      const calls: string[] = [];
+      const again = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: (p) => (readFileSync(p, "utf8") === "" ? null : FRAMES), ffprobeAvailable: () => true, listEncoders: () => "", encode: fakeEncode(calls), tmpRoot: s.tmpRoot }));
+      assert.equal(calls.length, 1, "sem isto, o verify-xml manda 'rode build' e o build reaproveita o ilegível (loop)");
+      assert.equal(readFileSync(c.path, "utf8"), "mov");
+      assert.ok(again.errs.some((e) => /no disco com ilegível \(ffprobe sem contagem\), o intervalo pede 540: apagado e cortado de novo/.test(e)), again.errs.join("\n"));
     } finally {
       s.cleanup();
     }
   });
 
-  it("o .part órfão do código antigo no out dir é apagado antes do corte (review)", () => {
+  it("ffprobe INDISPONÍVEL: o .mov existente é reaproveitado com [aviso], nunca apagado, quadros assumidos pelo intervalo", () => {
     const s = setup();
     try {
       const c = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => FRAMES, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot })).value;
       assert.ok(c);
-      rmSync(c.path);
-      writeFileSync(`${c.path}.part`, "órfão");
-      captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => FRAMES, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot }));
-      assert.deepEqual(readdirSync(s.out), [c.path.split(/[\\/]/).pop()]);
+      const again = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => null, probeFrames: () => null, ffprobeAvailable: () => false, encode: () => assert.fail("não corta de novo sem ffprobe") }));
+      assert.equal(again.value?.path, c.path);
+      assert.equal(again.value?.frames, FRAMES);
+      assert.equal(readFileSync(c.path, "utf8"), "mov", "o corte existente fica");
+      assert.ok(again.errs.some((e) => /\[aviso\] .*ffprobe indisponível, os quadros de .* não foram contados: reaproveitado sem conferir, com a contagem assumida pelo intervalo \(540 quadros\)/.test(e)), again.errs.join("\n"));
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it("os .part órfãos do código antigo no out dir são varridos uma vez, também quando o .mov é reaproveitado (review)", () => {
+    const s = setup();
+    try {
+      // Antes de qualquer build: o .part deste trecho, o de outro trecho da edição, e um alheio que fica.
+      writeFileSync(join(s.out, "261118_trecho_H5-aaaaaaaaaaaa.mov.part"), "órfão");
+      writeFileSync(join(s.out, "261118_trecho_H9-bbbbbbbbbbbb.mov.part"), "órfão");
+      writeFileSync(join(s.out, "261117_trecho_H1-cccccccccccc.mov.part"), "outra edição");
+      writeFileSync(join(s.out, "outro.mov.part"), "alheio");
+      const r = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => FRAMES, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot }));
+      assert.ok(r.value);
+      assert.deepEqual(readdirSync(s.out).sort(), ["261117_trecho_H1-cccccccccccc.mov.part", r.value.path.split(/[\\/]/).pop(), "outro.mov.part"].sort());
+      assert.ok(r.errs.some((e) => /2 \.part órfão\(s\) de trecho inserido apagado\(s\)/.test(e)), r.errs.join("\n"));
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it("varredura dos .part também roda quando o .mov é reaproveitado", () => {
+    const s = setup();
+    try {
+      // O nome do .mov sai do hash (fonte + intervalo), não do out dir: o 1º corte em s.out dá o nome.
+      const c = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => FRAMES, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot })).value;
+      assert.ok(c);
+      const movName = c.path.split(/[\\/]/).pop()!;
+      // Out dir novo com o .mov já presente (a cópia do Drive) e um .part órfão de outro trecho.
+      const out2 = join(s.dir, "out2");
+      mkdirSync(out2);
+      writeFileSync(join(out2, movName), "mov");
+      writeFileSync(join(out2, "261118_trecho_H9-dddddddddddd.mov.part"), "órfão");
+      const again = captureErr(() => cutTrechoInserido({ ...s.ctx, outDir: out2 } as CutCtx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => FRAMES, encode: () => assert.fail("reaproveita") }));
+      assert.ok(again.value);
+      assert.deepEqual(readdirSync(out2), [movName], "reaproveitado e o .part varrido");
     } finally {
       s.cleanup();
     }
@@ -133,6 +172,25 @@ describe("#13500 cutTrechoInserido confere os quadros (ffmpeg e ffprobe injetado
       // Longe do fim da fonte, a mesma falta é recusada.
       const meio = captureErr(() => cutTrechoInserido(s.ctx, trechoDe("3:00", "3:18"), 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 239.95, probeFrames: () => 538, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot }));
       assert.equal(meio.value, null);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it("a folga do fim da fonte é de 0,1 s exatos (3 quadros a 30 fps), sem quadro extra; fora do fim, ±1 quadro (review)", () => {
+    assert.equal(trechoInseridoMinFrames(540, 240, 239.95, 30), 537);
+    assert.equal(trechoInseridoMinFrames(540, 200, 239.95, 30), 540, "longe do fim, o intervalo inteiro");
+    assert.equal(trechoInseridoMinFrames(540, 240, null, 30), 540, "sem a duração, o intervalo inteiro");
+    for (const [got, ok] of [[537, true], [536, false], [541, true], [542, false], [null, false]] as const) {
+      assert.equal(trechoFramesInRange(537, 540, got), ok, `fim: ${got}`);
+    }
+    for (const [got, ok] of [[539, true], [541, true], [538, false], [542, false]] as const) {
+      assert.equal(trechoFramesInRange(540, 540, got), ok, `meio: ${got}`);
+    }
+    const s = setup();
+    try {
+      const r = captureErr(() => cutTrechoInserido(s.ctx, T, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 239.95, probeFrames: () => 536, listEncoders: () => "", encode: fakeEncode([]), tmpRoot: s.tmpRoot }));
+      assert.equal(r.value, null, "4 quadros a menos (> 0,1 s) é recusado mesmo no fim da fonte");
     } finally {
       s.cleanup();
     }
