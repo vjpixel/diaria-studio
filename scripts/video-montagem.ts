@@ -41,7 +41,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#13588) incremental: a medida de cada item fica em `face-cache.json` (state dir, chave =
  *       hash do intervalo), e só o item com intervalo novo (tomada trocada) vai ao detector;
  *       --all mede tudo. --um-frame: o frame do meio, com 25/75% só onde ele não achou rosto
- *       (opcional até o face-compare --um-frame mostrar que não piora).
+ *       (opcional: medido na 261117 e na 261118, 1 frame piorou o acerto; o padrão segue 3, #13588).
  *   face-compare AAMMDD --mp-python PY --mp-model TFLITE [--um-frame]
  *       (#13370) MEDIÇÃO: Haar x MediaPipe nos mesmos frames do `face`, contra o framing
  *       aprovado do blocks.json; grava `face-compare.json` no work dir, não muda nada.
