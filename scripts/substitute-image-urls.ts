@@ -24,6 +24,9 @@
  * #2316: fail-loud guard — se o HTML de input for mais antigo que
  * 02-reviewed.md (render não rodou após a última edição), aborta com
  * exit code 3 em vez de substituir placeholders num HTML stale.
+ *
+ * #13568: exit 4 quando o `--out` é o `_internal/newsletter-final.html`
+ * canônico e o HTML traz merge tag de Kit/Brevo — nada é gravado.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -31,6 +34,7 @@ import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mtimeMs } from "./lib/mtime.ts"; // #2316 fail-loud stale guard
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { checkNeutralHtmlWrite } from "./lib/diaria/newsletter-final-esp-guard.ts"; // #13568
 
 // #4266: exportadas — publish-daily-brevo.ts reusa o mesmo shape do cache de
 // upload-images-public.ts (URLs públicas são ESP-agnósticas, sem reupload).
@@ -225,6 +229,15 @@ function main(): void {
 
   if (outArg) {
     const outPath = resolve(ROOT, outArg);
+    // #13568: o caminho canônico (newsletter-final.html) é a variante neutra
+    // (`{{email}}`) que vira a página do site; merge tag de Kit/Brevo ali faz
+    // publish-edition-site-page.ts sair com exit 5. Recusa sem gravar nada
+    // (nem o baseline do Studio) — o arquivo anterior fica intacto.
+    const espError = checkNeutralHtmlWrite(outPath, result.html);
+    if (espError) {
+      process.stderr.write(espError + "\n");
+      process.exit(4); // Exit 4 = merge tag de ESP específico no caminho neutro (1=args, 2=unresolved, 3=stale)
+    }
     writeFileSync(outPath, result.html, "utf8");
     // #3829: refresca o baseline do painel de revisão do Studio pro slug
     // html-final logo após a Etapa 4 (re)escrever o HTML final — sem isso, o
