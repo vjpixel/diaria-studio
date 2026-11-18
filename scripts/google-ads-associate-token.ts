@@ -217,6 +217,7 @@ async function runConsentFlow(): Promise<void> {
         }).unref();
       } else {
         const opener = process.platform === "darwin" ? "open" : "xdg-open";
+        // Inócuo fora do Windows, mas o guard exige: `shell: true` tira a isenção de binário de GUI (#13575).
         spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true, windowsHide: true }).unref();
       }
 

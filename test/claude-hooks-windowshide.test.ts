@@ -382,13 +382,21 @@ const WINDOWS_HIDE_RE = /windowsHide\s*:\s*true/;
 const LITERAL_CALL_RE = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
 const BROAD_CALL_RE = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
 
+/** Nomes de alias que colidem com métodos comuns de outros objetos
+ * (`re.exec(`, `db.run(`, `fn.call(`, `map.get(`, `res.send(`…): pra eles,
+ * chamada por propriedade só conta como `this.nome(` (#13575). */
+const GENERIC_METHOD_ALIAS_NAMES = new Set(["exec", "run", "call", "apply", "bind", "get", "set", "send", "start"]);
+
 /** Regex das chamadas de um alias descoberto: `nome(`, e também por
- * propriedade, `this.nome(`/`deps.nome(` (como era no master antes do
- * #13575, que tinha deixado a chamada por propriedade de fora). Exceção:
- * alias chamado `exec` só conta solto ou como `this.exec(`, porque
- * `re.exec(` / `/x/g.exec(` é o método de RegExp, não processo. Pura. */
+ * propriedade, `this.nome(`/`deps.nome(`/`deps?.nome(` (como era no master
+ * antes do #13575, que tinha deixado a chamada por propriedade de fora).
+ * Exceção: alias com nome de método comum (`GENERIC_METHOD_ALIAS_NAMES`) só
+ * conta solto ou como `this.nome(`, porque `re.exec(` / `db.run(` são outro
+ * objeto, não processo. Pura. */
 function aliasCallRe(name: string): RegExp {
-  const prop = name === "exec" ? String.raw`(?<=\bthis\s*\.\s*)` : String.raw`(?<=[\w$\])]\s*\.\s*)`;
+  const prop = GENERIC_METHOD_ALIAS_NAMES.has(name)
+    ? String.raw`(?<=\bthis\s*\??\.\s*)`
+    : String.raw`(?<=[\w$\])?]\s*\.\s*)`;
   return new RegExp(String.raw`(?:(?<![.\w$])|${prop})${escapeRegExp(name)}\s*\(`, "g");
 }
 
@@ -1145,24 +1153,52 @@ function findBracketClose(masked: string, open: number): number {
   return -1;
 }
 
-const BLOCK_BEFORE_BRACE_KEYWORDS = new Set(["else", "do", "try", "finally"]);
+/** Palavras que, logo antes de `{`, fazem dele um objeto literal (ou tipo
+ * literal) e não um bloco. Qualquer outro identificador antes de `{` indica
+ * bloco: `else {`, `try {`, `catch {`, `static {`, `class C {`,
+ * `class C extends B {`, `(): void {`, `run(): T {` (#13575). */
+const OBJECT_BEFORE_BRACE_KEYWORDS = new Set([
+  "return", "yield", "await", "typeof", "in", "of", "instanceof", "new", "delete", "throw", "default", "as", "satisfies",
+]);
 
-/** `true` quando o `{` em `open` abre um BLOCO (corpo de função/arrow,
- * `if (…) {`, `else {`, bloco solto), não um objeto literal. Heurística pelo
- * último caractere significativo antes dele: `)`, `=>`, `;`, `{`, `}` ou
- * início do arquivo = bloco; `(`, `,`, `=`, `:`, `?`, `[`, `...`, `return` =
- * objeto. Pura. */
+/** `true` quando o `:` em `colon` fecha um rótulo (`outer:`) ou um `case X:`
+ * / `default:` de `switch`, e por isso o `{` depois dele é bloco. Dentro de
+ * objeto literal, parêntese ou array, ou depois de um `?` (ternário), não é.
+ * Pura. */
+function isStatementColon(masked: string, colon: number): boolean {
+  const encl = findEnclosingBracket(masked, colon);
+  if (encl >= 0 && (masked[encl] !== "{" || !isBlockBrace(masked, encl))) return false;
+  let s = colon - 1;
+  while (s >= 0 && !";{}".includes(masked[s])) s--;
+  const seg = masked.slice(s + 1, colon);
+  if (seg.includes("?")) return false;
+  if (/^\s*case\b/.test(seg)) return true;
+  // Rótulo ou `default`: só a última linha conta (sem `;` antes, por ASI, o
+  // trecho traz o fim do statement anterior).
+  const lastLine = seg.slice(seg.lastIndexOf("\n") + 1).trim();
+  return /^(?:case\b.*|[A-Za-z_$][\w$]*)$/.test(lastLine);
+}
+
+/** `true` quando o `{` em `open` abre um BLOCO (corpo de função/arrow/
+ * método/classe, `if (…) {`, `else {`, `catch {`, `static {`, bloco solto,
+ * rotulado ou de `case`), não um objeto literal. Heurística pelo último
+ * caractere significativo antes dele: `)`, `>` (`=>`, `Promise<void> {`),
+ * `;`, `{`, `}`, identificador (fora `OBJECT_BEFORE_BRACE_KEYWORDS`) ou
+ * início do arquivo = bloco; `:` = bloco só em rótulo/`case`
+ * (`isStatementColon`); `(`, `,`, `=`, `?`, `[`, `...`, `return` = objeto.
+ * Pura. */
 function isBlockBrace(masked: string, open: number): boolean {
   let k = open - 1;
   while (k >= 0 && /\s/.test(masked[k])) k--;
   if (k < 0) return true;
   const ch = masked[k];
-  if (ch === ")" || ch === ";" || ch === "{" || ch === "}") return true;
-  if (ch === ">" && masked[k - 1] === "=") return true;
+  if (ch === ")" || ch === ";" || ch === "{" || ch === "}" || ch === ">") return true;
+  if (ch === ":") return isStatementColon(masked, k);
   if (/[\w$]/.test(ch)) {
     let s = k;
     while (s >= 0 && /[\w$]/.test(masked[s])) s--;
-    return BLOCK_BEFORE_BRACE_KEYWORDS.has(masked.slice(s + 1, k + 1));
+    if (/^\d/.test(masked.slice(s + 1, k + 1))) return false;
+    return !OBJECT_BEFORE_BRACE_KEYWORDS.has(masked.slice(s + 1, k + 1));
   }
   return false;
 }
@@ -1391,6 +1427,78 @@ describe("findDetachedSpawnsWithoutWindowsHide (#13559, #13575) — lógica pura
   it("#13575: objeto de opções solto numa variável, sem windowsHide -> 1 ofensor", () => {
     const content = `const opts = { detached: true, stdio: "ignore" };\nspawn("node", [s], opts);`;
     assert.equal(findDetachedSpawnsWithoutWindowsHide(content).length, 1);
+  });
+
+  describe("#13575 fleet review (P2): `{` de bloco precedido por identificador, `>` ou `:` de rótulo/case", () => {
+    // Antes, `isBlockBrace` tratava esses `{` como objeto: `topObj` engolia o
+    // corpo inteiro e o `windowsHide: true` de OUTRA chamada do mesmo corpo
+    // cobria o `opts` solto com `detached: true`.
+    const body = `const o = { detached: true }; spawn("node", [], o); execFileSync("git", [], { windowsHide: true });`;
+    const cases: Array<[string, string]> = [
+      ["função com tipo de retorno", `function f(): void { ${body} }`],
+      ["async com Promise<void>", `async function main(): Promise<void> { ${body} }`],
+      ["método com tipo de retorno", `class K { run(): T { ${body} } }`],
+      ["corpo de classe (static block)", `class C { static { ${body} } }`],
+      ["class C extends B + static", `class C extends B { static { ${body} } }`],
+      ["catch sem binding", `try { x(); } catch { ${body} }`],
+      ["bloco rotulado", `outer: { ${body} }`],
+      ["bloco rotulado depois de statement sem `;` (ASI)", `foo()\nouter: { ${body} }`],
+      ["case de switch", `switch (x) { case 1: { ${body} } }`],
+      ["default de switch", `switch (x) { default: { ${body} } }`],
+    ];
+    for (const [label, content] of cases) {
+      it(`${label} -> 1 ofensor`, () => {
+        assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+      });
+    }
+
+    it("os mesmos blocos COM windowsHide no próprio opts -> nenhum ofensor", () => {
+      const okBody = `const o = { detached: true, windowsHide: true }; spawn("node", [], o);`;
+      for (const content of [`function f(): void { ${okBody} }`, `outer: { ${okBody} }`, `switch (x) { case 1: { ${okBody} } }`]) {
+        assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [], content);
+      }
+    });
+
+    it("`:` de propriedade e de ternário seguem sendo objeto -> windowsHide do objeto de fora vale", () => {
+      const prop = `spawn(cmd, args, { windowsHide: true, extra: { detached: true } });`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(prop), []);
+      const ternary = `spawn(cmd, args, { windowsHide: true, ...(bg ? {} : { detached: true }) });`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(ternary), []);
+      const stmtTernary = `const o = bg ? { windowsHide: true } : { windowsHide: true, detached: true };\nspawn("node", [], o);`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(stmtTernary), []);
+    });
+
+    it("`return {`, `() => ({`, `export default {` seguem sendo objeto", () => {
+      const ret = `function f() { return { detached: true, windowsHide: true }; }`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(ret), []);
+      const arrow = `const mk = () => ({ detached: true, windowsHide: true });`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(arrow), []);
+      const retBad = `function f() { return { detached: true }; }`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(retBad), [retBad.indexOf("detached")]);
+      const def = `export default { opts: { detached: true }, windowsHide: true };`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(def), []);
+    });
+  });
+});
+
+describe("#13575 fleet review — chamada de alias por optional chaining e nomes genéricos", () => {
+  it("(P3) `deps?.execFn(...)` sem windowsHide -> 1 ofensor", () => {
+    const content = [`function f(execFn = execFileSync) {`, `  return deps?.execFn("git", ["status"], {});`, `}`].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`execFn("git"`)]);
+  });
+
+  it("(P3) `this?.run(...)` de alias genérico sem windowsHide -> 1 ofensor", () => {
+    const content = `const run = spawnSync;\nclass C { go() { return this?.run("git", [], {}); } }`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`run("git"`)]);
+  });
+
+  it("(P3) alias com nome de método comum: `db.run(...)`, `fn.call(...)`, `res.send(...)` não contam; `run(...)` solto conta", () => {
+    for (const name of ["run", "call", "apply", "bind", "get", "set", "send", "start"]) {
+      const content = `const ${name} = spawnSync;\ndb.${name}("SELECT 1");\nx?.${name}(1);\n${name}("git", [], { windowsHide: true });`;
+      assert.deepEqual(findWindowsHideMissingCalls(content), [], name);
+      const bad = `const ${name} = spawnSync;\n${name}("git", [], {});`;
+      assert.deepEqual(findWindowsHideMissingCalls(bad), [bad.indexOf(`${name}("git"`)], name);
+    }
   });
 });
 
