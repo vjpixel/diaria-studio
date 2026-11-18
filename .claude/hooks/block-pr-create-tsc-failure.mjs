@@ -37,9 +37,20 @@
 //     central da issue).
 //
 // Escape hatch (#8482 "deve ser explícito e logado, nunca silencioso"):
-// `DIARIA_ALLOW_PR_WITH_TSC_ERRORS=1` na frente do comando pula o guard —
-// registrado em `data/run-log.jsonl` (`tsc_pr_guard_bypassed`) toda vez que
-// usado, nunca sem rastro.
+// `DIARIA_ALLOW_PR_WITH_TSC_ERRORS=1` pula o guard — registrado em
+// `data/run-log.jsonl` (`tsc_pr_guard_bypassed`) toda vez que usado, nunca
+// sem rastro. Duas formas valem (#13539): no ambiente da sessão (o processo
+// do hook herda) OU como atribuição na frente do próprio comando
+// (`DIARIA_ALLOW_PR_WITH_TSC_ERRORS=1 gh pr create ...`). A 2ª forma, a que a
+// mensagem de recusa ensina, nunca chega ao `process.env` do hook (o hook
+// roda no processo do harness, antes do shell do Bash), por isso é lida no
+// TEXTO do comando — só como atribuição de ambiente que precede o `gh pr
+// create`, nunca dentro de aspas (`--body "..."`) nem de corpo de heredoc.
+//
+// Antes do #13539 o prefixo nem era reconhecido como `gh pr create`
+// (`isGhPrCreateCommand` só aceita o comando no início do segmento), então
+// `QUALQUER_VAR=x gh pr create` saía do hook sem typecheck e sem log — o
+// escape hatch "funcionava" em silêncio, e qualquer atribuição o imitava.
 //
 // Nunca lança / nunca sai com código não-zero fora do processo do hook em
 // si — só emite `permissionDecision: "deny"` quando há um motivo real de
@@ -55,12 +66,82 @@ import {
   resolveRepoRootCandidates,
   resolveGitRoot,
 } from "./block-pr-create-pii-runtime-artifacts.mjs";
+import { stripHeredocSpans } from "./block-handwritten-pr-checks-loop.mjs";
 import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
+import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { isStudioCheckout, studioLogRoot } from "./lib/studio-checkout.mjs";
 
 /** Var de ambiente do escape hatch — nome único pra não colidir com nenhum
  * outro guard/flag do repo. */
 export const TSC_PR_GUARD_BYPASS_ENV = "DIARIA_ALLOW_PR_WITH_TSC_ERRORS";
+
+// Início de segmento de comando (mesmos separadores de `isGhPrCreateCommand`)
+// e uma sequência de atribuições de ambiente `NOME=valor ` (#13539).
+const SEGMENT_START = String.raw`(?:^|&&|;|\|\||\||\n)\s*`;
+const ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+const ENV_PREFIXED_PR_CREATE_RE = new RegExp(
+  `${SEGMENT_START}(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)+gh\\s+pr\\s+create\\b`,
+);
+const BYPASS_ASSIGNMENT_RE = new RegExp(
+  `${SEGMENT_START}${ENV_ASSIGNMENTS}${TSC_PR_GUARD_BYPASS_ENV}=1\\s+${ENV_ASSIGNMENTS}gh\\s+pr\\s+create\\b`,
+);
+
+/** Texto do comando que o shell de fato executa: sem corpo de heredoc e sem
+ * conteúdo entre aspas (texto citado nunca é comando nem atribuição). */
+function liveCommandText(command) {
+  return stripQuotedSpans(stripHeredocSpans(command));
+}
+
+/**
+ * `true` quando o comando roda `gh pr create` precedido de atribuição(ões) de
+ * ambiente (`FOO=bar gh pr create`). `isGhPrCreateCommand` (compartilhado com
+ * os outros guards de `gh pr create`) não reconhece essa forma (#13539).
+ */
+export function isEnvPrefixedGhPrCreate(command) {
+  if (typeof command !== "string") return false;
+  return ENV_PREFIXED_PR_CREATE_RE.test(liveCommandText(command));
+}
+
+/** O guard de typecheck se aplica a este comando? */
+export function isTscGuardedPrCreate(command) {
+  return isGhPrCreateCommand(command) || isEnvPrefixedGhPrCreate(command);
+}
+
+/**
+ * `true` quando `DIARIA_ALLOW_PR_WITH_TSC_ERRORS=1` aparece como atribuição de
+ * ambiente na frente do `gh pr create` (também depois de outras atribuições
+ * ou de `&&`/`;`). Ocorrência dentro de aspas ou de corpo de heredoc não conta
+ * (#13539).
+ */
+export function commandHasBypassAssignment(command) {
+  if (typeof command !== "string") return false;
+  return BYPASS_ASSIGNMENT_RE.test(liveCommandText(command));
+}
+
+/**
+ * De onde veio o pedido de bypass: `"env"` (ambiente do processo do hook),
+ * `"inline"` (atribuição no comando) ou `null` (nenhum).
+ */
+export function bypassSource(command, env = process.env) {
+  if (env?.[TSC_PR_GUARD_BYPASS_ENV] === "1") return "env";
+  if (commandHasBypassAssignment(command)) return "inline";
+  return null;
+}
+
+/**
+ * Aplica o escape hatch: se pedido, registra `tsc_pr_guard_bypassed` e devolve
+ * `true` (o hook sai sem typecheck). `logFn` injetável pros testes.
+ */
+export function applyTscGuardBypass(command, { env = process.env, logRoot, logFn = logTscGuardEvent } = {}) {
+  const source = bypassSource(command, env);
+  if (source === null) return false;
+  logFn(
+    "tsc_pr_guard_bypassed",
+    { source, command: typeof command === "string" ? command.slice(0, 500) : null },
+    { repoRoot: logRoot },
+  );
+  return true;
+}
 
 /**
  * `true` se `tsc` é resolvível a partir de `cwd` sem precisar instalar nada
@@ -207,7 +288,7 @@ if (
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
       const command = payload.tool_input?.command;
-      if (!isGhPrCreateCommand(command)) return;
+      if (!isTscGuardedPrCreate(command)) return;
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
@@ -224,14 +305,7 @@ if (
         return;
       }
 
-      if (process.env[TSC_PR_GUARD_BYPASS_ENV] === "1") {
-        logTscGuardEvent(
-          "tsc_pr_guard_bypassed",
-          { command: typeof command === "string" ? command.slice(0, 500) : null },
-          { repoRoot: logRoot },
-        );
-        return;
-      }
+      if (applyTscGuardBypass(command, { logRoot })) return;
 
       if (!checkTscAvailable(cwd)) {
         process.stdout.write(
