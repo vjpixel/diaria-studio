@@ -71,6 +71,56 @@ for (const [body, kind, label, dataDeletion] of cases) {
   });
 }
 
+// #13533: pedido de exclusão do contato de "todos os seus bancos de dados" (resposta real de 04/11, lote
+// 23fe14313cf3) marcava saída sem `data_deletion`, e o `--apply` não listava o caso em data_deletion_manual.
+const dataDeletionCases13533: Array<[string, boolean]> = [
+  ["Favor deletar meu contato de todos os seus bancos de dados", true],
+  ["Por favor, excluam meu e-mail do banco de dados de vocês.", true],
+  ["Removam meu contato de todos os seus cadastros, por favor.", true],
+  ["Peço que apaguem minhas informações.", true],
+  // Negativos: saída simples continua sem exclusão de dados.
+  ["Por favor, removam meu e-mail da base.", false],
+  ["Me tirem da lista, por favor.", false],
+  ["Removam meu contato de todas as listas.", false],
+];
+for (const [body, dataDeletion] of dataDeletionCases13533) {
+  test(`#13533 classifyReply: ${JSON.stringify(body)} → saida, data_deletion=${dataDeletion}`, () => {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.equal(c.kind, "saida", `${JSON.stringify(body)}: ${c.reason}`);
+    assert.equal(c.data_deletion, dataDeletion, `${JSON.stringify(body)}: ${c.reason}`);
+  });
+}
+
+// Review da PR #13552: pergunta de produto/conta com "banco de dados" ou "minhas informações de
+// pagamento" não pode virar exclusão de dados (data_deletion implica saída, que vai pra blacklist).
+for (const body of [
+  "Apaguei um texto, ele continua no banco de dados?",
+  "Removi um arquivo, ele some de todos os seus sistemas?",
+  "Como excluo minhas informações de pagamento?",
+  "Onde apago minhas informações da conta?",
+]) {
+  test(`#13552 classifyReply: ${JSON.stringify(body)} → não é saída nem data_deletion`, () => {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.notEqual(c.kind, "saida", `${JSON.stringify(body)}: ${c.reason}`);
+    assert.equal(c.data_deletion, false, `${JSON.stringify(body)}: ${c.reason}`);
+  });
+}
+
+test("#13552 marca pessoal antes do verbo ou enclítica segue valendo", () => {
+  for (const body of ["Me deletem do banco de dados de vocês.", "Deletem-me de todos os seus sistemas."]) {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.equal(c.kind, "saida", `${JSON.stringify(body)}: ${c.reason}`);
+    assert.equal(c.data_deletion, true, `${JSON.stringify(body)}: ${c.reason}`);
+  }
+});
+
+test("#13533 o pedido real entra em data_deletion_manual no plano", () => {
+  const plan = buildTriagePlan([
+    msg("Favor deletar meu contato de todos os seus bancos de dados" + QUOTE, { from: "lgpd13533@x.com" }),
+  ]);
+  assert.deepEqual(plan.actions.data_deletion, ["lgpd13533@x.com"]);
+});
+
 test("#12227 a citação do e-mail original (que tem 'descadastre-se' e 'quero') nunca entra na classificação", () => {
   assert.equal(stripQuoted("Obrigado!" + QUOTE), "Obrigado!");
   // corpo vazio + só citação → ruído, nunca saída por causa do rodapé citado
