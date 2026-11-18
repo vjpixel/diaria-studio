@@ -25,6 +25,25 @@ import { commitAndPushSitePage, homePageRelPathFromSitemap } from "../scripts/pu
 import type { GhRunner, LockRunner, SleepFn } from "../scripts/publish-edition-site-page.ts";
 import { syncCode, discardCollisionsIdenticalToUpstream, classifyFfRefusal, type SpawnFn, type SyncLock } from "../scripts/lib/git-sync.ts";
 
+// #13576: com `core.autocrlf=true` (padrão do Git for Windows) o checkout/stash
+// dos repos temporários troca LF por CRLF e a comparação de conteúdo cru falha
+// só no Windows. Fixar `autocrlf=false` por variável de ambiente alcança todo
+// git filho deste processo (inclusive os de `syncCode`/`commitAndPushSitePage`
+// e os clones, que não herdam config de repo). ANEXA ao GIT_CONFIG_COUNT que já
+// existir (ex.: `core.hooksPath` do codex-lane) em vez de sobrescrever, e o
+// `after` abaixo restaura o ambiente, para não vazar com --test-isolation=none.
+const PREV_GIT_CONFIG_COUNT = process.env.GIT_CONFIG_COUNT;
+const AUTOCRLF_SLOT = Number(PREV_GIT_CONFIG_COUNT ?? 0) || 0;
+process.env[`GIT_CONFIG_KEY_${AUTOCRLF_SLOT}`] = "core.autocrlf";
+process.env[`GIT_CONFIG_VALUE_${AUTOCRLF_SLOT}`] = "false";
+process.env.GIT_CONFIG_COUNT = String(AUTOCRLF_SLOT + 1);
+after(() => {
+  delete process.env[`GIT_CONFIG_KEY_${AUTOCRLF_SLOT}`];
+  delete process.env[`GIT_CONFIG_VALUE_${AUTOCRLF_SLOT}`];
+  if (PREV_GIT_CONFIG_COUNT === undefined) delete process.env.GIT_CONFIG_COUNT;
+  else process.env.GIT_CONFIG_COUNT = PREV_GIT_CONFIG_COUNT;
+});
+
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 }
@@ -121,6 +140,12 @@ function upstreamTouchesAllowlist(rootDir: string): void {
 }
 
 describe("#11673 — artefatos da página da edição não vão mais pro autostash", () => {
+  it("#13576: core.autocrlf=false está ativo para os git filhos (guarda o fix em qualquer SO)", () => {
+    const repo = tmp("diaria-13576-autocrlf-");
+    git(["init", "-q"], repo);
+    assert.equal(git(["config", "--get", "core.autocrlf"], repo).trim(), "false");
+  });
+
   it("colisão mista (página/sitemap/home idênticos + allowlist editada): stash só com a allowlist, ff passa", () => {
     const rootDir = setupRepo();
     publishAndMerge(rootDir);
