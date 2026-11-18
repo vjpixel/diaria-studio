@@ -18,16 +18,40 @@
  * não mostra a chave, para o A/B seguir cego; abrir o JSON só depois de
  * escolher.
  *
- * Só lê o bruto e grava em `--out`; não toca o Drive nem a pasta da edição.
+ * Janela (#13611): sem `--start`, a de `--dur` com mais fala pelas palavras do
+ * `transcript.json` da edição (`--edition AAMMDD`, ou `--transcript PATH`),
+ * contando só os trechos "usar" da decupagem (`blocks.json`, ou
+ * `blocks.template.json`) quando ela existe, e depois dos primeiros 120 s
+ * quando não. O terminal mostra a janela e os segundos de fala; fala abaixo de
+ * metade da janela recusa o A/B (`--force` gera assim mesmo, com aviso). Os
+ * tempos do transcript são os da linha do tempo do bruto: `--src` é o bruto
+ * (ou o áudio dele) inteiro, não um trecho. Sem transcript, a janela de antes
+ * (`--start` ou 120 s), com aviso de que a fala não foi conferida.
  *
- * Uso: npx tsx scripts/video-audio-denoise-ab.ts --src BRUTO [--start S] [--dur S]
- *        [--out DIR] [--threshold-db N] [--df-atten-db N] [--reference ADOBE.wav] [--seed N]
+ * Só lê o bruto (e, com `--edition`, a pasta da edição) e grava em `--out`;
+ * não toca o Drive.
+ *
+ * Uso: npx tsx scripts/video-audio-denoise-ab.ts --src BRUTO [--edition AAMMDD | --transcript PATH]
+ *        [--start S] [--dur S] [--force] [--out DIR] [--threshold-db N] [--df-atten-db N]
+ *        [--reference ADOBE.wav] [--seed N]
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { editionDir } from "./lib/edition-paths.ts";
+import {
+  bestSpeechWindow,
+  DEFAULT_SKIP_START_S,
+  formatWindowLine,
+  MIN_SPEECH_COVERAGE,
+  speechIntervals,
+  usarIntervalsFromBlocks,
+  windowSpeech,
+  type SpeechWindow,
+} from "./lib/diaria/audio-ab-window.ts";
+import type { Word } from "./lib/diaria/video-montage.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { audioLevelStats, deepFilterBin, DEEP_FILTER_REDUCED_ATTEN_DB, parseDeepFilterVersion, shuffled, type AudioLevelStats } from "./lib/diaria/audio-denoise.ts";
@@ -105,6 +129,83 @@ function deepFilterAvailable(): string | null {
   return r.error || r.status !== 0 ? null : parseDeepFilterVersion(`${r.stdout}\n${r.stderr}`);
 }
 
+const ROOT = resolve(import.meta.dirname, "..");
+
+function editionVideoFile(edition: string, name: string): string {
+  if (!/^\d{6}$/.test(edition)) throw new Error(`--edition espera AAMMDD (veio "${edition}")`);
+  return join(ROOT, editionDir(edition), "_internal", "video-montagem", name);
+}
+
+function readJson(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`${path} ilegível: ${(e as Error).message}`);
+  }
+}
+
+export interface AbWindowInput {
+  /** `--start` explícito; ausente = escolher pela fala. */
+  start?: number;
+  dur: number;
+  /** `transcript.json` (o de `--transcript` ou o da `--edition`); ausente ou inexistente = janela não conferida. */
+  transcript?: string;
+  /** `blocks.json`/`blocks.template.json` da edição, na ordem de preferência: os trechos "usar" da decupagem. */
+  blocks: readonly string[];
+  /** `--force`: gera o A/B mesmo com fala abaixo de metade da janela. */
+  force: boolean;
+}
+
+export interface AbWindowResult {
+  start: number;
+  window: (SpeechWindow & { chosenBy: "fala" | "start"; scope: "usar" | "depois-do-inicio" }) | { chosenBy: "start-sem-transcript" };
+  /** Linhas para o stderr. */
+  log: string[];
+}
+
+/**
+ * A janela do A/B (#13611). Com `transcript.json`: sem `--start`, a de `dur`
+ * com mais fala (só trechos "usar" quando há decupagem; senão depois dos
+ * primeiros `DEFAULT_SKIP_START_S`); com `--start`, a dada, medida. Nos dois
+ * casos, fala abaixo de `MIN_SPEECH_COVERAGE` da janela lança (sem `force`) ou
+ * avisa (com `force`). Sem transcript: o `--start` dado, ou `DEFAULT_SKIP_START_S`,
+ * com aviso de que a fala não foi conferida.
+ */
+export function resolveAbWindow(o: AbWindowInput): AbWindowResult {
+  const log: string[] = [];
+  if (!o.transcript || !existsSync(o.transcript)) {
+    const start = o.start ?? DEFAULT_SKIP_START_S;
+    log.push(`[aviso] sem transcript.json${o.transcript ? ` (${o.transcript})` : ""}: janela ${start}s a ${start + o.dur}s sem conferir a fala; passe --edition AAMMDD ou --transcript para escolher a janela pela fala (#13611)`);
+    return { start, window: { chosenBy: "start-sem-transcript" }, log };
+  }
+  const t = readJson(o.transcript) as { segments?: Array<{ words?: Word[] }> };
+  const words = (t.segments ?? []).flatMap((s) => s.words ?? []);
+  const blocksPath = o.blocks.find((p) => existsSync(p));
+  const usar = blocksPath ? usarIntervalsFromBlocks(readJson(blocksPath)) : [];
+  const scope = usar.length ? "usar" : "depois-do-inicio";
+  const speech = speechIntervals(words, usar.length ? usar : null);
+  const scopeText = usar.length ? `só os trechos "usar" de ${basename(blocksPath!)}` : `sem decupagem, depois dos primeiros ${DEFAULT_SKIP_START_S}s`;
+  let w: SpeechWindow;
+  let chosenBy: "fala" | "start";
+  if (o.start !== undefined) {
+    w = windowSpeech(speech, o.start, o.dur);
+    chosenBy = "start";
+    log.push(formatWindowLine(w, `--start dado; fala medida no transcript.json (${scopeText})`));
+  } else {
+    const best = bestSpeechWindow(speech, o.dur, usar.length ? 0 : DEFAULT_SKIP_START_S);
+    if (!best) throw new Error(`nenhuma fala no transcript.json (${scopeText}): passe --start`);
+    w = best;
+    chosenBy = "fala";
+    log.push(formatWindowLine(w, `a de mais fala no transcript.json (${scopeText})`));
+  }
+  if (w.coverage < MIN_SPEECH_COVERAGE) {
+    const msg = `fala cobre ${Math.round(w.coverage * 100)}% da janela (mínimo ${MIN_SPEECH_COVERAGE * 100}%): o A/B sai com silêncio demais para julgar a voz (#13611)`;
+    if (!o.force) throw new Error(`${msg}; ${chosenBy === "fala" ? "diminua --dur" : "troque --start ou omita para escolher pela fala"}, ou --force para gerar assim mesmo`);
+    log.push(`[aviso] ${msg}; seguindo por --force`);
+  }
+  return { start: w.start, window: { ...w, chosenBy, scope }, log };
+}
+
 function num(raw: string | undefined, label: string, fallback: number): number {
   if (raw === undefined) return fallback;
   const n = Number(raw);
@@ -114,11 +215,19 @@ function num(raw: string | undefined, label: string, fallback: number): number {
 
 async function main(): Promise<number> {
   loadProjectEnv(resolve(import.meta.dirname, ".."));
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const src = values["src"];
   if (!src || !existsSync(src)) throw new Error("--src BRUTO obrigatório (arquivo do bruto ou do áudio dele)");
-  const start = num(values["start"], "--start", 0);
   const dur = num(values["dur"], "--dur", 60);
+  const win = resolveAbWindow({
+    start: values["start"] === undefined ? undefined : num(values["start"], "--start", 0),
+    dur,
+    transcript: values["transcript"] ?? (values["edition"] ? editionVideoFile(values["edition"], "transcript.json") : undefined),
+    blocks: values["edition"] ? [editionVideoFile(values["edition"], "blocks.json"), editionVideoFile(values["edition"], "blocks.template.json")] : [],
+    force: flags.has("force"),
+  });
+  const start = win.start;
+  for (const l of win.log) console.error(l);
   const thresholdDb = num(values["threshold-db"], "--threshold-db", SILENCE_DETECT.noiseDb);
   const reducedAttenDb = num(values["df-atten-db"], "--df-atten-db", DEEP_FILTER_REDUCED_ATTEN_DB);
   const reference = values["reference"];
@@ -153,7 +262,7 @@ async function main(): Promise<number> {
     return { letter, file, variant: variant.id, description: variant.description, metrics: measure(file) };
   });
   rmSync(work, { recursive: true, force: true });
-  writeFileSync(join(out, "ab-chave.json"), JSON.stringify({ src, start, dur, thresholdDb, deepFilterVersion: dfVersion, reducedAttenDb, reference: reference ?? null, key }, null, 2) + "\n");
+  writeFileSync(join(out, "ab-chave.json"), JSON.stringify({ src, start, dur, window: win.window, thresholdDb, deepFilterVersion: dfVersion, reducedAttenDb, reference: reference ?? null, key }, null, 2) + "\n");
   console.log(`A/B cego em ${out} (${start}s a ${start + dur}s do bruto):`);
   for (const k of key) console.log(`  ab-${k.letter}.wav`);
   console.log(`Chave e medidas em ${join(out, "ab-chave.json")}: abrir só depois de escolher de ouvido (sibilantes e finais de palavra, #13194).`);

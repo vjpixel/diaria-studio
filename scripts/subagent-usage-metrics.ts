@@ -110,6 +110,7 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { logEvent, resolveRunLogPath } from "./lib/run-log.ts";
 import { currentSessionId } from "./lib/session-transcript.ts";
 import { COORDINATOR_KINDS, locateSessionTranscriptsDir, type CoordinatorKind } from "./coordinator-usage-estimate.ts";
+import { editionMatches, resolveEmitterEdition } from "./lib/overnight-round-edition.ts";
 
 export const SUBAGENT_METRICS_MESSAGE = "subagent_metrics";
 export const REVIEW_METRICS_MESSAGE = "review_metrics";
@@ -454,17 +455,19 @@ export function indexExistingEvents(lines: string[], edition: string, sessionId?
     const msg = rec.message;
     const details = (typeof rec.details === "object" && rec.details !== null ? rec.details : {}) as Record<string, unknown>;
     const sameSession = !sessionId || details.session_id === sessionId;
+    // #13612: da mesma sessão, a outra grafia do mesmo dia (261118 × 261118b) é a mesma rodada.
+    const inEdition = rec.edition === edition || (sameSession && editionMatches(rec.edition, edition, sessionId));
     if (msg === TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) {
-      if (rec.edition === edition && sameSession && typeof details.tipo === "string") idx.presentInEdition.add(details.tipo);
+      if (inEdition && sameSession && typeof details.tipo === "string") idx.presentInEdition.add(details.tipo);
       continue;
     }
     if (msg !== SUBAGENT_METRICS_MESSAGE && msg !== REVIEW_METRICS_MESSAGE && msg !== FLEET_REVIEW_METRICS_MESSAGE) continue;
-    if (rec.edition === edition && sameSession) idx.presentInEdition.add(msg);
+    if (inEdition && sameSession) idx.presentInEdition.add(msg);
     if (typeof details.agent_id === "string" && details.agent_id) {
       idx.agentIds.add(details.agent_id);
       continue;
     }
-    if (rec.edition !== edition) continue;
+    if (!inEdition) continue;
     if (msg === SUBAGENT_METRICS_MESSAGE) {
       const papel = typeof details.papel === "string" && details.papel.trim() ? details.papel.trim() : "";
       idx.manualSubagent.push({ papel, issues: asIssueList(details) });
@@ -663,14 +666,17 @@ export function collectSubagentMetrics(opts: {
 
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
-  const edition = values.edition;
   const agent = values.agent as CoordinatorKind;
-  if (!edition || !agent || !(COORDINATOR_KINDS as readonly string[]).includes(agent)) {
+  const resolved = resolveEmitterEdition(values);
+  if ("error" in resolved || !agent || !(COORDINATOR_KINDS as readonly string[]).includes(agent)) {
+    if ("error" in resolved) console.error(`[subagent-usage-metrics] ${resolved.error}`);
     console.error(
-      `[subagent-usage-metrics] uso: --edition {AAMMDD} --agent {${COORDINATOR_KINDS.join("|")}} [--since ISO] [--session-id UUID] [--dry-run]`,
+      `[subagent-usage-metrics] uso: --edition {AAMMDD} | --plan {plan.json} --agent {${COORDINATOR_KINDS.join("|")}} [--since ISO] [--session-id UUID] [--dry-run]`,
     );
     process.exit(2);
   }
+  if (resolved.note) console.error(`[subagent-usage-metrics] ${resolved.note}`);
+  const edition = resolved.edition;
   const outcome = collectSubagentMetrics({
     edition,
     sinceIso: values.since,

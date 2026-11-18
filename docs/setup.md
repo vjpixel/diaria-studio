@@ -189,8 +189,13 @@ A/B cego no mesmo trecho do bruto, com o export do Adobe Podcast como
 referência (na linha do tempo do bruto):
 
 ```bash
-npx tsx scripts/video-audio-denoise-ab.ts --src BRUTO --start 120 --dur 60 --reference ADOBE.wav --out DIR
+npx tsx scripts/video-audio-denoise-ab.ts --src BRUTO --edition AAMMDD --dur 60 --reference ADOBE.wav --out DIR
 ```
+
+Com `--edition` e sem `--start`, a janela é a de `--dur` com mais fala no
+`transcript.json` da edição (só os trechos "usar" da decupagem, quando já
+existe `blocks.json`), e o terminal mostra a janela e os segundos de fala. Fala
+abaixo de metade da janela recusa o A/B; `--force` gera assim mesmo (#13611).
 
 Sai `ab-A.wav`, `ab-B.wav`, ... embaralhados (áudio cru, tratamento atual,
 DeepFilterNet sem teto e com teto de 18 dB, Adobe) e `ab-chave.json` com a
