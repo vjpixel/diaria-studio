@@ -1847,6 +1847,15 @@ export function currentDoneSequences(state: RecurringState, edition: string, met
   );
 }
 
+/**
+ * Marca no estado as sequências medidas do registro. Registro sem nenhuma
+ * sequência (ex.: áudio do bruto ausente) não marca nada: a edição continua na
+ * fila da rodada seguinte (#13538). Puro, muta só `state`.
+ */
+export function markEditionDone(state: RecurringState, rec: EditionRecord, at = new Date().toISOString()): void {
+  if (rec.sequences.length) state.done[rec.edition] = { at, sequences: rec.sequences.map((s) => s.key) };
+}
+
 /** Método e falhas de remedição de uma sequência gravada (dos registros no disco). */
 export type SequenceLookup = (edition: string, key: string) => { method?: RecordMethod; remeasureFailed?: RemeasureFailure } | undefined;
 

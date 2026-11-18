@@ -12,6 +12,7 @@ import {
   XML_FINAL_SCHEMA,
   currentDoneSequences,
   editionsToCompare,
+  markEditionDone,
   mergeEditionRecord,
   type EditionRecord,
   type RecurringState,
@@ -61,5 +62,16 @@ describe("#13538: registro vazio por áudio ausente é refeito na rodada seguint
   it("fora da janela de 14 dias o registro vazio deixa de ser tentado", () => {
     const todo = editionsToCompare({ withPlan, state: noDone, today: "261201", days: 14 });
     assert.deepEqual(todo, []);
+  });
+
+  it("markEditionDone: registro vazio não marca done; medido marca só as sequências medidas", () => {
+    const state: RecurringState = { lastRunAt: null, patterns: {}, done: {} };
+    markEditionDone(state, emptyRecord("261111", ["outras-redes"]));
+    assert.deepEqual(state.done, {});
+    const mixed: EditionRecord = { ...emptyRecord("261112", ["outras-redes"]), sequences: [seq("youtube")] };
+    markEditionDone(state, mixed, "t3");
+    assert.deepEqual(state.done, { "261112": { at: "t3", sequences: ["youtube"] } });
+    const todo = editionsToCompare({ withPlan: [{ edition: "261112", sequences: ["outras-redes", "youtube"] }], state, today: "261118", days: 14, methodOf: methodLookup([mixed]) });
+    assert.deepEqual(todo, ["261112"], "edição mista segue na fila pela sequência pulada");
   });
 });
