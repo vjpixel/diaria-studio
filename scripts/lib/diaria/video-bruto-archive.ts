@@ -79,9 +79,21 @@ export function isBrutoFile(relPath: string): boolean {
   return CAMERA_NAME.test(name) || WIN_CAMERA_NAME.test(name) || /bruto[_ -]?unido/i.test(name);
 }
 
-/** Pura — os brutos de uma listagem recursiva da pasta da edição (`rclone lsjson -R`); `arquivo/` (#13610) e as demais subpastas ficam fora. */
+/**
+ * Nome da pasta de versões anteriores (#13610). Igual a `ARCHIVE_DIR_NAME` de
+ * `video-version-archive.ts`, que importa este módulo (repetido aqui para não
+ * criar import circular; um teste trava a igualdade, #13617).
+ */
+export const BRUTO_SKIP_ARCHIVE_DIR = "arquivo";
+
+/**
+ * Pura — os brutos de uma listagem recursiva da pasta da edição (`rclone lsjson -R`).
+ * Tudo dentro de `arquivo/` (#13610) fica fora, inclusive `arquivo/Brutos/x.mp4`
+ * vindo de um `_superadas/Brutos/` absorvido (#13617); as demais subpastas
+ * seguem `isBrutoFile` (`Brutos/` conta, `Final/` não).
+ */
 export function brutoFilesOf<T extends { path: string }>(files: readonly T[]): T[] {
-  return files.filter((f) => isBrutoFile(f.path));
+  return files.filter((f) => f.path.split("/").filter(Boolean)[0]?.toLowerCase() !== BRUTO_SKIP_ARCHIVE_DIR && isBrutoFile(f.path));
 }
 
 /**
