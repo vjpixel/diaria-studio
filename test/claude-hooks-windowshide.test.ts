@@ -17,9 +17,11 @@
  * contando `conhost`/`OpenConsole` alocados — BASE 26, DETACHED 27 (+1),
  * HIDDEN 26 (0 a mais).
  *
- * Escopo: só varre `.claude/hooks/*.mjs` DESTE repo (o `sync-check.cjs`
+ * Escopo original: `.claude/hooks/*.mjs` DESTE repo (o `sync-check.cjs`
  * equivalente em `claude-config` não tem CI — mudança lá é tratada à parte,
- * ver corpo da #7952).
+ * ver corpo da #7952). Desde o #13559 também varre `scripts/` (spawn
+ * destacado e os arquivos que rodam dentro de processo destacado — ver o
+ * bloco do #13559 mais abaixo).
  *
  * Heurística (não é um parser AST completo — nenhum outro guard de hook
  * deste repo é): pra cada ocorrência de `detached:\s*true`, procura
@@ -36,7 +38,7 @@
  * puro. Mitigado neste arquivo especificamente pelo 2º guard abaixo, que
  * varre só PRA FRENTE a partir da chamada (comentários explicativos ficam
  * ANTES da chamada no estilo deste repo, então saem da janela forward) —
- * mas o guard geral, aplicado aos outros 17 hooks, segue exposto a esse
+ * mas o guard geral, aplicado aos demais hooks, segue exposto a esse
  * modo. Aceito pelo mesmo custo/benefício acima.
  *
  * **2º guard, mais estrito, só pro arquivo que este PR toca (achado do fleet
@@ -105,8 +107,14 @@
  * `stripComments` usa um lexer mínimo e não lê `/*` ou `//` de dentro de
  * string como comentário; (4) o guard de spawn destacado de `scripts/`
  * ancora em `detached: true` (qualquer binário, não só `process.execPath`),
- * fora binários de GUI (`rundll32`, `open`, `xdg-open`). O 1º guard
+ * fora binários de GUI (`GUI_BINARY_LITERAL_RE`: `rundll32`, `explorer`,
+ * `open`, `xdg-open`, e só sem `shell: true`). O 1º guard
  * (`findDetachedWithoutWindowsHide`, hooks) segue com a janela de 600.
+ * Fleet review do PR: o guard de `scripts/` sobe pelos brackets em volta do
+ * objeto (bloco de callback não esconde mais o `opts` solto; spread
+ * condicional e `Object.assign` dentro do spawn são vistos), o alias volta a
+ * ser varrido quando chamado por propriedade (`deps.execFn(`, `this.run(`) e
+ * o lexer trata `a++ / 2` como divisão.
  */
 
 import { describe, it } from "node:test";
@@ -118,10 +126,14 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOKS_DIR = join(ROOT, ".claude", "hooks");
 
-/** Janela de caracteres ao redor de cada `detached: true` onde
- * `windowsHide: true` precisa aparecer. Generosa o bastante pra cobrir um
- * objeto de opções multi-linha inteiro (chamadas reais deste repo não
- * passam de ~600 chars entre `detached:` e o fechamento do objeto). */
+/** Janela de caracteres usada em quatro lugares: (1) ao redor de cada
+ * `detached: true` no 1º guard dos hooks (`findDetachedWithoutWindowsHide`);
+ * (2) pra trás de uma chamada via alias, onde o `opts` solto pode estar
+ * (#8017); (3) fim de reserva de uma chamada cujo `)` não fecha
+ * (`collectCallSites`); (4) janela de reserva do guard de `scripts/` quando
+ * o `detached: true` não está dentro de um objeto. Generosa o bastante pra
+ * cobrir um objeto de opções multi-linha inteiro (chamadas reais deste repo
+ * não passam de ~600 chars entre `detached:` e o fechamento do objeto). */
 const WINDOW_CHARS = 600;
 
 /** Pura — recebe o conteúdo já lido de um arquivo `.mjs`, devolve o offset
@@ -198,6 +210,9 @@ function lexJs(src: string): LexSegment[] {
   let lastSigIdx = -1;
   const regexAllowed = (): boolean => {
     if (lastSig === "") return true;
+    // `a++ / 2` e `a-- / 2`: o operador pós-fixo fecha um operando, então o
+    // `/` seguinte é divisão, não regex (`++/re/` prefixo não é JS válido).
+    if ((lastSig === "+" || lastSig === "-") && src[lastSigIdx - 1] === lastSig) return false;
     if ("(,=:[!&|?{};+-*%<>~^".includes(lastSig)) return true;
     if (/[\w$]/.test(lastSig)) {
       let k = lastSigIdx;
@@ -320,21 +335,6 @@ function findCallClose(masked: string, open: number): number {
   return -1;
 }
 
-/** Posição do `open` não fechado mais próximo antes de `idx`, num texto já
- * mascarado. `-1` se não houver. Pura. */
-function findEnclosingOpen(masked: string, idx: number, open: string, close: string): number {
-  let depth = 0;
-  for (let k = idx - 1; k >= 0; k--) {
-    const ch = masked[k];
-    if (ch === close) depth++;
-    else if (ch === open) {
-      if (depth === 0) return k;
-      depth--;
-    }
-  }
-  return -1;
-}
-
 /** Escapa metacaracteres de regex num identificador descoberto antes de
  * interpolá-lo num `new RegExp` (achado do fleet review pré-merge da #8021,
  * `pr-test-analyzer`, P3) — `$` é um caractere legal em identificador JS
@@ -353,7 +353,8 @@ function escapeRegExp(s: string): string {
  * de tipo antes do `=` (`exec: ExecFileSyncFn = execFileSync`,
  * `run: typeof spawnSync = spawnSync`), que antes escapava. A anotação tem de
  * caber numa linha e não ter parênteses: tipo de função literal
- * (`(cmd: string) => Buffer`) segue fora (ver teste).
+ * (`(cmd: string) => Buffer`) segue fora (teste "limite documentado: alias
+ * com anotação de tipo-FUNÇÃO literal").
  *
  * `(?!\s*\()` no fim (achado do fleet review pré-merge da #8021,
  * `pr-test-analyzer`, P2): sem isso, `const out = execFileSync(...)` — uma
@@ -381,6 +382,16 @@ const WINDOWS_HIDE_RE = /windowsHide\s*:\s*true/;
 const LITERAL_CALL_RE = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
 const BROAD_CALL_RE = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
 
+/** Regex das chamadas de um alias descoberto: `nome(`, e também por
+ * propriedade, `this.nome(`/`deps.nome(` (como era no master antes do
+ * #13575, que tinha deixado a chamada por propriedade de fora). Exceção:
+ * alias chamado `exec` só conta solto ou como `this.exec(`, porque
+ * `re.exec(` / `/x/g.exec(` é o método de RegExp, não processo. Pura. */
+function aliasCallRe(name: string): RegExp {
+  const prop = name === "exec" ? String.raw`(?<=\bthis\s*\.\s*)` : String.raw`(?<=[\w$\])]\s*\.\s*)`;
+  return new RegExp(String.raw`(?:(?<![.\w$])|${prop})${escapeRegExp(name)}\s*\(`, "g");
+}
+
 /** Uma chamada de processo achada no fonte: do nome até o `)` que a fecha. */
 type CallSite = { index: number; end: number; bidirectional: boolean };
 
@@ -398,7 +409,7 @@ function collectCallSites(masked: string, patterns: RegExp[], aliases: string[])
     }
   };
   for (const re of patterns) scan(re, false);
-  for (const name of aliases) scan(new RegExp(`(?<![.\\w$])${escapeRegExp(name)}\\s*\\(`, "g"), true);
+  for (const name of aliases) scan(aliasCallRe(name), true);
   const starts = [...byIndex.keys()].sort((a, b) => a - b);
   return starts.map((index, k) => {
     const { open, bidirectional } = byIndex.get(index)!;
@@ -703,6 +714,39 @@ describe("#13575 ponto 1 — alias tipado", () => {
     assert.deepEqual(findWindowsHideMissingCalls(content), []);
   });
 
+  it("limite documentado: alias com anotação de tipo-FUNÇÃO literal (`(cmd: string) => Buffer`) não é descoberto -> 0 ofensores (falso negativo aceito)", () => {
+    // A anotação não pode ter parênteses (ver docstring de
+    // discoverInjectedExecAliases). Se um dia o guard passar a cobrir este
+    // caso, este teste deve virar `length === 1`.
+    const content = [
+      `function f(exec: (cmd: string, args: string[]) => Buffer = execFileSync) {`,
+      `  return exec("git", ["status"], { encoding: "utf8" });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("fleet review (regressão vs master): alias chamado por propriedade (`deps.execFn(...)`, `this.run(...)`) é varrido", () => {
+    const viaDeps = [
+      `function f(execFn = execFileSync) {`,
+      `  return deps.execFn("git", ["status"], { encoding: "utf8" });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(viaDeps), [viaDeps.indexOf(`execFn("git"`)]);
+    const viaThis = `const run = spawnSync;\nclass C { go() { return this.run("git", ["fetch"], {}); } }`;
+    assert.deepEqual(findWindowsHideMissingCalls(viaThis), [viaThis.indexOf(`run("git"`)]);
+  });
+
+  it("fleet review: alias `exec` chamado como `this.exec(...)` é varrido, `re.exec(...)` não", () => {
+    const content = [
+      `function f(exec: ExecFileSyncFn = execFileSync) {`,
+      `  const m = re.exec(s);`,
+      `  return this.exec("git", ["status"], {});`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`exec("git"`)]);
+  });
+
   it("`const out: string = execFileSync(...)` (resultado da chamada) não vira alias", () => {
     const content = [
       `const out: string = execFileSync("git", ["rev-parse", "HEAD"], { windowsHide: true });`,
@@ -746,6 +790,14 @@ describe("#13575 ponto 2 — o windowsHide vale só dentro da própria chamada",
     assert.deepEqual(findWindowsHideMissingCalls(content), [0]);
   });
 
+  it("decisão documentada: chamada LITERAL com opts em variável (`const o = { windowsHide: true }; execFileSync(\"git\", [], o)`) é acusada (falso positivo seguro)", () => {
+    // Só a chamada via alias olha pra trás pelo `opts` solto (#8017). Na
+    // chamada literal o guard exige a flag no corpo da própria chamada —
+    // escrever `{ ...o, windowsHide: true }` ou a flag inline resolve.
+    const content = `const o = { windowsHide: true };\nexecFileSync("git", [], o);`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf("execFileSync")]);
+  });
+
   it("parêntese dentro de string não corta a chamada antes do objeto de opções", () => {
     const content = `execFileSync("git", ["log", "--format=%s (%h)", ")"], { encoding: "utf8", windowsHide: true });`;
     assert.deepEqual(findWindowsHideMissingCalls(content), []);
@@ -776,6 +828,11 @@ describe("#13575 ponto 3 — stripComments respeita strings", () => {
   it("template literal com ${…} e regex literal com `/*` não abrem comentário", () => {
     const content = "const t = `a/*${f(`b//`)}c*/`; const re = /\\/\\*/g; const z = 1; // fim";
     assert.equal(stripComments(content), "const t = `a/*${f(`b//`)}c*/`; const re = /\\/\\*/g; const z = 1; ");
+  });
+
+  it("fleet review: `/` depois de `a++`/`a--` é divisão, não regex — o comentário seguinte é removido", () => {
+    assert.equal(stripComments("const b = a++ / 2; // c\nconst d = 1;"), "const b = a++ / 2; \nconst d = 1;");
+    assert.equal(stripComments("const b = a-- / 2; // c\nconst d = 1;"), "const b = a-- / 2; \nconst d = 1;");
   });
 
   it("guard: alias depois de uma string com `/*` continua descoberto -> 1 ofensor (antes: comido até o `*/`)", () => {
@@ -958,9 +1015,10 @@ describe("Regressão #7959 — .claude/hooks/*.mjs reais deste repo (guard gener
  * Os mesmos `gh` chamados em foreground (com console herdado) não piscavam.
  *
  * Dois guards:
- *  1. todo `spawn(process.execPath, …)` destacado de `scripts/` declara
- *     `windowsHide` (senão o próprio filho ganha console visível — o caso de
- *     `stage-1-run.ts` antes do #13559);
+ *  1. todo `detached: true` em objeto de opções de processo em `scripts/`
+ *     declara `windowsHide` no mesmo objeto, exceto binários de GUI (senão
+ *     o próprio filho ganha console visível — o caso de `stage-1-run.ts`
+ *     antes do #13559; até o #13575 só ancorava em `spawn(process.execPath`);
  *  2. os arquivos que rodam DENTRO de um processo destacado declaram
  *     `windowsHide` em toda chamada de processo (`exec`/`execSync`/`fork`
  *     incluídos). Os ENTRYPOINTS são uma lista explícita; as libs que eles
@@ -994,9 +1052,10 @@ export function collectRelativeImportClosure(entry: string, readFile: (rel: stri
     if (content === null) continue;
     seen.add(rel);
     const baseDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+    const code = stripComments(content);
     let m: RegExpExecArray | null;
     RELATIVE_IMPORT_RE.lastIndex = 0;
-    while ((m = RELATIVE_IMPORT_RE.exec(stripComments(content))) !== null) {
+    while ((m = RELATIVE_IMPORT_RE.exec(code)) !== null) {
       const parts = (baseDir ? `${baseDir}/${m[1]}` : m[1]).split("/");
       const norm: string[] = [];
       for (const p of parts) {
@@ -1034,7 +1093,9 @@ function listScriptFiles(dir: string, rel = ""): string[] {
 
 /** Binários de GUI ou abridores de URL: um `detached: true` lançando um
  * deles não abre console (rundll32/explorer são GUI no Windows; `open` e
- * `xdg-open` só rodam fora do Windows, onde `windowsHide` não faz nada). */
+ * `xdg-open` só rodam fora do Windows, onde `windowsHide` não faz nada).
+ * Com `shell: true` no objeto de opções a isenção não vale: no Windows o
+ * shell é `cmd.exe`, que é console. */
 const GUI_BINARY_LITERAL_RE = /["'`](?:rundll32(?:\.exe)?|explorer(?:\.exe)?|open|xdg-open)["'`]/i;
 
 /** `true` quando o 1º argumento da chamada (texto, já sem comentários) é um
@@ -1052,17 +1113,99 @@ function isGuiBinaryArg(firstArg: string, noComments: string): boolean {
   return GUI_BINARY_LITERAL_RE.test(text) && !CONSOLE_BINARY_LITERAL_RE.test(text);
 }
 
+/** Posição do bracket (`(`, `[` ou `{`) não fechado mais próximo antes de
+ * `idx`, de qualquer tipo, num texto já mascarado. `-1` se não houver.
+ * Buscar só `(` pulava para um parêntese de fora quando o que envolve `idx`
+ * é um `{` de bloco (#13575, fleet review). Pura. */
+function findEnclosingBracket(masked: string, idx: number): number {
+  let depth = 0;
+  for (let k = idx - 1; k >= 0; k--) {
+    const ch = masked[k];
+    if (ch === ")" || ch === "]" || ch === "}") depth++;
+    else if (ch === "(" || ch === "[" || ch === "{") {
+      if (depth === 0) return k;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+/** Índice logo depois do `}`/`]`/`)` que fecha o bracket em `open`. `-1`
+ * se não fechar. Pura. */
+function findBracketClose(masked: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < masked.length; k++) {
+    const ch = masked[k];
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+      if (depth === 0) return k + 1;
+    }
+  }
+  return -1;
+}
+
+const BLOCK_BEFORE_BRACE_KEYWORDS = new Set(["else", "do", "try", "finally"]);
+
+/** `true` quando o `{` em `open` abre um BLOCO (corpo de função/arrow,
+ * `if (…) {`, `else {`, bloco solto), não um objeto literal. Heurística pelo
+ * último caractere significativo antes dele: `)`, `=>`, `;`, `{`, `}` ou
+ * início do arquivo = bloco; `(`, `,`, `=`, `:`, `?`, `[`, `...`, `return` =
+ * objeto. Pura. */
+function isBlockBrace(masked: string, open: number): boolean {
+  let k = open - 1;
+  while (k >= 0 && /\s/.test(masked[k])) k--;
+  if (k < 0) return true;
+  const ch = masked[k];
+  if (ch === ")" || ch === ";" || ch === "{" || ch === "}") return true;
+  if (ch === ">" && masked[k - 1] === "=") return true;
+  if (/[\w$]/.test(ch)) {
+    let s = k;
+    while (s >= 0 && /[\w$]/.test(masked[s])) s--;
+    return BLOCK_BEFORE_BRACE_KEYWORDS.has(masked.slice(s + 1, k + 1));
+  }
+  return false;
+}
+
+/** Palavras-chave que precedem `(` sem ser chamada (`if (`, `for (`…): o
+ * `(` delas é tratado como parêntese de agrupamento, sem nome. */
+const NON_CALL_PAREN_KEYWORDS = new Set([
+  "if", "for", "while", "switch", "catch", "return", "typeof", "void", "await", "yield", "in", "of", "new", "case",
+]);
+
+/** Nome da chamada cujo `(` está em `open` (`""` se for parêntese de
+ * agrupamento, `(bg ? … : …)`, ou de palavra-chave). Pura. */
+function calleeBefore(masked: string, open: number): string {
+  const name = /([\w$]+)\s*$/.exec(masked.slice(Math.max(0, open - 80), open))?.[1] ?? "";
+  return NON_CALL_PAREN_KEYWORDS.has(name) ? "" : name;
+}
+
+/** Chamada que lança processo: nome começando com `spawn`/`exec`/`fork`
+ * (`spawn`, `spawnFn`, `execFile`, `execFn`…). */
+const LAUNCHER_CALLEE_RE = /^(?:spawn|exec|fork)/i;
+const SHELL_TRUE_RE = /\bshell\s*:\s*true\b/;
+
 /** Offsets de todo `detached: true` de um objeto de opções de processo sem
  * `windowsHide: true` no MESMO objeto (#13575; até ali o guard só ancorava
  * em `spawn(process.execPath`, e `spawn("node", …)`/`spawn("npx", …)`
- * destacados passavam). Fica de fora:
- *  - objeto que é argumento de uma chamada que não lança processo (ex.:
- *    `JSON.stringify({ ...child, detached: true })` em `serve-preview.ts`);
- *    conta como lançadora a chamada cujo nome começa com `spawn`/`exec`/
- *    `fork` (`spawn`, `spawnFn`, `execFile`…);
- *  - chamada cujo 1º argumento é binário de GUI (`rundll32`, `open`,
- *    `xdg-open`), por literal ou por `const` no mesmo arquivo.
- * Objeto solto (`const opts = { detached: true }`) é checado também.
+ * destacados passavam).
+ *
+ * A partir do objeto que contém o `detached: true`, sobe pelos brackets que
+ * o envolvem (fleet review do #13575): parêntese de agrupamento
+ * (`...(bg ? { detached: true } : {})`), array e objeto literal continuam a
+ * subida; chamada que não lança processo (`Object.assign(…)`,
+ * `JSON.stringify(…)`) também continua; a 1ª chamada lançadora encontrada
+ * decide. Um `{` de BLOCO (corpo de arrow/função, `if {}`) ou o topo do
+ * arquivo encerram a subida. Fica de fora (não acusa):
+ *  - objeto envolvido só por chamadas que não lançam processo, sem nenhuma
+ *    lançadora acima (ex.: `JSON.stringify({ ...child, detached: true })` em
+ *    `serve-preview.ts`);
+ *  - chamada lançadora cujo 1º argumento é binário de GUI
+ *    (`GUI_BINARY_LITERAL_RE`: `rundll32`, `explorer`, `open`, `xdg-open`),
+ *    por literal ou por `const` no mesmo arquivo — exceto com `shell: true`
+ *    no objeto de opções, que no Windows passa por `cmd.exe` (console).
+ * Objeto solto (`const opts = { detached: true }`, inclusive dentro do
+ * corpo de um callback) é checado. Fail closed: na dúvida, acusa.
  * Limite: `{ ...base, detached: true }` com o `windowsHide` vindo de `base`
  * é acusado (falso positivo seguro: basta repetir a flag). Offsets no
  * `content` recebido. Pura. */
@@ -1073,39 +1216,58 @@ export function findDetachedSpawnsWithoutWindowsHide(content: string): number[] 
   const re = /\bdetached\s*:\s*true\b/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(masked)) !== null) {
-    const objOpen = findEnclosingOpen(masked, match.index, "{", "}");
-    let objEnd = content.length;
-    if (objOpen >= 0) {
-      let depth = 0;
-      for (let k = objOpen; k < masked.length; k++) {
-        if (masked[k] === "{") depth++;
-        else if (masked[k] === "}" && --depth === 0) {
-          objEnd = k + 1;
+    const encl = findEnclosingBracket(masked, match.index);
+    if (encl < 0 || masked[encl] !== "{") {
+      // Sem objeto em volta (texto fora de padrão): janela, fail closed.
+      const win = noComments.slice(Math.max(0, match.index - WINDOW_CHARS), match.index + WINDOW_CHARS);
+      if (!WINDOWS_HIDE_RE.test(win)) offenders.push(match.index);
+      continue;
+    }
+    // Sobe pelos objetos literais até a chamada lançadora (ou até um bloco).
+    let topObj = encl; // objeto literal mais externo atravessado
+    let cur = encl;
+    let launcherOpen = -1;
+    let sawOtherCall = false;
+    for (;;) {
+      const up = findEnclosingBracket(masked, cur);
+      if (up < 0) break;
+      const ch = masked[up];
+      if (ch === "{") {
+        if (isBlockBrace(masked, up)) break;
+        topObj = up;
+      } else if (ch === "(") {
+        const callee = calleeBefore(masked, up);
+        if (LAUNCHER_CALLEE_RE.test(callee)) {
+          launcherOpen = up;
           break;
         }
+        if (callee) sawOtherCall = true;
+      }
+      cur = up;
+    }
+    const objEnd = findBracketClose(masked, topObj);
+    const objText = noComments.slice(topObj, objEnd > 0 ? objEnd : content.length);
+    if (WINDOWS_HIDE_RE.test(objText)) continue;
+    if (launcherOpen < 0) {
+      if (sawOtherCall) continue; // só chamadas que não lançam processo em volta
+      offenders.push(match.index); // objeto solto
+      continue;
+    }
+    const close = findCallClose(masked, launcherOpen);
+    const argsEnd = close > 0 ? close - 1 : topObj;
+    let firstArgEnd = argsEnd;
+    let depth = 0;
+    for (let k = launcherOpen + 1; k < argsEnd; k++) {
+      const ch = masked[k];
+      if ("([{".includes(ch)) depth++;
+      else if (")]}".includes(ch)) depth--;
+      else if (ch === "," && depth === 0) {
+        firstArgEnd = k;
+        break;
       }
     }
-    const objStart = objOpen >= 0 ? objOpen : Math.max(0, match.index - WINDOW_CHARS);
-    if (WINDOWS_HIDE_RE.test(noComments.slice(objStart, objEnd))) continue;
-    const callOpen = objOpen >= 0 ? findEnclosingOpen(masked, objOpen, "(", ")") : -1;
-    if (callOpen >= 0) {
-      const callee = /([\w$]+)\s*$/.exec(masked.slice(Math.max(0, callOpen - 80), callOpen))?.[1] ?? "";
-      if (!/^(?:spawn|exec|fork)/i.test(callee)) continue; // não lança processo
-      const close = findCallClose(masked, callOpen);
-      const argsEnd = close > 0 ? close - 1 : objOpen;
-      let firstArgEnd = argsEnd;
-      let depth = 0;
-      for (let k = callOpen + 1; k < argsEnd; k++) {
-        const ch = masked[k];
-        if ("([{".includes(ch)) depth++;
-        else if (")]}".includes(ch)) depth--;
-        else if (ch === "," && depth === 0) {
-          firstArgEnd = k;
-          break;
-        }
-      }
-      if (isGuiBinaryArg(noComments.slice(callOpen + 1, firstArgEnd), noComments)) continue;
-    }
+    const gui = isGuiBinaryArg(noComments.slice(launcherOpen + 1, firstArgEnd), noComments);
+    if (gui && !SHELL_TRUE_RE.test(objText)) continue;
     offenders.push(match.index);
   }
   return offenders;
@@ -1164,8 +1326,60 @@ describe("findDetachedSpawnsWithoutWindowsHide (#13559, #13575) — lógica pura
   it("#13575: abridor por variável (`const opener = darwin ? \"open\" : \"xdg-open\"`) -> nenhum ofensor", () => {
     const content = [
       `const opener = process.platform === "darwin" ? "open" : "xdg-open";`,
+      `spawn(opener, [authUrl], { stdio: "ignore", detached: true }).unref();`,
+    ].join("\n");
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("#13575 fleet review: binário de GUI com `shell: true` no mesmo objeto NÃO é isento (o shell é cmd.exe no Windows)", () => {
+    const content = [
+      `const opener = process.platform === "darwin" ? "open" : "xdg-open";`,
       `spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();`,
     ].join("\n");
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+    const literal = `spawn("rundll32", [u], { shell: true, detached: true });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(literal), [literal.indexOf("detached")]);
+  });
+
+  it("#13575 fleet review: opts solto dentro do corpo de um callback (new Promise) -> 1 ofensor (antes pulava pro `(` de fora)", () => {
+    const content = `new Promise((resolve) => { const opts = { detached: true, stdio: "ignore" }; spawn("node", [], opts); });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+  });
+
+  it("#13575 fleet review: opts solto dentro do handler de app.get(...) -> 1 ofensor", () => {
+    const content = [
+      `app.get("/", () => {`,
+      `  const opts = { detached: true, stdio: "ignore" };`,
+      `  spawn("node", ["w.js"], opts);`,
+      `});`,
+    ].join("\n");
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+  });
+
+  it("#13575 fleet review: opts solto dentro do corpo de função/if -> 1 ofensor; COM windowsHide -> nenhum", () => {
+    const bad = `function f() { if (x) { const o = { detached: true }; spawn("node", [], o); } }`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(bad), [bad.indexOf("detached")]);
+    const ok = `function f() { if (x) { const o = { detached: true, windowsHide: true }; spawn("node", [], o); } }`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(ok), []);
+  });
+
+  it("#13575 fleet review: `detached` dentro de spread condicional `...(bg ? { detached: true } : {})` -> 1 ofensor (callee vazio sobe)", () => {
+    const content = `spawn(cmd, args, { stdio: "ignore", ...(bg ? { detached: true } : {}) });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+  });
+
+  it("#13575 fleet review: spread condicional com windowsHide no objeto de opções de fora -> nenhum ofensor", () => {
+    const content = `spawn(cmd, args, { windowsHide: true, ...(bg ? { detached: true } : {}) });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("#13575 fleet review: `Object.assign({}, base, { detached: true })` como opções de spawn -> 1 ofensor (sobe até o spawn)", () => {
+    const content = `spawn(cmd, args, Object.assign({}, base, { detached: true }));`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+  });
+
+  it("#13575 fleet review: `JSON.stringify` dentro de `console.log` dentro de callback, sem lançadora acima -> nenhum ofensor", () => {
+    const content = `child.on("exit", () => { console.log(JSON.stringify({ ...child, detached: true }, null, 2)); });`;
     assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
   });
 
@@ -1238,4 +1452,26 @@ describe("Regressão #13559 — scripts/ reais deste repo", () => {
       );
     });
   }
+});
+
+describe("lexJs — propriedade sobre os fontes reais (fleet review do #13575)", () => {
+  it("segmentos de lexJs são contíguos e, concatenados, reproduzem a fonte (scripts/ e .claude/hooks/)", () => {
+    const files = [
+      ...listScriptFiles(SCRIPTS_DIR).map((f) => join(SCRIPTS_DIR, f)),
+      ...listHookFiles().map((f) => join(HOOKS_DIR, f)),
+    ];
+    assert.ok(files.length > 0, "nenhum fonte pra varrer");
+    const broken: string[] = [];
+    for (const path of files) {
+      const src = readFileSync(path, "utf8");
+      const segs = lexJs(src);
+      let pos = 0;
+      for (const s of segs) {
+        if (s.start !== pos || s.end <= s.start) break;
+        pos = s.end;
+      }
+      if (pos !== src.length || segs.map((s) => src.slice(s.start, s.end)).join("") !== src) broken.push(path);
+    }
+    assert.deepEqual(broken, []);
+  });
 });

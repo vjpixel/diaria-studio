@@ -217,7 +217,7 @@ async function runConsentFlow(): Promise<void> {
         }).unref();
       } else {
         const opener = process.platform === "darwin" ? "open" : "xdg-open";
-        spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();
+        spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true, windowsHide: true }).unref();
       }
 
       // Sem timeout o processo fica pendurado pra sempre se a aba for fechada,
