@@ -317,7 +317,10 @@ export interface TriageActions {
   optin: string[];
   /** Emails que vão pra blacklist da Brevo + supressão no store. */
   saida: string[];
-  /** Subconjunto de `saida` que também pediu exclusão de dados — tratado à mão. */
+  /**
+   * Subconjunto de `saida` que também pediu exclusão de dados — o `--apply` registra na lista de
+   * esquecimento e minimiza no store e na Brevo (#13573; antes era tratado à mão).
+   */
   data_deletion: string[];
   /** Respostas a encaminhar à Clarice (o script nunca encaminha sozinho). */
   suporte: Array<{ email: string; subject: string; date: string; thread_id: string; snippet: string }>;
@@ -337,7 +340,21 @@ export interface TriageApplyState {
    * Opcional: planos gravados antes do #12265 não têm o campo.
    */
   saida_brevo_not_found?: string[];
-  failures: Array<{ email: string; step: "brevo" | "store" | "optin"; error: string }>;
+  /**
+   * Exclusão de DADOS (LGPD, #13573): registrada na lista de esquecimento e minimizada no store /
+   * na Brevo. Opcionais: planos gravados antes do #13573 não têm os campos.
+   */
+  forget_store_done?: string[];
+  forget_brevo_done?: string[];
+  /** Pedido de exclusão cujo contato não existe na Brevo (nada a minimizar lá; revisar à mão). */
+  forget_brevo_not_found?: string[];
+  /**
+   * Quando o `recomputeDerived` do último --apply que escreveu no store terminou. `null` = houve escrita
+   * e o recompute não terminou: o próximo --apply recomputa mesmo sem escrever nada (review da PR #13583).
+   * Ausente em planos antigos: tratado como pendente se o store já foi escrito.
+   */
+  recompute_done_at?: string | null;
+  failures: Array<{ email: string; step: "brevo" | "store" | "optin" | "forget_store" | "forget_brevo"; error: string }>;
   last_applied_at: string | null;
 }
 
@@ -358,6 +375,9 @@ export function emptyApplyState(): TriageApplyState {
     saida_store_done: [],
     saida_brevo_done: [],
     saida_brevo_not_found: [],
+    forget_store_done: [],
+    forget_brevo_done: [],
+    forget_brevo_not_found: [],
     failures: [],
     last_applied_at: null,
   };
