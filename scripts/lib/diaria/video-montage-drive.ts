@@ -59,6 +59,8 @@ export interface DriveEntry {
   mimeType: string;
   size?: string;
   modifiedTime?: string;
+  /** Pedido na listagem desde o #13617: ordena as `arquivo/` repetidas pela criação, não pela última mudança. */
+  createdTime?: string;
   webViewLink?: string;
 }
 
@@ -84,7 +86,7 @@ export interface CacheSidecar {
   modifiedTime: string | null;
 }
 
-const LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink)";
+const LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime,webViewLink)";
 
 // ── puro ─────────────────────────────────────────────────────────────────
 

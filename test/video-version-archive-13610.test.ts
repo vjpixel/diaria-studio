@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  ARCHIVE_DIR_NAME,
   archiveTargetName,
   familyOf,
   isOverwriteArchivedName,
@@ -27,10 +28,10 @@ import {
   stripArchivedSuffix,
   type ArchiveEntry,
 } from "../scripts/lib/diaria/video-version-archive.ts";
-import { archiveBeforeOverwriteLocal, archiveEditionDrive, archiveEditionLocal, installPreviewFile, moveDriveFile, resolveArchiveFolder, xmlNamesWithArchive } from "../scripts/lib/diaria/video-version-archive-io.ts";
+import { archiveBeforeOverwriteLocal, archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, isNotOwnerTrashError, moveDriveFile, resolveArchiveFolder, xmlNamesWithArchive } from "../scripts/lib/diaria/video-version-archive-io.ts";
 import { FOLDER_MIME, pickDriveBruto, type DriveEntry, type MontageDriveDeps } from "../scripts/lib/diaria/video-montage-drive.ts";
-import { brutoFilesOf, isBrutoFile, parseRcloneLsjson } from "../scripts/lib/diaria/video-bruto-archive.ts";
-import { archiveVersionsAfter, looseFilesIn, plannedXmlVersions, uploadAll, versionPickedSequences } from "../scripts/video-montagem.ts";
+import { BRUTO_SKIP_ARCHIVE_DIR, brutoFilesOf, isBrutoFile, parseRcloneLsjson } from "../scripts/lib/diaria/video-bruto-archive.ts";
+import { archiveVersionsAfter, looseFilesIn, makeDriveSession, plannedXmlVersions, uploadAll, versionPickedSequences } from "../scripts/video-montagem.ts";
 import { main as archiveMain, runArchiveVersions } from "../scripts/archive-video-versions.ts";
 
 const e = (name: string, modifiedMs: number | null = 1000, extra: Partial<ArchiveEntry> = {}): ArchiveEntry => ({ name, modifiedMs, ...extra });
@@ -292,7 +293,17 @@ type FakeFile = DriveEntry & { parent: string; body?: string };
  * metadado (`fields`), download (`alt=media`), PATCH de move/lixeira, criação
  * de pasta e a sessão de upload resumable (criar ou atualizar por id).
  */
-function fakeDrive(initial: FakeFile[], hooks: { failPatch?: (id: string, n: number) => "error" | "applied-error" | null; failUpload?: boolean } = {}) {
+function fakeDrive(
+  initial: FakeFile[],
+  hooks: {
+    failPatch?: (id: string, n: number) => "error" | "applied-error" | null;
+    failUpload?: boolean;
+    /** #13617: some da listagem (a busca do Drive que atrasa). */
+    hideFromList?: (f: FakeFile) => boolean;
+    /** #13619: resposta da lixeira (ex.: 403 de dono diferente); null = segue. */
+    failTrash?: (id: string) => Response | null;
+  } = {},
+) {
   const files: FakeFile[] = initial.map((f) => ({ ...f }));
   const patches: Array<{ id: string; add: string; remove: string; name?: string }> = [];
   const uploads: Array<{ kind: "create" | "update"; id: string; name: string }> = [];
@@ -300,7 +311,7 @@ function fakeDrive(initial: FakeFile[], hooks: { failPatch?: (id: string, n: num
   let created = 0;
   let patchCount = 0;
   const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
-  const meta = (f: FakeFile) => ({ id: f.id, name: f.name, mimeType: f.mimeType, parents: [f.parent], modifiedTime: f.modifiedTime });
+  const meta = (f: FakeFile) => ({ id: f.id, name: f.name, mimeType: f.mimeType, parents: [f.parent], modifiedTime: f.modifiedTime, ...(f.createdTime ? { createdTime: f.createdTime } : {}) });
   const deps: MontageDriveDeps = {
     driveFetch: async (url, init) => {
       const u = new URL(url);
@@ -320,6 +331,8 @@ function fakeDrive(initial: FakeFile[], hooks: { failPatch?: (id: string, n: num
         const body = JSON.parse(String(init.body ?? "{}")) as { name?: string; trashed?: boolean };
         const f = files.find((x) => x.id === id)!;
         if (body.trashed) {
+          const failed = hooks.failTrash?.(id) ?? null;
+          if (failed) return failed;
           files.splice(files.indexOf(f), 1);
           return json({ id, trashed: true });
         }
@@ -347,7 +360,7 @@ function fakeDrive(initial: FakeFile[], hooks: { failPatch?: (id: string, n: num
       const parent = /'([^']+)' in parents/.exec(q)![1];
       const name = /name = '([^']+)'/.exec(q)?.[1];
       const foldersOnly = q.includes(`mimeType = '${FOLDER_MIME}'`);
-      return json({ files: files.filter((f) => f.parent === parent && (name === undefined || f.name === name) && (!foldersOnly || f.mimeType === FOLDER_MIME)).map(meta) });
+      return json({ files: files.filter((f) => f.parent === parent && (name === undefined || f.name === name) && (!foldersOnly || f.mimeType === FOLDER_MIME) && !hooks.hideFromList?.(f)).map(meta) });
     },
     uploadFetch: async (url) => {
       if (hooks.failUpload) return json({ error: "boom" }, 500);
@@ -654,5 +667,139 @@ describe("bruto e arquivo/ fora do transcribe e do archive-video-brutos (#13610 
     ]);
     assert.equal(r?.pick.id, "b");
     assert.equal(r?.candidates.length, 1);
+  });
+});
+
+describe("resíduos do review do PR #13613 (#13617) e lixeira de dono diferente (#13619)", () => {
+  const seed = (): FakeFile[] => [
+    edFolder,
+    af("p0", "x.wav", "2026-11-17T09:00:00Z"),
+    af("a2", "261118_audio_tratado-bbbbbbbb.wav", "2026-11-17T10:30:00Z"),
+    xf("v1", "Diaria comentada horizontal_V1.xml", "2026-11-17T10:00:00Z", ["261118_audio_tratado-cccccccc.wav"]),
+    xf("v2", "Diaria comentada horizontal_V2.xml", "2026-11-17T11:00:00Z", ["261118_audio_tratado-cccccccc.wav"]),
+  ];
+  // A pasta criada nesta execução (`new*`) nunca aparece na listagem: a busca do Drive atrasada.
+  const lagging = { hideFromList: (f: FakeFile) => f.id.startsWith("new") };
+
+  it("1: a arquivo/ criada no upload é reaproveitada pelo arquivamento da mesma execução, mesmo fora da busca", async () => {
+    const d = fakeDrive(seed(), lagging);
+    const cache = new Map<string, DriveEntry>();
+    assert.equal(await archiveDriveIds(d.deps, "ed", "x.wav", ["p0"], { sleep: noSleep, archiveFolders: cache }), 1);
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: true, sleep: noSleep, archiveFolders: cache });
+    assert.equal(r.error, undefined);
+    assert.ok(r.moves.length > 0);
+    assert.equal(d.files.filter((f) => f.name === "arquivo").length, 1, "uma arquivo/ só");
+    const arquivo = d.files.find((f) => f.name === "arquivo")!;
+    assert.ok(d.patches.every((p) => p.add === arquivo.id));
+    // Sem o cache, a mesma sequência cria a 2ª (o defeito que o cache fecha).
+    const noCache = fakeDrive(seed(), lagging);
+    await archiveDriveIds(noCache.deps, "ed", "x.wav", ["p0"], { sleep: noSleep });
+    await archiveEditionDrive(noCache.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.equal(noCache.files.filter((f) => f.name === "arquivo").length, 2);
+  });
+
+  it("1: a sessão do Drive do video-montagem carrega o cache da arquivo/", () => {
+    const s = makeDriveSession("261118", "/tmp", { driveFetch: async () => new Response("{}") }, () => "yt");
+    assert.ok(s.archiveFolders instanceof Map);
+  });
+
+  it("2: duas arquivo/ = a mais antiga pela CRIAÇÃO, não pela última mudança", async () => {
+    const d = fakeDrive([
+      edFolder,
+      { id: "arqNova", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed", createdTime: "2026-11-18T10:00:00Z", modifiedTime: "2026-11-18T10:00:00Z" },
+      { id: "arqVelha", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed", createdTime: "2026-11-18T09:00:00Z", modifiedTime: "2026-11-18T11:00:00Z" },
+    ]);
+    assert.equal((await resolveArchiveFolder(d.deps, "ed", { create: true, sleep: noSleep }))?.id, "arqVelha");
+  });
+
+  it("3: rename final da prévia que falha apaga o .part e relança", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vva-part-"));
+    try {
+      const src = join(dir, "render.mp4");
+      writeFileSync(src, "nova");
+      // `out` é um diretório não vazio: o rename do `.part` por cima dele falha.
+      const out = join(dir, "261118 - previa vertical.mp4");
+      mkdirSync(out);
+      writeFileSync(join(out, "x"), "x");
+      // `arquivo` é um arquivo, não pasta: o arquivamento da anterior falha e vira warn.
+      writeFileSync(join(dir, "arquivo"), "não é pasta");
+      const warns: string[] = [];
+      assert.throws(() => installPreviewFile(src, out, { archive: true, warn: (m) => warns.push(m) }));
+      assert.equal(warns.length, 1);
+      assert.equal(existsSync(`${out}.part`), false, "nenhum .part órfão");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("4: releitura de parents que falha não mascara o erro do PATCH", async () => {
+    const d = fakeDrive([edFolder, { id: "arq", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed" }, af("a1", "x.wav", "2026-11-17T09:00:00Z")], {
+      failPatch: () => "error",
+    });
+    let reads = 0;
+    const deps: MontageDriveDeps = {
+      driveFetch: async (url, init) => {
+        if (!init?.method && /\/files\/a1\?/.test(url) && ++reads > 1) return new Response("releitura caiu", { status: 500 });
+        return d.deps.driveFetch(url, init);
+      },
+    };
+    await assert.rejects(moveDriveFile(deps, "a1", "ed", "arq"), /move de a1 para arquivo\/ no Drive falhou \(500\)/);
+    // Sem erro do PATCH, o erro da releitura é o que sobe.
+    const ok = fakeDrive([edFolder, { id: "arq", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed" }, af("a2", "y.wav", "2026-11-17T09:00:00Z")]);
+    let r2 = 0;
+    const lie: MontageDriveDeps = {
+      driveFetch: async (url, init) => {
+        if (init?.method === "PATCH") return new Response(JSON.stringify({ id: "a2" }), { status: 200 });
+        if (!init?.method && /\/files\/a2\?/.test(url) && ++r2 > 1) return new Response("releitura caiu", { status: 500 });
+        return ok.deps.driveFetch(url, init);
+      },
+    };
+    await assert.rejects(moveDriveFile(lie, "a2", "ed", "arq"), /metadado de a2 no Drive falhou \(500\)/);
+  });
+
+  it("6: brutoFilesOf ignora arquivo/Brutos/ (de um _superadas/Brutos/ absorvido); Brutos/ na raiz segue bruto", () => {
+    assert.equal(BRUTO_SKIP_ARCHIVE_DIR, ARCHIVE_DIR_NAME);
+    const files = [{ path: "arquivo/Brutos/20261117_181712.mp4" }, { path: "Arquivo/brutos/20261117_181712.mp4" }, { path: "Brutos/20261117_181713.mp4" }, { path: "20261117_181714.mp4" }];
+    assert.deepEqual(
+      brutoFilesOf(files).map((f) => f.path),
+      ["Brutos/20261117_181713.mp4", "20261117_181714.mp4"],
+    );
+  });
+
+  it("#13619: _superadas/ vazia de outra conta (403 insufficientFilePermissions) vira aviso, sem erro, e o exit não é 1", async () => {
+    const forbidden = () =>
+      new Response(JSON.stringify({ error: { code: 403, errors: [{ reason: "insufficientFilePermissions" }], message: "The user does not have sufficient permissions for this file." } }), { status: 403 });
+    const mk = () =>
+      fakeDrive(
+        [
+          edFolder,
+          { id: "sup", name: "_superadas", mimeType: FOLDER_MIME, parent: "ed" },
+          { id: "old", name: "Diaria comentada horizontal_V1.xml", mimeType: "application/xml", parent: "sup", body: xml(["x.wav"]) },
+        ],
+        { failTrash: (id) => (id === "sup" ? forbidden() : null) },
+      );
+    const d = mk();
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.equal(r.error, undefined, "os moves valeram; a lixeira recusada não é erro");
+    assert.ok(r.moves.length > 0 && r.moves.every((m) => m.done));
+    assert.deepEqual(r.absorbedFolders, []);
+    assert.match(r.warnings.join("\n"), /_superadas\/ \(id sup\) ficou vazia, mas não foi para a lixeira.*#13619/);
+    assert.ok(d.files.some((f) => f.id === "sup"), "a pasta vazia segue no Drive");
+    const cli = await runArchiveVersions(["--folder-id", "yt", "--apply"], mk().deps);
+    assert.equal(cli.code, 3, "exit de avisos, não 1");
+    // Outro erro da lixeira continua erro.
+    const other = fakeDrive(
+      [edFolder, { id: "sup", name: "_superadas", mimeType: FOLDER_MIME, parent: "ed" }, { id: "old", name: "a.xml", mimeType: "application/xml", parent: "sup", body: xml(["x.wav"]) }],
+      { failTrash: () => new Response("boom", { status: 500 }) },
+    );
+    const r2 = await archiveEditionDrive(other.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.match(r2.error ?? "", /500/);
+  });
+
+  it("#13619: isNotOwnerTrashError reconhece a resposta lida e o erro do retry, e só o 403 de permissão", () => {
+    assert.ok(isNotOwnerTrashError(new Error('lixeira da pasta vazia x falhou (403): {"error":{"errors":[{"reason":"insufficientFilePermissions"}]}}')));
+    assert.ok(isNotOwnerTrashError(new Error("Drive transient 403: insufficientFilePermissions")));
+    assert.equal(isNotOwnerTrashError(new Error("lixeira falhou (403): rateLimitExceeded")), false);
+    assert.equal(isNotOwnerTrashError(new Error("falhou (500): insufficientFilePermissions")), false);
   });
 });
