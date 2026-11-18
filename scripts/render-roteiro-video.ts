@@ -14,8 +14,10 @@
  * `[aviso]` do `video-roteiro-blocos.ts` (proposta de blocos, gancho, título,
  * capa, duração, formato react e fact-check do roteiro defasado, #13433/#13434)
  * saem no stderr, sem mudar o exit; capa que o
- * `gen-youtube-thumb.ts` recusaria sai como `[erro]` (#13401), também sem mudar
- * o exit (o `video-roteiro-blocos.ts` dá exit 4 para ela). A página é gravada num
+ * `gen-youtube-thumb.ts` recusaria sai como `[erro]` (#13401) e barra a página
+ * (#13569): exit 4, nada gravado, o mesmo exit do `video-roteiro-blocos.ts`.
+ * Antes ela só avisava, e o roteiro da 261118 foi publicado com uma capa de 6
+ * palavras no vertical 1, recusada só no dia da publicação. A página é gravada num
  * arquivo temporário e renomeada, para o Drive nunca sincronizar uma pela metade.
  *
  * O link do artefato (`<!-- artifact: URL -->`, 1ª linha) é preservado da
@@ -32,7 +34,8 @@
  *   --artifact-url:  link do artefato a gravar na 1ª linha
  *   --stdout:        imprime a página em vez de gravar
  *
- * Exit: 0 = página gerada (o caminho no stdout); 3 = sem roteiro-falas.json; 2 = uso, JSON inválido ou seta no texto.
+ * Exit: 0 = página gerada (o caminho no stdout); 3 = sem roteiro-falas.json; 2 = uso, JSON inválido ou seta no texto;
+ *       4 = capa fora da regra do gerador (vertical fora de 2 a 5 palavras, horizontal fora de 2 linhas de até 4), nada gravado (#13569).
  */
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -42,7 +45,7 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import { artifactUrlDe, artifactUrlSegura, renderRoteiroPagina, renderTopicosPagina } from "./lib/diaria/roteiro-pagina.ts";
 import { avisosTomConversacional, avisosDuracao, avisosTela, avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
-import { avisosRoteiroReact, lerDuracaoConfig } from "./video-roteiro-blocos.ts";
+import { avisosRoteiroReact, EXIT_CAPA_FORA_DA_REGRA, lerDuracaoConfig } from "./video-roteiro-blocos.ts";
 import { errosCapaDoRoteiro } from "./lib/diaria/youtube-thumb-roteiro.ts";
 
 export const ROTEIRO_PAGINA_FILE = "_internal/roteiro-d1.html";
@@ -104,8 +107,14 @@ export function main(
     ...avisosRoteiroReact(lido.roteiro, root, edition, falasPath),
   ])
     io.err(`[aviso] ${a}`);
-  // #13401: capa que o gen-youtube-thumb.ts recusaria, visível já na página (o exit fica; o blocos dá 4).
-  for (const e of errosCapaDoRoteiro(lido.roteiro)) io.err(`[erro] ${e}`);
+  // #13401: capa que o gen-youtube-thumb.ts recusaria. #13569: barra a página (exit 4, nada gravado), como
+  // o blocos: só o [erro] no stderr deixou a 261118 publicar o roteiro com capa de 6 palavras no vertical 1.
+  const errosCapa = errosCapaDoRoteiro(lido.roteiro);
+  for (const e of errosCapa) io.err(`[erro] ${e}`);
+  if (errosCapa.length) {
+    io.err(`[render-roteiro-video] página não gerada: corrija a capa no ${falasPath} e gere de novo (#13569)`);
+    return EXIT_CAPA_FORA_DA_REGRA;
+  }
   let html: string;
   try {
     html = soTopicos
