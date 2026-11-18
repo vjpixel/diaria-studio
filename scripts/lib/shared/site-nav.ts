@@ -51,6 +51,7 @@ export const SITE_NAV_MARKER = 'data-site-nav="global"';
  *  aplicado a nenhum rodapé nesta PR) o rodapé, pra nunca divergir. */
 export type SiteNavKey =
   | "edicoes"
+  | "videos"
   | "especiais"
   | "livros"
   | "cursos"
@@ -107,6 +108,9 @@ const NAV_ITEM_DEFS: readonly SiteNavItemDef[] = [
   // Worker → apoia.se/diaria (contador de clique + UTM); a página `/apoiar` não existe mais. Só os itens CROSS-HOST abaixo precisam de URL
   // absoluta (#8497 item 9).
   { key: "edicoes", label: "Edições", href: "/archive", crossHost: false },
+  // #13323: página `/videos` do apex (todos os horizontais, `gen-videos-page.ts`).
+  // Relativa como `/archive`: num host irmão `apexBase` a torna absoluta + UTM.
+  { key: "videos", label: "Vídeos", href: "/videos", crossHost: false },
   { key: "especiais", label: "Especiais", href: crossHostUrl(DIARIA_ESPECIAL_URL), crossHost: true },
   { key: "livros", label: "Livros", href: crossHostUrl(DIARIA_LIVROS_URL), crossHost: true },
   { key: "cursos", label: "Cursos", href: crossHostUrl(DIARIA_CURSOS_URL), crossHost: true },
@@ -324,4 +328,38 @@ export function injectSiteNavAfterBodyOpen(html: string, opts: RenderSiteNavOpti
     out = out.replace(/<body[^>]*>/i, (full) => `${full}\n${nav}`);
   }
   return injectSiteSocialFooter(out, { inheritHostTokens: opts.inheritHostTokens });
+}
+
+/** Bloco de links de um menu global já injetado: abertura do `<nav>` com o
+ *  marcador até o `<div class="dnav-links">`, o miolo (os `<a>`) e o
+ *  fechamento do div. Âncora no formato exato que `renderSiteNav` emite. */
+const NAV_LINKS_BLOCK_RE =
+  /(<nav class="dnav"[^>]*data-site-nav="global"[^>]*>\s*<div class="dnav-wrap">\s*<div class="dnav-links">)([\s\S]*?)(<\/div>)/;
+
+/**
+ * Re-renderiza, no lugar, os itens do menu global de uma página que JÁ tem o
+ * menu (#13323). `injectSiteNavAfterBodyOpen` é guardado pelo marcador e
+ * nunca toca uma página que já tem o menu, então um item novo em
+ * `NAV_ITEM_DEFS` não chegava às páginas commitadas (as ~310 `/p/{slug}`, os
+ * hosts irmãos) sem regenerar cada uma pelo próprio gerador.
+ *
+ * As opções da renderização original são inferidas do próprio HTML: o item
+ * ativo é o link com `dnav-active` (casado pelo rótulo); `apexBase` vale
+ * quando algum link do bloco aponta para `DIARIA_APEX_URL/...` (host irmão).
+ * Só o miolo do `<div class="dnav-links">` muda: o `<style>`, o CTA e o resto
+ * da página ficam intactos. Página sem o menu volta igual. Idempotente.
+ */
+export function refreshSiteNavLinks(html: string): string {
+  const m = NAV_LINKS_BLOCK_RE.exec(html);
+  if (!m) return html;
+  const inner = m[2];
+  const activeLabel = /<a [^>]*class="dnav-active"[^>]*>([^<]*)<\/a>/.exec(inner)?.[1];
+  const active = activeLabel
+    ? NAV_ITEM_DEFS.find((i) => escHtml(i.label) === activeLabel)?.key
+    : undefined;
+  const apexBase = inner.includes(`href="${DIARIA_APEX_URL}/`) ? DIARIA_APEX_URL : undefined;
+  const links = NAV_ITEM_DEFS.map((item) => renderNavLink(item, active, apexBase)).join("\n        ");
+  const newInner = `\n      ${links}\n    `;
+  if (newInner === inner) return html;
+  return html.slice(0, m.index) + m[1] + newInner + m[3] + html.slice(m.index + m[0].length);
 }

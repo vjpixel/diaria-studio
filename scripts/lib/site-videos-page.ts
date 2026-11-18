@@ -140,7 +140,7 @@ ${VIDEO_GRID_CSS}
 ${renderAnalyticsHead()}
 </head>
 <body>
-  ${renderSiteNav({ inheritHostTokens: true })}
+  ${renderSiteNav({ active: "videos", inheritHostTokens: true })}
   <main class="wrap">
     <p class="top"><a href="/">diar<span class="dot">.</span>ia<span class="dot">.</span>br</a></p>
     <h1>Vídeos</h1>
