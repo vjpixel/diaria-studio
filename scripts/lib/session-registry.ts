@@ -219,7 +219,9 @@ import {
   d1AcquireLock,
   d1LocksClientFromRepo,
   d1ReadLock,
+  d1ReadMergeGrant,
   d1ReleaseLock,
+  d1WriteMergeGrant,
   d1RenewLock,
   mergeGrantConsumedD1Name,
   mergeLockD1Name,
@@ -3394,6 +3396,41 @@ export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
   recoveredForeignClaims?: string[];
   /** #7003 — quantas cópias de conflito alimentaram a reconstrução. */
   recoveredFromFiles?: number;
+  /**
+   * #13238 — kind do registro onde a claim foi gravada, quando difere do
+   * `--kind` pedido. Só aparece no auto-registro `"fresh"` de um kind com
+   * autoridade de merge (`overnight`/`develop`): a claim vai para o registro
+   * `interactive` da sessão (ver `autoRegisterKindFor`).
+   */
+  registeredKind?: SessionKind;
+}
+
+/**
+ * #13238 — kind com que o auto-registro "fresh" (#6369) cria a sessão. Um kind
+ * com AUTORIDADE DE MERGE (`overnight`/`develop`) nunca nasce por auto-registro:
+ * esse registro é a identidade de coordenadora que o guard do #5716 lê, e o
+ * texto do guard já proíbe sessão interativa de rodar `register --kind develop`.
+ * O `claim-issue --kind develop` de uma sessão interativa sem registro (16/11/2026,
+ * claims da #13217 e da #13235) fazia exatamente isso por um caminho lateral, e
+ * passava a bloquear o merge de outras sessões. As rodadas de verdade registram
+ * antes do 1º claim (passo 1 do `/diaria-overnight` e do `/diaria-develop`), então
+ * não passam por aqui. `continuo` segue como antes: não tem autoridade de merge
+ * (#7702) e o cron do Hermes depende desse auto-registro (#6369, consumidor externo).
+ * A reconstrução a partir de cópias órfãs (#7003) não usa isto: lá a sessão
+ * comprovadamente já existia com aquele kind.
+ */
+export function autoRegisterKindFor(kind: SessionKind): SessionKind {
+  return hasMergeAuthorityKind(kind) ? "interactive" : kind;
+}
+
+/** #13238 — aviso do CLI quando a claim foi para o registro de outro kind. */
+export function downgradedClaimKindNotice(requested: SessionKind, registered: SessionKind): string {
+  return (
+    `session-registry: claim-issue — esta sessão não tem registro ${requested}; a claim foi gravada no registro ` +
+    `${registered} dela, e nenhum registro ${requested} foi criado (#13238). Auto-registro nunca cria identidade de ` +
+    "coordenadora: rodada overnight/develop de verdade registra com `register` antes do 1º claim. Em sessão " +
+    "interativa, prefira `--kind interactive`.\n"
+  );
 }
 
 /**
@@ -3481,9 +3518,23 @@ export function claimIssueAutoRegistering(
       recoveredFromFiles: recovered.files.length,
     };
   }
-  registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
-  const retried = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
-  return { ...retried, autoRegistered: true, autoRegisterMode: "fresh" };
+  // #13238: kind com autoridade de merge não nasce por auto-registro — a claim
+  // vai para o registro `interactive` da sessão (o beacon já pode tê-lo criado).
+  const regKind = autoRegisterKindFor(kind);
+  if (regKind !== kind) {
+    const onInteractive = claimIssueCheckAndSet(repoRoot, regKind, sessionId, issueNumber, tag, now, options);
+    if (onInteractive.reason !== "no-op-session-missing") {
+      return { ...onInteractive, autoRegistered: false, registeredKind: regKind };
+    }
+  }
+  registerSession(repoRoot, regKind, sessionId, { tag, startedAt: now });
+  const retried = claimIssueCheckAndSet(repoRoot, regKind, sessionId, issueNumber, tag, now, options);
+  return {
+    ...retried,
+    autoRegistered: true,
+    autoRegisterMode: "fresh",
+    ...(regKind !== kind ? { registeredKind: regKind } : {}),
+  };
 }
 
 /** #12010 — desfecho de UMA issue dentro de um claim em lote. */
@@ -3600,6 +3651,8 @@ export interface BatchClaimIssuesAutoRegisterResult extends BatchClaimIssuesResu
   recoveredClaims?: number[];
   recoveredForeignClaims?: string[];
   recoveredFromFiles?: number;
+  /** #13238 — ver `ClaimIssueAutoRegisterResult.registeredKind`. */
+  registeredKind?: SessionKind;
 }
 
 /**
@@ -3641,9 +3694,22 @@ export function claimIssuesAutoRegistering(
       recoveredFromFiles: recovered.files.length,
     };
   }
-  registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
-  const retried = claimIssuesCheckAndSet(repoRoot, kind, sessionId, issues, tag, now, options);
-  return { ...retried, autoRegistered: true, autoRegisterMode: "fresh" };
+  // #13238: mesma regra do `claimIssueAutoRegistering` (`autoRegisterKindFor`).
+  const regKind = autoRegisterKindFor(kind);
+  if (regKind !== kind) {
+    const onInteractive = claimIssuesCheckAndSet(repoRoot, regKind, sessionId, issues, tag, now, options);
+    if (!onInteractive.entries.some((e) => e.reason === "no-op-session-missing")) {
+      return { ...onInteractive, autoRegistered: false, registeredKind: regKind };
+    }
+  }
+  registerSession(repoRoot, regKind, sessionId, { tag, startedAt: now });
+  const retried = claimIssuesCheckAndSet(repoRoot, regKind, sessionId, issues, tag, now, options);
+  return {
+    ...retried,
+    autoRegistered: true,
+    autoRegisterMode: "fresh",
+    ...(regKind !== kind ? { registeredKind: regKind } : {}),
+  };
 }
 
 /**
@@ -4137,6 +4203,13 @@ export function unclaimIssues(
     if (existsSync(path)) {
       warnUnclaimUnreadable(sessionId, path);
       reason = "no-op-unreadable";
+    }
+    // #13238: o claim com `--kind overnight|develop` de uma sessão sem esse
+    // registro foi gravado no registro `interactive` dela (`autoRegisterKindFor`);
+    // o unclaim simétrico solta de lá. Só solta, nunca cria registro.
+    const fallbackKind = autoRegisterKindFor(kind);
+    if (reason === "no-op-session-missing" && fallbackKind !== kind) {
+      return unclaimIssues(repoRoot, fallbackKind, sessionId, issues, tag, now);
     }
     return { ok: false, writes: 0, entries: distinct.map(({ issue, label }) => ({ issue, label, ok: false, reason })) };
   }
@@ -4958,6 +5031,136 @@ function reportMergeGrantDoubleConsumed(repoRoot: string, grant: MergeGrant, ses
     },
     repoRoot,
   );
+}
+
+// ─── #13242: a concessão de merge também no D1 ─────────────────────────────
+//
+// Até aqui a CRIAÇÃO da concessão vivia só no registro da concedente em
+// `data/sessions/`, que chega à máquina da beneficiária pelo sync do Drive. Na
+// madrugada de 16/11/2026 o registro da overnight do `300` ficou parado no Neo
+// na versão de 00:47 e a janela de 10 min venceu antes de chegar: interativa no
+// Neo + coordenadora no `300` = merge impossível pelo fluxo documentado. A
+// concessão passa a ser gravada também no D1 (`merge-grant:{repo}|{beneficiária}`,
+// `holder` = concedente, `meta` = o `merge_grant`), e `check-merge-grant`, o
+// guard e o consumo a leem de lá quando o arquivo não a tem.
+//
+// O que NÃO muda (#5716): só `grantMergeWindow` escreve (coordenadora com
+// autoridade de merge, nunca para si, nunca para outra coordenadora); quem lê
+// exige que a concedente seja coordenadora com autoridade de merge ATIVA no
+// registro desta máquina (qualquer versão sincronizada dela, não a que traz a
+// concessão), TTL de 10 min a partir de `grantedAt`, uso único (marca de
+// consumo no D1 + registro da beneficiária), e o merge lock segue valendo.
+
+/** Resultado de `grantMergeWindowShared`: o de `grantMergeWindow` + onde ficou visível. */
+export interface SharedGrantMergeResult extends GrantMergeResult {
+  /** `d1` = gravada também no D1; `local` = sem D1; `local-fallback` = o D1 não gravou (aviso emitido). */
+  backend?: MergeLockBackend;
+}
+
+/**
+ * `grantMergeWindow` + espelho no D1 (#13242). Todas as recusas são as do
+ * arquivo (rodam antes, inalteradas); o D1 só recebe concessão que o arquivo
+ * aceitou. Falha do D1 nunca desfaz a concessão local: vira aviso de que ela
+ * só chega a outra máquina pelo sync.
+ */
+export async function grantMergeWindowShared(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  grantedTo: string,
+  meta: { pr?: number; repo?: string; tag?: string; now?: string; force?: boolean } = {},
+  opts: SharedLockOptions = {},
+): Promise<SharedGrantMergeResult> {
+  const local = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, meta);
+  if (!local.ok || !local.grant) return local;
+  const warn = opts.warn ?? stderrWarn;
+  const d1 = resolveD1ForRepo(repoRoot, opts);
+  if (!d1) return { ...local, backend: "local" };
+  const d1Opts = opts.d1Now !== undefined ? { now: opts.d1Now } : {};
+  const grant = local.grant;
+  let w = await d1WriteMergeGrant(d1, grant, MERGE_GRANT_TTL_MS, { ...d1Opts, ...(meta.force ? { force: true } : {}) });
+  if (w.ok && !w.value.written) {
+    // Linha viva de OUTRA concedente. Se ela já foi consumida, não protege
+    // nada: substitui. Viva e não consumida: avisa, sem sobrescrever.
+    const prior = await d1ReadMergeGrant(d1, grantedTo, grantRepoOf(grant) ?? DEFAULT_ISSUE_REPO, d1Opts);
+    const priorConsumed = prior.ok && prior.value ? await isMergeGrantConsumedInD1(d1, prior.value, d1Opts) : null;
+    if (priorConsumed?.ok && priorConsumed.value) {
+      w = await d1WriteMergeGrant(d1, grant, MERGE_GRANT_TTL_MS, { ...d1Opts, force: true });
+    }
+  }
+  if (!w.ok) {
+    reportD1Failure(repoRoot, "grant-merge", w, warn);
+    warn(
+      "⚠️  session-registry (#13242): a concessão foi gravada só no arquivo de data/sessions/ — numa beneficiária " +
+        "de OUTRA máquina ela só aparece quando o sync replicar, e pode vencer antes (TTL de 10 min).\n",
+    );
+    return { ...local, backend: "local-fallback" };
+  }
+  if (!w.value.written) {
+    warn(
+      `⚠️  session-registry (#13242): o D1 já tem concessão viva de ${w.value.holder ?? "outra coordenadora"} para ` +
+        `${grantedTo}; a sua ficou só no arquivo (visível em outra máquina só depois do sync). Use --force para substituir.\n`,
+    );
+    return { ...local, backend: "local-fallback" };
+  }
+  return { ...local, backend: "d1" };
+}
+
+/**
+ * Concessão viva para `sessionId` que só o D1 conhece (#13242): a linha
+ * `merge-grant:` existe, a concedente é coordenadora com autoridade de merge
+ * ATIVA no registro desta máquina (`listActiveSessions`, não stale), dentro do
+ * TTL de `grantedAt`, sem consumo no registro da beneficiária nem marca de
+ * consumo no D1. `null` = nenhuma (ou o D1 não respondeu; `error` diz qual).
+ */
+export async function findLiveMergeGrantInD1(
+  repoRoot: string,
+  sessionId: string,
+  repo: string = DEFAULT_ISSUE_REPO,
+  opts: SharedLockOptions = {},
+): Promise<{ grant: MergeGrant; grantedBy: ActiveSessionRecord } | { error: { error: string; permanent: boolean } } | null> {
+  const d1 = resolveD1ForRepo(repoRoot, opts);
+  if (!d1) return null;
+  const d1Opts = opts.d1Now !== undefined ? { now: opts.d1Now } : {};
+  const r = await d1ReadMergeGrant(d1, sessionId, repo, d1Opts);
+  if (!r.ok) return { error: r };
+  const raw = r.value;
+  if (!raw) return null;
+  const now = opts.now ?? Date.now();
+  const grantor = listActiveSessions(repoRoot, now).find(
+    (s) => s.sessionId === raw.grantedBy && hasMergeAuthorityKind(s.kind) && !s.stale,
+  );
+  if (!grantor) return null;
+  const grant = withLedgerConsumption(raw as MergeGrant, readMergeGrantConsumptions(repoRoot));
+  if (!isMergeGrantLive(grant, sessionId, now)) return null;
+  const consumed = await isMergeGrantConsumedInD1(d1, grant!, d1Opts);
+  if (consumed?.ok && consumed.value) return null;
+  if (consumed && !consumed.ok) return { error: consumed };
+  return { grant: grant!, grantedBy: grantor };
+}
+
+/**
+ * Atraso do registro de cada coordenadora de OUTRA máquina (#13242): idade do
+ * `lastHeartbeat` como esta máquina o vê. Serve ao aviso de `check-merge-grant`
+ * quando a resposta é `granted: false` — o registro pode ser a versão de antes
+ * da concessão, parado no sync. Pura sobre a lista recebida.
+ */
+export function staleGrantorRegistrations(
+  sessions: ActiveSessionRecord[],
+  localTag: string,
+  now: number,
+  minAgeMs: number = 60_000,
+): Array<{ sessionId: string; kind: SessionKind; machineTag: string; ageMinutes: number }> {
+  const out: Array<{ sessionId: string; kind: SessionKind; machineTag: string; ageMinutes: number }> = [];
+  for (const s of sessions) {
+    if (!hasMergeAuthorityKind(s.kind) || s.machineTag === localTag) continue;
+    const hb = Date.parse(s.lastHeartbeat ?? "");
+    if (!Number.isFinite(hb)) continue;
+    const age = now - hb;
+    if (age < minAgeMs) continue;
+    out.push({ sessionId: s.sessionId, kind: s.kind, machineTag: s.machineTag, ageMinutes: Math.round(age / 60_000) });
+  }
+  return out;
 }
 
 // ─── GC de registros encerrados (#6130) ────────────────────────────────────
@@ -7785,8 +7988,12 @@ async function main(): Promise<void> {
                     `${recoveredLabels.length} claim(s) recuperada(s)` +
                     `${recoveredLabels.length > 0 ? `: ${recoveredLabels.join(", ")}` : ""}` +
                     ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]\n"
-                : "session-registry: claim-issue --issues [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]\n",
+                : `session-registry: claim-issue --issues [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora ` +
+                    `como ${batch.registeredKind ?? kind} antes do claim, ver #6369]\n`,
             );
+          }
+          if (batch.registeredKind && batch.registeredKind !== kind) {
+            process.stderr.write(downgradedClaimKindNotice(kind, batch.registeredKind));
           }
           for (const entry of batch.entries) {
             const owner = entry.blockedBy;
@@ -7845,7 +8052,11 @@ async function main(): Promise<void> {
               `${recoveredClaimLabels(result).length} claim(s) recuperada(s)` +
               `${recoveredClaimLabels(result).length > 0 ? `: ${recoveredClaimLabels(result).join(", ")}` : ""}` +
               ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
-            : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]";
+            : ` [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora como ${result.registeredKind ?? kind} ` +
+              "antes do claim, ver #6369]";
+        if (result.registeredKind && result.registeredKind !== kind) {
+          process.stderr.write(downgradedClaimKindNotice(kind, result.registeredKind));
+        }
         switch (result.reason) {
           case "claimed":
             process.stdout.write(
@@ -8174,7 +8385,9 @@ async function main(): Promise<void> {
         const pr = values.pr ? Number(values.pr) : undefined;
         const force = flags.has("force");
         const grantRepo = requireRepoFlag(values, flags);
-        const result = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, {
+        // #13242: grava também no D1, para a beneficiária de outra máquina ver
+        // na hora (o arquivo só chega pelo sync do Drive).
+        const result = await grantMergeWindowShared(repoRoot, kind, sessionId, grantedTo, {
           ...(pr !== undefined ? { pr } : {}),
           ...(grantRepo !== DEFAULT_ISSUE_REPO ? { repo: grantRepo } : {}),
           ...(force ? { force } : {}),
@@ -8183,7 +8396,8 @@ async function main(): Promise<void> {
           case "granted":
             process.stdout.write(
               `session-registry: grant-merge ok — janela concedida a ${grantedTo}` +
-                `${pr !== undefined ? ` (PR #${pr})` : ""}, TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min, uso único\n`,
+                `${pr !== undefined ? ` (PR #${pr})` : ""}, TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min, uso único` +
+                `${result.backend === "d1" ? " (gravada também no D1: visível em todas as máquinas)" : ""}\n`,
             );
             // #7857: `grantedTo` não bate NENHUMA sessão ativa no registry —
             // aviso, não recusa (a beneficiária pode ainda não ter se
@@ -8267,6 +8481,7 @@ async function main(): Promise<void> {
       }
       case "check-merge-grant": {
         const sessionId = requireSessionId(values);
+        const checkRepo = requireRepoFlag(values, flags);
         const foundLocal = findLiveMergeGrant(repoRoot, sessionId);
         // #12842: consumo marcado no D1 (talvez por outra máquina, antes de o
         // registro sincronizar) derruba a janela — o guard faz o mesmo. Sem
@@ -8279,7 +8494,18 @@ async function main(): Promise<void> {
           reportD1Failure(repoRoot, "check-merge-grant (consumo da concessão não conferido)", consumedRead, stderrWarn);
         }
         const consumedInD1 = consumedRead?.ok === true && consumedRead.value;
-        const found = consumedInD1 ? null : foundLocal;
+        // #13242: sem janela no arquivo, a concessão pode estar só no D1 (a
+        // concedente é de outra máquina e o registro dela ainda não sincronizou).
+        let found: { grant: MergeGrant; grantedBy: ActiveSessionRecord; source: MergeGrantSource | "d1" } | null =
+          consumedInD1 ? null : foundLocal;
+        if (!found && !consumedInD1) {
+          const inD1 = await findLiveMergeGrantInD1(repoRoot, sessionId, checkRepo);
+          if (inD1 && "error" in inD1) {
+            reportD1Failure(repoRoot, "check-merge-grant (concessão no D1 não conferida)", inD1.error, stderrWarn);
+          } else if (inD1) {
+            found = { ...inD1, source: "d1" };
+          }
+        }
         if (consumedInD1) {
           process.stderr.write(
             "session-registry: a janela local existe, mas o D1 registra o consumo dela (#12842) — tratada como consumida.\n",
@@ -8301,9 +8527,21 @@ async function main(): Promise<void> {
             grant: found?.grant ?? null,
             grantedBy: found?.grantedBy ?? null,
             source: found?.source ?? null,
-            visible_to_merge_gate: found === null ? null : found.source === "real",
+            // #13242: o guard lê a concessão do D1 com as mesmas regras.
+            visible_to_merge_gate: found === null ? null : found.source === "real" || found.source === "d1",
           }) + "\n",
         );
+        if (!found) {
+          // #13242: `granted: false` com a concedente em outra máquina pode ser
+          // só o registro dela parado no sync — diz isso em vez de calar.
+          for (const s of staleGrantorRegistrations(listActiveSessions(repoRoot), machineTag(), Date.now())) {
+            process.stderr.write(
+              `session-registry: registro de ${s.kind} ${s.sessionId} (máquina ${s.machineTag}) com ${s.ageMinutes} min ` +
+                "de atraso aqui: o sync pode não ter trazido a concessão. Sem D1 configurado nesta máquina, peça à " +
+                "concedente para conferir o grant-merge (a saída diz se gravou no D1) ou para reconceder (#13242).\n",
+            );
+          }
+        }
         if (found && found.source === "backup") {
           // Aviso em stderr (nunca no stdout, que é JSON consumido por script):
           // a janela EXISTE na união do #6952 mas o gate do #5716 é cego a
@@ -8343,8 +8581,19 @@ async function main(): Promise<void> {
         // confirmado `granted: true` segundos antes (o "ok" abaixo não
         // distingue os dois casos — por isso o aviso explícito aqui).
         const sessionId = requireSessionId(values);
-        const toConsume = findLiveMergeGrant(repoRoot, sessionId)?.grant ?? null;
-        const ok = consumeMergeGrant(repoRoot, sessionId);
+        let toConsume = findLiveMergeGrant(repoRoot, sessionId)?.grant ?? null;
+        let ok = consumeMergeGrant(repoRoot, sessionId);
+        // #13242: janela que só o D1 conhece (concedente de outra máquina, sem
+        // sync ainda) — o consumo é a marca no D1 + o registro da beneficiária.
+        if (!toConsume) {
+          const inD1 = await findLiveMergeGrantInD1(repoRoot, sessionId, requireRepoFlag(values, flags));
+          if (inD1 && "error" in inD1) {
+            reportD1Failure(repoRoot, "consume-merge-grant (concessão no D1 não conferida)", inD1.error, stderrWarn);
+          } else if (inD1) {
+            toConsume = inD1.grant;
+            ok = recordMergeGrantConsumption(repoRoot, inD1.grant, new Date().toISOString());
+          }
+        }
         // #12842: marca de uso único no D1, visível a toda máquina. Sem D1, só o local.
         if (ok && toConsume) {
           const d1 = resolveD1ForRepo(repoRoot, {});

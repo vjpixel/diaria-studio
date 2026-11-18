@@ -333,6 +333,10 @@ export const ACQUIRE_SQL =
 
 export const READ_SQL = `SELECT holder, acquired_at, expires_at, ${nowParam(2)} AS now_ms FROM locks WHERE name = ?1`;
 
+/** Leitura com `meta` (concessão de merge no D1, #13242). Mesmo texto do hook. */
+export const READ_META_SQL =
+  `SELECT holder, acquired_at, expires_at, meta, ${nowParam(2)} AS now_ms FROM locks WHERE name = ?1`;
+
 /**
  * Tenta tomar `name` por `ttlMs`. Ganha quando não há linha, quando a linha
  * venceu (`expires_at <= agora`), ou nos casos de `reentrant`/`force`. Em
@@ -479,6 +483,101 @@ export function editionLockD1Name(edition: string): string {
 /** Consumo único de uma concessão de merge, pela identidade (concedente, beneficiária, instante). */
 export function mergeGrantConsumedD1Name(grant: { grantedBy: string; grantedTo: string; grantedAt: string }): string {
   return `merge-grant-consumed:${grant.grantedBy}|${grant.grantedTo}|${grant.grantedAt}`;
+}
+
+const DEFAULT_GRANT_REPO = "vjpixel/diaria-studio";
+
+/**
+ * #13242: concessão de merge no D1, uma linha por (repo, beneficiária).
+ * `holder` = coordenadora concedente; `meta` = o `merge_grant` inteiro (JSON).
+ * O arquivo da concedente em `data/sessions/` só chega à máquina da
+ * beneficiária pelo sync do Drive, e o atraso real passa do TTL de 10 min.
+ */
+export function mergeGrantD1Name(grantedTo: string, repo: string = DEFAULT_GRANT_REPO): string {
+  return `merge-grant:${repo.toLowerCase()}|${grantedTo}`;
+}
+
+/** Forma mínima de uma concessão vinda do D1 (espelho de `MergeGrant`). */
+export interface D1MergeGrant {
+  grantedTo: string;
+  grantedBy: string;
+  grantedAt: string;
+  pr?: number;
+  repo?: string;
+}
+
+/**
+ * Concessão de uma linha `merge-grant:` (#13242), ou `null` se a linha não
+ * descreve concessão válida para `sessionId` em `repo`. Pura; mesma regra de
+ * `grantFromD1Row` do hook (`.claude/hooks/lib/d1-locks.mjs`): JSON com os 3
+ * campos de identidade, `grantedTo === sessionId`, `grantedBy === holder`,
+ * nunca auto-concessão, repo igual. TTL, consumo e "concedente é coordenadora
+ * ativa" ficam com quem chama.
+ */
+export function grantFromD1Row(
+  row: { holder?: unknown; meta?: unknown } | null | undefined,
+  sessionId: string,
+  repo: string = DEFAULT_GRANT_REPO,
+): D1MergeGrant | null {
+  if (!row || typeof row.holder !== "string" || typeof row.meta !== "string") return null;
+  if (typeof sessionId !== "string" || sessionId === "") return null;
+  let g: Record<string, unknown>;
+  try {
+    g = JSON.parse(row.meta) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!g || typeof g !== "object") return null;
+  if (typeof g.grantedBy !== "string" || typeof g.grantedTo !== "string" || typeof g.grantedAt !== "string") return null;
+  if (g.grantedTo !== sessionId || g.grantedBy !== row.holder || g.grantedBy === g.grantedTo) return null;
+  const grantRepo = g.repo === undefined ? DEFAULT_GRANT_REPO : String(g.repo).toLowerCase();
+  if (grantRepo !== repo.toLowerCase()) return null;
+  const grant: D1MergeGrant = { grantedTo: g.grantedTo, grantedBy: g.grantedBy, grantedAt: g.grantedAt };
+  if (Number.isSafeInteger(g.pr)) grant.pr = g.pr as number;
+  if (g.repo !== undefined) grant.repo = String(g.repo);
+  return grant;
+}
+
+/** Concessão viva no D1 para `sessionId` em `repo` (`null` = nenhuma, ou vencida no relógio do D1). */
+export async function d1ReadMergeGrant(
+  client: D1Client,
+  sessionId: string,
+  repo: string = DEFAULT_GRANT_REPO,
+  opts: { now?: number } = {},
+): Promise<D1LockResult<D1MergeGrant | null>> {
+  try {
+    const rows = await run(client, READ_META_SQL, [mergeGrantD1Name(sessionId, repo), opts.now === undefined ? "" : String(opts.now)]);
+    const row = rows[0];
+    if (!row) return { ok: true, value: null };
+    const expiresAt = Number(row.expires_at);
+    const nowMs = Number(row.now_ms);
+    if (Number.isFinite(expiresAt) && Number.isFinite(nowMs) && expiresAt <= nowMs) return { ok: true, value: null };
+    return { ok: true, value: grantFromD1Row(row, sessionId, repo) };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+/**
+ * Grava a concessão no D1 (#13242). Ganha quando não há linha viva para a
+ * beneficiária, quando a linha é da MESMA concedente (renova/substitui) ou com
+ * `force`. Linha viva de OUTRA concedente: `written: false` com quem a segura
+ * — o chamador avisa, nunca sobrescreve sem `--force`.
+ */
+export async function d1WriteMergeGrant(
+  client: D1Client,
+  grant: D1MergeGrant,
+  ttlMs: number,
+  opts: { force?: boolean; now?: number } = {},
+): Promise<D1LockResult<{ written: boolean; holder: string | null }>> {
+  const r = await d1AcquireLock(client, mergeGrantD1Name(grant.grantedTo, grant.repo ?? DEFAULT_GRANT_REPO), grant.grantedBy, ttlMs, {
+    meta: JSON.stringify(grant),
+    reentrant: true,
+    ...(opts.force ? { force: true } : {}),
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  });
+  if (!r.ok) return r;
+  return { ok: true, value: { written: r.value.acquired, holder: r.value.current?.holder ?? null } };
 }
 
 /** Retenção da marca de consumo (igual à do registro local, `MERGE_GRANT_LEDGER_RETENTION_MS`). */
