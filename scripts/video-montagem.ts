@@ -78,6 +78,14 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *                           referência do Pixel (default: a voz com mais tempo de fala). Sem título
  *                           nem resumo "usar", o molde sai com `format: "entrevista"` e as
  *                           sequências abertura → comentário → CTA → fecho.
+ *   blocks AAMMDD --from-plan [--force]
+ *                           (#13463) grava o `blocks.json` do `blocks.template.json` da decupagem e da
+ *                           proposta do roteiro de gravação (`_internal/roteiro-falas.json`, a mesma do
+ *                           `video-roteiro-blocos.ts`): bloco, `targets`, `falaId`, sequências e título
+ *                           da vertical, pelo `falaId` das linhas "usar" do `decupagem-plan.json`
+ *                           (`lib/diaria/video-blocks-from-plan.ts`). Sem o roteiro: exit 3. Com
+ *                           `blocks.json` já gravado, recusa sem --force (o anterior vai para
+ *                           `blocks.antes-from-plan.json`).
  *   retranscribe AAMMDD --from S --to S
  *                           retranscreve só o trecho (até 60 s; sem VAD, sem condition_on_previous_text)
  *                           antes de declarar dúvida (#11364); não mexe no transcript.json. Com --sub (#11958),
@@ -343,7 +351,8 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor, editionsRoot as editionsRootDir } from "./lib/edition-paths.ts";
-import { readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { parseRoteiroFalas, propostaBlocosDoRoteiro, readRoteiroFalas, readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, ROTEIRO_FALAS_FILE, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { blocksFromPlan } from "./lib/diaria/video-blocks-from-plan.ts";
 import { clampTelaOverlaps, previewTelaArgs, telaBoxSvgForMarker, telaFileName, type TelaOverlay } from "./lib/diaria/video-tela.ts";
 import {
   readTrechosInseridos,
@@ -688,7 +697,7 @@ const OTIO_PY = join(ROOT, "scripts", "video", "otio_read_xml.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|blocks|retranscribe|frame|face|face-compare|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -2727,6 +2736,45 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   writeJson(tpl, template);
   process.stdout.write(md);
   console.error(`[video-montagem] decupagem: ${f(ctx, "decupagem.md")}; molde do blocks.json (falas "usar"): ${tpl}`);
+  return 0;
+}
+
+/** `blocks --from-plan` sem `roteiro-falas.json`: a edição não tem roteiro de gravação (mesmo código do `video-roteiro-blocos.ts`). */
+export const EXIT_BLOCKS_SEM_ROTEIRO = 3;
+
+/**
+ * `blocks AAMMDD --from-plan [--force] [--falas PATH]` (#13463): o `blocks.json`
+ * do molde da decupagem + a proposta do roteiro de gravação, no lugar do script
+ * ad-hoc. Valida o resultado inteiro (`parseBlocksFile`) antes de gravar; nunca
+ * sobrescreve um `blocks.json` sem `--force` (o anterior fica em
+ * `blocks.antes-from-plan.json`).
+ */
+function cmdBlocks(ctx: Ctx, fromPlan: boolean, force: boolean, falasArg: string | undefined): number {
+  if (!fromPlan) throw new Error("blocks exige --from-plan (o blocks.json do molde da decupagem + a proposta do roteiro, #13463)");
+  const tplPath = f(ctx, "blocks.template.json");
+  const tplParsed = parseBlocksFile(readJson<unknown>(tplPath, "blocks.template.json (rode decupagem com o decupagem-plan.json)"));
+  if (!tplParsed.ok) throw new Error(`blocks.template.json inválido:\n  - ${tplParsed.errors.join("\n  - ")}`);
+  if (tplParsed.file.edition !== ctx.edition) throw new Error(`blocks.template.json é da edição ${tplParsed.file.edition}, não ${ctx.edition}`);
+  const falasPath = falasArg ?? join(editionDirFor(ctx.edition), ROTEIRO_FALAS_FILE);
+  if (!existsSync(falasPath)) {
+    console.error(`[video-montagem] blocks: sem ${falasPath} (edição sem roteiro pela /diaria-video-roteiro): escrever o blocks.json a partir do molde, como antes (#13463)`);
+    return EXIT_BLOCKS_SEM_ROTEIRO;
+  }
+  const roteiro = parseRoteiroFalas(readJson<unknown>(falasPath, "roteiro-falas.json"));
+  if (!roteiro.ok) throw new Error(`${falasPath} inválido:\n  - ${roteiro.problemas.join("\n  - ")}`);
+  const proposta = propostaBlocosDoRoteiro(roteiro.roteiro);
+  const { file, avisos } = blocksFromPlan(tplParsed.file, proposta);
+  for (const a of avisos) console.error(`[aviso] ${a}`);
+  const parsed = parseBlocksFile(JSON.parse(JSON.stringify(file)));
+  if (!parsed.ok) throw new Error(`o blocks.json montado não passa na validação (nada gravado):\n  - ${parsed.errors.join("\n  - ")}`);
+  const path = f(ctx, "blocks.json");
+  if (existsSync(path)) {
+    if (!force) throw new Error(`${path} já existe: blocks --from-plan não sobrescreve sem --force (o atual vai para blocks.antes-from-plan.json)`);
+    copyFileSync(path, f(ctx, "blocks.antes-from-plan.json"));
+  }
+  writeFileAtomic(path, JSON.stringify(file, null, 2) + "\n");
+  const n = Object.values(file.blocks).reduce((s, l) => s + (l?.length ?? 0), 0);
+  console.error(`[video-montagem] blocks --from-plan: ${n} item(ns) em ${path}${avisos.length ? `, ${avisos.length} aviso(s) acima` : ""}; conferir o diff antes do face/roteiro (#13463)`);
   return 0;
 }
 
@@ -6806,7 +6854,7 @@ export const DRIVE_UPLOADS_FILE = "drive-uploads.json";
 /** Saída quando o comando deu certo e só o upload para o Drive falhou (as saídas estão no out dir). */
 export const EXIT_UPLOAD_FAILED = 4;
 
-export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
+export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "blocks", "retranscribe", "frame", "face", "face-compare", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 /** Subcomandos cujas saídas sobem para a pasta da edição no modo API. */
 export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview"];
@@ -7289,6 +7337,8 @@ async function runCommand(
       return cmdGaze(ctx, seq);
     case "decupagem":
       return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]));
+    case "blocks":
+      return cmdBlocks(ctx, flags.has("from-plan"), ctx.force, values["falas"]);
     case "frame": {
       await needLocalBruto();
       const code = cmdFrame(ctx, values["at"]);
