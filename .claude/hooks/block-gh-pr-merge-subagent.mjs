@@ -137,6 +137,7 @@ import {
   combineWithD1LockHolders,
   d1HookFailureNotice,
   d1LocksClientForHook,
+  d1ReadCoordinatorPresence,
   d1ReadLockHolder,
   d1ReadMergeGrant,
   mergeGrantConsumedD1Name,
@@ -477,12 +478,23 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo
  *   - consumo no registro da beneficiária (`ledger`) derruba.
  * A marca de consumo no D1 é conferida depois, pelo chamador, igual à da
  * concessão do arquivo.
+ *
+ * #13577: `d1Presence` (`presenceFromD1Row` da linha `coordinator:{id}`, ou
+ * `null`) atesta a concedente quando a varredura NÃO a tem — registro ausente
+ * nesta máquina ou parado no sync, o caso de 18/11/2026. Só vale com kind de
+ * autoridade de merge e `sessionId` igual ao `grantedBy`. Concedente que a
+ * varredura TEM decide pela varredura: continuo segue recusada mesmo com
+ * presença no D1.
  */
-export function acceptD1MergeGrant(d1Grant, sessionId, scan, ledger, now = Date.now()) {
+export function acceptD1MergeGrant(d1Grant, sessionId, scan, ledger, now = Date.now(), d1Presence = null) {
   if (!d1Grant || typeof sessionId !== "string" || sessionId === "") return null;
   if (d1Grant.grantedTo !== sessionId || d1Grant.grantedBy === d1Grant.grantedTo) return null;
-  if (!scan?.ids?.has(d1Grant.grantedBy)) return null;
-  if (!MERGE_AUTHORITY_KINDS.has(scan.kinds?.get(d1Grant.grantedBy))) return null;
+  if (scan?.ids?.has(d1Grant.grantedBy)) {
+    if (!MERGE_AUTHORITY_KINDS.has(scan.kinds?.get(d1Grant.grantedBy))) return null;
+  } else {
+    if (!d1Presence || d1Presence.sessionId !== d1Grant.grantedBy) return null;
+    if (!MERGE_AUTHORITY_KINDS.has(d1Presence.kind)) return null;
+  }
   if (ledger && ledgerConsumedAt(ledger, d1Grant)) return null;
   const grantedMs = Date.parse(d1Grant.grantedAt);
   if (!Number.isFinite(grantedMs)) return null;
@@ -2053,21 +2065,51 @@ if (
           });
           d1Notices.push(d1HookFailureNotice("concessão de merge", d1GrantRead.error, d1GrantRead.permanent));
         } else if (d1GrantRead?.ok && d1GrantRead.value) {
+          // #13577: concedente fora da varredura (registro ausente ou parado
+          // no sync desta máquina) — a presença dela no D1 a atesta. Leitura
+          // que falha não atesta nada: a concessão do D1 fica de fora. Em
+          // paralelo com a marca de consumo (as duas só dependem da linha
+          // lida), para o hook não somar mais uma ida ao D1 ao tempo total.
+          let d1Presence = null;
+          const needsPresence = !scan.ids.has(d1GrantRead.value.grantedBy);
+          const [presenceRead, d1GrantMarkerRead] = await Promise.all([
+            needsPresence ? d1ReadCoordinatorPresence(d1.client, d1GrantRead.value.grantedBy) : Promise.resolve(null),
+            d1ReadLockHolder(d1.client, mergeGrantConsumedD1Name(d1GrantRead.value)),
+          ]);
+          if (presenceRead !== null) {
+            if (presenceRead.ok) d1Presence = presenceRead.value;
+            else {
+              appendHookRunLog(
+                repoRoot,
+                "merge-guard",
+                presenceRead.permanent ? "error" : "warn",
+                "d1_presence_read_failed",
+                { error: presenceRead.error, permanent: presenceRead.permanent },
+              );
+              d1Notices.push(
+                d1HookFailureNotice("presença da concedente", presenceRead.error, presenceRead.permanent),
+              );
+            }
+          }
           const accepted = acceptD1MergeGrant(
             d1GrantRead.value,
             payload.session_id,
             scan,
             readMergeGrantConsumptions(repoRoot),
+            Date.now(),
+            d1Presence,
           );
           appendHookRunLog(repoRoot, "merge-guard", "info", "d1_grant_found", {
             grantedBy: d1GrantRead.value.grantedBy,
             grantedAt: d1GrantRead.value.grantedAt,
             accepted: accepted !== null,
+            grantorVia: scan.ids.has(d1GrantRead.value.grantedBy) ? "scan" : d1Presence ? "d1-presence" : "none",
           });
           if (accepted !== null) {
             grant = accepted;
             grantFromD1 = true;
-            markerRead = await d1ReadLockHolder(d1.client, mergeGrantConsumedD1Name(accepted));
+            // `accepted` é a própria linha lida: a marca já veio no Promise.all acima.
+            markerRead = d1GrantMarkerRead;
           }
         }
         lockReads.forEach((r, i) => {
