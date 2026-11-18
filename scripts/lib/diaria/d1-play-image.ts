@@ -3,7 +3,7 @@
  *
  * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o convite escrito
  * (`buildInviteSvg`: "Clique para assistir meus comentários" com o símbolo de
- * play ao lado, no canto inferior direito, sem play no centro), só para a
+ * play ao lado, no canto de menor conteúdo (#13556), sem play no centro), só para a
  * newsletter. O hero original
  * (`04-d1-2x1.jpg`) nunca é tocado — as redes seguem usando ele.
  *
@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_LINES, buildInviteSvg, inviteFontSize, type InviteTextMetrics } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_LINES, buildInviteSvg, inviteFontSize, pickInviteCorner, type InviteTextMetrics } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
@@ -113,7 +113,9 @@ export async function renderD1PlayImage(heroBytes: Buffer): Promise<Buffer> {
   const meta = await img.metadata();
   if (!meta.width || !meta.height) throw new Error("hero do D1 sem dimensões legíveis");
   const metrics = await measureInviteText(meta.width);
-  const svg = Buffer.from(buildInviteSvg(meta.width, meta.height, metrics));
+  const { data } = await sharp(heroBytes).removeAlpha().toColourspace("b-w").raw().toBuffer({ resolveWithObject: true });
+  const corner = pickInviteCorner(data, meta.width, meta.height, metrics);
+  const svg = Buffer.from(buildInviteSvg(meta.width, meta.height, metrics, D1_INVITE_FONT_FAMILY, corner));
   return img.composite([{ input: svg, top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer();
 }
 
