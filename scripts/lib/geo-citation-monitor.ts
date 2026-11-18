@@ -662,18 +662,23 @@ function anthropicCheckProviderError(json: unknown): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Modelos de raciocínio da OpenAI (família GPT-5, série o) — aceitam o
- * parâmetro `reasoning`; os não-raciocínio (ex: gpt-4.1, variantes `-chat`
- * da GPT-5) rejeitam, então só mandamos quando o model casa (#8064).
+ * Modelos de raciocínio da OpenAI (famílias GPT-5 e GPT-6, série o) —
+ * aceitam o parâmetro `reasoning`; os não-raciocínio (ex: gpt-4.1, variantes
+ * `-chat` da GPT-5) rejeitam, então só mandamos quando o model casa (#8064).
+ * #13543: a GPT-6 entrou junto com a troca para `gpt-6-luna` — sem ela aqui
+ * o request sairia sem `reasoning` e o modelo rodaria no effort default
+ * (`medium`), mais caro e mais lento que o `low` medido no #8064.
  */
 export function isOpenAiReasoningModel(model: string): boolean {
-  return /^(gpt-5|o\d)/.test(model) && !model.includes("-chat");
+  return /^(gpt-[56]|o\d)/.test(model) && !model.includes("-chat");
 }
 
 function openaiRequest(question: string, apiKey: string, model: string) {
   // #8064: effort "low" (não "minimal" — a doc oficial do web_search diz
   // "Web search does not support gpt-5 with minimal reasoning", conferido
-  // em 12/09/2026).
+  // em 12/09/2026). #13543: a página do `gpt-6-luna` lista `none`, `low`,
+  // `medium` (default), `high`, `xhigh` e `max` (sem `minimal`), conferida
+  // em 18/11/2026 — `low` segue válido.
   // O raciocínio é cobrado como token de saída; low é o bastante pra
   // decidir buscar e resumir, e mantém custo/latência perto do gpt-4.1.
   const reasoning = isOpenAiReasoningModel(model) ? { reasoning: { effort: "low" } } : {};
@@ -979,7 +984,8 @@ function perplexityExtractUsage(json: unknown): GeoProviderUsage | undefined {
  * importa: TDZ de `const` quebraria se ficasse depois. */
 export const GEO_PROVIDER_TIMEOUT_MS = 25_000;
 
-/** #8064: timeout do provider OpenAI com gpt-5-mini (raciocínio + busca). */
+/** #8064: timeout do provider OpenAI com modelo de raciocínio + busca
+ * (gpt-5-mini no #8064, gpt-6-luna desde o #13543). */
 export const OPENAI_GEO_TIMEOUT_MS = 90_000;
 
 export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
@@ -1020,7 +1026,14 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     // #8064 (decisão do editor, 12/09/2026): gpt-5-mini em vez de gpt-4.1 —
     // ~1/3 do custo semanal (o gpt-4.1 paga o conteúdo da busca a US$ 2/1M
     // de input) e mesma família dos modelos que o ChatGPT de consumo usa.
-    defaultModel: "gpt-5-mini",
+    // #13543: o acesso ao gpt-5-mini pela API termina em 11/12/2026. Troca
+    // para `gpt-6-luna` pelo mesmo critério do #8064: é o modelo do ChatGPT
+    // Free/Go (a maioria dos leitores que pergunta ao ChatGPT) e o mais
+    // barato da tabela (US$ 0,10/0,50 por 1M). O substituto que a página de
+    // deprecações da OpenAI recomenda, `gpt-6.1-terra`, custa US$ 1/5 por
+    // 1M (4x/2,5x o gpt-5-mini) e é o modelo dos planos pagos. A série do
+    // `openai` quebra na troca: o `--history-report` separa por modelo.
+    defaultModel: "gpt-6-luna",
     buildRequest: openaiRequest,
     extractText: openaiExtractText,
     extractUsage: openaiExtractUsage,
@@ -1028,7 +1041,8 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     // ou content_filter) ou bloco type:"refusal" podem deixar output[] sem
     // texto extraível.
     checkProviderError: openaiCheckProviderError,
-    // #8064: timeout próprio desde a troca pra gpt-5-mini — modelo de
+    // #8064: timeout próprio desde a troca pra gpt-5-mini (gpt-6-luna desde
+    // o #13543, também de raciocínio) — modelo de
     // raciocínio + web_search soma latência que o gpt-4.1 não tinha, e o
     // default de 25s não foi medido contra isso. Timeout ainda é cobrado
     // (mesmo achado da Anthropic), então errar pra cima é o lado barato.
@@ -1038,7 +1052,13 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     id: "google",
     label: "Gemini (Google)",
     envKey: "GEMINI_API_KEY",
-    defaultModel: "gemini-2.5-flash",
+    // #13543: o `gemini-2.5-flash` deixa de existir como modelo próprio em
+    // 01/12/2026 e passa a redirecionar, sem erro, para o
+    // `gemini-3.5-flash-lite`. Trocamos para esse destino de propósito, antes
+    // da data: mesmo preço de texto (US$ 0,30/2,50 por 1M), e a quebra da
+    // série cai no dia da troca, com o modelo novo gravado em cada registro,
+    // em vez de um redirect silencioso com o nome antigo no log.
+    defaultModel: "gemini-3.5-flash-lite",
     buildRequest: googleRequest,
     extractText: googleExtractText,
     extractUsage: googleExtractUsage,
@@ -1106,6 +1126,19 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
  *   raciocínio vêm dentro de `usage.output_tokens` e são cobrados como
  *   saída, então o cálculo abaixo já os inclui. `gpt-4.1` fica na tabela
  *   pra override via env e pra leitura do histórico.
+ * - #13543 (verificado em 18/11/2026): `gpt-6-luna` = $0.10 input / $0.50
+ *   output (developers.openai.com/api/docs/pricing e a página do modelo);
+ *   `gemini-3.5-flash-lite` = $0.30 input (texto) / $2.50 output
+ *   (aistudio.google.com/docs/pricing, para onde a página antiga
+ *   redireciona). Na família Gemini 3 o grounding muda de regra: 5.000
+ *   requisições/mês grátis, depois $14/1000 — o volume do monitor fica
+ *   abaixo disso, mesma ressalva de piso acima. `gpt-5-mini` e
+ *   `gemini-2.5-flash` ficam na tabela para a leitura do histórico e para
+ *   override via env até a data de desligamento.
+ *
+ * Todo `defaultModel` de provider não-Anthropic precisa de entrada aqui:
+ * sem ela o `estimatedCostUsd` some e o teto `--max-monthly-usd` fica cego
+ * (`test/geo-citation-monitor.test.ts`, #13543).
  *
  * Só os models listados — um override
  * via `{ENVKEY}_MODEL` (ver `main()`) pra um model fora desta tabela cai em
@@ -1115,6 +1148,8 @@ const GEO_NON_ANTHROPIC_TOKEN_PRICING: Readonly<Record<string, { inputPer1M: num
   "gpt-4.1": { inputPer1M: 2.0, outputPer1M: 8.0 },
   "gpt-5-mini": { inputPer1M: 0.25, outputPer1M: 2.0 },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5 },
+  "gpt-6-luna": { inputPer1M: 0.1, outputPer1M: 0.5 },
+  "gemini-3.5-flash-lite": { inputPer1M: 0.3, outputPer1M: 2.5 },
   // #8612 (migrado de #8342, docs.perplexity.ai/getting-started/pricing):
   // chave é o PRESET "fast" (Agent API), não mais o nome de modelo "sonar"
   // — a doc de migração mapeia Sonar/Sonar Pro → preset fast, então reusa os
@@ -1847,6 +1882,17 @@ export function deriveEffectiveErrorKind(
 
 export interface ProviderHistoryReportRow {
   provider: string;
+  /** Modelo consultado (#13543). Cada troca de modelo de um provider vira
+   * uma linha própria: a taxa de citação de modelos diferentes não é a mesma
+   * série, e somar as duas esconderia a quebra. `undefined` só em registro
+   * legado sem o campo (todo registro gravado por `runGeoCitationMonitor`
+   * leva `model`). */
+  model?: string;
+  /** 1ª e última data (`YYYY-MM-DD`) com registro deste provider+modelo —
+   * marca onde a série de um modelo começa e termina (#13543). `undefined`
+   * quando nenhum registro do grupo trazia `date`. */
+  firstDate?: string;
+  lastDate?: string;
   /** Total de consultas (válidas + erro) deste provider no recorte lido. */
   total: number;
   /** Quantas citaram `diar.ia.br` — só entre as VÁLIDAS (uma consulta com
@@ -1875,13 +1921,34 @@ export interface ProviderHistoryReportRow {
  * CLI (`scripts/geo-citation-monitor.ts`) para ler `data/geo-citations/history.jsonl`
  * sem gastar nenhuma chamada de rede nova.
  */
+export type HistoryReportInputRecord = Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error"> &
+  Partial<Pick<GeoCitationRecord, "model" | "date">>;
+
 export function summarizeHistoryByProviderReclassified(
-  records: readonly Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">[],
+  records: readonly HistoryReportInputRecord[],
 ): ProviderHistoryReportRow[] {
-  const byProvider = new Map<string, { total: number; cited: number; errors: number; quotaErrors: number }>();
+  type Acc = {
+    provider: string;
+    model?: string;
+    total: number;
+    cited: number;
+    errors: number;
+    quotaErrors: number;
+    firstDate?: string;
+    lastDate?: string;
+  };
+  // Chave provider+modelo (#13543): troca de modelo é quebra de série.
+  const byProvider = new Map<string, Acc>();
   for (const r of records) {
-    if (!byProvider.has(r.provider)) byProvider.set(r.provider, { total: 0, cited: 0, errors: 0, quotaErrors: 0 });
-    const s = byProvider.get(r.provider)!;
+    const key = `${r.provider}\u0000${r.model ?? ""}`;
+    if (!byProvider.has(key)) {
+      byProvider.set(key, { provider: r.provider, model: r.model, total: 0, cited: 0, errors: 0, quotaErrors: 0 });
+    }
+    const s = byProvider.get(key)!;
+    if (typeof r.date === "string" && r.date) {
+      if (s.firstDate === undefined || r.date < s.firstDate) s.firstDate = r.date;
+      if (s.lastDate === undefined || r.date > s.lastDate) s.lastDate = r.date;
+    }
     s.total += 1;
     if (r.cited) s.cited += 1;
     const effectiveKind = deriveEffectiveErrorKind(r);
@@ -1891,10 +1958,12 @@ export function summarizeHistoryByProviderReclassified(
     }
   }
   const rows: ProviderHistoryReportRow[] = [];
-  for (const [provider, s] of byProvider.entries()) {
+  for (const s of byProvider.values()) {
     const valid = s.total - s.errors;
     rows.push({
-      provider,
+      provider: s.provider,
+      ...(s.model !== undefined ? { model: s.model } : {}),
+      ...(s.firstDate !== undefined ? { firstDate: s.firstDate, lastDate: s.lastDate } : {}),
       total: s.total,
       cited: s.cited,
       valid,
@@ -1904,5 +1973,33 @@ export function summarizeHistoryByProviderReclassified(
       validCitationRatePct: valid > 0 ? Math.round((s.cited / valid) * 1000) / 10 : 0,
     });
   }
-  return rows.sort((a, b) => a.provider.localeCompare(b.provider));
+  // Provider em ordem alfabética; dentro do provider, os modelos em ordem
+  // cronológica (1ª data), para a quebra de série ler de cima para baixo.
+  return rows.sort(
+    (a, b) =>
+      a.provider.localeCompare(b.provider) ||
+      (a.firstDate ?? "").localeCompare(b.firstDate ?? "") ||
+      (a.model ?? "").localeCompare(b.model ?? ""),
+  );
+}
+
+/**
+ * Pure (#13543): providers com mais de um modelo no recorte do relatório —
+ * a série de citação deles quebrou na troca, e a comparação antes/depois não
+ * pode ser lida como variação de citação. Cada entrada lista os modelos na
+ * ordem cronológica de `rows` (ver `summarizeHistoryByProviderReclassified`),
+ * com a data em que o modelo novo apareceu pela 1ª vez.
+ */
+export function detectModelSeriesBreaks(
+  rows: readonly ProviderHistoryReportRow[],
+): Array<{ provider: string; models: Array<{ model: string; firstDate?: string }> }> {
+  const byProvider = new Map<string, Array<{ model: string; firstDate?: string }>>();
+  for (const row of rows) {
+    if (row.model === undefined) continue;
+    if (!byProvider.has(row.provider)) byProvider.set(row.provider, []);
+    byProvider.get(row.provider)!.push({ model: row.model, ...(row.firstDate ? { firstDate: row.firstDate } : {}) });
+  }
+  return [...byProvider.entries()]
+    .filter(([, models]) => models.length > 1)
+    .map(([provider, models]) => ({ provider, models }));
 }
