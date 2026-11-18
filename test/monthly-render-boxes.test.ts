@@ -84,7 +84,7 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
   it("DIVULGAÇÃO → box com kicker 'Divulgação'", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
     // #3181: o ponto ● agora vive num <span> separado (era &#9679;&nbsp; solto).
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Divulga/.test(html), "kicker Divulgação");
+    assert.ok(/<span style="color:#00A0A0;"[^>]*>&#9679;<\/span>&nbsp;Divulga/.test(html), "kicker Divulgação");
     assert.ok(html.includes("Amazon lança Alexa+ no Brasil"), "título do box");
   });
 
@@ -95,7 +95,7 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
       "https://poll.x/img/04-livros-promo.jpg",
     );
     // #3181: o ponto ● agora vive num <span> separado (era &#9679;&nbsp; solto).
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livros/.test(html), "kicker Livros");
+    assert.ok(/<span style="color:#00A0A0;"[^>]*>&#9679;<\/span>&nbsp;Livros/.test(html), "kicker Livros");
     assert.ok(html.includes('<img src="https://poll.x/img/04-livros-promo.jpg"'), "imagem do box de livros");
   });
 
@@ -147,7 +147,7 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
   it("kicker 'Livro do mês' (categoria) + título interno da 1ª linha do bloco", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
     assert.ok(
-      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      /<span style="color:#00A0A0;"[^>]*>&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
       "kicker deve ser a categoria 'Livro do mês'",
     );
     assert.ok(html.includes("Recomendação de leitura"), "título interno do box");
@@ -163,7 +163,7 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
   it("formato antigo (sem linha de título) NÃO transforma o link do livro em título", () => {
     const { html } = draftToEmail(draftFormatoAntigo, "Teste", "2606");
     assert.ok(
-      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      /<span style="color:#00A0A0;"[^>]*>&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
       "kicker de categoria também no formato antigo",
     );
     assert.ok(
@@ -180,7 +180,7 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
   it("label legado 'LIVRO DO MÊS' (back-compat) renderiza o mesmo kicker de categoria", () => {
     const { html } = draftToEmail(draftLegacyLabel, "Teste", "2606");
     assert.ok(
-      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      /<span style="color:#00A0A0;"[^>]*>&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
       "mesmo kicker a partir do label longo",
     );
     assert.ok(html.includes("Recomendação de leitura"), "título interno também no label legado");

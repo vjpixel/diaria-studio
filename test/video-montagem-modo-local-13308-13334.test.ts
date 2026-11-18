@@ -119,7 +119,8 @@ describe("#13308 vinheta do logo no modo local com raiz explícita", () => {
     const probed: string[] = [];
     const asset = await loadVinhetaForLocalRoot(root, drive, {
       readConfig: config,
-      exists: existsSync,
+      // #13537: o caminho do config é o do Neo, onde a vinheta existe de verdade; o teste não pode ler esse disco.
+      exists: (p) => p !== NEO_VINHETA && existsSync(p),
       probe: (p) => (probed.push(p), probeJson),
       warn: (m) => { throw new Error(m); },
     });

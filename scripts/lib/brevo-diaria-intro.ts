@@ -40,6 +40,7 @@ import {
   PAGE_BG,
 } from "./newsletter-render-html.ts";
 import { LAYOUT } from "./shared/design-tokens.ts"; // #5176: container width em paridade com o real
+import { applyDarkModeClasses } from "./shared/email-dark-mode.ts"; // #13525: intro injetada também ganha modo escuro
 import { BREVO_ORIGEM_ATTRIBUTE, BREVO_ORIGEM_KIT_SEM_ABERTURA } from "./kit-sem-abertura.ts"; // #10437
 
 export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
@@ -220,5 +221,8 @@ export function injectPendingIntro(fullDocumentHtml: string, introHtml: string):
     throw new Error("injectPendingIntro: tag <body> malformada (sem '>' de fechamento).");
   }
   const insertAt = closeIdx + 1;
-  return fullDocumentHtml.slice(0, insertAt) + introHtml + fullDocumentHtml.slice(insertAt);
+  // #13525: a intro entra depois do render, fora do passe de
+  // `applyDarkModeClasses` do fullDocument — marca as cores dela aqui, senão
+  // ficaria como o único bloco claro (fundo branco) no e-mail em modo escuro.
+  return fullDocumentHtml.slice(0, insertAt) + applyDarkModeClasses(introHtml) + fullDocumentHtml.slice(insertAt);
 }

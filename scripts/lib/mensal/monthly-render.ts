@@ -23,6 +23,7 @@ import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído 
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
 import { parseSocialInviteIcons, renderSocialInviteIconsHtml } from "../shared/encerramento-snippet.ts"; // #11483 — convite social com ícones, mesmo render da diária
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { applyDarkModeClasses, darkModeMediaRules } from "../shared/email-dark-mode.ts"; // #13525 — modo escuro do conteúdo
 import { imageCreditCaption, imageToolNameFromCaption, applyImageToolNameToCredits } from "../shared/image-tool-name.ts"; // #10826 — mesmo mapa slug → ferramenta da diária
 import type { Brand } from "../../../workers/poll/src/lib.ts"; // #7633 — fonte única do vocabulário de brand (só o TIPO, sem runtime do worker)
 // #4040/#4041: fonte única dos valores de UTM + composição do sufixo de posição.
@@ -1514,12 +1515,14 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
   // `table { border-collapse:collapse; }` em tabelas arredondadas sem guard inline —
   // ver nota de escopo em newsletter-styles.ts). #2645: agora também emite o dark
   // theme (canvas), com o INK do DS explícito (o módulo não importa design-tokens).
-  const styleBlock = buildMensalStyleBlock(SHELL, INK);
+  // #13525: o card, o texto e os boxes também ganham modo escuro — antes só o
+  // canvas escurecia e o Mail do iOS deixava texto escuro sobre card escuro.
+  const styleBlock = buildMensalStyleBlock(SHELL, INK, darkModeMediaRules());
   // Header co-brand + footer social do shell #2645 REMOVIDOS a pedido do editor
   // (260703): a APRESENTAÇÃO já faz o co-brand textual no topo, e o footer social
   // era redundante. renderCobrandHeader/renderSocialFooter seguem exportadas pra
   // reuso futuro (ex: quando houver logo). Ver issue de remoção.
-  return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+  return applyDarkModeClasses(`<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
@@ -1544,7 +1547,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
     </tr>
   </table>
 </body>
-</html>`;
+</html>`);
 }
 
 // #2794: vocabulário de labels SEM negrito — usado como defesa em profundidade

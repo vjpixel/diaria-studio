@@ -932,8 +932,37 @@ async function main() {
   const logRootDir = args["log-root-dir"];
 
   if (!articlesPath) {
-    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD] [--window 3] [--url-window-days 30] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
+    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD (obrigatório se --out/--articles não estiverem em editions/AAMMDD/)] [--window 3] [--url-window-days 30] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
     process.exit(1);
+  }
+
+  // #1856: exclui a edição corrente do subject-dedup pra não deduplicar contra o
+  // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
+  // removia os próprios destaques). Deriva do --out/--articles quando o caller
+  // não passa --current-edition explícito.
+  // #8666: `--current-edition` inválido falha alto — com ele errado o sinal (C)
+  // do event-dedup sairia desligado (ou com distâncias erradas) em silêncio.
+  if (args["current-edition"] !== undefined && !isValidEditionDir(args["current-edition"])) {
+    console.error(`dedup: --current-edition inválido: "${args["current-edition"]}" (esperado AAMMDD de data real)`);
+    process.exit(1);
+  }
+  const currentAammdd =
+    args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
+  // #13546: sem edição corrente (flag ausente e nenhum path em
+  // `editions/{AAMMDD}/`), a janela de URLs cai em "seção mais recente + 1 dia"
+  // e inclui a própria edição quando ela já está em past-editions.md — todo
+  // item do pool sai como repetido. Recusar em vez de devolver o falso positivo.
+  // Roda antes do pre-pass de títulos (#485), que faz fetch de rede.
+  if (!currentAammdd) {
+    console.error(
+      "dedup: edição corrente desconhecida (#13546) — passe --current-edition AAMMDD " +
+      "(ou --out/--articles dentro de data/editions/{AAMMDD}/). Sem ela, a própria " +
+      "edição entra no histórico e todo item sai como repetido.",
+    );
+    process.exit(1);
+  }
+  if (!args["current-edition"]) {
+    console.error(`[dedup] edição corrente derivada do path: ${currentAammdd} (excluída do subject-dedup #1856)`);
   }
 
   // #1268: aceitar array raw OU objeto wrapped `{articles, expanded?, warnings?}`
@@ -962,21 +991,6 @@ async function main() {
     console.error(`dedup pre-pass: ${resolved} título(s) resolvido(s), ${failed} falha(s) (mantidos com placeholder)`);
   }
 
-  // #1856: exclui a edição corrente do subject-dedup pra não deduplicar contra o
-  // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
-  // removia os próprios destaques). Deriva do --out/--articles quando o caller
-  // não passa --current-edition explícito.
-  // #8666: `--current-edition` inválido falha alto — com ele errado o sinal (C)
-  // do event-dedup sairia desligado (ou com distâncias erradas) em silêncio.
-  if (args["current-edition"] !== undefined && !isValidEditionDir(args["current-edition"])) {
-    console.error(`dedup: --current-edition inválido: "${args["current-edition"]}" (esperado AAMMDD de data real)`);
-    process.exit(1);
-  }
-  const currentAammdd =
-    args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
-  if (!args["current-edition"] && currentAammdd) {
-    console.error(`[dedup] edição corrente derivada do path: ${currentAammdd} (excluída do subject-dedup #1856)`);
-  }
   // #1847: past-editions.md mora em data/ (gitignored, regenerado no Stage 0) —
   // pode estar AUSENTE num clone fresco / CI antes do primeiro refresh-dedup.
   // Tratar ausência como histórico vazio (mesma semântica do guard #672 abaixo),
@@ -1102,11 +1116,8 @@ async function main() {
     currentAammdd,
   );
   // #8666: observabilidade do sinal (C) — desligado em silêncio era o risco.
-  if (!currentAammdd) {
-    console.error(
-      "dedup: #8666 edição corrente desconhecida — sinal (C) do event-dedup (invasão/vazamento em D-1/D-2) DESLIGADO; passe --current-edition AAMMDD",
-    );
-  } else if (pastEventDistanceDays.size === 0 && (pastTitles.length > 0 || pastArticleTitles.length > 0)) {
+  // (Edição corrente desconhecida já recusou acima, #13546.)
+  if (pastEventDistanceDays.size === 0 && (pastTitles.length > 0 || pastArticleTitles.length > 0)) {
     console.error(
       `dedup: #8666 mapa de distâncias vazio apesar de ${pastTitles.length + pastArticleTitles.length} título(s) passado(s) — sinal (C) sem efeito (edição corrente ${currentAammdd})`,
     );

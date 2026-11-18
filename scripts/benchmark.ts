@@ -98,6 +98,7 @@ const benchmarks: BenchDef[] = [
         "tsx", resolve(ROOT, "scripts/dedup.ts"),
         "--articles", resolve(tmpDir, "01-raw-articles.json"),
         "--past-editions", resolve(ROOT, "data/past-editions.md"),
+        "--current-edition", fixtureEdition, // #13546
         "--out", resolve(tmpDir, "bench-deduped.json"),
       ], ROOT),
   },

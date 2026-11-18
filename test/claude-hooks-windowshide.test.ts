@@ -139,7 +139,7 @@ export function findDetachedWithoutWindowsHide(content: string): number[] {
  * aceitável pro mesmo custo/benefício documentado no resto deste arquivo:
  * nenhum hook real tem `//`/`/* *\/` dentro de uma string que colidiria com
  * o padrão `nome = execFileSync` que estamos procurando. Pura. */
-function stripComments(content: string): string {
+export function stripComments(content: string): string {
   return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
@@ -586,6 +586,197 @@ describe("Regressão #7959 — .claude/hooks/*.mjs reais deste repo (guard gener
         `${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true (offsets: ` +
           `${offenders.join(", ")}) — arquivo cita binário de console conhecido; no Windows isso pode ` +
           "alocar janela mesmo sem detached:true (#7959).",
+      );
+    });
+  }
+});
+
+/**
+ * #13559 — a mesma classe, fora de `.claude/hooks/`: processos de `scripts/`
+ * que rodam DESTACADOS (`detached: true` + `windowsHide: true`) ficam sem
+ * console herdável no Windows. Cada filho de console que eles lançam (`gh`,
+ * `git`, `node`, `npx` via shell) sem `windowsHide` ganha uma janela própria —
+ * medido ao vivo em 18/11/2026: o waiter `publish-edition-site-page.ts
+ * --merge-pr` abria uma janela a cada `gh pr view` do polling, por até ~35 min.
+ * Os mesmos `gh` chamados em foreground (com console herdado) não piscavam.
+ *
+ * Dois guards:
+ *  1. todo `spawn(process.execPath, …)` destacado de `scripts/` declara
+ *     `windowsHide` (senão o próprio filho ganha console visível — o caso de
+ *     `stage-1-run.ts` antes do #13559);
+ *  2. os arquivos que rodam DENTRO de um processo destacado declaram
+ *     `windowsHide` em toda chamada de processo (`exec`/`execSync`/`fork`
+ *     incluídos). Os ENTRYPOINTS são uma lista explícita; as libs que eles
+ *     importam são achadas seguindo os imports relativos (achado do review do
+ *     PR: `lib/shared/gh-run.ts` e `lib/run-tsx.ts` ficavam de fora de uma
+ *     lista manual de libs).
+ */
+const SCRIPTS_DIR = join(ROOT, "scripts");
+
+/** Entrypoints que rodam como filho destacado, sem console. As libs que eles
+ * importam (transitivamente, imports relativos) entram sozinhas. */
+const DETACHED_CHILD_ENTRYPOINTS = [
+  "publish-edition-site-page.ts", // waiter --merge-pr (#9593/#9616)
+  "eia-compose.ts", // stage-1-run §1d
+  "prewarm-verify-cache.ts", // stage-1-run §1e-bis
+  "serve-preview.ts", // --detach (#9678)
+];
+
+const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,2}\/[^"']+)["']/g;
+
+/** Fecho transitivo dos imports relativos de `entry` (paths relativos a
+ * scripts/). Imports `import type` também entram — inofensivo: só aumenta a
+ * varredura. Pura sobre o sistema de arquivos. */
+export function collectRelativeImportClosure(entry: string, readFile: (rel: string) => string | null): string[] {
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const rel = queue.shift()!;
+    if (seen.has(rel)) continue;
+    const content = readFile(rel);
+    if (content === null) continue;
+    seen.add(rel);
+    const baseDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+    let m: RegExpExecArray | null;
+    RELATIVE_IMPORT_RE.lastIndex = 0;
+    while ((m = RELATIVE_IMPORT_RE.exec(stripComments(content))) !== null) {
+      const parts = (baseDir ? `${baseDir}/${m[1]}` : m[1]).split("/");
+      const norm: string[] = [];
+      for (const p of parts) {
+        if (p === "." || p === "") continue;
+        if (p === "..") norm.pop();
+        else norm.push(p);
+      }
+      queue.push(norm.join("/"));
+    }
+  }
+  return [...seen];
+}
+
+/** Como `findWindowsHideMissingCalls`, mas também cobre `exec(`, `execSync(` e
+ * `fork(` (achado do review: `execSync("git worktree prune")` e o `exec` do
+ * `openInBrowser` passavam). Recebe código já sem comentários. Pura. */
+export function findWindowsHideMissingCallsBroad(code: string): number[] {
+  const offenders = new Set(findWindowsHideMissingCalls(code));
+  const re = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(code)) !== null) {
+    const window = code.slice(match.index, Math.min(code.length, match.index + WINDOW_CHARS));
+    if (!/windowsHide\s*:\s*true/.test(window)) offenders.add(match.index);
+  }
+  return [...offenders].sort((a, b) => a - b);
+}
+
+function listScriptFiles(dir: string, rel = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+    const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules") continue;
+      out.push(...listScriptFiles(dir, relPath));
+    } else if (/\.(ts|mjs|js|cjs)$/.test(entry.name)) out.push(relPath);
+  }
+  return out;
+}
+
+/** Offsets de `spawn(process.execPath, …)` com `detached: true` e sem
+ * `windowsHide: true` no mesmo objeto de opções (janela só pra frente). Pura. */
+export function findDetachedNodeSpawnsWithoutWindowsHide(content: string): number[] {
+  const code = stripComments(content);
+  const offenders: number[] = [];
+  const re = /\bspawn\s*\(\s*process\.execPath\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(code)) !== null) {
+    const window = code.slice(match.index, Math.min(code.length, match.index + WINDOW_CHARS));
+    if (/detached\s*:\s*true/.test(window) && !/windowsHide\s*:\s*true/.test(window)) {
+      offenders.push(match.index);
+    }
+  }
+  return offenders;
+}
+
+describe("findDetachedNodeSpawnsWithoutWindowsHide (#13559) — lógica pura", () => {
+  it("spawn(process.execPath) destacado sem windowsHide -> 1 ofensor", () => {
+    const content = `spawn(process.execPath, ["--import", "tsx", abs], { cwd, detached: true, stdio: "ignore" });`;
+    assert.equal(findDetachedNodeSpawnsWithoutWindowsHide(content).length, 1);
+  });
+
+  it("mesmo spawn COM windowsHide -> nenhum ofensor", () => {
+    const content = `spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });`;
+    assert.deepEqual(findDetachedNodeSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("spawn(process.execPath) em foreground (sem detached) -> fora do escopo deste guard", () => {
+    const content = `spawn(process.execPath, args, { stdio: "inherit" });`;
+    assert.deepEqual(findDetachedNodeSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("windowsHide citado só num comentário não conta", () => {
+    const content = [
+      `spawn(process.execPath, args, {`,
+      `  detached: true, // falta windowsHide: true aqui`,
+      `  stdio: "ignore",`,
+      `});`,
+    ].join("\n");
+    assert.equal(findDetachedNodeSpawnsWithoutWindowsHide(content).length, 1);
+  });
+});
+
+describe("Regressão #13559 — scripts/ reais deste repo", () => {
+  const files = listScriptFiles(SCRIPTS_DIR);
+
+  it("existe script pra varrer (sanity)", () => {
+    assert.ok(files.length > 0, `nenhum script encontrado em ${SCRIPTS_DIR}`);
+  });
+
+  it("todo spawn destacado de process.execPath em scripts/ declara windowsHide:true", () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const hits = findDetachedNodeSpawnsWithoutWindowsHide(readFileSync(join(SCRIPTS_DIR, file), "utf8"));
+      if (hits.length > 0) offenders.push(`${file} (offsets ${hits.join(", ")})`);
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      "spawn destacado de node sem windowsHide abre um console visível no Windows pela vida inteira do filho (#13559).",
+    );
+  });
+
+  const readScript = (rel: string): string | null => {
+    for (const candidate of [rel, `${rel}.ts`, rel.replace(/\.js$/, ".ts"), rel.replace(/\.mjs$/, ".mts")]) {
+      try {
+        return readFileSync(join(SCRIPTS_DIR, candidate), "utf8");
+      } catch {
+        // tenta a próxima extensão
+      }
+    }
+    return null;
+  };
+  const reached = new Set<string>();
+  for (const entry of DETACHED_CHILD_ENTRYPOINTS) {
+    it(`${entry}: entrypoint destacado existe (senão o guard não prova nada)`, () => {
+      assert.ok(readScript(entry) !== null, `scripts/${entry} sumiu — atualize DETACHED_CHILD_ENTRYPOINTS`);
+    });
+    for (const rel of collectRelativeImportClosure(entry, readScript)) reached.add(rel);
+  }
+
+  it("o fecho de imports alcança as libs que já abriram janela (gh-run, run-tsx, session-registry)", () => {
+    for (const lib of ["lib/shared/gh-run.ts", "lib/run-tsx.ts", "lib/session-registry.ts"]) {
+      assert.ok(reached.has(lib), `${lib} deveria estar no fecho de imports dos entrypoints destacados`);
+    }
+  });
+
+  for (const file of [...reached].sort()) {
+    it(`${file}: roda dentro de processo destacado (sem console), então toda chamada de processo declara windowsHide:true`, () => {
+      const content = readScript(file) ?? "";
+      if (!/child_process/.test(content)) return; // não lança processo
+      const code = stripComments(content);
+      const offenders = findWindowsHideMissingCallsBroad(code);
+      assert.deepEqual(
+        offenders.map((o) => code.slice(o, o + 80).replace(/\s+/g, " ")),
+        [],
+        `scripts/${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true — rodando destacado, ` +
+          "cada gh/git/node filho abre uma janela no Windows (#13559).",
       );
     });
   }

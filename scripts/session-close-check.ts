@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { listActiveSessions, resolveRepoRoot, type SessionRecord } from "./lib/session-registry.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import {
-  hashPath, isUnchangedSinceSnapshot, readSnapshot, snapshotFilePath, type DirtySnapshot,
+  hashPath, isUnchangedSinceSnapshot, normalizeCheckoutPath, readSnapshot, snapshotFilePath, type DirtySnapshot,
 } from "../.claude/hooks/lib/session-dirty-snapshot.mjs";
 
 type Run = (command: string, args: string[], cwd: string) => string;
@@ -78,16 +78,25 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
   for (const issue of session.claimed_issues ?? []) report.pending.push(`claim: #${issue}`);
   for (const issue of session.claimed_foreign_issues ?? []) report.pending.push(`claim: ${issue}`);
   const branches = new Set<string>(session.branch ? [session.branch] : []);
-  const paths = new Set([...extraWorktrees, ...(session.worktrees ?? []).map(w => w.path)].map(p => resolve(root, p)));
+  // Keyed by normalizeCheckoutPath (#13537): git prints `C:/x`, resolve() gives `C:\x` and the harness may hand
+  // `c:\x`, all the same checkout. The value keeps the first readable form for the messages.
+  const paths = new Map<string, string>();
+  const addPath = (abs: string): void => {
+    const key = normalizeCheckoutPath(abs);
+    if (!paths.has(key)) paths.set(key, abs);
+  };
+  for (const p of [...extraWorktrees, ...(session.worktrees ?? []).map(w => w.path)]) addPath(resolve(root, p));
   const worktrees = query("git", ["worktree", "list", "--porcelain"]);
   // Discover the current location of the session branch, never all peer worktrees.
   for (const block of worktrees?.split("\n\n") ?? []) {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    if (path && branch && branches.has(branch)) paths.add(path);
+    // Same key as the session paths above; without it the session's own worktree was checked twice,
+    // doubling every pending entry (#13537).
+    if (path && branch && branches.has(branch)) addPath(resolve(path));
   }
   if (!paths.size) report.errors.push("Nenhum worktree atribuído; informe --worktree pelo histórico da sessão.");
-  for (const path of paths) {
+  for (const path of paths.values()) {
     report.checkedWorktrees.push(path);
     const snapshot = loadSnapshot(session.sessionId, path);
     // With a snapshot, untracked files are listed one by one (as in the snapshot), so each is matched by hash.

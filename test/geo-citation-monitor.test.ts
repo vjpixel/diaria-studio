@@ -39,6 +39,8 @@ import {
   runGeoCitationMonitor,
   summarizeGeoCitationRecords,
   summarizeHistoryByProviderReclassified,
+  detectModelSeriesBreaks,
+  type HistoryReportInputRecord,
   type GeoCitationRecord,
 } from "../scripts/lib/geo-citation-monitor.ts";
 
@@ -374,6 +376,27 @@ describe("buildUsageRecordFields (#4904)", () => {
     assert.ok(Math.abs(fieldsGoogle.estimatedCostUsd! - 2.8) < 1e-9); // 0.3 + 2.5
   });
 
+  it("#13543: modelos novos têm preço na tabela (gpt-6-luna $0.10/$0.50, gemini-3.5-flash-lite $0.30/$2.50)", () => {
+    const luna = buildUsageRecordFields("openai", { inputTokens: 1_000_000, outputTokens: 1_000_000 }, "gpt-6-luna", "2026-11-18T12:00:00.000Z");
+    assert.ok(Math.abs(luna.estimatedCostUsd! - 0.6) < 1e-9);
+    const flashLite = buildUsageRecordFields("google", { inputTokens: 1_000_000, outputTokens: 1_000_000 }, "gemini-3.5-flash-lite", "2026-11-18T12:00:00.000Z");
+    assert.ok(Math.abs(flashLite.estimatedCostUsd! - 2.8) < 1e-9);
+  });
+
+  it("#13543: todo defaultModel tem preço — tabela e defaultModel não podem divergir", () => {
+    // Sem esta trava, trocar o defaultModel sem a chave de preço faria o
+    // estimatedCostUsd sumir em silêncio e cegaria o teto --max-monthly-usd.
+    for (const provider of GEO_PROVIDERS) {
+      const fields = buildUsageRecordFields(provider.id, { inputTokens: 1000, outputTokens: 1000 }, provider.defaultModel, "2026-11-18T12:00:00.000Z");
+      assert.equal(typeof fields.estimatedCostUsd, "number", `${provider.id}/${provider.defaultModel} sem preço`);
+      assert.ok(fields.estimatedCostUsd! > 0, `${provider.id}/${provider.defaultModel} com preço zero`);
+    }
+  });
+
+  it("#13543: google usa gemini-3.5-flash-lite (gemini-2.5-flash redireciona em 01/12/2026)", () => {
+    assert.equal(GEO_PROVIDERS.find((p) => p.id === "google")!.defaultModel, "gemini-3.5-flash-lite");
+  });
+
   it("openai/google: model fora da tabela → estimatedCostUsd undefined, nunca preço inventado", () => {
     const fields = buildUsageRecordFields("openai", { inputTokens: 100, outputTokens: 50 }, "gpt-5-hipotetico", "2026-08-11T12:00:00.000Z");
     assert.equal(fields.inputTokens, 100); // tokens continuam populados
@@ -684,9 +707,9 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.equal(GEO_PROVIDERS.find((p) => p.id === "google")!.timeoutMs, GEO_PROVIDER_TIMEOUT_MS);
   });
 
-  it("#8064: OpenAI usa gpt-5-mini, com timeout próprio acima do default", () => {
+  it("#8064/#13543: OpenAI usa gpt-6-luna (gpt-5-mini sai do ar em 11/12/2026), com timeout próprio acima do default", () => {
     const openaiDef = GEO_PROVIDERS.find((p) => p.id === "openai")!;
-    assert.equal(openaiDef.defaultModel, "gpt-5-mini");
+    assert.equal(openaiDef.defaultModel, "gpt-6-luna");
     assert.equal(openaiDef.timeoutMs, OPENAI_GEO_TIMEOUT_MS);
     assert.ok(openaiDef.timeoutMs > GEO_PROVIDER_TIMEOUT_MS);
   });
@@ -697,6 +720,12 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.deepEqual(bodyOf("gpt-5-mini").reasoning, { effort: "low" });
     assert.deepEqual(bodyOf("gpt-5-mini").tools, [{ type: "web_search" }]);
     assert.equal(bodyOf("gpt-4.1").reasoning, undefined);
+    // #13543: o defaultModel novo (família GPT-6) também é de raciocínio —
+    // sem casar aqui, o request sairia sem `reasoning` e rodaria no effort
+    // default (medium).
+    assert.deepEqual(bodyOf("gpt-6-luna").reasoning, { effort: "low" });
+    assert.deepEqual(bodyOf(openaiDef.defaultModel).reasoning, { effort: "low" });
+    assert.equal(isOpenAiReasoningModel("gpt-6.1-terra"), true);
     assert.equal(isOpenAiReasoningModel("o4-mini"), true);
     assert.equal(isOpenAiReasoningModel("gpt-4.1-mini"), false);
     assert.equal(isOpenAiReasoningModel("gpt-5-chat-latest"), false);
@@ -1617,6 +1646,44 @@ describe("summarizeHistoryByProviderReclassified (#8341, item 3 da issue)", () =
     const rows = summarizeHistoryByProviderReclassified(records);
     assert.equal(rows[0].valid, 0);
     assert.equal(rows[0].validCitationRatePct, 0);
+  });
+
+  it("#13543: troca de modelo vira linha própria, em ordem cronológica, e detectModelSeriesBreaks marca a quebra", () => {
+    const records: HistoryReportInputRecord[] = [
+      { provider: "google", model: "gemini-3.5-flash-lite", date: "2026-11-30", cited: true, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "google", model: "gemini-2.5-flash", date: "2026-11-16", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "google", model: "gemini-2.5-flash", date: "2026-11-23", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "anthropic", model: "claude-haiku-4-5-20251001", date: "2026-11-23", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+    ];
+    const rows = summarizeHistoryByProviderReclassified(records);
+    assert.deepEqual(
+      rows.map((r) => [r.provider, r.model, r.firstDate, r.lastDate, r.total, r.cited]),
+      [
+        ["anthropic", "claude-haiku-4-5-20251001", "2026-11-23", "2026-11-23", 1, 0],
+        ["google", "gemini-2.5-flash", "2026-11-16", "2026-11-23", 2, 0],
+        ["google", "gemini-3.5-flash-lite", "2026-11-30", "2026-11-30", 1, 1],
+      ],
+    );
+    assert.deepEqual(detectModelSeriesBreaks(rows), [
+      {
+        provider: "google",
+        models: [
+          { model: "gemini-2.5-flash", firstDate: "2026-11-16" },
+          { model: "gemini-3.5-flash-lite", firstDate: "2026-11-30" },
+        ],
+      },
+    ]);
+  });
+
+  it("#13543: registro sem model/date (legado) continua agregando por provider, sem quebra falsa", () => {
+    const rows = summarizeHistoryByProviderReclassified([
+      { provider: "openai", cited: false, errorKind: undefined, httpStatus: undefined, error: undefined },
+      { provider: "openai", cited: true, errorKind: undefined, httpStatus: undefined, error: undefined },
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].model, undefined);
+    assert.equal(rows[0].firstDate, undefined);
+    assert.deepEqual(detectModelSeriesBreaks(rows), []);
   });
 
   it("multi-provider sai ordenado alfabeticamente", () => {

@@ -457,6 +457,22 @@ describe("readHistoryRecordsForReport (scripts/geo-citation-monitor.ts, I/O real
     assert.equal(records[0].httpStatus, 429);
     assert.equal(records[0].error, "HTTP 429: no credits");
   });
+
+  it("#13543: propaga model e date, que o relatório usa pra separar a série por modelo", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ provider: "google", cited: false, model: "gemini-2.5-flash", date: "2026-11-23" }),
+        JSON.stringify({ provider: "google", cited: false }), // legado sem model/date
+      ].join("\n") + "\n",
+    );
+    const records = readHistoryRecordsForReport(path);
+    assert.equal(records[0].model, "gemini-2.5-flash");
+    assert.equal(records[0].date, "2026-11-23");
+    assert.equal("model" in records[1], false);
+    assert.equal("date" in records[1], false);
+  });
 });
 
 describe("readHistoryRecordsForCostGuard (scripts/geo-citation-monitor.ts, I/O real via tmpdir — #4904)", () => {

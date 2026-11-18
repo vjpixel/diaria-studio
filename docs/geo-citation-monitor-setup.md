@@ -110,6 +110,31 @@ de raciocínio + busca ainda não foi medida ao vivo. Série do provider
 `openai` não é homogênea antes/depois desta data (o `model` fica gravado em
 cada registro). As tabelas abaixo são da época do `gpt-4.1`.
 
+## Troca de modelo antes dos desligamentos de dezembro/2026 (#13543)
+
+Dois modelos do monitor saem do ar em dezembro de 2026:
+
+- `gemini-2.5-flash` (provider `google`): a partir de **01/12/2026** toda
+  chamada a ele vai, sem erro, para o `gemini-3.5-flash-lite` (aviso do Google
+  AI Studio de 03/11/2026). Trocamos para o `gemini-3.5-flash-lite` antes da
+  data, com o mesmo preço de texto (US$ 0,30/2,50 por 1M). Na família Gemini 3
+  o grounding passa a ter 5.000 requisições/mês grátis e depois US$ 14/1000.
+- `gpt-5-mini` (provider `openai`): o acesso pela API termina em
+  **11/12/2026**, sem redirecionamento. Trocamos para o `gpt-6-luna`, pelo
+  critério do #8064 (custo semanal e mesma família do ChatGPT de consumo): é o
+  modelo do ChatGPT Free/Go e custa US$ 0,10/0,50 por 1M. O substituto
+  recomendado pela página de deprecações da OpenAI é o `gpt-6.1-terra`
+  (US$ 1/5 por 1M, modelo dos planos pagos), que fica disponível por override
+  (`OPENAI_API_KEY_MODEL`). Seguimos mandando `reasoning.effort: "low"`, que o
+  `gpt-6-luna` aceita.
+
+**Quebra de série.** A data da troca é a da 1ª rodada depois do merge, e ela
+fica gravada nos próprios registros (`model` em cada linha do
+`history.jsonl`). O `--history-report` separa cada provider por modelo, com a
+1ª e a última data de cada um, e imprime uma linha `QUEBRA DE SÉRIE` para todo
+provider com mais de um modelo no recorte. A diferença de taxa de citação
+entre o modelo antigo e o novo não é variação de citação.
+
 ## Perplexity como 4º provider (#8342, migrado pra Agent API no #8612)
 
 Provider `perplexity` (`PERPLEXITY_API_KEY`, preset `fast`, endpoint

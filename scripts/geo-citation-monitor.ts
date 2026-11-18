@@ -132,8 +132,10 @@ import {
   detectHighErrorRateProviders,
   errorRatePct,
   summarizeHistoryByProviderReclassified,
+  detectModelSeriesBreaks,
   GEO_ERROR_RATE_ALARM_THRESHOLD_PCT,
   type GeoQuestionPanel,
+  type HistoryReportInputRecord,
 } from "./lib/geo-citation-monitor.ts";
 import type { GeoCitationRecord } from "./lib/geo-citation-monitor.ts";
 
@@ -325,7 +327,9 @@ export function readHistoryRecordsForCostGuard(
 
 /**
  * Lê `history.jsonl` e devolve os campos que `summarizeHistoryByProviderReclassified`
- * precisa (#8341) — provider/cited/errorKind/httpStatus/error, opcionalmente
+ * precisa (#8341) — provider/cited/errorKind/httpStatus/error, mais
+ * model/date desde o #13543 (o relatório separa a série por modelo),
+ * opcionalmente
  * filtrado por painel (`panelFilter` ausente = TODOS os painéis, o default
  * do `--history-report` do CLI). Mesma disciplina fail-soft de
  * `readHistoryRecordsForPanel`/`readHistoryRecordsForCostGuard`: arquivo
@@ -334,7 +338,7 @@ export function readHistoryRecordsForCostGuard(
 export function readHistoryRecordsForReport(
   historyPath: string,
   panelFilter?: GeoQuestionPanel,
-): Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> {
+): HistoryReportInputRecord[] {
   if (!existsSync(historyPath)) return [];
   let raw: string;
   try {
@@ -342,7 +346,7 @@ export function readHistoryRecordsForReport(
   } catch {
     return [];
   }
-  const out: Array<Pick<GeoCitationRecord, "provider" | "cited" | "errorKind" | "httpStatus" | "error">> = [];
+  const out: HistoryReportInputRecord[] = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -357,6 +361,8 @@ export function readHistoryRecordsForReport(
         errorKind: r.errorKind,
         httpStatus: r.httpStatus,
         error: r.error,
+        ...(typeof r.model === "string" ? { model: r.model } : {}),
+        ...(typeof r.date === "string" ? { date: r.date } : {}),
       });
     } catch {
       continue;
@@ -556,11 +562,21 @@ async function main(): Promise<number> {
       console.log("  (nenhum registro legível)");
     }
     for (const row of rows) {
+      const modelLabel = row.model ? ` [${row.model}${row.firstDate ? `, ${row.firstDate} a ${row.lastDate}` : ""}]` : "";
       console.log(
-        `  - ${row.provider}: ${row.cited}/${row.valid} citaram (válidas), ${row.validCitationRatePct}% de taxa de citação válida — ` +
+        `  - ${row.provider}${modelLabel}: ${row.cited}/${row.valid} citaram (válidas), ${row.validCitationRatePct}% de taxa de citação válida — ` +
           `${row.total} consultas totais, ${row.errorRatePct}% de erro (${row.errors}` +
           (row.quotaErrors > 0 ? `, dos quais ${row.quotaErrors} cota/crédito esgotado` : "") +
           `).`,
+      );
+    }
+    // #13543: troca de modelo quebra a série do provider — a variação entre
+    // as linhas de modelos diferentes não é variação de citação.
+    for (const brk of detectModelSeriesBreaks(rows)) {
+      console.log(
+        `  QUEBRA DE SÉRIE em ${brk.provider}: ` +
+          brk.models.map((m) => `${m.model}${m.firstDate ? ` (desde ${m.firstDate})` : ""}`).join(" -> ") +
+          ` — taxas de modelos diferentes não são comparáveis como série única.`,
       );
     }
     return 0;

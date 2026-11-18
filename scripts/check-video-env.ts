@@ -29,7 +29,9 @@
  * conhecido). Só lê: não cria pasta nem baixa nada. Exit 0 = a montagem roda
  * aqui; 1 = falta algo obrigatório. OpenCV (face/gaze) é aviso: há fallback manual.
  * O `deep-filter` do DeepFilterNet (#13234, redução de ruído opcional da faixa
- * tratada) também é aviso: sem ele a faixa sai no ffmpeg.
+ * tratada) também é aviso: sem ele a faixa sai no ffmpeg. A linha `gpu`
+ * (#13535) diz se a transcrição roda na GPU ou cai na CPU, com o motivo; é só
+ * informativa (`[info]`), nunca reprova nem avisa.
  * As variáveis `DIARIA_VIDEO_*` valem também quando só estão no `.env` do
  * projeto (#13103): o `main` carrega o `.env` antes das sondas.
  */
@@ -54,6 +56,7 @@ import {
   WHISPER_MODEL,
   assessMontageEnv,
   formatMontageEnvReport,
+  parseGpuVerdict,
   requiredFreeBytes,
   resolveVideoPython,
   type MontageEnvReport,
@@ -182,6 +185,22 @@ function probeWhisperDecode(python: string): MontageProbe {
   }
 }
 
+/**
+ * #13535: a transcrição vai rodar na GPU ou na CPU? Lê o veredito em cache da
+ * sonda (#13504) ou roda a sonda (~10 s, depois cacheada) pelo próprio
+ * `transcribe_words.py --gpu-verdict`. Só informativo: a CPU é caminho válido.
+ */
+export function probeGpu(python: string, deviceEnv: string | undefined): MontageProbe {
+  const forced = (deviceEnv ?? "").trim().toLowerCase();
+  if (forced === "cpu") return { ok: false, detail: "transcrição na CPU: DIARIA_WHISPER_DEVICE=cpu força a CPU" };
+  const r = spawnSync(python, ["-P", resolve(ROOT, "scripts/video/transcribe_words.py"), "--gpu-verdict", WHISPER_MODEL], {
+    encoding: "utf8",
+    timeout: 360_000,
+    env: { ...process.env, HF_HUB_OFFLINE: "1", PYTHONIOENCODING: "utf-8" },
+  });
+  return parseGpuVerdict({ status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", error: r.error?.message });
+}
+
 interface DriveProbe {
   probe: MontageProbe;
   mode: "local" | "api";
@@ -266,6 +285,7 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, 
   const model = python.ok
     ? probePython(py.python, `from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8', local_files_only=True); print('${WHISPER_MODEL} carrega offline')`, 180_000)
     : { ok: false, detail: "sem Python com faster-whisper" };
+  const gpu: MontageProbe = python.ok ? probeGpu(py.python, process.env.DIARIA_WHISPER_DEVICE) : { ok: false, detail: "transcrição na CPU: sem Python com faster-whisper para sondar a GPU" };
   const drive = await probeDrive(edition, driveRootFlag);
   let disk: MontageProbe;
   const root = drive.mode === "api" ? montageCacheRoot(process.env.DIARIA_VIDEO_CACHE_DIR, homedir()) : null;
@@ -284,7 +304,7 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, 
       ? { ok: false, detail: `espaço livre ilegível em ${cacheRoot}` }
       : { ok: free >= need, detail: `${(free / 1e9).toFixed(1)} GB livres no disco de ${cacheRoot}, precisa ${(need / 1e9).toFixed(1)} GB` };
   }
-  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, opencv: probeOpenCv(py.python), deepfilter: probeDeepFilter(), drive: drive.probe, disk }, process.platform, py);
+  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, gpu, opencv: probeOpenCv(py.python), deepfilter: probeDeepFilter(), drive: drive.probe, disk }, process.platform, py);
 }
 
 async function main(): Promise<void> {
