@@ -3393,11 +3393,25 @@ function detectFaceFrames(ctx: Ctx, source: SourceInfo, frames: readonly FaceFra
   return readJson<FrameDetection[]>(outJson, "face_detect");
 }
 
-/** Os itens resolvidos do blocks.json como entrada do `face` (#13588): chave `{bloco}#{i}`, intervalo e arquivo. */
-function faceItemsOf(resolved: Record<string, ResolvedItem[] | undefined>): FaceItem[] {
+/**
+ * Os itens resolvidos do blocks.json como entrada do `face` (#13588): chave
+ * `{bloco}#{i}`, intervalo, arquivo e o `mirrored` efetivo do arquivo no meio
+ * da fala (o mesmo que `frameJobOf` usa para desespelhar; review da PR #13595).
+ */
+function faceItemsOf(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>): FaceItem[] {
   return (Object.entries(resolved) as Array<[string, ResolvedItem[] | undefined]>).flatMap(([block, items]) =>
-    (items ?? []).map((it, i) => ({ key: `${block}#${i}`, interval: { start: it.interval.start, end: it.interval.end }, ...(it.source !== undefined ? { source: it.source } : {}) })),
+    (items ?? []).map((it, i) => ({
+      key: `${block}#${i}`,
+      interval: { start: it.interval.start, end: it.interval.end },
+      ...(it.source !== undefined ? { source: it.source } : {}),
+      mirrored: frameAt(source, (it.interval.start + it.interval.end) / 2).view.mirrored,
+    })),
   );
+}
+
+/** Impressão do `face_detect.py` (parâmetros do Haar): mudar o detector invalida o `face-cache.json` (review da PR #13595). */
+function faceDetectorFingerprint(): string {
+  return createHash("sha256").update(readFileSync(FACE_PY)).digest("hex").slice(0, 12);
 }
 
 function cmdFace(ctx: Ctx, write: boolean, overwrite = false, opts: { all?: boolean; oneFrame?: boolean } = {}): number {
@@ -3410,7 +3424,7 @@ function cmdFace(ctx: Ctx, write: boolean, overwrite = false, opts: { all?: bool
   const cache = parseFaceCache(existsSync(cachePath) ? readJson<unknown>(cachePath, FACE_CACHE_FILE) : null);
   const sampling: FaceSampling = opts.oneFrame ? "um-frame" : "tres-frames";
   let batch = 0;
-  const m = runFaceMeasurement(faceItemsOf(resolved), cache, { detect: (frames) => detectFaceFrames(ctx, source, frames, dir, `f${batch++}`, proxy) }, { bruto: source.path, sampling, all: opts.all });
+  const m = runFaceMeasurement(faceItemsOf(source, resolved), cache, { detect: (frames) => detectFaceFrames(ctx, source, frames, dir, `f${batch++}`, proxy) }, { bruto: source.path, sampling, all: opts.all, detector: faceDetectorFingerprint() });
   rmSync(dir, { recursive: true, force: true });
   writeJson(cachePath, m.cache);
   console.error(`[video-montagem] face: ${m.measured.length} item(ns) medido(s) agora (${m.frames} frame(s)${sampling === "um-frame" ? ", 1 por item com 25/75% onde o do meio não achou rosto" : ""}), ${m.fromCache.length} do ${FACE_CACHE_FILE}${opts.all ? " (--all)" : "; --all mede tudo"} (#13588)`);
@@ -3459,7 +3473,7 @@ function cmdFaceCompare(ctx: Ctx, mpPython: string | undefined, mpModel: string 
     // #13588: os frames do `face --um-frame` (o do meio; 25/75% onde o Haar não achou rosto nele), os mesmos nos dois detectores.
     rmSync(dir, { recursive: true, force: true });
     const proxy = proxyNotice(ctx, source);
-    const fitems = faceItemsOf(resolved);
+    const fitems = faceItemsOf(source, resolved);
     keys = fitems.map((it) => it.key);
     items = new Map((Object.entries(resolved) as Array<[string, ResolvedItem[] | undefined]>).flatMap(([b, xs]) => (xs ?? []).map((it, i) => [`${b}#${i}`, it] as const)));
     const asked: FaceFrameRequest[] = [];

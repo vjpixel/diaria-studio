@@ -297,3 +297,18 @@ test("#13587: no roteiro, o intervalo do molde que já é a tomada separada não
   const r2 = resolveBlocks(old, rawWords, { durationS: DURATION, retranscribed });
   assert.ok(r2.warnings.some((w) => /tomada colapsada/.test(w)));
 });
+
+test("review da PR #13595: intervalo explícito largo em que a retranscrição ouviu uma tomada só segue avisando tomada colapsada", () => {
+  // Transcript com vão (1,6 s) dentro do trecho; a retranscrição cobre as palavras e ouviu só a tomada de 920,6.
+  const raw: Word[] = [{ text: "Oito", start: 919.2, end: 919.5 }, ...words("dias atrás eu fiz três previsões.", 921.12, 0.3)];
+  const retranscribed = [GANCHO_RETRANSCRIBED];
+  const text = "Oito dias atrás eu fiz três previsões.";
+  const mk = (start: number, end: number) => ({ edition: "261118", blocks: { gancho: [{ start, end, text }] } }) as unknown as BlocksFile;
+  const lastEnd = raw[raw.length - 1].end;
+  // Largo: começa 5,6 s antes da tomada retranscrita.
+  const wide = resolveBlocks(mk(915.0, lastEnd + 0.3), raw, { durationS: DURATION, retranscribed });
+  assert.ok(wide.warnings.some((w) => /tomada colapsada/.test(w)), wide.warnings.join("\n"));
+  // O molde (a tomada retranscrita com o ar de 0,3 s) segue calado.
+  const molde = resolveBlocks(mk(920.3, lastEnd + 0.3), raw, { durationS: DURATION, retranscribed });
+  assert.ok(!molde.warnings.some((w) => /tomada colapsada/.test(w)), molde.warnings.join("\n"));
+});

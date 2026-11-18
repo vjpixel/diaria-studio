@@ -2087,7 +2087,10 @@ export function resolveBlocks(
     const pick = pickCollapsedTake(inside, patch.segments, text, { match });
     // #13587: intervalo explícito que já é a tomada separada (o molde da decupagem com a borda da palavra
     // retranscrita): na retranscrição o trecho tem uma tomada só e nenhum vão; o vão era do transcript longo.
-    if (!pick.ok && explicit && pick.completeTakes <= 1 && inside.length > 0 && collapsedTakeSuspects(inside, opts.silences ?? [], { durationS: opts.durationS }).length === 0) return {};
+    // Review da PR #13595: só quando o intervalo cabe na tomada retranscrita (pontas a até `tol` das palavras
+    // dela, o ar do molde é 0,3 s); intervalo explícito largo em que a retranscrição ouviu uma tomada só segue avisando.
+    const fitsTake = inside.length > 0 && span.start >= inside[0].start - tol && span.end <= inside[inside.length - 1].end + tol;
+    if (!pick.ok && explicit && pick.completeTakes <= 1 && fitsTake && collapsedTakeSuspects(inside, opts.silences ?? [], { durationS: opts.durationS }).length === 0) return {};
     if (!pick.ok) {
       if (sub.repetition) warnings.push(repetitionWarning(label, sub.repetition));
       else {

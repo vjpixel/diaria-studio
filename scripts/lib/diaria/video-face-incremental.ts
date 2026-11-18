@@ -7,8 +7,8 @@
  * 5 tomadas custava as 40 medições de novo.
  *
  * Incremental: a medida de cada item fica em `face-cache.json` (state dir),
- * com a chave = hash do intervalo medido (mais o arquivo do bruto e o jeito de
- * medir). Na volta seguinte só o item com intervalo novo (tomada trocada,
+ * com a chave = hash do intervalo medido (mais o arquivo do bruto, o
+ * `mirrored` efetivo dele e o jeito de medir). Na volta seguinte só o item com intervalo novo (tomada trocada,
  * item novo) vai ao detector; o resto sai do cache. `--all` mede tudo.
  *
  * 1 frame por item (`--um-frame`): o frame do meio da fala; 25%/75% só nos
@@ -20,15 +20,34 @@
  */
 
 import { createHash } from "node:crypto";
-import { FACE_SAMPLE_FRACTIONS, itemFramings, pickFace, type FrameDetection, type ItemFaceResult } from "./video-face.ts";
+import { EYE_IN_FACE, FACE_SAMPLE_FRACTIONS, MIN_FACE_FRAMES, MOUTH_IN_FACE, itemFramings, pickFace, type FrameDetection, type ItemFaceResult } from "./video-face.ts";
 
 /** Arquivo do cache, no state dir da montagem. */
 export const FACE_CACHE_FILE = "face-cache.json";
-/** Sobe quando o jeito de medir muda (detector, frações): invalida o cache inteiro. */
-export const FACE_CACHE_VERSION = 1;
 
 /** O frame do meio e o reforço quando ele não acha rosto (#13588). */
 export const FACE_ONE_FRAME = { middle: 0.5, fallback: [0.25, 0.75] } as const;
+
+/** Sobe à mão só quando o formato do cache muda (campos da entrada); o jeito de medir entra sozinho em `FACE_CACHE_VERSION`. */
+const FACE_CACHE_SCHEMA = 1;
+
+/**
+ * Impressão do jeito de medir no lado TS (review da PR #13595): constantes e o
+ * código de `pickFace`/`itemFramings`. Mudar qualquer um muda a versão do
+ * cache e invalida tudo sem bump manual. O `face_detect.py` (parâmetros do
+ * Haar) entra pela impressão do detector que o chamador passa em `opts.detector`.
+ */
+export function faceMeasureFingerprint(): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ MIN_FACE_FRAMES, FACE_SAMPLE_FRACTIONS, EYE_IN_FACE, MOUTH_IN_FACE, FACE_ONE_FRAME }))
+    .update(pickFace.toString())
+    .update(itemFramings.toString())
+    .digest("hex")
+    .slice(0, 12);
+}
+
+/** Versão do cache: formato + impressão do jeito de medir. Cache de outra versão = vazio (mede tudo). */
+export const FACE_CACHE_VERSION = `${FACE_CACHE_SCHEMA}-${faceMeasureFingerprint()}`;
 
 export type FaceSampling = "tres-frames" | "um-frame";
 
@@ -38,6 +57,12 @@ export interface FaceItem {
   interval: { start: number; end: number };
   /** O arquivo do bruto do item (bruto em vários arquivos, #12559); ausente = bruto único. */
   source?: string;
+  /**
+   * O `mirrored` efetivo do arquivo do item (review da PR #13595): o frame é
+   * desespelhado na captura, então trocar o `mirrored` no blocks.json muda o
+   * `faceX` medido e precisa invalidar a medida em cache.
+   */
+  mirrored?: boolean;
 }
 
 export interface FaceCacheEntry {
@@ -48,7 +73,7 @@ export interface FaceCacheEntry {
 }
 
 export interface FaceCache {
-  version: number;
+  version: string;
   entries: Record<string, FaceCacheEntry>;
 }
 
@@ -63,25 +88,27 @@ export function parseFaceCache(raw: unknown): FaceCache {
 }
 
 /**
- * Chave do item no cache: hash do bruto, do arquivo do item, do intervalo (ms)
- * e do jeito de medir. A mesma tomada em outro bloco reaproveita a medida; a
- * tomada trocada (outro intervalo) não.
+ * Chave do item no cache: hash do bruto, do arquivo do item, do `mirrored`
+ * efetivo dele, do intervalo (ms), do jeito de medir e da impressão do
+ * detector. A mesma tomada em outro bloco reaproveita a medida; a tomada
+ * trocada (outro intervalo) ou o espelhamento trocado não.
  */
-export function faceCacheKey(bruto: string, item: Pick<FaceItem, "interval" | "source">, sampling: FaceSampling): string {
+export function faceCacheKey(bruto: string, item: Pick<FaceItem, "interval" | "source" | "mirrored">, sampling: FaceSampling, detector = ""): string {
   const ms = (x: number) => Math.round(x * 1000);
+  const mir = item.mirrored === undefined ? "" : item.mirrored ? "1" : "0";
   return createHash("sha256")
-    .update(`${FACE_CACHE_VERSION}|${sampling}|${bruto}|${item.source ?? ""}|${ms(item.interval.start)}|${ms(item.interval.end)}`)
+    .update(`${FACE_CACHE_VERSION}|${detector}|${sampling}|${bruto}|${item.source ?? ""}|${mir}|${ms(item.interval.start)}|${ms(item.interval.end)}`)
     .digest("hex")
     .slice(0, 24);
 }
 
 /** Os itens a medir agora e os que saem do cache. */
-export function planFaceRun(items: readonly FaceItem[], cache: FaceCache, opts: { bruto: string; sampling: FaceSampling; all?: boolean }): { measure: FaceItem[]; cached: ItemFaceResult[] } {
+export function planFaceRun(items: readonly FaceItem[], cache: FaceCache, opts: { bruto: string; sampling: FaceSampling; all?: boolean; detector?: string }): { measure: FaceItem[]; cached: ItemFaceResult[] } {
   const measure: FaceItem[] = [];
   const cached: ItemFaceResult[] = [];
   const seen = new Set<string>();
   for (const it of items) {
-    const hit = opts.all ? undefined : cache.entries[faceCacheKey(opts.bruto, it, opts.sampling)];
+    const hit = opts.all ? undefined : cache.entries[faceCacheKey(opts.bruto, it, opts.sampling, opts.detector)];
     if (hit) cached.push({ key: it.key, ...hit.result });
     else if (!seen.has(it.key)) {
       seen.add(it.key);
@@ -133,7 +160,7 @@ export function runFaceMeasurement(
   items: readonly FaceItem[],
   cache: FaceCache,
   io: FaceMeasurementIO,
-  opts: { bruto: string; sampling: FaceSampling; all?: boolean; now?: string },
+  opts: { bruto: string; sampling: FaceSampling; all?: boolean; now?: string; /** Impressão do detector (ex.: hash do `face_detect.py`): mudar o detector invalida o cache. */ detector?: string },
 ): FaceMeasurement {
   const { measure, cached } = planFaceRun(items, cache, opts);
   let frames = 0;
@@ -162,7 +189,7 @@ export function runFaceMeasurement(
   for (const it of measure) {
     const r = byKey.get(it.key)!;
     const { key: _k, ...result } = r;
-    next.entries[faceCacheKey(opts.bruto, it, opts.sampling)] = { interval: { ...it.interval }, sampling: opts.sampling, result, at };
+    next.entries[faceCacheKey(opts.bruto, it, opts.sampling, opts.detector)] = { interval: { ...it.interval }, sampling: opts.sampling, result, at };
   }
   return {
     results: items.map((it) => ({ ...byKey.get(it.key)!, key: it.key })),

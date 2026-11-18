@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   FACE_CACHE_VERSION,
   FACE_ONE_FRAME,
+  faceMeasureFingerprint,
   emptyFaceCache,
   faceCacheKey,
   middleMisses,
@@ -74,13 +75,14 @@ test("#13588: a chave do cache muda com o intervalo, o arquivo do bruto e o jeit
   assert.notEqual(k, faceCacheKey(BRUTO, { ...it, source: "20261117_183905" }, "tres-frames"));
   assert.notEqual(k, faceCacheKey("outro.mp4", it, "tres-frames"));
   assert.notEqual(k, faceCacheKey(BRUTO, it, "um-frame"));
+  assert.notEqual(k, faceCacheKey(BRUTO, it, "tres-frames", "outro-detector"));
   // O mesmo intervalo em outro bloco (resumo e resumo_curto) sai do cache.
   const cache = runFaceMeasurement([{ key: "resumo#0", ...it }], emptyFaceCache(), detector(), { bruto: BRUTO, sampling: "tres-frames" }).cache;
   assert.deepEqual(planFaceRun([{ key: "resumo_curto#0", ...it }], cache, { bruto: BRUTO, sampling: "tres-frames" }).measure, []);
 });
 
 test("#13588: cache ilegível ou de outra versão vale como vazio (mede tudo, nunca erra por cache)", () => {
-  for (const raw of [null, "x", [], { version: FACE_CACHE_VERSION + 1, entries: {} }, { version: FACE_CACHE_VERSION, entries: [] }]) {
+  for (const raw of [null, "x", [], { version: `${FACE_CACHE_VERSION}x`, entries: {} }, { version: 1, entries: {} }, { version: FACE_CACHE_VERSION, entries: [] }]) {
     assert.deepEqual(parseFaceCache(raw), emptyFaceCache());
   }
 });
@@ -111,4 +113,25 @@ test("#13588: frame do meio ilegível ou só com falso rosto no peito conta como
     { key: "c#0", w: 720, h: 1280, faces: [FACE] },
   ];
   assert.deepEqual(middleMisses(dets, ["a#0", "b#0", "c#0"]), ["a#0", "b#0"]);
+});
+
+test("review da PR #13595: trocar só o mirrored do arquivo do item invalida a medida em cache", () => {
+  const it: FaceItem = { key: "comentario#0", interval: { start: 424.3, end: 434.51 }, mirrored: false };
+  assert.notEqual(faceCacheKey(BRUTO, it, "tres-frames"), faceCacheKey(BRUTO, { ...it, mirrored: true }, "tres-frames"));
+  const first = runFaceMeasurement([it], emptyFaceCache(), detector(), { bruto: BRUTO, sampling: "tres-frames" });
+  const same = planFaceRun([it], first.cache, { bruto: BRUTO, sampling: "tres-frames" });
+  assert.deepEqual([same.measure.length, same.cached.length], [0, 1], "nada trocado: sai do cache");
+  const flipped = planFaceRun([{ ...it, mirrored: true }], first.cache, { bruto: BRUTO, sampling: "tres-frames" });
+  assert.deepEqual(flipped.measure.map((x) => x.key), ["comentario#0"], "mirrored trocado: mede de novo");
+  assert.deepEqual(flipped.cached, []);
+});
+
+test("review da PR #13595: a versão do cache deriva das constantes e do código de medir (sem bump manual)", () => {
+  assert.match(FACE_CACHE_VERSION, /^\d+-[0-9a-f]{12}$/);
+  assert.ok(FACE_CACHE_VERSION.endsWith(faceMeasureFingerprint()));
+  // Trocar o detector (o hash do face_detect.py que o chamador passa) também invalida.
+  const it: FaceItem = { key: "a#0", interval: { start: 1, end: 2 } };
+  const cache = runFaceMeasurement([it], emptyFaceCache(), detector(), { bruto: BRUTO, sampling: "tres-frames", detector: "py-v1" }).cache;
+  assert.equal(planFaceRun([it], cache, { bruto: BRUTO, sampling: "tres-frames", detector: "py-v1" }).measure.length, 0);
+  assert.equal(planFaceRun([it], cache, { bruto: BRUTO, sampling: "tres-frames", detector: "py-v2" }).measure.length, 1);
 });
