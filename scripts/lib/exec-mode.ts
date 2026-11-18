@@ -232,8 +232,18 @@ const COMMAND_PROBE_ARGS: Record<string, string[]> = {
 };
 
 /** Substituto injetável de `execFileSync` para testar `commandExistsSync`
- * sem spawnar processos reais. Em runtime, omitir (usa `execFileSync` real). */
-export type ExecFileSyncFn = (cmd: string, args: string[], opts: { stdio: "ignore"; windowsHide: true }) => unknown;
+ * sem spawnar processos reais. Em runtime, omitir (usa
+ * `realCommandProbeExec`). Nome próprio desde o #13592 (era `ExecFileSyncFn`,
+ * homônimo do tipo de `publish-edition-site-page.ts` com outro rigor). */
+export type CommandProbeExecFn = (cmd: string, args: string[], opts: { stdio: "ignore"; windowsHide: true }) => unknown;
+
+/** Default de `commandExistsSync`: wrapper tipado sobre o `execFileSync` real
+ * (#13592). Antes o default era `execFileSync as unknown as …`, cast que
+ * apagava a checagem de tipo; aqui o compilador confere a assinatura e a
+ * flag fica literal na chamada (o guard de `test/claude-hooks-windowshide.test.ts`
+ * lê a chamada, não o tipo). */
+export const realCommandProbeExec: CommandProbeExecFn = (cmd, args, opts) =>
+  execFileSync(cmd, args, { ...opts, windowsHide: true });
 
 /**
  * Checa se `cmd` existe no PATH tentando executá-lo com um argumento de
@@ -247,7 +257,7 @@ export type ExecFileSyncFn = (cmd: string, args: string[], opts: { stdio: "ignor
  */
 export function commandExistsSync(
   cmd: string,
-  execFn: ExecFileSyncFn = execFileSync as unknown as ExecFileSyncFn,
+  execFn: CommandProbeExecFn = realCommandProbeExec,
   warnFn: (message: string) => void = console.warn,
 ): boolean {
   try {

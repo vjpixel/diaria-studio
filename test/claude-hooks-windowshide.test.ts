@@ -115,6 +115,19 @@
  * condicional e `Object.assign` dentro do spawn são vistos), o alias volta a
  * ser varrido quando chamado por propriedade (`deps.execFn(`, `this.run(`) e
  * o lexer trata `a++ / 2` como divisão.
+ *
+ * **#13592 — pontos cegos restantes do review da #13586.** (1)
+ * `DETACHED_CHILD_ENTRYPOINTS` é conferida contra os spawns destacados de node
+ * reais (`deriveDetachedEntrypoints`); (2) o fecho de imports resolve `..`
+ * acima de scripts/, diretório com `index` e `require(…)`, e o import que não
+ * resolve reprova em vez de sair em silêncio; (3) `detached` com valor não
+ * literal e o shorthand `{ detached }` também ancoram (`findDetachedProps`);
+ * (4) mais formas de alias (`import { spawn as sp }`, `{ execFileSync: run }
+ * = cp`, `promisify(execFile)`, `run: typeof spawnSync` sem default, anotação
+ * em várias linhas, `cp.execSync(` pelo namespace); (5) `windowsHide: true`
+ * dentro de string ou de objeto aninhado como valor de propriedade (`env: {
+ * … }`) não conta mais. O item 6 (tipos) está em
+ * `test/windowshide-exec-types-13592.test.ts`.
  */
 
 import { describe, it } from "node:test";
@@ -138,18 +151,19 @@ const WINDOW_CHARS = 600;
 
 /** Pura — recebe o conteúdo já lido de um arquivo `.mjs`, devolve o offset
  * (não linha — mais barato de calcular, suficiente pra achar no editor) de todo
- * `detached: true` sem `windowsHide: true` na janela ao redor. */
+ * `detached` que pode destacar sem `windowsHide: true` na janela ao redor.
+ * Desde o #13592 a âncora não é só o literal `detached: true`: qualquer valor
+ * que não seja `false`/`undefined`/`null`/`0` (`detached: !fg`, `detached:
+ * isBg`) e o shorthand `{ detached }` contam (`findDetachedProps`), e a janela
+ * é lida sem comentários nem strings (um `windowsHide: true` citado em prosa ou
+ * dentro de string não satisfaz mais o guard). */
 export function findDetachedWithoutWindowsHide(content: string): number[] {
+  const masked = maskJs(content, true);
   const offenders: number[] = [];
-  const detachedRe = /detached\s*:\s*true/g;
-  let match: RegExpExecArray | null;
-  while ((match = detachedRe.exec(content)) !== null) {
-    const start = Math.max(0, match.index - WINDOW_CHARS);
-    const end = Math.min(content.length, match.index + WINDOW_CHARS);
-    const window = content.slice(start, end);
-    if (!/windowsHide\s*:\s*true/.test(window)) {
-      offenders.push(match.index);
-    }
+  for (const idx of findDetachedProps(masked)) {
+    const start = Math.max(0, idx - WINDOW_CHARS);
+    const end = Math.min(masked.length, idx + WINDOW_CHARS);
+    if (!WINDOWS_HIDE_RE.test(masked.slice(start, end))) offenders.push(idx);
   }
   return offenders;
 }
@@ -365,22 +379,106 @@ function escapeRegExp(s: string): string {
  * e `out` não é uma função chamável em lugar nenhum. O lookahead negativo
  * distingue "atribuição da REFERÊNCIA da função" (nunca seguida de `(`, é o
  * padrão real de alias) de "atribuição do RESULTADO de uma chamada" (sempre
- * seguida de `(`). Pura. */
-function discoverInjectedExecAliases(content: string): string[] {
+ * seguida de `(`). Pura.
+ *
+ * **#13592 item 4 — mais formas de alias.** Além do `nome = launcher`:
+ *  - anotação de tipo em várias linhas, quebrando em `|`/`&`
+ *    (`exec:\n  | A\n  | typeof execFileSync = execFileSync`);
+ *  - `nome = promisify(launcher)` (e `util.promisify(…)`);
+ *  - `nome = cp.launcher`, com `cp` namespace de `child_process`;
+ *  - `import { spawn as sp } from "node:child_process"`;
+ *  - `const { execFileSync: run } = cp` / `= require("child_process")`;
+ *  - parâmetro ou campo tipado SEM default com o tipo real do launcher:
+ *    `run: typeof spawnSync`, ou `run: T` com `type T = typeof spawnSync` no
+ *    mesmo arquivo.
+ * Fica de fora, de propósito, o parâmetro tipado com um tipo WRAPPER sem
+ * objeto de opções (`spawn: SpawnFn` em `git-sync.ts`, `SpawnFn =
+ * GitSpawnFn = (cmd, args, timeoutMs?) => SpawnResult`): o chamador não tem
+ * onde passar `windowsHide`, quem precisa da flag é a implementação real do
+ * wrapper, que chama o launcher pelo nome e já é varrida. A busca é por
+ * lookahead (não consome), então um nome espúrio antes do certo (`case A:\n
+ * run = spawn`) não esconde o `run`. `launchers` escolhe a família
+ * (`CORE_LAUNCHERS` ou `BROAD_LAUNCHERS`). */
+function discoverInjectedExecAliases(content: string, launchers: readonly string[] = CORE_LAUNCHERS): string[] {
   const code = maskJs(content, true);
-  const aliasRe =
-    /\b([A-Za-z_$][\w$]*)\s*(?::[^\S\n]*[\w$.<>[\]|& ]+?)?\s*=\s*(?:execFileSync|execFile|spawnSync|spawn)\b(?!\s*\()/g;
+  const withStrings = maskJs(content, false);
+  const L = launchers.map(escapeRegExp).join("|");
+  const namespaces = discoverChildProcessNamespaces(content);
+  const NS = namespaces.length > 0 ? String.raw`(?:(?:${namespaces.map(escapeRegExp).join("|")})\s*\.\s*)?` : "";
+  const TOK = String.raw`[\w$.<>[\]]+`;
+  const ANN = String.raw`\s*\|?\s*${TOK}(?:(?:[^\S\n]+|\s*[|&]\s*)${TOK})*`;
   const names = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = aliasRe.exec(code)) !== null) {
-    names.add(match[1]);
-  }
+  const collect = (re: RegExp, src: string, each: (m: RegExpExecArray) => void) => {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      each(m);
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  };
+  // `nome = launcher`, `nome: Tipo = launcher`, `nome = promisify(launcher)`.
+  collect(
+    new RegExp(
+      String.raw`(?<![\w$])([A-Za-z_$][\w$]*)(?=\s*(?:\??:${ANN})?\s*=\s*(?:${NS}(?:${L})\b(?!\s*\()|(?:[\w$]+\s*\.\s*)?promisify\s*\(\s*${NS}(?:${L})\s*\)))`,
+      "g",
+    ),
+    code,
+    (m) => names.add(m[1]),
+  );
+  // Tipo real do launcher: `typeof launcher` direto ou via `type T = typeof launcher`.
+  const launcherTypes = new Set<string>();
+  collect(new RegExp(String.raw`\btype\s+([\w$]+)\s*=\s*typeof\s+${NS}(?:${L})\b`, "g"), code, (m) => launcherTypes.add(m[1]));
+  const typeAlt = [String.raw`typeof\s+${NS}(?:${L})\b`, ...[...launcherTypes].map((t) => `${escapeRegExp(t)}\\b`)].join("|");
+  collect(new RegExp(String.raw`(?<![\w$])([A-Za-z_$][\w$]*)(?=\s*\??:\s*(?:${typeAlt}))`, "g"), code, (m) => names.add(m[1]));
+  // `import { launcher as nome } from "child_process"`.
+  collect(
+    new RegExp(String.raw`\bimport\s+(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*${CHILD_PROCESS_SPEC}`, "g"),
+    withStrings,
+    (m) => {
+      for (const r of m[1].matchAll(/([\w$]+)\s+as\s+([\w$]+)/g)) if (launchers.includes(r[1])) names.add(r[2]);
+    },
+  );
+  // `const { launcher: nome } = cp` / `= require("child_process")`.
+  const rhs = [String.raw`require\s*\(\s*${CHILD_PROCESS_SPEC}\s*\)`, ...namespaces.map((n) => `${escapeRegExp(n)}\\b`)].join("|");
+  collect(new RegExp(String.raw`\{([^{}]*)\}\s*=\s*(?:await\s+)?(?:${rhs})`, "g"), withStrings, (m) => {
+    for (const r of m[1].matchAll(/([\w$]+)\s*:\s*([\w$]+)/g)) if (launchers.includes(r[1])) names.add(r[2]);
+  });
   return [...names];
 }
+
+/** Especificador de módulo `child_process` (com ou sem `node:`), em texto
+ * com strings preservadas. */
+const CHILD_PROCESS_SPEC = String.raw`["'](?:node:)?child_process["']`;
+
+/** Nomes ligados ao MÓDULO `child_process` inteiro (#13592 item 4):
+ * `import * as cp from …`, `import cp from …`, `const cp = require(…)`,
+ * `const cp = await import(…)`. Uma chamada `cp.execSync(` passa a contar
+ * no guard amplo. Pura. */
+function discoverChildProcessNamespaces(content: string): string[] {
+  const src = maskJs(content, false);
+  const names = new Set<string>();
+  const res = [
+    new RegExp(String.raw`\bimport\s*\*\s*as\s+([\w$]+)\s+from\s*${CHILD_PROCESS_SPEC}`, "g"),
+    new RegExp(String.raw`\bimport\s+(?!type\b)([\w$]+)\s*(?:,\s*\{[^}]*\})?\s*from\s*${CHILD_PROCESS_SPEC}`, "g"),
+    new RegExp(String.raw`\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:require|(?:await\s+)?import)\s*\(\s*${CHILD_PROCESS_SPEC}\s*\)`, "g"),
+  ];
+  for (const re of res) for (const m of src.matchAll(re)) names.add(m[1]);
+  return [...names];
+}
+
+const CORE_LAUNCHERS = ["execFileSync", "execFile", "spawnSync", "spawn"] as const;
+const BROAD_LAUNCHERS = [...CORE_LAUNCHERS, "execSync", "exec", "fork"] as const;
 
 const WINDOWS_HIDE_RE = /windowsHide\s*:\s*true/;
 const LITERAL_CALL_RE = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
 const BROAD_CALL_RE = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
+
+/** Chamadas `cp.exec(`/`cp.execSync(`/`cp.fork(` pelo namespace de
+ * `child_process` (#13592 item 4). `null` sem namespace no arquivo. */
+function namespaceBroadCallRe(content: string): RegExp | null {
+  const ns = discoverChildProcessNamespaces(content);
+  if (ns.length === 0) return null;
+  return new RegExp(String.raw`(?<![\w$.])(?:${ns.map(escapeRegExp).join("|")})\s*\.\s*(?:execSync|exec|fork)\s*\(`, "g");
+}
 
 /** Nomes de alias que colidem com métodos comuns de outros objetos
  * (`re.exec(`, `db.run(`, `fn.call(`, `map.get(`, `res.send(`…): pra eles,
@@ -401,7 +499,7 @@ function aliasCallRe(name: string): RegExp {
 }
 
 /** Uma chamada de processo achada no fonte: do nome até o `)` que a fecha. */
-type CallSite = { index: number; end: number; bidirectional: boolean };
+type CallSite = { index: number; open: number; end: number; bidirectional: boolean };
 
 /** Acha, no texto mascarado, as chamadas (`patterns` terminam em `\(`) e as
  * chamadas via alias, e calcula onde cada uma termina (#13575): no `)` que
@@ -423,7 +521,7 @@ function collectCallSites(masked: string, patterns: RegExp[], aliases: string[])
     const { open, bidirectional } = byIndex.get(index)!;
     const close = findCallClose(masked, open);
     const fallback = Math.min(masked.length, index + WINDOW_CHARS, starts[k + 1] ?? Infinity);
-    return { index, end: close > 0 ? close : fallback, bidirectional };
+    return { index, open, end: close > 0 ? close : fallback, bidirectional };
   });
 }
 
@@ -441,18 +539,63 @@ function sliceWithoutOtherCalls(text: string, from: number, to: number, sites: C
   return out.join("");
 }
 
+/** `true` quando o `:` em `colon` separa chave e valor de propriedade de
+ * objeto (`env: {`, `"env": {`, `[k]: {`), não o `:` de ternário (`a ? b :
+ * {`). Texto mascarado: a chave em string virou espaço. Pura. */
+function isPropertyColon(masked: string, colon: number): boolean {
+  let k = colon - 1;
+  while (k >= 0 && /\s/.test(masked[k])) k--;
+  if (k >= 0 && masked[k] === "]") return true;
+  while (k >= 0 && /[\w$]/.test(masked[k])) k--;
+  while (k >= 0 && /\s/.test(masked[k])) k--;
+  return k >= 0 && (masked[k] === "{" || masked[k] === ",");
+}
+
+/** `true` quando a posição `idx` está dentro de um objeto que é VALOR de
+ * propriedade (`{ env: { windowsHide: true } }`), contando só os brackets
+ * depois de `stopAt`. Pura. */
+function isInsidePropertyValueObject(masked: string, idx: number, stopAt: number): boolean {
+  let cur = idx;
+  for (;;) {
+    const up = findEnclosingBracket(masked, cur);
+    if (up < 0 || up <= stopAt) return false;
+    if (masked[up] === "{") {
+      let k = up - 1;
+      while (k >= 0 && /\s/.test(masked[k])) k--;
+      if (k >= 0 && masked[k] === ":" && isPropertyColon(masked, k)) return true;
+    }
+    cur = up;
+  }
+}
+
+/** `true` quando `masked` (sem comentários NEM strings, #13592 item 5) tem
+ * `windowsHide: true` fora de objeto aninhado como valor de propriedade:
+ * `{ env: { windowsHide: true } }` não é a flag do spawn, e `"windowsHide:
+ * true"` numa string também não. Só os brackets depois de `stopAt` contam
+ * pra decidir o aninhamento. Pura. */
+function hasOwnWindowsHide(masked: string, stopAt: number): boolean {
+  const re = new RegExp(WINDOWS_HIDE_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(masked)) !== null) {
+    if (!isInsidePropertyValueObject(masked, m.index, stopAt)) return true;
+  }
+  return false;
+}
+
 /** Offsets das chamadas sem `windowsHide: true`. Chamada pelo nome literal:
  * só o corpo da própria chamada conta. Chamada via alias: também até
  * `WINDOW_CHARS` pra trás (o `opts` montado numa variável antes da chamada,
- * #8017), sem o corpo de outras chamadas. Pura. */
-function offendersFromSites(noComments: string, sites: CallSite[]): number[] {
+ * #8017), sem o corpo de outras chamadas. `masked` sem comentários nem
+ * strings (#13592 item 5). Pura. */
+function offendersFromSites(masked: string, sites: CallSite[]): number[] {
   const offenders: number[] = [];
   for (const s of sites) {
-    let text = sliceWithoutOtherCalls(noComments, s.index, s.end, sites, s);
-    if (s.bidirectional) {
-      text = sliceWithoutOtherCalls(noComments, Math.max(0, s.index - WINDOW_CHARS), s.index, sites, s) + text;
+    const body = sliceWithoutOtherCalls(masked, s.index, s.end, sites, s);
+    let ok = hasOwnWindowsHide(body, s.open - s.index);
+    if (!ok && s.bidirectional) {
+      ok = hasOwnWindowsHide(sliceWithoutOtherCalls(masked, Math.max(0, s.index - WINDOW_CHARS), s.index, sites, s), -1);
     }
-    if (!WINDOWS_HIDE_RE.test(text)) offenders.push(s.index);
+    if (!ok) offenders.push(s.index);
   }
   return offenders;
 }
@@ -468,7 +611,7 @@ function offendersFromSites(noComments: string, sites: CallSite[]): number[] {
 export function findWindowsHideMissingCalls(content: string): number[] {
   const masked = maskJs(content, true);
   const sites = collectCallSites(masked, [LITERAL_CALL_RE], discoverInjectedExecAliases(content));
-  return offendersFromSites(maskJs(content, false), sites);
+  return offendersFromSites(masked, sites);
 }
 
 /**
@@ -1036,8 +1179,12 @@ describe("Regressão #7959 — .claude/hooks/*.mjs reais deste repo (guard gener
  */
 const SCRIPTS_DIR = join(ROOT, "scripts");
 
-/** Entrypoints que rodam como filho destacado, sem console. As libs que eles
- * importam (transitivamente, imports relativos) entram sozinhas. */
+/** Entrypoints que rodam como filho destacado, sem console (relativos a
+ * scripts/). As libs que eles importam (transitivamente, imports relativos)
+ * entram sozinhas. Desde o #13592 a lista é conferida contra os spawns
+ * destacados reais (`deriveDetachedEntrypoints`): um script novo lançado
+ * destacado e fora daqui reprova o teste, e uma entrada que ninguém mais
+ * lança destacada também. */
 const DETACHED_CHILD_ENTRYPOINTS = [
   "publish-edition-site-page.ts", // waiter --merge-pr (#9593/#9616)
   "eia-compose.ts", // stage-1-run §1d
@@ -1045,36 +1192,183 @@ const DETACHED_CHILD_ENTRYPOINTS = [
   "serve-preview.ts", // --detach (#9678)
 ];
 
-const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,2}\/[^"']+)["']/g;
+const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g;
 
-/** Fecho transitivo dos imports relativos de `entry` (paths relativos a
- * scripts/). Imports `import type` também entram — inofensivo: só aumenta a
- * varredura. Pura sobre o sistema de arquivos. */
-export function collectRelativeImportClosure(entry: string, readFile: (rel: string) => string | null): string[] {
+/** Arquivo achado por `resolveFile`: o caminho real (com extensão, relativo
+ * à raiz do repo) e o conteúdo. */
+export type ResolvedSource = { path: string; content: string };
+
+/** Resultado do fecho: arquivos alcançados e os imports relativos que não
+ * resolveram (#13592 item 2: antes saíam do fecho em silêncio). */
+export type ImportClosure = { files: string[]; unresolved: string[] };
+
+/** Junta `baseDir` e `spec` e normaliza `.`/`..`, sem perder `..` que sobe
+ * acima da raiz (o `scripts/../workers/...` do #13592 virava
+ * `scripts/workers/...`). Pura. */
+function joinRel(baseDir: string, spec: string): string {
+  const norm: string[] = [];
+  for (const p of (baseDir ? `${baseDir}/${spec}` : spec).split("/")) {
+    if (p === "." || p === "") continue;
+    if (p === ".." && norm.length > 0 && norm[norm.length - 1] !== "..") norm.pop();
+    else norm.push(p);
+  }
+  return norm.join("/");
+}
+
+/** Fecho transitivo dos imports relativos de `entry` (caminhos relativos à
+ * raiz do repo, ex.: `scripts/eia-compose.ts`). Segue `import … from`,
+ * `export … from`, `import("…")` e `require("…")`. `resolveFile` recebe o
+ * caminho como escrito no import (sem extensão, `.js` no lugar de `.ts`,
+ * diretório com `index`) e devolve o arquivo real, ou `null`. Imports
+ * `import type` também entram — inofensivo: só aumenta a varredura. Import
+ * que não resolve vai para `unresolved` como `arquivo -> especificador`.
+ * Pura sobre o sistema de arquivos. */
+export function collectRelativeImportClosure(
+  entry: string,
+  resolveFile: (rel: string) => ResolvedSource | null,
+): ImportClosure {
   const seen = new Set<string>();
-  const queue = [entry];
+  const unresolved: string[] = [];
+  const queue: Array<{ rel: string; from: string | null; spec: string }> = [{ rel: entry, from: null, spec: entry }];
   while (queue.length > 0) {
-    const rel = queue.shift()!;
-    if (seen.has(rel)) continue;
-    const content = readFile(rel);
-    if (content === null) continue;
-    seen.add(rel);
-    const baseDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
-    const code = stripComments(content);
-    let m: RegExpExecArray | null;
-    RELATIVE_IMPORT_RE.lastIndex = 0;
-    while ((m = RELATIVE_IMPORT_RE.exec(code)) !== null) {
-      const parts = (baseDir ? `${baseDir}/${m[1]}` : m[1]).split("/");
-      const norm: string[] = [];
-      for (const p of parts) {
-        if (p === "." || p === "") continue;
-        if (p === "..") norm.pop();
-        else norm.push(p);
-      }
-      queue.push(norm.join("/"));
+    const { rel, from, spec } = queue.shift()!;
+    const found = resolveFile(rel);
+    if (found === null) {
+      unresolved.push(from === null ? `(entrypoint) ${spec}` : `${from} -> ${spec}`);
+      continue;
+    }
+    if (seen.has(found.path)) continue;
+    seen.add(found.path);
+    const baseDir = found.path.includes("/") ? found.path.slice(0, found.path.lastIndexOf("/")) : "";
+    const code = stripComments(found.content);
+    for (const m of code.matchAll(RELATIVE_IMPORT_RE)) {
+      queue.push({ rel: joinRel(baseDir, m[1]), from: found.path, spec: m[1] });
     }
   }
-  return [...seen];
+  return { files: [...seen], unresolved };
+}
+
+/** Candidatos de arquivo pra um import relativo como escrito: o próprio,
+ * `.ts`/`.mts` acrescentados, `.js`→`.ts`, `.mjs`→`.mts` e `index.*` de
+ * diretório. */
+function importCandidates(rel: string): string[] {
+  return [
+    rel,
+    `${rel}.ts`,
+    `${rel}.mts`,
+    rel.replace(/\.js$/, ".ts"),
+    rel.replace(/\.mjs$/, ".mts"),
+    rel.replace(/\.cjs$/, ".cts"),
+    `${rel}/index.ts`,
+    `${rel}/index.js`,
+    `${rel}/index.mjs`,
+  ];
+}
+
+/** Script node destacado: 1º argumento do launcher é `process.execPath` ou
+ * um literal `node`/`npx`/`tsx`. */
+const NODE_LAUNCH_ARG_RE = /^\s*(?:process\.execPath|["'`](?:node|npx|tsx)(?:\.exe|\.cmd)?["'`])\s*$/;
+const SCRIPT_LITERAL_RE = /["'`]((?:\.{0,2}\/)?[\w\-./]+\.(?:ts|mts|js|mjs|cjs))["'`]/g;
+const SELF_REF_RE = /\bimport\.meta\.(?:url|filename)\b|\b__filename\b/;
+/** Chamada de um wrapper de spawn destacado (nome com `detached`, ex.:
+ * `deps.spawnDetached("scripts/eia-compose.ts", …)`) com o script literal. */
+const DETACHED_WRAPPER_CALL_RE = /(?<![\w$])[\w$]*detached[\w$]*\s*\(\s*["'`]((?:\.{0,2}\/)?[\w\-./]+\.(?:ts|mts|js|mjs|cjs))["'`]/gi;
+
+/** `scripts/x.ts`, `./x.ts` e `x.ts` viram `x.ts` (relativo a scripts/). */
+function normalizeScriptRef(ref: string): string {
+  return ref.replace(/^\.\//, "").replace(/^scripts\//, "");
+}
+
+/** Nomes das funções (declaração, `const f = …`, método) cujos corpos
+ * envolvem `idx`, de dentro pra fora. Pura. */
+function enclosingFunctionNames(masked: string, idx: number): string[] {
+  const names: string[] = [];
+  let cur = idx;
+  for (;;) {
+    const up = findEnclosingBracket(masked, cur);
+    if (up < 0) break;
+    if (masked[up] === "{" && isBlockBrace(masked, up)) {
+      let s = up - 1;
+      while (s >= 0 && !";{}".includes(masked[s])) s--;
+      const head = masked.slice(s + 1, up);
+      const m =
+        /\bfunction\s*\*?\s*([\w$]+)/.exec(head) ??
+        /\b(?:const|let|var)\s+([\w$]+)/.exec(head) ??
+        /^\s*(?:(?:async|static|public|private|protected)\s+)*([\w$]+)\s*\(/.exec(head);
+      if (m) names.push(m[1]);
+    }
+    cur = up;
+  }
+  return names;
+}
+
+/** Abertura do corpo de bloco mais externo que envolve `idx` (`-1` no topo
+ * do arquivo). Pura. */
+function outermostBlock(masked: string, idx: number): number {
+  let found = -1;
+  let cur = idx;
+  for (;;) {
+    const up = findEnclosingBracket(masked, cur);
+    if (up < 0) break;
+    if (masked[up] === "{" && isBlockBrace(masked, up)) found = up;
+    cur = up;
+  }
+  return found;
+}
+
+/** Deriva, dos spawns destacados reais, os scripts que rodam como filho
+ * destacado (#13592 item 1). Para cada `detached` (`findDetachedProps`) que
+ * chega a um launcher de node (`NODE_LAUNCH_ARG_RE`), o script lançado é:
+ *  - literal de script dentro da própria chamada;
+ *  - o próprio arquivo, se a chamada ou o corpo de função mais externo em
+ *    volta dela cita `import.meta.url` (auto-relançamento: `serve-preview.ts`
+ *    `--detach`, waiter de `publish-edition-site-page.ts`);
+ *  - ou, se uma das funções em volta tem `detached` no nome (wrapper como
+ *    `realSpawnDetached` de `stage-1-run.ts`), os scripts literais passados
+ *    a chamadas `*detached*(…)` em qualquer arquivo.
+ * Spawn de node destacado que não cai em nenhum dos três vai para
+ * `unclassified` (o teste reprova: classificar à mão ou ajustar a
+ * derivação). Pura sobre o conteúdo recebido (`rel` relativo a scripts/). */
+export function deriveDetachedEntrypoints(files: Array<{ rel: string; content: string }>): {
+  entrypoints: string[];
+  unclassified: string[];
+} {
+  const entrypoints = new Set<string>();
+  const unclassified: string[] = [];
+  let wrapperSeen = false;
+  for (const { rel, content } of files) {
+    const masked = maskJs(content, true);
+    const noComments = maskJs(content, false);
+    for (const idx of findDetachedProps(masked)) {
+      const ctx = climbToLauncher(masked, idx);
+      if (!ctx || ctx.launcherOpen < 0) continue;
+      if (!NODE_LAUNCH_ARG_RE.test(firstArgText(masked, noComments, ctx.launcherOpen, ctx.topObj))) continue;
+      const close = findCallClose(masked, ctx.launcherOpen);
+      const callText = noComments.slice(ctx.launcherOpen, close > 0 ? close : ctx.objEnd);
+      const literals = [...callText.matchAll(SCRIPT_LITERAL_RE)].map((m) => normalizeScriptRef(m[1]));
+      if (literals.length > 0) {
+        for (const l of literals) entrypoints.add(l);
+        continue;
+      }
+      const outer = outermostBlock(masked, ctx.launcherOpen);
+      const body = outer < 0 ? callText : noComments.slice(outer, findBracketClose(masked, outer));
+      if (SELF_REF_RE.test(callText) || SELF_REF_RE.test(body)) {
+        entrypoints.add(rel);
+        continue;
+      }
+      if (enclosingFunctionNames(masked, ctx.launcherOpen).some((n) => /detached/i.test(n))) {
+        wrapperSeen = true;
+        continue;
+      }
+      unclassified.push(`${rel} (offset ${idx})`);
+    }
+  }
+  if (wrapperSeen) {
+    for (const { content } of files) {
+      for (const m of maskJs(content, false).matchAll(DETACHED_WRAPPER_CALL_RE)) entrypoints.add(normalizeScriptRef(m[1]));
+    }
+  }
+  return { entrypoints: [...entrypoints].sort(), unclassified };
 }
 
 /** Como `findWindowsHideMissingCalls`, mas também cobre `exec(`, `execSync(` e
@@ -1083,8 +1377,10 @@ export function collectRelativeImportClosure(entry: string, readFile: (rel: stri
  * Offsets no `code` recebido. Pura. */
 export function findWindowsHideMissingCallsBroad(code: string): number[] {
   const masked = maskJs(code, true);
-  const sites = collectCallSites(masked, [LITERAL_CALL_RE, BROAD_CALL_RE], discoverInjectedExecAliases(code));
-  return offendersFromSites(maskJs(code, false), sites);
+  const nsRe = namespaceBroadCallRe(code);
+  const patterns = nsRe ? [LITERAL_CALL_RE, BROAD_CALL_RE, nsRe] : [LITERAL_CALL_RE, BROAD_CALL_RE];
+  const sites = collectCallSites(masked, patterns, discoverInjectedExecAliases(code, BROAD_LAUNCHERS));
+  return offendersFromSites(masked, sites);
 }
 
 function listScriptFiles(dir: string, rel = ""): string[] {
@@ -1249,64 +1545,130 @@ export function findDetachedSpawnsWithoutWindowsHide(content: string): number[] 
   const masked = maskJs(content, true);
   const noComments = maskJs(content, false);
   const offenders: number[] = [];
-  const re = /\bdetached\s*:\s*true\b/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(masked)) !== null) {
-    const encl = findEnclosingBracket(masked, match.index);
-    if (encl < 0 || masked[encl] !== "{") {
+  for (const idx of findDetachedProps(masked)) {
+    const ctx = climbToLauncher(masked, idx);
+    if (!ctx) {
       // Sem objeto em volta (texto fora de padrão): janela, fail closed.
-      const win = noComments.slice(Math.max(0, match.index - WINDOW_CHARS), match.index + WINDOW_CHARS);
-      if (!WINDOWS_HIDE_RE.test(win)) offenders.push(match.index);
+      const win = masked.slice(Math.max(0, idx - WINDOW_CHARS), idx + WINDOW_CHARS);
+      if (!WINDOWS_HIDE_RE.test(win)) offenders.push(idx);
       continue;
     }
-    // Sobe pelos objetos literais até a chamada lançadora (ou até um bloco).
-    let topObj = encl; // objeto literal mais externo atravessado
-    let cur = encl;
-    let launcherOpen = -1;
-    let sawOtherCall = false;
-    for (;;) {
-      const up = findEnclosingBracket(masked, cur);
-      if (up < 0) break;
-      const ch = masked[up];
-      if (ch === "{") {
-        if (isBlockBrace(masked, up)) break;
-        topObj = up;
-      } else if (ch === "(") {
-        const callee = calleeBefore(masked, up);
-        if (LAUNCHER_CALLEE_RE.test(callee)) {
-          launcherOpen = up;
-          break;
-        }
-        if (callee) sawOtherCall = true;
-      }
-      cur = up;
-    }
-    const objEnd = findBracketClose(masked, topObj);
-    const objText = noComments.slice(topObj, objEnd > 0 ? objEnd : content.length);
-    if (WINDOWS_HIDE_RE.test(objText)) continue;
+    const { topObj, objEnd, launcherOpen, sawOtherCall } = ctx;
+    // #13592 item 5: a flag conta só no próprio objeto de opções, fora de
+    // string e de objeto aninhado como valor de propriedade.
+    if (hasOwnWindowsHide(masked.slice(topObj, objEnd), 0)) continue;
     if (launcherOpen < 0) {
       if (sawOtherCall) continue; // só chamadas que não lançam processo em volta
-      offenders.push(match.index); // objeto solto
+      offenders.push(idx); // objeto solto
       continue;
     }
-    const close = findCallClose(masked, launcherOpen);
-    const argsEnd = close > 0 ? close - 1 : topObj;
-    let firstArgEnd = argsEnd;
-    let depth = 0;
-    for (let k = launcherOpen + 1; k < argsEnd; k++) {
-      const ch = masked[k];
-      if ("([{".includes(ch)) depth++;
-      else if (")]}".includes(ch)) depth--;
-      else if (ch === "," && depth === 0) {
-        firstArgEnd = k;
-        break;
-      }
-    }
-    const gui = isGuiBinaryArg(noComments.slice(launcherOpen + 1, firstArgEnd), noComments);
-    if (gui && !SHELL_TRUE_RE.test(objText)) continue;
-    offenders.push(match.index);
+    const gui = isGuiBinaryArg(firstArgText(masked, noComments, launcherOpen, topObj), noComments);
+    if (gui && !SHELL_TRUE_RE.test(masked.slice(topObj, objEnd))) continue;
+    offenders.push(idx);
   }
   return offenders;
+}
+
+/** Contexto de um `detached` dentro de objeto: o objeto literal mais externo
+ * atravessado (`topObj`, até `objEnd`), a chamada lançadora que o recebe
+ * (`launcherOpen`, `-1` se nenhuma) e se houve chamada não lançadora no
+ * caminho. `null` quando o `detached` não está dentro de `{`. Pura. */
+function climbToLauncher(
+  masked: string,
+  idx: number,
+): { topObj: number; objEnd: number; launcherOpen: number; sawOtherCall: boolean } | null {
+  const encl = findEnclosingBracket(masked, idx);
+  if (encl < 0 || masked[encl] !== "{") return null;
+  // Sobe pelos objetos literais até a chamada lançadora (ou até um bloco).
+  let topObj = encl; // objeto literal mais externo atravessado
+  let cur = encl;
+  let launcherOpen = -1;
+  let sawOtherCall = false;
+  for (;;) {
+    const up = findEnclosingBracket(masked, cur);
+    if (up < 0) break;
+    const ch = masked[up];
+    if (ch === "{") {
+      if (isBlockBrace(masked, up)) break;
+      topObj = up;
+    } else if (ch === "(") {
+      const callee = calleeBefore(masked, up);
+      if (LAUNCHER_CALLEE_RE.test(callee)) {
+        launcherOpen = up;
+        break;
+      }
+      if (callee) sawOtherCall = true;
+    }
+    cur = up;
+  }
+  const close = findBracketClose(masked, topObj);
+  return { topObj, objEnd: close > 0 ? close : masked.length, launcherOpen, sawOtherCall };
+}
+
+/** Texto (sem comentários) do 1º argumento da chamada aberta em
+ * `launcherOpen`. Pura. */
+function firstArgText(masked: string, noComments: string, launcherOpen: number, fallbackEnd: number): string {
+  const close = findCallClose(masked, launcherOpen);
+  const argsEnd = close > 0 ? close - 1 : fallbackEnd;
+  let firstArgEnd = argsEnd;
+  let depth = 0;
+  for (let k = launcherOpen + 1; k < argsEnd; k++) {
+    const ch = masked[k];
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+    else if (ch === "," && depth === 0) {
+      firstArgEnd = k;
+      break;
+    }
+  }
+  return noComments.slice(launcherOpen + 1, firstArgEnd);
+}
+
+/** Valores de `detached:` que com certeza não destacam (#13592 item 3). */
+const NON_DETACHING_VALUE_RE = /^(?:false|undefined|null|0)(?![\w$])/;
+
+/** Offsets, num texto mascarado (sem comentários nem strings), de toda
+ * propriedade `detached` que PODE destacar (#13592 item 3): `detached:
+ * true`, mas também `detached: !fg`, `detached: isBg`, `detached:
+ * process.platform !== "win32"` e o shorthand `{ detached }`. Ficam de fora
+ * só os valores que certamente não destacam (`false`, `undefined`, `null`,
+ * `0`), o acesso `x.detached`, `detached?:` de tipo e o shorthand em padrão
+ * de desestruturação (`const { detached } = o`, `({ detached }) =>`,
+ * `function f({ detached }) {`). Fail closed: valor não literal conta como
+ * destacado. Pura. */
+function findDetachedProps(masked: string): number[] {
+  const out: number[] = [];
+  const re = /(?<![\w$.])detached(?![\w$])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(masked)) !== null) {
+    const after = masked.slice(m.index + m[0].length, m.index + m[0].length + 200);
+    const colon = /^\s*:\s*/.exec(after);
+    if (colon) {
+      if (!NON_DETACHING_VALUE_RE.test(after.slice(colon[0].length))) out.push(m.index);
+      continue;
+    }
+    if (!/^\s*[,}]/.test(after)) continue;
+    let k = m.index - 1;
+    while (k >= 0 && /\s/.test(masked[k])) k--;
+    if (k < 0 || (masked[k] !== "{" && masked[k] !== ",")) continue;
+    const encl = findEnclosingBracket(masked, m.index);
+    if (encl < 0 || masked[encl] !== "{" || isBlockBrace(masked, encl)) continue;
+    if (isDestructuringPattern(masked, encl)) continue;
+    out.push(m.index);
+  }
+  return out;
+}
+
+/** `true` quando o `{` em `open` é padrão de desestruturação, não objeto
+ * literal: `const|let|var {…}`, `{…} = x`, `({…}) =>`, `function f({…}) {`.
+ * Pura. */
+function isDestructuringPattern(masked: string, open: number): boolean {
+  if (/\b(?:const|let|var)\s*$/.test(masked.slice(Math.max(0, open - 20), open))) return true;
+  const close = findBracketClose(masked, open);
+  if (close < 0) return false;
+  const rest = masked.slice(close, close + 200);
+  if (/^\s*=(?![=>])/.test(rest)) return true;
+  return /^\s*\)\s*(?:=>|\{)/.test(rest);
 }
 
 describe("findDetachedSpawnsWithoutWindowsHide (#13559, #13575) — lógica pura", () => {
@@ -1522,40 +1884,66 @@ describe("Regressão #13559 — scripts/ reais deste repo", () => {
     );
   });
 
-  const readScript = (rel: string): string | null => {
-    for (const candidate of [rel, `${rel}.ts`, rel.replace(/\.js$/, ".ts"), rel.replace(/\.mjs$/, ".mts")]) {
+  /** Caminho relativo à raiz do repo -> arquivo real (ver `importCandidates`). */
+  const resolveSource = (rel: string): ResolvedSource | null => {
+    if (rel.startsWith("..")) return null; // fora do repo
+    for (const candidate of importCandidates(rel)) {
       try {
-        return readFileSync(join(SCRIPTS_DIR, candidate), "utf8");
+        return { path: candidate, content: readFileSync(join(ROOT, candidate), "utf8") };
       } catch {
-        // tenta a próxima extensão
+        // tenta o próximo candidato (inexistente, ou diretório: EISDIR)
       }
     }
     return null;
   };
+
+  it("#13592: DETACHED_CHILD_ENTRYPOINTS bate com os spawns destacados de node em scripts/", () => {
+    const { entrypoints, unclassified } = deriveDetachedEntrypoints(
+      files.map((rel) => ({ rel, content: readFileSync(join(SCRIPTS_DIR, rel), "utf8") })),
+    );
+    assert.deepEqual(
+      unclassified,
+      [],
+      "spawn destacado de node sem script identificável (literal na chamada, import.meta.url no corpo, ou wrapper `*Detached*`): ajuste deriveDetachedEntrypoints.",
+    );
+    assert.deepEqual(
+      entrypoints,
+      [...DETACHED_CHILD_ENTRYPOINTS].sort(),
+      "script lançado destacado fora de DETACHED_CHILD_ENTRYPOINTS (ou entrada que ninguém mais lança destacada): atualize a lista.",
+    );
+  });
+
   const reached = new Set<string>();
+  const unresolvedImports = new Set<string>();
   for (const entry of DETACHED_CHILD_ENTRYPOINTS) {
     it(`${entry}: entrypoint destacado existe (senão o guard não prova nada)`, () => {
-      assert.ok(readScript(entry) !== null, `scripts/${entry} sumiu — atualize DETACHED_CHILD_ENTRYPOINTS`);
+      assert.ok(resolveSource(`scripts/${entry}`) !== null, `scripts/${entry} sumiu — atualize DETACHED_CHILD_ENTRYPOINTS`);
     });
-    for (const rel of collectRelativeImportClosure(entry, readScript)) reached.add(rel);
+    const closure = collectRelativeImportClosure(`scripts/${entry}`, resolveSource);
+    for (const rel of closure.files) reached.add(rel);
+    for (const u of closure.unresolved) unresolvedImports.add(u);
   }
 
   it("o fecho de imports alcança as libs que já abriram janela (gh-run, run-tsx, session-registry)", () => {
-    for (const lib of ["lib/shared/gh-run.ts", "lib/run-tsx.ts", "lib/session-registry.ts"]) {
+    for (const lib of ["scripts/lib/shared/gh-run.ts", "scripts/lib/run-tsx.ts", "scripts/lib/session-registry.ts"]) {
       assert.ok(reached.has(lib), `${lib} deveria estar no fecho de imports dos entrypoints destacados`);
     }
   });
 
+  it("#13592: todo import relativo do fecho resolve (import que não resolve sairia da varredura em silêncio)", () => {
+    assert.deepEqual([...unresolvedImports].sort(), []);
+  });
+
   for (const file of [...reached].sort()) {
     it(`${file}: roda dentro de processo destacado (sem console), então toda chamada de processo declara windowsHide:true`, () => {
-      const content = readScript(file) ?? "";
+      const content = resolveSource(file)?.content ?? "";
       if (!/child_process/.test(content)) return; // não lança processo
       const code = stripComments(content);
       const offenders = findWindowsHideMissingCallsBroad(code);
       assert.deepEqual(
         offenders.map((o) => code.slice(o, o + 80).replace(/\s+/g, " ")),
         [],
-        `scripts/${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true — rodando destacado, ` +
+        `${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true — rodando destacado, ` +
           "cada gh/git/node filho abre uma janela no Windows (#13559).",
       );
     });
@@ -1581,5 +1969,266 @@ describe("lexJs — propriedade sobre os fontes reais (fleet review do #13575)",
       if (pos !== src.length || segs.map((s) => src.slice(s.start, s.end)).join("") !== src) broken.push(path);
     }
     assert.deepEqual(broken, []);
+  });
+});
+
+describe("lexJs — string e regex não atravessam quebra de linha (#13592, comentário da issue)", () => {
+  // Propriedade mais forte que a da concatenação (verdadeira por construção):
+  // fora de template literal, um segmento `string` ou `regex` com quebra de
+  // linha é sinal de leitura errada (regex engolindo código, aspas perdidas).
+  // Exceção legítima: continuação de linha `\` + newline dentro de string.
+  it("nenhum segmento string (de aspas) ou regex dos fontes reais contém newline fora de continuação", () => {
+    const files = [
+      ...listScriptFiles(SCRIPTS_DIR).map((f) => join(SCRIPTS_DIR, f)),
+      ...listHookFiles().map((f) => join(HOOKS_DIR, f)),
+    ];
+    const broken: string[] = [];
+    for (const path of files) {
+      const src = readFileSync(path, "utf8");
+      for (const s of lexJs(src)) {
+        if (s.kind !== "string" && s.kind !== "regex") continue;
+        const first = src[s.start];
+        if (s.kind === "string" && first !== '"' && first !== "'") continue; // template
+        const text = src.slice(s.start, s.end).replace(/\\\r?\n/g, "");
+        if (/\n/.test(text)) broken.push(`${path}:${s.start}`);
+      }
+    }
+    assert.deepEqual(broken, []);
+  });
+
+  it("discrimina: divisão seguida de divisão na linha seguinte não vira regex", () => {
+    const src = "const a = b / c;\nconst d = e / f;";
+    assert.ok(lexJs(src).every((s) => s.kind === "code"));
+  });
+});
+
+describe("#13592 item 1 — deriveDetachedEntrypoints", () => {
+  it("literal de script dentro da chamada destacada de node", () => {
+    const content = `spawn(process.execPath, ["--import", "tsx", "scripts/novo-bg.ts"], { detached: true, windowsHide: true });`;
+    assert.deepEqual(deriveDetachedEntrypoints([{ rel: "a.ts", content }]).entrypoints, ["novo-bg.ts"]);
+  });
+
+  it("auto-relançamento: import.meta.url no corpo da função em volta -> o próprio arquivo", () => {
+    const content = [
+      `export const launch = () => {`,
+      `  const self = fileURLToPath(import.meta.url);`,
+      `  spawn(process.execPath, [self, "--child"], { detached: true, windowsHide: true }).unref();`,
+      `};`,
+    ].join("\n");
+    assert.deepEqual(deriveDetachedEntrypoints([{ rel: "waiter.ts", content }]).entrypoints, ["waiter.ts"]);
+  });
+
+  it("wrapper `*Detached*`: os scripts passados às chamadas do wrapper em qualquer arquivo", () => {
+    const wrapper = [
+      `export function realSpawnDetached(root: string) {`,
+      `  return (rel: string, args: string[]) => {`,
+      `    spawn(process.execPath, ["--import", "tsx", rel, ...args], { detached: true, windowsHide: true });`,
+      `  };`,
+      `}`,
+    ].join("\n");
+    const caller = `deps.spawnDetached("scripts/fila-bg.ts", ["--x"]);`;
+    const out = deriveDetachedEntrypoints([
+      { rel: "stage.ts", content: wrapper },
+      { rel: "outro.ts", content: caller },
+    ]);
+    assert.deepEqual(out, { entrypoints: ["fila-bg.ts"], unclassified: [] });
+  });
+
+  it("spawn destacado de node sem script identificável -> unclassified (o teste real reprova)", () => {
+    const content = `function go(p: string) { spawn(process.execPath, [p], { detached: true, windowsHide: true }); }`;
+    assert.equal(deriveDetachedEntrypoints([{ rel: "x.ts", content }]).unclassified.length, 1);
+  });
+
+  it("valor não literal (`detached: isBg`) também conta; binário que não é node fica de fora", () => {
+    const content = [
+      `spawn("node", ["scripts/bg.ts"], { detached: isBg, windowsHide: true });`,
+      `spawn("rundll32", ["url.dll,FileProtocolHandler", "scripts/nao.ts"], { detached: true });`,
+    ].join("\n");
+    assert.deepEqual(deriveDetachedEntrypoints([{ rel: "x.ts", content }]).entrypoints, ["bg.ts"]);
+  });
+});
+
+describe("#13592 item 2 — collectRelativeImportClosure resolve ou lista", () => {
+  const fakeFs: Record<string, string> = {
+    "scripts/a.ts": [
+      `import { m } from "../workers/arquivo/src/hubs/meta.ts";`,
+      `import { lib } from "./lib";`,
+      `const c = require("./c.js");`,
+      `export { z } from "./z.js";`,
+      `import { nada } from "./sumiu.ts";`,
+    ].join("\n"),
+    "workers/arquivo/src/hubs/meta.ts": `export const m = 1;`,
+    "scripts/lib/index.ts": `export const lib = 1;`,
+    "scripts/c.ts": `module.exports = 1;`,
+    "scripts/z.ts": `export const z = 1;`,
+  };
+  const resolveFake = (rel: string): ResolvedSource | null => {
+    for (const c of importCandidates(rel)) if (c in fakeFs) return { path: c, content: fakeFs[c] };
+    return null;
+  };
+
+  it("`..` acima de scripts/, diretório com index, require e export-from entram no fecho", () => {
+    const { files } = collectRelativeImportClosure("scripts/a.ts", resolveFake);
+    assert.deepEqual(files.sort(), [
+      "scripts/a.ts",
+      "scripts/c.ts",
+      "scripts/lib/index.ts",
+      "scripts/z.ts",
+      "workers/arquivo/src/hubs/meta.ts",
+    ]);
+  });
+
+  it("import que não resolve vai para unresolved em vez de sumir", () => {
+    assert.deepEqual(collectRelativeImportClosure("scripts/a.ts", resolveFake).unresolved, ["scripts/a.ts -> ./sumiu.ts"]);
+  });
+});
+
+describe("#13592 item 3 — âncora além do literal `detached: true`", () => {
+  const flagged: Array<[string, string]> = [
+    ["`detached: !fg`", `{ detached: !fg, stdio: "ignore" }`],
+    ["`detached: isBg`", `{ detached: isBg, stdio: "ignore" }`],
+    ["`detached: process.platform !== \"win32\"`", `{ detached: process.platform !== "win32" }`],
+    ["shorthand `{ detached }`", `{ detached, stdio: "ignore" }`],
+    ["shorthand no fim `{ stdio, detached }`", `{ stdio, detached }`],
+  ];
+  for (const [label, opts] of flagged) {
+    it(`${label} sem windowsHide -> 1 ofensor nos dois guards (scripts/ e hooks)`, () => {
+      const content = `spawn("node", ["w.js"], ${opts});`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+      assert.deepEqual(findDetachedWithoutWindowsHide(content), [content.indexOf("detached")]);
+    });
+  }
+
+  it("mesmos valores COM windowsHide -> nenhum ofensor", () => {
+    for (const opts of [`{ detached: !fg, windowsHide: true }`, `{ detached, windowsHide: true }`]) {
+      const content = `spawn("node", ["w.js"], ${opts});`;
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [], opts);
+    }
+  });
+
+  it("não destaca ou não é propriedade: `false`/`undefined`/`null`/`0`, `x.detached`, `detached?:` de tipo, desestruturação", () => {
+    for (const content of [
+      `spawn("node", [], { detached: false });`,
+      `spawn("node", [], { detached: undefined });`,
+      `spawn("node", [], { detached: null });`,
+      `spawn("node", [], { detached: 0 });`,
+      `if (child.detached) log();`,
+      `type O = { detached?: boolean };`,
+      `const { detached } = opts;`,
+      `const f = ({ detached }) => detached;`,
+      `function g({ detached }) { return detached; }`,
+      `const { stdio, detached } = parse(argv);`,
+    ]) {
+      assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [], content);
+      assert.deepEqual(findDetachedWithoutWindowsHide(content), [], content);
+    }
+  });
+});
+
+describe("#13592 item 4 — aliases não descobertos", () => {
+  it("`import { spawn as sp } from \"node:child_process\"` -> sp(...) é varrido", () => {
+    const content = `import { spawn as sp, execFileSync } from "node:child_process";\nsp("git", ["fetch"], {});`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`sp("git"`)]);
+  });
+
+  it("`const { execFileSync: run } = cp` e `= require(\"child_process\")` -> run(...) é varrido", () => {
+    const viaNs = `import * as cp from "child_process";\nconst { execFileSync: run } = cp;\nrun("git", [], {});`;
+    assert.deepEqual(findWindowsHideMissingCalls(viaNs), [viaNs.indexOf(`run("git"`)]);
+    const viaRequire = `const { spawnSync: go } = require("node:child_process");\ngo("gh", [], {});`;
+    assert.deepEqual(findWindowsHideMissingCalls(viaRequire), [viaRequire.indexOf(`go("gh"`)]);
+  });
+
+  it("`promisify(execFile)` (e `util.promisify`) -> o alias é varrido", () => {
+    const a = `const execFileP = promisify(execFile);\nawait execFileP("git", ["status"], {});`;
+    assert.deepEqual(findWindowsHideMissingCalls(a), [a.indexOf(`execFileP("git"`)]);
+    const b = `const execP = util.promisify(exec);\nawait execP("git status");`;
+    assert.deepEqual(findWindowsHideMissingCallsBroad(b), [b.indexOf(`execP("git`)]);
+    const ok = `const execFileP = promisify(execFile);\nawait execFileP("git", [], { windowsHide: true });`;
+    assert.deepEqual(findWindowsHideMissingCalls(ok), []);
+  });
+
+  it("parâmetro tipado SEM default com o tipo real (`typeof spawnSync`, ou `type T = typeof spawnSync`)", () => {
+    const direct = `function f(run: typeof spawnSync) {\n  return run("git", [], {});\n}`;
+    assert.deepEqual(findWindowsHideMissingCalls(direct), [direct.indexOf(`run("git"`)]);
+    const viaType = `type Runner = typeof execFileSync;\nfunction f(deps: { go?: Runner }) {\n  return deps.go("git", [], {});\n}`;
+    assert.deepEqual(findWindowsHideMissingCalls(viaType), [viaType.indexOf(`go("git"`)]);
+  });
+
+  it("limite documentado: parâmetro com tipo WRAPPER sem opções (`run: GitSpawnFn`) não é alias -> 0 ofensores", () => {
+    const content = `function f(run: GitSpawnFn) {\n  return run("git", ["status"]);\n}`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("anotação de tipo em várias linhas (união quebrada em `|`)", () => {
+    const content = [
+      `function f(`,
+      `  exec:`,
+      `    | ExecFileSyncFn`,
+      `    | typeof execFileSync = execFileSync,`,
+      `) {`,
+      `  return exec("git", ["status"], {});`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`exec("git"`)]);
+  });
+
+  it("chamada por namespace: `cp.execSync(` / `cp.exec(` / `cp.fork(` no guard amplo", () => {
+    for (const call of [`cp.execSync("git worktree prune")`, `cp.exec("git status")`, `cp.fork("w.js")`]) {
+      const content = `import * as cp from "node:child_process";\n${call};`;
+      assert.deepEqual(findWindowsHideMissingCallsBroad(content), [content.indexOf("cp.")], call);
+      const ok = `import * as cp from "node:child_process";\n${call.replace(/\)$/, ", { windowsHide: true })")};`;
+      assert.deepEqual(findWindowsHideMissingCallsBroad(ok), [], ok);
+    }
+    const required = `const cp = require("child_process");\ncp.execSync("git status");`;
+    assert.deepEqual(findWindowsHideMissingCallsBroad(required), [required.indexOf("cp.")]);
+  });
+
+  it("`re.exec(...)` de regex num arquivo sem namespace de child_process não vira chamada", () => {
+    const content = `import { execSync } from "node:child_process";\nconst m = re.exec(s);\nexecSync("git status", { windowsHide: true });`;
+    assert.deepEqual(findWindowsHideMissingCallsBroad(content), []);
+  });
+});
+
+describe("#13592 item 5 — windowsHide em string ou em objeto aninhado não satisfaz", () => {
+  it("chamada: `windowsHide: true` só dentro de string -> 1 ofensor", () => {
+    const content = `execFileSync("git", ["log", "--grep=windowsHide: true"], { encoding: "utf8" });`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [0]);
+  });
+
+  it("chamada: `windowsHide: true` dentro de `env: {…}` -> 1 ofensor (é variável de ambiente, não a flag)", () => {
+    const content = `spawnSync("git", [], { env: { ...process.env, windowsHide: true } });`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [0]);
+    const strKey = `spawnSync("git", [], { "env": { windowsHide: true } });`;
+    assert.deepEqual(findWindowsHideMissingCalls(strKey), [0]);
+  });
+
+  it("chamada: flag em ternário, spread condicional ou Object.assign segue valendo", () => {
+    for (const opts of [
+      `bg ? { windowsHide: true } : { windowsHide: true, stdio: "ignore" }`,
+      `{ stdio: "ignore", ...(x ? { windowsHide: true } : {}) }`,
+      `Object.assign({}, base, { windowsHide: true })`,
+    ]) {
+      const content = `spawnSync("git", [], ${opts});`;
+      assert.deepEqual(findWindowsHideMissingCalls(content), [], opts);
+    }
+  });
+
+  it("alias: `opts` solto com a flag aninhada (`{ env: { windowsHide: true } }`) -> 1 ofensor", () => {
+    const content = `function f(execFn = execFileSync) {\n  const opts = { env: { windowsHide: true } };\n  return execFn("git", [], opts);\n}`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`execFn("git"`)]);
+  });
+
+  it("spawn destacado: flag só em string ou aninhada -> 1 ofensor; no próprio objeto -> nenhum", () => {
+    const inString = `spawn("node", ["--title=windowsHide: true"], { detached: true, stdio: "ignore", argv0: "windowsHide: true" });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(inString), [inString.indexOf("detached")]);
+    const nested = `spawn("node", [], { detached: true, env: { windowsHide: true } });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(nested), [nested.indexOf("detached")]);
+    const own = `spawn("node", [], { detached: true, env: { X: "1" }, windowsHide: true });`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(own), []);
+  });
+
+  it("guard dos hooks: `windowsHide: true` só em comentário ou string perto do detached -> 1 ofensor", () => {
+    const content = `// windowsHide: true\nspawn("node", [], { detached: true, title: "windowsHide: true" });`;
+    assert.deepEqual(findDetachedWithoutWindowsHide(content), [content.indexOf("detached")]);
   });
 });
