@@ -91,6 +91,9 @@ function emailKit(): string {
   return draftToEmailApoiadoresKit(DRAFT, null, YYMM, EIA_A, EIA_B, CREDIT, IMGS, CAPTION, LIVROS_IMG, PREV).html;
 }
 
+// #13525: os dois goldens foram regenerados com o modo escuro do conteúdo —
+// a diferença é só o bloco de regras `dm-*` no <style> e as classes `dm-*`
+// acrescentadas no fim dos atributos; sem elas, o HTML é o mesmo de antes.
 describe("#9872 — o e-mail sai byte a byte igual (golden pré-refatoração)", () => {
   it("e-mail Clarice", () => {
     const html = draftToEmail(DRAFT, null, YYMM, EIA_A, EIA_B, CREDIT, IMGS, CAPTION, LIVROS_IMG, PREV).html;

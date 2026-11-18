@@ -113,7 +113,8 @@ describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {
       "https://x/B.jpg",
       "Legenda do É IA?.",
     );
-    assert.ok(html.includes('<span style="color:#00A0A0;">&#9679;</span>&nbsp;É IA?'), "card do É IA? deve aparecer");
+    // #13525: o e-mail completo (wrapEmail) acrescenta a classe de dark mode ao ponto.
+    assert.ok(/<span style="color:#00A0A0;"[^>]*>&#9679;<\/span>&nbsp;É IA\?/.test(html), "card do É IA? deve aparecer");
     assert.ok(html.includes("Legenda do É IA?."), "legenda do 01-eia.md deve aparecer");
     assert.ok(
       !html.includes("Selecionar manualmente"),
