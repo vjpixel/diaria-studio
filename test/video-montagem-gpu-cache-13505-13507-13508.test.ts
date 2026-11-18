@@ -10,7 +10,7 @@ import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { audioIdentity, fileSha256, sameAudio } from "../scripts/lib/diaria/video-audio-identity.ts";
-import { batchFrameArgs, chunkFrameJobs, createHwDecoder, ffmpegListsCuda, HWACCEL_ENV, withHwDecode } from "../scripts/lib/diaria/video-hwaccel.ts";
+import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, HWACCEL_ENV, withHwDecode } from "../scripts/lib/diaria/video-hwaccel.ts";
 import { PROXY, proxyOutputArgs, proxyScaleFilter, proxyUsable, runExtractWithProxy } from "../scripts/lib/diaria/video-proxy.ts";
 import { verifyEdgeWords } from "../scripts/video-montagem.ts";
 import { trechoEncodeArgs } from "../scripts/lib/diaria/video-xml-trechos.ts";
@@ -59,6 +59,30 @@ describe("#13505 identidade do audio.wav pelo conteúdo", () => {
 });
 
 describe("#13507 decode pela GPU com queda para a CPU", () => {
+  it("#13530 review: GPU que cai no meio da prévia: os clipes feitos por ela são refeitos na CPU (concat uniforme)", () => {
+    const calls: string[][] = [];
+    let n = 0;
+    const dec = createHwDecoder({ listHwaccels: () => "cuda\n", env: {}, warn: () => {} });
+    // 2 clipes pela GPU, a 3ª chamada pela GPU falha (a CPU passa) e o resto segue na CPU.
+    const exec = (a: string[]) => {
+      calls.push(a);
+      if (a.includes("-hwaccel") && ++n === 3) throw new Error("CUDA_ERROR_OUT_OF_MEMORY");
+    };
+    const devices = [0, 1, 2, 3].map((i) => dec.run(["-i", `c${i}`, `o${i}.mp4`], exec, `clipe ${i + 1}`));
+    assert.deepEqual(devices, ["cuda", "cuda", "cpu", "cpu"]);
+    const redo = clipsToRedoOnCpu(devices);
+    assert.deepEqual(redo, [0, 1]);
+    // refeitos pelo mesmo decoder, que já está na CPU: sem -hwaccel
+    for (const k of redo) assert.equal(dec.run(["-i", `c${k}`, `o${k}.mp4`], exec, "refeito"), "cpu");
+    assert.ok(calls.slice(-2).every((a) => !a.includes("-hwaccel")));
+  });
+
+  it("#13530 review: prévia toda num só device não refaz nada", () => {
+    assert.deepEqual(clipsToRedoOnCpu(["cuda", "cuda", "cuda"]), []);
+    assert.deepEqual(clipsToRedoOnCpu(["cpu", "cpu"]), []);
+    assert.deepEqual(clipsToRedoOnCpu([]), []);
+  });
+
   it("ffmpegListsCuda lê a lista do -hwaccels", () => {
     assert.equal(ffmpegListsCuda("Hardware acceleration methods:\nvdpau\ncuda\nvaapi\n"), true);
     assert.equal(ffmpegListsCuda("Hardware acceleration methods:\nvaapi\nqsv\n"), false);

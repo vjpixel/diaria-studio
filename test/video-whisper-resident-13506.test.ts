@@ -9,7 +9,8 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -44,6 +45,8 @@ class _Info:
     duration = 1.0
 class WhisperModel:
     def __init__(self, name, device="cpu", compute_type="int8"):
+        import os, time
+        time.sleep(float(os.environ.get("FW_LOAD_SLEEP", "0") or 0))
         with open(LOG, "a", encoding="utf-8") as f:
             f.write(f"{device}:{compute_type}\\n")
     def transcribe(self, audio, **kw):
@@ -180,10 +183,54 @@ describe("#13506 transcribe_words.py residente", { skip: PY ? false : "sem pytho
     assert.equal(r.last?.resident, true);
     assert.notEqual(readState(env)?.pid, 2 ** 22 + 12345);
   });
+
+  it("residente vivo mas parado no load (heartbeat velho): não espera o WAIT inteiro, cai na carga local (#13530 review)", () => {
+    const env = fakeEnv();
+    // pid vivo (o do próprio teste, como no Windows antes do OpenProcess) e ready:false com heartbeat recente que ninguém renova
+    const now = Date.now() / 1000;
+    writeFileSync(env.state, JSON.stringify({ pid: process.pid, ready: false, at: now, hb: now, model: "large-v3-turbo", device_req: "cpu", helper: helperFingerprint() }));
+    const t0 = Date.now();
+    const r = run(env, [], { DIARIA_WHISPER_RESIDENT_WAIT_S: "60", DIARIA_WHISPER_RESIDENT_HEARTBEAT_STALE_S: "2" });
+    const elapsed = (Date.now() - t0) / 1000;
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(elapsed < 20, `esperou ${elapsed.toFixed(1)} s (WAIT era 60 s)`);
+    assert.match(r.stderr, /\[aviso\].*não ficou pronto/);
+    assert.equal(r.last?.resident, undefined);
+    assert.deepEqual(loads(env), ["cpu:int8"]);
+  });
+
+  it("load lento (5 s) com heartbeat de 3 s: o heartbeat mantém o residente vivo e a chamada é atendida por ele", () => {
+    const env = fakeEnv();
+    const r = run(env, [], { FW_LOAD_SLEEP: "5", DIARIA_WHISPER_RESIDENT_HEARTBEAT_STALE_S: "3" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.last?.resident, true, r.stderr);
+    assert.deepEqual(loads(env), ["cpu:int8"]);
+  });
+
+  it("estado de load com heartbeat já vencido na entrada: é tratado como morto e sobe um residente novo", () => {
+    const env = fakeEnv();
+    const old = Date.now() / 1000 - 120;
+    writeFileSync(env.state, JSON.stringify({ pid: process.pid, ready: false, at: old, hb: old, model: "large-v3-turbo", device_req: "cpu", helper: helperFingerprint() }));
+    const r = run(env, []);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.last?.resident, true);
+    assert.notEqual(readState(env)?.pid, process.pid);
+  });
+
+  it("versão do helper pelo conteúdo: mtime trocado com os mesmos bytes dá a mesma impressão", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fp-13530-"));
+    const copy = join(dir, "transcribe_words.py");
+    copyFileSync(HELPER, copy);
+    utimesSync(copy, new Date(2030, 0, 1), new Date(2030, 0, 1));
+    const fp = (file: string) => spawnSync(PY!, ["-c", "import importlib.util,sys; s=importlib.util.spec_from_file_location('tw', sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.helper_fingerprint())", file], { encoding: "utf8" }).stdout.trim();
+    assert.equal(fp(copy), fp(HELPER));
+    assert.equal(fp(HELPER), helperFingerprint());
+    writeFileSync(copy, readFileSync(HELPER, "utf8") + "\n# outro conteúdo\n");
+    assert.notEqual(fp(copy), fp(HELPER));
+  });
 });
 
-/** O mesmo `helper_fingerprint()` do Python: mtime (s) e tamanho do arquivo. */
+/** O mesmo `helper_fingerprint()` do Python: sha256 do conteúdo, 16 hex (#13530 review). */
 function helperFingerprint(): string {
-  const r = spawnSync(PY!, ["-c", "import os,sys; st=os.stat(sys.argv[1]); print(f'{int(st.st_mtime)}:{st.st_size}')", HELPER], { encoding: "utf8" });
-  return r.stdout.trim();
+  return createHash("sha256").update(readFileSync(HELPER)).digest("hex").slice(0, 16);
 }

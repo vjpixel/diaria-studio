@@ -649,7 +649,7 @@ import {
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
-import { batchFrameArgs, chunkFrameJobs, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
+import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
 import { PROXY, proxyOutputArgs, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
   deepFilterArgs,
@@ -786,8 +786,8 @@ const hwDecode = createHwDecoder({
 });
 
 /** Um ffmpeg que decodifica o bruto, pela GPU quando der (#13507). */
-function runDecode(args: string[], what: string, opts: { all?: boolean } = {}): void {
-  hwDecode.run(args, (a) => { run("ffmpeg", a); }, what, opts);
+function runDecode(args: string[], what: string, opts: { all?: boolean } = {}): "cuda" | "cpu" {
+  return hwDecode.run(args, (a) => { run("ffmpeg", a); }, what, opts);
 }
 
 interface Vocab {
@@ -5840,6 +5840,11 @@ async function cmdPreview(
   // #12559: bruto em vários arquivos: vídeo do arquivo do clipe em tempo local, áudio da faixa global (tratada, ou o concatenado).
   const multi = isMultiSource(pf.source);
   const multiAudio = multi ? (audioSrc ?? audioInputOf(ctx, pf.source)) : undefined;
+  // #13530 review: onde cada clipe foi decodificado, para refazer na CPU os da GPU se ela cair no meio.
+  const clipJobs: { args: string[]; what: string; device: "cuda" | "cpu" }[] = [];
+  const decodeClip = (args: string[], what: string): void => {
+    clipJobs.push({ args, what, device: runDecode(args, what) });
+  };
   plan.clips.forEach((c, i) => {
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // #13303: o áudio exato do clipe (PCM, amostras por quadro), regravado sobre o concat no fim.
@@ -5850,7 +5855,7 @@ async function cmdPreview(
       // A mesma geometria do XML (arquivo, encaixe, framing do arquivo e do item).
       const g = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, fileOverrides: pf.fileOverrides, clip: c });
       const off = g.file.offsetFrames;
-      runDecode(previewClipArgs({
+      decodeClip(previewClipArgs({
         src: g.file.path, start: (c.frameIn - off) / fps, end: (c.frameOut - off) / fps,
         crop: g.main.crop ?? { x: 0, y: 0, w: g.file.width, h: g.file.height }, mirrored: g.mirrored, fps, out: join(dir, name), ...size,
         audioSrc: multiAudio, audioStart: c.frameIn / fps, fit: g.fit, videoOnly: true,
@@ -5864,10 +5869,17 @@ async function cmdPreview(
     // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
     const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    runDecode(previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
+    decodeClip(previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
+  // #13530 review: GPU caiu no meio da prévia: os clipes já feitos pela GPU podem ter outro pix_fmt e o concat
+  // -c copy exige parâmetros iguais; refaz esses na CPU (o decoder já está em "cpu") para a prévia sair uniforme.
+  const redo = clipsToRedoOnCpu(clipJobs.map((j) => j.device));
+  if (redo.length > 0) {
+    console.error(`[aviso] a GPU caiu no meio da prévia: refazendo na CPU ${redo.length} clipe(s) feitos por ela, para o concat sair uniforme (#13530)`);
+    for (const k of redo) runDecode(clipJobs[k].args, `${clipJobs[k].what} (refeito na CPU)`);
+  }
   // #12571: o card de CTA que o XML desta sequência levou, como último clipe (com áudio em silêncio para o concat).
   const card = assets.ctaCard ?? null;
   let cardS = 0;

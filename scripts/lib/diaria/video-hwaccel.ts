@@ -86,6 +86,18 @@ export function createHwDecoder(deps: { listHwaccels: () => string; env?: Record
   };
 }
 
+/**
+ * Prévia com a GPU caindo no meio (#13530 review): os clipes feitos pela GPU
+ * podem sair com outro pix_fmt (nv12/p010 entregue ao libx264) que os da CPU
+ * (yuv420p/yuv420p10le), e o `concat -c copy` exige parâmetros iguais. Devolve
+ * os índices dos clipes feitos pela GPU quando algum outro saiu da CPU, para
+ * serem refeitos na CPU e a prévia ficar uniforme; prévia toda num só device: [].
+ */
+export function clipsToRedoOnCpu(devices: readonly ("cuda" | "cpu")[]): number[] {
+  if (!devices.includes("cpu")) return [];
+  return devices.flatMap((d, i) => (d === "cuda" ? [i] : []));
+}
+
 /** Um frame a extrair do bruto: tempo LOCAL no arquivo, espelhamento e o PNG de saída. */
 export interface FrameJob {
   src: string;

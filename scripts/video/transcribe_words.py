@@ -439,6 +439,8 @@ SERVER_STATE_FILE = "diaria-whisper-server.json"
 SERVER_IDLE_DEFAULT_S = 900
 SERVER_WAIT_DEFAULT_S = 180
 SERVER_MAX_REQUEST = 1024 * 1024
+SERVER_HEARTBEAT_S = 2
+SERVER_HEARTBEAT_STALE_DEFAULT_S = 20
 
 
 def _env_float(name: str, default: float) -> float:
@@ -462,10 +464,14 @@ def server_state_path() -> str:
 
 
 def helper_fingerprint() -> str:
-    """Versão deste arquivo: um residente de código anterior (git pull no meio da sessão) não é usado."""
+    """Versão deste arquivo pelo CONTEÚDO (sha256, 16 hex): um residente de código anterior (git pull no
+    meio da sessão) não é usado; um checkout que só regrava o arquivo (mtime novo, mesmos bytes) segue
+    servindo (#13530 review)."""
+    import hashlib
+
     try:
-        st = os.stat(os.path.abspath(__file__))
-        return f"{int(st.st_mtime)}:{st.st_size}"
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
     except OSError:
         return "?"
 
@@ -479,12 +485,37 @@ def read_server_state(path):
     return data if isinstance(data, dict) else None
 
 
+def _pid_alive_windows(pid: int) -> bool:
+    """OpenProcess + GetExitCodeProcess (STILL_ACTIVE = 259). `os.kill` no Windows mata o processo.
+    Falha do ctypes (sem acesso, API ausente) = vivo: o heartbeat do estado cobre o resto."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            # 87 = ERROR_INVALID_PARAMETER: não existe processo com esse pid.
+            return ctypes.get_last_error() != 87
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return True
+            return code.value == 259
+        finally:
+            k32.CloseHandle(h)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def pid_alive(pid) -> bool:
-    """POSIX: sinal 0. No Windows `os.kill` com outro sinal mata o processo: sem checagem (True)."""
+    """POSIX: sinal 0. Windows: OpenProcess/GetExitCodeProcess (#13530 review)."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     if os.name == "nt":
-        return True
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -505,8 +536,23 @@ def _remove_state_if(path, pid) -> None:
             pass
 
 
+def _heartbeat_stale(st) -> bool:
+    """Residente ainda carregando (ready: false) cujo heartbeat parou: morreu ou travou no load.
+    O `--serve` regrava `hb` a cada SERVER_HEARTBEAT_S enquanto carrega; sem `hb`, vale o `at`.
+    Sem isto, um residente morto no load (pid reaproveitado, ou checagem de pid sem efeito) fazia
+    cada chamada esperar os 180 s de DIARIA_WHISPER_RESIDENT_WAIT_S (#13530 review)."""
+    if st.get("ready"):
+        return False
+    hb = st.get("hb", st.get("at"))
+    if not isinstance(hb, (int, float)) or isinstance(hb, bool):
+        return False
+    return time.time() - hb > _env_float("DIARIA_WHISPER_RESIDENT_HEARTBEAT_STALE_S", SERVER_HEARTBEAT_STALE_DEFAULT_S)
+
+
 def _state_stale(st) -> bool:
     if not pid_alive(st.get("pid")):
+        return True
+    if _heartbeat_stale(st):
         return True
     at = st.get("at")
     loading_too_long = not st.get("ready") and isinstance(at, (int, float)) and time.time() - at > SERVER_WAIT_DEFAULT_S * 2
@@ -535,7 +581,9 @@ def claim_server_state(path, info) -> bool:
 
 
 def write_server_state(path, info) -> None:
-    tmp = f"{path}.{os.getpid()}.tmp"
+    import threading
+
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(info, f)
@@ -559,6 +607,7 @@ def serve_main(argv) -> int:
     import hmac
     import secrets
     import socket
+    import threading
 
     ap = argparse.ArgumentParser(description="transcribe_words.py residente (#13506)")
     ap.add_argument("--model", default="large-v3-turbo")
@@ -573,16 +622,42 @@ def serve_main(argv) -> int:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     path = server_state_path()
     base = {"pid": os.getpid(), "model": a.model, "device_req": device_req, "helper": helper_fingerprint()}
-    if not claim_server_state(path, {**base, "ready": False, "at": time.time()}):
+    started = time.time()
+    if not claim_server_state(path, {**base, "ready": False, "at": started, "hb": started}):
         print("transcribe_words --serve: outro residente já está de pé (ou subindo); saindo", file=sys.stderr)
         return 0
     sock = None
+    hb_stop = threading.Event()
+
+    def owns_state() -> bool:
+        st = read_server_state(path)
+        return st is not None and st.get("pid") == os.getpid()
+
+    def heartbeat() -> None:
+        # Enquanto o modelo carrega: o cliente que espera vê o processo vivo e progredindo (#13530 review).
+        while not hb_stop.wait(SERVER_HEARTBEAT_S):
+            if not owns_state():
+                return
+            try:
+                write_server_state(path, {**base, "ready": False, "at": started, "hb": time.time()})
+            except OSError:
+                pass
+
+    hb_thread = threading.Thread(target=heartbeat, name="whisper-heartbeat", daemon=True)
+    hb_thread.start()
     try:
         try:
             engine = Engine(a.model, device_req)
         except Exception as e:  # noqa: BLE001 — faster-whisper ausente, CUDA exigida e falha
             print(f"transcribe_words --serve: modelo não carregou: {e}", file=sys.stderr)
             return 1
+        finally:
+            hb_stop.set()
+            hb_thread.join()
+        if not owns_state():
+            # Dado como morto (heartbeat parado) e substituído por outro residente: não sobrescreve o dele.
+            print("transcribe_words --serve: o estado passou a outro residente; saindo", file=sys.stderr)
+            return 0
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
         sock.listen(16)
@@ -657,6 +732,9 @@ def wait_server_ready(path, proc, timeout_s: float):
         if st is not None and st.get("ready"):
             return st
         if st is not None and not pid_alive(st.get("pid")):
+            return None
+        if st is not None and _heartbeat_stale(st):
+            # Carregando sem heartbeat: morto ou travado no load; não espera o timeout inteiro.
             return None
         if proc is not None and proc.poll() is not None and (st is None or st.get("pid") == proc.pid):
             return None
