@@ -535,6 +535,7 @@ import {
   highBandCutWarnings,
   edgeWindowsFor,
   energyEnvelope,
+  type Envelope,
   noiseFloorThreshold,
   noPausesWarning,
   maxDbIn,
@@ -2810,6 +2811,28 @@ function cmdInventory(ctx: Ctx, dirArg: string | undefined, editionsArg: string 
 // ── Verificação independente do XML (#12561) ──────────────────────────────
 
 /**
+ * #13424: a envoltória de energia da faixa tratada (a que o XML toca) para medir
+ * as bordas do verify-xml, no mesmo eixo de tempo do bruto (a faixa tem a duração
+ * dele). Sem faixa tratada registrada (`--no-audio-clean`, build antigo) devolve
+ * `env: null` e o chamador mede o bruto como sempre; faixa registrada mas ausente
+ * ou ilegível também cai no bruto, com `warning`.
+ */
+export function treatedEdgeEnvelope(ctx: Ctx, key: string, treatedPath: string | undefined): { env: Envelope | null; warning?: string } {
+  if (!treatedPath) return { env: null };
+  if (!existsSync(treatedPath)) return { env: null, warning: `faixa tratada ${treatedPath} ausente nesta máquina: bordas medidas no bruto (rode build aqui para medir na tratada, #13424)` };
+  try {
+    const dir = join(ctx.workDir, `verify-${key}`);
+    mkdirSync(dir, { recursive: true });
+    const wav = join(dir, "tratada-16k.wav");
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", treatedPath, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav]);
+    const { samples, sampleRate } = parseWavPcm16(readFileSync(wav));
+    return { env: energyEnvelope(samples, sampleRate) };
+  } catch (e) {
+    return { env: null, warning: `faixa tratada ${treatedPath} ilegível (${(e as Error).message}): bordas medidas no bruto (#13424)` };
+  }
+}
+
+/**
  * `verify-xml AAMMDD [--seq KEY] [--no-transcribe]` (#12561): para cada XML do
  * build, lê os clipitem de áudio do PRÓPRIO arquivo (como o Premiere), remonta
  * o áudio do bruto só com eles (cortes secos), mede a energia logo fora de
@@ -2829,8 +2852,6 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   const edgeThreshold = verifyXmlEdgeThreshold(existsSync(silenceMeta) ? readJson<SilencesMeta>(silenceMeta, "silences.meta.json") : null);
   const thr = edgeThreshold.thresholdDb;
   console.error(`[video-montagem] verify-xml: bordas a ${thr} dBFS (${edgeThreshold.from}, o limiar do refino do build); piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "não medido"} dBFS (#12903, #12969)`);
-  // #13194: em cada borda vale o menor entre o fixo e o piso de ruído LOCAL + margem (localEdgeThreshold, o mesmo critério do build).
-  const thrAt = localEdgeThreshold(env, thr);
   console.error(`[video-montagem] verify-xml: cada borda também contra o piso de ruído local + ${LOCAL_FLOOR_EDGE.marginDb} dB (±${LOCAL_FLOOR_EDGE.windowS} s, nunca abaixo de ${LOCAL_FLOOR_EDGE.minThresholdDb} dBFS nem acima de ${thr} dBFS); entre o relativo e o fixo, erro só com energia sustentada por ${Math.round(SUSTAINED_EDGE.minS * 1000)} ms que o build abriria (silêncio antes do limite dele: teto de ${CUT_EDGE_OPEN.maxS} s, palavra vizinha, clipe vizinho), senão [aviso] (#13194)`);
   if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
@@ -2856,7 +2877,14 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const edgeCtx = verifyEdgeContext(plan, clips, { fps: pf.source.fps, rate: parsed.rate, words: edgeWords.words, durationS: pf.source.durationS, bounds: isMultiSource(pf.source) ? fileBounds(pf.source) : undefined });
     for (const w of edgeWords.warnings) if (!edgeWarned.has(w)) (edgeWarned.add(w), console.error(`[aviso] verify-xml: ${w}`));
     for (const w of edgeCtx.warnings) console.error(`[aviso] verify-xml ${key}: ${w}`);
-    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thrAt, edgeCtx.ctx);
+    // #13424: o XML toca a faixa tratada (piso mais baixo que o bruto): com ela no disco, as bordas são medidas nela.
+    const treatedEnv = treatedEdgeEnvelope(ctx, key, pf.xmlAssets?.[key]?.treatedAudio?.path);
+    const edgeEnv = treatedEnv.env ?? env;
+    if (treatedEnv.warning) console.error(`[aviso] verify-xml ${key}: ${treatedEnv.warning}`);
+    console.error(`[video-montagem] verify-xml ${key}: bordas medidas ${treatedEnv.env ? "na faixa tratada (a que o XML toca, #13424)" : "no áudio do bruto (sem faixa tratada)"}`);
+    // #13194: em cada borda vale o menor entre o fixo e o piso de ruído LOCAL + margem (localEdgeThreshold, o mesmo critério do build).
+    const thrAt = localEdgeThreshold(edgeEnv, thr);
+    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(edgeEnv, a, b), thrAt, edgeCtx.ctx);
     const soft = softEdges(edges);
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
     const durS = (parsed.clips[parsed.clips.length - 1]?.end ?? 0) / parsed.rate;
