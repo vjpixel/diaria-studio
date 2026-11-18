@@ -377,6 +377,10 @@ export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now(), rep
   // #11113: consumo cross-máquina vive no registro da beneficiária, não no
   // arquivo da coordenadora — ver `.claude/hooks/lib/merge-grant-ledger.mjs`.
   const ledger = readMergeGrantConsumptions(repoRoot);
+  // #13301: a cópia `.json.conflictN` conta como LIVENESS na varredura de
+  // coordenadoras, nunca como concessão. A cópia é o perdedor do bisync (a
+  // versão mais antiga) e pode trazer a concessão sem o `consumedAt` que o
+  // real já tinha: lê-la aqui ressuscitaria uma janela de uso único.
   for (const name of entries) {
     if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     try {
@@ -652,6 +656,125 @@ export function sessionsDir(repoRoot) {
 }
 
 /**
+ * Cópia de conflito do rclone bisync (`{nome}.json.conflictN`, #13301).
+ *
+ * Por que a varredura precisa dela: com `--conflict-resolve newer
+ * --conflict-loser num` (`scripts/systemd/gdrive-bisync.sh`) o bisync
+ * renomeia o perdedor para `{nome}.json.conflictN` e só depois copia o
+ * vencedor para o nome original. Nesse intervalo o `{nome}.json` some do
+ * disco, e quando o `newer` não decide as duas versões ganham sufixo e o
+ * original fica ausente até a próxima rodada (#13404). Medido na rodada
+ * 261116b: a coordenadora `c9b75947…` sumiu da varredura por 12 s (12:32:22Z,
+ * `sessionFoundInCoordinators: false`, `scanDegraded: false`) com o bisync
+ * rodando, e o merge legítimo dela foi recusado como `not-authorized`.
+ *
+ * Mesma forma que `RCLONE_CONFLICT_SUFFIX_RE`/`rcloneConflictOriginalName`
+ * de `scripts/lib/sync-conflict-copy.ts` (#12357), duplicada porque o hook é
+ * self-contained (sem import de `.ts`); paridade travada por
+ * `test/merge-guard-conflict-copy-13301.test.ts`.
+ */
+export const RCLONE_CONFLICT_SUFFIX_RE = /\.conflict(\d+)$/;
+
+/** `s.json.conflict2` → `s.json`; `null` sem o sufixo (espelho do `.ts`). */
+export function rcloneConflictOriginalName(name) {
+  if (typeof name !== "string") return null;
+  const m = RCLONE_CONFLICT_SUFFIX_RE.exec(name);
+  if (!m) return null;
+  const original = name.slice(0, m.index);
+  return original.length > 0 ? original : null;
+}
+
+/**
+ * Agrupa as cópias `.json.conflictN` de `entries` cujo arquivo real NÃO está
+ * na listagem, por nome original (#13301). Cópia cujo real existe fica de
+ * fora: o real decide sozinho, e a cópia (o PERDEDOR do `newer`, a versão
+ * mais antiga) nunca ressuscita uma sessão que o real mostra parada.
+ *
+ * `degraded` sobe só por erro de I/O que não é ENOENT (mesmo critério do
+ * arquivo real). JSON malformado numa cópia é ignorado SEM degradar: a cópia
+ * é detrito de sync que pode ficar no disco por dias (43 delas em
+ * `data/sessions/` na medição do #13301), e uma cópia ruim permanente
+ * degradaria toda varredura, bloqueando todo merge que não segura o lock.
+ * A cópia é evidência ADITIVA de liveness; sem ela o comportamento é o de
+ * antes do #13301.
+ */
+function readOrphanConflictCopyGroups(dir, entries, acceptOriginal) {
+  const present = new Set(entries);
+  const groups = new Map();
+  let degraded = false;
+  for (const name of entries) {
+    if (name.startsWith(".")) continue;
+    const original = rcloneConflictOriginalName(name);
+    if (!original || !original.endsWith(".json") || original.startsWith(".")) continue;
+    if (original.includes("-safeBackup-")) continue;
+    if (present.has(original)) continue;
+    if (!acceptOriginal(original)) continue;
+    let raw;
+    try {
+      raw = readFileSync(join(dir, name), "utf8");
+    } catch (e) {
+      if (e?.code !== "ENOENT") degraded = true;
+      continue;
+    }
+    let record;
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!record || typeof record !== "object") continue;
+    const list = groups.get(original) ?? [];
+    list.push(record);
+    groups.set(original, list);
+  }
+  return { groups, degraded };
+}
+
+/**
+ * Do grupo de cópias de conflito de `original`, devolve o registro que prova
+ * a sessão VIVA, ou `null` (#13301). Puro.
+ *
+ * "Evidência de liveness da MESMA sessão, nunca registro novo":
+ *   - a identidade vem do NOME original e o conteúdo tem de bater com ele
+ *     (`{kind}-{machineTag}-{sessionId}.json`, o nome que `sessionFilePath`
+ *     grava). Uma cópia não introduz sessão, kind nem máquina que o próprio
+ *     arquivo não nomeie; cópia que não bate é descartada;
+ *   - `endedAt` em qualquer cópia do grupo encerra a sessão, salvo cópia sem
+ *     `endedAt` com heartbeat POSTERIOR a ele (mesma regra de
+ *     `endedAfterLastHeartbeat`, #13114: `endSession` carimba as cópias antes
+ *     de apagar o real, então o encerramento limpo fica visível aqui);
+ *   - entre as cópias vivas, vale o heartbeat mais recente.
+ * Os filtros de kind, máquina e janela de heartbeat continuam com quem chama,
+ * os mesmos do arquivo real.
+ */
+export function liveRecordFromConflictCopies(original, records) {
+  if (typeof original !== "string" || !Array.isArray(records)) return null;
+  let endedMs = -Infinity;
+  let best = null;
+  let bestMs = -Infinity;
+  for (const record of records) {
+    if (!record || typeof record !== "object") continue;
+    if (typeof record.sessionId !== "string" || record.sessionId === "") continue;
+    if (typeof record.kind !== "string" || typeof record.machineTag !== "string") continue;
+    if (`${record.kind}-${record.machineTag}-${record.sessionId}.json` !== original) continue;
+    if (record.endedAt) {
+      const ms = Date.parse(record.endedAt);
+      // `endedAt` ilegível ainda é sinal de encerramento: conta como +∞.
+      endedMs = Math.max(endedMs, Number.isFinite(ms) ? ms : Infinity);
+      continue;
+    }
+    const hbMs = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
+    if (!Number.isFinite(hbMs)) continue;
+    if (hbMs > bestMs) {
+      bestMs = hbMs;
+      best = record;
+    }
+  }
+  if (best === null || bestMs <= endedMs) return null;
+  return best;
+}
+
+/**
  * Varredura de `data/sessions/*.json` (#6303 Finding B) — devolve os
  * `sessionId` de sessões COORDENADORAS ativas (mesmos critérios (a)/(b) de
  * `readActiveCoordinatorSessionIds` abaixo) **e** um sinal `degraded`
@@ -709,6 +832,12 @@ export function sessionsDir(repoRoot) {
  * `crossMachine: true` para alimentar `classifyMergeBlockCause`; o default
  * `false` é o que os testes deste módulo (e o único outro papel real do
  * filtro) continuam exercitando.
+ *
+ * #13301: com o `{nome}.json` ausente, a cópia `{nome}.json.conflictN` do
+ * rclone bisync conta como o registro da MESMA sessão (identidade conferida
+ * contra o nome, `endedAt` respeitado: `liveRecordFromConflictCopies`), com
+ * os mesmos filtros de kind, máquina e heartbeat. `viaConflictCopy` lista os
+ * `sessionId`s que só entraram assim.
  */
 export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {}) {
   const crossMachine = opts.crossMachine === true;
@@ -746,6 +875,35 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
   }
   const myTag = machineTag();
   let degraded = false;
+  // #13301: `sessionId`s que só entraram por cópia `.json.conflictN` (o real
+  // estava ausente na listagem). Aditivo, para o run-log dizer quando a
+  // identidade da coordenadora veio da cópia.
+  const viaConflictCopy = new Set();
+  /** Mesmos filtros para o arquivo real e para a cópia de conflito. */
+  const admit = (record) => {
+    if (!record || typeof record !== "object") return false;
+    if (!COORDINATOR_KINDS.has(record.kind)) return false;
+    if (typeof record.sessionId !== "string" || record.sessionId === "") return false;
+    // #5787 Defeito 2 / #6621: ignora sessões de outras máquinas — SÓ
+    // quando `crossMachine` não foi pedido. `data/sessions/` é
+    // compartilhado via OneDrive; o chamador que precisa do conjunto
+    // GLOBAL (leniência de merge) passa `crossMachine: true` e este filtro
+    // não se aplica.
+    if (!crossMachine && (typeof record.machineTag !== "string" || record.machineTag !== myTag)) return false;
+    const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
+    const heartbeatMs = Date.parse(heartbeatIso ?? "");
+    if (!Number.isFinite(heartbeatMs)) return false;
+    const ageMs = now - heartbeatMs;
+    if (ageMs < 0 || ageMs > MAX_SESSION_AGE_MS) return false;
+    // #5787 Defeito 1: janela de liveness prática (90 min). Uma sessão que
+    // não bateu heartbeat há mais de SOFT_STALE_MS está morta para efeito
+    // deste guard — não tem subagente ativo pra proteger.
+    if (ageMs > SOFT_STALE_MS) return false;
+    ids.add(record.sessionId);
+    kinds.set(record.sessionId, record.kind);
+    if (typeof record.attended === "boolean") attended.set(record.sessionId, record.attended);
+    return true;
+  };
   for (const name of entries) {
     if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     let raw;
@@ -760,28 +918,7 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
       continue;
     }
     try {
-      const record = JSON.parse(raw);
-      if (!record || typeof record !== "object") continue;
-      if (!COORDINATOR_KINDS.has(record.kind)) continue;
-      if (typeof record.sessionId !== "string" || record.sessionId === "") continue;
-      // #5787 Defeito 2 / #6621: ignora sessões de outras máquinas — SÓ
-      // quando `crossMachine` não foi pedido. `data/sessions/` é
-      // compartilhado via OneDrive; o chamador que precisa do conjunto
-      // GLOBAL (leniência de merge) passa `crossMachine: true` e este filtro
-      // não se aplica.
-      if (!crossMachine && (typeof record.machineTag !== "string" || record.machineTag !== myTag)) continue;
-      const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
-      const heartbeatMs = Date.parse(heartbeatIso ?? "");
-      if (!Number.isFinite(heartbeatMs)) continue;
-      const ageMs = now - heartbeatMs;
-      if (ageMs < 0 || ageMs > MAX_SESSION_AGE_MS) continue;
-      // #5787 Defeito 1: janela de liveness prática (90 min). Uma sessão que
-      // não bateu heartbeat há mais de SOFT_STALE_MS está morta para efeito
-      // deste guard — não tem subagente ativo pra proteger.
-      if (ageMs > SOFT_STALE_MS) continue;
-      ids.add(record.sessionId);
-      kinds.set(record.sessionId, record.kind);
-      if (typeof record.attended === "boolean") attended.set(record.sessionId, record.attended);
+      admit(JSON.parse(raw));
     } catch {
       // JSON malformado (pode ser outra sessão escrevendo agora, ou
       // corrupção genuína — não dá pra distinguir com segurança) OU qualquer
@@ -791,7 +928,18 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
       degraded = true;
     }
   }
-  return { ids, kinds, attended, degraded };
+  // #13301: real ausente + cópia `.json.conflictN` presente = o bisync no
+  // meio do rename. A cópia atesta a sessão que o próprio nome nomeia
+  // (`liveRecordFromConflictCopies`), com os mesmos filtros do real.
+  const copies = readOrphanConflictCopyGroups(dir, entries, () => true);
+  if (copies.degraded) degraded = true;
+  for (const [original, records] of copies.groups) {
+    const record = liveRecordFromConflictCopies(original, records);
+    // Sessão já contada por um arquivo real: o real decide `kind`/`attended`.
+    if (record === null || ids.has(record.sessionId)) continue;
+    if (admit(record)) viaConflictCopy.add(record.sessionId);
+  }
+  return { ids, kinds, attended, degraded, viaConflictCopy };
 }
 
 /**
@@ -949,6 +1097,18 @@ export function readLiveInteractiveRegistrationFor(repoRoot, sessionId, now = Da
       // Entrada ilegível: não conta como prova de sessão interativa viva.
       // Fail-closed — o efeito é bloquear, que é o comportamento anterior.
     }
+  }
+  // #13301: o registro `interactive` também passa pelo bisync. Real ausente
+  // + cópia `.json.conflictN` com a mesma identidade = sessão ainda viva.
+  const copies = readOrphanConflictCopyGroups(dir, entries, (original) => original.endsWith(suffix));
+  for (const [original, records] of copies.groups) {
+    const record = liveRecordFromConflictCopies(original, records);
+    if (record === null || record.kind !== "interactive" || record.sessionId !== sessionId) continue;
+    const heartbeatMs = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
+    if (!Number.isFinite(heartbeatMs)) continue;
+    const ageMs = now - heartbeatMs;
+    if (ageMs < 0 || ageMs > INTERACTIVE_SOFT_STALE_MS) continue;
+    return true;
   }
   return false;
 }
@@ -1989,6 +2149,8 @@ if (
         sessionId: payload.session_id,
         cwd: payload.cwd,
         sessionFoundInCoordinators: scan.ids.has(payload.session_id),
+        // #13301: a identidade veio de cópia `.json.conflictN` (real ausente).
+        ...(scan.viaConflictCopy?.has(payload.session_id) ? { sessionFoundViaConflictCopy: true } : {}),
         isCoordinator: scan.ids.has(payload.session_id) && ctx.callerInLinkedWorktree !== true,
         callerInLinkedWorktree: ctx.callerInLinkedWorktree,
         scanDegraded: scan.degraded,
