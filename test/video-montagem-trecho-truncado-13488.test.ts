@@ -213,7 +213,7 @@ describe("#13488 verify-xml confere os trechos contra a mídia real", () => {
   it("o cmdVerifyXml soma os problemas de mídia em `bad`", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
     const body = src.slice(src.indexOf("function cmdVerifyXml("), src.indexOf("// ── Rosto automático"));
-    assert.match(body, /const mediaIssues = trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\)\);/);
+    assert.match(body, /const mediaIssues = trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), probeTrechoFrames, \{ dir: ctx\.outDir, clips: inseridosXml \}\);/);
     assert.match(body, /bad \+= mediaIssues\.length;/);
   });
 });

@@ -305,6 +305,8 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
       let args: string[] = [];
       const c = cutTrechoInserido(withSrc, t, 300, spec, 30, "I:/v/261118/bruto.mp4", {
         probeDurationS: () => 600,
+        // #13500: o encode falso grava "mov"; os quadros do intervalo (18 s a 30 fps).
+        probeFrames: () => 540,
         listEncoders: () => "",
         encode: (a) => {
           args = a;
@@ -318,7 +320,7 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
       assert.ok(existsSync(c.path));
       assert.equal(args[args.indexOf("-ss") + 1], "222.000000");
       assert.equal(args[args.indexOf("-c:v") + 1], "libx264");
-      const again = cutTrechoInserido(withSrc, t, 300, spec, 30, "I:/v/261118/bruto.mp4", { probeDurationS: () => 600, encode: () => assert.fail("reaproveita o corte") });
+      const again = cutTrechoInserido(withSrc, t, 300, spec, 30, "I:/v/261118/bruto.mp4", { probeDurationS: () => 600, probeFrames: () => 540, encode: () => assert.fail("reaproveita o corte") });
       assert.equal(again?.path, c.path);
       const fail = cutTrechoInserido({ ...withSrc, outDir: mkdtempSync(join(tmpdir(), "trecho-cut-f-13437-")) } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", {
         probeDurationS: () => null,
@@ -411,7 +413,7 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
     assert.equal(r.edicao, "261110");
   });
 
-  it("cutTrechoInserido: ffprobe falho avisa; clipe bem mais curto que o intervalo é recusado; menos de 1 quadro é null (fix 4)", () => {
+  it("cutTrechoInserido: ffprobe da fonte falho avisa; clipe com outros quadros (ou ilegível) é recusado; menos de 1 quadro é null (fix 4, #13500)", () => {
     const mk = () => mkdtempSync(join(tmpdir(), "trecho-cut4-13437-"));
     const dir = mk();
     const src = join(dir, "fonte.mp4");
@@ -423,22 +425,30 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
     const orig = console.error;
     console.error = (m: string) => void errs.push(String(m));
     try {
-      const semProbe = cutTrechoInserido(ctx, t, 300, spec, 30, "I:/v/261118/b.mp4", { probeDurationS: () => null, listEncoders: () => "", encode: write });
-      assert.ok(semProbe, "sem probe, o clipe entra com aviso");
+      // #13500: o clipe é conferido em QUADROS (ffprobe contando pacotes), como os trechos do XML leve (#13488).
+      const semProbe = cutTrechoInserido(ctx, t, 300, spec, 30, "I:/v/261118/b.mp4", { probeDurationS: () => null, probeFrames: () => 540, listEncoders: () => "", encode: write });
+      assert.ok(semProbe, "sem a duração da fonte, o clipe entra com aviso (os quadros dele conferem)");
       assert.ok(errs.some((e) => /\[aviso\] .*não foi medida \(ffprobe falhou\); o fim do trecho não foi conferido/.test(e)), errs.join("\n"));
-      assert.ok(errs.some((e) => /\[aviso\] .*a duração do clipe cortado não foi medida/.test(e)), errs.join("\n"));
+      errs.length = 0;
+      // #13500: clipe que o ffprobe não conta (sem moov) não entra mais com aviso: o XML pediria quadros que não existem.
+      const ilegivelDir = mk();
+      assert.equal(cutTrechoInserido({ ...ctx, outDir: ilegivelDir } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => null, listEncoders: () => "", encode: write }), null);
+      assert.ok(errs.some((e) => /NÃO inserido: .*o render saiu com ilegível \(ffprobe sem contagem\), o intervalo pede 540 \(2 tentativas, #13500\)/.test(e)), errs.join("\n"));
+      assert.deepEqual(readdirSync(ilegivelDir), []);
       errs.length = 0;
       const curtoDir = mk();
       const curto = cutTrechoInserido({ ...ctx, outDir: curtoDir } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", {
-        probeDurationS: (p) => (p.endsWith(".part") ? 5 : null),
+        probeDurationS: () => null,
+        probeFrames: () => 150,
         listEncoders: () => "",
         encode: write,
       });
       assert.equal(curto, null);
-      assert.ok(errs.some((e) => /NÃO inserido: o corte de .* falhou \(o clipe saiu com 5\.00 s, e o intervalo pede 18\.00 s/.test(e)), errs.join("\n"));
+      assert.ok(errs.some((e) => /NÃO inserido: o corte de .* falhou \(trecho inserido H5: o render saiu com 150 quadro\(s\), o intervalo pede 540 \(2 tentativas, #13500\); a fonte acaba antes do fim do trecho\?\)/.test(e)), errs.join("\n"));
       assert.deepEqual(readdirSync(curtoDir), [], "nem o .part nem o .mov ficam");
-      const quase = cutTrechoInserido({ ...ctx, outDir: mk() } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: (p) => (p.endsWith(".part") ? 17.6 : 600), listEncoders: () => "", encode: write });
-      assert.ok(quase, "dentro da folga (0,5 s), o clipe entra");
+      // #13500: a folga é de 1 quadro (TRECHO_FRAME_TOL), não mais 0,5 s: o que falta vira preto no Premiere.
+      assert.ok(cutTrechoInserido({ ...ctx, outDir: mk() } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => 539, listEncoders: () => "", encode: write }), "1 quadro de diferença entra");
+      assert.equal(cutTrechoInserido({ ...ctx, outDir: mk() } as typeof ctx, t, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => 600, probeFrames: () => 528, listEncoders: () => "", encode: write }), null, "17,6 s de 18 s não entra mais");
       errs.length = 0;
       const tiny = { ...t, trecho: { ...ytTrecho, fimS: ytTrecho.inicioS + 0.01 } };
       assert.equal(cutTrechoInserido(ctx, tiny, 300, spec, 30, "I:/v/b.mp4", { probeDurationS: () => assert.fail("nem mede"), encode: () => assert.fail("nem corta") }), null);
