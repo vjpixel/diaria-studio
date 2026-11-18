@@ -508,7 +508,7 @@ export function openInBrowser(url: string, execImpl: typeof exec = exec): void {
       : process.platform === "darwin"
         ? `open "${url}"`
         : `xdg-open "${url}"`;
-  const child = execImpl(cmd);
+  const child = execImpl(cmd, { windowsHide: true }); // #13559: --detach --open roda sem console
   // #9911: o servidor encerra por `process.exitCode` (loop vazio), não por
   // `process.exit()`. O browser lançado pelo xdg-open pode herdar o stdio do
   // filho e manter os pipes abertos — sem unref, o teardown nunca terminaria.

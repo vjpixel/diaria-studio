@@ -605,21 +605,67 @@ describe("Regressão #7959 — .claude/hooks/*.mjs reais deste repo (guard gener
  *     `windowsHide` (senão o próprio filho ganha console visível — o caso de
  *     `stage-1-run.ts` antes do #13559);
  *  2. os arquivos que rodam DENTRO de um processo destacado declaram
- *     `windowsHide` em toda chamada de processo. Lista explícita: quem
- *     adicionar um novo filho destacado inclui aqui o script que ele roda e as
- *     libs que esse script usa pra lançar processo.
+ *     `windowsHide` em toda chamada de processo (`exec`/`execSync`/`fork`
+ *     incluídos). Os ENTRYPOINTS são uma lista explícita; as libs que eles
+ *     importam são achadas seguindo os imports relativos (achado do review do
+ *     PR: `lib/shared/gh-run.ts` e `lib/run-tsx.ts` ficavam de fora de uma
+ *     lista manual de libs).
  */
 const SCRIPTS_DIR = join(ROOT, "scripts");
 
-/** Scripts (e libs que eles usam pra lançar processo) que rodam como filho
- * destacado, sem console. */
-const DETACHED_CHILD_FILES = [
+/** Entrypoints que rodam como filho destacado, sem console. As libs que eles
+ * importam (transitivamente, imports relativos) entram sozinhas. */
+const DETACHED_CHILD_ENTRYPOINTS = [
   "publish-edition-site-page.ts", // waiter --merge-pr (#9593/#9616)
   "eia-compose.ts", // stage-1-run §1d
   "prewarm-verify-cache.ts", // stage-1-run §1e-bis
   "serve-preview.ts", // --detach (#9678)
-  "lib/session-registry.ts", // merge lock do waiter (git rev-parse/status)
 ];
+
+const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,2}\/[^"']+)["']/g;
+
+/** Fecho transitivo dos imports relativos de `entry` (paths relativos a
+ * scripts/). Imports `import type` também entram — inofensivo: só aumenta a
+ * varredura. Pura sobre o sistema de arquivos. */
+export function collectRelativeImportClosure(entry: string, readFile: (rel: string) => string | null): string[] {
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const rel = queue.shift()!;
+    if (seen.has(rel)) continue;
+    const content = readFile(rel);
+    if (content === null) continue;
+    seen.add(rel);
+    const baseDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+    let m: RegExpExecArray | null;
+    RELATIVE_IMPORT_RE.lastIndex = 0;
+    while ((m = RELATIVE_IMPORT_RE.exec(stripComments(content))) !== null) {
+      const parts = (baseDir ? `${baseDir}/${m[1]}` : m[1]).split("/");
+      const norm: string[] = [];
+      for (const p of parts) {
+        if (p === "." || p === "") continue;
+        if (p === "..") norm.pop();
+        else norm.push(p);
+      }
+      queue.push(norm.join("/"));
+    }
+  }
+  return [...seen];
+}
+
+/** Como `findWindowsHideMissingCalls`, mas também cobre `exec(`, `execSync(` e
+ * `fork(` (achado do review: `execSync("git worktree prune")` e o `exec` do
+ * `openInBrowser` passavam). Recebe código já sem comentários. Pura. */
+export function findWindowsHideMissingCallsBroad(code: string): number[] {
+  const offenders = new Set(findWindowsHideMissingCalls(code));
+  const re = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(code)) !== null) {
+    const window = code.slice(match.index, Math.min(code.length, match.index + WINDOW_CHARS));
+    if (!/windowsHide\s*:\s*true/.test(window)) offenders.add(match.index);
+  }
+  return [...offenders].sort((a, b) => a - b);
+}
 
 function listScriptFiles(dir: string, rel = ""): string[] {
   const out: string[] = [];
@@ -696,21 +742,41 @@ describe("Regressão #13559 — scripts/ reais deste repo", () => {
     );
   });
 
-  for (const file of DETACHED_CHILD_FILES) {
-    it(`${file}: roda destacado (sem console), então toda chamada de processo declara windowsHide:true`, () => {
-      let content: string;
+  const readScript = (rel: string): string | null => {
+    for (const candidate of [rel, `${rel}.ts`, rel.replace(/\.js$/, ".ts"), rel.replace(/\.mjs$/, ".mts")]) {
       try {
-        content = readFileSync(join(SCRIPTS_DIR, file), "utf8");
+        return readFileSync(join(SCRIPTS_DIR, candidate), "utf8");
       } catch {
-        assert.fail(`scripts/${file} deveria existir — atualize DETACHED_CHILD_FILES se ele mudou de lugar`);
-        return;
+        // tenta a próxima extensão
       }
-      const offenders = findWindowsHideMissingCalls(stripComments(content));
+    }
+    return null;
+  };
+  const reached = new Set<string>();
+  for (const entry of DETACHED_CHILD_ENTRYPOINTS) {
+    it(`${entry}: entrypoint destacado existe (senão o guard não prova nada)`, () => {
+      assert.ok(readScript(entry) !== null, `scripts/${entry} sumiu — atualize DETACHED_CHILD_ENTRYPOINTS`);
+    });
+    for (const rel of collectRelativeImportClosure(entry, readScript)) reached.add(rel);
+  }
+
+  it("o fecho de imports alcança as libs que já abriram janela (gh-run, run-tsx, session-registry)", () => {
+    for (const lib of ["lib/shared/gh-run.ts", "lib/run-tsx.ts", "lib/session-registry.ts"]) {
+      assert.ok(reached.has(lib), `${lib} deveria estar no fecho de imports dos entrypoints destacados`);
+    }
+  });
+
+  for (const file of [...reached].sort()) {
+    it(`${file}: roda dentro de processo destacado (sem console), então toda chamada de processo declara windowsHide:true`, () => {
+      const content = readScript(file) ?? "";
+      if (!/child_process/.test(content)) return; // não lança processo
+      const code = stripComments(content);
+      const offenders = findWindowsHideMissingCallsBroad(code);
       assert.deepEqual(
-        offenders,
+        offenders.map((o) => code.slice(o, o + 80).replace(/\s+/g, " ")),
         [],
-        `scripts/${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true (offsets no código sem ` +
-          `comentários: ${offenders.join(", ")}) — rodando destacado, cada gh/git/node filho abre uma janela (#13559).`,
+        `scripts/${file}: ${offenders.length} chamada(s) de processo sem windowsHide:true — rodando destacado, ` +
+          "cada gh/git/node filho abre uma janela no Windows (#13559).",
       );
     });
   }

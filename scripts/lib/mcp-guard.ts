@@ -145,7 +145,7 @@ export function emitHaltBanner(
       "--action",
       `Verifique conectividade do ${mcpName} e responda 'retry' pra re-tentar, ou 'abort' pra abortar`,
     ],
-    { stdio: "inherit" },
+    { stdio: "inherit", windowsHide: true }, // #13559: alcançável do waiter destacado
   );
   // O banner é o último aviso antes de a pipeline parar; se nem ele saiu, o
   // operador precisa saber — senão a falha de infra vira silêncio total.

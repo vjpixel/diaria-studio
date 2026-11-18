@@ -654,8 +654,8 @@ function extractBloco(md: string, rotulo: string): string | null {
 export type GitRunner = (args: string[], cwd: string) => string;
 
 const defaultGitRunner: GitRunner = (args, cwd) =>
-  // windowsHide (#13559): o waiter `--merge-pr` roda destacado e sem console;
-  // sem a flag, cada `git`/`gh` filho abre uma janela própria no Windows.
+  // windowsHide (#13559): no waiter `--merge-pr` (destacado, sem console),
+  // sem a flag cada `git`/`gh` filho abriria uma janela própria no Windows.
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).toString("utf8");
 
 /**
@@ -3746,7 +3746,7 @@ export async function main(): Promise<void> {
         // assinatura é `(command: string, options?)`); o mesmo `git worktree
         // prune` que o `git` injetado em `commitAndPushSitePage` rodaria se o
         // `finally` dele não tiver limpado o worktree.
-        execSync("git worktree prune", { cwd: ROOT, shell: "bash", stdio: "ignore" });
+        execSync("git worktree prune", { cwd: ROOT, shell: "bash", stdio: "ignore", windowsHide: true });
       } catch {
         // fail-soft: `git worktree prune` é higiene, nunca bloqueio.
       }

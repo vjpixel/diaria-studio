@@ -237,8 +237,9 @@ export function realSpawnDetached(rootDir: string): SpawnDetachedFn {
         detached: true,
         stdio: "ignore",
         // #13559: sem isto o filho destacado ganha console visível no Windows
-        // pela vida inteira (classe do #7952). Os netos dele passam a precisar
-        // de windowsHide também (eia-compose.ts, prewarm-verify-cache.ts).
+        // pela vida inteira (classe do #7952). Os netos (o que eia-compose.ts e
+        // prewarm-verify-cache.ts lançam, inclusive via lib/run-tsx.ts) também
+        // precisam de windowsHide — test/claude-hooks-windowshide.test.ts confere.
         windowsHide: true,
       });
       child.unref();
