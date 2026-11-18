@@ -22,6 +22,7 @@
  *
  * Puro: quem lê o corpo da página é `scripts/demote-stale-date-highlights.ts`.
  */
+import { DESTAQUE_REQUEST_FIELD } from "./destaque-upgrade.ts";
 import { hasNegativeImpactTag, type HighlightLike } from "./negative-impact-promotion.ts";
 import type { SourceDateHit } from "./stale-highlight.ts";
 
@@ -91,10 +92,20 @@ export function staleDateCandidates<H extends StaleDateHighlight>(highlights: H[
  * Pedido do editor fica onde está: submissão dele (`flag: editor_submitted`,
  * `editor_destaque_request`) ou item que a janela de data já poupou
  * (`date_window_spared`). Mesmo precedente do `filter-date-window.ts` (#4656).
+ *
+ * `editor_destaque_request` guarda o slot pedido (`"d1"`/`"d2"`/`"d3"`, ou
+ * `"destaque"` sem posição; `inject-inbox-urls.ts`, `reserved-destaques.ts`),
+ * nunca `true`: conta qualquer string não vazia, como o invariante
+ * `editor-destaque-request` do Stage 4 (#13497).
  */
 function editorProtected(h: StaleDateHighlight): boolean {
   const a = art(h);
-  return a.flag === "editor_submitted" || a.editor_destaque_request === true || a.date_window_spared === true;
+  const request = a[DESTAQUE_REQUEST_FIELD];
+  return (
+    a.flag === "editor_submitted" ||
+    (typeof request === "string" && request.trim() !== "") ||
+    a.date_window_spared === true
+  );
 }
 
 /** Já rebaixado por outro passo (#9100, #10795, #9462): nunca sobe por causa deste. */

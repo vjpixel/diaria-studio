@@ -107,7 +107,9 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#13219) XML LEVE por padrão: os clipes apontam trechos do bruto em H.264 4K + PCM 48 kHz
  *       (`trechos/` na pasta da edição, só o que as sequências usam, folga de 1 s de cada lado,
  *       trechos a menos de 3 s um do outro viram um só; nome = arquivo + quadros de início e fim,
- *       reaproveitado no rebuild), para o Premiere não converter o AAC do bruto inteiro nem tocar
+ *       reaproveitado no rebuild só com os quadros do nome conferidos no ffprobe; o truncado é
+ *       refeito, #13488; render numa pasta temporária fora do Drive, copiado e conferido de novo;
+ *       o verify-xml confere os trechos contra a mídia real), para o Premiere não converter o AAC do bruto inteiro nem tocar
  *       o HEVC pelo Drive. h264_nvenc quando o ffmpeg tem; senão libx264. --xml-bruto aponta o
  *       bruto, como antes; --trechos-folga muda a folga. No modo API (300) sai o XML do bruto, com
  *       [aviso] (os trechos não sobem pelo upload do out dir). Falha do ffmpeg = XML do bruto, com [aviso].
@@ -319,7 +321,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
 
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -513,7 +515,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
+import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
 import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
@@ -789,7 +791,7 @@ function warnVocabOnce(warnings: string[]): void {
 
 function transcribeWithPython(ctx: Ctx, audio: string, out: string, opts: { vad: boolean; noCondition?: boolean }): void {
   const vocab = loadVocab();
-  console.error(`[video-montagem] transcrevendo ${audio} (faster-whisper large-v3-turbo, CPU int8; leva minutos)…`);
+  console.error(`[video-montagem] transcrevendo ${audio} (faster-whisper large-v3-turbo, GPU com queda para CPU, #13477; leva minutos)…`);
   const args = ["-P", PY_HELPER, audio, out, "--initial-prompt", vocab.whisper_prompt ?? ""];
   if (opts.vad) args.push("--vad");
   if (opts.noCondition) args.push("--no-condition");
@@ -2915,6 +2917,11 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   let bad = 0;
   let cutTotal = 0;
   let softTotal = 0;
+  // #13488: os trechos do XML leve contra a mídia real (o resto confere contra a <duration> do <file>, a do nome).
+  const xmlTexts = chosen.map((p) => join(ctx.outDir, xmlFileName(p.spec.name))).filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
+  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName));
+  for (const x of mediaIssues) console.log(`[erro] ${x}`);
+  bad += mediaIssues.length;
   const report: Record<string, unknown> = {};
   for (const plan of chosen) {
     const key = sequenceKey(plan.spec);
@@ -4053,13 +4060,53 @@ export interface TrechosBuildOption {
   folgaS: number;
 }
 
+/** #13488: os quadros de vídeo do trecho no disco (ffprobe contando pacotes); ffprobe que falha ou arquivo ilegível = null. */
+export function probeTrechoFrames(path: string): number | null {
+  try {
+    return parseTrechoFrameProbe(run("ffprobe", trechoFrameProbeArgs(path)).stdout);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #13488: os trechos que os XMLs leves apontam, conferidos contra a mídia
+ * REAL em `dir` (a `trechos/` do out dir): ausente, ilegível ou com menos (ou
+ * mais) quadros que o nome promete é um problema. O resto do `verify-xml`
+ * confere in/out contra a `<duration>` do `<file>`, que é a do nome, não a do
+ * arquivo; sem isto, o trecho truncado da 261118 passava.
+ */
+export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, probe: (path: string) => number | null = probeTrechoFrames): string[] {
+  const names = [...new Set(xmlTexts.flatMap((x) => trechoNamesInXml(x)))];
+  const issues: string[] = [];
+  for (const name of names) {
+    const want = parseTrechoName(name);
+    if (!want) continue;
+    const path = join(dir, name);
+    const expected = want.end - want.start;
+    if (!existsSync(path)) {
+      issues.push(`trecho ${name} ausente em ${dir}: o XML aponta um arquivo que não está no disco; rode build (#13488)`);
+      continue;
+    }
+    const got = probe(path);
+    if (!trechoFramesOk(expected, got)) issues.push(`trecho ${name} com ${got === null ? "quadros ilegíveis (ffprobe sem contagem)" : `${got} quadro(s)`} no disco, o XML pede ${expected}: imagem preta ou congelada no Premiere; rode build (ele refaz o trecho, #13488)`);
+  }
+  return issues;
+}
+
 /**
  * #13219: os trechos do bruto que as sequências usam, em H.264 + PCM, na
  * subpasta `trechos/` do out dir (a pasta da edição). Arquivo já presente é
- * reaproveitado (o nome leva o arquivo e os quadros de início e fim; o render
- * vai para `.part` e só vira o nome final completo). NVENC que falha cai para
- * libx264 uma vez, com [aviso]; libx264 que falha lança (o build volta ao
- * XML do bruto). `encode`/`listEncoders` são injetáveis para o teste.
+ * reaproveitado só se tiver os quadros que o nome promete (o nome leva o
+ * arquivo e os quadros de início e fim); o que diverge é apagado e refeito,
+ * com [aviso] (#13488: na 261118 quatro trechos truncados no Drive foram
+ * reaproveitados pelo nome e o XML saiu com 27 s de preto). O render vai para
+ * uma pasta temporária FORA do out dir (o Drive for desktop subia o `.part`
+ * vazio e não propagava o rename, #13488) e é copiado para o nome final; os
+ * quadros são conferidos no temporário e de novo na cópia. Divergência tenta
+ * mais uma vez e depois lança (o build volta ao XML do bruto, com [aviso]).
+ * NVENC que falha cai para libx264 uma vez, com [aviso]; libx264 que falha
+ * lança. `encode`/`listEncoders`/`probeFrames`/`tmpRoot` são injetáveis para o teste.
  */
 export function renderTrechos(input: {
   plans: readonly Pick<SequencePlan, "clips">[];
@@ -4070,10 +4117,15 @@ export function renderTrechos(input: {
   folgaS: number;
   encode?: (args: string[]) => void;
   listEncoders?: () => string;
+  /** #13488: os quadros de vídeo do arquivo (null = ilegível); padrão `probeTrechoFrames`. */
+  probeFrames?: (path: string) => number | null;
+  /** #13488: onde fica a pasta temporária do render (padrão `os.tmpdir()`), fora do out dir sincronizado. */
+  tmpRoot?: string;
   log?: (line: string) => void;
-}): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number } {
+}): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number; redone: number } {
   const log = input.log ?? ((m: string) => console.error(m));
   const encode = input.encode ?? ((args: string[]) => { run("ffmpeg", args); });
+  const probeFrames = input.probeFrames ?? probeTrechoFrames;
   const files = sourceFiles(input.source);
   const uses = input.plans.flatMap((p) =>
     p.clips.map((c) => {
@@ -4090,27 +4142,61 @@ export function renderTrechos(input: {
   const xmlDir = `${p.slice(0, p.lastIndexOf("/") + 1)}${TRECHOS.dirName}/`;
   let made = 0;
   let reused = 0;
-  const trechos = planned.map((t) => {
-    const out = join(dir, t.name);
-    if (existsSync(out)) reused++;
-    else {
-      const part = `${out}.part`;
-      const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
-      try {
-        encode(args(encoder));
-      } catch (e) {
-        if (encoder !== "h264_nvenc") throw e;
-        // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
-        log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
-        encoder = "libx264";
-        encode(args(encoder));
+  let redone = 0;
+  let tmp: string | null = null;
+  const fmt = (n: number | null) => (n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`);
+  try {
+    const trechos = planned.map((t) => {
+      const out = join(dir, t.name);
+      const expected = t.end - t.start;
+      if (existsSync(out)) {
+        const got = probeFrames(out);
+        if (trechoFramesOk(expected, got)) {
+          reused++;
+          return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
+        }
+        // #13488: o nome promete os quadros, o arquivo no disco não os tem (encode interrompido, Drive que não gravou tudo).
+        log(`[aviso] trecho ${t.name} no disco com ${fmt(got)}, o nome pede ${expected}: apagado e refeito (#13488)`);
+        rmSync(out, { force: true });
+        redone++;
       }
-      renameSync(part, out);
+      tmp ??= mkdtempSync(join(input.tmpRoot ?? tmpdir(), "diaria-trechos-"));
+      const part = join(tmp, `${t.name}.part`);
+      const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
+      for (let attempt = 1; ; attempt++) {
+        rmSync(part, { force: true });
+        try {
+          encode(args(encoder));
+        } catch (e) {
+          if (encoder !== "h264_nvenc") throw e;
+          // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
+          log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
+          encoder = "libx264";
+          encode(args(encoder));
+        }
+        // #13488: os quadros no render local e, depois da cópia, no nome final (a pasta do Drive).
+        const gotPart = probeFrames(part);
+        let bad = trechoFramesOk(expected, gotPart) ? null : `o render saiu com ${fmt(gotPart)}`;
+        if (!bad) {
+          copyFileSync(part, out);
+          const gotOut = probeFrames(out);
+          if (!trechoFramesOk(expected, gotOut)) {
+            rmSync(out, { force: true });
+            bad = `a cópia em ${out} ficou com ${fmt(gotOut)}`;
+          }
+        }
+        rmSync(part, { force: true });
+        if (!bad) break;
+        if (attempt >= 2) throw new Error(`trecho ${t.name}: ${bad}, o nome pede ${expected} (2 tentativas, #13488)`);
+        log(`[aviso] trecho ${t.name}: ${bad}, o nome pede ${expected}; refazendo (#13488)`);
+      }
       made++;
-    }
-    return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
-  });
-  return { trechos, encoder, made, reused };
+      return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
+    });
+    return { trechos, encoder, made, reused, redone };
+  } finally {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 /** #13437: folga mínima (s) para o clipe cortado sair mais curto que o intervalo (além de 5% dele) antes de ser recusado. */
@@ -4242,7 +4328,7 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
     const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS });
     const cov = trechosCoverage(r.trechos, sourceFiles(source));
     console.error(
-      `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s)), ` +
+      `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
         `H.264 no tamanho do bruto (${r.encoder}, qualidade ${TRECHOS.quality}, GOP ${TRECHOS.gop}, sem B-frames, ${source.fps} fps CFR, 8 bits) + PCM 48 kHz, folga de ${opt.folgaS} s; ` +
         "--xml-bruto aponta o bruto; conferir no Premiere do Mac o playback e a cor (8 bits) (#13219)",
     );
