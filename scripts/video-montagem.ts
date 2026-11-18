@@ -373,6 +373,7 @@ import {
   horizontalSequenceName,
   sequenceKey,
   assembleClips,
+  closeSliverGaps,
   audioGainFor,
   buildSequencePlan,
   buildXmeml,
@@ -3571,6 +3572,13 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
       adjustments.push(...assembled.merges);
     }
     for (const n of opened.warnings) warnings.push(`${p.spec.name}: ${n}`);
+    // #13460: vão de menos de 0,1 s entre clipes contíguos no bruto (o refino e a abertura acima deixam) fecha.
+    const slivers = closeSliverGaps(assembled.clips, edgeNeighborWords(words, heard), source.fps);
+    if (slivers.adjustments.length) {
+      adjustments.push(...slivers.adjustments);
+      assembled = assembleClips(p.spec, slivers.clips.map(rawOf), source.fps);
+      adjustments.push(...assembled.merges);
+    }
     highBandWarnings[sequenceKey(p.spec)] = highEnv
       ? highBandCutWarnings(assembled.clips.map((c) => ({ ...c, srcIn: c.frameIn / source.fps, srcOut: c.frameOut / source.fps })), highEnv)
       : ["banda alta não conferida: bruto indisponível; possível fonema cortado (#11940)"];
@@ -3602,7 +3610,7 @@ export function openCutEdgesOfPlan(
   words: Word[],
   heard: Map<string, Word[]> | null,
 ): { clips: PlannedClip[]; adjustments: CutAdjustment[]; warnings: string[] } {
-  const neighbors = [...words, ...(heard ? [...heard.values()].flat() : [])].filter((w) => w.text.trim());
+  const neighbors = edgeNeighborWords(words, heard);
   const r = openCutSoundEdges(clips, source.fps, (a, b) => maxDbIn(env, a, b), localEdgeThreshold(env, thresholdDb), {
     durationS: source.durationS,
     words: neighbors,
@@ -3618,7 +3626,9 @@ export function openCutEdgesOfPlan(
       edge: o.edge,
       from: o.from,
       to: Math.round(o.to * 1000) / 1000,
-      reason: `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${Math.round(o.thresholdDb)} dB${limiarNote(o.thresholdDb)}): aberto até o silêncio (${Math.round(o.toDb)} dB) (#13194)`,
+      reason: o.valley
+        ? `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${Math.round(o.thresholdDb)} dB${limiarNote(o.thresholdDb)}) sem silêncio antes do limite: aberto até o vale de energia (${Math.round(o.toDb)} dB fora), não até o silêncio (#13460)`
+        : `SOM CORTADO na borda (${Math.round(o.fromDb)} dB fora, limiar ${Math.round(o.thresholdDb)} dB${limiarNote(o.thresholdDb)}): aberto até o silêncio (${Math.round(o.toDb)} dB) (#13194)`,
     })),
     warnings: r.unresolved.map((u) =>
       u.error
@@ -3626,6 +3636,11 @@ export function openCutEdgesOfPlan(
         : `${u.block}: ${side(u.edge)} em ${u.atS.toFixed(2)} s do bruto com ${Math.round(u.db)} dB fora (limiar ${Math.round(u.thresholdDb)} dB${limiarNote(u.thresholdDb)}): ${softReasonText({ reason: "sem-abertura", aboveMs: Math.round(u.aboveS * 1000), thresholdDb: u.thresholdDb, limit: u.limit, limitS: u.limitS }, (x) => `${x.toFixed(2)} s`)}; o verify-xml avisa (#13194)`,
     ),
   };
+}
+
+/** As palavras do bruto que limitam a abertura das bordas: o transcript e a retranscrição das bordas, sem as vazias (#13194, #13460). */
+export function edgeNeighborWords(words: Word[], heard: Map<string, Word[]> | null): Word[] {
+  return [...words, ...(heard ? [...heard.values()].flat() : [])].filter((w) => w.text.trim());
 }
 
 /** A palavra de fora colada na borda é a 1ª (entrada) ou a última (saída) do roteiro do próprio clipe (#13194). */

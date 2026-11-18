@@ -490,6 +490,44 @@ export interface OpenedEdge<B extends string = string> {
   toDb: number;
   /** Limiar da borda (dBFS) em que ela foi aberta (#13194: relativo ao piso local quando há envelope). */
   thresholdDb: number;
+  /**
+   * #13460: sem silêncio antes do limite, a borda foi para o vale de energia
+   * (o ponto mais quieto até o limite, `CUT_EDGE_VALLEY`), não para o silêncio.
+   * O lado de fora ainda passa do limiar: o `verify-xml` segue acusando.
+   */
+  valley?: true;
+}
+
+/**
+ * #13460 (decisão do editor de 17/11: palavra cortada é defeito do corte):
+ * borda com SOM CORTADO acima do limiar fixo do bruto que não acha silêncio
+ * antes do limite da abertura (`edgeOpenLimit`) ia ficar onde estava, às vezes
+ * no pico da palavra. Na 261105 a entrada de "diferença" (1175,78 s) caía a
+ * -5 dBFS, com o ataque da palavra 0,15 s antes; o editor abriu 0,73 s à mão.
+ * Agora ela vai para o ponto mais quieto entre a borda e o limite (energia nos
+ * `EDGE_WINDOW_S` centrados no ponto), se ele estiver pelo menos `minDropDb`
+ * abaixo da borda. Sem vale claro (fala contínua até a palavra vizinha, como o
+ * "e" de "veículos e" na mesma edição), a borda fica: a regra nunca avança só
+ * por avançar. Vale só para a borda acima do fixo; o [aviso] `sem-abertura`
+ * (ruído de sala, energia sustentada abaixo do fixo) e o `filler` da vinheta
+ * ficam como antes.
+ */
+export const CUT_EDGE_VALLEY = { minDropDb: 10 } as const;
+
+/**
+ * #13460: o quadro mais quieto (`levelAt`) de `from + dir` até `limit`
+ * (inclusive), no empate o mais perto da borda; `null` se ele não fica pelo
+ * menos `CUT_EDGE_VALLEY.minDropDb` abaixo da borda (`from`). Puro.
+ */
+export function valleyFrame(from: number, limit: number, dir: 1 | -1, fps: number, levelAt: (t: number) => number): number | null {
+  let best: number | null = null;
+  let bestDb = Number.POSITIVE_INFINITY;
+  for (let fr = from + dir; dir > 0 ? fr <= limit : fr >= limit; fr += dir) {
+    const db = levelAt(fr / fps);
+    if (db < bestDb) [best, bestDb] = [fr, db];
+  }
+  if (best === null) return null;
+  return bestDb <= levelAt(from / fps) - CUT_EDGE_VALLEY.minDropDb + 1e-9 ? best : null;
 }
 
 export interface UnresolvedEdge<B extends string = string> {
@@ -549,12 +587,19 @@ export function openCutSoundEdges<T extends OpenableClip>(
   const cur = clips.map((c) => ({ ...c }));
   const opened: OpenedEdge<T["block"]>[] = [];
   const first = findings(cur);
+  const fixedDb = fixedOf(thresholdDb);
+  const halfWin = (opts.windowS ?? EDGE_WINDOW_S) / 2;
+  // #13460: energia no ponto de corte (janela centrada), para achar o vale quando não há silêncio até o limite.
+  const levelAt = (t: number) => levelDb(t - halfWin, t + halfWin);
   for (let i = 0; i < cur.length; i++) {
     for (const edge of ["in", "out"] as const) {
       const f0 = first[i];
       if (!(edge === "in" ? f0.openIn : f0.openOut)) continue;
       const c = cur[i];
       const lim = edgeOpenLimit(timeline(cur), fps, i, edge, ctxOf(cur)).s;
+      // #13460: o vale só vale para SOM CORTADO acima do fixo (nunca o filler, nunca o [aviso] de sala ruidosa).
+      const valleyOk = !c.filler && (edge === "in" ? f0.beforeDb : f0.afterDb) > fixedDb;
+      let done = false;
       if (edge === "in") {
         const loFrame = Math.ceil(lim * fps - eps);
         for (let fr = c.frameIn - 1; fr >= loFrame; fr--) {
@@ -563,7 +608,17 @@ export function openCutSoundEdges<T extends OpenableClip>(
           if (!e.overIn) {
             opened.push({ block: c.block, edge, from: c.srcIn, to: fr / fps, fromDb: f0.beforeDb, toDb: e.beforeDb, thresholdDb: e.thrInDb });
             cur[i] = trial[i];
+            done = true;
             break;
+          }
+        }
+        if (!done && valleyOk) {
+          const fr = valleyFrame(c.frameIn, loFrame, -1, fps, levelAt);
+          if (fr !== null) {
+            const trial = cur.map((x, j) => (j === i ? { ...x, frameIn: fr, srcIn: fr / fps } : x));
+            const e = findings(trial)[i];
+            opened.push({ block: c.block, edge, from: c.srcIn, to: fr / fps, fromDb: f0.beforeDb, toDb: e.beforeDb, thresholdDb: e.thrInDb, valley: true });
+            cur[i] = trial[i];
           }
         }
       } else {
@@ -574,7 +629,17 @@ export function openCutSoundEdges<T extends OpenableClip>(
           if (!e.overOut) {
             opened.push({ block: c.block, edge, from: c.srcOut, to: fr / fps, fromDb: f0.afterDb, toDb: e.afterDb, thresholdDb: e.thrOutDb });
             cur[i] = trial[i];
+            done = true;
             break;
+          }
+        }
+        if (!done && valleyOk) {
+          const fr = valleyFrame(c.frameOut, hiFrame, 1, fps, levelAt);
+          if (fr !== null) {
+            const trial = cur.map((x, j) => (j === i ? { ...x, frameOut: fr, srcOut: fr / fps } : x));
+            const e = findings(trial)[i];
+            opened.push({ block: c.block, edge, from: c.srcOut, to: fr / fps, fromDb: f0.afterDb, toDb: e.afterDb, thresholdDb: e.thrOutDb, valley: true });
+            cur[i] = trial[i];
           }
         }
       }

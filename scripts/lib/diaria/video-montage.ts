@@ -2361,6 +2361,58 @@ export function assembleClips(
   return { clips, durationFrames: t, merges };
 }
 
+/**
+ * #13460: vão entre dois clipes seguidos da sequência, contíguos no bruto,
+ * abaixo do qual o corte não tira nada de útil e só corta a fala: 0,1 s (3
+ * quadros a 30 fps). O corte de pausa (`speechParts`) nunca deixa vão menor
+ * que `minGapS - 2 * padS` (0,21 s), então ele não é desfeito aqui; o vão
+ * menor nasce do refino das bordas e do encontro de dois itens. Na comparação
+ * XML × final (#13196) das 261104, 261105, 261116 e 261117, a regra fecha 24
+ * vãos; o editor fechou à mão 14 deles, e dois tinham palavra comida: "a"
+ * (261104, 60 ms entre "equivalente a" e "127") e "com" (261116, 35 ms no
+ * meio da palavra). Os outros 10 ganham menos de 0,1 s de vale cada.
+ */
+export const SLIVER_GAP = { maxS: 0.1 } as const;
+
+/**
+ * #13460: fecha os vãos de menos de `SLIVER_GAP.maxS` entre clipes seguidos e
+ * contíguos no bruto (o 1º estende a saída até a entrada do 2º, e o
+ * `assembleClips` seguinte os funde). Não fecha: palavra INTEIRA dentro do
+ * vão (o corte tirou uma palavra de propósito, como a hesitação que a passada
+ * B do refino tira), arquivos ou encaixes diferentes, enquadramentos
+ * diferentes (o item seguinte pediu outro quadro) e o `filler` da pausa da
+ * vinheta. Puro.
+ */
+export function closeSliverGaps(
+  clips: readonly PlannedClip[],
+  words: ReadonlyArray<{ start: number; end: number; text: string }>,
+  fps: number,
+): { clips: PlannedClip[]; adjustments: CutAdjustment[] } {
+  const out = clips.map((c) => ({ ...c }));
+  const adjustments: CutAdjustment[] = [];
+  const eps = 1e-6;
+  for (let i = 1; i < out.length; i++) {
+    const prev = out[i - 1];
+    const c = out[i];
+    const gapFrames = c.frameIn - prev.frameOut;
+    if (gapFrames <= 0 || gapFrames / fps >= SLIVER_GAP.maxS - eps) continue;
+    if (prev.filler || c.filler || (prev.file ?? 0) !== (c.file ?? 0) || prev.fit !== c.fit || !sameFramePoint(prev.framing, c.framing)) continue;
+    const a = prev.frameOut / fps;
+    const b = c.frameIn / fps;
+    if (words.some((w) => w.text.trim() !== "" && w.start >= a - eps && w.end <= b + eps)) continue;
+    adjustments.push({
+      block: c.block,
+      edge: "emenda",
+      from: prev.srcOut,
+      to: c.srcIn,
+      reason: `vão de ${Math.round((b - a) * 1000)} ms entre clipes contíguos no bruto fechado: cortar menos que ${Math.round(SLIVER_GAP.maxS * 1000)} ms só come fala (#13460)`,
+    });
+    prev.frameOut = c.frameIn;
+    prev.srcOut = c.srcIn;
+  }
+  return { clips: out, adjustments };
+}
+
 export interface SequencePlan {
   spec: SequenceSpec;
   clips: PlannedClip[];

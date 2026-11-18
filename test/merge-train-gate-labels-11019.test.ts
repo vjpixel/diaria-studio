@@ -229,6 +229,9 @@ describe("runMergeTrain — PR-trem recebe a label antes do polling de CI (cená
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } })))
       .on("gh", (a) => a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "OPEN", mergedAt: null })))
       .on("gh", (a) => a[1] === "view" && a.includes("labels,body"), () => ok(JSON.stringify({ labels: [], body: "" })))
+      // #13461: HEAD do PR-trem e base atual contida nele (relida sob o lock).
+      .on("gh", (a) => a[1] === "view" && a.includes("headRefOid"), () => ok(JSON.stringify({ headRefOid: "c".repeat(40) })))
+      .on("gh", (a) => a[0] === "api" && /\/compare\//.test(a[1] ?? ""), () => ok(JSON.stringify({ status: "ahead", behind_by: 0, base_sha: "b".repeat(40) })))
       .on("gh", (a) => a[1] === "merge" || a[1] === "comment" || a[1] === "close", () => ok());
 
     const infos = [info(11007, { changedFiles: [WRITER, "test/w.test.ts"], labels: [AGENT_EVAL_LABEL] }), info(11009), info(11010)];

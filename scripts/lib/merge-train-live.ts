@@ -615,6 +615,68 @@ export interface MergeTrainBatchResult {
   /** PR do lote cuja condição 2 falhou por erro de leitura das threads —
    * `runMergeTrain` rotula o outcome como `threads-ilegiveis`. */
   threadsUnreadablePr?: number;
+  /** #13461: com o merge lock em mãos, a base remota NÃO estava contida no
+   * HEAD que ia ser mergeado — o CI verde desse HEAD é de uma base antiga e
+   * não prova a combinação com o que entrou depois. Nada foi mergeado;
+   * `runMergeTrain` revalida sobre a base atual (PR-trem) em vez de mergear. */
+  staleBase?: { headSha: string; baseSha: string; behindBy: number };
+}
+
+const SHA40 = /^[0-9a-f]{40}$/;
+
+/** HEAD atual (40 hex) de um PR — `gh pr view --json headRefOid` (#13461). */
+export function readPrHeadSha(runner: TrainRunner, prNumber: number): { ok: true; sha: string } | { ok: false; reason: string } {
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "headRefOid"]);
+  if (!res.ok) return { ok: false, reason: `gh pr view --json headRefOid falhou pro PR #${prNumber}: ${res.stderr.trim() || "sem saída"}` };
+  try {
+    const sha = (JSON.parse(res.stdout) as { headRefOid?: unknown }).headRefOid;
+    if (typeof sha === "string" && SHA40.test(sha)) return { ok: true, sha };
+    return { ok: false, reason: `PR #${prNumber}: headRefOid ausente ou fora do formato de 40 hex (${JSON.stringify(sha)})` };
+  } catch (e) {
+    return { ok: false, reason: `PR #${prNumber}: JSON malformado de gh pr view (headRefOid): ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+export type BaseFreshness =
+  /** O HEAD contém a ponta atual da base: o CI dele vale para a base de agora. */
+  | { verdict: "fresh"; baseSha: string }
+  /** A base tem `behindBy` commit(s) fora do HEAD: o CI do HEAD é de base antiga. */
+  | { verdict: "stale"; baseSha: string; behindBy: number }
+  /** Não deu para saber (gh falhou, payload inesperado) — nunca tratado como `fresh`. */
+  | { verdict: "unknown"; reason: string };
+
+/**
+ * A ponta ATUAL da base remota está contida em `headSha`? (#13461)
+ *
+ * Uma chamada à API de comparação do GitHub (`compare/{base}...{head}`): o
+ * `{base}` é resolvido pelo GitHub no instante da consulta, então ler isto
+ * com o merge lock em mãos é o "reler o SHA da base com o lock" da regra
+ * #10927 do `/diaria-overnight`. `behind_by: 0` (status `ahead`/`identical`)
+ * = o HEAD já tem tudo da base. Roda no GitHub, sem `git fetch` no checkout
+ * principal compartilhado.
+ */
+export function checkHeadContainsBase(runner: TrainRunner, headSha: string, baseBranch: string = TRAIN_BASE_BRANCH): BaseFreshness {
+  const res = runner.exec("gh", [
+    "api",
+    `repos/${TRAIN_REPO}/compare/${baseBranch}...${headSha}`,
+    "--jq",
+    "{status: .status, behind_by: .behind_by, base_sha: .base_commit.sha}",
+  ]);
+  if (!res.ok) return { verdict: "unknown", reason: `gh api compare ${baseBranch}...${headSha.slice(0, 12)} falhou: ${res.stderr.trim() || "sem saída"}` };
+  let p: { status?: unknown; behind_by?: unknown; base_sha?: unknown };
+  try {
+    p = JSON.parse(res.stdout) as typeof p;
+  } catch (e) {
+    return { verdict: "unknown", reason: `JSON malformado de gh api compare: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const baseSha = typeof p?.base_sha === "string" && SHA40.test(p.base_sha) ? p.base_sha : null;
+  const behindBy = typeof p?.behind_by === "number" && Number.isInteger(p.behind_by) && p.behind_by >= 0 ? p.behind_by : null;
+  if (!baseSha || behindBy === null || typeof p.status !== "string") {
+    return { verdict: "unknown", reason: `gh api compare devolveu payload inesperado: ${res.stdout.trim().slice(0, 200)}` };
+  }
+  if (behindBy > 0) return { verdict: "stale", baseSha, behindBy };
+  if (p.status === "ahead" || p.status === "identical") return { verdict: "fresh", baseSha };
+  return { verdict: "unknown", reason: `gh api compare: status "${p.status}" com behind_by 0` };
 }
 
 /** Campos de `MergeTrainBatchResult` derivados das condições 2 e 3 do Gate 2. */
@@ -747,7 +809,7 @@ export function mergeTrainBatch(
   trainPrNumber: number,
   batch: TrainBatch,
   prInfos: readonly TrainPrInfo[],
-  opts: { sessionId: string; kind: string; commitTitle: string; commitBody: string },
+  opts: { sessionId: string; kind: string; commitTitle: string; commitBody: string; baseBranch?: string },
 ): MergeTrainBatchResult {
   // #13388: PR mergeada fora do trem entre a descoberta e o merge é terminal
   // ok — fora da revalidação do Gate 2 e do fechamento (já está MERGED).
@@ -762,6 +824,12 @@ export function mergeTrainBatch(
       };
     }
   }
+
+  // #13461: o CI do PR-trem vale para a base em que a integração foi montada.
+  // O HEAD lido aqui é o que vai ao `--match-head-commit`, e sob o lock a
+  // base é relida contra ele (outra sessão pode ter mergeado durante o CI).
+  const trainHead = readPrHeadSha(runner, trainPrNumber);
+  if (!trainHead.ok) return { ok: false, error: `HEAD do PR-trem #${trainPrNumber} ilegível, sem merge (#13461): ${trainHead.reason}` };
 
   const acquire = runner.exec("npx", [
     "tsx",
@@ -787,11 +855,24 @@ export function mergeTrainBatch(
   let mergeOk: boolean;
   let syncWarning: string | undefined;
   try {
+    const fresh = checkHeadContainsBase(runner, trainHead.sha, opts.baseBranch ?? TRAIN_BASE_BRANCH);
+    if (fresh.verdict === "stale") {
+      return {
+        ok: false,
+        staleBase: { headSha: trainHead.sha, baseSha: fresh.baseSha, behindBy: fresh.behindBy },
+        error: `base andou depois do CI do PR-trem #${trainPrNumber}: ${fresh.behindBy} commit(s) da base (${fresh.baseSha.slice(0, 12)}) fora do HEAD ${trainHead.sha.slice(0, 12)} (#13461)`,
+      };
+    }
+    if (fresh.verdict === "unknown") {
+      return { ok: false, error: `base atual não verificável sob o lock, sem merge do PR-trem #${trainPrNumber} (#13461): ${fresh.reason}` };
+    }
     const merge = runner.exec("gh", [
       "pr",
       "merge",
       String(trainPrNumber),
       "--squash",
+      "--match-head-commit",
+      trainHead.sha,
       "--subject",
       opts.commitTitle,
       "--body",
@@ -887,6 +968,7 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
 export interface MergeSoloOptions {
   sessionId: string;
   kind: string;
+  baseBranch?: string; // default "master"
 }
 
 /** Piso da bissecção = caminho de HOJE, sem trem: revalida o Gate 2 do PR
@@ -896,15 +978,22 @@ export interface MergeSoloOptions {
  * Sem isso, o GitHub pode herdar Closes de um commit mesmo após o body
  * ter sido alterado para REFS (escopo parcial).
  *
- * Confia no CI do PR rodado sobre a base em que ele foi aberto — por isso
- * `runMergeTrain` NUNCA chama esta função pra um PR que esteve num lote
- * vermelho (#10997): esse PR é revalidado sobre a base atual pelo caminho
- * do lote (PR-trem de 1). */
+ * Só confia no CI do PR quando o HEAD dele já contém a base ATUAL (#13461):
+ * com o lock em mãos, `checkHeadContainsBase` relê a ponta da base contra o
+ * HEAD validado. Base fora do HEAD (outra PR entrou depois do último push
+ * desta) devolve `staleBase` sem mergear, e `runMergeTrain` revalida o PR
+ * pelo caminho do lote (PR-trem de 1 sobre `origin/{base}` fresco), como faz
+ * com o PR que esteve num lote vermelho (#10997). Foi o merge solo da #13456
+ * com o CI de antes da #13458 que deixou o `tsc` do master vermelho. O merge
+ * leva `--match-head-commit` com o HEAD validado: push concorrente na branch
+ * recusa o merge. */
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
   const gate = revalidateGate2(runner, prNumber, opts.sessionId);
   if (!gate.ok) {
     return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}`, ...gate2FailureFields(gate, prNumber) };
   }
+  const head = readPrHeadSha(runner, prNumber);
+  if (!head.ok) return { ok: false, error: `HEAD da PR #${prNumber} ilegível, base atual não verificável, sem merge (#13461): ${head.reason}` };
 
   const acquire = runner.exec("npx", [
     "tsx",
@@ -924,6 +1013,17 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
     };
   }
   try {
+    const fresh = checkHeadContainsBase(runner, head.sha, opts.baseBranch ?? TRAIN_BASE_BRANCH);
+    if (fresh.verdict === "stale") {
+      return {
+        ok: false,
+        staleBase: { headSha: head.sha, baseSha: fresh.baseSha, behindBy: fresh.behindBy },
+        error: `PR #${prNumber} atrás da base atual: ${fresh.behindBy} commit(s) da base (${fresh.baseSha.slice(0, 12)}) fora do HEAD ${head.sha.slice(0, 12)}; o CI verde dela é de base antiga (#13461)`,
+      };
+    }
+    if (fresh.verdict === "unknown") {
+      return { ok: false, error: `base atual não verificável sob o lock, sem merge da PR #${prNumber} (#13461): ${fresh.reason}` };
+    }
     const message = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "title,body,commits"]);
     if (!message.ok) return { ok: false, error: `mensagem da PR #${prNumber} ilegível: ${message.stderr}` };
     let title: string;
@@ -947,6 +1047,8 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
       "merge",
       String(prNumber),
       "--squash",
+      "--match-head-commit",
+      head.sha,
       "--subject",
       buildSoloSquashSubject(title, prNumber),
       "--body",
@@ -1098,6 +1200,10 @@ const LOCK_RETRY_DELAY_MS = 20_000;
 // boas) — e não muda em nada o caminho feliz (CI verde na 1ª tentativa
 // nunca passa por aqui).
 const RECONFIRM_DELAY_MS = 15_000;
+// #13461: quantas vezes um lote refaz a integração porque a base andou entre
+// o CI do PR-trem e o merge. Cada volta custa 1 CI; acima disto o lote fica
+// `lock-blocked` (validado só sobre base antiga) em vez de girar a noite toda.
+const MAX_BASE_MOVED_RETRIES = 2;
 
 /**
  * Orquestrador de topo — fila de lotes começando pelo lote inicial
@@ -1108,7 +1214,11 @@ const RECONFIRM_DELAY_MS = 15_000;
  * então o CI verde do PR sobre a base antiga não vale; o PR sozinho passa
  * pela integração + PR-trem + CI sobre `origin/{base}` fresco (a
  * "revalidação da base" do #10927) e, se esse CI reprovar ou não montar,
- * termina `solo-failed` sem merge. Lote de tamanho ≥2: monta a integração (worktree isolado),
+ * termina `solo-failed` sem merge. O mesmo vale (#13461) para o PR solo cujo
+ * HEAD não contém a base atual relida sob o lock (`mergeSoloPr` devolve
+ * `staleBase` sem mergear). E o PR-trem verde cuja base andou antes do merge
+ * refaz a integração (até `MAX_BASE_MOVED_RETRIES`, depois `lock-blocked`).
+ * Lote de tamanho ≥2: monta a integração (worktree isolado),
  * abre o PR-trem, espera 1 run de CI; verde → merge de verdade (1 commit
  * squash, `Closes` de todas as issues do lote, com retry bounded se só o
  * lock estiver negado) + fecha as PRs originais; vermelho → RECONFIRMA
@@ -1153,6 +1263,11 @@ export async function runMergeTrain(
   // `origin/{base}` fresco + PR-trem + CI) e só mergeia com esse CI verde.
   // Foi o que deixou master vermelha na rodada 261023 (PR #10954).
   const needsBaseRevalidation = new Set<number>();
+  // #13461: PRs que chegaram ao merge solo com a base fora do HEAD (só pro
+  // detalhe do outcome) e quantas vezes cada lote viu a base andar entre o
+  // CI do PR-trem e o merge (bounded por MAX_BASE_MOVED_RETRIES).
+  const staleSoloPrs = new Set<number>();
+  const baseMovedRetries = new Map<string, number>();
 
   /** Lote que não pode seguir: bissecta (>=2) ou, no piso, vira `solo-failed`
    * terminal — `bisectBatch` lança em lote de 1, e um PR sozinho que falha
@@ -1173,7 +1288,18 @@ export async function runMergeTrain(
 
     if (batch.prs.length === 1 && !needsBaseRevalidation.has(batch.prs[0])) {
       const pr = batch.prs[0];
-      const result = mergeSoloPr(runner, pr, opts);
+      const result = mergeSoloPr(runner, pr, { sessionId: opts.sessionId, kind: opts.kind, baseBranch });
+      if (result.staleBase) {
+        // #13461: a base andou depois do último push desta PR — o CI verde
+        // dela não prova a combinação com o que entrou. Nada foi mergeado;
+        // a PR volta à frente da fila pelo caminho do PR-trem de 1 (mesma
+        // revalidação do #10997). Bounded: a PR nunca mais passa por aqui.
+        needsBaseRevalidation.add(pr);
+        staleSoloPrs.add(pr);
+        runner.warn(`${result.error} — revalidando sobre a base atual pelo PR-trem de 1 em vez do merge solo`);
+        queue.unshift(batch);
+        continue;
+      }
       const threadsOutcome = threadsBlockedOutcome(batch, result); // #12734
       if (threadsOutcome) {
         outcomes.push(threadsOutcome);
@@ -1221,6 +1347,7 @@ export async function runMergeTrain(
         kind: opts.kind,
         commitTitle: buildTrainMergeCommitTitle(batch),
         commitBody: buildTrainMergeCommitBody(batch, prInfos),
+        baseBranch,
       });
       let lockRetries = 0;
       while (!mergeResult.ok && mergeResult.lockDenied && lockRetries < MAX_LOCK_RETRIES) {
@@ -1231,6 +1358,7 @@ export async function runMergeTrain(
           kind: opts.kind,
           commitTitle: buildTrainMergeCommitTitle(batch),
           commitBody: buildTrainMergeCommitBody(batch, prInfos),
+          baseBranch,
         });
       }
       // O PR-trem SÓ é fechado explicitamente se o merge não aconteceu —
@@ -1241,12 +1369,31 @@ export async function runMergeTrain(
       }
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
       if (mergeResult.ok && batch.prs.length === 1) {
-        // #10997: PR sozinho revalidado sobre a base atual (veio de um lote vermelho).
+        // #10997: PR sozinho revalidado sobre a base atual (veio de um lote
+        // vermelho, ou, #13461, de um merge solo com a base fora do HEAD).
+        const why = staleSoloPrs.has(batch.prs[0]) ? "estava atrás da base atual, #13461" : "#10997";
         outcomes.push({
           batch,
           status: "solo-merged",
-          detail: mergeResult.error ?? `revalidado sobre a base atual (PR-trem #${trainPrNumber}, CI verde) e squash-mergeado (#10997)`,
+          detail: mergeResult.error ?? `revalidado sobre a base atual (PR-trem #${trainPrNumber}, CI verde) e squash-mergeado (${why})`,
         });
+      } else if (mergeResult.staleBase) {
+        // #13461: a base andou entre o CI do PR-trem e o merge (outra sessão
+        // mergeou no meio). Nada mergeado; a integração é refeita sobre a base
+        // nova, no máximo MAX_BASE_MOVED_RETRIES vezes por lote.
+        const key = batch.prs.join(",");
+        const seen = (baseMovedRetries.get(key) ?? 0) + 1;
+        baseMovedRetries.set(key, seen);
+        if (seen <= MAX_BASE_MOVED_RETRIES) {
+          outcomes.push({ batch, status: "abandoned", detail: `${mergeResult.error} — integração refeita sobre a base nova (tentativa ${seen}/${MAX_BASE_MOVED_RETRIES})` });
+          queue.unshift(batch);
+        } else {
+          outcomes.push({
+            batch,
+            status: "lock-blocked",
+            detail: `base andou ${seen}x entre o CI do PR-trem e o merge — lote validado só sobre base antiga, não mergeado: ${mergeResult.error}`,
+          });
+        }
       } else if (mergeResult.ok) {
         outcomes.push({ batch, status: "merged", detail: mergeResult.error ?? `PR-trem #${trainPrNumber} squash-mergeado` });
       } else if (mergeResult.retidoPr !== undefined) {
