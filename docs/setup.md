@@ -125,6 +125,10 @@ python -m pip install --user nvidia-cublas-cu12 "nvidia-cudnn-cu12>=9,<10"
 
 O helper registra os `bin` desses pacotes com `os.add_dll_directory`; nada a pôr
 no PATH. Conferido no Neo (RTX 4060 Laptop, driver 617.42) em 18/11/2026.
+O veredito da sonda da GPU (~10 s) fica 6 h em cache em `diaria-whisper-cuda-probe.json`,
+no diretório temporário do sistema, e só a 1ª chamada paga a sonda (#13504); depois de
+instalar ou trocar as DLLs, apagar esse arquivo (ou `DIARIA_WHISPER_PROBE_CACHE=0`) força
+a sonda de novo.
 
 Opcional (#13372): o `verify-xml` usa o OpenTimelineIO (adapter FCP7) como 2º
 leitor do XML, conferindo clipes, in/out e duração contra o leitor próprio. Sem

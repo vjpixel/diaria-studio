@@ -3,6 +3,9 @@
  * CUDA falha — inclusive no primeiro `encode`, que é onde o Windows acusa
  * `cublas64_12.dll is not found` (a carga do modelo passa). Roda o helper real
  * contra um `faster_whisper` falso no PYTHONPATH, sem GPU nem modelo.
+ *
+ * #13504: o veredito da sonda fica em cache; cada `fakeEnv` aponta o cache para o
+ * próprio tmpdir (`DIARIA_WHISPER_PROBE_CACHE_DIR`), então os testes não se veem.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -72,17 +75,35 @@ function run(env: ReturnType<typeof fakeEnv>, args: string[], extraEnv: Record<s
   const out = join(env.dir, "out.json");
   const r = spawnSync(PY!, ["-P", HELPER, env.audio, out, ...args], {
     encoding: "utf8",
-    env: { ...process.env, PYTHONPATH: env.dir, PYTHONIOENCODING: "utf-8", DIARIA_WHISPER_DEVICE: "", ...extraEnv },
+    env: {
+      ...process.env,
+      PYTHONPATH: env.dir,
+      PYTHONIOENCODING: "utf-8",
+      DIARIA_WHISPER_DEVICE: "",
+      DIARIA_WHISPER_PROBE_CACHE: "",
+      DIARIA_WHISPER_PROBE_CACHE_DIR: env.dir,
+      ...extraEnv,
+    },
   });
-  const loads = (() => {
-    try {
-      return readFileSync(env.log, "utf8").trim().split(/\r?\n/);
-    } catch {
-      return [];
-    }
-  })();
-  return { ...r, out, loads };
+  return { ...r, out, loads: readLoads(env) };
 }
+
+function readLoads(env: ReturnType<typeof fakeEnv>): string[] {
+  try {
+    return readFileSync(env.log, "utf8").trim().split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Roda e devolve só as cargas desta chamada (o loads.log acumula entre chamadas no mesmo env). */
+function runDelta(env: ReturnType<typeof fakeEnv>, args: string[], extraEnv: Record<string, string> = {}) {
+  const before = readLoads(env).length;
+  const r = run(env, args, extraEnv);
+  return { ...r, loads: r.loads.slice(before) };
+}
+
+const cacheFile = (env: ReturnType<typeof fakeEnv>) => join(env.dir, "diaria-whisper-cuda-probe.json");
 
 describe("#13477 transcribe_words.py --device", { skip: PY ? false : "sem python3" }, () => {
   it("auto: CUDA falha no 1º encode (cublas64_12.dll) → avisa e refaz na CPU int8", () => {
@@ -161,5 +182,88 @@ describe("#13477 transcribe_words.py --device", { skip: PY ? false : "sem python
     const r = run(env, ["--device", "tpu"]);
     assert.equal(r.status, 2);
     assert.deepEqual(r.loads, []);
+  });
+});
+
+describe("#13504 cache do veredito da sonda da GPU", { skip: PY ? false : "sem python3" }, () => {
+  it("GPU ok: a 2ª chamada em auto pula a sonda (só a carga real)", () => {
+    const env = fakeEnv("ok");
+    const r1 = runDelta(env, []);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(r1.loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+    const r2 = runDelta(env, []);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(r2.loads, ["cuda:int8_float16"]);
+    assert.equal(JSON.parse(r2.stdout.trim().split("\n").pop()!).device, "cuda");
+  });
+
+  it("veredito falho cacheado: a 2ª chamada nem toca a GPU e o aviso cita o motivo cacheado", () => {
+    const env = fakeEnv("native-crash");
+    const r1 = runDelta(env, []);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(r1.loads, ["cuda:int8_float16", "cpu:int8"]);
+    const r2 = runDelta(env, []);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(r2.loads, ["cpu:int8"]);
+    assert.match(r2.stderr, /\[aviso\].*sonda da GPU saiu 9.*veredito em cache/);
+  });
+
+  it("sonda ok mas o encode falha no processo principal → cache invalidado, a chamada seguinte sonda de novo", () => {
+    const env = fakeEnv("fail-2nd-encode");
+    const win = join(env.dir, "win.json");
+    writeFileSync(win, JSON.stringify([1, 2, 3].map((k) => ({ key: `w${k}`, start: k * 2, end: k * 2 + 1 }))));
+    const r1 = runDelta(env, ["--windows", win]);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(r1.loads, ["cuda:int8_float16", "cuda:int8_float16", "cpu:int8"]);
+    assert.deepEqual(JSON.parse(readFileSync(cacheFile(env), "utf8")), {});
+    const r2 = runDelta(env, ["--windows", win]);
+    assert.equal(r2.status, 0, r2.stderr);
+    // a sonda roda de novo (1ª carga): nem um "ok" velho que pularia a sonda, nem um "falho" que pularia a GPU
+    assert.deepEqual(r2.loads, ["cuda:int8_float16", "cuda:int8_float16", "cpu:int8"]);
+  });
+
+  it("sonda ok mas a carga real falha → cache invalidado", () => {
+    const env = fakeEnv("ok");
+    assert.equal(runDelta(env, []).status, 0);
+    // a GPU "some" entre as chamadas: veredito ok em cache, carga falha
+    const init = join(env.dir, "faster_whisper", "__init__.py");
+    writeFileSync(init, readFileSync(init, "utf8").replace('MODE = "ok"', 'MODE = "load-fail"'));
+    const r2 = runDelta(env, []);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(r2.loads, ["cuda:int8_float16", "cpu:int8"]);
+    assert.deepEqual(JSON.parse(readFileSync(cacheFile(env), "utf8")), {});
+    const r3 = runDelta(env, []);
+    // sem cache: a sonda roda (e falha na carga), depois CPU
+    assert.deepEqual(r3.loads, ["cuda:int8_float16", "cpu:int8"]);
+    assert.match(r3.stderr, /sonda da GPU saiu/);
+  });
+
+  it("cache corrompido → roda a sonda, sem erro, e regrava um cache válido", () => {
+    const env = fakeEnv("ok");
+    writeFileSync(cacheFile(env), "{isto não é json");
+    const r1 = runDelta(env, []);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(r1.loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+    assert.deepEqual(runDelta(env, []).loads, ["cuda:int8_float16"]);
+  });
+
+  it("TTL vencido → roda a sonda de novo", () => {
+    const env = fakeEnv("ok");
+    assert.equal(runDelta(env, []).status, 0);
+    const data = JSON.parse(readFileSync(cacheFile(env), "utf8")) as Record<string, { at: number }>;
+    assert.equal(Object.keys(data).length, 1);
+    for (const k of Object.keys(data)) data[k].at -= 6 * 3600 + 1;
+    writeFileSync(cacheFile(env), JSON.stringify(data));
+    const r = runDelta(env, []);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+  });
+
+  it("DIARIA_WHISPER_PROBE_CACHE=0 desliga o cache: toda chamada sonda", () => {
+    const env = fakeEnv("ok");
+    const off = { DIARIA_WHISPER_PROBE_CACHE: "0" };
+    assert.deepEqual(runDelta(env, [], off).loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+    assert.deepEqual(runDelta(env, [], off).loads, ["cuda:int8_float16", "cuda:int8_float16"]);
+    assert.throws(() => readFileSync(cacheFile(env), "utf8"));
   });
 });

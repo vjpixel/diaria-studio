@@ -9,6 +9,13 @@ driver: `pip install --user nvidia-cublas-cu12 "nvidia-cudnn-cu12>=9,<10"`; o he
 diretórios `bin` desses pacotes com `os.add_dll_directory` antes de carregar o modelo.
 `--device cpu` força o comportamento anterior.
 
+Cache da sonda (#13504): o veredito da sonda da GPU (ok ou falho, com o motivo) fica em
+`diaria-whisper-cuda-probe.json` no diretório temporário do sistema (`DIARIA_WHISPER_PROBE_CACHE_DIR`
+troca o diretório), chaveado por `sys.executable` + versão do CTranslate2 + modelo, por 6 h. Só a 1ª
+chamada da janela paga a sonda (~10 s); veredito falho cacheado vai direto para a CPU. Se a sonda
+passou e a carga ou o encode na GPU falharem no processo principal, a entrada é apagada e a próxima
+chamada sonda de novo. Arquivo ilegível = sem cache. `DIARIA_WHISPER_PROBE_CACHE=0` desliga.
+
 Rodar com `python -P` (não `-I`: `-I` esconde o site-packages do usuário, onde o
 faster-whisper está instalado) e `HF_HUB_OFFLINE=1` (o modelo já está no cache do Hugging
 Face; sem a variável o hub tenta a rede a cada carga). O TS passa os dois.
@@ -33,11 +40,15 @@ import argparse
 import json
 import os
 import sys
+import tempfile
+import time
 
 CUDA_ERROR_MARKERS = ("cuda", "cublas", "cudnn", "cudart")
 PROBE_FLAG = "--probe-cuda"
 PROBE_OK = "cuda-ok"
 PROBE_TIMEOUT_S = 300
+PROBE_CACHE_FILE = "diaria-whisper-cuda-probe.json"
+PROBE_CACHE_TTL_S = 6 * 3600
 
 
 def probe_cuda(model_name: str) -> int:
@@ -83,6 +94,94 @@ def cuda_usable(model_name: str):
         return True, ""
     tail = ((r.stderr or "").strip().splitlines() or [""])[-1]
     return False, f"sonda da GPU saiu {r.returncode}: {tail}"[:400]
+
+
+def probe_cache_path():
+    """Caminho do cache do veredito da sonda (#13504), ou None se desligado."""
+    if os.environ.get("DIARIA_WHISPER_PROBE_CACHE", "").strip() == "0":
+        return None
+    d = os.environ.get("DIARIA_WHISPER_PROBE_CACHE_DIR", "").strip() or tempfile.gettempdir()
+    return os.path.join(d, PROBE_CACHE_FILE)
+
+
+def probe_cache_key(model_name: str) -> str:
+    # Pelos metadados do pacote: não carrega o código nativo do CTranslate2 só para ler a versão.
+    try:
+        from importlib.metadata import version
+
+        ct2 = version("ctranslate2")
+    except Exception:  # noqa: BLE001 — sem CTranslate2 instalado a chave só não leva a versão
+        ct2 = "ausente"
+    return f"{sys.executable}|ctranslate2={ct2}|{model_name}"
+
+
+def _read_probe_cache(path) -> dict:
+    """Entradas do cache; arquivo ausente, corrompido ou ilegível = {} (nunca lança)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_probe_cache(path, data: dict) -> None:
+    """Escrita atômica (tmp + os.replace); falha de escrita só perde o cache."""
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def cached_probe_verdict(model_name: str):
+    """(ok, motivo) do cache ainda dentro do TTL, ou None (sem cache, vencido, malformado)."""
+    path = probe_cache_path()
+    if not path:
+        return None
+    entry = _read_probe_cache(path).get(probe_cache_key(model_name))
+    if not isinstance(entry, dict):
+        return None
+    ok, at, why = entry.get("ok"), entry.get("at"), entry.get("why", "")
+    if not isinstance(ok, bool) or not isinstance(at, (int, float)) or isinstance(at, bool):
+        return None
+    age = time.time() - at
+    if age < 0 or age >= PROBE_CACHE_TTL_S:
+        return None
+    return ok, str(why)
+
+
+def store_probe_verdict(model_name: str, ok: bool, why: str) -> None:
+    path = probe_cache_path()
+    if not path:
+        return
+    data = _read_probe_cache(path)
+    data[probe_cache_key(model_name)] = {"ok": ok, "why": why, "at": time.time()}
+    _write_probe_cache(path, data)
+
+
+def invalidate_probe_verdict(model_name: str) -> None:
+    """A GPU falhou depois de a sonda passar: apaga a entrada, a próxima chamada sonda de novo."""
+    path = probe_cache_path()
+    if not path:
+        return
+    data = _read_probe_cache(path)
+    if data.pop(probe_cache_key(model_name), None) is not None:
+        _write_probe_cache(path, data)
+
+
+def gpu_verdict(model_name: str):
+    """(ok, motivo): veredito do cache (#13504) ou, sem ele, da sonda, que é então cacheada."""
+    cached = cached_probe_verdict(model_name)
+    if cached is not None:
+        ok, why = cached
+        return ok, (f"{why} [veredito em cache, {PROBE_CACHE_FILE}]" if not ok else "")
+    ok, why = cuda_usable(model_name)
+    store_probe_verdict(model_name, ok, why)
+    return ok, why
 
 
 def register_nvidia_dll_dirs() -> list:
@@ -165,13 +264,14 @@ def main() -> int:
 
     if device_req == "auto":
         register_nvidia_dll_dirs()
-        ok, why = cuda_usable(a.model)
+        ok, why = gpu_verdict(a.model)
         if not ok:
             fall_back_to_cpu(why)
         else:
             try:
                 load("cuda")
             except Exception as e:  # noqa: BLE001 — a sonda passou; qualquer falha aqui ainda cai na CPU
+                invalidate_probe_verdict(a.model)
                 fall_back_to_cpu(e)
     elif device_req == "cuda":
         register_nvidia_dll_dirs()
@@ -190,6 +290,7 @@ def main() -> int:
             # A falta de cublas64_12.dll só aparece no primeiro encode, não na carga.
             # Sem memória na GPU também cai aqui: o arquivo é refeito do zero na CPU (correto, mais lento).
             if state["device"] == "cuda" and device_req == "auto" and is_cuda_error(e):
+                invalidate_probe_verdict(a.model)
                 fall_back_to_cpu(e)
                 state["fell_back"] = True
                 return _segments_of(audio, offset)
