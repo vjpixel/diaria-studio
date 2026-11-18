@@ -107,6 +107,7 @@ import {
   clipReason,
   CURRENT_METHOD,
   currentDoneSequences,
+  markEditionDone,
   DriveReadInterruptedError,
   readWithRetry,
   remeasureGaveUp,
@@ -675,7 +676,7 @@ function saveRecord(rec: EditionRecord, state: RecurringState, dryRun: boolean, 
   const merged = mergeEditionRecord(fresh.get(rec.edition) ?? readJsonSafe<EditionRecord>(out(`${rec.edition}.json`)), rec);
   fresh.set(rec.edition, merged);
   if (!dryRun) writeJson(out(`${rec.edition}.json`), merged);
-  if (merged.sequences.length) state.done[rec.edition] = { at: new Date().toISOString(), sequences: merged.sequences.map((s) => s.key) };
+  markEditionDone(state, merged);
   return merged;
 }
 
