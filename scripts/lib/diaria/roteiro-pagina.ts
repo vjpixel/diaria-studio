@@ -142,8 +142,8 @@ function grupos(roteiro: RoteiroFalas, v: VideoRoteiro): Array<{ bloco: BlockKey
   return out;
 }
 
-function secaoVideo(roteiro: RoteiroFalas, v: VideoRoteiro, seg: number | undefined, ctaCardS: number): string {
-  const comTopicos = roteiro.falas.some((f) => (f.topicos?.length ?? 0) > 0);
+function secaoVideo(roteiro: RoteiroFalas, v: VideoRoteiro, seg: number | undefined, ctaCardS: number, semTopicos = false): string {
+  const comTopicos = !semTopicos && roteiro.falas.some((f) => (f.topicos?.length ?? 0) > 0);
   const peca = roteiroPecas(roteiro)[v] ?? {};
   const spec = seg !== undefined ? `cerca de ${fmtDuracao(seg)}` : "";
   const papel = v === "horizontal" ? "notícia completa · " : "";
@@ -298,6 +298,8 @@ export interface RenderOpts {
   cfg?: RoteiroDuracaoConfig;
   /** Link do artefato publicado, gravado na 1ª linha (`<!-- artifact: URL -->`, Passo 5 da skill). */
   artifactUrl?: string;
+  /** Roteiro sem a coluna de tópicos (`--sem-topicos`, #13447): os tópicos vão na página à parte. */
+  semTopicos?: boolean;
 }
 
 /**
@@ -324,7 +326,7 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `<main class="wrap">`,
     `  <section class="review" aria-label="Gravação">`,
     `    <h2>Gravação</h2>`,
-    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. À esquerda de cada fala, os tópicos para gravar sem ler; o texto de tela fica no box à direita, só no horizontal.</p>`,
+    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. ${opts.semTopicos ? "Os tópicos para gravar sem ler estão na página de tópicos. O" : "À esquerda de cada fala, os tópicos para gravar sem ler; o"} texto de tela fica no box à direita, só no horizontal.</p>`,
     `    <ul>\n${itensGravacao(roteiro, cfg).map((i) => `      <li>${i}</li>`).join("\n")}\n    </ul>`,
     `  </section>`,
     ``,
@@ -334,7 +336,7 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `  </div>`,
     ``,
     `  <div id="roteiro" style="display:flex;flex-direction:column;gap:26px">`,
-    ...videos.map((v) => secaoVideo(roteiro, v, dur.get(v), cfg.ctaCardS)),
+    ...videos.map((v) => secaoVideo(roteiro, v, dur.get(v), cfg.ctaCardS, opts.semTopicos)),
     `  </div>`,
     ...(notas.length
       ? [``, `  <section class="notes" aria-label="Notas para a edição">`, `    <h2>Notas para a edição</h2>`, `    <ul>\n${notas.map((n) => `      <li>${n}</li>`).join("\n")}\n    </ul>`, `  </section>`]
@@ -342,6 +344,67 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `</main>`,
     ``,
     `<script>\n${SCRIPT}\n</script>`,
+    ``,
+  ].join("\n");
+  const seta = html.match(SETA);
+  if (seta) throw new Error(`a página sairia com seta (${seta[0]}), proibida no que chega ao leitor (#9721): troque no roteiro-falas.json`);
+  return html;
+}
+
+const CSS_TOPICOS = `
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 30px; line-height: 1.35; padding: 24px 16px 56px; }
+.wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.meta { font-size: 14px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.bloco { background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 16px 22px; }
+.bloco .id { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 14px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 6px; }
+.bloco ul { margin: 8px 0 0; padding-left: 28px; font-weight: 600; }
+.bloco li + li { margin-top: 4px; }
+.bloco .sem { margin: 8px 0 0; font-size: 18px; color: var(--muted); font-style: italic; }
+.faixa { border-left: 6px dashed var(--warn); background: var(--sug-bg); border-radius: 6px; padding: 12px 20px; font-size: 22px; }
+.faixa b { display: block; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--warn); margin-bottom: 4px; }
+.faixa span { font-size: 17px; color: var(--muted); display: block; margin-top: 4px; }
+.separador { font-size: 14px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-top: 2px solid var(--ink); padding-top: 14px; }
+.novo { display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; background: var(--new-bg); color: var(--new-fg); padding: 2px 7px; border-radius: 4px; margin-left: 8px; vertical-align: 3px; }
+@media (max-width: 520px) { body { font-size: 24px; } }`;
+
+function blocoTopicos(f: FalaRoteiro, aparte: boolean): string {
+  const lista = f.topicos?.length ? `<ul>${f.topicos.map((t) => `<li>${esc(t.trim())}</li>`).join("")}</ul>` : `<p class="sem">sem tópicos</p>`;
+  const tag = aparte ? `<span class="novo">Gravar à parte</span>` : "";
+  return `  <section class="bloco"><span class="id">${esc(f.id)}</span>${tag}${lista}</section>`;
+}
+
+/**
+ * Página só com os tópicos (#13447, pedido do editor na 261118): um bloco por
+ * fala na ordem do horizontal, a faixa de cada `trechoInserido` onde o trecho
+ * entra, e as falas gravadas à parte no fim. Fonte grande, para ler de relance.
+ * Mesmo esquema de temas (claro/escuro) da página do roteiro.
+ */
+export function renderTopicosPagina(roteiro: RoteiroFalas, opts: { artifactUrl?: string } = {}): string {
+  if (opts.artifactUrl && !artifactUrlSegura(opts.artifactUrl)) throw new Error(`link de artefato inválido para o comentário HTML: ${opts.artifactUrl}`);
+  const principais = falasDoVideo(roteiro, "horizontal").falas.filter((f) => !f.gravarAParte);
+  const aparte = roteiro.falas.filter((f) => f.gravarAParte);
+  const corpo: string[] = [];
+  for (const f of principais) {
+    corpo.push(blocoTopicos(f, false));
+    if (f.trechoInserido)
+      corpo.push(`  <div class="faixa"><b>Entra o trecho</b>${esc(f.trechoInserido.origem.trim())}<span>${esc(f.id)} termina; depois do trecho, a próxima fala</span></div>`);
+  }
+  if (aparte.length) {
+    corpo.push(`  <div class="separador">Gravadas à parte</div>`);
+    for (const f of aparte) corpo.push(blocoTopicos(f, true));
+  }
+  const html = [
+    ...(opts.artifactUrl ? [`<!-- artifact: ${opts.artifactUrl} -->`] : []),
+    `<title>Tópicos ${esc(roteiro.edicao ?? "")}</title>`,
+    `<meta name="claude:viewport-fit-sides" content="cover">`,
+    `<!-- Gerado de _internal/roteiro-falas.json por scripts/render-roteiro-video.ts --topicos (#13447): editar o JSON e gerar de novo, nunca o HTML à mão. -->`,
+    `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Inter:wght@400;600&display=swap">`,
+    `<style>\n${CSS.slice(0, CSS.indexOf("body {"))}${CSS_TOPICOS}\n</style>`,
+    ``,
+    `<main class="wrap">`,
+    `  <div class="meta">Tópicos · Edição ${esc(roteiro.edicao ?? "")} · ordem de gravação</div>`,
+    ...corpo,
+    `</main>`,
     ``,
   ].join("\n");
   const seta = html.match(SETA);
