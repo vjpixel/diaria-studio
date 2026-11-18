@@ -96,7 +96,7 @@ export const D1_INVITE_LINE_HEIGHT = 1.2;
  * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
  * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`.
  */
-export const D1_INVITE_VERSION = "invite-v7";
+export const D1_INVITE_VERSION = "invite-v8";
 
 /** `alt` da imagem do D1 quando ela é link: a imagem é o único conteúdo do link e o convite está só nos pixels. */
 export function d1HeroAlt(title: string): string {
@@ -160,6 +160,44 @@ export interface InviteTextMetrics {
   descent: number;
 }
 
+/** Cantos candidatos do convite (#13556), em ordem de preferência: inferior direito é o padrão. */
+export type InviteCorner = "br" | "bl" | "tr" | "tl";
+export const INVITE_CORNERS: readonly InviteCorner[] = ["br", "bl", "tr", "tl"];
+
+/**
+ * Escolhe o canto do convite com MENOS conteúdo (#13556): o selo não deve cobrir
+ * o sujeito da arte. Recebe a imagem em tons de cinza (1 byte/pixel) e mede, por
+ * canto, a energia de bordas (gradiente horizontal + vertical médio) sob o
+ * retângulo do convite. Menor energia = fundo liso. Empate fica com o primeiro
+ * da ordem de preferência (`br`).
+ */
+export function pickInviteCorner(gray: Uint8Array, width: number, height: number, m: InviteTextMetrics): InviteCorner {
+  let best: InviteCorner = "br";
+  let bestEnergy = Infinity;
+  for (const corner of INVITE_CORNERS) {
+    const { pill } = inviteGeometry(width, height, m, corner);
+    const x0 = Math.max(0, Math.floor(pill.x));
+    const y0 = Math.max(0, Math.floor(pill.y));
+    const x1 = Math.min(width - 2, Math.ceil(pill.x + pill.w));
+    const y1 = Math.min(height - 2, Math.ceil(pill.y + pill.h));
+    let sum = 0;
+    let n = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = y * width + x;
+        sum += Math.abs(gray[i + 1] - gray[i]) + Math.abs(gray[i + width] - gray[i]);
+        n++;
+      }
+    }
+    const energy = n > 0 ? sum / n : Infinity;
+    if (energy < bestEnergy) {
+      bestEnergy = energy;
+      best = corner;
+    }
+  }
+  return best;
+}
+
 export function estimateInviteTextMetrics(width: number): InviteTextMetrics {
   const fontSize = inviteFontSize(width);
   return { textW: fontSize * 9.95, ascent: fontSize * 0.74, descent: fontSize * 0.22 };
@@ -176,7 +214,12 @@ export function estimateInviteTextMetrics(width: number): InviteTextMetrics {
  * Lança se a faixa não couber na imagem com a margem: em vez de cortar o
  * convite, a geração falha e o fail-soft de `ensureD1PlayImage` tira o link.
  */
-export function inviteGeometry(width: number, height: number, m: InviteTextMetrics = estimateInviteTextMetrics(width)) {
+export function inviteGeometry(
+  width: number,
+  height: number,
+  m: InviteTextMetrics = estimateInviteTextMetrics(width),
+  corner: InviteCorner = "br",
+) {
   if (!(width > 0 && height > 0)) throw new Error(`buildInviteSvg: dimensões inválidas ${width}x${height}`);
   const fontSize = inviteFontSize(width);
   const margin = width * 0.03;
@@ -189,8 +232,8 @@ export function inviteGeometry(width: number, height: number, m: InviteTextMetri
   const blockH = m.ascent + lineGap * (lines - 1) + m.descent;
   const w = padX * 2 + iconD + gap + m.textW;
   const h = padY * 2 + Math.max(blockH, iconD);
-  const x = width - margin - w;
-  const y = height - margin - h;
+  const x = corner === "bl" || corner === "tl" ? margin : width - margin - w;
+  const y = corner === "tl" || corner === "tr" ? margin : height - margin - h;
   if (x < margin || y < margin) {
     throw new Error(`buildInviteSvg: convite (${w.toFixed(0)}x${h.toFixed(0)}) não cabe na imagem ${width}x${height} (#12747)`);
   }
@@ -207,8 +250,8 @@ export function inviteGeometry(width: number, height: number, m: InviteTextMetri
 
 /**
  * SVG do convite, do tamanho da imagem, para compor sobre o hero: faixa na cor
- * de tinta do design system (#171411, 82% de opacidade) no canto inferior
- * direito, com círculo branco e triângulo de play à esquerda e o texto branco
+ * de tinta do design system (#171411, 82% de opacidade) no canto de menor
+ * conteúdo (padrão inferior direito, #13556), com círculo branco e triângulo de play à esquerda e o texto branco
  * em duas linhas (#12747). Fica fora do centro para não cobrir o assunto da arte.
  * `textLength` não é usado: o rasterizador (librsvg) o ignora.
  */
@@ -217,8 +260,9 @@ export function buildInviteSvg(
   height: number,
   m: InviteTextMetrics = estimateInviteTextMetrics(width),
   fontFamily: string = D1_INVITE_FONT_FAMILY,
+  corner: InviteCorner = "br",
 ): string {
-  const g = inviteGeometry(width, height, m);
+  const g = inviteGeometry(width, height, m, corner);
   const f = (n: number) => n.toFixed(1);
   const { pill } = g;
   const r = g.iconD / 2;
