@@ -70,7 +70,7 @@ import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { watchCortesWithoutOwner } from "./lib/diaria/corte-owner-watch.ts";
 import { CORTES_REL_DIR } from "./lib/diaria/short-corte.ts";
 import { TIMER_LOCK_FILE as LINKEDIN_TIMER_LOCK_FILE, acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
-import { DOWNLOAD_PART_FRESH_MS, SHORTS_THREADS_TIMER_LOCK_FILE, verticalDownloadBusy } from "./lib/diaria/vertical-download-guard.ts";
+import { DOWNLOAD_PART_FRESH_MS, SHORTS_THREADS_TIMER_LOCK_FILE, driveNotReadyWait, verticalDownloadBusy } from "./lib/diaria/vertical-download-guard.ts";
 import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
@@ -505,6 +505,12 @@ async function runThreadsTimerEdition(aammdd: string, dir: string, dryRun: boole
     }
     const r = deps.runScript(publishArgs);
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
+    // #13540: vertical ainda subindo para o Drive (download vazio) — espera a próxima hora, sem alarme.
+    const notReady = driveNotReadyWait({ exitCode: r.status, stdout: r.stdout, nowMs: now.getTime(), at });
+    if (notReady) {
+      console.log(`${LOG_PREFIX} ${aammdd}: ${notReady} — tenta de novo na próxima execução`);
+      return 0;
+    }
     const outcome = interpretThreadsTimerOutput(r.status, r.stdout, r.stderr.trimEnd().split("\n").slice(-15).join("\n"));
     console.log(`${LOG_PREFIX} ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
     if (outcome.kind !== "alarm") return 0;

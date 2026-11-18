@@ -23,6 +23,34 @@ export const SHORTS_TIMER_LOCK_STALE_MS = 90 * 60_000;
 export const DOWNLOAD_PART_FRESH_MS = 30 * 60_000;
 
 /**
+ * Exit do `publish-shorts.ts --from-drive` quando o Drive devolveu o arquivo
+ * vazio (`DriveDownloadEmptyError`, #13540/#13541): o upload do editor criou o
+ * arquivo e o conteúdo ainda não chegou. 75 = EX_TEMPFAIL do sysexits.
+ */
+export const PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT = 75;
+
+/**
+ * Até quanto depois do horário do vertical o download vazio é espera, não
+ * alarme. Mesma 1 h do `missing-video`: o upload que segue vazio na execução
+ * seguinte (a de hora em hora) já não é "subindo agora", e o editor é avisado.
+ */
+export const DRIVE_NOT_READY_GRACE_MS = 60 * 60_000;
+
+/**
+ * Puro (#13540/#13541): a saída do `publish-shorts` é o download vazio de um
+ * vertical que ainda está subindo, dentro da tolerância? Devolve o motivo da
+ * espera (o timer sai 0 e tenta na próxima hora), ou null (segue o alarme de
+ * sempre). Só o exit dedicado SEM JSON no stdout conta: qualquer outra saída é
+ * lida pelo intérprete do timer como antes.
+ */
+export function driveNotReadyWait(input: { exitCode: number | null; stdout: string; nowMs: number; at: string }): string | null {
+  if (input.exitCode !== PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT || input.stdout.trim() !== "") return null;
+  const atMs = Date.parse(input.at);
+  if (!Number.isFinite(atMs) || input.nowMs - atMs >= DRIVE_NOT_READY_GRACE_MS) return null;
+  return "o Drive devolveu o vertical vazio (o upload ainda está em curso)";
+}
+
+/**
  * Puro: outro processo está baixando o vertical agora? `.part` recente do
  * download (`downloadDriveFile` grava em `{arquivo}.part`), ou o lock de pé do
  * timer da OUTRA rede, que baixa o mesmo arquivo. Devolve o motivo, ou null.

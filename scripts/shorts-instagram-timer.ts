@@ -111,6 +111,7 @@ import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { watchCortesWithoutOwner } from "./lib/diaria/corte-owner-watch.ts";
 import { CORTES_REL_DIR } from "./lib/diaria/short-corte.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
+import { driveNotReadyWait } from "./lib/diaria/vertical-download-guard.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
 import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
@@ -1047,6 +1048,12 @@ async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boo
         mkdirSync(dirname(sidecarPath), { recursive: true });
         writeFileAtomic(sidecarPath, JSON.stringify({ fileId: choice.fileId, modifiedTime: choice.modifiedTime, name: choice.name }, null, 2) + "\n");
       }
+    }
+    // #13541: corte ainda subindo para o Drive (download vazio) — espera a próxima hora, sem alarme.
+    const notReady = driveNotReadyWait({ exitCode: r.status, stdout: r.stdout, nowMs: now.getTime(), at });
+    if (notReady) {
+      console.log(`${LOG_PREFIX} ${aammdd}: ${notReady} — tenta de novo na próxima execução`);
+      return 0;
     }
     const outcome = interpretInstagramTimerOutput(r.status, r.stdout, tail(r.stderr));
     console.log(`${LOG_PREFIX} ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
