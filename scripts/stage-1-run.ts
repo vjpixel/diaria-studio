@@ -210,6 +210,7 @@ export function realExec(rootDir: string): ExecFn {
     const result = spawnSync(process.execPath, ["--import", "tsx", abs, ...args], {
       cwd: rootDir,
       encoding: "utf8",
+      windowsHide: true, // #13559
     });
     if (result.error || result.status === null) {
       return {
@@ -235,6 +236,10 @@ export function realSpawnDetached(rootDir: string): SpawnDetachedFn {
         cwd: rootDir,
         detached: true,
         stdio: "ignore",
+        // #13559: sem isto o filho destacado ganha console visível no Windows
+        // pela vida inteira (classe do #7952). Os netos dele passam a precisar
+        // de windowsHide também (eia-compose.ts, prewarm-verify-cache.ts).
+        windowsHide: true,
       });
       child.unref();
     } catch {

@@ -704,6 +704,7 @@ export function readProcessCmdline(pid: number): string | null {
       encoding: "utf8",
       timeout: 5_000,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true, // inócuo fora do Windows; mantém o guard do #13559 sem exceção
     });
     return out.trim() || null;
   } catch {

@@ -1267,7 +1267,8 @@ function runScript(cmd: string, args: string[]): void {
 function runNode(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   try {
-    execFileSync(process.execPath, [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
+    // windowsHide (#13559): roda como filho destacado do stage-1-run, sem console.
+    execFileSync(process.execPath, [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO, windowsHide: true });
   } catch (e) {
     // #1373: error generic "Command failed" não diz POR QUE. Detectar causas
     // comuns (missing env vars, exit codes específicos) e re-throw com hint

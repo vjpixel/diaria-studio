@@ -654,7 +654,9 @@ function extractBloco(md: string, rotulo: string): string | null {
 export type GitRunner = (args: string[], cwd: string) => string;
 
 const defaultGitRunner: GitRunner = (args, cwd) =>
-  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
+  // windowsHide (#13559): o waiter `--merge-pr` roda destacado e sem console;
+  // sem a flag, cada `git`/`gh` filho abre uma janela própria no Windows.
+  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).toString("utf8");
 
 /**
  * #9821: estado do CÓDIGO que está rodando (o checkout em `rootDir`) frente a
@@ -1050,7 +1052,7 @@ export const FRESH_CODE_PENDING_REASON =
 export type GhRunner = (args: string[], cwd: string) => string;
 
 export const defaultGhRunner: GhRunner = (args, cwd) =>
-  execFileSync("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
+  execFileSync("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).toString("utf8"); // #13559
 
 /** Nome da branch dedicada de publicação de página, sempre determinístico a partir do slug. */
 function sitePublishBranch(slug: string): string {
@@ -1106,7 +1108,7 @@ const LOCK_RUNNER_TIMEOUT_MS = 60_000;
 type ExecFileSyncFn = (
   cmd: string,
   args: string[],
-  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; shell?: boolean },
+  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; windowsHide: boolean; shell?: boolean },
 ) => Buffer | string;
 
 /**
@@ -1144,6 +1146,7 @@ export function createExecFileSyncLockRunner(
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: LOCK_RUNNER_TIMEOUT_MS,
+        windowsHide: true, // #13559
         ...(shell ? { shell: true } : {}),
       }).toString("utf8");
       return { ok: true, stdout, stderr: "" };
