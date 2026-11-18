@@ -47,6 +47,13 @@ export function spawnGhSync(
   timeoutMs: number = GH_SPAWN_TIMEOUT_MS,
   bin: string = "gh",
 ): GhSpawnResult {
-  const result = spawnSync(bin, args, { cwd, encoding: "utf8", timeout: timeoutMs });
+  const result = spawnSync(bin, args, {
+    cwd,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    // #13559: o alerta do waiter destacado de publish-edition-site-page passa
+    // por aqui; sem console herdável, cada gh abriria uma janela no Windows.
+    windowsHide: true,
+  });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

@@ -2460,6 +2460,7 @@ export function checkRepoTreeClean(repoRoot: string): RepoTreeCleanResult {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true, // #13559: chamado também do waiter destacado, sem console
     });
     if (res.status !== 0) return { clean: true, files: [] };
     const files = (res.stdout ?? "")
@@ -7822,6 +7823,7 @@ export function resolveRepoRoot(cwd: string = process.cwd()): string {
       cwd,
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true, // #13559
     });
     if (res.status === 0 && res.stdout && res.stdout.trim()) {
       return dirname(res.stdout.trim());
