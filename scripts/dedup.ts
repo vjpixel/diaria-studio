@@ -704,6 +704,17 @@ export function dedup(
         winner.editor_submitted_url = editorCopy.url;
       }
     }
+    // #13478: a reserva de destaque (`reserve-destaque.ts`, #13331) entra com
+    // a URL canonicalizada e o pool da pesquisa pode trazer a mesma matéria
+    // crua (utm_*, barra final). O match exato do 1h falha, o grupo se
+    // forma aqui e o vencedor costuma ser o item do researcher. Sem herdar o
+    // pedido de posição e o `reserved_from`, o aviso `editor-destaque-request`
+    // do gate 4 nunca dispara. Pedido já presente no vencedor vence.
+    for (const field of ["editor_destaque_request", "reserved_from"] as const) {
+      if (winner[field]) continue;
+      const donor = sorted.find((a) => a[field]);
+      if (donor) winner[field] = donor[field];
+    }
     // #9365: a mesma URL canônica chega crua da pesquisa e canonicalizada da
     // captura de newsletter (e/ou do forward do editor) — as menções em
     // newsletter de todos os membros vão pro vencedor, senão o bônus de
