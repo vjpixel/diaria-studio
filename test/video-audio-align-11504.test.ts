@@ -274,7 +274,9 @@ if (tool === "ffprobe") {
   process.exit(0);
 }
 if (tool === "ffmpeg") {
-  const af = args[args.indexOf("-af") + 1] ?? "";
+  // #13508: a leitura do transcribe leva também a banda alta (-af highpass) antes do loudnorm.
+  const afs = args.filter((a, i) => args[i - 1] === "-af");
+  const af = afs.find((a) => a.startsWith("silencedetect") || a.includes("loudnorm")) ?? afs[0] ?? "";
   if (af.startsWith("silencedetect")) process.exit(0);
   const outs = args.filter((a, i) => a.endsWith(".wav") && args[i - 1] !== "-i");
   const input = args[args.indexOf("-i") + 1];

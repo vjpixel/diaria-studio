@@ -4562,7 +4562,8 @@ export function buildXmeml(
     });
     // A faixa de áudio do trecho vem depois das da vinheta (o link da vinheta aponta a faixa 2): o índice dela é contado.
     const audioTrackIndex = 2 + (vin.audio.match(/<track>/g)?.length ?? 0);
-    const trechoTracks = trechoInseridoTracksXml({ placed: ripple.placed, rate, idPrefix: `trecho-${si + 1}`, url, audioTrackIndex });
+    // #13536: o trecho recebe o ganho medido nele (Audio Levels), como os clipes do bruto; `--no-audio-gain` tira os dois.
+    const trechoTracks = trechoInseridoTracksXml({ placed: ripple.placed, rate, idPrefix: `trecho-${si + 1}`, url, audioTrackIndex, ...(opts.audioGain ? { levels: audioLevelsFilter } : {}) });
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
@@ -5304,8 +5305,18 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
  * podem ser partes da gravação; `--source` seleciona explicitamente). Sem nenhum vídeo,
  * o maior áudio solto (`audioOnly: true`, #11552).
  */
+/**
+ * Os vídeos que a própria montagem grava na pasta da edição (#13544): o card de
+ * CTA (`{AAMMDD}_cta_card_*`, #12571) e o trecho inserido (`{AAMMDD}_trecho_*`,
+ * #13437). Nunca são bruto: o `inventory --listen` quebrava no MP4 sem áudio do
+ * card, e o `--all` os juntava à gravação.
+ */
+export function isMontageArtifact(name: string): boolean {
+  return /^\d{6}_(?:cta_card|trecho)_/i.test(name);
+}
+
 export function pickRawSource<T extends { name: string; size: number }>(files: T[]): { pick: T; candidates: T[]; audioOnly?: true } | null {
-  const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name);
+  const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name) && !isMontageArtifact(f.name);
   const vids = files.filter((f) => /\.(mp4|mov)$/i.test(f.name) && usable(f));
   if (vids.length > 0) return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
   // #11552: sem vídeo solto, um arquivo de áudio (os comentários gravados à parte).

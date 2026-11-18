@@ -130,7 +130,10 @@ no diretório temporário do sistema (6 h se ok, 10 min se falho; falta de memó
 ou timeout não entram), e só a 1ª chamada paga a sonda (#13504). A chave leva as versões
 do CTranslate2 e dos pacotes `nvidia-*` e o mtime/tamanho do `nvcuda.dll`, então instalar
 ou remover as DLLs pelo pip, ou atualizar o driver, já força a sonda de novo; para forçar
-à mão, apagar o arquivo ou usar `DIARIA_WHISPER_PROBE_CACHE=0`.
+à mão, apagar o arquivo ou usar `DIARIA_WHISPER_PROBE_CACHE=0`. O
+`npx tsx scripts/check-video-env.ts --montagem` diz numa linha `gpu` se a transcrição vai
+rodar na GPU (`[ok]`) ou na CPU (`[info]`, com o motivo e o comando acima); a linha nunca
+reprova o check (#13535).
 
 Opcional (#13372): o `verify-xml` usa o OpenTimelineIO (adapter FCP7) como 2º
 leitor do XML, conferindo clipes, in/out e duração contra o leitor próprio. Sem

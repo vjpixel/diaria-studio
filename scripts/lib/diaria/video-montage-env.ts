@@ -10,7 +10,7 @@
  * falharia). Daqui o venv próprio `~/.venv-video-montagem` e o check.
  */
 
-export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "opencv" | "drive" | "disk" | "deepfilter";
+export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "gpu" | "opencv" | "drive" | "disk" | "deepfilter";
 
 export interface MontageProbe {
   ok: boolean;
@@ -23,10 +23,47 @@ export interface MontageProbe {
  * `deepfilter` (#13234) é opcional: sonda ausente = item fora do relatório
  * (chamadas anteriores ao DeepFilterNet seguem valendo).
  */
-export type MontageEnvProbes = Record<Exclude<MontageEnvItemId, "deepfilter">, MontageProbe> & { deepfilter?: MontageProbe };
+export type MontageEnvProbes = Record<Exclude<MontageEnvItemId, "deepfilter" | "gpu">, MontageProbe> & { deepfilter?: MontageProbe; gpu?: MontageProbe };
 
 /** Itens que só avisam: a montagem roda sem eles (há fallback). */
 const WARNING_ONLY: readonly MontageEnvItemId[] = ["opencv", "deepfilter"];
+
+/**
+ * Itens só informativos (#13535): nunca reprovam nem viram aviso. `gpu` diz se
+ * a transcrição roda na GPU ou cai na CPU (caminho válido, só mais lento).
+ */
+const INFO_ONLY: readonly MontageEnvItemId[] = ["gpu"];
+
+/** Comando que instala as DLLs da GPU no Python da montagem (docs/setup.md, #13477). */
+export function gpuSetupCommand(python: string): string {
+  return `${python} -m pip install --user nvidia-cublas-cu12 "nvidia-cudnn-cu12>=9,<10" (docs/setup.md, "GPU na transcrição"; só Windows, no Linux a CUDA vem do driver)`;
+}
+
+/**
+ * #13535: lê a saída de `transcribe_words.py --gpu-verdict` (JSON numa linha:
+ * `{device, why, cached}`). Sonda que não roda ou saída ilegível = CPU, com o
+ * motivo: o item é só informativo e nunca reprova o check.
+ */
+export function parseGpuVerdict(out: { status: number | null; stdout: string; stderr: string; error?: string }): MontageProbe {
+  if (out.error) return { ok: false, detail: `transcrição na CPU (veredito da GPU não lido: ${out.error})` };
+  const line = out.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  const v = ((): { device?: unknown; why?: unknown; cached?: unknown } | null => {
+    try {
+      const j: unknown = JSON.parse(line);
+      return j && typeof j === "object" ? (j as { device?: unknown; why?: unknown; cached?: unknown }) : null;
+    } catch {
+      return null;
+    }
+  })();
+  if (out.status !== 0 || !v || (v.device !== "cuda" && v.device !== "cpu")) {
+    const tail = out.stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop() ?? `exit ${out.status}`;
+    return { ok: false, detail: `transcrição na CPU (veredito da GPU não lido: ${tail.slice(0, 160)})` };
+  }
+  const src = v.cached === true ? "veredito em cache, #13504" : "sonda agora";
+  if (v.device === "cuda") return { ok: true, detail: `transcrição na GPU (cuda; ${src})` };
+  const why = typeof v.why === "string" && v.why.trim() ? v.why.trim().slice(0, 200) : "sonda da GPU falhou";
+  return { ok: false, detail: `transcrição na CPU: ${why} (${src})` };
+}
 
 export interface MontageEnvItem {
   id: MontageEnvItemId;
@@ -90,7 +127,7 @@ export function montageSetupCommand(platform: NodeJS.Platform | string): string 
     : "uv venv --python 3.12 ~/.venv-video-montagem && VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/montagem-requirements.txt";
 }
 
-const ORDER = ["ffmpeg", "python", "model", "opencv", "deepfilter", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
+const ORDER = ["ffmpeg", "python", "model", "gpu", "opencv", "deepfilter", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
 
 function fixFor(id: MontageEnvItemId, platform: string, python: string): string {
   switch (id) {
@@ -108,6 +145,8 @@ function fixFor(id: MontageEnvItemId, platform: string, python: string): string 
       return MONTAGE_DISK_FIX;
     case "deepfilter":
       return DEEP_FILTER_FIX;
+    case "gpu":
+      return gpuSetupCommand(python);
   }
 }
 
@@ -140,7 +179,7 @@ export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Plat
     return [{ id, ok: probe.ok, fix: probe.ok ? null : (probe.fix ?? fixFor(id, platform, python.python)), detail: probe.detail ?? null }];
   });
   // OpenCV só atende face/gaze (enquadramento manual, P3); sem DeepFilterNet o áudio sai no ffmpeg (#13234).
-  const missing = items.filter((i) => !i.ok && !WARNING_ONLY.includes(i.id)).map((i) => i.id);
+  const missing = items.filter((i) => !i.ok && !WARNING_ONLY.includes(i.id) && !INFO_ONLY.includes(i.id)).map((i) => i.id);
   const warnings = items.filter((i) => !i.ok && WARNING_ONLY.includes(i.id)).map((i) => i.id);
   return { platform, python, items, ready: missing.length === 0, missing, warnings };
 }
@@ -149,6 +188,10 @@ export function formatMontageEnvReport(r: MontageEnvReport): string {
   const lines = [`Ambiente da montagem do vídeo (${r.platform}, python: ${r.python.python} (${r.python.from})):`];
   for (const i of r.items) {
     const d = i.detail ? ` (${i.detail})` : "";
+    if (!i.ok && INFO_ONLY.includes(i.id)) {
+      lines.push(`  [info] ${i.id}${d}. Para usar a GPU: ${i.fix}`);
+      continue;
+    }
     lines.push(i.ok ? `  [ok] ${i.id}${d}` : `  [${WARNING_ONLY.includes(i.id) ? "aviso" : "falta"}] ${i.id}${d}. Resolver: ${i.fix}`);
   }
   lines.push(r.ready ? "A montagem roda nesta máquina." : `A montagem NÃO roda nesta máquina (falta: ${r.missing.join(", ")}).`);
