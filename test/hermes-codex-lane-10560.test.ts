@@ -1211,6 +1211,8 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     cpSync(join(ROOT, ".claude/hooks/lib/gh-target-repo.mjs"), join(r, ".claude/hooks/lib/gh-target-repo.mjs"));
     // #10689: gh-target-repo.mjs importa o detector de merge (alvo do modo estrito).
     cpSync(join(ROOT, ".claude/hooks/lib/gh-pr-merge-command.mjs"), join(r, ".claude/hooks/lib/gh-pr-merge-command.mjs"));
+    // #13550: o guard de PII importa o detector de `gh pr create` (prefixo de ambiente e wrappers).
+    cpSync(join(ROOT, ".claude/hooks/lib/gh-pr-create-command.mjs"), join(r, ".claude/hooks/lib/gh-pr-create-command.mjs"));
     writeFileSync(join(r, "_prbody.md"), "corpo solto\n");
     assert.equal(sh("git", ["add", "_prbody.md"], r).status, 0);
     assert.equal(sh("git", ["commit", "-q", "-m", "artefato"], r).status, 0);
