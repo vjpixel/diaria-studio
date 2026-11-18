@@ -120,9 +120,18 @@ export function stripQuoted(body: string): string {
     .split("\n")
     .filter((l) => !/^\s*>/.test(l))
     .filter((l) => !/^\s*(enviado d[eo] (meu|minha)|sent from my|obter o outlook)/i.test(l))
+    .map((l) => l.replace(GLUED_MOBILE_SIGNATURE_RE, ""))
     .join("\n")
     .trim();
 }
+
+/**
+ * Assinatura de celular colada no fim da linha, sem quebra: `Eu queroEnviado do meu Galaxy` (#13520).
+ * Só com o aparelho nomeado e no FIM da linha, pra não cortar texto do assinante que diga "enviado do meu
+ * trabalho" no meio de uma frase.
+ */
+const GLUED_MOBILE_SIGNATURE_RE =
+  /\s*(enviado d[eo] (meu|minha)|sent from my)\s+(smartphone\s+|tablet\s+)?(galaxy|iphone|ipad|android|samsung|smartphone|tablet|celular|dispositivo|aparelho|xiaomi|motorola|moto|huawei|redmi|lg|mobile|phone)\b[^\n]{0,40}$|\s*obter o outlook para (android|ios)\b[^\n]{0,20}$/i;
 
 // ---------------------------------------------------------------------------
 // Regras
