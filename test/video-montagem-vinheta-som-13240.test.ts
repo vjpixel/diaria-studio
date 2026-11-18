@@ -24,6 +24,7 @@ import {
   previewVinhetaFilter,
   vinhetaConfigFrom,
   vinhetaSfxConfigCheck,
+  premiereUnsafeNameChars,
   vinhetaSfxConfigFrom,
   vinhetaSfxFrames,
   vinhetaSfxLenFrames,
@@ -60,7 +61,7 @@ const SOURCE: SourceInfo = { path: "I:/Meu Drive/diaria-studio-video/261117/brut
 const FRAMING = { faceX: 0.5, eyeY: 0.5 };
 const SPEC_H: SequenceSpec = { target: "youtube", name: "Diaria comentada_Youtube_V1", width: 1920, height: 1080, order: ["titulo", "abertura"], scales: [60, 85] };
 const SPEC_V: SequenceSpec = { target: "outras-redes", name: "Diaria comentada_Vertical_V1", width: 1080, height: 1920, order: ["titulo", "abertura"], scales: [115, 130] };
-const SFX_NAME = "ES_Computers, Keyboard & Mouse, Keyboard, Laptop, Notebook, Return Or Enter Key Press - Epidemic Sound.mp3";
+const SFX_NAME = "vinheta-som.mp3";
 const SFX: VinhetaSfx = { path: `${DEFAULT_DRIVE_ROOT}/_marca/${SFX_NAME}`, durationS: 0.182146, atS: [0.1, 0.333], audioChannels: 2, audioSampleRate: 48000 };
 const VIN: VinhetaAsset = { path: `${DEFAULT_DRIVE_ROOT}/_marca/vinheta-logo-diaria.mov`, durationS: 1.3, width: 1920, height: 1080, hasAudio: false, fps: 30 };
 const PROBE_OK = () => JSON.stringify({ streams: [{ codec_type: "audio", channels: 2, sample_rate: "48000" }], format: { duration: "0.182146" } });
@@ -130,6 +131,18 @@ describe("#13240: config do som da vinheta", () => {
     assert.equal(toda.cfg, null);
     assert.match(toda.problems.at(-1)!, /at_s sem nenhum instante válido \(2 item\(ns\), todos descartados\)/);
     assert.deepEqual(vinhetaSfxConfigCheck({}), { present: false, cfg: null, problems: [] });
+  });
+
+  it("#13522: nome com & ou vírgula (o mp3 da Epidemic) = sem som e aviso, nunca XML que não importa", () => {
+    const epidemic = "I:/Meu Drive/diaria-studio-video/_marca/ES_Computers, Keyboard & Mouse, Keyboard, Laptop, Notebook, Return Or Enter Key Press - Epidemic Sound.mp3";
+    assert.deepEqual(premiereUnsafeNameChars(epidemic), [",", "&"]);
+    const check = vinhetaSfxConfigCheck({ publishing: { video: { vinheta_som: { path: epidemic, at_s: [0.1, 0.333] } } } });
+    assert.equal(check.cfg, null);
+    assert.match(check.problems.join("\n"), /",", "&" no nome do arquivo: o Premiere não importa o XML/);
+    // Só o NOME conta: vírgula numa pasta do caminho não descarta.
+    assert.deepEqual(premiereUnsafeNameChars("I:/a,b/vinheta-som.mp3"), []);
+    assert.deepEqual(premiereUnsafeNameChars("C:\\a&b\\vinheta-som.mp3"), []);
+    assert.deepEqual(vinhetaSfxConfigFrom({ publishing: { video: { vinheta_som: { path: "I:/x/vinheta-som.mp3", at_s: [0.1] } } } }), { path: "I:/x/vinheta-som.mp3", atS: [0.1] });
   });
 
   it("probe: sem áudio ou sem duração é erro; canais e taxa quando vêm", () => {

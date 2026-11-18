@@ -3728,8 +3728,19 @@ export function vinhetaSfxConfigCheck(config: unknown): VinhetaSfxConfigCheck {
     else problems.push(`publishing.video.vinheta_som.at_s[${i}] = ${JSON.stringify(t) ?? String(t)} descartado: não é número finito >= 0 (#13240)`);
   });
   atS.sort((a, b) => a - b);
+  // #13522: o Premiere do Mac não importa NADA (sem erro) de um XML cujo efeito tem `&` ou `,` no nome
+  // (o mp3 da Epidemic Sound, medido em 18/11/2026: o mesmo som com nome simples importa). Melhor
+  // XML sem o som e com aviso do que XML que não importa.
+  const bad = premiereUnsafeNameChars(path);
+  if (bad.length) problems.push(`publishing.video.vinheta_som.path com ${bad.map((c) => `"${c}"`).join(", ")} no nome do arquivo: o Premiere não importa o XML; renomear o arquivo em _marca/ (#13522)`);
   if (raw && !atS.length) problems.push(`publishing.video.vinheta_som.at_s sem nenhum instante válido (${raw.length} item(ns), todos descartados) (#13240)`);
-  return { present: true, cfg: path && atS.length ? { path, atS } : null, problems };
+  return { present: true, cfg: path && atS.length && !bad.length ? { path, atS } : null, problems };
+}
+
+/** Caracteres no NOME do arquivo que fazem o Premiere do Mac não importar o XML, em silêncio (#13522). */
+export function premiereUnsafeNameChars(path: string): string[] {
+  const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+  return [...new Set([...name].filter((c) => "&,#%;".includes(c)))];
 }
 
 /** `publishing.video.vinheta_som` usável (#13240) ou `null` (ausente, caminho vazio ou nenhum instante válido). Os avisos saem de `vinhetaSfxConfigCheck`. */
