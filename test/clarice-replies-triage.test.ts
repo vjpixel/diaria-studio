@@ -91,6 +91,29 @@ for (const [body, dataDeletion] of dataDeletionCases13533) {
   });
 }
 
+// Review da PR #13552: pergunta de produto/conta com "banco de dados" ou "minhas informações de
+// pagamento" não pode virar exclusão de dados (data_deletion implica saída, que vai pra blacklist).
+for (const body of [
+  "Apaguei um texto, ele continua no banco de dados?",
+  "Removi um arquivo, ele some de todos os seus sistemas?",
+  "Como excluo minhas informações de pagamento?",
+  "Onde apago minhas informações da conta?",
+]) {
+  test(`#13552 classifyReply: ${JSON.stringify(body)} → não é saída nem data_deletion`, () => {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.notEqual(c.kind, "saida", `${JSON.stringify(body)}: ${c.reason}`);
+    assert.equal(c.data_deletion, false, `${JSON.stringify(body)}: ${c.reason}`);
+  });
+}
+
+test("#13552 marca pessoal antes do verbo ou enclítica segue valendo", () => {
+  for (const body of ["Me deletem do banco de dados de vocês.", "Deletem-me de todos os seus sistemas."]) {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.equal(c.kind, "saida", `${JSON.stringify(body)}: ${c.reason}`);
+    assert.equal(c.data_deletion, true, `${JSON.stringify(body)}: ${c.reason}`);
+  }
+});
+
 test("#13533 o pedido real entra em data_deletion_manual no plano", () => {
   const plan = buildTriagePlan([
     msg("Favor deletar meu contato de todos os seus bancos de dados" + QUOTE, { from: "lgpd13533@x.com" }),

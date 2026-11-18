@@ -158,13 +158,28 @@ const DATA_DELETION_RES: RegExp[] = [
   /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(meus|todos os meus|os meus) dados\b/,
   /\bexclusao (dos |de )?(meus )?dados\b/,
   /\bdireito ao esquecimento\b/,
-  // "deletar meu contato de todos os seus bancos de dados" (#13533). Só "banco de dados", ou "todos os
-  // seus cadastros/bases/registros/sistemas", viram exclusão de dados: "removam meu e-mail da base" é
-  // saída simples da lista, e "de todas as listas" também.
-  /\b(exclu|apag|delet|remov|elimin|retir)\w*\b[^.!?\n]{0,60}\bbancos? de dados\b/,
-  /\b(exclu|apag|delet|remov|elimin|retir)\w*\b[^.!?\n]{0,60}\btod[oa]s (os |as )?(seus |suas |vossos |vossas )?(bancos de dados|bases( de dados)?|cadastros|registros|sistemas)\b/,
-  /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(minhas|todas as minhas) informac(ao|oes)\b/,
+  // "Como excluo minhas informações de pagamento?" é pergunta de conta, não pedido LGPD (review da PR #13552).
+  /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(minhas|todas as minhas) informac(ao|oes)\b(?! (de|do|da|dos|das) (pagamento|cobranca|faturamento|cartao|conta|login|acesso|assinatura|plano)\b)/,
 ];
+
+/**
+ * "deletar meu contato de todos os seus bancos de dados" (#13533). Só "banco de dados", ou "todos os
+ * seus cadastros/bases/registros/sistemas", viram exclusão de dados: "removam meu e-mail da base" é
+ * saída simples da lista, e "de todas as listas" também. Exige marca de 1ª pessoa ("me tirem", "meu
+ * contato", "deletem-me"), como `REMOVAL_PRODUCT_OBJECT_RE` (#12283): "Apaguei um texto, ele continua no
+ * banco de dados?" é pergunta de produto e não pode ir pra blacklist (review da PR #13552).
+ */
+const DATA_DELETION_STORE_RES: RegExp[] = [
+  /\b(me )?(exclu|apag|delet|remov|elimin|retir)\w*\b([^.!?\n]{0,60})\bbancos? de dados\b/g,
+  /\b(me )?(exclu|apag|delet|remov|elimin|retir)\w*\b([^.!?\n]{0,60})\btod[oa]s (os |as )?(seus |suas |vossos |vossas )?(bancos de dados|bases( de dados)?|cadastros|registros|sistemas)\b/g,
+];
+
+function isDataDeletionRequest(norm: string): boolean {
+  if (DATA_DELETION_RES.some((re) => re.test(norm))) return true;
+  return DATA_DELETION_STORE_RES.some((re) =>
+    [...norm.matchAll(re)].some((m) => !!m[1] || REMOVAL_PERSONAL_RE.test(m[3])),
+  );
+}
 
 const SAIDA_RES: RegExp[] = [
   /\bdescadastr/,
@@ -257,7 +272,7 @@ export function classifyReply(msg: ReplyMessage): ReplyClassification {
     return out("ruido", "resposta vazia (só citação)");
   }
 
-  const dataDeletion = anyMatch(DATA_DELETION_RES, norm);
+  const dataDeletion = isDataDeletionRequest(norm);
   const removal = removalOfProductObject(norm);
   const saida = dataDeletion || anyMatch(SAIDA_RES, norm) || removal === "saida";
   const suporte = anyMatch(SUPORTE_RES, norm);
