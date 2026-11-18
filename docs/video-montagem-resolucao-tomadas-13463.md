@@ -312,3 +312,73 @@ Não abertas: a decisão é do editor.
 - video-roteiro: trecho que sobra de um corte (#13129) começa com a pontuação
   do trecho cortado (". Duas já aconteceram…" na proposta da 261118) (P3,
   achado desta medição: o texto do item da vertical sai com o ponto solto).
+
+## Medições com o bruto real depois das issues-filhas (18/11/2026)
+
+O código das duas filhas saiu na PR #13595. As medições abaixo usaram o bruto
+real da 261117 e da 261118 no 300 (Linux, 8 núcleos, sem GPU: #13505), cada
+edição numa cópia isolada do state dir (`--state-dir`/`--work-dir` no
+scratchpad), sem gravar nada em `data/`.
+
+### A. Retranscrição dirigida na 1ª passada (#13587)
+
+A 1ª passada do `decupagem 261118` rodou do zero: sem `decupagem-plan.json`,
+sem molde, sem `decupagem-segments.json` e sem nenhum `retranscribe-*.json`.
+Entradas: o `transcript.json` e o `silences.json` da montagem real (o das
+15:17 de 18/11) e o `audio.wav` extraído dos dois arquivos do bruto pelo
+`transcribe` (sem `--force`, que mantém o transcript existente).
+
+| | Neo (GPU) | 300 (CPU), Whisper frio | 300 (CPU), Whisper já carregado |
+|---|---|---|---|
+| Relógio da 1ª passada | 19,6 s | 522 s (8:42) | 456 s (7:36) |
+| CPU do Whisper residente | n/d | 1950 s | 1765 s |
+| CPU do processo Node | n/d | 2,6 s | 2,5 s |
+
+- Os dois lados acharam o mesmo: 16 segmentos com tomada colapsada, 16
+  janelas e 19 subjanelas retranscritas numa chamada só, 9 segmentos
+  separados. Ficam com aviso para conferir no áudio os segmentos 15, 16, 31,
+  44 (65,5 s de som sem palavra, maior que a janela de 60 s) e 100; os
+  segmentos 8 e 53 saem como falso começo, com o corte proposto.
+- O tempo do 300 é quase todo Whisper em CPU (`large-v3-turbo`): a carga do
+  modelo pesa ~66 s de relógio e ~185 s de CPU, e o resto é retranscrição.
+  No 300 sem GPU a 1ª passada custa ~8 min por edição. No Neo, 20 s.
+- **Aceite (molde a até 0,6 s do início aprovado), na listagem real:** o
+  gancho H1 sai separado pela retranscrição (`retranscribe-906.5-923.5.json`)
+  e começa em 920,29 s, a 0,39 s do aprovado (919,9). Antes, 12,9 s. H7 e H12
+  não estão mais colapsados no transcript das 15:17 (o `transcribe` novo já os
+  separou), então a borda vem do transcript longo: H7 em 425,53 s (aprovado
+  424,3, +1,23 s) e H12 em 864,46 s (aprovado 863,0, +1,46 s). Antes, 37,9 e
+  19,2 s. A diferença que sobra é o ar que o editor abriu antes da 1ª palavra
+  no Gate 2: nenhuma transcrição, longa ou retranscrita, ouviu palavra antes de
+  425,48 e 864,0 s (a fixture do `test/video-decupagem-collapsed-13587.test.ts`,
+  com o transcript anterior, dá 425,28 e 863,9). Os 0,6 s valem para o gancho;
+  em H7 e H12 a borda está na 1ª palavra falada, e a pré-rolagem fica com o
+  Gate 2.
+
+### B. `face` com 1 frame por item (#13588)
+
+`face-compare` (#13370) com e sem `--um-frame`, Haar e MediaPipe nos mesmos
+frames, cada item contra o `framing` aprovado no `blocks.json` (7 itens da
+261118 sem `framing` ficam de fora). Venv do MediaPipe recriado no 300 como
+em `docs/video-medicoes-r2-r3.md` (o de 17/11 não estava mais lá).
+
+| Haar | 261117, 3 frames | 261117, 1 frame | 261118, 3 frames | 261118, 1 frame |
+|---|---|---|---|---|
+| Itens com rosto | 38/38 | 38/38 | 42/42 | 42/42 |
+| Erro mediano `faceX` / `eyeY` | 0 / 0 | 0,001 / 0,002 | 0 / 0 | 0,001 / 0,002 |
+| Itens a até 1% do aprovado | 35 | 32 | 39 | 34 |
+| Itens a até 2% | 37 | 37 | 39 | 38 |
+| Maior erro | 0,024 | 0,027 | 0,072 | 0,213 |
+| Relógio do `face-compare` (os 2 detectores) | 127 s | 85 s | 132 s | 94 s |
+
+- **1 frame piora o acerto nas duas edições** (3 e 5 itens a menos a até 1%),
+  e na 261118 o frame único do `resumo#2` pôs o `eyeY` em 0,578 contra 0,365
+  aprovado. Pelo aceite da issue, `--um-frame` não vira o padrão: segue
+  opcional e o `face` continua com 3 frames.
+- Ressalva: o `framing` aprovado saiu do próprio Haar com 3 frames
+  (`face --write`), então a referência favorece os 3 frames. Mesmo assim, o
+  erro de 0,21 num item é defeito real do frame único, não viés da referência.
+- O ganho do incremental (`face-cache.json`) independe disto e fica.
+- MediaPipe, de passagem: 1 frame mantém 11/42 a até 1% na 261118 e 18/38 na
+  261117, igual aos 3 frames; os números da R3 seguem em
+  `docs/video-medicoes-r2-r3.md`.
