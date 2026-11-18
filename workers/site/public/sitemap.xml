@@ -1280,14 +1280,6 @@
   <url>
     <loc>https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca</loc>
     <lastmod>2026-11-16</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-16T00:00:00.000Z</news:publication_date>
-      <news:title>Google põe o Gemini 4 Hydrogen na sua Busca</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso</loc>
@@ -1303,5 +1295,17 @@
   </url>
   <url>
     <loc>https://diar.ia.br/videos</loc>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/eua-exigem-licenca-para-chips-de-ia-no-brasil</loc>
+    <lastmod>2026-11-18</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-18T00:00:00.000Z</news:publication_date>
+      <news:title>EUA exigem licença para chips de IA no Brasil</news:title>
+    </news:news>
   </url>
 </urlset>
