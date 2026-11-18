@@ -2277,7 +2277,7 @@ export function resolveSourceList(list: readonly string[], driveDir: string, exi
     if (exists(direct)) return direct.replace(/\\/g, "/");
     const inDrive = join(driveDir, name);
     if (exists(inDrive)) return inDrive.replace(/\\/g, "/");
-    throw new Error(`--source: arquivo não encontrado: ${name} (nem em ${driveDir})`);
+    throw new Error(`--source: arquivo não encontrado: ${name} (procurado em ${direct} e em ${inDrive})`);
   });
 }
 
@@ -2335,7 +2335,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   const audioPath = fromAudio ? normPath(fromAudio.audio) : undefined;
   if (audioPath && !existsSync(audioPath)) throw new Error(`--from-audio: arquivo não encontrado: ${audioPath}`);
   const audioTr = audioPath ? stashAudioTranscript(ctx, audioPath, fromAudio?.transcript) : null;
-  let src = multiPaths ? multiPaths[0] : sourceArg ? resolve(sourceArg) : undefined;
+  let src = multiPaths ? multiPaths[0] : sourceArg ? resolveSourceList([sourceArg], ctx.driveDir)[0] : undefined;
   if (!src) {
     if (!existsSync(ctx.driveDir)) {
       throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root; desde a #12578 a pasta é a diaria-studio-video da diaria.editor: o bruto pode ter subido para a pasta antiga da vjpixel ou por outra conta)`);
