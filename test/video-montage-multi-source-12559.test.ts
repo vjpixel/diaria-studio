@@ -71,7 +71,8 @@ describe("#12559 regressão: bruto único", () => {
     const source: SourceInfo = { path: "G:/Meu Drive/YouTube/261109/bruto.mp4", fps: 30, durationS: 30, width: 3840, height: 2160, mirrored: true };
     const framing = { faceX: 0.48, eyeY: 0.54, mug: { left: 0.6, right: 0.7, top: 0.6, bottom: 0.8 } };
     // #12609: o golden é de antes da troca do nome do horizontal; o nome antigo segue válido e mantém o XML byte a byte.
-    const specs = defaultSequences("V1", "monologo").map((s) => (s.target === "youtube" ? { ...s, name: "Diaria comentada_Youtube_V1" } : s));
+    // #13414: as verticais ancoram pela boca desde então; com os olhos a 40% fixados, o golden de antes do #12559 vale byte a byte.
+    const specs = defaultSequences("V1", "monologo").map((s) => (s.target === "youtube" ? { ...s, name: "Diaria comentada_Youtube_V1" } : { ...s, eyeFraction: 0.4 }));
     const plans = specs.map((s) => buildSequencePlan(s, resolved, silences, source, {}));
     assert.deepEqual(JSON.parse(JSON.stringify(plans.map((p) => p.clips))), golden.plans);
     assert.deepEqual(plans.map((p) => buildXmeml([p], source, framing, { audioGain: { db: 3, linear: 1.412538, limitedBy: "target" } })), golden.xml);

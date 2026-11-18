@@ -12,6 +12,12 @@ Uso:
     python -P scripts/video/face_detect.py --sheet ENTRADA.json FOLHA.jpg
       ENTRADA: [{"row": "rótulo da linha", "label": "rótulo do quadro", "path": "frame.png"}]
       Recorta o rosto ampliado de cada frame e monta uma folha, uma linha por "row".
+    python -P scripts/video/face_detect.py --detector mediapipe --model blaze_face_short_range.tflite ENTRADA.json SAIDA.json
+      Medição da #13370 (MediaPipe contra o Haar): mesma ENTRADA e SAIDA, cada rosto
+      com "eyeY"/"mouthY" (px) dos pontos do rosto e "score". O MediaPipe NÃO está no
+      venv da montagem: roda com o Python de um venv próprio (`video-montagem.ts
+      face-compare --mp-python`). No 300 só a 0.10.x carrega (a 1.2.3 pede a
+      libGLESv2 do sistema, medido em 17/11/2026).
 """
 
 import json
@@ -152,15 +158,73 @@ def sheet(inp: str, out: str) -> int:
     return 0
 
 
+def mediapipe_detector(model):
+    """Detector de rosto do MediaPipe (BlazeFace, CPU) da medição da #13370; erro explícito sem o pacote ou o modelo."""
+    try:
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+    except ImportError:
+        print('face_detect: MediaPipe indisponível neste Python; venv próprio da medição: uv pip install "mediapipe==0.10.21" "opencv-python-headless==4.11.0.86" (#13370)', file=sys.stderr)
+        sys.exit(1)
+    if not model or not os.path.isfile(model):
+        print(f"face_detect: modelo do MediaPipe ausente: {model!r} (blaze_face_short_range.tflite, #13370)", file=sys.stderr)
+        sys.exit(1)
+    opts = vision.FaceDetectorOptions(base_options=BaseOptions(model_asset_path=model, delegate=BaseOptions.Delegate.CPU))
+    det = vision.FaceDetector.create_from_options(opts)
+
+    def run(cv2, img):
+        h = img.shape[0]
+        res = det.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
+        faces = []
+        for d in res.detections:
+            b = d.bounding_box
+            kp = d.keypoints
+            face = {"x": int(b.origin_x), "y": int(b.origin_y), "w": int(b.width), "h": int(b.height), "score": round(float(d.categories[0].score), 3)}
+            # Pontos do BlazeFace: 0/1 olhos, 2 nariz, 3 centro da boca (frações do frame).
+            if len(kp) >= 4:
+                face["eyeY"] = round((kp[0].y + kp[1].y) / 2 * h, 1)
+                face["mouthY"] = round(kp[3].y * h, 1)
+            faces.append(face)
+        return faces
+
+    return run
+
+
+def parse_args(argv):
+    """`[--detector haar|mediapipe] [--model PATH] ENTRADA SAIDA` -> (detector, modelo, posicionais)."""
+    detector, model, pos = "haar", None, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--detector", "--model") and i + 1 < len(argv):
+            if a == "--detector":
+                detector = argv[i + 1]
+            else:
+                model = argv[i + 1]
+            i += 2
+        else:
+            pos.append(a)
+            i += 1
+    return detector, model, pos
+
+
 def main() -> int:
     if len(sys.argv) == 4 and sys.argv[1] == "--sheet":
         return sheet(sys.argv[2], sys.argv[3])
-    if len(sys.argv) != 3:
+    detector, model, pos = parse_args(sys.argv[1:])
+    if len(pos) != 2 or detector not in ("haar", "mediapipe"):
         print(__doc__, file=sys.stderr)
         return 2
     cv2 = load_cv2()
-    cascade = load_cascade(cv2)
-    with open(sys.argv[1], encoding="utf-8") as f:
+    if detector == "mediapipe":
+        find = mediapipe_detector(model)
+    else:
+        cascade = load_cascade(cv2)
+
+        def find(cv2, img):
+            return [{"x": int(r[0]), "y": int(r[1]), "w": int(r[2]), "h": int(r[3])} for r in detect(cv2, cascade, img)]
+
+    with open(pos[0], encoding="utf-8") as f:
         items = json.load(f)
     out = []
     for it in items:
@@ -169,13 +233,11 @@ def main() -> int:
             out.append({"key": it["key"], "w": 0, "h": 0, "faces": []})
             continue
         h, w = img.shape[:2]
-        faces = [{"x": int(r[0]), "y": int(r[1]), "w": int(r[2]), "h": int(r[3])} for r in detect(cv2, cascade, img)]
-        out.append({"key": it["key"], "w": w, "h": h, "faces": faces})
-    with open(sys.argv[2] + ".tmp", "w", encoding="utf-8") as f:
+        out.append({"key": it["key"], "w": w, "h": h, "faces": find(cv2, img)})
+    with open(pos[1] + ".tmp", "w", encoding="utf-8") as f:
         json.dump(out, f)
-    os.replace(sys.argv[2] + ".tmp", sys.argv[2])
+    os.replace(pos[1] + ".tmp", pos[1])
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

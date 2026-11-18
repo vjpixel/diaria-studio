@@ -12,6 +12,7 @@ import {
   clipFraming,
   faceCenterWarnings,
   framingFor,
+  sequenceAnchor,
   parseBlocksFile,
   previewCropFor,
   resolveBlocks,
@@ -66,8 +67,9 @@ describe("framing por item do blocks.json", () => {
     const xml = buildXmeml([plan], SOURCE, BASE);
     const com = plan.clips.find((c) => c.block === "comentario")!;
     const tit = plan.clips.find((c) => c.block === "titulo")!;
-    const own = framingFor({ srcW: 3840, srcH: 2160, seqW: 1080, seqH: 1920, scalePct: com.scale, framing: { ...BASE, ...ITEM } });
-    const base = framingFor({ srcW: 3840, srcH: 2160, seqW: 1080, seqH: 1920, scalePct: tit.scale, framing: BASE });
+    // #13414: a vertical ancora pela boca (sequenceAnchor), no XML e na prévia.
+    const own = framingFor({ srcW: 3840, srcH: 2160, seqW: 1080, seqH: 1920, scalePct: com.scale, framing: { ...BASE, ...ITEM }, ...sequenceAnchor(SPEC_V) });
+    const base = framingFor({ srcW: 3840, srcH: 2160, seqW: 1080, seqH: 1920, scalePct: tit.scale, framing: BASE, ...sequenceAnchor(SPEC_V) });
     assert.ok(xml.includes(`<horiz>${own.center.horiz}</horiz>`), "Center do item no XML");
     assert.ok(xml.includes(`<horiz>${base.center.horiz}</horiz>`), "Center do arquivo no clipe sem framing próprio");
     assert.notEqual(own.center.horiz, base.center.horiz);
@@ -85,7 +87,7 @@ describe("framing por item do blocks.json", () => {
     (file.blocks.comentario![0] as { framing: unknown }).framing = { faceX: 1.2, eyeY: 0.4 };
     const r = parseBlocksFile(file);
     assert.equal(r.ok, false);
-    assert.match(!r.ok ? r.errors.join("\n") : "", /comentario\[0\]: framing do item precisa só de faceX e eyeY, entre 0 e 1/);
+    assert.match(!r.ok ? r.errors.join("\n") : "", /comentario\[0\]: framing do item precisa só de faceX, eyeY e \(opcional\) mouthY, entre 0 e 1/);
   });
 
   it("validação: mug no item é erro; 0 e 1 valem como no framing do arquivo", () => {
