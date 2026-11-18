@@ -223,7 +223,7 @@ Sempre, sem o editor pedir: depois da revisão do Passo 5a (nas duas vezes em qu
 - num react (Passo 2), `srt_paths`: o SRT de cada vídeo citado em `trechoInserido.video` (`diaria-comentada-{AAMMDD}.srt` da edição daquele vídeo): é a fonte do que o editor disse antes;
 - `out_path`: `_internal/fact-check-roteiro.md`, um veredito por afirmação.
 
-**Depois:** corrigir no JSON tudo que saiu `PARTIAL`, `NOT_SUPPORTED` ou `DIVERGENT` (sem mudar o sentido por conta própria: mudança de sentido vai ao editor como decisão, Passo 6, item 3), gerar a página de novo e listar as correções na entrega, por fala, com a frase antiga e a nova. Repetir o passo quando o D1 da edição mudar depois do roteiro e quando o editor mudar um fato numa fala (Passo 6). Fact-checker indisponível: dizer na entrega que o passo não rodou e seguir, como no Passo 5a.
+**Depois:** corrigir no JSON tudo que saiu `PARTIAL`, `NOT_SUPPORTED` ou `DIVERGENT` (sem mudar o sentido por conta própria: mudança de sentido vai ao editor como decisão, Passo 6, item 3), gerar as duas páginas de novo (Passo 6, item 1) e listar as correções na entrega, por fala, com a frase antiga e a nova. Repetir o passo quando o D1 da edição mudar depois do roteiro e quando o editor mudar um fato numa fala (Passo 6). Fact-checker indisponível: dizer na entrega que o passo não rodou e seguir, como no Passo 5a.
 
 ## Passo 6 — Iterar com o editor
 
