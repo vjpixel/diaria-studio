@@ -789,7 +789,7 @@ function warnVocabOnce(warnings: string[]): void {
 
 function transcribeWithPython(ctx: Ctx, audio: string, out: string, opts: { vad: boolean; noCondition?: boolean }): void {
   const vocab = loadVocab();
-  console.error(`[video-montagem] transcrevendo ${audio} (faster-whisper large-v3-turbo, CPU int8; leva minutos)…`);
+  console.error(`[video-montagem] transcrevendo ${audio} (faster-whisper large-v3-turbo, GPU com queda para CPU, #13477; leva minutos)…`);
   const args = ["-P", PY_HELPER, audio, out, "--initial-prompt", vocab.whisper_prompt ?? ""];
   if (opts.vad) args.push("--vad");
   if (opts.noCondition) args.push("--no-condition");

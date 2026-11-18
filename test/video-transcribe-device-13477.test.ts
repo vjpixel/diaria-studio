@@ -23,7 +23,7 @@ function findPython(): string | null {
 const PY = findPython();
 
 /** faster_whisper falso: `mode` decide como a CUDA falha. Registra cada carga em loads.log. */
-function fakeEnv(mode: "encode-fail" | "load-fail" | "ok"): { dir: string; audio: string; log: string } {
+function fakeEnv(mode: "encode-fail" | "load-fail" | "ok" | "native-crash" | "fail-2nd-encode"): { dir: string; audio: string; log: string } {
   const dir = mkdtempSync(join(tmpdir(), "fw-13477-"));
   const pkg = join(dir, "faster_whisper");
   mkdirSync(pkg);
@@ -47,12 +47,20 @@ class WhisperModel:
         if device == "cuda" and MODE == "load-fail":
             raise RuntimeError("CUDA failed with error no CUDA-capable device is detected")
         self.device = device
+        self.calls = 0
     def transcribe(self, audio, **kw):
+        self.calls += 1
         def gen():
             if self.device == "cuda" and MODE == "encode-fail":
                 raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+            if self.device == "cuda" and MODE == "native-crash":
+                os._exit(9)  # cuDNN ausente: o CTranslate2 derruba o processo sem exceção Python
+            if self.device == "cuda" and MODE == "fail-2nd-encode" and self.calls == 2:
+                raise RuntimeError("CUDA failed with error out of memory")
             yield _Seg()
         return gen(), _Info()
+def decode_audio(path, sampling_rate=16000):
+    return [0.0] * (sampling_rate * 30)
 `,
   );
   const audio = join(dir, "a.wav");
@@ -95,12 +103,36 @@ describe("#13477 transcribe_words.py --device", { skip: PY ? false : "sem python
     assert.match(r.stderr, /\[aviso\]/);
   });
 
-  it("auto com GPU funcionando fica na GPU", () => {
+  it("auto com GPU funcionando fica na GPU (sonda + carga real)", () => {
     const env = fakeEnv("ok");
     const r = run(env, []);
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(r.loads, ["cuda:int8_float16"]);
+    assert.deepEqual(r.loads, ["cuda:int8_float16", "cuda:int8_float16"]);
     assert.equal(JSON.parse(r.stdout.trim().split("\n").pop()!).device, "cuda");
+  });
+
+  it("auto: cuDNN ausente derruba a sonda no código nativo → o processo principal nem toca a GPU e transcreve na CPU", () => {
+    const env = fakeEnv("native-crash");
+    const r = run(env, []);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.loads, ["cuda:int8_float16", "cpu:int8"]);
+    assert.match(r.stderr, /\[aviso\].*sonda da GPU saiu 9/);
+    assert.equal(JSON.parse(readFileSync(r.out, "utf8")).segments.length, 1);
+  });
+
+  it("--windows: CUDA falha na 2ª janela → refaz só ela na CPU, as anteriores ficam e as seguintes seguem na CPU", () => {
+    const env = fakeEnv("fail-2nd-encode");
+    const win = join(env.dir, "win.json");
+    writeFileSync(win, JSON.stringify([1, 2, 3].map((k) => ({ key: `w${k}`, start: k * 2, end: k * 2 + 1 }))));
+    const r = run(env, ["--windows", win]);
+    assert.equal(r.status, 0, r.stderr);
+    // sonda (1 encode, passa), carga na GPU, queda para a CPU na 2ª janela
+    assert.deepEqual(r.loads, ["cuda:int8_float16", "cuda:int8_float16", "cpu:int8"]);
+    const out = JSON.parse(readFileSync(r.out, "utf8"));
+    assert.deepEqual(out.windows.map((w: { key: string; segments: unknown[] }) => [w.key, w.segments.length]), [["w1", 1], ["w2", 1], ["w3", 1]]);
+    const last = JSON.parse(r.stdout.trim().split("\n").pop()!);
+    assert.equal(last.device, "cpu");
+    assert.equal(last.fallback, true);
   });
 
   it("--device cpu nunca toca a GPU (comportamento anterior ao #13477)", () => {

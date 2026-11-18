@@ -34,7 +34,55 @@ import json
 import os
 import sys
 
-CUDA_ERROR_MARKERS = ("cuda", "cublas", "cudnn", "cudart", "gpu")
+CUDA_ERROR_MARKERS = ("cuda", "cublas", "cudnn", "cudart")
+PROBE_FLAG = "--probe-cuda"
+PROBE_OK = "cuda-ok"
+PROBE_TIMEOUT_S = 300
+
+
+def probe_cuda(model_name: str) -> int:
+    """Modo sonda (#13477): carrega o modelo na GPU e transcreve 1 s de silêncio.
+
+    Roda num subprocesso descartável porque a falta (ou versão errada) do cuDNN
+    pode derrubar o processo no código nativo, sem exceção Python que o
+    `try` do processo principal pegue.
+    """
+    register_nvidia_dll_dirs()
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    from faster_whisper import WhisperModel
+
+    try:
+        import numpy as np
+
+        silence = np.zeros(16000, dtype=np.float32)
+    except ImportError:
+        silence = [0.0] * 16000
+    model = WhisperModel(model_name, device="cuda", compute_type="int8_float16")
+    segs, _ = model.transcribe(silence, language="pt")
+    list(segs)
+    print(PROBE_OK)
+    return 0
+
+
+def cuda_usable(model_name: str):
+    """(ok, motivo): a GPU passa na sonda num subprocesso? Nunca lança."""
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            [sys.executable, "-P", os.path.abspath(__file__), PROBE_FLAG, model_name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=PROBE_TIMEOUT_S,
+        )
+    except Exception as e:  # noqa: BLE001 — timeout, executável ausente
+        return False, f"sonda da GPU não rodou: {e}"
+    if r.returncode == 0 and PROBE_OK in (r.stdout or ""):
+        return True, ""
+    tail = ((r.stderr or "").strip().splitlines() or [""])[-1]
+    return False, f"sonda da GPU saiu {r.returncode}: {tail}"[:400]
 
 
 def register_nvidia_dll_dirs() -> list:
@@ -104,7 +152,7 @@ def main() -> int:
         print(f"transcribe_words: faster-whisper indisponível ({e}); instalar com pip install faster-whisper", file=sys.stderr)
         return 1
 
-    state = {"model": None, "device": "cpu"}
+    state = {"model": None, "device": "cpu", "fell_back": False}
 
     def load(device):
         compute = "int8_float16" if device == "cuda" else "int8"
@@ -115,15 +163,23 @@ def main() -> int:
         print(f"[aviso] transcribe_words: CUDA indisponível ({e}); seguindo na CPU em int8", file=sys.stderr)
         load("cpu")
 
-    if device_req in ("auto", "cuda"):
+    if device_req == "auto":
+        register_nvidia_dll_dirs()
+        ok, why = cuda_usable(a.model)
+        if not ok:
+            fall_back_to_cpu(why)
+        else:
+            try:
+                load("cuda")
+            except Exception as e:  # noqa: BLE001 — a sonda passou; qualquer falha aqui ainda cai na CPU
+                fall_back_to_cpu(e)
+    elif device_req == "cuda":
         register_nvidia_dll_dirs()
         try:
             load("cuda")
-        except Exception as e:  # noqa: BLE001 — qualquer falha de carga da GPU
-            if device_req == "cuda":
-                print(f"transcribe_words: --device cuda pedido e a CUDA falhou: {e}", file=sys.stderr)
-                return 1
-            fall_back_to_cpu(e)
+        except Exception as e:  # noqa: BLE001
+            print(f"transcribe_words: --device cuda pedido e a CUDA falhou: {e}", file=sys.stderr)
+            return 1
     else:
         load("cpu")
 
@@ -132,8 +188,10 @@ def main() -> int:
             return _segments_of(audio, offset)
         except RuntimeError as e:
             # A falta de cublas64_12.dll só aparece no primeiro encode, não na carga.
+            # Sem memória na GPU também cai aqui: o arquivo é refeito do zero na CPU (correto, mais lento).
             if state["device"] == "cuda" and device_req == "auto" and is_cuda_error(e):
                 fall_back_to_cpu(e)
+                state["fell_back"] = True
                 return _segments_of(audio, offset)
             raise
 
@@ -182,7 +240,7 @@ def main() -> int:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=False)
         os.replace(tmp, a.out)
-        print(json.dumps({"ok": True, "windows": len(out["windows"]), "device": state["device"]}))
+        print(json.dumps({"ok": True, "windows": len(out["windows"]), "device": state["device"], "fallback": state["fell_back"]}))
         return 0
 
     segs, info = segments_of(a.audio)
@@ -191,9 +249,11 @@ def main() -> int:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
     os.replace(tmp, a.out)
-    print(json.dumps({"ok": True, "duration": info.duration, "segments": len(out["segments"]), "device": state["device"]}))
+    print(json.dumps({"ok": True, "duration": info.duration, "segments": len(out["segments"]), "device": state["device"], "fallback": state["fell_back"]}))
     return 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == [PROBE_FLAG]:
+        sys.exit(probe_cuda(sys.argv[2] if len(sys.argv) > 2 else "large-v3-turbo"))
     sys.exit(main())
