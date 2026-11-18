@@ -28,7 +28,9 @@
  *        propósito: o store suprime antes da chamada de rede, então uma falha
  *        da Brevo nunca deixa a pessoa elegível no nosso pipeline.
  *      - Exclusão LGPD = mesmo tratamento da saída; exclusão de DADOS, se
- *        pedida, só é listada (tratada à mão).
+ *        pedida (`data_deletion`), também entra na lista de esquecimento do
+ *        store e é minimizada no store e na Brevo, sem apagar o contato
+ *        (`lib/clarice-forget.ts`, #13573) — o rebuild do store não a desfaz.
  *      - `suporte` vira lista de encaminhamento à Clarice (o script nunca
  *        encaminha); `ambíguo` fica pendente, sem ação; `ruído` é ignorado.
  *
@@ -72,13 +74,14 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   DEFAULT_DB_PATH,
+  describeStoreFile,
   markSuppressedNow,
   openClariceDb,
   recomputeDerived,
@@ -95,6 +98,12 @@ import {
 } from "./lib/clarice-replies-classify.ts";
 import { addPriorityOptins, resolveOptinEmail } from "./clarice-optin.ts";
 import { isTestAccount } from "./lib/cohorts.ts";
+import {
+  DEFAULT_FORGET_LEDGER_PATH,
+  forgetInStore,
+  makeBrevoMinimizer,
+  type BrevoMinimizeResult,
+} from "./lib/clarice-forget.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 export const DEFAULT_PLAN_DIR = resolve(ROOT, "data", "clarice-replies");
@@ -244,7 +253,11 @@ export function renderPlanSummary(plan: TriagePlan, canonical?: CanonicalMap): s
   const list = (emails: string[]) => emails.map((e) => withCanonical(e, canonical)).join(", ");
   lines.push(`  priority_optin (+40): ${a.optin.length ? list(a.optin) : "(nenhum)"}`);
   lines.push(`  saída (blacklist Brevo + store): ${a.saida.length ? list(a.saida) : "(nenhuma)"}`);
-  if (a.data_deletion.length) lines.push(`  ⚠️  exclusão de DADOS pedida (tratar à mão): ${a.data_deletion.join(", ")}`);
+  if (a.data_deletion.length) {
+    lines.push(
+      `  🔒 exclusão de DADOS (LGPD — lista de esquecimento + minimização no store e na Brevo): ${list(a.data_deletion)}`,
+    );
+  }
   if (a.conflitos.length) lines.push(`  ⚠️  quero E saída do mesmo e-mail (saída prevalece): ${a.conflitos.join(", ")}`);
   if (a.suporte.length) {
     lines.push("  encaminhar à Clarice (o script não encaminha):");
@@ -268,6 +281,17 @@ export interface ApplyDeps {
    * contato não existe na Brevo (#12265).
    */
   blacklist: (email: string) => Promise<void | "not_found">;
+  /**
+   * Minimiza o contato na Brevo da Clarice (exclusão de DADOS, #13573): blacklist, fora das listas,
+   * atributos de texto zerados, sem apagar. Obrigatório quando há `data_deletion` pendente na Brevo;
+   * ausente nesse caso, o e-mail vira falha `forget_brevo` (o store é minimizado mesmo assim).
+   */
+  minimizeBrevo?: (email: string) => Promise<BrevoMinimizeResult>;
+  /**
+   * Ledger da lista de esquecimento (`lib/clarice-forget.ts`). `null`/omitido = só a tabela do store
+   * (testes). O `main` passa o ledger ao lado do store.
+   */
+  forgetLedgerPath?: string | null;
   /** E-mails do plano que o editor excluiu desta aplicação (`--skip`, #12283). Nada é feito com eles. */
   skip?: ReadonlySet<string>;
   now?: string;
@@ -288,11 +312,22 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
   const skip = deps.skip ?? new Set<string>();
   for (const e of skip) log(`⏭️  ${e}: excluído desta aplicação (--skip)`);
 
+  // #13574: o store mora no Drive; cada fase avisa antes de começar e quanto levou, para um --apply
+  // longo nunca parecer travado.
+  const phase = (label: string) => {
+    const t0 = Date.now();
+    log(`⏳ ${label}…`);
+    return () => log(`   ${label}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  };
+  // Houve escrita no store nesta execução? Só então o recompute (que lê e reavalia a base inteira) roda.
+  let storeWritten = false;
+
   const optinTodo = plan.actions.optin.filter((e) => !applied.optin_done.includes(e) && !skip.has(e));
   for (const email of optinTodo) {
     try {
       addPriorityOptins(deps.db, [email], now, log);
       applied.optin_done.push(email);
+      storeWritten = true;
     } catch (err) {
       applied.failures.push({ email, step: "optin", error: (err as Error).message });
     }
@@ -315,11 +350,56 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
         continue;
       }
       applied.saida_store_done.push(email);
+      storeWritten = true;
     } catch (err) {
       applied.failures.push({ email, step: "store", error: (err as Error).message });
     }
   }
-  if (optinTodo.length > 0 || saidaTodo.length > 0) recomputeDerived(deps.db);
+
+  // Exclusão de DADOS (LGPD, #13573): lista de esquecimento + minimização no store, antes do recompute
+  // e antes de qualquer chamada de rede (mesma ordem conservadora da saída).
+  applied.forget_store_done ??= [];
+  applied.forget_brevo_done ??= [];
+  applied.forget_brevo_not_found ??= [];
+  const forgetStoreDone = applied.forget_store_done;
+  const forgetBrevoDone = applied.forget_brevo_done;
+  const forgetNotFound = applied.forget_brevo_not_found;
+  const forgetTodo = plan.actions.data_deletion.filter((e) => !skip.has(e) && !skipped.has(e) && !isTestAccount(e));
+  for (const email of forgetTodo) {
+    if (forgetStoreDone.includes(email)) continue;
+    // Data do pedido = data da resposta que o fez (registro do pedido LGPD), não a da aplicação.
+    const asked = plan.items
+      .filter((i) => i.email === email && i.kind === "saida" && i.data_deletion)
+      .map((i) => i.date)
+      .sort()[0];
+    try {
+      const r = forgetInStore(
+        deps.db,
+        { email, requestedAt: asked ?? now, source: `clarice-replies-triage:${plan.batch_id}` },
+        deps.forgetLedgerPath ?? null,
+      );
+      forgetStoreDone.push(email);
+      storeWritten = true;
+      log(`🔒 ${email}: na lista de esquecimento (LGPD) — ${r.minimized} linha(s) minimizada(s) no store`);
+    } catch (err) {
+      applied.failures.push({ email, step: "forget_store", error: (err as Error).message });
+    }
+  }
+
+  if (storeWritten) {
+    const done = phase("recomputando send_eligible no store inteiro");
+    recomputeDerived(deps.db);
+    done();
+  }
+
+  const brevoTodo = saidaTodo.filter(
+    (e) => !applied.saida_brevo_done.includes(e) && !notFound.includes(e) && !skipped.has(e),
+  );
+  const forgetBrevoTodo = forgetTodo.filter((e) => !forgetBrevoDone.includes(e) && !forgetNotFound.includes(e));
+  const brevoDone =
+    brevoTodo.length + forgetBrevoTodo.length > 0
+      ? phase(`Brevo: ${brevoTodo.length} blacklist(s) + ${forgetBrevoTodo.length} minimização(ões) LGPD`)
+      : () => {};
 
   for (const email of saidaTodo) {
     if (applied.saida_brevo_done.includes(email) || notFound.includes(email) || skipped.has(email)) continue;
@@ -338,6 +418,34 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
     }
   }
 
+  for (const email of forgetBrevoTodo) {
+    const target = canonical.get(email) ?? email;
+    if (!deps.minimizeBrevo) {
+      applied.failures.push({ email, step: "forget_brevo", error: "sem cliente Brevo para minimizar o contato" });
+      continue;
+    }
+    try {
+      const r = await deps.minimizeBrevo(target);
+      if (r.status === "not_found") {
+        forgetNotFound.push(email);
+        log(`🔎 Brevo: ${target} não existe na Brevo — exclusão feita só no store; revise à mão o endereço que recebe a newsletter`);
+        continue;
+      }
+      forgetBrevoDone.push(email);
+      log(
+        `🔒 Brevo: ${target} minimizado (fora de ${r.lists_unlinked.length} lista(s), atributos zerados: ` +
+          `${r.attributes_cleared.join(", ") || "nenhum"})`,
+      );
+      if (r.attributes_kept.length > 0) {
+        log(`⚠️  Brevo: ${target} — atributos não-texto mantidos, revise à mão: ${r.attributes_kept.join(", ")}`);
+      }
+    } catch (err) {
+      applied.failures.push({ email, step: "forget_brevo", error: (err as Error).message });
+      log(`❌ Brevo: minimização LGPD de ${target} falhou — ${(err as Error).message}`);
+    }
+  }
+  brevoDone();
+
   applied.last_applied_at = now;
   return plan;
 }
@@ -347,6 +455,15 @@ export function pendingBrevoCount(plan: TriagePlan, skip: ReadonlySet<string> = 
   const notFound = plan.applied.saida_brevo_not_found ?? [];
   return plan.actions.saida.filter(
     (e) => !plan.applied.saida_brevo_done.includes(e) && !notFound.includes(e) && !isTestAccount(e) && !skip.has(e),
+  ).length;
+}
+
+/** Exclusões de DADOS (#13573) ainda sem minimização na Brevo. */
+export function pendingForgetBrevoCount(plan: TriagePlan, skip: ReadonlySet<string> = new Set()): number {
+  const done = plan.applied.forget_brevo_done ?? [];
+  const notFound = plan.applied.forget_brevo_not_found ?? [];
+  return plan.actions.data_deletion.filter(
+    (e) => !done.includes(e) && !notFound.includes(e) && !isTestAccount(e) && !skip.has(e),
   ).length;
 }
 
@@ -394,7 +511,11 @@ async function makeBrevoBlacklister(apiKey: string): Promise<(email: string) => 
 
 export async function main(
   argv: string[] = process.argv.slice(2),
-  overrides: { reader?: ReplyReader; blacklist?: (email: string) => Promise<void | "not_found"> } = {},
+  overrides: {
+    reader?: ReplyReader;
+    blacklist?: (email: string) => Promise<void | "not_found">;
+    minimizeBrevo?: (email: string) => Promise<BrevoMinimizeResult>;
+  } = {},
 ): Promise<number> {
   const planDir = getArg(argv, "plan-dir") || DEFAULT_PLAN_DIR;
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
@@ -438,20 +559,32 @@ export async function main(
       return 1;
     }
     let blacklist = overrides.blacklist;
-    if (!blacklist && pendingBrevoCount(plan, skip) > 0) {
+    let minimizeBrevo = overrides.minimizeBrevo;
+    const needBlacklist = !blacklist && pendingBrevoCount(plan, skip) > 0;
+    const needMinimize = !minimizeBrevo && pendingForgetBrevoCount(plan, skip) > 0;
+    if (needBlacklist || needMinimize) {
       loadProjectEnv();
       const apiKey = process.env.BREVO_CLARICE_API_KEY;
       if (!apiKey) {
         console.error("❌ BREVO_CLARICE_API_KEY ausente no env — saída pendente na Brevo não pode ser aplicada. Nada aplicado.");
         return 1;
       }
-      blacklist = await makeBrevoBlacklister(apiKey);
+      if (needBlacklist) blacklist = await makeBrevoBlacklister(apiKey);
+      if (needMinimize) minimizeBrevo = await makeBrevoMinimizer(apiKey);
     }
+    // #13574: abrir o store pelo Drive e o recompute da base inteira levam minutos — avisar antes,
+    // com o tamanho, para o --apply não parecer travado (e ninguém matar o processo no meio).
+    const t0 = Date.now();
+    console.error(`📂 abrindo o store em ${dbPath} (${describeStoreFile(dbPath)}) — pelo Drive pode levar alguns minutos…`);
     const db = openClariceDb(dbPath);
+    console.error(`   store aberto em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     try {
       await applyTriagePlan(plan, {
         db,
         blacklist: blacklist ?? (async () => {}),
+        minimizeBrevo,
+        // Ledger da lista de esquecimento ao lado do store (= data/clarice-subscribers/ no store padrão).
+        forgetLedgerPath: resolve(dirname(dbPath), basename(DEFAULT_FORGET_LEDGER_PATH)),
         skip,
         log: (m) => console.error(m),
       });
@@ -459,6 +592,7 @@ export async function main(
       db.close();
       writeFileAtomic(path, JSON.stringify(plan, null, 2) + "\n");
     }
+    console.error(`   --apply concluído em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     const a = plan.applied;
     const summary = {
       batch_id: plan.batch_id,
@@ -469,7 +603,12 @@ export async function main(
       saida_brevo_not_found: a.saida_brevo_not_found ?? [],
       skipped: [...skip].sort(),
       failures: a.failures,
-      data_deletion_manual: plan.actions.data_deletion,
+      // #13573: exclusão de DADOS deixou de ser manual — registrada na lista de esquecimento e
+      // minimizada no store/Brevo. `not_found` = só no store (contato fora da Brevo, revisar à mão).
+      data_deletion: plan.actions.data_deletion,
+      data_deletion_store_done: a.forget_store_done ?? [],
+      data_deletion_brevo_done: a.forget_brevo_done ?? [],
+      data_deletion_brevo_not_found: a.forget_brevo_not_found ?? [],
       suporte_encaminhar: plan.actions.suporte.length,
       pendentes: plan.actions.pendentes.length,
     };

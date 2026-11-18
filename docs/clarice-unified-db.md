@@ -124,6 +124,28 @@ mais fraco que dispute/soft_bounce).
 | `npx tsx scripts/clarice-optin.ts remove <email…>` | remove optin. |
 | `npx tsx scripts/clarice-optin.ts list` | lista optins. |
 | `npx tsx scripts/clarice-sync-brevo.ts [--db <p>] [--concurrency N] [--limit N]` | sincroniza engajamento/supressão do Brevo (opens/clicks/sends/bounces/unsub/last_*) → recomputa derivados. **Checkpoint-resumável** + rate-limit-aware. |
+| `npx tsx scripts/clarice-forget.ts add --email <e> [--no-brevo]` | pedido de exclusão de DADOS (LGPD, #13573): lista de esquecimento + minimização no store e na Brevo, sem apagar o contato. `list` mostra os pedidos. |
+
+### Lista de esquecimento — exclusão de dados (LGPD, #13573)
+
+Quem pede exclusão de dados entra na tabela `forget_requests` do store e no
+ledger `data/clarice-subscribers/forget-requests.jsonl` (cópia fora do `.db`;
+o rebuild a reimporta antes de ingerir o Stripe e **aborta** se ela estiver
+ilegível). Daí em diante o e-mail fica no store só com as flags de supressão
+(`unsubscribed`, `email_blacklisted`, bounce/complaint) e `send_eligible = 0`:
+
+- `clarice-build-db.ts` não regrava nome/ids/cohort/MV dele (o export do
+  Stripe continua tendo a pessoa — era isso que desfazia a exclusão à mão);
+- `clarice-sync-brevo.ts` (`makeBrevoUpsert`) só mescla a supressão;
+- `recomputeDerived` minimiza a linha a cada build/sync (`minimizeForgottenRows`)
+  e não faz backfill de cohort por CSV.
+
+A linha **não é apagada** de propósito: sem ela a pessoa voltaria elegível se
+reaparecer num export. Mesma lógica na Brevo: o contato fica blacklisted, sai
+das listas e tem os atributos de texto zerados (`lib/clarice-forget.ts`).
+A correspondência é pela caixa canônica do Gmail. `clarice-replies-triage.ts
+--apply` registra sozinho as respostas com `data_deletion`; pedido que chega
+por outro caminho entra com `clarice-forget.ts add`.
 
 A lógica de priorização (pontos + elegibilidade) vive em `scripts/lib/clarice-db.ts`
 (`computePriorityPoints`, `classifyEligibility`, `recomputeDerived`), testada em
