@@ -28,7 +28,7 @@
  * `scripts/suggest-capa-hooks.ts`.
  */
 
-import { normalizeShortCoverHook, splitHook } from "./youtube-thumb.ts";
+import { normalizeShortCoverHook, SHORT_HOOK_MAX_WORDS, splitHook } from "./youtube-thumb.ts";
 import { contentWords, extractProperNouns } from "./youtube-title-research.ts";
 
 export const CAPA_HOOKS_RECORD_FILE = "_internal/youtube-capa-hooks.json";
@@ -243,7 +243,11 @@ export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigi
   const notes: string[] = [];
   let score = 50;
 
-  if (words < CAPA_HOOK_MIN_WORDS || words > CAPA_HOOK_MAX_WORDS) {
+  // A capa do Short aceita até 7 palavras (SHORT_HOOK_MAX_WORDS, 18/11/2026): acima da
+  // diretriz geral, mas cabendo no Short, é nota, não violação.
+  if (words > CAPA_HOOK_MAX_WORDS && words <= SHORT_HOOK_MAX_WORDS && shortHookArg(hook).hook) {
+    notes.push(`${words} palavras: acima da diretriz de ${CAPA_HOOK_MIN_WORDS} a ${CAPA_HOOK_MAX_WORDS}, só a capa do Short aceita (até ${SHORT_HOOK_MAX_WORDS})`);
+  } else if (words < CAPA_HOOK_MIN_WORDS || words > CAPA_HOOK_MAX_WORDS) {
     violations.push(`${words} palavra(s); a diretriz é ${CAPA_HOOK_MIN_WORDS} a ${CAPA_HOOK_MAX_WORDS}`);
   } else if (words >= CAPA_HOOK_TARGET_MIN && words <= CAPA_HOOK_TARGET_MAX) {
     score += 15;
