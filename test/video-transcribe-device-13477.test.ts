@@ -85,6 +85,8 @@ function run(env: ReturnType<typeof fakeEnv>, args: string[], extraEnv: Record<s
       DIARIA_WHISPER_PROBE_CACHE: "",
       DIARIA_WHISPER_PROBE_CACHE_DIR: env.dir,
       DIARIA_WHISPER_CUDA_DRIVER_PATH: "",
+      // #13506: estes testes medem a carga avulsa; o residente tem o teste próprio (video-whisper-resident-13506).
+      DIARIA_WHISPER_RESIDENT: "0",
       ...extraEnv,
     },
   });

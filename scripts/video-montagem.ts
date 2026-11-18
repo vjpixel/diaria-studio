@@ -21,6 +21,15 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       `silences.meta.json`); `--silence-db -35` sobrepõe. Limiar diferente do
  *       da última detecção refaz só o `silences.json`. Um `transcript.json` existente
  *       nunca é retranscrito sem --force, nem com `source.json` novo (#11504: avisa e mantém).
+ *       (#13508) com GPU (cuda + h264_nvenc no ffmpeg), a mesma leitura grava o proxy
+ *       `bruto-proxy-1440p.mp4` (+ `.meta.json`), de onde face/face-compare/gaze tiram os
+ *       frames; o XML segue no bruto 4K. Falha = só o áudio, como antes, com [aviso].
+ *       `DIARIA_VIDEO_PROXY=0` desliga.
+ *       (#13507) o decode do bruto na prévia, nos trechos do XML leve e nos frames vai pela
+ *       GPU (`-hwaccel cuda`) quando o ffmpeg lista cuda; falha cai na CPU com [aviso] uma
+ *       vez por execução. `DIARIA_VIDEO_HWACCEL=0` desliga. Frames do face/gaze em lote.
+ *       (#13506) o Whisper fica residente entre as chamadas (`transcribe_words.py --serve`,
+ *       ocioso por 15 min encerra); `DIARIA_WHISPER_RESIDENT=0` volta ao helper avulso.
  *   transcribe AAMMDD --source A,B,C [--ordem gravacao|dada] | --all
  *       (#12559) bruto em vários arquivos: uma linha do tempo na ordem de gravação
  *       (creation_time), `files[]` no `source.json`, áudio por arquivo concatenado em
@@ -642,6 +651,9 @@ import {
 } from "./lib/diaria/video-montage-drive.ts";
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
+import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
+import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
+import { PROXY, proxyOutputArgs, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
   deepFilterArgs,
   deepFilterBin,
@@ -764,6 +776,21 @@ function run(cmd: string, args: string[], opts: SpawnSyncOptions & { inheritStde
   const stderr = String(r.stderr ?? "");
   if (r.status !== 0) throw new Error(`${cmd} saiu ${r.status}: ${stderr.trim().split(/\r?\n/).slice(-8).join(" | ")}`);
   return { stdout: String(r.stdout ?? ""), stderr };
+}
+
+/**
+ * #13507: decode do bruto pela GPU (`-hwaccel cuda`) com queda para a CPU e
+ * `[aviso]` uma vez por execução (`lib/diaria/video-hwaccel.ts`).
+ * `DIARIA_VIDEO_HWACCEL=0` desliga.
+ */
+const hwDecode = createHwDecoder({
+  listHwaccels: () => run("ffmpeg", ["-hide_banner", "-hwaccels"]).stdout,
+  warn: (line) => console.error(line),
+});
+
+/** Um ffmpeg que decodifica o bruto, pela GPU quando der (#13507). */
+function runDecode(args: string[], what: string, opts: { all?: boolean } = {}): "cuda" | "cpu" {
+  return hwDecode.run(args, (a) => { run("ffmpeg", a); }, what, opts);
 }
 
 interface Vocab {
@@ -1408,7 +1435,7 @@ function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
   const out = f(ctx, `frame-${t.toFixed(1)}-orientacoes.jpg`);
   const vf = "scale=960:-2,split[a][b];[b]hflip[m];[a][m]hstack=inputs=2,drawgrid=w=iw/20:h=ih/10:t=1:c=white@0.4";
   const at0 = frameAt(measured, t);
-  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-filter_complex", vf, out]);
+  runDecode(["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-filter_complex", vf, out], "frame");
   console.log(out);
   console.error("[video-montagem] lado a lado: esquerda = bruto como gravado, direita = espelhado; o lado em que a caneca e o pôster leem certo é a orientação real (#11959)");
   console.error(`[premissa] ${mirroredPremise(measured, override)} (#11959)`);
@@ -2460,12 +2487,25 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (redo || !existsSync(audio) || !existsSync(loudPath)) {
     console.error("[video-montagem] extraindo o áudio (16 kHz mono) e medindo o loudness do bruto…");
     let stderr = "";
+    const baseArgs = [
+      "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
+      "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
+      "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
+    ];
+    // #13508: o proxy 1440p na mesma leitura (bruto de um arquivo de vídeo, GPU + NVENC); só na 1ª leitura.
+    let proxyPlan = multiAudio || source.audioOnly ? null : transcribeProxyPlan(ctx, source);
     const extract = () => {
-      stderr = run("ffmpeg", [
-        "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
-        "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
-        "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
-      ]).stderr;
+      const r = runExtractWithProxy({
+        baseArgs,
+        proxy: proxyPlan,
+        exec: (args) => run("ffmpeg", args).stderr,
+        finish: (part) => finishProxy(ctx, source, part),
+        discard: (part) => rmSync(part, { force: true }),
+        warn: (line) => console.error(line),
+      });
+      if (r.proxy === "made") console.error(`[video-montagem] proxy ${PROXY.shortSide}p gravado (${join(ctx.workDir, PROXY.file)}): face/gaze leem dele, o XML segue no bruto (#13508)`);
+      proxyPlan = null;
+      stderr = r.stderr;
       return probeDurationS(audio);
     };
     if (multiAudio) extract();
@@ -2764,7 +2804,7 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   // #11939: os recortes de cada escala sobre o bruto desespelhado, antes do scale, em px do bruto.
   const overlays = frameCropOverlays(at0.view, framing);
   const vf = `${at0.view.mirrored ? "hflip," : ""}${overlays.filters.join(",")},scale=960:-2,drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.6`;
-  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-vf", vf, out]);
+  runDecode(["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-vf", vf, out], "frame");
   console.log(out);
   for (const w of overlays.warnings) console.error(`[aviso] ${w}`);
   for (const w of overlays.premises) console.error(`[premissa] ${w}`);
@@ -3032,12 +3072,97 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
 // ── Rosto automático e folha de olhar (#12560) ────────────────────────────
 
 /** Um frame do bruto (tempo global) em PNG de 720 px de largura, desespelhado. */
-function grabFrame(source: SourceInfo, t: number, out: string): void {
-  const at0 = frameAt(source, t);
+function grabFrame(source: SourceInfo, t: number, out: string, proxy: string | null = null): void {
+  const job = frameJobOf(source, t, out, proxy);
   rmSync(out, { force: true });
-  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", at0.localS.toFixed(3), "-i", at0.view.path, "-frames:v", "1", "-vf", `${at0.view.mirrored ? "hflip," : ""}scale=720:-2`, out]);
+  runDecode(["-hide_banner", "-v", "error", "-y", "-ss", job.atS.toFixed(3), "-i", job.src, "-frames:v", "1", "-vf", `${job.mirrored ? "hflip," : ""}scale=720:-2`, out], "frame");
   // ffmpeg com -ss além do fim sai 0 sem gravar: frame ausente é falha de extração, não "rosto não detectado" (review da PR #12563).
-  if (!existsSync(out)) throw new Error(`frame em ${t.toFixed(2)} s (${at0.view.id} em ${at0.localS.toFixed(2)} s) não foi extraído: tempo além do fim do arquivo?`);
+  if (!existsSync(out)) throw new Error(missingFrameMessage(source, t));
+}
+
+function missingFrameMessage(source: SourceInfo, t: number): string {
+  const at0 = frameAt(source, t);
+  return `frame em ${t.toFixed(2)} s (${at0.view.id} em ${at0.localS.toFixed(2)} s) não foi extraído: tempo além do fim do arquivo?`;
+}
+
+/** #13508: o frame sai do proxy 1440p quando há um válido (mesmo tempo, mesmo espelhamento); senão do bruto. */
+function frameJobOf(source: SourceInfo, t: number, out: string, proxy: string | null): FrameJob {
+  const at0 = frameAt(source, t);
+  return { src: !at0.multi && proxy ? proxy : at0.view.path, atS: at0.localS, mirrored: at0.view.mirrored, out };
+}
+
+/**
+ * #13508: o proxy 1440p do bruto (`transcribe`), se a meta bate com o
+ * `source.json`; senão `null` (frames do 4K, como antes).
+ */
+function proxyFor(ctx: Pick<Ctx, "workDir">, source: SourceInfo): string | null {
+  const path = join(ctx.workDir, PROXY.file);
+  const metaPath = join(ctx.workDir, PROXY.meta);
+  if (!existsSync(path) || !existsSync(metaPath)) return null;
+  try {
+    return proxyUsable(JSON.parse(readFileSync(metaPath, "utf8")), source, statSync(source.path).size) ? path : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #13508: a saída do proxy para o ffmpeg do `transcribe`, ou `null` (sem
+ * proxy): `DIARIA_VIDEO_PROXY=0` ou `DIARIA_VIDEO_HWACCEL=0`, ffmpeg sem `cuda`
+ * em `-hwaccels` ou sem `h264_nvenc`, ou bruto que já cabe em 1440p. O proxy e
+ * a meta anteriores saem antes (a leitura nova regrava os dois).
+ */
+function transcribeProxyPlan(ctx: Pick<Ctx, "workDir">, source: SourceInfo): { args: string[]; part: string } | null {
+  if ((process.env.DIARIA_VIDEO_PROXY ?? "").trim() === "0" || (process.env.DIARIA_VIDEO_HWACCEL ?? "").trim() === "0") return null;
+  const final = join(ctx.workDir, PROXY.file);
+  rmSync(final, { force: true });
+  rmSync(join(ctx.workDir, PROXY.meta), { force: true });
+  let gpu = false;
+  try {
+    gpu = ffmpegListsCuda(run("ffmpeg", ["-hide_banner", "-hwaccels"]).stdout) && pickTrechoEncoder(run("ffmpeg", ["-hide_banner", "-encoders"]).stdout) === "h264_nvenc";
+  } catch {
+    gpu = false;
+  }
+  if (!gpu) {
+    console.error(`[premissa] ffmpeg sem GPU (cuda + h264_nvenc): sem proxy ${PROXY.shortSide}p; face/gaze leem o bruto 4K (#13508)`);
+    return null;
+  }
+  const part = `${final}.part`;
+  const args = proxyOutputArgs({ width: source.width, height: source.height, out: part });
+  return args ? { args, part } : null;
+}
+
+/** Confere a duração do proxy recém-gravado contra o bruto, põe no nome final e grava a meta (#13508). */
+function finishProxy(ctx: Pick<Ctx, "workDir">, source: SourceInfo, part: string): void {
+  const d = probeDurationS(part);
+  if (!Number.isFinite(d) || Math.abs(d - source.durationS) > PROXY.durationTolS) throw new Error(`proxy com ${Number.isFinite(d) ? d.toFixed(2) : "?"} s, o bruto tem ${source.durationS.toFixed(2)} s`);
+  renameSync(part, join(ctx.workDir, PROXY.file));
+  const meta: ProxyMeta = { version: PROXY.version, src: source.path, size: statSync(source.path).size, durationS: source.durationS, width: source.width, height: source.height };
+  writeJson(join(ctx.workDir, PROXY.meta), meta);
+}
+
+/** `proxyFor` com a linha do relato dizendo de onde os frames saem (#13508). */
+function proxyNotice(ctx: Pick<Ctx, "workDir">, source: SourceInfo): string | null {
+  const p = proxyFor(ctx, source);
+  if (p) console.error(`[video-montagem] frames do proxy ${PROXY.shortSide}p (${p}); o XML segue no bruto (#13508)`);
+  return p;
+}
+
+/**
+ * #13507: os frames em lote, um processo do ffmpeg por até `FRAME_BATCH_SIZE`
+ * frames (GPU quando der). Lote que falha, ou que deixa algum PNG sem gravar,
+ * é refeito frame a frame (`grabFrame`), que nomeia o frame problemático.
+ */
+function grabFrames(source: SourceInfo, list: ReadonlyArray<{ t: number; out: string }>, proxy: string | null = null): void {
+  for (const chunk of chunkFrameJobs(list)) {
+    for (const x of chunk) rmSync(x.out, { force: true });
+    try {
+      runDecode(batchFrameArgs(chunk.map((x) => frameJobOf(source, x.t, x.out, proxy)), { width: 720 }), `${chunk.length} frame(s) em lote`, { all: true });
+    } catch {
+      /* refeito frame a frame abaixo */
+    }
+    for (const x of chunk) if (!existsSync(x.out)) grabFrame(source, x.t, x.out, proxy);
+  }
 }
 
 const FACE_PY = join(ROOT, "scripts", "video", "face_detect.py");
@@ -3051,10 +3176,11 @@ const FACE_PY = join(ROOT, "scripts", "video", "face_detect.py");
  * ao trocar uma tomada (com `--overwrite`, se o `face` já gravou antes).
  */
 /** Os frames do `face` (25/50/75% de cada item) em `dir`, com o `in.json` do face_detect.py; devolve as chaves `{bloco}#{i}`. */
-function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>, dir: string): { keys: string[]; items: Map<string, ResolvedItem> } {
+function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>, dir: string, proxy: string | null = null): { keys: string[]; items: Map<string, ResolvedItem> } {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const jobs: Array<{ key: string; path: string }> = [];
+  const frames: Array<{ t: number; out: string }> = [];
   const keys: string[] = [];
   const byKey = new Map<string, ResolvedItem>();
   for (const [block, items] of Object.entries(resolved) as Array<[string, ResolvedItem[]]>) {
@@ -3064,11 +3190,13 @@ function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, Resolve
       byKey.set(key, it);
       FACE_SAMPLE_FRACTIONS.forEach((q, k) => {
         const path = join(dir, `${block}-${i}-${k}.png`);
-        grabFrame(source, it.interval.start + (it.interval.end - it.interval.start) * q, path);
+        frames.push({ t: it.interval.start + (it.interval.end - it.interval.start) * q, out: path });
         jobs.push({ key, path });
       });
     });
   }
+  // #13507: frames em lote; #13508: do proxy 1440p quando houver.
+  grabFrames(source, frames, proxy);
   writeJson(join(dir, "in.json"), jobs);
   return { keys, items: byKey };
 }
@@ -3076,7 +3204,7 @@ function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, Resolve
 function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
   const { source, resolved } = plans(ctx);
   const dir = join(ctx.workDir, "face-tmp");
-  const { keys } = grabItemFaceFrames(source, resolved, dir);
+  const { keys } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source));
   run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "out.json")], { inheritStderr: true });
   const results = itemFramings(readJson<FrameDetection[]>(join(dir, "out.json"), "face_detect"), keys);
   for (const r of results) {
@@ -3116,7 +3244,7 @@ function cmdFaceCompare(ctx: Ctx, mpPython: string | undefined, mpModel: string 
   const { file, source, resolved } = plans(ctx);
   const { framing: base, assumed } = effectiveFraming(file);
   const dir = join(ctx.workDir, "face-compare-tmp");
-  const { keys, items } = grabItemFaceFrames(source, resolved, dir);
+  const { keys, items } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source));
   run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "haar.json")], { inheritStderr: true });
   run(mpPython, ["-P", FACE_PY, "--detector", "mediapipe", "--model", mpModel, join(dir, "in.json"), join(dir, "mediapipe.json")], { inheritStderr: true });
   const refs: FaceReference[] = [];
@@ -3166,6 +3294,7 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const jobs: Array<{ row: string; label: string; path: string }> = [];
+  const frames: Array<{ t: number; out: string }> = [];
   const bounds = fileBounds(pf.source);
   plan.clips.forEach((c, i) => {
     const a = c.frameIn / fps;
@@ -3174,10 +3303,12 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
     const fileEnd = bounds[c.file ?? 0]?.end ?? Number.POSITIVE_INFINITY;
     gazeMarks(a, b, i === plan.clips.length - 1, fileEnd).forEach((m, k) => {
       const path = join(dir, `g${String(i).padStart(3, "0")}-${k}.png`);
-      grabFrame(pf.source, m.t, path);
+      frames.push({ t: m.t, out: path });
       jobs.push({ row, label: m.label, path });
     });
   });
+  // #13507: frames em lote; #13508: do proxy 1440p quando houver.
+  grabFrames(pf.source, frames, proxyNotice(ctx, pf.source));
   writeJson(join(dir, "in.json"), jobs);
   const out = join(ctx.workDir, `gaze-${sequenceKey(plan.spec)}.jpg`);
   run(ctx.python, ["-P", FACE_PY, "--sheet", join(dir, "in.json"), out], { inheritStderr: true });
@@ -3472,7 +3603,8 @@ function silenceThresholdDb(ctx: Ctx): number {
  * Retranscreve as janelas das bordas (#11500) numa chamada só do Python (o
  * modelo carrega uma vez), sem VAD e sem `condition_on_previous_text`. Cache
  * por janela em `edge-retranscribe.json`, válido para o MESMO `audio.wav`
- * (tamanho + mtime): build repetido no loop da autorrevisão não retranscreve.
+ * (hash do conteúdo, #13505; tamanho + mtime até então): build repetido no loop da
+ * autorrevisão não retranscreve, nem depois de uma cópia do work dir.
  */
 function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<string, Word[]> {
   return windowTranscripts(ctx, audio, windows, "edge-retranscribe.json", "refino dos cortes: retranscrevendo {n} borda(s) de clipe (sem VAD)…");
@@ -3486,15 +3618,22 @@ function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<st
  */
 function windowTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[], cacheName: string, message: string): Map<string, Word[]> {
   const cachePath = f(ctx, cacheName);
-  const st = statSync(audio);
-  const id = { size: st.size, mtimeMs: st.mtimeMs };
-  type Cache = { audio: typeof id; windows: Record<string, Word[]> };
+  // #13505: a chave é o hash do conteúdo do áudio (+ o intervalo, na chave da janela), não tamanho + mtime.
+  const id = audioIdentity(audio);
+  type Cache = { audio: AudioIdentity; windows: Record<string, Word[]> };
   let cache: Cache = { audio: id, windows: {} };
+  let restamp = false;
   if (existsSync(cachePath) && !ctx.force) {
     const c = readJson<Cache>(cachePath, cacheName);
-    if (c.audio?.size === id.size && c.audio?.mtimeMs === id.mtimeMs) cache = c;
+    const m = sameAudio(c.audio, id);
+    if (m.same && c.windows && typeof c.windows === "object") {
+      cache = { audio: id, windows: c.windows };
+      restamp = m.legacy;
+    }
   }
   const missing = windows.filter((w) => !(w.key in cache.windows));
+  // Cache anterior ao #13505 (tamanho + mtime) que ainda vale: regrava com o hash, para sobreviver à próxima cópia.
+  if (!missing.length && restamp) writeJson(cachePath, cache);
   if (missing.length) {
     mkdirSync(ctx.workDir, { recursive: true });
     const stem = cacheName.replace(/\.json$/, "");
@@ -3708,16 +3847,16 @@ export interface VerifyEdgeWordsInput {
   /** `null` = transcript.json ausente ou ilegível. */
   transcript: Word[] | null;
   /** `null` = edge-retranscribe.json ausente ou ilegível. */
-  cache: { audio?: { size?: number; mtimeMs?: number }; windows?: Record<string, Word[]> } | null;
-  /** `statSync` do `audio.wav` desta máquina. */
-  audio: { size: number; mtimeMs: number };
+  cache: { audio?: { size?: number; mtimeMs?: number; sha256?: string }; windows?: Record<string, Word[]> } | null;
+  /** Identidade do `audio.wav` desta máquina (tamanho, mtime e, desde o #13505, o hash do conteúdo). */
+  audio: AudioIdentity;
 }
 
 /**
  * #13194: as palavras do bruto que limitam a abertura no `verify-xml`, como no
  * build: o transcript e as janelas da retranscrição das bordas. Do cache só
  * entram as janelas de `edgeWindowsFor` dos clipes do plano atual, e só se ele
- * é do MESMO `audio.wav` (tamanho + mtime, como `windowTranscripts`). Cache
+ * é do MESMO `audio.wav` (hash do conteúdo desde o #13505, como `windowTranscripts`). Cache
  * ausente, inválido ou de outro áudio, e transcript ausente ou vazio, viram
  * [aviso] e o verify segue com o que há (nunca aborta).
  */
@@ -3728,7 +3867,7 @@ export function verifyEdgeWords(input: VerifyEdgeWordsInput & { planClips: Reado
   else words.push(...input.transcript);
   const c = input.cache;
   if (!c || !c.windows || typeof c.windows !== "object") warnings.push("edge-retranscribe.json ausente ou inválido: palavras da retranscrição das bordas não aplicadas (#13194)");
-  else if (c.audio?.size !== input.audio.size || c.audio?.mtimeMs !== input.audio.mtimeMs) warnings.push("edge-retranscribe.json é de outro audio.wav: palavras da retranscrição das bordas não aplicadas; rode build de novo nesta máquina (#13194)");
+  else if (!sameAudio(c.audio, input.audio).same) warnings.push("edge-retranscribe.json é de outro audio.wav: palavras da retranscrição das bordas não aplicadas; rode build de novo nesta máquina (#13194)");
   else {
     const keys = new Set(input.planClips.flatMap((x) => edgeWindowsFor(x, input.durationS).map((w) => w.key)));
     for (const [k, ws] of Object.entries(c.windows)) if (keys.has(k) && Array.isArray(ws)) words.push(...ws.filter((w) => typeof w?.start === "number" && typeof w?.end === "number" && typeof w?.text === "string"));
@@ -3747,11 +3886,10 @@ function readVerifyEdgeWordsInput(ctx: Ctx, audio: string): VerifyEdgeWordsInput
     }
   };
   const t = tryRead<Transcript>(f(ctx, "transcript.json"), "transcript.json");
-  const st = statSync(audio);
   return {
     transcript: t ? transcriptWords(t) : null,
     cache: tryRead<VerifyEdgeWordsInput["cache"] & object>(f(ctx, "edge-retranscribe.json"), "edge-retranscribe.json"),
-    audio: { size: st.size, mtimeMs: st.mtimeMs },
+    audio: audioIdentity(audio),
   };
 }
 
@@ -4259,7 +4397,8 @@ export function renderTrechos(input: {
   log?: (line: string) => void;
 }): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number; redone: number } {
   const log = input.log ?? ((m: string) => console.error(m));
-  const encode = input.encode ?? ((args: string[]) => { run("ffmpeg", args); });
+  // #13507: o decode do bruto pela GPU quando der (a queda para a CPU fica no runDecode; a do NVENC, abaixo).
+  const encode = input.encode ?? ((args: string[]) => runDecode(args, "trecho do XML leve"));
   const probeFrames = input.probeFrames ?? probeTrechoFrames;
   const files = sourceFiles(input.source);
   const uses = input.plans.flatMap((p) =>
@@ -5927,6 +6066,11 @@ async function cmdPreview(
   // #12559: bruto em vários arquivos: vídeo do arquivo do clipe em tempo local, áudio da faixa global (tratada, ou o concatenado).
   const multi = isMultiSource(pf.source);
   const multiAudio = multi ? (audioSrc ?? audioInputOf(ctx, pf.source)) : undefined;
+  // #13530 review: onde cada clipe foi decodificado, para refazer na CPU os da GPU se ela cair no meio.
+  const clipJobs: { args: string[]; what: string; device: "cuda" | "cpu" }[] = [];
+  const decodeClip = (args: string[], what: string): void => {
+    clipJobs.push({ args, what, device: runDecode(args, what) });
+  };
   plan.clips.forEach((c, i) => {
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // #13303: o áudio exato do clipe (PCM, amostras por quadro), regravado sobre o concat no fim.
@@ -5937,11 +6081,11 @@ async function cmdPreview(
       // A mesma geometria do XML (arquivo, encaixe, framing do arquivo e do item).
       const g = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, fileOverrides: pf.fileOverrides, clip: c });
       const off = g.file.offsetFrames;
-      run("ffmpeg", previewClipArgs({
+      decodeClip(previewClipArgs({
         src: g.file.path, start: (c.frameIn - off) / fps, end: (c.frameOut - off) / fps,
         crop: g.main.crop ?? { x: 0, y: 0, w: g.file.width, h: g.file.height }, mirrored: g.mirrored, fps, out: join(dir, name), ...size,
         audioSrc: multiAudio, audioStart: c.frameIn / fps, fit: g.fit, videoOnly: true,
-      }));
+      }), `clipe ${i + 1} da prévia`);
       list.push(`file '${name}'`);
       console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block}, ${g.file.id}${g.fit !== "fill" ? `, ${g.fit}` : ""})`);
       return;
@@ -5951,10 +6095,17 @@ async function cmdPreview(
     // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
     const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }));
+    decodeClip(previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
+  // #13530 review: GPU caiu no meio da prévia: os clipes já feitos pela GPU podem ter outro pix_fmt e o concat
+  // -c copy exige parâmetros iguais; refaz esses na CPU (o decoder já está em "cpu") para a prévia sair uniforme.
+  const redo = clipsToRedoOnCpu(clipJobs.map((j) => j.device));
+  if (redo.length > 0) {
+    console.error(`[aviso] a GPU caiu no meio da prévia: refazendo na CPU ${redo.length} clipe(s) feitos por ela, para o concat sair uniforme (#13530)`);
+    for (const k of redo) runDecode(clipJobs[k].args, `${clipJobs[k].what} (refeito na CPU)`);
+  }
   // #12571: o card de CTA que o XML desta sequência levou, como último clipe (com áudio em silêncio para o concat).
   const card = assets.ctaCard ?? null;
   let cardS = 0;
