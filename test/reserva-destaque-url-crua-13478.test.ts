@@ -56,7 +56,19 @@ describe("reserva de destaque com URL crua no pool (#13478)", () => {
     assert.equal(r.kept.length, 1);
     const kept = r.kept[0] as Record<string, unknown>;
     assert.equal(kept.editor_destaque_request, "d2");
-    assert.equal(kept.reserved_from, "261117/d2");
+    // #13510: o reserved_from é do doador, não do pedido do vencedor — não mistura
+    assert.equal(kept.reserved_from, undefined);
+  });
+
+  it("#13510: com 2 doadores, pedido e reserved_from vêm do mesmo doador", () => {
+    const a = { url: RAW, title: "Título bem mais longo do item vencedor do grupo" };
+    const b = { url: canonicalize(RAW), title: "Curto B", editor_destaque_request: "d1" };
+    const c = { url: canonicalize(RAW) + "#x", title: "Curto C", editor_destaque_request: "d2", reserved_from: "261117/d3" };
+    const r = dedup([a, b, c] as never, new Set(), 0.85);
+    assert.equal(r.kept.length, 1);
+    const kept = r.kept[0] as Record<string, unknown>;
+    assert.equal(kept.editor_destaque_request, "d1");
+    assert.equal(kept.reserved_from, undefined);
   });
 
   it("match exato no 1h copia reserved_from junto com o pedido", () => {
