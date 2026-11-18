@@ -962,20 +962,22 @@ export interface ShortCoverPlan {
  * o aviso inverte, porque dentro da janela o lettering do título do D1
  * apareceria junto do gancho.
  */
-export function planShortCoverFrame(video: string, atSeconds: number, out: string, opts: { withHook?: boolean } = {}): ShortCoverPlan {
+export function planShortCoverFrame(video: string, atSeconds: number, out: string, opts: { withHook?: boolean; letteringS?: number } = {}): ShortCoverPlan {
   if (!Number.isFinite(atSeconds) || atSeconds < 0) {
     throw new Error(`--at inválido: ${atSeconds} (segundos, ex.: 1.8)`);
   }
+  // #13570: o fim do lettering medido no plan.json da montagem, quando o CLI o tem; senão os 3,5 s de sempre.
+  const lettering = opts.letteringS ?? SHORT_COVER_LETTERING_WINDOW_S;
   const warnings: string[] = [];
   if (opts.withHook) {
-    if (atSeconds <= SHORT_COVER_LETTERING_WINDOW_S) {
+    if (atSeconds <= lettering) {
       warnings.push(
-        `frame aos ${atSeconds}s está dentro da janela do lettering do título (0–${SHORT_COVER_LETTERING_WINDOW_S}s) — o título do D1 apareceria junto do gancho; escolha um frame depois de ${SHORT_COVER_LETTERING_WINDOW_S}s`,
+        `frame aos ${atSeconds}s está dentro da janela do lettering do título (0–${lettering}s) — o título do D1 apareceria junto do gancho; escolha um frame depois de ${lettering}s`,
       );
     }
-  } else if (atSeconds > SHORT_COVER_LETTERING_WINDOW_S) {
+  } else if (atSeconds > lettering) {
     warnings.push(
-      `frame aos ${atSeconds}s está fora da janela do lettering do título (0–${SHORT_COVER_LETTERING_WINDOW_S}s) — a capa sairia sem o título do D1`,
+      `frame aos ${atSeconds}s está fora da janela do lettering do título (0–${lettering}s) — a capa sairia sem o título do D1`,
     );
   }
   return {
