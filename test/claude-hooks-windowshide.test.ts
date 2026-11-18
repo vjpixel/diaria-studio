@@ -94,6 +94,19 @@
  * continuam só-pra-frente, sem mudança de comportamento (evita reabrir o 2º
  * modo de falso-negativo documentado acima — comentário explicativo ANTES da
  * chamada citando "windowsHide" por nome).
+ *
+ * **#13575 — quatro pontos cegos fechados.** (1) alias com anotação de tipo
+ * (`exec: ExecFileSyncFn = execFileSync`) passou a ser descoberto, e achou um
+ * ofensor real em `scripts/lib/exec-mode.ts`; (2) nos guards por chamada, o
+ * `windowsHide` só conta dentro da própria chamada (até o `)` que a fecha,
+ * sem o corpo de chamadas vizinhas ou aninhadas), não numa janela de 600
+ * caracteres que emprestava a flag da chamada seguinte; o ramo de alias
+ * continua olhando `WINDOW_CHARS` pra trás pelo `opts` solto; (3)
+ * `stripComments` usa um lexer mínimo e não lê `/*` ou `//` de dentro de
+ * string como comentário; (4) o guard de spawn destacado de `scripts/`
+ * ancora em `detached: true` (qualquer binário, não só `process.execPath`),
+ * fora binários de GUI (`rundll32`, `open`, `xdg-open`). O 1º guard
+ * (`findDetachedWithoutWindowsHide`, hooks) segue com a janela de 600.
  */
 
 import { describe, it } from "node:test";
@@ -129,18 +142,197 @@ export function findDetachedWithoutWindowsHide(content: string): number[] {
   return offenders;
 }
 
+/** Segmento léxico de um fonte JS/TS (#13575). `string` cobre aspas simples,
+ * duplas e os pedaços de template literal; `regex` cobre literal de regex. */
+type LexSegment = { kind: "code" | "string" | "comment" | "regex"; start: number; end: number };
+
+const REGEX_AFTER_KEYWORDS = new Set([
+  "return", "typeof", "case", "in", "of", "new", "delete", "void", "throw", "yield", "await", "else", "do",
+]);
+
+/** Lexer mínimo (#13575): separa código de string, template literal, literal
+ * de regex e comentário. Não é um parser, só o bastante pra que `/*` ou `//`
+ * DENTRO de uma string (ex.: `"scripts/**\/*.ts"`, `"https://x"`) não seja
+ * lido como comentário, e pra que parêntese dentro de string não desbalanceie
+ * a busca do fim de uma chamada. Template literal com `${…}` aninhado é
+ * seguido por pilha. Literal de regex é reconhecido pela heurística clássica
+ * (o `/` vem depois de operador, `(`, `,`, `;` ou palavra-chave). Pura. */
+function lexJs(src: string): LexSegment[] {
+  const segs: LexSegment[] = [];
+  const n = src.length;
+  const tpl: number[] = []; // profundidade de `{` dentro de cada `${` aberto
+  const push = (kind: LexSegment["kind"], start: number, end: number) => {
+    if (end > start) segs.push({ kind, start, end });
+  };
+  const scanTemplate = (from: number): number => {
+    let j = from;
+    while (j < n) {
+      const ch = src[j];
+      if (ch === "\\") { j += 2; continue; }
+      if (ch === "`") return j + 1;
+      if (ch === "$" && src[j + 1] === "{") { tpl.push(0); return j + 2; }
+      j++;
+    }
+    return n;
+  };
+  const scanRegex = (from: number): number => {
+    let j = from + 1;
+    let inClass = false;
+    while (j < n) {
+      const ch = src[j];
+      if (ch === "\\") { j += 2; continue; }
+      if (ch === "\n") return -1;
+      if (inClass) {
+        if (ch === "]") inClass = false;
+      } else if (ch === "[") inClass = true;
+      else if (ch === "/") {
+        j++;
+        while (j < n && /[a-z]/i.test(src[j])) j++;
+        return j;
+      }
+      j++;
+    }
+    return -1;
+  };
+  let lastSig = "";
+  let lastSigIdx = -1;
+  const regexAllowed = (): boolean => {
+    if (lastSig === "") return true;
+    if ("(,=:[!&|?{};+-*%<>~^".includes(lastSig)) return true;
+    if (/[\w$]/.test(lastSig)) {
+      let k = lastSigIdx;
+      while (k >= 0 && /[\w$]/.test(src[k])) k--;
+      return REGEX_AFTER_KEYWORDS.has(src.slice(k + 1, lastSigIdx + 1));
+    }
+    return false;
+  };
+  let segStart = 0;
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === "/" && d === "/") {
+      push("code", segStart, i);
+      const nl = src.indexOf("\n", i);
+      const end = nl < 0 ? n : nl;
+      push("comment", i, end);
+      i = segStart = end;
+      continue;
+    }
+    if (c === "/" && d === "*") {
+      push("code", segStart, i);
+      const close = src.indexOf("*/", i + 2);
+      const end = close < 0 ? n : close + 2;
+      push("comment", i, end);
+      i = segStart = end;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      push("code", segStart, i);
+      let j = i + 1;
+      while (j < n) {
+        if (src[j] === "\\") { j += 2; continue; }
+        if (src[j] === c) { j++; break; }
+        if (src[j] === "\n") break;
+        j++;
+      }
+      push("string", i, j);
+      i = segStart = j;
+      lastSig = c;
+      lastSigIdx = j - 1;
+      continue;
+    }
+    if (c === "`" || (c === "}" && tpl.length > 0 && tpl[tpl.length - 1] === 0)) {
+      if (c === "}") tpl.pop();
+      push("code", segStart, i);
+      const end = scanTemplate(i + 1);
+      push("string", i, end);
+      i = segStart = end;
+      lastSig = "`";
+      lastSigIdx = end - 1;
+      continue;
+    }
+    if (c === "/" && regexAllowed()) {
+      const end = scanRegex(i);
+      if (end > 0) {
+        push("code", segStart, i);
+        push("regex", i, end);
+        i = segStart = end;
+        lastSig = "/";
+        lastSigIdx = end - 1;
+        continue;
+      }
+    }
+    if (tpl.length > 0) {
+      if (c === "{") tpl[tpl.length - 1]++;
+      else if (c === "}") tpl[tpl.length - 1]--;
+    }
+    if (!/\s/.test(c)) {
+      lastSig = c;
+      lastSigIdx = i;
+    }
+    i++;
+  }
+  push("code", segStart, n);
+  return segs;
+}
+
 /** Remove comentários `//...` e `/* ... *\/` antes da descoberta de alias
  * (achado ao vivo #8017: sem isto, prosa de comentário do tipo "`execFn` é
  * injetável (default = execFileSync real)" — presente em
  * `pr-create-review.mjs` — inventa um alias falso chamado `default`, que
  * depois casa toda ocorrência da palavra "default(" no arquivo como suposta
- * chamada, produzindo dezenas de falsos positivos). Heurística simples (não
- * distingue `//` dentro de uma string literal de um comentário real) —
- * aceitável pro mesmo custo/benefício documentado no resto deste arquivo:
- * nenhum hook real tem `//`/`/* *\/` dentro de uma string que colidiria com
- * o padrão `nome = execFileSync` que estamos procurando. Pura. */
+ * chamada, produzindo dezenas de falsos positivos). Desde o #13575 respeita
+ * strings: `/*` dentro de `"scripts/**\/*.ts"` ou `//` dentro de `"https://…"`
+ * não abre comentário (a versão por regex comia o código até o próximo `*\/`
+ * ou até o fim da linha). Pura. */
 export function stripComments(content: string): string {
-  return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  return lexJs(content)
+    .filter((s) => s.kind !== "comment")
+    .map((s) => content.slice(s.start, s.end))
+    .join("");
+}
+
+/** Mesmo comprimento que `content` (offsets preservados): troca por espaço o
+ * conteúdo dos comentários e, com `literals`, também o de strings e regex.
+ * Quebras de linha ficam. Pura. */
+function maskJs(content: string, literals: boolean): string {
+  const out = content.split("");
+  for (const s of lexJs(content)) {
+    if (s.kind === "code" || (!literals && s.kind !== "comment")) continue;
+    for (let k = s.start; k < s.end; k++) if (out[k] !== "\n") out[k] = " ";
+  }
+  return out.join("");
+}
+
+/** Índice logo depois do `)` que fecha o `(` em `open`, num texto já
+ * mascarado (sem strings nem comentários). `-1` se não fechar. Pura. */
+function findCallClose(masked: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < masked.length; k++) {
+    const ch = masked[k];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return k + 1;
+    }
+  }
+  return -1;
+}
+
+/** Posição do `open` não fechado mais próximo antes de `idx`, num texto já
+ * mascarado. `-1` se não houver. Pura. */
+function findEnclosingOpen(masked: string, idx: number, open: string, close: string): number {
+  let depth = 0;
+  for (let k = idx - 1; k >= 0; k--) {
+    const ch = masked[k];
+    if (ch === close) depth++;
+    else if (ch === open) {
+      if (depth === 0) return k;
+      depth--;
+    }
+  }
+  return -1;
 }
 
 /** Escapa metacaracteres de regex num identificador descoberto antes de
@@ -157,7 +349,11 @@ function escapeRegExp(s: string): string {
 /** Descobre nomes de parâmetro/variável usados como alias injetável de
  * `execFileSync`/`execFile`/`spawnSync`/`spawn` (#8017) — o padrão
  * `nome = execFileSync` como default de parâmetro (`function f(execFn =
- * execFileSync)`) ou atribuição de variável.
+ * execFileSync)`) ou atribuição de variável. Desde o #13575 aceita anotação
+ * de tipo antes do `=` (`exec: ExecFileSyncFn = execFileSync`,
+ * `run: typeof spawnSync = spawnSync`), que antes escapava. A anotação tem de
+ * caber numa linha e não ter parênteses: tipo de função literal
+ * (`(cmd: string) => Buffer`) segue fora (ver teste).
  *
  * `(?!\s*\()` no fim (achado do fleet review pré-merge da #8021,
  * `pr-test-analyzer`, P2): sem isso, `const out = execFileSync(...)` — uma
@@ -170,8 +366,9 @@ function escapeRegExp(s: string): string {
  * padrão real de alias) de "atribuição do RESULTADO de uma chamada" (sempre
  * seguida de `(`). Pura. */
 function discoverInjectedExecAliases(content: string): string[] {
-  const code = stripComments(content);
-  const aliasRe = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:execFileSync|execFile|spawnSync|spawn)\b(?!\s*\()/g;
+  const code = maskJs(content, true);
+  const aliasRe =
+    /\b([A-Za-z_$][\w$]*)\s*(?::[^\S\n]*[\w$.<>[\]|& ]+?)?\s*=\s*(?:execFileSync|execFile|spawnSync|spawn)\b(?!\s*\()/g;
   const names = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = aliasRe.exec(code)) !== null) {
@@ -180,39 +377,79 @@ function discoverInjectedExecAliases(content: string): string[] {
   return [...names];
 }
 
-/** 2º guard, mais estrito (ver docstring do módulo) — varre TODA chamada
- * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached`, e
- * confirma `windowsHide: true` na janela ao redor. Desde #8017, também varre
- * chamadas via ALIAS injetado (`execFn = execFileSync` → `execFn(...)`) —
- * ver docstring do módulo pro porquê da janela bidirecional só nesse ramo.
+const WINDOWS_HIDE_RE = /windowsHide\s*:\s*true/;
+const LITERAL_CALL_RE = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
+const BROAD_CALL_RE = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
+
+/** Uma chamada de processo achada no fonte: do nome até o `)` que a fecha. */
+type CallSite = { index: number; end: number; bidirectional: boolean };
+
+/** Acha, no texto mascarado, as chamadas (`patterns` terminam em `\(`) e as
+ * chamadas via alias, e calcula onde cada uma termina (#13575): no `)` que
+ * fecha a chamada; se não fechar, na próxima chamada ou em `WINDOW_CHARS`.
  * Pura. */
-export function findWindowsHideMissingCalls(content: string): number[] {
-  const offenders: number[] = [];
-  const callRe = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
-  let match: RegExpExecArray | null;
-  while ((match = callRe.exec(content)) !== null) {
-    const start = match.index;
-    const end = Math.min(content.length, match.index + WINDOW_CHARS);
-    const window = content.slice(start, end);
-    if (!/windowsHide\s*:\s*true/.test(window)) {
-      offenders.push(match.index);
+function collectCallSites(masked: string, patterns: RegExp[], aliases: string[]): CallSite[] {
+  const byIndex = new Map<number, { open: number; bidirectional: boolean }>();
+  const scan = (re: RegExp, bidirectional: boolean) => {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      if (!byIndex.has(m.index)) byIndex.set(m.index, { open: m.index + m[0].length - 1, bidirectional });
     }
+  };
+  for (const re of patterns) scan(re, false);
+  for (const name of aliases) scan(new RegExp(`(?<![.\\w$])${escapeRegExp(name)}\\s*\\(`, "g"), true);
+  const starts = [...byIndex.keys()].sort((a, b) => a - b);
+  return starts.map((index, k) => {
+    const { open, bidirectional } = byIndex.get(index)!;
+    const close = findCallClose(masked, open);
+    const fallback = Math.min(masked.length, index + WINDOW_CHARS, starts[k + 1] ?? Infinity);
+    return { index, end: close > 0 ? close : fallback, bidirectional };
+  });
+}
+
+/** Trecho `[from, to)` de `text` com o corpo das OUTRAS chamadas apagado:
+ * o `windowsHide` de uma chamada vizinha ou aninhada não conta pra esta
+ * (#13575). A chamada que CONTÉM `me` não é apagada. Pura. */
+function sliceWithoutOtherCalls(text: string, from: number, to: number, sites: CallSite[], me: CallSite): string {
+  const out = text.slice(from, to).split("");
+  for (const o of sites) {
+    if (o === me || (o.index <= me.index && o.end >= me.end)) continue;
+    const a = Math.max(o.index, from);
+    const b = Math.min(o.end, to);
+    for (let k = a; k < b; k++) out[k - from] = " ";
   }
-  for (const name of discoverInjectedExecAliases(content)) {
-    const aliasCallRe = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "g");
-    let aliasMatch: RegExpExecArray | null;
-    while ((aliasMatch = aliasCallRe.exec(content)) !== null) {
-      // Bidirecional (ver docstring do módulo #8017) — diferente do ramo
-      // literal acima, que é só-pra-frente.
-      const start = Math.max(0, aliasMatch.index - WINDOW_CHARS);
-      const end = Math.min(content.length, aliasMatch.index + WINDOW_CHARS);
-      const window = content.slice(start, end);
-      if (!/windowsHide\s*:\s*true/.test(window)) {
-        offenders.push(aliasMatch.index);
-      }
+  return out.join("");
+}
+
+/** Offsets das chamadas sem `windowsHide: true`. Chamada pelo nome literal:
+ * só o corpo da própria chamada conta. Chamada via alias: também até
+ * `WINDOW_CHARS` pra trás (o `opts` montado numa variável antes da chamada,
+ * #8017), sem o corpo de outras chamadas. Pura. */
+function offendersFromSites(noComments: string, sites: CallSite[]): number[] {
+  const offenders: number[] = [];
+  for (const s of sites) {
+    let text = sliceWithoutOtherCalls(noComments, s.index, s.end, sites, s);
+    if (s.bidirectional) {
+      text = sliceWithoutOtherCalls(noComments, Math.max(0, s.index - WINDOW_CHARS), s.index, sites, s) + text;
     }
+    if (!WINDOWS_HIDE_RE.test(text)) offenders.push(s.index);
   }
   return offenders;
+}
+
+/** 2º guard, mais estrito (ver docstring do módulo) — varre TODA chamada
+ * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached`, e
+ * confirma `windowsHide: true` no corpo da própria chamada (#13575: antes era
+ * uma janela de `WINDOW_CHARS` pra frente, que emprestava o `windowsHide` da
+ * chamada seguinte). Desde #8017, também varre chamadas via ALIAS injetado
+ * (`execFn = execFileSync` → `execFn(...)`) — ver docstring do módulo pro
+ * porquê da janela bidirecional só nesse ramo. Chamada citada em comentário
+ * ou string não conta. Offsets no `content` recebido. Pura. */
+export function findWindowsHideMissingCalls(content: string): number[] {
+  const masked = maskJs(content, true);
+  const sites = collectCallSites(masked, [LITERAL_CALL_RE], discoverInjectedExecAliases(content));
+  return offendersFromSites(maskJs(content, false), sites);
 }
 
 /**
@@ -429,6 +666,126 @@ describe("stripComments (#8017/#8021 fleet review P3) — regressão dedicada do
       `function useDefault() { return default(); }`,
     ].join("\n");
     assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+});
+
+describe("#13575 ponto 1 — alias tipado", () => {
+  it("`exec: ExecFileSyncFn = execFileSync` sem windowsHide -> 1 ofensor (antes o alias não era descoberto)", () => {
+    const content = [
+      `function f(exec: ExecFileSyncFn = execFileSync) {`,
+      `  return exec("git", ["status"], { encoding: "utf8" });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`exec("git"`)]);
+  });
+
+  it("`const run: typeof spawnSync = spawnSync` sem windowsHide -> 1 ofensor", () => {
+    const content = `const run: typeof spawnSync = spawnSync;\nrun("git", ["fetch"], { stdio: "ignore" });`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`run("git"`)]);
+  });
+
+  it("alias tipado COM windowsHide -> nenhum ofensor", () => {
+    const content = [
+      `function f(exec: ExecFileSyncFn = execFileSync) {`,
+      `  return exec("git", ["status"], { encoding: "utf8", windowsHide: true });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("alias tipado chamado `exec` não confunde `re.exec(...)` de regex com chamada de processo", () => {
+    const content = [
+      `function f(exec: ExecFileSyncFn = execFileSync) {`,
+      `  const m = /x/g.exec(s);`,
+      `  return exec("git", ["status"], { windowsHide: true });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("`const out: string = execFileSync(...)` (resultado da chamada) não vira alias", () => {
+    const content = [
+      `const out: string = execFileSync("git", ["rev-parse", "HEAD"], { windowsHide: true });`,
+      `function out2() { return out(1); }`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+});
+
+describe("#13575 ponto 2 — o windowsHide vale só dentro da própria chamada", () => {
+  it("chamada literal sem windowsHide seguida de outra COM -> 1 ofensor (antes a janela de 600 emprestava)", () => {
+    const content = [
+      `execFileSync("git", ["fetch"], { encoding: "utf8" });`,
+      `execFileSync("git", ["status"], { encoding: "utf8", windowsHide: true });`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [0]);
+  });
+
+  it("chamada via alias seguida de outra COM windowsHide -> 1 ofensor", () => {
+    const content = [
+      `function f(execFn = execFileSync) {`,
+      `  execFn("git", ["fetch"], { encoding: "utf8" });`,
+      `  execFn("git", ["status"], { encoding: "utf8", windowsHide: true });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`execFn("git", ["fetch"]`)]);
+  });
+
+  it("alias: windowsHide da chamada ANTERIOR não cobre esta (só opts solto conta pra trás)", () => {
+    const content = [
+      `function f(execFn = execFileSync) {`,
+      `  execFn("git", ["fetch"], { encoding: "utf8", windowsHide: true });`,
+      `  execFn("git", ["status"], { encoding: "utf8" });`,
+      `}`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`execFn("git", ["status"]`)]);
+  });
+
+  it("windowsHide de chamada ANINHADA (callback) não cobre a de fora", () => {
+    const content = `execFile("git", ["fetch"], {}, () => { spawn("gh", [], { windowsHide: true }); });`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), [0]);
+  });
+
+  it("parêntese dentro de string não corta a chamada antes do objeto de opções", () => {
+    const content = `execFileSync("git", ["log", "--format=%s (%h)", ")"], { encoding: "utf8", windowsHide: true });`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("Broad: exec(...) sem windowsHide seguido de execSync COM -> 1 ofensor", () => {
+    const code = [`exec("start x", { shell: true });`, `execSync("git worktree prune", { windowsHide: true });`].join("\n");
+    assert.deepEqual(findWindowsHideMissingCallsBroad(code), [0]);
+  });
+});
+
+describe("#13575 ponto 3 — stripComments respeita strings", () => {
+  it("`/*` dentro de string não abre comentário", () => {
+    const content = `const glob = "scripts/**/*.ts";\nconst run = execFileSync;\nconst tail = "a */ b";`;
+    assert.equal(stripComments(content), content);
+  });
+
+  it("`//` dentro de string não abre comentário de linha", () => {
+    const content = `const url = "https://x.example"; const run = execFileSync;`;
+    assert.equal(stripComments(content), content);
+  });
+
+  it("comentários de verdade continuam removidos (bloco, linha, depois de string)", () => {
+    const content = `const a = "x"; /* bloco */ const b = 1; // linha\nconst c = '//';`;
+    assert.equal(stripComments(content), `const a = "x";  const b = 1; \nconst c = '//';`);
+  });
+
+  it("template literal com ${…} e regex literal com `/*` não abrem comentário", () => {
+    const content = "const t = `a/*${f(`b//`)}c*/`; const re = /\\/\\*/g; const z = 1; // fim";
+    assert.equal(stripComments(content), "const t = `a/*${f(`b//`)}c*/`; const re = /\\/\\*/g; const z = 1; ");
+  });
+
+  it("guard: alias depois de uma string com `/*` continua descoberto -> 1 ofensor (antes: comido até o `*/`)", () => {
+    const content = [
+      `const glob = "scripts/*.ts";`,
+      `const run = execFileSync;`,
+      `run("git", ["status"], { encoding: "utf8" });`,
+      `const note = "fim */";`,
+    ].join("\n");
+    assert.deepEqual(findWindowsHideMissingCalls(content), [content.indexOf(`run("git"`)]);
   });
 });
 
@@ -655,16 +1012,12 @@ export function collectRelativeImportClosure(entry: string, readFile: (rel: stri
 
 /** Como `findWindowsHideMissingCalls`, mas também cobre `exec(`, `execSync(` e
  * `fork(` (achado do review: `execSync("git worktree prune")` e o `exec` do
- * `openInBrowser` passavam). Recebe código já sem comentários. Pura. */
+ * `openInBrowser` passavam). Mesma regra de corpo da chamada do #13575.
+ * Offsets no `code` recebido. Pura. */
 export function findWindowsHideMissingCallsBroad(code: string): number[] {
-  const offenders = new Set(findWindowsHideMissingCalls(code));
-  const re = /(?<![.\w$])(?:execSync|exec|fork)\s*\(/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(code)) !== null) {
-    const window = code.slice(match.index, Math.min(code.length, match.index + WINDOW_CHARS));
-    if (!/windowsHide\s*:\s*true/.test(window)) offenders.add(match.index);
-  }
-  return [...offenders].sort((a, b) => a - b);
+  const masked = maskJs(code, true);
+  const sites = collectCallSites(masked, [LITERAL_CALL_RE, BROAD_CALL_RE], discoverInjectedExecAliases(code));
+  return offendersFromSites(maskJs(code, false), sites);
 }
 
 function listScriptFiles(dir: string, rel = ""): string[] {
@@ -679,36 +1032,99 @@ function listScriptFiles(dir: string, rel = ""): string[] {
   return out;
 }
 
-/** Offsets de `spawn(process.execPath, …)` com `detached: true` e sem
- * `windowsHide: true` no mesmo objeto de opções (janela só pra frente). Pura. */
-export function findDetachedNodeSpawnsWithoutWindowsHide(content: string): number[] {
-  const code = stripComments(content);
+/** Binários de GUI ou abridores de URL: um `detached: true` lançando um
+ * deles não abre console (rundll32/explorer são GUI no Windows; `open` e
+ * `xdg-open` só rodam fora do Windows, onde `windowsHide` não faz nada). */
+const GUI_BINARY_LITERAL_RE = /["'`](?:rundll32(?:\.exe)?|explorer(?:\.exe)?|open|xdg-open)["'`]/i;
+
+/** `true` quando o 1º argumento da chamada (texto, já sem comentários) é um
+ * binário de GUI: literal direto, ou um identificador cujo `const`/`let`
+ * no mesmo arquivo só cita binários de GUI. Pura. */
+function isGuiBinaryArg(firstArg: string, noComments: string): boolean {
+  let text = firstArg.trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) {
+    const decl = new RegExp(`\\b(?:const|let|var)\\s+${escapeRegExp(text)}\\s*(?::[^=\\n]+)?=\\s*([^;\\n]+)`).exec(
+      noComments,
+    );
+    if (!decl) return false;
+    text = decl[1];
+  }
+  return GUI_BINARY_LITERAL_RE.test(text) && !CONSOLE_BINARY_LITERAL_RE.test(text);
+}
+
+/** Offsets de todo `detached: true` de um objeto de opções de processo sem
+ * `windowsHide: true` no MESMO objeto (#13575; até ali o guard só ancorava
+ * em `spawn(process.execPath`, e `spawn("node", …)`/`spawn("npx", …)`
+ * destacados passavam). Fica de fora:
+ *  - objeto que é argumento de uma chamada que não lança processo (ex.:
+ *    `JSON.stringify({ ...child, detached: true })` em `serve-preview.ts`);
+ *    conta como lançadora a chamada cujo nome começa com `spawn`/`exec`/
+ *    `fork` (`spawn`, `spawnFn`, `execFile`…);
+ *  - chamada cujo 1º argumento é binário de GUI (`rundll32`, `open`,
+ *    `xdg-open`), por literal ou por `const` no mesmo arquivo.
+ * Objeto solto (`const opts = { detached: true }`) é checado também.
+ * Limite: `{ ...base, detached: true }` com o `windowsHide` vindo de `base`
+ * é acusado (falso positivo seguro: basta repetir a flag). Offsets no
+ * `content` recebido. Pura. */
+export function findDetachedSpawnsWithoutWindowsHide(content: string): number[] {
+  const masked = maskJs(content, true);
+  const noComments = maskJs(content, false);
   const offenders: number[] = [];
-  const re = /\bspawn\s*\(\s*process\.execPath\b/g;
+  const re = /\bdetached\s*:\s*true\b/g;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(code)) !== null) {
-    const window = code.slice(match.index, Math.min(code.length, match.index + WINDOW_CHARS));
-    if (/detached\s*:\s*true/.test(window) && !/windowsHide\s*:\s*true/.test(window)) {
-      offenders.push(match.index);
+  while ((match = re.exec(masked)) !== null) {
+    const objOpen = findEnclosingOpen(masked, match.index, "{", "}");
+    let objEnd = content.length;
+    if (objOpen >= 0) {
+      let depth = 0;
+      for (let k = objOpen; k < masked.length; k++) {
+        if (masked[k] === "{") depth++;
+        else if (masked[k] === "}" && --depth === 0) {
+          objEnd = k + 1;
+          break;
+        }
+      }
     }
+    const objStart = objOpen >= 0 ? objOpen : Math.max(0, match.index - WINDOW_CHARS);
+    if (WINDOWS_HIDE_RE.test(noComments.slice(objStart, objEnd))) continue;
+    const callOpen = objOpen >= 0 ? findEnclosingOpen(masked, objOpen, "(", ")") : -1;
+    if (callOpen >= 0) {
+      const callee = /([\w$]+)\s*$/.exec(masked.slice(Math.max(0, callOpen - 80), callOpen))?.[1] ?? "";
+      if (!/^(?:spawn|exec|fork)/i.test(callee)) continue; // não lança processo
+      const close = findCallClose(masked, callOpen);
+      const argsEnd = close > 0 ? close - 1 : objOpen;
+      let firstArgEnd = argsEnd;
+      let depth = 0;
+      for (let k = callOpen + 1; k < argsEnd; k++) {
+        const ch = masked[k];
+        if ("([{".includes(ch)) depth++;
+        else if (")]}".includes(ch)) depth--;
+        else if (ch === "," && depth === 0) {
+          firstArgEnd = k;
+          break;
+        }
+      }
+      if (isGuiBinaryArg(noComments.slice(callOpen + 1, firstArgEnd), noComments)) continue;
+    }
+    offenders.push(match.index);
   }
   return offenders;
 }
 
-describe("findDetachedNodeSpawnsWithoutWindowsHide (#13559) — lógica pura", () => {
+describe("findDetachedSpawnsWithoutWindowsHide (#13559, #13575) — lógica pura", () => {
   it("spawn(process.execPath) destacado sem windowsHide -> 1 ofensor", () => {
     const content = `spawn(process.execPath, ["--import", "tsx", abs], { cwd, detached: true, stdio: "ignore" });`;
-    assert.equal(findDetachedNodeSpawnsWithoutWindowsHide(content).length, 1);
+    assert.equal(findDetachedSpawnsWithoutWindowsHide(content).length, 1);
   });
 
   it("mesmo spawn COM windowsHide -> nenhum ofensor", () => {
     const content = `spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });`;
-    assert.deepEqual(findDetachedNodeSpawnsWithoutWindowsHide(content), []);
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
   });
 
   it("spawn(process.execPath) em foreground (sem detached) -> fora do escopo deste guard", () => {
     const content = `spawn(process.execPath, args, { stdio: "inherit" });`;
-    assert.deepEqual(findDetachedNodeSpawnsWithoutWindowsHide(content), []);
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
   });
 
   it("windowsHide citado só num comentário não conta", () => {
@@ -718,7 +1134,49 @@ describe("findDetachedNodeSpawnsWithoutWindowsHide (#13559) — lógica pura", (
       `  stdio: "ignore",`,
       `});`,
     ].join("\n");
-    assert.equal(findDetachedNodeSpawnsWithoutWindowsHide(content).length, 1);
+    assert.equal(findDetachedSpawnsWithoutWindowsHide(content).length, 1);
+  });
+
+  it("#13575: spawn destacado de outro binário (\"npx\", não process.execPath) sem windowsHide -> 1 ofensor", () => {
+    // Antes do #13575 o guard só ancorava em `spawn(process.execPath` e isto passava.
+    const content = `spawn("npx", ["tsx", "scripts/x.ts"], { detached: true, stdio: "ignore", shell: true });`;
+    assert.equal(findDetachedSpawnsWithoutWindowsHide(content).length, 1);
+  });
+
+  it("#13575: spawn destacado via alias injetado (spawnFn) sem windowsHide -> 1 ofensor", () => {
+    const content = `spawnFn("node", [script], { detached: true, stdio: "ignore" }).unref();`;
+    assert.equal(findDetachedSpawnsWithoutWindowsHide(content).length, 1);
+  });
+
+  it("#13575: windowsHide da chamada SEGUINTE não cobre esta (mesmo objeto, não janela)", () => {
+    const content = [
+      `spawn("node", [a], { detached: true, stdio: "ignore" });`,
+      `spawn("node", [b], { detached: true, stdio: "ignore", windowsHide: true });`,
+    ].join("\n");
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), [content.indexOf("detached")]);
+  });
+
+  it("#13575: binário de GUI (rundll32) destacado -> fora do escopo, nenhum ofensor", () => {
+    const content = `spawn("rundll32", ["url.dll,FileProtocolHandler", url], { shell: false, stdio: "ignore", detached: true }).unref();`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("#13575: abridor por variável (`const opener = darwin ? \"open\" : \"xdg-open\"`) -> nenhum ofensor", () => {
+    const content = [
+      `const opener = process.platform === "darwin" ? "open" : "xdg-open";`,
+      `spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();`,
+    ].join("\n");
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("#13575: `detached: true` dentro de chamada que não lança processo (JSON.stringify) -> nenhum ofensor", () => {
+    const content = `console.log(JSON.stringify({ ...child, detached: true, reused: false }, null, 2));`;
+    assert.deepEqual(findDetachedSpawnsWithoutWindowsHide(content), []);
+  });
+
+  it("#13575: objeto de opções solto numa variável, sem windowsHide -> 1 ofensor", () => {
+    const content = `const opts = { detached: true, stdio: "ignore" };\nspawn("node", [s], opts);`;
+    assert.equal(findDetachedSpawnsWithoutWindowsHide(content).length, 1);
   });
 });
 
@@ -729,10 +1187,10 @@ describe("Regressão #13559 — scripts/ reais deste repo", () => {
     assert.ok(files.length > 0, `nenhum script encontrado em ${SCRIPTS_DIR}`);
   });
 
-  it("todo spawn destacado de process.execPath em scripts/ declara windowsHide:true", () => {
+  it("todo spawn destacado (detached: true) em scripts/ declara windowsHide:true, fora binário de GUI", () => {
     const offenders: string[] = [];
     for (const file of files) {
-      const hits = findDetachedNodeSpawnsWithoutWindowsHide(readFileSync(join(SCRIPTS_DIR, file), "utf8"));
+      const hits = findDetachedSpawnsWithoutWindowsHide(readFileSync(join(SCRIPTS_DIR, file), "utf8"));
       if (hits.length > 0) offenders.push(`${file} (offsets ${hits.join(", ")})`);
     }
     assert.deepEqual(
