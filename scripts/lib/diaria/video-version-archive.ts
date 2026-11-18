@@ -227,12 +227,6 @@ export function referencedFromXmlTexts(texts: ReadonlyArray<string | null>): Set
   return out;
 }
 
-/**
- * Pura — o plano de uma pasta de edição. `referenced` = nomes que os XMLs
- * vigentes referenciam (`xmlReferencedNames` de cada um de `vigenteXmlNames`);
- * `null` = alguma leitura falhou: nenhum asset sai (não dá para saber o que o
- * XML vigente usa), XML/SRT/prévia seguem a regra.
- */
 export interface PlanOptions {
   /**
    * #13610 B: os XMLs que o `plan.json` diz vigentes (o build acabou de gravar).
@@ -241,6 +235,14 @@ export interface PlanOptions {
   expectedXmls?: readonly string[];
 }
 
+/**
+ * Pura — o plano de uma pasta de edição. `referenced` = nomes que os XMLs que
+ * ficam na raiz referenciam (`referencedFromXmlTexts` sobre o texto de cada um
+ * de `xmlsThatStay`: os vigentes por família, os fora de família e as cópias de
+ * nome repetido). `null` = nenhum asset sai (não dá para saber o que os XMLs
+ * usam), seja porque alguma leitura falhou, seja porque algum XML que fica não
+ * tem nenhum `<pathurl>`; XML/SRT/prévia seguem a regra nos dois casos.
+ */
 export function planEditionArchive(root: readonly ArchiveEntry[], referenced: ReadonlySet<string> | null, opts: PlanOptions = {}): EditionArchivePlan {
   const move: ArchiveDecision[] = [];
   const keep: ArchiveDecision[] = [];

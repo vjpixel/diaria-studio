@@ -675,7 +675,7 @@ import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 import { readWithRetry } from "./lib/diaria/video-xml-vs-final.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
-import { archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, rootIdsNamed, xmlNamesWithArchive, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
+import { archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, rootIdsNamed, xmlNamesWithArchive, type ArchiveFolderCache, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
 import { isOverwriteArchivedName, versionOfSequenceId, type ArchiveEntry } from "./lib/diaria/video-version-archive.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
@@ -7255,12 +7255,14 @@ export interface DriveSession {
   rootFolderId?: () => string;
   /** A pasta `{AAMMDD}/` no Drive (resolvida na 1ª chamada). */
   folder(): Promise<DriveEntry>;
+  /** A `arquivo/` resolvida ou criada nesta execução (#13617): o upload e o arquivamento usam a mesma, sem depender da busca. */
+  archiveFolders?: ArchiveFolderCache;
 }
 
 /** `rootFolderId` é lido só quando algum passo vai mesmo à rede (frame com o bruto em cache não lê o config). */
 export function makeDriveSession(edition: string, cacheDir: string, deps: MontageDriveDeps, rootFolderId: () => string): DriveSession {
   let memo: Promise<DriveEntry> | null = null;
-  return { deps, edition, cacheDir, rootFolderId, folder: () => (memo ??= Promise.resolve().then(() => findEditionFolder(deps, rootFolderId(), edition))) };
+  return { deps, edition, cacheDir, rootFolderId, folder: () => (memo ??= Promise.resolve().then(() => findEditionFolder(deps, rootFolderId(), edition))), archiveFolders: new Map() };
 }
 
 function configRootFolderId(flag: string | undefined): () => string {
@@ -7486,7 +7488,7 @@ export async function uploadAll(
       const r = await uploadToFolder(d.deps, target.folderId, queue[i], log, { excludeIds: new Set(previous) });
       if (previous.length) {
         try {
-          await archiveDriveIds(d.deps, target.folderId, name, previous.filter((id) => id !== r.id), { now: (opts.now ?? (() => new Date()))(), log, warn: (m) => log(`[aviso] ${m} (#13610)`) });
+          await archiveDriveIds(d.deps, target.folderId, name, previous.filter((id) => id !== r.id), { now: (opts.now ?? (() => new Date()))(), log, warn: (m) => log(`[aviso] ${m} (#13610)`), archiveFolders: d.archiveFolders });
         } catch (e) {
           log(`[aviso] ${name} anterior não foi para arquivo/ (${(e as Error).message}); a nova já está na raiz, com o mesmo nome (#13610)`);
         }
@@ -7539,7 +7541,7 @@ export async function archiveVersionsAfter(
   const expectedXmls = ctx.stateDir ? plannedXmlFileNames({ stateDir: ctx.stateDir }) : [];
   if (up) {
     try {
-      report(await archiveEditionDrive(up.deps, await up.folder(), { apply: true, fresh, log, expectedXmls }), "Drive: ");
+      report(await archiveEditionDrive(up.deps, await up.folder(), { apply: true, fresh, log, expectedXmls, archiveFolders: up.archiveFolders }), "Drive: ");
     } catch (e) {
       warn(`versões anteriores de ${ctx.edition}/ não foram para arquivo/ no Drive (${(e as Error).message}); o comando deu certo. Rode: npx tsx scripts/archive-video-versions.ts --edition ${ctx.edition} --apply (#13610)`);
     }

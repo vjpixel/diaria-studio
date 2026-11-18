@@ -72,7 +72,18 @@ export interface ArchiveOptions {
   expectedXmls?: readonly string[];
   /** Espera antes de reconferir se `arquivo/` existe (#13610 D); injetável nos testes. */
   sleep?: (ms: number) => Promise<void>;
+  /** A `arquivo/` já resolvida nesta execução, por pasta de edição (#13617): ver `ArchiveFolderCache`. */
+  archiveFolders?: ArchiveFolderCache;
 }
+
+/**
+ * `arquivo/` resolvida ou criada nesta execução, por id da pasta da edição
+ * (#13617). A 1ª chamada (`archiveDriveIds`, no upload) pode criar a pasta e a
+ * 2ª (`archiveEditionDrive`, logo depois) não achá-la na busca do Drive, que
+ * atrasa mesmo depois da espera de 2 s, e criar outra. Com o cache a 2ª
+ * reaproveita a da 1ª sem depender da busca.
+ */
+export type ArchiveFolderCache = Map<string, DriveEntry>;
 
 const modifiedMsOf = (t: string | undefined) => {
   const ms = t ? Date.parse(t) : NaN;
@@ -160,7 +171,13 @@ export async function moveDriveFile(deps: MontageDriveDeps, id: string, fromPare
   } catch (e) {
     patchError = e as Error;
   }
-  const after = await fetchParents(deps, id);
+  let after: { parents: string[]; name: string };
+  try {
+    after = await fetchParents(deps, id);
+  } catch (e) {
+    // #13617: a releitura que falha não esconde o erro do PATCH, que é a causa.
+    throw patchError ?? e;
+  }
   if (applied(after.parents)) return "moved";
   throw patchError ?? new Error(`move de ${id} respondeu 2xx mas o arquivo segue com parents ${after.parents.join(", ")} (#6582)`);
 }
@@ -180,15 +197,37 @@ async function trashDriveFolder(deps: MontageDriveDeps, id: string): Promise<voi
 }
 
 /**
+ * Pura — a lixeira recusada porque a conta do OAuth não é dona do item (#13619):
+ * `403 insufficientFilePermissions` (editora não põe na lixeira o que é de
+ * outra conta). Vale tanto para a resposta lida por `okJson` quanto para o
+ * erro que o retry do `gFetchRetry` relança.
+ */
+export function isNotOwnerTrashError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\b403\b/.test(msg) && /insufficientFilePermissions/i.test(msg);
+}
+
+/** A data que ordena as `arquivo/` repetidas: criação (#13617), senão a última mudança. */
+const createdOrModified = (e: DriveEntry) => e.createdTime ?? e.modifiedTime ?? "";
+
+/**
  * A pasta `arquivo/` da edição (#13610 D): uma só = ela; mais de uma (duas
- * execuções criaram ao mesmo tempo, a busca atrasou) = a mais antiga, com
- * aviso; nenhuma = espera e busca de novo antes de criar.
+ * execuções criaram ao mesmo tempo, a busca atrasou) = a mais antiga pela
+ * criação (#13617), com aviso; nenhuma = espera e busca de novo antes de criar.
+ * Com `cache` (#13617), a já resolvida nesta execução vale sem nova busca, e a
+ * resolvida ou criada aqui entra nele.
  */
 export async function resolveArchiveFolder(
   deps: MontageDriveDeps,
   parentId: string,
-  opts: { create: boolean; sleep?: (ms: number) => Promise<void>; warn?: (m: string) => void },
+  opts: { create: boolean; sleep?: (ms: number) => Promise<void>; warn?: (m: string) => void; cache?: ArchiveFolderCache },
 ): Promise<DriveEntry | null> {
+  const cached = opts.cache?.get(parentId);
+  if (cached) return cached;
+  const remember = (e: DriveEntry) => {
+    opts.cache?.set(parentId, e);
+    return e;
+  };
   const find = () => listChildren(deps, parentId, { name: ARCHIVE_DIR_NAME, foldersOnly: true });
   let found = await find();
   if (!found.length && opts.create) {
@@ -196,14 +235,14 @@ export async function resolveArchiveFolder(
     found = await find();
   }
   if (found.length > 1) {
-    const sorted = [...found].sort((a, b) => (a.modifiedTime ?? "").localeCompare(b.modifiedTime ?? "") || a.id.localeCompare(b.id));
+    const sorted = [...found].sort((a, b) => createdOrModified(a).localeCompare(createdOrModified(b)) || a.id.localeCompare(b.id));
     opts.warn?.(`${found.length} pastas ${ARCHIVE_DIR_NAME}/ na edição (${found.map((f) => f.id).join(", ")}): usando a mais antiga (${sorted[0].id}); junte as outras à mão`);
-    return sorted[0];
+    return remember(sorted[0]);
   }
-  if (found.length === 1) return found[0];
+  if (found.length === 1) return remember(found[0]);
   if (!opts.create) return null;
-  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,name,mimeType,modifiedTime" });
-  return okJson<DriveEntry>(
+  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,name,mimeType,modifiedTime,createdTime" });
+  const created = await okJson<DriveEntry>(
     await deps.driveFetch(`${DRIVE_API}/files?${params}`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=UTF-8" },
@@ -212,6 +251,7 @@ export async function resolveArchiveFolder(
     }),
     `criação da pasta ${ARCHIVE_DIR_NAME}/ no Drive`,
   );
+  return remember(created);
 }
 
 /**
@@ -219,6 +259,9 @@ export async function resolveArchiveFolder(
  * `apply: false` só planeja (lê a listagem e os XMLs que ficam). `_superadas/`
  * é absorvido: os filhos vão para `arquivo/` e a pasta, vazia, para a lixeira
  * (premissa: pasta vazia não guarda nada; o Drive mantém a lixeira 30 dias).
+ * Lixeira recusada porque a pasta é de outra conta (`403
+ * insufficientFilePermissions`, #13619) vira aviso: os moves já valeram e a
+ * pasta vazia fica para remoção à mão.
  */
 export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<DriveEntry, "id" | "name">, opts: ArchiveOptions): Promise<EditionArchiveResult> {
   const log = opts.log ?? (() => {});
@@ -240,7 +283,7 @@ export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<D
   if (referenced === null && !texts.includes(null)) warnings.push("algum XML que fica na raiz não tem <pathurl>: nenhum asset sai desta pasta");
   const plan = finalizePlan(root, referenced, opts);
   const stamp = archiveStamp(opts.now ?? new Date());
-  const archiveHint = await resolveArchiveFolder(deps, folder.id, { create: false, warn: (m) => warnings.push(m) });
+  const archiveHint = await resolveArchiveFolder(deps, folder.id, { create: false, warn: (m) => warnings.push(m), cache: opts.archiveFolders });
   const taken = new Set(archiveHint ? (await listChildren(deps, archiveHint.id)).map((c) => c.name) : []);
   const moves: ArchiveMove[] = [];
   const pending: Array<{ id: string; parent: string; to: string; name: string; move: ArchiveMove }> = [];
@@ -269,7 +312,7 @@ export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<D
   const result: EditionArchiveResult = { edition: folder.name, plan, moves, absorbedFolders, warnings, applied: opts.apply };
   if (!opts.apply || (!pending.length && !legacyFolders.length)) return result;
   try {
-    const archive = archiveHint ?? (await resolveArchiveFolder(deps, folder.id, { create: true, sleep: opts.sleep, warn: (m) => warnings.push(m) }))!;
+    const archive = archiveHint ?? (await resolveArchiveFolder(deps, folder.id, { create: true, sleep: opts.sleep, warn: (m) => warnings.push(m), cache: opts.archiveFolders }))!;
     for (const p of pending) {
       const r = await moveDriveFile(deps, p.id, p.parent, archive.id, p.to !== p.name ? p.to : undefined);
       p.move.done = true;
@@ -281,7 +324,13 @@ export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<D
         warnings.push(`${lf.name}/ ainda tem ${left.length} item(ns) depois de absorvida: ficou como está`);
         continue;
       }
-      await trashDriveFolder(deps, lf.id);
+      try {
+        await trashDriveFolder(deps, lf.id);
+      } catch (e) {
+        if (!isNotOwnerTrashError(e)) throw e;
+        warnings.push(`${lf.name}/ (id ${lf.id}) ficou vazia, mas não foi para a lixeira: a conta do OAuth não é dona dela (403 insufficientFilePermissions); remova à mão com a conta dona (#13619)`);
+        continue;
+      }
       absorbedFolders.push(lf.name);
     }
   } catch (e) {
@@ -301,9 +350,9 @@ export async function rootIdsNamed(deps: MontageDriveDeps, folderId: string, nam
 }
 
 /** Move ids da raiz para `arquivo/` (a prévia anterior, depois de a nova subir). Devolve quantos foram. */
-export async function archiveDriveIds(deps: MontageDriveDeps, folderId: string, name: string, ids: readonly string[], opts: { now?: Date; log?: (l: string) => void; sleep?: (ms: number) => Promise<void>; warn?: (m: string) => void } = {}): Promise<number> {
+export async function archiveDriveIds(deps: MontageDriveDeps, folderId: string, name: string, ids: readonly string[], opts: { now?: Date; log?: (l: string) => void; sleep?: (ms: number) => Promise<void>; warn?: (m: string) => void; archiveFolders?: ArchiveFolderCache } = {}): Promise<number> {
   if (!ids.length) return 0;
-  const archive = (await resolveArchiveFolder(deps, folderId, { create: true, sleep: opts.sleep, warn: opts.warn }))!;
+  const archive = (await resolveArchiveFolder(deps, folderId, { create: true, sleep: opts.sleep, warn: opts.warn, cache: opts.archiveFolders }))!;
   const taken = new Set((await listChildren(deps, archive.id)).map((c) => c.name));
   const stamp = archiveStamp(opts.now ?? new Date());
   for (const id of ids) {
@@ -403,7 +452,8 @@ export function archiveBeforeOverwriteLocal(path: string, now: Date = new Date()
  * Prévia nova no disco (#13610 C): copia para `{out}.part` primeiro, só então
  * manda a anterior para `arquivo/` e renomeia a nova para o nome final. Falha
  * na cópia deixa a anterior na raiz; falha ao arquivar vira `warn` e a nova
- * substitui a anterior no lugar.
+ * substitui a anterior no lugar; falha no rename final apaga o `.part` e
+ * relança (#13617).
  */
 export function installPreviewFile(src: string, out: string, opts: { archive: boolean; now?: Date; log?: (l: string) => void; warn?: (m: string) => void }): void {
   if (!opts.archive) {
@@ -422,7 +472,13 @@ export function installPreviewFile(src: string, out: string, opts: { archive: bo
   } catch (e) {
     opts.warn?.(`${basename(out)} anterior não foi para arquivo/ (${(e as Error).message}): a nova a substitui (#13610)`);
   }
-  renameSync(part, out);
+  try {
+    renameSync(part, out);
+  } catch (e) {
+    // #13617: o `.part` não fica órfão na pasta da edição.
+    rmSync(part, { force: true });
+    throw e;
+  }
 }
 
 /**
