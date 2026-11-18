@@ -1,0 +1,42 @@
+/**
+ * test/continuo-pr-review-base-revalidation-13470-wrapper.test.ts (#7129)
+ *
+ * Executa `test/continuo-pr-review-base-revalidation-13470.test.sh` sob
+ * `node --test`, pra rodar em CI de verdade — mesmo padrão de
+ * `test/claude-openrouter-symlink-preflight.test.ts` +
+ * `hermes/scripts/claude-openrouter-symlink-preflight.test.sh`.
+ *
+ * O `.sh` já existia (#13470) mas ficava fora de `run-tests.ts`, que só
+ * varre `*.test.ts` — nunca rodou em CI (#7129, achado do crítico de
+ * cobertura da #7112). Cobre as 5 propriedades do merge-lock cross-sessão
+ * de `try_merge_gate()` (aquisição antes do merge, liberação após pull,
+ * liberação em falha de merge, retry limitado em negação, e erro genuíno
+ * vs. negação tratados igual).
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: executa script bash do continuo/hermes, que só roda no 300 (Linux); no Git Bash do Windows symlink, chmod e jq não se comportam igual";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT_PATH = join(ROOT, "test/continuo-pr-review-base-revalidation-13470.test.sh");
+
+describe("continuo-pr-review.sh — revalida a base sob o lock em try_merge_gate() (#13470)", { skip: SKIP_WIN32 }, () => {
+  it("bash test/continuo-pr-review-base-revalidation-13470.test.sh sai com exit 0", () => {
+    let out = "";
+    try {
+      out = execFileSync("bash", [SCRIPT_PATH], { encoding: "utf8" });
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      assert.fail(
+        `continuo-pr-review-base-revalidation-13470.test.sh falhou (regressão do #13470?) — stdout: ${err.stdout ?? ""} stderr: ${err.stderr ?? err.message ?? ""}`,
+      );
+    }
+    assert.match(out, /TODOS OS TESTES PASSARAM/);
+  });
+});

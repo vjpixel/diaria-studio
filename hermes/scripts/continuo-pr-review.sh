@@ -591,6 +591,49 @@ try_merge_gate() {
       # pro resto do tick (próxima PR do laço, ou o fim do script).
       trap release_merge_lock EXIT
 
+      # #13470 (mesma lacuna do trem solo, #13461/#10927): o CI verde desta PR
+      # vale para a base em que ela rodou. Com o lock em mãos, relê a base
+      # ATUAL e exige que o HEAD revisado a contenha (`behind_by == 0`); duas
+      # PRs verdes isoladas que só quebram juntas nunca mergeiam em sequência
+      # sobre base velha. Fail-closed: HEAD ausente, base ilegível ou payload
+      # inesperado = sem merge nesta rodada (o lock é solto antes de voltar).
+      FRESH_REASON=""
+      set +e
+      BASE_REF=$(gh api "repos/{owner}/{repo}/pulls/$pr" --jq '.base.ref' 2>&1)
+      BASE_RC=$?
+      if [ "$BASE_RC" -eq 0 ] && [ -n "$REVIEWED_HEAD_SHA" ]; then
+        COMPARE=$(gh api "repos/{owner}/{repo}/compare/${BASE_REF}...${REVIEWED_HEAD_SHA}" --jq '[.status, .behind_by] | @tsv' 2>&1)
+        COMPARE_RC=$?
+      else
+        COMPARE=""
+        COMPARE_RC=1
+      fi
+      set -e
+      if [ -z "$REVIEWED_HEAD_SHA" ]; then
+        FRESH_REASON="gate não devolveu reviewedHeadSha — base atual não verificável"
+      elif [ "$BASE_RC" -ne 0 ]; then
+        FRESH_REASON="base da PR ilegível: $BASE_REF"
+      elif [ "$COMPARE_RC" -ne 0 ]; then
+        FRESH_REASON="compare ${BASE_REF}...${REVIEWED_HEAD_SHA:0:12} falhou: $COMPARE"
+      else
+        COMPARE_STATUS="${COMPARE%%$'\t'*}"
+        COMPARE_BEHIND="${COMPARE#*$'\t'}"
+        if ! [[ "$COMPARE_BEHIND" =~ ^[0-9]+$ ]]; then
+          FRESH_REASON="payload inesperado do compare: $COMPARE"
+        elif [ "$COMPARE_BEHIND" -gt 0 ]; then
+          FRESH_REASON="base andou: HEAD ${REVIEWED_HEAD_SHA:0:12} está $COMPARE_BEHIND commit(s) atrás de $BASE_REF — o CI verde é de base antiga"
+        elif [ "$COMPARE_STATUS" != "ahead" ] && [ "$COMPARE_STATUS" != "identical" ]; then
+          FRESH_REASON="compare com status \"$COMPARE_STATUS\" e behind_by 0"
+        fi
+      fi
+      if [ -n "$FRESH_REASON" ]; then
+        echo "[continuo-pr-review] PR #$pr: sem merge (#13470) — $FRESH_REASON; tenta de novo no próximo tick" >&2
+        log_infra_error "$pr" "base_not_fresh" "$FRESH_REASON"
+        release_merge_lock
+        trap - EXIT
+        return
+      fi
+
       set +e
       # `--match-head-commit`: o GitHub recusa o merge se o HEAD real da PR
       # divergir do SHA que o gate acabou de confirmar — fecha o intervalo

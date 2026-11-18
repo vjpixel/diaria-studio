@@ -52,6 +52,7 @@ esac
 exit 9
 `;
 const FAKE_GH = `#!/usr/bin/env bash
+if [ "$1" = "api" ]; then case "$2" in */pulls/*) echo master ;; */compare/*) printf 'ahead\\t0\\n' ;; esac; exit 0; fi
 if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then echo "merge GH_REPO=\${GH_REPO:-} $3"; echo "merge GH_REPO=\${GH_REPO:-} $3" >> "$EVENTS_LOG"; exit 0; fi
 exit 9
 `;

@@ -150,6 +150,14 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   cat "$GH_VIEW_STATE_FIXTURE"
   exit 0
 fi
+if [ "$1" = "api" ]; then
+  # #13470: revalidação da base sob o lock — aqui sempre fresca.
+  case "$2" in
+    */pulls/*) echo master ;;
+    */compare/*) printf 'ahead\t0\n' ;;
+  esac
+  exit 0
+fi
 if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
   exit 0
 fi
