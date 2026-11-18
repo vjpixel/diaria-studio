@@ -25,6 +25,17 @@
  *     início em quadros locais dele): o `verify-xml` volta ao tempo do bruto
  *     só pelo id (`toTimeline`, `video-xml-verify.ts`).
  *   - O 4K fica: o zoom do vertical (115–130%) e do horizontal não perde nada.
+ *
+ * #13493 (na 261118 o XML leve deixou a montagem mais lenta: 3 rodadas de
+ * recodificação, trechos truncados, `.part` no Drive):
+ *   - Os limites ficam ancorados no BLOCO DE SILÊNCIO do `silences.json` em
+ *     que o corte cai (`trechoStartFor`/`trechoEndFor`), não no quadro exato
+ *     do corte: um ajuste de borda dentro do mesmo silêncio dá o mesmo trecho,
+ *     com o mesmo nome, e ele é reaproveitado. Sem silêncio, o segundo inteiro.
+ *   - O XML leve liga sozinho só acima de um limiar (`decideXmlLeve`,
+ *     `publishing.video.xml_leve`); abaixo, o XML aponta o bruto.
+ *   - O XML só é dado por pronto com os trechos na nuvem
+ *     (`esperarTrechosNaNuvem`).
  */
 
 export const TRECHOS = {
@@ -38,7 +49,79 @@ export const TRECHOS = {
   gop: 15,
   /** Qualidade constante do H.264 (cq do NVENC, crf do libx264). */
   quality: 19,
+  /**
+   * #13493: até quanto do silêncio (antes da fala ou depois dela) o trecho
+   * engole quando o limite fica ancorado no bloco de silêncio, em segundos.
+   * Também o máximo que o limite pode recuar (ou avançar) até a borda do bloco
+   * vizinho; além disso, volta ao segundo inteiro.
+   */
+  silenceMaxS: 3,
+  /** #13493: o corte do refino pode cair uns quadros depois do fim do silêncio detectado (ou antes do começo). */
+  silenceTolS: 0.25,
 } as const;
+
+/**
+ * #13493: quando o XML leve liga sozinho (`publishing.video.xml_leve`). Na
+ * 261116 (~20 GB em 8 arquivos) o Premiere travava lendo o bruto pelo Drive;
+ * na 261118 (11,9 GB) o bruto já sincronizado servia e os trechos só
+ * atrasaram. Acima de `minGb` (GiB, como o Explorer mostra) OU de
+ * `maxArquivos` arquivos, XML leve; senão o bruto direto.
+ */
+export const XML_LEVE_LIMIAR_DEFAULT = { minGb: 15, maxArquivos: 8 } as const;
+
+export interface XmlLeveLimiar {
+  minGb: number;
+  maxArquivos: number;
+}
+
+/** `--xml-leve` força os trechos, `--xml-bruto` força o bruto; sem nenhum, o limiar decide. */
+export type XmlLeveChoice = "auto" | "leve" | "bruto";
+
+/** `--xml-leve` e `--xml-bruto` juntos é erro (#13493). */
+export function parseXmlLeveChoice(flags: { leve: boolean; bruto: boolean }): XmlLeveChoice {
+  if (flags.leve && flags.bruto) throw new Error("--xml-leve e --xml-bruto juntos: escolha um (#13493)");
+  return flags.leve ? "leve" : flags.bruto ? "bruto" : "auto";
+}
+
+/**
+ * `publishing.video.xml_leve` (`{ min_gb, max_arquivos }`) do config (#13493).
+ * Ausente = o default; valor que não é número positivo = o default daquele
+ * campo, com aviso.
+ */
+export function xmlLeveLimiarFrom(config: unknown, warn: (m: string) => void = () => {}): XmlLeveLimiar {
+  const raw = (config as { publishing?: { video?: { xml_leve?: unknown } } } | null)?.publishing?.video?.xml_leve;
+  if (raw === undefined || raw === null) return { ...XML_LEVE_LIMIAR_DEFAULT };
+  const o = typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const pick = (key: string, def: number, integer: boolean): number => {
+    const v = o[key];
+    if (v === undefined) return def;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0 && (!integer || Number.isInteger(v))) return v;
+    warn(`publishing.video.xml_leve.${key} inválido (${JSON.stringify(v)}): vale o default ${def} (#13493)`);
+    return def;
+  };
+  if (o !== raw) warn(`publishing.video.xml_leve não é objeto (${JSON.stringify(raw)}): vale o default (#13493)`);
+  return { minGb: pick("min_gb", XML_LEVE_LIMIAR_DEFAULT.minGb, false), maxArquivos: pick("max_arquivos", XML_LEVE_LIMIAR_DEFAULT.maxArquivos, true) };
+}
+
+const GIB = 1024 ** 3;
+
+/**
+ * #13493: XML leve ou o bruto direto. `totalBytes` null = o tamanho de algum
+ * arquivo do bruto não foi lido: decide só pelo número de arquivos (dito no
+ * motivo). Forçado pela CLI, o limiar não conta.
+ */
+export function decideXmlLeve(input: { choice: XmlLeveChoice; totalBytes: number | null; files: number; limiar: XmlLeveLimiar }): { enabled: boolean; reason: string } {
+  const { limiar } = input;
+  const size = input.totalBytes === null ? "tamanho não lido" : `${(input.totalBytes / GIB).toFixed(1)} GB`;
+  const bruto = `bruto de ${size} em ${input.files} arquivo(s)`;
+  const regra = `limiar: mais de ${limiar.minGb} GB ou de ${limiar.maxArquivos} arquivos, publishing.video.xml_leve`;
+  if (input.choice === "leve") return { enabled: true, reason: `--xml-leve (${bruto})` };
+  if (input.choice === "bruto") return { enabled: false, reason: `--xml-bruto (${bruto})` };
+  const bySize = input.totalBytes !== null && input.totalBytes > limiar.minGb * GIB;
+  const byFiles = input.files > limiar.maxArquivos;
+  if (bySize || byFiles) return { enabled: true, reason: `${bruto}, acima do ${regra}` };
+  return { enabled: false, reason: `${bruto}, dentro do ${regra}${input.totalBytes === null ? " (sem o tamanho, só o número de arquivos decidiu)" : ""}` };
+}
 
 export type TrechoEncoder = "h264_nvenc" | "libx264";
 
@@ -136,15 +219,97 @@ export function parseTrechoFileId(id: string): { fileIndex: number; start: numbe
   return m ? { fileIndex: Number(m[1]) - 1, start: Number(m[2]) } : null;
 }
 
+/** Um silêncio em quadros LOCAIS de um arquivo do bruto, `end` exclusivo (#13493). */
+export interface FrameInterval {
+  start: number;
+  end: number;
+}
+
+/**
+ * #13493: os silêncios do `silences.json` (segundos, linha do tempo global do
+ * projeto) em quadros locais de cada arquivo do bruto, cortados nas bordas do
+ * arquivo e em ordem.
+ */
+export function silencesPerFile(silences: readonly { start: number; end: number }[], files: readonly { offsetFrames: number; frames: number }[], fps: number): FrameInterval[][] {
+  return files.map((f) =>
+    silences
+      .map((s) => ({ start: Math.max(0, Math.round(s.start * fps) - f.offsetFrames), end: Math.min(f.frames, Math.round(s.end * fps) - f.offsetFrames) }))
+      .filter((s) => s.end > s.start)
+      .sort((a, b) => a.start - b.start || a.end - b.end),
+  );
+}
+
+interface AnchorCtx {
+  fps: number;
+  folgaS: number;
+  frames: number;
+  silences: readonly FrameInterval[];
+}
+
+/** As bordas dos blocos (começo e fim de cada silêncio, mais o começo e o fim do arquivo), em ordem. */
+function blockPoints(c: AnchorCtx): number[] {
+  return [...new Set([0, c.frames, ...c.silences.flatMap((s) => [s.start, s.end])])].sort((a, b) => a - b);
+}
+
+/**
+ * #13493: o início do trecho de um clipe que começa em `inF`. Com o `inF`
+ * dentro de um silêncio, o limite depende só desse silêncio (nunca do quadro
+ * exato do corte): o silêncio inteiro antes da fala, até `silenceMaxS` (sempre
+ * pelo menos a folga); silêncio mais curto que a folga recua até a borda de
+ * bloco anterior (até `silenceMaxS` além da folga) ou ao segundo inteiro antes
+ * de `fim do silêncio - folga`. Um ajuste de borda dentro do mesmo silêncio
+ * cai no mesmo trecho, e o nome (que leva os quadros) não muda. Corte fora de
+ * silêncio, ou sem `silences.json`, volta à regra do #13219: o segundo inteiro
+ * antes de `inF - folga`.
+ */
+export function trechoStartFor(inF: number, c: AnchorCtx): { frame: number; anchor: "silencio" | "segundo" } {
+  const legacy = { frame: Math.max(0, Math.round(Math.floor(inF / c.fps - c.folgaS + 1e-9) * c.fps)), anchor: "segundo" as const };
+  const folgaF = Math.round(c.folgaS * c.fps);
+  const maxF = Math.max(Math.round(TRECHOS.silenceMaxS * c.fps), folgaF);
+  const tolF = Math.round(TRECHOS.silenceTolS * c.fps);
+  const s = c.silences.find((x) => x.start <= inF && inF <= x.end + tolF);
+  if (!s) return legacy;
+  let b: number;
+  if (s.end - folgaF >= s.start) b = Math.max(s.start, s.end - maxF);
+  else {
+    const target = s.end - folgaF;
+    const p = blockPoints(c).filter((x) => x <= target).pop();
+    b = p !== undefined && target - p <= maxF ? p : Math.max(0, Math.round(Math.floor(target / c.fps + 1e-9) * c.fps));
+  }
+  b = Math.max(0, b);
+  return b <= inF ? { frame: b, anchor: "silencio" } : legacy;
+}
+
+/** #13493: o fim do trecho de um clipe que termina em `outF` (`end` exclusivo); o espelho de `trechoStartFor`. */
+export function trechoEndFor(outF: number, c: AnchorCtx): { frame: number; anchor: "silencio" | "segundo" } {
+  const legacy = { frame: Math.min(c.frames, Math.round(Math.ceil(outF / c.fps + c.folgaS - 1e-9) * c.fps)), anchor: "segundo" as const };
+  const folgaF = Math.round(c.folgaS * c.fps);
+  const maxF = Math.max(Math.round(TRECHOS.silenceMaxS * c.fps), folgaF);
+  const tolF = Math.round(TRECHOS.silenceTolS * c.fps);
+  const s = c.silences.find((x) => x.start - tolF <= outF && outF <= x.end);
+  if (!s) return legacy;
+  let e: number;
+  if (s.start + folgaF <= s.end) e = Math.min(s.end, s.start + maxF);
+  else {
+    const target = s.start + folgaF;
+    const p = blockPoints(c).find((x) => x >= target);
+    e = p !== undefined && p - target <= maxF ? p : Math.round(Math.ceil(target / c.fps - 1e-9) * c.fps);
+  }
+  e = Math.min(c.frames, e);
+  return e >= outF ? { frame: e, anchor: "silencio" } : legacy;
+}
+
 /**
  * Os trechos que cobrem todos os `uses` (#13219). Clipe com in/out fora do
- * arquivo (ou vazio) é erro: o plano é de outro bruto.
+ * arquivo (ou vazio) é erro: o plano é de outro bruto. Com `silences` (por
+ * arquivo, quadros locais, `silencesPerFile`), os limites ficam ancorados nos
+ * blocos de silêncio (#13493, `trechoStartFor`/`trechoEndFor`).
  */
 export function planTrechos(
   uses: readonly TrechoUse[],
   files: readonly TrechoSourceFile[],
   fps: number,
-  opts: { folgaS?: number; mergeGapS?: number } = {},
+  opts: { folgaS?: number; mergeGapS?: number; silences?: readonly (readonly FrameInterval[])[] } = {},
 ): Trecho[] {
   const folgaS = opts.folgaS ?? TRECHOS.folgaS;
   const mergeGapS = opts.mergeGapS ?? TRECHOS.mergeGapS;
@@ -155,9 +320,10 @@ export function planTrechos(
     const f = files[u.fileIndex];
     if (!f) throw new Error(`trechos: clipe aponta o arquivo ${u.fileIndex}, mas o bruto tem ${files.length}`);
     if (!(u.in >= 0 && u.out > u.in && u.out <= f.frames)) throw new Error(`trechos: clipe ${u.in}–${u.out} fora de ${stem(f.path)} (${f.frames} quadros)`);
-    // Para fora, em segundos inteiros: o mesmo limite para cortes que mudam pouco.
-    const start = Math.max(0, Math.round(Math.floor(u.in / fps - folgaS + 1e-9) * fps));
-    const end = Math.min(f.frames, Math.round(Math.ceil(u.out / fps + folgaS - 1e-9) * fps));
+    // #13493: ancorado no bloco de silêncio quando há silences; senão, para fora em segundos inteiros (#13219).
+    const c: AnchorCtx = { fps, folgaS, frames: f.frames, silences: opts.silences?.[u.fileIndex] ?? [] };
+    const start = trechoStartFor(u.in, c).frame;
+    const end = trechoEndFor(u.out, c).frame;
     const list = byFile.get(u.fileIndex) ?? [];
     list.push({ start, end });
     byFile.set(u.fileIndex, list);
@@ -214,6 +380,74 @@ export function trechoEncodeArgs(input: { src: string; out: string; start: numbe
     "-c:a", "pcm_s16le", "-ar", "48000",
     "-f", "mov", input.out,
   ];
+}
+
+/**
+ * #13493: dos trechos do XML leve (nome e tamanho no disco), os que ainda não
+ * estão na nuvem com o mesmo tamanho: ausentes, com outro tamanho (subida pela
+ * metade) ou só como `.part` (o Drive for desktop sobe o `.part` e demora a
+ * propagar o rename; na 261118 o Mac viu 9 `.mov.part` e 8 `.mov` de 22, e o
+ * Premiere importou o XML sem fazer nada e sem erro).
+ */
+export function trechosPendentesNaNuvem(
+  local: readonly { name: string; size: number }[],
+  remote: readonly { name: string; size?: string | number }[],
+): TrechoPendente[] {
+  const byName = new Map<string, { name: string; size?: string | number }[]>();
+  for (const r of remote) byName.set(r.name, [...(byName.get(r.name) ?? []), r]);
+  return local.flatMap((l): TrechoPendente[] => {
+    const found = byName.get(l.name) ?? [];
+    if (found.some((r) => r.size !== undefined && Number(r.size) === l.size)) return [];
+    if (found.length) return [{ name: l.name, why: "tamanho" }];
+    return [{ name: l.name, why: byName.has(`${l.name}.part`) ? "part" : "ausente" }];
+  });
+}
+
+/** Um trecho que ainda não está na nuvem e por quê (#13493). */
+export interface TrechoPendente {
+  name: string;
+  why: "ausente" | "tamanho" | "part";
+}
+
+/**
+ * #13493: espera os trechos chegarem à nuvem, relendo a listagem a cada
+ * `pollS` até `timeoutS` (0 = uma leitura só). Listagem que falha conta como
+ * "não conferido" (`error`), nunca como pronto.
+ */
+export async function esperarTrechosNaNuvem(input: {
+  local: readonly { name: string; size: number }[];
+  list: () => Promise<readonly { name: string; size?: string | number }[]>;
+  timeoutS: number;
+  pollS: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  log?: (line: string) => void;
+}): Promise<{ pending: TrechoPendente[]; error: string | null; waitedS: number }> {
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = input.now ?? (() => Date.now());
+  const t0 = now();
+  let pending: TrechoPendente[] = input.local.map((l) => ({ name: l.name, why: "ausente" }));
+  let error: string | null = null;
+  for (;;) {
+    try {
+      pending = trechosPendentesNaNuvem(input.local, await input.list());
+      error = null;
+    } catch (e) {
+      error = (e as Error).message.split(/\r?\n/)[0];
+    }
+    const waitedS = Math.round((now() - t0) / 1000);
+    if ((!pending.length && !error) || waitedS + input.pollS > input.timeoutS) return { pending, error, waitedS };
+    input.log?.(`[video-montagem] ${error ? `listagem do Drive falhou (${error})` : `${pending.length} de ${input.local.length} trecho(s) ainda não estão no Drive`}; conferindo de novo em ${input.pollS} s (até ${input.timeoutS} s, #13493)`);
+    await sleep(input.pollS * 1000);
+  }
+}
+
+/** `--esperar-nuvem S`: segundos de 0 a 3600 (#13493); ausente = `def`. */
+export function parseEsperarNuvemArg(v: string | undefined, def: number): number {
+  if (v === undefined) return def;
+  const n = Number(v);
+  if (v.trim() === "" || !Number.isFinite(n) || n < 0 || n > 3600) throw new Error(`--esperar-nuvem espera segundos de 0 a 3600 (recebeu "${v}")`);
+  return n;
 }
 
 /** `--trechos-folga S`: segundos de 0 a 10. */

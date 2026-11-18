@@ -132,7 +132,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   fact-check-merge AAMMDD (#13597)
  *                           junta o `fact-check.delta.json` do agent com os achados mantidos no
  *                           `fact-check.json` (delta de outra versão é recusado)
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S] [--trecho-fonte "CHAVE=caminho;…"]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-leve|--xml-bruto] [--trechos-folga S] [--esperar-nuvem S] [--trecho-fonte "CHAVE=caminho;…"]
  *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
  *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
  *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir,
@@ -158,6 +158,14 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       o HEVC pelo Drive. h264_nvenc quando o ffmpeg tem; senão libx264. --xml-bruto aponta o
  *       bruto, como antes; --trechos-folga muda a folga. No modo API (300) sai o XML do bruto, com
  *       [aviso] (os trechos não sobem pelo upload do out dir). Falha do ffmpeg = XML do bruto, com [aviso].
+ *       (#13493) o XML leve liga sozinho só acima do limiar `publishing.video.xml_leve` (bruto com mais
+ *       de 15 GB ou de 8 arquivos, por padrão); abaixo, XML do bruto com [premissa]. --xml-leve força os
+ *       trechos, --xml-bruto força o bruto. Os limites dos trechos ancoram no bloco de silêncio do
+ *       silences.json em que o corte cai (um ajuste de borda no mesmo silêncio reaproveita o trecho);
+ *       fora de silêncio, o segundo inteiro. No Drive for desktop (I:), o build espera os trechos na
+ *       nuvem com o tamanho do disco (sem .part) até --esperar-nuvem S (padrão 600; 0 = uma leitura,
+ *       pela API com data/.credentials.json) e termina com `[ok] XML leve pronto` ou `[aviso] XML leve
+ *       AINDA NÃO pronto` (sem credenciais ou com --no-drive-api: [aviso] de não conferido).
  *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado-{chave}.wav`
  *       (`cleanAudioFileName`; a chave é o hash dos args do ffmpeg), o áudio do bruto com afftdn +
  *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
@@ -567,7 +575,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
+import { decideXmlLeve, esperarTrechosNaNuvem, parseEsperarNuvemArg, parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, parseXmlLeveChoice, pickTrechoEncoder, planTrechos, silencesPerFile, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, xmlLeveLimiarFrom, type TrechoEncoder, type TrechoXml, type XmlLeveChoice } from "./lib/diaria/video-xml-trechos.ts";
 import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
@@ -768,6 +776,8 @@ interface Ctx {
   localDrive?: DriveSession;
   /** #13334: os caminhos do XML (raiz do Neo/explícita, antes da troca pelo Mac) que o último build gravou. */
   buildXmlFiles?: string[];
+  /** #13493: os trechos do XML leve que o último build gravou (nome e tamanho no disco), conferidos na nuvem antes do XML ser dado por pronto. */
+  buildTrechos?: { name: string; size: number }[];
   /** #13437: `--trecho-fonte` (CHAVE → caminho do export do vídeo de origem de um trecho inserido). */
   trechoFontes?: Record<string, string>;
   /** #13437: a raiz da pasta de vídeo NESTA máquina, onde o export do vídeo de origem é procurado; `null` = sem Drive local (modo API). */
@@ -4616,9 +4626,9 @@ export async function renderCtaCard(input: {
   };
 }
 
-/** #13219: XML leve (padrão) ou o bruto (`--xml-bruto`), e a folga dos trechos. */
+/** #13219: XML leve ou o bruto, e a folga dos trechos. #13493: `auto` = o limiar decide (`publishing.video.xml_leve`); `--xml-leve`/`--xml-bruto` forçam. */
 export interface TrechosBuildOption {
-  enabled: boolean;
+  choice: XmlLeveChoice;
   folgaS: number;
 }
 
@@ -4882,6 +4892,8 @@ export function renderTrechos(input: {
   framesCachePath?: string | null;
   /** #13488: onde fica a pasta temporária do render (padrão `os.tmpdir()`), fora do out dir sincronizado. */
   tmpRoot?: string;
+  /** #13493: os silêncios do `silences.json` (segundos, tempo global): os limites dos trechos ancoram neles; ausente = segundo inteiro. */
+  silences?: readonly Interval[];
   log?: (line: string) => void;
 }): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number; redone: number } {
   const log = input.log ?? ((m: string) => console.error(m));
@@ -4895,7 +4907,10 @@ export function renderTrechos(input: {
       return { fileIndex: k, in: c.frameIn - off, out: c.frameOut - off };
     }),
   );
-  const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
+  const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, {
+    folgaS: input.folgaS,
+    ...(input.silences ? { silences: silencesPerFile(input.silences, files, input.source.fps) } : {}),
+  });
   const dir = join(input.outDir, TRECHOS.dirName);
   mkdirSync(dir, { recursive: true });
   // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild; o cache fica no
@@ -5187,13 +5202,31 @@ export function measureTrechoGain(path: string, measure: (p: string) => string =
   return { gain: g, detail: `clipe a ${m.inputI.toFixed(1)} LUFS, alvo -14` };
 }
 
+/** #13493: o tamanho somado dos arquivos do bruto; algum que não dá `stat` = null (o limiar decide só pelo número de arquivos). */
+export function brutoTotalBytes(paths: readonly string[], stat: (p: string) => { size: number } = statSync): number | null {
+  let total = 0;
+  for (const p of paths) {
+    try {
+      total += stat(p).size;
+    } catch {
+      return null;
+    }
+  }
+  return total;
+}
+
 /**
  * #13219: o XML leve do build, ou `null` para o XML do bruto (`--xml-bruto`,
- * modo API, ou ffmpeg que falhou), sempre dito no relato.
+ * abaixo do limiar #13493, modo API, ou ffmpeg que falhou), sempre dito no relato.
  */
 function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: SourceInfo, mediaPath: string, opt: TrechosBuildOption): TrechoXml[] | null {
-  if (!opt.enabled) {
-    console.error("[aviso] --xml-bruto: o XML aponta o bruto inteiro; o Premiere converte o AAC de cada arquivo e lê o HEVC pelo Drive (#13219)");
+  ctx.buildTrechos = undefined;
+  // #13493: o limiar (bruto grande ou com muitos arquivos) decide, salvo --xml-leve/--xml-bruto.
+  const files = sourceFiles(source);
+  const decision = decideXmlLeve({ choice: opt.choice, totalBytes: brutoTotalBytes(files.map((x) => x.path)), files: files.length, limiar: xmlLeveLimiarFrom(readPlatformConfigSafe(), (m) => console.error(`[aviso] ${m}`)) });
+  if (!decision.enabled) {
+    if (opt.choice === "bruto") console.error(`[aviso] ${decision.reason}: o XML aponta o bruto inteiro; o Premiere converte o AAC de cada arquivo e lê o HEVC pelo Drive (#13219)`);
+    else console.error(`[premissa] XML do bruto: ${decision.reason}; deixar a pasta da edição off-line no Mac antes de abrir; --xml-leve força os trechos (#13493)`);
     return null;
   }
   if (ctx.mode === "api") {
@@ -5201,13 +5234,23 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
     return null;
   }
   try {
-    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir) });
-    const cov = trechosCoverage(r.trechos, sourceFiles(source));
+    // #13493: os limites ancoram nos blocos de silêncio (um ajuste de borda não invalida o trecho); sem silences.json, segundo inteiro.
+    const silPath = f(ctx, "silences.json");
+    let sil: Interval[] | undefined;
+    try {
+      sil = existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : undefined;
+    } catch (e) {
+      console.error(`[aviso] silences.json ilegível (${(e as Error).message.split("\n")[0]}): limites dos trechos no segundo inteiro (#13493)`);
+    }
+    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir), ...(sil ? { silences: sil } : {}) });
+    const cov = trechosCoverage(r.trechos, files);
     console.error(
-      `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
-        `H.264 no tamanho do bruto (${r.encoder}, qualidade ${TRECHOS.quality}, GOP ${TRECHOS.gop}, sem B-frames, ${source.fps} fps CFR, 8 bits) + PCM 48 kHz, folga de ${opt.folgaS} s; ` +
+      `[premissa] XML leve (${decision.reason}): ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
+        `H.264 no tamanho do bruto (${r.encoder}, qualidade ${TRECHOS.quality}, GOP ${TRECHOS.gop}, sem B-frames, ${source.fps} fps CFR, 8 bits) + PCM 48 kHz, folga de ${opt.folgaS} s, ` +
+        `limites ${sil ? "no bloco de silêncio do silences.json (#13493)" : "no segundo inteiro (sem silences.json)"}, render fora do Drive e copiado pronto; ` +
         "--xml-bruto aponta o bruto; conferir no Premiere do Mac o playback e a cor (8 bits) (#13219)",
     );
+    ctx.buildTrechos = r.trechos.map((t) => ({ name: t.name, size: statSync(join(ctx.outDir, TRECHOS.dirName, t.name)).size }));
     return r.trechos;
   } catch (e) {
     console.error(`[aviso] trechos do XML leve falharam (${(e as Error).message.split("\n")[0]}): XML do bruto, como com --xml-bruto (#13219)`);
@@ -5291,7 +5334,7 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
   return lines;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }, trechosOpt: TrechosBuildOption = { enabled: true, folgaS: TRECHOS.folgaS }): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }, trechosOpt: TrechosBuildOption = { choice: "auto", folgaS: TRECHOS.folgaS }): Promise<number> {
   // #12902: recusar antes do detector/refino, assets e XMLs: sem o plano
   // anterior legível, o merge de um build parcial descartaria as outras
   // sequências. Entradas mudadas não recusam mais (#12968): as outras ficam no
@@ -7516,7 +7559,16 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   // #13332: e as legendas do XML das verticais, em `legendas-vertical*/`.
   const snap = () => snapshotDirWithSubdirs(ctx.outDir, [TRECHOS.dirName, ...subtitleSubdirsIn(ctx.outDir)], (dir) => readdirSync(dir));
   const before = uploads ? snap() : null;
+  // #13493: quanto o build espera os trechos do XML leve chegarem à nuvem (Drive for desktop); inválido para antes do build.
+  const esperarNuvemS = cmd === "build" ? parseEsperarNuvemArg(values["esperar-nuvem"] ?? (flags.has("esperar-nuvem") ? "" : undefined), ESPERAR_NUVEM_DEFAULT_S) : 0;
   const code = await runCommand(ctx, cmd, values, flags, seq, d);
+  // #13493: no Drive for desktop (sem upload pela API), o XML leve só é dado por pronto com os trechos na nuvem.
+  if (cmd === "build" && code === 0 && !uploads && ctx.buildTrechos?.length) {
+    const cloud = mode === "local" && !flags.has("no-drive-api") && googleCredentialsPresent()
+      ? makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]))
+      : null;
+    await reportTrechosNaNuvem(cloud, ctx.buildTrechos, esperarNuvemS, flags.has("no-drive-api") ? "--no-drive-api" : "sem data/.credentials.json (OAuth do projeto)");
+  }
   if (before && up && code === 0) {
     const changed = changedFiles(before, snap()).map((n) => join(ctx.outDir, n));
     const r = await uploadAll(ctx, up, changed);
@@ -7568,6 +7620,58 @@ export async function warnXmlFilesMissingInDrive(d: DriveSession, files: readonl
   if (missing.length) warn(`${missing.length} arquivo(s) do XML ausente(s) no Drive (o Premiere abre com mídia offline): ${missing.join(", ")}; suba com upload ${d.edition} --file ARQUIVO (#13334)`);
   else console.error(`[drive] os ${rels.length} arquivo(s) do XML estão no Drive (#13334)`);
   return missing;
+}
+
+/** #13493: quanto o build espera, por padrão, os trechos do XML leve subirem pelo Drive for desktop (`--esperar-nuvem S`). */
+export const ESPERAR_NUVEM_DEFAULT_S = 600;
+const ESPERAR_NUVEM_POLL_S = 20;
+
+/** #13493: os arquivos da subpasta `trechos/` da edição no Drive (nenhuma = vazio; duas = erro). */
+async function listTrechosNaNuvem(d: DriveSession): Promise<DriveEntry[]> {
+  const folder = await d.folder();
+  const sub = await listChildren(d.deps, folder.id, { name: TRECHOS.dirName, foldersOnly: true });
+  if (sub.length > 1) throw new Error(`${sub.length} pastas ${TRECHOS.dirName}/ na edição do Drive: junte ou renomeie`);
+  return sub.length ? listChildren(d.deps, sub[0].id) : [];
+}
+
+/**
+ * #13493: no fim do build com XML leve no Drive for desktop, o XML só é dado
+ * por pronto quando cada trecho está na nuvem com o tamanho do disco (sem
+ * `.part`): na 261118 o Premiere do Mac importou o XML com trechos ainda em
+ * `.mov.part` sem fazer nada e sem erro. Espera até `timeoutS`; sem sessão do
+ * Drive (sem credenciais, `--no-drive-api`), não confere e diz isso. Nunca muda
+ * o exit: o resultado é a linha `[ok] XML leve pronto` ou o `[aviso] XML leve
+ * AINDA NÃO pronto`. Devolve os pendentes (null = não conferido).
+ */
+export async function reportTrechosNaNuvem(
+  d: DriveSession | null,
+  trechos: readonly { name: string; size: number }[],
+  timeoutS: number,
+  noSessionReason: string,
+  io: { list?: () => Promise<readonly { name: string; size?: string | number }[]>; sleep?: (ms: number) => Promise<void>; now?: () => number; log?: (line: string) => void } = {},
+): Promise<string[] | null> {
+  const log = io.log ?? ((m: string) => console.error(m));
+  const dir = `${d?.edition ?? ""}${d ? "/" : ""}${TRECHOS.dirName}/`;
+  if (!d && !io.list) {
+    log(`[aviso] XML leve gravado, mas a subida dos ${trechos.length} trecho(s) para a nuvem NÃO foi conferida (${noSessionReason}): antes de importar no Mac, conferir que ${TRECHOS.dirName}/ tem os ${trechos.length} .mov e nenhum .part, ou o Premiere importa sem fazer nada e sem erro (#13493)`);
+    return null;
+  }
+  const r = await esperarTrechosNaNuvem({ local: trechos, list: io.list ?? (() => listTrechosNaNuvem(d!)), timeoutS, pollS: ESPERAR_NUVEM_POLL_S, ...(io.sleep ? { sleep: io.sleep } : {}), ...(io.now ? { now: io.now } : {}), log });
+  if (!r.pending.length && !r.error) {
+    log(`[ok] XML leve pronto: os ${trechos.length} trecho(s) estão em ${dir} no Drive com o tamanho do disco; pode importar no Mac (#13493)`);
+    return [];
+  }
+  if (r.error) {
+    log(`[aviso] XML leve AINDA NÃO pronto: a conferência dos trechos no Drive falhou (${r.error}) depois de ${r.waitedS} s; antes de importar no Mac, conferir que ${dir} tem os ${trechos.length} .mov e nenhum .part (#13493)`);
+    return null;
+  }
+  const fmt = (why: string, label: string) => {
+    const ns = r.pending.filter((p) => p.why === why).map((p) => p.name);
+    return ns.length ? `${label}: ${ns.join(", ")}` : null;
+  };
+  const detail = [fmt("ausente", "ausente(s)"), fmt("part", "só como .part"), fmt("tamanho", "com outro tamanho (subida pela metade)")].filter(Boolean).join("; ");
+  log(`[aviso] XML leve AINDA NÃO pronto: ${r.pending.length} de ${trechos.length} trecho(s) não estão em ${dir} no Drive com o tamanho do disco depois de ${r.waitedS} s (${detail}). Não importar no Mac antes do Drive for desktop subir tudo (o Premiere importa sem fazer nada e sem erro); rodar o build de novo confere outra vez (os trechos são reaproveitados), ou --xml-bruto (#13493)`);
+  return r.pending.map((p) => p.name);
 }
 
 async function runCommand(
@@ -7643,8 +7747,8 @@ async function runCommand(
       {
         // #12104: o modo removido (`text`) falha aqui, antes de baixar o bruto.
         const titleMode = parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined));
-        // #13219: XML leve por padrão; --xml-bruto volta ao bruto. A folga inválida falha aqui, antes de baixar o bruto.
-        const trechosOpt: TrechosBuildOption = { enabled: !flags.has("xml-bruto"), folgaS: parseTrechosFolgaArg(values["trechos-folga"] ?? (flags.has("trechos-folga") ? "" : undefined)) };
+        // #13219/#13493: o limiar decide entre XML leve e o bruto; --xml-leve/--xml-bruto forçam. Folga inválida falha aqui, antes de baixar o bruto.
+        const trechosOpt: TrechosBuildOption = { choice: parseXmlLeveChoice({ leve: flags.has("xml-leve"), bruto: flags.has("xml-bruto") }), folgaS: parseTrechosFolgaArg(values["trechos-folga"] ?? (flags.has("trechos-folga") ? "" : undefined)) };
         // #13234: motor da faixa tratada (ffmpeg padrão; deepfilternet até a escolha de ouvido). Inválido para aqui, antes do bruto.
         const denoise = resolveAudioDenoise({
           flag: values["audio-denoise"] ?? (flags.has("audio-denoise") ? "" : undefined),
