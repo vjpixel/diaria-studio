@@ -932,7 +932,7 @@ async function main() {
   const logRootDir = args["log-root-dir"];
 
   if (!articlesPath) {
-    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD] [--window 3] [--url-window-days 30] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
+    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD (obrigatório se --out/--articles não estiverem em editions/AAMMDD/)] [--window 3] [--url-window-days 30] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
     process.exit(1);
   }
 
