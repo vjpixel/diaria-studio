@@ -166,14 +166,40 @@ export function vigenteXmlNames(root: readonly ArchiveEntry[]): string[] {
 }
 
 /**
+ * Pura — os XMLs da raiz cujas referências protegem assets (#13610, A): o
+ * vigente de cada família (TODAS as cópias do nome, quando o Drive tem nome
+ * repetido) e todo `.xml` fora de família (sem `_V{n}`, `(1)`, acento,
+ * `_v9` minúsculo), que nunca sai da raiz. Só o XML de versão anterior, que
+ * vai para `arquivo/`, não protege.
+ */
+export function xmlsThatStay(root: readonly ArchiveEntry[]): ArchiveEntry[] {
+  const vig = new Set(vigenteXmlNames(root));
+  return root.filter((e) => !e.isFolder && /\.xml$/i.test(e.name) && (xmlFamilyOf(e.name) === null || vig.has(e.name)));
+}
+
+/** Pura — entidades XML (`&amp;`, `&apos;`, `&quot;`, `&lt;`, `&gt;`, `&#39;`, `&#x27;`). */
+export function decodeXmlEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|amp|apos|quot|lt|gt);/gi, (m, ent: string) => {
+    const e = ent.toLowerCase();
+    if (e === "amp") return "&";
+    if (e === "apos") return "'";
+    if (e === "quot") return '"';
+    if (e === "lt") return "<";
+    if (e === "gt") return ">";
+    const code = e.startsWith("#x") ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+  });
+}
+
+/**
  * Pura — os nomes de arquivo que um XML (xmeml) referencia por `pathurl`
  * (`file://localhost/…/261118/261118_audio_tratado-x.wav` → `261118_audio_tratado-x.wav`).
- * Percent-encoding decodificado; `\` vale como separador.
+ * Entidades XML e percent-encoding (`%XX`) decodificados; `\` vale como separador.
  */
 export function xmlReferencedNames(xml: string): string[] {
   const out = new Set<string>();
   for (const m of xml.matchAll(/<pathurl>([^<]+)<\/pathurl>/g)) {
-    let p = m[1].trim().replace(/&amp;/g, "&");
+    let p = decodeXmlEntities(m[1].trim());
     try {
       p = decodeURIComponent(p);
     } catch {
@@ -186,12 +212,36 @@ export function xmlReferencedNames(xml: string): string[] {
 }
 
 /**
+ * Pura — o conjunto de nomes referenciados pelos XMLs que ficam. `null` (nenhum
+ * asset sai) quando algum texto não foi lido (`null` na lista) ou foi lido sem
+ * nenhum `<pathurl>`: um XML que não referencia nada não é prova de que nada é usado.
+ */
+export function referencedFromXmlTexts(texts: ReadonlyArray<string | null>): Set<string> | null {
+  const out = new Set<string>();
+  for (const t of texts) {
+    if (t === null) return null;
+    const refs = xmlReferencedNames(t);
+    if (!refs.length) return null;
+    for (const r of refs) out.add(r);
+  }
+  return out;
+}
+
+/**
  * Pura — o plano de uma pasta de edição. `referenced` = nomes que os XMLs
  * vigentes referenciam (`xmlReferencedNames` de cada um de `vigenteXmlNames`);
  * `null` = alguma leitura falhou: nenhum asset sai (não dá para saber o que o
  * XML vigente usa), XML/SRT/prévia seguem a regra.
  */
-export function planEditionArchive(root: readonly ArchiveEntry[], referenced: ReadonlySet<string> | null): EditionArchivePlan {
+export interface PlanOptions {
+  /**
+   * #13610 B: os XMLs que o `plan.json` diz vigentes (o build acabou de gravar).
+   * Algum fora da listagem da raiz (a busca do Drive atrasa) = nenhum asset sai nesta rodada.
+   */
+  expectedXmls?: readonly string[];
+}
+
+export function planEditionArchive(root: readonly ArchiveEntry[], referenced: ReadonlySet<string> | null, opts: PlanOptions = {}): EditionArchivePlan {
   const move: ArchiveDecision[] = [];
   const keep: ArchiveDecision[] = [];
   const untouched: string[] = [];
@@ -249,9 +299,21 @@ export function planEditionArchive(root: readonly ArchiveEntry[], referenced: Re
   }
 
   // Asset com hash: o referenciado pelo XML vigente fica; sem referência, o mais novo.
-  for (const g of groupBy(classified.filter((x) => x.f.kind === "asset"), (x) => x.f.key).values()) {
-    if (referenced === null) {
-      for (const x of g) keep.push(dec(x, "referências dos XMLs vigentes não lidas: asset fica"));
+  // #13610 B: listagem possivelmente atrasada (XML do plan.json ausente, ou asset mais novo que todo XML da raiz) = nenhum asset sai.
+  const rootNames = new Set(root.filter((e) => !e.isFolder).map((e) => e.name));
+  const missingExpected = (opts.expectedXmls ?? []).filter((n) => !rootNames.has(n));
+  const xmlTimes = root.filter((e) => !e.isFolder && /\.xml$/i.test(e.name)).map((e) => e.modifiedMs);
+  const newestXml = xmlTimes.length && xmlTimes.every((t) => t !== null) ? Math.max(...(xmlTimes as number[])) : null;
+  const assets = classified.filter((x) => x.f.kind === "asset");
+  const newerAsset = newestXml !== null ? assets.find((x) => x.e.modifiedMs !== null && x.e.modifiedMs > newestXml) : undefined;
+  const assetHold =
+    referenced === null ? "referências dos XMLs que ficam não lidas: asset fica"
+    : missingExpected.length ? `XML do plan.json fora da listagem (${missingExpected.join(", ")}): asset fica nesta rodada`
+    : newerAsset ? `${newerAsset.e.name} é mais novo que todo XML da raiz (listagem atrasada?): asset fica nesta rodada`
+    : null;
+  for (const g of groupBy(assets, (x) => x.f.key).values()) {
+    if (assetHold !== null || referenced === null) {
+      for (const x of g) keep.push(dec(x, assetHold ?? "referências não lidas: asset fica"));
       continue;
     }
     const refd = g.filter((x) => referenced.has(nfc(x.e.name)));
@@ -276,7 +338,7 @@ export function planEditionArchive(root: readonly ArchiveEntry[], referenced: Re
   }
 
   // Asset referenciado por XML vigente nunca sai, mesmo que outra regra o tenha posto em `move` (defesa).
-  const safeMove = referenced === null ? move : move.filter((m) => !referenced.has(nfc(m.name)) || familyOf(m.name)?.kind !== "asset");
+  const safeMove = referenced === null ? move.filter((m) => familyOf(m.name)?.kind !== "asset") : move.filter((m) => !referenced.has(nfc(m.name)) || familyOf(m.name)?.kind !== "asset");
   return { move: safeMove, keep, untouched: untouched.sort(), absorb, vigenteXmls: vigenteXmlNames(root) };
 }
 
@@ -285,8 +347,11 @@ export function planEditionArchive(root: readonly ArchiveEntry[], referenced: Re
  * extensão quando já existe um igual lá (o Drive aceitaria dois, o disco
  * sobrescreveria). `stamp` é do chamador (data/hora), e o contador garante unicidade.
  */
-export function archiveTargetName(name: string, taken: ReadonlySet<string>, stamp: string): string {
-  if (!taken.has(name)) return name;
+export function archiveTargetName(name: string, taken: ReadonlySet<string>, stamp: string, opts: { caseInsensitive?: boolean } = {}): string {
+  // #13610 H: no NTFS do Neo `X.xml` e `x.xml` são o mesmo arquivo.
+  const lower = opts.caseInsensitive ? new Set([...taken].map((t) => t.toLowerCase())) : null;
+  const has = (n: string) => (lower ? lower.has(n.toLowerCase()) : taken.has(n));
+  if (!has(name)) return name;
   const dot = name.lastIndexOf(".");
   const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
   // `.srt.no-plan.json`: o sufixo vai antes do `.srt`.
@@ -294,7 +359,7 @@ export function archiveTargetName(name: string, taken: ReadonlySet<string>, stam
   const [s, x] = noPlan ? [name.slice(0, noPlan.index), name.slice(noPlan.index)] : [stem, ext];
   for (let i = 1; ; i++) {
     const cand = `${s} (arquivado ${stamp}${i > 1 ? ` ${i}` : ""})${x}`;
-    if (!taken.has(cand)) return cand;
+    if (!has(cand)) return cand;
   }
 }
 
@@ -310,6 +375,11 @@ export function maxXmlVersionIn(names: readonly string[], familyKey: string): nu
     if (f && f.key === familyKey && f.version !== null && (max === null || f.version > max)) max = f.version;
   }
   return max;
+}
+
+/** Pura — tira o ` (arquivado …)` que a colisão no `arquivo/` acrescenta (`X_V8 (arquivado 20261118-120000).xml` → `X_V8.xml`). */
+export function stripArchivedSuffix(name: string): string {
+  return name.replace(/ \(arquivado [^)]*\)(?=(\.srt\.no-plan\.json|\.[A-Za-z0-9]+)?$)/i, "");
 }
 
 /** Pura — a versão do `<sequence id>` versionado (`seq-{chave}-v{n}-{hash}`) do plan.json. */

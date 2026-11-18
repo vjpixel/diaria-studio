@@ -10,7 +10,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -23,13 +23,15 @@ import {
   xmlReferencedNames,
   maxXmlVersionIn,
   versionOfSequenceId,
+  referencedFromXmlTexts,
+  stripArchivedSuffix,
   type ArchiveEntry,
 } from "../scripts/lib/diaria/video-version-archive.ts";
-import { archiveBeforeOverwriteLocal, archiveEditionDrive, archiveEditionLocal, xmlNamesWithArchive } from "../scripts/lib/diaria/video-version-archive-io.ts";
+import { archiveBeforeOverwriteLocal, archiveEditionDrive, archiveEditionLocal, installPreviewFile, moveDriveFile, resolveArchiveFolder, xmlNamesWithArchive } from "../scripts/lib/diaria/video-version-archive-io.ts";
 import { FOLDER_MIME, pickDriveBruto, type DriveEntry, type MontageDriveDeps } from "../scripts/lib/diaria/video-montage-drive.ts";
-import { isBrutoFile } from "../scripts/lib/diaria/video-bruto-archive.ts";
-import { archiveVersionsAfter, plannedXmlVersions, versionPickedSequences } from "../scripts/video-montagem.ts";
-import { runArchiveVersions } from "../scripts/archive-video-versions.ts";
+import { brutoFilesOf, isBrutoFile, parseRcloneLsjson } from "../scripts/lib/diaria/video-bruto-archive.ts";
+import { archiveVersionsAfter, looseFilesIn, plannedXmlVersions, uploadAll, versionPickedSequences } from "../scripts/video-montagem.ts";
+import { main as archiveMain, runArchiveVersions } from "../scripts/archive-video-versions.ts";
 
 const e = (name: string, modifiedMs: number | null = 1000, extra: Partial<ArchiveEntry> = {}): ArchiveEntry => ({ name, modifiedMs, ...extra });
 const xml = (refs: string[]) =>
@@ -283,15 +285,35 @@ describe("executor no disco (o Neo)", () => {
   });
 });
 
-/** Drive falso: pastas e arquivos em memória; responde listagem, download e PATCH de move. */
-function fakeDrive(tree: Record<string, Array<DriveEntry & { parent: string; body?: string }>>) {
-  const files = Object.values(tree).flat();
+type FakeFile = DriveEntry & { parent: string; body?: string };
+
+/**
+ * Drive falso: pastas e arquivos em memória. Responde listagem (com `q`),
+ * metadado (`fields`), download (`alt=media`), PATCH de move/lixeira, criação
+ * de pasta e a sessão de upload resumable (criar ou atualizar por id).
+ */
+function fakeDrive(initial: FakeFile[], hooks: { failPatch?: (id: string, n: number) => "error" | "applied-error" | null; failUpload?: boolean } = {}) {
+  const files: FakeFile[] = initial.map((f) => ({ ...f }));
   const patches: Array<{ id: string; add: string; remove: string; name?: string }> = [];
+  const uploads: Array<{ kind: "create" | "update"; id: string; name: string }> = [];
+  const sessions = new Map<string, { kind: "create" | "update"; id?: string; name?: string; parent?: string }>();
   let created = 0;
-  const json = (v: unknown) => new Response(JSON.stringify(v), { headers: { "content-type": "application/json" } });
+  let patchCount = 0;
+  const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
+  const meta = (f: FakeFile) => ({ id: f.id, name: f.name, mimeType: f.mimeType, parents: [f.parent], modifiedTime: f.modifiedTime });
   const deps: MontageDriveDeps = {
     driveFetch: async (url, init) => {
       const u = new URL(url);
+      if (u.pathname.startsWith("/upload/")) {
+        const key = `https://u/s/${sessions.size + 1}`;
+        const m = /\/files\/([^/?]+)$/.exec(u.pathname);
+        if (init?.method === "PATCH" && m) sessions.set(key, { kind: "update", id: decodeURIComponent(m[1]) });
+        else {
+          const b = JSON.parse(String(init?.body)) as { name: string; parents: string[] };
+          sessions.set(key, { kind: "create", name: b.name, parent: b.parents[0] });
+        }
+        return new Response("", { status: 200, headers: { location: key } });
+      }
       const m = /\/files\/([^/?]+)$/.exec(u.pathname);
       if (init?.method === "PATCH" && m) {
         const id = decodeURIComponent(m[1]);
@@ -299,51 +321,79 @@ function fakeDrive(tree: Record<string, Array<DriveEntry & { parent: string; bod
         const f = files.find((x) => x.id === id)!;
         if (body.trashed) {
           files.splice(files.indexOf(f), 1);
-          return json({ id });
+          return json({ id, trashed: true });
         }
+        const fail = hooks.failPatch?.(id, ++patchCount) ?? null;
+        if (fail === "error") return json({ error: "boom" }, 500);
         patches.push({ id, add: u.searchParams.get("addParents")!, remove: u.searchParams.get("removeParents")!, ...(body.name ? { name: body.name } : {}) });
         f.parent = u.searchParams.get("addParents")!;
         if (body.name) f.name = body.name;
-        return json({ id });
+        if (fail === "applied-error") return json({ error: "resposta perdida" }, 500);
+        return json(meta(f));
       }
       if (init?.method === "POST") {
         const b = JSON.parse(String(init.body)) as { name: string; parents: string[] };
-        const f = { id: `new${++created}`, name: b.name, mimeType: FOLDER_MIME, parent: b.parents[0] };
+        const f: FakeFile = { id: `new${++created}`, name: b.name, mimeType: FOLDER_MIME, parent: b.parents[0], modifiedTime: "2026-11-18T00:00:00Z" };
         files.push(f);
         return json(f);
       }
-      if (m && u.searchParams.get("alt") === "media") return new Response(files.find((x) => x.id === decodeURIComponent(m[1]))?.body ?? "");
+      if (m) {
+        const f = files.find((x) => x.id === decodeURIComponent(m[1]));
+        if (!f) return json({ error: "not found" }, 404);
+        if (u.searchParams.get("alt") === "media") return new Response(f.body ?? "");
+        return json(meta(f));
+      }
       const q = u.searchParams.get("q") ?? "";
       const parent = /'([^']+)' in parents/.exec(q)![1];
       const name = /name = '([^']+)'/.exec(q)?.[1];
       const foldersOnly = q.includes(`mimeType = '${FOLDER_MIME}'`);
-      return json({ files: files.filter((f) => f.parent === parent && (name === undefined || f.name === name) && (!foldersOnly || f.mimeType === FOLDER_MIME)) });
+      return json({ files: files.filter((f) => f.parent === parent && (name === undefined || f.name === name) && (!foldersOnly || f.mimeType === FOLDER_MIME)).map(meta) });
+    },
+    uploadFetch: async (url) => {
+      if (hooks.failUpload) return json({ error: "boom" }, 500);
+      const s = sessions.get(url)!;
+      if (s.kind === "update") {
+        uploads.push({ kind: "update", id: s.id!, name: files.find((f) => f.id === s.id)!.name });
+        return json({ id: s.id, name: files.find((f) => f.id === s.id)!.name });
+      }
+      const f: FakeFile = { id: `up${++created}`, name: s.name!, mimeType: "video/mp4", parent: s.parent!, modifiedTime: "2026-11-18T12:00:00Z" };
+      files.push(f);
+      uploads.push({ kind: "create", id: f.id, name: f.name });
+      return json({ id: f.id, name: f.name });
     },
   };
-  return { deps, patches, files };
+  return { deps, patches, files, uploads };
 }
 
+const edFolder: FakeFile = { id: "ed", name: "261118", mimeType: FOLDER_MIME, parent: "yt" };
+const xf = (id: string, name: string, t: string, refs: string[] | string): FakeFile => ({ id, name, mimeType: "application/xml", parent: "ed", modifiedTime: t, body: typeof refs === "string" ? refs : xml(refs) });
+const af = (id: string, name: string, t: string): FakeFile => ({ id, name, mimeType: "audio/wav", parent: "ed", modifiedTime: t });
+const noSleep = async () => {};
+
 describe("executor no Drive (falso)", () => {
-  const mk = () =>
-    fakeDrive({
-      root: [{ id: "ed", name: "261118", mimeType: FOLDER_MIME, parent: "yt" }, { id: "x", name: "notas", mimeType: FOLDER_MIME, parent: "yt" }],
-      ed: [
+  const mk = (hooks?: Parameters<typeof fakeDrive>[1]) =>
+    fakeDrive(
+      [
+        edFolder,
+        { id: "x", name: "notas", mimeType: FOLDER_MIME, parent: "yt" },
         { id: "b", name: "20261117_181712.mp4", mimeType: "video/mp4", parent: "ed", modifiedTime: "2026-11-17T10:00:00Z" },
-        { id: "v1", name: "Diaria comentada horizontal_V1.xml", mimeType: "application/xml", parent: "ed", modifiedTime: "2026-11-17T10:00:00Z", body: xml(["261118_audio_tratado-aaaaaaaa.wav"]) },
-        { id: "v2", name: "Diaria comentada horizontal_V2.xml", mimeType: "application/xml", parent: "ed", modifiedTime: "2026-11-17T11:00:00Z", body: xml(["261118_audio_tratado-aaaaaaaa.wav", "20261117_181712.mp4"]) },
-        { id: "a1", name: "261118_audio_tratado-aaaaaaaa.wav", mimeType: "audio/wav", parent: "ed", modifiedTime: "2026-11-17T09:00:00Z" },
-        { id: "a2", name: "261118_audio_tratado-bbbbbbbb.wav", mimeType: "audio/wav", parent: "ed", modifiedTime: "2026-11-17T12:00:00Z" },
+        xf("v1", "Diaria comentada horizontal_V1.xml", "2026-11-17T10:00:00Z", ["261118_audio_tratado-aaaaaaaa.wav"]),
+        xf("v2", "Diaria comentada horizontal_V2.xml", "2026-11-17T11:00:00Z", ["261118_audio_tratado-aaaaaaaa.wav", "20261117_181712.mp4"]),
+        af("a1", "261118_audio_tratado-aaaaaaaa.wav", "2026-11-17T09:00:00Z"),
+        af("a2", "261118_audio_tratado-bbbbbbbb.wav", "2026-11-17T10:30:00Z"),
         { id: "fin", name: "Final", mimeType: FOLDER_MIME, parent: "ed" },
       ],
-    });
+      hooks,
+    );
 
   it("dry-run lista e não move; --apply move por addParents/removeParents preservando o id", async () => {
     const d = mk();
-    const dry = await archiveEditionDrive(d.deps, { id: "ed", name: "261118" }, { apply: false });
+    const dry = await archiveEditionDrive(d.deps, edFolder, { apply: false });
     assert.deepEqual(dry.moves.map((m) => m.name).sort(), ["261118_audio_tratado-bbbbbbbb.wav", "Diaria comentada horizontal_V1.xml"]);
     assert.equal(d.patches.length, 0);
-    const r = await archiveEditionDrive(d.deps, { id: "ed", name: "261118" }, { apply: true });
-    assert.equal(r.moves.length, 2);
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.equal(r.error, undefined);
+    assert.ok(r.moves.every((m) => m.done));
     const arquivo = d.files.find((f) => f.name === "arquivo")!;
     assert.deepEqual(d.patches.map((p) => [p.id, p.add, p.remove]).sort(), [["a2", arquivo.id, "ed"], ["v1", arquivo.id, "ed"]]);
     assert.ok(d.files.some((f) => f.id === "a1" && f.parent === "ed"), "o referenciado fica");
@@ -351,21 +401,217 @@ describe("executor no Drive (falso)", () => {
 
   it("recém-gravado que a busca ainda não mostra entra no plano e nunca sai", async () => {
     const d = mk();
-    const fresh = [{ name: "Diaria comentada horizontal_V3.xml", id: "v3", modifiedMs: Date.now() }];
-    d.files.push({ id: "v3", name: "Diaria comentada horizontal_V3.xml", mimeType: "application/xml", parent: "elsewhere", body: xml(["261118_audio_tratado-bbbbbbbb.wav"]) });
-    const r = await archiveEditionDrive(d.deps, { id: "ed", name: "261118" }, { apply: false, fresh });
+    const fresh = [{ name: "Diaria comentada horizontal_V3.xml", id: "v3", modifiedMs: Date.parse("2026-11-17T13:00:00Z") }];
+    d.files.push({ ...xf("v3", "Diaria comentada horizontal_V3.xml", "2026-11-17T13:00:00Z", ["261118_audio_tratado-bbbbbbbb.wav"]), parent: "elsewhere" });
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: false, fresh });
     assert.deepEqual(r.plan.vigenteXmls, ["Diaria comentada horizontal_V3.xml"]);
     assert.deepEqual(r.moves.map((m) => m.name).sort(), ["261118_audio_tratado-aaaaaaaa.wav", "Diaria comentada horizontal_V1.xml", "Diaria comentada horizontal_V2.xml"]);
   });
 
-  it("migração: só pastas de edição, dry-run por padrão", async () => {
+  it("A: XML fora de família e cópias de nome repetido protegem os assets que referenciam", async () => {
+    const d = fakeDrive([
+      edFolder,
+      xf("v9", "Diaria comentada horizontal_V9.xml", "2026-11-17T12:00:00Z", ["261118_audio_tratado-bbbbbbbb.wav"]),
+      xf("v9b", "Diaria comentada horizontal_V9.xml", "2026-11-17T11:00:00Z", ["261118_titulo_vertical-1111111111111111.png"]),
+      xf("mont", "261118 - montagem (importar no Premiere).xml", "2026-11-17T12:00:00Z", ["261118_audio_tratado-aaaaaaaa.wav"]),
+      af("a1", "261118_audio_tratado-aaaaaaaa.wav", "2026-11-17T09:00:00Z"),
+      af("a2", "261118_audio_tratado-bbbbbbbb.wav", "2026-11-17T10:00:00Z"),
+      af("t1", "261118_titulo_vertical-1111111111111111.png", "2026-11-17T09:00:00Z"),
+      af("t2", "261118_titulo_vertical-2222222222222222.png", "2026-11-17T10:00:00Z"),
+    ]);
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: false });
+    const moved = r.moves.map((m) => m.name);
+    assert.ok(!moved.includes("261118_audio_tratado-aaaaaaaa.wav"), "referenciado pelo XML sem versão");
+    assert.ok(!moved.includes("261118_titulo_vertical-1111111111111111.png"), "referenciado pela 2ª cópia do nome repetido");
+    assert.ok(moved.includes("261118_titulo_vertical-2222222222222222.png"));
+  });
+
+  it("A: XML que fica sem nenhum <pathurl> = nenhum asset sai, com aviso", async () => {
+    const d = fakeDrive([
+      edFolder,
+      xf("v9", "Diaria comentada horizontal_V9.xml", "2026-11-17T12:00:00Z", ["261118_audio_tratado-bbbbbbbb.wav"]),
+      xf("odd", "Diaria comentada horizontal_V9 (1).xml", "2026-11-17T12:00:00Z", "<xmeml/>"),
+      af("a1", "261118_audio_tratado-aaaaaaaa.wav", "2026-11-17T09:00:00Z"),
+      af("a2", "261118_audio_tratado-bbbbbbbb.wav", "2026-11-17T10:00:00Z"),
+    ]);
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: false });
+    assert.equal(r.moves.length, 0);
+    assert.match(r.warnings.join("\n"), /sem <pathurl>|não tem <pathurl>/);
+  });
+
+  it("B: XML do plan.json fora da listagem, ou asset mais novo que todo XML = nenhum asset sai", async () => {
+    const d = mk();
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: false, expectedXmls: ["Diaria comentada horizontal_V3.xml"] });
+    assert.deepEqual(r.moves.map((m) => m.name), ["Diaria comentada horizontal_V1.xml"]);
+    const newer = mk();
+    newer.files.push(af("a3", "261118_audio_tratado-cccccccc.wav", "2026-11-17T13:00:00Z"));
+    const r2 = await archiveEditionDrive(newer.deps, edFolder, { apply: false });
+    assert.deepEqual(r2.moves.map((m) => m.name), ["Diaria comentada horizontal_V1.xml"]);
+  });
+
+  it("D: duas pastas arquivo/ = usa a mais antiga e avisa; nenhuma = espera e busca de novo antes de criar", async () => {
+    const d = fakeDrive([
+      edFolder,
+      { id: "arqB", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed", modifiedTime: "2026-11-18T10:00:00Z" },
+      { id: "arqA", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed", modifiedTime: "2026-11-18T09:00:00Z" },
+    ]);
+    const warns: string[] = [];
+    assert.equal((await resolveArchiveFolder(d.deps, "ed", { create: true, sleep: noSleep, warn: (m) => warns.push(m) }))?.id, "arqA");
+    assert.match(warns.join(), /2 pastas arquivo\//);
+    const empty = fakeDrive([edFolder]);
+    let slept = 0;
+    const lateFolder = async () => {
+      slept++;
+      empty.files.push({ id: "late", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed" });
+    };
+    assert.equal((await resolveArchiveFolder(empty.deps, "ed", { create: true, sleep: lateFolder }))?.id, "late", "a que apareceu na 2ª busca, sem criar outra");
+    assert.equal(slept, 1);
+    assert.equal(empty.files.filter((f) => f.name === "arquivo").length, 1);
+  });
+
+  it("E: já no arquivo/ = pula sem PATCH; PATCH aplicado com resposta perdida = sucesso; 2xx sem efeito = erro", async () => {
+    const d = fakeDrive([edFolder, { id: "arq", name: "arquivo", mimeType: FOLDER_MIME, parent: "ed" }, af("a1", "x.wav", "2026-11-17T09:00:00Z"), af("a2", "y.wav", "2026-11-17T09:00:00Z")], {
+      failPatch: (id) => (id === "a2" ? "applied-error" : null),
+    });
+    d.files.find((f) => f.id === "a1")!.parent = "arq";
+    assert.equal(await moveDriveFile(d.deps, "a1", "ed", "arq"), "already");
+    assert.equal(d.patches.length, 0);
+    assert.equal(await moveDriveFile(d.deps, "a2", "ed", "arq"), "moved");
+    const liar = fakeDrive([edFolder, af("a3", "z.wav", "2026-11-17T09:00:00Z")]);
+    const lie: MontageDriveDeps = {
+      driveFetch: async (url, init) => (init?.method === "PATCH" ? new Response(JSON.stringify({ id: "a3" }), { status: 200 }) : liar.deps.driveFetch(url, init)),
+    };
+    await assert.rejects(moveDriveFile(lie, "a3", "ed", "arq"), /2xx|#6582/);
+  });
+
+  it("G: falha no meio do --apply devolve o parcial (o 1º movido) com o erro", async () => {
+    const d = mk({ failPatch: (_id, n) => (n === 2 ? "error" : null) });
+    const r = await archiveEditionDrive(d.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.match(r.error ?? "", /500|boom/);
+    assert.equal(r.moves.filter((m) => m.done).length, 1);
+    assert.equal(r.moves.length, 2);
+  });
+
+  it("C: prévia no Drive é criada nova e só depois a anterior vai para arquivo/; upload falho deixa a anterior na raiz", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vva-prevd-"));
+    try {
+      const name = "261118 - previa horizontal.mp4";
+      const path = join(dir, name);
+      writeFileSync(path, "nova");
+      const old: FakeFile = { id: "oldprev", name, mimeType: "video/mp4", parent: "ed", modifiedTime: "2026-11-17T10:00:00Z" };
+      const ok = fakeDrive([edFolder, old]);
+      const sess = { deps: ok.deps, edition: "261118", cacheDir: dir, folder: async () => edFolder };
+      const r = await uploadAll({ stateDir: dir, edition: "261118" }, sess, [path], { archiveOverwritten: true, now: () => new Date(Date.UTC(2026, 10, 18)) });
+      assert.equal(r.error, null);
+      assert.deepEqual(ok.uploads.map((u) => u.kind), ["create"], "nunca atualiza o id da anterior no lugar");
+      const arquivo = ok.files.find((f) => f.name === "arquivo")!;
+      assert.equal(ok.files.find((f) => f.id === "oldprev")!.parent, arquivo.id);
+      assert.ok(ok.files.some((f) => f.name === name && f.parent === "ed" && f.id !== "oldprev"));
+
+      const bad = fakeDrive([edFolder, { ...old }], { failUpload: true });
+      const r2 = await uploadAll({ stateDir: mkdtempSync(join(tmpdir(), "vva-st-")), edition: "261118" }, { ...sess, deps: bad.deps }, [path], { archiveOverwritten: true });
+      assert.notEqual(r2.error, null);
+      assert.equal(bad.files.find((f) => f.id === "oldprev")!.parent, "ed", "a anterior segue na raiz");
+      assert.equal(bad.patches.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migração: só pastas de edição, dry-run por padrão; exits 1 (pasta), 3 (avisos com --apply), 4 (infra)", async () => {
     const d = mk();
     const r = await runArchiveVersions(["--folder-id", "yt"], d.deps);
     assert.equal(r.code, 0);
     assert.deepEqual(r.reports.map((x) => x.folder), ["261118"]);
     assert.equal(d.patches.length, 0);
-    const miss = await runArchiveVersions(["--folder-id", "yt", "--edition", "261199"], d.deps);
-    assert.equal(miss.code, 1);
+    assert.equal((await runArchiveVersions(["--folder-id", "yt", "--edition", "261199"], d.deps)).code, 1);
+    const warned = fakeDrive([edFolder, xf("v9", "Diaria comentada horizontal_V9.xml", "2026-11-17T12:00:00Z", "<xmeml/>")]);
+    assert.equal((await runArchiveVersions(["--folder-id", "yt", "--apply"], warned.deps)).code, 3);
+    const infra: MontageDriveDeps = { driveFetch: async () => new Response("unauthorized", { status: 401 }) };
+    assert.equal(await archiveMain(["--folder-id", "yt"], infra), 4);
+    assert.equal(await archiveMain(["--edition"], infra), 2);
+  });
+});
+
+describe("C/H/F no disco e na numeração", () => {
+  it("C: prévia local vai por .part; cópia falha deixa a anterior na raiz", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vva-inst-"));
+    try {
+      const out = join(dir, "261118 - previa vertical.mp4");
+      writeFileSync(out, "antiga");
+      assert.throws(() => installPreviewFile(join(dir, "nao-existe.mp4"), out, { archive: true }));
+      assert.equal(readFileSync(out, "utf8"), "antiga");
+      assert.equal(existsSync(join(dir, "arquivo")), false);
+      assert.equal(existsSync(`${out}.part`), false);
+      const src = join(dir, "render.mp4");
+      writeFileSync(src, "nova");
+      installPreviewFile(src, out, { archive: true });
+      assert.equal(readFileSync(out, "utf8"), "nova");
+      assert.deepEqual(readdirSync(join(dir, "arquivo")), ["261118 - previa vertical.mp4"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("H: colisão no arquivo/ do disco não diferencia maiúsculas (NTFS)", () => {
+    assert.equal(archiveTargetName("x.xml", new Set(["X.XML"]), "s", { caseInsensitive: true }), "x (arquivado s).xml");
+    assert.equal(archiveTargetName("x.xml", new Set(["X.XML"]), "s"), "x.xml");
+    const dir = mkdtempSync(join(tmpdir(), "vva-ci-"));
+    try {
+      mkdirSync(join(dir, "arquivo"));
+      writeFileSync(join(dir, "arquivo", "261118 - PREVIA VERTICAL.mp4"), "v0");
+      writeFileSync(join(dir, "261118 - previa vertical.mp4"), "v1");
+      const to = archiveBeforeOverwriteLocal(join(dir, "261118 - previa vertical.mp4"), new Date(Date.UTC(2026, 10, 18)));
+      assert.match(to ?? "", /\(arquivado 20261118-000000\)\.mp4$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("F: o sufixo de colisão sai antes de contar a versão; plan.json ilegível avisa", () => {
+    assert.equal(stripArchivedSuffix("Diaria comentada horizontal_V8 (arquivado 20261118-120000).xml"), "Diaria comentada horizontal_V8.xml");
+    assert.equal(stripArchivedSuffix("a - legendas (arquivado s).srt.no-plan.json"), "a - legendas.srt.no-plan.json");
+    const dir = mkdtempSync(join(tmpdir(), "vva-f-"));
+    const state = mkdtempSync(join(tmpdir(), "vva-fs-"));
+    try {
+      mkdirSync(join(dir, "arquivo"));
+      writeFileSync(join(dir, "arquivo", "Diaria comentada horizontal_V8 (arquivado 20261118-120000).xml"), "<xmeml/>");
+      const plan = { spec: { name: "Diaria comentada horizontal_V1", target: "youtube", width: 1920, height: 1080 }, clips: [], durationFrames: 0 };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      versionPickedSequences({ outDir: dir, stateDir: state } as any, [plan as any], "h".repeat(64), { speechDetect: true, audioRefine: true, audioGain: true, titleMode: "png" });
+      assert.equal(plan.spec.name, "Diaria comentada horizontal_V9");
+      writeFileSync(join(state, "plan.json"), "{ruim");
+      const warns: string[] = [];
+      assert.deepEqual(plannedXmlVersions({ stateDir: state }, (m) => warns.push(m)), {});
+      assert.match(warns.join(), /plan\.json ilegível/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+
+  it("A: entidades XML e %XX no pathurl", () => {
+    const t = `<xmeml><pathurl>file://localhost/x/O&apos;Neil%20a.png</pathurl><pathurl>file://localhost/x/b&#39;c&amp;d.wav</pathurl><pathurl>file://localhost/x/e&#x27;f.mov</pathurl></xmeml>`;
+    assert.deepEqual(xmlReferencedNames(t).sort(), ["O'Neil a.png", "b'c&d.wav", "e'f.mov"]);
+    assert.equal(referencedFromXmlTexts([t, "<xmeml/>"]), null, "XML sem pathurl = null");
+    assert.equal(referencedFromXmlTexts([t, null]), null, "XML não lido = null");
+    assert.equal(referencedFromXmlTexts([t])?.size, 3);
+  });
+
+  it("A no disco: XML fora de família (_v9 minúsculo, acento) protege o asset antigo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vva-a-"));
+    try {
+      writeFileSync(join(dir, "261118_audio_tratado-aaaaaaaa.wav"), "a");
+      utimesSync(join(dir, "261118_audio_tratado-aaaaaaaa.wav"), 100, 100);
+      writeFileSync(join(dir, "261118_audio_tratado-bbbbbbbb.wav"), "b");
+      utimesSync(join(dir, "261118_audio_tratado-bbbbbbbb.wav"), 200, 200);
+      writeFileSync(join(dir, "Diaria comentada_Vertical_V2-automação.xml"), xml(["261118_audio_tratado-aaaaaaaa.wav"]));
+      writeFileSync(join(dir, "Diaria comentada horizontal_V3.xml"), xml(["261118_audio_tratado-bbbbbbbb.wav"]));
+      const r = archiveEditionLocal(dir, "261118", { apply: false });
+      assert.deepEqual(r.moves, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -374,6 +620,31 @@ describe("bruto e arquivo/ fora do transcribe e do archive-video-brutos (#13610 
     assert.equal(isBrutoFile("20261104_124252.mp4"), true);
     assert.equal(isBrutoFile("arquivo/20261104_124252.mp4"), false);
     assert.equal(isBrutoFile("arquivo"), false);
+  });
+
+  it("a listagem recursiva do archive-video-brutos (rclone lsjson -R) não pega bruto em arquivo/", () => {
+    const listing = parseRcloneLsjson(
+      JSON.stringify([
+        { Path: "20261117_181712.mp4", Size: 10, IsDir: false },
+        { Path: "arquivo", Size: -1, IsDir: true },
+        { Path: "arquivo/20261104_124252.mp4", Size: 10, IsDir: false },
+        { Path: "arquivo/Diaria comentada horizontal_V1.xml", Size: 1, IsDir: false },
+        { Path: "Brutos/VID_20261104_124252.mp4", Size: 10, IsDir: false },
+      ]),
+    );
+    assert.deepEqual(brutoFilesOf(listing).map((f) => f.path), ["20261117_181712.mp4", "Brutos/VID_20261104_124252.mp4"]);
+  });
+
+  it("a lista de onde o transcribe local escolhe o bruto (looseFilesIn) ignora arquivo/", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vva-loose-"));
+    try {
+      writeFileSync(join(dir, "20261117_181712.mp4"), "x");
+      mkdirSync(join(dir, "arquivo"));
+      writeFileSync(join(dir, "arquivo", "20261104_124252.mp4"), "xxxxxxxxxxxx");
+      assert.deepEqual(looseFilesIn(dir).map((f) => f.name), ["20261117_181712.mp4"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("a escolha do bruto do transcribe (Drive) ignora a subpasta arquivo/", () => {

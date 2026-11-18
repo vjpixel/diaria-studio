@@ -350,7 +350,8 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  * anterior de cada arquivo da raiz de {AAMMDD}/ vai para {AAMMDD}/arquivo/ (move, nunca apaga;
  * no Drive pela API, preservando o id; no Neo pelo disco). Fica o XML de maior _V{n} de cada
  * família, o SRT da versão dele e os assets que os XMLs vigentes referenciam; política em
- * scripts/lib/diaria/video-version-archive.ts. A prévia regravada arquiva a anterior antes. A
+ * scripts/lib/diaria/video-version-archive.ts. A prévia regravada arquiva a anterior depois de a
+ * nova estar gravada/enviada. A
  * numeração do build conta o arquivo/ e o plan.json. Falha ao arquivar é [aviso], nunca muda o
  * exit. --no-archive desliga. Migração das pastas antigas: scripts/archive-video-versions.ts.
  *
@@ -665,7 +666,7 @@ import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 import { readWithRetry } from "./lib/diaria/video-xml-vs-final.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
-import { archiveBeforeOverwriteDrive, archiveBeforeOverwriteLocal, archiveEditionDrive, archiveEditionLocal, xmlNamesWithArchive, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
+import { archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, rootIdsNamed, xmlNamesWithArchive, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
 import { isOverwriteArchivedName, versionOfSequenceId, type ArchiveEntry } from "./lib/diaria/video-version-archive.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
@@ -2476,7 +2477,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (!multiPaths && multi.all) {
     if (sourceArg) throw new Error("--all e --source juntos: use um só");
     if (!existsSync(ctx.driveDir)) throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir}`);
-    const files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+    const files = looseFilesIn(ctx.driveDir);
     const raw = pickRawSource(files);
     if (!raw || raw.audioOnly) throw new Error(`--all: nenhum vídeo solto em ${ctx.driveDir}`);
     multiPaths = raw.candidates.map((c) => join(ctx.driveDir, c.name).replace(/\\/g, "/"));
@@ -2495,9 +2496,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     if (!existsSync(ctx.driveDir)) {
       throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root; desde a #12578 a pasta é a diaria-studio-video da diaria.editor: o bruto pode ter subido para a pasta antiga da vjpixel ou por outra conta)`);
     }
-    const files = readdirSync(ctx.driveDir, { withFileTypes: true })
-      .filter((d) => d.isFile())
-      .map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+    const files = looseFilesIn(ctx.driveDir);
     const raw = pickRawSource(files);
     if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto em ${ctx.driveDir}; passe --source`);
     assertSingleRawVideo(raw);
@@ -3053,7 +3052,7 @@ export const INVENTORY_LISTEN_S = 45;
 function cmdInventory(ctx: Ctx, dirArg: string | undefined, editionsArg: string | undefined, listen: boolean): number {
   const dir = resolve(dirArg ?? ctx.driveDir);
   if (!existsSync(dir)) throw new Error(`inventory: pasta não encontrada: ${dir}`);
-  const names = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(dir, d.name)).size }));
+  const names = looseFilesIn(dir);
   const raw = pickRawSource(names);
   if (!raw || raw.audioOnly) throw new Error(`inventory: nenhum vídeo solto em ${dir}`);
   const mirroredDefault = configMirroredDefault();
@@ -3356,7 +3355,7 @@ function warnLooseVideos(ctx: Pick<Ctx, "driveDir" | "edition">, source: SourceI
   if (source.audioOnly || !existsSync(ctx.driveDir)) return [];
   let files: Array<{ name: string; size: number }>;
   try {
-    files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+    files = looseFilesIn(ctx.driveDir);
   } catch (e) {
     console.error(`[debug] ${ctx.driveDir} não listada (${(e as Error).message}): vídeos fora do bruto não conferidos (#13544)`);
     return [];
@@ -4423,7 +4422,7 @@ export function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: s
  * atrás quando o XML foi para o `arquivo/` ou só existe em outra máquina.
  * Ausente/ilegível = nada (a numeração segue pelos arquivos).
  */
-export function plannedXmlVersions(ctx: Pick<Ctx, "stateDir">): Record<string, { version: number; hash: string }> {
+export function plannedXmlVersions(ctx: Pick<Ctx, "stateDir">, warn: (m: string) => void = (m) => console.error(`[aviso] ${m}`)): Record<string, { version: number; hash: string }> {
   const out: Record<string, { version: number; hash: string }> = {};
   const path = f(ctx, "plan.json");
   if (!existsSync(path)) return out;
@@ -4433,10 +4432,35 @@ export function plannedXmlVersions(ctx: Pick<Ctx, "stateDir">): Record<string, {
       const parsed = typeof v?.id === "string" ? versionOfSequenceId(v.id) : null;
       if (parsed) out[k] = parsed;
     }
-  } catch {
-    /* plan.json ilegível: a numeração segue pelos arquivos */
+  } catch (e) {
+    warn(`plan.json ilegível (${(e as Error).message}): a versão do XML segue só pelos arquivos do out dir e do arquivo/ (#13610)`);
   }
   return out;
+}
+
+/**
+ * #13610 B: os XMLs que o `plan.json` diz vigentes (o nome versionado de cada
+ * sequência do último build). Algum fora da listagem da raiz = nenhum asset sai.
+ * Ausente/ilegível = nenhum (o guard de asset mais novo que o XML segue valendo).
+ */
+export function plannedXmlFileNames(ctx: Pick<Ctx, "stateDir">): string[] {
+  const path = f(ctx, "plan.json");
+  if (!existsSync(path)) return [];
+  try {
+    const pf = JSON.parse(readFileSync(path, "utf8")) as Partial<Pick<PlanFile, "plans">>;
+    return (pf.plans ?? []).flatMap((p) => (typeof p?.spec?.name === "string" && sequenceNameVersion(p.spec.name) !== null ? [xmlFileName(p.spec.name)] : []));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Os arquivos SOLTOS de uma pasta (nome + tamanho), sem subpastas: é a lista de
+ * onde o `transcribe`/`inventory` escolhem o bruto. `arquivo/` (#13610),
+ * `Final/`, `Brutos/` e as demais subpastas nunca entram.
+ */
+export function looseFilesIn(dir: string): Array<{ name: string; size: number }> {
+  return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(dir, d.name)).size }));
 }
 
 /** Uma linha do relato por ajuste de corte (#11500). */
@@ -6780,16 +6804,9 @@ async function cmdPreview(
       run("ffmpeg", finalArgs(plain), { cwd: dir });
     }
   } else run("ffmpeg", finalArgs(plain), { cwd: dir });
-  // #13610: com o out dir na pasta da edição (o Neo), a prévia anterior vai para arquivo/ antes de a nova ocupar o nome.
-  if (ctx.mode === "local" && !ctx.noArchive && outDirIsEditionFolder(ctx)) {
-    try {
-      archiveBeforeOverwriteLocal(out, new Date(), log);
-    } catch (e) {
-      console.error(`[aviso] ${basename(out)} anterior não foi para arquivo/ (${(e as Error).message}): a nova a substitui (#13610)`);
-    }
-  }
   normalizePreviewAudio(dir);
-  copyFileSync(join(dir, "previa.mp4"), out);
+  // #13610: com o out dir na pasta da edição (o Neo), a nova vai para `.part`, a anterior para arquivo/, e só então a nova toma o nome.
+  installPreviewFile(join(dir, "previa.mp4"), out, { archive: ctx.mode === "local" && !ctx.noArchive && outDirIsEditionFolder(ctx), log, warn: (m) => console.error(`[aviso] ${m}`) });
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
   const dur = Math.max(1, plan.durationFrames / fps + cardS);
   const sheet = f(ctx, `previa-${sequenceKey(plan.spec)}.jpg`);
@@ -7411,15 +7428,24 @@ export async function uploadAll(
     const folder = await d.folder();
     for (let i = 0; i < queue.length; i++) {
       const target = await targetOf(folder, queue[i]);
-      // #13610: a prévia regravada não é atualizada no lugar: a anterior vai para arquivo/ e a nova é criada.
-      if (opts.archiveOverwritten && !target.prefix && isOverwriteArchivedName(basename(queue[i]))) {
+      // #13610: a prévia regravada não é atualizada no lugar: a nova é criada e, só depois de subir, a anterior vai para arquivo/.
+      const name = basename(queue[i]);
+      let previous: string[] = [];
+      if (opts.archiveOverwritten && !target.prefix && isOverwriteArchivedName(name)) {
         try {
-          await archiveBeforeOverwriteDrive(d.deps, target.folderId, basename(queue[i]), (opts.now ?? (() => new Date()))(), log);
+          previous = await rootIdsNamed(d.deps, target.folderId, name);
         } catch (e) {
-          log(`[aviso] ${basename(queue[i])} anterior não foi para arquivo/ (${(e as Error).message}): a nova a substitui no lugar (#13610)`);
+          log(`[aviso] ${name}: prévia anterior não listada (${(e as Error).message}); a nova a substitui no lugar (#13610)`);
         }
       }
-      const r = await uploadToFolder(d.deps, target.folderId, queue[i], log);
+      const r = await uploadToFolder(d.deps, target.folderId, queue[i], log, { excludeIds: new Set(previous) });
+      if (previous.length) {
+        try {
+          await archiveDriveIds(d.deps, target.folderId, name, previous.filter((id) => id !== r.id), { now: (opts.now ?? (() => new Date()))(), log, warn: (m) => log(`[aviso] ${m} (#13610)`) });
+        } catch (e) {
+          log(`[aviso] ${name} anterior não foi para arquivo/ (${(e as Error).message}); a nova já está na raiz, com o mesmo nome (#13610)`);
+        }
+      }
       if (!target.prefix) fresh.push({ name: r.name, id: r.id, modifiedMs: Date.now() });
       reg.files[`${target.prefix}${r.name}`] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: queue[i] };
       uploaded.push(queue[i]);
@@ -7452,7 +7478,7 @@ const outDirIsEditionFolder = (ctx: Pick<Ctx, "outDir" | "driveDir">) => resolve
  * vira `[aviso]` e nunca muda o exit do comando.
  */
 export async function archiveVersionsAfter(
-  ctx: Pick<Ctx, "edition" | "outDir" | "driveDir" | "mode" | "noArchive">,
+  ctx: Pick<Ctx, "edition" | "outDir" | "driveDir" | "mode" | "noArchive"> & Partial<Pick<Ctx, "stateDir">>,
   up: DriveSession | null,
   fresh: ArchiveEntry[],
   warn: (m: string) => void = (m) => console.error(`[aviso] ${m}`),
@@ -7463,17 +7489,19 @@ export async function archiveVersionsAfter(
     results.push(r);
     if (r.moves.length) console.error(`[arquivo] ${r.moves.length} versão(ões) anterior(es) de ${ctx.edition}/ em ${where}arquivo/ (#13610)`);
     for (const w of r.warnings) warn(`arquivo/: ${w} (#13610)`);
+    if (r.error) warn(`arquivo/ de ${ctx.edition}/ parou no meio (${r.error}): ${r.moves.filter((m) => m.done).length} de ${r.moves.length} movido(s); o comando deu certo. Rode: npx tsx scripts/archive-video-versions.ts --edition ${ctx.edition} --apply (#13610)`);
   };
+  const expectedXmls = ctx.stateDir ? plannedXmlFileNames({ stateDir: ctx.stateDir }) : [];
   if (up) {
     try {
-      report(await archiveEditionDrive(up.deps, await up.folder(), { apply: true, fresh, log }), "Drive: ");
+      report(await archiveEditionDrive(up.deps, await up.folder(), { apply: true, fresh, log, expectedXmls }), "Drive: ");
     } catch (e) {
       warn(`versões anteriores de ${ctx.edition}/ não foram para arquivo/ no Drive (${(e as Error).message}); o comando deu certo. Rode: npx tsx scripts/archive-video-versions.ts --edition ${ctx.edition} --apply (#13610)`);
     }
   }
   if (ctx.mode === "local" && outDirIsEditionFolder(ctx) && existsSync(ctx.driveDir)) {
     try {
-      report(archiveEditionLocal(ctx.driveDir, ctx.edition, { apply: true, log }), "");
+      report(archiveEditionLocal(ctx.driveDir, ctx.edition, { apply: true, log, expectedXmls }), "");
     } catch (e) {
       warn(`versões anteriores de ${ctx.driveDir} não foram para arquivo/ (${(e as Error).message}); o comando deu certo (#13610)`);
     }

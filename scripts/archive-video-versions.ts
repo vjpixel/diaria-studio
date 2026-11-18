@@ -24,7 +24,10 @@
  *   --verbose     no texto, lista também o que fica e o motivo.
  *
  * Auth do Drive: OAuth do projeto (`data/.credentials.json`, `scripts/google-auth.ts`).
- * Exit: 0 ok; 1 alguma pasta falhou (as outras seguem); 2 uso inválido.
+ * Exit: 0 ok; 1 alguma pasta falhou (as outras seguem; o que já foi movido
+ * fica no relatório, `done: true`); 2 uso inválido; 3 `--apply` terminou com
+ * avisos (XML não lido, `_superadas/` não esvaziada, item sem id); 4 erro de
+ * infraestrutura antes de qualquer pasta (OAuth, config, listagem da raiz).
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -47,19 +50,25 @@ export interface FolderReport {
   folder: string;
   ok: boolean;
   error?: string;
+  /** Também no erro no meio do `--apply`: o parcial (o que tem `done` foi movido). */
   result?: EditionArchiveResult;
 }
 
+/** Erro de infraestrutura (OAuth, config, listagem da raiz): exit 4, distinto do 2 de uso. */
+export class ArchiveInfraError extends Error {}
+
 /** Pura — o resumo de texto de uma pasta. */
 export function renderFolderReport(r: FolderReport, verbose: boolean): string {
-  if (!r.ok || !r.result) return `${r.folder}: ERRO ${r.error}`;
+  if (!r.result) return `${r.folder}: ERRO ${r.error}`;
   const res = r.result;
+  const done = res.moves.filter((m) => m.done).length;
   const keepFiles = res.plan.keep.length;
   const lines = [
     `${r.folder}: ${res.moves.length} para ${ARCHIVE_DIR_NAME}/ · ${keepFiles} versionado(s) ficam · ${res.plan.untouched.length} fora da regra${res.plan.absorb.length ? ` · absorve ${res.plan.absorb.map((a) => `${a.name}/`).join(", ")}` : ""}${res.applied ? " (APLICADO)" : ""}`,
   ];
+  if (!r.ok) lines.push(`  ERRO no meio do --apply: ${r.error} (${done} de ${res.moves.length} movido(s); rode de novo para continuar)`);
   if (res.plan.vigenteXmls.length) lines.push(`  XML vigente: ${res.plan.vigenteXmls.join(" | ")}`);
-  for (const m of res.moves) lines.push(`  → ${m.from}${m.to !== m.name ? `  (como ${m.to})` : ""}  [${m.reason}]`);
+  for (const m of res.moves) lines.push(`  ${res.applied ? (m.done ? "✓" : "·") : "→"} ${m.from}${m.to !== m.name ? `  (como ${m.to})` : ""}  [${m.reason}]`);
   if (verbose) for (const k of res.plan.keep) lines.push(`  = ${k.name}  [${k.reason}]`);
   for (const w of res.warnings) lines.push(`  [aviso] ${w}`);
   return lines.join("\n");
@@ -72,27 +81,47 @@ function readFolderId(flag: string | undefined): string {
   return id;
 }
 
+export interface ArchiveArgs {
+  apply: boolean;
+  only?: string[];
+  localRoot?: string;
+  folderId?: string;
+}
+
+/** Lança (exit 2) com flag inválida. */
+export function parseArchiveArgs(argv: string[]): ArchiveArgs {
+  return {
+    apply: hasFlag(argv, "apply"),
+    only: getStringArg(argv, "edition", { example: "261118" })?.split(",").map((s) => s.trim()).filter(Boolean),
+    localRoot: getStringArg(argv, "local-root", { example: '"I:/Meu Drive/diaria-studio-video"' }),
+    folderId: getStringArg(argv, "folder-id", { example: "10caFTgy…" }),
+  };
+}
+
 export async function runArchiveVersions(argv: string[], deps?: MontageDriveDeps, now: Date = new Date()): Promise<{ code: number; reports: FolderReport[] }> {
-  const apply = hasFlag(argv, "apply");
-  const only = getStringArg(argv, "edition", { example: "261118" })?.split(",").map((s) => s.trim()).filter(Boolean);
-  const localRoot = getStringArg(argv, "local-root", { example: '"I:/Meu Drive/diaria-studio-video"' });
+  const { apply, only, localRoot, folderId } = parseArchiveArgs(argv);
   const log = (l: string) => console.error(l);
   const reports: FolderReport[] = [];
   const wanted = (name: string) => isEditionFolderName(name) && (!only || only.includes(name));
   if (localRoot) {
-    if (!existsSync(localRoot)) throw new Error(`--local-root não existe: ${localRoot}`);
+    if (!existsSync(localRoot)) throw new ArchiveInfraError(`--local-root não existe: ${localRoot}`);
     const folders = readdirSync(localRoot, { withFileTypes: true }).filter((d) => d.isDirectory() && wanted(d.name)).map((d) => d.name).sort();
     for (const folder of folders) {
       try {
-        reports.push({ folder, ok: true, result: archiveEditionLocal(join(localRoot, folder), folder, { apply, now, log }) });
+        const result = archiveEditionLocal(join(localRoot, folder), folder, { apply, now, log });
+        reports.push({ folder, ok: !result.error, ...(result.error ? { error: result.error } : {}), result });
       } catch (e) {
         reports.push({ folder, ok: false, error: (e as Error).message });
       }
     }
   } else {
     const d: MontageDriveDeps = deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) };
-    const rootId = readFolderId(getStringArg(argv, "folder-id", { example: "10caFTgy…" }));
-    const children = await listChildren(d, rootId, { foldersOnly: true });
+    let children;
+    try {
+      children = await listChildren(d, readFolderId(folderId), { foldersOnly: true });
+    } catch (e) {
+      throw new ArchiveInfraError(`pasta de vídeo no Drive: ${(e as Error).message}`);
+    }
     const folders = children.filter((c) => c.mimeType === FOLDER_MIME && wanted(c.name)).sort((a, b) => a.name.localeCompare(b.name));
     const dupNames = new Set(folders.map((f) => f.name).filter((n, i, all) => all.indexOf(n) !== i));
     for (const folder of folders) {
@@ -101,14 +130,17 @@ export async function runArchiveVersions(argv: string[], deps?: MontageDriveDeps
         continue;
       }
       try {
-        reports.push({ folder: folder.name, ok: true, result: await archiveEditionDrive(d, folder, { apply, now, log }) });
+        const result = await archiveEditionDrive(d, folder, { apply, now, log });
+        reports.push({ folder: folder.name, ok: !result.error, ...(result.error ? { error: result.error } : {}), result });
       } catch (e) {
         reports.push({ folder: folder.name, ok: false, error: (e as Error).message });
       }
     }
   }
   if (only) for (const name of only) if (!reports.some((r) => r.folder === name)) reports.push({ folder: name, ok: false, error: "pasta não encontrada" });
-  return { code: reports.some((r) => !r.ok) ? 1 : 0, reports };
+  const failed = reports.some((r) => !r.ok);
+  const warned = apply && reports.some((r) => (r.result?.warnings.length ?? 0) > 0);
+  return { code: failed ? 1 : warned ? 3 : 0, reports };
 }
 
 export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps): Promise<number> {
@@ -121,16 +153,23 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     console.error(`flag desconhecida: ${unknown.join(", ")}\n${USAGE}`);
     return 2;
   }
+  try {
+    parseArchiveArgs(argv);
+  } catch (e) {
+    console.error(`archive-video-versions: ${(e as Error).message}\n${USAGE}`);
+    return 2;
+  }
   let out: Awaited<ReturnType<typeof runArchiveVersions>>;
   try {
     out = await runArchiveVersions(argv, deps);
   } catch (e) {
     console.error(`archive-video-versions: ${(e as Error).message}`);
-    return 2;
+    return 4;
   }
   const verbose = hasFlag(argv, "verbose");
   const text = out.reports.map((r) => renderFolderReport(r, verbose)).join("\n\n");
-  const total = out.reports.reduce((n, r) => n + (r.result?.moves.length ?? 0), 0);
+  const apply = hasFlag(argv, "apply");
+  const total = out.reports.reduce((n, r) => n + (r.result?.moves.filter((m) => !apply || m.done).length ?? 0), 0);
   const footer = `\n${hasFlag(argv, "apply") ? "movidos" : "iriam para arquivo/ (dry-run; --apply para mover)"}: ${total} arquivo(s) em ${out.reports.length} pasta(s)`;
   if (hasFlag(argv, "json")) {
     console.error(text + footer);

@@ -7,24 +7,28 @@
  * for desktop em `I:`). Move para `{AAMMDD}/arquivo/`, nunca apaga:
  * - Drive: `files.update` com `addParents`/`removeParents` (o id do arquivo
  *   se preserva: o upload por id do #11639 e os links do `drive-uploads.json`
- *   continuam valendo). Nome repetido no `arquivo/` ganha ` (arquivado …)`.
+ *   continuam valendo). Antes de cada move os `parents` são relidos (já está
+ *   no `arquivo/` = pula), e a resposta é conferida: 2xx não é prova (#6582).
+ *   Nome repetido no `arquivo/` ganha ` (arquivado …)`.
  * - Disco: `rename` dentro da mesma pasta da edição (no Drive for desktop vira
- *   o mesmo move do Drive).
+ *   o mesmo move do Drive), com colisão de nome sem diferenciar maiúsculas (NTFS).
  *
- * Fail-soft é de quem chama (`video-montagem.ts`): aqui um erro sobe.
+ * Falha no meio do `apply` devolve o resultado PARCIAL (`moves[].done`) com
+ * `error`; fail-soft é de quem chama (`video-montagem.ts`).
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { DRIVE_API } from "../drive-constants.ts";
-import { ensureChildFolder, FOLDER_MIME, listChildren, type DriveEntry, type MontageDriveDeps } from "./video-montage-drive.ts";
+import { FOLDER_MIME, listChildren, type DriveEntry, type MontageDriveDeps } from "./video-montage-drive.ts";
 import {
   ARCHIVE_DIR_NAME,
   archiveStamp,
   archiveTargetName,
   planEditionArchive,
-  vigenteXmlNames,
-  xmlReferencedNames,
+  referencedFromXmlTexts,
+  stripArchivedSuffix,
+  xmlsThatStay,
   type ArchiveEntry,
   type EditionArchivePlan,
 } from "./video-version-archive.ts";
@@ -36,18 +40,22 @@ export interface ArchiveMove {
   /** Nome no `arquivo/` (o mesmo, ou com ` (arquivado …)` na colisão). */
   to: string;
   reason: string;
+  /** Com `apply`: o move foi feito (ou já estava feito). */
+  done?: boolean;
 }
 
 export interface EditionArchiveResult {
   edition: string;
   plan: EditionArchivePlan;
-  /** Moves planejados (dry-run) ou feitos (apply). */
+  /** Moves planejados (dry-run) ou tentados (apply; `done` diz quais foram). */
   moves: ArchiveMove[];
   /** Pastas `_superadas/` absorvidas e deixadas vazias (apply). */
   absorbedFolders: string[];
-  /** Avisos (XML vigente ilegível, pasta legada não esvaziada). */
+  /** Avisos (XML não lido, pasta legada não esvaziada, item sem id, `arquivo/` repetida). */
   warnings: string[];
   applied: boolean;
+  /** Falha no meio do `apply`: o que está em `moves` com `done` foi movido, o resto não. */
+  error?: string;
 }
 
 export interface ArchiveOptions {
@@ -60,6 +68,10 @@ export interface ArchiveOptions {
    * atrasar segundos) e nunca são movidos.
    */
   fresh?: ArchiveEntry[];
+  /** #13610 B: os XMLs que o `plan.json` diz vigentes; algum fora da listagem = nenhum asset sai. */
+  expectedXmls?: readonly string[];
+  /** Espera antes de reconferir se `arquivo/` existe (#13610 D); injetável nos testes. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const modifiedMsOf = (t: string | undefined) => {
@@ -68,6 +80,8 @@ const modifiedMsOf = (t: string | undefined) => {
 };
 
 const toEntry = (c: DriveEntry): ArchiveEntry => ({ name: c.name, id: c.id, isFolder: c.mimeType === FOLDER_MIME, modifiedMs: modifiedMsOf(c.modifiedTime) });
+
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Junta a listagem com os recém-gravados (por id, senão por nome); recém-gravado vence. */
 export function mergeFresh(listed: readonly ArchiveEntry[], fresh: readonly ArchiveEntry[] = []): ArchiveEntry[] {
@@ -81,8 +95,9 @@ export function mergeFresh(listed: readonly ArchiveEntry[], fresh: readonly Arch
 }
 
 /** Plano + a parte que não depende de IO: tira do `move` o que acabou de ser gravado. */
-function finalizePlan(root: ArchiveEntry[], referenced: Set<string> | null, fresh: readonly ArchiveEntry[]): EditionArchivePlan {
-  const plan = planEditionArchive(root, referenced);
+function finalizePlan(root: ArchiveEntry[], referenced: Set<string> | null, opts: ArchiveOptions): EditionArchivePlan {
+  const fresh = opts.fresh ?? [];
+  const plan = planEditionArchive(root, referenced, { expectedXmls: opts.expectedXmls });
   if (!fresh.length) return plan;
   const freshIds = new Set(fresh.flatMap((f) => (f.id ? [f.id] : [])));
   const freshNames = new Set(fresh.filter((f) => !f.id).map((f) => f.name));
@@ -102,30 +117,57 @@ async function okJson<T>(res: Response, what: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** Texto de um arquivo pequeno do Drive (o XML vigente, para ler os `pathurl`). */
+/** Texto de um arquivo pequeno do Drive (o XML, para ler os `pathurl`). */
 export async function downloadDriveText(deps: MontageDriveDeps, id: string): Promise<string> {
   const res = await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`, { signal: AbortSignal.timeout(120_000) });
   if (!res.ok) throw new Error(`download do XML ${id} falhou (${res.status}): ${(await res.text()).slice(0, 200)}`);
   return res.text();
 }
 
-/** Move (e renomeia, se `newName`) pela API, preservando o id (#13610, restrição 6). */
-export async function moveDriveFile(deps: MontageDriveDeps, id: string, fromParent: string, toParent: string, newName?: string): Promise<void> {
+async function fetchParents(deps: MontageDriveDeps, id: string): Promise<{ parents: string[]; name: string }> {
+  const params = new URLSearchParams({ fields: "id,name,parents", supportsAllDrives: "true" });
+  const meta = await okJson<{ parents?: string[]; name?: string }>(
+    await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, { signal: AbortSignal.timeout(30_000) }),
+    `metadado de ${id} no Drive`,
+  );
+  return { parents: meta.parents ?? [], name: meta.name ?? "" };
+}
+
+/**
+ * Move (e renomeia, se `newName`) pela API, preservando o id (#13610,
+ * restrição 6). Relê os `parents` antes: já em `toParent` e fora de
+ * `fromParent` = feito (`already`); fora de `fromParent` sem estar em
+ * `toParent` = alguém mexeu, erro. Confere a resposta do PATCH (2xx não é
+ * prova, #6582); PATCH que falhou ou veio sem `parents` é relido: aplicado =
+ * sucesso (o retry de transiente pode ter aplicado o 1º).
+ */
+export async function moveDriveFile(deps: MontageDriveDeps, id: string, fromParent: string, toParent: string, newName?: string): Promise<"moved" | "already"> {
+  const applied = (parents: string[]) => parents.includes(toParent) && !parents.includes(fromParent);
+  const before = await fetchParents(deps, id);
+  if (applied(before.parents)) return "already";
+  if (!before.parents.includes(fromParent)) throw new Error(`${before.name || id} não está mais na pasta de origem (parents: ${before.parents.join(", ") || "nenhum"}): não movido`);
   const params = new URLSearchParams({ addParents: toParent, removeParents: fromParent, supportsAllDrives: "true", fields: "id,name,parents" });
-  await okJson(
-    await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, {
+  let patchError: Error | null = null;
+  try {
+    const res = await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json; charset=UTF-8" },
       body: JSON.stringify(newName ? { name: newName } : {}),
       signal: AbortSignal.timeout(60_000),
-    }),
-    `move de ${id} para arquivo/ no Drive`,
-  );
+    });
+    const body = await okJson<{ parents?: string[] }>(res, `move de ${id} para arquivo/ no Drive`);
+    if (body.parents && applied(body.parents)) return "moved";
+  } catch (e) {
+    patchError = e as Error;
+  }
+  const after = await fetchParents(deps, id);
+  if (applied(after.parents)) return "moved";
+  throw patchError ?? new Error(`move de ${id} respondeu 2xx mas o arquivo segue com parents ${after.parents.join(", ")} (#6582)`);
 }
 
 async function trashDriveFolder(deps: MontageDriveDeps, id: string): Promise<void> {
-  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id" });
-  await okJson(
+  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,trashed" });
+  const r = await okJson<{ trashed?: boolean }>(
     await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json; charset=UTF-8" },
@@ -134,96 +176,143 @@ async function trashDriveFolder(deps: MontageDriveDeps, id: string): Promise<voi
     }),
     `lixeira da pasta vazia ${id}`,
   );
+  if (r.trashed === false) throw new Error(`a pasta ${id} não foi para a lixeira (#6582)`);
+}
+
+/**
+ * A pasta `arquivo/` da edição (#13610 D): uma só = ela; mais de uma (duas
+ * execuções criaram ao mesmo tempo, a busca atrasou) = a mais antiga, com
+ * aviso; nenhuma = espera e busca de novo antes de criar.
+ */
+export async function resolveArchiveFolder(
+  deps: MontageDriveDeps,
+  parentId: string,
+  opts: { create: boolean; sleep?: (ms: number) => Promise<void>; warn?: (m: string) => void },
+): Promise<DriveEntry | null> {
+  const find = () => listChildren(deps, parentId, { name: ARCHIVE_DIR_NAME, foldersOnly: true });
+  let found = await find();
+  if (!found.length && opts.create) {
+    await (opts.sleep ?? defaultSleep)(2000);
+    found = await find();
+  }
+  if (found.length > 1) {
+    const sorted = [...found].sort((a, b) => (a.modifiedTime ?? "").localeCompare(b.modifiedTime ?? "") || a.id.localeCompare(b.id));
+    opts.warn?.(`${found.length} pastas ${ARCHIVE_DIR_NAME}/ na edição (${found.map((f) => f.id).join(", ")}): usando a mais antiga (${sorted[0].id}); junte as outras à mão`);
+    return sorted[0];
+  }
+  if (found.length === 1) return found[0];
+  if (!opts.create) return null;
+  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,name,mimeType,modifiedTime" });
+  return okJson<DriveEntry>(
+    await deps.driveFetch(`${DRIVE_API}/files?${params}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=UTF-8" },
+      body: JSON.stringify({ name: ARCHIVE_DIR_NAME, mimeType: FOLDER_MIME, parents: [parentId] }),
+      signal: AbortSignal.timeout(30_000),
+    }),
+    `criação da pasta ${ARCHIVE_DIR_NAME}/ no Drive`,
+  );
 }
 
 /**
  * Arquiva as versões anteriores de UMA pasta de edição no Drive. Com
- * `apply: false` só planeja (lê a listagem e os XMLs vigentes). `_superadas/`
+ * `apply: false` só planeja (lê a listagem e os XMLs que ficam). `_superadas/`
  * é absorvido: os filhos vão para `arquivo/` e a pasta, vazia, para a lixeira
  * (premissa: pasta vazia não guarda nada; o Drive mantém a lixeira 30 dias).
  */
 export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<DriveEntry, "id" | "name">, opts: ArchiveOptions): Promise<EditionArchiveResult> {
   const log = opts.log ?? (() => {});
-  const fresh = opts.fresh ?? [];
   const warnings: string[] = [];
   const children = await listChildren(deps, folder.id);
-  const root = mergeFresh(children.map(toEntry), fresh);
-  const byName = new Map(root.filter((e) => !e.isFolder).map((e) => [e.name, e] as const));
-  let referenced: Set<string> | null = new Set();
-  for (const name of vigenteXmlNames(root)) {
-    const e = byName.get(name);
+  const root = mergeFresh(children.map(toEntry), opts.fresh ?? []);
+  // #13610 A: todo XML que fica na raiz (inclusive fora de família e cópias de nome repetido) é lido.
+  const texts: Array<string | null> = [];
+  for (const x of xmlsThatStay(root)) {
     try {
-      if (!e?.id) throw new Error("sem id");
-      for (const r of xmlReferencedNames(await downloadDriveText(deps, e.id))) referenced.add(r);
+      if (!x.id) throw new Error("sem id");
+      texts.push(await downloadDriveText(deps, x.id));
     } catch (err) {
-      warnings.push(`XML vigente ${name} não lido (${(err as Error).message}): nenhum asset sai desta pasta`);
-      referenced = null;
-      break;
+      warnings.push(`XML ${x.name} não lido (${(err as Error).message}): nenhum asset sai desta pasta`);
+      texts.push(null);
     }
   }
-  const plan = finalizePlan(root, referenced, fresh);
+  const referenced = referencedFromXmlTexts(texts);
+  if (referenced === null && !texts.includes(null)) warnings.push("algum XML que fica na raiz não tem <pathurl>: nenhum asset sai desta pasta");
+  const plan = finalizePlan(root, referenced, opts);
   const stamp = archiveStamp(opts.now ?? new Date());
-  const existingArchive = children.filter((c) => c.mimeType === FOLDER_MIME && c.name === ARCHIVE_DIR_NAME);
-  if (existingArchive.length > 1) throw new Error(`${existingArchive.length} pastas ${ARCHIVE_DIR_NAME}/ em ${folder.name}/ no Drive: junte à mão antes`);
-  const taken = new Set(existingArchive.length ? (await listChildren(deps, existingArchive[0].id)).map((c) => c.name) : []);
+  const archiveHint = await resolveArchiveFolder(deps, folder.id, { create: false, warn: (m) => warnings.push(m) });
+  const taken = new Set(archiveHint ? (await listChildren(deps, archiveHint.id)).map((c) => c.name) : []);
   const moves: ArchiveMove[] = [];
-  const pending: Array<{ id: string; parent: string; to: string; name: string }> = [];
-  for (const m of plan.move) {
-    if (!m.id) continue;
-    const to = archiveTargetName(m.name, taken, stamp);
+  const pending: Array<{ id: string; parent: string; to: string; name: string; move: ArchiveMove }> = [];
+  const queue = (id: string | undefined, parent: string, name: string, from: string, reason: string) => {
+    if (!id) {
+      warnings.push(`${from} sem id na listagem: não movido`);
+      return;
+    }
+    const to = archiveTargetName(name, taken, stamp);
     taken.add(to);
-    moves.push({ name: m.name, from: m.name, to, reason: m.reason });
-    pending.push({ id: m.id, parent: folder.id, to, name: m.name });
-  }
+    const move: ArchiveMove = { name, from, to, reason };
+    moves.push(move);
+    pending.push({ id, parent, to, name, move });
+  };
+  for (const m of plan.move) queue(m.id, folder.id, m.name, m.name, m.reason);
   const legacyFolders: DriveEntry[] = [];
   for (const legacy of plan.absorb) {
-    const kids = await listChildren(deps, legacy.id!);
-    legacyFolders.push({ id: legacy.id!, name: legacy.name, mimeType: FOLDER_MIME });
-    for (const k of kids) {
-      const to = archiveTargetName(k.name, taken, stamp);
-      taken.add(to);
-      moves.push({ name: k.name, from: `${legacy.name}/${k.name}`, to, reason: `absorvido de ${legacy.name}/` });
-      pending.push({ id: k.id, parent: legacy.id!, to, name: k.name });
+    if (!legacy.id) {
+      warnings.push(`${legacy.name}/ sem id na listagem: não absorvida`);
+      continue;
     }
+    legacyFolders.push({ id: legacy.id, name: legacy.name, mimeType: FOLDER_MIME });
+    for (const k of await listChildren(deps, legacy.id)) queue(k.id, legacy.id, k.name, `${legacy.name}/${k.name}`, `absorvido de ${legacy.name}/`);
   }
   const absorbedFolders: string[] = [];
-  if (opts.apply && (pending.length || legacyFolders.length)) {
-    const archive = existingArchive[0] ?? (await ensureChildFolder(deps, folder.id, ARCHIVE_DIR_NAME));
+  const result: EditionArchiveResult = { edition: folder.name, plan, moves, absorbedFolders, warnings, applied: opts.apply };
+  if (!opts.apply || (!pending.length && !legacyFolders.length)) return result;
+  try {
+    const archive = archiveHint ?? (await resolveArchiveFolder(deps, folder.id, { create: true, sleep: opts.sleep, warn: (m) => warnings.push(m) }))!;
     for (const p of pending) {
-      await moveDriveFile(deps, p.id, p.parent, archive.id, p.to !== p.name ? p.to : undefined);
-      log(`[arquivo] ${folder.name}/${p.name} → ${ARCHIVE_DIR_NAME}/${p.to}`);
+      const r = await moveDriveFile(deps, p.id, p.parent, archive.id, p.to !== p.name ? p.to : undefined);
+      p.move.done = true;
+      log(`[arquivo] ${folder.name}/${p.move.from} → ${ARCHIVE_DIR_NAME}/${p.to}${r === "already" ? " (já estava)" : ""}`);
     }
     for (const lf of legacyFolders) {
       const left = await listChildren(deps, lf.id);
       if (left.length) {
-        warnings.push(`${lf.name}/ ainda tem ${left.length} item(ns) depois de absorvido: ficou como está`);
+        warnings.push(`${lf.name}/ ainda tem ${left.length} item(ns) depois de absorvida: ficou como está`);
         continue;
       }
       await trashDriveFolder(deps, lf.id);
       absorbedFolders.push(lf.name);
     }
+  } catch (e) {
+    result.error = (e as Error).message;
   }
-  return { edition: folder.name, plan, moves, absorbedFolders, warnings, applied: opts.apply };
+  return result;
 }
 
 /**
- * Antes de a nova ocupar o nome (prévia, `isOverwriteArchivedName`): o
- * arquivo de mesmo nome na RAIZ da pasta vai para `arquivo/`, em vez de ser
- * atualizado no lugar. Devolve quantos foram movidos.
+ * Prévia regravada no Drive (#13610 C): os ids de mesmo nome na RAIZ antes do
+ * upload. O upload da nova cria um arquivo novo (sem reusar esses ids) e só
+ * DEPOIS dele dar certo `archiveDriveIds` os move; falha no upload deixa a
+ * anterior na raiz.
  */
-export async function archiveBeforeOverwriteDrive(deps: MontageDriveDeps, folderId: string, name: string, now: Date = new Date(), log: (line: string) => void = () => {}): Promise<number> {
-  const all = (await listChildren(deps, folderId, { name })).filter((f) => f.mimeType !== FOLDER_MIME);
-  if (!all.length) return 0;
-  const archive = await ensureChildFolder(deps, folderId, ARCHIVE_DIR_NAME);
+export async function rootIdsNamed(deps: MontageDriveDeps, folderId: string, name: string): Promise<string[]> {
+  return (await listChildren(deps, folderId, { name })).filter((f) => f.mimeType !== FOLDER_MIME).map((f) => f.id);
+}
+
+/** Move ids da raiz para `arquivo/` (a prévia anterior, depois de a nova subir). Devolve quantos foram. */
+export async function archiveDriveIds(deps: MontageDriveDeps, folderId: string, name: string, ids: readonly string[], opts: { now?: Date; log?: (l: string) => void; sleep?: (ms: number) => Promise<void>; warn?: (m: string) => void } = {}): Promise<number> {
+  if (!ids.length) return 0;
+  const archive = (await resolveArchiveFolder(deps, folderId, { create: true, sleep: opts.sleep, warn: opts.warn }))!;
   const taken = new Set((await listChildren(deps, archive.id)).map((c) => c.name));
-  const stamp = archiveStamp(now);
-  for (const f of all) {
-    const to = archiveTargetName(f.name, taken, stamp);
+  const stamp = archiveStamp(opts.now ?? new Date());
+  for (const id of ids) {
+    const to = archiveTargetName(name, taken, stamp);
     taken.add(to);
-    await moveDriveFile(deps, f.id, folderId, archive.id, to !== f.name ? to : undefined);
-    log(`[arquivo] ${name} anterior → ${ARCHIVE_DIR_NAME}/${to}`);
+    await moveDriveFile(deps, id, folderId, archive.id, to !== name ? to : undefined);
+    opts.log?.(`[arquivo] ${name} anterior → ${ARCHIVE_DIR_NAME}/${to}`);
   }
-  return all.length;
+  return ids.length;
 }
 
 // ── Disco (Neo) ──────────────────────────────────────────────────────────
@@ -245,45 +334,43 @@ export function listLocalEdition(dir: string): ArchiveEntry[] {
 /** Mesma política no disco (`{AAMMDD}/arquivo/`). */
 export function archiveEditionLocal(dir: string, edition: string, opts: ArchiveOptions): EditionArchiveResult {
   const log = opts.log ?? (() => {});
-  const fresh = opts.fresh ?? [];
   const warnings: string[] = [];
-  const root = mergeFresh(listLocalEdition(dir), fresh);
-  let referenced: Set<string> | null = new Set();
-  for (const name of vigenteXmlNames(root)) {
+  const root = mergeFresh(listLocalEdition(dir), opts.fresh ?? []);
+  const texts: Array<string | null> = [];
+  for (const x of xmlsThatStay(root)) {
     try {
-      for (const r of xmlReferencedNames(readFileSync(join(dir, name), "utf8"))) referenced.add(r);
+      texts.push(readFileSync(join(dir, x.name), "utf8"));
     } catch (err) {
-      warnings.push(`XML vigente ${name} não lido (${(err as Error).message}): nenhum asset sai desta pasta`);
-      referenced = null;
-      break;
+      warnings.push(`XML ${x.name} não lido (${(err as Error).message}): nenhum asset sai desta pasta`);
+      texts.push(null);
     }
   }
-  const plan = finalizePlan(root, referenced, fresh);
+  const referenced = referencedFromXmlTexts(texts);
+  if (referenced === null && !texts.includes(null)) warnings.push("algum XML que fica na raiz não tem <pathurl>: nenhum asset sai desta pasta");
+  const plan = finalizePlan(root, referenced, opts);
   const archiveDir = join(dir, ARCHIVE_DIR_NAME);
   const taken = new Set(existsSync(archiveDir) ? readdirSync(archiveDir) : []);
   const stamp = archiveStamp(opts.now ?? new Date());
   const moves: ArchiveMove[] = [];
-  const pending: Array<{ src: string; to: string; name: string }> = [];
-  for (const m of plan.move) {
-    const to = archiveTargetName(m.name, taken, stamp);
+  const pending: Array<{ src: string; to: string; move: ArchiveMove }> = [];
+  const queue = (src: string, name: string, from: string, reason: string) => {
+    const to = archiveTargetName(name, taken, stamp, { caseInsensitive: true });
     taken.add(to);
-    moves.push({ name: m.name, from: m.name, to, reason: m.reason });
-    pending.push({ src: join(dir, m.name), to, name: m.name });
-  }
-  for (const legacy of plan.absorb) {
-    for (const k of readdirSync(join(dir, legacy.name))) {
-      const to = archiveTargetName(k, taken, stamp);
-      taken.add(to);
-      moves.push({ name: k, from: `${legacy.name}/${k}`, to, reason: `absorvido de ${legacy.name}/` });
-      pending.push({ src: join(dir, legacy.name, k), to, name: k });
-    }
-  }
+    const move: ArchiveMove = { name, from, to, reason };
+    moves.push(move);
+    pending.push({ src, to, move });
+  };
+  for (const m of plan.move) queue(join(dir, m.name), m.name, m.name, m.reason);
+  for (const legacy of plan.absorb) for (const k of readdirSync(join(dir, legacy.name))) queue(join(dir, legacy.name, k), k, `${legacy.name}/${k}`, `absorvido de ${legacy.name}/`);
   const absorbedFolders: string[] = [];
-  if (opts.apply && (pending.length || plan.absorb.length)) {
+  const result: EditionArchiveResult = { edition, plan, moves, absorbedFolders, warnings, applied: opts.apply };
+  if (!opts.apply || (!pending.length && !plan.absorb.length)) return result;
+  try {
     mkdirSync(archiveDir, { recursive: true });
     for (const p of pending) {
       renameSync(p.src, join(archiveDir, p.to));
-      log(`[arquivo] ${edition}/${p.name} → ${ARCHIVE_DIR_NAME}/${p.to}`);
+      p.move.done = true;
+      log(`[arquivo] ${edition}/${p.move.from} → ${ARCHIVE_DIR_NAME}/${p.to}`);
     }
     for (const legacy of plan.absorb) {
       try {
@@ -293,33 +380,60 @@ export function archiveEditionLocal(dir: string, edition: string, opts: ArchiveO
         warnings.push(`${legacy.name}/ não removida depois de absorvida (${(err as Error).message}): ficou como está`);
       }
     }
+  } catch (e) {
+    result.error = (e as Error).message;
   }
-  return { edition, plan, moves, absorbedFolders, warnings, applied: opts.apply };
+  return result;
 }
 
-/** Disco: o arquivo de mesmo nome vai para `arquivo/` antes de a nova versão ocupar o nome (prévia). */
+/** Disco: o arquivo de mesmo nome vai para `arquivo/` (a prévia anterior). Sem arquivo = null. */
 export function archiveBeforeOverwriteLocal(path: string, now: Date = new Date(), log: (line: string) => void = () => {}): string | null {
   if (!existsSync(path)) return null;
-  const dir = join(path, "..");
-  const name = path.replace(/\\/g, "/").split("/").pop()!;
+  const dir = dirname(path);
+  const name = basename(path);
   const archiveDir = join(dir, ARCHIVE_DIR_NAME);
   mkdirSync(archiveDir, { recursive: true });
-  const to = archiveTargetName(name, new Set(readdirSync(archiveDir)), archiveStamp(now));
+  const to = archiveTargetName(name, new Set(readdirSync(archiveDir)), archiveStamp(now), { caseInsensitive: true });
   renameSync(path, join(archiveDir, to));
   log(`[arquivo] ${name} anterior → ${ARCHIVE_DIR_NAME}/${to}`);
   return join(archiveDir, to);
 }
 
 /**
- * As `_V{n}` já usadas por um nome de XML, na raiz e no `arquivo/` de uma
- * pasta no disco (o out dir do `build` no Neo é a pasta da edição): a
- * numeração do build conta o arquivado (#13610, restrição 2).
+ * Prévia nova no disco (#13610 C): copia para `{out}.part` primeiro, só então
+ * manda a anterior para `arquivo/` e renomeia a nova para o nome final. Falha
+ * na cópia deixa a anterior na raiz; falha ao arquivar vira `warn` e a nova
+ * substitui a anterior no lugar.
+ */
+export function installPreviewFile(src: string, out: string, opts: { archive: boolean; now?: Date; log?: (l: string) => void; warn?: (m: string) => void }): void {
+  if (!opts.archive) {
+    copyFileSync(src, out);
+    return;
+  }
+  const part = `${out}.part`;
+  try {
+    copyFileSync(src, part);
+  } catch (e) {
+    rmSync(part, { force: true });
+    throw e;
+  }
+  try {
+    archiveBeforeOverwriteLocal(out, opts.now ?? new Date(), opts.log);
+  } catch (e) {
+    opts.warn?.(`${basename(out)} anterior não foi para arquivo/ (${(e as Error).message}): a nova a substitui (#13610)`);
+  }
+  renameSync(part, out);
+}
+
+/**
+ * Os XMLs de uma pasta no disco e do seu `arquivo/`, com o nome sem o
+ * ` (arquivado …)` da colisão (#13610 F): a numeração do build conta o arquivado.
  */
 export function xmlNamesWithArchive(dir: string): Array<{ name: string; path: string }> {
   const out: Array<{ name: string; path: string }> = [];
   for (const d of [dir, join(dir, ARCHIVE_DIR_NAME)]) {
     if (!existsSync(d)) continue;
-    for (const n of readdirSync(d)) if (n.toLowerCase().endsWith(".xml")) out.push({ name: n, path: join(d, n) });
+    for (const n of readdirSync(d)) if (n.toLowerCase().endsWith(".xml")) out.push({ name: stripArchivedSuffix(n), path: join(d, n) });
   }
   return out;
 }
