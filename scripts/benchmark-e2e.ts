@@ -226,7 +226,7 @@ runStage(1, "Research — dedup + categorize + render", () => {
 
   // Dedup
   const dedupOut = resolve(benchDir, "01-deduped.json");
-  run(`npx tsx scripts/dedup.ts --articles "${rawDst}" --past-editions data/past-editions.md --out "${dedupOut}"`);
+  run(`npx tsx scripts/dedup.ts --articles "${rawDst}" --past-editions data/past-editions.md --current-edition ${latest.aammdd} --out "${dedupOut}"`);
 
   // Extract kept articles for categorize
   const deduped = JSON.parse(readFileSync(dedupOut, "utf8"));
