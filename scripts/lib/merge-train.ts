@@ -618,6 +618,16 @@ export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly T
  *   `"merged"` (o pior caso documentado em `worstCaseCiRuns` acima: um
  *   lote vermelho custa mais runs que o caminho de hoje, não menos).
  *
+ * **Contagem explícita (#13509).** A regra acima pelo TAMANHO do lote
+ * subestimava: o PR solo revalidado pelo PR-trem de 1 (#10997, #13461)
+ * dispara 1 run real e caía em `soloPrs` com zero run. E superestimava o lote
+ * ≥2 cuja integração (ou abertura do PR-trem) falhou antes de haver CI.
+ * `runMergeTrain` agora grava `ciRuns` em cada outcome (1 quando o
+ * `pollTrainCi` daquele lote rodou, 0 quando não), e esta função soma esse
+ * campo. A regra por tamanho fica só como fallback de outcome sem `ciRuns`
+ * (forma antiga, testes). PR de 1 que passou pelo PR-trem deixa de contar
+ * em `soloPrs` (não ficou fora do trem).
+ *
  * `prsInvolvedInBatches`/`issuesInvolvedInBatches` são a UNIÃO distinta de
  * PRs/issues que passaram por pelo menos 1 lote ≥2 em algum ponto da
  * árvore de bissecção — nunca soma duplicada entre a entrada abandonada e
@@ -631,9 +641,9 @@ export interface TrainCiRunsSummary {
   readonly prsInvolvedInBatches: number;
   /** Issues distintas fechadas por esses PRs (via `TrainPrInfo.issueNumbers`) — denominador de "runs de CI por issue". */
   readonly issuesInvolvedInBatches: number;
-  /** Runs de CI reais disparados pelo mecanismo do trem — o "depois" (1 por outcome com `batch.prs.length >= 2`, INCLUINDO bissecção). */
+  /** Runs de CI reais disparados pelo mecanismo do trem — o "depois" (soma de `ciRuns`: 1 por PR-trem com CI, INCLUINDO bissecção e o PR-trem de 1, #13509). */
   readonly ciRunsUsed: number;
-  /** PRs que nunca entraram em lote (`batch.prs.length === 1`) — não afetados pelo trem, só contexto. */
+  /** Outcomes de 1 PR sem run de CI do trem (merge solo direto) — não afetados pelo trem, só contexto. O PR-trem de 1 (#10997/#13461) não conta aqui (#13509). */
   readonly soloPrs: number;
 }
 
@@ -641,6 +651,8 @@ export interface TrainCiRunsSummary {
  * importar `merge-train-live.ts` aqui (que faz I/O) só pelo tipo. */
 export interface TrainCiRunsOutcomeLike {
   readonly batch: { readonly prs: readonly number[] };
+  /** #13509: runs de CI do PR-trem consumidos por este outcome (0 ou 1). Ausente = regra pelo tamanho do lote. */
+  readonly ciRuns?: number;
 }
 
 export function summarizeTrainCiRuns(
@@ -654,13 +666,14 @@ export function summarizeTrainCiRuns(
   let soloPrs = 0;
 
   for (const o of outcomes) {
+    const runs = o.ciRuns ?? (o.batch.prs.length >= 2 ? 1 : 0);
+    ciRunsUsed += runs;
     if (o.batch.prs.length >= 2) {
-      ciRunsUsed++;
       for (const pr of o.batch.prs) {
         involvedPrs.add(pr);
         for (const issue of byPr.get(pr)?.issueNumbers ?? []) involvedIssues.add(issue);
       }
-    } else if (o.batch.prs.length === 1) {
+    } else if (o.batch.prs.length === 1 && runs === 0) {
       soloPrs++;
     }
   }

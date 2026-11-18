@@ -21,6 +21,15 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       `silences.meta.json`); `--silence-db -35` sobrepõe. Limiar diferente do
  *       da última detecção refaz só o `silences.json`. Um `transcript.json` existente
  *       nunca é retranscrito sem --force, nem com `source.json` novo (#11504: avisa e mantém).
+ *       (#13508) com GPU (cuda + h264_nvenc no ffmpeg), a mesma leitura grava o proxy
+ *       `bruto-proxy-1440p.mp4` (+ `.meta.json`), de onde face/face-compare/gaze tiram os
+ *       frames; o XML segue no bruto 4K. Falha = só o áudio, como antes, com [aviso].
+ *       `DIARIA_VIDEO_PROXY=0` desliga.
+ *       (#13507) o decode do bruto na prévia, nos trechos do XML leve e nos frames vai pela
+ *       GPU (`-hwaccel cuda`) quando o ffmpeg lista cuda; falha cai na CPU com [aviso] uma
+ *       vez por execução. `DIARIA_VIDEO_HWACCEL=0` desliga. Frames do face/gaze em lote.
+ *       (#13506) o Whisper fica residente entre as chamadas (`transcribe_words.py --serve`,
+ *       ocioso por 15 min encerra); `DIARIA_WHISPER_RESIDENT=0` volta ao helper avulso.
  *   transcribe AAMMDD --source A,B,C [--ordem gravacao|dada] | --all
  *       (#12559) bruto em vários arquivos: uma linha do tempo na ordem de gravação
  *       (creation_time), `files[]` no `source.json`, áudio por arquivo concatenado em
@@ -93,7 +102,10 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S] [--trecho-fonte "CHAVE=caminho;…"]
  *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
  *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
- *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir),
+ *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir,
+ *       reaproveitado no rebuild só com os quadros do intervalo conferidos no ffprobe; o truncado
+ *       é cortado de novo; corte numa pasta temporária fora do Drive, copiado e conferido de novo;
+ *       o verify-xml confere o clipe contra a mídia real, #13500),
  *       numa faixa própria do XML (clipitems trecho-{seq}-v{n}/trecho-{seq}-a{n}, nome "trecho
  *       {fala}", label Mango, marcador cobrindo o clipe), logo depois da fala; o que vem depois
  *       anda a duração do trecho (só no XML: plan.json e prévia seguem sem ele; o verify-xml
@@ -516,7 +528,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
+import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
 import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
@@ -639,6 +651,9 @@ import {
 } from "./lib/diaria/video-montage-drive.ts";
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
+import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
+import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
+import { PROXY, proxyOutputArgs, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
   deepFilterArgs,
   deepFilterBin,
@@ -761,6 +776,21 @@ function run(cmd: string, args: string[], opts: SpawnSyncOptions & { inheritStde
   const stderr = String(r.stderr ?? "");
   if (r.status !== 0) throw new Error(`${cmd} saiu ${r.status}: ${stderr.trim().split(/\r?\n/).slice(-8).join(" | ")}`);
   return { stdout: String(r.stdout ?? ""), stderr };
+}
+
+/**
+ * #13507: decode do bruto pela GPU (`-hwaccel cuda`) com queda para a CPU e
+ * `[aviso]` uma vez por execução (`lib/diaria/video-hwaccel.ts`).
+ * `DIARIA_VIDEO_HWACCEL=0` desliga.
+ */
+const hwDecode = createHwDecoder({
+  listHwaccels: () => run("ffmpeg", ["-hide_banner", "-hwaccels"]).stdout,
+  warn: (line) => console.error(line),
+});
+
+/** Um ffmpeg que decodifica o bruto, pela GPU quando der (#13507). */
+function runDecode(args: string[], what: string, opts: { all?: boolean } = {}): "cuda" | "cpu" {
+  return hwDecode.run(args, (a) => { run("ffmpeg", a); }, what, opts);
 }
 
 interface Vocab {
@@ -1405,7 +1435,7 @@ function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
   const out = f(ctx, `frame-${t.toFixed(1)}-orientacoes.jpg`);
   const vf = "scale=960:-2,split[a][b];[b]hflip[m];[a][m]hstack=inputs=2,drawgrid=w=iw/20:h=ih/10:t=1:c=white@0.4";
   const at0 = frameAt(measured, t);
-  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-filter_complex", vf, out]);
+  runDecode(["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-filter_complex", vf, out], "frame");
   console.log(out);
   console.error("[video-montagem] lado a lado: esquerda = bruto como gravado, direita = espelhado; o lado em que a caneca e o pôster leem certo é a orientação real (#11959)");
   console.error(`[premissa] ${mirroredPremise(measured, override)} (#11959)`);
@@ -2457,12 +2487,25 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (redo || !existsSync(audio) || !existsSync(loudPath)) {
     console.error("[video-montagem] extraindo o áudio (16 kHz mono) e medindo o loudness do bruto…");
     let stderr = "";
+    const baseArgs = [
+      "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
+      "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
+      "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
+    ];
+    // #13508: o proxy 1440p na mesma leitura (bruto de um arquivo de vídeo, GPU + NVENC); só na 1ª leitura.
+    let proxyPlan = multiAudio || source.audioOnly ? null : transcribeProxyPlan(ctx, source);
     const extract = () => {
-      stderr = run("ffmpeg", [
-        "-hide_banner", "-nostats", "-y", "-i", multiAudio ? multiAudio.path : source.path,
-        "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio,
-        "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-",
-      ]).stderr;
+      const r = runExtractWithProxy({
+        baseArgs,
+        proxy: proxyPlan,
+        exec: (args) => run("ffmpeg", args).stderr,
+        finish: (part) => finishProxy(ctx, source, part),
+        discard: (part) => rmSync(part, { force: true }),
+        warn: (line) => console.error(line),
+      });
+      if (r.proxy === "made") console.error(`[video-montagem] proxy ${PROXY.shortSide}p gravado (${join(ctx.workDir, PROXY.file)}): face/gaze leem dele, o XML segue no bruto (#13508)`);
+      proxyPlan = null;
+      stderr = r.stderr;
       return probeDurationS(audio);
     };
     if (multiAudio) extract();
@@ -2761,7 +2804,7 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   // #11939: os recortes de cada escala sobre o bruto desespelhado, antes do scale, em px do bruto.
   const overlays = frameCropOverlays(at0.view, framing);
   const vf = `${at0.view.mirrored ? "hflip," : ""}${overlays.filters.join(",")},scale=960:-2,drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.6`;
-  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-vf", vf, out]);
+  runDecode(["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-vf", vf, out], "frame");
   console.log(out);
   for (const w of overlays.warnings) console.error(`[aviso] ${w}`);
   for (const w of overlays.premises) console.error(`[premissa] ${w}`);
@@ -2920,7 +2963,9 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   let softTotal = 0;
   // #13488: os trechos do XML leve contra a mídia real (o resto confere contra a <duration> do <file>, a do nome).
   const xmlTexts = chosen.map((p) => join(ctx.outDir, xmlFileName(p.spec.name))).filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
-  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName));
+  // #13500: e os trechos inseridos de cada sequência escolhida, contra o arquivo no out dir.
+  const inseridosXml = chosen.flatMap((p) => pf.xmlAssets?.[sequenceKey(p.spec)]?.trechosInseridos ?? []);
+  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), cachedTrechoProbe(trechoFramesCachePath(ctx.workDir)), { dir: ctx.outDir, clips: inseridosXml });
   for (const x of mediaIssues) console.log(`[erro] ${x}`);
   bad += mediaIssues.length;
   const report: Record<string, unknown> = {};
@@ -3027,12 +3072,97 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
 // ── Rosto automático e folha de olhar (#12560) ────────────────────────────
 
 /** Um frame do bruto (tempo global) em PNG de 720 px de largura, desespelhado. */
-function grabFrame(source: SourceInfo, t: number, out: string): void {
-  const at0 = frameAt(source, t);
+function grabFrame(source: SourceInfo, t: number, out: string, proxy: string | null = null): void {
+  const job = frameJobOf(source, t, out, proxy);
   rmSync(out, { force: true });
-  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", at0.localS.toFixed(3), "-i", at0.view.path, "-frames:v", "1", "-vf", `${at0.view.mirrored ? "hflip," : ""}scale=720:-2`, out]);
+  runDecode(["-hide_banner", "-v", "error", "-y", "-ss", job.atS.toFixed(3), "-i", job.src, "-frames:v", "1", "-vf", `${job.mirrored ? "hflip," : ""}scale=720:-2`, out], "frame");
   // ffmpeg com -ss além do fim sai 0 sem gravar: frame ausente é falha de extração, não "rosto não detectado" (review da PR #12563).
-  if (!existsSync(out)) throw new Error(`frame em ${t.toFixed(2)} s (${at0.view.id} em ${at0.localS.toFixed(2)} s) não foi extraído: tempo além do fim do arquivo?`);
+  if (!existsSync(out)) throw new Error(missingFrameMessage(source, t));
+}
+
+function missingFrameMessage(source: SourceInfo, t: number): string {
+  const at0 = frameAt(source, t);
+  return `frame em ${t.toFixed(2)} s (${at0.view.id} em ${at0.localS.toFixed(2)} s) não foi extraído: tempo além do fim do arquivo?`;
+}
+
+/** #13508: o frame sai do proxy 1440p quando há um válido (mesmo tempo, mesmo espelhamento); senão do bruto. */
+function frameJobOf(source: SourceInfo, t: number, out: string, proxy: string | null): FrameJob {
+  const at0 = frameAt(source, t);
+  return { src: !at0.multi && proxy ? proxy : at0.view.path, atS: at0.localS, mirrored: at0.view.mirrored, out };
+}
+
+/**
+ * #13508: o proxy 1440p do bruto (`transcribe`), se a meta bate com o
+ * `source.json`; senão `null` (frames do 4K, como antes).
+ */
+function proxyFor(ctx: Pick<Ctx, "workDir">, source: SourceInfo): string | null {
+  const path = join(ctx.workDir, PROXY.file);
+  const metaPath = join(ctx.workDir, PROXY.meta);
+  if (!existsSync(path) || !existsSync(metaPath)) return null;
+  try {
+    return proxyUsable(JSON.parse(readFileSync(metaPath, "utf8")), source, statSync(source.path).size) ? path : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #13508: a saída do proxy para o ffmpeg do `transcribe`, ou `null` (sem
+ * proxy): `DIARIA_VIDEO_PROXY=0` ou `DIARIA_VIDEO_HWACCEL=0`, ffmpeg sem `cuda`
+ * em `-hwaccels` ou sem `h264_nvenc`, ou bruto que já cabe em 1440p. O proxy e
+ * a meta anteriores saem antes (a leitura nova regrava os dois).
+ */
+function transcribeProxyPlan(ctx: Pick<Ctx, "workDir">, source: SourceInfo): { args: string[]; part: string } | null {
+  if ((process.env.DIARIA_VIDEO_PROXY ?? "").trim() === "0" || (process.env.DIARIA_VIDEO_HWACCEL ?? "").trim() === "0") return null;
+  const final = join(ctx.workDir, PROXY.file);
+  rmSync(final, { force: true });
+  rmSync(join(ctx.workDir, PROXY.meta), { force: true });
+  let gpu = false;
+  try {
+    gpu = ffmpegListsCuda(run("ffmpeg", ["-hide_banner", "-hwaccels"]).stdout) && pickTrechoEncoder(run("ffmpeg", ["-hide_banner", "-encoders"]).stdout) === "h264_nvenc";
+  } catch {
+    gpu = false;
+  }
+  if (!gpu) {
+    console.error(`[premissa] ffmpeg sem GPU (cuda + h264_nvenc): sem proxy ${PROXY.shortSide}p; face/gaze leem o bruto 4K (#13508)`);
+    return null;
+  }
+  const part = `${final}.part`;
+  const args = proxyOutputArgs({ width: source.width, height: source.height, out: part });
+  return args ? { args, part } : null;
+}
+
+/** Confere a duração do proxy recém-gravado contra o bruto, põe no nome final e grava a meta (#13508). */
+function finishProxy(ctx: Pick<Ctx, "workDir">, source: SourceInfo, part: string): void {
+  const d = probeDurationS(part);
+  if (!Number.isFinite(d) || Math.abs(d - source.durationS) > PROXY.durationTolS) throw new Error(`proxy com ${Number.isFinite(d) ? d.toFixed(2) : "?"} s, o bruto tem ${source.durationS.toFixed(2)} s`);
+  renameSync(part, join(ctx.workDir, PROXY.file));
+  const meta: ProxyMeta = { version: PROXY.version, src: source.path, size: statSync(source.path).size, durationS: source.durationS, width: source.width, height: source.height };
+  writeJson(join(ctx.workDir, PROXY.meta), meta);
+}
+
+/** `proxyFor` com a linha do relato dizendo de onde os frames saem (#13508). */
+function proxyNotice(ctx: Pick<Ctx, "workDir">, source: SourceInfo): string | null {
+  const p = proxyFor(ctx, source);
+  if (p) console.error(`[video-montagem] frames do proxy ${PROXY.shortSide}p (${p}); o XML segue no bruto (#13508)`);
+  return p;
+}
+
+/**
+ * #13507: os frames em lote, um processo do ffmpeg por até `FRAME_BATCH_SIZE`
+ * frames (GPU quando der). Lote que falha, ou que deixa algum PNG sem gravar,
+ * é refeito frame a frame (`grabFrame`), que nomeia o frame problemático.
+ */
+function grabFrames(source: SourceInfo, list: ReadonlyArray<{ t: number; out: string }>, proxy: string | null = null): void {
+  for (const chunk of chunkFrameJobs(list)) {
+    for (const x of chunk) rmSync(x.out, { force: true });
+    try {
+      runDecode(batchFrameArgs(chunk.map((x) => frameJobOf(source, x.t, x.out, proxy)), { width: 720 }), `${chunk.length} frame(s) em lote`, { all: true });
+    } catch {
+      /* refeito frame a frame abaixo */
+    }
+    for (const x of chunk) if (!existsSync(x.out)) grabFrame(source, x.t, x.out, proxy);
+  }
 }
 
 const FACE_PY = join(ROOT, "scripts", "video", "face_detect.py");
@@ -3046,10 +3176,11 @@ const FACE_PY = join(ROOT, "scripts", "video", "face_detect.py");
  * ao trocar uma tomada (com `--overwrite`, se o `face` já gravou antes).
  */
 /** Os frames do `face` (25/50/75% de cada item) em `dir`, com o `in.json` do face_detect.py; devolve as chaves `{bloco}#{i}`. */
-function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>, dir: string): { keys: string[]; items: Map<string, ResolvedItem> } {
+function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>, dir: string, proxy: string | null = null): { keys: string[]; items: Map<string, ResolvedItem> } {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const jobs: Array<{ key: string; path: string }> = [];
+  const frames: Array<{ t: number; out: string }> = [];
   const keys: string[] = [];
   const byKey = new Map<string, ResolvedItem>();
   for (const [block, items] of Object.entries(resolved) as Array<[string, ResolvedItem[]]>) {
@@ -3059,11 +3190,13 @@ function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, Resolve
       byKey.set(key, it);
       FACE_SAMPLE_FRACTIONS.forEach((q, k) => {
         const path = join(dir, `${block}-${i}-${k}.png`);
-        grabFrame(source, it.interval.start + (it.interval.end - it.interval.start) * q, path);
+        frames.push({ t: it.interval.start + (it.interval.end - it.interval.start) * q, out: path });
         jobs.push({ key, path });
       });
     });
   }
+  // #13507: frames em lote; #13508: do proxy 1440p quando houver.
+  grabFrames(source, frames, proxy);
   writeJson(join(dir, "in.json"), jobs);
   return { keys, items: byKey };
 }
@@ -3071,7 +3204,7 @@ function grabItemFaceFrames(source: SourceInfo, resolved: Record<string, Resolve
 function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
   const { source, resolved } = plans(ctx);
   const dir = join(ctx.workDir, "face-tmp");
-  const { keys } = grabItemFaceFrames(source, resolved, dir);
+  const { keys } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source));
   run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "out.json")], { inheritStderr: true });
   const results = itemFramings(readJson<FrameDetection[]>(join(dir, "out.json"), "face_detect"), keys);
   for (const r of results) {
@@ -3111,7 +3244,7 @@ function cmdFaceCompare(ctx: Ctx, mpPython: string | undefined, mpModel: string 
   const { file, source, resolved } = plans(ctx);
   const { framing: base, assumed } = effectiveFraming(file);
   const dir = join(ctx.workDir, "face-compare-tmp");
-  const { keys, items } = grabItemFaceFrames(source, resolved, dir);
+  const { keys, items } = grabItemFaceFrames(source, resolved, dir, proxyNotice(ctx, source));
   run(ctx.python, ["-P", FACE_PY, join(dir, "in.json"), join(dir, "haar.json")], { inheritStderr: true });
   run(mpPython, ["-P", FACE_PY, "--detector", "mediapipe", "--model", mpModel, join(dir, "in.json"), join(dir, "mediapipe.json")], { inheritStderr: true });
   const refs: FaceReference[] = [];
@@ -3161,6 +3294,7 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const jobs: Array<{ row: string; label: string; path: string }> = [];
+  const frames: Array<{ t: number; out: string }> = [];
   const bounds = fileBounds(pf.source);
   plan.clips.forEach((c, i) => {
     const a = c.frameIn / fps;
@@ -3169,10 +3303,12 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
     const fileEnd = bounds[c.file ?? 0]?.end ?? Number.POSITIVE_INFINITY;
     gazeMarks(a, b, i === plan.clips.length - 1, fileEnd).forEach((m, k) => {
       const path = join(dir, `g${String(i).padStart(3, "0")}-${k}.png`);
-      grabFrame(pf.source, m.t, path);
+      frames.push({ t: m.t, out: path });
       jobs.push({ row, label: m.label, path });
     });
   });
+  // #13507: frames em lote; #13508: do proxy 1440p quando houver.
+  grabFrames(pf.source, frames, proxyNotice(ctx, pf.source));
   writeJson(join(dir, "in.json"), jobs);
   const out = join(ctx.workDir, `gaze-${sequenceKey(plan.spec)}.jpg`);
   run(ctx.python, ["-P", FACE_PY, "--sheet", join(dir, "in.json"), out], { inheritStderr: true });
@@ -3467,7 +3603,8 @@ function silenceThresholdDb(ctx: Ctx): number {
  * Retranscreve as janelas das bordas (#11500) numa chamada só do Python (o
  * modelo carrega uma vez), sem VAD e sem `condition_on_previous_text`. Cache
  * por janela em `edge-retranscribe.json`, válido para o MESMO `audio.wav`
- * (tamanho + mtime): build repetido no loop da autorrevisão não retranscreve.
+ * (hash do conteúdo, #13505; tamanho + mtime até então): build repetido no loop da
+ * autorrevisão não retranscreve, nem depois de uma cópia do work dir.
  */
 function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<string, Word[]> {
   return windowTranscripts(ctx, audio, windows, "edge-retranscribe.json", "refino dos cortes: retranscrevendo {n} borda(s) de clipe (sem VAD)…");
@@ -3481,15 +3618,22 @@ function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<st
  */
 function windowTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[], cacheName: string, message: string): Map<string, Word[]> {
   const cachePath = f(ctx, cacheName);
-  const st = statSync(audio);
-  const id = { size: st.size, mtimeMs: st.mtimeMs };
-  type Cache = { audio: typeof id; windows: Record<string, Word[]> };
+  // #13505: a chave é o hash do conteúdo do áudio (+ o intervalo, na chave da janela), não tamanho + mtime.
+  const id = audioIdentity(audio);
+  type Cache = { audio: AudioIdentity; windows: Record<string, Word[]> };
   let cache: Cache = { audio: id, windows: {} };
+  let restamp = false;
   if (existsSync(cachePath) && !ctx.force) {
     const c = readJson<Cache>(cachePath, cacheName);
-    if (c.audio?.size === id.size && c.audio?.mtimeMs === id.mtimeMs) cache = c;
+    const m = sameAudio(c.audio, id);
+    if (m.same && c.windows && typeof c.windows === "object") {
+      cache = { audio: id, windows: c.windows };
+      restamp = m.legacy;
+    }
   }
   const missing = windows.filter((w) => !(w.key in cache.windows));
+  // Cache anterior ao #13505 (tamanho + mtime) que ainda vale: regrava com o hash, para sobreviver à próxima cópia.
+  if (!missing.length && restamp) writeJson(cachePath, cache);
   if (missing.length) {
     mkdirSync(ctx.workDir, { recursive: true });
     const stem = cacheName.replace(/\.json$/, "");
@@ -3703,16 +3847,16 @@ export interface VerifyEdgeWordsInput {
   /** `null` = transcript.json ausente ou ilegível. */
   transcript: Word[] | null;
   /** `null` = edge-retranscribe.json ausente ou ilegível. */
-  cache: { audio?: { size?: number; mtimeMs?: number }; windows?: Record<string, Word[]> } | null;
-  /** `statSync` do `audio.wav` desta máquina. */
-  audio: { size: number; mtimeMs: number };
+  cache: { audio?: { size?: number; mtimeMs?: number; sha256?: string }; windows?: Record<string, Word[]> } | null;
+  /** Identidade do `audio.wav` desta máquina (tamanho, mtime e, desde o #13505, o hash do conteúdo). */
+  audio: AudioIdentity;
 }
 
 /**
  * #13194: as palavras do bruto que limitam a abertura no `verify-xml`, como no
  * build: o transcript e as janelas da retranscrição das bordas. Do cache só
  * entram as janelas de `edgeWindowsFor` dos clipes do plano atual, e só se ele
- * é do MESMO `audio.wav` (tamanho + mtime, como `windowTranscripts`). Cache
+ * é do MESMO `audio.wav` (hash do conteúdo desde o #13505, como `windowTranscripts`). Cache
  * ausente, inválido ou de outro áudio, e transcript ausente ou vazio, viram
  * [aviso] e o verify segue com o que há (nunca aborta).
  */
@@ -3723,7 +3867,7 @@ export function verifyEdgeWords(input: VerifyEdgeWordsInput & { planClips: Reado
   else words.push(...input.transcript);
   const c = input.cache;
   if (!c || !c.windows || typeof c.windows !== "object") warnings.push("edge-retranscribe.json ausente ou inválido: palavras da retranscrição das bordas não aplicadas (#13194)");
-  else if (c.audio?.size !== input.audio.size || c.audio?.mtimeMs !== input.audio.mtimeMs) warnings.push("edge-retranscribe.json é de outro audio.wav: palavras da retranscrição das bordas não aplicadas; rode build de novo nesta máquina (#13194)");
+  else if (!sameAudio(c.audio, input.audio).same) warnings.push("edge-retranscribe.json é de outro audio.wav: palavras da retranscrição das bordas não aplicadas; rode build de novo nesta máquina (#13194)");
   else {
     const keys = new Set(input.planClips.flatMap((x) => edgeWindowsFor(x, input.durationS).map((w) => w.key)));
     for (const [k, ws] of Object.entries(c.windows)) if (keys.has(k) && Array.isArray(ws)) words.push(...ws.filter((w) => typeof w?.start === "number" && typeof w?.end === "number" && typeof w?.text === "string"));
@@ -3742,11 +3886,10 @@ function readVerifyEdgeWordsInput(ctx: Ctx, audio: string): VerifyEdgeWordsInput
     }
   };
   const t = tryRead<Transcript>(f(ctx, "transcript.json"), "transcript.json");
-  const st = statSync(audio);
   return {
     transcript: t ? transcriptWords(t) : null,
     cache: tryRead<VerifyEdgeWordsInput["cache"] & object>(f(ctx, "edge-retranscribe.json"), "edge-retranscribe.json"),
-    audio: { size: st.size, mtimeMs: st.mtimeMs },
+    audio: audioIdentity(audio),
   };
 }
 
@@ -4070,27 +4213,53 @@ export function probeTrechoFrames(path: string): number | null {
   }
 }
 
-/** #13512: o cache da contagem de quadros, no out dir (fora da `trechos/`, que só guarda mídia). */
-export const TRECHO_FRAMES_CACHE = ".trechos-quadros-cache.json";
+/** #13512: o arquivo do cache da contagem de quadros. */
+export const TRECHO_FRAMES_CACHE = "trechos-quadros-cache.json";
 
 /**
- * #13512: `probe` com cache em `cachePath`, chave nome do
+ * #13512: onde o cache mora, no work dir da edição (local: `tmp` no Neo, o
+ * cache em disco no modo API). Nunca no out dir nem na `trechos/`: a pasta do
+ * Drive sincroniza entre máquinas, e o mtime de um arquivo baixado pelo Drive
+ * em outra máquina não é o desta, então a chave não valeria lá.
+ */
+export function trechoFramesCachePath(workDir: string): string {
+  return join(workDir, TRECHO_FRAMES_CACHE);
+}
+
+/**
+ * #13512: `probe` com cache em `cachePath`, chave caminho absoluto do
  * arquivo + tamanho + mtime. O mesmo arquivo, intacto, não é relido a cada
  * rebuild do XML leve (~1,6 GB de trechos); mudou tamanho ou mtime, sonda de
- * novo. Só contagem válida é guardada (null = ilegível, sempre reprobe), e
- * cache ausente, corrompido ou que não grava vira sonda direta, nunca erro.
+ * novo. Só contagem válida é guardada (null = ilegível, sempre reprobe);
+ * entrada de arquivo que não existe mais é podada ao carregar; cache ausente,
+ * corrompido ou que não grava vira sonda direta, nunca erro. Não usar para o
+ * `.part` temporário do render (`renderFramesConferidos.probePart`).
  */
 export function cachedTrechoProbe(cachePath: string, probe: (path: string) => number | null = probeTrechoFrames): (path: string) => number | null {
-  let cache: Record<string, { size: number; mtimeMs: number; frames: number }> = {};
+  type Entry = { size: number; mtimeMs: number; frames: number };
+  const cache: Record<string, Entry> = {};
+  let pruned = false;
   try {
-    const raw = JSON.parse(readFileSync(cachePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) cache = raw;
+    const raw: unknown = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw as Record<string, Entry>)) {
+        if (existsSync(k)) cache[k] = v;
+        else pruned = true;
+      }
+    }
   } catch { /* sem cache */ }
+  const save = () => {
+    try {
+      mkdirSync(dirname(cachePath), { recursive: true });
+      writeFileSync(cachePath, JSON.stringify(cache));
+    } catch { /* cache é otimização */ }
+  };
+  if (pruned) save();
   return (path: string) => {
-    const key = basename(path);
+    const key = resolve(path);
     let st: { size: number; mtimeMs: number };
     try {
-      st = statSync(path);
+      st = statSync(key);
     } catch {
       return probe(path);
     }
@@ -4098,13 +4267,14 @@ export function cachedTrechoProbe(cachePath: string, probe: (path: string) => nu
     if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs && Number.isInteger(hit.frames)) return hit.frames;
     const frames = probe(path);
     if (frames === null) {
-      delete cache[key];
+      if (key in cache) {
+        delete cache[key];
+        save();
+      }
       return null;
     }
     cache[key] = { size: st.size, mtimeMs: st.mtimeMs, frames };
-    try {
-      writeFileSync(cachePath, JSON.stringify(cache));
-    } catch { /* cache é otimização */ }
+    save();
     return frames;
   };
 }
@@ -4116,9 +4286,28 @@ export function cachedTrechoProbe(cachePath: string, probe: (path: string) => nu
  * confere in/out contra a `<duration>` do `<file>`, que é a do nome, não a do
  * arquivo; sem isto, o trecho truncado da 261118 passava.
  */
-export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, probe: (path: string) => number | null = cachedTrechoProbe(join(dirname(dir), TRECHO_FRAMES_CACHE))): string[] {
+export function trechoMediaIssues(
+  xmlTexts: readonly string[],
+  dir: string,
+  probe: (path: string) => number | null = probeTrechoFrames,
+  /** #13500: os trechos inseridos (`xmlAssets[key].trechosInseridos`), conferidos pelo nome do `xmlPath` em `inseridos.dir` (o out dir). */
+  inseridos: { dir: string; clips: readonly Pick<TrechoInseridoClip, "id" | "xmlPath" | "frames">[] } | null = null,
+): string[] {
   const names = [...new Set(xmlTexts.flatMap((x) => trechoNamesInXml(x)))];
   const issues: string[] = [];
+  const seen = new Set<string>();
+  for (const c of inseridos?.clips ?? []) {
+    const name = c.xmlPath.split(/[\\/]/).pop() || c.xmlPath;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const path = join(inseridos!.dir, name);
+    if (!existsSync(path)) {
+      issues.push(`trecho inserido ${c.id} (${name}) ausente em ${inseridos!.dir}: o XML aponta um arquivo que não está no disco; rode build (#13500)`);
+      continue;
+    }
+    const got = probe(path);
+    if (!trechoFramesOk(c.frames, got)) issues.push(`trecho inserido ${c.id} (${name}) com ${fmtTrechoFrames(got)} no disco, o XML pede ${c.frames}: imagem preta ou congelada no Premiere; rode build (ele corta o trecho de novo, #13500)`);
+  }
   for (const name of names) {
     const want = parseTrechoName(name);
     if (!want) continue;
@@ -4132,6 +4321,118 @@ export function trechoMediaIssues(xmlTexts: readonly string[], dir: string, prob
     if (!trechoFramesOk(expected, got)) issues.push(`trecho ${name} com ${got === null ? "quadros ilegíveis (ffprobe sem contagem)" : `${got} quadro(s)`} no disco, o XML pede ${expected}: imagem preta ou congelada no Premiere; rode build (ele refaz o trecho, #13488)`);
   }
   return issues;
+}
+
+/** #13488/#13500: quadros para o relato; null = ffprobe que não contou. */
+function fmtTrechoFrames(n: number | null): string {
+  return n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`;
+}
+
+/**
+ * #13500: os quadros do arquivo batem? Com `min >= max`, é o `trechoFramesOk(max)`
+ * (±1 quadro). Com `min < max` (trecho inserido que chega ao fim da fonte), de
+ * `min` exato a `max` + `TRECHO_FRAME_TOL`: a folga para menos é só a de `min`
+ * (`TRECHO_END_SHORT_TOL_S`), sem quadro extra. null = não.
+ */
+export function trechoFramesInRange(min: number, max: number, got: number | null): boolean {
+  if (got === null || !Number.isFinite(got)) return false;
+  return min >= max ? trechoFramesOk(max, got) : got >= min && got <= max + TRECHO_FRAME_TOL;
+}
+
+let ffprobeAvailableCache: boolean | null = null;
+/**
+ * #13500: o ffprobe roda nesta máquina? Conferido uma vez por processo
+ * (`ffprobe -version`). Separa "ffprobe ausente" (não dá para contar nada) de
+ * "ffprobe roda e não conta o arquivo" (arquivo ilegível, sem `moov`).
+ */
+export function ffprobeAvailable(): boolean {
+  if (ffprobeAvailableCache === null) {
+    try {
+      ffprobeAvailableCache = spawnSync("ffprobe", ["-version"], { stdio: "ignore", windowsHide: true }).status === 0;
+    } catch {
+      ffprobeAvailableCache = false;
+    }
+  }
+  return ffprobeAvailableCache;
+}
+
+const trechoPartsSwept = new Set<string>();
+/**
+ * #13500: apaga, uma vez por out dir e processo, os `{AAMMDD}_trecho_*.mov.part`
+ * órfãos que o código antigo deixava no out dir (o Drive). Devolve quantos.
+ */
+export function sweepTrechoInseridoParts(outDir: string, edition: string): number {
+  const key = `${resolve(outDir)}|${edition}`;
+  if (trechoPartsSwept.has(key)) return 0;
+  trechoPartsSwept.add(key);
+  const prefix = trechoInseridoFileName(edition, "", "").replace(/-\.mov$/, "");
+  let n = 0;
+  let names: string[] = [];
+  try {
+    names = readdirSync(outDir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".mov.part")) continue;
+    try {
+      rmSync(join(outDir, name), { force: true });
+      n++;
+    } catch { /* fica para o próximo build */ }
+  }
+  return n;
+}
+
+/** #13500: os quadros do render divergem do esperado (o resto do erro do corte é outro: ffmpeg, disco). */
+export class TrechoFramesError extends Error {}
+
+/**
+ * #13488/#13500: o render de um arquivo cujo número de quadros é sabido
+ * (trecho do XML leve, trecho inserido). `render` grava num `.part` da pasta
+ * temporária `tmp` (FORA do out dir: o Drive for desktop subia o `.part` e não
+ * propagava o rename); os quadros são conferidos ali, o arquivo é copiado para
+ * `out` e conferido de novo na cópia. Divergência tenta mais uma vez e depois
+ * lança `TrechoFramesError`, sem deixar `out` com o arquivo curto. `render`
+ * que lança, lança o erro dele. Devolve os quadros da cópia.
+ */
+export function renderFramesConferidos(input: {
+  out: string;
+  expected: number;
+  /** #13500: o mínimo aceito (padrão `expected`): o trecho inserido que vai até o fim da fonte pode sair uns quadros mais curto. */
+  minExpected?: number;
+  tmp: string;
+  render: (part: string) => void;
+  probeFrames: (path: string) => number | null;
+  /** #13512: a sonda do `.part` temporário (padrão `probeFrames`); nunca a com cache, que guardaria um arquivo descartável. */
+  probePart?: (path: string) => number | null;
+  /** Começo das mensagens (`trecho X.mov`, `trecho inserido H5`). */
+  label: string;
+  /** O que promete os quadros (`o nome pede`, `o intervalo pede`). */
+  pede: string;
+  tag: string;
+  log: (line: string) => void;
+}): number {
+  const part = join(input.tmp, `${basename(input.out)}.part`);
+  const ok = (got: number | null) => trechoFramesInRange(input.minExpected ?? input.expected, input.expected, got);
+  for (let attempt = 1; ; attempt++) {
+    rmSync(part, { force: true });
+    input.render(part);
+    const gotPart = (input.probePart ?? input.probeFrames)(part);
+    let bad = ok(gotPart) ? null : `o render saiu com ${fmtTrechoFrames(gotPart)}`;
+    let gotOut: number | null = null;
+    if (!bad) {
+      copyFileSync(part, input.out);
+      gotOut = input.probeFrames(input.out);
+      if (!ok(gotOut)) {
+        rmSync(input.out, { force: true });
+        bad = `a cópia em ${input.out} ficou com ${fmtTrechoFrames(gotOut)}`;
+      }
+    }
+    rmSync(part, { force: true });
+    if (!bad) return gotOut!;
+    if (attempt >= 2) throw new TrechoFramesError(`${input.label}: ${bad}, ${input.pede} ${input.expected} (2 tentativas, ${input.tag})`);
+    input.log(`[aviso] ${input.label}: ${bad}, ${input.pede} ${input.expected}; refazendo (${input.tag})`);
+  }
 }
 
 /**
@@ -4159,12 +4460,15 @@ export function renderTrechos(input: {
   listEncoders?: () => string;
   /** #13488: os quadros de vídeo do arquivo (null = ilegível); padrão `probeTrechoFrames`. */
   probeFrames?: (path: string) => number | null;
+  /** #13512: o cache local da contagem de quadros (`trechoFramesCachePath(workDir)`); ausente = sem cache. */
+  framesCachePath?: string | null;
   /** #13488: onde fica a pasta temporária do render (padrão `os.tmpdir()`), fora do out dir sincronizado. */
   tmpRoot?: string;
   log?: (line: string) => void;
 }): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number; redone: number } {
   const log = input.log ?? ((m: string) => console.error(m));
-  const encode = input.encode ?? ((args: string[]) => { run("ffmpeg", args); });
+  // #13507: o decode do bruto pela GPU quando der (a queda para a CPU fica no runDecode; a do NVENC, abaixo).
+  const encode = input.encode ?? ((args: string[]) => runDecode(args, "trecho do XML leve"));
   const files = sourceFiles(input.source);
   const uses = input.plans.flatMap((p) =>
     p.clips.map((c) => {
@@ -4176,8 +4480,10 @@ export function renderTrechos(input: {
   const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
   const dir = join(input.outDir, TRECHOS.dirName);
   mkdirSync(dir, { recursive: true });
-  // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild.
-  const probeFrames = input.probeFrames ?? cachedTrechoProbe(join(input.outDir, TRECHO_FRAMES_CACHE));
+  // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild; o cache fica no
+  // work dir (local), nunca no out dir sincronizado. O `.part` do render é sempre sondado sem cache.
+  const rawProbe = input.probeFrames ?? probeTrechoFrames;
+  const probeFrames = input.framesCachePath ? cachedTrechoProbe(input.framesCachePath, rawProbe) : rawProbe;
   let encoder: TrechoEncoder = pickTrechoEncoder(input.listEncoders ? input.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
   const p = input.mediaPath.replace(/\\/g, "/");
   const xmlDir = `${p.slice(0, p.lastIndexOf("/") + 1)}${TRECHOS.dirName}/`;
@@ -4185,7 +4491,6 @@ export function renderTrechos(input: {
   let reused = 0;
   let redone = 0;
   let tmp: string | null = null;
-  const fmt = (n: number | null) => (n === null ? "ilegível (ffprobe sem contagem)" : `${n} quadro(s)`);
   try {
     const trechos = planned.map((t) => {
       const out = join(dir, t.name);
@@ -4197,40 +4502,35 @@ export function renderTrechos(input: {
           return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
         }
         // #13488: o nome promete os quadros, o arquivo no disco não os tem (encode interrompido, Drive que não gravou tudo).
-        log(`[aviso] trecho ${t.name} no disco com ${fmt(got)}, o nome pede ${expected}: apagado e refeito (#13488)`);
+        log(`[aviso] trecho ${t.name} no disco com ${fmtTrechoFrames(got)}, o nome pede ${expected}: apagado e refeito (#13488)`);
         rmSync(out, { force: true });
         redone++;
       }
       tmp ??= mkdtempSync(join(input.tmpRoot ?? tmpdir(), "diaria-trechos-"));
-      const part = join(tmp, `${t.name}.part`);
-      const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
-      for (let attempt = 1; ; attempt++) {
-        rmSync(part, { force: true });
-        try {
-          encode(args(encoder));
-        } catch (e) {
-          if (encoder !== "h264_nvenc") throw e;
-          // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
-          log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
-          encoder = "libx264";
-          encode(args(encoder));
-        }
-        // #13488: os quadros no render local e, depois da cópia, no nome final (a pasta do Drive).
-        const gotPart = probeFrames(part);
-        let bad = trechoFramesOk(expected, gotPart) ? null : `o render saiu com ${fmt(gotPart)}`;
-        if (!bad) {
-          copyFileSync(part, out);
-          const gotOut = probeFrames(out);
-          if (!trechoFramesOk(expected, gotOut)) {
-            rmSync(out, { force: true });
-            bad = `a cópia em ${out} ficou com ${fmt(gotOut)}`;
+      // #13488: os quadros no render local e, depois da cópia, no nome final (a pasta do Drive).
+      renderFramesConferidos({
+        out,
+        expected,
+        tmp,
+        probeFrames,
+        probePart: rawProbe,
+        label: `trecho ${t.name}`,
+        pede: "o nome pede",
+        tag: "#13488",
+        log,
+        render: (part) => {
+          const args = (enc: TrechoEncoder) => trechoEncodeArgs({ src: files[t.fileIndex].path, out: part, start: t.start, end: t.end, fps: input.source.fps, encoder: enc });
+          try {
+            encode(args(encoder));
+          } catch (e) {
+            if (encoder !== "h264_nvenc") throw e;
+            // #13282: o ffmpeg no Windows termina a linha com \r\n; split só por \n deixava o \r no aviso.
+            log(`[aviso] h264_nvenc falhou em ${t.name} (${(e as Error).message.split(/\r?\n/)[0]}): os trechos seguem em libx264 (#13219)`);
+            encoder = "libx264";
+            encode(args(encoder));
           }
-        }
-        rmSync(part, { force: true });
-        if (!bad) break;
-        if (attempt >= 2) throw new Error(`trecho ${t.name}: ${bad}, o nome pede ${expected} (2 tentativas, #13488)`);
-        log(`[aviso] trecho ${t.name}: ${bad}, o nome pede ${expected}; refazendo (#13488)`);
-      }
+        },
+      });
       made++;
       return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
     });
@@ -4240,22 +4540,75 @@ export function renderTrechos(input: {
   }
 }
 
-/** #13437: folga mínima (s) para o clipe cortado sair mais curto que o intervalo (além de 5% dele) antes de ser recusado. */
-const TRECHO_CLIP_SHORT_TOL_S = 0.5;
-
 /** #13437 (PR 2): a fonte do trecho nesta máquina (ordem em `video-trecho-fonte.ts`). */
 export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">, t: Pick<TrechoInseridoRoteiro, "id" | "trecho">): FonteTrecho {
   return resolverFonteTrecho({ id: t.id, trecho: t.trecho, fontes: ctx.trechoFontes ?? {}, editionsRootDir: editionsRootDir(), driveRoot: ctx.trechoDriveRoot ?? null });
 }
 
 /**
+ * #13500: o quanto um trecho inserido pode passar do fim do vídeo de origem, e
+ * sair mais curto que o intervalo, sem ser recusado: o stream de vídeo costuma
+ * acabar antes do container (padding do AAC), e um `fim` = fim do vídeo rende
+ * de 1 a 3 quadros a menos.
+ */
+export const TRECHO_END_SHORT_TOL_S = 0.1;
+
+/**
+ * #13500: o mínimo de quadros aceito no clipe do trecho inserido. O intervalo
+ * inteiro, salvo quando o fim do trecho chega ao fim do vídeo de origem
+ * (`durS`, a do stream de vídeo): aí até `TRECHO_END_SHORT_TOL_S` a menos.
+ */
+export function trechoInseridoMinFrames(frames: number, fimS: number, durS: number | null, fps: number): number {
+  if (durS === null || fimS < durS - TRECHO_END_SHORT_TOL_S) return frames;
+  return Math.max(1, frames - Math.ceil(TRECHO_END_SHORT_TOL_S * fps));
+}
+
+/** #13500: a saída do ffprobe de uma duração (`csv=p=0`) → segundos; vazia, `N/A` ou não positiva = null. */
+export function parseProbeDurationS(stdout: string): number | null {
+  const d = Number(stdout.trim().split(/\r?\n/)[0]?.replace(/,$/, ""));
+  return Number.isFinite(d) && d > 0 ? d : null;
+}
+
+/**
+ * #13500: a duração do vídeo de origem para conferir o fim do trecho: a do
+ * stream de vídeo (`v:0`), que acaba antes do container quando o áudio tem
+ * padding; sem ela, a do container (`format`). ffprobe falho = null.
+ */
+export function probeVideoDurationS(src: string, ffprobe: (args: string[]) => string = (args) => run("ffprobe", args).stdout): number | null {
+  for (const args of [
+    ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", src],
+    ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src],
+  ]) {
+    try {
+      const d = parseProbeDurationS(ffprobe(args));
+      if (d !== null) return d;
+    } catch { /* tenta o próximo */ }
+  }
+  return null;
+}
+
+/**
  * #13437 (PR 2): o clipe de um trecho inserido, cortado do export do vídeo de
  * origem no intervalo do roteiro, no tamanho e fps da sequência, no out dir
- * (`trechoInseridoFileName`, reaproveitado no rebuild: o hash muda com a fonte e
- * o intervalo). Sem fonte, intervalo de menos de 1 quadro ou além do fim do
- * vídeo, fonte ilegível, ffmpeg falho ou clipe cortado bem mais curto que o
- * intervalo: `null` com `[aviso]` (o trecho fica só no marcador), nunca para
- * o build. ffprobe que falha (na fonte ou no clipe) é `[aviso]`, sem recusar.
+ * (`trechoInseridoFileName`; o hash muda com a fonte e o intervalo). Arquivo já
+ * presente é reaproveitado só se tiver os quadros do intervalo; o que diverge é
+ * apagado e cortado de novo, com [aviso] (#13500, a mesma disciplina do
+ * `renderTrechos`, #13488: o hash não muda com um corte interrompido, e o
+ * truncado era reaproveitado em todo rebuild). O corte vai para uma pasta
+ * temporária FORA do out dir e é copiado (`renderFramesConferidos`), com os
+ * quadros conferidos no temporário e na cópia. Arquivo que o ffprobe roda e não
+ * conta (sem `moov`) é ilegível e também é cortado de novo; só com o ffprobe
+ * INDISPONÍVEL nesta máquina (`ffprobeAvailable`) o corte existente é
+ * reaproveitado sem conferir, com [aviso]. Os `.part` órfãos do código antigo
+ * no out dir são varridos uma vez (`sweepTrechoInseridoParts`).
+ * Trecho que chega ao fim do vídeo de origem (duração do stream de vídeo) pode
+ * sair até `TRECHO_END_SHORT_TOL_S` mais curto: entra com os quadros reais em
+ * `frames`, com [premissa]. Sem fonte, intervalo de menos de 1 quadro ou além
+ * do fim do vídeo (mais que a folga), fonte ilegível, ffmpeg falho ou clipe
+ * com outro número de quadros (2 tentativas; inclui o render que o ffprobe não
+ * conta): `null` com `[aviso]` (o trecho fica só no marcador), nunca para o
+ * build. ffprobe que falha na duração da fonte é `[aviso]`, sem recusar.
+ * `probeDurationS`/`probeFrames`/`tmpRoot` são injetáveis para o teste.
  */
 export function cutTrechoInserido(
   ctx: Ctx,
@@ -4264,7 +4617,17 @@ export function cutTrechoInserido(
   spec: Pick<SequenceSpec, "width" | "height" | "name">,
   fps: number,
   mediaPath: string,
-  deps: { encode?: (args: string[]) => void; probeDurationS?: (src: string) => number | null; listEncoders?: () => string } = {},
+  deps: {
+    encode?: (args: string[]) => void;
+    probeDurationS?: (src: string) => number | null;
+    listEncoders?: () => string;
+    /** #13500: os quadros de vídeo do arquivo (null = ilegível); padrão `probeTrechoFrames`. */
+    probeFrames?: (path: string) => number | null;
+    /** #13500: onde fica a pasta temporária do corte (padrão `os.tmpdir()`), fora do out dir sincronizado. */
+    tmpRoot?: string;
+    /** #13500: o ffprobe roda nesta máquina? Padrão `ffprobeAvailable` (uma vez por processo). */
+    ffprobeAvailable?: () => boolean;
+  } = {},
 ): TrechoInseridoClip | null {
   const fonte = fonteDoTrecho(ctx, t);
   const where = `${spec.name}: trecho depois da fala ${t.id} (${rotuloTrecho(t.trecho)})`;
@@ -4281,18 +4644,11 @@ export function cutTrechoInserido(
     console.error(`[aviso] ${where} NÃO inserido: o intervalo do roteiro (${t.trecho.inicioS.toFixed(2)} a ${t.trecho.fimS.toFixed(2)} s) não chega a 1 quadro a ${fps} fps; conferir o intervalo no roteiro (#13437)`);
     return null;
   }
-  const probe = deps.probeDurationS ?? ((src: string) => {
-    try {
-      const d = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src]).stdout.trim());
-      return Number.isFinite(d) && d > 0 ? d : null;
-    } catch {
-      return null;
-    }
-  });
+  const probe = deps.probeDurationS ?? probeVideoDurationS;
   const dur = probe(fonte.fonte);
   if (dur === null) {
     console.error(`[aviso] ${where}: a duração de ${fonte.fonte} não foi medida (ffprobe falhou); o fim do trecho não foi conferido contra o fim do vídeo, e o clipe cortado é conferido depois do corte (#13437)`);
-  } else if (t.trecho.fimS > dur + 0.05) {
+  } else if (t.trecho.fimS > dur + TRECHO_END_SHORT_TOL_S) {
     console.error(`[aviso] ${where} NÃO inserido: o fim do trecho (${t.trecho.fimS.toFixed(2)} s) passa do fim de ${fonte.fonte} (${dur.toFixed(2)} s); conferir o intervalo no roteiro, ou a fonte (#13437)`);
     return null;
   }
@@ -4319,35 +4675,78 @@ export function cutTrechoInserido(
     fimS: t.trecho.fimS,
     fonte: fonte.fonte,
   };
+  const probeFrames = deps.probeFrames ?? probeTrechoFrames;
+  // #13500: trecho que vai até o fim do vídeo de origem pode sair até TRECHO_END_SHORT_TOL_S mais curto
+  // (o stream de vídeo acaba antes do container); aceito com os quadros reais, nunca recusado por isso.
+  const minFrames = trechoInseridoMinFrames(frames, t.trecho.fimS, dur, fps);
+  const usarQuadros = (got: number, onde: string) => {
+    if (minFrames < frames && got < frames) {
+      console.error(`[premissa] ${where}: ${onde} tem ${got} quadro(s), ${frames - got} a menos que o intervalo (a fonte acaba antes do fim do trecho, dentro de ${TRECHO_END_SHORT_TOL_S} s): o XML usa os ${got} (#13500)`);
+      clip.frames = got;
+    }
+  };
+  // #13500: os `.part` órfãos que o código antigo deixava no out dir (o Drive), uma vez por out dir.
+  const orfaos = sweepTrechoInseridoParts(ctx.outDir, ctx.edition);
+  if (orfaos) console.error(`[video-montagem] ${orfaos} .part órfão(s) de trecho inserido apagado(s) de ${ctx.outDir} (#13500)`);
   if (existsSync(out)) {
-    if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
-    return clip;
+    const got = probeFrames(out);
+    if (got === null && !(deps.ffprobeAvailable ?? ffprobeAvailable)()) {
+      // #13500: sem ffprobe nesta máquina não dá para contar nada: o corte existente não é apagado por isso.
+      console.error(`[aviso] ${where}: ffprobe indisponível, os quadros de ${name} não foram contados: reaproveitado sem conferir, com a contagem assumida pelo intervalo (${frames} quadros); conferir no 1º import (#13500)`);
+      if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
+      return clip;
+    }
+    if (got !== null && trechoFramesInRange(minFrames, frames, got)) {
+      usarQuadros(got, `o ${name} reaproveitado`);
+      if (uploadsToDrive(ctx)) queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), out);
+      return clip;
+    }
+    // #13500: o hash promete o intervalo, o arquivo no disco não tem os quadros (corte interrompido, Drive que não
+    // gravou tudo); o ffprobe roda e não conta (sem `moov`) = ilegível, também cortado de novo.
+    console.error(`[aviso] ${where}: ${name} no disco com ${fmtTrechoFrames(got)}, o intervalo pede ${frames}: apagado e cortado de novo (#13500)`);
+    rmSync(out, { force: true });
   }
+  // #13500: o código antigo cortava para `.part` dentro do out dir (o Drive); o órfão sai antes do corte.
+  rmSync(`${out}.part`, { force: true });
   const encode = deps.encode ?? ((args: string[]) => { run("ffmpeg", args); });
-  const part = `${out}.part`;
-  const args = (encoder: TrechoEncoder) => trechoInseridoEncodeArgs({ src: fonte.fonte!, out: part, inicioS: t.trecho.inicioS, frames, fps, width: spec.width, height: spec.height, encoder });
+  let tmp: string | null = null;
   try {
     let encoder: TrechoEncoder = "libx264";
     try {
       encoder = pickTrechoEncoder(deps.listEncoders ? deps.listEncoders() : run("ffmpeg", ["-hide_banner", "-encoders"]).stdout);
     } catch { /* sem a lista: libx264 */ }
-    try {
-      encode(args(encoder));
-    } catch (e) {
-      if (encoder !== "h264_nvenc") throw e;
-      console.error(`[aviso] h264_nvenc falhou no trecho ${t.id} (${(e as Error).message.split(/\r?\n/)[0]}): segue em libx264 (#13437)`);
-      encode(args("libx264"));
-    }
-    // O clipe cortado tem de ter a duração do intervalo: mais curto = a fonte acabou antes (o probe dela pode ter falhado).
-    const esperado = frames / fps;
-    const got = probe(part);
-    if (got === null) console.error(`[aviso] ${where}: a duração do clipe cortado não foi medida (ffprobe falhou); conferir no 1º import que ele tem ${esperado.toFixed(2)} s (#13437)`);
-    else if (got < esperado - Math.max(TRECHO_CLIP_SHORT_TOL_S, esperado * 0.05)) throw new Error(`o clipe saiu com ${got.toFixed(2)} s, e o intervalo pede ${esperado.toFixed(2)} s (a fonte acaba antes do fim do trecho?)`);
-    renameSync(part, out);
+    tmp = mkdtempSync(join(deps.tmpRoot ?? tmpdir(), "diaria-trecho-inserido-"));
+    // #13500: o clipe tem de ter os quadros do intervalo; menos = a fonte acabou antes, ou o arquivo ficou curto.
+    const got = renderFramesConferidos({
+      out,
+      expected: frames,
+      minExpected: minFrames,
+      tmp,
+      probeFrames,
+      label: `trecho inserido ${t.id}`,
+      pede: "o intervalo pede",
+      tag: "#13500",
+      log: (m) => console.error(m),
+      render: (part) => {
+        const args = (enc: TrechoEncoder) => trechoInseridoEncodeArgs({ src: fonte.fonte!, out: part, inicioS: t.trecho.inicioS, frames, fps, width: spec.width, height: spec.height, encoder: enc });
+        try {
+          encode(args(encoder));
+        } catch (e) {
+          if (encoder !== "h264_nvenc") throw e;
+          console.error(`[aviso] h264_nvenc falhou no trecho ${t.id} (${(e as Error).message.split(/\r?\n/)[0]}): segue em libx264 (#13437)`);
+          encoder = "libx264";
+          encode(args(encoder));
+        }
+      },
+    });
+    usarQuadros(got, "o clipe cortado");
   } catch (e) {
-    rmSync(part, { force: true });
-    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}); fica só o marcador (#13437)`);
+    // #13500: a dica da fonte curta só quando o que falhou foi a contagem de quadros, não o ffmpeg.
+    const dica = e instanceof TrechoFramesError ? "; a fonte acaba antes do fim do trecho?" : "";
+    console.error(`[aviso] ${where} NÃO inserido: o corte de ${fonte.fonte} falhou (${(e as Error).message.split(/\r?\n/)[0]}${dica}); fica só o marcador (#13437)`);
     return null;
+  } finally {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
   }
   return clip;
 }
@@ -4366,7 +4765,7 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
     return null;
   }
   try {
-    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS });
+    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir) });
     const cov = trechosCoverage(r.trechos, sourceFiles(source));
     console.error(
       `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
@@ -5741,6 +6140,11 @@ async function cmdPreview(
   // #12559: bruto em vários arquivos: vídeo do arquivo do clipe em tempo local, áudio da faixa global (tratada, ou o concatenado).
   const multi = isMultiSource(pf.source);
   const multiAudio = multi ? (audioSrc ?? audioInputOf(ctx, pf.source)) : undefined;
+  // #13530 review: onde cada clipe foi decodificado, para refazer na CPU os da GPU se ela cair no meio.
+  const clipJobs: { args: string[]; what: string; device: "cuda" | "cpu" }[] = [];
+  const decodeClip = (args: string[], what: string): void => {
+    clipJobs.push({ args, what, device: runDecode(args, what) });
+  };
   plan.clips.forEach((c, i) => {
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // #13303: o áudio exato do clipe (PCM, amostras por quadro), regravado sobre o concat no fim.
@@ -5751,11 +6155,11 @@ async function cmdPreview(
       // A mesma geometria do XML (arquivo, encaixe, framing do arquivo e do item).
       const g = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, fileOverrides: pf.fileOverrides, clip: c });
       const off = g.file.offsetFrames;
-      run("ffmpeg", previewClipArgs({
+      decodeClip(previewClipArgs({
         src: g.file.path, start: (c.frameIn - off) / fps, end: (c.frameOut - off) / fps,
         crop: g.main.crop ?? { x: 0, y: 0, w: g.file.width, h: g.file.height }, mirrored: g.mirrored, fps, out: join(dir, name), ...size,
         audioSrc: multiAudio, audioStart: c.frameIn / fps, fit: g.fit, videoOnly: true,
-      }));
+      }), `clipe ${i + 1} da prévia`);
       list.push(`file '${name}'`);
       console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block}, ${g.file.id}${g.fit !== "fill" ? `, ${g.fit}` : ""})`);
       return;
@@ -5765,10 +6169,17 @@ async function cmdPreview(
     // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
     const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }));
+    decodeClip(previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}), videoOnly: true }), `clipe ${i + 1} da prévia`);
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
+  // #13530 review: GPU caiu no meio da prévia: os clipes já feitos pela GPU podem ter outro pix_fmt e o concat
+  // -c copy exige parâmetros iguais; refaz esses na CPU (o decoder já está em "cpu") para a prévia sair uniforme.
+  const redo = clipsToRedoOnCpu(clipJobs.map((j) => j.device));
+  if (redo.length > 0) {
+    console.error(`[aviso] a GPU caiu no meio da prévia: refazendo na CPU ${redo.length} clipe(s) feitos por ela, para o concat sair uniforme (#13530)`);
+    for (const k of redo) runDecode(clipJobs[k].args, `${clipJobs[k].what} (refeito na CPU)`);
+  }
   // #12571: o card de CTA que o XML desta sequência levou, como último clipe (com áudio em silêncio para o concat).
   const card = assets.ctaCard ?? null;
   let cardS = 0;

@@ -401,6 +401,19 @@ describe("summarizeTrainCiRuns — antes/depois de runs de CI (#6300, último cr
     assert.deepEqual(s, { prsInvolvedInBatches: 0, issuesInvolvedInBatches: 0, ciRunsUsed: 0, soloPrs: 0 });
   });
 
+  it("#13509: `ciRuns` explícito vence o tamanho do lote — PR-trem de 1 conta run, lote ≥2 sem CI não conta", () => {
+    const outcomes: TrainCiRunsOutcomeLike[] = [
+      { batch: { prs: [1, 2, 3] }, ciRuns: 0 }, // integração falhou: nenhum PR-trem, nenhum run
+      { batch: { prs: [1, 2] }, ciRuns: 1 },
+      { batch: { prs: [3] }, ciRuns: 1 }, // PR-trem de 1 (#10997/#13461): run real
+      { batch: { prs: [2] }, ciRuns: 0 }, // merge solo direto
+    ];
+    const s = summarizeTrainCiRuns(outcomes, prInfos);
+    assert.equal(s.ciRunsUsed, 2);
+    assert.equal(s.soloPrs, 1, "só o merge solo direto conta como fora do trem");
+    assert.equal(s.prsInvolvedInBatches, 3);
+  });
+
   it("PR sem TrainPrInfo correspondente (não encontrado no map): não lança, só não soma issue nenhuma pra ele", () => {
     const outcomes: TrainCiRunsOutcomeLike[] = [{ batch: { prs: [1, 999] } }];
     const s = summarizeTrainCiRuns(outcomes, prInfos);

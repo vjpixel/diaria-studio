@@ -710,10 +710,15 @@ export function dedup(
     // forma aqui e o vencedor costuma ser o item do researcher. Sem herdar o
     // pedido de posição e o `reserved_from`, o aviso `editor-destaque-request`
     // do gate 4 nunca dispara. Pedido já presente no vencedor vence.
-    for (const field of ["editor_destaque_request", "reserved_from"] as const) {
-      if (winner[field]) continue;
-      const donor = sorted.find((a) => a[field]);
-      if (donor) winner[field] = donor[field];
+    // #13510: os dois campos vêm do MESMO doador (o par é uma unidade) e só
+    // quando o vencedor não tem nenhum dos dois — senão o pedido de um
+    // doador se misturaria com o `reserved_from` de outro.
+    if (!winner.editor_destaque_request && !winner.reserved_from) {
+      const donor = sorted.find((a) => a.editor_destaque_request || a.reserved_from);
+      if (donor) {
+        if (donor.editor_destaque_request) winner.editor_destaque_request = donor.editor_destaque_request;
+        if (donor.reserved_from) winner.reserved_from = donor.reserved_from;
+      }
     }
     // #9365: a mesma URL canônica chega crua da pesquisa e canonicalizada da
     // captura de newsletter (e/ou do forward do editor) — as menções em
