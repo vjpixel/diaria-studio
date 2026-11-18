@@ -113,6 +113,19 @@ por acaso) e o cache só tinha os modelos `base` e `small`: daí o venv próprio
 Neo segue com o Python do usuário (`python` do PATH); um `~/.venv-video-montagem`
 criado lá passa a ter prioridade sobre ele.
 
+GPU na transcrição (#13477). O `transcribe_words.py` tenta a CUDA (`int8_float16`)
+e cai na CPU em int8 com `[aviso]` se ela não carregar; `DIARIA_WHISPER_DEVICE=cpu`
+força a CPU. No Windows o CTranslate2 precisa das DLLs do cuBLAS 12 e do cuDNN 9,
+que não vêm com o driver nem com o pip do faster-whisper (sem elas, o 1º `encode`
+falha com `cublas64_12.dll is not found`). No Python que a montagem usa:
+
+```bash
+python -m pip install --user nvidia-cublas-cu12 "nvidia-cudnn-cu12>=9,<10"
+```
+
+O helper registra os `bin` desses pacotes com `os.add_dll_directory`; nada a pôr
+no PATH. Conferido no Neo (RTX 4060 Laptop, driver 617.42) em 18/11/2026.
+
 Opcional (#13372): o `verify-xml` usa o OpenTimelineIO (adapter FCP7) como 2º
 leitor do XML, conferindo clipes, in/out e duração contra o leitor próprio. Sem
 ele, avisa "2º leitor indisponível" e segue; divergência nunca reprova o XML.
