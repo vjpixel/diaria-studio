@@ -1124,6 +1124,15 @@ export interface TrainBatchOutcome {
     | "retido"
     | "retido-ilegivel";
   detail: string;
+  /**
+   * #13509: runs de CI do PR-trem consumidos por ESTE outcome — 1 quando o
+   * `pollTrainCi` do lote rodou (inclusive PR-trem de 1, #10997/#13461, e
+   * lote vermelho/indeterminado), 0 quando não houve CI (merge solo direto,
+   * integração ou abertura do PR-trem falhou, outcome derivado de um PR
+   * tirado de um lote cujo run já foi contado). `summarizeTrainCiRuns` soma
+   * este campo em vez de inferir pelo tamanho do lote.
+   */
+  ciRuns?: number;
   /** #12734: só em `threads-bloqueantes` — PR barrado e IDs das threads retidas. */
   blockingThreads?: { pr: number; threads: string[] };
 }
@@ -1272,14 +1281,14 @@ export async function runMergeTrain(
   /** Lote que não pode seguir: bissecta (>=2) ou, no piso, vira `solo-failed`
    * terminal — `bisectBatch` lança em lote de 1, e um PR sozinho que falha
    * sobre a base atual não tem metade "boa" pra isolar. */
-  const failOrBisect = (batch: TrainBatch, detail: string): void => {
+  const failOrBisect = (batch: TrainBatch, detail: string, ciRuns: number): void => {
     if (batch.prs.length === 1) {
-      outcomes.push({ batch, status: "solo-failed", detail: `${detail} — PR sozinho sobre a base atual, sem merge (#10997)` });
+      outcomes.push({ batch, status: "solo-failed", detail: `${detail} — PR sozinho sobre a base atual, sem merge (#10997)`, ciRuns });
       return;
     }
     const [left, right] = bisectBatch(batch);
     queue.push(left, right);
-    outcomes.push({ batch, status: "abandoned", detail: `${detail}, bissectando` });
+    outcomes.push({ batch, status: "abandoned", detail: `${detail}, bissectando`, ciRuns });
   };
 
   while (queue.length > 0) {
@@ -1302,7 +1311,7 @@ export async function runMergeTrain(
       }
       const threadsOutcome = threadsBlockedOutcome(batch, result); // #12734
       if (threadsOutcome) {
-        outcomes.push(threadsOutcome);
+        outcomes.push({ ...threadsOutcome, ciRuns: 0 });
         continue;
       }
       const soloStatus = result.ok
@@ -1312,7 +1321,7 @@ export async function runMergeTrain(
           : result.retidoIlegivel
             ? "retido-ilegivel"
             : "retido";
-      outcomes.push({ batch, status: soloStatus, detail: result.error ?? "sem trem — merge solo" });
+      outcomes.push({ batch, status: soloStatus, detail: result.error ?? "sem trem — merge solo", ciRuns: 0 });
       continue;
     }
 
@@ -1325,7 +1334,7 @@ export async function runMergeTrain(
       // mas ainda assim é um diretório temp e uma branch local que não
       // devem sobreviver além deste lote.
       cleanupIntegrationBranch(runner, integ.branchName, integ.worktreePath, mainCwd);
-      failOrBisect(batch, `integração falhou (${integ.error})`);
+      failOrBisect(batch, `integração falhou (${integ.error})`, 0);
       continue;
     }
 
@@ -1334,7 +1343,7 @@ export async function runMergeTrain(
       trainPrNumber = openTrainPr(runner, branchName, baseBranch, buildTrainPrTitle(batch), buildTrainPrBody(batch, prInfos));
     } catch (err) {
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-      failOrBisect(batch, `abrir PR-trem falhou (${err instanceof Error ? err.message : String(err)})`);
+      failOrBisect(batch, `abrir PR-trem falhou (${err instanceof Error ? err.message : String(err)})`, 0);
       continue;
     }
     applyTrainGateLabels(runner, trainPrNumber, batch, prInfos); // #11019
@@ -1376,6 +1385,7 @@ export async function runMergeTrain(
           batch,
           status: "solo-merged",
           detail: mergeResult.error ?? `revalidado sobre a base atual (PR-trem #${trainPrNumber}, CI verde) e squash-mergeado (${why})`,
+          ciRuns: 1,
         });
       } else if (mergeResult.staleBase) {
         // #13461: a base andou entre o CI do PR-trem e o merge (outra sessão
@@ -1385,17 +1395,18 @@ export async function runMergeTrain(
         const seen = (baseMovedRetries.get(key) ?? 0) + 1;
         baseMovedRetries.set(key, seen);
         if (seen <= MAX_BASE_MOVED_RETRIES) {
-          outcomes.push({ batch, status: "abandoned", detail: `${mergeResult.error} — integração refeita sobre a base nova (tentativa ${seen}/${MAX_BASE_MOVED_RETRIES})` });
+          outcomes.push({ batch, status: "abandoned", detail: `${mergeResult.error} — integração refeita sobre a base nova (tentativa ${seen}/${MAX_BASE_MOVED_RETRIES})`, ciRuns: 1 });
           queue.unshift(batch);
         } else {
           outcomes.push({
             batch,
             status: "lock-blocked",
             detail: `base andou ${seen}x entre o CI do PR-trem e o merge — lote validado só sobre base antiga, não mergeado: ${mergeResult.error}`,
+            ciRuns: 1,
           });
         }
       } else if (mergeResult.ok) {
-        outcomes.push({ batch, status: "merged", detail: mergeResult.error ?? `PR-trem #${trainPrNumber} squash-mergeado` });
+        outcomes.push({ batch, status: "merged", detail: mergeResult.error ?? `PR-trem #${trainPrNumber} squash-mergeado`, ciRuns: 1 });
       } else if (mergeResult.retidoPr !== undefined) {
         // #10294: 1 PR do lote ficou retido para o editor DEPOIS da
         // descoberta. Nunca prende o resto: o retido sai (terminal
@@ -1403,11 +1414,12 @@ export async function runMergeTrain(
         // menor — anti-livelock preservado (cada re-entrada encolhe o lote).
         const retidoPr = mergeResult.retidoPr;
         const rest = batch.prs.filter((p) => p !== retidoPr);
-        outcomes.push({ batch, status: "abandoned", detail: `PR #${retidoPr} retido no instante do merge — lote refeito sem ele: ${mergeResult.error}` });
+        outcomes.push({ batch, status: "abandoned", detail: `PR #${retidoPr} retido no instante do merge — lote refeito sem ele: ${mergeResult.error}`, ciRuns: 1 });
         outcomes.push({
           batch: { prs: [retidoPr] },
           status: mergeResult.retidoIlegivel ? "retido-ilegivel" : "retido",
           detail: mergeResult.error ?? "retido-para-editor",
+          ciRuns: 0, // o run do lote já foi contado na entrada `abandoned` acima
         });
         if (rest.length > 0) queue.push({ prs: rest });
       } else if (mergeResult.threadsBlockedPr !== undefined && mergeResult.blockingThreads !== undefined && batch.prs.length > 1) {
@@ -1424,9 +1436,10 @@ export async function runMergeTrain(
           batch,
           status: "abandoned",
           detail: `PR #${blockedPr} com thread(s) de review aberta(s) no instante do merge — lote refeito sem ele: ${mergeResult.error}`,
+          ciRuns: 1,
         });
         const blockedOutcome = threadsBlockedOutcome({ prs: [blockedPr] }, mergeResult);
-        if (blockedOutcome) outcomes.push(blockedOutcome);
+        if (blockedOutcome) outcomes.push({ ...blockedOutcome, ciRuns: 0 }); // run já contado na entrada `abandoned`
         if (rest.length > 0) queue.push({ prs: rest });
       } else if (mergeResult.lockDenied) {
         // Esgotou os retries e o lock continua negado — achado do fleet
@@ -1438,6 +1451,7 @@ export async function runMergeTrain(
           batch,
           status: "lock-blocked",
           detail: `lock negado após ${MAX_LOCK_RETRIES} tentativas — lote validado (CI verde) mas não mergeado: ${mergeResult.error}`,
+          ciRuns: 1,
         });
       } else {
         // Falha de merge que NÃO é lock — também não bissecta (o problema
@@ -1448,9 +1462,10 @@ export async function runMergeTrain(
         // ia investigar sessão concorrente; erro de leitura das threads vira
         // `threads-ilegiveis`. O resto (CI regrediu, claims,
         // gh pr merge falhou por outro motivo) segue no rótulo genérico.
-        outcomes.push(
-          threadsBlockedOutcome(batch, mergeResult) ?? { batch, status: "lock-blocked", detail: `merge falhou (não-lock): ${mergeResult.error}` },
-        );
+        outcomes.push({
+          ...(threadsBlockedOutcome(batch, mergeResult) ?? { batch, status: "lock-blocked", detail: `merge falhou (não-lock): ${mergeResult.error}` }),
+          ciRuns: 1,
+        });
       }
       continue;
     }
@@ -1480,6 +1495,7 @@ export async function runMergeTrain(
           detail:
             `1ª execução do CI do lote: fail; reconfirmação (2ª execução, mesmo sha): ${reconfirmVerdict} — ` +
             "discordância, assinatura de corrida (#7060/#7064); lote NÃO bissectado, requer nova tentativa",
+          ciRuns: 1, // a reconfirmação relê o mesmo run (mesmo sha), não dispara outro
         });
         continue;
       }
@@ -1493,7 +1509,7 @@ export async function runMergeTrain(
     runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
     cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
     for (const pr of batch.prs) needsBaseRevalidation.add(pr);
-    failOrBisect(batch, `CI do lote: ${finalVerdict}${reconfirmNote}`);
+    failOrBisect(batch, `CI do lote: ${finalVerdict}${reconfirmNote}`, 1);
   }
 
   return outcomes;
