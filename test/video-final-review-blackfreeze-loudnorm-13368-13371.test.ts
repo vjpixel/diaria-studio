@@ -236,7 +236,8 @@ describe("#13371 prévia: loudnorm em duas passadas com o alvo do export", () =>
     const src = readFileSync(new URL("../scripts/video-montagem.ts", import.meta.url), "utf8");
     assert.doesNotMatch(src, /loudnorm: LOUDNORM_TARGET/);
     assert.doesNotMatch(src, /"-af", LOUDNORM_TARGET\]/);
-    assert.match(src, /normalizePreviewAudio\(dir\);\n\s*copyFileSync\(join\(dir, "previa\.mp4"\), out\);/);
+    // #13610: a cópia passou a `installPreviewFile` (`.part`, arquivo/ da anterior, rename); a ordem continua: normaliza, depois instala.
+    assert.match(src, /normalizePreviewAudio\(dir\);\n(?:\s*\/\/[^\n]*\n)*\s*(?:copyFileSync|installPreviewFile)\(join\(dir, "previa\.mp4"\), out[,)]/);
   });
 
   it("áudio a -30 LUFS sai a -14 LUFS (±1) depois das duas passadas, pelo ffmpeg desta máquina", { skip: !hasFfmpeg }, () => {

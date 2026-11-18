@@ -653,13 +653,22 @@ export async function uploadToFolder(
   folderId: string,
   localPath: string,
   log: (line: string) => void = () => {},
+  opts: { excludeIds?: ReadonlySet<string> } = {},
 ): Promise<{ id: string; name: string; webViewLink: string | null; updated: boolean }> {
   const name = basename(localPath);
+  // #13610: ids que não podem ser atualizados no lugar (a prévia anterior, que vai para arquivo/ depois de a nova subir).
+  const exclude = opts.excludeIds ?? new Set<string>();
+  const findUsable = async () => {
+    if (!exclude.size) return findByName(deps, folderId, name);
+    const found = (await listChildren(deps, folderId, { name })).filter((f) => f.mimeType !== FOLDER_MIME && !exclude.has(f.id));
+    found.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
+    return found.length === 0 ? { file: null, duplicates: 0 as const } : { file: found[0], duplicates: found.length - 1 };
+  };
   const size = statSync(localPath).size;
   const chunked = size > UPLOAD_CHUNK_THRESHOLD;
   const content = chunked ? undefined : readFileSync(localPath);
   const mime = uploadMimeFor(name);
-  const found = await findByName(deps, folderId, name);
+  const found = await findUsable();
   if (found.file && found.duplicates) log(`[aviso] ${found.duplicates + 1} arquivos "${name}" na pasta do Drive: atualizando o mais recente (${found.file.id})`);
   let existing = found.file;
   const fields = "id,name,webViewLink";
@@ -667,7 +676,7 @@ export async function uploadToFolder(
   let lastError = "";
   for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt++) {
     // Um PUT que o Drive gravou mas cuja resposta se perdeu já criou o arquivo: a nova tentativa atualiza, não duplica.
-    if (attempt > 1 && !existing) existing = (await findByName(deps, folderId, name)).file;
+    if (attempt > 1 && !existing) existing = (await findUsable()).file;
     const sessionUrl = existing
       ? `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable&supportsAllDrives=true&fields=${fields}`
       : `${DRIVE_UPLOAD}/files?uploadType=resumable&supportsAllDrives=true&fields=${fields}`;

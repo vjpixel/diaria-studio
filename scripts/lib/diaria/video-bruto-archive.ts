@@ -79,6 +79,11 @@ export function isBrutoFile(relPath: string): boolean {
   return CAMERA_NAME.test(name) || WIN_CAMERA_NAME.test(name) || /bruto[_ -]?unido/i.test(name);
 }
 
+/** Pura — os brutos de uma listagem recursiva da pasta da edição (`rclone lsjson -R`); `arquivo/` (#13610) e as demais subpastas ficam fora. */
+export function brutoFilesOf<T extends { path: string }>(files: readonly T[]): T[] {
+  return files.filter((f) => isBrutoFile(f.path));
+}
+
 /**
  * Pura — edições que o nome da pasta cobre. `261105` → `["261105"]`;
  * `261109-10` → `["261109", "261110"]`. Fora do padrão → `null` (a pasta é
