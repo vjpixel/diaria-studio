@@ -126,7 +126,7 @@ import {
   decideFolder,
   duplicatePaths,
   editionsOfFolder,
-  isBrutoFile,
+  brutoFilesOf,
   montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
@@ -930,7 +930,7 @@ async function runArchiveLocked(
       const l = await listRemote(cfg, stop, `${cfg.remoteRoot}/${name}`);
       if ("error" in l) report.errors.push(`${name}: ${l.error}`);
       else
-        for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
+        for (const f of brutoFilesOf(l.files)) {
           report.files.push(inUseResult(name, f, refs) ?? { folder: name, path: f.path, sizeBytes: f.size, status: "sairia" });
         }
     }
@@ -978,7 +978,7 @@ async function runArchiveLocked(
         continue;
       }
       const dups = duplicatePaths(l.files);
-      for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
+      for (const f of brutoFilesOf(l.files)) {
         // #12603: o sinal para a rodada entre um bruto e outro.
         if (stop.signal) break folders;
         const inUse = inUseResult(folder, f, refs);
