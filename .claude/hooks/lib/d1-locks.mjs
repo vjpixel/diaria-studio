@@ -120,6 +120,58 @@ export async function d1ReadMergeGrant(client, sessionId, repo = DEFAULT_GRANT_R
 }
 
 /**
+ * #13577: presença da coordenadora no D1, uma linha por sessão. `holder` = a
+ * própria coordenadora; `meta` = `{ sessionId, kind, machineTag }`. Gravada
+ * pelo `register` e renovada a cada `grant-merge` (`scripts/lib/session-registry.ts`),
+ * apagada pelo `end`. Existe porque a concessão do D1 (#13242) ainda exigia
+ * o registro da concedente em `data/sessions/`, que chega à máquina da
+ * beneficiária pelo mesmo sync do Drive que a concessão contorna.
+ */
+export function coordinatorPresenceD1Name(sessionId) {
+  return `coordinator:${sessionId}`;
+}
+
+/**
+ * Presença lida de uma linha `coordinator:` (#13577), ou `null` quando a linha
+ * não descreve a presença de `sessionId`. Pura. `holder` e `meta.sessionId`
+ * precisam ser a própria sessão, e `kind` uma string. Se o `kind` tem
+ * autoridade de merge, decide quem chama.
+ */
+export function presenceFromD1Row(row, sessionId) {
+  if (!row || typeof row.holder !== "string" || typeof row.meta !== "string") return null;
+  if (typeof sessionId !== "string" || sessionId === "" || row.holder !== sessionId) return null;
+  let p;
+  try {
+    p = JSON.parse(row.meta);
+  } catch {
+    return null;
+  }
+  if (!p || typeof p !== "object" || p.sessionId !== sessionId || typeof p.kind !== "string") return null;
+  const presence = { sessionId, kind: p.kind };
+  if (typeof p.machineTag === "string") presence.machineTag = p.machineTag;
+  return presence;
+}
+
+/**
+ * Presença viva no D1 da coordenadora `sessionId` (#13577):
+ * `{ ok: true, value: presence | null }`; falha = `{ ok: false, error, permanent }`.
+ * Linha vencida (relógio do D1) volta `null`.
+ */
+export async function d1ReadCoordinatorPresence(client, sessionId) {
+  try {
+    const { results } = await client.query(READ_META_SQL, [coordinatorPresenceD1Name(sessionId), ""]);
+    const row = results[0];
+    if (!row) return { ok: true, value: null };
+    const expiresAt = Number(row.expires_at);
+    const nowMs = Number(row.now_ms);
+    if (Number.isFinite(expiresAt) && Number.isFinite(nowMs) && expiresAt <= nowMs) return { ok: true, value: null };
+    return { ok: true, value: presenceFromD1Row(row, sessionId) };
+  } catch (e) {
+    return failure(e);
+  }
+}
+
+/**
  * Guard de merge, para UM repo: soma ao holder do ARQUIVO desse repo
  * (`localHolder`: sessão, `null` = livre, `undefined` = leitura
  * indeterminada) o que o D1 respondeu para o MESMO repo (`d1Holders`: `[]`
