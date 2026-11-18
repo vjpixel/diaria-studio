@@ -77,6 +77,31 @@ describe("session closure evidence", () => {
     assert.deepEqual(result.checkedWorktrees, [resolve("/repo/own")]);
     assert.equal(result.pending.filter(p => p.startsWith("mudanças não commitadas")).length, 1);
   });
+  it("checks the session's own worktree once when git lists it in a non-normalized form, on any OS (#13537)", () => {
+    // `/repo/./own/` differs from `/repo/own` as a raw string on Linux too, so this case discriminates in CI.
+    for (const gitForm of ["/repo/./own", "/repo/own/", "/repo/x/../own/"]) {
+      const result = checkSessionClose("/repo", session, [], (cmd, args) => {
+        if (args[0] === "worktree") return `worktree ${gitForm}\nbranch refs/heads/feature/own\n\n`;
+        if (args[0] === "status") return "?? forgotten.txt\n";
+        return clean(cmd, args);
+      });
+      assert.deepEqual(result.checkedWorktrees, [resolve("/repo/own")], gitForm);
+      assert.equal(result.pending.filter(p => p.startsWith("mudanças não commitadas")).length, 1, gitForm);
+    }
+  });
+  it("checks the worktree once when only the drive letter case differs (#13537)", () => {
+    // Harness hands `c:\repo\own`, git prints `C:/repo/own`. Only discriminates on Windows; on Linux it is a no-op.
+    const registryForm = resolve("/repo/own").replace(/^[A-Z]:/, d => d.toLowerCase());
+    const gitForm = resolve("/repo/own").replace(/\\/g, "/").replace(/^[a-z]:/, d => d.toUpperCase());
+    const result = checkSessionClose("/repo", { ...session, worktrees: [{ path: registryForm }] }, [], (cmd, args) => {
+      if (args[0] === "worktree") return `worktree ${gitForm}\nbranch refs/heads/feature/own\n\n`;
+      if (args[0] === "status") return "?? forgotten.txt\n";
+      return clean(cmd, args);
+    });
+    // The readable form kept is the first one seen (the registry's).
+    assert.deepEqual(result.checkedWorktrees, [resolve(registryForm)]);
+    assert.equal(result.pending.filter(p => p.startsWith("mudanças não commitadas")).length, 1);
+  });
   it("does not block on line-ending-only diffs nor routine audience snapshots (#11733)", () => {
     const status = " M scripts/lib/crlf.ts\nM  scripts/lib/real.ts\n M context/audience-profile.md\n"
       + "?? docs/audience-history/2026-10-22.md\n?? _tmp.ts\n";
