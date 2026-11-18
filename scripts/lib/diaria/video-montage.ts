@@ -4159,7 +4159,10 @@ export function telaMarkersFor(
         let wordEnd = it.interval.end;
         if (opts.toClipEnd) {
           // #13489: a borda de energia abre o clipe além da palavra; a cauda vale até a fala do próximo item.
-          const next = items.filter((o) => o !== it && o.interval.start >= it.interval.end - 1e-6).reduce((m, o) => Math.min(m, o.interval.start), Infinity);
+          // O próximo item é escolhido pelo INÍCIO, não pelo fim deste: os intervalos têm folga de ~0,3 s de cada
+          // lado, então falas com pausa curta se sobrepõem e um filtro por `end` descartava a seguinte (o trecho
+          // ia para o fim do clipe fundido, depois da fala seguinte). O `Math.max` abaixo segura o piso em `end`.
+          const next = items.filter((o) => o !== it && o.interval.start > it.interval.start + 1e-6).reduce((m, o) => Math.min(m, o.interval.start), Infinity);
           wordEnd = Math.max(wordEnd, Math.min(c.srcOut, next));
         }
         outF = Math.max(outF, c.seqEnd - Math.round(Math.max(0, c.srcOut - wordEnd) * fps));
@@ -4168,6 +4171,24 @@ export function telaMarkersFor(
     if (Number.isFinite(inF) && outF > inF) out.push({ id: t.id, tela: t.tela, ...(t.telaBox !== undefined ? { telaBox: t.telaBox } : {}), in: inF, out: outF });
   }
   return out.sort((a, b) => a.in - b.in);
+}
+
+/**
+ * Pure (#13489): o quadro da sequência onde entra cada trecho inserido (formato
+ * react, #13437) — o fim do clipe da fala, já aberto pela borda de energia e
+ * limitado ao começo do próximo item (`telaMarkersFor` com `toClipEnd`). Trecho
+ * sem item casado fica fora do mapa. Helper próprio para o `build` não perder o
+ * `toClipEnd` em silêncio (sem ele o trecho cai no fim da palavra e 6 quadros da
+ * fala tocam depois dele).
+ */
+export function trechoInseridoAtFrames(
+  plan: Pick<SequencePlan, "spec" | "clips">,
+  resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
+  fps: number,
+  trechos: ReadonlyArray<{ id: string; texto: string }>,
+): Map<string, number> {
+  const ms = telaMarkersFor(plan, resolved, fps, trechos.map((t) => ({ id: t.id, texto: t.texto, tela: "" })), { toClipEnd: true });
+  return new Map(ms.map((m) => [m.id, m.out]));
 }
 
 /**

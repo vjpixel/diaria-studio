@@ -380,6 +380,7 @@ import {
   buildSequencePlan,
   buildXmeml,
   telaMarkersFor,
+  trechoInseridoAtFrames,
   telaSemMarcador,
   type TelaMarker,
   clockTime,
@@ -4747,16 +4748,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   }
   for (const p of picked) {
     if (!trechosInseridos.length || !isYoutubeSpec(p.spec)) continue;
-    const pos = telaMarkersFor(p, resolved, source.fps, trechosInseridos.map((t) => ({ id: t.id, texto: t.texto, tela: rotuloTrecho(t.trecho) })), { toClipEnd: true });
+    const pos = trechoInseridoAtFrames(p, resolved, source.fps, trechosInseridos);
     const ms: TrechoInseridoMarker[] = [];
     const clips: TrechoInseridoClip[] = [];
     for (const t of trechosInseridos) {
-      const at = pos.find((m) => m.id === t.id);
-      if (!at) {
+      const at = pos.get(t.id);
+      if (at === undefined) {
         console.error(`[aviso] ${p.spec.name}: trecho inserido depois da fala ${t.id} sem item casado no blocks.json (pôr "fala": "${t.id}" no item): fora do XML (#13437)`);
         continue;
       }
-      const m: TrechoInseridoMarker = { id: t.id, trecho: t.trecho, at: at.out };
+      const m: TrechoInseridoMarker = { id: t.id, trecho: t.trecho, at };
       ms.push(m);
       const clip = cutTrechoInserido(ctx, t, m.at, p.spec, source.fps, mediaPath);
       if (clip) clips.push(clip);
