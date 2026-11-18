@@ -29,6 +29,8 @@ describe("#13282 aviso do NVENC com \\r\\n", () => {
         folgaS: 1,
         listEncoders: () => " V....D h264_nvenc NVIDIA NVENC H.264 encoder",
         encode,
+        // #13488: o encode falso grava arquivo vazio; os quadros (0-90 a 30 fps, folga 1 s) saem do esperado.
+        probeFrames: () => 90,
         log: (m) => lines.push(m),
       });
       const aviso = lines.find((l) => l.includes("h264_nvenc falhou"));

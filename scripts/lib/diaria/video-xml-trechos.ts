@@ -85,6 +85,51 @@ export function trechoFileId(fileIndex: number, start: number): string {
   return `file-${fileIndex + 1}-t${start}`;
 }
 
+/** Nome de trecho (`{stem}_q{início}-{fim}.mov`) → quadros de início e fim (`end` exclusivo); outro nome = null (#13488). */
+export function parseTrechoName(name: string): { start: number; end: number } | null {
+  const m = /_q(\d{6,})-(\d{6,})\.mov$/.exec(name);
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  return end > start ? { start, end } : null;
+}
+
+/**
+ * Folga, em quadros, entre os quadros que o nome promete e os do arquivo
+ * (#13488). O ffmpeg com `-t` + CFR dá o número exato; 1 quadro cobre o
+ * arredondamento do `-t`. Os truncados da 261118 perdiam de 240 a 511.
+ */
+export const TRECHO_FRAME_TOL = 1;
+
+/**
+ * O arquivo do trecho tem os quadros que o nome promete (#13488)? `got` null
+ * (ffprobe que falha: arquivo sem `moov`, cortado no meio) = não.
+ */
+export function trechoFramesOk(expected: number, got: number | null): boolean {
+  return got !== null && Number.isFinite(got) && Math.abs(got - expected) <= TRECHO_FRAME_TOL;
+}
+
+/**
+ * Argumentos do ffprobe que contam os pacotes de vídeo do trecho (#13488):
+ * sem decodificar (um trecho 4K de 30 s conta em menos de 1 s), e um pacote
+ * por quadro no H.264 sem B-frames que o build grava.
+ */
+export function trechoFrameProbeArgs(path: string): string[] {
+  return ["-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path];
+}
+
+/** A saída do ffprobe de `trechoFrameProbeArgs` → quadros; vazia/ilegível = null. */
+export function parseTrechoFrameProbe(stdout: string): number | null {
+  const n = Number(stdout.trim().split(/\r?\n/)[0]?.replace(/,$/, ""));
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Os nomes de trecho que um XML leve aponta (o `<name>` de cada `<file>`), sem repetição, na ordem em que aparecem (#13488). */
+export function trechoNamesInXml(xmlText: string): string[] {
+  const unescape = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+  return [...new Set([...xmlText.matchAll(/<name>([^<]*_q\d{6,}-\d{6,}\.mov)<\/name>/g)].map((m) => unescape(m[1])))];
+}
+
 /** `file-{k}-t{início}` → arquivo (0-based) e início local; outro id = null. */
 export function parseTrechoFileId(id: string): { fileIndex: number; start: number } | null {
   const m = /^file-(\d+)-t(\d+)$/.exec(id);

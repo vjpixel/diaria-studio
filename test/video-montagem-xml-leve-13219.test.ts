@@ -18,6 +18,7 @@ import { parseXmlAudio, toTimeline, xmlPlanIssues, xmlStructureIssues } from "..
 import {
   findTrecho,
   parseTrechoFileId,
+  parseTrechoName,
   parseTrechosFolgaArg,
   pickTrechoEncoder,
   planTrechos,
@@ -246,6 +247,11 @@ describe("#13219 build: XML leve por padrão, --xml-bruto e --trechos-folga", ()
 });
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
+// #13488: o encode falso grava arquivo vazio; os quadros saem do nome (o que o trecho promete).
+const framesFromName = (p: string): number | null => {
+  const m = parseTrechoName(p.replace(/\.part$/, ""));
+  return m ? m.end - m.start : null;
+};
 const probe = (path: string, entries: string, stream: string): string =>
   spawnSync("ffprobe", ["-v", "error", "-select_streams", stream, "-count_frames", "-show_entries", entries, "-of", "default=nw=1:nk=1", path], { encoding: "utf8" }).stdout.replace(/\r\n/g, "\n").trim(); // #13276: ffprobe no Windows devolve \r\n
 
@@ -297,7 +303,7 @@ describe("#13219 renderTrechos com ffmpeg real (mídia sintética)", { skip: !ha
         spawnSync("touch", [args[args.length - 1]]);
       };
       const nv = " V....D h264_nvenc NVIDIA NVENC H.264 encoder";
-      const r = renderTrechos({ plans, source, outDir: dir, mediaPath: "I:/v/b.mp4", folgaS: 1, listEncoders: () => nv, encode, log: (m) => lines.push(m) });
+      const r = renderTrechos({ plans, source, outDir: dir, mediaPath: "I:/v/b.mp4", folgaS: 1, listEncoders: () => nv, encode, probeFrames: framesFromName, log: (m) => lines.push(m) });
       assert.deepEqual(used, ["h264_nvenc", "libx264"]);
       assert.equal(r.encoder, "libx264");
       assert.match(lines.join("\n"), /\[aviso\] h264_nvenc falhou/);
