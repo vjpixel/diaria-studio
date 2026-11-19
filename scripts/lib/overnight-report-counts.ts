@@ -76,6 +76,14 @@ export interface UnitsTable {
   rows: UnitRow[];
   /** Cabeçalho incompatível: impede contar referências nas colunas erradas. */
   error?: string;
+  /**
+   * `true` quando a tabela tem cabeçalho válido e ZERO linhas de dados (#13699)
+   * — o caso legítimo de uma sessão sem nenhuma unidade mergeada. Ausente
+   * quando há linhas de dados, mesmo que nenhuma seja legível: "tabela vazia"
+   * (contagem 0, conferível) e "linhas presentes mas fora do formato" (guard
+   * quebrado) continuam sendo desfechos distintos.
+   */
+  empty?: true;
 }
 
 /**
@@ -132,6 +140,8 @@ export function parseUnitsTable(markdown: string): UnitsTable {
 
   const rows: UnitRow[] = [];
   let seenTable = false;
+  /** Linhas de dados (nem cabeçalho nem separador), legíveis ou não. */
+  let bodyLines = 0;
 
   for (let i = markerAt + 1; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -156,6 +166,7 @@ export function parseUnitsTable(markdown: string): UnitsTable {
     }
     if (/^\|[\s:|-]+\|$/.test(line)) continue; // separador
 
+    bodyLines++;
     const cells = splitRow(line);
     const issues = refsIn(cells[0]);
     if (issues.length === 0) continue; // cabeçalho ou linha sem referência
@@ -164,6 +175,11 @@ export function parseUnitsTable(markdown: string): UnitsTable {
     rows.push({ issues, pr: prs.length > 0 ? prs[0] : null });
   }
 
+  // #13699: cabeçalho válido sem nenhuma linha de dados = tabela vazia
+  // legítima (sessão sem merge), contagem 0. Sem cabeçalho (o marcador não
+  // precede tabela) ou com linhas ilegíveis, segue `rows: []` sem `empty`, e
+  // `compareTitleWithReport` reprova como antes.
+  if (seenTable && bodyLines === 0) return { found: true, rows, empty: true };
   return { found: true, rows };
 }
 
@@ -264,6 +280,9 @@ export function isTitleOk(check: TitleCheck): boolean {
 /**
  * Confere título × relatório.
  *
+ * Tabela com cabeçalho válido e zero linhas (#13699) é legível: conta 0
+ * unidades e 0 issues, e o título tem que anunciar 0 ("0 unidades, 0 issues").
+ *
  * Reprova dois casos, ambos com a tabela presente e legível:
  *   1. CONTRADIÇÃO — um número declarado no título diverge da tabela.
  *   2. NÃO-CONFERIBILIDADE — o título não declara nenhum dos dois números, e
@@ -280,7 +299,7 @@ export function compareTitleWithReport(title: string, markdown: string): TitleCh
 
   if (!table.found) return { kind: "skipped", found };
 
-  if (table.error || table.rows.length === 0) {
+  if (table.error || (table.rows.length === 0 && !table.empty)) {
     return {
       kind: "unreadable",
       found,
