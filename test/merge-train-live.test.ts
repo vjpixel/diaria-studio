@@ -1330,6 +1330,39 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       assert.ok(lockAt >= 0 && compareAt > lockAt && mergeAt > compareAt, "a base é relida depois de pegar o lock e antes do merge");
     });
 
+    // #13645 (regressão #633): a B foi mergeada à mão por outra sessão (squash,
+    // `--delete-branch`) no meio da rodada. O HEAD dela fica atrás da base (o
+    // commit de squash não está nele); antes do fix voltava `staleBase`, ia pro
+    // PR-trem de 1 e, com a branch apagada, o fetch da integração falhava:
+    // `solo-failed` para um PR que está mergeado.
+    for (const when of ["antes do merge solo", "entre a 1ª checagem e o lock"] as const) {
+      it(`#13645: B já mergeada fora do trem (${when}) — terminal ok, sem PR-trem, sem merge, lock liberado`, async () => {
+        const runner = fullRunner();
+        let stateReads = 0;
+        runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === String(B) && a.includes("state,mergedAt"), () => {
+          stateReads++;
+          const merged = when === "antes do merge solo" || stateReads > 1;
+          return ok(JSON.stringify(merged ? { state: "MERGED", mergedAt: "2026-11-19T03:00:00Z" } : { state: "OPEN", mergedAt: null }));
+        });
+        runner.on("gh", isCompareFor(B), () => ok(compareJson(1)));
+        runner.on("git", (a, cwd) => a[0] === "fetch" && cwd !== MAIN_CWD, () => fail("fatal: couldn't find remote ref continuo/fix-13447"));
+        runner.on("gh", (a) => a[0] === "pr" && (a[1] === "merge" || a[1] === "create"), (a) => {
+          throw new Error(`não deveria chamar gh pr ${a[1]} para PR já mergeada`);
+        });
+        const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+        assert.deepEqual(outcomes.map((o) => o.status), ["solo-merged"]);
+        assert.match(outcomes[0].detail, /já estava mergeada fora do trem.*#13645/);
+        assert.equal(trainHasRealFailure(outcomes), false);
+        assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[0] === "api" && /\/compare\//.test(c.args[1] ?? "")), "nem chega a comparar com a base");
+        assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === String(B)), "PR já MERGED não é fechada de novo");
+        const acquired = runner.calls.some((c) => c.args.includes("merge-lock-acquire"));
+        const released = runner.calls.some((c) => c.args.includes("merge-lock-release"));
+        assert.equal(acquired, when !== "antes do merge solo", "antes do merge solo nem pega o lock");
+        assert.equal(released, acquired, "lock pego é sempre liberado");
+      });
+    }
+
     it("base não verificável (gh api compare falhou): sem merge, lock liberado, 'solo-failed'", async () => {
       const runner = fullRunner();
       runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
