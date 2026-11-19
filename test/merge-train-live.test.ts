@@ -1363,6 +1363,53 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       });
     }
 
+    // #13684 (regressão #633): janela residual da #13645. A B volta `staleBase`
+    // do merge solo, vai pro PR-trem de 1 e, ANTES do trem buscar a branch, é
+    // mergeada à mão com a branch apagada. Antes do fix o fetch da branch
+    // falhava e a B terminava `solo-failed`, já estando em master.
+    it("#13684: B volta staleBase e é mergeada fora antes do fetch do PR-trem de 1 — terminal ok, sem integração", async () => {
+      const runner = fullRunner();
+      let stateReads = 0;
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === String(B) && a.includes("state,mergedAt"), () => {
+        stateReads++;
+        // leituras 1-2 = mergeSoloPr (antes e sob o lock); da 3ª em diante = já mergeada
+        return ok(JSON.stringify(stateReads > 2 ? { state: "MERGED", mergedAt: "2026-11-19T03:00:00Z" } : { state: "OPEN", mergedAt: null }));
+      });
+      runner.on("gh", isCompareFor(B), () => ok(compareJson(1)));
+      runner.on("git", (a, cwd) => a[0] === "fetch" && cwd !== MAIN_CWD, () => fail("fatal: couldn't find remote ref continuo/fix-13447"));
+      runner.on("gh", (a) => a[0] === "pr" && (a[1] === "merge" || a[1] === "create"), (a) => {
+        throw new Error(`não deveria chamar gh pr ${a[1]} para PR já mergeada`);
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [B] }, [infoB], { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(outcomes.map((o) => o.status), ["solo-merged"], "antes do fix: ['solo-failed'] (fetch da branch apagada)");
+      assert.match(outcomes[0].detail, /já estava mergeada fora do trem/);
+      assert.equal(outcomes[0].ciRuns, 0);
+      assert.equal(trainHasRealFailure(outcomes), false);
+      assert.ok(!runner.calls.some((c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "add"), "nem monta a integração");
+      assert.ok(!runner.calls.some((c) => c.cmd === "git" && c.args[0] === "fetch" && c.cwd !== MAIN_CWD), "nem tenta buscar a branch apagada");
+    });
+
+    it("#13684: lote de 2 com uma PR mergeada fora antes do fetch — ela sai terminal ok, a outra segue sozinha", async () => {
+      const runner = fullRunner();
+      const infos = [makePrInfo({ pr: 100, headRefName: "develop/fix-100", issueNumbers: [10] }), makePrInfo({ pr: 101, headRefName: "develop/fix-101", issueNumbers: [11] })];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "100" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-11-19T03:00:00Z" })));
+      runner.on("git", (a, cwd) => a[0] === "fetch" && cwd !== MAIN_CWD, () => fail("fatal: couldn't find remote ref develop/fix-100"));
+      const merged: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a[2]);
+        return ok();
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, infos, { sessionId: "s", kind: "overnight", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(outcomes.map((o) => [o.batch.prs.join(","), o.status]), [["100", "solo-merged"], ["101", "solo-merged"]], "antes do fix: lote abandoned por falha de integração");
+      assert.match(outcomes[0].detail, /PR #100 já estava mergeada fora do trem/);
+      assert.deepEqual(merged, ["101"], "só a 101 é mergeada, pelo merge solo");
+      assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "create"), "sem PR-trem");
+      assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === "100"), "a 100 já MERGED não é fechada");
+      assert.equal(trainHasRealFailure(outcomes), false);
+    });
+
     it("base não verificável (gh api compare falhou): sem merge, lock liberado, 'solo-failed'", async () => {
       const runner = fullRunner();
       runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
