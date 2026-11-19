@@ -182,10 +182,10 @@ export async function moveDriveFile(deps: MontageDriveDeps, id: string, fromPare
   throw patchError ?? new Error(`move de ${id} respondeu 2xx mas o arquivo segue com parents ${after.parents.join(", ")} (#6582)`);
 }
 
-async function trashDriveFolder(deps: MontageDriveDeps, id: string): Promise<void> {
+async function trashDriveFolder(driveFetch: MontageDriveDeps["driveFetch"], id: string): Promise<void> {
   const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,trashed" });
   const r = await okJson<{ trashed?: boolean }>(
-    await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, {
+    await driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json; charset=UTF-8" },
       body: JSON.stringify({ trashed: true }),
@@ -214,6 +214,9 @@ const createdOrModified = (e: DriveEntry) => e.createdTime ?? e.modifiedTime ?? 
  * A pasta `arquivo/` da edição (#13610 D): uma só = ela; mais de uma (duas
  * execuções criaram ao mesmo tempo, a busca atrasou) = a mais antiga pela
  * criação (#13617), com aviso; nenhuma = espera e busca de novo antes de criar.
+ * Cria com a conta dona da pasta de vídeo (`deps.ownerFetch`, diaria.editor,
+ * #13619) quando houver; se ela falhar, relê e, sem pasta, cria com o OAuth do
+ * projeto, com aviso (essa `arquivo/` fica com o dono do OAuth).
  * Com `cache` (#13617), a já resolvida nesta execução vale sem nova busca, e a
  * resolvida ou criada aqui entra nele.
  */
@@ -242,16 +245,28 @@ export async function resolveArchiveFolder(
   if (found.length === 1) return remember(found[0]);
   if (!opts.create) return null;
   const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,name,mimeType,modifiedTime,createdTime" });
-  const created = await okJson<DriveEntry>(
-    await deps.driveFetch(`${DRIVE_API}/files?${params}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=UTF-8" },
-      body: JSON.stringify({ name: ARCHIVE_DIR_NAME, mimeType: FOLDER_MIME, parents: [parentId] }),
-      signal: AbortSignal.timeout(30_000),
-    }),
-    `criação da pasta ${ARCHIVE_DIR_NAME}/ no Drive`,
-  );
-  return remember(created);
+  const create = async (f: MontageDriveDeps["driveFetch"], who: string) =>
+    okJson<DriveEntry>(
+      await f(`${DRIVE_API}/files?${params}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=UTF-8" },
+        body: JSON.stringify({ name: ARCHIVE_DIR_NAME, mimeType: FOLDER_MIME, parents: [parentId] }),
+        signal: AbortSignal.timeout(30_000),
+      }),
+      `criação da pasta ${ARCHIVE_DIR_NAME}/ no Drive${who}`,
+    );
+  // #13619: a conta dona da pasta de vídeo (diaria.editor) cria, para a `arquivo/` ter o dono do resto.
+  if (deps.ownerFetch) {
+    try {
+      return remember(await create(deps.ownerFetch.bind(deps), " com a conta dona"));
+    } catch (e) {
+      // A criação pode ter valido com a resposta perdida: relê antes de criar outra.
+      const again = await find().catch(() => []);
+      if (again.length) return remember(again[0]);
+      opts.warn?.(`${ARCHIVE_DIR_NAME}/ não foi criada com a conta dona da pasta de vídeo (${(e as Error).message}): criada com o OAuth do projeto, que fica dono dela (#13619)`);
+    }
+  }
+  return remember(await create(deps.driveFetch.bind(deps), ""));
 }
 
 /**
@@ -260,8 +275,9 @@ export async function resolveArchiveFolder(
  * é absorvido: os filhos vão para `arquivo/` e a pasta, vazia, para a lixeira
  * (premissa: pasta vazia não guarda nada; o Drive mantém a lixeira 30 dias).
  * Lixeira recusada porque a pasta é de outra conta (`403
- * insufficientFilePermissions`, #13619) vira aviso: os moves já valeram e a
- * pasta vazia fica para remoção à mão.
+ * insufficientFilePermissions`, #13619) é tentada de novo com a conta dona
+ * (`deps.ownerFetch`); sem ela, ou se ela também falhar, vira aviso: os moves
+ * já valeram e a pasta vazia fica para remoção à mão.
  */
 export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<DriveEntry, "id" | "name">, opts: ArchiveOptions): Promise<EditionArchiveResult> {
   const log = opts.log ?? (() => {});
@@ -325,10 +341,21 @@ export async function archiveEditionDrive(deps: MontageDriveDeps, folder: Pick<D
         continue;
       }
       try {
-        await trashDriveFolder(deps, lf.id);
+        await trashDriveFolder(deps.driveFetch.bind(deps), lf.id);
       } catch (e) {
         if (!isNotOwnerTrashError(e)) throw e;
-        warnings.push(`${lf.name}/ (id ${lf.id}) ficou vazia, mas não foi para a lixeira: a conta do OAuth não é dona dela (403 insufficientFilePermissions); remova à mão com a conta dona (#13619)`);
+        // #13619: a conta dona da pasta de vídeo (diaria.editor) põe na lixeira o que a do OAuth não pode.
+        let ownerError = "";
+        if (deps.ownerFetch) {
+          try {
+            await trashDriveFolder(deps.ownerFetch.bind(deps), lf.id);
+            absorbedFolders.push(lf.name);
+            continue;
+          } catch (oe) {
+            ownerError = `; a conta dona também não conseguiu: ${(oe as Error).message}`;
+          }
+        }
+        warnings.push(`${lf.name}/ (id ${lf.id}) ficou vazia, mas não foi para a lixeira: a conta do OAuth não é dona dela (403 insufficientFilePermissions)${ownerError}; remova à mão com a conta dona (#13619)`);
         continue;
       }
       absorbedFolders.push(lf.name);

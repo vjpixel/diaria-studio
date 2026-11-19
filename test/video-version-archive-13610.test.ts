@@ -803,3 +803,100 @@ describe("resíduos do review do PR #13613 (#13617) e lixeira de dono diferente 
     assert.equal(isNotOwnerTrashError(new Error("falhou (500): insufficientFilePermissions")), false);
   });
 });
+
+describe("arquivo/ criada pela conta dona da pasta de vídeo (#13619)", () => {
+  type OwnerFail = (url: string, init?: RequestInit) => Promise<Response | null> | Response | null;
+  /** ownerFetch que repassa ao Drive falso, registrando as chamadas (ou falhando nelas). */
+  const withOwner = (d: ReturnType<typeof fakeDrive>, fail?: OwnerFail) => {
+    const ownerCalls: string[] = [];
+    const projectPosts: string[] = [];
+    const deps: MontageDriveDeps = {
+      driveFetch: async (url, init) => {
+        if (init?.method === "POST") projectPosts.push(url);
+        return d.deps.driveFetch(url, init);
+      },
+      ownerFetch: async (url, init) => {
+        ownerCalls.push(init?.method ?? "GET");
+        return (await fail?.(url, init)) ?? d.deps.driveFetch(url, init);
+      },
+    };
+    return { deps, ownerCalls, projectPosts };
+  };
+  const forbidden = () => new Response(JSON.stringify({ error: { code: 403, errors: [{ reason: "insufficientFilePermissions" }] } }), { status: 403 });
+
+  it("com ownerFetch, a arquivo/ é criada pela conta dona e o OAuth do projeto não cria nada", async () => {
+    const d = fakeDrive([edFolder, xf("x1", "Diaria comentada horizontal_V1.xml", "2026-11-17T09:00:00Z", ["a.wav"]), xf("x2", "Diaria comentada horizontal_V2.xml", "2026-11-17T10:00:00Z", ["a.wav"]), af("a", "a.wav", "2026-11-17T08:00:00Z")]);
+    const o = withOwner(d);
+    const r = await archiveEditionDrive(o.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.equal(r.error, undefined);
+    assert.ok(r.moves.length > 0 && r.moves.every((m) => m.done), "os moves seguem com o OAuth do projeto");
+    assert.deepEqual(o.ownerCalls, ["POST"], "só a criação vai pela conta dona");
+    assert.deepEqual(o.projectPosts, [], "o OAuth do projeto não cria a pasta");
+    assert.deepEqual(r.warnings, []);
+  });
+
+  it("conta dona falha: relê, não acha, cria com o OAuth do projeto e avisa", async () => {
+    const d = fakeDrive([edFolder]);
+    const o = withOwner(d, () => new Response("invalid_grant", { status: 400 }));
+    const warn: string[] = [];
+    const a = await resolveArchiveFolder(o.deps, "ed", { create: true, sleep: noSleep, warn: (m) => warn.push(m) });
+    assert.equal(a?.name, ARCHIVE_DIR_NAME);
+    assert.equal(o.projectPosts.length, 1, "fallback: o OAuth do projeto cria");
+    assert.match(warn.join("\n"), /não foi criada com a conta dona.*400.*OAuth do projeto, que fica dono dela \(#13619\)/);
+    assert.equal(d.files.filter((f) => f.name === ARCHIVE_DIR_NAME).length, 1);
+  });
+
+  it("conta dona lança (rclone ausente) antes de chegar ao Drive: mesmo fallback", async () => {
+    const d = fakeDrive([edFolder]);
+    const o = withOwner(d, () => {
+      throw new Error("rclone config dump falhou (ENOENT)");
+    });
+    const warn: string[] = [];
+    await resolveArchiveFolder(o.deps, "ed", { create: true, sleep: noSleep, warn: (m) => warn.push(m) });
+    assert.equal(o.projectPosts.length, 1);
+    assert.match(warn.join("\n"), /ENOENT/);
+  });
+
+  it("conta dona criou mas a resposta se perdeu: a releitura acha a pasta e não cria outra", async () => {
+    const d = fakeDrive([edFolder]);
+    const o = withOwner(d, async (url, init) => {
+      if (init?.method !== "POST") return null;
+      await d.deps.driveFetch(url, init); // aplicou no Drive
+      return new Response("timeout", { status: 504 });
+    });
+    const warn: string[] = [];
+    const a = await resolveArchiveFolder(o.deps, "ed", { create: true, sleep: noSleep, warn: (m) => warn.push(m) });
+    assert.equal(a?.name, ARCHIVE_DIR_NAME);
+    assert.deepEqual(o.projectPosts, []);
+    assert.equal(d.files.filter((f) => f.name === ARCHIVE_DIR_NAME).length, 1, "nenhuma arquivo/ repetida");
+    assert.deepEqual(warn, []);
+  });
+
+  it("_superadas/ vazia de outra conta: a conta dona põe na lixeira (sem aviso); se ela também falhar, aviso com os dois motivos", async () => {
+    const mk = () =>
+      fakeDrive(
+        [edFolder, { id: "sup", name: "_superadas", mimeType: FOLDER_MIME, parent: "ed" }, { id: "old", name: "Diaria comentada horizontal_V1.xml", mimeType: "application/xml", parent: "sup", body: xml(["x.wav"]) }],
+        { failTrash: (id) => (id === "sup" ? forbidden() : null) },
+      );
+    const d = mk();
+    // A conta dona é a dona: a lixeira dela passa.
+    const o = withOwner(d, (url, init) => {
+      const body = init?.body ? (JSON.parse(String(init.body)) as { trashed?: boolean }) : {};
+      if (init?.method !== "PATCH" || !body.trashed) return null;
+      d.files.splice(d.files.findIndex((f) => f.id === "sup"), 1);
+      return new Response(JSON.stringify({ id: "sup", trashed: true }), { status: 200 });
+    });
+    const r = await archiveEditionDrive(o.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.equal(r.error, undefined);
+    assert.deepEqual(r.absorbedFolders, ["_superadas"]);
+    assert.ok(!d.files.some((f) => f.id === "sup"));
+    assert.ok(!r.warnings.some((w) => /lixeira/.test(w)), r.warnings.join("\n"));
+
+    const d2 = mk();
+    const o2 = withOwner(d2, (_u, init) => (init?.method === "PATCH" ? new Response("nope", { status: 500 }) : null));
+    const r2 = await archiveEditionDrive(o2.deps, edFolder, { apply: true, sleep: noSleep });
+    assert.equal(r2.error, undefined, "segue como aviso");
+    assert.deepEqual(r2.absorbedFolders, []);
+    assert.match(r2.warnings.join("\n"), /não foi para a lixeira.*a conta dona também não conseguiu: lixeira da pasta vazia sup falhou \(500\).*#13619/);
+  });
+});
