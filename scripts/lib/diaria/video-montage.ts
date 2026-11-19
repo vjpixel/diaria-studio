@@ -1338,7 +1338,7 @@ export interface SequenceSpec {
   /**
    * #13123: o texto da capa no começo DESTA vertical (com `capaInicio` no
    * arquivo); sobrepõe o `capa` do arquivo e o do roteiro. Mesmas regras do
-   * gancho da capa do Short (2 a 5 palavras).
+   * gancho da capa do Short (2 a 7 palavras).
    */
   capa?: string;
   /**

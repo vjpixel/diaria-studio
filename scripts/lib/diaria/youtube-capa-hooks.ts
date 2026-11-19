@@ -28,7 +28,7 @@
  * `scripts/suggest-capa-hooks.ts`.
  */
 
-import { normalizeShortCoverHook, splitHook } from "./youtube-thumb.ts";
+import { normalizeShortCoverHook, SHORT_HOOK_MAX_WORDS, splitHook } from "./youtube-thumb.ts";
 import { contentWords, extractProperNouns } from "./youtube-title-research.ts";
 
 export const CAPA_HOOKS_RECORD_FILE = "_internal/youtube-capa-hooks.json";
@@ -94,7 +94,7 @@ export interface CapaHookScore {
   /** `--hook` pronto para a capa horizontal, ou `null` (motivo em `horizontal_reason`). */
   horizontal_hook: string | null;
   horizontal_reason: string | null;
-  /** `--hook` pronto para a capa do Short (2 a 5 palavras, #12462), ou `null`. */
+  /** `--hook` pronto para a capa do Short (2 a 7 palavras, #12462), ou `null`. */
   short_hook: string | null;
   short_reason: string | null;
   /**
@@ -209,7 +209,7 @@ export function horizontalHookArg(hook: string): { hook: string | null; reason: 
   return { hook: null, reason: "não cabe nas regras da capa horizontal" };
 }
 
-/** `--hook` da capa do Short (2 a 5 palavras, #12462). */
+/** `--hook` da capa do Short (2 a 7 palavras, #12462). */
 export function shortHookArg(hook: string): { hook: string | null; reason: string | null } {
   try {
     return { hook: normalizeShortCoverHook(hook), reason: null };
@@ -243,7 +243,11 @@ export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigi
   const notes: string[] = [];
   let score = 50;
 
-  if (words < CAPA_HOOK_MIN_WORDS || words > CAPA_HOOK_MAX_WORDS) {
+  // A capa do Short aceita até 7 palavras (SHORT_HOOK_MAX_WORDS, 18/11/2026): acima da
+  // diretriz geral, mas cabendo no Short, é nota, não violação.
+  if (words > CAPA_HOOK_MAX_WORDS && words <= SHORT_HOOK_MAX_WORDS && shortHookArg(hook).hook) {
+    notes.push(`${words} palavras: acima da diretriz de ${CAPA_HOOK_MIN_WORDS} a ${CAPA_HOOK_MAX_WORDS}, só a capa do Short aceita (até ${SHORT_HOOK_MAX_WORDS})`);
+  } else if (words < CAPA_HOOK_MIN_WORDS || words > CAPA_HOOK_MAX_WORDS) {
     violations.push(`${words} palavra(s); a diretriz é ${CAPA_HOOK_MIN_WORDS} a ${CAPA_HOOK_MAX_WORDS}`);
   } else if (words >= CAPA_HOOK_TARGET_MIN && words <= CAPA_HOOK_TARGET_MAX) {
     score += 15;

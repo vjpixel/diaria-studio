@@ -74,11 +74,21 @@ test("número do D1 ganha ponto; número que o D1 não traz vira alerta", () => 
   assert.ok(ok.score > inventado.score);
 });
 
-test("--hook pronto: horizontal quebra acima de 4 palavras, Short recusa 6", () => {
+test("--hook pronto: horizontal quebra acima de 4 palavras, Short recusa 8", () => {
   assert.deepEqual(horizontalHookArg("IA ladra?"), { hook: "IA ladra?", reason: null });
   assert.equal(horizontalHookArg("Ensinaram a IA e foram demitidos").hook, "Ensinaram a IA|e foram demitidos");
-  assert.equal(shortHookArg("Ensinaram a IA e foram demitidos").hook, null);
+  assert.equal(shortHookArg("Ensinaram a IA e foram demitidos ontem cedo").hook, null);
   assert.equal(shortHookArg("Treinou o próprio substituto?").hook, "Treinou o|próprio substituto?");
+});
+
+test("capa de 7 palavras: só o Short aceita, e o score não a trata como violação (teto 7, 18/11/2026)", () => {
+  const sete = "Sol faz slide no seu modelo hoje";
+  assert.ok(shortHookArg(sete).hook);
+  const s = scoreCapaHook(sete, D1_261111);
+  assert.ok(!s.violations.some((v) => /palavra/.test(v)), s.violations.join("; "));
+  assert.ok(s.notes.some((n) => /só a capa do Short aceita/.test(n)), s.notes.join("; "));
+  const oito = scoreCapaHook("Sol faz slide no seu modelo hoje cedo", D1_261111);
+  assert.ok(oito.violations.some((v) => /8 palavra/.test(v)), oito.violations.join("; "));
 });
 
 test("topo traz pergunta e afirmação mesmo quando as perguntas pontuam mais", () => {
