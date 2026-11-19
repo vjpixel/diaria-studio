@@ -53,6 +53,19 @@ describe("filtro do bisync de data/: logs escritos continuamente (#13614)", () =
     }
   });
 
+  it("exclui as saídas stream-json da cadeia noturna e as rotações delas (#13646)", () => {
+    for (const r of [
+      "- /continuo/last-daily-review-output.jsonl",
+      "- /continuo/last-daily-review-output.jsonl.*",
+      "- /overnight/.nightly-chain-last-overnight.json",
+      "- /overnight/.nightly-chain-last-overnight.json.*",
+    ]) {
+      assert.ok(rules.includes(r), `falta '${r}' no gdrive-data-bisync-filters.txt`);
+    }
+    // O texto final do review é gravado de uma vez e é lido pelo gate do marco.
+    assert.ok(!rules.some((r) => r.startsWith("-") && r.includes("last-daily-review-output.txt")));
+  });
+
   it("nunca exclui *.log global (logs curtos das tasks seguem sincronizando) nem inclui log", () => {
     assert.ok(!rules.includes("- *.log"));
     assert.ok(!rules.some((r) => r.startsWith("+") && r.includes(".log")));
