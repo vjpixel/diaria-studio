@@ -754,6 +754,15 @@ Rede de segurança: o script ignora a claim cuja sessão
 `data/session-lifecycle.jsonl` mostra encerrada depois do `at` dela, mas o log
 só chega à outra máquina quando o sync replica.
 
+**Rotear para fora do track solta a claim (#13605).** `route-issue.ts` solta
+sozinho, depois de um roteamento validado, a claim de sessão cujo kind não é
+do track de destino (`overnight` mantém `overnight`/`continuo`, `develop`
+mantém `develop`/`interactive`, os demais soltam todas): release no GitHub e
+`unclaim` no registro desta máquina. Sem isso, o overnight que roteava uma
+issue para develop deixava a sessão develop com `github-claim` por até 24h.
+Um `unclaim-issue` posterior dessa issue pela sessão que roteou devolve
+`no-op-not-claimed` (esperado); `--keep-claim` desliga o passo.
+
 **Corrida entre dois `--announce` (#13172).** Depois de postar, o script relê
 os comentários. Se outra sessão postou uma claim mais antiga entre a
 conferência e o post, esta cede: grava o próprio release e sai `exit 1` com
