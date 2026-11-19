@@ -412,6 +412,7 @@ import {
   type TrechoInseridoRoteiro,
 } from "./lib/diaria/video-trecho-inserido.ts";
 import {
+  arquivoVideoRoot,
   avisosTrechosNaMontagem,
   parseTrechoFonteArg,
   resolverFonteTrecho,
@@ -796,6 +797,8 @@ interface Ctx {
   trechoFontes?: Record<string, string>;
   /** #13437: a raiz da pasta de vídeo NESTA máquina, onde o export do vídeo de origem é procurado; `null` = sem Drive local (modo API). */
   trechoDriveRoot?: string | null;
+  /** #13674: a raiz do arquivo de vídeo no HD NESTA máquina (`arquivoVideoRoot`), onde ficam os finais já recolhidos do Drive; `null` = sem o HD. */
+  trechoArquivoRoot?: string | null;
   /** #13610: `--no-archive` desliga a ida da versão anterior para `{AAMMDD}/arquivo/`. */
   noArchive?: boolean;
   /** #13610: o que o `upload` acabou de subir (entra na listagem do arquivamento mesmo com a busca do Drive atrasada). */
@@ -5079,8 +5082,8 @@ export function renderTrechos(input: {
 }
 
 /** #13437 (PR 2): a fonte do trecho nesta máquina (ordem em `video-trecho-fonte.ts`). */
-export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">, t: Pick<TrechoInseridoRoteiro, "id" | "trecho">): FonteTrecho {
-  return resolverFonteTrecho({ id: t.id, trecho: t.trecho, fontes: ctx.trechoFontes ?? {}, editionsRootDir: editionsRootDir(), driveRoot: ctx.trechoDriveRoot ?? null });
+export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot" | "trechoArquivoRoot">, t: Pick<TrechoInseridoRoteiro, "id" | "trecho">): FonteTrecho {
+  return resolverFonteTrecho({ id: t.id, trecho: t.trecho, fontes: ctx.trechoFontes ?? {}, editionsRootDir: editionsRootDir(), driveRoot: ctx.trechoDriveRoot ?? null, arquivoRoot: ctx.trechoArquivoRoot ?? null });
 }
 
 /**
@@ -7697,6 +7700,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     trechoFontes,
     // #13437: o export do vídeo de origem é procurado na pasta de vídeo desta máquina (no modo API ela não existe aqui).
     trechoDriveRoot: existsSync(driveRoot) ? driveRoot : null,
+    // #13674: finais de edição já liberada saem do Drive no dia seguinte (#13630); a cópia conferida fica no HD do 300.
+    trechoArquivoRoot: arquivoVideoRoot(process.env, existsSync),
     edition,
     stateDir: resolve(values["state-dir"] ?? join(editionDirFor(edition), "_internal", "video-montagem")),
     workDir: resolve(values["work-dir"] ?? workDirDefault(mode, cacheDir, tmpdir(), edition)),

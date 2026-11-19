@@ -11,6 +11,7 @@ import {
   diffRatio,
   formatRatio,
   getDiffLineStats,
+  getOwnCommitsDiffStats,
   parseNumstat,
 } from "../scripts/lib/diff-line-stats.ts";
 
@@ -94,5 +95,19 @@ describe("getDiffLineStats", () => {
   it("lança quando git falha (status !== 0)", () => {
     const fakeSpawn = (() => ({ status: 1, stdout: "", stderr: "fatal: bad revision" })) as unknown as typeof import("node:child_process").spawnSync;
     assert.throws(() => getDiffLineStats("bad", "HEAD", { spawnFn: fakeSpawn }), /git diff --numstat/);
+  });
+});
+
+describe("getOwnCommitsDiffStats", () => {
+  it("SHA repetido (várias PRs num commit do trem) é somado uma vez só (#13672)", () => {
+    const shown: string[] = [];
+    const fakeSpawn = ((_cmd: string, args: string[]) => {
+      shown.push(args[args.length - 1]);
+      return { status: 0, stdout: "10\t2\tfoo.ts\n", stderr: "" } as ReturnType<typeof import("node:child_process").spawnSync>;
+    }) as typeof import("node:child_process").spawnSync;
+
+    const stats = getOwnCommitsDiffStats(["d576", "d576", "abcd", "d576"], { spawnFn: fakeSpawn });
+    assert.deepEqual(shown, ["d576", "abcd"]);
+    assert.deepEqual(stats, { files: 2, added: 20, removed: 4 });
   });
 });
