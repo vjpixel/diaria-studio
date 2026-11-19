@@ -110,6 +110,8 @@
  *   npx tsx scripts/archive-video-brutos.ts --apply --only 261027,261028
  *   npx tsx scripts/archive-video-brutos.ts --json
  *   npx tsx scripts/archive-video-brutos.ts --published-min-days 7   # idade mínima da pasta publicada (default 4)
+ *   npx tsx scripts/archive-video-brutos.ts --help             # uso, sai 0 sem tocar no Drive (#13686)
+ * Flag desconhecida ou sem valor sai 2 antes de qualquer acesso ao Drive (#13686).
  *
  * Testável sem tocar produção: VIDEO_ARCHIVE_* (inclusive VIDEO_ARCHIVE_LOCK) e RCLONE_BIN/SYSTEMCTL_BIN/
  * MD5SUM_BIN/VIDEO_ARCHIVE_MOUNTPOINT_CMD sobrescrevíveis por env.
@@ -134,7 +136,16 @@ import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import {
+  type CliAction,
+  type CliSpec,
+  formatCliUsage,
+  getIntArg,
+  getStringArg,
+  hasFlag,
+  isMainModule,
+  resolveCliAction,
+} from "./lib/cli-args.ts";
 import { formatBytes } from "./lib/onedrive-quota.ts";
 import { parseRcloneAboutJson } from "./lib/gdrive-quota.ts";
 import { editionDirUnder, editionVideoPublished, todayBrt } from "./prune-video-montage-cache.ts";
@@ -1477,8 +1488,52 @@ function printText(report: ArchiveReport): void {
   for (const e of report.errors) console.error(`${LOG_PREFIX} erro: ${e}`);
 }
 
+/**
+ * #13686: contrato do argv, validado antes de qualquer acesso ao Drive. Sem ele,
+ * `--help` rodava o dry-run inteiro contra `gdrive-diaria:` e um typo
+ * (`--apply --hlep`) era ignorado e o apply seguia.
+ */
+export const ARCHIVE_CLI_SPEC: CliSpec = {
+  script: "scripts/archive-video-brutos.ts",
+  booleans: ["apply", "json"],
+  values: ["only", "unpublished-max-days", "published-min-days"],
+  numeric: ["unpublished-max-days", "published-min-days"],
+  usage: [
+    "uso: npx tsx scripts/archive-video-brutos.ts [--apply] [--json] [--only AAMMDD[,AAMMDD...]]",
+    "       [--unpublished-max-days N] [--published-min-days N] [--help | -h]",
+    "",
+    "Sem --apply é dry-run: só lista o que sairia do Drive.",
+    "Flags válidas: --apply, --json, --only, --unpublished-max-days, --published-min-days, --help, -h.",
+    "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 2 sem tocar no Drive (#13686).",
+  ].join("\n"),
+};
+
+/** Exit code do argv: `help` = 0, `error` = 2 (uso inválido), `run` = null (seguir). @pure */
+export function archiveCliExitCode(action: CliAction): 0 | 2 | null {
+  if (action.kind === "run") return null;
+  return action.kind === "help" ? 0 : 2;
+}
+
+/** #13686: decide o argv antes de qualquer I/O. @pure */
+export function resolveArchiveCliAction(argv: readonly string[]): CliAction {
+  return resolveCliAction(argv, ARCHIVE_CLI_SPEC);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  const cliAction = resolveArchiveCliAction(argv);
+  const cliExit = archiveCliExitCode(cliAction);
+  if (cliExit !== null) {
+    const usage = formatCliUsage(ARCHIVE_CLI_SPEC);
+    if (cliAction.kind === "error") {
+      console.error(`${LOG_PREFIX} ${cliAction.message}`);
+      console.error(usage);
+    } else {
+      console.log(usage);
+    }
+    process.exitCode = cliExit;
+    return;
+  }
   const apply = hasFlag(argv, "apply");
   const unpublishedMaxDays = getIntArg(argv, "unpublished-max-days", { min: 0 }) ?? DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS;
   const publishedMinDays = getIntArg(argv, "published-min-days", { min: 0 }) ?? DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS;
