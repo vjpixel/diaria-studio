@@ -75,7 +75,7 @@ import {
   type TrainBatch,
   type TrainPrInfo,
 } from "./merge-train.ts";
-import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
+import { evaluatePrChecksGate, keepLatestPerName, type PrCheckNode } from "./pr-checks-gate.ts";
 import { classifyFfRefusal, discardCollisionsIdenticalToUpstream } from "./git-sync.ts"; // #12223
 import type { GitSpawnFn } from "./spawn-types.ts";
 import { extractRemovalDeclaration } from "./pr-removal-declaration.ts"; // #10848
@@ -555,9 +555,14 @@ export type TrainCiVerdict = "pass" | "fail" | "timeout";
 export async function pollTrainCi(
   runner: TrainRunner,
   trainPrNumber: number,
-  opts: { timeoutMs: number; intervalMs: number },
+  opts: { timeoutMs: number; intervalMs: number; runningCeilingMs?: number },
 ): Promise<TrainCiVerdict> {
   const start = runner.now();
+  // #13693: check IN_PROGRESS no HEAD vigente = CI andando, não parado — o
+  // prazo estende até `runningCeilingMs` (mesmo `running_ceiling_secs` do
+  // `wait-pr-checks.sh`, #13685). "Pendente sem run" segue no `timeoutMs`.
+  const runningCeilingMs = Math.max(opts.runningCeilingMs ?? opts.timeoutMs, opts.timeoutMs);
+  let lastRunning = false;
   for (;;) {
     const res = runner.exec("gh", ["pr", "view", String(trainPrNumber), "--json", "statusCheckRollup"]);
     if (res.ok) {
@@ -583,10 +588,11 @@ export async function pollTrainCi(
         const gate = evaluatePrChecksGate(rollup);
         if (gate.verdict === "pass") return "pass";
         if (gate.verdict === "fail") return "fail";
+        lastRunning = Array.isArray(rollup) && keepLatestPerName(rollup as PrCheckNode[]).some((n) => n?.status === "IN_PROGRESS");
         // "pending" ou "error" (statusCheckRollup ainda sem checks registrados) — tenta de novo até o timeout.
       }
     }
-    if (runner.now() - start >= opts.timeoutMs) return "timeout";
+    if (runner.now() - start >= (lastRunning ? runningCeilingMs : opts.timeoutMs)) return "timeout";
     await runner.sleep(opts.intervalMs);
   }
 }
@@ -1093,6 +1099,7 @@ export interface RunMergeTrainOptions {
   baseBranch?: string; // default "master"
   ciTimeoutMs?: number; // default 30 min — mesma convenção de timeout de CI já usada nas skills
   ciPollIntervalMs?: number; // default 30s
+  ciRunningCeilingMs?: number; // default 60 min — teto com check IN_PROGRESS no HEAD vigente (#13693)
   branchPrefix?: string; // default "merge-train"
   mainCwd: string; // checkout principal — onde o worktree é adicionado/removido e onde o merge de verdade acontece
 }
@@ -1213,6 +1220,7 @@ export function threadsBlockedOutcome(batch: TrainBatch, result: MergeTrainBatch
 
 const DEFAULT_CI_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CI_POLL_INTERVAL_MS = 30_000;
+const DEFAULT_CI_RUNNING_CEILING_MS = 60 * 60 * 1000;
 // Achado do fleet review: lote CI-verde que só falha no merge por causa de
 // lock negado (outra sessão mergeando agora) merece retry, não descarte —
 // o lote já provou que passa junto, custaria uma rodada inteira nova de
@@ -1280,6 +1288,7 @@ export async function runMergeTrain(
   const baseBranch = opts.baseBranch ?? "master";
   const ciTimeoutMs = opts.ciTimeoutMs ?? DEFAULT_CI_TIMEOUT_MS;
   const ciPollIntervalMs = opts.ciPollIntervalMs ?? DEFAULT_CI_POLL_INTERVAL_MS;
+  const ciRunningCeilingMs = opts.ciRunningCeilingMs ?? DEFAULT_CI_RUNNING_CEILING_MS;
   const branchPrefix = opts.branchPrefix ?? "merge-train";
   const mainCwd = opts.mainCwd;
 
@@ -1391,7 +1400,7 @@ export async function runMergeTrain(
     }
     applyTrainGateLabels(runner, trainPrNumber, batch, prInfos); // #11019
 
-    const verdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs });
+    const verdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs, runningCeilingMs: ciRunningCeilingMs });
 
     if (verdict === "pass") {
       let mergeResult = mergeTrainBatch(runner, trainPrNumber, batch, prInfos, {
@@ -1523,7 +1532,7 @@ export async function runMergeTrain(
     let reconfirmNote = "";
     if (verdict === "fail") {
       await runner.sleep(RECONFIRM_DELAY_MS);
-      const reconfirmVerdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs });
+      const reconfirmVerdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs, runningCeilingMs: ciRunningCeilingMs });
       if (reconfirmVerdict !== "fail") {
         // Discordância entre as 2 execuções = a assinatura da corrida do
         // #7060 (merge ref ainda não recalculado) — nunca reprovação, nunca
