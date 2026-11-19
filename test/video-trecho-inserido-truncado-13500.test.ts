@@ -291,7 +291,7 @@ describe("#13500 verify-xml confere os trechos inseridos contra a mídia real", 
     const body = src.slice(src.indexOf("function cmdVerifyXml("), src.indexOf("// ── Rosto automático"));
     assert.match(body, /const inseridosXml = chosen\.flatMap\(\(p\) => pf\.xmlAssets\?\.\[sequenceKey\(p\.spec\)\]\?\.trechosInseridos \?\? \[\]\);/);
     // #13512: a sonda vai com o cache local do work dir.
-    assert.match(body, /trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), cachedTrechoProbe\(trechoFramesCachePath\(ctx\.workDir\)\), \{ dir: ctx\.outDir, clips: inseridosXml \}\)/);
+    assert.match(body, /trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), cachedTrechoProbe\(trechoFramesCachePath\(ctx\.workDir\)\), \{ dir: ctx\.outDir, clips: inseridosXml \}[,)]/);
   });
 });
 
