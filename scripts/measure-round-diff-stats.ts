@@ -28,6 +28,12 @@
  *   npx tsx scripts/measure-round-diff-stats.ts --base <sha> --session-kind continuo --dry-run
  *   npx tsx scripts/measure-round-diff-stats.ts --base <sha> --session-kind interactive
  *
+ * `--own-shas a,b,c` (#13606): mede só a soma dos diffs desses commits (os
+ * `merged_sha` do plano da sessão), não `base..head` inteiro — que inclui os
+ * merges de sessões concorrentes (ex: overnight do 300 durante um develop) e
+ * os atribui à rodada. Lista vazia (`--own-shas ""`) = a sessão não mergeou
+ * nada = diff zero. Sem a flag, mantém o diff `base..head` de sempre.
+ *
  * `--dry-run` calcula e imprime, mas NÃO grava no run-log.
  *
  * Falha ALTA (exit 1) se `--base`/`--session-kind` faltarem ou o `git diff`
@@ -47,7 +53,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { checkIsAncestor, getDiffLineStats } from "./lib/diff-line-stats.ts";
+import { checkIsAncestor, getDiffLineStats, getOwnCommitsDiffStats } from "./lib/diff-line-stats.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   buildRoundDiffStatsRecord,
@@ -100,6 +106,8 @@ async function main(): Promise<number | void> {
   const sessionKind = getArg(argv, "session-kind");
   const edition = getArg(argv, "edition") || null;
   const dryRun = hasFlag(argv, "dry-run");
+  const ownShasGiven = argv.some((a) => a === "--own-shas" || a.startsWith("--own-shas="));
+  const ownShasArg = getArg(argv, "own-shas");
 
   if (!base || !sessionKind) {
     console.error(`${LOG_PREFIX} uso: --base <sha> --session-kind ${VALID_ROUND_SESSION_KINDS.join("|")} [--head <sha>] [--edition AAMMDD] [--dry-run]`);
@@ -141,7 +149,10 @@ async function main(): Promise<number | void> {
 
   let stats;
   try {
-    stats = getDiffLineStats(base, head, { cwd });
+    stats =
+      !ownShasGiven
+        ? getDiffLineStats(base, head, { cwd })
+        : getOwnCommitsDiffStats(ownShasArg.split(",").map((x) => x.trim()).filter(Boolean), { cwd });
   } catch (e) {
     console.error(`${LOG_PREFIX} ${(e as Error).message}`);
     return 1;
