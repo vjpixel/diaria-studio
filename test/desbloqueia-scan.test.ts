@@ -1245,6 +1245,22 @@ describe("#13689 — ja-destravada já roteada depois da decisão", () => {
       baseInput({ comments: [decisao, rota("bloqueada"), adiada("2026-11-18T00:00:00Z")], now }),
     );
     assert.equal(c?.status, "acao-adiada");
+    // #13704 — com o status sobreposto, a flag não pode seguir `true`.
+    assert.equal(c?.jaRoteadaDesdeDecisao, false);
+  });
+
+  it("#13704 — invariante: jaRoteadaDesdeDecisao só é true com status ja-destravada", () => {
+    const now = new Date("2026-11-19T00:00:00Z");
+    const cenarios = [
+      [decisao, rota("bloqueada")],
+      [decisao, rota("bloqueada"), adiada("2026-11-18T00:00:00Z")],
+      [decisao, adiada("2026-11-18T00:00:00Z"), rota("bloqueada")],
+      [rota("bloqueada"), decisao],
+    ];
+    for (const comments of cenarios) {
+      const c = classifyDesbloqueioCandidate(baseInput({ comments, now }));
+      if (c?.jaRoteadaDesdeDecisao) assert.equal(c.status, "ja-destravada");
+    }
   });
 
   it("sem route-issue posterior, acao-adiada não muda o status", () => {

@@ -78,6 +78,20 @@ export interface ShortCoverRecord {
    * a capa no 1º frame.
    */
   first_frame_ms?: number;
+  /**
+   * #13708: a verificação da aba Shorts (`check-short-feed-cover.ts`, o
+   * `sardefault.jpg`, #12251) registrada ao fechar o Passo B3a com
+   * `scripts/short-vertical-cover.ts confirm`. Só no `thumbnails_set`.
+   */
+  feed_check?: ShortFeedCheckRecord;
+}
+
+/** #13708: resultado do `check-short-feed-cover.ts` gravado no registro. */
+export interface ShortFeedCheckRecord {
+  verdict: "capa" | "frame-automatico" | "sem-capa-vertical";
+  distance?: number;
+  threshold?: number;
+  checked_at: string;
 }
 
 /**
@@ -308,7 +322,9 @@ export function keepStudioWebVerticalFeed(
   // frame do vertical já no ar continua lá; `first_frame_ms` acompanha.
   const firstFrame = next.first_frame_ms === undefined && prior.first_frame_ms !== undefined ? { first_frame_ms: prior.first_frame_ms } : {};
   // Confirmado no Studio web é absorvente: nenhum ramo abaixo o rebaixa.
-  if (prior.vertical_feed === "studio_web") return { ...next, ...firstFrame, vertical_feed: "studio_web" };
+  // #13708: a verificação do feed acompanha o `studio_web` (o thumbnails.set não muda a aba Shorts).
+  const feedCheck = next.feed_check === undefined && prior.feed_check !== undefined ? { feed_check: prior.feed_check } : {};
+  if (prior.vertical_feed === "studio_web") return { ...next, ...firstFrame, ...feedCheck, vertical_feed: "studio_web" };
   if (next.ok && next.vertical_feed !== "manual") return { ...next, ...firstFrame };
   if (prior.vertical_feed === "first_frame_cover") return { ...next, ...firstFrame, vertical_feed: "first_frame_cover" };
   return next;

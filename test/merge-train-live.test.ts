@@ -480,6 +480,34 @@ describe("pollTrainCi", () => {
     assert.equal(verdict, "timeout");
   });
 
+  it("check IN_PROGRESS lento (#13693): passa do timeoutMs e conclui antes do runningCeilingMs → pass", async () => {
+    const runner = new FakeTrainRunner();
+    runner.advanceMs = 20_000;
+    let call = 0;
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "view", () => {
+      call++;
+      const done = call > 5; // ~100s simulados, acima do timeoutMs de 50s
+      return ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: done ? "SUCCESS" : null, status: done ? "COMPLETED" : "IN_PROGRESS", startedAt: "2026-11-19T10:00:00Z" }] }));
+    });
+    const verdict = await pollTrainCi(runner, 6400, { timeoutMs: 50_000, intervalMs: 1000, runningCeilingMs: 300_000 });
+    assert.equal(verdict, "pass");
+  });
+
+  it("check IN_PROGRESS que passa do runningCeilingMs → timeout; pendente sem run segue no timeoutMs", async () => {
+    const runner = new FakeTrainRunner();
+    runner.advanceMs = 20_000;
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "view", () =>
+      ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: null, status: "IN_PROGRESS" }] })),
+    );
+    assert.equal(await pollTrainCi(runner, 6400, { timeoutMs: 50_000, intervalMs: 1000, runningCeilingMs: 120_000 }), "timeout");
+    const r2 = new FakeTrainRunner();
+    r2.advanceMs = 20_000;
+    let calls = 0;
+    r2.on("gh", (a) => a[0] === "pr" && a[1] === "view", () => { calls++; return ok(JSON.stringify({ statusCheckRollup: [] })); });
+    assert.equal(await pollTrainCi(r2, 6400, { timeoutMs: 50_000, intervalMs: 1000, runningCeilingMs: 600_000 }), "timeout");
+    assert.ok(calls <= 4, `sem run não deve estender (calls=${calls})`);
+  });
+
   it("pending vira pass assim que o check conclui (várias rodadas de polling)", async () => {
     const runner = new FakeTrainRunner();
     let call = 0;

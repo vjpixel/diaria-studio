@@ -66,7 +66,7 @@ describe("formatQueueLine — contrato com wait-pr-checks.sh (#10578)", () => {
       { mergeable: "MERGEABLE" },
     );
     const line = formatQueueLine(r);
-    assert.equal(line, "[check-pr-checks-gate] queue: queued=1 pending=2");
+    assert.equal(line, "[check-pr-checks-gate] queue: queued=1 pending=2 running=1");
     assert.match(line ?? "", /queue: queued=[0-9]+/);
   });
 

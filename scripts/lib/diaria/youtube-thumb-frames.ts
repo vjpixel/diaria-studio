@@ -21,6 +21,7 @@
  * ficam no CLI `scripts/gen-youtube-thumb.ts --frames-from-drive`.
  */
 
+import { resolve as resolvePath } from "node:path";
 import sharp from "sharp";
 import { COLORS, FONTS } from "../shared/design-tokens.ts";
 import { DRIVE_API } from "../drive-constants.ts";
@@ -100,6 +101,30 @@ export function planDriveFrameArgs(input: {
     ...(input.mirrored ? ["-vf", "hflip"] : []),
     "-y",
     input.out,
+  ];
+}
+
+/**
+ * #13712 (review da PR #13715): fonte dos frames. `--frames-from-file` é caminho
+ * (resolvido contra o cwd); `--frames-from-drive` é FILE_ID e segue intacto, nunca
+ * passa por `resolve` (virava caminho local e a Drive API devolvia 404).
+ */
+export function resolveFramesSource(input: { fromFile: boolean; raw: string; cwd?: string }): { localFile: boolean; id: string } {
+  const raw = input.raw.trim();
+  return input.fromFile ? { localFile: true, id: resolvePath(input.cwd ?? process.cwd(), raw) } : { localFile: false, id: raw };
+}
+
+/** #13712: um frame de um arquivo LOCAL (bruto fora do Drive), mesmo contrato do `planDriveFrameArgs`. */
+export function planFileFrameArgs(input: { path: string; atSeconds: number; out: string; mirrored?: boolean }): string[] {
+  if (!input.path.trim()) throw new Error("caminho do vídeo vazio");
+  if (!Number.isFinite(input.atSeconds) || input.atSeconds < 0) throw new Error(`instante inválido: ${input.atSeconds}`);
+  return [
+    "-hide_banner", "-loglevel", "error",
+    "-ss", String(input.atSeconds),
+    "-i", input.path,
+    "-frames:v", "1",
+    ...(input.mirrored ? ["-vf", "hflip"] : []),
+    "-y", input.out,
   ];
 }
 

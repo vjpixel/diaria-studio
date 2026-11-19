@@ -23,16 +23,19 @@
 #   scripts/lib/wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600] [running_ceiling_secs=3600]
 #
 # Check EM EXECUÇÃO no HEAD vigente (#13685): enquanto a última leitura do
-# gate mostra check rodando (`pending=P` > `queued=K` na linha `queue:` —
-# job com runner, `IN_PROGRESS`), o prazo se estende até
-# `running_ceiling_secs` (default 60 min), contado do início da espera. O job
+# gate mostra check rodando (`running=R` > 0 na linha `queue:` — CheckRun
+# com runner e `startedAt`; StatusContext legado pendente não conta, #13702),
+# o prazo se estende até `running_ceiling_secs` (default 60 min) contado
+# DEPOIS do tempo em fila (#13702: `running_ceiling_secs + tempo_em_fila`,
+# com o tempo em fila limitado por `queue_ceiling_secs`). O job
 # `test` do CI leva rotineiramente 35-45 min (rodada 261119): com o teto de
 # 30 min o helper saía TIMEOUT com o run ainda `in_progress`, e a regra
 # "TIMEOUT = CI vermelho" mandava pra draft + fixer uma PR sem defeito.
 # "Pendente sem run" (rollup vazio, nenhuma linha `queue:`, só checks na
 # fila) não ganha essa extensão: segue com o teto normal (ou o da fila,
 # abaixo). Teto absoluto continua existindo (#6921): o laço nunca passa de
-# max(queue_ceiling_secs, running_ceiling_secs).
+# queue_ceiling_secs + running_ceiling_secs. Estourado o prazo com check
+# ainda na fila, sai 7 (FILA) mesmo com outro check rodando (#13702).
 #
 # Fila de runner (#10578): o tempo em que o gate reporta checks ainda na
 # FILA do GitHub (`queued=K` com K>0 na linha `queue:` de
@@ -51,7 +54,8 @@
 #   1 = TIMEOUT — teto de vida estourou; mensagem nomeada em stderr, nunca
 #       confundida com "ainda rodando silenciosamente". Com check em
 #       execução na última leitura, só depois de `running_ceiling_secs`
-#       (#13685): a mensagem diz que o check seguia rodando.
+#       além do tempo em fila (#13685/#13702): a mensagem diz que o check
+#       seguia rodando.
 #   2 = uso inválido (PR ausente)
 #   7 = FILA — o teto absoluto (`queue_ceiling_secs`) estourou com checks
 #       ainda na fila de runner, sem nenhuma falha (#10578). NÃO é CI
@@ -114,7 +118,7 @@ wait_pr_checks() {
   local start elapsed rc now deadline
   # #13685: checks em execução (pending - queued) na última leitura pending.
   # Um rc=3 transitório não o zera, como o `last_queued`.
-  local last_running=0 pending_count
+  local last_running=0 pending_count running_count queued_for_running running_deadline
   local error_streak=0
   local max_error_streak=5
   # #10578: segundos acumulados em que o gate viu checks na FILA de runner
@@ -157,18 +161,32 @@ wait_pr_checks() {
       deadline="$queue_ceiling_secs"
     fi
     # #13685: check rodando no HEAD vigente na última leitura — o CI está
-    # andando, não parado; o prazo vai até o teto de execução.
-    if [ "$last_running" -gt 0 ] && [ "$deadline" -lt "$running_ceiling_secs" ]; then
-      deadline="$running_ceiling_secs"
+    # andando, não parado; o prazo vai até o teto de execução. #13702: o teto
+    # de execução conta DEPOIS do tempo de fila (job que esperou 20 min por
+    # runner e roda 40 min não pode estourar aos 60), com o tempo de fila
+    # limitado por `queue_ceiling_secs` — teto absoluto do laço =
+    # running_ceiling_secs + queue_ceiling_secs (#6921).
+    if [ "$last_running" -gt 0 ]; then
+      queued_for_running="$queued_secs"
+      if [ "$queued_for_running" -gt "$queue_ceiling_secs" ]; then
+        queued_for_running="$queue_ceiling_secs"
+      fi
+      running_deadline=$(( running_ceiling_secs + queued_for_running ))
+      if [ "$deadline" -lt "$running_deadline" ]; then
+        deadline="$running_deadline"
+      fi
     fi
     if [ "$polled" -eq 1 ] && [ "$elapsed" -ge "$deadline" ]; then
-      if [ "$last_running" -gt 0 ]; then
-        echo "[wait-pr-checks] TIMEOUT: PR #$pr com $last_running check(s) ainda em execução após ${elapsed}s (teto de execução ${running_ceiling_secs}s, #13685) — abortando espera (teto de vida, #6921, nunca um laço órfão). Investigar manualmente: gh pr checks $pr" >&2
-        return 1
-      fi
+      # #13702: fila antes do ramo running — com um check rodando e outro
+      # ainda sem runner, o que segura o CI é a fila (rc=7, reaguardar),
+      # nunca TIMEOUT/ci_timeout.
       if [ "$last_queued" -gt 0 ]; then
         echo "[wait-pr-checks] FILA: PR #$pr com $last_queued check(s) ainda na fila de runner do GitHub após ${elapsed}s (teto absoluto ${queue_ceiling_secs}s, ${queued_secs}s em fila) — nenhuma falha; NÃO é CI vermelho nem ci_timeout, reaguardar (#10578). Conferir: gh pr checks $pr" >&2
         return 7
+      fi
+      if [ "$last_running" -gt 0 ]; then
+        echo "[wait-pr-checks] TIMEOUT: PR #$pr com $last_running check(s) ainda em execução após ${elapsed}s (teto de execução ${running_ceiling_secs}s além de ${queued_secs}s em fila, #13685/#13702) — abortando espera (teto de vida, #6921, nunca um laço órfão). Investigar manualmente: gh pr checks $pr" >&2
+        return 1
       fi
       echo "[wait-pr-checks] TIMEOUT: PR #$pr com checks pendentes após ${elapsed}s — abortando espera (teto de vida, #6921, nunca um laço órfão). Investigar manualmente: gh pr checks $pr" >&2
       return 1
@@ -214,10 +232,17 @@ wait_pr_checks() {
     # linha `queue:` (gate antigo, rollup vazio, janela de corrida) = 0.
     queued=$(printf '%s\n' "${LAST_GATE_OUTPUT:-}" | grep -o 'queue: queued=[0-9][0-9]*' | tail -n 1 | grep -o '[0-9][0-9]*$')
     last_queued="${queued:-0}"
-    # #13685: e quantos estão rodando (pending - queued). Sem linha `queue:`
-    # (rollup vazio = pendente sem run) = 0, sem extensão.
-    pending_count=$(printf '%s\n' "${LAST_GATE_OUTPUT:-}" | grep -o 'queue: queued=[0-9][0-9]* pending=[0-9][0-9]*' | tail -n 1 | grep -o '[0-9][0-9]*$')
-    last_running=$(( ${pending_count:-0} - last_queued ))
+    # #13685/#13702: e quantos estão rodando — `running=R` da linha `queue:`
+    # (só CheckRun com runner; StatusContext legado pendente nunca conta).
+    # Gate antigo sem `running=`: cai no `pending - queued` de antes. Sem
+    # linha `queue:` (rollup vazio = pendente sem run) = 0, sem extensão.
+    running_count=$(printf '%s\n' "${LAST_GATE_OUTPUT:-}" | grep -o 'queue: queued=[0-9][0-9]* pending=[0-9][0-9]* running=[0-9][0-9]*' | tail -n 1 | grep -o '[0-9][0-9]*$')
+    if [ -n "$running_count" ]; then
+      last_running="$running_count"
+    else
+      pending_count=$(printf '%s\n' "${LAST_GATE_OUTPUT:-}" | grep -o 'queue: queued=[0-9][0-9]* pending=[0-9][0-9]*' | tail -n 1 | grep -o '[0-9][0-9]*$')
+      last_running=$(( ${pending_count:-0} - last_queued ))
+    fi
     if [ "$last_running" -lt 0 ]; then
       last_running=0
     fi

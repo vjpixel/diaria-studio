@@ -32,6 +32,7 @@ import { readMarker } from "../pipeline-state.ts";
 import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
 import { linkScoreBlocks, linkTitleBlocks } from "../newsletter-intake-link-rules.ts"; // #12593
 import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257, #12693
+import { hasClariceReviewCredit } from "../clarice-review-credit.ts"; // #13711
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
@@ -4551,6 +4552,32 @@ function checkClaricePending(editionDir: string): InvariantViolation[] {
   ];
 }
 
+/**
+ * #13711: com a Clarice pendente, o rodapé PARA ENCERRAR de `02-reviewed.md`
+ * ainda afirma "A revisão foi feita pelo MCP da Clarice (...)". O render
+ * (`extractContent`) já omite essa oração enquanto o marcador existir; o aviso
+ * diz isso ao editor no gate, para ele saber por que o preview difere do
+ * markdown e decidir se quer outra redação. Warning, nunca bloqueia.
+ */
+function checkClaricePendingFooterCredit(editionDir: string): InvariantViolation[] {
+  if (!existsSync(resolve(editionDir, CLARICE_PENDING_REL))) return [];
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  if (!hasClariceReviewCredit(readFileSync(path, "utf8"))) return [];
+  return [
+    {
+      rule: "clarice-pending-footer-credit",
+      message:
+        "o rodapé PARA ENCERRAR de 02-reviewed.md afirma que a revisão foi feita pela Clarice, mas ela não rodou nesta edição. " +
+        "O render omite essa oração (com o link de afiliado) enquanto _internal/02-clarice-pending.json existir; " +
+        "se a Clarice for retomada com sucesso, a frase volta. Para outra redação, editar o rodapé à mão.",
+      source_issue: "#13711",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 /** Arquivos sem os quais o Stage 4 não tem o que revisar nem publicar (#13545). */
 export const EDITION_REQUIRED_FILES = ["02-reviewed.md", "_internal/01-approved.json", "06-public-images.json"] as const;
 
@@ -5089,6 +5116,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkClaricePending,
   },
+  {
+    id: "clarice-pending-footer-credit",
+    description: "rodapé PARA ENCERRAR afirma a revisão da Clarice com o marcador _internal/02-clarice-pending.json ativo; o render omite a oração (#13711, warning-only)",
+    source_issue: "#13711",
+    stage: 4,
+    run: checkClaricePendingFooterCredit,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -5139,4 +5173,5 @@ export {
   checkUseMelhorTempoTitleHeuristicShare,
   checkApprovedItemRemoval,
   checkClaricePending,
+  checkClaricePendingFooterCredit,
 };
