@@ -355,7 +355,8 @@ export function resolveMergeStateLine(stdout: string | null, readThreads: () => 
 }
 
 /**
- * #10578: `[check-pr-checks-gate] queue: queued=K pending=P` — contrato com
+ * #10578: `[check-pr-checks-gate] queue: queued=K pending=P running=R` (o
+ * `running=R` desde o #13702) — contrato com
  * `scripts/lib/wait-pr-checks.sh` (que faz grep de `queued=N`). `null` fora
  * do veredito `pending` ou quando o resultado não traz `queuedChecks`
  * (janela de corrida do #7060, rollup vazio): o laço lê ausência como
@@ -364,7 +365,12 @@ export function resolveMergeStateLine(stdout: string | null, readThreads: () => 
 export function formatQueueLine(result: CliGateResult): string | null {
   if (result.verdict !== "pending") return null;
   if (!("queuedChecks" in result) || !Array.isArray(result.queuedChecks)) return null;
-  return `[check-pr-checks-gate] queue: queued=${result.queuedChecks.length} pending=${result.pendingChecks.length}`;
+  const line = `[check-pr-checks-gate] queue: queued=${result.queuedChecks.length} pending=${result.pendingChecks.length}`;
+  // #13702: `running=R` só conta CheckRun com runner (status != COMPLETED e
+  // `startedAt`); `pending - queued` incluiria StatusContext legado pendente.
+  // Vai no FIM da linha pra não quebrar o grep de `queued=K pending=P`.
+  if (!("runningChecks" in result) || !Array.isArray(result.runningChecks)) return line;
+  return `${line} running=${result.runningChecks.length}`;
 }
 
 const EXIT_CODES: Record<CliGateResult["verdict"], number> = {
