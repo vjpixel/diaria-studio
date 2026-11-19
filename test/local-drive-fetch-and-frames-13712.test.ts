@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { makeLocalDriveDeps } from "../scripts/lib/diaria/local-drive-deps.ts";
 import { parseFetchDriveVideoArgs, runFetchDriveVideo } from "../scripts/fetch-drive-video.ts";
-import { planFileFrameArgs } from "../scripts/lib/diaria/youtube-thumb-frames.ts";
+import { planDriveFrameArgs, planFileFrameArgs, resolveFramesSource } from "../scripts/lib/diaria/youtube-thumb-frames.ts";
 
 const CLI = fileURLToPath(new URL("../scripts/gen-youtube-thumb.ts", import.meta.url));
 const TSX_LOADER = pathToFileURL(fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url))).href;
@@ -25,11 +25,54 @@ after(() => roots.forEach((r) => rmSync(r, { recursive: true, force: true })));
 
 describe("fetch-drive-video --drive-root (#13712)", () => {
   it("parse: --drive-root dispensa pasta do Drive e usa o id local", () => {
-    const r = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "horizontal", "--drive-root", "C:/x"], { folderId: null, windowHours: null });
+    const r = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "horizontal", "--drive-root", "C:/x"], { folderId: null, windowHours: null }, {});
     assert.ok(r.ok);
     if (r.ok) {
       assert.equal(r.driveRoot, "C:/x");
       assert.equal(r.folderId, "local:");
+    }
+  });
+
+  const CFG = { folderId: "DRIVE_FOLDER", windowHours: null };
+  const ENV = { DIARIA_VIDEO_DRIVE_ROOT: "/mnt/drive" };
+
+  it("--drive-root x --folder-id explícitos se contradizem", () => {
+    const r = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "horizontal", "--drive-root", "/x", "--folder-id", "F"], CFG, {});
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.error, /contradizem/);
+  });
+
+  it("--drive-root fora do horizontal (vertical/instagram) é recusado: id local quebraria o publish-shorts --from-drive", () => {
+    for (const extra of [[], ["--target", "instagram"]]) {
+      const r = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "vertical", ...extra, "--drive-root", "/x"], CFG, {});
+      assert.equal(r.ok, false, extra.join(" "));
+      if (!r.ok) assert.match(r.error, /só vale para o horizontal/);
+    }
+  });
+
+  it("env DIARIA_VIDEO_DRIVE_ROOT vale sozinha no horizontal", () => {
+    const r = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "horizontal"], CFG, ENV);
+    assert.ok(r.ok);
+    if (r.ok) {
+      assert.equal(r.driveRoot, "/mnt/drive");
+      assert.equal(r.folderId, "local:");
+    }
+  });
+
+  it("env cede a --folder-id explícito e ao vertical (segue pela Drive API)", () => {
+    const withFolder = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "horizontal", "--folder-id", "F"], CFG, ENV);
+    assert.ok(withFolder.ok);
+    if (withFolder.ok) {
+      assert.equal(withFolder.driveRoot, null);
+      assert.equal(withFolder.folderId, "F");
+    }
+    for (const extra of [[], ["--target", "instagram"]]) {
+      const v = parseFetchDriveVideoArgs(["--edition", "261119", "--orientation", "vertical", ...extra], CFG, ENV);
+      assert.ok(v.ok, extra.join(" "));
+      if (v.ok) {
+        assert.equal(v.driveRoot, null);
+        assert.equal(v.folderId, "DRIVE_FOLDER");
+      }
     }
   });
 
@@ -76,6 +119,19 @@ describe("gen-youtube-thumb --frames-from-file (#13712)", () => {
     const m = planFileFrameArgs({ path: "/v.mp4", atSeconds: 3, out: "/o.png", mirrored: true });
     assert.equal(m[m.indexOf("-vf") + 1], "hflip");
     assert.equal(m.at(-1), "/o.png");
+  });
+
+  it("resolveFramesSource: FILE_ID do Drive chega intacto ao planDriveFrameArgs (regressão: resolve() o virava caminho)", () => {
+    const id = "1AbC-dEf_GhI";
+    const src = resolveFramesSource({ fromFile: false, raw: ` ${id} `, cwd: "/algum/cwd" });
+    assert.deepEqual(src, { localFile: false, id });
+    const args = planDriveFrameArgs({ fileId: src.id, accessToken: "T", atSeconds: 1, out: "/o.png" });
+    assert.ok(args.some((a) => a.includes(`/files/${id}?`) || a.includes(`/files/${encodeURIComponent(id)}`)), args.join(" "));
+    assert.ok(!args.join(" ").includes("/algum/cwd"));
+  });
+
+  it("resolveFramesSource: --frames-from-file resolve o caminho contra o cwd", () => {
+    assert.deepEqual(resolveFramesSource({ fromFile: true, raw: "bruto.mp4", cwd: "/w" }), { localFile: true, id: join("/w", "bruto.mp4") });
   });
 
   it("CLI: extrai a folha do arquivo local e avisa do espelhamento default", (t) => {

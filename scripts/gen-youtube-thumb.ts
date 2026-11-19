@@ -177,6 +177,7 @@ import {
   planDriveFrameArgs,
   planFileFrameArgs,
   redactFfmpegArgs,
+  resolveFramesSource,
   resolveThumbMirrored,
   thumbFrameFileName,
   type MirroredOrigin,
@@ -464,7 +465,8 @@ async function main(): Promise<number> {
       // #13712: sem flag nem estado da montagem, o espelhamento é só o default — conferir na folha (261119: o bruto NÃO vinha espelhado).
       console.error(`[aviso] mirrored=${mirror.mirrored} é o DEFAULT (sem --mirrored/--no-mirrored nem blocks.json/source.json): confira na folha opcoes.jpg se o texto (caneca, letreiros) está legível e, se invertido, rode de novo com ${mirror.mirrored ? "--no-mirrored" : "--mirrored"}`);
     }
-    return framesFromDrive(dir, resolve(fileId), values, mirror, fromFinal, fromFile);
+    const src = resolveFramesSource({ fromFile, raw: fileId });
+    return framesFromDrive(dir, src.id, values, mirror, fromFinal, src.localFile);
   }
 
   if (values["pick-frame"] !== undefined || flags.has("pick-frame")) {

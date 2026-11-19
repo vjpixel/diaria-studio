@@ -1035,7 +1035,7 @@ export type ParsedFetchDriveVideoArgs =
       orientation: VideoOrientation;
       target: VideoTarget;
       folderId: string;
-      /** #13712: raiz local (`--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT`); `null` = Drive API. */
+      /** #13712: raiz local (`--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT`), só no horizontal; `null` = Drive API. */
       driveRoot: string | null;
       windowHours: number;
       editionDir: string | null;
@@ -1053,6 +1053,7 @@ export type ParsedFetchDriveVideoArgs =
 export function parseFetchDriveVideoArgs(
   argv: string[],
   cfg: ReturnType<typeof readYouTubeDriveConfig>,
+  env: Record<string, string | undefined> = process.env,
 ): ParsedFetchDriveVideoArgs {
   const { flags, values, positional } = parseArgs(argv);
   // `--dry-run 261025` engoliria a edição como valor da flag; e flag de valor sem valor vira flag solta.
@@ -1077,8 +1078,17 @@ export function parseFetchDriveVideoArgs(
     return { ok: false, error: `--target ${target} é ${targetOrientation(target)}, não combina com --orientation ${orientation}` };
   }
   // #13712: export fora do Drive — raiz local (mesma convenção do video-montagem, #13308); sem API.
-  const driveRoot = values["drive-root"]?.trim() || process.env.DIARIA_VIDEO_DRIVE_ROOT?.trim() || null;
-  if (driveRoot && values["folder-id"] !== undefined) return { ok: false, error: "--drive-root (ou DIARIA_VIDEO_DRIVE_ROOT) e --folder-id se contradizem" };
+  // Só o HORIZONTAL: o id `local:` não serve ao `publish-shorts.ts --from-drive`, que o manda
+  // para a Drive API — vertical/instagram local daria um `next_command` quebrado (review da PR #13715).
+  // `--drive-root` explícito fora do horizontal ou com `--folder-id` é erro; a env é só default,
+  // e cede a `--folder-id` explícito e ao vertical (segue pela API, como antes do #13712).
+  const explicitRoot = values["drive-root"]?.trim() || null;
+  if (explicitRoot && values["folder-id"] !== undefined) return { ok: false, error: "--drive-root e --folder-id se contradizem" };
+  if (explicitRoot && orientation !== "horizontal") {
+    return { ok: false, error: `--drive-root só vale para o horizontal: o id local não serve ao publish-shorts.ts --from-drive (veio --orientation ${orientation}, --target ${target})` };
+  }
+  const envRoot = env.DIARIA_VIDEO_DRIVE_ROOT?.trim() || null;
+  const driveRoot = explicitRoot ?? (envRoot && orientation === "horizontal" && values["folder-id"] === undefined ? envRoot : null);
   const folderId = driveRoot ? LOCAL_ID_PREFIX : values["folder-id"]?.trim() || cfg.folderId;
   if (!folderId) return { ok: false, error: "sem pasta — passe --folder-id ou preencha publishing.youtube.drive_folder_id" };
   const windowRaw = values["window-hours"];
