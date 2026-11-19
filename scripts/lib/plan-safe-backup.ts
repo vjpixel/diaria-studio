@@ -51,12 +51,23 @@
  *   livre) antes da troca, para auditoria. Qualquer divergência (valor
  *   diferente, `session_id` diferente, cada lado com algo que o outro não
  *   tem) segue em `backup-alongside`.
+ *   **Todos os campos contam, não só `timeline`/`pr` (#13703):** os demais
+ *   campos de topo (`waves`, `ci_queue_reawaits`, `state_changed_pending`,
+ *   `resume_state`, ...) e de cada issue (`status`, `motivo`, ...) do vivo
+ *   precisam estar iguais na cópia, ou ausentes/`null` no vivo (subconjunto:
+ *   objeto com as mesmas chaves e valores, array com o vivo como prefixo).
+ *   Um `status` ou contador diferente já é divergência: escolher entre os dois
+ *   lados seria julgamento, e o vivo fica. Antes da troca o vivo é relido; se
+ *   mudou desde a comparação (outro escritor no meio), nada é promovido. O
+ *   rebaixado mantém o mtime original do vivo e o restauro (plano ausente)
+ *   prefere a cópia que domina as outras, não só a de maior mtime: o
+ *   rebaixado nunca volta como "backup mais novo" por cima da versão à frente.
  *
  * Fail-soft: erro de I/O ao listar o diretório → `clean` (o leitor segue com
  * o comportamento de antes, que já trata ausência).
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { issueKeyOfPlanEntry } from "./issue-key.ts";
@@ -151,14 +162,72 @@ function planProgressFacts(plan: Record<string, unknown>): PlanProgressFacts {
   return { timeline, pr };
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
 /**
- * `true` quando `copy` está estritamente à frente de `live` (#13687): mesmo
- * `session_id` (quando algum dos dois tem), cada marco de `timeline` e cada
- * `pr` do vivo aparece na cópia com o MESMO valor, e a cópia tem ao menos um
+ * `true` quando o valor do vivo está contido no da cópia (#13703): `null`/
+ * ausente no vivo cabe em qualquer coisa; objeto → cada chave do vivo
+ * contida na mesma chave da cópia; array → o vivo é prefixo da cópia
+ * (elemento a elemento, com a mesma regra); escalar → igual. Pura.
+ */
+function liveValueContainedIn(live: unknown, copy: unknown): boolean {
+  if (live === null || live === undefined) return true;
+  if (Array.isArray(live)) {
+    if (!Array.isArray(copy) || copy.length < live.length) return false;
+    return live.every((v, i) => liveValueContainedIn(v, copy[i]));
+  }
+  if (isPlainObject(live)) {
+    if (!isPlainObject(copy)) return false;
+    return Object.keys(live).every((k) => liveValueContainedIn(live[k], copy[k]));
+  }
+  return Object.is(live, copy);
+}
+
+/** Campos de cada issue que a dominância trata à parte: identidade (`number`,
+ * `ref`, já usados na chave) e os marcos normalizados por `planProgressFacts`. */
+const ISSUE_FIELDS_COMPARED_APART = new Set(["number", "ref", "timeline", "pr"]);
+
+/**
+ * `true` quando todo campo do vivo fora de `timeline`/`pr` está contido na
+ * cópia (#13703): os de topo (exceto `issues`) e os de cada issue, pareadas
+ * pela chave. Issue do vivo ausente da cópia → `false`. Pura.
+ */
+function planOtherFieldsContained(live: Record<string, unknown>, copy: Record<string, unknown>): boolean {
+  for (const [k, v] of Object.entries(live)) {
+    if (k === "issues") continue;
+    if (!liveValueContainedIn(v, copy[k])) return false;
+  }
+  const copyByKey = new Map<string, Record<string, unknown>>();
+  for (const entry of normalizeIssues<Record<string, unknown>>(copy)) {
+    const key = isPlainObject(entry) ? issueKeyOfPlanEntry(entry) : null;
+    if (key) copyByKey.set(key, entry);
+  }
+  for (const entry of normalizeIssues<Record<string, unknown>>(live)) {
+    if (!isPlainObject(entry)) continue;
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key) continue;
+    const other = copyByKey.get(key);
+    if (!other) return false;
+    for (const [field, v] of Object.entries(entry)) {
+      if (ISSUE_FIELDS_COMPARED_APART.has(field)) continue;
+      if (!liveValueContainedIn(v, other[field])) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * `true` quando `copy` está estritamente à frente de `live` (#13687, #13703):
+ * mesmo `session_id` (quando algum dos dois tem), cada marco de `timeline` e
+ * cada `pr` do vivo aparece na cópia com o MESMO valor, todo outro campo do
+ * vivo (topo e por issue) está contido na cópia, e a cópia tem ao menos um
  * marco ou `pr` que o vivo não tem. Pura.
  */
 export function planCopyIsAheadOf(live: Record<string, unknown>, copy: Record<string, unknown>): boolean {
   if ((live.session_id ?? null) !== (copy.session_id ?? null)) return false;
+  if (!planOtherFieldsContained(live, copy)) return false;
   const a = planProgressFacts(live);
   const b = planProgressFacts(copy);
   for (const [key, events] of a.timeline) {
@@ -216,23 +285,51 @@ export function recoverPlanFromSafeBackup(planPath: string): PlanSafeBackupRecov
 
   if (existsSync(planPath)) return promoteCopyAheadOrWarn(planPath, backups, backupPaths);
 
+  const b = pickRestoreCandidate(backups);
+  if (b === null) return { status: "unrecoverable", backups: backupPaths };
+  try {
+    writeFileAtomic(planPath, b.raw);
+  } catch {
+    return { status: "unrecoverable", backups: backupPaths };
+  }
+  try {
+    const mtime = new Date(b.mtimeMs);
+    utimesSync(planPath, mtime, mtime);
+  } catch {
+    // mtime é refinamento (watchdog); o conteúdo já foi restaurado.
+  }
+  return { status: "restored", from: b.path, backups: backupPaths };
+}
+
+/**
+ * Cópia a restaurar quando o plano sumiu (#13703): parte da válida de maior
+ * mtime e troca por qualquer outra que esteja à frente dela
+ * (`planCopyIsAheadOf`), até nenhuma estar. Sem isso, um vivo rebaixado numa
+ * promoção anterior (`plan.json.conflictN`, atrasado mas com o mtime do vivo,
+ * que no bisync `--conflict-resolve newer` é o maior) voltaria no lugar da
+ * versão à frente. `null` se nenhuma cópia é um objeto JSON válido.
+ */
+function pickRestoreCandidate(
+  backups: PlanSafeBackupFile[],
+): { path: string; raw: string; mtimeMs: number } | null {
+  const valid: { path: string; raw: string; mtimeMs: number; plan: Record<string, unknown> }[] = [];
   for (const b of backups) {
     const raw = isValidPlanJson(b.path);
-    if (raw === null) continue;
-    try {
-      writeFileAtomic(planPath, raw);
-    } catch {
-      return { status: "unrecoverable", backups: backupPaths };
-    }
-    try {
-      const mtime = new Date(b.mtimeMs);
-      utimesSync(planPath, mtime, mtime);
-    } catch {
-      // mtime é refinamento (watchdog); o conteúdo já foi restaurado.
-    }
-    return { status: "restored", from: b.path, backups: backupPaths };
+    if (raw !== null) valid.push({ path: b.path, raw, mtimeMs: b.mtimeMs, plan: parsePlanObject(raw)! });
   }
-  return { status: "unrecoverable", backups: backupPaths };
+  if (valid.length === 0) return null;
+  let best = valid[0];
+  // "À frente" é estrito (cada troca acrescenta marco), então o laço termina.
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const c of valid) {
+      if (c !== best && planCopyIsAheadOf(best.plan, c.plan)) {
+        best = c;
+        changed = true;
+      }
+    }
+  }
+  return best;
 }
 
 /**
@@ -248,8 +345,10 @@ function promoteCopyAheadOrWarn(
 ): PlanSafeBackupRecovery {
   const alongside: PlanSafeBackupRecovery = { status: "backup-alongside", backups: backupPaths };
   let liveRaw: string;
+  let liveMtimeMs: number;
   try {
     liveRaw = readFileSync(planPath, "utf8");
+    liveMtimeMs = statSync(planPath).mtimeMs;
   } catch {
     return alongside;
   }
@@ -269,6 +368,31 @@ function promoteCopyAheadOrWarn(
   try {
     writeFileAtomic(demotedTo, liveRaw);
   } catch {
+    return alongside;
+  }
+  try {
+    // #13703: o rebaixado guarda o mtime do vivo, não "agora" — senão vira a
+    // cópia mais nova e o restauro (plano ausente) a escolheria.
+    const mtime = new Date(liveMtimeMs);
+    utimesSync(demotedTo, mtime, mtime);
+  } catch {
+    // mtime é refinamento; o restauro também ranqueia por dominância.
+  }
+  // #13703: relê o vivo logo antes da troca. Se outro escritor (log-event,
+  // watchdog) gravou desde a comparação, a decisão foi sobre um conteúdo que
+  // não existe mais: não promove e desfaz o rebaixado recém-criado.
+  let currentRaw: string | null;
+  try {
+    currentRaw = readFileSync(planPath, "utf8");
+  } catch {
+    currentRaw = null;
+  }
+  if (currentRaw !== liveRaw) {
+    try {
+      unlinkSync(demotedTo);
+    } catch {
+      // cópia idêntica a uma versão antiga do vivo: inofensiva se ficar.
+    }
     return alongside;
   }
   try {
