@@ -446,6 +446,9 @@ def _write_json_atomic(path, data) -> None:
 # (não subiu, não ficou pronto a tempo, outro modelo/device, outra versão deste arquivo,
 # conexão recusada, erro na transcrição) cai na carga local de sempre, com [aviso].
 # `DIARIA_WHISPER_RESIDENT=0` desliga (volta ao helper avulso).
+# O cliente espera a resposta com limite proporcional à duração do áudio e, se o residente não
+# responder, cai na carga local com [aviso] nomeando o pid; o residente grava num temporário que
+# só o cliente renomeia para `out`, então um job abandonado (Ctrl+C) não grava depois (#13644).
 
 RESIDENT_ENV = "DIARIA_WHISPER_RESIDENT"
 SERVE_FLAG = "--serve"
@@ -455,6 +458,15 @@ SERVER_WAIT_DEFAULT_S = 180
 SERVER_MAX_REQUEST = 1024 * 1024
 SERVER_HEARTBEAT_S = 2
 SERVER_HEARTBEAT_STALE_DEFAULT_S = 20
+# Espera do cliente pela resposta de um job (#13644): piso + fator x duração do áudio. Duração
+# desconhecida (ffprobe ausente, áudio ilegível) usa o teto fixo. `DIARIA_WHISPER_RESIDENT_JOB_TIMEOUT_S`
+# fixa o valor; `DIARIA_WHISPER_RESIDENT_JOB_FACTOR` troca o fator (CPU int8 é a mais lenta, ~1x tempo real).
+SERVER_JOB_TIMEOUT_FLOOR_S = 120
+SERVER_JOB_TIMEOUT_FACTOR = 3.0
+SERVER_JOB_TIMEOUT_UNKNOWN_S = 3600
+# O residente grava em `{out}{STAGING_MARK}{pid do cliente}.tmp`; só o cliente, com a resposta em mãos,
+# renomeia para `out` (#13644). Job abandonado (Ctrl+C) nunca toca o `out`.
+STAGING_MARK = ".resident-"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -616,6 +628,69 @@ def _recv_line(conn, limit=SERVER_MAX_REQUEST) -> bytes:
     return buf.split(b"\n", 1)[0]
 
 
+def _peer_closed(conn) -> bool:
+    """O cliente já fechou a conexão (Ctrl+C, timeout)? Leitura sem consumir; erro conta como fechado."""
+    import select
+    import socket
+
+    try:
+        r, _, _ = select.select([conn], [], [], 0)
+        if not r:
+            return False
+        return conn.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
+
+
+def staging_path(out: str) -> str:
+    return f"{out}{STAGING_MARK}{os.getpid()}.tmp"
+
+
+def audio_duration_s(path: str):
+    """Duração do áudio em segundos (wave da stdlib, senão ffprobe), ou None."""
+    import subprocess
+    import wave
+
+    try:
+        with wave.open(path, "rb") as w:
+            rate = w.getframerate()
+            if rate > 0:
+                return w.getnframes() / float(rate)
+    except Exception:  # noqa: BLE001 — não é WAV PCM
+        pass
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        v = float(r.stdout.strip().splitlines()[0]) if r.returncode == 0 and r.stdout.strip() else None
+    except Exception:  # noqa: BLE001 — ffprobe ausente, saída ilegível
+        return None
+    return v if v is not None and v > 0 else None
+
+
+def resident_job_timeout(job) -> float:
+    """Quanto o cliente espera a resposta do residente (#13644). Sem isto, um residente vivo e travado
+    (ex.: CUDA pendurada) prendia toda chamada para sempre."""
+    explicit = os.environ.get("DIARIA_WHISPER_RESIDENT_JOB_TIMEOUT_S", "").strip()
+    if explicit:
+        return _env_float("DIARIA_WHISPER_RESIDENT_JOB_TIMEOUT_S", SERVER_JOB_TIMEOUT_UNKNOWN_S)
+    dur = None
+    if job.get("windows"):
+        try:
+            with open(job["windows"], encoding="utf-8") as f:
+                dur = sum(max(0.0, float(w["end"]) - float(w["start"])) for w in json.load(f))
+        except Exception:  # noqa: BLE001 — cai na duração do áudio inteiro
+            dur = None
+    if dur is None:
+        dur = audio_duration_s(job["audio"])
+    if dur is None:
+        return SERVER_JOB_TIMEOUT_UNKNOWN_S
+    return SERVER_JOB_TIMEOUT_FLOOR_S + _env_float("DIARIA_WHISPER_RESIDENT_JOB_FACTOR", SERVER_JOB_TIMEOUT_FACTOR) * dur
+
+
 def serve_main(argv) -> int:
     """`--serve`: carrega o modelo uma vez e atende as chamadas até ficar ocioso (#13506)."""
     import hmac
@@ -700,9 +775,20 @@ def serve_main(argv) -> int:
                         job["initial_prompt"] = job["initial_prompt"] or ""
                         if not isinstance(job["audio"], str) or not os.path.isfile(job["audio"]) or not isinstance(job["out"], str):
                             resp = {"ok": False, "error": f"áudio não encontrado: {job['audio']}"}
+                        elif STAGING_MARK not in os.path.basename(job["out"]):
+                            # Só o temporário do cliente: o `out` de verdade é do cliente renomear (#13644).
+                            resp = {"ok": False, "error": "saída sem o temporário do cliente"}
                         else:
                             resp = engine.run_job(job)
                             resp["resident"] = True
+                            if _peer_closed(conn):
+                                # Cliente saiu no meio (Ctrl+C, timeout): ninguém vai renomear; descarta (#13644).
+                                try:
+                                    os.remove(job["out"])
+                                except OSError:
+                                    pass
+                                print(f"transcribe_words --serve: o cliente saiu antes do fim; saída descartada ({job['out']})", file=sys.stderr)
+                                continue
                 except Exception as e:  # noqa: BLE001 — a chamada cai na carga local
                     resp = {"ok": False, "error": f"{type(e).__name__}: {e}"[:500]}
                 try:
@@ -788,18 +874,36 @@ def try_resident(job, model_name: str, device_req: str):
         _remove_state_if(path, st.get("pid"))
         print("[aviso] transcribe_words: o processo residente não atendeu; carga local (#13506)", file=sys.stderr)
         return None
+    staging = staging_path(job["out"])
+    timeout_s = resident_job_timeout(job)
+    pid = st.get("pid")
     try:
         with conn:
-            conn.sendall((json.dumps({**job, "token": token}, ensure_ascii=False) + "\n").encode("utf-8"))
-            conn.settimeout(None)
+            conn.sendall((json.dumps({**job, "out": staging, "token": token}, ensure_ascii=False) + "\n").encode("utf-8"))
+            conn.settimeout(timeout_s)
             line = _recv_line(conn, limit=64 * 1024 * 1024)
         resp = json.loads(line.decode("utf-8")) if line else None
+    except socket.timeout:
+        # Vivo e sem responder (ex.: CUDA pendurada): a próxima chamada sobe outro em vez de esperar este (#13644).
+        _remove_state_if(path, pid)
+        kill = f"taskkill /F /PID {pid}" if os.name == "nt" else f"kill {pid}"
+        print(
+            f"[aviso] transcribe_words: o processo residente do Whisper (pid {pid}) não respondeu em {timeout_s:.0f} s; "
+            f"carga local. Se ele travou (ex.: GPU), encerre com `{kill}`; DIARIA_WHISPER_RESIDENT=0 desliga o residente (#13644)",
+            file=sys.stderr,
+        )
+        return None
     except Exception as e:  # noqa: BLE001
         print(f"[aviso] transcribe_words: o processo residente falhou ({e}); carga local (#13506)", file=sys.stderr)
         return None
     if not isinstance(resp, dict) or not resp.get("ok"):
         err = resp.get("error") if isinstance(resp, dict) else "resposta vazia ou ilegível"
         print(f"[aviso] transcribe_words: o processo residente recusou a chamada ({err}); carga local (#13506)", file=sys.stderr)
+        return None
+    try:
+        os.replace(staging, job["out"])
+    except OSError as e:
+        print(f"[aviso] transcribe_words: a saída do processo residente não foi gravada ({e}); carga local (#13644)", file=sys.stderr)
         return None
     for aviso in resp.pop("avisos", None) or []:
         print(aviso, file=sys.stderr)
