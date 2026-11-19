@@ -23,7 +23,12 @@
  *   --local-root  modo disco (o Neo, Drive for desktop): opera na pasta local, sem API.
  *   --verbose     no texto, lista também o que fica e o motivo.
  *
- * Auth do Drive: OAuth do projeto (`data/.credentials.json`, `scripts/google-auth.ts`).
+ * Auth do Drive: OAuth do projeto (`data/.credentials.json`, `scripts/google-auth.ts`)
+ * para listar, ler e mover. A `arquivo/` é criada (e a `_superadas/` vazia vai
+ * para a lixeira) com a conta dona da pasta de vídeo, a diaria.editor, pelo
+ * remote rclone de `publishing.video.archive_folder_owner` (#13619,
+ * `lib/diaria/drive-owner-account.ts`); sem ele, ou se ele falhar, o OAuth do
+ * projeto cria, com aviso.
  * Exit: 0 ok; 1 alguma pasta falhou (as outras seguem; o que já foi movido
  * fica no relatório, `done: true`); 2 uso inválido; 3 `--apply` terminou com
  * avisos (XML não lido, `_superadas/` não esvaziada, item sem id); 4 erro de
@@ -39,6 +44,7 @@ import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { FOLDER_MIME, listChildren, youtubeFolderIdFrom, type MontageDriveDeps } from "./lib/diaria/video-montage-drive.ts";
 import { archiveEditionDrive, archiveEditionLocal, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
 import { ARCHIVE_DIR_NAME, isEditionFolderName } from "./lib/diaria/video-version-archive.ts";
+import { ownerFetchFromConfigFile } from "./lib/diaria/drive-owner-account.ts";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const KNOWN = ["edition", "apply", "json", "folder-id", "local-root", "verbose", "help"];
@@ -115,7 +121,11 @@ export async function runArchiveVersions(argv: string[], deps?: MontageDriveDeps
       }
     }
   } else {
-    const d: MontageDriveDeps = deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) };
+    const d: MontageDriveDeps = deps ?? {
+      driveFetch: (url, init) => gFetchRetry(url, init ?? {}),
+      // #13619: arquivo/ nasce com a conta dona da pasta de vídeo (publishing.video.archive_folder_owner).
+      ownerFetch: ownerFetchFromConfigFile(join(ROOT, "platform.config.json")),
+    };
     let children;
     try {
       children = await listChildren(d, readFolderId(folderId), { foldersOnly: true });

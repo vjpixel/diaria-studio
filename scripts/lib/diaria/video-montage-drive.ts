@@ -50,6 +50,14 @@ export interface MontageDriveDeps {
    * `driveFetch` (testes).
    */
   uploadFetch?(url: string, init?: RequestInit): Promise<Response>;
+  /**
+   * Chamada autenticada como a conta DONA da pasta de vídeo (diaria.editor,
+   * #13619; `drive-owner-account.ts`): cria a `arquivo/` e põe na lixeira a
+   * `_superadas/` vazia que o OAuth do projeto (vjpixel, editora) não pode.
+   * Ausente = o OAuth do projeto cria (e fica dono). Falha = aviso e fallback
+   * para o `driveFetch`.
+   */
+  ownerFetch?(url: string, init?: RequestInit): Promise<Response>;
 }
 
 /** Um arquivo/pasta como a listagem do Drive devolve (`size` é string int64 na API). */

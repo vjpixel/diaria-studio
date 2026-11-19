@@ -675,6 +675,7 @@ import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 import { readWithRetry } from "./lib/diaria/video-xml-vs-final.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
+import { ownerFetchFromConfigFile } from "./lib/diaria/drive-owner-account.ts";
 import { archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, rootIdsNamed, xmlNamesWithArchive, type ArchiveFolderCache, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
 import { isOverwriteArchivedName, versionOfSequenceId, type ArchiveEntry } from "./lib/diaria/video-version-archive.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
@@ -7693,7 +7694,9 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     const stop = audioOnlyStop(ctx, cmd);
     if (stop !== null) return stop;
   }
-  const driveDeps = (): MontageDriveDeps => deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}) };
+  // #13619: ownerFetch = a conta dona da pasta de vídeo (diaria.editor), que cria a arquivo/ (publishing.video.archive_folder_owner).
+  const driveDeps = (): MontageDriveDeps =>
+    deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}), ownerFetch: ownerFetchFromConfigFile(join(ROOT, "platform.config.json")) };
   const d = mode === "api" && DRIVE_COMMANDS.has(cmd)
     ? makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]))
     : null;
