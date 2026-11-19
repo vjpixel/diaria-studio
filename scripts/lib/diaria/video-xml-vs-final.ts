@@ -1436,9 +1436,26 @@ export interface PatternRule {
    * comentário nela em vez de abrir outra (não duplicar a #13194, a #12089).
    */
   trackingIssue?: number;
+  /**
+   * #13626: só contam as edições a partir desta (AAMMDD). Para a regra cujo
+   * parâmetro do build já mudou depois das edições antigas: o XML delas saiu
+   * de outro build, e somá-las às novas abre issue pelo que já foi corrigido.
+   */
+  sinceEdition?: string;
 }
 
-const fmt = (x: number | null, unit = "") => (x === null ? "n/d" : `${x > 0 ? "+" : ""}${x}${unit}`);
+/**
+ * #13626: 1ª edição cujo XML saiu do build com as margens das pontas do
+ * #13194 (`TAKE_DEFAULTS.preRollS`/`postRollS` de 0,3 s, PR #13203, e a borda
+ * aberta até o silêncio, PR #13218, ambas de 15–16/11). A 261116 ainda é do
+ * build anterior: o editor estendeu 18 entradas em até +285 ms, que é a
+ * medição que motivou o #13194. Na 261117 o horizontal tem 49 de 50 entradas
+ * intocadas. A 261103 (-500 ms) e a 261105 (-283 ms) abriram a #13626 somadas
+ * à 261118, a única pós-correção acima do limiar.
+ */
+export const EDGE_MARGIN_SINCE_EDITION = "261117";
+
+const fmt =(x: number | null, unit = "") => (x === null ? "n/d" : `${x > 0 ? "+" : ""}${x}${unit}`);
 
 /**
  * Padrões vigiados. Limiares conservadores de propósito: a issue sai só com o
@@ -1461,6 +1478,7 @@ export const PATTERN_RULES: readonly PatternRule[] = [
     title: "video-montagem: o editor estende a ponta da saída dos clipes",
     priority: "P3",
     minEditions: 3,
+    sinceEdition: EDGE_MARGIN_SINCE_EDITION,
     hit: (r) => (r.tailMeanMs === null ? null : r.tailMeanMs >= 80),
     value: (r) => fmt(r.tailMeanMs, " ms"),
     suggestion: "Aumentar o padding da saída do clipe no build pela média medida (parâmetro com critério mecânico).",
@@ -1470,6 +1488,7 @@ export const PATTERN_RULES: readonly PatternRule[] = [
     title: "video-montagem: o editor estende a ponta da entrada dos clipes",
     priority: "P3",
     minEditions: 3,
+    sinceEdition: EDGE_MARGIN_SINCE_EDITION,
     hit: (r) => (r.headMeanMs === null ? null : r.headMeanMs >= 80),
     value: (r) => fmt(r.headMeanMs, " ms"),
     suggestion: "Aumentar o padding da entrada do clipe no build pela média medida.",
@@ -1479,6 +1498,7 @@ export const PATTERN_RULES: readonly PatternRule[] = [
     title: "video-montagem: o editor apara a cabeça dos clipes",
     priority: "P3",
     minEditions: 3,
+    sinceEdition: EDGE_MARGIN_SINCE_EDITION,
     hit: (r) => (r.headMeanMs === null ? null : r.headMeanMs <= -150),
     value: (r) => fmt(r.headMeanMs, " ms"),
     suggestion: "Reduzir a folga da entrada (respiração/hesitação antes da fala), como na #12089.",
@@ -1536,6 +1556,11 @@ export function stableHash(text: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/** #13626: a edição conta para a regra (`sinceEdition`; AAMMDD compara como texto). */
+export function countsForRule(rule: Pick<PatternRule, "sinceEdition">, edition: string): boolean {
+  return rule.sinceEdition === undefined || edition >= rule.sinceEdition;
+}
+
 /**
  * `requireAuto` (default `true`): o padrão só sai com pelo menos uma edição
  * medida pela tarefa. Os números importados da #11670 reforçam a evidência,
@@ -1546,7 +1571,7 @@ export function detectPatterns(agg: Aggregate, rules: readonly PatternRule[] = P
   const requireAuto = opts.requireAuto ?? true;
   const out: DetectedPattern[] = [];
   for (const rule of rules) {
-    const hits = agg.rows.filter((r) => rule.hit(r) === true);
+    const hits = agg.rows.filter((r) => countsForRule(rule, r.edition) && rule.hit(r) === true);
     const editions = [...new Set(hits.map((r) => r.edition))].sort();
     if (editions.length < rule.minEditions) continue;
     if (requireAuto && !hits.some((r) => r.method !== "11670-manual")) continue;
@@ -1610,15 +1635,23 @@ function clipText(t: string | undefined, max = 80): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-/** Exemplos com tempo no bruto, por padrão, tirados do detalhe dos registros. */
-export function patternExamples(records: readonly EditionRecord[], max = 8): Map<string, string[]> {
+/**
+ * Exemplos com tempo no bruto, por padrão, tirados do detalhe dos registros.
+ * #13626: com `sinceEdition` na regra, a edição anterior não dá exemplo (a
+ * #13626 saiu com 8 exemplos da 261104, edição que nem contava para ela).
+ */
+export function patternExamples(records: readonly EditionRecord[], max = 8, rules: readonly PatternRule[] = PATTERN_RULES): Map<string, string[]> {
   const out = new Map<string, string[]>();
+  let edition = "";
   const push = (id: string, line: string) => {
+    const rule = rules.find((x) => x.id === id);
+    if (rule && !countsForRule(rule, edition)) return;
     const xs = out.get(id) ?? [];
     if (xs.length < max) xs.push(line);
     out.set(id, xs);
   };
   for (const r of records) {
+    edition = r.edition;
     for (const s of r.sequences) {
       const d = s.detail;
       if (!d) continue;
