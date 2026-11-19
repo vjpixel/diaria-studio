@@ -1703,6 +1703,39 @@ export function detectProviderTotalFailure(
     .map(([providerId]) => providerId);
 }
 
+/** Rodadas consecutivas de cota esgotada que disparam o alarme (#13634). */
+export const GEO_QUOTA_PERSISTENT_ROUNDS = 2;
+
+/**
+ * Pure (#13634): providers cujas últimas `minRounds` rodadas foram TODAS 100%
+ * `errorKind: "quota"`. Uma rodada = uma `date` em que o provider produziu
+ * registros. `detectProviderTotalFailure` só olha a rodada corrente e só avisa;
+ * sem esta checagem o OpenAI ficou um mês sem medir (cota zerada) e nenhum
+ * alarme chegou ao editor, porque os outros providers seguiam gravando.
+ * Rodada parcial (>=1 resposta válida ou erro de outra causa) quebra a
+ * sequência. Quem chama passa o histórico do painel + os registros da rodada
+ * atual (ainda não anexados ao arquivo).
+ */
+export function detectPersistentQuotaProviders(
+  records: readonly Pick<GeoCitationRecord, "date" | "provider" | "error" | "errorKind">[],
+  minRounds: number = GEO_QUOTA_PERSISTENT_ROUNDS,
+): GeoProviderId[] {
+  const byProvider = new Map<GeoProviderId, Map<string, boolean>>();
+  for (const r of records) {
+    const rounds = byProvider.get(r.provider) ?? new Map<string, boolean>();
+    const allQuota = (rounds.get(r.date) ?? true) && Boolean(r.error) && r.errorKind === "quota";
+    rounds.set(r.date, allQuota);
+    byProvider.set(r.provider, rounds);
+  }
+  const out: GeoProviderId[] = [];
+  for (const [provider, rounds] of byProvider) {
+    const dates = [...rounds.keys()].sort();
+    if (dates.length < minRounds) continue;
+    if (dates.slice(-minRounds).every((d) => rounds.get(d))) out.push(provider);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // #4900 — provedor que some da rodada não alarma em silêncio (item b) +
 // detecção (não-resolução) de conflito de escrita OneDrive (item c).

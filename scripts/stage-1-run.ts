@@ -1523,6 +1523,9 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
     opts.edition,
     "--bodies-dir",
     internalPath(editionDir, "_forensic/link-verify-bodies"),
+    // #13662: também rebaixa o top-3 que repete notícia de 31-84 dias atrás.
+    "--editions-dir",
+    "data/editions",
     "--out-log",
     internalPath(editionDir, "01-stale-date-demoted.json"),
   ]);

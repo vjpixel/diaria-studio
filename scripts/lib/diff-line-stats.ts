@@ -98,6 +98,30 @@ export function getDiffLineStats(
   return parseNumstat(r.stdout ?? "");
 }
 
+/**
+ * I/O (#13606): soma o diff de cada commit em `shas` (`git show --numstat`),
+ * ignorando qualquer outro commit do intervalo da rodada. Squash-merge é
+ * commit de 1 pai, então o `show` é o diff da PR inteira. Lista vazia = zero.
+ */
+export function getOwnCommitsDiffStats(
+  shas: string[],
+  opts: { cwd?: string; spawnFn?: typeof spawnSync } = {},
+): DiffLineStats {
+  const spawnFn = opts.spawnFn ?? spawnSync;
+  const total: DiffLineStats = { files: 0, added: 0, removed: 0 };
+  for (const sha of shas) {
+    const r = spawnFn("git", ["show", "--numstat", "--format=", sha], { encoding: "utf8", cwd: opts.cwd });
+    if (r.status !== 0) {
+      throw new Error(`git show --numstat ${sha} falhou: ${r.stderr || `exit ${r.status}`}`);
+    }
+    const s = parseNumstat(r.stdout ?? "");
+    total.files += s.files;
+    total.added += s.added;
+    total.removed += s.removed;
+  }
+  return total;
+}
+
 export type AncestryVerdict = "ancestor" | "not-ancestor" | "error";
 
 /**
