@@ -24,6 +24,8 @@ import {
   editionWeekday,
   weekEditionsBefore,
 } from "./diaria/video-box0.ts"; // #12073
+import { isClaricePending } from "./clarice-pending-marker.ts"; // #13711
+import { omitClariceReviewCredit } from "./clarice-review-credit.ts"; // #13711
 import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
@@ -2651,7 +2653,12 @@ export function extractContent(
   // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
   // Quando ausentes (edição antiga, ou pixel preferiu omitir), graceful skip.
   const sorteio = extractTemplateBlock(reviewedText, "🎁 SORTEIO");
-  const encerrar = extractTemplateBlock(reviewedText, "🙋🏼‍♀️ PARA ENCERRAR");
+  const encerrarRaw = extractTemplateBlock(reviewedText, "🙋🏼‍♀️ PARA ENCERRAR");
+  // #13711: com a Clarice pendente (marcador #12257), o rodapé não afirma ao
+  // leitor uma revisão que não aconteceu. Só o render muda; 02-reviewed.md fica.
+  const encerrar = encerrarRaw && isClaricePending(editionDir)
+    ? omitClariceReviewCredit(encerrarRaw).markdown
+    : encerrarRaw;
   const erroIntencional = extractTemplateBlock(reviewedText, "ERRO INTENCIONAL"); // #1279
 
   // #1093: linha de cobertura no topo da newsletter.

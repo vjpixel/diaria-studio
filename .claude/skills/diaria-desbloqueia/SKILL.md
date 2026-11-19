@@ -236,6 +236,16 @@ npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" --track
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
+> **Já roteada depois da decisão: não rotear de novo (#13689, #13704).**
+> Toda candidata do scan traz `jaRoteadaDesdeDecisao`. `true` = a thread já
+> tem um comentário `route-issue` POSTERIOR à decisão com o track atual.
+> Aí **pular** o `route-issue.ts` acima e não postar comentário nenhum
+> (re-rotear empilharia um `route-issue` idêntico a cada rodada): a issue
+> só entra na contagem do relatório (Passo 5), com a nota "já roteada
+> depois da decisão". `false`: rotear como acima. O scan só marca `true`
+> com status `ja-destravada`; uma `acao-adiada` ativa e posterior à
+> decisão manda a issue para `acaoAdiada`, com a flag `false`.
+
 Para cada issue em `bloqueioConfirmado` **com `escopo` ≠ `"sem-sinal"`**
 (ou seja `"bloqueada"`/`"develop"`/`"fora-de-rodada"`): nada muda — o
 bloqueio segue de pé e já está documentado. Comentar (curto, sem
@@ -587,7 +597,8 @@ Terminar com um resumo, não uma lista de comandos executados:
 
 Par efetivo: {model}/{effort} — ok | saiu do pinado (tally …) | sonda indisponível ({motivo})
 Varridas: N candidatas (bloqueada/develop/·sem sinal/fora-de-rodada)
-  {A} já destravadas pela thread — re-roteadas sem pergunta
+  {A} já destravadas pela thread — {A1} re-roteadas sem pergunta,
+       {A2} já roteadas depois da decisão, sem rotear nem comentar (#13704)
   {B} bloqueio confirmado — sem mudança, comentário de revisão
   {B2} bloqueio documentado com LABEL FALTANDO — roteadas pra bloqueada (#7694)
   {B3} bloqueio OBSOLETO — a dependência já fechou, re-roteadas (#7707)

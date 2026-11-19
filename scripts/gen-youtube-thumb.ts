@@ -50,6 +50,11 @@
  *   espelha (a exportação já vem desespelhada), avisa da resolução menor, e o
  *   `--pick-frame` desses frames nunca espelha.
  *
+ * Bruto LOCAL, fora do Drive (#13712): `--frames-from-file PATH` faz o mesmo
+ * (folha `opcoes.jpg`, `frames.json`, `--pick-frame`) lendo o arquivo do disco, sem
+ * OAuth. Sem `--mirrored`/`--no-mirrored` nem estado da montagem, o `mirrored` é o
+ * default e o script AVISA para conferir o texto na folha.
+ *
  * Retrato em close-up pelo Codex (#11942), com o frame escolhido só como
  * referência de identidade e a expressão variando:
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right]
@@ -112,7 +117,7 @@
 
 import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -170,7 +175,9 @@ import {
   framesSourceWarnings,
   pickFrameNeedsFlop,
   planDriveFrameArgs,
+  planFileFrameArgs,
   redactFfmpegArgs,
+  resolveFramesSource,
   resolveThumbMirrored,
   thumbFrameFileName,
   type MirroredOrigin,
@@ -180,7 +187,7 @@ import {
 const USAGE =
   "uso: gen-youtube-thumb.ts AAMMDD [--hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\"); sem ele, porVideo.horizontal.capa do roteiro] --portrait PNG [--background IMG] [--layout bottom|top|right] [--bg-crop x,y,w,h] [--enhance-portrait] [--hook-style serif|grande] [--logo PNG] [--out PATH] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --background-prompt-capa --scene \"um objeto iluminado\" [--layout bottom|top|right] [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
+  "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID | --frames-from-file PATH [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-sheet [--edition-dir DIR]\n" +
@@ -197,18 +204,32 @@ async function framesFromDrive(
   values: Record<string, string>,
   mirror: { mirrored: boolean; from: MirroredOrigin },
   fromFinal = false,
+  /** #13712: bruto LOCAL (`--frames-from-file`); sem Drive nem token. `fileId` é o caminho. */
+  localFile = false,
 ): Promise<number> {
-  const { getAccessToken } = await import("./google-auth.ts");
-  const { gFetchRetry } = await import("./lib/drive-helpers.ts");
-  const { DRIVE_API } = await import("./lib/drive-constants.ts");
-  const token = await getAccessToken();
-  const params = new URLSearchParams({ fields: "id,name,mimeType,videoMediaMetadata(durationMillis,width,height)", supportsAllDrives: "true" });
-  const res = await gFetchRetry(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?${params}`, { signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) {
-    console.error(`gen-youtube-thumb: metadado do arquivo ${fileId} no Drive falhou (HTTP ${res.status}) — confira o id e o acesso da conta OAuth do projeto (oauth-setup.ts)`);
-    return 1;
+  type Meta = { name?: string; mimeType?: string; videoMediaMetadata?: { durationMillis?: string; width?: number; height?: number } };
+  let meta: Meta;
+  let token = "";
+  if (localFile) {
+    if (!existsSync(fileId)) {
+      console.error(`gen-youtube-thumb: vídeo local ${fileId} não existe`);
+      return 1;
+    }
+    const dims = (await import("./lib/diaria/local-drive-deps.ts")).probeVideoDims(fileId);
+    meta = { name: basename(fileId), mimeType: "video/mp4", videoMediaMetadata: dims };
+  } else {
+    const { getAccessToken } = await import("./google-auth.ts");
+    const { gFetchRetry } = await import("./lib/drive-helpers.ts");
+    const { DRIVE_API } = await import("./lib/drive-constants.ts");
+    token = await getAccessToken();
+    const params = new URLSearchParams({ fields: "id,name,mimeType,videoMediaMetadata(durationMillis,width,height)", supportsAllDrives: "true" });
+    const res = await gFetchRetry(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?${params}`, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) {
+      console.error(`gen-youtube-thumb: metadado do arquivo ${fileId} no Drive falhou (HTTP ${res.status}) — confira o id e o acesso da conta OAuth do projeto (oauth-setup.ts)`);
+      return 1;
+    }
+    meta = (await res.json()) as Meta;
   }
-  const meta = (await res.json()) as { name?: string; mimeType?: string; videoMediaMetadata?: { durationMillis?: string; width?: number; height?: number } };
   if (!meta.mimeType?.startsWith("video/")) {
     console.error(`gen-youtube-thumb: ${fileId} (${meta.name ?? "?"}) não é vídeo (mimeType ${meta.mimeType ?? "?"})`);
     return 1;
@@ -226,7 +247,9 @@ async function framesFromDrive(
   const frames: { n: number; at: number; path: string }[] = [];
   for (const [i, at] of times.entries()) {
     const out = join(outDir, thumbFrameFileName(i + 1));
-    const args = planDriveFrameArgs({ fileId, accessToken: token, atSeconds: at, out, mirrored: mirror.mirrored });
+    const args = localFile
+      ? planFileFrameArgs({ path: fileId, atSeconds: at, out, mirrored: mirror.mirrored })
+      : planDriveFrameArgs({ fileId, accessToken: token, atSeconds: at, out, mirrored: mirror.mirrored });
     const r = spawnSync("ffmpeg", args, { encoding: "utf8", timeout: 5 * 60_000 });
     if (r.error || r.status !== 0 || !existsSync(out)) {
       console.error(
@@ -421,10 +444,15 @@ async function main(): Promise<number> {
   }
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
 
-  if (values["frames-from-drive"] !== undefined || flags.has("frames-from-drive")) {
-    const fileId = values["frames-from-drive"]?.trim();
+  const fromFile = values["frames-from-file"] !== undefined || flags.has("frames-from-file");
+  if (fromFile && (values["frames-from-drive"] !== undefined || flags.has("frames-from-drive"))) {
+    console.error("gen-youtube-thumb: --frames-from-file e --frames-from-drive juntos se contradizem");
+    return 2;
+  }
+  if (values["frames-from-drive"] !== undefined || flags.has("frames-from-drive") || fromFile) {
+    const fileId = (fromFile ? values["frames-from-file"] : values["frames-from-drive"])?.trim();
     if (!fileId) {
-      console.error("gen-youtube-thumb: --frames-from-drive exige o FILE_ID do vídeo bruto no Drive");
+      console.error(fromFile ? "gen-youtube-thumb: --frames-from-file exige o CAMINHO do vídeo bruto local" : "gen-youtube-thumb: --frames-from-drive exige o FILE_ID do vídeo bruto no Drive");
       return 2;
     }
     // #11532: --from-final = o FILE_ID é o horizontal exportado em Final/
@@ -433,7 +461,12 @@ async function main(): Promise<number> {
     if (values["from-final"] !== undefined) throw new Error(`--from-final não leva valor (recebeu ${JSON.stringify(values["from-final"])}): ponha a flag depois do AAMMDD`);
     const mirror = thumbMirrored(dir, flags, values, fromFinal);
     console.error(`[video] mirrored=${mirror.mirrored} (${mirror.from})${mirror.mirrored ? ": frames desespelhados (hflip)" : ""}`);
-    return framesFromDrive(dir, fileId, values, mirror, fromFinal);
+    if (fromFile && mirror.from === "default") {
+      // #13712: sem flag nem estado da montagem, o espelhamento é só o default — conferir na folha (261119: o bruto NÃO vinha espelhado).
+      console.error(`[aviso] mirrored=${mirror.mirrored} é o DEFAULT (sem --mirrored/--no-mirrored nem blocks.json/source.json): confira na folha opcoes.jpg se o texto (caneca, letreiros) está legível e, se invertido, rode de novo com ${mirror.mirrored ? "--no-mirrored" : "--mirrored"}`);
+    }
+    const src = resolveFramesSource({ fromFile, raw: fileId });
+    return framesFromDrive(dir, src.id, values, mirror, fromFinal, src.localFile);
   }
 
   if (values["pick-frame"] !== undefined || flags.has("pick-frame")) {

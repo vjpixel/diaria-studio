@@ -267,6 +267,14 @@ export interface PrChecksGateResult {
    * do GitHub" (estende o teto) de "rodando sem concluir" (teto normal).
    */
   queuedChecks?: string[];
+  /**
+   * #13702: subconjunto de `pendingChecks` EM EXECUÇÃO — `CheckRun` com
+   * status diferente de `COMPLETED` e `startedAt` válido (um runner pegou o
+   * job). `StatusContext` legado em `PENDING`/`EXPECTED` nunca conta: pode
+   * nunca postar, e contá-lo como "rodando" dava a extensão de 60 min do
+   * #13685 a um pendente sem run. Preenchido junto com `queuedChecks`.
+   */
+  runningChecks?: string[];
   /** Motivo legível — sempre presente, útil pra log/halt banner. */
   reason: string;
 }
@@ -403,6 +411,7 @@ export function evaluatePrChecksGate(
   const failingChecks: string[] = [];
   const pendingChecks: string[] = [];
   const queuedChecks: string[] = [];
+  const runningChecks: string[] = [];
 
   // Descarta runs supersedidas por force-push antes de julgar — ver
   // `keepLatestPerName`.
@@ -444,6 +453,7 @@ export function evaluatePrChecksGate(
     if (node.status !== "COMPLETED") {
       pendingChecks.push(label);
       if (isQueuedCheckRun(node)) queuedChecks.push(label);
+      else if (parseStartedAt(node.startedAt) !== null) runningChecks.push(label);
       continue;
     }
     const conclusion = typeof node.conclusion === "string" ? node.conclusion : null;
@@ -537,6 +547,7 @@ export function evaluatePrChecksGate(
       failingChecks: [],
       pendingChecks,
       queuedChecks,
+      runningChecks,
       reason: `${pendingChecks.length} check(s) ainda não concluído(s): ${pendingChecks.join(", ")}`,
     };
   }
