@@ -103,6 +103,20 @@ export function planDriveFrameArgs(input: {
   ];
 }
 
+/** #13712: um frame de um arquivo LOCAL (bruto fora do Drive), mesmo contrato do `planDriveFrameArgs`. */
+export function planFileFrameArgs(input: { path: string; atSeconds: number; out: string; mirrored?: boolean }): string[] {
+  if (!input.path.trim()) throw new Error("caminho do vídeo vazio");
+  if (!Number.isFinite(input.atSeconds) || input.atSeconds < 0) throw new Error(`instante inválido: ${input.atSeconds}`);
+  return [
+    "-hide_banner", "-loglevel", "error",
+    "-ss", String(input.atSeconds),
+    "-i", input.path,
+    "-frames:v", "1",
+    ...(input.mirrored ? ["-vf", "hflip"] : []),
+    "-y", input.out,
+  ];
+}
+
 /**
  * #11378: metadado gravado ao lado dos frames — se o `hflip` já foi aplicado
  * na extração. O `--pick-frame` lê para não desespelhar duas vezes (e para

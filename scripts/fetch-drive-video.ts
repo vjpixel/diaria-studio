@@ -8,7 +8,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * Uso:
  *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical
  *     [--target youtube|outras-redes|instagram]
- *     [--folder-id ID] [--window-hours N] [--edition-dir DIR]
+ *     [--folder-id ID | --drive-root DIR] [--window-hours N] [--edition-dir DIR]
  *     [--download [--max-mb N]] [--promote | --no-promote] [--dry-run] [--force]
  *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --corte SLUG[,SLUG...] [--folder-id ID]
  *
@@ -109,6 +109,7 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
 import { escapeDriveQueryString, gFetchRetry } from "./lib/drive-helpers.ts";
+import { LOCAL_ID_PREFIX, makeLocalDriveDeps } from "./lib/diaria/local-drive-deps.ts";
 import { downloadDriveFile } from "./lib/drive-download.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import {
@@ -1034,6 +1035,8 @@ export type ParsedFetchDriveVideoArgs =
       orientation: VideoOrientation;
       target: VideoTarget;
       folderId: string;
+      /** #13712: raiz local (`--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT`); `null` = Drive API. */
+      driveRoot: string | null;
       windowHours: number;
       editionDir: string | null;
       /** Sem `--download` o CLI só planeja (#11551): nenhum byte vai para o disco. */
@@ -1054,7 +1057,7 @@ export function parseFetchDriveVideoArgs(
   const { flags, values, positional } = parseArgs(argv);
   // `--dry-run 261025` engoliria a edição como valor da flag; e flag de valor sem valor vira flag solta.
   const misused = ["dry-run", "force", "download", "promote", "no-promote"].filter((f) => values[f] !== undefined);
-  const missingValue = ["edition", "orientation", "target", "folder-id", "window-hours", "edition-dir", "max-mb"].filter((f) => flags.has(f));
+  const missingValue = ["edition", "orientation", "target", "folder-id", "drive-root", "window-hours", "edition-dir", "max-mb"].filter((f) => flags.has(f));
   if (positional.length || misused.length || missingValue.length) {
     const what = [...positional, ...misused.map((f) => `--${f} não leva valor`), ...missingValue.map((f) => `--${f} sem valor`)];
     return { ok: false, error: `argumentos inválidos (${what.join(", ")})` };
@@ -1073,7 +1076,9 @@ export function parseFetchDriveVideoArgs(
   if (targetOrientation(target) !== orientation) {
     return { ok: false, error: `--target ${target} é ${targetOrientation(target)}, não combina com --orientation ${orientation}` };
   }
-  const folderId = values["folder-id"]?.trim() || cfg.folderId;
+  // #13712: export fora do Drive — raiz local (mesma convenção do video-montagem, #13308); sem API.
+  const driveRoot = values["drive-root"]?.trim() || process.env.DIARIA_VIDEO_DRIVE_ROOT?.trim() || null;
+  const folderId = driveRoot ? LOCAL_ID_PREFIX : values["folder-id"]?.trim() || cfg.folderId;
   if (!folderId) return { ok: false, error: "sem pasta — passe --folder-id ou preencha publishing.youtube.drive_folder_id" };
   const windowRaw = values["window-hours"];
   const windowHours = windowRaw !== undefined ? Number(windowRaw) : (cfg.windowHours ?? DRIVE_VIDEO_WINDOW_HOURS);
@@ -1090,6 +1095,7 @@ export function parseFetchDriveVideoArgs(
     orientation,
     target,
     folderId,
+    driveRoot,
     windowHours,
     editionDir: values["edition-dir"] ?? null,
     dryRun: !download,
@@ -1155,8 +1161,15 @@ async function main(): Promise<number> {
       console.error(`fetch-drive-video: ${args.error}\n${USAGE}`);
       return 2;
     }
+    if (args.driveRoot) {
+      if (!existsSync(args.driveRoot)) {
+        console.error(`fetch-drive-video: raiz local ${args.driveRoot} não existe (--drive-root/DIARIA_VIDEO_DRIVE_ROOT)`);
+        return 2;
+      }
+      console.error(`[premissa] Drive local em ${args.driveRoot}: lendo {AAMMDD}/Final/ e Editados/ do disco, sem a API (#13712)`);
+    }
     const outcome = await runFetchDriveVideo(
-      defaultFetchDriveVideoDeps,
+      args.driveRoot ? makeLocalDriveDeps(resolve(args.driveRoot)) : defaultFetchDriveVideoDeps,
       {
         aammdd: args.aammdd,
         orientation: args.orientation,
