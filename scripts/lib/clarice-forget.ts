@@ -30,6 +30,7 @@ import {
   recordForgetRequest,
   type ForgetRequest,
 } from "./clarice-db.ts";
+import { conflictCopiesOf } from "./sync-conflict-copy.ts";
 
 const ROOT = import.meta.dirname ? resolve(import.meta.dirname, "..", "..") : process.cwd();
 
@@ -40,9 +41,18 @@ export const DEFAULT_FORGET_LEDGER_PATH = resolve(ROOT, "data/clarice-subscriber
 // ---------------------------------------------------------------------------
 
 export interface LedgerRead {
-  /** O arquivo existe? Ausente = nenhum pedido NESTE arquivo (ver `importForgetLedger`). */
+  /**
+   * O ledger existe (o arquivo principal OU alguma cópia de conflito dele)?
+   * Ausente = nenhum pedido em arquivo (ver `importForgetLedger`).
+   */
   exists: boolean;
+  /** Pedidos do arquivo principal + das cópias de conflito, 1 por e-mail. */
   entries: ForgetRequest[];
+  /**
+   * Cópias de conflito do sync de `data/` lidas junto (#13607), a mais nova
+   * primeiro. Vazio com `includeConflictCopies: false`.
+   */
+  conflict_copies: string[];
 }
 
 /**
@@ -50,9 +60,40 @@ export interface LedgerRead {
  * leitura LANÇA, e linha que não é um pedido válido também LANÇA (#13573,
  * review da PR #13583): pular a linha seria esquecer em silêncio um pedido
  * de exclusão, e o rebuild regravaria o dado pessoal dele.
+ *
+ * Cópias de conflito (#13607): o ledger fica em `data/` (Drive) e é escrito
+ * por duas máquinas. Quando as duas acrescentam linhas antes do sync, o
+ * rclone bisync deixa `forget-requests.jsonl.conflictN` (às vezes renomeando
+ * também o original, que some), e o OneDrive deixa `-safeBackup-`. Como o
+ * ledger é append-only e cada linha é um pedido, a união de todas as cópias
+ * é a leitura certa: um pedido que só sobreviveu numa cópia continua sendo
+ * um pedido. Por padrão as cópias entram (com as mesmas regras de leitura:
+ * linha inválida ou cópia ilegível LANÇA); `includeConflictCopies: false` lê
+ * só o arquivo principal (é o que `appendForgetLedger` usa, para que
+ * `sync-ledger` consolide no principal o que só estava nas cópias). As cópias
+ * nunca são apagadas aqui: depois do `sync-ledger`, quem confere apaga à mão.
+ * No e-mail repetido entre arquivos fica o pedido de `requested_at` mais antigo.
  */
-export function readForgetLedger(path: string): LedgerRead {
-  if (!existsSync(path)) return { exists: false, entries: [] };
+export function readForgetLedger(
+  path: string,
+  opts: { includeConflictCopies?: boolean } = {},
+): LedgerRead {
+  const includeCopies = opts.includeConflictCopies ?? true;
+  const copies = includeCopies ? conflictCopiesOf(path).map((c) => c.path) : [];
+  const mainExists = existsSync(path);
+  if (!mainExists && copies.length === 0) return { exists: false, entries: [], conflict_copies: [] };
+  const byEmail = new Map<string, ForgetRequest>();
+  for (const file of mainExists ? [path, ...copies] : copies) {
+    for (const e of readLedgerFile(file)) {
+      const prev = byEmail.get(e.email);
+      if (!prev || e.requested_at < prev.requested_at) byEmail.set(e.email, e);
+    }
+  }
+  return { exists: true, entries: [...byEmail.values()], conflict_copies: copies };
+}
+
+/** Lê UM arquivo do ledger (o principal ou uma cópia de conflito). Erro e linha inválida LANÇAM. */
+function readLedgerFile(path: string): ForgetRequest[] {
   const lines = readFileSync(path, "utf8").split(/\r?\n/);
   const entries: ForgetRequest[] = [];
   const invalid: number[] = [];
@@ -80,13 +121,17 @@ export function readForgetLedger(path: string): LedgerRead {
         `corrija o arquivo (1 pedido JSON por linha, com email e requested_at); nada foi feito`,
     );
   }
-  return { exists: true, entries };
+  return entries;
 }
 
-/** Acrescenta o pedido ao ledger se o e-mail ainda não está lá. Devolve `true` se escreveu. */
+/**
+ * Acrescenta o pedido ao ARQUIVO PRINCIPAL do ledger se o e-mail ainda não
+ * está nele (cópias de conflito não contam, #13607: assim o pedido que só
+ * estava numa cópia passa para o principal). Devolve `true` se escreveu.
+ */
 export function appendForgetLedger(path: string, req: ForgetRequest): boolean {
   const email = req.email.trim().toLowerCase();
-  if (readForgetLedger(path).entries.some((e) => e.email === email)) return false;
+  if (readForgetLedger(path, { includeConflictCopies: false }).entries.some((e) => e.email === email)) return false;
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, JSON.stringify({ ...req, email }) + "\n", "utf8");
   return true;
@@ -107,8 +152,8 @@ export function appendForgetLedger(path: string, req: ForgetRequest): boolean {
 export function importForgetLedger(
   db: DatabaseSync,
   path: string,
-): { imported: number; total: number; ledger_exists: boolean } {
-  const { exists, entries } = readForgetLedger(path);
+): { imported: number; total: number; ledger_exists: boolean; conflict_copies: string[] } {
+  const { exists, entries, conflict_copies } = readForgetLedger(path);
   const inLedger = new Set(entries.map((e) => e.email));
   const missing = listForgetRequests(db)
     .map((r) => r.email)
@@ -127,16 +172,18 @@ export function importForgetLedger(
       imported++;
     }
   }
-  return { imported, total: entries.length, ledger_exists: exists };
+  return { imported, total: entries.length, ledger_exists: exists, conflict_copies };
 }
 
 /**
- * Tabela → ledger: acrescenta ao ledger todo pedido da tabela que falta nele
- * (nunca remove nem reescreve linha existente). Devolve os e-mails acrescentados.
+ * Tabela + cópias de conflito → arquivo principal do ledger: acrescenta ao
+ * principal todo pedido da tabela ou de uma cópia `.conflictN`/`-safeBackup-`
+ * (#13607) que falta nele (nunca remove nem reescreve linha existente, nunca
+ * apaga a cópia). Devolve os e-mails acrescentados.
  */
 export function syncLedgerFromStore(db: DatabaseSync, path: string): string[] {
   const added: string[] = [];
-  for (const r of listForgetRequests(db)) {
+  for (const r of [...readForgetLedger(path).entries, ...listForgetRequests(db)]) {
     if (appendForgetLedger(path, r)) added.push(r.email);
   }
   return added;

@@ -23,8 +23,10 @@
  *      Cada variante do mesmo Gmail que o store tem vira um contato minimizado.
  *
  * `sync-ledger`: acrescenta ao ledger os pedidos da tabela que faltam nele
- * (o rebuild aborta enquanto o ledger não cobre a tabela). Rodar só depois de
- * conferir que o Drive terminou de sincronizar o ledger.
+ * (o rebuild aborta enquanto o ledger não cobre a tabela), e também os que só
+ * estão numa cópia de conflito `.conflictN`/`-safeBackup-` do ledger (#13607);
+ * as cópias ficam no disco para apagar à mão. Rodar só depois de conferir que
+ * o Drive terminou de sincronizar o ledger.
  *
  * Ledger: `DEFAULT_FORGET_LEDGER_PATH` (o mesmo que a triagem e o rebuild
  * leem), salvo `--ledger` explícito.
@@ -54,6 +56,7 @@ import {
   forgetInStore,
   makeBrevoMinimizer,
   minimizeBrevoTargets,
+  readForgetLedger,
   syncLedgerFromStore,
   type BrevoForgetOutcome,
   type BrevoMinimizeResult,
@@ -95,8 +98,16 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ForgetC
     const db = openDb(dbPath);
     try {
       const added = syncLedgerFromStore(db, ledgerPath);
-      console.error(`📝 ledger ${ledgerPath}: ${added.length} pedido(s) acrescentado(s) a partir do store`);
-      console.log(JSON.stringify({ ledger: ledgerPath, added }, null, 2));
+      console.error(`📝 ledger ${ledgerPath}: ${added.length} pedido(s) acrescentado(s) a partir do store e das cópias de conflito`);
+      // #13607: as cópias ficam no disco; apagar é à mão, depois de conferir o principal.
+      const conflictCopies = readForgetLedger(ledgerPath).conflict_copies;
+      if (conflictCopies.length > 0) {
+        console.error(
+          `⚠️  ${conflictCopies.length} cópia(s) de conflito do ledger seguem no disco (${conflictCopies.join(", ")}): ` +
+            `os pedidos delas já estão no ledger principal; conferir e apagar à mão.`,
+        );
+      }
+      console.log(JSON.stringify({ ledger: ledgerPath, added, conflict_copies: conflictCopies }, null, 2));
     } finally {
       db.close();
     }

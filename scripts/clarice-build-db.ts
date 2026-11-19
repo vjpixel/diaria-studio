@@ -373,6 +373,15 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     );
     process.exit(1);
   }
+  if (forget.conflict_copies.length > 0) {
+    // #13607: duas máquinas gravaram o ledger antes do sync; os pedidos das
+    // cópias já entraram acima (união). Consolidar e limpar é passo à parte.
+    console.error(
+      `⚠️  lista de esquecimento (LGPD): ${forget.conflict_copies.length} cópia(s) de conflito do ledger lidas junto ` +
+        `(${forget.conflict_copies.join(", ")}). Os pedidos delas já valem neste rebuild. Para consolidar: ` +
+        `\`npx tsx scripts/clarice-forget.ts sync-ledger\` e, conferido o ledger principal, apagar as cópias.`,
+    );
+  }
   if (!forget.ledger_exists) {
     console.error(
       `⚠️  lista de esquecimento (LGPD): ledger ${ledgerPath} não existe — seguindo sem pedidos de exclusão. ` +
