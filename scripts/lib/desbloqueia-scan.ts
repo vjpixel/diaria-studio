@@ -426,7 +426,7 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
   // Marcador MAIS RECENTE (por `decided_at`/`recorded_at`) vence; empate
   // favorece a decisão (sinal mais forte — resolução explícita do editor).
   let status = decideStatus({ decision, executionBlock, adiamentoSuprime, escopo, input });
-  const jaRoteadaDesdeDecisao =
+  let jaRoteadaDesdeDecisao =
     status === "ja-destravada" && decision !== null && roteadaDesdeDecisao(input.comments, decision, track);
   if (
     jaRoteadaDesdeDecisao &&
@@ -436,6 +436,10 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
     acaoAdiada.pedido_em > decision.decided_at
   ) {
     status = "acao-adiada";
+    // #13704 — o sinal só vale para `ja-destravada` (docstring do campo):
+    // com o status sobreposto, um consumidor que lesse a flag primeiro
+    // trataria a issue como já roteada e pularia o tratamento do adiamento.
+    jaRoteadaDesdeDecisao = false;
   }
 
   return {
