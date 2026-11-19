@@ -163,6 +163,19 @@
  * mesma issue, o guard de decisão do #12389 passou a cobrir também `--motivo
  * trade-off` (caso #12737: decisão às 00:11, trade-off-real às 00:17).
  *
+ * ## Claim de sessão de outro track é solta junto (#13605)
+ *
+ * Depois de um roteamento validado, o verbo solta toda claim ativa de sessão
+ * cujo kind não pertence ao track de destino (`overnight` mantém `overnight`
+ * e `continuo`; `develop` mantém `develop` e `interactive`; os demais tracks
+ * soltam todas): marcador de release no GitHub (`diaria-claim-release`, o
+ * mesmo do `check-pre-dispatch-claim.ts --release`) e `unclaim` no registro
+ * desta máquina (registro de outra máquina fica, com aviso). Caso de origem:
+ * o overnight roteou três issues para develop e a claim dele travou a sessão
+ * develop por até 24h. Resultado em `claimRelease`; falha ali não muda `ok`.
+ * Depois disso, um `unclaim-issue` da mesma issue pela sessão que roteou
+ * devolve `no-op-not-claimed`, o esperado. `--keep-claim` desliga o passo.
+ *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *
  * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
@@ -227,6 +240,20 @@ import {
   detectNonDateReason,
   type NonDateReasonFinding,
 } from "./lib/route-reason-guard.ts";
+import {
+  assessGithubClaims,
+  endedSessionsFromLifecycle,
+  formatReleaseComment,
+} from "./lib/github-claim-marker.ts";
+import {
+  listActiveSessions,
+  machineTag,
+  readSessionLifecycleEvents,
+  unclaimIssues,
+  type ClaimIssueTarget,
+  type SessionKind as RegistrySessionKind,
+} from "./lib/session-registry.ts";
+import { claimKindStaysOnTrack, claimsToReleaseOnRoute, type RouteClaimReleaseEntry } from "./lib/route-claim-release.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
@@ -283,6 +310,15 @@ export interface RouteIssueOptions {
    * (de outro track) que a razão não cita. Motivo obrigatório, registrado no
    * comentário. `overrideUnblock` também dispensa este guard. */
   overrideReroute?: string;
+  /** #13605 — não soltar as claims de sessão de outro track depois do
+   * roteamento (default: solta, ver `scripts/lib/route-claim-release.ts`). */
+  keepClaim?: boolean;
+  /** #13605 — registro de sessões injetável (teste). Default: o
+   * `session-registry` de `cwd`. */
+  claimRegistry?: ClaimRegistryPort;
+  /** #13605 — fins de sessão do log de lifecycle (`sessionId` → ISO).
+   * Default: lê `data/session-lifecycle.jsonl` de `cwd` (fail-soft). */
+  endedSessions?: () => ReadonlyMap<string, string>;
   cwd: string;
   ghRun?: GhRunFn;
   /** Injetável pra teste; default `new Date()`. Usado só na validação final
@@ -308,7 +344,40 @@ export interface RouteIssueResult {
    * issue (#11614 — `issueClosed: true` após `--motivo sem-direcao` na
    * #11560 era a issue já fechada pelo `Closes` de uma PR mergeada). */
   issueClosed?: boolean;
+  /** #13605 — claims de sessão de outro track soltas depois do roteamento
+   * (GitHub e registro). Ausente quando não havia nada a soltar. Falha aqui
+   * não muda `ok`: o roteamento já valeu; a entrada sai com `ok: false`. */
+  claimRelease?: RouteClaimReleaseEntry[];
   error?: string;
+}
+
+/** #13605 — o que `routeIssue` precisa do `session-registry` para soltar a
+ * claim local. Injetável para teste. */
+export interface ClaimRegistryPort {
+  /** `machineTag` desta máquina: registro de outra máquina nunca é reescrito
+   * daqui (chega por sync; reescrever geraria cópia de conflito). */
+  localTag: string;
+  /** Sessões ativas que seguram a issue (`N` ou `owner/repo#N`). */
+  holders(target: ClaimIssueTarget): Array<{ kind: string; sessionId: string; machineTag: string }>;
+  unclaim(kind: string, sessionId: string, target: ClaimIssueTarget, tag: string): { ok: boolean; reason: string };
+}
+
+function defaultClaimRegistry(cwd: string): ClaimRegistryPort {
+  return {
+    localTag: machineTag(),
+    holders: (target) =>
+      listActiveSessions(cwd)
+        .filter((s) =>
+          typeof target === "number"
+            ? s.claimed_issues_effective.includes(target)
+            : (s.claimed_foreign_issues_effective ?? []).includes(`${target.repo}#${target.number}`),
+        )
+        .map((s) => ({ kind: s.kind, sessionId: s.sessionId, machineTag: s.machineTag })),
+    unclaim: (kind, sessionId, target, tag) => {
+      const r = unclaimIssues(cwd, kind as RegistrySessionKind, sessionId, [target], tag).entries[0];
+      return { ok: r.ok, reason: r.reason };
+    },
+  };
 }
 
 interface FetchedIssueState {
@@ -807,6 +876,22 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     };
   }
 
+  // Passo 5 (#13605) — solta as claims de sessão de outro track. Só depois da
+  // validação: um roteamento recusado não mexe em claim nenhuma.
+  const claimRelease = options.keepClaim
+    ? []
+    : releaseOffTrackClaims({
+        issue,
+        foreignRepo,
+        track,
+        comments: fetchedAfter.data.routingComments,
+        cwd,
+        ghRun,
+        now,
+        registry: options.claimRegistry,
+        endedSessions: options.endedSessions,
+      });
+
   return {
     ok: true,
     labelsAdded: toAdd,
@@ -816,7 +901,73 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     validated: true,
     resolvedTrack,
     ...(issueClosed ? { issueClosed: true } : {}),
+    ...(claimRelease.length > 0 ? { claimRelease } : {}),
   };
+}
+
+/**
+ * #13605 — solta, no GitHub e no registro local, as claims ativas de sessão
+ * cujo kind não pertence ao track de destino (`claimKindStaysOnTrack`). Nunca
+ * lança: cada falha vira uma entrada `ok: false`.
+ */
+function releaseOffTrackClaims(args: {
+  issue: number;
+  foreignRepo: string | null;
+  track: RouteTrack;
+  comments: Array<{ body: string; createdAt?: string; authorAssociation?: string }>;
+  cwd: string;
+  ghRun: GhRunFn;
+  now: Date;
+  registry?: ClaimRegistryPort;
+  endedSessions?: () => ReadonlyMap<string, string>;
+}): RouteClaimReleaseEntry[] {
+  const out: RouteClaimReleaseEntry[] = [];
+  let ended: ReadonlyMap<string, string>;
+  try {
+    ended = args.endedSessions
+      ? args.endedSessions()
+      : endedSessionsFromLifecycle(readSessionLifecycleEvents(args.cwd));
+  } catch {
+    ended = new Map();
+  }
+  // `excludeSessionId` vazio: aqui interessam todas as claims ativas.
+  const assessed = assessGithubClaims(args.comments, { excludeSessionId: "", now: args.now.getTime(), endedSessions: ended });
+  for (const claim of claimsToReleaseOnRoute(assessed?.activeClaims ?? [], args.track)) {
+    const body = formatReleaseComment({ sessionId: claim.sessionId, at: args.now.toISOString() });
+    const res = args.ghRun(["issue", "comment", String(args.issue), "--body", body], args.cwd);
+    out.push({
+      sessionId: claim.sessionId,
+      kind: claim.kind,
+      where: "github",
+      ok: res.status === 0,
+      ...(res.status === 0 ? {} : { detail: res.stderr.trim() || `gh issue comment saiu com status ${res.status}` }),
+    });
+  }
+
+  let registry: ClaimRegistryPort;
+  let holders: ReturnType<ClaimRegistryPort["holders"]>;
+  const target: ClaimIssueTarget = args.foreignRepo ? { repo: args.foreignRepo, number: args.issue } : args.issue;
+  try {
+    registry = args.registry ?? defaultClaimRegistry(args.cwd);
+    holders = registry.holders(target);
+  } catch (e) {
+    out.push({ sessionId: "", kind: "", where: "registry", ok: false, detail: `leitura do registro falhou: ${(e as Error).message}` });
+    return out;
+  }
+  for (const h of holders) {
+    if (claimKindStaysOnTrack(h.kind, args.track)) continue;
+    if (h.machineTag !== registry.localTag) {
+      out.push({ sessionId: h.sessionId, kind: h.kind, where: "registry", ok: false, detail: `registro de outra máquina (${h.machineTag}); solta-se lá` });
+      continue;
+    }
+    try {
+      const r = registry.unclaim(h.kind, h.sessionId, target, h.machineTag);
+      out.push({ sessionId: h.sessionId, kind: h.kind, where: "registry", ok: r.ok, ...(r.ok ? {} : { detail: r.reason }) });
+    } catch (e) {
+      out.push({ sessionId: h.sessionId, kind: h.kind, where: "registry", ok: false, detail: (e as Error).message });
+    }
+  }
+  return out;
 }
 
 /**
@@ -945,6 +1096,8 @@ interface ParsedArgs {
   sessao?: string;
   /** #7288 Parte A — escape hatch pro detector de padrão não-data. */
   force?: boolean;
+  /** #13605 — não soltar claims de sessão de outro track. */
+  keepClaim?: boolean;
 }
 
 function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
@@ -970,6 +1123,7 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
       else out.overrideDecision = value;
     }
     else if (a === "--force") out.force = true;
+    else if (a === "--keep-claim") out.keepClaim = true;
     else return { error: `argumento desconhecido: ${a}` };
   }
   return out;
@@ -1023,6 +1177,7 @@ export function parseArgs(argv: string[]): RouteIssueOptions | { error: string }
     dependsOn,
     sessao: raw.sessao as SessionKind | undefined,
     force: raw.force,
+    keepClaim: raw.keepClaim,
     triagedAt: raw.triagedAt,
     overrideNewer: raw.overrideNewer,
     overrideDecision: raw.overrideDecision,
@@ -1049,13 +1204,13 @@ function parseForCreateArgs(argv: string[]): ForCreateOptions | { error: string 
  */
 export const CLI_SPEC: CliSpec = {
   script: "scripts/route-issue.ts",
-  booleans: ["for-create", "force"],
+  booleans: ["for-create", "force", "keep-claim"],
   values: ["issue", "track", "reason", "motivo", "until", "body", "depends-on", "sessao", "triaged-at", "override-newer", "override-decision", "override-unblock", "override-reroute"],
   usage: [
     "uso: npx tsx scripts/route-issue.ts --issue N|owner/repo#N --track {track} [--reason <texto>] [--motivo <m>]",
     "  [--until AAAA-MM-DD] [--depends-on N] [--sessao continuo|overnight|develop] [--triaged-at <iso>]",
     "  [--override-newer <motivo>] [--override-decision <motivo>] [--override-unblock <motivo>]",
-    "  [--override-reroute <motivo>] [--force] [--help | -h]",
+    "  [--override-reroute <motivo>] [--force] [--keep-claim] [--help | -h]",
     "uso: npx tsx scripts/route-issue.ts --for-create --track {track} [--motivo <m>] [--until AAAA-MM-DD] [--body <texto>]",
     "",
     "Sem --for-create aplica labels e comenta na issue (escrita real no GitHub).",
@@ -1094,6 +1249,9 @@ async function main() {
   }
   const result = routeIssue(parsed);
   console.log(JSON.stringify(result, null, 2));
+  for (const e of result.claimRelease ?? []) {
+    if (!e.ok) console.error(`[route-issue] claim de ${e.kind || "?"} ${e.sessionId || "?"} não solta (${e.where}): ${e.detail ?? "sem detalhe"} (#13605)`);
+  }
   if (!result.ok) {
     console.error(`[route-issue] ${result.error ?? "falhou sem mensagem de erro"}`);
     process.exitCode = 1;
