@@ -183,17 +183,81 @@ else
   FAILED=1
 fi
 
-# ── 10. #10578: check RODANDO (queued=0) segue com o teto normal -> exit 1 ──
-# Distinção pedida pela issue: "sem progresso" (job pegou runner e não
-# termina) não ganha extensão, mesmo com teto absoluto folgado.
+# ── 10. #10578/#13685: check RODANDO sem concluir estoura o teto de EXECUÇÃO -> exit 1 ──
+# A fila (#10578) não estende o prazo de quem já tem runner; desde o #13685 o
+# check rodando tem o teto próprio (`running_ceiling_secs`), e passado ele é
+# o caso "sem progresso": TIMEOUT, nunca FILA.
 check_pr_checks_once() {
   LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #10: verdict=pending — 1 check(s) ainda não concluído(s): a
 [check-pr-checks-gate] queue: queued=0 pending=1"
   return 2
 }
-wait_pr_checks "10" 1 1 60 >/dev/null 2>&1
+START10=$(date +%s)
+OUT10=$(wait_pr_checks "10" 1 1 60 3 2>&1)
 RC10=$?
-assert_eq "check em execução sem concluir (queued=0) -> exit 1 no teto normal" "1" "$RC10"
+ELAPSED10=$(( $(date +%s) - START10 ))
+assert_eq "check em execução sem concluir (queued=0) -> exit 1 no teto de execução" "1" "$RC10"
+if echo "$OUT10" | grep -q "TIMEOUT.*em execução.*#13685"; then
+  echo "ok: TIMEOUT diz que o check seguia em execução (cita #13685)"
+else
+  echo "FAIL: mensagem de TIMEOUT com check em execução não encontrada — obtido: $OUT10"
+  FAILED=1
+fi
+if [ "$ELAPSED10" -ge 3 ] && [ "$ELAPSED10" -le 10 ]; then
+  echo "ok: esperou até o teto de execução de 3s, não o normal de 1s (${ELAPSED10}s)"
+else
+  echo "FAIL: teto de execução de 3s não respeitado — levou ${ELAPSED10}s"
+  FAILED=1
+fi
+
+# ── 12. #13685: run in_progress além do teto normal NÃO dá TIMEOUT ──────────
+# Cenário da PR #13678 (rodada 261119): o job `test` seguia `in_progress` no
+# HEAD vigente depois dos 30 min e passou minutos depois; o helper saía
+# "TIMEOUT após 1818s" e a regra mandava a PR pra draft + fixer. Fixture:
+# 5 leituras com 1 check rodando (queued=0 pending=1), depois resolve; com
+# timeout=2, antes do fix o laço saía rc=1 por volta da 3ª leitura.
+CALL_COUNT_FILE12="$(mktemp)"
+echo 0 > "$CALL_COUNT_FILE12"
+check_pr_checks_once() {
+  local n
+  n=$(( $(cat "$CALL_COUNT_FILE12") + 1 ))
+  echo "$n" > "$CALL_COUNT_FILE12"
+  if [ "$n" -le 5 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #12: verdict=pending — 1 check(s) ainda não concluído(s): test
+[check-pr-checks-gate] queue: queued=0 pending=1"
+    return 2
+  fi
+  return 0
+}
+OUT12=$(wait_pr_checks "12" 2 1 60 60 2>&1)
+RC12=$?
+rm -f "$CALL_COUNT_FILE12"
+assert_eq "check em execução além do teto normal e o CI conclui -> exit 0, nunca TIMEOUT" "0" "$RC12"
+if echo "$OUT12" | grep -q "TIMEOUT"; then
+  echo "FAIL: run in_progress foi tratado como TIMEOUT — obtido: $OUT12"
+  FAILED=1
+else
+  echo "ok: sem TIMEOUT enquanto o check estava em execução"
+fi
+
+# ── 13. #13685: pendente SEM run (rollup vazio, sem linha queue:) fica no teto normal ──
+# A extensão é só pra check rodando: "nenhum check registrado" não ganha os
+# 60 min, mesmo com o teto de execução folgado.
+check_pr_checks_once() {
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #13: verdict=pending — nenhum check registrado ainda no PR (statusCheckRollup vazio)"
+  return 2
+}
+START13=$(date +%s)
+wait_pr_checks "13" 1 1 60 60 >/dev/null 2>&1
+RC13=$?
+ELAPSED13=$(( $(date +%s) - START13 ))
+assert_eq "pendente sem run (sem linha queue:) -> exit 1 no teto normal" "1" "$RC13"
+if [ "$ELAPSED13" -le 10 ]; then
+  echo "ok: sem extensão de execução (${ELAPSED13}s)"
+else
+  echo "FAIL: pendente sem run ganhou extensão — levou ${ELAPSED13}s"
+  FAILED=1
+fi
 
 # ── 11. #12733: virada de segundo antes da 1ª leitura nunca dá TIMEOUT ──────
 # O vermelho intermitente do job Shell tests (PR #12717) era o caso 9 dando
