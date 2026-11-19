@@ -303,10 +303,12 @@ const sameRoot = (a: string, b: string) => toPosix(a).replace(/\/+$/, "").toLowe
  * projeto presentes; `--no-drive-api` desliga; a raiz padrão do Neo (`I:`, o
  * próprio Drive for desktop) nunca sobe pela API (o Drive já sincroniza).
  */
-export function localDriveUploadFor(o: { mode: "local" | "api"; explicitRoot: string | undefined; noDriveApi: boolean; credentials: boolean }): { enabled: boolean; reason: string } {
+export function localDriveUploadFor(o: { mode: "local" | "api"; explicitRoot: string | undefined; noDriveApi: boolean; credentials: boolean; desktopRoot?: string }): { enabled: boolean; reason: string } {
   if (o.mode !== "local" || o.explicitRoot === undefined) return { enabled: false, reason: "sem raiz explícita no modo local" };
   if (o.noDriveApi) return { enabled: false, reason: "--no-drive-api" };
-  if (sameRoot(o.explicitRoot, DEFAULT_DRIVE_ROOT)) return { enabled: false, reason: `raiz ${DEFAULT_DRIVE_ROOT} é a do Drive for desktop` };
+  // #13628: `desktopRoot` só no teste do `main` (a raiz temporária faz o papel do I: do Neo).
+  const desktop = o.desktopRoot ?? DEFAULT_DRIVE_ROOT;
+  if (sameRoot(o.explicitRoot, desktop)) return { enabled: false, reason: `raiz ${desktop} é a do Drive for desktop` };
   if (!o.credentials) return { enabled: false, reason: "sem data/.credentials.json (OAuth do projeto)" };
   return { enabled: true, reason: `raiz explícita ${o.explicitRoot} fora do Drive for desktop` };
 }
