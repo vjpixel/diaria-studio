@@ -202,6 +202,40 @@ export function trechoFramesOk(expected: number, got: number | null): boolean {
 }
 
 /**
+ * #13500/#13643: o quanto um corte que chega ao fim do vídeo de origem pode sair
+ * mais curto que o intervalo: o stream de vídeo costuma acabar antes do
+ * container (padding do AAC), e um fim = fim do arquivo rende de 1 a 3 quadros
+ * a menos. Vale para o trecho inserido (#13500) e para o trecho do XML leve que
+ * vai até o fim do arquivo do bruto (#13643), cujos quadros saem da duração do
+ * container (`format.duration`).
+ */
+export const TRECHO_END_SHORT_TOL_S = 0.1;
+
+/**
+ * #13643: o mínimo de quadros aceito no arquivo de um trecho do XML leve. Os
+ * do nome (`end - start`), salvo quando o trecho termina no fim do arquivo do
+ * bruto (`end >= fileFrames`): aí até `TRECHO_END_SHORT_TOL_S` a menos (o
+ * `trechoEndFor` prende o fim em `frames`, a contagem do container). Sem
+ * `fileFrames` (arquivo do bruto desconhecido), os do nome.
+ */
+export function trechoMinFrames(t: { start: number; end: number }, fileFrames: number | null | undefined, fps: number): number {
+  const expected = t.end - t.start;
+  if (fileFrames === null || fileFrames === undefined || !(fps > 0) || t.end < fileFrames) return expected;
+  return Math.max(1, expected - Math.ceil(TRECHO_END_SHORT_TOL_S * fps));
+}
+
+/** #13643: o nome do arquivo do bruto (sem extensão) de que o trecho saiu (`{stem}_q…-….mov`); outro nome = null. */
+export function trechoSourceStem(name: string): string | null {
+  const m = /^(.*)_q\d{6,}-\d{6,}\.mov$/.exec(name);
+  return m ? m[1] : null;
+}
+
+/** #13643: os quadros de cada arquivo do bruto pelo nome sem extensão, a chave que `trechoSourceStem` devolve. */
+export function trechoFileFramesByStem(files: readonly TrechoSourceFile[]): Map<string, number> {
+  return new Map(files.map((f) => [stem(f.path), f.frames]));
+}
+
+/**
  * Argumentos do ffprobe que contam os pacotes de vídeo do trecho (#13488):
  * sem decodificar (um trecho 4K de 30 s conta em menos de 1 s), e um pacote
  * por quadro no H.264 sem B-frames que o build grava.

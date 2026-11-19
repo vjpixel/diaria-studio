@@ -8,7 +8,7 @@
  *
  * Incremental: a medida de cada item fica em `face-cache.json` (state dir),
  * com a chave = hash do intervalo medido (mais o arquivo do bruto, o
- * `mirrored` efetivo dele e o jeito de medir). Na volta seguinte só o item com intervalo novo (tomada trocada,
+ * `mirrored` efetivo dele, o tamanho e o mtime dele, #13608, e o jeito de medir). Na volta seguinte só o item com intervalo novo (tomada trocada,
  * item novo) vai ao detector; o resto sai do cache. `--all` mede tudo.
  *
  * 1 frame por item (`--um-frame`): o frame do meio da fala; 25%/75% só nos
@@ -65,6 +65,14 @@ export interface FaceItem {
    * `faceX` medido e precisa invalidar a medida em cache.
    */
   mirrored?: boolean;
+  /**
+   * #13608: tamanho e mtime do arquivo do bruto do item (`statSync`), como os
+   * outros caches da montagem (proxy, quadros dos trechos). O bruto trocado no
+   * Drive pelo MESMO nome (reexport, novo upload) muda os dois e invalida a
+   * medida; sem eles a chave só via o caminho e reaproveitava o `faceX` do
+   * arquivo antigo. Ausente = não lido (a chave fica sem o carimbo).
+   */
+  sourceStat?: { size: number; mtimeMs: number };
 }
 
 export interface FaceCacheEntry {
@@ -91,15 +99,17 @@ export function parseFaceCache(raw: unknown): FaceCache {
 
 /**
  * Chave do item no cache: hash do bruto, do arquivo do item, do `mirrored`
- * efetivo dele, do intervalo (ms), do jeito de medir e da impressão do
- * detector. A mesma tomada em outro bloco reaproveita a medida; a tomada
- * trocada (outro intervalo) ou o espelhamento trocado não.
+ * efetivo dele, do tamanho e do mtime do arquivo (#13608), do intervalo (ms),
+ * do jeito de medir e da impressão do detector. A mesma tomada em outro bloco
+ * reaproveita a medida; a tomada trocada (outro intervalo), o espelhamento
+ * trocado ou o bruto trocado pelo mesmo nome não.
  */
-export function faceCacheKey(bruto: string, item: Pick<FaceItem, "interval" | "source" | "mirrored">, sampling: FaceSampling, detector = ""): string {
+export function faceCacheKey(bruto: string, item: Pick<FaceItem, "interval" | "source" | "mirrored" | "sourceStat">, sampling: FaceSampling, detector = ""): string {
   const ms = (x: number) => Math.round(x * 1000);
   const mir = item.mirrored === undefined ? "" : item.mirrored ? "1" : "0";
+  const stat = item.sourceStat ? `${item.sourceStat.size}|${Math.round(item.sourceStat.mtimeMs)}` : "|";
   return createHash("sha256")
-    .update(`${FACE_CACHE_VERSION}|${detector}|${sampling}|${bruto}|${item.source ?? ""}|${mir}|${ms(item.interval.start)}|${ms(item.interval.end)}`)
+    .update(`${FACE_CACHE_VERSION}|${detector}|${sampling}|${bruto}|${item.source ?? ""}|${mir}|${stat}|${ms(item.interval.start)}|${ms(item.interval.end)}`)
     .digest("hex")
     .slice(0, 24);
 }

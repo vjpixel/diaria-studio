@@ -584,7 +584,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { decideXmlLeve, esperarTrechosNaNuvem, parseEsperarNuvemArg, parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, parseXmlLeveChoice, pickTrechoEncoder, planTrechos, silencesPerFile, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, xmlLeveLimiarFrom, type TrechoEncoder, type TrechoXml, type XmlLeveChoice } from "./lib/diaria/video-xml-trechos.ts";
+import { decideXmlLeve, esperarTrechosNaNuvem, parseEsperarNuvemArg, parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, parseXmlLeveChoice, pickTrechoEncoder, planTrechos, silencesPerFile, TRECHOS, trechoEncodeArgs, TRECHO_END_SHORT_TOL_S, TRECHO_FRAME_TOL, trechoFileFramesByStem, trechoFrameProbeArgs, trechoFramesOk, trechoMinFrames, trechoNamesInXml, trechoSourceStem, trechosCoverage, xmlLeveLimiarFrom, type TrechoEncoder, type TrechoXml, type XmlLeveChoice } from "./lib/diaria/video-xml-trechos.ts";
 import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
@@ -3185,7 +3185,10 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   const xmlTexts = chosen.map((p) => join(ctx.outDir, xmlFileName(p.spec.name))).filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
   // #13500: e os trechos inseridos de cada sequência escolhida, contra o arquivo no out dir.
   const inseridosXml = chosen.flatMap((p) => pf.xmlAssets?.[sequenceKey(p.spec)]?.trechosInseridos ?? []);
-  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), cachedTrechoProbe(trechoFramesCachePath(ctx.workDir)), { dir: ctx.outDir, clips: inseridosXml });
+  const mediaIssues = trechoMediaIssues(xmlTexts, join(ctx.outDir, TRECHOS.dirName), cachedTrechoProbe(trechoFramesCachePath(ctx.workDir)), { dir: ctx.outDir, clips: inseridosXml }, {
+    fps: pf.source.fps,
+    framesByStem: trechoFileFramesByStem(sourceFiles(pf.source)),
+  });
   for (const x of mediaIssues) console.log(`[erro] ${x}`);
   bad += mediaIssues.length;
   const report: Record<string, unknown> = {};
@@ -3486,16 +3489,35 @@ function detectFaceFrames(ctx: Ctx, source: SourceInfo, frames: readonly FaceFra
 /**
  * Os itens resolvidos do blocks.json como entrada do `face` (#13588): chave
  * `{bloco}#{i}`, intervalo, arquivo e o `mirrored` efetivo do arquivo no meio
- * da fala (o mesmo que `frameJobOf` usa para desespelhar; review da PR #13595).
+ * da fala (o mesmo que `frameJobOf` usa para desespelhar; review da PR #13595),
+ * mais o tamanho e o mtime desse arquivo (#13608: o bruto trocado pelo mesmo
+ * nome invalida a medida). Arquivo que o `statSync` não lê fica sem o carimbo.
  */
-function faceItemsOf(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>): FaceItem[] {
+export function faceItemsOf(source: SourceInfo, resolved: Record<string, ResolvedItem[] | undefined>, stat: (path: string) => { size: number; mtimeMs: number } = statSync): FaceItem[] {
+  const stats = new Map<string, { size: number; mtimeMs: number } | null>();
+  const statOf = (path: string) => {
+    if (!stats.has(path)) {
+      try {
+        const st = stat(path);
+        stats.set(path, { size: st.size, mtimeMs: st.mtimeMs });
+      } catch {
+        stats.set(path, null);
+      }
+    }
+    return stats.get(path)!;
+  };
   return (Object.entries(resolved) as Array<[string, ResolvedItem[] | undefined]>).flatMap(([block, items]) =>
-    (items ?? []).map((it, i) => ({
-      key: `${block}#${i}`,
-      interval: { start: it.interval.start, end: it.interval.end },
-      ...(it.source !== undefined ? { source: it.source } : {}),
-      mirrored: frameAt(source, (it.interval.start + it.interval.end) / 2).view.mirrored,
-    })),
+    (items ?? []).map((it, i) => {
+      const view = frameAt(source, (it.interval.start + it.interval.end) / 2).view;
+      const st = statOf(view.path);
+      return {
+        key: `${block}#${i}`,
+        interval: { start: it.interval.start, end: it.interval.end },
+        ...(it.source !== undefined ? { source: it.source } : {}),
+        mirrored: view.mirrored,
+        ...(st ? { sourceStat: st } : {}),
+      };
+    }),
   );
 }
 
@@ -4789,6 +4811,8 @@ export function trechoMediaIssues(
   probe: (path: string) => number | null = probeTrechoFrames,
   /** #13500: os trechos inseridos (`xmlAssets[key].trechosInseridos`), conferidos pelo nome do `xmlPath` em `inseridos.dir` (o out dir). */
   inseridos: { dir: string; clips: readonly Pick<TrechoInseridoClip, "id" | "xmlPath" | "frames">[] } | null = null,
+  /** #13643: os quadros de cada arquivo do bruto (`trechoFileFramesByStem`) e o fps: o trecho que chega ao fim do arquivo pode ter uns quadros a menos. Ausente = a conferência exata (±1). */
+  bruto: { fps: number; framesByStem: ReadonlyMap<string, number> } | null = null,
 ): string[] {
   const names = [...new Set(xmlTexts.flatMap((x) => trechoNamesInXml(x)))];
   const issues: string[] = [];
@@ -4815,7 +4839,9 @@ export function trechoMediaIssues(
       continue;
     }
     const got = probe(path);
-    if (!trechoFramesOk(expected, got)) issues.push(`trecho ${name} com ${got === null ? "quadros ilegíveis (ffprobe sem contagem)" : `${got} quadro(s)`} no disco, o XML pede ${expected}: imagem preta ou congelada no Premiere; rode build (ele refaz o trecho, #13488)`);
+    const stemName = trechoSourceStem(name);
+    const min = bruto && stemName !== null ? trechoMinFrames(want, bruto.framesByStem.get(stemName), bruto.fps) : expected;
+    if (!trechoFramesInRange(min, expected, got)) issues.push(`trecho ${name} com ${got === null ? "quadros ilegíveis (ffprobe sem contagem)" : `${got} quadro(s)`} no disco, o XML pede ${expected}: imagem preta ou congelada no Premiere; rode build (ele refaz o trecho, #13488)`);
   }
   return issues;
 }
@@ -4936,7 +4962,8 @@ export function renderFramesConferidos(input: {
  * #13219: os trechos do bruto que as sequências usam, em H.264 + PCM, na
  * subpasta `trechos/` do out dir (a pasta da edição). Arquivo já presente é
  * reaproveitado só se tiver os quadros que o nome promete (o nome leva o
- * arquivo e os quadros de início e fim); o que diverge é apagado e refeito,
+ * arquivo e os quadros de início e fim; o trecho que vai até o fim do arquivo
+ * do bruto pode ter até `TRECHO_END_SHORT_TOL_S` a menos, com [premissa], #13643); o que diverge é apagado e refeito,
  * com [aviso] (#13488: na 261118 quatro trechos truncados no Drive foram
  * reaproveitados pelo nome e o XML saiu com 27 s de preto). O render vai para
  * uma pasta temporária FORA do out dir (o Drive for desktop subia o `.part`
@@ -4997,9 +5024,16 @@ export function renderTrechos(input: {
     const trechos = planned.map((t) => {
       const out = join(dir, t.name);
       const expected = t.end - t.start;
+      // #13643: o trecho que vai até o fim do arquivo do bruto pode sair até TRECHO_END_SHORT_TOL_S mais curto
+      // (os quadros do arquivo vêm da duração do container; o stream de vídeo acaba antes, padding do AAC).
+      const minExpected = trechoMinFrames(t, files[t.fileIndex].frames, input.source.fps);
+      const premissaCurto = (got: number, onde: string) => {
+        if (got < expected) log(`[premissa] trecho ${t.name}: ${onde} tem ${got} quadro(s), ${expected - got} a menos que o nome (o trecho vai até o fim de ${basename(files[t.fileIndex].path)} e o stream de vídeo acaba antes do container, dentro de ${TRECHO_END_SHORT_TOL_S} s): aceito (#13643)`);
+      };
       if (existsSync(out)) {
         const got = probeFrames(out);
-        if (trechoFramesOk(expected, got)) {
+        if (trechoFramesInRange(minExpected, expected, got)) {
+          premissaCurto(got!, "o arquivo reaproveitado");
           reused++;
           return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
         }
@@ -5010,9 +5044,10 @@ export function renderTrechos(input: {
       }
       tmp ??= mkdtempSync(join(input.tmpRoot ?? tmpdir(), "diaria-trechos-"));
       // #13488: os quadros no render local e, depois da cópia, no nome final (a pasta do Drive).
-      renderFramesConferidos({
+      const gotRender = renderFramesConferidos({
         out,
         expected,
+        minExpected,
         tmp,
         probeFrames,
         probePart: rawProbe,
@@ -5033,6 +5068,7 @@ export function renderTrechos(input: {
           }
         },
       });
+      premissaCurto(gotRender, "o render");
       made++;
       return { ...t, xmlPath: `${xmlDir}${t.name}`, width: files[t.fileIndex].width, height: files[t.fileIndex].height };
     });
@@ -5049,11 +5085,11 @@ export function fonteDoTrecho(ctx: Pick<Ctx, "trechoFontes" | "trechoDriveRoot">
 
 /**
  * #13500: o quanto um trecho inserido pode passar do fim do vídeo de origem, e
- * sair mais curto que o intervalo, sem ser recusado: o stream de vídeo costuma
- * acabar antes do container (padding do AAC), e um `fim` = fim do vídeo rende
- * de 1 a 3 quadros a menos.
+ * sair mais curto que o intervalo, sem ser recusado. Mora em
+ * `video-xml-trechos.ts` desde o #13643 (o trecho do XML leve que chega ao fim
+ * do bruto usa a mesma folga); reexportado aqui para quem já o importava.
  */
-export const TRECHO_END_SHORT_TOL_S = 0.1;
+export { TRECHO_END_SHORT_TOL_S };
 
 /**
  * #13500: o mínimo de quadros aceito no clipe do trecho inserido. O intervalo
