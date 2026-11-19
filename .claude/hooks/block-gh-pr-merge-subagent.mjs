@@ -494,6 +494,22 @@ export function d1PresenceGrantNotice(grantedBy, presence) {
 }
 
 /**
+ * #13603: versão do aviso para o `systemMessage` (visível ao usuário a cada
+ * merge). A presença de OUTRA máquina é o caminho normal entre máquinas: sem
+ * aviso (`null`); o texto alarmista de `d1PresenceGrantNotice` fica só no
+ * stderr e no run-log. Presença sem `machineTag` (ou desta máquina) leva um
+ * texto neutro. Puro.
+ */
+export function d1PresenceGrantSystemNotice(grantedBy, presence, localTag = machineTag()) {
+  const tag = typeof presence?.machineTag === "string" ? presence.machineTag : null;
+  if (tag !== null && tag !== localTag) return null;
+  return (
+    `merge-guard (#13596): concessão do D1 de ${grantedBy} aceita pela presença dela no D1 ` +
+    `(${tag === null ? "máquina não declarada" : `máquina ${tag}`}).`
+  );
+}
+
+/**
  * #13242: aceita a concessão lida do D1 (`d1ReadMergeGrant`, já conferida em
  * forma, identidade, auto-concessão e repo) só com as MESMAS regras do arquivo
  * que dependem desta máquina. Pura.
@@ -533,22 +549,43 @@ export function acceptD1MergeGrant(
   d1Presence = null,
   localTag = machineTag(),
 ) {
-  if (!d1Grant || typeof sessionId !== "string" || sessionId === "") return null;
-  if (d1Grant.grantedTo !== sessionId || d1Grant.grantedBy === d1Grant.grantedTo) return null;
-  if (scan?.nonAuthorityIds?.has(d1Grant.grantedBy)) return null;
+  return d1MergeGrantRejectReason(d1Grant, sessionId, scan, ledger, now, d1Presence, localTag) === null
+    ? d1Grant
+    : null;
+}
+
+/**
+ * #13603: o motivo pelo qual `acceptD1MergeGrant` recusa (ou `null` quando
+ * aceita), para o run-log do hook nomear a recusa com o MESMO vocabulário de
+ * `D1GrantRejection` do TS (`grantor-not-coordinator`, `grantor-unknown`,
+ * `grantor-presence-local-without-record`) e os motivos que o TS trata como
+ * "nenhuma concessão" (`not-for-session`, `consumed`, `expired`). Pura.
+ */
+export function d1MergeGrantRejectReason(
+  d1Grant,
+  sessionId,
+  scan,
+  ledger,
+  now = Date.now(),
+  d1Presence = null,
+  localTag = machineTag(),
+) {
+  if (!d1Grant || typeof sessionId !== "string" || sessionId === "") return "not-for-session";
+  if (d1Grant.grantedTo !== sessionId || d1Grant.grantedBy === d1Grant.grantedTo) return "not-for-session";
+  if (scan?.nonAuthorityIds?.has(d1Grant.grantedBy)) return "grantor-not-coordinator";
   if (scan?.ids?.has(d1Grant.grantedBy)) {
-    if (!MERGE_AUTHORITY_KINDS.has(scan.kinds?.get(d1Grant.grantedBy))) return null;
+    if (!MERGE_AUTHORITY_KINDS.has(scan.kinds?.get(d1Grant.grantedBy))) return "grantor-not-coordinator";
   } else {
-    if (!d1Presence || d1Presence.sessionId !== d1Grant.grantedBy) return null;
-    if (!MERGE_AUTHORITY_KINDS.has(d1Presence.kind)) return null;
-    if (!presenceMachineConsistent(d1Presence, scan, localTag)) return null;
+    if (!d1Presence || d1Presence.sessionId !== d1Grant.grantedBy) return "grantor-unknown";
+    if (!MERGE_AUTHORITY_KINDS.has(d1Presence.kind)) return "grantor-not-coordinator";
+    if (!presenceMachineConsistent(d1Presence, scan, localTag)) return "grantor-presence-local-without-record";
   }
-  if (ledger && ledgerConsumedAt(ledger, d1Grant)) return null;
+  if (ledger && ledgerConsumedAt(ledger, d1Grant)) return "consumed";
   const grantedMs = Date.parse(d1Grant.grantedAt);
-  if (!Number.isFinite(grantedMs)) return null;
+  if (!Number.isFinite(grantedMs)) return "expired";
   const ageMs = now - grantedMs;
-  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > MERGE_GRANT_TTL_MS) return null;
-  return d1Grant;
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > MERGE_GRANT_TTL_MS) return "expired";
+  return null;
 }
 
 /**
@@ -2169,7 +2206,8 @@ if (
               );
             }
           }
-          const accepted = acceptD1MergeGrant(
+          // #13603: o motivo da recusa vai ao run-log, no vocabulário do TS.
+          const rejectReason = d1MergeGrantRejectReason(
             d1GrantRead.value,
             payload.session_id,
             scan,
@@ -2177,18 +2215,30 @@ if (
             Date.now(),
             d1Presence,
           );
+          const accepted = rejectReason === null ? d1GrantRead.value : null;
           const grantorVia = scan.ids.has(d1GrantRead.value.grantedBy) ? "scan" : d1Presence ? "d1-presence" : "none";
+          const presenceNotice =
+            accepted !== null && grantorVia === "d1-presence"
+              ? d1PresenceGrantNotice(d1GrantRead.value.grantedBy, d1Presence)
+              : null;
           appendHookRunLog(repoRoot, "merge-guard", "info", "d1_grant_found", {
             grantedBy: d1GrantRead.value.grantedBy,
             grantedAt: d1GrantRead.value.grantedAt,
             accepted: accepted !== null,
+            ...(rejectReason !== null ? { rejectReason } : {}),
             grantorVia,
             ...(grantorVia === "d1-presence" ? { presenceMachineTag: d1Presence?.machineTag ?? null } : {}),
+            ...(presenceNotice !== null ? { notice: presenceNotice } : {}),
           });
-          if (accepted !== null && grantorVia === "d1-presence") {
+          if (presenceNotice !== null) {
             // #13596: a presença é autodeclarada (quem tem a credencial do D1
-            // a grava para qualquer id). Aceitar por ela nunca passa calado.
-            d1Notices.push(d1PresenceGrantNotice(d1GrantRead.value.grantedBy, d1Presence));
+            // a grava para qualquer id). Aceitar por ela nunca passa calado:
+            // o texto completo vai ao stderr e ao run-log. #13603: no
+            // `systemMessage` (visível a cada merge), texto neutro, e nenhum
+            // quando a presença é de outra máquina, o caminho normal.
+            process.stderr.write(`${presenceNotice}\n`);
+            const systemNotice = d1PresenceGrantSystemNotice(d1GrantRead.value.grantedBy, d1Presence);
+            if (systemNotice !== null) d1Notices.push(systemNotice);
           }
           if (accepted !== null) {
             grant = accepted;

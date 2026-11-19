@@ -5203,17 +5203,27 @@ export async function reconcileCoordinatorPresenceOnRegister(
 export async function clearPresenceForGcRemovals(
   repoRoot: string,
   plan: readonly SessionGcResult[],
-  opts: SharedLockOptions = {},
+  opts: SharedLockOptions & { localTag?: string } = {},
 ): Promise<number> {
+  const localTag = opts.localTag ?? machineTag();
   const ids = new Set<string>();
   for (const entry of plan) {
     if (entry.action !== "removed" || entry.sessionId === undefined || entry.kind === undefined) continue;
-    if (hasMergeAuthorityKind(entry.kind)) ids.add(entry.sessionId);
+    if (!hasMergeAuthorityKind(entry.kind)) continue;
+    // #13603: cópia local de coordenadora de OUTRA máquina (o caso do bisync
+    // da #13577) não diz nada sobre a sessão: quem renova e limpa a presença
+    // dela é a máquina dela (e a linha tem TTL próprio). Registro sem
+    // `machineTag` legível também fica de fora: na dúvida, não apaga.
+    if (entry.machineTag !== localTag) continue;
+    ids.add(entry.sessionId);
   }
   // Sessão que segue viva noutro registro (outro arquivo, outra máquina) não
-  // perde a presença por causa de uma cópia velha recolhida.
+  // perde a presença por causa de uma cópia velha recolhida. #13603: qualquer
+  // registro com autoridade de merge não encerrado na janela de 24h conta,
+  // inclusive PARADO (antes, só `!stale`: promovida e parada entre 90 min e
+  // 24 h perdia a presença).
   for (const s of listActiveSessions(repoRoot, opts.now)) {
-    if (!s.stale && isCoordinatorKind(s.kind)) ids.delete(s.sessionId);
+    if (hasMergeAuthorityKind(s.kind)) ids.delete(s.sessionId);
   }
   if (ids.size === 0) return 0;
   // Uma resolução do D1 para todas as linhas (sem D1 configurado: nada a fazer).
@@ -5337,11 +5347,35 @@ export function isD1PresenceGrantor(g: ActiveSessionRecord | D1PresenceGrantor):
   return (g as Partial<D1PresenceGrantor>).via === "d1-presence";
 }
 
+/**
+ * #13603: algum registro (por arquivo, ANTES da deduplicação de
+ * `listActiveSessions`) da sessão `sessionId` é coordenadora SEM autoridade de
+ * merge (continuo), não encerrado e com heartbeat na janela de 24h
+ * (`MAX_SESSION_AGE_MS`, inclusive parado). Mesma régua de
+ * `scan.nonAuthorityIds` no guard (`readActiveCoordinatorScan`). Pura.
+ */
+export function hasNonAuthorityCoordinatorRecord(
+  records: ReadonlyArray<Pick<SessionRecord, "sessionId" | "kind" | "lastHeartbeat" | "startedAt" | "endedAt">>,
+  sessionId: string,
+  now: number,
+): boolean {
+  return records.some((r) => {
+    if (r.sessionId !== sessionId || !isCoordinatorKind(r.kind) || hasMergeAuthorityKind(r.kind)) return false;
+    if (r.endedAt && Number.isFinite(Date.parse(r.endedAt))) return false;
+    const hb = Date.parse(r.lastHeartbeat ?? r.startedAt ?? "");
+    if (!Number.isFinite(hb)) return false;
+    const age = now - hb;
+    return age >= -CLOCK_SKEW_TOLERANCE_MS && age <= MAX_SESSION_AGE_MS;
+  });
+}
+
 /** Concessão do D1 que existe mas não vale aqui (#13577): o motivo, para o aviso. */
 export interface D1GrantRejection {
   grantedBy: string;
   grantedAt: string;
-  reason: "grantor-not-coordinator" | "grantor-unknown";
+  /** #13603: `grantor-presence-local-without-record` = a presença no D1 diz
+   * ser desta máquina e não há registro coordenador da concedente aqui. */
+  reason: "grantor-not-coordinator" | "grantor-unknown" | "grantor-presence-local-without-record";
 }
 
 /**
@@ -5387,8 +5421,11 @@ export async function findLiveMergeGrantInD1(
     rejected: { grantedBy: raw.grantedBy, grantedAt: raw.grantedAt, reason },
   });
   // Registro local com a concedente como coordenadora sem autoridade de merge:
-  // o D1 nunca a promove.
-  if (sessions.some((s) => s.sessionId === raw.grantedBy && isCoordinatorKind(s.kind) && !hasMergeAuthorityKind(s.kind))) {
+  // o D1 nunca a promove. #13603: conferido ANTES da deduplicação por
+  // `(machineTag, sessionId)` de `listActiveSessions`, registro a registro,
+  // como o hook faz (`scan.nonAuthorityIds`): um continuo não encerrado da
+  // mesma sessão ao lado de um overnight vivo recusa nos dois lados.
+  if (hasNonAuthorityCoordinatorRecord(readMergedSessionGroups(repoRoot, now), raw.grantedBy, now)) {
     return reject("grantor-not-coordinator");
   }
   let grantor: ActiveSessionRecord | D1PresenceGrantor | undefined = sessions.find(
@@ -5401,7 +5438,9 @@ export async function findLiveMergeGrantInD1(
     if (!hasMergeAuthorityKind(p.value.kind)) return reject("grantor-not-coordinator");
     // #13596: presença que se diz desta máquina sem registro coordenador da
     // concedente aqui é sobra ou linha escrita sem registro — mesma regra do guard.
-    if (!presenceMachineConsistent(p.value, sessions, opts.localTag ?? machineTag())) return reject("grantor-unknown");
+    if (!presenceMachineConsistent(p.value, sessions, opts.localTag ?? machineTag())) {
+      return reject("grantor-presence-local-without-record");
+    }
     grantor = {
       sessionId: p.value.sessionId,
       kind: p.value.kind,
@@ -5437,6 +5476,17 @@ export function grantVisibilitySuffix(result: Pick<SharedGrantMergeResult, "back
  * concessão e ela não vale por causa da concedente (#13577). Pura.
  */
 export function d1GrantRejectionMessage(r: D1GrantRejection): string {
+  if (r.reason === "grantor-presence-local-without-record") {
+    // #13603: repetir o grant-merge não resolve (a presença seguiria dizendo
+    // ser desta máquina, sem registro aqui).
+    return (
+      `session-registry (#13603): o D1 tem concessão de ${r.grantedBy} (grantedAt ${r.grantedAt}) para esta sessão, ` +
+      "mas ela NÃO vale aqui: a presença da concedente no D1 diz ser DESTA máquina e não há registro coordenador " +
+      "dela aqui (sobra de um `end` que não limpou o D1, ou linha gravada sem registro). Repetir o grant-merge não " +
+      "resolve: a concedente precisa estar registrada nesta máquina (`session-registry.ts register`), ou a " +
+      "concessão tem de vir de uma coordenadora registrada.\n"
+    );
+  }
   const why =
     r.reason === "grantor-not-coordinator"
       ? "a concedente não tem autoridade de merge (continuo ou kind sem autoridade)"
@@ -5659,6 +5709,9 @@ export interface SessionGcResult {
    * apagar a presença no D1 de coordenadora removida (`clearPresenceForGcRemovals`). */
   sessionId?: string;
   kind?: string;
+  /** #13603 — `machineTag` do registro avaliado, quando legível. O GC só apaga
+   * a presença no D1 de coordenadora DESTA máquina. */
+  machineTag?: string;
 }
 
 /**
@@ -5936,7 +5989,11 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       continue;
     }
     const identity = `${records[0]!.kind}-${records[0]!.machineTag}-${records[0]!.sessionId}`;
-    const who = { sessionId: records[0]!.sessionId, kind: records[0]!.kind };
+    const who = {
+      sessionId: records[0]!.sessionId,
+      kind: records[0]!.kind,
+      ...(typeof records[0]!.machineTag === "string" ? { machineTag: records[0]!.machineTag } : {}),
+    };
     // #13114: sessão que já chamou `end` e teve o real ressuscitado pelo sync.
     // O read-path já a ignora; o GC recolhe os arquivos sem esperar a janela
     // conservadora, porque o próprio carimbo é o sinal positivo de fim.
@@ -5977,6 +6034,7 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       ...decision,
       ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
       ...(typeof record.kind === "string" ? { kind: record.kind } : {}),
+      ...(typeof record.machineTag === "string" ? { machineTag: record.machineTag } : {}),
     });
   }
 
