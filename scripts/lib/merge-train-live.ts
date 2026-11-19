@@ -972,7 +972,11 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
  * MERGED (mergeada fora do trem). Nada é mergeado nem sincronizado; o
  * `error` só explica o `detail` do outcome. */
 function alreadyMergedResult(prNumber: number): MergeTrainBatchResult {
-  return { ok: true, alreadyMerged: true, error: `PR #${prNumber} já estava mergeada fora do trem; nada a mergear (#13645)` };
+  return { ok: true, alreadyMerged: true, error: alreadyMergedDetail(prNumber) };
+}
+
+function alreadyMergedDetail(prNumber: number): string {
+  return `PR #${prNumber} já estava mergeada fora do trem; nada a mergear (#13645)`;
 }
 
 export interface MergeSoloOptions {
@@ -1341,6 +1345,26 @@ export async function runMergeTrain(
             ? "retido-ilegivel"
             : "retido";
       outcomes.push({ batch, status: soloStatus, detail: result.error ?? "sem trem — merge solo", ciRuns: 0 });
+      continue;
+    }
+
+    // #13684: PR mergeada fora do trem ANTES da integração (o editor ou outra
+    // sessão mergeou à mão, com `--delete-branch`) sai terminal ok aqui, antes
+    // do fetch da branch. Sem isto, o `buildIntegrationBranch` falhava no
+    // fetch da branch apagada e o lote virava `abandoned`/`solo-failed` para
+    // uma PR que já está em master: o PR-trem de 1 de quem voltou `staleBase`
+    // (#13461) e o lote de 2+ mergeado em parte por fora. A checagem de
+    // `mergeTrainBatch` (#13388) segue cobrindo o merge feito DURANTE o CI.
+    // O resto do lote volta à frente da fila como lote estritamente menor
+    // (anti-livelock preservado); um resto de 1 PR sem revalidação pendente
+    // degrada pro merge solo, como qualquer lote de 1.
+    const mergedOutside = batch.prs.filter((pr) => confirmMerged(runner, pr));
+    if (mergedOutside.length > 0) {
+      for (const pr of mergedOutside) {
+        outcomes.push({ batch: { prs: [pr] }, status: "solo-merged", detail: alreadyMergedDetail(pr), ciRuns: 0 });
+      }
+      const rest = batch.prs.filter((pr) => !mergedOutside.includes(pr));
+      if (rest.length > 0) queue.unshift({ prs: rest });
       continue;
     }
 

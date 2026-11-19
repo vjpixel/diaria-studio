@@ -240,6 +240,67 @@ describe("compareTitleWithReport (#5521)", () => {
     assert.equal(check.kind, "skipped");
   });
 
+  describe("REGRESSÃO #13699: tabela de unidades vazia (sessão sem merge)", () => {
+    const VAZIA = "<!-- unidades-mergeadas -->\n| Issue(s) | PR | status |\n|---|---|---|\n\n## Puladas\n\n| #13690 | — | x |\n";
+
+    it("cabeçalho válido sem linhas → found, empty, rows vazio", () => {
+      assert.deepEqual(parseUnitsTable(VAZIA), { found: true, rows: [], empty: true });
+    });
+
+    it("tabela vazia sem separador nem linha em branco depois também é vazia", () => {
+      assert.deepEqual(parseUnitsTable("<!-- unidades-mergeadas -->\n| Issues | PR |"), {
+        found: true,
+        rows: [],
+        empty: true,
+      });
+    });
+
+    it("título '0 unidades, 0 issues' passa contra a tabela vazia", () => {
+      const check = compareTitleWithReport("diar.ia.br develop 261119 — 0 unidades, 0 issues", VAZIA);
+      assert.equal(check.kind, "checked");
+      assert.ok(isTitleOk(check));
+      assert.deepEqual(check.kind === "checked" && check.expected, { units: 0, issues: 0 });
+    });
+
+    it("título '0 PRs' passa contra a tabela vazia", () => {
+      assert.ok(isTitleOk(compareTitleWithReport("develop 261119 — 0 PRs", VAZIA)));
+    });
+
+    it("título '3 unidades' é reprovado contra a tabela vazia, com sufixo 0", () => {
+      const check = compareTitleWithReport("develop 261119 — 3 unidades, 4 issues", VAZIA);
+      assert.equal(check.kind, "checked");
+      assert.ok(!isTitleOk(check));
+      assert.equal(check.problems.length, 2);
+      assert.equal(check.kind === "checked" && check.suggestion, "0 unidades, 0 issues");
+    });
+
+    it("título sem contagem continua reprovado (não-conferível) mesmo com tabela vazia", () => {
+      const check = compareTitleWithReport("develop 261119 — fila vazia", VAZIA);
+      assert.ok(!isTitleOk(check));
+      assert.match(check.kind === "checked" ? check.problems[0] : "", /não declara nenhuma contagem/);
+    });
+
+    it("linhas presentes mas não reconhecidas continuam recusadas (unreadable)", () => {
+      const md = "<!-- unidades-mergeadas -->\n| Issue(s) | PR | status |\n|---|---|---|\n| (nenhuma) | — | — |\n";
+      assert.deepEqual(parseUnitsTable(md), { found: true, rows: [] });
+      const check = compareTitleWithReport("0 unidades, 0 issues", md);
+      assert.equal(check.kind, "unreadable");
+      assert.ok(!isTitleOk(check));
+    });
+
+    it("marcador sem tabela nenhuma continua recusado (unreadable)", () => {
+      const check = compareTitleWithReport("0 unidades", "<!-- unidades-mergeadas -->\n\nprosa solta\n");
+      assert.equal(check.kind, "unreadable");
+    });
+
+    it("cabeçalho inválido sem linhas continua recusado (unreadable)", () => {
+      const md = "<!-- unidades-mergeadas -->\n| unidade | issues | PR | status |\n|---|---|---|---|\n";
+      const check = compareTitleWithReport("0 unidades, 0 issues", md);
+      assert.equal(check.kind, "unreadable");
+      if (check.kind === "unreadable") assert.match(check.problems[0], /cabeçalho inválido/);
+    });
+  });
+
   it("só o número errado é apontado quando o outro está certo", () => {
     const check = compareTitleWithReport(
       "overnight 260816e — 13 unidades, 13 issues",
@@ -351,6 +412,18 @@ describe("register-report.ts: guard de contagem (#5521)", () => {
     assert.equal(r.code, 1);
     assert.match(r.stderr, /cabeçalho inválido.*Issue\(s\).*PR/);
     assert.match(r.stderr, /nada foi registrado/);
+    assert.equal(r.stdout.trim(), "");
+    assert.deepEqual(registeredLines(), []);
+  });
+
+  it("REGRESSÃO #13699: tabela vazia com título '3 unidades' bloqueia e não registra", () => {
+    // Só o caminho que BLOQUEIA roda pelo CLI: o que passa registraria de
+    // verdade em data/reports/index.jsonl (coberto pelos testes puros acima).
+    writeFileSync(join(reportDir, "report.md"), "<!-- unidades-mergeadas -->\n| Issue(s) | PR | status |\n|---|---|---|\n");
+    const r = run("develop 261119 — 3 unidades", "develop");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /0 unidades, 0 issues/);
+    assert.doesNotMatch(r.stderr, /nenhuma linha reconhecida/);
     assert.equal(r.stdout.trim(), "");
     assert.deepEqual(registeredLines(), []);
   });

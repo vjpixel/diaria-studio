@@ -154,8 +154,10 @@ import {
   latestExecutionBlockFor,
   type AcaoAdiada,
   type ExecutionBlock,
+  parseDecisionMarkers,
   type IssueDecision,
 } from "./issue-decisions.ts";
+import { parseRouteIssueMarkerAtStart } from "./issue-route.ts";
 
 export type DesbloqueioStatus =
   | "ja-destravada"
@@ -274,6 +276,15 @@ export interface DesbloqueioCandidate {
    * revisada no relatório.
    */
   semMudancaDesdeUltimaRevisao: boolean;
+  /**
+   * #13689 — `true` quando a issue é `ja-destravada` e a thread já tem um
+   * comentário `route-issue` POSTERIOR à decisão (ordem da thread) cujo
+   * track é o atual. Re-rotear empilharia um comentário idêntico por
+   * rodada: o playbook só conta a issue no relatório, sem rotear nem
+   * comentar. Um `acao-adiada` ativo e posterior à decisão manda a issue
+   * para `acaoAdiada` (status), não para este sinal.
+   */
+  jaRoteadaDesdeDecisao: boolean;
 }
 
 /** #12546 — o último comentário da thread, como o CLI o lê do `gh`. */
@@ -396,6 +407,7 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
       commentsRead: input.comments.length,
       commentsFetchError: input.commentsFetchError,
       semMudancaDesdeUltimaRevisao: false,
+      jaRoteadaDesdeDecisao: false,
     };
   }
 
@@ -413,7 +425,18 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
   // tornando `decided_at >= updatedAt` insatisfazível por construção).
   // Marcador MAIS RECENTE (por `decided_at`/`recorded_at`) vence; empate
   // favorece a decisão (sinal mais forte — resolução explícita do editor).
-  const status = decideStatus({ decision, executionBlock, adiamentoSuprime, escopo, input });
+  let status = decideStatus({ decision, executionBlock, adiamentoSuprime, escopo, input });
+  const jaRoteadaDesdeDecisao =
+    status === "ja-destravada" && decision !== null && roteadaDesdeDecisao(input.comments, decision, track);
+  if (
+    jaRoteadaDesdeDecisao &&
+    adiamentoSuprime &&
+    acaoAdiada !== null &&
+    decision !== null &&
+    acaoAdiada.pedido_em > decision.decided_at
+  ) {
+    status = "acao-adiada";
+  }
 
   return {
     number: input.number,
@@ -428,7 +451,28 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
     commentsRead: input.comments.length,
     commentsFetchError: null,
     semMudancaDesdeUltimaRevisao: semMudancaDesdeUltimaRevisao(input, status),
+    jaRoteadaDesdeDecisao,
   };
+}
+
+/**
+ * #13689 — o ÚLTIMO comentário `route-issue` da thread vem depois do
+ * comentário da decisão mais recente e declara o track atual? Compara por
+ * posição na thread (o marcador de rota não carrega timestamp).
+ */
+function roteadaDesdeDecisao(comments: readonly string[], decision: IssueDecision, track: ExecTrack): boolean {
+  let decisionIdx = -1;
+  let routeIdx = -1;
+  let routeTrack: string | null = null;
+  comments.forEach((body, i) => {
+    if (parseDecisionMarkers([body]).some((d) => d.decided_at === decision.decided_at)) decisionIdx = i;
+    const t = parseRouteIssueMarkerAtStart(body);
+    if (t !== null) {
+      routeIdx = i;
+      routeTrack = t;
+    }
+  });
+  return decisionIdx >= 0 && routeIdx > decisionIdx && routeTrack === track;
 }
 
 function decideStatus(args: {
