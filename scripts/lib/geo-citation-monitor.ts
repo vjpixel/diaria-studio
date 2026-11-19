@@ -1715,13 +1715,23 @@ export const GEO_QUOTA_PERSISTENT_ROUNDS = 2;
  * Rodada parcial (>=1 resposta válida ou erro de outra causa) quebra a
  * sequência. Quem chama passa o histórico do painel + os registros da rodada
  * atual (ainda não anexados ao arquivo).
+ *
+ * `currentRoundProviders` (#13673): quando informado, só providers desse
+ * conjunto podem alarmar. Provider que saiu da rodada (key/config removida
+ * depois de 2 rodadas de cota) não produz registro novo, e sem o filtro as
+ * duas últimas datas dele no histórico seguiriam 100% cota para sempre,
+ * reprovando todo `--strict` seguinte. O CLI passa os providers presentes
+ * nos registros da rodada corrente.
  */
 export function detectPersistentQuotaProviders(
   records: readonly Pick<GeoCitationRecord, "date" | "provider" | "error" | "errorKind">[],
   minRounds: number = GEO_QUOTA_PERSISTENT_ROUNDS,
+  currentRoundProviders?: Iterable<GeoProviderId>,
 ): GeoProviderId[] {
+  const allowed = currentRoundProviders ? new Set(currentRoundProviders) : null;
   const byProvider = new Map<GeoProviderId, Map<string, boolean>>();
   for (const r of records) {
+    if (allowed && !allowed.has(r.provider)) continue;
     const rounds = byProvider.get(r.provider) ?? new Map<string, boolean>();
     const allQuota = (rounds.get(r.date) ?? true) && Boolean(r.error) && r.errorKind === "quota";
     rounds.set(r.date, allQuota);
