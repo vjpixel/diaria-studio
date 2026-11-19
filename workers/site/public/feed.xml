@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 18 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 19 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>OpenAI lança GPT-6.2 e corta preço em 20%</title>
+      <link>https://diar.ia.br/p/openai-lanca-gpt-6-2-e-corta-preco-em-20</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/openai-lanca-gpt-6-2-e-corta-preco-em-20</guid>
+      <pubDate>Thu, 19 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Califórnia processa OpenAI por agentes descontrolados | Gemini agora liga e faz compras por você</description>
+    </item>
     <item>
       <title>EUA exigem licença para chips de IA no Brasil</title>
       <link>https://diar.ia.br/p/eua-exigem-licenca-para-chips-de-ia-no-brasil</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/nvidia-diz-que-a-agi-chegou-cientistas-duvidam</guid>
       <pubDate>Tue, 08 Sep 2026 09:00:00 GMT</pubDate>
       <description>Google lança Gemma 4 para codar sozinho | Seu ChatGPT ficou 47% mais rápido - e mais perigoso</description>
-    </item>
-    <item>
-      <title>NVIDIA agora controla onde você baixa modelos</title>
-      <link>https://diar.ia.br/p/nvidia-agora-controla-onde-voce-baixa-modelos</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/nvidia-agora-controla-onde-voce-baixa-modelos</guid>
-      <pubDate>Fri, 04 Sep 2026 09:00:00 GMT</pubDate>
-      <description>GPT-6 Astra: modelo mais capaz vira arma crítica | Brasil lidera pressa por IA, mas ensino atrasa</description>
     </item>
   </channel>
 </rss>
