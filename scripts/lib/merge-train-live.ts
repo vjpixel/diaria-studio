@@ -620,6 +620,9 @@ export interface MergeTrainBatchResult {
    * não prova a combinação com o que entrou depois. Nada foi mergeado;
    * `runMergeTrain` revalida sobre a base atual (PR-trem) em vez de mergear. */
   staleBase?: { headSha: string; baseSha: string; behindBy: number };
+  /** #13645: o merge solo achou a PR já MERGED (mergeada fora do trem) e
+   * devolveu ok sem mergear nada. */
+  alreadyMerged?: boolean;
 }
 
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -965,6 +968,13 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
   return worktreeResolved.ok ? { ok: true } : { ok: false, error: `worktree remove falhou: ${worktreeResolved.error}` };
 }
 
+/** #13645: resultado terminal ok do merge solo de uma PR que já estava
+ * MERGED (mergeada fora do trem). Nada é mergeado nem sincronizado; o
+ * `error` só explica o `detail` do outcome. */
+function alreadyMergedResult(prNumber: number): MergeTrainBatchResult {
+  return { ok: true, alreadyMerged: true, error: `PR #${prNumber} já estava mergeada fora do trem; nada a mergear (#13645)` };
+}
+
 export interface MergeSoloOptions {
   sessionId: string;
   kind: string;
@@ -988,6 +998,12 @@ export interface MergeSoloOptions {
  * leva `--match-head-commit` com o HEAD validado: push concorrente na branch
  * recusa o merge. */
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
+  // #13645: PR mergeada fora do trem (sessão interativa, entre a descoberta e
+  // aqui) é terminal ok, como no lote (#13388). Sem isto, o
+  // `checkHeadContainsBase` sob o lock lia o HEAD dela atrás da base (o
+  // commit de squash não está no HEAD) e devolvia `staleBase`: CI de PR-trem
+  // desperdiçado, ou `solo-failed` se a branch já tinha sido apagada.
+  if (confirmMerged(runner, prNumber)) return alreadyMergedResult(prNumber);
   const gate = revalidateGate2(runner, prNumber, opts.sessionId);
   if (!gate.ok) {
     return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}`, ...gate2FailureFields(gate, prNumber) };
@@ -1013,6 +1029,9 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
     };
   }
   try {
+    // #13645: de novo sob o lock — o merge por fora pode ter caído entre a
+    // checagem do início e o acquire.
+    if (confirmMerged(runner, prNumber)) return alreadyMergedResult(prNumber);
     const fresh = checkHeadContainsBase(runner, head.sha, opts.baseBranch ?? TRAIN_BASE_BRANCH);
     if (fresh.verdict === "stale") {
       return {
