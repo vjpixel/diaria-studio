@@ -5,7 +5,7 @@
  * Task `Diaria-GDrive-Sync-Alarm` (de hora em hora): alarme do `rclone
  * bisync` do Google Drive no `300` (#12356) — o equivalente, pro backend
  * novo, do `scripts/onedrive-sync-alarm.ts` (#5548), desativado desde a
- * virada do `data/` para o Drive (#12359, 11/11/2026; #12923). Cinco
+ * virada do `data/` para o Drive (#12359, 11/11/2026; #12923). Seis
  * sinais, cada um com achado próprio:
  *
  *   1. Sync (`check: "gdrive-sync"`): lê os carimbos que o
@@ -35,6 +35,13 @@
  *   5. Cota da conta de `data/` (`check: "gdrive-data-quota"`): `rclone
  *      about {remote de data/}: --json`, mesmos limiares do 2, só quando o
  *      bisync de `data/` tem carimbo (instalado nesta máquina).
+ *   6. Aborto do bisync de `data/` com edição em curso (`check:
+ *      "gdrive-data-abort"`, #13614): o `gdrive-bisync.sh` carimba
+ *      `last-abort.json` quando o log traz `Bisync aborted`; aborto nas
+ *      últimas 2h com alguma edição nos Stages 2-6 vira achado P1 sem
+ *      tolerância, porque a rodada seguinte pode transformar arquivos da
+ *      edição em `.conflictN` (#13545). Lógica pura em
+ *      `evaluateDataBisyncAbort` (`lib/gdrive-sync-alarm.ts`).
  *
  * Latência: o alarme roda de hora em hora, então um achado chega até ~1h
  * depois de vencer a tolerância (até ~90 min para o sinal 3).
@@ -107,11 +114,15 @@ import {
   FULL_DRIVE_BISYNC_TARGET,
   DATA_BISYNC_TARGET,
   dataBisyncTarget,
+  evaluateDataBisyncAbort,
+  describeDataBisyncAbort,
+  type DataAbortEvaluation,
   type BisyncTarget,
   type BisyncStampRead,
   type GdriveSyncEvaluation,
 } from "./lib/gdrive-sync-alarm.ts";
 import { resolveDataBisyncConfig, type DataBisyncConfig } from "./lib/gdrive-data-bisync-config.ts";
+import { findEditionsInProgress, type Stage } from "./lib/find-current-edition.ts";
 import type { GdriveQuotaEvaluation as QuotaEval } from "./lib/gdrive-quota.ts";
 import {
   readRcloneAboutDetailed,
@@ -147,6 +158,9 @@ export const QUOTA_CHECK = "gdrive-quota";
 export const DATA_SYNC_CHECK = "gdrive-data-sync";
 export const DATA_CONFIG_CHECK = "gdrive-data-config";
 export const DATA_QUOTA_CHECK = "gdrive-data-quota";
+/** Sinal 6 (#13614): aborto do bisync de `data/` com edição em curso. */
+export const DATA_ABORT_CHECK = "gdrive-data-abort";
+export const DATA_ABORT_DURING_EDITION = "alarm-data-bisync-aborted-during-edition";
 /** Fingerprint do sinal 3 quando o `data/` depende do bisync de `data/` e ele
  * não tem carimbo nenhum. */
 export const DATA_BISYNC_MISSING = "alarm-data-bisync-missing";
@@ -172,6 +186,27 @@ export function defaultGdriveDataStateDir(
  * `data/` (ver docstring do topo). */
 export function gdriveAlarmIssuesStatePath(stateDir: string): string {
   return join(stateDir, ".gdrive-sync-alarm-issues.json");
+}
+
+/** Stages cuja edição "em curso" conta para o sinal de aborto (#13614): da
+ * aprovação da pesquisa até o agendamento, inclusive a montagem do vídeo. */
+export const ABORT_EDITION_STAGES: readonly Stage[] = [2, 3, 4, 5, 6];
+
+/** Edições em curso em qualquer dos `ABORT_EDITION_STAGES`, sem repetição e
+ * ordenadas. `null` quando a listagem falha (o sinal alarma assim mesmo).
+ * `find` injetável para teste. */
+export function listEditionsInProgress(
+  rootDir: string,
+  find: (stage: Stage, rootDir: string) => string[] = findEditionsInProgress,
+): string[] | null {
+  const all = new Set<string>();
+  try {
+    for (const stage of ABORT_EDITION_STAGES) for (const e of find(stage, rootDir)) all.add(e);
+  } catch (e) {
+    console.error(`${LOG_PREFIX} não consegui listar as edições em curso: ${(e as Error).message}`);
+    return null;
+  }
+  return [...all].sort();
 }
 
 /** Lê um carimbo do state dir. Só ENOENT é `absent`; qualquer outro erro de
@@ -416,6 +451,27 @@ export function toDataConfigAlarmFinding(cfg: Pick<DataBisyncConfig, "errors" | 
   };
 }
 
+/** Sinal 6 (#13614): aborto do bisync de `data/` com edição em curso. P1:
+ * a rodada seguinte ao aborto pode apagar arquivo da edição (`.conflictN`). */
+export function toDataAbortAlarmFinding(ev: DataAbortEvaluation, target: BisyncTarget = DATA_BISYNC_TARGET): AlarmFinding {
+  return {
+    check: DATA_ABORT_CHECK,
+    fingerprint: DATA_ABORT_DURING_EDITION,
+    title: `[diar.ia.br] Google Drive data/ sync: ${DATA_ABORT_DURING_EDITION}`,
+    body: [
+      "Achado automático do alarme `Diaria-GDrive-Sync-Alarm` (`scripts/gdrive-sync-alarm.ts`, aborto do bisync de `data/` com edição em curso, #13614).",
+      "",
+      describeDataBisyncAbort(ev, target),
+      "",
+      "Esta issue é criada automaticamente pelo alarme e será comentada/fechada sozinha quando o achado deixar de",
+      `reproduzir por ${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    labels: ["bug", ALARM_ACTION_LABEL],
+    priority: "P1",
+    family: "estado",
+  };
+}
+
 /** Veredito de cota que vira achado, ou `null`. `unmeasured` só alarma (como
  * `quota-unmeasured`) quando esta máquina roda o bisync — sem bisync, o
  * rclone pode nem existir e o silêncio é o correto. */
@@ -495,6 +551,8 @@ export interface DataAlarmEmailContext {
   quota: GdriveQuotaEvaluation | null;
   quotaUnmeasuredReason: string | null;
   remoteName: string;
+  /** Aborto com edição em curso (#13614); ausente = não avaliado. */
+  abort?: DataAbortEvaluation | null;
 }
 
 export function buildGdriveAlarmEmail(
@@ -511,6 +569,12 @@ export function buildGdriveAlarmEmail(
   const d = data ? qualifying.find((o) => o.check === DATA_SYNC_CHECK) : undefined;
   const c = data ? qualifying.find((o) => o.check === DATA_CONFIG_CHECK) : undefined;
   const dq = data ? qualifying.find((o) => o.check === DATA_QUOTA_CHECK) : undefined;
+  const da = data ? qualifying.find((o) => o.check === DATA_ABORT_CHECK) : undefined;
+  // Aborto com edição em curso primeiro: é o que pede ação na edição agora.
+  if (da && data?.abort) {
+    parts.push(`${describeDataBisyncAbort(data.abort, data.target)}${issueLineFor(da)}`);
+    subjects.push("data/ bisync abortou com edição em curso");
+  }
   if (s) {
     parts.push(`${describeGdriveSyncVerdict(sync)}${issueLineFor(s)}`);
     subjects.push(sync.verdict);
@@ -573,6 +637,9 @@ export interface GdriveAlarmInputs {
   /** Cota da conta de `data/`; `null` = não medida (sem carimbo de data/). */
   dataQuota: GdriveQuotaEvaluation | null;
   dataQuotaError: string | null;
+  /** Aborto do bisync de `data/` cruzado com edição em curso (#13614).
+   * Ausente/`null` = não avaliado nesta execução: a issue aberta congela. */
+  dataAbort?: DataAbortEvaluation | null;
 }
 
 /** Achados + regra de congelamento de uma execução. Pura: é a fiação do
@@ -589,7 +656,7 @@ export function collectGdriveAlarmFindings(i: GdriveAlarmInputs): {
     // Sem bisync de data/ no Windows: os caminhos default nem fazem sentido
     // aqui (sairiam `C:\…`), e nenhum achado de data/ é medido — congela.
     const base = absenceUnmeasured({ sync: i.sync.verdict, quota: i.quota.verdict, dataSync: "not-installed", dataQuota: null });
-    const dataChecks = new Set([DATA_SYNC_CHECK, DATA_CONFIG_CHECK, DATA_QUOTA_CHECK]);
+    const dataChecks = new Set([DATA_SYNC_CHECK, DATA_CONFIG_CHECK, DATA_QUOTA_CHECK, DATA_ABORT_CHECK]);
     return {
       findings,
       isAbsenceUnmeasured: (key) => base(key) || [...dataChecks].some((c) => key.startsWith(`${c}:`)),
@@ -603,6 +670,12 @@ export function collectGdriveAlarmFindings(i: GdriveAlarmInputs): {
   if (i.dataQuota !== null && quotaFindingVerdict(i.dataQuota, i.dataSync.verdict) !== null) {
     findings.push(toQuotaAlarmFinding(i.dataQuota, i.dataQuotaError, i.dataCfg.remoteName));
   }
+  const abort = i.dataAbort ?? null;
+  if (abort?.verdict === "alarm-abort-during-edition") findings.push(toDataAbortAlarmFinding(abort, i.dataTarget));
+  // Sem medida do aborto (não avaliado, carimbo ilegível) ou sem bisync de
+  // data/ nesta máquina: a ausência do achado não prova nada — congela.
+  const abortUnmeasured = abort === null || abort.verdict === "unmeasured" || i.dataSync.verdict === "not-installed";
+  const abortKey = alarmIssueStateKey(DATA_ABORT_CHECK, DATA_ABORT_DURING_EDITION);
   const base = absenceUnmeasured({
     sync: i.sync.verdict,
     quota: i.quota.verdict,
@@ -612,7 +685,8 @@ export function collectGdriveAlarmFindings(i: GdriveAlarmInputs): {
   // `data/` sem realpath (HD desmontado, alvo some): ausência do achado
   // "missing" não prova nada — congela em vez de fechar sozinho.
   const missingKey = alarmIssueStateKey(DATA_SYNC_CHECK, DATA_BISYNC_MISSING);
-  const isAbsenceUnmeasured = (key: string) => base(key) || (!i.dataDirResolved && key === missingKey);
+  const isAbsenceUnmeasured = (key: string) =>
+    base(key) || (!i.dataDirResolved && key === missingKey) || (abortUnmeasured && key === abortKey);
   return { findings, isAbsenceUnmeasured, dataMissing };
 }
 
@@ -704,6 +778,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // Aborto do bisync de data/ com edição em curso (#13614): só com o bisync
+  // de data/ instalado (há carimbo) e state dir absoluto.
+  let dataAbort: DataAbortEvaluation | null = null;
+  if (process.platform !== "win32" && dataStampsUsable && dataSync.verdict !== "not-installed") {
+    dataAbort = evaluateDataBisyncAbort(readBisyncStamp(join(dataStateDir, "last-abort.json")), listEditionsInProgress(ROOT), now);
+    console.log(
+      `${LOG_PREFIX} aborto data/: verdict=${dataAbort.verdict} ` +
+        `at=${dataAbort.abort?.at ?? "nenhum"} edições=${dataAbort.editions === null ? "ilegível" : dataAbort.editions.join(",") || "nenhuma"}` +
+        (dataAbort.reason ? ` motivo=${dataAbort.reason}` : ""),
+    );
+  }
+
   const { findings, isAbsenceUnmeasured, dataMissing } = collectGdriveAlarmFindings({
     sync,
     quota,
@@ -717,6 +803,7 @@ async function main(): Promise<void> {
     platform: process.platform,
     dataQuota,
     dataQuotaError,
+    dataAbort,
   });
   if (dataMissing) console.log(`${LOG_PREFIX} data/ (${dataDirReal}) depende do bisync de data/, sem carimbo: ${DATA_BISYNC_MISSING}`);
 
@@ -760,6 +847,7 @@ async function main(): Promise<void> {
         quota: dataQuota,
         quotaUnmeasuredReason: dataQuotaError,
         remoteName: dataCfg.remoteName,
+        abort: dataAbort,
       }),
     {
       cwd: ROOT,

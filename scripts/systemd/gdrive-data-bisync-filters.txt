@@ -54,3 +54,19 @@
 # leitura) ou baixa a pagina de novo; o --restore do swap-destaque so
 # funciona na maquina onde o swap foi feito; cada maquina limpa o proprio.
 - _forensic/**
+#
+# Logs escritos continuamente (#13614). Um log que cresce enquanto o rclone o
+# copia muda o hash no meio da transferencia ("corrupted on transfer: md5
+# hashes differ", 18/11/2026 03:22 UTC, .nightly-chain-last-review.stderr.log)
+# e o bisync aborta sem salvar a listagem: o mesmo gatilho do .conflictN da
+# #13545 (rodada seguinte ve o que o Neo mexeu como "changed in both paths").
+# Sao locais por maquina, como o _forensic/ acima: o log do overnight e do
+# continuo so existe no `300`, onde as tasks rodam. As rotacoes (.prev) e as
+# copias de conflito (.conflictN) de cada log saem junto.
+# Custo aceito: o log de uma rodada so se le na maquina que a rodou.
+- *.stderr.log
+- *.stderr.log.*
+- /overnight/*.log
+- /overnight/*.log.*
+- /continuo/*.log
+- /continuo/*.log.*

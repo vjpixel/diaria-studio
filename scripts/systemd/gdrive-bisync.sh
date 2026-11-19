@@ -26,7 +26,9 @@
 # não carimba NADA, nem `last-run.json`: um teste manual não é a rodada do
 # timer, e um dry-run que saísse 75 ou de erro deixaria o alarme achando que
 # o sync está travado/falhando. O exit code do rclone é o do script, sem
-# mudança.
+# mudança. Tentativa cujo log traz `Bisync aborted` grava também
+# `$STATE_DIR/last-abort.json` (mesmo formato, #13614), que o alarme do
+# bisync de `data/` cruza com edição em curso.
 #
 # Exit 7 por 401/authError (token OAuth vencendo no meio de uma listagem
 # longa) ganha um resync automático (#12412), que pode ressuscitar arquivo
@@ -211,6 +213,16 @@ run_bisync() {
   case "$RC" in
     ''|*[!0-9]*) RC=1 ;;
   esac
+  # Aborto no meio da rodada (#13614): `Bisync aborted` no log quer dizer
+  # que o rclone renomeou/copiou e saiu sem salvar a listagem, e a rodada
+  # seguinte (com `--recover`) pode transformar em `.conflictN` tudo o que a
+  # outra máquina mexeu nesse meio-tempo (#13545). Carimbo próprio, porque a
+  # rodada seguinte costuma sair 0 e o `last-run.json` não guarda o aborto;
+  # o alarme de `data/` o cruza com edição em curso. Carimbado aqui, por
+  # tentativa, porque o retry de 401 reescreve o $RCLONE_LOG.
+  if [ "$DRY_RUN" -eq 0 ] && grep -q 'Bisync aborted' "$RCLONE_LOG" 2>/dev/null; then
+    stamp last-abort.json "$RC"
+  fi
 }
 
 auth_error_in_log() {

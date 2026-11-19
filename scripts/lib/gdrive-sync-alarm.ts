@@ -310,6 +310,86 @@ export function isAlarmingGdriveSyncVerdict(v: GdriveSyncVerdict): boolean {
   );
 }
 
+/**
+ * Aborto do bisync de `data/` com edição em curso (#13614).
+ *
+ * O `gdrive-bisync.sh` grava `last-abort.json` ({at, exit}) quando o log de
+ * uma tentativa traz `Bisync aborted`: o rclone renomeou/copiou e saiu sem
+ * salvar a listagem, e a rodada seguinte (com `--recover`) pode virar
+ * `.conflictN` tudo o que a outra máquina mexeu no meio-tempo, apagando o
+ * original quando os mtimes empatam (#13545). A rodada seguinte costuma sair
+ * 0, então nem o `last-run.json` nem os achados de falha persistente (15 min)
+ * veem o aborto: este sinal é próprio e não tem tolerância.
+ *
+ * Janela: o alarme roda de hora em hora, então um aborto conta por
+ * `DATA_ABORT_WINDOW_MS` (2h) a partir do `at` — pega ao menos uma execução
+ * mesmo com o timer atrasado. Passada a janela, o achado deixa de reproduzir
+ * e a issue fecha sozinha depois de 2 execuções limpas.
+ *
+ * "Edição em curso" = alguma edição com o prereq de um dos Stages 2-6 e o
+ * output faltando (`findEditionsInProgress`): da aprovação da pesquisa até o
+ * agendamento, inclusive a montagem do vídeo, que roda entre o gate 4 e a
+ * Etapa 5. `null` = não foi possível listar as edições; com aborto recente,
+ * alarma assim mesmo (silêncio seria pior que um aviso a mais).
+ */
+export const DATA_ABORT_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+export type DataAbortVerdict = "no-abort" | "unmeasured" | "abort-no-edition" | "alarm-abort-during-edition";
+
+export interface DataAbortEvaluation {
+  verdict: DataAbortVerdict;
+  /** Carimbo do aborto, quando legível. */
+  abort: BisyncStamp | null;
+  /** Idade do aborto em ms; `null` sem carimbo legível. */
+  ageMs: number | null;
+  /** Edições em curso; `null` = não listadas. */
+  editions: readonly string[] | null;
+  /** Motivo do `unmeasured` (carimbo ilegível ou no futuro). */
+  reason: string | null;
+}
+
+/** Pura. */
+export function evaluateDataBisyncAbort(
+  abortInput: BisyncStampInput,
+  editionsInProgress: readonly string[] | null,
+  now: Date,
+  windowMs: number = DATA_ABORT_WINDOW_MS,
+): DataAbortEvaluation {
+  const read = normalizeStampInput(abortInput);
+  const base = { abort: null, ageMs: null, editions: editionsInProgress, reason: null };
+  if (read.kind === "absent") return { ...base, verdict: "no-abort" };
+  if (read.kind === "unreadable") return { ...base, verdict: "unmeasured", reason: `last-abort.json: ${read.reason}` };
+  const nowMs = now.getTime();
+  const atMs = Date.parse(read.stamp.at);
+  if (atMs - nowMs > STAMP_FUTURE_TOLERANCE_MS) {
+    return { ...base, verdict: "unmeasured", reason: `last-abort.json: \`at\` ${read.stamp.at} está no futuro além da folga de relógio` };
+  }
+  const ageMs = Math.max(0, nowMs - atMs);
+  const withStamp = { ...base, abort: read.stamp, ageMs };
+  if (ageMs > windowMs) return { ...withStamp, verdict: "no-abort" };
+  if (editionsInProgress !== null && editionsInProgress.length === 0) return { ...withStamp, verdict: "abort-no-edition" };
+  return { ...withStamp, verdict: "alarm-abort-during-edition" };
+}
+
+/** Texto do achado de aborto com edição em curso (issue e e-mail). */
+export function describeDataBisyncAbort(ev: DataAbortEvaluation, target: BisyncTarget = DATA_BISYNC_TARGET): string {
+  const when = ev.abort ? `${ev.abort.at} (exit ${ev.abort.exit}, há ${hours(ev.ageMs)})` : "momento desconhecido";
+  const eds =
+    ev.editions === null
+      ? "não consegui listar as edições em curso (`data/editions` ilegível nesta execução)"
+      : `edição(ões) em curso: ${ev.editions.join(", ")}`;
+  return (
+    `O \`rclone bisync\` ${target.subject} ABORTOU no meio de uma rodada em ${when}, com ${eds}. ` +
+    "Um aborto sai sem salvar a listagem, e a rodada seguinte pode transformar em `.conflictN` os arquivos que a " +
+    "outra máquina mexeu nesse intervalo, sumindo com o original quando os dois lados têm o mesmo mtime (#13545). " +
+    "Conferir a pasta da edição antes de seguir: `npx tsx scripts/check-invariants.ts --stage 4 --edition-dir " +
+    "data/editions/{AAMM}/{AAMMDD}/` (invariante `edition-sync-conflicts`) e, havendo cópia, restaurar pelo " +
+    "procedimento de `docs/sync-conflict-restore.md`. Causa do aborto: " +
+    `\`journalctl --user -u ${target.unit} -n 80\` (procure \`Bisync critical error\`) e ` +
+    `\`${target.stateDirHint}last-rclone.log\`. Este alarme nunca roda o sync.`
+  );
+}
+
 function hours(ms: number | null): string {
   return ms === null ? "nunca" : `${(ms / 3_600_000).toFixed(1)}h`;
 }
