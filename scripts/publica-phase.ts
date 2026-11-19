@@ -59,7 +59,10 @@
  *   no comando.
  * - `join` sai 1 com tarefa pendente (inclusive em background), órfã sem
  *   tentativa posterior concluída, linha ilegível no JSONL ou sentinel
- *   antecipado: nenhuma fase é dada por concluída assim.
+ *   antecipado: nenhuma fase é dada por concluída assim. Também sai 1 com a
+ *   capa vertical do Short pendente sem dono (#13708: `cover.vertical_feed`
+ *   do `youtube_shorts` diferente de `"studio_web"` e sem dono registrado por
+ *   `short-vertical-cover.ts defer`) ou com o registro do vertical ilegível.
  * - `report` imprime as durações por fase (`null` = indisponível, nunca
  *   zero), o caminho crítico pela união dos intervalos, execução × espera.
  *
@@ -108,6 +111,7 @@ import { planSha256, readVideoPlanManifest } from "./lib/diaria/video-publish-pl
 import { assessVideoBeforePublish, STAGE5_DONE_FILE } from "./lib/diaria/video-before-publish.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 import { readPublishedRecord } from "./publish-youtube.ts";
+import { describeShortVerticalCoverStep, readShortVerticalCoverStep, type ShortVerticalCoverStep } from "./lib/diaria/short-vertical-cover-step.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE6_DONE_FILE = "_internal/.step-6-done.json";
@@ -273,6 +277,21 @@ function resumableUpload(dir: string, aammdd: string): { videoId: string } | { p
   } catch (e) {
     return { problem: `retomada recusada: ${(e as Error).message}` };
   }
+}
+
+/**
+ * #13708: o Passo B3a no join. Registro ou dono ilegível vira problema (o join
+ * não dá a capa por feita às cegas); `pending` sem dono vira problema;
+ * `pending` com dono e `done` viram nota.
+ */
+function verticalCoverJoin(dir: string, aammdd: string): { step: ShortVerticalCoverStep | null; problem: string | null; note: string | null } {
+  let step: ShortVerticalCoverStep;
+  try {
+    step = readShortVerticalCoverStep(dir, aammdd);
+  } catch (e) {
+    return { step: null, problem: `capa vertical do Short não verificável: ${(e as Error).message} (#13708)`, note: null };
+  }
+  return { step, ...describeShortVerticalCoverStep(aammdd, step) };
 }
 
 /** `start` com check e gravação sob lock. Devolve o evento gravado, ou o exit de recusa/uso. */
@@ -505,9 +524,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     );
     // Linha ilegível pode esconder uma tarefa pendente: o join não fecha às cegas.
     const problems = [...r.problems, ...parseProblems.map((p) => `linha ilegível: ${p}`)];
+    // #13708: a capa vertical do Short (Passo B3a) é obrigatória: pendente sem dono segura o join.
+    const cover = verticalCoverJoin(a.dir, a.aammdd);
+    if (cover.problem) problems.push(cover.problem);
+    if (cover.note) deps.err(`publica-phase join: ${cover.note}`);
     for (const p of problems) deps.err(`publica-phase join: ${p}`);
     const ok = problems.length === 0;
-    deps.log(JSON.stringify({ ok, parts_pending: r.partsPending, problems }, null, 2));
+    deps.log(JSON.stringify({ ok, parts_pending: r.partsPending, problems, vertical_cover: cover.step }, null, 2));
     return ok ? 0 : 1;
   }
   if (cmd === "report") {
