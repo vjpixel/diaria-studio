@@ -100,7 +100,9 @@
  *
  * Task agendada: `Diaria-Video-Bruto-Archive` (diária 03:00 BRT desde a #13631, `--apply`), com os defaults (sem espelho).
  * Aviso (#13631): falha = exit 1 (unit `failed`); o "não apagado/movido" por
- * permissão abre uma issue por conjunto de arquivos (`notDeletedFinding`).
+ * permissão abre uma issue por conjunto de arquivos (`notDeletedFinding`). Final
+ * ou prévia com nome repetido no Drive (#13675) entra no mesmo aviso e fica para
+ * o próximo ciclo, sem `failed`; bruto com nome repetido segue falha.
  *
  * Uso:
  *   npx tsx scripts/archive-video-brutos.ts                    # dry-run
@@ -281,6 +283,8 @@ export type FileStatus =
   | "sairia"
   | "nao-apagado-sem-permissao"
   | "nome-duplicado-no-drive"
+  // #13675: dois finais/prévias com o mesmo nome (re-upload do editor). Fica no Drive e vira aviso, não falha.
+  | "final-nome-duplicado-mantido"
   | "em-uso-por-outra-edicao"
   | "falha-conferencia"
   | "falha-download"
@@ -306,6 +310,7 @@ export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
   sairia: false,
   "nao-apagado-sem-permissao": false,
   "nome-duplicado-no-drive": true,
+  "final-nome-duplicado-mantido": false,
   "em-uso-por-outra-edicao": false,
   "falha-conferencia": true,
   "falha-download": true,
@@ -326,11 +331,13 @@ export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
 
 /**
  * #13631: o que não é falha mas o editor precisa saber (o Drive recusou mexer
- * num arquivo de outro dono). É o único aviso da rodada diária fora das falhas
+ * num arquivo de outro dono; ou, #13675, um final de nome repetido que ficou no
+ * Drive). É o único aviso da rodada diária fora das falhas
  * (que deixam a unit `failed`): a rotina roda todo dia e não pode virar ruído.
  */
 export const STATUS_NEEDS_NOTICE: ReadonlySet<FileStatus> = new Set<FileStatus>([
   "nao-apagado-sem-permissao",
+  "final-nome-duplicado-mantido",
   "nao-movido-sem-permissao",
   "duplicata-nao-apagada-sem-permissao",
 ]);
@@ -1133,7 +1140,13 @@ async function runArchiveLocked(
         }
         const k = kind ? { kind } : {};
         if (dups.has(f.path)) {
-          report.files.push({ folder, path: f.path, sizeBytes: f.size, status: "nome-duplicado-no-drive", ...k, detail: "dois arquivos com o mesmo nome no Drive; apagar por nome não diz qual sai" });
+          // #13675: final/prévia com nome repetido é re-upload do editor; a rotina diária não pode ficar `failed`
+          // todo dia por isso. Fica no Drive (nada baixado nem apagado) e entra no aviso; o bruto segue falha.
+          report.files.push(
+            kind === "final"
+              ? { folder, path: f.path, sizeBytes: f.size, status: "final-nome-duplicado-mantido", ...k, detail: "dois arquivos com o mesmo nome no Drive; mantidos para o próximo ciclo (renomear ou apagar um deles)" }
+              : { folder, path: f.path, sizeBytes: f.size, status: "nome-duplicado-no-drive", ...k, detail: "dois arquivos com o mesmo nome no Drive; apagar por nome não diz qual sai" },
+          );
           continue;
         }
         log(`${LOG_PREFIX} ${folder}/${f.path} (${formatBytes(f.size)})…`);
@@ -1413,11 +1426,11 @@ export function notDeletedFinding(report: ArchiveReport): NotifyEditorFinding | 
     severity: "acao",
     subject: `Vídeo no Drive: ${list.length} arquivo(s) que a rotina não conseguiu apagar ou mover (outro dono)`,
     body: [
-      "A rotina diária do vídeo (`Diaria-Video-Bruto-Archive`, `scripts/archive-video-brutos.ts`) não conseguiu tirar do Drive estes arquivos: o Drive recusou por permissão (arquivo de outro dono, #12570/#13619). A cópia conferida dos arquivados fica no HD do 300; as duplicatas e os brutos de edição renomeada continuam no Drive.",
+      "A rotina diária do vídeo (`Diaria-Video-Bruto-Archive`, `scripts/archive-video-brutos.ts`) não conseguiu tirar do Drive estes arquivos: o Drive recusou por permissão (arquivo de outro dono, #12570/#13619) ou, em `final-nome-duplicado-mantido`, há dois arquivos com o mesmo nome em `Final/`/`Editado(s)/` (ou duas prévias) e apagar por nome não diz qual sai (#13675). A cópia conferida dos arquivados fica no HD do 300; as duplicatas, os brutos de edição renomeada e os finais de nome repetido continuam no Drive.",
       "",
       ...lines,
       "",
-      "Ação: apagar (ou mover) à mão pela conta dona, ou transferir a posse para a diaria.editor.",
+      "Ação: apagar (ou mover) à mão pela conta dona, ou transferir a posse para a diaria.editor. Nos finais de nome repetido, renomear ou apagar um dos dois: a rotina do dia seguinte arquiva o resto.",
     ].join("\n"),
     priority: "P3",
     labels: ["enhancement"],
@@ -1504,7 +1517,8 @@ async function main(): Promise<void> {
   if (hasFlag(argv, "json")) console.log(JSON.stringify(report, null, 2));
   else printText(report);
   if (reportFailed(report)) process.exitCode = 1;
-  // #13631: rodada diária. Fora as falhas (unit `failed`), o único aviso é o "não apagado/movido" por permissão.
+  // #13631: rodada diária. Fora as falhas (unit `failed`), o único aviso é o "não apagado/movido" por permissão
+  // e o final de nome repetido (#13675).
   const finding = apply ? notDeletedFinding(report) : null;
   if (finding) {
     try {
