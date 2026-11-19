@@ -70,7 +70,8 @@
  * a issue pede pra evitar.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { classifyExecTrack, type ExecTrackInput } from "./issue-exec-track.ts";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
 import { isForeignPlanEntry, planEntryKey, studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
@@ -207,7 +208,10 @@ function readPlan(planPath: string): PlanWithStateChanged {
 }
 
 function writePlan(planPath: string, plan: PlanWithStateChanged): void {
-  writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  // #13687: atômico como os demais escritores do plano (log-event,
+  // record-overnight-wave, trem): o bisync de data/ nunca copia um plan.json
+  // pela metade ("source file is being updated").
+  writeFileAtomic(planPath, `${JSON.stringify(plan, null, 2)}\n`);
 }
 
 /** I/O: lê o plan.json, aplica `add`, grava de volta. */
