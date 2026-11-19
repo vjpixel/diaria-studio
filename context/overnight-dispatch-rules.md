@@ -755,11 +755,16 @@ Rede de segurança: o script ignora a claim cuja sessão
 só chega à outra máquina quando o sync replica.
 
 **Rotear para fora do track solta a claim (#13605).** `route-issue.ts` solta
-sozinho, depois de um roteamento validado, a claim de sessão cujo kind não é
-do track de destino (`overnight` mantém `overnight`/`continuo`, `develop`
-mantém `develop`/`interactive`, os demais soltam todas): release no GitHub e
-`unclaim` no registro desta máquina. Sem isso, o overnight que roteava uma
-issue para develop deixava a sessão develop com `github-claim` por até 24h.
+sozinho, depois de um roteamento validado, a claim da PRÓPRIA sessão que
+roteia quando o kind dela não é do track de destino (`overnight` mantém
+`overnight`/`continuo`, `develop` mantém `develop`/`interactive`, os demais
+soltam todas): release no GitHub e `unclaim` no registro desta máquina. Sem
+isso, o overnight que roteava uma issue para develop deixava a sessão develop
+com `github-claim` por até 24h. Claim de OUTRA sessão viva nunca sai (#13671:
+o overnight triando a issue soltava a claim de uma `/diaria-develop` que a
+implementava, e o dispatch seguinte saía duplicado). A identidade vem do
+`--session-id` que o hook `inject-session-id.mjs` injeta na chamada
+standalone; encadeada ou sem a flag, o roteamento vale e nenhuma claim sai.
 Um `unclaim-issue` posterior dessa issue pela sessão que roteou devolve
 `no-op-not-claimed` (esperado); `--keep-claim` desliga o passo.
 

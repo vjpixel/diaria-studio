@@ -488,6 +488,25 @@ describe("buildUpdatedCommand (#5156)", () => {
     assert.ok(risk.includes("session-close-check.ts"), risk);
   });
 
+  it("injeta --session-id em route-issue.ts standalone (#13671 — só a claim da própria sessão sai)", () => {
+    const cmd = `npx tsx scripts/route-issue.ts --issue 13671 --track overnight --motivo trade-off --reason "x; y"`;
+    assert.equal(needsSessionId(cmd), true);
+    assert.equal(buildUpdatedCommand(cmd, "sess-abc", 4242), `${cmd} --session-id 'sess-abc'`);
+    assert.equal(buildUpdatedCommand(`${cmd} --session-id ja`, "sess-abc"), null);
+  });
+
+  it("route-issue.ts encadeado → sem injeção e SEM negação (flag opcional, #13671)", () => {
+    const chained = "git fetch && npx tsx scripts/route-issue.ts --issue 1 --track develop --reason x";
+    assert.equal(needsSessionId(chained), false);
+    assert.equal(buildUpdatedCommand(chained, "sess-abc"), null);
+    assert.equal(detectChainedSessionIdRisk(chained), null);
+    // Encadeado com outro alvo obrigatório continua negado, citando só ele.
+    const mixed = "npx tsx scripts/route-issue.ts --issue 1 --track develop --reason x && npx tsx scripts/session-close-check.ts";
+    const risk = detectChainedSessionIdRisk(mixed);
+    assert.notEqual(risk, null);
+    assert.ok(risk.includes("session-close-check.ts") && !risk.includes("route-issue.ts"), risk);
+  });
+
   it("effective-model-probe.ts encadeado → null (#9527)", () => {
     assert.equal(buildUpdatedCommand("cd x && npx tsx scripts/lib/effective-model-probe.ts", "sess-abc"), null);
   });

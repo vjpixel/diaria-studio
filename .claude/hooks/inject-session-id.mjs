@@ -180,6 +180,15 @@ const TARGET_EDITION_LOCK = "edition-lock.ts";
 // (fora do elo Codex, que usa `DIARIA_INJECTED_SESSION_ID`). Incondicional:
 // o script não tem subcomando.
 const TARGET_SESSION_CLOSE_CHECK = "session-close-check.ts";
+// #13671: `route-issue.ts` é o 9º alvo — ao rotear, o verbo solta só a claim
+// da PRÓPRIA sessão (#13605 soltava a de qualquer sessão de outro track, e o
+// overnight soltava a claim de uma `/diaria-develop` viva). A identidade vem
+// desta injeção. Diferente dos demais, a flag é OPCIONAL para o script (sem
+// ela o roteamento vale e nenhuma claim sai), então o encadeado NÃO é negado
+// (`blockWhenChained: false`): negar travaria toda chamada encadeada de um
+// verbo que roda dezenas de vezes por rodada, e o efeito de faltar a flag é o
+// lado seguro (claim fica até o `--release`/expiração).
+const TARGET_ROUTE_ISSUE = "route-issue.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -268,6 +277,11 @@ const SESSION_ID_TARGETS = [
   {
     match: TARGET_SESSION_CLOSE_CHECK,
     needsSessionId: () => true,
+  },
+  {
+    match: TARGET_ROUTE_ISSUE,
+    needsSessionId: () => true,
+    blockWhenChained: false,
   },
 ];
 
@@ -408,9 +422,12 @@ function matchesInjectableTarget(command) {
  * `cleanup-merged-worktrees.ts` retornava `false` no 1º alvo e nunca olhava
  * o 2º — falso negativo, o lado errado para este guard.
  */
-function matchedInjectableTargets(command) {
+function matchedInjectableTargets(command, { forChainedBlock = false } = {}) {
   const names = [];
   for (const target of SESSION_ID_TARGETS) {
+    // #13671: alvo de flag opcional (`blockWhenChained: false`) injeta no
+    // standalone, mas não entra na negação do encadeado.
+    if (forChainedBlock && target.blockWhenChained === false) continue;
     if (isScriptInvoked(command, target.match) && target.needsSessionId(command)) {
       names.push(target.match);
     }
@@ -531,7 +548,7 @@ export function detectChainedSessionIdRisk(command) {
   } catch {
     checked = command;
   }
-  const matched = matchedInjectableTargets(checked);
+  const matched = matchedInjectableTargets(checked, { forChainedBlock: true });
   if (matched.length === 0) return null;
   return (
     "Comando encadeado (&&, ;, |, ||, ou múltiplas linhas) contém uma chamada a " +

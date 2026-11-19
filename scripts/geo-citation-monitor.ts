@@ -771,10 +771,17 @@ async function main(): Promise<number> {
   // mediu"), e os outros providers gravando escondiam isso. Sob `--strict`
   // reprova (exit 1) → unit systemd `failed` → sweep de
   // `systemd-failed-units-alarm.ts` avisa o editor. Não recarrega conta.
-  const persistentQuota = detectPersistentQuotaProviders([
-    ...priorErrorHistory,
-    ...records.map((r) => ({ date: r.date, provider: r.provider, error: r.error, errorKind: r.errorKind })),
-  ]);
+  // Só providers com registro NESTA rodada podem alarmar (#13673): provider
+  // removido da config depois de 2 rodadas de cota não pode reprovar o
+  // `--strict` para sempre com base só no histórico.
+  const persistentQuota = detectPersistentQuotaProviders(
+    [
+      ...priorErrorHistory,
+      ...records.map((r) => ({ date: r.date, provider: r.provider, error: r.error, errorKind: r.errorKind })),
+    ],
+    GEO_QUOTA_PERSISTENT_ROUNDS,
+    records.map((r) => r.provider),
+  );
   let quotaAlarmCode = 0;
   if (persistentQuota.length > 0) {
     console.error(
