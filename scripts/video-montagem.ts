@@ -159,7 +159,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       bruto, como antes; --trechos-folga muda a folga. No modo API (300) sai o XML do bruto, com
  *       [aviso] (os trechos não sobem pelo upload do out dir). Falha do ffmpeg = XML do bruto, com [aviso].
  *       (#13493) o XML leve liga sozinho só acima do limiar `publishing.video.xml_leve` (bruto com mais
- *       de 15 GB ou de 8 arquivos, por padrão); abaixo, XML do bruto com [premissa]. --xml-leve força os
+ *       de 2 GB ou de 8 arquivos, por padrão, #13629); abaixo, XML do bruto com [premissa]. --xml-leve força os
  *       trechos, --xml-bruto força o bruto. Os limites dos trechos ancoram no bloco de silêncio do
  *       silences.json em que o corte cai (um ajuste de borda no mesmo silêncio reaproveita o trecho);
  *       fora de silêncio, o segundo inteiro. No Drive for desktop (I:), o build espera os trechos na
@@ -789,6 +789,8 @@ interface Ctx {
   buildXmlFiles?: string[];
   /** #13493: os trechos do XML leve que o último build gravou (nome e tamanho no disco), conferidos na nuvem antes do XML ser dado por pronto. */
   buildTrechos?: { name: string; size: number }[];
+  /** #13628: o `stat` do tamanho do bruto no limiar do XML leve (teste do `main`); ausente = `statSync`. */
+  brutoStat?: (path: string) => { size: number };
   /** #13437: `--trecho-fonte` (CHAVE → caminho do export do vídeo de origem de um trecho inserido). */
   trechoFontes?: Record<string, string>;
   /** #13437: a raiz da pasta de vídeo NESTA máquina, onde o export do vídeo de origem é procurado; `null` = sem Drive local (modo API). */
@@ -5289,7 +5291,7 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
   ctx.buildTrechos = undefined;
   // #13493: o limiar (bruto grande ou com muitos arquivos) decide, salvo --xml-leve/--xml-bruto.
   const files = sourceFiles(source);
-  const decision = decideXmlLeve({ choice: opt.choice, totalBytes: brutoTotalBytes(files.map((x) => x.path)), files: files.length, limiar: xmlLeveLimiarFrom(readPlatformConfigSafe(), (m) => console.error(`[aviso] ${m}`)) });
+  const decision = decideXmlLeve({ choice: opt.choice, totalBytes: brutoTotalBytes(files.map((x) => x.path), ctx.brutoStat), files: files.length, limiar: xmlLeveLimiarFrom(readPlatformConfigSafe(), (m) => console.error(`[aviso] ${m}`)) });
   if (!decision.enabled) {
     if (opt.choice === "bruto") console.error(`[aviso] ${decision.reason}: o XML aponta o bruto inteiro; o Premiere converte o AAC de cada arquivo e lê o HEVC pelo Drive (#13219)`);
     else console.error(`[premissa] XML do bruto: ${decision.reason}; deixar a pasta da edição off-line no Mac antes de abrir; --xml-leve força os trechos (#13493)`);
@@ -7598,7 +7600,20 @@ export function restoreConflictCopies(stateDir: string, namesArg: string, fs?: C
   return restored;
 }
 
-export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps): Promise<number> {
+/**
+ * #13628: pontos de injeção do `main` só para teste (o build inteiro com Drive
+ * falso). `desktopRoot` = a raiz que conta como Drive for desktop nesta máquina
+ * (padrão `DEFAULT_DRIVE_ROOT`, o `I:` do Neo): com ela, o build não sobe pela
+ * API e confere os trechos na nuvem, como no Neo. `brutoStat` = o tamanho do
+ * bruto no limiar do XML leve. `cloudWait` = relógio da espera da nuvem.
+ */
+export interface MontageMainSeams {
+  desktopRoot?: string;
+  brutoStat?: (path: string) => { size: number };
+  cloudWait?: { sleep?: (ms: number) => Promise<void>; now?: () => number };
+}
+
+export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps, seams: MontageMainSeams = {}): Promise<number> {
   const { values, flags, positional } = parseArgs(argv);
   const [cmd, edition] = positional;
   if (!cmd || !edition || flags.has("help")) {
@@ -7661,6 +7676,7 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     noArchive: flags.has("no-archive"),
     // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
     ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
+    ...(seams.brutoStat ? { brutoStat: seams.brutoStat } : {}),
   };
   // #13404: só com o pedido do editor; sem a flag, a mensagem de "ausente" aponta a cópia e o comando.
   activeStateDir = ctx.stateDir;
@@ -7685,7 +7701,7 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   // #13334: modo local com raiz explícita fora do Drive for desktop: as saídas sobem pela API (o disco não sincroniza).
   // O cache da sessão é só o da `_marca/` do modo API, que aqui não é usado (a vinheta vai para {raiz}/_marca/, #13308).
   if (mode === "local" && (DRIVE_UPLOAD_COMMANDS.includes(cmd) || cmd === "upload")) {
-    const local = localDriveUploadFor({ mode, explicitRoot, noDriveApi: flags.has("no-drive-api"), credentials: googleCredentialsPresent() });
+    const local = localDriveUploadFor({ mode, explicitRoot, noDriveApi: flags.has("no-drive-api"), credentials: googleCredentialsPresent(), ...(seams.desktopRoot ? { desktopRoot: seams.desktopRoot } : {}) });
     if (local.enabled) {
       ctx.localDrive = makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]));
       console.error(`[premissa] modo local com ${local.reason}: as saídas de ${cmd} sobem para a pasta ${edition}/ do Drive pela API, como no modo API; --no-drive-api desliga (#13334)`);
@@ -7707,7 +7723,7 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     const cloud = mode === "local" && !flags.has("no-drive-api") && googleCredentialsPresent()
       ? makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]))
       : null;
-    await reportTrechosNaNuvem(cloud, ctx.buildTrechos, esperarNuvemS, flags.has("no-drive-api") ? "--no-drive-api" : "sem data/.credentials.json (OAuth do projeto)");
+    await reportTrechosNaNuvem(cloud, ctx.buildTrechos, esperarNuvemS, flags.has("no-drive-api") ? "--no-drive-api" : "sem data/.credentials.json (OAuth do projeto)", { ...(seams.cloudWait?.sleep ? { sleep: seams.cloudWait.sleep } : {}), ...(seams.cloudWait?.now ? { now: seams.cloudWait.now } : {}) });
   }
   let fresh: ArchiveEntry[] = [];
   if (before && up && code === 0) {

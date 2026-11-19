@@ -72,9 +72,11 @@ export const TRECHOS = {
  * 261116 (~20 GB em 8 arquivos) o Premiere travava lendo o bruto pelo Drive;
  * na 261118 (11,9 GB) o bruto já sincronizado servia e os trechos só
  * atrasaram. Acima de `minGb` (GiB, como o Explorer mostra) OU de
- * `maxArquivos` arquivos, XML leve; senão o bruto direto.
+ * `maxArquivos` arquivos, XML leve; senão o bruto direto. #13629: o editor
+ * baixou o limiar de tamanho de 15 para 2 GB em 19/11/2026 (o mesmo valor do
+ * `platform.config.json`); o limite de 8 arquivos ficou.
  */
-export const XML_LEVE_LIMIAR_DEFAULT = { minGb: 15, maxArquivos: 8 } as const;
+export const XML_LEVE_LIMIAR_DEFAULT = { minGb: 2, maxArquivos: 8 } as const;
 
 export interface XmlLeveLimiar {
   minGb: number;
