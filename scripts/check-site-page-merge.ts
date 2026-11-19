@@ -137,7 +137,8 @@ export function buildSitePageMergeCheckFinding(
     `- PR: ${prRef} (state: ${verdict.prState})`,
     `- Página: /p/${slug}`,
     `- Último registro no state file: ${verdict.mergeReason ?? "(sem mergeReason)"}`,
-    `- Log do waiter: ${join(editionDirAbs, "_internal", "site-page-merge-waiter.log")}`,
+    // #13649: o log fica fora do bisync de data/, então só existe na máquina que rodou a Etapa 5.
+    `- Log do waiter: ${join(editionDirAbs, "_internal", "site-page-merge-waiter.log")} (só na máquina que rodou a Etapa 5)`,
     ``,
     `Provável causa quando o state ainda diz "merge delegado ao waiter": o waiter em background (#9593) morreu (reboot/kill) antes de terminar.`,
     ``,

@@ -63,7 +63,12 @@ describe("#13493 limiar do XML leve (opção 5)", () => {
 
   it("config: publishing.video.xml_leve do platform.config.json; inválido vale o default com aviso", () => {
     const real = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
-    assert.deepEqual(xmlLeveLimiarFrom(real), { minGb: 15, maxArquivos: 8 });
+    // #13629: o editor baixou o limiar de tamanho de 15 para 2 GB em 19/11/2026; o default do código acompanha.
+    assert.deepEqual(xmlLeveLimiarFrom(real), { minGb: 2, maxArquivos: 8 });
+    assert.deepEqual({ ...XML_LEVE_LIMIAR_DEFAULT }, { minGb: 2, maxArquivos: 8 });
+    // A 261118 (11,9 GB, 3 arquivos) agora cai no XML leve; a 261116 (~20 GB) segue nele.
+    assert.equal(decideXmlLeve({ choice: "auto", totalBytes: 11.9 * GIB, files: 3, limiar: xmlLeveLimiarFrom(real) }).enabled, true);
+    assert.equal(decideXmlLeve({ choice: "auto", totalBytes: 1.9 * GIB, files: 3, limiar: xmlLeveLimiarFrom(real) }).enabled, false);
     assert.deepEqual(xmlLeveLimiarFrom({}), { ...XML_LEVE_LIMIAR_DEFAULT });
     assert.deepEqual(xmlLeveLimiarFrom({ publishing: { video: { xml_leve: { min_gb: 5, max_arquivos: 3 } } } }), { minGb: 5, maxArquivos: 3 });
     const warns: string[] = [];
