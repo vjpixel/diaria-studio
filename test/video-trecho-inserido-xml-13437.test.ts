@@ -26,6 +26,7 @@ import {
   type TrechoInseridoClip,
 } from "../scripts/lib/diaria/video-trecho-inserido.ts";
 import {
+  arquivoVideoRoot,
   avisosTrechosNaMontagem,
   fonteNoDrive,
   parseTrechoFonteArg,
@@ -272,6 +273,50 @@ describe("#13437 PR 2: fonte do trecho (export do vídeo de origem, nunca o YouT
     assert.match(amb.motivo, /ambíguo .*--trecho-fonte/);
     assert.match(fonteNoDrive(ed, fakeFs({}, [ed]), new Date()).motivo, /Final\/ e Editado\/ \(nenhum \.mp4\)/);
     assert.match(fonteNoDrive("/drive/999999", fakeFs({}, []), new Date()).motivo, /pasta da edição ausente/);
+  });
+
+  it("regressão #13674: edição liberada e recolhida do Drive (#13630) acha o export no arquivo do HD", () => {
+    const root = editionsWithRegistry("/drive/261110/Final/Diaria comentada horizontal_V4.mp4");
+    const hd = "/mnt/hd-sata/arquivo-video/261110";
+    // Drive sem a pasta Final/ (a rotina diária recolheu); o video_path do registro apontava para ela.
+    const fs = fakeFs({ [`${hd}/Final/Diaria comentada horizontal_V4.mp4`]: 5, [`${hd}/Final/Diaria comentada_Vertical_V4.mp4`]: 5 }, ["/drive/261110", hd, `${hd}/Final`]);
+    const base = { id: "H5", trecho: ytTrecho, fontes: {}, editionsRootDir: root, driveRoot: "/drive", fs };
+    const r = resolverFonteTrecho({ ...base, arquivoRoot: "/mnt/hd-sata/arquivo-video" });
+    assert.equal(r.fonte?.replace(/\\/g, "/"), `${hd}/Final/Diaria comentada horizontal_V4.mp4`, r.procurado.join("\n"));
+    // Sem o HD nesta máquina (o Neo): sem fonte, e o aviso diz para passar --trecho-fonte.
+    const semHd = resolverFonteTrecho({ ...base, arquivoRoot: null });
+    assert.equal(semHd.fonte, null);
+    assert.match(semHd.procurado.join("\n"), /arquivo de vídeo no HD .*--trecho-fonte 261110=caminho/);
+    // Sem a raiz do Drive (modo API do 300), o HD ainda é consultado.
+    assert.equal(resolverFonteTrecho({ ...base, driveRoot: null, arquivoRoot: "/mnt/hd-sata/arquivo-video" }).fonte?.replace(/\\/g, "/"), `${hd}/Final/Diaria comentada horizontal_V4.mp4`);
+  });
+
+  it("#13674: horizontal ambíguo no Drive não cai no HD (a escolha é do editor); Drive com o export vence o HD", () => {
+    const root = editionsWithRegistry(null);
+    const ed = "/drive/261110";
+    const hd = "/arq/261110";
+    const fs = fakeFs(
+      {
+        [`${ed}/Final/Diaria comentada horizontal_V3.mp4`]: 1,
+        [`${ed}/Final/Diaria comentada horizontal_V4.mp4`]: 2,
+        [`${hd}/Final/Diaria comentada horizontal_V9.mp4`]: 3,
+      },
+      [ed, `${ed}/Final`, hd, `${hd}/Final`],
+    );
+    const amb = resolverFonteTrecho({ id: "H5", trecho: ytTrecho, fontes: {}, editionsRootDir: root, driveRoot: "/drive", arquivoRoot: "/arq", fs });
+    assert.equal(amb.fonte, null);
+    assert.match(amb.procurado.join("\n"), /ambíguo/);
+    const one = fakeFs({ [`${ed}/Final/Diaria comentada horizontal_V4.mp4`]: 2, [`${hd}/Final/Diaria comentada horizontal_V9.mp4`]: 3 }, [ed, `${ed}/Final`, hd, `${hd}/Final`]);
+    assert.equal(resolverFonteTrecho({ id: "H5", trecho: ytTrecho, fontes: {}, editionsRootDir: root, driveRoot: "/drive", arquivoRoot: "/arq", fs: one }).fonte?.replace(/\\/g, "/"), `${ed}/Final/Diaria comentada horizontal_V4.mp4`);
+    assert.match(fonteNoDrive("/arq/999999", fakeFs({}, []), new Date(), "no arquivo do HD").motivo, /pasta da edição ausente no arquivo do HD/);
+  });
+
+  it("#13674: arquivoVideoRoot usa as variáveis da rotina de arquivamento e só vale se a pasta existe", () => {
+    const yes = () => true;
+    assert.equal(arquivoVideoRoot({}, yes), "/mnt/hd-sata/arquivo-video");
+    assert.equal(arquivoVideoRoot({ VIDEO_ARCHIVE_ROOT: "/x/arq" }, yes), "/x/arq");
+    assert.equal(arquivoVideoRoot({ VIDEO_ARCHIVE_MOUNT: "/hd" }, yes)?.replace(/\\/g, "/"), "/hd/arquivo-video");
+    assert.equal(arquivoVideoRoot({}, () => false), null);
   });
 
   it("corte: seek, duração em quadros, tamanho e fps da sequência, PCM; nome com fala e hash", () => {

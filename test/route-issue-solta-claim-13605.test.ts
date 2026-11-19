@@ -13,9 +13,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { routeIssue, type ClaimRegistryPort, type GhRunFn } from "../scripts/route-issue.ts";
+import { parseArgs, routeIssue, type ClaimRegistryPort, type GhRunFn } from "../scripts/route-issue.ts";
 import { assessGithubClaims, formatClaimComment } from "../scripts/lib/github-claim-marker.ts";
-import { claimKindStaysOnTrack, claimsToReleaseOnRoute } from "../scripts/lib/route-claim-release.ts";
+import { claimKindStaysOnTrack, claimsToReleaseOnRoute, shouldReleaseClaimOnRoute } from "../scripts/lib/route-claim-release.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 
 interface Comment {
@@ -109,13 +109,25 @@ describe("#13605 — claimKindStaysOnTrack / claimsToReleaseOnRoute", () => {
     }
   });
 
-  it("filtra só as claims de outro track", () => {
+  it("filtra só a claim da própria sessão, e só se de outro track (#13671)", () => {
     const claims = [
       { kind: "overnight", sessionId: "a", host: "300", at: NOW.toISOString() },
       { kind: "develop", sessionId: "b", host: "neo", at: NOW.toISOString() },
     ];
-    assert.deepEqual(claimsToReleaseOnRoute(claims, "develop").map((c) => c.sessionId), ["a"]);
-    assert.deepEqual(claimsToReleaseOnRoute(claims, "overnight").map((c) => c.sessionId), ["b"]);
+    assert.deepEqual(claimsToReleaseOnRoute(claims, "develop", "a").map((c) => c.sessionId), ["a"]);
+    assert.deepEqual(claimsToReleaseOnRoute(claims, "develop", "b").map((c) => c.sessionId), []);
+    // #13671: a sessão `a` (overnight) roteando para overnight não solta a develop `b`.
+    assert.deepEqual(claimsToReleaseOnRoute(claims, "overnight", "a").map((c) => c.sessionId), []);
+    assert.deepEqual(claimsToReleaseOnRoute(claims, "overnight", "b").map((c) => c.sessionId), ["b"]);
+    assert.deepEqual(claimsToReleaseOnRoute(claims, "bloqueada", undefined), []);
+    assert.deepEqual(claimsToReleaseOnRoute(claims, "bloqueada", "  "), []);
+  });
+
+  it("shouldReleaseClaimOnRoute: outra sessão viva nunca, mesmo fora do track (#13671)", () => {
+    for (const track of ["overnight", "develop", "bloqueada", "agendada", "fora-de-rodada", "epica"]) {
+      assert.equal(shouldReleaseClaimOnRoute({ kind: "develop", sessionId: DEVELOP }, track, OVERNIGHT), false, track);
+      assert.equal(shouldReleaseClaimOnRoute({ kind: "interactive", sessionId: "i" }, track, OVERNIGHT), false, track);
+    }
   });
 });
 
@@ -126,7 +138,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     assert.equal(activeAfter(gh.comments).length, 1, "pré-condição: claim ativa");
 
     const r = routeIssue({
-      issue: 13563, track: "develop", reason: "o editor confirma antes",
+      issue: 13563, track: "develop", reason: "o editor confirma antes", sessionId: OVERNIGHT,
       cwd: "/tmp", ghRun: gh.run, now: NOW, claimRegistry: reg.port, endedSessions: () => new Map(),
     });
 
@@ -143,7 +155,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     const gh = fakeGh([claim("develop", DEVELOP, "2026-11-18T17:20:00Z")]);
     const reg = fakeRegistry([{ kind: "develop", sessionId: DEVELOP, machineTag: "neo" }]);
     const r = routeIssue({
-      issue: 1, track: "develop", reason: "x", cwd: "/tmp", ghRun: gh.run, now: NOW,
+      issue: 1, track: "develop", reason: "x", sessionId: DEVELOP, cwd: "/tmp", ghRun: gh.run, now: NOW,
       claimRegistry: reg.port, endedSessions: () => new Map(),
     });
     assert.equal(r.ok, true, r.error);
@@ -156,7 +168,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     const gh = fakeGh([claim("develop", DEVELOP, "2026-11-18T17:20:00Z")]);
     const reg = fakeRegistry([]);
     const r = routeIssue({
-      issue: 2, track: "agendada", until: "2026-11-25", reason: "aguardando resposta da Beehiiv",
+      issue: 2, track: "agendada", until: "2026-11-25", reason: "aguardando resposta da Beehiiv", sessionId: DEVELOP,
       cwd: "/tmp", ghRun: gh.run, now: NOW, claimRegistry: reg.port, endedSessions: () => new Map(),
     });
     assert.equal(r.ok, true, r.error);
@@ -167,7 +179,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     const gh = fakeGh([]);
     const reg = fakeRegistry([{ kind: "overnight", sessionId: OVERNIGHT, machineTag: "300" }], "neo");
     const r = routeIssue({
-      issue: 3, track: "develop", reason: "x", cwd: "/tmp", ghRun: gh.run, now: NOW,
+      issue: 3, track: "develop", reason: "x", sessionId: OVERNIGHT, cwd: "/tmp", ghRun: gh.run, now: NOW,
       claimRegistry: reg.port, endedSessions: () => new Map(),
     });
     assert.equal(r.ok, true, r.error);
@@ -180,7 +192,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     const gh = fakeGh([claim("overnight", OVERNIGHT, "2026-11-18T17:10:40Z")]);
     const reg = fakeRegistry([{ kind: "overnight", sessionId: OVERNIGHT, machineTag: "300" }]);
     const r = routeIssue({
-      issue: 4, track: "develop", reason: "x", cwd: "/tmp", ghRun: gh.run, now: NOW,
+      issue: 4, track: "develop", reason: "x", sessionId: OVERNIGHT, cwd: "/tmp", ghRun: gh.run, now: NOW,
       claimRegistry: reg.port, endedSessions: () => new Map(), keepClaim: true,
     });
     assert.equal(r.ok, true, r.error);
@@ -193,7 +205,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     gh.failComment = true;
     const reg = fakeRegistry([]);
     const r = routeIssue({
-      issue: 5, track: "develop", reason: "x", cwd: "/tmp", ghRun: gh.run, now: NOW,
+      issue: 5, track: "develop", reason: "x", sessionId: OVERNIGHT, cwd: "/tmp", ghRun: gh.run, now: NOW,
       claimRegistry: reg.port, endedSessions: () => new Map(),
     });
     assert.equal(r.ok, true, r.error);
@@ -206,7 +218,7 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     const gh = fakeGh([claim("overnight", OVERNIGHT, "2026-11-18T17:10:40Z")]);
     const reg = fakeRegistry([{ kind: "overnight", sessionId: OVERNIGHT, machineTag: "300" }]);
     const r = routeIssue({
-      issue: 6, track: "agendada", until: "2026-11-01", reason: "data",
+      issue: 6, track: "agendada", until: "2026-11-01", reason: "data", sessionId: OVERNIGHT,
       cwd: "/tmp", ghRun: gh.run, now: NOW, claimRegistry: reg.port, endedSessions: () => new Map(),
     });
     assert.equal(r.ok, false);
@@ -219,10 +231,74 @@ describe("#13605 — routeIssue solta a claim de sessão de outro track", () => 
     const gh = fakeGh([external]);
     const reg = fakeRegistry([]);
     const r = routeIssue({
-      issue: 7, track: "develop", reason: "x", cwd: "/tmp", ghRun: gh.run, now: NOW,
+      issue: 7, track: "develop", reason: "x", sessionId: OVERNIGHT, cwd: "/tmp", ghRun: gh.run, now: NOW,
       claimRegistry: reg.port, endedSessions: () => new Map(),
     });
     assert.equal(r.ok, true, r.error);
     assert.equal(r.claimRelease, undefined);
+  });
+});
+
+describe("#13671 — rotear nunca solta a claim de OUTRA sessão viva", () => {
+  it("cenário da issue: claim develop viva + overnight roteia para overnight → claim develop fica", () => {
+    // develop reivindicou e implementa; o overnight tria a issue na Fase 0.
+    const gh = fakeGh([claim("develop", DEVELOP, "2026-11-18T17:20:00Z")]);
+    const reg = fakeRegistry([{ kind: "develop", sessionId: DEVELOP, machineTag: "300" }]);
+    const r = routeIssue({
+      issue: 13671, track: "overnight", motivo: "trade-off", reason: "trade-off-real — vai ao briefing",
+      sessionId: OVERNIGHT, cwd: "/tmp", ghRun: gh.run, now: NOW, claimRegistry: reg.port, endedSessions: () => new Map(),
+    });
+    assert.equal(r.ok, true, r.error);
+    assert.deepEqual(activeAfter(gh.comments).map((c) => c.sessionId), [DEVELOP], "claim develop segue ativa no GitHub");
+    assert.equal(gh.comments.some((c) => c.body.includes("diaria-claim-release")), false, "nenhum release postado");
+    assert.equal(reg.unclaimed.length, 0, "registro intocado");
+    assert.equal(r.claimRelease, undefined);
+  });
+
+  it("bloqueada pelo overnight também não solta claim develop/interactive viva", () => {
+    const gh = fakeGh([claim("develop", DEVELOP, "2026-11-18T17:20:00Z"), claim("interactive", "iiii", "2026-11-18T17:44:00Z")]);
+    const reg = fakeRegistry([{ kind: "develop", sessionId: DEVELOP, machineTag: "300" }]);
+    const r = routeIssue({
+      issue: 8, track: "bloqueada", reason: "falta credencial do editor", sessionId: OVERNIGHT,
+      cwd: "/tmp", ghRun: gh.run, now: NOW, claimRegistry: reg.port, endedSessions: () => new Map(),
+    });
+    assert.equal(r.ok, true, r.error);
+    assert.equal(activeAfter(gh.comments).length, 2);
+    assert.equal(reg.unclaimed.length, 0);
+  });
+
+  it("com as duas claims, só a da própria sessão sai", () => {
+    const gh = fakeGh([claim("overnight", OVERNIGHT, "2026-11-18T17:10:40Z"), claim("develop", DEVELOP, "2026-11-18T17:20:00Z")]);
+    const reg = fakeRegistry([
+      { kind: "overnight", sessionId: OVERNIGHT, machineTag: "300" },
+      { kind: "develop", sessionId: DEVELOP, machineTag: "300" },
+    ]);
+    const r = routeIssue({
+      issue: 9, track: "agendada", until: "2026-11-25", reason: "aguardando resposta da Beehiiv", sessionId: OVERNIGHT,
+      cwd: "/tmp", ghRun: gh.run, now: NOW, claimRegistry: reg.port, endedSessions: () => new Map(),
+    });
+    assert.equal(r.ok, true, r.error);
+    assert.deepEqual(activeAfter(gh.comments).map((c) => c.sessionId), [DEVELOP]);
+    assert.deepEqual(reg.unclaimed.map((u) => u.sessionId), [OVERNIGHT]);
+  });
+
+  it("sem --session-id nada é solto (lado seguro)", () => {
+    const gh = fakeGh([claim("overnight", OVERNIGHT, "2026-11-18T17:10:40Z")]);
+    const reg = fakeRegistry([{ kind: "overnight", sessionId: OVERNIGHT, machineTag: "300" }]);
+    const r = routeIssue({
+      issue: 10, track: "develop", reason: "x", cwd: "/tmp", ghRun: gh.run, now: NOW,
+      claimRegistry: reg.port, endedSessions: () => new Map(),
+    });
+    assert.equal(r.ok, true, r.error);
+    assert.equal(activeAfter(gh.comments).length, 1);
+    assert.equal(reg.unclaimed.length, 0);
+    assert.equal(r.claimRelease, undefined);
+  });
+
+  it("CLI aceita --session-id (injetado pelo hook) e repassa", () => {
+    const parsed = parseArgs(["--issue", "11", "--track", "develop", "--reason", "x", "--session-id", OVERNIGHT]);
+    assert.ok(!("error" in parsed));
+    assert.equal((parsed as { sessionId?: string }).sessionId, OVERNIGHT);
+    assert.ok("error" in parseArgs(["--issue", "11", "--track", "develop", "--session-id"]));
   });
 });
