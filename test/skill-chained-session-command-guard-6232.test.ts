@@ -105,7 +105,11 @@ export function loadUnconditionalTargetsFromHook(hookPath: string): string[] {
     constDecls.set(m[1], m[2]);
   }
   const targets: string[] = [];
-  for (const m of source.matchAll(/match:\s*(TARGET_\w+),\s*\n\s*needsSessionId:\s*\(\)\s*=>\s*true/g)) {
+  for (const m of source.matchAll(/match:\s*(TARGET_\w+),\s*\n\s*needsSessionId:\s*\(\)\s*=>\s*true([^}]*)\}/g)) {
+    // #13671: alvo de flag opcional (`blockWhenChained: false`, hoje
+    // `route-issue.ts`) não é negado encadeado pelo hook — encadear não
+    // perde nada que o script exija, então a SKILL pode encadeá-lo.
+    if (/blockWhenChained:\s*false/.test(m[2])) continue;
     const value = constDecls.get(m[1]);
     if (value) targets.push(value);
   }
