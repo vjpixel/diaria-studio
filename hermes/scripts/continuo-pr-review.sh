@@ -343,6 +343,9 @@ ESCALATED_NEW=0
 REJECTED_NEW=0
 REJECTED=0
 LOCK_BLOCKED=0
+# #13641: PRs aprovadas e verdes recusadas por base velha que receberam a base
+# na hora (update-branch em `try_merge_gate`). Só no resumo, quando não-zero.
+BASE_REFRESHED=0
 
 # #6910 (01/09/2026): o motivo de um erro de infra (exit 3 de
 # check-pr-review-authenticity.ts, ou `gh pr view` falhando) só existia em
@@ -598,6 +601,7 @@ try_merge_gate() {
       # sobre base velha. Fail-closed: HEAD ausente, base ilegível ou payload
       # inesperado = sem merge nesta rodada (o lock é solto antes de voltar).
       FRESH_REASON=""
+      FRESH_BEHIND=0
       set +e
       BASE_REF=$(gh api "repos/{owner}/{repo}/pulls/$pr" --jq '.base.ref' 2>&1)
       BASE_RC=$?
@@ -622,6 +626,7 @@ try_merge_gate() {
           FRESH_REASON="payload inesperado do compare: $COMPARE"
         elif [ "$COMPARE_BEHIND" -gt 0 ]; then
           FRESH_REASON="base andou: HEAD ${REVIEWED_HEAD_SHA:0:12} está $COMPARE_BEHIND commit(s) atrás de $BASE_REF — o CI verde é de base antiga"
+          FRESH_BEHIND=1
         elif [ "$COMPARE_STATUS" != "ahead" ] && [ "$COMPARE_STATUS" != "identical" ]; then
           FRESH_REASON="compare com status \"$COMPARE_STATUS\" e behind_by 0"
         fi
@@ -631,6 +636,37 @@ try_merge_gate() {
         log_infra_error "$pr" "base_not_fresh" "$FRESH_REASON"
         release_merge_lock
         trap - EXIT
+        # #13641: recusar e só "tentar de novo no próximo tick" não mudava
+        # nada — o HEAD seguia atrás e a PR ficava recusada todo tick até o
+        # `refresh_branch` do resolvedor (6h parada, no máximo 2x por PR,
+        # `scripts/lib/continuo-stuck-pr.ts`). Quando o motivo é SÓ a base ter
+        # andado (compare legível, `behind_by > 0`), traz a base pra branch
+        # agora: merge da base pelo REST (nunca rebase nem force-push), preso
+        # ao HEAD revisado (`--expected-head`, o GitHub recusa se alguém
+        # empurrou depois). O HEAD novo dispara re-review (#8445) e CI sobre a
+        # base fresca, e o merge sai num tick seguinte — fora do cap do
+        # `refresh_branch`, que segue valendo pro caso "parada por outro
+        # motivo". Fora da janela do lock: o update-branch não toca o checkout
+        # compartilhado. `--no-wait`: o HEAD novo só importa no próximo tick,
+        # não vale prender este 90s. Os outros motivos (HEAD/base/compare
+        # ilegível) seguem fail-closed sem update: sem leitura confiável da
+        # base não há o que trazer. Falha (conflito, head-mismatch, erro) não
+        # aborta o tick: vira log append-only + linha no stderr, e o
+        # resolvedor de travadas cuida do conflito parado como sempre.
+        if [ "$FRESH_BEHIND" -eq 1 ]; then
+          set +e
+          UPD_OUT=$(npx tsx scripts/gh-pr-update-branch.ts --pr "$pr" --expected-head "$REVIEWED_HEAD_SHA" \
+            --no-wait ${TARGET_REPO:+--repo "$TARGET_REPO"} 2>&1)
+          UPD_RC=$?
+          set -e
+          if [ "$UPD_RC" -eq 0 ]; then
+            BASE_REFRESHED=$((${BASE_REFRESHED:-0} + 1))
+            echo "[continuo-pr-review] PR #$pr: base trazida pra branch (update-branch, #13641) — re-review e CI rodam sobre a base nova: $UPD_OUT" >&2
+          else
+            echo "[continuo-pr-review] PR #$pr: update-branch falhou (rc=$UPD_RC, #13641) — PR segue atrás da base: $UPD_OUT" >&2
+            log_infra_error "$pr" "base_refresh_rc=$UPD_RC" "update-branch após recusa por base velha falhou: $UPD_OUT"
+          fi
+        fi
         return
       fi
 
@@ -1159,6 +1195,7 @@ NOTIFY=0
 # contenção de lock pra relatar (#8212 review, P3).
 LOCK_NOTE=""
 [ "$LOCK_BLOCKED" -gt 0 ] 2>/dev/null && LOCK_NOTE=" bloqueadas-por-lock=$LOCK_BLOCKED"
+[ "${BASE_REFRESHED:-0}" -gt 0 ] 2>/dev/null && LOCK_NOTE="$LOCK_NOTE base-trazida=$BASE_REFRESHED"
 
 SUMMARY="[continuo-pr-review] fim — revisadas=$REVIEWED mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED falhas=$((FAILED+INFRA_ERRORS))$LOCK_NOTE"
 # O resumo sempre vai pro log (stderr), mesmo em rodada silenciosa — o
