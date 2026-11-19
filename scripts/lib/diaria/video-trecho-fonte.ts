@@ -18,7 +18,13 @@
  *      e, sem `.mp4` lá, `Editado/`/`Editados/`, com a escolha do horizontal
  *      de `selectDriveVideo` (o mesmo critério do `/diaria-publica`: sufixo
  *      `horizontal_V{n}`/`_Youtube_`, versão mais alta em `Editados/`, 2+ em
- *      `Final/` é ambíguo e não se chuta).
+ *      `Final/` é ambíguo e não se chuta);
+ *   5. o arquivo de vídeo no HD do 300 (`/mnt/hd-sata/arquivo-video/{AAMMDD}/`,
+ *      #13674), com o mesmo critério do passo 4: a rotina diária
+ *      (`archive-video-brutos.ts`, #13630) tira `Final/` e `Editado(s)/` do
+ *      Drive no dia seguinte à liberação da edição e guarda a cópia conferida
+ *      ali, na mesma estrutura de pastas. Sem o HD nesta máquina (o Neo), o
+ *      trecho de edição já recolhida pede `--trecho-fonte` explícito.
  *
  * A edição de origem é o `video` do trecho (AAMMDD) ou a que tem o id do
  * YouTube no `05-youtube-published.json`. Sem fonte, o trecho fica só no
@@ -102,6 +108,19 @@ export interface FonteTrecho {
   explicitoAusente?: true;
 }
 
+/** Raiz do arquivo de vídeo no HD do 300, a mesma do `archive-video-brutos.ts` (#13674). */
+export const DEFAULT_ARQUIVO_VIDEO_ROOT = "/mnt/hd-sata/arquivo-video";
+
+/**
+ * A raiz do arquivo de vídeo NESTA máquina (#13674), com as mesmas variáveis da
+ * rotina de arquivamento (`VIDEO_ARCHIVE_ROOT`, senão `{VIDEO_ARCHIVE_MOUNT}/arquivo-video`,
+ * senão `/mnt/hd-sata/arquivo-video`); `null` quando a pasta não existe aqui.
+ */
+export function arquivoVideoRoot(env: Readonly<Record<string, string | undefined>>, exists: (p: string) => boolean): string | null {
+  const root = env.VIDEO_ARCHIVE_ROOT || (env.VIDEO_ARCHIVE_MOUNT ? join(env.VIDEO_ARCHIVE_MOUNT, "arquivo-video") : DEFAULT_ARQUIVO_VIDEO_ROOT);
+  return exists(root) ? root : null;
+}
+
 /** A pasta da edição AAMMDD sob a raiz das edições (`{AAMM}/{AAMMDD}`). */
 const editionDirIn = (root: string, ed: string): string => join(root, ed.slice(0, 4), ed);
 
@@ -117,6 +136,8 @@ export function resolverFonteTrecho(input: {
   editionsRootDir: string;
   /** Raiz da pasta de vídeo no Drive (`I:/Meu Drive/diaria-studio-video` no Neo); `null` = sem Drive nesta máquina. */
   driveRoot: string | null;
+  /** Raiz do arquivo de vídeo no HD (`arquivoVideoRoot`, #13674); `null`/ausente = sem o HD nesta máquina. */
+  arquivoRoot?: string | null;
   fs?: FonteFs;
   now?: Date;
 }): FonteTrecho {
@@ -166,13 +187,24 @@ export function resolverFonteTrecho(input: {
   const local = join(editionDirIn(input.editionsRootDir, edicao), `diaria-comentada-${edicao}.mp4`);
   if (fs.exists(local)) return { fonte: local, edicao, procurado };
   procurado.push(`${local} (ausente)`);
+  const now = input.now ?? new Date();
   if (input.driveRoot === null) {
     procurado.push(`a pasta de vídeo no Drive (sem a raiz nesta máquina: rodar no Neo, com o Drive em I:)`);
+  } else {
+    const drive = fonteNoDrive(join(input.driveRoot, edicao), fs, now);
+    if (drive.fonte) return { fonte: drive.fonte, edicao, procurado, ...(drive.premissa ? { premissa: drive.premissa } : {}) };
+    procurado.push(drive.motivo);
+    // Horizontal ambíguo no Drive: o export ainda está lá (não foi recolhido), a escolha é do editor; o HD não desempata.
+    if (drive.ambiguo) return { fonte: null, edicao, procurado };
+  }
+  // #13674: a edição liberada perde `Final/`/`Editado(s)/` no Drive no dia seguinte (#13630); a cópia fica no HD.
+  if (!input.arquivoRoot) {
+    procurado.push(`o arquivo de vídeo no HD (${DEFAULT_ARQUIVO_VIDEO_ROOT}, ausente nesta máquina: edição já recolhida do Drive pede --trecho-fonte ${edicao}=caminho)`);
     return { fonte: null, edicao, procurado };
   }
-  const drive = fonteNoDrive(join(input.driveRoot, edicao), fs, input.now ?? new Date());
-  if (drive.fonte) return { fonte: drive.fonte, edicao, procurado, ...(drive.premissa ? { premissa: drive.premissa } : {}) };
-  procurado.push(drive.motivo);
+  const arquivo = fonteNoDrive(join(input.arquivoRoot, edicao), fs, now, "no arquivo do HD");
+  if (arquivo.fonte) return { fonte: arquivo.fonte, edicao, procurado, ...(arquivo.premissa ? { premissa: arquivo.premissa } : {}) };
+  procurado.push(arquivo.motivo);
   return { fonte: null, edicao, procurado };
 }
 
@@ -181,8 +213,8 @@ export function resolverFonteTrecho(input: {
  * `Final/` (e variações) primeiro; sem `.mp4` em nenhuma delas, `Editado/` e
  * variações. Escolha por `selectDriveVideo` (destino `youtube`).
  */
-export function fonteNoDrive(edDir: string, fs: FonteFs, now: Date): { fonte: string | null; motivo: string; premissa?: string } {
-  if (!fs.exists(edDir)) return { fonte: null, motivo: `${edDir} (pasta da edição ausente no Drive)` };
+export function fonteNoDrive(edDir: string, fs: FonteFs, now: Date, lugar = "no Drive"): { fonte: string | null; motivo: string; premissa?: string; ambiguo?: true } {
+  if (!fs.exists(edDir)) return { fonte: null, motivo: `${edDir} (pasta da edição ausente ${lugar})` };
   const subs = fs.list(edDir).filter((e) => e.dir);
   const filesOf = (names: string[], edited: boolean): Array<DriveVideoFile & { path: string }> =>
     names.flatMap((sub) =>
@@ -209,7 +241,7 @@ export function fonteNoDrive(edDir: string, fs: FonteFs, now: Date): { fonte: st
     const f = sel.file as DriveVideoFile & { path?: string };
     return { fonte: f.path ?? f.id, motivo: "", ...(sel.premise ? { premissa: sel.premise } : {}) };
   }
-  if (sel.kind === "ambiguous") return { fonte: null, motivo: `${edDir}: horizontal ambíguo (${sel.candidates.map((c) => c.name).join(", ")}); escolher com --trecho-fonte` };
+  if (sel.kind === "ambiguous") return { fonte: null, ambiguo: true, motivo: `${edDir}: horizontal ambíguo (${sel.candidates.map((c) => c.name).join(", ")}); escolher com --trecho-fonte` };
   return { fonte: null, motivo: `${edDir}: ${"reason" in sel ? sel.reason : "sem horizontal"}` };
 }
 

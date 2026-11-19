@@ -194,7 +194,7 @@ describe("duplicatas entre pastas (#13627)", () => {
 
 // ── executor contra um Drive falso ──────────────────────────────────────────
 
-function sandbox(opts: { lockedTrash?: string; lockedMove?: boolean } = {}) {
+function sandbox(opts: { lockedTrash?: string; lockedMove?: boolean; dupPath?: string } = {}) {
   const sb = mkdtempSync(join(tmpdir(), "video-cleanup-"));
   const mount = join(sb, "hd");
   const drive = join(sb, "drive");
@@ -223,7 +223,8 @@ case "$cmd" in
       const fs=require("fs"),path=require("path"),c=require("crypto"); const out=[];
       const walk=(d,rel)=>{ for(const e of fs.readdirSync(d,{withFileTypes:true})){ const r=rel?rel+"/"+e.name:e.name;
         if(e.isDirectory()) walk(path.join(d,e.name),r); else { const b=fs.readFileSync(path.join(d,e.name));
-        out.push({Path:r,Size:b.length,IsDir:false,Hashes:{md5:c.createHash("md5").update(b).digest("hex")}}); } } };
+        const it={Path:r,Size:b.length,IsDir:false,Hashes:{md5:c.createHash("md5").update(b).digest("hex")}}; out.push(it);
+        if(path.join(d,e.name).endsWith(${JSON.stringify("/" + (opts.dupPath ?? "__sem-dup__"))})) out.push({...it,Size:b.length+1,Hashes:{md5:"f".repeat(32)}}); } } };
       walk(process.argv[1],""); console.log(JSON.stringify(out));' "$(strip "$p")" ;;
   copyto) cp "$(strip "$1")" "$2" ;;
   moveto)
@@ -396,6 +397,28 @@ describe("runArchive: finais da edição liberada (#13630)", posixOnly, () => {
     const d = r.finalsFolders.find((f) => f.name === "261117")!;
     assert.equal(!d.eligible && d.reason, "agendamento-pendente");
     assert.ok(existsSync(join(s.drive, "261117/Final/Diaria_V3-guia.mp4")));
+  });
+});
+
+describe("runArchive: final com nome repetido no Drive (#13675)", posixOnly, () => {
+  it("regressão: dois exports com o mesmo nome em Final/ ficam no Drive, viram aviso e a rodada NÃO falha", async () => {
+    // O Drive aceita dois arquivos com o mesmo nome; o rclone falso lista Final/Diaria_V3.mp4 duas vezes.
+    const s = sandbox({ dupPath: "261117/Final/Diaria_V3.mp4" });
+    s.put("261117/Final/Diaria_V3.mp4", "final-h");
+    s.put("261117/Final/Diaria_vertical_V3.mp4", "final-v");
+    s.publish("261117");
+    s.liberar("261117");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), false, JSON.stringify(r, null, 2));
+    const dup = r.files.filter((f) => f.path === "Final/Diaria_V3.mp4");
+    assert.ok(dup.length > 0 && dup.every((f) => f.status === "final-nome-duplicado-mantido" && f.kind === "final"), JSON.stringify(r.files));
+    assert.ok(existsSync(join(s.drive, "261117/Final/Diaria_V3.mp4")), "o duplicado fica para o próximo ciclo");
+    assert.ok(!s.callLines().some((l) => l.startsWith("rclone deletefile") && l.includes("Diaria_V3.mp4")), "nada apagado por nome ambíguo");
+    // o outro final da mesma pasta segue o fluxo normal
+    assert.equal(r.files.find((f) => f.path === "Final/Diaria_vertical_V3.mp4")?.status, "arquivado");
+    const finding = notDeletedFinding(r)!;
+    assert.ok(finding, "vira aviso ao editor (issue deduplicada por conjunto)");
+    assert.match(finding.body, /261117\/Final\/Diaria_V3\.mp4.*final-nome-duplicado-mantido/);
   });
 });
 
