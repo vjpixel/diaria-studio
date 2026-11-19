@@ -55,6 +55,12 @@ describe("measure-round-diff-stats --own-shas (#13606)", () => {
     assert.match(r.stdout, /\+5\/-0 \(1 arquivo/);
   });
 
+  it("SHA repetido (lote do trem: várias PRs, 1 commit) conta uma vez só (#13672)", () => {
+    const r = run(["--base", base, "--head", head, "--session-kind", "develop", "--own-shas", `${own},${own},${own}`]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /\+5\/-0 \(1 arquivo/);
+  });
+
   it("sem PR da sessão o diff é zero", () => {
     const r = run(["--base", base, "--head", head, "--session-kind", "develop", "--own-shas", ""]);
     assert.equal(r.status, 0, r.stderr);

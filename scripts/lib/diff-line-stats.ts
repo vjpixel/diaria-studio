@@ -102,6 +102,10 @@ export function getDiffLineStats(
  * I/O (#13606): soma o diff de cada commit em `shas` (`git show --numstat`),
  * ignorando qualquer outro commit do intervalo da rodada. Squash-merge é
  * commit de 1 pai, então o `show` é o diff da PR inteira. Lista vazia = zero.
+ *
+ * SHA repetido conta uma vez só (#13672): no trem de merge várias PRs saem
+ * num commit só, e as skills mandam achar o SHA por PR — sem dedup o mesmo
+ * commit seria somado N vezes, inflando razão e linhas/dia do `--check-alarm`.
  */
 export function getOwnCommitsDiffStats(
   shas: string[],
@@ -109,7 +113,7 @@ export function getOwnCommitsDiffStats(
 ): DiffLineStats {
   const spawnFn = opts.spawnFn ?? spawnSync;
   const total: DiffLineStats = { files: 0, added: 0, removed: 0 };
-  for (const sha of shas) {
+  for (const sha of new Set(shas)) {
     const r = spawnFn("git", ["show", "--numstat", "--format=", sha], { encoding: "utf8", cwd: opts.cwd });
     if (r.status !== 0) {
       throw new Error(`git show --numstat ${sha} falhou: ${r.stderr || `exit ${r.status}`}`);
