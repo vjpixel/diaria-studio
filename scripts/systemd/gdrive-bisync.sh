@@ -139,6 +139,7 @@ install_filters() {
   fi
 }
 
+FILTERS_PREV_SAVED=0
 if [ ! -f "$FILTERS" ]; then
   # 1ª rodada nesta máquina: não há filtro instalado a preservar. Sem
   # `--resync` o bisync recusa mesmo assim (não há listagem nem `.md5`).
@@ -148,6 +149,20 @@ if [ ! -f "$FILTERS" ]; then
   install_filters "$FILTERS"
 elif ! cmp -s "$FILTERS_SRC" "$FILTERS"; then
   if [ "$RESYNC" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+    # Guarda o par instalado (filtro + `.md5` do bisync) antes de trocar
+    # (#13688): se o resync não sair 0 (lock de outra rodada, 401, rede), o
+    # par antigo volta no fim e o timer segue com o filtro que bate com o
+    # estado gravado, em vez de cair em "filters changed, must --resync".
+    if ! cp "$FILTERS" "$FILTERS.prev"; then
+      echo "gdrive-bisync: falha ao guardar o filtro instalado em $FILTERS.prev — sync abortado (#13688)" >&2
+      finish 75
+    fi
+    rm -f "$FILTERS.md5.prev"
+    if [ -f "$FILTERS.md5" ] && ! cp "$FILTERS.md5" "$FILTERS.md5.prev"; then
+      echo "gdrive-bisync: falha ao guardar $FILTERS.md5 — sync abortado (#13688)" >&2
+      finish 75
+    fi
+    FILTERS_PREV_SAVED=1
     echo "gdrive-bisync: --resync instala o filtro de $FILTERS_SRC (#12396)" >&2
     install_filters "$FILTERS"
   elif [ "$RESYNC" -eq 1 ]; then
@@ -159,6 +174,31 @@ elif ! cmp -s "$FILTERS_SRC" "$FILTERS"; then
     echo "gdrive-bisync: aviso — $FILTERS_SRC difere do filtro instalado ($FILTERS); seguindo com o instalado. Pra adotar o novo, rode uma vez com --resync, timer parado (#12396)" >&2
   fi
 fi
+
+# Filtro trocado pelo `--resync` (#13688): só fica se o resync saiu 0. Na
+# falha (inclusive a recusa do guard do --force), volta o par anterior
+# (filtro + `.md5`), que é o que bate com as listagens que o rclone ainda
+# guarda; o filtro novo entra no próximo `--resync` que terminar bem.
+restore_prev_filters() {
+  [ "$FILTERS_PREV_SAVED" -eq 1 ] || return 0
+  FILTERS_PREV_SAVED=0
+  if [ "$1" -eq 0 ]; then
+    rm -f "$FILTERS.prev" "$FILTERS.md5.prev"
+    return 0
+  fi
+  restored=1
+  mv "$FILTERS.prev" "$FILTERS" || restored=0
+  if [ -f "$FILTERS.md5.prev" ]; then
+    mv "$FILTERS.md5.prev" "$FILTERS.md5" || restored=0
+  else
+    rm -f "$FILTERS.md5" || restored=0
+  fi
+  if [ "$restored" -eq 1 ]; then
+    echo "gdrive-bisync: --resync saiu $1; filtro anterior restaurado em $FILTERS, o novo fica para o proximo --resync (#13688)" >&2
+  else
+    echo "gdrive-bisync: aviso — --resync saiu $1 e nao consegui restaurar o filtro anterior em $FILTERS; rode --resync de novo (#13688)" >&2
+  fi
+}
 
 # Retry em erro de autenticação (#12412). Quando a listagem do Drive passa
 # de 1h, o access token OAuth vence no meio dela e algumas listagens
@@ -267,6 +307,7 @@ owner_of() {
 refuse_force() {
   echo "gdrive-bisync: --force RECUSADO, nada foi aplicado (#12979): $1" >&2
   echo "gdrive-bisync: confira com --dry-run --force; se a pasta sumiu do espelho por engano, devolva os arquivos ao espelho (rclone copy) antes do --force; se apagar do Drive arquivos de outro dono for intencional, rode de novo com --allow-foreign-deletes" >&2
+  restore_prev_filters 75
   exit 75
 }
 
@@ -398,4 +439,5 @@ if [ "$DRY_RUN" -eq 0 ]; then
     fi
   fi
 fi
+restore_prev_filters "$RC"
 finish "$RC"

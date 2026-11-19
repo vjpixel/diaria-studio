@@ -38,8 +38,19 @@
  * - **`plan.json` presente + backups ao lado** → `status: "backup-alongside"`,
  *   só aviso: o backup pode carregar estado divergente que o plano vivo não
  *   tem, e escolher entre os dois sem saber qual é o mais completo é
- *   julgamento — fica para o coordenador (merge manual), nunca sobrescrita
- *   automática.
+ *   julgamento — fica para o coordenador (merge manual).
+ * - **Exceção (#13687): cópia que está estritamente À FRENTE do plano vivo**
+ *   → `status: "promoted"`. O plano é regravado várias vezes por minuto
+ *   durante a rodada e o bisync pode deixar o lado errado com o nome
+ *   `plan.json` (mtime empatado, relógio). Quando uma cópia válida tem TUDO o
+ *   que o vivo tem em `timeline` e `pr` de cada issue (mesmos valores) e algo
+ *   a mais, o vivo é só uma versão anterior da mesma sequência de escritas:
+ *   ficar com ele faria o coordenador perder `merged`/`pr` e re-despachar
+ *   issue já mergeada. Nesse caso (e só nele) a cópia vira `plan.json`, e o
+ *   plano vivo anterior é guardado como `plan.json.conflict{N}` (próximo N
+ *   livre) antes da troca, para auditoria. Qualquer divergência (valor
+ *   diferente, `session_id` diferente, cada lado com algo que o outro não
+ *   tem) segue em `backup-alongside`.
  *
  * Fail-soft: erro de I/O ao listar o diretório → `clean` (o leitor segue com
  * o comportamento de antes, que já trata ausência).
@@ -48,6 +59,8 @@
 import { existsSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { issueKeyOfPlanEntry } from "./issue-key.ts";
+import { normalizeIssues } from "./plan-issues-normalize.ts";
 import { RCLONE_CONFLICT_SUFFIX_RE, rcloneConflictOriginalName } from "./sync-conflict-copy.ts";
 
 /** `plan-300-safeBackup-0001.json` → captura o número da cópia. Aceita
@@ -107,7 +120,77 @@ export type PlanSafeBackupRecovery =
   | { status: "clean" }
   | { status: "restored"; from: string; backups: string[] }
   | { status: "unrecoverable"; backups: string[] }
-  | { status: "backup-alongside"; backups: string[] };
+  | { status: "backup-alongside"; backups: string[] }
+  | { status: "promoted"; from: string; demotedTo: string; backups: string[] };
+
+/** Marcos por issue que a dominância compara (#13687): `timeline` e `pr`. */
+interface PlanProgressFacts {
+  timeline: Map<string, Map<string, string>>;
+  pr: Map<string, string>;
+}
+
+function planProgressFacts(plan: Record<string, unknown>): PlanProgressFacts {
+  const timeline = new Map<string, Map<string, string>>();
+  const pr = new Map<string, string>();
+  for (const entry of normalizeIssues<Record<string, unknown>>(plan)) {
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key) continue;
+    const tl = entry?.timeline;
+    if (tl && typeof tl === "object" && !Array.isArray(tl)) {
+      const events = new Map<string, string>();
+      for (const [event, ts] of Object.entries(tl as Record<string, unknown>)) {
+        if (ts !== null && ts !== undefined && ts !== "") events.set(event, String(ts));
+      }
+      if (events.size > 0) timeline.set(key, events);
+    }
+    const rawPr = entry?.pr;
+    if ((typeof rawPr === "number" && Number.isFinite(rawPr)) || (typeof rawPr === "string" && rawPr.trim() !== "")) {
+      pr.set(key, String(rawPr).trim().replace(/^#/, ""));
+    }
+  }
+  return { timeline, pr };
+}
+
+/**
+ * `true` quando `copy` está estritamente à frente de `live` (#13687): mesmo
+ * `session_id` (quando algum dos dois tem), cada marco de `timeline` e cada
+ * `pr` do vivo aparece na cópia com o MESMO valor, e a cópia tem ao menos um
+ * marco ou `pr` que o vivo não tem. Pura.
+ */
+export function planCopyIsAheadOf(live: Record<string, unknown>, copy: Record<string, unknown>): boolean {
+  if ((live.session_id ?? null) !== (copy.session_id ?? null)) return false;
+  const a = planProgressFacts(live);
+  const b = planProgressFacts(copy);
+  for (const [key, events] of a.timeline) {
+    const other = b.timeline.get(key);
+    if (!other) return false;
+    for (const [event, ts] of events) if (other.get(event) !== ts) return false;
+  }
+  for (const [key, value] of a.pr) if (b.pr.get(key) !== value) return false;
+  for (const [key, events] of b.timeline) {
+    const mine = a.timeline.get(key);
+    for (const event of events.keys()) if (!mine?.has(event)) return true;
+  }
+  for (const key of b.pr.keys()) if (!a.pr.has(key)) return true;
+  return false;
+}
+
+function parsePlanObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Próximo `plan.json.conflictN` livre em `dir`. */
+function nextFreeConflictPath(dir: string): string {
+  for (let n = 1; ; n++) {
+    const p = join(dir, `plan.json.conflict${n}`);
+    if (!existsSync(p)) return p;
+  }
+}
 
 function isValidPlanJson(path: string): string | null {
   try {
@@ -131,7 +214,7 @@ export function recoverPlanFromSafeBackup(planPath: string): PlanSafeBackupRecov
   if (backups.length === 0) return { status: "clean" };
   const backupPaths = backups.map((b) => b.path);
 
-  if (existsSync(planPath)) return { status: "backup-alongside", backups: backupPaths };
+  if (existsSync(planPath)) return promoteCopyAheadOrWarn(planPath, backups, backupPaths);
 
   for (const b of backups) {
     const raw = isValidPlanJson(b.path);
@@ -150,6 +233,50 @@ export function recoverPlanFromSafeBackup(planPath: string): PlanSafeBackupRecov
     return { status: "restored", from: b.path, backups: backupPaths };
   }
   return { status: "unrecoverable", backups: backupPaths };
+}
+
+/**
+ * Plano vivo presente (#13687): promove a cópia válida mais à frente (ver
+ * `planCopyIsAheadOf`), guardando antes o vivo como `plan.json.conflict{N}`.
+ * Sem cópia à frente, ou se qualquer escrita falhar, fica o comportamento de
+ * sempre (`backup-alongside`, vivo intocado).
+ */
+function promoteCopyAheadOrWarn(
+  planPath: string,
+  backups: PlanSafeBackupFile[],
+  backupPaths: string[],
+): PlanSafeBackupRecovery {
+  const alongside: PlanSafeBackupRecovery = { status: "backup-alongside", backups: backupPaths };
+  let liveRaw: string;
+  try {
+    liveRaw = readFileSync(planPath, "utf8");
+  } catch {
+    return alongside;
+  }
+  const live = parsePlanObject(liveRaw);
+  if (live === null) return alongside;
+
+  let best: { path: string; raw: string; plan: Record<string, unknown> } | null = null;
+  for (const b of backups) {
+    const raw = isValidPlanJson(b.path);
+    if (raw === null) continue;
+    const plan = parsePlanObject(raw)!;
+    if (planCopyIsAheadOf(best?.plan ?? live, plan)) best = { path: b.path, raw, plan };
+  }
+  if (best === null) return alongside;
+
+  const demotedTo = nextFreeConflictPath(dirname(planPath));
+  try {
+    writeFileAtomic(demotedTo, liveRaw);
+  } catch {
+    return alongside;
+  }
+  try {
+    writeFileAtomic(planPath, best.raw);
+  } catch {
+    return alongside;
+  }
+  return { status: "promoted", from: best.path, demotedTo, backups: backupPaths };
 }
 
 /**
@@ -202,6 +329,11 @@ export function describePlanSafeBackupRecovery(planPath: string, r: PlanSafeBack
       return (
         `[plan-safe-backup] cópia(s) de conflito de sync ao lado de ${planPath}: ${r.backups.join(", ")} — ` +
         `o plano vivo foi mantido; compare e mescle à mão se o backup tiver estado mais novo (#10579).`
+      );
+    case "promoted":
+      return (
+        `[plan-safe-backup] ${planPath} estava ATRÁS de uma cópia de conflito de sync (timeline/pr) — ` +
+        `promovida ${r.from}; o plano anterior foi guardado em ${r.demotedTo} (#13687).`
       );
   }
 }

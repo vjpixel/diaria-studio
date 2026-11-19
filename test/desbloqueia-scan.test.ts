@@ -36,7 +36,7 @@ import {
   SEM_DIRECAO_LABEL,
   type DesbloqueioIssueInput,
 } from "../scripts/lib/desbloqueia-scan.ts";
-import { MOTIVO_LABEL } from "../scripts/lib/issue-route.ts";
+import { MOTIVO_LABEL, formatRouteIssueMarker } from "../scripts/lib/issue-route.ts";
 import {
   resolveDependencyStates,
   runDesbloqueioScan,
@@ -1211,5 +1211,45 @@ describe("#12546 — semMudancaDesdeUltimaRevisao: não repetir o comentário de
       ),
     });
     assert.equal(comTerceiro.bloqueioConfirmado[0]?.semMudancaDesdeUltimaRevisao, false);
+  });
+});
+
+describe("#13689 — ja-destravada já roteada depois da decisão", () => {
+  const decisao = formatDecisionMarker({
+    decided_at: "2026-11-10T10:00:00Z",
+    pergunta: "Trocar X por Y?",
+    resposta: "Sim",
+    sessao: "develop",
+  });
+  const rota = (track: "bloqueada" | "overnight") => `${formatRouteIssueMarker(track)}\n\nRoteado.`;
+  const adiada = (pedido_em: string) =>
+    formatAcaoAdiadaMarker({ pedido_em, acao: "fazer algo", motivo: "", sessao: "develop" });
+
+  it("route-issue posterior à decisão com o track atual → jaRoteadaDesdeDecisao", () => {
+    const c = classifyDesbloqueioCandidate(baseInput({ comments: [decisao, rota("bloqueada")] }));
+    assert.equal(c?.status, "ja-destravada");
+    assert.equal(c?.jaRoteadaDesdeDecisao, true);
+  });
+
+  it("route-issue anterior à decisão, ausente ou com track diferente → false", () => {
+    for (const comments of [[rota("bloqueada"), decisao], [decisao], [decisao, rota("overnight")]]) {
+      const c = classifyDesbloqueioCandidate(baseInput({ comments }));
+      assert.equal(c?.status, "ja-destravada");
+      assert.equal(c?.jaRoteadaDesdeDecisao, false);
+    }
+  });
+
+  it("acao-adiada ativa e posterior à decisão (já roteada) → status acao-adiada", () => {
+    const now = new Date("2026-11-19T00:00:00Z");
+    const c = classifyDesbloqueioCandidate(
+      baseInput({ comments: [decisao, rota("bloqueada"), adiada("2026-11-18T00:00:00Z")], now }),
+    );
+    assert.equal(c?.status, "acao-adiada");
+  });
+
+  it("sem route-issue posterior, acao-adiada não muda o status", () => {
+    const now = new Date("2026-11-19T00:00:00Z");
+    const c = classifyDesbloqueioCandidate(baseInput({ comments: [decisao, adiada("2026-11-18T00:00:00Z")], now }));
+    assert.equal(c?.status, "ja-destravada");
   });
 });
