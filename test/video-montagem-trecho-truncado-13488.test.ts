@@ -214,7 +214,7 @@ describe("#13488 verify-xml confere os trechos contra a mídia real", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
     const body = src.slice(src.indexOf("function cmdVerifyXml("), src.indexOf("// ── Rosto automático"));
     // #13512: a sonda com o cache local (work dir), não a do out dir sincronizado.
-    assert.match(body, /const mediaIssues = trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), cachedTrechoProbe\(trechoFramesCachePath\(ctx\.workDir\)\), \{ dir: ctx\.outDir, clips: inseridosXml \}\);/);
+    assert.match(body, /const mediaIssues = trechoMediaIssues\(xmlTexts, join\(ctx\.outDir, TRECHOS\.dirName\), cachedTrechoProbe\(trechoFramesCachePath\(ctx\.workDir\)\), \{ dir: ctx\.outDir, clips: inseridosXml \}(?:, \{[^;]*\})?\);/);
     assert.match(body, /bad \+= mediaIssues\.length;/);
   });
 });
