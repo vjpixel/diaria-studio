@@ -196,8 +196,9 @@ describe("#13596 item 2: presença apagada no rebaixamento de kind e no GC", () 
   it("GC: registro overnight removido leva sessionId/kind no plano e a presença sai do D1", async () => {
     const d1 = createFakeD1();
     const root = freshRoot();
-    writeSession(root, "overnight", COORD, OTHER, 8 * 24 * 60 * 60_000);
-    await ts.d1WriteCoordinatorPresence(d1, { sessionId: COORD, kind: "overnight", machineTag: OTHER });
+    // #13603: o GC só apaga presença de coordenadora DESTA máquina.
+    writeSession(root, "overnight", COORD, LOCAL, 8 * 24 * 60 * 60_000);
+    await ts.d1WriteCoordinatorPresence(d1, { sessionId: COORD, kind: "overnight", machineTag: LOCAL });
     await ts.d1WriteCoordinatorPresence(d1, { sessionId: "vivo", kind: "overnight", machineTag: OTHER });
     const plan = garbageCollectSessions(root);
     const removed = plan.find((e) => e.action === "removed");
@@ -221,7 +222,7 @@ describe("#13596 item 2: presença apagada no rebaixamento de kind e no GC", () 
     const plan: SessionGcResult[] = [
       { identity: "a", files: [], action: "removed", reason: "", sessionId: "c-1", kind: "continuo" },
       { identity: "b", files: [], action: "kept", reason: "", sessionId: "kept", kind: "overnight" },
-      { identity: "orphan-backup:x", files: [], action: "removed", reason: "", sessionId: "viva", kind: "overnight" },
+      { identity: "orphan-backup:x", files: [], action: "removed", reason: "", sessionId: "viva", kind: "overnight", machineTag: LOCAL },
     ];
     assert.equal(await clearPresenceForGcRemovals(root, plan, { d1, ...silent }), 0);
     for (const id of ["viva", "kept"]) {
@@ -260,7 +261,11 @@ describe("#13596 item 3: presença desta máquina sem registro aqui não atesta;
     await grantFrom(d1, LOCAL);
     const neo = freshRoot();
     const found = await findLiveMergeGrantInD1(neo, NEO, undefined, { d1 });
-    assert.ok(found && "rejected" in found && found.rejected.reason === "grantor-unknown", JSON.stringify(found));
+    // #13603: motivo próprio (antes `grantor-unknown`, cuja mensagem mandava repetir o grant-merge).
+    assert.ok(
+      found && "rejected" in found && found.rejected.reason === "grantor-presence-local-without-record",
+      JSON.stringify(found),
+    );
     // Com o registro (mesmo parado) desta máquina, vale.
     writeSession(neo, "overnight", COORD, LOCAL, 3 * 60 * 60_000);
     const ok = await findLiveMergeGrantInD1(neo, NEO, undefined, { d1 });

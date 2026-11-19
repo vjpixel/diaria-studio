@@ -70,3 +70,30 @@
 - /overnight/*.log.*
 - /continuo/*.log
 - /continuo/*.log.*
+#
+# Saidas stream-json da cadeia noturna (#13646): mesmo gatilho dos logs acima,
+# mas sem extensao .log. O review faz `tee` de
+# continuo/last-daily-review-output.jsonl (opus-daily-diff-review.sh) e o
+# overnight grava overnight/.nightly-chain-last-overnight.json evento a evento
+# (run-nightly-chain.ts), durante horas. Em 19/11/2026 03:20 UTC o .jsonl
+# abortou toda rodada enquanto o review rodava ("source file is being
+# updated", depois "md5 hashes differ"). So existem no `300`, onde a cadeia
+# roda. O texto final (last-daily-review-output.txt) segue sincronizando: e
+# gravado de uma vez, depois do fim do review.
+- /continuo/last-daily-review-output.jsonl
+- /continuo/last-daily-review-output.jsonl.*
+- /overnight/.nightly-chain-last-overnight.json
+- /overnight/.nightly-chain-last-overnight.json.*
+#
+# Log do waiter destacado do merge da pagina do site (#13649). O
+# publish-edition-site-page.ts (Stage 5/6) abre
+# editions/{AAMMDD}/_internal/site-page-merge-waiter.log em modo append e o
+# waiter escreve nele por ate 35 min. Mesmo gatilho dos logs acima. So tem
+# leitor na maquina que rodou a Etapa 5: o aviso do
+# Diaria-Site-Page-Merge-Check cita o caminho, que so existe la.
+# Os logs das tasks do registro (logPath em scripts/lib/scheduled-tasks.ts)
+# NAO entram aqui: o task-runner escreve a run num log temporario fora de
+# data/ e anexa ao logPath de uma vez, no fim (#13642;
+# test/gdrive-data-bisync-continuous-writers-13642.test.ts trava os dois lados).
+- *-merge-waiter.log
+- *-merge-waiter.log.*

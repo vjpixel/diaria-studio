@@ -643,12 +643,12 @@ describe("runArchive com montagem de outra edição em curso (#12602)", posixOnl
 });
 
 describe("task agendada (#12548)", () => {
-  it("Diaria-Video-Bruto-Archive roda o script com --apply, sábado de madrugada, habilitada", async () => {
+  it("Diaria-Video-Bruto-Archive roda o script com --apply, todo dia de madrugada (#13631), habilitada", async () => {
     const { getScheduledTaskByName } = await import("../scripts/lib/scheduled-tasks.ts");
     const t = getScheduledTaskByName("Diaria-Video-Bruto-Archive");
     assert.ok(t);
     assert.deepEqual(t.steps.map((s) => [s.script, s.args]), [["scripts/archive-video-brutos.ts", ["--apply"]]]);
-    assert.deepEqual(t.schedule, { kind: "weekly", dayOfWeek: "Saturday", hour: 3, minute: 0 });
+    assert.deepEqual(t.schedule, { kind: "daily", hour: 3, minute: 0 });
     assert.notEqual(t.enabled, false);
   });
 });

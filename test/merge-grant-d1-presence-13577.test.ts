@@ -341,7 +341,7 @@ describe("guard + CLI com a concedente ausente no Neo (#13577, ponta a ponta)", 
     const res = await runGuard(root);
     assert.equal(JSON.parse(res.stdout).hookSpecificOutput.permissionDecision, "deny");
     const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
-    assert.match(log, /"accepted":false,"grantorVia":"none"/);
+    assert.match(log, /"accepted":false,"rejectReason":"grantor-unknown","grantorVia":"none"/);
     const check = await runCli(root, ["check-merge-grant", "--session-id", NEO]);
     assert.equal(JSON.parse(check.stdout).granted, false);
     assert.match(check.stderr, /o D1 tem concessão de e333a546-overnight-300/);
@@ -360,12 +360,65 @@ describe("guard + CLI com a concedente ausente no Neo (#13577, ponta a ponta)", 
     // #13596: o aceite pela presença nunca passa calado (stderr do CLI).
     assert.match(check.stderr, /grantorVia: d1-presence/);
     const allowed = await runGuard(root);
-    // #13596: permite (sem `deny`), com o aviso da presença no systemMessage.
+    // #13596: permite (sem `deny`); o aviso da presença nunca passa calado.
+    // #13603: presença de OUTRA máquina é o caminho normal: o texto completo
+    // fica no stderr e no run-log, e o `systemMessage` não o repete.
     const out = allowed.stdout.trim() === "" ? {} : JSON.parse(allowed.stdout);
     assert.equal(out.hookSpecificOutput?.permissionDecision, undefined, `concessão do D1 + presença + lock: permite. ${allowed.stdout}`);
-    assert.match(out.systemMessage ?? "", /grantorVia: d1-presence/);
+    assert.doesNotMatch(out.systemMessage ?? "", /forjada|grantorVia/);
+    assert.match(allowed.stderr, /grantorVia: d1-presence/);
     const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
     assert.match(log, /"accepted":true,"grantorVia":"d1-presence"/);
+    assert.match(log, /"notice":"merge-guard \(#13596\)/, "texto completo do aviso no run-log (#13603)");
+  });
+
+  it("#13603: presença com a tag DESTA máquina sem registro aqui: guard nega com rejectReason próprio e o CLI não manda repetir o grant-merge", async () => {
+    srv.d1.db.exec("DELETE FROM locks");
+    const root = neoRoot();
+    await ts.d1WriteCoordinatorPresence(srv.d1, { sessionId: COORD, kind: "overnight", machineTag: machineTag() });
+    await ts.d1WriteMergeGrant(srv.d1, grantRow(), MERGE_GRANT_TTL_MS);
+    const res = await runGuard(root);
+    assert.equal(JSON.parse(res.stdout).hookSpecificOutput.permissionDecision, "deny", res.stdout);
+    const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
+    assert.match(log, /"accepted":false,"rejectReason":"grantor-presence-local-without-record"/);
+    const check = await runCli(root, ["check-merge-grant", "--session-id", NEO]);
+    assert.equal(JSON.parse(check.stdout).granted, false);
+    assert.match(check.stderr, /diz ser DESTA máquina/);
+    assert.doesNotMatch(check.stderr, /Peça à concedente para repetir o grant-merge/);
+  });
+
+  it("#13603: CLI gc apaga a presença de coordenadora DESTA máquina recolhida e preserva a de outra máquina", async () => {
+    srv.d1.db.exec("DELETE FROM locks");
+    const root = neoRoot();
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString();
+    const local = machineTag();
+    for (const [id, tag] of [["gc-local", local], ["gc-remota", GRANTOR_TAG]] as const) {
+      writeFileSync(
+        join(sessionsDir(root), `overnight-${tag}-${id}.json`),
+        JSON.stringify({ kind: "overnight", sessionId: id, machineTag: tag, startedAt: old, lastHeartbeat: old }),
+      );
+      await ts.d1WriteCoordinatorPresence(srv.d1, { sessionId: id, kind: "overnight", machineTag: tag });
+    }
+    const gc = await runCli(root, ["gc"]);
+    assert.equal(gc.status, 0, gc.stderr);
+    const gone = await ts.d1ReadCoordinatorPresence(srv.d1, "gc-local");
+    assert.ok(gone.ok && gone.value === null, `presença local recolhida apagada. ${gc.stdout}`);
+    const kept = await ts.d1ReadCoordinatorPresence(srv.d1, "gc-remota");
+    assert.ok(kept.ok && kept.value, "presença de outra máquina intacta (renovada e limpa pela máquina dela)");
+  });
+
+  it("#13603: CLI register com rebaixamento de kind apaga a presença", async () => {
+    srv.d1.db.exec("DELETE FROM locks");
+    const root = neoRoot();
+    const id = "cafe-rebaixa-cli";
+    const reg = await runCli(root, ["register", "--kind", "overnight", "--session-id", id]);
+    assert.equal(reg.status, 0, reg.stderr);
+    const p = await ts.d1ReadCoordinatorPresence(srv.d1, id);
+    assert.ok(p.ok && p.value, "presença gravada");
+    const demote = await runCli(root, ["register", "--kind", "continuo", "--session-id", id]);
+    assert.equal(demote.status, 0, demote.stderr);
+    const gone = await ts.d1ReadCoordinatorPresence(srv.d1, id);
+    assert.ok(gone.ok && gone.value === null, `presença apagada no rebaixamento. ${demote.stderr}`);
   });
 
   it("CLI: register de overnight grava a presença e end a apaga", async () => {
