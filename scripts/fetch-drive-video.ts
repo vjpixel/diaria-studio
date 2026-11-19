@@ -1078,6 +1078,7 @@ export function parseFetchDriveVideoArgs(
   }
   // #13712: export fora do Drive — raiz local (mesma convenção do video-montagem, #13308); sem API.
   const driveRoot = values["drive-root"]?.trim() || process.env.DIARIA_VIDEO_DRIVE_ROOT?.trim() || null;
+  if (driveRoot && values["folder-id"] !== undefined) return { ok: false, error: "--drive-root (ou DIARIA_VIDEO_DRIVE_ROOT) e --folder-id se contradizem" };
   const folderId = driveRoot ? LOCAL_ID_PREFIX : values["folder-id"]?.trim() || cfg.folderId;
   if (!folderId) return { ok: false, error: "sem pasta — passe --folder-id ou preencha publishing.youtube.drive_folder_id" };
   const windowRaw = values["window-hours"];

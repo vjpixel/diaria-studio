@@ -65,7 +65,7 @@ function describe(root: string, abs: string, probe: (p: string) => VideoDims) {
     id: `${LOCAL_ID_PREFIX}${rel}`,
     name: basename(abs),
     mimeType: isDir ? FOLDER_MIME : isMp4 ? "video/mp4" : /\.(jpe?g)$/i.test(abs) ? "image/jpeg" : /\.png$/i.test(abs) ? "image/png" : "application/octet-stream",
-    createdTime: st.birthtime.toISOString(),
+    createdTime: (st.birthtimeMs > 0 && st.birthtimeMs <= st.mtimeMs ? st.birthtime : st.mtime).toISOString(),
     modifiedTime: st.mtime.toISOString(),
     ...(isDir ? {} : { size: String(st.size) }),
     ...(isMp4 && Object.keys(dims).length > 0 ? { videoMediaMetadata: dims } : {}),
@@ -98,7 +98,7 @@ export function makeLocalDriveDeps(root: string, probe: (p: string) => VideoDims
         if (parent === undefined) return json({ error: "consulta sem pasta-pai" }, 400);
         const dir = localIdToPath(root, parent.replace(/\\'/g, "'"));
         if (!existsSync(dir)) return json({ files: [] });
-        return json({ files: readdirSync(dir).map((n) => describe(root, join(dir, n), probe)) });
+        return json({ files: readdirSync(dir).flatMap((n) => { try { return [describe(root, join(dir, n), probe)]; } catch { return []; } }) });
       } catch (e) {
         return json({ error: (e as Error).message }, 400);
       }
