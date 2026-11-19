@@ -23,6 +23,12 @@
  * `status: "completed"` (efetivamente enviados) entram na enumeração — um
  * rascunho/agendado não tem audiência real pra ingerir ainda.
  *
+ * Desde o #13649 a retomada é por EXECUÇÃO, não por broadcast: a escrita vai
+ * para uma cópia de trabalho do `.db` que só vira o store no `rename` do fim
+ * (`stageDbForAtomicUpdate`, para o bisync de `data/` nunca copiar o arquivo
+ * no meio da escrita), e o manifest é gravado depois desse commit. Processo
+ * morto no meio perde a execução inteira; a seguinte refaz (idempotente).
+ *
  * ## Guard anti-fabricação (#6496)
  *
  * Um broadcast só vira `ok` no manifest se a contagem do eixo `sent`
@@ -86,7 +92,15 @@ import {
   type KitBroadcastClick,
 } from "./lib/kit-client.ts";
 import { fetchAudience, fetchUrlClicks, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts, getKitActiveSummary } from "./lib/diaria-subscribers-db.ts";
+import {
+  DEFAULT_DB_PATH,
+  openDiariaSubscribersDb,
+  getStoreCounts,
+  getKitActiveSummary,
+  stageDbForAtomicUpdate,
+  commitStagedDbUpdate,
+  discardStagedDbUpdate,
+} from "./lib/diaria-subscribers-db.ts";
 import { runCanonicalEdicaoBackfillFailSoft } from "./lib/diaria-subscribers-edicao-canonica.ts";
 import { detectSamePlatformDuplicateIdentities } from "./lib/diaria-subscribers-identity-resolve.ts";
 import {
@@ -476,7 +490,76 @@ export async function main(
   }
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
-  const db = openDiariaSubscribersDb(dbPath);
+  // #13649: a ingestão grava por ~20 min (roster + broadcasts com pacing), e o
+  // bisync de `data/` que passava nessa janela abortava com "source file is
+  // being updated" no `.db`. Toda a escrita vai para uma cópia de trabalho que
+  // o bisync ignora (`stageDbForAtomicUpdate`), e o store definitivo só muda
+  // no `rename` do fim. O manifest acompanha: só é gravado DEPOIS do commit do
+  // banco, senão um processo morto no meio (timeout da unit, OOM) deixaria o
+  // manifest dizendo `ok` para broadcasts cujos eventos ficaram na cópia
+  // descartada. Exceção no meio ainda commita o progresso parcial, como antes
+  // (a escrita direta já persistia o que tinha sido gravado).
+  const staged = stageDbForAtomicUpdate(dbPath);
+  const manifestOut: { value: IngestManifest | null } = { value: null };
+  let outcome: "commit" | "discard" = "commit";
+  let bodyError: unknown = null;
+  try {
+    outcome = await ingestIntoWorkDb({
+      argv,
+      deps,
+      dbPath,
+      workPath: staged.workPath,
+      manifestPath,
+      manifestOut,
+      limit,
+      broadcastFilter,
+      configPath,
+      dataRoot,
+    });
+  } catch (e) {
+    bodyError = e;
+  }
+  if (outcome === "discard") {
+    discardStagedDbUpdate(staged);
+  } else {
+    try {
+      commitStagedDbUpdate(staged);
+      if (manifestOut.value) saveManifest(manifestPath, manifestOut.value);
+    } catch (e) {
+      discardStagedDbUpdate(staged);
+      console.error(
+        `❌ commit atômico do store falhou — store definitivo e manifest ficaram como estavam (#13649): ` +
+          (e instanceof Error ? e.message : String(e)),
+      );
+      if (bodyError === null) throw e;
+    }
+  }
+  if (bodyError !== null) throw bodyError;
+}
+
+interface IngestIntoWorkDbCtx {
+  argv: string[];
+  deps: KitIngestDeps;
+  /** Store definitivo — só aparece no resumo; a escrita vai para `workPath`. */
+  dbPath: string;
+  workPath: string;
+  manifestPath: string;
+  /** Último manifest da execução; `main` grava depois do commit do banco (#13649). */
+  manifestOut: { value: IngestManifest | null };
+  limit: number | undefined;
+  broadcastFilter: number | undefined;
+  configPath: string;
+  dataRoot: string;
+}
+
+/**
+ * Corpo da ingestão sobre a cópia de trabalho do store (#13649). Devolve
+ * `"discard"` quando a execução abortou ANTES de gravar por regra de escritor
+ * único (cópia de conflito): aí nem a cópia de trabalho deve virar o store.
+ */
+async function ingestIntoWorkDb(ctx: IngestIntoWorkDbCtx): Promise<"commit" | "discard"> {
+  const { argv, deps, dbPath, workPath, manifestPath, manifestOut, limit, broadcastFilter, configPath, dataRoot } = ctx;
+  const db = openDiariaSubscribersDb(workPath);
 
   // -------------------------------------------------------------------------
   // Passo 1 (#7174): ingestão de ROSTER — popula `subscription`, que a
@@ -507,7 +590,7 @@ export async function main(
           );
           process.exitCode = 1;
           db.close();
-          return;
+          return "discard";
         }
       }
     }
@@ -693,7 +776,7 @@ export async function main(
     broadcasts.map((b) => ({ id: String(b.id), label: b.subject })),
     new Date().toISOString(),
   );
-  saveManifest(manifestPath, manifest);
+  manifestOut.value = manifest;
 
   const byId = new Map(broadcasts.map((b) => [String(b.id), b]));
   let pending = pendingManifestEntries(manifest).filter((e) => byId.has(e.id));
@@ -710,7 +793,10 @@ export async function main(
     const broadcast = byId.get(entry.id)!;
     const outcome = await ingestOneBroadcast(db, broadcast, deps);
     manifest = upsertManifestEntry(manifest, outcome.entry);
-    saveManifest(manifestPath, manifest); // durável a cada broadcast — retomável em qualquer ponto
+    // #13649: o manifest vai pro disco junto com o banco, no commit atômico do
+    // fim (`main`). Antes era gravado a cada broadcast, o que reescrevia o
+    // arquivo dezenas de vezes na janela do bisync (`md5 differ`).
+    manifestOut.value = manifest;
     eventsNewTotal += outcome.eventsNew;
     eventsAlreadyKnownTotal += outcome.eventsAlreadyKnown;
     processed++;
@@ -726,7 +812,7 @@ export async function main(
   const coverage = manifestCoverageSummary(manifest);
   // #7204 (pós-#7249): último passo — refresca `event.edicao_canonica` com o
   // dado recém-ingerido (fail-soft, ver docstring de `runCanonicalEdicaoBackfillFailSoft`).
-  const canonicalEdicaoBackfill = runCanonicalEdicaoBackfillFailSoft(dbPath);
+  const canonicalEdicaoBackfill = runCanonicalEdicaoBackfillFailSoft(workPath);
   // #8236 item 3: detector de identidade partida DENTRO da plataforma Kit —
   // conta e-mails com >1 subscriber_id no Kit (o defeito que o fix de
   // `ensureSubscriber`, item 1/#8259, previne daqui pra frente, mas não cura
@@ -736,7 +822,7 @@ export async function main(
   // quando a leitura falha — `null` propaga "não avaliado" honestamente.
   let samePlatformDuplicateReport: ReturnType<typeof detectSamePlatformDuplicateIdentities> | null = null;
   try {
-    const dupDb = openDiariaSubscribersDb(dbPath);
+    const dupDb = openDiariaSubscribersDb(workPath);
     try {
       samePlatformDuplicateReport = detectSamePlatformDuplicateIdentities(dupDb);
     } finally {
@@ -788,6 +874,7 @@ export async function main(
       2,
     ),
   );
+  return "commit";
 }
 
 if (isMainModule(import.meta.url)) {

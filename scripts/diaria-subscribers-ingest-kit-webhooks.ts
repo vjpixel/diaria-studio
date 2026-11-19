@@ -31,7 +31,13 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
+import {
+  DEFAULT_DB_PATH,
+  openDiariaSubscribersDb,
+  stageDbForAtomicUpdate,
+  commitStagedDbUpdate,
+  discardStagedDbUpdate,
+} from "./lib/diaria-subscribers-db.ts";
 import { detectSiblingConflictFiles } from "./diaria-subscribers-ingest-kit.ts";
 import {
   fetchKitWebhookEvents,
@@ -83,7 +89,12 @@ export async function main(
     }
   }
 
-  const db = openDiariaSubscribersDb(dbPath);
+  // #13649: com `--write`, grava numa cópia de trabalho que o bisync de
+  // `data/` ignora e troca o store por `rename` no fim (mesmo caminho da
+  // ingestão do roster, que roda logo antes na mesma task).
+  const staged = shouldWrite ? stageDbForAtomicUpdate(dbPath) : null;
+  let commitStaged = false;
+  const db = openDiariaSubscribersDb(staged ? staged.workPath : dbPath);
   try {
     const explicitSince = getArg(argv, "since");
     if (explicitSince && Number.isNaN(Date.parse(explicitSince))) {
@@ -104,6 +115,7 @@ export async function main(
       return 0;
     }
     const result = ingestKitWebhookEvents(db, fetched.events);
+    commitStaged = true;
     console.log(
       JSON.stringify({
         since,
@@ -116,6 +128,10 @@ export async function main(
     return 0;
   } finally {
     db.close();
+    if (staged) {
+      if (commitStaged) commitStagedDbUpdate(staged);
+      else discardStagedDbUpdate(staged);
+    }
   }
 }
 

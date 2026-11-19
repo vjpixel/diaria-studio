@@ -83,7 +83,7 @@
 // dado a mensagem clara.
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { assertSupportedNodeVersion } from "./check-node-version.ts";
 import { renameWithRetry } from "./atomic-write.ts";
@@ -674,6 +674,154 @@ export function atomicCommitRebuild(tmpDbPath: string, dbPath: string): void {
       } catch {
         // Inerte — ninguém lê sidecar sem dono conhecido.
       }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Atualização atômica do store (#13649)
+// ---------------------------------------------------------------------------
+
+/**
+ * Infixo do `.db` de trabalho de uma ATUALIZAÇÃO atômica (#13649). O nome
+ * começa com `~` de propósito: os filtros do bisync de `data/`
+ * (`scripts/systemd/gdrive-data-bisync-filters.txt`) e do Drive inteiro
+ * excluem `- ~*`, e esse padrão também casa os sidecars que o SQLite cria
+ * para o arquivo de trabalho (`~…-wal`, `~…-shm`, `~…-journal`). Um nome
+ * dot-prefixed como o do rebuild (#7187) seria copiado pelo bisync no meio da
+ * escrita, que é justamente o aborto que este caminho existe para evitar.
+ */
+const UPDATE_TMP_PREFIX = "~";
+const UPDATE_TMP_INFIX = ".update-tmp-";
+
+/** Retrato do store definitivo no instante em que a cópia de trabalho foi tirada. */
+export interface DbFileFingerprint {
+  size: number;
+  mtimeMs: number;
+  /** Tamanho do `-wal` do store (0 quando ausente). */
+  walSize: number;
+}
+
+export interface StagedDbUpdate {
+  /** Store definitivo (absoluto). */
+  dbPath: string;
+  /** `.db` de trabalho onde o caller grava (absoluto, mesmo diretório). */
+  workPath: string;
+  /** `null` = o store definitivo não existia quando o trabalho começou. */
+  baseline: DbFileFingerprint | null;
+}
+
+function fingerprintDbFile(absDb: string): DbFileFingerprint | null {
+  if (!existsSync(absDb)) return null;
+  const st = statSync(absDb);
+  let walSize = 0;
+  try {
+    walSize = statSync(`${absDb}-wal`).size;
+  } catch {
+    walSize = 0;
+  }
+  return { size: st.size, mtimeMs: st.mtimeMs, walSize };
+}
+
+function sameFingerprint(a: DbFileFingerprint | null, b: DbFileFingerprint | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.size === b.size && a.mtimeMs === b.mtimeMs && a.walSize === b.walSize;
+}
+
+/**
+ * Prepara uma atualização do store em `dbPath` por cópia de trabalho +
+ * `rename` atômico no fim (#13649).
+ *
+ * **Motivação:** a ingestão diária do Kit (`diaria-subscribers-ingest-kit.ts`,
+ * task `Diaria-Kit-Roster-Ingest`, 04:25 BRT) grava no `.db` por ~20 min. O
+ * bisync de `data/` que passa nessa janela tenta copiar o arquivo enquanto ele
+ * muda e aborta inteiro com "can't copy - source file is being updated"
+ * (journal de 12/11 a 19/11/2026: abortos por volta das 07:4x UTC, 82 linhas
+ * `md5 differ` e 24 `corrupted on transfer` só nesse arquivo). Excluir o
+ * `.db` do filtro não serve: ele é lido em outra máquina.
+ *
+ * Com este caminho o `.db` definitivo só muda num instante, no `rename` de
+ * `commitStagedDbUpdate`; toda a escrita longa acontece num arquivo que o
+ * bisync ignora (`~{stem}.update-tmp-…`, ver `UPDATE_TMP_PREFIX`).
+ *
+ * A cópia usa `VACUUM INTO`, que lê um retrato consistente mesmo com a WAL
+ * do store ainda não checkpointada. Lixo de atualizações que morreram no meio
+ * (mesmo prefixo, inclusive sidecars) é varrido aqui, best-effort.
+ *
+ * O retrato (`baseline`) é tirado depois de fechar a conexão de leitura: o
+ * commit compara de novo e recusa trocar o arquivo se outro escritor (outra
+ * task, outra máquina via sync) mexeu no store nesse meio-tempo.
+ */
+export function stageDbForAtomicUpdate(dbPath: string): StagedDbUpdate {
+  assertSupportedNodeVersion();
+  const absDb = resolve(dbPath);
+  const dir = dirname(absDb);
+  const stem = basename(absDb);
+  mkdirSync(dir, { recursive: true });
+  const litterPrefix = `${UPDATE_TMP_PREFIX}${stem}${UPDATE_TMP_INFIX}`;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    // Sem varredura — segue pro nome novo.
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(litterPrefix)) continue;
+    try {
+      rmSync(resolve(dir, entry), { force: true });
+    } catch {
+      // Inerte — tenta de novo na próxima atualização.
+    }
+  }
+  const workPath = resolve(
+    dir,
+    `${litterPrefix}${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  if (existsSync(absDb)) {
+    const { DatabaseSync: DatabaseSyncCtor } = createRequire(import.meta.url)(
+      "node:sqlite",
+    ) as { DatabaseSync: typeof DatabaseSync };
+    const src = new DatabaseSyncCtor(absDb);
+    try {
+      src.exec("PRAGMA busy_timeout = 5000;");
+      src.exec(`VACUUM INTO '${workPath.replace(/'/g, "''")}'`);
+    } finally {
+      src.close();
+    }
+  }
+  return { dbPath: absDb, workPath, baseline: fingerprintDbFile(absDb) };
+}
+
+/**
+ * Instala a cópia de trabalho no lugar do store (`rename` atômico, via
+ * `atomicCommitRebuild`). A conexão com `workPath` precisa estar FECHADA.
+ *
+ * Lança, com o store definitivo intacto e a cópia de trabalho descartada, se
+ * o store mudou desde `stageDbForAtomicUpdate` (outro escritor gravou nele):
+ * trocar o arquivo ali apagaria a escrita alheia. O caller perde a rodada (a
+ * próxima refaz a ingestão, que é idempotente) em vez de perder dado de
+ * terceiro.
+ */
+export function commitStagedDbUpdate(stage: StagedDbUpdate): void {
+  const current = fingerprintDbFile(stage.dbPath);
+  if (!sameFingerprint(stage.baseline, current)) {
+    discardStagedDbUpdate(stage);
+    throw new Error(
+      `commitStagedDbUpdate: ${stage.dbPath} mudou durante a atualização (outro escritor ou o sync gravou nele) — ` +
+        `cópia de trabalho descartada, store definitivo intacto (#13649). ` +
+        `antes=${JSON.stringify(stage.baseline)} agora=${JSON.stringify(current)}`,
+    );
+  }
+  atomicCommitRebuild(stage.workPath, stage.dbPath);
+}
+
+/** Remove a cópia de trabalho e seus sidecars, best-effort. */
+export function discardStagedDbUpdate(stage: StagedDbUpdate): void {
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    try {
+      rmSync(`${stage.workPath}${suffix}`, { force: true });
+    } catch {
+      // Inerte — a próxima atualização varre o prefixo.
     }
   }
 }
