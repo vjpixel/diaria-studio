@@ -128,12 +128,14 @@ import {
   latestRoundProviders,
   detectProviderDrop,
   detectProviderTotalFailure,
+  detectPersistentQuotaProviders,
   detectSafeBackupConflictFiles,
   detectHighErrorRateProviders,
   errorRatePct,
   summarizeHistoryByProviderReclassified,
   detectModelSeriesBreaks,
   GEO_ERROR_RATE_ALARM_THRESHOLD_PCT,
+  GEO_QUOTA_PERSISTENT_ROUNDS,
   type GeoQuestionPanel,
   type HistoryReportInputRecord,
 } from "./lib/geo-citation-monitor.ts";
@@ -286,6 +288,37 @@ export function readHistoryRecordsForPanel(
       const recordPanel: GeoQuestionPanel = normalizeHistoryPanel(r.panel);
       if (recordPanel !== panel) continue;
       out.push({ date: r.date, provider: r.provider });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+/**
+ * Lê `history.jsonl` do painel com os campos de erro que
+ * `detectPersistentQuotaProviders` precisa (#13634). Mesma disciplina
+ * fail-soft de `readHistoryRecordsForPanel`.
+ */
+export function readHistoryErrorsForPanel(
+  historyPath: string,
+  panel: GeoQuestionPanel,
+): Array<Pick<GeoCitationRecord, "date" | "provider" | "error" | "errorKind">> {
+  if (!existsSync(historyPath)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  const out: Array<Pick<GeoCitationRecord, "date" | "provider" | "error" | "errorKind">> = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as Partial<GeoCitationRecord>;
+      if (typeof r.date !== "string" || typeof r.provider !== "string") continue;
+      if (normalizeHistoryPanel(r.panel) !== panel) continue;
+      out.push({ date: r.date, provider: r.provider, error: r.error, errorKind: r.errorKind });
     } catch {
       continue;
     }
@@ -655,6 +688,7 @@ async function main(): Promise<number> {
   // compararia contra si mesma.
   const previousRound = latestRoundProviders(readHistoryRecordsForPanel(outPath, panel));
 
+  const priorErrorHistory = readHistoryErrorsForPanel(outPath, panel);
   const records = await runGeoCitationMonitor(process.env, questions, undefined, undefined, undefined, undefined, panel);
   appendGeoCitationLog(records, outPath);
 
@@ -732,6 +766,26 @@ async function main(): Promise<number> {
     }
   }
 
+  // #13634: provider com cota/crédito esgotado em 100% das últimas rodadas
+  // seguidas = medição CEGA nele (a série não distingue "não citou" de "não
+  // mediu"), e os outros providers gravando escondiam isso. Sob `--strict`
+  // reprova (exit 1) → unit systemd `failed` → sweep de
+  // `systemd-failed-units-alarm.ts` avisa o editor. Não recarrega conta.
+  const persistentQuota = detectPersistentQuotaProviders([
+    ...priorErrorHistory,
+    ...records.map((r) => ({ date: r.date, provider: r.provider, error: r.error, errorKind: r.errorKind })),
+  ]);
+  let quotaAlarmCode = 0;
+  if (persistentQuota.length > 0) {
+    console.error(
+      `[geo-citation-monitor] ERRO: ${persistentQuota.join(", ")} com cota/crédito esgotado em 100% das consultas há ` +
+        `${GEO_QUOTA_PERSISTENT_ROUNDS}+ rodadas seguidas (painel "${panel}"). Impacto: MEDIÇÃO CEGA nesse provider — ` +
+        "as citações dele não estão sendo medidas e a série não diferencia 'não citou' de 'não mediu'. " +
+        "Ação do editor: recarregar crédito/revisar o plano da conta (#13634).",
+    );
+    if (strict) quotaAlarmCode = 1;
+  }
+
   // Falha TOTAL (100% das consultas erraram) sob `--strict`. Key expirada,
   // cartão recusado, DNS/firewall bloqueando — tudo isso produzia o mesmo
   // exit 0 de uma semana saudável. Falha PARCIAL continua saindo 0 de
@@ -740,7 +794,7 @@ async function main(): Promise<number> {
   const veredito = resolveStrictOutcome(records, strict);
   if (veredito.level === "error") console.error(veredito.message);
   else if (veredito.level === "warn") console.warn(veredito.message);
-  return veredito.code;
+  return Math.max(veredito.code, quotaAlarmCode);
 }
 
 if (isMainModule(import.meta.url)) {

@@ -12,6 +12,12 @@
  * e o próximo sobe (`scripts/lib/stale-date-demotion.ts`). O item segue no
  * pool; o editor promove de volta no gate 1 se houver fato novo.
  *
+ * Com `--editions-dir` (#13662), o top-3 inteiro (com ou sem data verificada)
+ * também é comparado com o publicado há 31-84 dias, pelo critério do
+ * `stale-highlight-repeat` do gate 4; a notícia repetida sai do top-3 do
+ * mesmo jeito. Caso 261119: D2 do Fantástico de 16/11 recontando o caso dos
+ * agentes da OpenAI na Hugging Face, já publicado em 260928.
+ *
  * Texto da página: 1º o corpo que o `verify-accessibility` já gravou em
  * `--bodies-dir` (sem rede); sem ele, um GET pelo `fetchSourceText` (o mesmo
  * fetcher do fact-checker, com guard de host privado e timeout de 20s). Sem
@@ -35,15 +41,23 @@ import { runCli } from "./lib/cli-exit.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
-import { latestDeclaredSourceDate, STALE_SOURCE_DATE_MAX_DAYS, type SourceDateHit } from "./lib/stale-highlight.ts";
+import {
+  latestDeclaredSourceDate,
+  STALE_HIGHLIGHT_WINDOW_DAYS,
+  STALE_SOURCE_DATE_MAX_DAYS,
+  type SourceDateHit,
+} from "./lib/stale-highlight.ts";
 import {
   demoteStaleDateHighlights,
   formatStaleDateKeptNote,
   formatStaleDateNote,
   staleDateCandidates,
+  staleRepeatHits,
   urlOf,
   type StaleDateHighlight,
+  type StaleHit,
 } from "./lib/stale-date-demotion.ts";
+import { readPastStoryItems } from "./lib/invariant-checks/stage-4.ts";
 import { fetchSourceText, htmlToText } from "./fetch-source-text.ts";
 
 type Rec = Record<string, unknown>;
@@ -71,6 +85,8 @@ export interface RunResult {
   resolved: number;
   demoted: number;
   kept: number;
+  /** #13662: destaques do top-3 que repetem notícia de 31-84 dias atrás. */
+  repeats: number;
   notes: string[];
   error?: string;
 }
@@ -86,12 +102,18 @@ export async function runStaleDateDemotion(opts: {
   outLog?: string;
   dryRun?: boolean;
   rootDir?: string;
+  /**
+   * #13662: raiz das edições (`data/editions`). Com ela, o top-3 também é
+   * comparado com o publicado há 31-84 dias e a notícia repetida sai do
+   * top-3. Sem ela, só a data declarada na fonte (comportamento da #13341).
+   */
+  editionsRoot?: string;
 }): Promise<RunResult> {
   try {
     const categorized = JSON.parse(readFileSync(opts.categorizedPath, "utf8")) as Rec;
     const highlights = (Array.isArray(categorized.highlights) ? categorized.highlights : []) as StaleDateHighlight[];
     const candidates = staleDateCandidates(highlights);
-    const stale = new Map<string, SourceDateHit>();
+    const stale = new Map<string, StaleHit>();
     const declared = new Map<string, SourceDateHit>();
     const notes: string[] = [];
     const lookups: Array<{ url: string; via: string; declared_iso?: string; days?: number; error?: string }> = [];
@@ -104,6 +126,12 @@ export async function runStaleDateDemotion(opts: {
       declared.set(url, latest);
       if (latest.days > STALE_SOURCE_DATE_MAX_DAYS) stale.set(url, latest);
     }
+
+    // #13662: notícia repetida. A data velha da fonte vence (um motivo por item).
+    const repeats = opts.editionsRoot
+      ? staleRepeatHits(highlights, readPastStoryItems(opts.editionsRoot, opts.edition, 0, STALE_HIGHLIGHT_WINDOW_DAYS), opts.edition)
+      : new Map<string, StaleHit>();
+    for (const [url, hit] of repeats) if (!stale.has(url)) stale.set(url, hit);
 
     const result = demoteStaleDateHighlights(highlights, stale);
     notes.push(...result.demoted.map(formatStaleDateNote), ...result.kept.map(formatStaleDateKeptNote));
@@ -118,13 +146,14 @@ export async function runStaleDateDemotion(opts: {
     });
 
     if (!opts.dryRun) {
-      if (declared.size > 0) {
+      if (declared.size > 0 || result.demoted.length > 0) {
         writeFileSync(opts.categorizedPath, JSON.stringify({ ...categorized, highlights: annotated }, null, 2) + "\n", "utf8");
       }
       if (opts.outLog) {
+        const repeatLog = [...repeats].map(([url, h]) => ({ url, ...h.repeat, days: h.days }));
         writeFileSync(
           opts.outLog,
-          JSON.stringify({ edition: opts.edition, lookups, demoted: result.demoted, kept: result.kept }, null, 2) + "\n",
+          JSON.stringify({ edition: opts.edition, lookups, repeats: repeatLog, demoted: result.demoted, kept: result.kept }, null, 2) + "\n",
           "utf8",
         );
       }
@@ -134,6 +163,7 @@ export async function runStaleDateDemotion(opts: {
       resolved: declared.size,
       demoted: result.demoted.length,
       kept: result.kept.length,
+      repeats: repeats.size,
       notes,
     };
   } catch (err) {
@@ -148,7 +178,7 @@ export async function runStaleDateDemotion(opts: {
       },
       opts.rootDir,
     );
-    return { examined: 0, resolved: 0, demoted: 0, kept: 0, notes: [], error: msg };
+    return { examined: 0, resolved: 0, demoted: 0, kept: 0, repeats: 0, notes: [], error: msg };
   }
 }
 
@@ -162,7 +192,7 @@ async function main(): Promise<number | void> {
   if (!categorizedPath || !edition || !/^\d{6}$/.test(edition)) {
     console.error(
       "Uso: demote-stale-date-highlights.ts --categorized <01-categorized.json> --edition AAMMDD " +
-        "[--bodies-dir <dir>] [--out-log <path>] [--no-fetch] [--dry-run]",
+        "[--bodies-dir <dir>] [--editions-dir <data/editions>] [--out-log <path>] [--no-fetch] [--dry-run]",
     );
     return 1;
   }
@@ -172,6 +202,7 @@ async function main(): Promise<number | void> {
     loadText: makePageTextLoader({ bodiesDir: args["bodies-dir"] ?? null, fetch: !noFetch }),
     outLog: args["out-log"],
     dryRun,
+    editionsRoot: args["editions-dir"],
   });
   for (const n of res.notes) console.error(`[demote-stale-date] ${n}`);
   if (res.error) console.error(`[demote-stale-date] ⚠️ fail-soft: ${res.error}`);
