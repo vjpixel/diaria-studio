@@ -1424,7 +1424,7 @@ export function notDeletedFinding(report: ArchiveReport): NotifyEditorFinding | 
     check: "video-drive-cleanup-nao-apagado",
     fingerprint: `video-drive-cleanup-nao-apagado:${(h >>> 0).toString(16)}`,
     severity: "acao",
-    subject: `Vídeo no Drive: ${list.length} arquivo(s) que a rotina não conseguiu apagar ou mover (outro dono)`,
+    subject: `Vídeo no Drive: ${list.length} arquivo(s) que a rotina não conseguiu apagar ou mover (outro dono ou nome repetido)`,
     body: [
       "A rotina diária do vídeo (`Diaria-Video-Bruto-Archive`, `scripts/archive-video-brutos.ts`) não conseguiu tirar do Drive estes arquivos: o Drive recusou por permissão (arquivo de outro dono, #12570/#13619) ou, em `final-nome-duplicado-mantido`, há dois arquivos com o mesmo nome em `Final/`/`Editado(s)/` (ou duas prévias) e apagar por nome não diz qual sai (#13675). A cópia conferida dos arquivados fica no HD do 300; as duplicatas, os brutos de edição renomeada e os finais de nome repetido continuam no Drive.",
       "",
