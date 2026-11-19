@@ -16,6 +16,12 @@
  * `highlights` (rank 4+) e no bucket dele, e o editor pode promovê-lo de volta
  * no gate 1.
  *
+ * #13662: o mesmo rebaixamento vale para o top-3 que repete notícia publicada
+ * há 31-84 dias (`staleRepeatHits`, critério do `stale-highlight-repeat` do
+ * gate 4). Caso 261119: D2 do Fantástico de 16/11 sobre os agentes da OpenAI
+ * na Hugging Face, caso de julho coberto em 260928; só o aviso do gate 4
+ * acusava, depois da escrita e das imagens.
+ *
  * Fora daqui: a busca da 1ª cobertura na imprensa (custo de busca por
  * candidato, a medir antes). Sem data declarada, o item fica como está, com o
  * ⚠️ do `01-categorized.md` e o aviso do gate 4.
@@ -24,10 +30,32 @@
  */
 import { DESTAQUE_REQUEST_FIELD } from "./destaque-upgrade.ts";
 import { hasNegativeImpactTag, type HighlightLike } from "./negative-impact-promotion.ts";
-import type { SourceDateHit } from "./stale-highlight.ts";
+import { findStaleHighlightRepeats, vendorHintsFromUrl, type SourceDateHit } from "./stale-highlight.ts";
+import type { PastStoryItem, StoryItem } from "./story-twice-in-edition.ts";
 
 export interface StaleDateHighlight extends HighlightLike {
   rank?: number;
+}
+
+/**
+ * Repetição de notícia já publicada há 31-84 dias (#13662): o mesmo sinal do
+ * `stale-highlight-repeat` do gate 4 (`findStaleHighlightRepeats`), antecipado
+ * para o Stage 1.
+ */
+export interface StaleRepeat {
+  kind: "url" | "incident";
+  matched_edition: string;
+  matched_title: string;
+  signal: string;
+}
+
+/**
+ * Motivo do rebaixamento. Sem `repeat`: data declarada na fonte (`iso` = a
+ * data, `text` = o trecho). Com `repeat`: notícia repetida (`iso` = data da
+ * edição passada, `text` = o sinal, `days` = distância até ela).
+ */
+export interface StaleHit extends SourceDateHit {
+  repeat?: StaleRepeat;
 }
 
 export interface StaleDateDemotion {
@@ -41,6 +69,8 @@ export interface StaleDateDemotion {
   days: number;
   /** Quem subiu para a vaga (título do novo top-3 que não estava antes). */
   replaced_by?: string;
+  /** #13662: presente quando o motivo é notícia repetida, não data da fonte. */
+  repeat?: StaleRepeat;
 }
 
 export interface StaleDateKept {
@@ -50,6 +80,7 @@ export interface StaleDateKept {
   reason: string;
   declared_iso: string;
   days: number;
+  repeat?: StaleRepeat;
 }
 
 export interface StaleDateDemotionResult<H extends StaleDateHighlight> {
@@ -86,6 +117,50 @@ export function staleDateCandidates<H extends StaleDateHighlight>(highlights: H[
   return byRank(highlights)
     .slice(0, topN)
     .filter((h) => art(h).date_unverified === true && urlOf(h) !== "");
+}
+
+/**
+ * #13662: top-N que repete notícia publicada há 31-84 dias, pelo mesmo
+ * critério do `stale-highlight-repeat` do gate 4 (mesma URL, ou mesmo
+ * incidente com >= 2 entidades em comum). Examina todo o top-N, com ou sem
+ * data verificada: o caso 261119 tinha data certa (reportagem do Fantástico
+ * de 16/11) sobre um caso de julho já coberto em setembro e outubro.
+ *
+ * O texto do Stage 1 é título + resumo da fonte, mais os fornecedores citados
+ * no slug da URL (`vendorHintsFromUrl`). `past` = itens publicados
+ * (`readPastStoryItems` com janela por data); itens fora de 31-84 dias são
+ * ignorados por `findStaleHighlightRepeats`.
+ */
+export function staleRepeatHits<H extends StaleDateHighlight>(
+  highlights: H[],
+  past: PastStoryItem[],
+  edition: string,
+  topN = 3,
+): Map<string, StaleHit> {
+  const items: StoryItem[] = byRank(highlights)
+    .slice(0, topN)
+    .filter((h) => urlOf(h) !== "")
+    .map((h, i) => {
+      const summary = (art(h).summary as unknown) ?? "";
+      const hints = vendorHintsFromUrl(urlOf(h));
+      return {
+        label: `D${i + 1}`,
+        title: titleOf(h),
+        url: urlOf(h),
+        summary: [typeof summary === "string" ? summary : "", ...hints].filter(Boolean).join("\n"),
+      };
+    });
+  const out = new Map<string, StaleHit>();
+  for (const w of findStaleHighlightRepeats(items, past, edition)) {
+    const e = w.matched_edition;
+    out.set(w.item_url, {
+      iso: `20${e.slice(0, 2)}-${e.slice(2, 4)}-${e.slice(4, 6)}`,
+      text: w.signal,
+      days: w.days,
+      repeat: { kind: w.kind, matched_edition: e, matched_title: w.matched_title, signal: w.signal },
+    });
+  }
+  return out;
 }
 
 /**
@@ -134,7 +209,7 @@ function blocked(h: StaleDateHighlight): boolean {
  */
 export function demoteStaleDateHighlights<H extends StaleDateHighlight>(
   highlights: H[],
-  stale: Map<string, SourceDateHit>,
+  stale: Map<string, StaleHit>,
   topN = 3,
 ): StaleDateDemotionResult<H> {
   const ordered = byRank(highlights);
@@ -153,6 +228,7 @@ export function demoteStaleDateHighlights<H extends StaleDateHighlight>(
         reason: "pedido do editor (submissão ou destaque pedido) — mantido, só aviso",
         declared_iso: hit.iso,
         days: hit.days,
+        ...(hit.repeat ? { repeat: hit.repeat } : {}),
       });
       return;
     }
@@ -202,6 +278,7 @@ export function demoteStaleDateHighlights<H extends StaleDateHighlight>(
           : "candidatos com data recente insuficientes para completar o top-3 — mantido, só aviso",
         declared_iso: hit.iso,
         days: hit.days,
+        ...(hit.repeat ? { repeat: hit.repeat } : {}),
       });
       return;
     }
@@ -216,8 +293,11 @@ export function demoteStaleDateHighlights<H extends StaleDateHighlight>(
       declared_text: hit.text,
       days: hit.days,
       ...(riser ? { replaced_by: titleOf(riser) } : {}),
+      ...(hit.repeat ? { repeat: hit.repeat } : {}),
     });
-    newHighlights[i] = { ...newHighlights[i], stale_date_demoted: { declared_iso: hit.iso, days: hit.days } };
+    newHighlights[i] = hit.repeat
+      ? { ...newHighlights[i], stale_repeat_demoted: { ...hit.repeat, days: hit.days } }
+      : { ...newHighlights[i], stale_date_demoted: { declared_iso: hit.iso, days: hit.days } };
   });
   return { highlights: newHighlights as H[], demoted, kept };
 }
@@ -225,6 +305,13 @@ export function demoteStaleDateHighlights<H extends StaleDateHighlight>(
 /** Linha do relatório do Stage 1 para um rebaixamento. */
 export function formatStaleDateNote(d: StaleDateDemotion): string {
   const riser = d.replaced_by ? `"${d.replaced_by}"` : "o próximo candidato";
+  if (d.repeat) {
+    return (
+      `⬇️ NOTÍCIA REPETIDA — "${d.title}" rebaixado de D${d.from_rank} (ficou no pool${d.bucket ? `, ${d.bucket}` : ""}): ` +
+      `conta de novo ${d.repeat.kind === "url" ? "a URL" : "o incidente"} de ${d.repeat.matched_edition} ` +
+      `("${d.repeat.matched_title}", ${d.days} dias atrás; ${d.repeat.signal}); subiu ${riser}. Promova de volta se houver fato novo.`
+    );
+  }
   return (
     `⬇️ DATA VELHA NA FONTE — "${d.title}" rebaixado de D${d.from_rank} (ficou no pool${d.bucket ? `, ${d.bucket}` : ""}): ` +
     `sem data verificada e a página declara ${d.declared_iso}, ${d.days} dias antes da edição ("${d.declared_text}"); ` +
@@ -234,5 +321,8 @@ export function formatStaleDateNote(d: StaleDateDemotion): string {
 
 /** Linha do relatório para um velho que ficou no top-3. */
 export function formatStaleDateKeptNote(k: StaleDateKept): string {
+  if (k.repeat) {
+    return `⚠️ NOTÍCIA REPETIDA — "${k.title}" (D${k.rank}) conta de novo o que saiu em ${k.repeat.matched_edition} ("${k.repeat.matched_title}", ${k.days} dias atrás); ${k.reason}.`;
+  }
   return `⚠️ DATA VELHA NA FONTE — "${k.title}" (D${k.rank}) declara ${k.declared_iso}, ${k.days} dias antes da edição; ${k.reason}.`;
 }

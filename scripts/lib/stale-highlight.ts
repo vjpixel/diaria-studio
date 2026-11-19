@@ -120,6 +120,39 @@ const VENDOR_OF: Record<string, string> = {
   apple: "apple", siri: "apple", amazon: "amazon", alexa: "amazon", nvidia: "nvidia", mistral: "mistral",
 };
 
+/** Nome legível de cada fornecedor de `VENDOR_OF`, como entidade de texto. */
+const VENDOR_DISPLAY: Record<string, string> = {
+  openai: "OpenAI", anthropic: "Anthropic", google: "Google", meta: "Meta", microsoft: "Microsoft",
+  xai: "XAI", apple: "Apple", amazon: "Amazon", nvidia: "Nvidia", mistral: "Mistral",
+};
+
+/**
+ * Fornecedores citados no caminho da URL (#13662). No Stage 1 o destaque
+ * ainda tem o título e o resumo da fonte, que às vezes não nomeiam a empresa:
+ * caso 261119, "Como agentes de IA conseguiram invadir sistemas de empresas?"
+ * (G1) com a OpenAI só no slug `como-agentes-da-openai-ultrapassaram-…`. O
+ * texto reescrito do gate 4 nomeia a empresa e o aviso dispara lá; sem esta
+ * dica, o Stage 1 via uma entidade só (Austrália) e deixava passar.
+ *
+ * Só devolve fornecedor, e fornecedor sozinho nunca basta para o sinal de
+ * incidente (exige uma entidade que não seja empresa de IA): a dica não cria
+ * aviso novo sem outra entidade em comum vinda do texto.
+ */
+export function vendorHintsFromUrl(url: string): string[] {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const tok of normalize(path).split(/[^a-z0-9]+/)) {
+    const vendor = VENDOR_OF[tok];
+    if (vendor && VENDOR_DISPLAY[vendor]) out.add(VENDOR_DISPLAY[vendor]);
+  }
+  return [...out];
+}
+
 function entityKey(e: string): { key: string; vendor: boolean } {
   const first = e.split(/[\s-]/)[0];
   const vendor = VENDOR_OF[first];
