@@ -312,7 +312,7 @@ test("#13573 ledger: append idempotente, import idempotente, linha inválida lan
   assert.equal(importForgetLedger(db, path).imported, 0);
   db.close();
   assert.deepEqual(readForgetLedger(path).entries.map((e) => e.email), [EMAIL]);
-  assert.deepEqual(readForgetLedger(resolve(dir, "nao-existe.jsonl")), { exists: false, entries: [] });
+  assert.deepEqual(readForgetLedger(resolve(dir, "nao-existe.jsonl")), { exists: false, entries: [], conflict_copies: [] });
   writeFileSync(path, readFileSync(path, "utf8") + "não é json\n");
   assert.throws(() => readForgetLedger(path), /inválida.*: 2/);
 });
