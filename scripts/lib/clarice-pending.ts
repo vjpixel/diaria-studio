@@ -79,7 +79,9 @@ import { readFactCheckProtection } from "./fact-check-protection.ts";
 import { isIntentionalErrorPlaceholder } from "./intentional-errors.ts";
 import { extractTemplateBlock, pickErroIntencionalReveal } from "./newsletter-parse.ts";
 
-export const CLARICE_PENDING_REL = join("_internal", "02-clarice-pending.json");
+import { claricePendingPath, isClaricePending } from "./clarice-pending-marker.ts";
+// #13711: caminho e existência do marcador moraram aqui até o parser precisar deles sem ciclo de import.
+export { CLARICE_PENDING_REL, claricePendingPath, isClaricePending } from "./clarice-pending-marker.ts";
 export const PRE_CLARICE_REL = join("_internal", "02-pre-clarice.md");
 export const PRE_RESUME_REL = join("_internal", "02-pre-clarice-resume.md");
 export const CLARICE_SUGGESTIONS_REL = join("_internal", "02-clarice-suggestions.json");
@@ -115,10 +117,6 @@ export interface ClaricePendingMarker {
    * Os invariantes dos Stages 4 e 5 levam ao gate.
    */
   last_reason?: string;
-}
-
-export function claricePendingPath(editionDir: string): string {
-  return join(editionDir, CLARICE_PENDING_REL);
 }
 
 /** Comando de retomada. Derivado na leitura (nunca persistido), com `--edition` quando conhecida. */
@@ -158,11 +156,6 @@ export function lastResumeAttemptNote(marker: ClaricePendingMarker | null): stri
   const outcome = marker.last_outcome ? `, ${marker.last_outcome}` : "";
   const why = marker.last_reason ? `: ${marker.last_reason}` : "";
   return `Última tentativa de retomar em ${marker.last_attempt_at}${outcome}${why}. `;
-}
-
-/** Há revisão da Clarice pendente? (o arquivo existe, legível ou não) */
-export function isClaricePending(editionDir: string): boolean {
-  return existsSync(claricePendingPath(editionDir));
 }
 
 function writeMarker(editionDir: string, marker: ClaricePendingMarker): void {

@@ -312,6 +312,148 @@ unset -f date sleep
 rm -f "$DATE_FILE11"
 assert_eq "virada de segundo antes da 1ª leitura com CI já resolvido -> exit 0" "0" "$RC11B"
 
+# ── 14-16. #13702: relógio falso (1s por `date`, `sleep` sem espera) ────────
+# Os cenários abaixo precisam de dezenas de "segundos"; o relógio falso os
+# torna determinísticos e instantâneos. Cada leitura do gate = 1 volta = 1s.
+FAKE_CLOCK13702="$(mktemp)"
+GATE_CALLS13702="$(mktemp)"
+fake_clock_on() {
+  echo 1000 > "$FAKE_CLOCK13702"
+  echo 0 > "$GATE_CALLS13702"
+  date() {
+    local t
+    t=$(cat "$FAKE_CLOCK13702")
+    echo $(( t + 1 )) > "$FAKE_CLOCK13702"
+    echo "$t"
+  }
+  sleep() { :; }
+}
+fake_clock_off() { unset -f date sleep; }
+gate_call_n() {
+  local n
+  n=$(( $(cat "$GATE_CALLS13702") + 1 ))
+  echo "$n" > "$GATE_CALLS13702"
+  echo "$n"
+}
+
+# ── 14. fila seguida de execução: o teto de execução conta DEPOIS da fila ───
+# Cenário do #13702: o job espera por runner e depois roda. Fixture: 8
+# leituras na fila, 4 rodando, depois o CI conclui. timeout=2,
+# running_ceiling=6: antes do fix o prazo com check rodando era
+# max(2+fila, 6) = 10, contado do início da espera, e o laço saía TIMEOUT na
+# 2ª leitura de execução; com o fix o prazo é 6 + 8 de fila = 14.
+fake_clock_on
+check_pr_checks_once() {
+  local n
+  n=$(gate_call_n)
+  if [ "$n" -le 8 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=1 pending=1 running=0"
+    return 2
+  fi
+  if [ "$n" -le 12 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=0 pending=1 running=1"
+    return 2
+  fi
+  return 0
+}
+OUT14=$(wait_pr_checks "14" 2 1 60 6 2>&1)
+RC14=$?
+fake_clock_off
+assert_eq "fila seguida de execução: teto de execução soma o tempo de fila -> exit 0, nunca TIMEOUT" "0" "$RC14"
+if echo "$OUT14" | grep -q "TIMEOUT"; then
+  echo "FAIL: execução depois da fila tratada como TIMEOUT — obtido: $OUT14"
+  FAILED=1
+else
+  echo "ok: sem TIMEOUT na execução que começou depois da fila"
+fi
+
+# Mesmo cenário com execução que nunca conclui: o laço continua limitado
+# (#6921) — TIMEOUT com a mensagem de execução, por volta de 6 + 8 leituras.
+fake_clock_on
+check_pr_checks_once() {
+  local n
+  n=$(gate_call_n)
+  if [ "$n" -le 8 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=1 pending=1 running=0"
+    return 2
+  fi
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=0 pending=1 running=1"
+  return 2
+}
+OUT14B=$(wait_pr_checks "14" 2 1 60 6 2>&1)
+RC14B=$?
+CALLS14B=$(cat "$GATE_CALLS13702")
+fake_clock_off
+assert_eq "execução eterna depois da fila -> exit 1 (TIMEOUT de execução)" "1" "$RC14B"
+if echo "$OUT14B" | grep -q "TIMEOUT.*em execução.*#13702"; then
+  echo "ok: TIMEOUT de execução cita #13702"
+else
+  echo "FAIL: mensagem de TIMEOUT de execução não encontrada — obtido: $OUT14B"
+  FAILED=1
+fi
+if [ "$CALLS14B" -ge 12 ] && [ "$CALLS14B" -le 20 ]; then
+  echo "ok: teto de execução + tempo de fila respeitado (${CALLS14B} leituras)"
+else
+  echo "FAIL: esperado ~14 leituras (6 de execução + 8 de fila), obtido ${CALLS14B}"
+  FAILED=1
+fi
+
+# ── 15. execução e fila juntas ao estourar o teto -> exit 7 (FILA), nunca 1 ──
+# Antes do fix o ramo running vinha primeiro e saía TIMEOUT (ci_timeout,
+# draft + fixer) onde o que segurava o CI era a fila de runner.
+fake_clock_on
+check_pr_checks_once() {
+  gate_call_n >/dev/null
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=1 pending=2 running=1"
+  return 2
+}
+OUT15=$(wait_pr_checks "15" 1 1 3 3 2>&1)
+RC15=$?
+CALLS15=$(cat "$GATE_CALLS13702")
+fake_clock_off
+assert_eq "check rodando + check na fila no teto -> exit 7 (FILA), nunca TIMEOUT" "7" "$RC15"
+if echo "$OUT15" | grep -q "FILA.*#10578"; then
+  echo "ok: mensagem de FILA presente"
+else
+  echo "FAIL: mensagem de FILA não encontrada — obtido: $OUT15"
+  FAILED=1
+fi
+if [ "$CALLS15" -le 10 ]; then
+  echo "ok: teto absoluto (fila + execução) respeitado (${CALLS15} leituras)"
+else
+  echo "FAIL: laço passou do teto absoluto — ${CALLS15} leituras"
+  FAILED=1
+fi
+
+# ── 16. StatusContext legado pendente (running=0) não ganha a extensão ──────
+# `pending - queued` contava o status legado PENDING/EXPECTED como execução
+# e a espera dobrava pra 60 min. Com `running=0` o teto é o normal.
+fake_clock_on
+check_pr_checks_once() {
+  gate_call_n >/dev/null
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #16: verdict=pending — 1 check(s) ainda não concluído(s): deploy/preview
+[check-pr-checks-gate] queue: queued=0 pending=1 running=0"
+  return 2
+}
+OUT16=$(wait_pr_checks "16" 2 1 60 60 2>&1)
+RC16=$?
+CALLS16=$(cat "$GATE_CALLS13702")
+fake_clock_off
+assert_eq "status legado pendente (running=0) -> exit 1 no teto normal" "1" "$RC16"
+if [ "$CALLS16" -le 4 ]; then
+  echo "ok: sem extensão de execução pro status legado (${CALLS16} leituras)"
+else
+  echo "FAIL: status legado ganhou a extensão de execução — ${CALLS16} leituras"
+  FAILED=1
+fi
+if echo "$OUT16" | grep -q "em execução"; then
+  echo "FAIL: TIMEOUT descreveu status legado como check em execução — obtido: $OUT16"
+  FAILED=1
+else
+  echo "ok: TIMEOUT sem a mensagem de execução"
+fi
+rm -f "$FAKE_CLOCK13702" "$GATE_CALLS13702"
+
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
 OUT4=$(bash "$DIR/wait-pr-checks.sh" 2>&1)
 RC4=$?
