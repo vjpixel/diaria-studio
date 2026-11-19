@@ -12,9 +12,11 @@
  * item novo) vai ao detector; o resto sai do cache. `--all` mede tudo.
  *
  * 1 frame por item (`--um-frame`): o frame do meio da fala; 25%/75% só nos
- * itens em que o do meio não achou rosto. Opcional até o `face-compare
- * --um-frame` (#13370) da 261117 e da 261118 mostrar que não piora o acerto
- * contra o `framing` aprovado; aí vira o padrão.
+ * itens em que o do meio não achou rosto. Fica opcional: o `face-compare
+ * --um-frame` (#13370) da 261117 e da 261118 (300, 18/11/2026) mostrou o acerto
+ * contra o `framing` aprovado PIOR com 1 frame (35 → 32 de 38 e 39 → 34 de 42
+ * itens a até 1%), então o padrão segue 3 frames (#13588; tabela em
+ * `docs/video-montagem-resolucao-tomadas-13463.md`).
  *
  * Puro: frames e detector entram por parâmetro (`runFaceMeasurement`).
  */

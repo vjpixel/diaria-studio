@@ -83,7 +83,24 @@
  * `rclone about` falhou; o motivo vai em `warnings`). Falha = exit 1, a unit
  * fica `failed` e o alarme de units falhas acusa.
  *
- * Task agendada: `Diaria-Video-Bruto-Archive` (sábado 03:00 BRT, `--apply`), com os defaults (sem espelho).
+ * Além dos brutos, a mesma rodada (política em `lib/diaria/video-drive-cleanup.ts`):
+ *   - #13630: finais, prévias e editados das pastas cujas edições o
+ *     `/diaria-publica` liberou (`_internal/05-video-liberada.json`, gravado
+ *     por `scripts/mark-video-liberada.ts`) e sem agendamento pendente no banco
+ *     saem com a mesma disciplina (cópia conferida no HD, depois o delete);
+ *   - #13632: a pasta de uma edição renomeada (`_origem-brutos.json` da pasta
+ *     nova) segue a edição nova, e os brutos dela são movidos para a pasta nova
+ *     no Drive (`rclone moveto`) antes do arquivamento;
+ *   - #13627: depois do arquivamento, cópias idênticas (md5 + tamanho) entre
+ *     pastas vão para a LIXEIRA do Drive, fica a da pasta dona;
+ *   - cada arquivo que sai ganha uma linha em
+ *     `{arquivo}/{pasta}/_registro-arquivamento.jsonl`.
+ * Renomeação e duplicatas usam uma listagem recursiva da pasta de vídeo e só
+ * rodam sem espelho (o default).
+ *
+ * Task agendada: `Diaria-Video-Bruto-Archive` (diária 03:00 BRT desde a #13631, `--apply`), com os defaults (sem espelho).
+ * Aviso (#13631): falha = exit 1 (unit `failed`); o "não apagado/movido" por
+ * permissão abre uma issue por conjunto de arquivos (`notDeletedFinding`).
  *
  * Uso:
  *   npx tsx scripts/archive-video-brutos.ts                    # dry-run
@@ -97,6 +114,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import {
+  appendFileSync,
   closeSync,
   constants as fsConstants,
   existsSync,
@@ -126,7 +144,8 @@ import {
   decideFolder,
   duplicatePaths,
   editionsOfFolder,
-  isBrutoFile,
+  effectiveEditionsOfFolder,
+  brutoFilesOf,
   montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
@@ -141,6 +160,23 @@ import {
   type RemoteFile,
   type VerifyVerdict,
 } from "./lib/diaria/video-bruto-archive.ts";
+import {
+  ORIGEM_BRUTOS_FILE,
+  VIDEO_LIBERADA_FILE,
+  buildRenameMap,
+  decideFinalsFolder,
+  foldersWithRemovalCandidates,
+  isFinalOrPreviewFile,
+  isRootXml,
+  parseVideoLiberada,
+  pendingAgendamentosOf,
+  planCrossFolderDuplicates,
+  referencedNamesOfXmls,
+  type FinalsDecision,
+  type FolderFile,
+} from "./lib/diaria/video-drive-cleanup.ts";
+import { loadAgendamentos } from "./lib/diaria/agendamentos.ts";
+import type { NotifyEditorFinding } from "./lib/editor-notify.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[archive-video-brutos]";
@@ -250,7 +286,19 @@ export type FileStatus =
   | "falha-download"
   | "falha-mover"
   | "falha-apagar"
-  | "falha-guardar-copia";
+  | "falha-guardar-copia"
+  // #13632: bruto da pasta de uma edição renomeada, movido para a pasta nova.
+  | "moveria-para-edicao-renomeada"
+  | "movido-para-edicao-renomeada"
+  | "ja-na-edicao-renomeada"
+  | "conflito-na-edicao-renomeada"
+  | "nao-movido-sem-permissao"
+  | "falha-mover-renomeada"
+  // #13627: cópia duplicada entre pastas, para a lixeira do Drive.
+  | "duplicata-sairia"
+  | "duplicata-na-lixeira"
+  | "duplicata-nao-apagada-sem-permissao"
+  | "falha-apagar-duplicata";
 
 /** Exaustivo de propósito: um status novo não compila sem dizer se é falha. */
 export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
@@ -264,13 +312,36 @@ export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
   "falha-mover": true,
   "falha-apagar": true,
   "falha-guardar-copia": true,
+  "moveria-para-edicao-renomeada": false,
+  "movido-para-edicao-renomeada": false,
+  "ja-na-edicao-renomeada": false,
+  "conflito-na-edicao-renomeada": true,
+  "nao-movido-sem-permissao": false,
+  "falha-mover-renomeada": true,
+  "duplicata-sairia": false,
+  "duplicata-na-lixeira": false,
+  "duplicata-nao-apagada-sem-permissao": false,
+  "falha-apagar-duplicata": true,
 };
+
+/**
+ * #13631: o que não é falha mas o editor precisa saber (o Drive recusou mexer
+ * num arquivo de outro dono). É o único aviso da rodada diária fora das falhas
+ * (que deixam a unit `failed`): a rotina roda todo dia e não pode virar ruído.
+ */
+export const STATUS_NEEDS_NOTICE: ReadonlySet<FileStatus> = new Set<FileStatus>([
+  "nao-apagado-sem-permissao",
+  "nao-movido-sem-permissao",
+  "duplicata-nao-apagada-sem-permissao",
+]);
 
 export interface FileResult {
   folder: string;
   path: string;
   sizeBytes: number;
   status: FileStatus;
+  /** Ausente = bruto. `final` = final/prévia/editado (#13630); `duplicata` = cópia entre pastas (#13627). */
+  kind?: "final" | "duplicata";
   source?: "arquivo" | "espelho" | "download";
   verify?: VerifyVerdict;
   detail?: string;
@@ -280,12 +351,16 @@ export interface ArchiveReport {
   at: string;
   applied: boolean;
   folders: FolderDecision[];
+  /** #13630: pastas com finais/prévias/editados liberados (ou o motivo de não). */
+  finalsFolders: FinalsDecision[];
   files: FileResult[];
   errors: string[];
   warnings: string[];
   driveFreeBefore: number | null;
   driveFreeAfter: number | null;
   archivedBytes: number;
+  /** #13627: duplicatas mandadas para a lixeira do Drive (ainda contam na cota por 30 dias). */
+  trashedBytes: number;
 }
 
 /**
@@ -511,10 +586,16 @@ async function listFolders(
   }
 }
 
-function publishedSignals(cfg: ArchiveConfig, name: string, warnings: string[]): Record<string, boolean | null> {
+/** Publicação de cada edição que a pasta segue (#13632: já com a renomeação). */
+function publishedSignals(
+  cfg: ArchiveConfig,
+  name: string,
+  warnings: string[],
+  renamedTo?: Readonly<Record<string, string>>,
+): Record<string, boolean | null> {
   const out: Record<string, boolean | null> = {};
   const haveEditions = existsSync(join(cfg.dataRoot, "editions"));
-  for (const e of editionsOfFolder(name) ?? []) {
+  for (const e of effectiveEditionsOfFolder(name, renamedTo) ?? []) {
     if (!haveEditions) {
       out[e] = null;
       continue;
@@ -855,12 +936,14 @@ export async function runArchive(opts: {
     at: new Date().toISOString(),
     applied: apply,
     folders: [],
+    finalsFolders: [],
     files: [],
     errors: [],
     warnings: [],
     driveFreeBefore: null,
     driveFreeAfter: null,
     archivedBytes: 0,
+    trashedBytes: 0,
   };
 
   // #12573: com --apply, uma execução por vez. A 2ª sai antes de tocar no timer do bisync.
@@ -908,37 +991,89 @@ async function runArchiveLocked(
   // #12789: duas pastas com o mesmo nome no Drive. O lsjson junta o conteúdo das duas e o deletefile resolve por
   // nome: o arquivo conferido numa pode não ser o apagado na outra. Erro da edição, nada baixado nem apagado dela;
   // as demais seguem (mesmo espírito do `nome-duplicado-no-drive` dos arquivos).
+  const allDupFolders = new Set(listed.duplicates);
   const dupFolders = new Set(listed.duplicates.filter(wanted));
   for (const name of dupFolders) {
     report.errors.push(`${name}: pasta de edição com nome duplicado no Drive; nada baixado nem apagado dela (junte ou renomeie as pastas)`);
   }
+  // Pastas de edição sem nome repetido: as que a renomeação, os finais e as duplicatas enxergam.
+  const editionFolders = listed.names.filter((n) => editionsOfFolder(n) !== null && !allDupFolders.has(n));
+
+  // #13632/#13627: uma listagem recursiva da pasta de vídeo inteira (só metadados, o Drive devolve o MD5).
+  // Só sem espelho (o default): com espelho (rodada manual da pasta antiga) toda listagem do Drive que decide
+  // o que sai tem de vir depois da pausa do bisync, e a renomeação e as duplicatas ficam fora.
+  let allFiles: FolderFile[] | null = null;
+  if (cfg.localRoot === null) {
+    const all = await listAllFolders(cfg, stop, new Set(editionFolders));
+    if ("error" in all) report.errors.push(all.error);
+    else allFiles = all.files;
+  } else {
+    report.warnings.push("com espelho (VIDEO_ARCHIVE_LOCAL_ROOT), a renomeação de edição e as duplicatas entre pastas ficam fora da rodada (#13632, #13627)");
+  }
+  const renamedTo = allFiles ? await readRenames(cfg, stop, allFiles, report.warnings) : {};
+
   report.folders = listed.names
     .filter((n) => wanted(n) && !dupFolders.has(n))
-    .map((name) =>
-      decideFolder({ name, published: publishedSignals(cfg, name, report.warnings) }, opts.today, opts.unpublishedMaxDays, publishedMinDays),
-    );
+    .map((name) => {
+      const ren = renamesOfFolder(name, renamedTo);
+      return decideFolder(
+        { name, published: publishedSignals(cfg, name, report.warnings, ren), ...(ren ? { renamedTo: ren } : {}) },
+        opts.today,
+        opts.unpublishedMaxDays,
+        publishedMinDays,
+      );
+    });
   const eligible = report.folders.filter((f) => f.eligible).map((f) => f.name);
-  const refs = eligible.length > 0 ? inUseMontageRefs(cfg, opts.today, opts.unpublishedMaxDays, publishedMinDays, report.warnings) : { byKey: new Map<string, string[]>(), errors: [] };
+  report.finalsFolders = decideFinals(cfg, report.folders.map((f) => f.name), renamedTo, report.warnings);
+  const finalsEligible = new Set(report.finalsFolders.filter((f) => f.eligible).map((f) => f.name));
+  // #13632: bruto da pasta antiga de uma edição renomeada vai para a pasta nova.
+  const renameMoves = allFiles ? planRenameMoves(report.folders, allFiles, new Set(editionFolders)) : [];
+  const needRefs = eligible.length > 0 || renameMoves.length > 0 || allFiles !== null;
+  const refs = needRefs ? inUseMontageRefs(cfg, opts.today, opts.unpublishedMaxDays, publishedMinDays, report.warnings) : { byKey: new Map<string, string[]>(), errors: [] };
   report.errors.push(...refs.errors);
   const dedupWarnings = () => {
     report.warnings = [...new Set(report.warnings)];
   };
+  /** Pastas a listar: as dos brutos e as dos finais liberados, na ordem do nome. */
+  const workFolders = [...new Set([...eligible, ...finalsEligible])].sort();
+  const workFilesOf = (folder: string, files: RemoteFile[]): Array<{ f: RemoteFile; kind?: "final" }> => [
+    ...(eligible.includes(folder) ? brutoFilesOf(files).map((f) => ({ f })) : []),
+    ...(finalsEligible.has(folder) ? files.filter((f) => f.size > 0 && isFinalOrPreviewFile(f.path)).map((f) => ({ f, kind: "final" as const })) : []),
+  ];
 
   if (!apply) {
     // Dry-run: lista sem pausar nada (só leitura).
-    for (const name of eligible) {
+    const leaving = new Set<string>();
+    for (const m of renameMoves) {
+      const res = renameMoveVerdict(m, refs, allFiles ?? []);
+      report.files.push(res ?? { folder: m.from, path: m.file.path, sizeBytes: m.file.size, status: "moveria-para-edicao-renomeada", detail: `para ${m.to}/${m.file.path} (#13632)` });
+      if (!res) leaving.add(`${m.from}/${m.file.path}`);
+    }
+    for (const name of workFolders) {
       const l = await listRemote(cfg, stop, `${cfg.remoteRoot}/${name}`);
-      if ("error" in l) report.errors.push(`${name}: ${l.error}`);
-      else
-        for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
-          report.files.push(inUseResult(name, f, refs) ?? { folder: name, path: f.path, sizeBytes: f.size, status: "sairia" });
-        }
+      if ("error" in l) {
+        report.errors.push(`${name}: ${l.error}`);
+        continue;
+      }
+      for (const { f, kind } of workFilesOf(name, l.files)) {
+        if (leaving.has(`${name}/${f.path}`)) continue;
+        const inUse = kind ? null : inUseResult(name, f, refs);
+        report.files.push(inUse ?? { folder: name, path: f.path, sizeBytes: f.size, status: "sairia", ...(kind ? { kind } : {}) });
+        if (!inUse) leaving.add(`${name}/${f.path}`);
+      }
+    }
+    if (allFiles && refs.errors.length === 0) {
+      const rest = allFiles.filter((f) => !leaving.has(`${f.folder}/${f.path}`));
+      for (const d of await planDuplicates(cfg, stop, rest, eligible, refs, report)) {
+        if (wanted(d.file.folder)) report.files.push(duplicateResult(d, "duplicata-sairia"));
+      }
     }
     dedupWarnings();
     return report;
   }
   dedupWarnings();
-  if (eligible.length === 0) return report;
+  const maybeDuplicates = allFiles !== null && foldersWithRemovalCandidates(allFiles, new Set(eligible)).length > 0;
+  if (workFolders.length === 0 && renameMoves.length === 0 && !maybeDuplicates) return report;
   // Sem saber que brutos uma montagem em curso usa, nada sai do Drive (#12602).
   if (refs.errors.length > 0) return report;
 
@@ -969,8 +1104,18 @@ async function runArchiveLocked(
     }
     if (interrupted()) return report;
     report.driveFreeBefore = await driveFree(cfg, stop, report.warnings);
+
+    // #13632: antes de listar as pastas, os brutos da edição renomeada vão para a pasta nova (depois da pausa,
+    // para o bisync ver o estado final). Os que foram saem com a edição nova, pela regra normal dela.
+    for (const m of renameMoves) {
+      if (stop.signal) break;
+      const res = renameMoveVerdict(m, refs, allFiles ?? []) ?? (await moveRenamed(cfg, stop, m));
+      report.files.push(res);
+      log(`${LOG_PREFIX} ${m.from}/${m.file.path} → ${m.to}: ${res.status}${res.detail ? `: ${res.detail}` : ""}`);
+    }
+
     // A listagem vem DEPOIS da pausa: tamanho e MD5 são os do estado que vai ser apagado.
-    folders: for (const folder of eligible) {
+    folders: for (const folder of workFolders) {
       if (stop.signal) break;
       const l = await listRemote(cfg, stop, `${cfg.remoteRoot}/${folder}`);
       if ("error" in l) {
@@ -978,23 +1123,47 @@ async function runArchiveLocked(
         continue;
       }
       const dups = duplicatePaths(l.files);
-      for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
-        // #12603: o sinal para a rodada entre um bruto e outro.
+      for (const { f, kind } of workFilesOf(folder, l.files)) {
+        // #12603: o sinal para a rodada entre um arquivo e outro.
         if (stop.signal) break folders;
-        const inUse = inUseResult(folder, f, refs);
+        const inUse = kind ? null : inUseResult(folder, f, refs);
         if (inUse) {
           report.files.push(inUse);
           continue;
         }
+        const k = kind ? { kind } : {};
         if (dups.has(f.path)) {
-          report.files.push({ folder, path: f.path, sizeBytes: f.size, status: "nome-duplicado-no-drive", detail: "dois arquivos com o mesmo nome no Drive; apagar por nome não diz qual sai" });
+          report.files.push({ folder, path: f.path, sizeBytes: f.size, status: "nome-duplicado-no-drive", ...k, detail: "dois arquivos com o mesmo nome no Drive; apagar por nome não diz qual sai" });
           continue;
         }
         log(`${LOG_PREFIX} ${folder}/${f.path} (${formatBytes(f.size)})…`);
-        const res = await archiveOne(cfg, stop, folder, f);
+        const res = { ...(await archiveOne(cfg, stop, folder, f)), ...k };
         report.files.push(res);
-        if (res.status === "arquivado") report.archivedBytes += res.sizeBytes;
+        if (res.status === "arquivado") {
+          report.archivedBytes += res.sizeBytes;
+          appendRegistry(cfg, folder, { kind: kind ?? "bruto", path: f.path, size: f.size, md5: f.md5, destino: join(cfg.archiveRoot, folder, ...f.path.split("/")) }, report);
+        }
         log(`${LOG_PREFIX}   ${res.status}${res.detail ? `: ${res.detail}` : ""}`);
+      }
+    }
+    if (interrupted()) return report;
+
+    // #13627: duplicatas entre pastas, sobre a listagem DEPOIS do arquivamento (o que já saiu não conta).
+    if (allFiles !== null) {
+      const fresh = await listAllFolders(cfg, stop, new Set(editionFolders));
+      if ("error" in fresh) report.errors.push(`duplicatas: ${fresh.error}`);
+      else {
+        for (const d of await planDuplicates(cfg, stop, fresh.files, eligible, refs, report)) {
+          if (stop.signal) break;
+          if (!wanted(d.file.folder)) continue;
+          const res = await trashDuplicate(cfg, stop, d);
+          report.files.push(res);
+          if (res.status === "duplicata-na-lixeira") {
+            report.trashedBytes += res.sizeBytes;
+            appendRegistry(cfg, d.file.folder, { kind: "duplicata", path: d.file.path, size: d.file.size, md5: d.file.md5, destino: `lixeira do Drive (cópia de ${d.keptAt})` }, report);
+          }
+          log(`${LOG_PREFIX} duplicata ${d.file.folder}/${d.file.path}: ${res.status}${res.detail ? `: ${res.detail}` : ""}`);
+        }
       }
     }
     if (interrupted()) return report;
@@ -1002,7 +1171,258 @@ async function runArchiveLocked(
   } finally {
     await resume();
   }
+  dedupWarnings();
   return report;
+}
+
+// ── #13632: edição renomeada ────────────────────────────────────────────────
+
+/** Listagem recursiva da pasta de vídeo inteira, só das pastas de edição em `folders`. */
+async function listAllFolders(cfg: ArchiveConfig, stop: StopController, folders: ReadonlySet<string>): Promise<{ files: FolderFile[] } | { error: string }> {
+  const l = await listRemote(cfg, stop, cfg.remoteRoot);
+  if ("error" in l) return { error: `pasta de vídeo ${cfg.remoteRoot}: ${l.error}` };
+  const files: FolderFile[] = [];
+  for (const f of l.files) {
+    const i = f.path.indexOf("/");
+    if (i <= 0) continue;
+    const folder = f.path.slice(0, i);
+    if (folders.has(folder)) files.push({ folder, path: f.path.slice(i + 1), size: f.size, md5: f.md5 });
+  }
+  return { files };
+}
+
+/**
+ * Lê o `_origem-brutos.json` de cada pasta que tem um e devolve `de → para`,
+ * só para a edição antiga que NÃO tem pasta em `data/editions` (a renomeação
+ * só decide pela pasta que ficou sem edição, #13632). Ilegível = aviso.
+ */
+async function readRenames(cfg: ArchiveConfig, stop: StopController, files: readonly FolderFile[], warnings: string[]): Promise<Record<string, string>> {
+  const records: Array<{ folder: string; raw: unknown }> = [];
+  for (const f of files) {
+    if (f.path !== ORIGEM_BRUTOS_FILE) continue;
+    const r = await run(stop, cfg.rclone, ["cat", ...DRIVE_FLAGS, `${cfg.remoteRoot}/${f.folder}/${ORIGEM_BRUTOS_FILE}`], { timeoutMs: 120_000 });
+    if (!r.ok) {
+      warnings.push(`${f.folder}/${ORIGEM_BRUTOS_FILE}: não consegui ler (${r.stderr.trim().slice(-200)}); renomeação ignorada`);
+      continue;
+    }
+    try {
+      records.push({ folder: f.folder, raw: JSON.parse(r.stdout) });
+    } catch (e) {
+      warnings.push(`${f.folder}/${ORIGEM_BRUTOS_FILE}: ilegível (${(e as Error).message}); renomeação ignorada`);
+    }
+  }
+  const { map, warnings: w } = buildRenameMap(records);
+  warnings.push(...w);
+  const out: Record<string, string> = {};
+  for (const [de, para] of map) {
+    if (!existsSync(editionDirUnder(cfg.dataRoot, de))) out[de] = para;
+  }
+  return out;
+}
+
+/** As renomeações que valem para as edições do nome da pasta (`undefined` = nenhuma). */
+function renamesOfFolder(name: string, renamedTo: Readonly<Record<string, string>>): Record<string, string> | undefined {
+  const own = Object.fromEntries((editionsOfFolder(name) ?? []).filter((e) => renamedTo[e]).map((e) => [e, renamedTo[e]]));
+  return Object.keys(own).length > 0 ? own : undefined;
+}
+
+interface RenameMove {
+  from: string;
+  to: string;
+  file: FolderFile;
+}
+
+/**
+ * Brutos a mover: só da pasta de uma edição única (`AAMMDD`) renomeada, e só
+ * quando a pasta nova existe no Drive (sem nome repetido).
+ */
+function planRenameMoves(folders: readonly FolderDecision[], files: readonly FolderFile[], editionFolders: ReadonlySet<string>): RenameMove[] {
+  const out: RenameMove[] = [];
+  for (const d of folders) {
+    const to = d.renamedTo?.[d.name];
+    if (!to || !editionFolders.has(to)) continue;
+    const own = files.filter((f) => f.folder === d.name);
+    for (const f of brutoFilesOf(own)) out.push({ from: d.name, to, file: f });
+  }
+  return out;
+}
+
+/** Bruto que não se move (em uso, ou já há arquivo com o mesmo nome na pasta nova); `null` = mover. */
+function renameMoveVerdict(m: RenameMove, refs: InUseRefs, files: readonly FolderFile[]): FileResult | null {
+  const base = { folder: m.from, path: m.file.path, sizeBytes: m.file.size };
+  const users = referencingEditions(m.file.path, refs.byKey);
+  if (users.length > 0) {
+    return { ...base, status: "em-uso-por-outra-edicao", detail: `usado pela montagem de ${users.join(", ")} (source.json); não movido para ${m.to}` };
+  }
+  const there = files.find((f) => f.folder === m.to && f.path === m.file.path);
+  if (!there) return null;
+  if (there.size === m.file.size && there.md5 !== null && there.md5 === m.file.md5) {
+    return { ...base, status: "ja-na-edicao-renomeada", detail: `${m.to}/${m.file.path} já tem o mesmo conteúdo; esta cópia sai como duplicata (#13627)` };
+  }
+  return { ...base, status: "conflito-na-edicao-renomeada", detail: `${m.to}/${m.file.path} existe com outro conteúdo; nada movido (conferir à mão)` };
+}
+
+async function moveRenamed(cfg: ArchiveConfig, stop: StopController, m: RenameMove): Promise<FileResult> {
+  const base = { folder: m.from, path: m.file.path, sizeBytes: m.file.size };
+  const r = await run(
+    stop,
+    cfg.rclone,
+    ["moveto", ...DRIVE_FLAGS, `${cfg.remoteRoot}/${m.from}/${m.file.path}`, `${cfg.remoteRoot}/${m.to}/${m.file.path}`],
+    { timeoutMs: 600_000 },
+  );
+  if (r.ok) return { ...base, status: "movido-para-edicao-renomeada", detail: `para ${m.to}/${m.file.path}` };
+  const err = r.stderr.trim().slice(-500);
+  return { ...base, status: isPermissionError(r.stderr) ? "nao-movido-sem-permissao" : "falha-mover-renomeada", detail: err };
+}
+
+// ── #13630: finais, prévias e editados ──────────────────────────────────────
+
+/** Decide os finais de cada pasta: edição liberada pelo `/diaria-publica` e sem agendamento pendente no banco. */
+function decideFinals(cfg: ArchiveConfig, names: readonly string[], renamedTo: Readonly<Record<string, string>>, warnings: string[]): FinalsDecision[] {
+  let itens: ReadonlyArray<{ id: string; edicao: string; estado: string }> | null;
+  try {
+    itens = loadAgendamentos(join(cfg.dataRoot, "agendamentos", "banco.json")).itens;
+  } catch (e) {
+    itens = null;
+    warnings.push(`banco de agendamentos ilegível (${(e as Error).message}); nenhum final sai do Drive nesta rodada`);
+  }
+  return names.map((name) => {
+    const ren = renamesOfFolder(name, renamedTo);
+    const editions = effectiveEditionsOfFolder(name, ren) ?? [];
+    const liberada: Record<string, boolean> = {};
+    const pending: Record<string, string[]> = {};
+    for (const e of editions) {
+      liberada[e] = readLiberada(cfg, e);
+      if (itens) pending[e] = pendingAgendamentosOf(itens, e);
+    }
+    return decideFinalsFolder({ name, liberada, pending: itens ? pending : null, ...(ren ? { renamedTo: ren } : {}) });
+  });
+}
+
+function readLiberada(cfg: ArchiveConfig, edition: string): boolean {
+  try {
+    return parseVideoLiberada(JSON.parse(readFileSync(join(editionDirUnder(cfg.dataRoot, edition), VIDEO_LIBERADA_FILE), "utf8")), edition);
+  } catch {
+    return false;
+  }
+}
+
+// ── #13627: duplicatas entre pastas ─────────────────────────────────────────
+
+interface DuplicateRemoval {
+  file: FolderFile;
+  keptAt: string;
+}
+
+/** Plano das duplicatas: lê os XMLs da raiz só das pastas com candidata a sair; avisos dos retidos vão no relatório. */
+async function planDuplicates(
+  cfg: ArchiveConfig,
+  stop: StopController,
+  files: readonly FolderFile[],
+  removable: readonly string[],
+  refs: InUseRefs,
+  report: ArchiveReport,
+): Promise<DuplicateRemoval[]> {
+  const removableSet = new Set(removable);
+  const referencedByFolder = new Map<string, ReadonlySet<string> | null>();
+  for (const folder of foldersWithRemovalCandidates(files, removableSet)) {
+    const texts: Array<string | null> = [];
+    for (const x of files.filter((f) => f.folder === folder && isRootXml(f.path))) {
+      const r = await run(stop, cfg.rclone, ["cat", ...DRIVE_FLAGS, `${cfg.remoteRoot}/${folder}/${x.path}`], { timeoutMs: 120_000 });
+      texts.push(r.ok ? r.stdout : null);
+    }
+    const names = referencedNamesOfXmls(texts);
+    if (names === null) report.warnings.push(`${folder}: algum XML da raiz não pôde ser lido; nenhuma duplicata sai da pasta (#13627)`);
+    referencedByFolder.set(folder, names);
+  }
+  const groups = planCrossFolderDuplicates(files, { removableFolders: removableSet, referencedByFolder, inUseKeys: new Set(refs.byKey.keys()) });
+  const out: DuplicateRemoval[] = [];
+  for (const g of groups) {
+    const keptAt = `${g.keep[0].folder}/${g.keep[0].path}`;
+    for (const f of g.remove) out.push({ file: f, keptAt });
+  }
+  return out;
+}
+
+function duplicateResult(d: DuplicateRemoval, status: FileStatus, extra?: string): FileResult {
+  return {
+    folder: d.file.folder,
+    path: d.file.path,
+    sizeBytes: d.file.size,
+    status,
+    kind: "duplicata",
+    detail: `cópia de ${d.keptAt}${extra ? `; ${extra}` : ""}`,
+  };
+}
+
+/** Manda a cópia para a LIXEIRA do Drive (reversível por 30 dias), nunca delete definitivo. */
+async function trashDuplicate(cfg: ArchiveConfig, stop: StopController, d: DuplicateRemoval): Promise<FileResult> {
+  const r = await run(
+    stop,
+    cfg.rclone,
+    ["deletefile", "--drive-use-trash=true", ...DRIVE_FLAGS, `${cfg.remoteRoot}/${d.file.folder}/${d.file.path}`],
+    { timeoutMs: 600_000 },
+  );
+  if (r.ok) return duplicateResult(d, "duplicata-na-lixeira");
+  const err = r.stderr.trim().slice(-300);
+  // #13619: lixeira em arquivo de outro dono dá 403; vira aviso, não falha.
+  return duplicateResult(d, isPermissionError(r.stderr) ? "duplicata-nao-apagada-sem-permissao" : "falha-apagar-duplicata", err);
+}
+
+// ── registro por edição (#13630 item 5) ─────────────────────────────────────
+
+/** Nome do registro do que saiu do Drive, na pasta da edição no arquivo do HD. */
+export const ARCHIVE_REGISTRY_FILE = "_registro-arquivamento.jsonl";
+
+/**
+ * Acrescenta uma linha ao registro da edição (`{arquivo}/{pasta}/_registro-arquivamento.jsonl`):
+ * o que saiu, de onde e para onde, para o editor recuperar um final. Falhar
+ * aqui é falha da rodada: o arquivo já saiu do Drive.
+ */
+function appendRegistry(
+  cfg: ArchiveConfig,
+  folder: string,
+  entry: { kind: "bruto" | "final" | "duplicata"; path: string; size: number; md5: string | null; destino: string },
+  report: ArchiveReport,
+): void {
+  const file = join(cfg.archiveRoot, folder, ARCHIVE_REGISTRY_FILE);
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), drive: `${cfg.remoteRoot}/${folder}/${entry.path}`, ...entry }) + "\n");
+  } catch (e) {
+    report.errors.push(`${folder}: não consegui gravar ${ARCHIVE_REGISTRY_FILE} (${(e as Error).message}); ${entry.path} já saiu do Drive`);
+  }
+}
+
+/**
+ * #13631: aviso ao editor sobre o que o Drive recusou mexer (arquivo de outro
+ * dono). Uma issue por CONJUNTO de arquivos (o fingerprint é a lista): a rotina
+ * roda todo dia e o mesmo conjunto não reabre nem reenvia nada. Falhas não
+ * entram aqui: deixam a unit `failed` e o alarme de units pega.
+ */
+export function notDeletedFinding(report: ArchiveReport): NotifyEditorFinding | null {
+  const list = report.files.filter((f) => STATUS_NEEDS_NOTICE.has(f.status));
+  if (list.length === 0) return null;
+  const keys = list.map((f) => `${f.status}:${f.folder}/${f.path}`).sort();
+  let h = 0;
+  for (const ch of keys.join("\n")) h = (Math.imul(h, 31) + ch.charCodeAt(0)) | 0;
+  const lines = list.map((f) => `- \`${f.folder}/${f.path}\` (${formatBytes(f.sizeBytes)}): ${f.status}${f.detail ? ` — ${f.detail.slice(0, 200)}` : ""}`);
+  return {
+    check: "video-drive-cleanup-nao-apagado",
+    fingerprint: `video-drive-cleanup-nao-apagado:${(h >>> 0).toString(16)}`,
+    severity: "acao",
+    subject: `Vídeo no Drive: ${list.length} arquivo(s) que a rotina não conseguiu apagar ou mover (outro dono)`,
+    body: [
+      "A rotina diária do vídeo (`Diaria-Video-Bruto-Archive`, `scripts/archive-video-brutos.ts`) não conseguiu tirar do Drive estes arquivos: o Drive recusou por permissão (arquivo de outro dono, #12570/#13619). A cópia conferida dos arquivados fica no HD do 300; as duplicatas e os brutos de edição renomeada continuam no Drive.",
+      "",
+      ...lines,
+      "",
+      "Ação: apagar (ou mover) à mão pela conta dona, ou transferir a posse para a diaria.editor.",
+    ].join("\n"),
+    priority: "P3",
+    labels: ["enhancement"],
+    legacyResendIntent: "dedupe-new-occurrences-only",
+  };
 }
 
 export function reportFailed(report: ArchiveReport): boolean {
@@ -1022,16 +1442,22 @@ function printText(report: ArchiveReport): void {
   for (const f of report.folders) {
     console.log(`  ${f.eligible ? "entra " : "fica  "} ${f.name}  (${f.ageDays ?? "?"}d, ${FOLDER_REASON[f.reason]})`);
   }
-  for (const f of report.files) {
-    console.log(`  ${f.status.padEnd(26)} ${f.folder}/${f.path}  ${formatBytes(f.sizeBytes)}${f.detail ? `  — ${f.detail}` : ""}`);
+  for (const f of report.finalsFolders) {
+    if (f.eligible) console.log(`  finais ${f.name}  (liberada pelo /diaria-publica)`);
+    else if (f.reason === "agendamento-pendente") console.log(`  finais ficam ${f.name}  (agendamento pendente: ${f.detail})`);
   }
-  const planned = report.files.reduce((n, f) => n + f.sizeBytes, 0);
+  for (const f of report.files) {
+    const tag = f.kind === "final" ? " [final]" : f.kind === "duplicata" ? " [duplicata]" : "";
+    console.log(`  ${f.status.padEnd(26)} ${f.folder}/${f.path}${tag}  ${formatBytes(f.sizeBytes)}${f.detail ? `  — ${f.detail}` : ""}`);
+  }
+  const leaving = report.files.filter((f) => f.status === "sairia" || f.status === "duplicata-sairia");
+  const planned = leaving.reduce((n, f) => n + f.sizeBytes, 0);
   if (report.applied) {
-    console.log(`${LOG_PREFIX} arquivado e apagado do Drive: ${formatBytes(report.archivedBytes)}.`);
+    console.log(`${LOG_PREFIX} arquivado e apagado do Drive: ${formatBytes(report.archivedBytes)}; duplicatas na lixeira: ${formatBytes(report.trashedBytes)}.`);
     const fmt = (v: number | null) => (v === null ? "?" : formatBytes(v));
     console.log(`${LOG_PREFIX} Drive livre: antes ${fmt(report.driveFreeBefore)}, depois ${fmt(report.driveFreeAfter)}.`);
   } else {
-    console.log(`${LOG_PREFIX} ${report.files.length} bruto(s), ${formatBytes(planned)} sairiam do Drive.`);
+    console.log(`${LOG_PREFIX} ${leaving.length} arquivo(s), ${formatBytes(planned)} sairiam do Drive.`);
     console.log(`${LOG_PREFIX} dry-run (default): nada movido nem apagado. Rode com --apply.`);
   }
   for (const w of report.warnings) console.error(`${LOG_PREFIX} aviso: ${w}`);
@@ -1078,6 +1504,17 @@ async function main(): Promise<void> {
   if (hasFlag(argv, "json")) console.log(JSON.stringify(report, null, 2));
   else printText(report);
   if (reportFailed(report)) process.exitCode = 1;
+  // #13631: rodada diária. Fora as falhas (unit `failed`), o único aviso é o "não apagado/movido" por permissão.
+  const finding = apply ? notDeletedFinding(report) : null;
+  if (finding) {
+    try {
+      const { notifyEditor } = await import("./lib/editor-notify.ts");
+      const res = await notifyEditor(finding, { cwd: ROOT });
+      if (res.issue?.action === "failed") console.error(`${LOG_PREFIX} aviso ao editor falhou: ${res.issue.error}`);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} aviso ao editor falhou: ${(e as Error).message}`);
+    }
+  }
 }
 
 if (isMainModule(import.meta.url)) {

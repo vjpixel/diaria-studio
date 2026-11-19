@@ -9,6 +9,8 @@ Invariante `edition-sync-conflicts` (Stage 4, `error`): roda em `check-invariant
 - qualquer `*.conflictN` dentro da pasta da edição, fora de `_conflitos-*`;
 - ausência de `02-reviewed.md`, `_internal/01-approved.json` ou `06-public-images.json`.
 
+Aviso antecipado (#13614): um aborto do bisync de `data/` no meio de uma rodada (`Bisync aborted`) com edição em curso vira o achado `alarm-data-bisync-aborted-during-edition` do `Diaria-GDrive-Sync-Alarm` (issue P1 + e-mail), porque é a rodada seguinte ao aborto que gera os `.conflictN`. Ao receber esse aviso, rode a invariante acima na edição em curso antes de seguir.
+
 ## Restaurar com segurança
 
 1. Pare a escrita na edição (nenhuma outra sessão ou máquina rodando Stage 2-4 nela).

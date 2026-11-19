@@ -41,7 +41,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       (#13588) incremental: a medida de cada item fica em `face-cache.json` (state dir, chave =
  *       hash do intervalo), e só o item com intervalo novo (tomada trocada) vai ao detector;
  *       --all mede tudo. --um-frame: o frame do meio, com 25/75% só onde ele não achou rosto
- *       (opcional até o face-compare --um-frame mostrar que não piora).
+ *       (opcional: medido na 261117 e na 261118, 1 frame piorou o acerto; o padrão segue 3, #13588).
  *   face-compare AAMMDD --mp-python PY --mp-model TFLITE [--um-frame]
  *       (#13370) MEDIÇÃO: Haar x MediaPipe nos mesmos frames do `face`, contra o framing
  *       aprovado do blocks.json; grava `face-compare.json` no work dir, não muda nada.
@@ -132,7 +132,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *   fact-check-merge AAMMDD (#13597)
  *                           junta o `fact-check.delta.json` do agent com os achados mantidos no
  *                           `fact-check.json` (delta de outra versão é recusado)
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-bruto] [--trechos-folga S] [--trecho-fonte "CHAVE=caminho;…"]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--speech-full-db N] [--speech-diff-db N] [--no-speech-voice] [--no-audio-clean] [--xml-leve|--xml-bruto] [--trechos-folga S] [--esperar-nuvem S] [--trecho-fonte "CHAVE=caminho;…"]
  *       (#13437) trecho de outro vídeo (formato react, `trechoInserido` da fala do horizontal):
  *       cortado do EXPORT do horizontal do vídeo de origem (nunca do YouTube), no intervalo do
  *       roteiro, no tamanho/fps da sequência (`{AAMMDD}_trecho_{fala}-{hash}.mov` no out dir,
@@ -158,6 +158,14 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  *       o HEVC pelo Drive. h264_nvenc quando o ffmpeg tem; senão libx264. --xml-bruto aponta o
  *       bruto, como antes; --trechos-folga muda a folga. No modo API (300) sai o XML do bruto, com
  *       [aviso] (os trechos não sobem pelo upload do out dir). Falha do ffmpeg = XML do bruto, com [aviso].
+ *       (#13493) o XML leve liga sozinho só acima do limiar `publishing.video.xml_leve` (bruto com mais
+ *       de 2 GB ou de 8 arquivos, por padrão, #13629); abaixo, XML do bruto com [premissa]. --xml-leve força os
+ *       trechos, --xml-bruto força o bruto. Os limites dos trechos ancoram no bloco de silêncio do
+ *       silences.json em que o corte cai (um ajuste de borda no mesmo silêncio reaproveita o trecho);
+ *       fora de silêncio, o segundo inteiro. No Drive for desktop (I:), o build espera os trechos na
+ *       nuvem com o tamanho do disco (sem .part) até --esperar-nuvem S (padrão 600; 0 = uma leitura,
+ *       pela API com data/.credentials.json) e termina com `[ok] XML leve pronto` ou `[aviso] XML leve
+ *       AINDA NÃO pronto` (sem credenciais ou com --no-drive-api: [aviso] de não conferido).
  *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado-{chave}.wav`
  *       (`cleanAudioFileName`; a chave é o hash dos args do ffmpeg), o áudio do bruto com afftdn +
  *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
@@ -345,6 +353,15 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
  * nome) como no modo API, em drive-uploads.json, e `upload` funciona; o build confere no fim
  * se todo arquivo do XML está no Drive e avisa o que falta. A raiz padrão (I:) nunca sobe pela
  * API: o Drive for desktop já sincroniza.
+ *
+ * Pasta arquivo/ (#13610): depois de build/srt/preview/upload que deram certo, a versão
+ * anterior de cada arquivo da raiz de {AAMMDD}/ vai para {AAMMDD}/arquivo/ (move, nunca apaga;
+ * no Drive pela API, preservando o id; no Neo pelo disco). Fica o XML de maior _V{n} de cada
+ * família, o SRT da versão dele e os assets que os XMLs vigentes referenciam; política em
+ * scripts/lib/diaria/video-version-archive.ts. A prévia regravada arquiva a anterior depois de a
+ * nova estar gravada/enviada. A
+ * numeração do build conta o arquivo/ e o plan.json. Falha ao arquivar é [aviso], nunca muda o
+ * exit. --no-archive desliga. Migração das pastas antigas: scripts/archive-video-versions.ts.
  *
  * Cache e HD (#12365): DIARIA_VIDEO_CACHE_DIR aponta para um SUBDIRETÓRIO dentro do ponto de
  * montagem do HD, nunca o ponto em si. No modo API, a variável apontando para um diretório que
@@ -567,7 +584,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, pickTrechoEncoder, planTrechos, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, type TrechoEncoder, type TrechoXml } from "./lib/diaria/video-xml-trechos.ts";
+import { decideXmlLeve, esperarTrechosNaNuvem, parseEsperarNuvemArg, parseTrechoFrameProbe, parseTrechoName, parseTrechosFolgaArg, parseXmlLeveChoice, pickTrechoEncoder, planTrechos, silencesPerFile, TRECHOS, trechoEncodeArgs, TRECHO_FRAME_TOL, trechoFrameProbeArgs, trechoFramesOk, trechoNamesInXml, trechosCoverage, xmlLeveLimiarFrom, type TrechoEncoder, type TrechoXml, type XmlLeveChoice } from "./lib/diaria/video-xml-trechos.ts";
 import { otioCheckLines, otioCrossCheck, resolveOtioPython } from "./lib/diaria/video-xml-otio.ts";
 import { assemblySegments, edgeFindings, edgeLine, localEdgeThreshold, LOCAL_FLOOR_EDGE, longPauses, type EdgeFindingsContext, type TimelineClip, softEdges, softEdgeWarnings, softReasonText, SUSTAINED_EDGE, CUT_EDGE_OPEN, openCutSoundEdges, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { CTA_CARD, ctaCardDurationFrom, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
@@ -658,6 +675,9 @@ import { classifyVoices, segmentF0s, speechSeconds, voicedFrames, type VoiceMark
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 import { readWithRetry } from "./lib/diaria/video-xml-vs-final.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
+import { ownerFetchFromConfigFile } from "./lib/diaria/drive-owner-account.ts";
+import { archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, rootIdsNamed, xmlNamesWithArchive, type ArchiveFolderCache, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
+import { isOverwriteArchivedName, versionOfSequenceId, type ArchiveEntry } from "./lib/diaria/video-version-archive.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
   DEFAULT_DRIVE_ROOT,
@@ -768,10 +788,18 @@ interface Ctx {
   localDrive?: DriveSession;
   /** #13334: os caminhos do XML (raiz do Neo/explícita, antes da troca pelo Mac) que o último build gravou. */
   buildXmlFiles?: string[];
+  /** #13493: os trechos do XML leve que o último build gravou (nome e tamanho no disco), conferidos na nuvem antes do XML ser dado por pronto. */
+  buildTrechos?: { name: string; size: number }[];
+  /** #13628: o `stat` do tamanho do bruto no limiar do XML leve (teste do `main`); ausente = `statSync`. */
+  brutoStat?: (path: string) => { size: number };
   /** #13437: `--trecho-fonte` (CHAVE → caminho do export do vídeo de origem de um trecho inserido). */
   trechoFontes?: Record<string, string>;
   /** #13437: a raiz da pasta de vídeo NESTA máquina, onde o export do vídeo de origem é procurado; `null` = sem Drive local (modo API). */
   trechoDriveRoot?: string | null;
+  /** #13610: `--no-archive` desliga a ida da versão anterior para `{AAMMDD}/arquivo/`. */
+  noArchive?: boolean;
+  /** #13610: o que o `upload` acabou de subir (entra na listagem do arquivamento mesmo com a busca do Drive atrasada). */
+  freshUploads?: ArchiveEntry[];
 }
 
 /** As saídas deste comando sobem para a pasta da edição no Drive (modo API, ou local com `localDrive`, #13334). */
@@ -1769,7 +1797,8 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
         ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
-        ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS } : {}),
+        // #13493: a regra de limite dos trechos entra junto com a folga — mesma folga e regra nova = trechos com outro nome, versão nova.
+        ...(typeof opts.trechosFolgaS === "number" ? { trechosFolgaS: opts.trechosFolgaS, trechosAnchor: TRECHOS.anchorRule } : {}),
         // #13414: a vertical ancorada pela boca muda o Center sem mudar o plano: versão nova, nunca o _V{n} já importado regravado.
         ...(sequenceAnchor(plan.spec).mouthFraction !== undefined ? { anchor: { mouthFraction: sequenceAnchor(plan.spec).mouthFraction } } : {}),
         ...(opts.telaOverlays?.[sequenceKey(plan.spec)]?.length ? { telaOverlays: opts.telaOverlays[sequenceKey(plan.spec)].map(({ path: _p, ...rest }) => rest) } : {}),
@@ -2463,7 +2492,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (!multiPaths && multi.all) {
     if (sourceArg) throw new Error("--all e --source juntos: use um só");
     if (!existsSync(ctx.driveDir)) throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir}`);
-    const files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+    const files = looseFilesIn(ctx.driveDir);
     const raw = pickRawSource(files);
     if (!raw || raw.audioOnly) throw new Error(`--all: nenhum vídeo solto em ${ctx.driveDir}`);
     multiPaths = raw.candidates.map((c) => join(ctx.driveDir, c.name).replace(/\\/g, "/"));
@@ -2482,9 +2511,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     if (!existsSync(ctx.driveDir)) {
       throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root; desde a #12578 a pasta é a diaria-studio-video da diaria.editor: o bruto pode ter subido para a pasta antiga da vjpixel ou por outra conta)`);
     }
-    const files = readdirSync(ctx.driveDir, { withFileTypes: true })
-      .filter((d) => d.isFile())
-      .map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+    const files = looseFilesIn(ctx.driveDir);
     const raw = pickRawSource(files);
     if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto em ${ctx.driveDir}; passe --source`);
     assertSingleRawVideo(raw);
@@ -3040,7 +3067,7 @@ export const INVENTORY_LISTEN_S = 45;
 function cmdInventory(ctx: Ctx, dirArg: string | undefined, editionsArg: string | undefined, listen: boolean): number {
   const dir = resolve(dirArg ?? ctx.driveDir);
   if (!existsSync(dir)) throw new Error(`inventory: pasta não encontrada: ${dir}`);
-  const names = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(dir, d.name)).size }));
+  const names = looseFilesIn(dir);
   const raw = pickRawSource(names);
   if (!raw || raw.audioOnly) throw new Error(`inventory: nenhum vídeo solto em ${dir}`);
   const mirroredDefault = configMirroredDefault();
@@ -3343,7 +3370,7 @@ function warnLooseVideos(ctx: Pick<Ctx, "driveDir" | "edition">, source: SourceI
   if (source.audioOnly || !existsSync(ctx.driveDir)) return [];
   let files: Array<{ name: string; size: number }>;
   try {
-    files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
+    files = looseFilesIn(ctx.driveDir);
   } catch (e) {
     console.error(`[debug] ${ctx.driveDir} não listada (${(e as Error).message}): vídeos fora do bruto não conferidos (#13544)`);
     return [];
@@ -4375,8 +4402,10 @@ export function absorbShortClipsOfPlans(ps: readonly SequencePlan[], words: Read
  * novo). Devolve o fingerprint de versão de cada sequência (`xmlVersionHashOf`,
  * #12160), que vai também no `<sequence id>`.
  */
-function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string, opts: XmlBuildOptions): Map<SequencePlan, string> {
-  const files = existsSync(ctx.outDir) ? readdirSync(ctx.outDir).filter((n) => n.endsWith(".xml")) : [];
+export function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string, opts: XmlBuildOptions): Map<SequencePlan, string> {
+  // #13610: o `arquivo/` do out dir também conta (no Neo o out dir é a pasta da edição, e a versão anterior sai da raiz).
+  const files = xmlNamesWithArchive(ctx.outDir);
+  const planned = plannedXmlVersions(ctx);
   const hashes = new Map<SequencePlan, string>();
   for (const p of picked) {
     const versionHash = xmlVersionHashOf(hash, p, opts);
@@ -4386,17 +4415,67 @@ function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string, 
       console.error(`[aviso] ${p.spec.name}: nome sem _V{n}, o XML sai sem versão e sobrescreve o anterior (#12111)`);
       continue;
     }
-    const existing = files.flatMap((n) => {
+    const existing = files.flatMap(({ name: n, path }) => {
       const v = sequenceNameVersion(n.slice(0, -4));
       if (v === null || xmlFileName(versionedSequenceName(p.spec.name, v)) !== n) return [];
       let id: ReturnType<typeof parseSequenceIdVersion> = null;
-      try { id = parseSequenceIdVersion(readFileSync(join(ctx.outDir, n), "utf8")); } catch { /* ilegível: conta como outro plano */ }
+      try { id = parseSequenceIdVersion(readFileSync(path, "utf8")); } catch { /* ilegível: conta como outro plano */ }
       return [{ version: v, hash: id?.hash ?? null }];
     });
+    // #13610: a versão que o plan.json (sincronizado entre as máquinas) registra para esta sequência também conta.
+    const fromPlan = planned[sequenceKey(p.spec)];
+    if (fromPlan) existing.push(fromPlan);
     const version = pickXmlVersion(existing, versionHash, nameVersion);
     p.spec = { ...p.spec, name: versionedSequenceName(p.spec.name, version) };
   }
   return hashes;
+}
+
+/**
+ * #13610: a versão de cada sequência no `plan.json` (`xmlVersions`, o
+ * `<sequence id>` `seq-{chave}-v{n}-{hash}`): a numeração do build não volta
+ * atrás quando o XML foi para o `arquivo/` ou só existe em outra máquina.
+ * Ausente/ilegível = nada (a numeração segue pelos arquivos).
+ */
+export function plannedXmlVersions(ctx: Pick<Ctx, "stateDir">, warn: (m: string) => void = (m) => console.error(`[aviso] ${m}`)): Record<string, { version: number; hash: string }> {
+  const out: Record<string, { version: number; hash: string }> = {};
+  const path = f(ctx, "plan.json");
+  if (!existsSync(path)) return out;
+  try {
+    const pf = JSON.parse(readFileSync(path, "utf8")) as Pick<PlanFile, "xmlVersions">;
+    for (const [k, v] of Object.entries(pf.xmlVersions ?? {})) {
+      const parsed = typeof v?.id === "string" ? versionOfSequenceId(v.id) : null;
+      if (parsed) out[k] = parsed;
+    }
+  } catch (e) {
+    warn(`plan.json ilegível (${(e as Error).message}): a versão do XML segue só pelos arquivos do out dir e do arquivo/ (#13610)`);
+  }
+  return out;
+}
+
+/**
+ * #13610 B: os XMLs que o `plan.json` diz vigentes (o nome versionado de cada
+ * sequência do último build). Algum fora da listagem da raiz = nenhum asset sai.
+ * Ausente/ilegível = nenhum (o guard de asset mais novo que o XML segue valendo).
+ */
+export function plannedXmlFileNames(ctx: Pick<Ctx, "stateDir">): string[] {
+  const path = f(ctx, "plan.json");
+  if (!existsSync(path)) return [];
+  try {
+    const pf = JSON.parse(readFileSync(path, "utf8")) as Partial<Pick<PlanFile, "plans">>;
+    return (pf.plans ?? []).flatMap((p) => (typeof p?.spec?.name === "string" && sequenceNameVersion(p.spec.name) !== null ? [xmlFileName(p.spec.name)] : []));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Os arquivos SOLTOS de uma pasta (nome + tamanho), sem subpastas: é a lista de
+ * onde o `transcribe`/`inventory` escolhem o bruto. `arquivo/` (#13610),
+ * `Final/`, `Brutos/` e as demais subpastas nunca entram.
+ */
+export function looseFilesIn(dir: string): Array<{ name: string; size: number }> {
+  return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(dir, d.name)).size }));
 }
 
 /** Uma linha do relato por ajuste de corte (#11500). */
@@ -4616,9 +4695,9 @@ export async function renderCtaCard(input: {
   };
 }
 
-/** #13219: XML leve (padrão) ou o bruto (`--xml-bruto`), e a folga dos trechos. */
+/** #13219: XML leve ou o bruto, e a folga dos trechos. #13493: `auto` = o limiar decide (`publishing.video.xml_leve`); `--xml-leve`/`--xml-bruto` forçam. */
 export interface TrechosBuildOption {
-  enabled: boolean;
+  choice: XmlLeveChoice;
   folgaS: number;
 }
 
@@ -4882,6 +4961,8 @@ export function renderTrechos(input: {
   framesCachePath?: string | null;
   /** #13488: onde fica a pasta temporária do render (padrão `os.tmpdir()`), fora do out dir sincronizado. */
   tmpRoot?: string;
+  /** #13493: os silêncios do `silences.json` (segundos, tempo global): os limites dos trechos ancoram neles; ausente = segundo inteiro. */
+  silences?: readonly Interval[];
   log?: (line: string) => void;
 }): { trechos: TrechoXml[]; encoder: TrechoEncoder; made: number; reused: number; redone: number } {
   const log = input.log ?? ((m: string) => console.error(m));
@@ -4895,7 +4976,10 @@ export function renderTrechos(input: {
       return { fileIndex: k, in: c.frameIn - off, out: c.frameOut - off };
     }),
   );
-  const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, { folgaS: input.folgaS });
+  const planned = planTrechos(uses, files.map((x) => ({ path: x.path, frames: x.frames })), input.source.fps, {
+    folgaS: input.folgaS,
+    ...(input.silences ? { silences: silencesPerFile(input.silences, files, input.source.fps) } : {}),
+  });
   const dir = join(input.outDir, TRECHOS.dirName);
   mkdirSync(dir, { recursive: true });
   // #13512: arquivo intacto (mesmo tamanho e mtime) não é relido a cada rebuild; o cache fica no
@@ -5187,13 +5271,31 @@ export function measureTrechoGain(path: string, measure: (p: string) => string =
   return { gain: g, detail: `clipe a ${m.inputI.toFixed(1)} LUFS, alvo -14` };
 }
 
+/** #13493: o tamanho somado dos arquivos do bruto; algum que não dá `stat` = null (o limiar decide só pelo número de arquivos). */
+export function brutoTotalBytes(paths: readonly string[], stat: (p: string) => { size: number } = statSync): number | null {
+  let total = 0;
+  for (const p of paths) {
+    try {
+      total += stat(p).size;
+    } catch {
+      return null;
+    }
+  }
+  return total;
+}
+
 /**
  * #13219: o XML leve do build, ou `null` para o XML do bruto (`--xml-bruto`,
- * modo API, ou ffmpeg que falhou), sempre dito no relato.
+ * abaixo do limiar #13493, modo API, ou ffmpeg que falhou), sempre dito no relato.
  */
 function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: SourceInfo, mediaPath: string, opt: TrechosBuildOption): TrechoXml[] | null {
-  if (!opt.enabled) {
-    console.error("[aviso] --xml-bruto: o XML aponta o bruto inteiro; o Premiere converte o AAC de cada arquivo e lê o HEVC pelo Drive (#13219)");
+  ctx.buildTrechos = undefined;
+  // #13493: o limiar (bruto grande ou com muitos arquivos) decide, salvo --xml-leve/--xml-bruto.
+  const files = sourceFiles(source);
+  const decision = decideXmlLeve({ choice: opt.choice, totalBytes: brutoTotalBytes(files.map((x) => x.path), ctx.brutoStat), files: files.length, limiar: xmlLeveLimiarFrom(readPlatformConfigSafe(), (m) => console.error(`[aviso] ${m}`)) });
+  if (!decision.enabled) {
+    if (opt.choice === "bruto") console.error(`[aviso] ${decision.reason}: o XML aponta o bruto inteiro; o Premiere converte o AAC de cada arquivo e lê o HEVC pelo Drive (#13219)`);
+    else console.error(`[premissa] XML do bruto: ${decision.reason}; deixar a pasta da edição off-line no Mac antes de abrir; --xml-leve força os trechos (#13493)`);
     return null;
   }
   if (ctx.mode === "api") {
@@ -5201,13 +5303,23 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
     return null;
   }
   try {
-    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir) });
-    const cov = trechosCoverage(r.trechos, sourceFiles(source));
+    // #13493: os limites ancoram nos blocos de silêncio (um ajuste de borda não invalida o trecho); sem silences.json, segundo inteiro.
+    const silPath = f(ctx, "silences.json");
+    let sil: Interval[] | undefined;
+    try {
+      sil = existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : undefined;
+    } catch (e) {
+      console.error(`[aviso] silences.json ilegível (${(e as Error).message.split("\n")[0]}): limites dos trechos no segundo inteiro (#13493)`);
+    }
+    const r = renderTrechos({ plans: picked, source, outDir: ctx.outDir, mediaPath, folgaS: opt.folgaS, framesCachePath: trechoFramesCachePath(ctx.workDir), ...(sil ? { silences: sil } : {}) });
+    const cov = trechosCoverage(r.trechos, files);
     console.error(
-      `[premissa] XML leve: ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
-        `H.264 no tamanho do bruto (${r.encoder}, qualidade ${TRECHOS.quality}, GOP ${TRECHOS.gop}, sem B-frames, ${source.fps} fps CFR, 8 bits) + PCM 48 kHz, folga de ${opt.folgaS} s; ` +
+      `[premissa] XML leve (${decision.reason}): ${r.trechos.length} trecho(s) em ${join(ctx.outDir, TRECHOS.dirName)} (${(cov.frames / source.fps).toFixed(0)} s de ${(cov.totalFrames / source.fps).toFixed(0)} s do bruto; ${r.made} novo(s), ${r.reused} reaproveitado(s) com os quadros conferidos${r.redone ? `, ${r.redone} refeito(s) por estar(em) truncado(s) no disco, #13488` : ""}), ` +
+        `H.264 no tamanho do bruto (${r.encoder}, qualidade ${TRECHOS.quality}, GOP ${TRECHOS.gop}, sem B-frames, ${source.fps} fps CFR, 8 bits) + PCM 48 kHz, folga de ${opt.folgaS} s, ` +
+        `limites ${sil ? "no bloco de silêncio do silences.json (#13493)" : "no segundo inteiro (sem silences.json)"}, render fora do Drive e copiado pronto; ` +
         "--xml-bruto aponta o bruto; conferir no Premiere do Mac o playback e a cor (8 bits) (#13219)",
     );
+    ctx.buildTrechos = r.trechos.map((t) => ({ name: t.name, size: statSync(join(ctx.outDir, TRECHOS.dirName, t.name)).size }));
     return r.trechos;
   } catch (e) {
     console.error(`[aviso] trechos do XML leve falharam (${(e as Error).message.split("\n")[0]}): XML do bruto, como com --xml-bruto (#13219)`);
@@ -5291,7 +5403,7 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
   return lines;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }, trechosOpt: TrechosBuildOption = { enabled: true, folgaS: TRECHOS.folgaS }): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}, denoise: AudioDenoiseChoice = { engine: "ffmpeg", attenDb: null, from: "default" }, trechosOpt: TrechosBuildOption = { choice: "auto", folgaS: TRECHOS.folgaS }): Promise<number> {
   // #12902: recusar antes do detector/refino, assets e XMLs: sem o plano
   // anterior legível, o merge de um build parcial descartaria as outras
   // sequências. Entradas mudadas não recusam mais (#12968): as outras ficam no
@@ -6741,7 +6853,8 @@ async function cmdPreview(
     }
   } else run("ffmpeg", finalArgs(plain), { cwd: dir });
   normalizePreviewAudio(dir);
-  copyFileSync(join(dir, "previa.mp4"), out);
+  // #13610: com o out dir na pasta da edição (o Neo), a nova vai para `.part`, a anterior para arquivo/, e só então a nova toma o nome.
+  installPreviewFile(join(dir, "previa.mp4"), out, { archive: ctx.mode === "local" && !ctx.noArchive && outDirIsEditionFolder(ctx), log, warn: (m) => console.error(`[aviso] ${m}`) });
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
   const dur = Math.max(1, plan.durationFrames / fps + cardS);
   const sheet = f(ctx, `previa-${sequenceKey(plan.spec)}.jpg`);
@@ -7145,12 +7258,14 @@ export interface DriveSession {
   rootFolderId?: () => string;
   /** A pasta `{AAMMDD}/` no Drive (resolvida na 1ª chamada). */
   folder(): Promise<DriveEntry>;
+  /** A `arquivo/` resolvida ou criada nesta execução (#13617): o upload e o arquivamento usam a mesma, sem depender da busca. */
+  archiveFolders?: ArchiveFolderCache;
 }
 
 /** `rootFolderId` é lido só quando algum passo vai mesmo à rede (frame com o bruto em cache não lê o config). */
 export function makeDriveSession(edition: string, cacheDir: string, deps: MontageDriveDeps, rootFolderId: () => string): DriveSession {
   let memo: Promise<DriveEntry> | null = null;
-  return { deps, edition, cacheDir, rootFolderId, folder: () => (memo ??= Promise.resolve().then(() => findEditionFolder(deps, rootFolderId(), edition))) };
+  return { deps, edition, cacheDir, rootFolderId, folder: () => (memo ??= Promise.resolve().then(() => findEditionFolder(deps, rootFolderId(), edition))), archiveFolders: new Map() };
 }
 
 function configRootFolderId(flag: string | undefined): () => string {
@@ -7336,7 +7451,12 @@ function readRegistry(path: string): DriveUploadRegistry {
  * em `pending`, e a próxima execução de build/srt/preview (ou `upload`) os
  * tenta de novo mesmo sem mudança.
  */
-export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition"> & Partial<Pick<Ctx, "outDir">>, d: DriveSession, paths: string[]): Promise<{ uploaded: string[]; pending: string[]; error: string | null }> {
+export async function uploadAll(
+  ctx: Pick<Ctx, "stateDir" | "edition"> & Partial<Pick<Ctx, "outDir">>,
+  d: DriveSession,
+  paths: string[],
+  opts: { archiveOverwritten?: boolean; now?: () => Date } = {},
+): Promise<{ uploaded: string[]; pending: string[]; error: string | null; fresh: ArchiveEntry[] }> {
   const regPath = f(ctx, DRIVE_UPLOADS_FILE);
   // #13334: um arquivo numa subpasta do out dir (`trechos/`) sobe para a subpasta de mesmo nome da edição.
   const subfolders = new Map<string, Promise<DriveEntry>>();
@@ -7350,13 +7470,33 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition"> & Partial
   const reg = readRegistry(regPath);
   const queue = [...new Set([...reg.pending.filter((p) => existsSync(p)), ...paths])];
   const uploaded: string[] = [];
-  if (queue.length === 0) return { uploaded, pending: [], error: null };
+  // #13610: o que subiu para a RAIZ da edição, para o arquivamento não depender da busca do Drive (que atrasa).
+  const fresh: ArchiveEntry[] = [];
+  if (queue.length === 0) return { uploaded, pending: [], error: null, fresh };
   const save = (pending: string[]) => writeJson(regPath, { ...reg, pending });
   try {
     const folder = await d.folder();
     for (let i = 0; i < queue.length; i++) {
       const target = await targetOf(folder, queue[i]);
-      const r = await uploadToFolder(d.deps, target.folderId, queue[i], log);
+      // #13610: a prévia regravada não é atualizada no lugar: a nova é criada e, só depois de subir, a anterior vai para arquivo/.
+      const name = basename(queue[i]);
+      let previous: string[] = [];
+      if (opts.archiveOverwritten && !target.prefix && isOverwriteArchivedName(name)) {
+        try {
+          previous = await rootIdsNamed(d.deps, target.folderId, name);
+        } catch (e) {
+          log(`[aviso] ${name}: prévia anterior não listada (${(e as Error).message}); a nova a substitui no lugar (#13610)`);
+        }
+      }
+      const r = await uploadToFolder(d.deps, target.folderId, queue[i], log, { excludeIds: new Set(previous) });
+      if (previous.length) {
+        try {
+          await archiveDriveIds(d.deps, target.folderId, name, previous.filter((id) => id !== r.id), { now: (opts.now ?? (() => new Date()))(), log, warn: (m) => log(`[aviso] ${m} (#13610)`), archiveFolders: d.archiveFolders });
+        } catch (e) {
+          log(`[aviso] ${name} anterior não foi para arquivo/ (${(e as Error).message}); a nova já está na raiz, com o mesmo nome (#13610)`);
+        }
+      }
+      if (!target.prefix) fresh.push({ name: r.name, id: r.id, modifiedMs: Date.now() });
       reg.files[`${target.prefix}${r.name}`] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: queue[i] };
       uploaded.push(queue[i]);
       if (!reg.previewNamesNoticeShown && [previewFileName(ctx.edition, "youtube"), previewFileName(ctx.edition, "outras-redes")].includes(r.name)) {
@@ -7367,12 +7507,56 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition"> & Partial
       save(queue.slice(i + 1));
       log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${target.prefix}${r.name}: ${r.webViewLink ?? r.id}`);
     }
-    return { uploaded, pending: [], error: null };
+    return { uploaded, pending: [], error: null, fresh };
   } catch (e) {
     const pending = queue.slice(uploaded.length);
     save(pending);
-    return { uploaded, pending, error: (e as Error).message };
+    return { uploaded, pending, error: (e as Error).message, fresh };
   }
+}
+
+/** Os comandos que gravam uma versão nova na pasta da edição (#13610): depois deles, a anterior vai para `arquivo/`. */
+export const ARCHIVE_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview", "upload"];
+
+/** O out dir é a própria pasta da edição (o Neo, ou o modo local com raiz explícita). */
+const outDirIsEditionFolder = (ctx: Pick<Ctx, "outDir" | "driveDir">) => resolve(ctx.outDir) === resolve(ctx.driveDir);
+
+/**
+ * #13610: depois do comando que deu certo, a versão anterior de cada arquivo da
+ * raiz de `{AAMMDD}/` vai para `{AAMMDD}/arquivo/`: no Drive pela API (a sessão
+ * de upload) e no disco quando o out dir é a pasta da edição. Fail-soft: falha
+ * vira `[aviso]` e nunca muda o exit do comando.
+ */
+export async function archiveVersionsAfter(
+  ctx: Pick<Ctx, "edition" | "outDir" | "driveDir" | "mode" | "noArchive"> & Partial<Pick<Ctx, "stateDir">>,
+  up: DriveSession | null,
+  fresh: ArchiveEntry[],
+  warn: (m: string) => void = (m) => console.error(`[aviso] ${m}`),
+): Promise<EditionArchiveResult[]> {
+  if (ctx.noArchive) return [];
+  const results: EditionArchiveResult[] = [];
+  const report = (r: EditionArchiveResult, where: string) => {
+    results.push(r);
+    if (r.moves.length) console.error(`[arquivo] ${r.moves.length} versão(ões) anterior(es) de ${ctx.edition}/ em ${where}arquivo/ (#13610)`);
+    for (const w of r.warnings) warn(`arquivo/: ${w} (#13610)`);
+    if (r.error) warn(`arquivo/ de ${ctx.edition}/ parou no meio (${r.error}): ${r.moves.filter((m) => m.done).length} de ${r.moves.length} movido(s); o comando deu certo. Rode: npx tsx scripts/archive-video-versions.ts --edition ${ctx.edition} --apply (#13610)`);
+  };
+  const expectedXmls = ctx.stateDir ? plannedXmlFileNames({ stateDir: ctx.stateDir }) : [];
+  if (up) {
+    try {
+      report(await archiveEditionDrive(up.deps, await up.folder(), { apply: true, fresh, log, expectedXmls, archiveFolders: up.archiveFolders }), "Drive: ");
+    } catch (e) {
+      warn(`versões anteriores de ${ctx.edition}/ não foram para arquivo/ no Drive (${(e as Error).message}); o comando deu certo. Rode: npx tsx scripts/archive-video-versions.ts --edition ${ctx.edition} --apply (#13610)`);
+    }
+  }
+  if (ctx.mode === "local" && outDirIsEditionFolder(ctx) && existsSync(ctx.driveDir)) {
+    try {
+      report(archiveEditionLocal(ctx.driveDir, ctx.edition, { apply: true, log, expectedXmls }), "");
+    } catch (e) {
+      warn(`versões anteriores de ${ctx.driveDir} não foram para arquivo/ (${(e as Error).message}); o comando deu certo (#13610)`);
+    }
+  }
+  return results;
 }
 
 async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefined): Promise<number> {
@@ -7380,11 +7564,12 @@ async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefi
   if (!d) throw new Error("upload é do modo API do Drive (o 300), ou do modo local com raiz explícita e OAuth (#13334); no Neo, copie o arquivo para a pasta da edição em I:/Meu Drive/diaria-studio-video (nunca na pasta antiga da vjpixel, #12578)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`arquivo não encontrado: ${path}`);
-  const r = await uploadAll(ctx, d, [path]);
+  const r = await uploadAll(ctx, d, [path], { archiveOverwritten: !ctx.noArchive });
   if (r.error) {
     console.error(`[erro] upload para o Drive falhou: ${r.error}. Pendentes: ${r.pending.join(", ")}`);
     return EXIT_UPLOAD_FAILED;
   }
+  ctx.freshUploads = r.fresh;
   return 0;
 }
 
@@ -7416,7 +7601,20 @@ export function restoreConflictCopies(stateDir: string, namesArg: string, fs?: C
   return restored;
 }
 
-export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps): Promise<number> {
+/**
+ * #13628: pontos de injeção do `main` só para teste (o build inteiro com Drive
+ * falso). `desktopRoot` = a raiz que conta como Drive for desktop nesta máquina
+ * (padrão `DEFAULT_DRIVE_ROOT`, o `I:` do Neo): com ela, o build não sobe pela
+ * API e confere os trechos na nuvem, como no Neo. `brutoStat` = o tamanho do
+ * bruto no limiar do XML leve. `cloudWait` = relógio da espera da nuvem.
+ */
+export interface MontageMainSeams {
+  desktopRoot?: string;
+  brutoStat?: (path: string) => { size: number };
+  cloudWait?: { sleep?: (ms: number) => Promise<void>; now?: () => number };
+}
+
+export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps, seams: MontageMainSeams = {}): Promise<number> {
   const { values, flags, positional } = parseArgs(argv);
   const [cmd, edition] = positional;
   if (!cmd || !edition || flags.has("help")) {
@@ -7476,8 +7674,10 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     xmlMediaRoot: values["xml-media-root"],
     // A raiz explícita é a do Neo só no modo local; no modo API ela não existe aqui (#11653).
     driveRoot: mode === "local" ? explicitRoot : undefined,
+    noArchive: flags.has("no-archive"),
     // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
     ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
+    ...(seams.brutoStat ? { brutoStat: seams.brutoStat } : {}),
   };
   // #13404: só com o pedido do editor; sem a flag, a mensagem de "ausente" aponta a cópia e o comando.
   activeStateDir = ctx.stateDir;
@@ -7494,7 +7694,9 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     const stop = audioOnlyStop(ctx, cmd);
     if (stop !== null) return stop;
   }
-  const driveDeps = (): MontageDriveDeps => deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}) };
+  // #13619: ownerFetch = a conta dona da pasta de vídeo (diaria.editor), que cria a arquivo/ (publishing.video.archive_folder_owner).
+  const driveDeps = (): MontageDriveDeps =>
+    deps ?? { driveFetch: (url, init) => gFetchRetry(url, init ?? {}), uploadFetch: (url, init) => gFetch(url, init ?? {}), ownerFetch: ownerFetchFromConfigFile(join(ROOT, "platform.config.json")) };
   const d = mode === "api" && DRIVE_COMMANDS.has(cmd)
     ? makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]))
     : null;
@@ -7502,7 +7704,7 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   // #13334: modo local com raiz explícita fora do Drive for desktop: as saídas sobem pela API (o disco não sincroniza).
   // O cache da sessão é só o da `_marca/` do modo API, que aqui não é usado (a vinheta vai para {raiz}/_marca/, #13308).
   if (mode === "local" && (DRIVE_UPLOAD_COMMANDS.includes(cmd) || cmd === "upload")) {
-    const local = localDriveUploadFor({ mode, explicitRoot, noDriveApi: flags.has("no-drive-api"), credentials: googleCredentialsPresent() });
+    const local = localDriveUploadFor({ mode, explicitRoot, noDriveApi: flags.has("no-drive-api"), credentials: googleCredentialsPresent(), ...(seams.desktopRoot ? { desktopRoot: seams.desktopRoot } : {}) });
     if (local.enabled) {
       ctx.localDrive = makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]));
       console.error(`[premissa] modo local com ${local.reason}: as saídas de ${cmd} sobem para a pasta ${edition}/ do Drive pela API, como no modo API; --no-drive-api desliga (#13334)`);
@@ -7516,10 +7718,21 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   // #13332: e as legendas do XML das verticais, em `legendas-vertical*/`.
   const snap = () => snapshotDirWithSubdirs(ctx.outDir, [TRECHOS.dirName, ...subtitleSubdirsIn(ctx.outDir)], (dir) => readdirSync(dir));
   const before = uploads ? snap() : null;
+  // #13493: quanto o build espera os trechos do XML leve chegarem à nuvem (Drive for desktop); inválido para antes do build.
+  const esperarNuvemS = cmd === "build" ? parseEsperarNuvemArg(values["esperar-nuvem"] ?? (flags.has("esperar-nuvem") ? "" : undefined), ESPERAR_NUVEM_DEFAULT_S) : 0;
   const code = await runCommand(ctx, cmd, values, flags, seq, d);
+  // #13493: no Drive for desktop (sem upload pela API), o XML leve só é dado por pronto com os trechos na nuvem.
+  if (cmd === "build" && code === 0 && !uploads && ctx.buildTrechos?.length) {
+    const cloud = mode === "local" && !flags.has("no-drive-api") && googleCredentialsPresent()
+      ? makeDriveSession(edition, cacheDir, driveDeps(), configRootFolderId(values["folder-id"]))
+      : null;
+    await reportTrechosNaNuvem(cloud, ctx.buildTrechos, esperarNuvemS, flags.has("no-drive-api") ? "--no-drive-api" : "sem data/.credentials.json (OAuth do projeto)", { ...(seams.cloudWait?.sleep ? { sleep: seams.cloudWait.sleep } : {}), ...(seams.cloudWait?.now ? { now: seams.cloudWait.now } : {}) });
+  }
+  let fresh: ArchiveEntry[] = [];
   if (before && up && code === 0) {
     const changed = changedFiles(before, snap()).map((n) => join(ctx.outDir, n));
-    const r = await uploadAll(ctx, up, changed);
+    const r = await uploadAll(ctx, up, changed, { archiveOverwritten: !ctx.noArchive });
+    fresh = r.fresh;
     if (r.error) {
       console.error(
         `[erro] ${cmd} terminou, mas o upload para o Drive falhou: ${r.error}. Subiram: ${r.uploaded.length ? r.uploaded.map((p) => basename(p)).join(", ") : "nenhum"}; ` +
@@ -7529,6 +7742,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     }
     if (cmd === "build" && ctx.buildXmlFiles) await warnXmlFilesMissingInDrive(up, ctx.buildXmlFiles, ctx.mode === "local" ? (ctx.driveRoot ?? DEFAULT_DRIVE_ROOT) : DEFAULT_DRIVE_ROOT);
   }
+  // #13610: a versão anterior de cada arquivo vai para {AAMMDD}/arquivo/ (fail-soft, nunca muda o exit).
+  if (code === 0 && ARCHIVE_COMMANDS.includes(cmd)) await archiveVersionsAfter(ctx, up && (uploads || cmd === "upload") ? up : null, [...fresh, ...(ctx.freshUploads ?? [])]);
   return code;
 }
 
@@ -7568,6 +7783,58 @@ export async function warnXmlFilesMissingInDrive(d: DriveSession, files: readonl
   if (missing.length) warn(`${missing.length} arquivo(s) do XML ausente(s) no Drive (o Premiere abre com mídia offline): ${missing.join(", ")}; suba com upload ${d.edition} --file ARQUIVO (#13334)`);
   else console.error(`[drive] os ${rels.length} arquivo(s) do XML estão no Drive (#13334)`);
   return missing;
+}
+
+/** #13493: quanto o build espera, por padrão, os trechos do XML leve subirem pelo Drive for desktop (`--esperar-nuvem S`). */
+export const ESPERAR_NUVEM_DEFAULT_S = 600;
+const ESPERAR_NUVEM_POLL_S = 20;
+
+/** #13493: os arquivos da subpasta `trechos/` da edição no Drive (nenhuma = vazio; duas = erro). */
+async function listTrechosNaNuvem(d: DriveSession): Promise<DriveEntry[]> {
+  const folder = await d.folder();
+  const sub = await listChildren(d.deps, folder.id, { name: TRECHOS.dirName, foldersOnly: true });
+  if (sub.length > 1) throw new Error(`${sub.length} pastas ${TRECHOS.dirName}/ na edição do Drive: junte ou renomeie`);
+  return sub.length ? listChildren(d.deps, sub[0].id) : [];
+}
+
+/**
+ * #13493: no fim do build com XML leve no Drive for desktop, o XML só é dado
+ * por pronto quando cada trecho está na nuvem com o tamanho do disco (sem
+ * `.part`): na 261118 o Premiere do Mac importou o XML com trechos ainda em
+ * `.mov.part` sem fazer nada e sem erro. Espera até `timeoutS`; sem sessão do
+ * Drive (sem credenciais, `--no-drive-api`), não confere e diz isso. Nunca muda
+ * o exit: o resultado é a linha `[ok] XML leve pronto` ou o `[aviso] XML leve
+ * AINDA NÃO pronto`. Devolve os pendentes (null = não conferido).
+ */
+export async function reportTrechosNaNuvem(
+  d: DriveSession | null,
+  trechos: readonly { name: string; size: number }[],
+  timeoutS: number,
+  noSessionReason: string,
+  io: { list?: () => Promise<readonly { name: string; size?: string | number }[]>; sleep?: (ms: number) => Promise<void>; now?: () => number; log?: (line: string) => void } = {},
+): Promise<string[] | null> {
+  const log = io.log ?? ((m: string) => console.error(m));
+  const dir = `${d?.edition ?? ""}${d ? "/" : ""}${TRECHOS.dirName}/`;
+  if (!d && !io.list) {
+    log(`[aviso] XML leve gravado, mas a subida dos ${trechos.length} trecho(s) para a nuvem NÃO foi conferida (${noSessionReason}): antes de importar no Mac, conferir que ${TRECHOS.dirName}/ tem os ${trechos.length} .mov e nenhum .part, ou o Premiere importa sem fazer nada e sem erro (#13493)`);
+    return null;
+  }
+  const r = await esperarTrechosNaNuvem({ local: trechos, list: io.list ?? (() => listTrechosNaNuvem(d!)), timeoutS, pollS: ESPERAR_NUVEM_POLL_S, ...(io.sleep ? { sleep: io.sleep } : {}), ...(io.now ? { now: io.now } : {}), log });
+  if (!r.pending.length && !r.error) {
+    log(`[ok] XML leve pronto: os ${trechos.length} trecho(s) estão em ${dir} no Drive com o tamanho do disco; pode importar no Mac (#13493)`);
+    return [];
+  }
+  if (r.error) {
+    log(`[aviso] XML leve AINDA NÃO pronto: a conferência dos trechos no Drive falhou (${r.error}) depois de ${r.waitedS} s; antes de importar no Mac, conferir que ${dir} tem os ${trechos.length} .mov e nenhum .part (#13493)`);
+    return null;
+  }
+  const fmt = (why: string, label: string) => {
+    const ns = r.pending.filter((p) => p.why === why).map((p) => p.name);
+    return ns.length ? `${label}: ${ns.join(", ")}` : null;
+  };
+  const detail = [fmt("ausente", "ausente(s)"), fmt("part", "só como .part"), fmt("tamanho", "com outro tamanho (subida pela metade)")].filter(Boolean).join("; ");
+  log(`[aviso] XML leve AINDA NÃO pronto: ${r.pending.length} de ${trechos.length} trecho(s) não estão em ${dir} no Drive com o tamanho do disco depois de ${r.waitedS} s (${detail}). Não importar no Mac antes do Drive for desktop subir tudo (o Premiere importa sem fazer nada e sem erro); rodar o build de novo confere outra vez (os trechos são reaproveitados), ou --xml-bruto (#13493)`);
+  return r.pending.map((p) => p.name);
 }
 
 async function runCommand(
@@ -7643,8 +7910,8 @@ async function runCommand(
       {
         // #12104: o modo removido (`text`) falha aqui, antes de baixar o bruto.
         const titleMode = parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined));
-        // #13219: XML leve por padrão; --xml-bruto volta ao bruto. A folga inválida falha aqui, antes de baixar o bruto.
-        const trechosOpt: TrechosBuildOption = { enabled: !flags.has("xml-bruto"), folgaS: parseTrechosFolgaArg(values["trechos-folga"] ?? (flags.has("trechos-folga") ? "" : undefined)) };
+        // #13219/#13493: o limiar decide entre XML leve e o bruto; --xml-leve/--xml-bruto forçam. Folga inválida falha aqui, antes de baixar o bruto.
+        const trechosOpt: TrechosBuildOption = { choice: parseXmlLeveChoice({ leve: flags.has("xml-leve"), bruto: flags.has("xml-bruto") }), folgaS: parseTrechosFolgaArg(values["trechos-folga"] ?? (flags.has("trechos-folga") ? "" : undefined)) };
         // #13234: motor da faixa tratada (ffmpeg padrão; deepfilternet até a escolha de ouvido). Inválido para aqui, antes do bruto.
         const denoise = resolveAudioDenoise({
           flag: values["audio-denoise"] ?? (flags.has("audio-denoise") ? "" : undefined),

@@ -247,12 +247,12 @@ describe("#13196 detectPatterns e corpo de issue", () => {
   });
 
   it("padrão só sai com o mínimo de edições", () => {
-    const one = aggregateRecords([auto("261110", [{ key: "youtube", summary: { clips: 10, tailMeanMs: 200 } }])]);
+    const one = aggregateRecords([auto("261120", [{ key: "youtube", summary: { clips: 10, tailMeanMs: 200 } }])]);
     assert.equal(detectPatterns(one).some((p) => p.id === "ponta-saida-estendida"), false);
-    const three = aggregateRecords(["261110", "261111", "261112"].map((e) => auto(e, [{ key: "youtube", summary: { clips: 10, tailMeanMs: 200 } }])));
+    const three = aggregateRecords(["261120", "261121", "261122"].map((e) => auto(e, [{ key: "youtube", summary: { clips: 10, tailMeanMs: 200 } }])));
     const p = detectPatterns(three).find((x) => x.id === "ponta-saida-estendida");
     assert.ok(p);
-    assert.deepEqual(p.editions, ["261110", "261111", "261112"]);
+    assert.deepEqual(p.editions, ["261120", "261121", "261122"]);
   });
 
   it("palavras recuperadas vai para a #13194, que já acompanha o padrão", () => {

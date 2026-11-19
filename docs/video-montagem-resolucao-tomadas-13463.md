@@ -312,3 +312,181 @@ Não abertas: a decisão é do editor.
 - video-roteiro: trecho que sobra de um corte (#13129) começa com a pontuação
   do trecho cortado (". Duas já aconteceram…" na proposta da 261118) (P3,
   achado desta medição: o texto do item da vertical sai com o ponto solto).
+
+## Medições com o bruto real depois das issues-filhas (18/11/2026)
+
+O código das duas filhas saiu na PR #13595. As medições abaixo usaram o bruto
+real da 261117 e da 261118 no 300 (Linux, 8 núcleos, sem GPU: #13505), cada
+edição numa cópia isolada do state dir (`--state-dir`/`--work-dir` no
+scratchpad), sem gravar nada em `data/`.
+
+### A. Retranscrição dirigida na 1ª passada (#13587)
+
+A 1ª passada do `decupagem 261118` rodou do zero: sem `decupagem-plan.json`,
+sem molde, sem `decupagem-segments.json` e sem nenhum `retranscribe-*.json`.
+Entradas: o `transcript.json` e o `silences.json` da montagem real (o das
+15:17 de 18/11) e o `audio.wav` extraído dos dois arquivos do bruto pelo
+`transcribe` (sem `--force`, que mantém o transcript existente).
+
+| | Neo (GPU) | 300 (CPU), Whisper frio | 300 (CPU), Whisper já carregado |
+|---|---|---|---|
+| Relógio da 1ª passada | 19,6 s | 522 s (8:42) | 456 s (7:36) |
+| CPU do Whisper residente | n/d | 1950 s | 1765 s |
+| CPU do processo Node | n/d | 2,6 s | 2,5 s |
+
+- Os dois lados acharam o mesmo: 16 segmentos com tomada colapsada, 16
+  janelas e 19 subjanelas retranscritas numa chamada só, 9 segmentos
+  separados. Ficam com aviso para conferir no áudio os segmentos 15, 16, 31,
+  44 (65,5 s de som sem palavra, maior que a janela de 60 s) e 100; os
+  segmentos 8 e 53 saem como falso começo, com o corte proposto.
+- O tempo do 300 é quase todo Whisper em CPU (`large-v3-turbo`): a carga do
+  modelo pesa ~66 s de relógio e ~185 s de CPU, e o resto é retranscrição.
+  No 300 sem GPU a 1ª passada custa ~8 min por edição. No Neo, 20 s.
+- **Aceite (molde a até 0,6 s do início aprovado), na listagem real:** o
+  gancho H1 sai separado pela retranscrição (`retranscribe-906.5-923.5.json`)
+  e começa em 920,29 s, a 0,39 s do aprovado (919,9). Antes, 12,9 s. H7 e H12
+  não estão mais colapsados no transcript das 15:17 (o `transcribe` novo já os
+  separou), então a borda vem do transcript longo: H7 em 425,53 s (aprovado
+  424,3, +1,23 s) e H12 em 864,46 s (aprovado 863,0, +1,46 s). Antes, 37,9 e
+  19,2 s. A diferença que sobra é o ar que o editor abriu antes da 1ª palavra
+  no Gate 2: nenhuma transcrição, longa ou retranscrita, ouviu palavra antes de
+  425,48 e 864,0 s (a fixture do `test/video-decupagem-collapsed-13587.test.ts`,
+  com o transcript anterior, dá 425,28 e 863,9). Os 0,6 s valem para o gancho;
+  em H7 e H12 a borda está na 1ª palavra falada, e a pré-rolagem fica com o
+  Gate 2.
+- **Decisão do editor (19/11/2026):** 1,5 s fica como tolerância aceitável de
+  fallback nas bordas; o objetivo seguiu sendo achar um método mais preciso. A
+  medição dos métodos está na seção "Detecção da borda de início" abaixo: nenhum
+  bate o critério de 0,6 s, e vale a tolerância.
+
+### B. `face` com 1 frame por item (#13588)
+
+`face-compare` (#13370) com e sem `--um-frame`, Haar e MediaPipe nos mesmos
+frames, cada item contra o `framing` aprovado no `blocks.json` (7 itens da
+261118 sem `framing` ficam de fora). Venv do MediaPipe recriado no 300 como
+em `docs/video-medicoes-r2-r3.md` (o de 17/11 não estava mais lá).
+
+| Haar | 261117, 3 frames | 261117, 1 frame | 261118, 3 frames | 261118, 1 frame |
+|---|---|---|---|---|
+| Itens com rosto | 38/38 | 38/38 | 42/42 | 42/42 |
+| Erro mediano `faceX` / `eyeY` | 0 / 0 | 0,001 / 0,002 | 0 / 0 | 0,001 / 0,002 |
+| Itens a até 1% do aprovado | 35 | 32 | 39 | 34 |
+| Itens a até 2% | 37 | 37 | 39 | 38 |
+| Maior erro | 0,024 | 0,027 | 0,072 | 0,213 |
+| Relógio do `face-compare` (os 2 detectores) | 127 s | 85 s | 132 s | 94 s |
+
+- **1 frame piora o acerto nas duas edições** (3 e 5 itens a menos a até 1%),
+  e na 261118 o frame único do `resumo#2` pôs o `eyeY` em 0,578 contra 0,365
+  aprovado. Pelo aceite da issue, `--um-frame` não vira o padrão: segue
+  opcional e o `face` continua com 3 frames.
+- Ressalva: o `framing` aprovado saiu do próprio Haar com 3 frames
+  (`face --write`), então a referência favorece os 3 frames. Mesmo assim, o
+  erro de 0,21 num item é defeito real do frame único, não viés da referência.
+- O ganho do incremental (`face-cache.json`) independe disto e fica.
+- MediaPipe, de passagem: 1 frame mantém 11/42 a até 1% na 261118 e 18/38 na
+  261117, igual aos 3 frames; os números da R3 seguem em
+  `docs/video-medicoes-r2-r3.md`.
+
+## Detecção da borda de início (#13587, 19/11/2026)
+
+Resíduo da #13587, depois da decisão do editor de 19/11: medir métodos de
+detecção da borda de início contra os cortes aprovados da 261117 e da 261118,
+com o critério de 0,6 s. Só medição: nada mudou na decupagem nem no `build`.
+
+### Como reproduzir
+
+```
+python -P scripts/video/vad_probs.py {bruto-16k.wav} vad.json      # venv da montagem
+npx tsx scripts/video-bordas-13587.ts 261117 261118 \
+  --audio {bruto-261117-16k.wav},{bruto-261118-16k.wav} \
+  --vad-probs {vad-261117.json},{vad-261118.json} \
+  --template {state-261117}/blocks.template.json,{state-261118}/blocks.template.defasado.json \
+  [--state-dir {state-261117},{state-261118}] [--out bordas.json]
+```
+
+Lógica pura em `scripts/lib/diaria/video-border-onset.ts` (teste
+`test/video-border-onset-13587.test.ts`). Leitura do `blocks.json` final, do
+`transcript.json`, dos `retranscribe-*.json` e do molde de cada edição; nada é
+gravado em `data/`.
+
+- **Áudio:** 261117, o `bruto-multi-16k.wav` do cache do #12089 (1533,4 s).
+  261118, os dois arquivos do bruto extraídos a 16 kHz mono e concatenados no
+  `offsetFrames` do `source.json` (992,867 s), 1185,7 s.
+- **Gabarito:** cada início explícito do `blocks.json` final, uma vez (o item
+  repetido em dois blocos conta uma vez). "À mão" é o início que não está no
+  molde: na 261117 os 17; na 261118, 14 de 45 (o molde comparado é o
+  `blocks.template.defasado.json`, do mesmo transcript). Item só com texto não
+  entra (a borda dele é a da palavra).
+- **Âncora:** a palavra que abre o item, a mais perto do aprovado entre -1 e
+  +4 s, no transcript longo e na retranscrição curta. A "mais cedo das duas" é a
+  borda que a decupagem grava hoje.
+
+Métodos: a palavra; energia por janela curta (20 ms, piso de ruído = percentil
+20 dos 6 s antes da palavra, limiar = piso + 8 dB, som sustentado por 60 ms,
+busca de 0,6 s antes a 1,2 s depois da palavra); início da ilha do Silero
+(limiar 0,5, a mesma união da #13598); início da ilha do detector de energia +
+F0 do `build`; a palavra com pré-rolagem fixa; e a palavra com pré-rolagem só
+quando há silêncio antes dela (grade de 1, 3 e 5 s de silêncio por 0,2 a 0,8 s
+de pré-rolagem).
+
+### Resultado
+
+Bordas a até 0,6 s (critério) e a até 1,5 s (tolerância) do início aprovado,
+nas 62 bordas das duas edições (31 acertadas à mão):
+
+| Método | À mão, ≤ 0,6 s | À mão, ≤ 1,5 s | Todas, ≤ 0,6 s | Todas, ≤ 1,5 s | Erro máx. |
+|---|---|---|---|---|---|
+| Palavra, transcript longo | 16/19 | 18/19 | 47/50 | 49/50 | 3,21 s |
+| Palavra, retranscrição curta | 14/18 | 18/18 | 19/23 | 23/23 | 1,18 s |
+| **Palavra, a mais cedo das duas (hoje)** | **28/31** | **31/31** | **59/62** | **62/62** | **1,18 s** |
+| Energia, janela de 20 ms | 18/31 | 30/31 | 42/62 | 61/62 | 1,68 s |
+| Silero, início da ilha | 13/28 | 23/28 | 31/59 | 47/59 | 3,07 s |
+| Energia + F0 do `build`, início da ilha | 8/31 | 15/31 | 17/62 | 27/62 | 89 s |
+| Palavra - 0,3 s | 29/31 | 31/31 | 58/62 | 62/62 | 0,88 s |
+| Palavra - 0,5 s | 29/31 | 31/31 | 57/62 | 62/62 | 0,98 s |
+| Palavra - 0,4 s se ≥ 3 s de silêncio (melhor da grade) | 30/31 | 31/31 | 60/62 | 62/62 | 1,18 s |
+
+Os três itens do aceite da issue (gancho H1, H7 e H12 da 261118):
+
+| Item | Aprovado | Palavra (hoje) | Energia 20 ms | Silero | Silêncio antes da palavra |
+|---|---|---|---|---|---|
+| Gancho H1 | 919,90 | 920,58 (+0,68) | 920,89 (+0,99) | 921,12 (+1,22) | 10 s |
+| H7 | 424,30 | 425,48 (+1,18) | 424,93 (+0,63) | 426,18 (+1,88) | ruído subindo de 423 a 426 s |
+| H12 | 863,00 | 864,00 (+1,00) | 864,68 (+1,68) | 864,83 (+1,83) | 8,2 s |
+
+- **Nenhum método bate o critério nos três.** O de hoje (a palavra) erra 3
+  das 62 bordas por mais de 0,6 s, justamente esses três, e fica dentro de
+  1,5 s em todas as 62 (máximo 1,18 s, H7).
+- **Os detectores acústicos acham o som, não a borda que o editor escolhe.**
+  O editor aprova perto da palavra do Whisper (erro mediano 0,10 s), e o som
+  medido pela energia fica de um lado ou do outro dela: depois da palavra
+  depois de uma pausa (mediana +0,15 s, p90 +0,56 s), e já presente no começo
+  da busca em fala corrida (um quarto das bordas sai 0,55 a 0,6 s antes da
+  palavra). Energia e Silero ficam em 42 e 31 de 62. A ilha do `build` engole
+  tomadas no bruto quente da 261118 (M4) e começa até 89 s antes.
+- **Nos três itens do aceite não há o que detectar.** Nas três janelas, o
+  início aprovado cai no meio do piso de ruído (-33 a -36 dBFS na 261118):
+  4,5 s sem fala antes do H7, 8,2 s antes do H12 e 10 s antes do gancho, sem
+  evento de energia no ponto aprovado. É o ar que o editor abriu antes da 1ª
+  palavra, uma escolha dele, não uma borda acústica. No H7, a energia sai a
+  +0,63 s só porque a busca começa 0,6 s antes da palavra e o ruído já está
+  acima do limiar ali.
+- **Pré-rolagem não resolve.** Das 15 bordas com 3 s ou mais de silêncio
+  antes da palavra, 13 foram aprovadas a até 0,5 s dela e 2 (gancho e H12) com
+  0,68 e 1,00 s de ar; o H7 nem entra nesse grupo, porque o ruído sobe antes
+  da fala.
+  Toda pré-rolagem que encosta o gancho e o H12 no aprovado afasta outras
+  bordas além de 0,6 s (a de 0,6 s condicional erra a V2-G da 261118 em
+  -1,08 s), e a melhor da grade, ajustada nos próprios dados, ainda erra o H7
+  (+1,18 s) e a V2-G (-0,88 s).
+
+### Conclusão
+
+Fica a tolerância de 1,5 s (decisão do editor de 19/11/2026): a borda da
+palavra, como a decupagem grava hoje, fica dentro dela nas 62 bordas medidas, e
+nenhum dos métodos testados (energia por janela curta, Silero, energia + F0 do
+`build`, alinhamento pela palavra do transcript longo ou da retranscrição,
+pré-rolagem fixa ou condicional) chega a 0,6 s nos três itens do aceite sem
+afastar outros. Nada muda no código de produção. O que sobra acima de 0,6 s é
+o ar antes da 1ª palavra numa tomada nova, que o editor decide no Gate 2 e que
+o áudio não carrega.

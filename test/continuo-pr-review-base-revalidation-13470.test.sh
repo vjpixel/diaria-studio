@@ -34,6 +34,9 @@ case "$script" in
       merge-lock-acquire) echo acquire >> "$EVENTS_LOG" ;;
       merge-lock-release) echo release >> "$EVENTS_LOG" ;;
     esac; exit 0 ;;
+  # #13641: a recusa por base velha agora traz a base pra branch.
+  scripts/gh-pr-update-branch.ts)
+    echo "update-branch:$*" >> "$EVENTS_LOG"; echo '{"outcome":"accepted"}'; exit 0 ;;
 esac
 exit 9
 F

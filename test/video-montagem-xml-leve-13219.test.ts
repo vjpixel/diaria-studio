@@ -241,8 +241,8 @@ describe("#13219 build: XML leve por padrão, --xml-bruto e --trechos-folga", ()
     }
   });
 
-  it("--xml-bruto desliga os trechos (opção do main para o cmdBuild)", () => {
-    assert.match(src, /enabled: !flags\.has\("xml-bruto"\)/);
+  it("--xml-bruto desliga os trechos (opção do main para o cmdBuild; #13493: --xml-leve força, sem nenhum o limiar decide)", () => {
+    assert.match(src, /choice: parseXmlLeveChoice\(\{ leve: flags\.has\("xml-leve"\), bruto: flags\.has\("xml-bruto"\) \}\)/);
   });
 });
 

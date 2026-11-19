@@ -172,6 +172,26 @@ describe("filtro real do rclone, bisync de data/ (#12478)", { skip: existsSync(R
         "sessions/s.json.conflict1",
         "editions/2611/261118/_internal/_forensic/link-verify-bodies/1556c48b4a10e438.html",
         "editions/2611/261118/_internal/_Forensic/x.html",
+        // #13614: logs escritos continuamente (e suas rotações/conflitos) saem;
+        // o resto de overnight/ e os logs curtos das outras tasks ficam.
+        "overnight/.nightly-chain-last-review.stderr.log",
+        "overnight/.nightly-chain-last-review.stderr.log.prev",
+        "overnight/.nightly-chain-last-review.stderr.log.conflict1",
+        "overnight/.nightly-chain.log",
+        "overnight/.nightly-chain.live.log.prev",
+        "overnight/triage-261115.json",
+        "continuo/watch-health.log",
+        // #13646: saídas stream-json da cadeia noturna saem (com .prev e
+        // .conflictN); o texto final do review e o marco seguem sincronizando.
+        "continuo/last-daily-review-output.jsonl",
+        "continuo/last-daily-review-output.jsonl.prev",
+        "continuo/last-daily-review-output.jsonl.conflict1",
+        "continuo/last-daily-review-output.txt",
+        "continuo/last-daily-review-sha",
+        "overnight/.nightly-chain-last-overnight.json",
+        "overnight/.nightly-chain-last-overnight.json.prev",
+        "editions/2611/261118/_internal/x.STDERR.LOG",
+        "linkedin-personal/.task.log",
       ];
       for (const f of files) {
         mkdirSync(join(sb, "t", dirname(f)), { recursive: true });
@@ -183,7 +203,15 @@ describe("filtro real do rclone, bisync de data/ (#12478)", { skip: existsSync(R
       });
       assert.equal(r.status, 0, r.stderr);
       const listed = r.stdout.split("\n").filter(Boolean).sort();
-      assert.deepEqual(listed, ["editions/2611/261108/02-reviewed.md", "keep.json", "sessions/s.json.conflict1"]);
+      assert.deepEqual(listed, [
+        "continuo/last-daily-review-output.txt",
+        "continuo/last-daily-review-sha",
+        "editions/2611/261108/02-reviewed.md",
+        "keep.json",
+        "linkedin-personal/.task.log",
+        "overnight/triage-261115.json",
+        "sessions/s.json.conflict1",
+      ]);
     } finally {
       rmSync(sb, { recursive: true, force: true });
     }

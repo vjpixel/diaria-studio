@@ -78,6 +78,7 @@ import {
   resolveTranscriptsDir,
 } from "./lib/session-transcript.ts";
 import { findTranscript } from "./lib/effective-model-probe.ts";
+import { editionMatches, resolveEmitterEdition } from "./lib/overnight-round-edition.ts";
 
 /** Kinds que têm coordenador e emitem `coordinator_tokens_estimate`. */
 export const COORDINATOR_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -174,7 +175,8 @@ export function lastCoordinatorCumulativeBase(
     if (typeof obj !== "object" || obj === null) continue;
     const rec = obj as Record<string, unknown>;
     if (rec.message !== COORDINATOR_ESTIMATE_MESSAGE) continue;
-    if (rec.edition !== edition) continue;
+    // #13612: com sessão, a outra grafia do mesmo dia (261118 × 261118b) é a mesma série de checkpoints.
+    if (!editionMatches(rec.edition, edition, sessionId)) continue;
     if (rec.agent !== agent) continue;
     const details = rec.details as
       | { tokens?: unknown; cumulative_tokens?: unknown; session_id?: unknown }
@@ -326,14 +328,17 @@ export function estimateCoordinatorUsage(opts: {
 
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
-  const edition = values.edition;
   const agent = values.agent as CoordinatorKind;
-  if (!edition || !agent || !(COORDINATOR_KINDS as readonly string[]).includes(agent)) {
+  const resolved = resolveEmitterEdition(values);
+  if ("error" in resolved || !agent || !(COORDINATOR_KINDS as readonly string[]).includes(agent)) {
+    if ("error" in resolved) console.error(`[coordinator-usage-estimate] ${resolved.error}`);
     console.error(
-      `[coordinator-usage-estimate] uso: --edition {AAMMDD} --agent {${COORDINATOR_KINDS.join("|")}} --phase {nome} [--since ISO] [--session-id UUID] [--dry-run]`,
+      `[coordinator-usage-estimate] uso: --edition {AAMMDD} | --plan {plan.json} --agent {${COORDINATOR_KINDS.join("|")}} --phase {nome} [--since ISO] [--session-id UUID] [--dry-run]`,
     );
     process.exit(2);
   }
+  if (resolved.note) console.error(`[coordinator-usage-estimate] ${resolved.note}`);
+  const edition = resolved.edition;
   const phase = values.phase ?? "checkpoint";
   const sessionId = values["session-id"] ?? currentSessionId(process.env);
   const result = estimateCoordinatorUsage({

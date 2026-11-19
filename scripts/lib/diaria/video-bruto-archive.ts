@@ -80,6 +80,23 @@ export function isBrutoFile(relPath: string): boolean {
 }
 
 /**
+ * Nome da pasta de versões anteriores (#13610). Igual a `ARCHIVE_DIR_NAME` de
+ * `video-version-archive.ts`, que importa este módulo (repetido aqui para não
+ * criar import circular; um teste trava a igualdade, #13617).
+ */
+export const BRUTO_SKIP_ARCHIVE_DIR = "arquivo";
+
+/**
+ * Pura — os brutos de uma listagem recursiva da pasta da edição (`rclone lsjson -R`).
+ * Tudo dentro de `arquivo/` (#13610) fica fora, inclusive `arquivo/Brutos/x.mp4`
+ * vindo de um `_superadas/Brutos/` absorvido (#13617); as demais subpastas
+ * seguem `isBrutoFile` (`Brutos/` conta, `Final/` não).
+ */
+export function brutoFilesOf<T extends { path: string }>(files: readonly T[]): T[] {
+  return files.filter((f) => f.path.split("/").filter(Boolean)[0]?.toLowerCase() !== BRUTO_SKIP_ARCHIVE_DIR && isBrutoFile(f.path));
+}
+
+/**
  * Pura — edições que o nome da pasta cobre. `261105` → `["261105"]`;
  * `261109-10` → `["261109", "261110"]`. Fora do padrão → `null` (a pasta é
  * ignorada, nunca tocada).
@@ -95,18 +112,30 @@ export function editionsOfFolder(name: string): string[] | null {
 
 export interface ArchiveFolderInput {
   name: string;
-  /** Publicação por edição do nome; `null` = desconhecida. */
+  /** Publicação por edição (já com a renomeação aplicada); `null` = desconhecida. */
   published: Record<string, boolean | null>;
+  /**
+   * #13632: edição do nome que foi renomeada (`_origem-brutos.json` da pasta
+   * nova) → edição nova. A pasta antiga segue a nova: publicação E idade.
+   */
+  renamedTo?: Readonly<Record<string, string>>;
 }
 
-export type FolderDecision =
+export type FolderDecision = (
   | { name: string; eligible: true; reason: "publicado" | "teto-sem-publicacao"; ageDays: number }
   | {
       name: string;
       eligible: false;
       reason: "nome-fora-do-padrao" | "aguardando-publicacao" | "publicacao-desconhecida" | "publicado-recente";
       ageDays: number | null;
-    };
+    }
+) & { renamedTo?: Record<string, string> };
+
+/** Pura (#13632) — edições que a pasta segue: as do nome, trocadas pela renomeação quando houver. */
+export function effectiveEditionsOfFolder(name: string, renamedTo?: Readonly<Record<string, string>>): string[] | null {
+  const editions = editionsOfFolder(name);
+  return editions ? editions.map((e) => renamedTo?.[e] ?? e) : null;
+}
 
 /** Pura — decide se a pasta da edição entra na rodada. */
 export function decideFolder(
@@ -115,7 +144,18 @@ export function decideFolder(
   unpublishedMaxDays: number = DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS,
   publishedMinDays: number = DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS,
 ): FolderDecision {
-  const editions = editionsOfFolder(input.name);
+  const d = decideFolderInner(input, today, unpublishedMaxDays, publishedMinDays);
+  const renamed = Object.entries(input.renamedTo ?? {}).filter(([de]) => editionsOfFolder(input.name)?.includes(de));
+  return renamed.length > 0 ? { ...d, renamedTo: Object.fromEntries(renamed) } : d;
+}
+
+function decideFolderInner(
+  input: ArchiveFolderInput,
+  today: Date,
+  unpublishedMaxDays: number,
+  publishedMinDays: number,
+): FolderDecision {
+  const editions = effectiveEditionsOfFolder(input.name, input.renamedTo);
   if (!editions) return { name: input.name, eligible: false, reason: "nome-fora-do-padrao", ageDays: null };
   const ages = editions.map((e) => editionAgeDays(e, today));
   if (ages.some((a) => a === null)) {

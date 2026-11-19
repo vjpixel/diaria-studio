@@ -45,7 +45,15 @@
  *
  * `--run-dir` é um atalho: a edição é derivada do basename do path (ex:
  * `data/overnight/260811/` → edição `260811`) — útil quando o coordenador já
- * tem o path da rodada em mãos e não quer repetir o AAMMDD.
+ * tem o path da rodada em mãos e não quer repetir o AAMMDD. Só `--plan`
+ * também basta: a edição sai da pasta do plano.
+ *
+ * **Rodada com sufixo (#13612).** Na `data/overnight/261118b/` o
+ * `record-overnight-wave.ts` grava sob `261118b` e os comandos da SKILL com
+ * `--edition {AAMMDD}` gravam sob `261118`. Com filtro de sessão, as duas
+ * grafias do mesmo dia contam juntas (é a mesma sessão, logo a mesma rodada);
+ * sem filtro, só a edição exata (a `261118` é compartilhada com a outra
+ * rodada do dia).
  *
  * @see .claude/skills/diaria-overnight/SKILL.md (Fase 2 — "Custo em tokens")
  * @see scripts/log-event.ts (emissor dos 3 tipos de evento checados aqui)
@@ -57,6 +65,7 @@ import { basename, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
+import { editionMatches, runEditionFromPlanPath } from "./lib/overnight-round-edition.ts";
 
 /** Os 3 tipos de evento mandatados pelo SKILL.md (#3453 Rec 1, #4815). */
 export const TRACKED_TOKEN_INSTRUMENTATION_MESSAGES = [
@@ -170,7 +179,8 @@ function recordsFor(lines: string[], edition: string, sessionId?: string | null)
     }
     if (typeof obj !== "object" || obj === null) continue;
     const rec = obj as Record<string, unknown>;
-    if (rec.edition !== edition) continue;
+    // #13612: com filtro de sessão, a outra grafia do mesmo dia (261118 × 261118b) é a mesma rodada.
+    if (!editionMatches(rec.edition, edition, sessionId)) continue;
     if (!eventMatchesSession(rec, sessionId)) continue;
     out.push(rec);
   }
@@ -325,7 +335,22 @@ export function resolveEditionFromArgs(values: Record<string, string>): string |
     const base = basename(cleaned);
     return base || null;
   }
+  // #13612: só `--plan` basta — a edição é o nome da pasta da rodada (`261118b`).
+  if (values.plan) return runEditionFromPlanPath(values.plan);
   return null;
+}
+
+/**
+ * Pure (#13612): grafias de edição sob as quais os eventos rastreados desta
+ * sessão foram gravados (ex.: `261118` e `261118b`), em ordem. Mais de uma =
+ * a contagem somou as duas; o texto do relatório diz isso.
+ */
+export function editionSpellingsSeen(lines: string[], edition: string, sessionId?: string | null): string[] {
+  const seen = new Set<string>();
+  for (const rec of recordsFor(lines, edition, sessionId)) {
+    if ((isTrackedMessage(rec.message) || rec.message === TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) && typeof rec.edition === "string") seen.add(rec.edition);
+  }
+  return [...seen].sort();
 }
 
 /**
@@ -345,7 +370,10 @@ export function checkOvernightTokenInstrumentation(
   const papelBreakdown = countSubagentMetricsByPapel(lines, edition, sessionId);
   const verdict = resolveTokenInstrumentationVerdict(counts, countEmptyMarkers(lines, edition, sessionId));
   const papelLine = formatPapelBreakdown(papelBreakdown);
-  const baseSection = buildTokenInstrumentationSection(edition, counts, verdict, scope);
+  const spellings = editionSpellingsSeen(lines, edition, sessionId);
+  const spellingNote =
+    spellings.length > 1 ? ` Eventos desta sessão gravados sob ${spellings.join(" e ")} (mesma rodada, somados, #13612).` : "";
+  const baseSection = buildTokenInstrumentationSection(edition, counts, verdict, scope) + spellingNote;
   const section = papelLine ? `${baseSection}\n${papelLine}` : baseSection;
   return { edition, sessionId, counts, papelBreakdown, verdict, section };
 }
@@ -389,7 +417,7 @@ if (isMainModule(import.meta.url)) {
   const edition = resolveEditionFromArgs(values);
   if (!edition) {
     console.error(
-      "[check-overnight-token-instrumentation] uso: --edition {AAMMDD} ou --run-dir {path} [--plan {plan.json} | --session-id {uuid}]",
+      "[check-overnight-token-instrumentation] uso: --edition {AAMMDD} ou --run-dir {path} ou --plan {plan.json} [--plan {plan.json} | --session-id {uuid}]",
     );
     process.exit(2);
   }

@@ -31,7 +31,7 @@
  *
  * Uso:
  *   compare AAMMDD [--final PATH] [--seq KEY] [--dry-run]
- *       uma edição: todos os finais achados em Final/ (ou o --final dado).
+ *       uma edição: todos os finais achados em Final/ (ou Editados/, sem mp4 em Final/), ou só o --final dado.
  *   run [--today AAMMDD] [--days 14] [--open-issues] [--dry-run] [--no-register]
  *       a tarefa recorrente (Diaria-Video-Xml-Vs-Final-Daily): as edições da
  *       janela com plan.json e alguma sequência ainda sem comparação; depois
@@ -524,6 +524,19 @@ export async function brutoWav(
   return problem ? { wav: null, reason: clipReason(parts.length > 1 ? `áudio do bruto em ${parts.length} arquivos: ${problem}` : problem) } : { wav: own };
 }
 
+/**
+ * Motivo da sequência sem final a comparar (#13609). Com `--final`, a rodada se
+ * restringe a esse arquivo: as outras sequências ficaram de fora por isso, não
+ * por falta de export (na 261118 as verticais tinham final em `Editados/` e saíam
+ * como "sem final exportado em Final/"). Sem `--final`, o motivo cita as duas
+ * pastas que o finder procura (`Final/` e, sem mp4 nela, `Editados/`).
+ */
+export function noFinalReason(finalPath: string | undefined): string {
+  return finalPath
+    ? `fora do --final passado (${basename(finalPath)}); rode sem --final para as outras sequências`
+    : "sem final exportado (procurado em Final/ e Editados/)";
+}
+
 /** Compara uma edição. `null` = sem plan.json (fora da rodada). */
 export async function compareEdition(
   edition: string,
@@ -571,7 +584,7 @@ export async function compareEdition(
     const key = sequenceKey(plan.spec);
     const fin = finals.get(key);
     if (!fin) {
-      record.skipped.push({ key, reason: "sem final exportado em Final/" });
+      record.skipped.push({ key, reason: noFinalReason(opts.finalPath) });
       continue;
     }
     if (brutoRes === null) {

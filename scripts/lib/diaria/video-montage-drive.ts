@@ -50,6 +50,14 @@ export interface MontageDriveDeps {
    * `driveFetch` (testes).
    */
   uploadFetch?(url: string, init?: RequestInit): Promise<Response>;
+  /**
+   * Chamada autenticada como a conta DONA da pasta de vídeo (diaria.editor,
+   * #13619; `drive-owner-account.ts`): cria a `arquivo/` e põe na lixeira a
+   * `_superadas/` vazia que o OAuth do projeto (vjpixel, editora) não pode.
+   * Ausente = o OAuth do projeto cria (e fica dono). Falha = aviso e fallback
+   * para o `driveFetch`.
+   */
+  ownerFetch?(url: string, init?: RequestInit): Promise<Response>;
 }
 
 /** Um arquivo/pasta como a listagem do Drive devolve (`size` é string int64 na API). */
@@ -59,6 +67,8 @@ export interface DriveEntry {
   mimeType: string;
   size?: string;
   modifiedTime?: string;
+  /** Pedido na listagem desde o #13617: ordena as `arquivo/` repetidas pela criação, não pela última mudança. */
+  createdTime?: string;
   webViewLink?: string;
 }
 
@@ -84,7 +94,7 @@ export interface CacheSidecar {
   modifiedTime: string | null;
 }
 
-const LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink)";
+const LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,createdTime,webViewLink)";
 
 // ── puro ─────────────────────────────────────────────────────────────────
 
@@ -293,10 +303,12 @@ const sameRoot = (a: string, b: string) => toPosix(a).replace(/\/+$/, "").toLowe
  * projeto presentes; `--no-drive-api` desliga; a raiz padrão do Neo (`I:`, o
  * próprio Drive for desktop) nunca sobe pela API (o Drive já sincroniza).
  */
-export function localDriveUploadFor(o: { mode: "local" | "api"; explicitRoot: string | undefined; noDriveApi: boolean; credentials: boolean }): { enabled: boolean; reason: string } {
+export function localDriveUploadFor(o: { mode: "local" | "api"; explicitRoot: string | undefined; noDriveApi: boolean; credentials: boolean; desktopRoot?: string }): { enabled: boolean; reason: string } {
   if (o.mode !== "local" || o.explicitRoot === undefined) return { enabled: false, reason: "sem raiz explícita no modo local" };
   if (o.noDriveApi) return { enabled: false, reason: "--no-drive-api" };
-  if (sameRoot(o.explicitRoot, DEFAULT_DRIVE_ROOT)) return { enabled: false, reason: `raiz ${DEFAULT_DRIVE_ROOT} é a do Drive for desktop` };
+  // #13628: `desktopRoot` só no teste do `main` (a raiz temporária faz o papel do I: do Neo).
+  const desktop = o.desktopRoot ?? DEFAULT_DRIVE_ROOT;
+  if (sameRoot(o.explicitRoot, desktop)) return { enabled: false, reason: `raiz ${desktop} é a do Drive for desktop` };
   if (!o.credentials) return { enabled: false, reason: "sem data/.credentials.json (OAuth do projeto)" };
   return { enabled: true, reason: `raiz explícita ${o.explicitRoot} fora do Drive for desktop` };
 }
@@ -653,13 +665,22 @@ export async function uploadToFolder(
   folderId: string,
   localPath: string,
   log: (line: string) => void = () => {},
+  opts: { excludeIds?: ReadonlySet<string> } = {},
 ): Promise<{ id: string; name: string; webViewLink: string | null; updated: boolean }> {
   const name = basename(localPath);
+  // #13610: ids que não podem ser atualizados no lugar (a prévia anterior, que vai para arquivo/ depois de a nova subir).
+  const exclude = opts.excludeIds ?? new Set<string>();
+  const findUsable = async () => {
+    if (!exclude.size) return findByName(deps, folderId, name);
+    const found = (await listChildren(deps, folderId, { name })).filter((f) => f.mimeType !== FOLDER_MIME && !exclude.has(f.id));
+    found.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
+    return found.length === 0 ? { file: null, duplicates: 0 as const } : { file: found[0], duplicates: found.length - 1 };
+  };
   const size = statSync(localPath).size;
   const chunked = size > UPLOAD_CHUNK_THRESHOLD;
   const content = chunked ? undefined : readFileSync(localPath);
   const mime = uploadMimeFor(name);
-  const found = await findByName(deps, folderId, name);
+  const found = await findUsable();
   if (found.file && found.duplicates) log(`[aviso] ${found.duplicates + 1} arquivos "${name}" na pasta do Drive: atualizando o mais recente (${found.file.id})`);
   let existing = found.file;
   const fields = "id,name,webViewLink";
@@ -667,7 +688,7 @@ export async function uploadToFolder(
   let lastError = "";
   for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt++) {
     // Um PUT que o Drive gravou mas cuja resposta se perdeu já criou o arquivo: a nova tentativa atualiza, não duplica.
-    if (attempt > 1 && !existing) existing = (await findByName(deps, folderId, name)).file;
+    if (attempt > 1 && !existing) existing = (await findUsable()).file;
     const sessionUrl = existing
       ? `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable&supportsAllDrives=true&fields=${fields}`
       : `${DRIVE_UPLOAD}/files?uploadType=resumable&supportsAllDrives=true&fields=${fields}`;

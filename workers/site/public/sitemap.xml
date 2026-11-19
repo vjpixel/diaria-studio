@@ -1284,14 +1284,6 @@
   <url>
     <loc>https://diar.ia.br/p/deepfake-de-drauzio-varella-anuncia-remedio-milagroso</loc>
     <lastmod>2026-11-17</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-17T00:00:00.000Z</news:publication_date>
-      <news:title>Deepfake de Drauzio Varella anuncia remédio milagroso</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/videos</loc>
@@ -1306,6 +1298,18 @@
       </news:publication>
       <news:publication_date>2026-11-18T00:00:00.000Z</news:publication_date>
       <news:title>EUA exigem licença para chips de IA no Brasil</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/openai-lanca-gpt-6-2-e-corta-preco-em-20</loc>
+    <lastmod>2026-11-19</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-19T00:00:00.000Z</news:publication_date>
+      <news:title>OpenAI lança GPT-6.2 e corta preço em 20%</news:title>
     </news:news>
   </url>
 </urlset>
