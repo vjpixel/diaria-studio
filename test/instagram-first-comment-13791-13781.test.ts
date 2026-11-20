@@ -126,7 +126,10 @@ describe("#13791 marca de envio antes do POST", () => {
     const dir = edition([igEntry({ first_comment_pending: pending(1) })]);
     try {
       const { d, posted } = retryDeps(async () => ({ ok: true, id: "cm2" }), failingUpdate(1));
-      await assert.rejects(() => retryInstagramFirstComment(dir, AAMMDD, false, d), /EBUSY/);
+      // #13797: sai `failed` não esgotada (o timer retenta), nunca exceção → `invalid` → stuck.
+      const r = await retryInstagramFirstComment(dir, AAMMDD, false, d);
+      assert.equal(r.action, "failed");
+      assert.match(r.action === "failed" ? r.error : "", /EBUSY/);
       assert.equal(posted.length, 0);
       assert.deepEqual(readIg(dir).first_comment_pending, pending(1));
     } finally {
