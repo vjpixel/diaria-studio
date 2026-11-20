@@ -80,7 +80,9 @@ exit ${opts.rcloneExit}
   });
   let stderr = "";
   child.stderr!.on("data", (d) => (stderr += d));
-  const exited = new Promise<number | null>((resolve) => child.on("close", (code, signal) => resolve(code ?? (signal ? -1 : null))));
+  // Depois do restore o script morre pelo próprio SIGTERM (parada limpa pro
+  // systemd), então o resultado esperado é o sinal, não um exit code.
+  const exited = new Promise<string>((resolve) => child.on("close", (code, signal) => resolve(signal ?? `exit ${code}`)));
   for (let i = 0; i < 250 && !existsSync(started); i++) await sleep(20);
   assert.equal(existsSync(started), true, "rclone falso não começou");
   // Com o rclone já rodando, o filtro novo está instalado: é a janela do bug.
@@ -100,9 +102,9 @@ exit ${opts.rcloneExit}
 }
 
 describe("gdrive-bisync.sh — SIGTERM no meio do --resync devolve o filtro anterior (#13724)", { skip: process.platform === "win32" ? "script POSIX-only" : false }, () => {
-  it("SIGTERM no cgroup inteiro (rclone morre junto) → filtro e .md5 antigos de volta, exit 143", async () => {
+  it("SIGTERM no cgroup inteiro (rclone morre junto) → filtro e .md5 antigos de volta, morre por SIGTERM", async () => {
     const r = await runAndSignal({ rcloneSleep: 30, rcloneExit: 0, target: "group", args: ["--resync"] });
-    assert.equal(r.status, 143, r.stderr);
+    assert.equal(r.status, "SIGTERM", r.stderr);
     assert.equal(r.installed, "- velho\n");
     assert.equal(r.md5, "md5-de-- velho\n");
     assert.equal(r.prevLeft, false);
@@ -110,8 +112,8 @@ describe("gdrive-bisync.sh — SIGTERM no meio do --resync devolve o filtro ante
   });
 
   it("SIGTERM só no script, rclone termina o resync com 0 → filtro novo fica, sem .prev", async () => {
-    const r = await runAndSignal({ rcloneSleep: 1, rcloneExit: 0, target: "shell", args: ["--resync"] });
-    assert.equal(r.status, 143, r.stderr);
+    const r = await runAndSignal({ rcloneSleep: 2, rcloneExit: 0, target: "shell", args: ["--resync"] });
+    assert.equal(r.status, "SIGTERM", r.stderr);
     assert.equal(r.installed, "- novo\n");
     assert.equal(r.md5, "md5-de-- novo\n");
     assert.equal(r.prevLeft, false);
@@ -119,8 +121,8 @@ describe("gdrive-bisync.sh — SIGTERM no meio do --resync devolve o filtro ante
   });
 
   it("SIGTERM só no script, rclone termina o resync com 1 → filtro antigo de volta", async () => {
-    const r = await runAndSignal({ rcloneSleep: 1, rcloneExit: 1, target: "shell", args: ["--resync"] });
-    assert.equal(r.status, 143, r.stderr);
+    const r = await runAndSignal({ rcloneSleep: 2, rcloneExit: 1, target: "shell", args: ["--resync"] });
+    assert.equal(r.status, "SIGTERM", r.stderr);
     assert.equal(r.installed, "- velho\n");
     assert.equal(r.md5, "md5-de-- velho\n");
     assert.equal(r.prevLeft, false);
@@ -128,7 +130,7 @@ describe("gdrive-bisync.sh — SIGTERM no meio do --resync devolve o filtro ante
 
   it("SIGTERM numa rodada sem --resync → filtro instalado intocado, sem restore", async () => {
     const r = await runAndSignal({ rcloneSleep: 30, rcloneExit: 0, target: "group", args: [] });
-    assert.equal(r.status, 143, r.stderr);
+    assert.equal(r.status, "SIGTERM", r.stderr);
     assert.equal(r.installed, "- velho\n");
     assert.equal(r.prevLeft, false);
     assert.doesNotMatch(r.stderr, /restaurado/);

@@ -178,6 +178,9 @@ restore_prev_filters() {
 # tentativa dele chegou a gravar exit 0 em $RCLONE_RC, o resync terminou bem e
 # o filtro novo fica. SIGKILL não tem trap: o par antigo fica em `.prev`.
 # O EXIT cobre o `finish 75` de uma instalação que falha depois do backup.
+# Depois do restore o script morre pelo MESMO sinal, com a ação default (como
+# antes dos traps): o systemd conta morte por SIGTERM/SIGINT/SIGHUP como
+# parada limpa, mas um `exit 143` deixaria a unit `failed` a cada stop.
 on_signal() {
   sig_done=$(cat "$RCLONE_RC" 2>/dev/null)
   if [ "$sig_done" = 0 ]; then
@@ -185,12 +188,14 @@ on_signal() {
   else
     restore_prev_filters "$1"
   fi
+  trap - EXIT "$2"
+  kill -s "$2" "$$"
   exit "$1"
 }
 trap 'restore_prev_filters $?' EXIT
-trap 'on_signal 129' HUP
-trap 'on_signal 130' INT
-trap 'on_signal 143' TERM
+trap 'on_signal 129 HUP' HUP
+trap 'on_signal 130 INT' INT
+trap 'on_signal 143 TERM' TERM
 
 if [ ! -f "$FILTERS" ]; then
   # 1ª rodada nesta máquina: não há filtro instalado a preservar. Sem
