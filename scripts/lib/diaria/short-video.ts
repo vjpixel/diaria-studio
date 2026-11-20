@@ -962,6 +962,13 @@ export interface InstagramFirstCommentPending {
    * (sairia duplicado); o editor confere os comentários do post.
    */
   uncertain?: boolean;
+  /**
+   * #13791: marca gravada ANTES do POST da retentativa (com `uncertain` e a
+   * tentativa já somada). O resultado troca a marca; se ela ficar, o registro
+   * não gravou depois do POST (ou o processo caiu no meio) e o comentário pode
+   * existir: nunca retenta sozinho.
+   */
+  sending?: boolean;
 }
 
 export interface ShortsPublishedFile {

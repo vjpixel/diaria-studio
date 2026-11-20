@@ -646,6 +646,8 @@ async function uploadChunks(
     let offset = 0;
     let failures = 0;
     let probing = opts.resume;
+    // #13790: só a 1ª consulta da retomada é "de graça"; as seguintes contam como falha sem progresso.
+    let resumeProbePending = opts.resume;
     // #13739: banda medida nos blocos que deram certo, para o teto e o progresso.
     let sentBytes = 0;
     let sentMs = 0;
@@ -696,7 +698,10 @@ async function uploadChunks(
       const match = range?.match(/^bytes=0-(\d+)$/);
       const next = range === null ? 0 : match ? Number(match[1]) + 1 : NaN;
       // A 1ª consulta de uma retomada (#13739) parte do 0: o Drive pode estar em qualquer ponto, e ela não conta como falha.
-      const resumeProbe = wasProbing && opts.resume && sentBytes === 0 && offset === 0;
+      // Vale UMA vez só (#13790): antes valia para toda consulta enquanto nenhum bloco desse certo, então cada
+      // falha do bloco 0 zerava `failures` e o upload ficava em loop sem fim (308 sem Range + PUT que sempre cai).
+      const resumeProbe = wasProbing && resumeProbePending;
+      if (resumeProbe) resumeProbePending = false;
       if (!Number.isSafeInteger(next) || next < offset || (next > offset + length && !wasProbing) || next >= size) {
         throw new Error(`Range inválido no upload: ${range}`);
       }

@@ -47,7 +47,7 @@ function sparseFile(size: number): { dir: string; path: string } {
 }
 
 /** Drive resumable falso: guarda o quanto recebeu por sessão e deixa o teste derrubar PUTs. */
-function fakeResumable(size: number, failPut: (n: number, range: string) => "network" | "404" | null) {
+function fakeResumable(size: number, failPut: (n: number, range: string) => "network" | "404" | "503" | null) {
   let sessions = 0;
   let puts = 0;
   const received = new Map<string, number>();
@@ -66,6 +66,7 @@ function fakeResumable(size: number, failPut: (n: number, range: string) => "net
       const fail = failPut(++puts, range ?? "");
       if (fail === "network") throw new Error("socket hang up");
       if (fail === "404") return new Response("sessão expirada", { status: 404 });
+      if (fail === "503") return new Response("indisponível", { status: 503 });
       const got = received.get(url) ?? 0;
       if (range === `bytes */${size}`) {
         if (got === size) return done();
@@ -140,6 +141,31 @@ describe("#13739 upload retomável em rede lenta", () => {
       assert.equal(d.sessions, 2);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  // #13790: a consulta da retomada zerava `failures` a cada volta enquanto nenhum bloco desse certo.
+  // Rede de ~0,05 MB/s: o PUT do bloco 0 sempre estoura e a consulta responde 308 sem Range.
+  for (const kind of ["network", "503"] as const) {
+    it(`bloco 0 sempre falhando (${kind}) com a consulta em 308 sem Range: desiste depois de UPLOAD_CHUNK_RETRIES falhas por tentativa, sem loop`, async () => {
+      const size = 2 * UPLOAD_CHUNK_BYTES;
+      const { dir, path } = sparseFile(size);
+      // Trava de segurança: se o loop voltar, o fake "aceita" o arquivo e o teste falha no rejects (em vez de pendurar).
+      const CAP = 500;
+      try {
+        const d = fakeResumable(size, (_n, range) => (range === `bytes */${size}` ? null : kind));
+        const originalFetch = d.deps.uploadFetch!;
+        let calls = 0;
+        d.deps.uploadFetch = async (url, init) => {
+          if (++calls > CAP) return Response.json({ id: "loop", name: "trecho.mp4" });
+          return originalFetch(url, init);
+        };
+        await assert.rejects(uploadToFolder(d.deps, "pasta", path, () => {}, noSleep), /falhou 3 vezes/);
+        assert.equal(d.sessions, 1, "a sessão segue a mesma nas 3 tentativas");
+        const blockPuts = d.ranges.filter((x) => x === `bytes 0-${UPLOAD_CHUNK_BYTES - 1}/${size}`).length;
+        assert.ok(blockPuts <= 3 * UPLOAD_CHUNK_RETRIES, `PUTs do bloco 0: ${blockPuts} (teto ${3 * UPLOAD_CHUNK_RETRIES})`);
+        assert.ok(calls < CAP, `chamadas: ${calls}`);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
 
   it("arquivo pequeno (≤ 8 MiB) segue no PUT único", async () => {
     const dir = mkdtempSync(join(tmpdir(), "drive-lento-"));

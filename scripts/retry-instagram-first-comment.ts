@@ -18,6 +18,11 @@
  * Efeito público: posta UM comentário no Reels da edição. Lê e grava só a
  * entrada `instagram` do arquivo do registro que a contém (principal ou o do
  * timer), sob o lock do `updateShortEntry`.
+ *
+ * #13791: antes do POST grava a marca de envio (`sending` + `uncertain`, a
+ * tentativa já somada); sem ela gravada, não comenta. Se o registro não gravar
+ * o resultado depois do POST, a marca fica, a saída é `uncertain` e a rodada
+ * seguinte do timer só alarma, nunca comenta de novo.
  */
 
 import { readFileSync } from "node:fs";
@@ -37,6 +42,7 @@ import {
 import {
   applyFirstCommentAttempt,
   firstCommentRetryState,
+  markFirstCommentSending,
   INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
   type FirstCommentAttempt,
 } from "./lib/diaria/instagram-first-comment-retry.ts";
@@ -57,6 +63,8 @@ export interface RetryFirstCommentDeps {
   /** Conta autora + token; `null` com o motivo quando não há credencial. */
   resolveAuthor: () => Promise<{ token: string; apiVersion: string } | { error: string }>;
   postComment: (mediaId: string, token: string, apiVersion: string, message: string) => Promise<FirstCommentAttempt>;
+  /** Gravação da entrada sob o lock do registro; o default é `updateShortEntry` (o teste injeta a falha, #13791). */
+  updateEntry?: typeof updateShortEntry;
 }
 
 /** Só os dois arquivos com escritor conhecido; cópia de conflito do sync não é gravada aqui. */
@@ -91,12 +99,41 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
   if (!writer) return { action: "invalid", reason: `a pendência está em ${basename(pendingHit.path)}, que não é o registro principal nem o do timer (cópia de conflito?): una o registro antes` };
   if (dryRun) return { action: "dry-run", media_id: state.mediaId, message: state.pending.message, attempts: state.pending.attempts };
 
-  const author = await deps.resolveAuthor();
-  const attempt: FirstCommentAttempt = "error" in author ? { ok: false, error: `sem credencial do Instagram: ${author.error}` } : await deps.postComment(state.mediaId, author.token, author.apiVersion, state.pending.message);
-  const updated = updateShortEntry(dir, aammdd, writer, "instagram", (entry) => {
+  const update = deps.updateEntry ?? updateShortEntry;
+  const sameMedia = (entry: ShortPublishedEntry): void => {
     if (entry.id !== state.mediaId) throw new Error(`a entrada instagram de ${basename(pendingHit.path)} mudou de mídia (${state.mediaId} → ${entry.id}) no meio da retentativa`);
-    return applyFirstCommentAttempt(entry, attempt, deps.now());
-  });
+  };
+  const author = await deps.resolveAuthor();
+  let attempt: FirstCommentAttempt;
+  if ("error" in author) {
+    attempt = { ok: false, error: `sem credencial do Instagram: ${author.error}` };
+  } else {
+    // #13791: a marca vai ao registro ANTES do POST; se não gravar, lança e nada é postado.
+    update(dir, aammdd, writer, "instagram", (entry) => {
+      sameMedia(entry);
+      return markFirstCommentSending(entry, deps.now());
+    });
+    attempt = await deps.postComment(state.mediaId, author.token, author.apiVersion, state.pending.message);
+  }
+  let updated: ShortPublishedEntry;
+  try {
+    updated = update(dir, aammdd, writer, "instagram", (entry) => {
+      sameMedia(entry);
+      return applyFirstCommentAttempt(entry, attempt, deps.now());
+    });
+  } catch (e) {
+    if ("error" in author) throw e; // nada postado: a pendência segue como estava
+    // #13791: o POST rodou e o resultado não gravou; a marca de envio fica e a próxima rodada só alarma.
+    const what = attempt.ok ? `o comentário SAIU (id ${attempt.id})` : `a tentativa falhou (${attempt.error})`;
+    return {
+      action: "uncertain",
+      media_id: state.mediaId,
+      message: state.pending.message,
+      error: `${what}, mas o registro não gravou o resultado (${(e as Error).message}): fica a marca de envio, sem retentativa automática; confira os comentários do post antes de comentar à mão (#13791)`,
+      attempts: state.pending.attempts + 1,
+      max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
+    };
+  }
   if (attempt.ok) return { action: "commented", media_id: state.mediaId, comment_id: attempt.id, attempts: state.pending.attempts + 1 };
   const attempts = updated.first_comment_pending?.attempts ?? state.pending.attempts + 1;
   return {

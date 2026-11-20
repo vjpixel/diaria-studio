@@ -17,6 +17,9 @@
  *     `done_unverified` e o título do vídeo (fora do que a Posts API edita)
  *     fica o antigo;
  *   - Instagram: só pela UI (Gerenciar post → Editar), o plano devolve o texto;
+ *     se a legenda nova promete o link no 1º comentário e o Reels não tem
+ *     comentário registrado (anterior ao #13709 ou postado à mão), o plano
+ *     devolve também o texto do comentário a fazer (#13781);
  *   - Threads pessoal: só pela UI e só até 15 min depois de publicar;
  *   - X (sem plano Plus na @diariabr) e TikTok: não editam depois de publicar;
  *   - o repost da página herda o texto do perfil (nada a fazer).
@@ -46,8 +49,11 @@ export type PublishedUpdateItem =
   | { destination: string; action: "api_youtube"; videoId: string; title: string; description: string }
   | { destination: string; action: "api_facebook"; slug: string; videoId: string; description: string }
   | { destination: string; action: "api_linkedin"; postUrn: string; text: string; note: string }
-  /** Só pela UI da plataforma (Claude in Chrome ou app): o texto novo vai no plano. */
-  | { destination: string; action: "ui"; text: string; how: string; url?: string }
+  /**
+   * Só pela UI da plataforma (Claude in Chrome ou app): o texto novo vai no plano.
+   * `firstComment` (#13781, só Instagram): o 1º comentário com o link que a legenda nova promete e o Reels não tem.
+   */
+  | { destination: string; action: "ui"; text: string; how: string; url?: string; firstComment?: string }
   /** A plataforma não edita o post depois de publicado (ou a janela passou). */
   | { destination: string; action: "not_editable"; reason: string }
   | { destination: string; action: "skip"; reason: string };
@@ -64,6 +70,8 @@ export function planPublishedTextUpdates(input: {
   diariaProfiles?: DiariaProfiles;
   /** #13117: roteiro com cta_vertical; Instagram e Threads apontam para o 1º comentário/resposta (#13709). Nunca no corte. */
   ctaVertical?: boolean;
+  /** #13781: texto do 1º comentário do Reels (`Vídeo completo: diar.ia.br/video/AAMMDD`); `null` = edição sem link por edição. */
+  instagramFirstComment?: string | null;
   only?: readonly string[] | null;
   /** Ids que o config conhece: `--only` com nome fora deles e do registro lança. */
   known?: ReadonlySet<string>;
@@ -116,12 +124,24 @@ export function planPublishedTextUpdates(input: {
         out.push({ destination: e.destination, action: "ui", text, how: "registro sem URN do post (--mark): troque o texto pela página do post (Editar post)", ...(e.url ? { url: e.url } : {}) });
       }
     } else if (e.destination === "instagram") {
+      const how = "a API do Instagram não edita legenda: Gerenciar post → Editar (Claude in Chrome ou app)";
+      // #13781: a legenda nova diz "link no primeiro comentário"; o Reels sem comentário registrado ficaria com a promessa vazia.
+      const promises = input.ctaVertical === true && !e.first_comment_id;
+      const comment = promises && !e.first_comment_pending ? (input.instagramFirstComment ?? null) : null;
+      const commentNote = !promises
+        ? ""
+        : e.first_comment_pending
+          ? "; o 1º comentário com o link está pendente no registro (o timer do 300 retenta ou já alarmou): não comente à mão sem conferir o post"
+          : comment
+            ? `; a legenda nova promete o link no 1º comentário e este Reels não tem comentário registrado (anterior ao #13709 ou postado à mão): confira os comentários e, se faltar, comente: ${comment} (#13781)`
+            : "; a legenda nova promete o link no 1º comentário e este Reels não tem comentário registrado (anterior ao #13709 ou postado à mão), e a edição não tem link por edição: troque a legenda só depois de comentar o link (#13781)";
       out.push({
         destination: e.destination,
         action: "ui",
         text: buildReelsCaption({ platform: "instagram", d1: input.d1, ctaVertical: input.ctaVertical === true }),
-        how: "a API do Instagram não edita legenda: Gerenciar post → Editar (Claude in Chrome ou app)",
+        how: how + commentNote,
         ...(e.url ? { url: e.url } : {}),
+        ...(comment ? { firstComment: comment } : {}),
       });
     } else if (e.destination === "threads_profile") {
       const atMs = Date.parse(e.at);

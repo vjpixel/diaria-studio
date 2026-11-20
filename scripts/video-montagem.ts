@@ -716,7 +716,7 @@ import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
 import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
 import { withGpuLock, type GpuLockDeps } from "./lib/diaria/video-gpu-lock.ts";
-import { sequenceEndingWarning } from "./lib/diaria/video-sequence-fecho.ts";
+import { clipsHaveSpokenCta, sequenceEndingWarning } from "./lib/diaria/video-sequence-fecho.ts";
 import { falasSemTomada, falasSemTomadaAviso, readRoteiroFalasLista, videosForaDoBruto, videosForaDoBrutoAviso } from "./lib/diaria/video-roteiro-cobertura.ts";
 import { PROXY, cropOnProxy, proxyOutputArgs, proxySize, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
@@ -5412,9 +5412,13 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
   }
 }
 
-/** #12571: sequência sem card e sem CTA falado (nenhum item de `cta_*` na ordem dela) sai sem CTA nenhum. */
+/**
+ * #12571: sequência sem card e sem CTA falado sai sem CTA nenhum. CTA falado =
+ * clipe de `cta_*` ou o fecho com texto de CTA, para onde a proposta de blocos
+ * move a última fala `cta_*` (#13743, #13792).
+ */
 export function sequenceHasSpokenCta(plan: Pick<SequencePlan, "clips">): boolean {
-  return plan.clips.some((c) => (CTA_BLOCKS as readonly string[]).includes(c.block));
+  return clipsHaveSpokenCta(plan.clips, CTA_BLOCKS);
 }
 
 /** Título do D1 em `02-reviewed.md` da edição; ausente ou sem D1 = null. */
@@ -5750,7 +5754,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     }
   }
   for (const p of picked) {
-    if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
+    if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem CTA falado em cta_* ou no fecho) (#12571, #13792)`);
     // #13743: a sequência que acaba no comentário (sem o fecho) sai seca, direto no card.
     const ending = sequenceEndingWarning(p.spec.name, p.clips, file.holdBlocks ?? ["fecho"]);
     if (ending) console.error(`[aviso] ${ending}`);
