@@ -589,23 +589,70 @@ export async function findByName(
   return found.length === 0 ? { file: null, duplicates: 0 } : { file: found[0], duplicates: found.length - 1 };
 }
 
-/** Tentativas do upload (cada uma com sessão nova). */
+/** Tentativas do upload (#13739: a sessão resumable é reaproveitada entre elas; sessão nova só se o Drive a expirou). */
 export const UPLOAD_ATTEMPTS = 3;
 
 export const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // múltiplo de 256 KiB
-export const UPLOAD_CHUNK_THRESHOLD = 256 * 1024 * 1024;
+/**
+ * Acima disto o upload vai em blocos retomáveis (#13739). Era 256 MiB (#12269):
+ * os 27 trechos do XML leve (~107 MB cada) e as prévias subiam num PUT único,
+ * com o teto a 2 MB/s, e a 0,3 MB/s (Wi-Fi ruim do Neo, 261119) estouravam o
+ * tempo e recomeçavam do zero. Até um bloco, o PUT único não tem o que retomar.
+ */
+export const UPLOAD_CHUNK_THRESHOLD = UPLOAD_CHUNK_BYTES;
+/** Falhas seguidas de um bloco, sem progresso confirmado, antes de desistir da tentativa (#13739). */
+export const UPLOAD_CHUNK_RETRIES = 5;
+
+/**
+ * Teto de um bloco (#13739): o de sempre (2 MB/s, piso de 2 min) ou, com a banda
+ * já medida nos blocos anteriores, o dobro do tempo que o bloco levaria nela,
+ * o que for maior. Rede de 0,05 MB/s manda 8 MiB em ~168 s: o teto sobe para
+ * ~336 s em vez de abortar aos 120 s e repetir o mesmo bloco até desistir.
+ */
+export function chunkTimeoutMs(length: number, measuredBytesPerS: number | null): number {
+  const base = downloadBudgetMs(length, { minMs: 120_000 });
+  if (measuredBytesPerS === null || !Number.isFinite(measuredBytesPerS) || measuredBytesPerS <= 0) return base;
+  return Math.max(base, Math.ceil(((2 * length) / measuredBytesPerS) * 1000));
+}
+
+/** Espera antes de reenviar um bloco que falhou: 1 s, 2 s, 4 s… até 30 s (#13739). */
+export function chunkRetryDelayMs(failures: number, baseMs = 1000): number {
+  return Math.min(30_000, baseMs * 2 ** Math.max(0, failures - 1));
+}
+
+/** Sessão resumable que o Drive já não reconhece: só uma sessão nova resolve (#13739). */
+const sessionExpired = (status: number) => status === 404 || status === 410;
+
+interface ChunkOpts {
+  /** Retomada de uma sessão já aberta: consulta o Range confirmado antes de enviar (#13739). */
+  resume: boolean;
+  log: (line: string) => void;
+  name: string;
+  backoffMs: number;
+  sleep: (ms: number) => Promise<void>;
+}
 
 /** Um único bloco em memória; após falha, consulta o offset confirmado na mesma sessão. */
 async function uploadChunks(
   put: NonNullable<MontageDriveDeps["uploadFetch"]>,
   location: string, localPath: string, size: number, mime: string,
+  opts: ChunkOpts,
 ): Promise<Response> {
   const file = await open(localPath, "r");
   try {
     const buffer = Buffer.alloc(Math.min(UPLOAD_CHUNK_BYTES, size));
     let offset = 0;
     let failures = 0;
-    let probing = false;
+    let probing = opts.resume;
+    // #13739: banda medida nos blocos que deram certo, para o teto e o progresso.
+    let sentBytes = 0;
+    let sentMs = 0;
+    let nextLogAt = 0.25;
+    const measured = () => (sentMs > 0 ? (sentBytes * 1000) / sentMs : null);
+    const retry = async () => {
+      await opts.sleep(chunkRetryDelayMs(failures, opts.backoffMs));
+      probing = true;
+    };
     while (true) {
       let length = 0;
       if (!probing) {
@@ -617,6 +664,8 @@ async function uploadChunks(
         }
       }
       let res: Response;
+      const t0 = Date.now();
+      const wasProbing = probing;
       try {
         res = await put(location, {
           method: "PUT",
@@ -626,29 +675,43 @@ async function uploadChunks(
             "Content-Range": probing ? `bytes */${size}` : `bytes ${offset}-${offset + length - 1}/${size}`,
           },
           body: probing ? undefined : buffer.subarray(0, length),
-          signal: AbortSignal.timeout(downloadBudgetMs(length, { minMs: 120_000 })),
+          signal: AbortSignal.timeout(chunkTimeoutMs(length, measured())),
         });
       } catch (error) {
-        if (++failures >= UPLOAD_ATTEMPTS) throw error;
-        probing = true;
+        if (++failures >= UPLOAD_CHUNK_RETRIES) throw error;
+        opts.log(`[aviso] upload de ${opts.name}: bloco em ${offset} falhou na rede (${(error as Error).message}); ${failures}/${UPLOAD_CHUNK_RETRIES}, retomando do que o Drive confirmou`);
+        await retry();
         continue;
       }
       if (res.status >= 500 || res.status === 429) {
-        if (++failures >= UPLOAD_ATTEMPTS) return res;
-        probing = true;
+        if (++failures >= UPLOAD_CHUNK_RETRIES) return res;
+        opts.log(`[aviso] upload de ${opts.name}: bloco em ${offset} recebeu ${res.status}; ${failures}/${UPLOAD_CHUNK_RETRIES}, retomando do que o Drive confirmou`);
+        await retry();
         continue;
       }
       if (res.status !== 308) return res;
       const range = res.headers.get("range");
       const match = range?.match(/^bytes=0-(\d+)$/);
       const next = range === null ? 0 : match ? Number(match[1]) + 1 : NaN;
-      if (!Number.isSafeInteger(next) || next < offset || next > offset + length && !probing || next >= size) {
+      // A 1ª consulta de uma retomada (#13739) parte do 0: o Drive pode estar em qualquer ponto, e ela não conta como falha.
+      const resumeProbe = wasProbing && opts.resume && sentBytes === 0 && offset === 0;
+      if (!Number.isSafeInteger(next) || next < offset || (next > offset + length && !wasProbing) || next >= size) {
         throw new Error(`Range inválido no upload: ${range}`);
       }
-      if (next > offset) failures = 0;
-      else if (++failures >= UPLOAD_ATTEMPTS) throw new Error("upload sem progresso");
+      if (!wasProbing && next > offset) {
+        sentBytes += next - offset;
+        sentMs += Math.max(1, Date.now() - t0);
+      }
+      if (next > offset || resumeProbe) failures = 0;
+      else if (++failures >= UPLOAD_CHUNK_RETRIES) throw new Error("upload sem progresso");
+      if (resumeProbe && next > 0) opts.log(`[drive] ${opts.name}: o Drive já tem ${(next / 1e6).toFixed(0)} de ${(size / 1e6).toFixed(0)} MB, continuando dali`);
       offset = next;
       probing = false;
+      if (offset / size >= nextLogAt) {
+        const bw = measured();
+        opts.log(`[drive] ${opts.name}: ${Math.floor((offset / size) * 100)}% (${(offset / 1e6).toFixed(0)} de ${(size / 1e6).toFixed(0)} MB${bw ? `, ${(bw / 1e6).toFixed(2)} MB/s` : ""})`);
+        while (nextLogAt <= offset / size) nextLogAt += 0.25;
+      }
     }
   } finally {
     await file.close();
@@ -656,16 +719,19 @@ async function uploadChunks(
 }
 
 /**
- * Cria ou atualiza pelo nome. Até 256 MiB preserva o PUT único; acima disso,
- * lê blocos do disco e retoma pelo Range do Drive. Sessão expirada/PUT pequeno
- * com falha transitória reinicia até UPLOAD_ATTEMPTS vezes, sem duplicar nomes.
+ * Cria ou atualiza pelo nome. Até um bloco (8 MiB) é um PUT único; acima disso,
+ * lê blocos do disco e retoma pelo Range do Drive, com teto por bloco
+ * proporcional à banda medida (#13739). Falha de rede ou 5xx/429 que esgota as
+ * repetições do bloco reabre a MESMA sessão na tentativa seguinte (consulta o
+ * Range e continua de onde parou, #13739); sessão nova só se o Drive a expirou
+ * (404/410) ou no PUT único, até UPLOAD_ATTEMPTS vezes, sem duplicar nomes.
  */
 export async function uploadToFolder(
   deps: MontageDriveDeps,
   folderId: string,
   localPath: string,
   log: (line: string) => void = () => {},
-  opts: { excludeIds?: ReadonlySet<string> } = {},
+  opts: { excludeIds?: ReadonlySet<string>; backoffMs?: number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<{ id: string; name: string; webViewLink: string | null; updated: boolean }> {
   const name = basename(localPath);
   // #13610: ids que não podem ser atualizados no lugar (a prévia anterior, que vai para arquivo/ depois de a nova subir).
@@ -685,29 +751,42 @@ export async function uploadToFolder(
   let existing = found.file;
   const fields = "id,name,webViewLink";
   const put = deps.uploadFetch ?? deps.driveFetch;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const chunkBase = { log, name, backoffMs: opts.backoffMs ?? 1000, sleep };
   let lastError = "";
+  // #13739: sessão aberta que sobrevive à tentativa que falhou (só no upload em blocos).
+  let resumeLocation: string | null = null;
   for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt++) {
-    // Um PUT que o Drive gravou mas cuja resposta se perdeu já criou o arquivo: a nova tentativa atualiza, não duplica.
-    if (attempt > 1 && !existing) existing = (await findUsable()).file;
-    const sessionUrl = existing
-      ? `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable&supportsAllDrives=true&fields=${fields}`
-      : `${DRIVE_UPLOAD}/files?uploadType=resumable&supportsAllDrives=true&fields=${fields}`;
-    const session = await deps.driveFetch(sessionUrl, {
-      method: existing ? "PATCH" : "POST",
-      headers: {
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Upload-Content-Type": mime,
-        "X-Upload-Content-Length": String(size),
-      },
-      body: JSON.stringify(existing ? {} : { name, parents: [folderId] }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!session.ok) throw new Error(`upload de ${name} para o Drive: sessão recusada (${session.status}): ${(await session.text()).slice(0, 300)}`);
-    const location = session.headers.get("location");
-    if (!location) throw new Error(`upload de ${name} para o Drive: sessão sem Location`);
+    let location: string;
+    if (resumeLocation) {
+      location = resumeLocation;
+      log(`[drive] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} retoma a mesma sessão de onde o Drive confirmou`);
+    } else {
+      // Um PUT que o Drive gravou mas cuja resposta se perdeu já criou o arquivo: a nova tentativa atualiza, não duplica.
+      if (attempt > 1 && !existing) existing = (await findUsable()).file;
+      const sessionUrl = existing
+        ? `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable&supportsAllDrives=true&fields=${fields}`
+        : `${DRIVE_UPLOAD}/files?uploadType=resumable&supportsAllDrives=true&fields=${fields}`;
+      const session = await deps.driveFetch(sessionUrl, {
+        method: existing ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Upload-Content-Type": mime,
+          "X-Upload-Content-Length": String(size),
+        },
+        body: JSON.stringify(existing ? {} : { name, parents: [folderId] }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!session.ok) throw new Error(`upload de ${name} para o Drive: sessão recusada (${session.status}): ${(await session.text()).slice(0, 300)}`);
+      const loc = session.headers.get("location");
+      if (!loc) throw new Error(`upload de ${name} para o Drive: sessão sem Location`);
+      location = loc;
+    }
+    const resuming = resumeLocation !== null;
+    resumeLocation = null;
     let res: Response;
     try {
-      res = chunked ? await uploadChunks(put, location, localPath, size, mime) : await put(location, {
+      res = chunked ? await uploadChunks(put, location, localPath, size, mime, { ...chunkBase, resume: resuming }) : await put(location, {
         method: "PUT",
         headers: { "Content-Type": mime },
         body: content,
@@ -715,12 +794,15 @@ export async function uploadToFolder(
       });
     } catch (e) {
       lastError = (e as Error).message;
-      log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} falhou na rede (${lastError})`);
+      if (chunked) resumeLocation = location;
+      log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} falhou na rede (${lastError})${chunked ? "; a próxima retoma a sessão" : ""}`);
       continue;
     }
-    if (res.status >= 500 || res.status === 429 || chunked && res.status === 404) {
+    if (res.status >= 500 || res.status === 429 || (chunked && sessionExpired(res.status))) {
       lastError = `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
-      log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} recebeu ${res.status}; sessão nova`);
+      const keep = chunked && !sessionExpired(res.status);
+      if (keep) resumeLocation = location;
+      log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} recebeu ${res.status}; ${keep ? "a próxima retoma a sessão" : "sessão nova"}`);
       continue;
     }
     const meta = await okJson<{ id?: string; name?: string; webViewLink?: string }>(res, `upload de ${name} para o Drive`);

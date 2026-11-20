@@ -69,6 +69,7 @@ import {
   type RoteiroDuracaoConfig,
 } from "./lib/diaria/roteiro-videos.ts";
 import { errosCapaDoRoteiro } from "./lib/diaria/youtube-thumb-roteiro.ts";
+import { asSyncReadError, SyncReadError } from "./lib/diaria/sync-read-error.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -111,6 +112,7 @@ export function main(
   argv: string[] = process.argv.slice(2),
   io: { out: (s: string) => void; err: (s: string) => void } = { out: (s) => console.log(s), err: (s) => console.error(s) },
   root: string = ROOT,
+  read: (p: string) => string = (p) => readFileSync(p, "utf8"),
 ): number {
   const { values, flags, positional } = parseArgs(argv);
   const edition = positional[0];
@@ -125,9 +127,11 @@ export function main(
   }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(read(path));
   } catch (e) {
-    io.err(`[video-roteiro-blocos] não li ${path}: ${(e as Error).message}`);
+    // #13740: falha de I/O (Drive sincronizando) diz o que fazer; JSON inválido segue como antes.
+    const err = asSyncReadError(path, e);
+    io.err(err instanceof SyncReadError ? `[erro] [video-roteiro-blocos] ${err.message}` : `[video-roteiro-blocos] não li ${path}: ${(e as Error).message}`);
     return 2;
   }
   const lido = parseRoteiroFalas(raw);

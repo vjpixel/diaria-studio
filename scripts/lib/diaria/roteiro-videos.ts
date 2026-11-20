@@ -23,8 +23,9 @@
  * editor.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { readTextOrSyncError } from "./sync-read-error.ts";
 import {
   BLOCK_KEYS,
   defaultSequences,
@@ -520,15 +521,25 @@ function avisoSeta(comSeta: string[]): string {
 
 type RoteiroBruto = { estado: "ausente" } | { estado: "ilegivel"; path: string; erro: string } | { estado: "lido"; path: string; raw: unknown };
 
-function readRoteiroBruto(editionDir: string): RoteiroBruto {
+/**
+ * Lê o `roteiro-falas.json`. JSON inválido = `ilegivel` (cada leitor avisa e
+ * segue sem o roteiro). Falha de I/O (`UNKNOWN … read` com o Drive
+ * sincronizando, #13740) não diz nada do conteúdo: lança `SyncReadError`, e o
+ * comando para com a correção em vez de seguir sem o roteiro em silêncio.
+ */
+function readRoteiroBruto(editionDir: string, read?: (p: string) => string): RoteiroBruto {
   const path = join(editionDir, ROTEIRO_FALAS_FILE);
   if (!existsSync(path)) return { estado: "ausente" };
+  const text = readTextOrSyncError(path, read);
   try {
-    return { estado: "lido", path, raw: JSON.parse(readFileSync(path, "utf8")) };
+    return { estado: "lido", path, raw: JSON.parse(text) };
   } catch (e) {
     return { estado: "ilegivel", path, erro: (e as Error).message };
   }
 }
+
+/** Só para teste (#13740): o leitor com a leitura injetada. */
+export const readRoteiroBrutoForTest = readRoteiroBruto;
 
 /** Uma fonte de fora do D1, como o fact-check da fala recebe (#13132). */
 export interface FonteDoRoteiro {
