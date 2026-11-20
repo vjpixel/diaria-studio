@@ -143,10 +143,21 @@ export function corteHookLine(file: Pick<BlocksFile, "blocks">, spec: SequenceSp
  * colaria na principal em algum destino (ex.: dois Shorts às 06:30 no canal).
  * `principal` = horário da principal nos destinos sem horário próprio.
  */
-export function extraVerticalTime(sched: ShortScheduleConfig, date: string): { hhmm: string; principal: string; reason: string; collides: boolean } {
+/**
+ * Os horários BRT em que a vertical principal do dia `date` sai em algum
+ * destino: o da rotação, dentro da janela do teste do #10831, ou todos os
+ * horários fixos por destino (#12250). Usado pela extra e pelo vertical 2 do
+ * banco de agendamentos (#13729) para não colar na principal.
+ */
+export function mainVerticalTimes(sched: ShortScheduleConfig, date: string): { principal: string; taken: string[] } {
   const main = resolveShortTime(sched, date);
-  const principal = main.hhmm;
-  const taken = new Set(main.source === "rotation" ? [principal] : fixedShortTimes(sched));
+  return { principal: main.hhmm, taken: main.source === "rotation" ? [main.hhmm] : fixedShortTimes(sched) };
+}
+
+export function extraVerticalTime(sched: ShortScheduleConfig, date: string): { hhmm: string; principal: string; reason: string; collides: boolean } {
+  const main = mainVerticalTimes(sched, date);
+  const principal = main.principal;
+  const taken = new Set(main.taken);
   const takenText = [...taken].join(", ");
   const times = sched.rotationTimes;
   const i = times.indexOf(principal);

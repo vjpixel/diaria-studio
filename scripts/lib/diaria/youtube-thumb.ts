@@ -265,12 +265,13 @@ function hookDrawnLines(hook: HookParts): string[] {
 }
 
 /**
- * Tamanho do gancho: o maior que cabe em HOOK_MAX_WIDTH, entre 64 e 130 px.
- * Com 2 linhas (#11740), quem manda é a linha mais longa.
+ * Tamanho do gancho: o maior que cabe em `maxWidth` (default HOOK_MAX_WIDTH, o
+ * horizontal), entre 64 e 130 px. Com 2 linhas (#11740), quem manda é a linha
+ * mais longa. A capa vertical mede contra a largura dela (#13737).
  */
-export function hookFontSize(hook: HookParts): number {
+export function hookFontSize(hook: HookParts, maxWidth = HOOK_MAX_WIDTH): number {
   const chars = Math.max(...hookDrawnLines(hook).map((l) => Array.from(l).length));
-  const fit = Math.floor(HOOK_MAX_WIDTH / (chars * GEORGIA_BOLD_CHAR_EM));
+  const fit = Math.floor(maxWidth / (chars * GEORGIA_BOLD_CHAR_EM));
   return Math.max(HOOK_MIN_FONT, Math.min(HOOK_MAX_FONT, fit));
 }
 
@@ -336,9 +337,9 @@ export function buildVignetteSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H, cx = 
  * largura máxima vale mesmo quando a fonte efetiva tem métrica diferente da
  * estimada em `hookFontSize` (fallback sem Georgia sai bem mais largo).
  */
-export function buildHookSvg(hook: string, align: "end" | "start" | "middle" = "end"): string {
+export function buildHookSvg(hook: string, align: "end" | "start" | "middle" = "end", measureWidth = HOOK_MAX_WIDTH): string {
   const parts = splitHook(hook);
-  const size = hookFontSize(parts);
+  const size = hookFontSize(parts, measureWidth);
   const textAttrs = `font-family="${escapeXml(FONTS.serif)}" font-weight="700" font-size="${size}" fill="${COLORS.onInk}"`;
   const mark = parts.mark ? `<tspan fill="${COLORS.brand}">${escapeXml(parts.mark)}</tspan>` : "";
   if (!parts.lines) {
@@ -374,20 +375,43 @@ export function buildHookSvg(hook: string, align: "end" | "start" | "middle" = "
 
 /**
  * Rasteriza o gancho, recorta a caixa real e encolhe se passar de `maxWidth`
- * (encolher a camada rasterizada equivale a reduzir a fonte).
+ * (encolher a camada rasterizada equivale a reduzir a fonte). `measureWidth`
+ * é a largura contra a qual a fonte é escolhida (default: a do horizontal).
+ * `effectiveFontSize` = fonte do SVG vezes a escala aplicada (#13737).
  */
 async function renderHookLayer(
   hook: string,
   maxWidth = HOOK_MAX_WIDTH,
   align: "end" | "start" | "middle" = "end",
-): Promise<{ png: Buffer; width: number; height: number }> {
-  let png = await sharp(Buffer.from(buildHookSvg(hook, align))).png().trim().toBuffer();
+  measureWidth = HOOK_MAX_WIDTH,
+): Promise<{ png: Buffer; width: number; height: number; effectiveFontSize: number }> {
+  const fontSize = hookFontSize(splitHook(hook), measureWidth);
+  let png = await sharp(Buffer.from(buildHookSvg(hook, align, measureWidth))).png().trim().toBuffer();
   let meta = await sharp(png).metadata();
+  let scale = 1;
   if ((meta.width ?? 0) > maxWidth) {
+    scale = maxWidth / (meta.width ?? maxWidth);
     png = await sharp(png).resize({ width: maxWidth }).png().toBuffer();
     meta = await sharp(png).metadata();
   }
-  return { png, width: meta.width ?? 0, height: meta.height ?? 0 };
+  return { png, width: meta.width ?? 0, height: meta.height ?? 0, effectiveFontSize: Math.round(fontSize * scale) };
+}
+
+/**
+ * Abaixo desta fonte efetiva (px, na capa de 1080x1920) o gancho da capa
+ * vertical fica pequeno no feed de Shorts: vira `[aviso]` pedindo para
+ * encurtar (#13737). Com 7 palavras curtas a fonte fica em ~64-90 px; com
+ * palavras longas cai para ~40 px.
+ */
+export const SHORT_HOOK_MIN_EFFECTIVE_FONT = 56;
+
+/** Pure (#13737): o aviso de fonte pequena na capa vertical, ou `undefined`. */
+export function shortHookSmallFontWarning(hook: string, effectiveFontSize: number): string | undefined {
+  if (effectiveFontSize >= SHORT_HOOK_MIN_EFFECTIVE_FONT) return undefined;
+  return (
+    `gancho da capa vertical ${JSON.stringify(hook.replace(/\|/g, " "))} saiu com fonte efetiva de ~${effectiveFontSize}px ` +
+    `(abaixo de ${SHORT_HOOK_MIN_EFFECTIVE_FONT}px, fica pequeno no feed de Shorts): encurte a capa ou troque as palavras longas (#13737)`
+  );
 }
 
 /**
@@ -1046,6 +1070,22 @@ export function normalizeShortCoverHook(hook: string): string {
         `A capa traz o gancho, não o título do D1`,
     );
   }
+  // #13737: quebra explícita com linha acima do teto (5+2, 2+5) passa no total e
+  // caía na mensagem do horizontal (#11740), que não diz o que fazer na vertical.
+  if (lines.length > HOOK_MAX_LINES) {
+    throw new Error(`gancho da capa vertical ${JSON.stringify(hook)} tem ${lines.length} linhas; a capa vertical leva no máximo ${HOOK_MAX_LINES} (#13737)`);
+  }
+  if (lines.length > 1) {
+    for (const [i, line] of lines.entries()) {
+      const n = shortHookWords(line).length;
+      if (n > HOOK_MAX_WORDS_PER_LINE) {
+        throw new Error(
+          `linha ${i + 1} da capa vertical (${JSON.stringify(line)}) tem ${n} palavra(s); na capa vertical cada linha leva até ${HOOK_MAX_WORDS_PER_LINE} ` +
+            `(${SHORT_HOOK_MIN_WORDS} a ${SHORT_HOOK_MAX_WORDS} no total). Passe palavras para a outra linha (ex.: 4|3) ou tire a quebra "|" para a divisão automática (#13737)`,
+        );
+      }
+    }
+  }
   let normalized = lines.join("|");
   if (lines.length === 1) {
     const words = shortHookTokens(lines[0]);
@@ -1097,7 +1137,9 @@ export async function composeShortCoverOverlay(input: { hook: string; width?: nu
   const hook = normalizeShortCoverHook(input.hook);
   const panelTopRatio = input.panelTopRatio ?? SHORT_COVER_PANEL_TOP_RATIO;
   const panel = buildShortCoverPanelSvg(panelTopRatio);
-  const hookLayer = await renderHookLayer(hook, SHORT_HOOK_MAX_WIDTH, "middle");
+  const hookLayer = await renderHookLayer(hook, SHORT_HOOK_MAX_WIDTH, "middle", SHORT_HOOK_MAX_WIDTH);
+  const pequena = shortHookSmallFontWarning(hook, hookLayer.effectiveFontSize);
+  if (pequena) warnings.push(pequena);
   const panelTop = Math.round(SHORT_COVER_H * panelTopRatio);
   const panelH = SHORT_COVER_H - panelTop;
   if (hookLayer.height > panelH - 80) warnings.push(`gancho com ${hookLayer.height}px de altura quase não cabe no painel (${panelH}px): encurte o texto da capa`);
@@ -1145,7 +1187,9 @@ export async function composeShortCover(input: ComposeShortCoverInput): Promise<
     warnings.push(`frame ${meta.width}x${meta.height} não é 9:16 — recortado no centro`);
   }
   const base = await sharp(input.frame).rotate().resize(SHORT_COVER_W, SHORT_COVER_H, { fit: "cover", position: "centre" }).toBuffer();
-  const hookLayer = await renderHookLayer(hook, SHORT_HOOK_MAX_WIDTH, "middle");
+  const hookLayer = await renderHookLayer(hook, SHORT_HOOK_MAX_WIDTH, "middle", SHORT_HOOK_MAX_WIDTH);
+  const pequena = shortHookSmallFontWarning(hook, hookLayer.effectiveFontSize);
+  if (pequena) warnings.push(pequena);
   const panelTop = Math.round(SHORT_COVER_H * panelTopRatio);
   const panelH = SHORT_COVER_H - panelTop;
   if (hookLayer.height > panelH - 80) {

@@ -192,6 +192,14 @@ gerador e sai com **exit 4** quando alguma está fora dela (vertical fora de 2 a
 saiu inteira. No roteiro, corrigir a capa antes de gravar; na montagem, seguir
 e passar a capa por `--hook` na `/diaria-publica`.
 
+**Fonte da capa vertical (#13737):** o tamanho do gancho vertical é medido
+contra a largura da capa vertical (960 px úteis), não a do horizontal. Com 6-7
+palavras curtas a fonte fica entre ~64 e ~90 px; com palavras longas ela cai, e
+abaixo de 56 px efetivos o `gen-youtube-thumb.ts --short-cover` (e a capa no
+começo dos verticais) sai com `[aviso]` pedindo para encurtar. Quebra explícita
+na capa vertical aceita até 4 palavras por linha (ex.: `4|3`); `5|2` ou `2|5` é
+recusada com a instrução de rebalancear ou tirar o `|`.
+
 ## Capa no começo dos verticais (#13123, em teste)
 
 Proposta do editor de 15/11/2026: nas redes sem controle de capa (TikTok,

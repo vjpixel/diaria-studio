@@ -35,6 +35,8 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "../atomic-write.ts";
+import { mainVerticalTimes } from "./extra-verticals.ts";
+import type { ShortScheduleConfig } from "./short-video.ts";
 
 /** Caminho do banco relativo à raiz do repo. */
 export const AGENDAMENTOS_DB_REL_PATH = "data/agendamentos/banco.json";
@@ -222,6 +224,23 @@ function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
+ * Puro (#13736): `dono` que o Git Bash (MSYS) converteu em caminho do Windows.
+ * O MSYS troca o argumento que começa com `/` por um caminho dentro da
+ * instalação do Git (`/diaria-publica 261123` vira `C:/Program
+ * Files/Git/diaria-publica 261123`), e o item seria gravado com esse dono.
+ * Devolve o dono provável de antes da conversão (`/diaria-publica 261123`),
+ * ou `null` quando o dono não tem cara de conversão.
+ */
+export function donoConvertidoPeloMsys(dono: string): string | null {
+  const d = dono.trim().replace(/\\/g, "/");
+  if (!/^[A-Za-z]:\//.test(d)) return null;
+  const git = /\/(?:Git|msys64|msys32)\/(.*)$/i.exec(d);
+  if (git) return `/${git[1]}`;
+  const skill = /\/((?:diaria-|modo corte).*)$/i.exec(d);
+  return skill ? `/${skill[1]}` : null;
+}
+
+/**
  * Puro: registra um item. Reexecução com os mesmos dados é no-op
  * (`created: false`); mesmo id com dados diferentes lança — mudar alvo,
  * destinos ou dono de um item existente não é efeito colateral de um
@@ -230,6 +249,13 @@ function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
 export function addAgendamento(banco: AgendamentosBanco, input: NovoAgendamento, now: Date): AddResult {
   const estado = input.estado ?? "pendente";
   if (estado === "publicado") throw new Error("item novo não nasce publicado: registre e marque com verificacao");
+  const original = donoConvertidoPeloMsys(input.dono);
+  if (original !== null) {
+    throw new Error(
+      `dono ${JSON.stringify(input.dono.trim())} parece caminho convertido pelo Git Bash (MSYS troca argumento que começa com "/" por caminho): ` +
+        `rode de novo com MSYS_NO_PATHCONV=1 na frente do comando (dono pretendido: ${JSON.stringify(original)}) (#13736)`,
+    );
+  }
   const nowIso = now.toISOString();
   const alvo = isIsoInstant(input.alvo) ? new Date(input.alvo).toISOString() : input.alvo;
   const item: AgendamentoItem = {
@@ -312,6 +338,85 @@ export function brtAlvoIso(aammdd: string, hhmm: string): string {
   const t = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hhmm);
   if (!m || !t) throw new Error(`data/hora inválida: ${aammdd} ${hhmm}`);
   return new Date(Date.UTC(2000 + Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(t[1]) + 3, Number(t[2]))).toISOString();
+}
+
+/** Puro: `HH:MM` BRT de um instante ISO (UTC-3 fixo, o mesmo de `brtAlvoIso`). */
+function brtHhmmAndDate(iso: string): { aammdd: string; hhmm: string } | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const d = new Date(t - 3 * 3_600_000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return {
+    aammdd: `${p(d.getUTCFullYear() % 100)}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`,
+    hhmm: `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`,
+  };
+}
+
+export interface HorarioLivreResultado {
+  hhmm: string;
+  /** `true` quando o horário pedido foi trocado por um livre. */
+  ajustado: boolean;
+  /** `true` quando nenhum horário de `rotation_times` estava livre: fica o pedido, colidindo. */
+  colide: boolean;
+  motivo: string;
+}
+
+/**
+ * Puro (#13729): o horário de um item do banco nos destinos da vertical no dia
+ * `aammdd` sem colar em outra publicação das mesmas contas. Ocupados: os
+ * horários da vertical principal daquele dia (`mainVerticalTimes`, só em dia
+ * útil, que é quando há edição) e os alvos dos outros itens do banco no mesmo
+ * dia com algum destino em comum (o extra de outra edição, #12934). Horário
+ * pedido livre fica como está; ocupado vira o seguinte livre de
+ * `rotation_times` (em ciclo, como a extra do `extraVerticalTime`); sem
+ * nenhum livre, fica o pedido com `colide: true`.
+ *
+ * Motivo: o vertical 2 era registrado às 12:00 de D+7, e D+7 de uma edição de
+ * dia útil é dia útil, com o vertical 1 da edição do dia às 12:00 nos mesmos
+ * destinos.
+ */
+export function horarioLivreNoBanco(input: {
+  sched: ShortScheduleConfig;
+  aammdd: string;
+  hhmm: string;
+  destinos: readonly string[];
+  /** Destinos da vertical principal (`--destinos vertical`); sem interseção com `destinos`, a principal não ocupa nada. */
+  destinosVertical: readonly string[];
+  banco: AgendamentosBanco;
+  /** Id do próprio item: não ocupa o próprio horário (retomada idempotente). */
+  id: string;
+}): HorarioLivreResultado {
+  const ocupados = new Map<string, string>();
+  const wd = new Date(Date.UTC(2000 + Number(input.aammdd.slice(0, 2)), Number(input.aammdd.slice(2, 4)) - 1, Number(input.aammdd.slice(4, 6)))).getUTCDay();
+  const diaUtil = wd !== 0 && wd !== 6;
+  const cruza = (a: readonly string[], b: readonly string[]) => a.some((d) => b.includes(d));
+  if (diaUtil && cruza(input.destinos, input.destinosVertical)) {
+    for (const t of mainVerticalTimes(input.sched, input.aammdd).taken) ocupados.set(t, `vertical principal de ${input.aammdd}`);
+  }
+  for (const it of input.banco.itens) {
+    if (it.id === input.id || !cruza(it.destinos, input.destinos)) continue;
+    if (it.estado === "falhou") continue;
+    const at = brtHhmmAndDate(it.alvo);
+    if (at && at.aammdd === input.aammdd && !ocupados.has(at.hhmm)) ocupados.set(at.hhmm, `item ${it.id} do banco`);
+  }
+  if (!ocupados.has(input.hhmm)) {
+    return { hhmm: input.hhmm, ajustado: false, colide: false, motivo: `${input.hhmm} livre em ${input.aammdd}` };
+  }
+  const times = input.sched.rotationTimes;
+  const i = times.indexOf(input.hhmm);
+  for (let step = 1; step <= times.length; step++) {
+    const t = times[((i < 0 ? -1 : i) + step + times.length) % times.length];
+    if (!ocupados.has(t)) {
+      return {
+        hhmm: t,
+        ajustado: true,
+        colide: false,
+        motivo: `${input.hhmm} de ${input.aammdd} é da ${ocupados.get(input.hhmm)}: usa ${t}, o seguinte livre de rotation_times (${times.join("/")}) (#13729)`,
+      };
+    }
+  }
+  const lista = [...ocupados].map(([t, quem]) => `${t} (${quem})`).join(", ");
+  return { hhmm: input.hhmm, ajustado: false, colide: true, motivo: `nenhum horário de rotation_times (${times.join("/")}) livre em ${input.aammdd}: ocupados ${lista}; fica ${input.hhmm}, colidindo (#13729)` };
 }
 
 // ─── Consumo e alarme ────────────────────────────────────────────────────────
