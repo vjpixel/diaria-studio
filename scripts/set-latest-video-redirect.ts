@@ -4,7 +4,9 @@
  * Aponta `diar.ia.br/video` (o link fixo da bio no TikTok, Instagram e
  * Threads) para o horizontal da edição: lê `_internal/05-video-url.txt` e
  * grava o registro `video:latest-horizontal` no KV `POLL`, que o Worker do
- * apex (`workers/site`) lê a cada clique. Contrato do registro e do redirect:
+ * apex (`workers/site`) lê a cada clique. #13709: grava também
+ * `video:edition:{AAMMDD}`, o destino do link por edição
+ * `diar.ia.br/video/{AAMMDD}` (1º comentário do Reels, resposta no Threads). Contrato do registro e do redirect:
  * `scripts/lib/shared/latest-video-redirect.ts`.
  *
  * Uso:
@@ -41,7 +43,9 @@ import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 import { DEFAULT_EDITION_SCHEDULE_HHMM, resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import {
   LATEST_VIDEO_KV_KEY,
+  editionVideoKvKey,
   isLatestVideoPublic,
+  parseEditionVideoRecord,
   parseLatestVideoRecord,
   shouldReplaceLatestVideo,
   type LatestVideoPrevious,
@@ -195,6 +199,61 @@ export async function updateLatestVideoRedirect(input: {
   return { status: "written", record, current };
 }
 
+export type EditionVideoUpdateOutcome =
+  | { status: "no_link"; detail: string }
+  | { status: "unchanged"; record: LatestVideoPrevious }
+  | { status: "would_write"; record: LatestVideoPrevious; current: LatestVideoPrevious | null }
+  | { status: "written"; record: LatestVideoPrevious; current: LatestVideoPrevious | null };
+
+/**
+ * #13709: grava (ou, com `apply: false`, só planeja) o registro do horizontal
+ * DA edição em `video:edition:{AAMMDD}`, lido pelo link por edição
+ * `diar.ia.br/video/{AAMMDD}` (1º comentário do Reels no Instagram, resposta
+ * ao próprio post no Threads). Mesmo `public_at` do registro do mais recente;
+ * sem `previous` (cada edição tem a sua chave). Na mesma chave vale a mesma
+ * regra de troca do mais recente (`shouldReplaceLatestVideo`): link novo
+ * troca; `public_at` só troca por uma fonte igual ou melhor (#12869). Ao
+ * contrário do mais recente, rodar uma edição antiga grava a chave DELA —
+ * não há "voltar no tempo". Lança em falha de KV.
+ */
+export async function updateEditionVideoRedirect(input: {
+  editionDir: string;
+  aammdd: string;
+  kv: LatestVideoKv;
+  apply: boolean;
+  now: Date;
+}): Promise<EditionVideoUpdateOutcome> {
+  const url = readEditionHorizontalUrl(input.editionDir);
+  if (!url) return { status: "no_link", detail: `${D1_VIDEO_URL_FILE} ausente ou vazio — o horizontal da edição ${input.aammdd} ainda não tem link` };
+  const key = editionVideoKvKey(input.aammdd);
+  const record: LatestVideoPrevious = { url, aammdd: input.aammdd, updated_at: input.now.toISOString() };
+  const { publicAt, source } = resolveEditionHorizontalPublicAt(input.editionDir, url, input.aammdd);
+  if (publicAt) record.public_at = publicAt;
+  record.public_at_source = source;
+  const current = parseEditionVideoRecord(await input.kv.get(key));
+  if (current && !shouldReplaceLatestVideo(current, record)) return { status: "unchanged", record: current };
+  if (!input.apply) return { status: "would_write", record, current };
+  await input.kv.put(key, JSON.stringify(record));
+  return { status: "written", record, current };
+}
+
+/** Linha de log do link por edição (#13709). */
+export function describeEditionVideoOutcome(aammdd: string, o: EditionVideoUpdateOutcome): string {
+  const path = `diar.ia.br/video/${aammdd}`;
+  switch (o.status) {
+    case "no_link":
+      return `${path} sem mudança: ${o.detail}`;
+    case "unchanged":
+      return `${path} já aponta para ${o.record.url}`;
+    case "would_write":
+      return `${path} passaria a ${o.record.url} (hoje ${o.current ? o.current.url : "sem registro"}) — rode com --apply`;
+    case "written":
+      return o.record.public_at
+        ? `${path} aponta para ${o.record.url} a partir de ${o.record.public_at}; até lá cai na lista do canal (#13709)`
+        : `${path} agora aponta para ${o.record.url} (#13709)`;
+  }
+}
+
 /** KV `POLL` pela API REST, com as credenciais do ambiente; `null` + motivo se faltar alguma. */
 export function pollKvFromEnv(env: NodeJS.ProcessEnv = process.env): { kv: LatestVideoKv; reason?: undefined } | { kv: null; reason: string } {
   const accountId = env.CLOUDFLARE_ACCOUNT_ID;
@@ -240,9 +299,13 @@ async function main(): Promise<number> {
     return 1;
   }
   const apply = flags.has("apply");
-  const outcome = await updateLatestVideoRedirect({ editionDir: editionDirFor(aammdd), aammdd, kv: env.kv, apply, now: new Date() });
+  const now = new Date();
+  const outcome = await updateLatestVideoRedirect({ editionDir: editionDirFor(aammdd), aammdd, kv: env.kv, apply, now });
   console.error(describeLatestVideoOutcome(outcome));
-  console.log(JSON.stringify({ dry_run: !apply, ...outcome }, null, 2));
+  // #13709: o link por edição (diar.ia.br/video/{AAMMDD}) do 1º comentário/resposta.
+  const edition = await updateEditionVideoRedirect({ editionDir: editionDirFor(aammdd), aammdd, kv: env.kv, apply, now });
+  console.error(describeEditionVideoOutcome(aammdd, edition));
+  console.log(JSON.stringify({ dry_run: !apply, ...outcome, edition }, null, 2));
   return outcome.status === "no_link" && apply ? 1 : 0;
 }
 
