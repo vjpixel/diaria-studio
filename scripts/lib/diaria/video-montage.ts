@@ -2826,6 +2826,8 @@ export function buildSequencePlan(
         const from = it.lastWordEnd ?? lastPart.end;
         let end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
         let got = end - from;
+        // #13735: com trecho tirado, o respiro curto pode vir do corte, não da fala seguinte.
+        let skipShortened = false;
         if (it.breathSkip) {
           const fileEnd = bounds ? bounds[file].end : Number.POSITIVE_INFINITY;
           const cut = breathSkipCut(from, Math.min(it.holdLimit, source.durationS, fileEnd), breath, it.breathSkip, minClip);
@@ -2834,6 +2836,7 @@ export function buildSequencePlan(
             end = cut.end;
             breathPieces = cut.pieces;
             got = Math.max(0, cut.end - from - cut.removed);
+            skipShortened = cut.removed > 0;
             lastPart.end = round3(Math.max(lastPart.start, cut.firstEnd));
             premises.push(
               `${spec.name}: respiro depois de ${key} sem ${cut.used.map((u) => `${u.start.toFixed(2)}–${u.end.toFixed(2)} s`).join(", ")} (breathSkip, #13735): ` +
@@ -2848,6 +2851,7 @@ export function buildSequencePlan(
           // (a fala seguinte vem colada), a pausa vem do silêncio mais próximo do mesmo arquivo:
           // fora de todo item resolvido (nunca fala de outro trecho) e nunca menor que um clipe.
           const need = round3(Math.max(minClip, breath - Math.max(0, got)));
+          const why = skipShortened ? "o trecho tirado pelo breathSkip encurtou o respiro, #13735" : "a fala seguinte vem logo";
           const fb = bounds ? bounds[file] : { start: 0, end: source.durationS };
           const all = Object.values(resolved).flatMap((xs) => xs ?? []);
           // #13239 item 3: fora do pré-roll, sem som, com o rosto parado, depois da fala, e só então o mais perto.
@@ -2862,13 +2866,13 @@ export function buildSequencePlan(
           if (pick) {
             breathFiller = { srcIn: pick.srcIn, srcOut: pick.srcOut };
             premises.push(
-              `${spec.name}: respiro depois de ${key} de ${Math.max(0, got).toFixed(2)} s no bruto (a fala seguinte vem logo); ` +
+              `${spec.name}: respiro depois de ${key} de ${Math.max(0, got).toFixed(2)} s no bruto (${why}); ` +
                 `pausa completada com ${need.toFixed(2)} s de silêncio do bruto em ${breathFiller.srcIn.toFixed(2)}–${breathFiller.srcOut.toFixed(2)} s, para a vinheta não cobrir a fala (#13204): ` +
                 `${pick.why.join(", ")}; conferir esse trecho no Premiere (#13239)`,
             );
           } else {
             warnings.push(
-              `${spec.name}: respiro depois de ${key} de ${Math.max(0, got).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto, e nenhum silêncio de ${need.toFixed(2)} s no arquivo); ` +
+              `${spec.name}: respiro depois de ${key} de ${Math.max(0, got).toFixed(2)} s, abaixo dos ${breath} s pedidos (${skipShortened ? why : "a fala seguinte vem logo no bruto"}, e nenhum silêncio de ${need.toFixed(2)} s no arquivo); ` +
                 `a vinheta pode cobrir o começo da fala seguinte (#12101, #13204)`,
             );
           }

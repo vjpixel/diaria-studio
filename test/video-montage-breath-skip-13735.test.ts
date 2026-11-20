@@ -100,6 +100,22 @@ describe("#13735: buildSequencePlan com breathSkip", () => {
     assert.equal(titulo[0].srcOut, 4.6);
   });
 
+  it("respiro curto por causa do trecho tirado: a premissa da pausa completada culpa o breathSkip, não a fala seguinte", () => {
+    // Tira 3,1–5,0 s: o respiro no bruto vai até 5,9 s (holdLimit), sobram 1,1 s < 1,7 s; a pausa vem de 10–12 s.
+    const p = buildSequencePlan(SPEC_H, resolved([{ start: 3.1, end: 5 }]), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    const prem = (p.premises ?? []).join("\n");
+    assert.match(prem, /pausa completada/);
+    assert.match(prem, /o trecho tirado pelo breathSkip encurtou o respiro, #13735/);
+    assert.doesNotMatch(prem, /a fala seguinte vem logo/);
+  });
+
+  it("sem breathSkip, o respiro curto segue dizendo que a fala seguinte vem logo", () => {
+    const p = buildSequencePlan(SPEC_H, resolved(undefined, 3.5), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    const msgs = [...(p.premises ?? []), ...(p.warnings ?? [])].join("\n");
+    assert.match(msgs, /a fala seguinte vem logo/);
+    assert.doesNotMatch(msgs, /breathSkip encurtou/);
+  });
+
   it("breathSkip fora do respiro vira aviso e não muda o plano", () => {
     const p = buildSequencePlan(SPEC_H, resolved([{ start: 20, end: 21 }]), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
     assert.equal(p.clips.filter((c) => c.block === "titulo").at(-1)!.srcOut, 4.6);
