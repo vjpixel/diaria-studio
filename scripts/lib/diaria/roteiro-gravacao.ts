@@ -114,8 +114,8 @@ export interface PecaVideo {
   /**
    * Só no vertical 1 (#13280, decisão do editor no briefing 261116b): o
    * vertical pertence ao horizontal da edição, e a legenda dele chama para o
-   * vídeo completo ("Vídeo completo: link na bio" e, no TikTok sem link na
-   * bio, a chamada pelo @). Decide no lugar da comparação de títulos do
+   * vídeo completo (#13709: "link no primeiro comentário" no Instagram, "link
+   * na resposta" no Threads e, no TikTok, a chamada sem link). Decide no lugar da comparação de títulos do
    * #13209, que nunca casa quando o horizontal usa o título do roteiro.
    * Ausente = vale a comparação de títulos. O vertical 2 sai como corte
    * avulso, sem horizontal, e não leva o campo.

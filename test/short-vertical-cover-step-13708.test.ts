@@ -225,6 +225,32 @@ describe("CLI + publica-phase join (#13708)", () => {
     assert.match(errs.join("\n"), /studio_web \(feed: capa/);
   });
 
+  it("#13723: cópia de conflito com at mais novo vence a união: confirm avisa o arquivo e sai 1; join segue 1", async () => {
+    writeRegistry(shortEntry());
+    // Cópia de conflito do sync do Drive com a mesma entrada, at mais novo e sem studio_web.
+    const conflict = join(dir, "_internal", "06-shorts-published (conflito).json");
+    writeFileSync(conflict, JSON.stringify(registry(shortEntry({ at: "2026-11-19T14:30:00.000Z" })), null, 2));
+    const feedFile = join(dir, "feed-13723.json");
+    writeFileSync(feedFile, JSON.stringify({ verdict: "capa", distance: 0.03, threshold: 0.2, image: "sardefault", feed_url: `https://i.ytimg.com/vi/${VID}/sardefault.jpg` }));
+    assert.equal(await coverMain(["confirm", ED, "--id", VID, "--studio-persisted", "--feed-check", feedFile, "--edition-dir", dir], deps()), 1);
+    assert.match(errs.join("\n"), /06-shorts-published \(conflito\)\.json/);
+    assert.match(errs.join("\n"), /#13723/);
+    // O principal ficou gravado (nada se perde); a leitura unida é que segue pendente.
+    const saved = JSON.parse(readFileSync(join(dir, SHORTS_PUBLISHED_FILE), "utf8")) as ShortsPublishedFile;
+    assert.equal(saved.entries.find((e) => e.destination === "youtube_shorts")?.cover?.vertical_feed, "studio_web");
+    assert.equal(await join_(), 1);
+    // Sem a cópia, o mesmo confirm passa.
+    rmSync(conflict);
+    errs = [];
+    assert.equal(await coverMain(["confirm", ED, "--id", VID, "--studio-persisted", "--edition-dir", dir], deps()), 0);
+  });
+
+  it("#13723: empate de at fica com o principal: confirm passa mesmo com a cópia", async () => {
+    writeRegistry(shortEntry());
+    writeFileSync(join(dir, "_internal", "06-shorts-published (conflito).json"), JSON.stringify(registry(shortEntry()), null, 2));
+    assert.equal(await coverMain(["confirm", ED, "--id", VID, "--studio-persisted", "--edition-dir", dir], deps()), 0);
+  });
+
   it("registro ilegível: o join não dá a capa por feita", async () => {
     mkdirSync(join(dir, "_internal"), { recursive: true });
     writeFileSync(join(dir, SHORTS_PUBLISHED_FILE), "{quebrado");

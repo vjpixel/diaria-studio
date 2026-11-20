@@ -33,7 +33,7 @@
  * das redes que aceitam link leva o horizontal DA edição, sem esse problema.
  */
 
-import { LATEST_VIDEO_BIO_UTM, LATEST_VIDEO_BIO_UTM_SOURCES } from "./utm-registry.ts";
+import { EDITION_VIDEO_UTM, EDITION_VIDEO_UTM_SOURCES, LATEST_VIDEO_BIO_UTM, LATEST_VIDEO_BIO_UTM_SOURCES } from "./utm-registry.ts";
 
 /** Caminho do redirect no apex. */
 export const LATEST_VIDEO_PATH = "/video";
@@ -237,4 +237,77 @@ export function latestVideoClickSource(reqUrl: URL): LatestVideoBioNetwork | "ou
 /** Chave do contador diário de cliques por rede (KV `CURSOS_SUBSCRIBERS`, mesmo molde de `apoiar-counters.ts`). */
 export function latestVideoClickCounterKey(source: string, day: string): string {
   return `counter:video:${source}:${day}`;
+}
+
+// ─── Link por edição: diar.ia.br/video/{AAMMDD} (#13709) ────────────────────
+
+/**
+ * #13709 (decisão do editor no briefing do overnight 261120, opção b): o
+ * editor recusou `diar.ia.br/video` na bio, porque o redirect fixo leva ao
+ * horizontal MAIS RECENTE e quem assiste o vertical depois do dia cai no
+ * vídeo errado. O vertical passa a levar ao horizontal DA MESMA edição por
+ * `diar.ia.br/video/{AAMMDD}`, publicado no 1º comentário do Reels no
+ * Instagram e na resposta ao próprio post no Threads (#13209). TikTok fica
+ * sem link.
+ *
+ * Registro por edição no KV `POLL` (`editionVideoKvKey`): o mesmo formato do
+ * registro do mais recente, sem `previous` (cada edição tem a sua chave).
+ * Enquanto o horizontal não é público (`public_at` no futuro), ou sem
+ * registro, o redirect cai na lista do canal (`LATEST_VIDEO_FALLBACK_URL`):
+ * nunca um vídeo privado, nunca 404.
+ */
+export const EDITION_VIDEO_KV_KEY_PREFIX = "video:edition:";
+
+/** Chave do registro do horizontal de uma edição no KV `POLL`. */
+export function editionVideoKvKey(aammdd: string): string {
+  if (!AAMMDD_RE.test(aammdd)) throw new Error(`AAMMDD inválido para o link por edição: ${aammdd}`);
+  return `${EDITION_VIDEO_KV_KEY_PREFIX}${aammdd}`;
+}
+
+/** `utm_medium`/`utm_campaign` do link por edição (registry: entradas `*-comentario-video-horizontal-13709`). */
+export const EDITION_VIDEO_UTM_MEDIUM = EDITION_VIDEO_UTM.medium;
+export const EDITION_VIDEO_UTM_CAMPAIGN = EDITION_VIDEO_UTM.campaign;
+
+/** Redes que levam o link por edição (Instagram no 1º comentário, Threads na resposta). */
+export const EDITION_VIDEO_NETWORKS = EDITION_VIDEO_UTM_SOURCES;
+export type EditionVideoNetwork = (typeof EDITION_VIDEO_NETWORKS)[number];
+
+/** `https://diar.ia.br/video/{AAMMDD}?utm_source={rede}&utm_medium=comentario&utm_campaign=video-horizontal`. */
+export function editionVideoLink(aammdd: string, network: EditionVideoNetwork, origin = "https://diar.ia.br"): string {
+  if (!AAMMDD_RE.test(aammdd)) throw new Error(`AAMMDD inválido para o link por edição: ${aammdd}`);
+  const u = new URL(`${LATEST_VIDEO_PATH}/${aammdd}`, origin);
+  u.searchParams.set("utm_source", network);
+  u.searchParams.set("utm_medium", EDITION_VIDEO_UTM_MEDIUM);
+  u.searchParams.set("utm_campaign", EDITION_VIDEO_UTM_CAMPAIGN);
+  return u.toString();
+}
+
+/** Pure: o AAMMDD de `/video/{AAMMDD}` (com ou sem barra final), ou `null`. */
+export function matchEditionVideoPath(pathname: string): string | null {
+  const m = /^\/video\/(\d{6})\/?$/.exec(pathname);
+  return m ? m[1] : null;
+}
+
+/** Pure: o registro da edição que o redirect usa em `now` (só se já público). */
+export function effectiveEditionVideoRecord(record: LatestVideoPrevious | null, now: Date): LatestVideoPrevious | null {
+  return record && isLatestVideoPublic(record, now) ? record : null;
+}
+
+/** Pure: o registro por edição lido do KV (ignora `previous`), ou `null`. Nunca lança. */
+export function parseEditionVideoRecord(raw: string | null | undefined): LatestVideoPrevious | null {
+  const r = parseLatestVideoRecord(raw);
+  if (!r) return null;
+  const { previous: _previous, ...rest } = r;
+  return rest;
+}
+
+/** Rede do clique no link por edição, para o contador. Lista fechada, como `latestVideoClickSource`. */
+export function editionVideoClickSource(reqUrl: URL): EditionVideoNetwork | "outro" {
+  const s = (reqUrl.searchParams.get("utm_source") ?? "").toLowerCase();
+  return (EDITION_VIDEO_NETWORKS as readonly string[]).includes(s) ? (s as EditionVideoNetwork) : "outro";
+}
+
+/** Contador diário de cliques no link por edição (separado do da bio). */
+export function editionVideoClickCounterKey(source: string, day: string): string {
+  return `counter:video-edicao:${source}:${day}`;
 }

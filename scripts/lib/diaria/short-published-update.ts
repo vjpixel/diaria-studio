@@ -62,7 +62,7 @@ export function planPublishedTextUpdates(input: {
   /** Link do horizontal (#12735) no Facebook e no LinkedIn; `null` = sem link. */
   horizontalLink?: string | null;
   diariaProfiles?: DiariaProfiles;
-  /** #13117: roteiro com cta_vertical; Instagram e Threads apontam para a bio. Nunca no corte. */
+  /** #13117: roteiro com cta_vertical; Instagram e Threads apontam para o 1º comentário/resposta (#13709). Nunca no corte. */
   ctaVertical?: boolean;
   only?: readonly string[] | null;
   /** Ids que o config conhece: `--only` com nome fora deles e do registro lança. */
