@@ -139,7 +139,59 @@ install_filters() {
   fi
 }
 
+RCLONE_LOG="$STATE_DIR/last-rclone.log"
+RCLONE_RC="$STATE_DIR/last-rclone.rc"
+
+# Filtro trocado pelo `--resync` (#13688): só fica se o resync saiu 0. Na
+# falha (inclusive a recusa do guard do --force), volta o par anterior
+# (filtro + `.md5`), que é o que bate com as listagens que o rclone ainda
+# guarda; o filtro novo entra no próximo `--resync` que terminar bem.
 FILTERS_PREV_SAVED=0
+restore_prev_filters() {
+  [ "$FILTERS_PREV_SAVED" -eq 1 ] || return 0
+  FILTERS_PREV_SAVED=0
+  if [ "$1" -eq 0 ]; then
+    rm -f "$FILTERS.prev" "$FILTERS.md5.prev"
+    return 0
+  fi
+  restored=1
+  mv "$FILTERS.prev" "$FILTERS" || restored=0
+  if [ -f "$FILTERS.md5.prev" ]; then
+    mv "$FILTERS.md5.prev" "$FILTERS.md5" || restored=0
+  else
+    rm -f "$FILTERS.md5" || restored=0
+  fi
+  if [ "$restored" -eq 1 ]; then
+    echo "gdrive-bisync: --resync saiu $1; filtro anterior restaurado em $FILTERS, o novo fica para o proximo --resync (#13688)" >&2
+  else
+    echo "gdrive-bisync: aviso — --resync saiu $1 e nao consegui restaurar o filtro anterior em $FILTERS; rode --resync de novo (#13688)" >&2
+  fi
+}
+
+# Morte no meio do `--resync` (#13724): stop timeout, SIGTERM do systemd ou
+# reboot chegam com o rclone rodando, e o `restore_prev_filters` do fim nunca
+# rodava, deixando o filtro novo instalado sem o estado do bisync que o
+# acompanha (o mesmo defeito do #13688). Os traps chamam o restore enquanto o
+# par anterior está guardado; fora dessa janela (`FILTERS_PREV_SAVED=0`, antes
+# do backup ou depois do restore/limpeza) não fazem nada. O sinal chega ao
+# shell e o trap só roda quando o pipeline do rclone termina: se a última
+# tentativa dele chegou a gravar exit 0 em $RCLONE_RC, o resync terminou bem e
+# o filtro novo fica. SIGKILL não tem trap: o par antigo fica em `.prev`.
+# O EXIT cobre o `finish 75` de uma instalação que falha depois do backup.
+on_signal() {
+  sig_done=$(cat "$RCLONE_RC" 2>/dev/null)
+  if [ "$sig_done" = 0 ]; then
+    restore_prev_filters 0
+  else
+    restore_prev_filters "$1"
+  fi
+  exit "$1"
+}
+trap 'restore_prev_filters $?' EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
 if [ ! -f "$FILTERS" ]; then
   # 1ª rodada nesta máquina: não há filtro instalado a preservar. Sem
   # `--resync` o bisync recusa mesmo assim (não há listagem nem `.md5`).
@@ -162,6 +214,9 @@ elif ! cmp -s "$FILTERS_SRC" "$FILTERS"; then
       echo "gdrive-bisync: falha ao guardar $FILTERS.md5 — sync abortado (#13688)" >&2
       finish 75
     fi
+    # Exit de rodada anterior não pode passar por sucesso deste resync no
+    # trap de sinal (#13724): daqui em diante só o run_bisync grava o arquivo.
+    rm -f "$RCLONE_RC"
     FILTERS_PREV_SAVED=1
     echo "gdrive-bisync: --resync instala o filtro de $FILTERS_SRC (#12396)" >&2
     install_filters "$FILTERS"
@@ -174,31 +229,6 @@ elif ! cmp -s "$FILTERS_SRC" "$FILTERS"; then
     echo "gdrive-bisync: aviso — $FILTERS_SRC difere do filtro instalado ($FILTERS); seguindo com o instalado. Pra adotar o novo, rode uma vez com --resync, timer parado (#12396)" >&2
   fi
 fi
-
-# Filtro trocado pelo `--resync` (#13688): só fica se o resync saiu 0. Na
-# falha (inclusive a recusa do guard do --force), volta o par anterior
-# (filtro + `.md5`), que é o que bate com as listagens que o rclone ainda
-# guarda; o filtro novo entra no próximo `--resync` que terminar bem.
-restore_prev_filters() {
-  [ "$FILTERS_PREV_SAVED" -eq 1 ] || return 0
-  FILTERS_PREV_SAVED=0
-  if [ "$1" -eq 0 ]; then
-    rm -f "$FILTERS.prev" "$FILTERS.md5.prev"
-    return 0
-  fi
-  restored=1
-  mv "$FILTERS.prev" "$FILTERS" || restored=0
-  if [ -f "$FILTERS.md5.prev" ]; then
-    mv "$FILTERS.md5.prev" "$FILTERS.md5" || restored=0
-  else
-    rm -f "$FILTERS.md5" || restored=0
-  fi
-  if [ "$restored" -eq 1 ]; then
-    echo "gdrive-bisync: --resync saiu $1; filtro anterior restaurado em $FILTERS, o novo fica para o proximo --resync (#13688)" >&2
-  else
-    echo "gdrive-bisync: aviso — --resync saiu $1 e nao consegui restaurar o filtro anterior em $FILTERS; rode --resync de novo (#13688)" >&2
-  fi
-}
 
 # Retry em erro de autenticação (#12412). Quando a listagem do Drive passa
 # de 1h, o access token OAuth vence no meio dela e algumas listagens
@@ -225,8 +255,6 @@ AUTH_RETRY_DELAY="${GDRIVE_AUTH_RETRY_DELAY:-60}"
 # (falso) e o teto deixaria de valer.
 case "$AUTH_RETRY_MAX" in ''|*[!0-9]*) AUTH_RETRY_MAX=1 ;; esac
 case "$AUTH_RETRY_DELAY" in ''|*[!0-9]*) AUTH_RETRY_DELAY=60 ;; esac
-RCLONE_LOG="$STATE_DIR/last-rclone.log"
-RCLONE_RC="$STATE_DIR/last-rclone.rc"
 
 # Roda o bisync com as travas fixas + "$@", espelhando a saída no journal e
 # em $RCLONE_LOG (lido pelo detector de 401). O exit do rclone volta em
