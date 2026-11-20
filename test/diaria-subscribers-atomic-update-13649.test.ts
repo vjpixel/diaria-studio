@@ -281,4 +281,85 @@ describe("main() da ingestão do Kit grava no store só no fim (#13649)", () => 
     assert.equal(countSubscribers(dbPath), 1, "store válido depois da falha");
     assert.deepEqual(readdirSync(dirname(dbPath)).filter((f) => f.startsWith("~")), []);
   });
+
+  // #13747: o teste acima roda sem `--write` e com roster vazio, então passava
+  // com o defeito. Aqui o roster grava linhas na cópia de trabalho (frames na
+  // WAL, abaixo do autocheckpoint) e só então `listAllBroadcasts` lança. Com a
+  // conexão ainda aberta no commit, o rename levava o `.db` sem esses frames e
+  // o `rmSync` do `-wal` os apagava: o store final ficava sem o roster que o
+  // `captura-log.jsonl` dizia ter gravado.
+  for (const [label, failingDeps] of [
+    [
+      "listAllBroadcasts",
+      {
+        listAllBroadcasts: async () => {
+          throw new Error("Kit fora do ar");
+        },
+      },
+    ],
+    [
+      // `ingestOneBroadcast` é fail-soft no fetch; o throw no laço vem do
+      // pacing entre broadcasts (ou de uma escrita SQLite), já com eventos do
+      // 1º broadcast na WAL.
+      "o laço de broadcasts (pacing)",
+      {
+        listAllBroadcasts: async () => [broadcast, { ...broadcast, id: 2, subject: "Edição B" }],
+        sleep: async () => {
+          throw new Error("Kit fora do ar");
+        },
+      },
+    ],
+  ] as const) {
+    it(`--write com roster gravado e ${label} lançando: o roster chega ao store final (#13747)`, async () => {
+      const { dir, dbPath, manifestPath } = run(`diaria-atomic-update-13747-${label.length}-`);
+      const capturaDir = resolve(dir, "..", "metrics");
+      mkdirSync(capturaDir, { recursive: true });
+      const capturaLog = resolve(capturaDir, "captura-log.jsonl");
+      const roster = [
+        { id: 101, email_address: "r1@x.com", state: "active" as const, created_at: "2026-11-01T10:00:00Z" },
+        { id: 102, email_address: "r2@x.com", state: "active" as const, created_at: "2026-11-02T10:00:00Z" },
+        { id: 103, email_address: "r3@x.com", state: "cancelled" as const, created_at: "2026-11-03T10:00:00Z" },
+      ];
+      await assert.rejects(
+        () =>
+          main(
+            [
+              "--db",
+              dbPath,
+              "--manifest",
+              manifestPath,
+              "--write",
+              "--captura-log",
+              capturaLog,
+              "--kit-active-history",
+              resolve(capturaDir, "kit-active-history.jsonl"),
+              "--snapshot-root",
+              resolve(dir, "..", "snapshots-inexistentes"),
+            ],
+            {
+              fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+              getBroadcastStats: async () => makeStats(0),
+              sleep: async () => {},
+              listAllRosterSubscribers: async () => roster,
+              readOnboardingExclusion: () => ({ ids: new Set<string>(), source: "store", kitTransportEnabled: false, warning: null }),
+              ...failingDeps,
+            } as KitIngestDeps,
+          ),
+        /Kit fora do ar/,
+      );
+      const log = readFileSync(capturaLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      assert.equal(log.length, 1);
+      assert.equal(log[0].exit, 0, "o log registrou o roster como gravado");
+      const db = openDiariaSubscribersDb(dbPath);
+      try {
+        for (const s of roster) {
+          assert.equal(findSubscriberIdsByEmail(db, s.email_address).length, 1, `${s.email_address} no store final`);
+        }
+        assert.equal(findSubscriberIdsByEmail(db, "velho@x.com").length, 1, "dado anterior preservado");
+      } finally {
+        db.close();
+      }
+      assert.deepEqual(readdirSync(dirname(dbPath)).filter((f) => f.startsWith("~")), [], "sem cópia de trabalho sobrando");
+    });
+  }
 });
