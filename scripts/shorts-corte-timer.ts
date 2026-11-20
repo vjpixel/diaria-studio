@@ -72,6 +72,16 @@
  * dos cortes (timers da edição) alarma o corte pendente com o timer parado, e a
  * rodada manual avisa ao delegar a um timer parado.
  *
+ * #13733: o repost pela página (`linkedin_page_repost`) precisa da URN do vídeo
+ * do perfil, que no corte só existe depois que o timer publica o perfil. A
+ * execução que publica o `linkedin_profile` leva o repost autorizado junto no
+ * `--only` (`companions`), e o publish-shorts o põe na fila do Worker com a URN
+ * recém-gravada; se a fila recusar, alarme `repost-failed`.
+ *
+ * #13731: destino autorizado que não é do timer (API agendada, Buffer, passo
+ * guiado, repost) e segue sem registro 3 h depois do horário (até 48 h) vira o
+ * alarme `unregistered`, uma vez por corte, destino e plano.
+ *
  * Uso: npx tsx scripts/shorts-corte-timer.ts [--corte SLUG] [--dry-run]
  *      npx tsx scripts/shorts-corte-timer.ts --corte SLUG --clear-sending DESTINO
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme.
@@ -92,7 +102,7 @@ import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile, type ShortPublishedEntry } from "./lib/diaria/short-video.ts";
-import { CORTE_SPEC_FILE, CORTE_TIMER_LOCK_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
+import { CORTE_SPEC_FILE, CORTE_TIMER_DESTINATIONS, CORTE_TIMER_LOCK_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
 import { clearShortSendingAll, openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "./lib/diaria/vertical-download-guard.ts";
 import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
@@ -146,10 +156,22 @@ export type CorteTimerAlarmKey =
    * ex.: o filho morto pelo teto), num destino que o publish-shorts não confere
    * na conta (`linkedin_profile`): o timer não publica de novo até o editor liberar.
    */
-  | "sending-orphan";
+  | "sending-orphan"
+  /**
+   * #13731: destino autorizado FORA dos do timer (API agendada, Buffer, passo
+   * guiado, repost) ainda sem registro 3 h depois do horário: pode ter saído à
+   * mão sem `--mark`, ou não saiu. Ninguém mais alarma esses destinos.
+   */
+  | "unregistered"
+  /**
+   * #13733: o vídeo do perfil saiu (ou ficou ambíguo) nesta execução, mas o
+   * repost da página não foi para a fila do Worker. O timer não tenta de novo
+   * sozinho (o perfil deixou de ser pendente).
+   */
+  | "repost-failed";
 
 /** O post pode estar (ou está) no ar: `acao`, e o corpo nunca manda publicar de novo. */
-const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check", "child-timeout", "sending-orphan"]);
+const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check", "child-timeout", "sending-orphan", "unregistered"]);
 
 /**
  * #11985: destinos em que o publish-shorts confere a conta antes de publicar
@@ -180,16 +202,29 @@ export const corteTimerDestinations = corteUnscheduledDestinations;
  */
 export interface CorteTimerSideAlarm {
   destination: string;
-  key: "revoked" | "unknown-destination" | "sending-orphan";
+  key: "revoked" | "unknown-destination" | "sending-orphan" | "unregistered";
   reason: string;
 }
+
+/**
+ * #13733: o repost da página (`linkedin_page_repost`) depende da URN do vídeo
+ * do perfil, que no corte só existe depois que o timer publica o perfil. Ele vai
+ * junto no `--only` da execução que publica o `linkedin_profile`, e o
+ * publish-shorts o põe na fila do Worker com a URN recém-gravada (#11121).
+ */
+export const CORTE_TIMER_REPOST_DESTINATION = "linkedin_page_repost";
 
 export type CorteTimerDecision =
   | { kind: "skip"; reason: string; alarms?: CorteTimerSideAlarm[] }
   | { kind: "wait"; reason: string; at: string }
   /** `inFlight` (#12001): destinos com envio em curso por outra rodada, fora de `pending` nesta execução. */
   | { kind: "late"; reason: string; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[]; inFlight?: string[] }
-  | { kind: "publish"; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[]; inFlight?: string[] };
+  /**
+   * `companions` (#13733): destinos que vão junto no `--only` porque dependem de um
+   * pendente desta execução (o repost da página, do vídeo do perfil). Ficam fora de
+   * `pending`: não alarmam `late`/`missing-video`/`content-changed` por conta própria.
+   */
+  | { kind: "publish"; at: string; pending: string[]; companions?: string[]; alarms?: CorteTimerSideAlarm[]; inFlight?: string[] };
 
 /** Puro: o que fazer com um corte nesta execução, antes de tocar em qualquer API. */
 export function decideCorteTimerRun(input: {
@@ -233,8 +268,8 @@ export function decideCorteTimerRun(input: {
   const inWindow = deltaMs >= 0 && deltaMs <= CORTE_TIMER_HORIZON_MS;
   // #11912: lidos SEMPRE, mesmo com autorização (um --only menor depois da queda não silencia os outros).
   const alarms: CorteTimerSideAlarm[] = [];
+  const known = knownDestinationIds(cfg);
   if (inWindow) {
-    const known = knownDestinationIds(cfg);
     for (const d of authorized.filter((x) => !known.has(x))) {
       alarms.push({ destination: d, key: "unknown-destination", reason: `o "pode publicar" do corte cita ${d}, que a config atual não conhece: o timer não publica nada nele` });
     }
@@ -256,6 +291,13 @@ export function decideCorteTimerRun(input: {
         key: "sending-orphan",
         reason: `o envio de ${m.destination} começou em ${m.started_at} e ficou sem desfecho (processo encerrado no meio, ex.: o teto do filho): o post pode ter saído, e o timer não publica de novo este destino até a marca ser liberada`,
       });
+    }
+    // #13731: os destinos autorizados que não são do timer (API agendada, Buffer, passo guiado,
+    // repost) saem pela rodada manual; se 3 h depois do horário seguem sem registro, ninguém avisava.
+    if (deltaMs > MAX_FIRE_LATENESS_MS) {
+      for (const d of authorized.filter((x) => known.has(x) && !CORTE_TIMER_DESTINATIONS.includes(x) && !done.has(x) && !inFlight.has(x))) {
+        alarms.push({ destination: d, key: "unregistered", reason: corteUnregisteredReason(spec, d, deltaMs, done) });
+      }
     }
   }
   const withAlarms = alarms.length ? { alarms } : {};
@@ -302,7 +344,27 @@ export function decideCorteTimerRun(input: {
       ...withBusy,
     };
   }
-  return { kind: "publish", at, pending, ...withAlarms, ...withBusy };
+  // #13733: o repost da página vai junto com o vídeo do perfil desta execução (precisa da URN dele).
+  const companions =
+    pending.includes("linkedin_profile") &&
+    authorized.includes(CORTE_TIMER_REPOST_DESTINATION) &&
+    known.has(CORTE_TIMER_REPOST_DESTINATION) &&
+    !done.has(CORTE_TIMER_REPOST_DESTINATION) &&
+    !inFlight.has(CORTE_TIMER_REPOST_DESTINATION)
+      ? [CORTE_TIMER_REPOST_DESTINATION]
+      : [];
+  return { kind: "publish", at, pending, ...(companions.length ? { companions } : {}), ...withAlarms, ...withBusy };
+}
+
+/** Puro (#13731): o motivo do alarme `unregistered`, com o que falta fazer em cada tipo de destino. */
+export function corteUnregisteredReason(spec: Pick<CorteSpec, "date" | "hhmm">, destination: string, deltaMs: number, done: ReadonlySet<string>): string {
+  const base = `${spec.hhmm} BRT de ${spec.date} passou há ${Math.round(deltaMs / 60_000)} min e ${destination}, autorizado no "pode publicar", não está no registro do corte`;
+  if (destination === CORTE_TIMER_REPOST_DESTINATION) {
+    return done.has("linkedin_profile")
+      ? `${base}: o vídeo do perfil está registrado e o repost pela página não`
+      : `${base}: o repost depende do vídeo do perfil (linkedin_profile), que também não está registrado`;
+  }
+  return `${base}: este destino sai pela rodada manual do corte (API agendada, Buffer ou passo guiado), não pelo timer`;
 }
 
 /**
@@ -381,6 +443,11 @@ export function interpretCorteTimerOutput(exitCode: number | null, stdout: strin
   }
   return pending.map((destination): CorteDestinationOutcome => {
     const result = Array.isArray(out?.results) ? out.results.find((r: any) => r?.destination === destination) : undefined;
+    // #13733: o repost acompanha o perfil; sem resultado próprio, o desfecho depende do que o perfil fez nesta execução.
+    if (!result && destination === CORTE_TIMER_REPOST_DESTINATION) {
+      const repost = interpretCorteRepostWithoutResult(out, exitCode);
+      if (repost) return repost;
+    }
     if (result) {
       const e = result.entry;
       const where = e ? (e.url ?? e.id) : "";
@@ -428,6 +495,36 @@ export function interpretCorteTimerOutput(exitCode: number | null, stdout: strin
   });
 }
 
+/**
+ * Puro (#13733): desfecho do repost da página sem resultado próprio na saída do
+ * publish-shorts. `null` = segue a regra geral (ex.: `skip_done`).
+ *   - `guided`: o perfil saiu, mas a fila do Worker recusou (sem segredo da
+ *     página, URN ilegível, falha): alarme `repost-failed` com o motivo, que o
+ *     publish-shorts põe no `detail` do item.
+ *   - `skip_invalid` com o perfil falhando nesta execução (sem entrada): espera;
+ *     a próxima execução publica o perfil e leva o repost de novo.
+ *   - `skip_invalid` por outro motivo (perfil em `send_unknown`, cadeia velha):
+ *     alarme `repost-failed`; o perfil sai da fila do timer e ninguém mais
+ *     levaria o repost.
+ */
+export function interpretCorteRepostWithoutResult(out: any, exitCode: number | null): CorteDestinationOutcome | null {
+  const destination = CORTE_TIMER_REPOST_DESTINATION;
+  const item = Array.isArray(out?.items) ? out.items.find((i: any) => i?.destination === destination) : undefined;
+  if (!item) return null;
+  const detail = String(item.detail ?? "");
+  if (item.action === "guided") {
+    return { destination, kind: "alarm", key: "repost-failed", detail: `o repost não foi para a fila do Worker (exit ${exitCode}): ${detail || "sem detalhe"}` };
+  }
+  if (item.action === "skip_invalid") {
+    const profile = Array.isArray(out?.results) ? out.results.find((r: any) => r?.destination === "linkedin_profile") : undefined;
+    if (profile && !profile.ok && !profile.entry) {
+      return { destination, kind: "wait", detail: `o vídeo do perfil falhou nesta execução; o repost vai junto na próxima: ${detail}` };
+    }
+    return { destination, kind: "alarm", key: "repost-failed", detail: `o repost ficou sem sair: ${detail || "sem detalhe"}` };
+  }
+  return null;
+}
+
 /** Puro: corpo do alarme, por motivo, com os comandos já com o corte. */
 export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: string; key: CorteTimerAlarmKey; reason: string }): { subject: string; body: string } {
   const { spec, destination, key, reason } = input;
@@ -448,6 +545,30 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
     "",
   ];
   let subject: string;
+  if (key === "unregistered") {
+    // #13731: destino fora do timer: nem o timer nem rodar o timer publicam.
+    const repost = destination === CORTE_TIMER_REPOST_DESTINATION;
+    lines.push(
+      "Confira a conta antes de qualquer coisa; NÃO poste de novo sem conferir.",
+      `- Se o post do corte está lá (saiu à mão, ou pela plataforma, sem registro): registre com ${mark}.`,
+      repost
+        ? `- Se não está: com o vídeo do perfil já registrado, \`${base} --only ${destination} --publish ${publishConfirmSuffix(spec.date)}\` põe o repost na fila do Worker (#11121); sem a fila, reposte à mão como a página e registre com ${mark}.`
+        : `- Se não está e o post ainda deve sair: \`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\` (destino de API) ou o passo guiado do plano, e registre com ${mark}.`,
+      "O timer avisa uma vez por corte, destino e plano; ele não publica este destino.",
+    );
+    subject = `[diar.ia.br] Corte "${spec.slug}" sem registro no ${destination} 3 h depois do horário`;
+    return { subject, body: lines.join("\n") };
+  }
+  if (key === "repost-failed") {
+    lines.push(
+      "O vídeo do perfil saiu pelo timer (ou ficou em envio ambíguo), mas o repost pela página diar.ia.br não foi para a fila do Worker. O timer não tenta de novo sozinho.",
+      "O que fazer:",
+      `- Com o vídeo do perfil registrado (confira o perfil; se ambíguo, registre com \`${base} --mark linkedin_profile=URL\`): \`${base} --only ${destination} --publish ${publishConfirmSuffix(spec.date)}\` tenta a fila do Worker de novo.`,
+      `- Se a fila recusar de novo (Worker sem o token da página, #8816): reposte à mão como a página e registre com ${mark}.`,
+    );
+    subject = `[diar.ia.br] Corte "${spec.slug}": repost pela página não saiu (${key})`;
+    return { subject, body: lines.join("\n") };
+  }
   if (MAYBE_PUBLISHED_KEYS.has(key)) {
     lines.push("Confira a conta antes de qualquer coisa; NÃO poste de novo sem conferir.", `- Se o vídeo do corte está lá: registre com ${mark}.`);
     if (key === "sending-orphan") {
@@ -776,7 +897,9 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
       for (const d of decision.pending) ok = (await alarm(dir, spec, d, key, reason, corteAlarmVariant(key, spec, content))) && ok;
       return ok ? 0 : 1;
     }
-    const args = cortePublishArgs(spec, decision.pending);
+    // #13733: o repost da página vai junto do perfil desta execução (precisa da URN dele).
+    const run = [...decision.pending, ...(decision.companions ?? [])];
+    const args = cortePublishArgs(spec, run);
     if (dryRun) {
       console.log(`${LOG_PREFIX} dry-run: npx tsx ${args.join(" ")}`);
       return 0;
@@ -785,7 +908,7 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
     const stderrTail = r.stderr.trimEnd().split("\n").slice(-15).join("\n");
     // #11966: filho morto pelo teto não é "sem JSON, tenta de novo": o envio pode ter saído.
-    const outcomes = r.timedOut ? corteTimerTimeoutOutcomes(decision.pending, stderrTail) : interpretCorteTimerOutput(r.status, r.stdout, decision.pending, stderrTail);
+    const outcomes = r.timedOut ? corteTimerTimeoutOutcomes(run, stderrTail) : interpretCorteTimerOutput(r.status, r.stdout, run, stderrTail);
     let failed = !sideOk;
     for (const o of outcomes) {
       console.log(`${LOG_PREFIX} ${spec.slug} ${o.destination}: ${o.kind}${o.kind === "alarm" ? ` (${o.key})` : ""} — ${o.detail}`);

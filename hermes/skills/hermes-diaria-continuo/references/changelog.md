@@ -13,6 +13,14 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.22 (20/11/2026): #13683 — o `route-issue.ts` só solta a claim da
+  própria sessão e, sem `--session-id`, não solta nada (#13671). O Hermes roda
+  fora do Claude Code (o hook não injeta a flag) e a skill passava
+  `--session-id "$SESSION_ID"` só no `claim-issue`: a claim `continuo` ficava
+  na issue roteada para `develop`/`bloqueada`, e a sessão develop recebia
+  `github-claim` por até 24h (o caso da #13605). O re-roteamento passou a
+  levar `--session-id "$SESSION_ID"`; guard em
+  `test/hermes-route-issue-session-id-13683.test.ts`.
 - 0.5.21 (13/11/2026): #12950 — a frase do 0.5.20 virou instrução
   incondicional: toda PR do contínuo nascia draft + `bloqueio-execucao`, e a
   #12920, sem bloqueio nenhum no corpo, ficou retida esperando liberação. O
