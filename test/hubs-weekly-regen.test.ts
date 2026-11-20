@@ -331,6 +331,29 @@ describe("mergeHubsRegenPr (#8923 — merge síncrono, nunca --auto; #8926 — p
     );
   });
 
+  it("check IN_PROGRESS passando de 30min não dá timeout; passa e mergeia (#13750)", async () => {
+    let views = 0;
+    const runner = lockOkRunner()
+      .on(
+        "gh",
+        (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"),
+        () => {
+          views++;
+          // clock avança 30s por poll: 80 polls IN_PROGRESS = 40min > teto de 30min.
+          return views <= 80
+            ? ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: null, status: "IN_PROGRESS" }] }))
+            : ok(ciJson("SUCCESS"));
+        },
+      )
+      .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-11-20T00:00:00Z" })));
+
+    const result = await mergeHubsRegenPr(runner, "123", { sessionId: "s1" });
+
+    assert.equal(result.ciVerdict, "pass");
+    assert.ok(views > 60, "precisa ter esperado além dos 30min");
+  });
+
   it("merge-lock-acquire negado (depois do CI já ter passado): não mergeia, mas ainda libera o que foi possível", async () => {
     const runner = new FakeHubsRunner()
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciJson("SUCCESS")))

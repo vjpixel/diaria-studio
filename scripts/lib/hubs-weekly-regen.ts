@@ -231,6 +231,9 @@ export interface HubsRegenMergeOptions {
   readonly ciTimeoutMs?: number;
   /** Default 30s. */
   readonly ciPollIntervalMs?: number;
+  /** Default 60min (`running_ceiling_secs` 3600, #13685) — teto com check
+   * IN_PROGRESS no HEAD vigente; o job `test` leva 35-45min (#13750). */
+  readonly ciRunningCeilingMs?: number;
 }
 
 export interface HubsRegenMergeResult {
@@ -242,6 +245,7 @@ export interface HubsRegenMergeResult {
 
 const DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS = 30_000;
+const DEFAULT_HUBS_MERGE_CI_RUNNING_CEILING_MS = 60 * 60 * 1000;
 
 /**
  * Sequência SÍNCRONA de merge pro PR de regen semanal de hubs (#8923,
@@ -282,6 +286,7 @@ export async function mergeHubsRegenPr(
   const ciVerdict = await pollTrainCi(runner, prNum, {
     timeoutMs: opts.ciTimeoutMs ?? DEFAULT_HUBS_MERGE_CI_TIMEOUT_MS,
     intervalMs: opts.ciPollIntervalMs ?? DEFAULT_HUBS_MERGE_CI_POLL_INTERVAL_MS,
+    runningCeilingMs: opts.ciRunningCeilingMs ?? DEFAULT_HUBS_MERGE_CI_RUNNING_CEILING_MS,
   });
   if (ciVerdict !== "pass") {
     return {
