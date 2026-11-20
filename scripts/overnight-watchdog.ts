@@ -582,9 +582,13 @@ export function resolveRunActivity(
   // #12676: o heartbeat da sessão coordenadora (session-registry) também é
   // atividade da rodada — esperando CI e uma onda de subagentes, ela passa
   // 45+ min sem gravar plan.json nem run-log, mas o beacon segue vivo.
-  const activity = withSessionHeartbeat(
-    fileActivity,
-    sessionHeartbeatActivity(listSessions(rootDir, Date.now()), kind, plan?.session_id),
+  const sessionHeartbeat = sessionHeartbeatActivity(listSessions(rootDir, Date.now()), kind, plan?.session_id);
+  // #13744: o heartbeat `ci_wait_running` do `wait-pr-checks.sh` só conta
+  // até `CI_WAIT_SESSION_GRACE_MS` depois do último beacon da sessão — o
+  // helper em background sobrevive à morte do coordenador.
+  const activity = withCiWaitHelperHeartbeat(
+    withSessionHeartbeat(fileActivity, sessionHeartbeat),
+    getLastCiWaitHelperActivity(rootDir, aammdd, kind, ciWaitHelperCap(sessionHeartbeat)),
   );
   if (activity.ts > 0) return activity;
 
@@ -641,16 +645,63 @@ export function isOwnWatchdogEvent(
 }
 
 /**
- * Extrai o timestamp mais recente do run-log para a edição/agente dado
- * (`agent`, default `"overnight"` — #5293 item 3 generaliza pra `"continuo"`).
- *
- * #5520: eventos emitidos pelo próprio watchdog são ignorados — ver
- * `isOwnWatchdogEvent`.
+ * #13744 — `details.source` do heartbeat `ci_wait_running` que o próprio
+ * `scripts/lib/wait-pr-checks.sh` grava (#13725). O helper roda em background
+ * e SOBREVIVE à morte do coordenador: com um check rodando, seguiria gravando
+ * a cada 15 min até o teto (7200s) e o STALL abriria em ~2h45 em vez de 45
+ * min. Por isso esse evento não entra em `getLastRunLogActivity`; só conta
+ * via `getLastCiWaitHelperActivity`, limitado pelo beacon da sessão.
  */
-export function getLastRunLogActivity(
+export const CI_WAIT_HELPER_SOURCE = "wait-pr-checks";
+
+/**
+ * #13744 — quanto o heartbeat do helper pode passar do último beacon da sessão
+ * coordenadora (#12676) e ainda contar como atividade. 20 min = o fallback
+ * wake de toda espera de CI (≤1200s, #11276/#2945): coordenador vivo esperando
+ * CI faz ao menos uma chamada de ferramenta (beacon) nesse intervalo. Com o
+ * coordenador morto, o STALL abre no máximo em limiar + 20 min.
+ */
+export const CI_WAIT_SESSION_GRACE_MS = 20 * 60_000;
+
+/** Pure: o evento é o heartbeat do `wait-pr-checks.sh`? (#13744) */
+export function isCiWaitHelperEvent(event: { details?: { source?: string } | null }): boolean {
+  return event.details?.source === CI_WAIT_HELPER_SOURCE;
+}
+
+/**
+ * Pure: até que instante o heartbeat do helper ainda conta (#13744). Sem
+ * beacon da sessão desta rodada (`null` — plano legado sem `session_id`,
+ * sessão fora do registry) o helper não conta nunca: não há como saber se o
+ * coordenador está vivo.
+ */
+export function ciWaitHelperCap(sessionHeartbeat: { ts: number } | null): number | null {
+  if (sessionHeartbeat === null) return null;
+  return sessionHeartbeat.ts + CI_WAIT_SESSION_GRACE_MS;
+}
+
+/** Pure: `max(atividade, heartbeat do helper)` — o helper só vence se for mais recente. */
+export function withCiWaitHelperHeartbeat(
+  activity: { ts: number; source: string },
+  helperTs: number | null,
+): { ts: number; source: string } {
+  if (helperTs === null || helperTs <= activity.ts) return activity;
+  return { ts: helperTs, source: "wait-pr-checks ci_wait_running (sessão viva)" };
+}
+
+type RunLogScanEvent = {
+  agent?: string;
+  edition?: string;
+  timestamp?: string;
+  message?: string;
+  details?: { source?: string } | null;
+};
+
+/** Último timestamp do run-log da edição/agente cujo evento passa em `accept`. */
+function scanRunLogLastTs(
   rootDir: string,
   aammdd: string,
-  agent: WatchableKind = "overnight",
+  agent: WatchableKind,
+  accept: (event: RunLogScanEvent, ts: number) => boolean,
 ): number | null {
   const logPath = resolveRunLogPath(rootDir);
   if (!existsSync(logPath)) return null;
@@ -667,21 +718,14 @@ export function getLastRunLogActivity(
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const event = JSON.parse(trimmed) as {
-        agent?: string;
-        edition?: string;
-        timestamp?: string;
-        message?: string;
-        details?: { source?: string } | null;
-      };
-      if (isOwnWatchdogEvent(event, agent)) continue;
+      const event = JSON.parse(trimmed) as RunLogScanEvent;
       if (
         event.agent === agent &&
         event.edition === aammdd &&
         event.timestamp
       ) {
         const ts = new Date(event.timestamp).getTime();
-        if (!isNaN(ts) && (lastTs === null || ts > lastTs)) {
+        if (!isNaN(ts) && accept(event, ts) && (lastTs === null || ts > lastTs)) {
           lastTs = ts;
         }
       }
@@ -690,6 +734,42 @@ export function getLastRunLogActivity(
     }
   }
   return lastTs;
+}
+
+/**
+ * Extrai o timestamp mais recente do run-log para a edição/agente dado
+ * (`agent`, default `"overnight"` — #5293 item 3 generaliza pra `"continuo"`).
+ *
+ * #5520: eventos emitidos pelo próprio watchdog são ignorados — ver
+ * `isOwnWatchdogEvent`. #13744: o heartbeat do `wait-pr-checks.sh` também —
+ * ver `getLastCiWaitHelperActivity`.
+ */
+export function getLastRunLogActivity(
+  rootDir: string,
+  aammdd: string,
+  agent: WatchableKind = "overnight",
+): number | null {
+  return scanRunLogLastTs(
+    rootDir,
+    aammdd,
+    agent,
+    (event) => !isOwnWatchdogEvent(event, agent) && !isCiWaitHelperEvent(event),
+  );
+}
+
+/**
+ * #13744 — último heartbeat `ci_wait_running` do `wait-pr-checks.sh` para a
+ * edição/agente, considerando só os gravados até `capTs` (ver
+ * `ciWaitHelperCap`). `capTs === null` → `null`.
+ */
+export function getLastCiWaitHelperActivity(
+  rootDir: string,
+  aammdd: string,
+  agent: WatchableKind,
+  capTs: number | null,
+): number | null {
+  if (capTs === null) return null;
+  return scanRunLogLastTs(rootDir, aammdd, agent, (event, ts) => isCiWaitHelperEvent(event) && ts <= capTs);
 }
 
 /**
