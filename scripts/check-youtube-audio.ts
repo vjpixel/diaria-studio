@@ -15,12 +15,19 @@
  * No áudio degradado, depois de gravar, abre o alarme ao editor (issue
  * `youtube-audio-degraded`, `notifyEditor`), salvo `--no-alarm`.
  *
+ * #13734: com `--corte SLUG`, o registro é o do corte avulso
+ * (`data/cortes/{slug}/_internal/06-shorts-published.json`, entrada
+ * `youtube_shorts`; a data vem do `corte.json`) e, sem `--source`, a origem é o
+ * vertical do corte (`video` do `corte.json`), se estiver nesta máquina. É o
+ * comando que o `publish-shorts --corte` imprime quando o processamento não terminou.
+ *
  * Uso:
  *   npx tsx scripts/check-youtube-audio.ts --id VIDEO_ID
  *   npx tsx scripts/check-youtube-audio.ts --id VIDEO_ID --edition AAMMDD [--part horizontal|vertical]
+ *   npx tsx scripts/check-youtube-audio.ts --id VIDEO_ID --corte SLUG   (vertical de corte avulso)
  *   npx tsx scripts/check-youtube-audio.ts --id VIDEO_ID --source Final/vertical.mp4   (origem sem áudio = nada a conferir)
  *   npx tsx scripts/check-youtube-audio.ts --id VIDEO_ID --no-alarm
- *   (--edition-dir DIR troca a pasta da edição: testes / edição fora do lugar)
+ *   (--edition-dir DIR troca a pasta da edição ou do corte: testes / pasta fora do lugar)
  *
  * Saída: JSON no stdout (`audio_check`, e `record` quando gravou). Exit 0 =
  * áudio ok (ou origem sem áudio); 1 = degradado; 3 = processamento ainda não
@@ -46,6 +53,7 @@ import {
   type YouTubeAudioCheck,
 } from "./lib/diaria/youtube-audio-check.ts";
 import { readShortsRegistry, shortsRegistryPath, updateShortEntry } from "./lib/diaria/shorts-published-store.ts";
+import { CORTE_SPEC_FILE, corteRelDir, parseCorteSpec, resolveCorteVideo, validateCorteSlug, type CorteSpec } from "./lib/diaria/short-corte.ts";
 import {
   YOUTUBE_PUBLISHED_FILE,
   defaultYouTubeUploadDeps,
@@ -55,7 +63,8 @@ import {
 } from "./lib/diaria/youtube-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "uso: check-youtube-audio.ts --id VIDEO_ID [--edition AAMMDD [--part horizontal|vertical] [--edition-dir DIR]] [--source MP4] [--no-alarm]";
+const USAGE =
+  "uso: check-youtube-audio.ts --id VIDEO_ID [--edition AAMMDD [--part horizontal|vertical] | --corte SLUG] [--edition-dir DIR] [--source MP4] [--no-alarm]";
 const YOUTUBE_VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
 export type AudioCheckPart = "horizontal" | "vertical";
@@ -116,6 +125,8 @@ export interface CheckYouTubeAudioCliDeps {
   alarm: YouTubeAudioAlarmFn;
   /** Pasta da edição a partir do AAMMDD (produção: `data/editions/AAMM/AAMMDD`). */
   editionDir: (aammdd: string) => string;
+  /** #13734: pasta do corte avulso a partir do slug (produção: `data/cortes/{slug}`). Ausente = `--corte` sem pasta (exit 2). */
+  corteDir?: (slug: string) => string;
   out: (line: string) => void;
   err: (line: string) => void;
 }
@@ -138,12 +149,59 @@ export async function runCheckYouTubeAudio(argv: string[], deps: CheckYouTubeAud
     deps.err(`check-youtube-audio: --part ${JSON.stringify(partArg)} inválido (horizontal ou vertical)\n${USAGE}`);
     return 2;
   }
-  if ((partArg || values["edition-dir"]) && !aammdd) {
-    deps.err(`check-youtube-audio: --part e --edition-dir pedem --edition\n${USAGE}`);
+  const corteSlug = values["corte"]?.trim();
+  if (flags.has("corte") || corteSlug === "") {
+    deps.err(`check-youtube-audio: --corte pede o slug do corte\n${USAGE}`);
     return 2;
   }
-  let target: { dir: string; aammdd: string; part: AudioCheckPart } | null = null;
-  if (aammdd) {
+  if (corteSlug !== undefined) {
+    const slugError = validateCorteSlug(corteSlug);
+    if (slugError) {
+      deps.err(`check-youtube-audio: ${slugError}\n${USAGE}`);
+      return 2;
+    }
+    if (aammdd) {
+      deps.err(`check-youtube-audio: --corte e --edition não combinam (a data do corte vem do corte.json)\n${USAGE}`);
+      return 2;
+    }
+    if (partArg === "horizontal") {
+      deps.err(`check-youtube-audio: o corte avulso só tem o vertical (--part horizontal não vale com --corte)\n${USAGE}`);
+      return 2;
+    }
+  }
+  if ((partArg || values["edition-dir"]) && !aammdd && corteSlug === undefined) {
+    deps.err(`check-youtube-audio: --part e --edition-dir pedem --edition (ou --corte)\n${USAGE}`);
+    return 2;
+  }
+  let target: { dir: string; aammdd: string; part: AudioCheckPart; corteSlug?: string } | null = null;
+  /** #13734: vertical do corte, origem padrão quando não veio `--source`. */
+  let corteVideo: string | null = null;
+  if (corteSlug !== undefined) {
+    const dir = values["edition-dir"] ? resolve(values["edition-dir"]) : deps.corteDir ? deps.corteDir(corteSlug) : null;
+    if (!dir) {
+      deps.err(`check-youtube-audio: --corte sem a pasta dos cortes nesta chamada; passe --edition-dir data/cortes/${corteSlug}`);
+      return 2;
+    }
+    const specPath = join(dir, CORTE_SPEC_FILE);
+    let spec: CorteSpec;
+    try {
+      spec = parseCorteSpec(deps.readFile(specPath).toString("utf8"), specPath);
+    } catch (e) {
+      deps.err(`check-youtube-audio: corte "${corteSlug}" sem ${CORTE_SPEC_FILE} legível em ${dir} (${(e as Error).message})`);
+      return 2;
+    }
+    if (spec.slug !== corteSlug) {
+      deps.err(`check-youtube-audio: ${specPath} é do corte "${spec.slug}", não de "${corteSlug}"`);
+      return 2;
+    }
+    // O registro do corte não compara o `aammdd` do arquivo com a data atual (#12998): a do corte.json serve.
+    if (inferAudioCheckPart(dir, spec.date, id) !== "vertical") {
+      deps.err(`check-youtube-audio: o registro do corte ${corteSlug} (${dir}) não tem o vídeo ${id} na entrada youtube_shorts`);
+      return 2;
+    }
+    target = { dir, aammdd: spec.date, part: "vertical", corteSlug };
+    corteVideo = resolveCorteVideo(dir, spec.video);
+  } else if (aammdd) {
     const dir = values["edition-dir"] ? resolve(values["edition-dir"]) : deps.editionDir(aammdd);
     const part = (partArg as AudioCheckPart | undefined) ?? inferAudioCheckPart(dir, aammdd, id);
     if (!part) {
@@ -159,6 +217,14 @@ export async function runCheckYouTubeAudio(argv: string[], deps: CheckYouTubeAud
     } catch (e) {
       deps.err(`check-youtube-audio: origem ${values["source"]} ilegível (${(e as Error).message})`);
       return 2;
+    }
+  } else if (corteVideo) {
+    // #13734: sem --source, a origem é o vertical do corte. Ausente nesta máquina não impede a
+    // checagem: confere o YouTube sem saber se a origem tem áudio (o mesmo de quando a origem é ilegível).
+    try {
+      sourceHasAudio = mp4HasAudioTrack(deps.readFile(corteVideo));
+    } catch (e) {
+      deps.err(`[aviso] vertical do corte ilegível nesta máquina (${corteVideo}: ${(e as Error).message}); confere o YouTube sem a origem`);
     }
   }
   let check: YouTubeAudioCheck;
@@ -194,13 +260,17 @@ export async function runCheckYouTubeAudio(argv: string[], deps: CheckYouTubeAud
     }
   }
   deps.out(JSON.stringify({ video_id: id, audio_check: check, ...(recordPath ? { record: recordPath } : {}) }, null, 2));
-  const line = describeYouTubeAudioCheck(check, id, target?.aammdd);
+  const line = describeYouTubeAudioCheck(check, id, target?.aammdd, target?.corteSlug);
   if (line) deps.err(line);
   if (check.status === "ok") deps.err(`[ok] áudio do YouTube em ${id}: ${check.bitrate_bps} bps`);
   if (recordPath) deps.err(`[ok] audio_check gravado em ${recordPath}`);
   if (recordError) deps.err(`[aviso] audio_check NÃO gravado no registro: ${recordError}`);
   // O alarme sai depois da gravação (ou da tentativa).
-  const label = target ? `${target.part === "horizontal" ? "horizontal" : "vertical (Short)"} da edição ${target.aammdd}` : `vídeo ${id}`;
+  const label = target
+    ? target.corteSlug
+      ? `vertical (Short) do corte ${target.corteSlug}`
+      : `${target.part === "horizontal" ? "horizontal" : "vertical (Short)"} da edição ${target.aammdd}`
+    : `vídeo ${id}`;
   const url = target?.part === "vertical" ? `https://youtube.com/shorts/${id}` : `https://youtu.be/${id}`;
   if (!flags.has("no-alarm")) await alarmYouTubeAudioDegraded(check, { videoId: id, url, label }, deps.alarm, deps.err);
   const code = audioCheckExitCode(check);
@@ -215,6 +285,7 @@ async function main(): Promise<number> {
     readFile: (p) => readFileSync(p),
     alarm: (check, ctx) => notifyYouTubeAudioDegraded(check, ctx, { cwd: ROOT }),
     editionDir: (aammdd) => resolve(ROOT, editionDirFor(aammdd)),
+    corteDir: (slug) => resolve(ROOT, corteRelDir(slug)),
     out: (l) => console.log(l),
     err: (l) => console.error(l),
   });
