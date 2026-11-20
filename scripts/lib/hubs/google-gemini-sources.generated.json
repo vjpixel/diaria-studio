@@ -781,5 +781,17 @@
       "https://tecnoblog.net/noticias/google-amplia-demissoes-voluntarias-para-investir-mais-em-ia/"
     ],
     "editionTitle": "Google paga até 12 salários para quem sair"
+  },
+  {
+    "date": "2026-11-16",
+    "editionSlug": "google-poe-o-gemini-4-hydrogen-na-sua-busca",
+    "url": "https://diar.ia.br/p/google-poe-o-gemini-4-hydrogen-na-sua-busca",
+    "matchedHeadlines": [
+      "Google põe o Gemini 4 Hydrogen na sua Busca"
+    ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-hydrogen/"
+    ],
+    "editionTitle": "Google põe o Gemini 4 Hydrogen na sua Busca"
   }
 ]
