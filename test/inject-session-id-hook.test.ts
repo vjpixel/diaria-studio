@@ -507,6 +507,37 @@ describe("buildUpdatedCommand (#5156)", () => {
     assert.ok(risk.includes("session-close-check.ts") && !risk.includes("route-issue.ts"), risk);
   });
 
+  it("gh/git/node -e que só CITAM route-issue.ts em prosa → sem injeção (#13682)", () => {
+    // Antes do fix, os 4 saíam com ` --session-id 'sess-abc'` no fim e o gh/git/node abortava.
+    const mentions = [
+      `gh issue comment 5 --body "rota corrigida via npx tsx scripts/route-issue.ts --issue 5"`,
+      `gh pr create --title "x (#13682)" --body "rodar npx tsx scripts/route-issue.ts --issue 5 --track develop"`,
+      `git commit -m "fix: npx tsx scripts/route-issue.ts agora solta a claim"`,
+      `node --input-type=module -e "console.log('npx tsx scripts/route-issue.ts --issue 5')"`,
+    ];
+    for (const cmd of mentions) {
+      assert.equal(needsSessionId(cmd), false, cmd);
+      assert.equal(buildUpdatedCommand(cmd, "sess-abc", 4242), null, cmd);
+    }
+  });
+
+  it("menção em prosa a outro alvo (session-registry register) também não recebe --session-id nem --pid (#13682)", () => {
+    const cmd = `gh issue comment 5 --body "use npx tsx scripts/lib/session-registry.ts register --kind overnight"`;
+    assert.equal(needsSessionId(cmd), false);
+    assert.equal(needsPid(cmd), false);
+    assert.equal(buildUpdatedCommand(cmd, "sess-abc", 4242), null);
+  });
+
+  it("invocação real com atribuição de ambiente na frente segue injetando (#13682)", () => {
+    for (const cmd of [
+      `FOO=bar npx tsx scripts/route-issue.ts --issue 5 --track develop --reason x`,
+      `env FOO=bar BAZ=1 npx tsx scripts/route-issue.ts --issue 5 --track develop --reason x`,
+      `  npx tsx scripts/route-issue.ts --issue 5 --track develop --reason x`,
+    ]) {
+      assert.equal(buildUpdatedCommand(cmd, "sess-abc"), `${cmd} --session-id 'sess-abc'`, cmd);
+    }
+  });
+
   it("effective-model-probe.ts encadeado → null (#9527)", () => {
     assert.equal(buildUpdatedCommand("cd x && npx tsx scripts/lib/effective-model-probe.ts", "sess-abc"), null);
   });

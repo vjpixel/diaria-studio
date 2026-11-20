@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.21
+version: 0.5.22
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -18,13 +18,14 @@ metadata:
 Histórico versão a versão (incluindo o porquê da v0.5.0 trocar paráfrase por
 execução) vive em `references/changelog.md` — aqui fica só o comportamento atual.
 
-Papel do Hermes nesta skill: **orquestrador** (loop do cron, claims, fila,
+Papel: **orquestrador** (loop do cron, claims, fila,
 relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
 **Re-roteamento (#11301):** `route-issue.ts` em issue existente leva
-`--triaged-at "{triaged_at}"`. Depois de postar `decisao-editor`, reler tudo
-e capturar o ISO no início dessa nova leitura, após a postagem; marcador
-mais novo → reler, nunca `--override-newer` automático. Detalhe:
+`--triaged-at "{triaged_at}"` e `--session-id "$SESSION_ID"`.
+Depois de postar `decisao-editor`, reler tudo e capturar o ISO
+no início dessa nova leitura, após a postagem; marcador mais novo → reler,
+nunca `--override-newer` automático. Ver
 `references/route-issue-triaged-at-11301.md`. Com `decisao-editor` na
 thread, `--track develop`/`fora-de-rodada` exige `--reason` citando a decisão
 ou `--override-decision "motivo"` (#12389).

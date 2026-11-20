@@ -391,6 +391,28 @@ function isScriptInvoked(command, targetName) {
 }
 
 /**
+ * #13682: a injeção acrescenta a flag no FIM da string, então só é correta
+ * quando o comando standalone É a chamada ao script — o executor abre o
+ * comando. `isScriptInvoked` acha o executor em qualquer posição e casava a
+ * menção em prosa (`gh issue comment --body "rota corrigida via npx tsx
+ * scripts/route-issue.ts …"`, `git commit -m "… npx tsx …"`, código de
+ * `node -e`): o `--session-id` ia parar no fim do `gh`/`git`/`node`, que
+ * abortava com flag desconhecida. Aqui o executor tem de ser o 1º token,
+ * admitindo antes dele só atribuições de ambiente (`FOO=bar npx tsx …`,
+ * `env FOO=bar npx tsx …`). A negação do encadeado
+ * (`detectChainedSessionIdRisk`) segue com `isScriptInvoked`: lá a chamada
+ * pode estar no meio do bloco.
+ */
+function isScriptInvokedAtStart(command, targetName) {
+  const escaped = targetName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `^\\s*(?:env\\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*(?:npx\\s+tsx|tsx|node)\\s+\\S*${escaped}(?:\\s|$)`,
+    "i",
+  );
+  return pattern.test(command);
+}
+
+/**
  * Casa `command` contra `SESSION_ID_TARGETS` e decide se PRECISARIA de
  * `--session-id` — independente de o comando estar encadeado ou não.
  * Extraído de `needsSessionId` (#7212) porque a checagem de bloqueio
@@ -405,7 +427,7 @@ function isScriptInvoked(command, targetName) {
  * NOME do script fora de posição de chamada).
  */
 function matchesInjectableTarget(command) {
-  return matchedInjectableTargets(command).length > 0;
+  return matchedInjectableTargets(command, { anchored: true }).length > 0;
 }
 
 /**
@@ -422,13 +444,15 @@ function matchesInjectableTarget(command) {
  * `cleanup-merged-worktrees.ts` retornava `false` no 1º alvo e nunca olhava
  * o 2º — falso negativo, o lado errado para este guard.
  */
-function matchedInjectableTargets(command, { forChainedBlock = false } = {}) {
+function matchedInjectableTargets(command, { forChainedBlock = false, anchored = false } = {}) {
   const names = [];
+  // #13682: `anchored` (caminho da injeção) exige o executor abrindo o comando.
+  const invoked = anchored ? isScriptInvokedAtStart : isScriptInvoked;
   for (const target of SESSION_ID_TARGETS) {
     // #13671: alvo de flag opcional (`blockWhenChained: false`) injeta no
     // standalone, mas não entra na negação do encadeado.
     if (forChainedBlock && target.blockWhenChained === false) continue;
-    if (isScriptInvoked(command, target.match) && target.needsSessionId(command)) {
+    if (invoked(command, target.match) && target.needsSessionId(command)) {
       names.push(target.match);
     }
   }
@@ -579,7 +603,8 @@ export function detectChainedSessionIdRisk(command) {
 export function needsPid(command) {
   if (typeof command !== "string" || command.trim() === "") return false;
   if (isChainedCommand(command)) return false;
-  return isScriptInvoked(command, TARGET_REGISTRY) && REGISTER_SUBCOMMAND.test(command);
+  // #13682: mesma âncora da injeção de `--session-id` — `--pid` também vai pro fim.
+  return isScriptInvokedAtStart(command, TARGET_REGISTRY) && REGISTER_SUBCOMMAND.test(command);
 }
 
 /** `true` se o comando já traz `--pid` explicitamente — nunca sobrescrever. */
