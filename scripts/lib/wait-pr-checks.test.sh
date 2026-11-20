@@ -494,6 +494,45 @@ fake_clock_off
 assert_eq "sem check rodando (só fila) -> nenhum heartbeat" "0" "$(wc -l < "$HB_LOG13725" | tr -d ' ')"
 rm -f "$HB_LOG13725"
 
+# ── 18. #13726: StatusContext pendente JUNTO com CheckRun rodando ──────────
+# `queued=0 pending=2 running=1`: o caso exato que o #13702 separa. A extensão
+# de execução vale (há 1 CheckRun com runner), mas a contagem de execução é o
+# `running=1` do gate, nunca `pending - queued` = 2 (que contaria o status
+# legado). timeout=2, running_ceiling=6, sem fila: ~6 leituras, não 2.
+HB_LOG13726="$(mktemp)"
+emit_ci_wait_running() { echo "$1 $2 $3" >> "$HB_LOG13726"; }
+fake_clock_on
+check_pr_checks_once() {
+  gate_call_n >/dev/null
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #18: verdict=pending — 2 check(s) ainda não concluído(s): deploy/preview, test
+[check-pr-checks-gate] queue: queued=0 pending=2 running=1"
+  return 2
+}
+OUT18=$(CI_WAIT_HEARTBEAT_SECS=2 wait_pr_checks "18" 2 1 60 6 2>&1)
+RC18=$?
+CALLS18=$(cat "$GATE_CALLS13702")
+fake_clock_off
+assert_eq "status legado pendente + CheckRun rodando -> exit 1 (TIMEOUT de execução)" "1" "$RC18"
+if [ "$CALLS18" -ge 5 ] && [ "$CALLS18" -le 10 ]; then
+  echo "ok: CheckRun rodando ganha a extensão mesmo com status legado pendente (${CALLS18} leituras)"
+else
+  echo "FAIL: esperado ~6 leituras (teto de execução), obtido ${CALLS18}"
+  FAILED=1
+fi
+if echo "$OUT18" | grep -q "PR #18 com 1 check(s) ainda em execução"; then
+  echo "ok: TIMEOUT conta só o CheckRun (running=1), não o status legado"
+else
+  echo "FAIL: TIMEOUT deveria citar 1 check em execução — obtido: $OUT18"
+  FAILED=1
+fi
+if [ -s "$HB_LOG13726" ] && ! grep -qv "^18 .* 1$" "$HB_LOG13726"; then
+  echo "ok: heartbeat conta 1 check rodando, nunca 2"
+else
+  echo "FAIL: heartbeat com contagem errada ou ausente — $(cat "$HB_LOG13726")"
+  FAILED=1
+fi
+rm -f "$HB_LOG13726"
+
 rm -f "$FAKE_CLOCK13702" "$GATE_CALLS13702"
 
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────

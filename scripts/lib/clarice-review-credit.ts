@@ -27,9 +27,18 @@
  * casar outra menção à Clarice com o mesmo link (o box 📣 de divulgação).
  *
  * Grupos: 1 = fronteira antes da frase (início ou `. `), 2 = separador depois.
+ *
+ * Dentro da frase, antes de "revisão" e entre "revisão" e "Clarice", um `.!?`
+ * seguido de caractere que não seja espaço não encerra a frase (#13718): a
+ * marca "diar.ia.br" ou um domínio citado ficam dentro dela. Fim de frase de
+ * verdade é pontuação seguida de espaço ou quebra de linha. Também casa a
+ * variante "revisado/revisada pela Clarice" (#13718).
  */
-export const CLARICE_REVIEW_CREDIT_RE =
-  /(^|[.!?]\s+)[^.!?\n]*?\brevis[ãa]o\b[^.!?\n]*?\bClarice\b[^.!?\n(]*?\(\s*\[[^\]]*\]\(\s*https?:\/\/(?:www\.)?clarice\.ai[^)]*\)\s*\)([ \t]*,[ \t]*(?:e[ \t]+)?|[ \t]*[.!?])?[ \t]*/gim;
+const IN_SENTENCE = String.raw`(?:[^.!?\n]|[.!?](?=\S))`;
+export const CLARICE_REVIEW_CREDIT_RE = new RegExp(
+  String.raw`(^|[.!?]\s+)${IN_SENTENCE}*?\brevis(?:[ãa]o|ad[oa])\b${IN_SENTENCE}*?\bClarice\b[^.!?\n(]*?\(\s*\[[^\]]*\]\(\s*https?:\/\/(?:www\.)?clarice\.ai[^)]*\)\s*\)([ \t]*,[ \t]*(?:e[ \t]+)?|[ \t]*[.!?])?[ \t]*`,
+  "gim",
+);
 
 export interface OmitClariceCreditResult {
   markdown: string;
