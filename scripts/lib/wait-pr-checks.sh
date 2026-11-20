@@ -123,7 +123,12 @@ check_pr_checks_once() {
 # separada pelo mesmo motivo de `check_pr_checks_once` (teste sobrescreve).
 emit_ci_wait_running() {
   local pr="$1" elapsed="$2" running="$3" ed_args=() agent ed
-  agent="${WAIT_PR_CHECKS_AGENT:-overnight}"
+  # #13751: sem agente declarado não se grava — assumir "overnight" atribuía a
+  # espera do develop/continuo à rodada overnight e mascarava stall dela.
+  agent="${WAIT_PR_CHECKS_AGENT:-}"
+  if [ -z "$agent" ]; then
+    return 0
+  fi
   ed="${WAIT_PR_CHECKS_EDITION:-}"
   # O watchdog só conta eventos com agent+edição da rodada; sem env, infere
   # a edição do plan.json mais recente da rodada (checkout principal).

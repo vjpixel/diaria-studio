@@ -452,6 +452,22 @@ if echo "$OUT16" | grep -q "em execução"; then
 else
   echo "ok: TIMEOUT sem a mensagem de execução"
 fi
+# ── 16b. sem WAIT_PR_CHECKS_AGENT não grava ci_wait_running (#13751) ────────
+# emit REAL, com npx stubado: sem agente declarado nenhuma gravação.
+(
+  STUB13751="$(mktemp -d)"
+  mkdir -p "$STUB13751/bin"
+  printf '#!/bin/sh\necho called >> "%s/calls"\n' "$STUB13751" > "$STUB13751/bin/npx"
+  chmod +x "$STUB13751/bin/npx"
+  PATH="$STUB13751/bin:$PATH"
+  unset WAIT_PR_CHECKS_AGENT
+  emit_ci_wait_running 1 60 1
+  if [ -e "$STUB13751/calls" ]; then echo "FAIL: gravou ci_wait_running sem agente"; exit 1; fi
+  echo "ok: sem agente, ci_wait_running não é gravado"
+  WAIT_PR_CHECKS_AGENT=develop WAIT_PR_CHECKS_EDITION=261120 emit_ci_wait_running 1 60 1
+  if [ ! -e "$STUB13751/calls" ]; then echo "FAIL: não gravou com agente"; exit 1; fi
+  echo "ok: com agente, grava"
+) || FAILED=1
 # ── 17. heartbeat ci_wait_running (#13725) ─────────────────────────────────
 # Espera estendida (check rodando) passa do limiar de stall do watchdog; o
 # laço grava ci_wait_running sozinho a cada CI_WAIT_HEARTBEAT_SECS, sem
