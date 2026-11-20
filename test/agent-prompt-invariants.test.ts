@@ -63,6 +63,16 @@ describe("Invariantes protegidos em agent prompts (#7978)", () => {
     assert.match(content, /Noite Estrelada/i);
   });
 
+  it("writer-destaque.md e writer.md: conferência de completude contra a fonte (#13765) está presente", () => {
+    const destaque = readAgent(".claude/agents/writer-destaque.md");
+    assert.match(destaque, /Conferência de completude contra a fonte \(#13765\)/);
+    assert.match(destaque, /\*\*\(a\) Lista da fonte sai completa ou com corte declarado\.\*\*/);
+    assert.match(destaque, /\*\*\(b\) Conselho prático é o da fonte\.\*\*/);
+    assert.match(destaque, /\*\*\(c\) Número, benchmark e afirmação de empresa levam atribuição/);
+    const writer = readAgent(".claude/agents/writer.md");
+    assert.match(writer, /#13765/, "writer.md deveria espelhar a conferência de completude do writer-destaque");
+  });
+
   it("writer.md: prompt de imagem sem pixels e sem Noite Estrelada está presente", () => {
     const content = readAgent(".claude/agents/writer.md");
     assert.match(content, /pixels/i);
