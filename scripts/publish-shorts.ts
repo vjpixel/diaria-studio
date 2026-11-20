@@ -2914,12 +2914,39 @@ export async function postInstagramReelFirstComment(
     return { ok: false, uncertain: true, error, warning: `Reels publicado (${mediaId}), 1º comentário com ${error}. Confira os comentários do post antes de comentar à mão: ${message} (#13709, #13759: sem retentativa automática)` };
   } catch (e) {
     const error = (e as Error).message;
+    // #13791: sem resposta HTTP (timeout, abort, conexão caída no meio) o POST pode ter chegado à Graph.
+    if (firstCommentErrorIsUncertain(e)) {
+      return {
+        ok: false,
+        uncertain: true,
+        error: `sem resposta da Graph (${error}): o comentário pode existir`,
+        warning: `Reels publicado (${mediaId}), 1º comentário sem resposta da Graph (${error}): pode ter saído. Confira os comentários do post antes de comentar à mão: ${message} (#13709, #13791: sem retentativa automática)`,
+      };
+    }
     return {
       ok: false,
       error,
       warning: `Reels publicado (${mediaId}), 1º comentário não saiu: ${error}. Fica pendente no registro (first_comment_pending): o timer do Instagram no 300 tenta de novo; não comente à mão sem conferir o post. Texto: ${message} (#13709, #13759)`,
     };
   }
+}
+
+/** Códigos de rede em que a requisição nem saiu da máquina (o comentário não pode existir). */
+const FIRST_COMMENT_NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+
+/**
+ * Pure (#13791): a falha do POST do 1º comentário deixa o comentário incerto?
+ * Resposta HTTP com erro (`GraphResponseError`, 4xx ou 5xx) é falha que a
+ * retentativa cobre, como no #13759. Sem resposta (timeout do
+ * `AbortSignal.timeout`, abort, conexão caída depois de enviar) o pedido pode
+ * ter chegado: incerto, nunca retentado. Exceção: DNS ou conexão recusada,
+ * que provam que nada foi enviado.
+ */
+export function firstCommentErrorIsUncertain(e: unknown): boolean {
+  if (e instanceof GraphResponseError) return false;
+  const cause = (e as { cause?: { code?: unknown } } | null)?.cause;
+  const code = typeof cause?.code === "string" ? cause.code : typeof (e as { code?: unknown } | null)?.code === "string" ? (e as { code: string }).code : null;
+  return !(code && FIRST_COMMENT_NOT_SENT_CODES.has(code));
 }
 
 /**
@@ -5603,6 +5630,8 @@ async function runUpdatePublished(input: {
     items = planPublishedTextUpdates({
       entries, d1, now: new Date(), horizontalTitle, horizontalLink: horizontal?.url ?? null, only: input.only, known: knownDestinationIds(shortsCfg),
       ctaVertical: horizontal ? verticalBioCtaFromHorizontal(horizontal, d1.title) : false, // #13117/#13209: nunca no corte (horizontal null)
+      // #13781: o texto do 1º comentário, para o Reels antigo (ou postado à mão) que não tem comentário.
+      instagramFirstComment: horizontal && !horizontal.noVideo ? verticalEditionLinkText(editionVideoLink(aammdd, "instagram")) : null,
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {
@@ -6067,7 +6096,10 @@ async function mainUnlocked(): Promise<number> {
         syncCorteAgendamento(ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries, [], new Date()),
       );
     }
-    console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
+    // #13781: o Reels registrado à mão não ganha o 1º comentário sozinho; lembra o editor.
+    const firstCommentReminder = mark.destination === "instagram" && !corte ? readInstagramManualFirstCommentReminder(dir, aammdd) : null;
+    if (firstCommentReminder) console.error(`[aviso] instagram: ${firstCommentReminder}`);
+    console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}), ...(firstCommentReminder ? { first_comment_reminder: firstCommentReminder } : {}) }));
     cleanup();
     return 0;
   }
@@ -7324,6 +7356,33 @@ function instagramConfirmContext(
 }
 
 /**
+ * Pure (#13781): lembrete do 1º comentário na rota à mão do Reels
+ * (`--confirm-instagram`, `--mark instagram=URL`). A legenda do vertical com
+ * `cta_vertical` diz "link no primeiro comentário", mas só o publish pela API
+ * comenta; o registro à mão não grava `first_comment_pending` de propósito: o
+ * editor pode já ter comentado no app, e o timer comentaria de novo. `null` =
+ * a legenda não promete o comentário (sem `cta_vertical` ou edição sem vídeo).
+ */
+export function instagramManualFirstCommentReminder(input: { aammdd: string; ctaVertical: boolean; noVideo: boolean }): string | null {
+  if (!input.ctaVertical || input.noVideo) return null;
+  const text = verticalEditionLinkText(editionVideoLink(input.aammdd, "instagram"));
+  return `a legenda do vertical diz "${VERTICAL_COMMENT_CTA_LINE}" e o registro à mão não comenta (o timer do 300 só comenta o Reels que ele publica): confira os comentários do Reels e, se o link não estiver lá, comente: ${text} (#13781)`;
+}
+
+/** #13781: o lembrete acima, lendo o D1 e o horizontal da edição; leitura que falha ainda lembra. */
+export function readInstagramManualFirstCommentReminder(dir: string, aammdd: string): string | null {
+  try {
+    const reviewedPath = join(dir, "02-reviewed.md");
+    const d1 = existsSync(reviewedPath) ? parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1) : undefined;
+    const horizontal = readHorizontalVideoForShort(dir);
+    return instagramManualFirstCommentReminder({ aammdd, ctaVertical: d1 ? verticalBioCtaFromHorizontal(horizontal, d1.title) : false, noVideo: horizontal.noVideo });
+  } catch (e) {
+    const text = verticalEditionLinkText(editionVideoLink(aammdd, "instagram"));
+    return `não deu pra conferir se a legenda promete o link no 1º comentário (${(e as Error).message}): se ela diz "${VERTICAL_COMMENT_CTA_LINE}", confira os comentários do Reels e, se faltar, comente: ${text} (#13781)`;
+  }
+}
+
+/**
  * `--confirm-instagram` (#10915): depois do Share no Chrome (ou no app), acha o
  * Reels pela API (`/{ig-user}/media`, só leitura), grava a entrada `instagram`
  * e avisa se o collab ficou Pending. A confirmação vem da API, nunca da tela,
@@ -7361,8 +7420,10 @@ export async function confirmInstagram(
     }
     persist(built.entry);
     const warning = "registrado pela URL informada, sem conferir na API — confira que é o Reel desta edição";
-    console.error(`[aviso] instagram: ${warning}`);
-    console.log(JSON.stringify({ confirmed: true, id: built.entry.id, url: built.entry.url, account: "--url", warnings: [warning] }));
+    const reminder = readInstagramManualFirstCommentReminder(dir, aammdd); // #13781
+    const urlWarnings = reminder ? [warning, reminder] : [warning];
+    for (const w of urlWarnings) console.error(`[aviso] instagram: ${w}`);
+    console.log(JSON.stringify({ confirmed: true, id: built.entry.id, url: built.entry.url, account: "--url", warnings: urlWarnings }));
     return 0;
   }
   // #10978: --since inválido falha antes de qualquer chamada à API.
@@ -7435,6 +7496,8 @@ export async function confirmInstagram(
     }
   }
   persist(entry);
+  const reminder = readInstagramManualFirstCommentReminder(dir, aammdd); // #13781
+  if (reminder) warnings.push(reminder);
   for (const w of warnings) console.error(`[aviso] instagram: ${w}`);
   console.log(JSON.stringify({ confirmed: true, id: entry.id, url: entry.url ?? null, account: who, warnings }));
   return 0;

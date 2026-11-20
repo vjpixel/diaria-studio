@@ -571,7 +571,7 @@ export function interpretFirstCommentRetryOutput(exitCode: number | null, stdout
         kind: "alarm",
         key: "first-comment-stuck",
         failed: false,
-        detail: `1º comentário do Reels ${out.media_id} ${out.action === "uncertain" ? "com resposta sem id (pode existir)" : "sem tentativa sobrando"}${attempts}: ${out.error}. Texto: ${out.message}`,
+        detail: `1º comentário do Reels ${out.media_id} ${out.action === "uncertain" ? "em estado incerto (pode existir)" : "sem tentativa sobrando"}${attempts}: ${out.error}. Texto: ${out.message}`,
       };
     case "invalid":
       return { kind: "alarm", key: "first-comment-stuck", failed: false, detail: `1º comentário pendente sem retentativa possível: ${out.reason ?? "?"}` };
@@ -583,7 +583,8 @@ export function interpretFirstCommentRetryOutput(exitCode: number | null, stdout
 /** Puro (#13759): motivo do alarme para uma pendência que o timer nem tenta (esgotada, incerta, ilegível). */
 export function firstCommentStuckDetail(state: Exclude<FirstCommentRetryState, { kind: "none" | "retry" }>): string {
   if (state.kind === "invalid") return `1º comentário pendente sem retentativa possível: ${state.reason}`;
-  const what = state.kind === "uncertain" ? "com resposta sem id (pode existir)" : "sem tentativa sobrando";
+  // #13791: a marca de envio que ficou (o registro não gravou depois do POST) também é incerta.
+  const what = state.kind === "uncertain" ? (state.pending.sending ? "com uma tentativa sem resultado gravado (pode existir)" : "com resposta sem id (pode existir)") : "sem tentativa sobrando";
   return `1º comentário do Reels ${state.mediaId} ${what} (tentativa ${state.pending.attempts}): ${state.pending.error}. Texto: ${state.pending.message}`;
 }
 
@@ -650,7 +651,7 @@ export function buildInstagramTimerAlarm(input: {
   } else if (key === "first-comment-stuck") {
     lines.push(
       "O Reels está no ar e registrado; NÃO reposte.",
-      "O 1º comentário com o link por edição não sai sozinho: as tentativas acabaram, a Graph respondeu sem id (o comentário pode existir) ou o registro não permite retentar.",
+      "O 1º comentário com o link por edição não sai sozinho: as tentativas acabaram, a Graph respondeu sem id ou não respondeu, uma tentativa ficou sem resultado gravado (nos três casos o comentário pode existir, #13791) ou o registro não permite retentar.",
       "O que fazer: confira os comentários do Reels no app. Se o link não está lá, comente à mão com o texto do motivo acima.",
       "Este alarme sai uma vez por edição.",
     );

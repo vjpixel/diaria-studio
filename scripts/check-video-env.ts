@@ -36,9 +36,9 @@
  * projeto (#13103): o `main` carrega o `.env` antes das sondas.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -80,6 +80,8 @@ import {
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { assessDeepFilterProbe, deepFilterBin } from "./lib/diaria/audio-denoise.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
+import { checkBrutosLocal, defaultBrutoLocalDeps, type BrutoLocalDeps } from "./lib/diaria/video-bruto-local.ts";
+import { pickRawSource } from "./lib/diaria/video-montage.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -222,6 +224,33 @@ export function explicitDriveRoot(flag: string | undefined, env: string | undefi
   return null;
 }
 
+/**
+ * #13740: no modo local, os brutos soltos da pasta da edição (os candidatos do
+ * `transcribe`, `pickRawSource`) estão inteiros e locais? Mesmo critério do
+ * `transcribe`/`inventory` (`checkBrutosLocal`): atributo de nuvem no Windows e
+ * tamanho estável. Pasta sem bruto = ok (o bruto ainda não chegou).
+ */
+export function localBrutoProbe(dir: string, deps: BrutoLocalDeps = defaultBrutoLocalDeps(), opts: { settleMs?: number } = {}): MontageProbe {
+  let files: Array<{ name: string; size: number }>;
+  try {
+    files = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: 0 }));
+  } catch (e) {
+    return { ok: false, detail: `pasta ${dir} ilegível: ${(e as Error).message}`, fix: "esperar o Drive for desktop sincronizar a pasta da edição" };
+  }
+  const raw = pickRawSource(files);
+  if (!raw) return { ok: true, detail: "sem bruto solto ainda" };
+  const paths = raw.candidates.map((c) => join(dir, c.name).replace(/\\/g, "/"));
+  const check = checkBrutosLocal(paths, deps, opts);
+  if (check.problems.length) {
+    return {
+      ok: false,
+      detail: `bruto não está inteiro e local, o transcribe penduraria na leitura (#13740): ${check.problems.map((p) => `${basename(p.path)}: ${p.detail}`).join("; ")}`,
+      fix: "esperar a cópia ou o Drive for desktop terminar (botão direito > Disponibilizar off-line), ou copiar o bruto para uma raiz local (--drive-root)",
+    };
+  }
+  return { ok: true, detail: `${paths.length} bruto(s) inteiro(s) e local(is)${check.attributesUnread ? " (atributo de nuvem não lido: só o tamanho conferido)" : ""}` };
+}
+
 async function probeDrive(edition: string | undefined, driveRootFlag?: string): Promise<DriveProbe> {
   const explicit = explicitDriveRoot(driveRootFlag, process.env.DIARIA_VIDEO_DRIVE_ROOT);
   const root = explicit?.root ?? DEFAULT_DRIVE_ROOT;
@@ -231,7 +260,10 @@ async function probeDrive(edition: string | undefined, driveRootFlag?: string): 
     if (edition && !existsSync(join(root, edition))) {
       return { mode, bruto: null, probe: { ok: false, detail: `Drive for desktop em ${root}, sem a pasta ${edition}/`, fix: `esperar o Drive for desktop sincronizar ${edition}/ (ou rodar com --from-drive para baixar pela API)` } };
     }
-    return { mode, bruto: null, probe: { ok: true, detail: `Drive for desktop em ${root} (modo local)` } };
+    // #13740: bruto ainda copiando ou só na nuvem pendura o transcribe; o Passo 0 já diz qual.
+    const brutos = edition ? localBrutoProbe(join(root, edition)) : null;
+    if (brutos && !brutos.ok) return { mode, bruto: null, probe: brutos };
+    return { mode, bruto: null, probe: { ok: true, detail: `Drive for desktop em ${root} (modo local)${brutos ? `; ${brutos.detail}` : ""}` } };
   }
   let rootId: string | null;
   try {

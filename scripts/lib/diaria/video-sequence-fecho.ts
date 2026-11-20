@@ -16,6 +16,9 @@
  *   o `blocks --from-plan` usa);
  * - `sequenceEndingWarning`: o `build` avisa quando o último clipe falado da
  *   sequência não é de um bloco que segura o respiro.
+ *
+ * #13792: como o CTA pode ir para o fecho, `clipsHaveSpokenCta` (o aviso "sai
+ * sem CTA nenhum" do #12571) conta também o fecho com texto de CTA.
  */
 
 import type { BlockKey } from "./video-montage.ts";
@@ -41,6 +44,47 @@ export function falaDeFecho(bloco: BlockKey, texto: string): boolean {
   if (bloco.startsWith("cta_")) return true;
   if (bloco !== "comentario") return false;
   return FECHO_PATTERNS.some((re) => re.test(texto));
+}
+
+/**
+ * #13792: texto de CTA falado, o que manda para fora do vídeo (vídeo completo,
+ * canal, link, inscrição, seguir). Chamar para os comentários NÃO entra: antes
+ * do #13743 essa fala ficava no `comentario` e não contava como CTA no aviso
+ * do #12571, e mover para o fecho não pode mudar isso.
+ */
+export const CTA_TEXT_PATTERNS: readonly RegExp[] = [
+  /\bv[ií]deo\s+completo\b/i,
+  /\byoutube\b/i,
+  /\bno\s+(?:meu\s+|nosso\s+)?canal\b/i,
+  /\blink\b/i,
+  /\bse\s+inscrev|\binscreva-se\b|\bse\s+inscreve\b/i,
+  /\b(?:segue|siga)\s+(?:a|o)\s+diar\.?ia/i,
+];
+
+/** A fala é um CTA pelo texto (`CTA_TEXT_PATTERNS`). */
+export function textoDeCta(texto: string | undefined): boolean {
+  return !!texto && CTA_TEXT_PATTERNS.some((re) => re.test(texto));
+}
+
+/**
+ * #12571 + #13792: a sequência tem CTA falado. Conta o clipe de bloco `cta_*`
+ * (ou o pedaço `cta_*` de um clipe fundido) e o clipe do `fecho` cujo texto é
+ * de CTA: a proposta de blocos (#13743) passa a última fala `cta_*` para o
+ * fecho, e sem isso o build avisava "sai sem CTA nenhum" com o CTA falado.
+ * Vale também para o clipe fundido que tem o `fecho` em `parts` (#13797).
+ */
+export function clipsHaveSpokenCta(
+  clips: ReadonlyArray<{ block: string; script?: string; filler?: boolean; parts?: ReadonlyArray<{ block: string }> }>,
+  ctaBlocks: readonly string[],
+): boolean {
+  return clips.some((c) => {
+    if (c.filler) return false;
+    if (ctaBlocks.includes(c.block) || c.parts?.some((p) => ctaBlocks.includes(p.block))) return true;
+    // #13797: clipe de outro bloco fundido ao `fecho` seguinte (corte contíguo, `assembleClips`)
+    // leva o nome do 1º bloco e só tem o `fecho` em `parts`; o `script` dele junta os textos.
+    const hasFecho = c.block === "fecho" || !!c.parts?.some((p) => p.block === "fecho");
+    return hasFecho && textoDeCta(c.script);
+  });
 }
 
 /**

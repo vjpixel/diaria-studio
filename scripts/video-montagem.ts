@@ -679,6 +679,8 @@ import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { ownerFetchFromConfigFile } from "./lib/diaria/drive-owner-account.ts";
 import { archiveDriveIds, archiveEditionDrive, archiveEditionLocal, installPreviewFile, rootIdsNamed, xmlNamesWithArchive, type ArchiveFolderCache, type EditionArchiveResult } from "./lib/diaria/video-version-archive-io.ts";
 import { isOverwriteArchivedName, versionOfSequenceId, type ArchiveEntry } from "./lib/diaria/video-version-archive.ts";
+import { assertBrutosLocal } from "./lib/diaria/video-bruto-local.ts";
+import { readTextOrSyncError } from "./lib/diaria/sync-read-error.ts";
 import { gFetch, googleCredentialsPresent } from "./google-auth.ts";
 import {
   DEFAULT_DRIVE_ROOT,
@@ -714,7 +716,7 @@ import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
 import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
 import { withGpuLock, type GpuLockDeps } from "./lib/diaria/video-gpu-lock.ts";
-import { sequenceEndingWarning } from "./lib/diaria/video-sequence-fecho.ts";
+import { clipsHaveSpokenCta, sequenceEndingWarning } from "./lib/diaria/video-sequence-fecho.ts";
 import { falasSemTomada, falasSemTomadaAviso, readRoteiroFalasLista, videosForaDoBruto, videosForaDoBrutoAviso } from "./lib/diaria/video-roteiro-cobertura.ts";
 import { PROXY, cropOnProxy, proxyOutputArgs, proxySize, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
@@ -814,7 +816,8 @@ const f = (ctx: Pick<Ctx, "stateDir">, name: string) => join(ctx.stateDir, name)
 
 function readJson<T>(path: string, what: string): T {
   if (!existsSync(path)) throw new Error(missingWorkFileMessage(path, what));
-  return JSON.parse(readFileSync(path, "utf8")) as T;
+  // #13740: `UNKNOWN … read` com o Drive sincronizando sai como erro acionável, não como o erro cru do sistema.
+  return JSON.parse(readTextOrSyncError(path)) as T;
 }
 
 /** #13404: o `stateDir` da execução em curso; `--restore-conflict NOME` só alcança arquivos dele. */
@@ -1023,6 +1026,30 @@ async function fetchMarcaFile(drive: DriveSession, name: string, destDir: string
   return (await ensureCachedFile(drive.deps, found.file, destDir, log)).localPath;
 }
 
+/** Cópia de um arquivo de marca para `{raiz}/_marca/` (injetável nos testes, #13739). */
+export interface MarcaCopyDeps {
+  copy?: (src: string, dst: string) => void;
+  mkdir?: (dir: string) => void;
+}
+
+/**
+ * #13739: a vinheta (ou o som dela) achada só no caminho do config (o `I:` do
+ * Neo, fora da raiz explícita) é copiada para `{raiz}/_marca/`. Usar o caminho
+ * do config direto deixava o XML apontando para `I:`, que o `premiere_root` não
+ * troca: no Mac a vinheta abria offline, sem erro (261119, `--no-drive-api`).
+ * Devolve null com a cópia feita, ou a mensagem do erro.
+ */
+export function copyMarcaIntoRoot(src: string, dst: string, deps: MarcaCopyDeps = {}): string | null {
+  try {
+    (deps.mkdir ?? ((d: string) => mkdirSync(d, { recursive: true })))(dirname(dst));
+    (deps.copy ?? copyFileSync)(src, dst);
+    log(`[drive] ${basename(dst)} ausente em ${dirname(dst)}/: copiado de ${src} para a raiz, e o XML aponta para ${dst} (#13739)`);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
 /**
  * #13308: a vinheta no modo local com raiz explícita (`--drive-root`/
  * `DIARIA_VIDEO_DRIVE_ROOT`, o 300 em `/mnt/hd-sata/.../local-root`). O caminho
@@ -1036,7 +1063,7 @@ async function fetchMarcaFile(drive: DriveSession, name: string, destDir: string
 export async function loadVinhetaForLocalRoot(
   root: string,
   drive: DriveSession | null,
-  deps: Parameters<typeof loadVinheta>[0] = {},
+  deps: Parameters<typeof loadVinheta>[0] & MarcaCopyDeps = {},
 ): Promise<VinhetaAsset | null> {
   const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
   const exists = deps.exists ?? existsSync;
@@ -1055,7 +1082,12 @@ export async function loadVinhetaForLocalRoot(
   const at = (path: string, extra: Partial<Parameters<typeof loadVinheta>[0]> = {}) =>
     loadVinheta({ ...deps, ...extra, readConfig: () => ({ publishing: { video: { vinheta_logo: { path } } } }) });
   if (exists(atRoot)) return at(atRoot);
-  if (exists(cfg.path)) return at(cfg.path);
+  if (exists(cfg.path)) {
+    const copied = copyMarcaIntoRoot(cfg.path, atRoot, deps);
+    if (copied === null) return at(atRoot, { exists: () => true });
+    warn(`vinheta do logo ausente em ${atRoot} e a cópia de ${cfg.path} falhou (${copied}): o XML aponta para ${cfg.path}, fora da raiz ${root}, e abre com a vinheta offline onde esse caminho não existe (Mac); copie o MOV para ${atRoot} e refaça o build (#13739)`);
+    return at(cfg.path);
+  }
   if (drive) {
     try {
       log(`[drive] vinheta ${name} ausente em ${marcaDir}/ e em ${cfg.path}: baixando da _marca/ do Drive (#13308)`);
@@ -1226,7 +1258,7 @@ export async function loadVinhetaSfxForDrive(
 export async function loadVinhetaSfxForLocalRoot(
   root: string,
   drive: DriveSession | null,
-  deps: SfxLoadDeps = {},
+  deps: SfxLoadDeps & MarcaCopyDeps = {},
 ): Promise<VinhetaSfx | null> {
   const r = sfxReporter(deps);
   const exists = deps.exists ?? existsSync;
@@ -1237,7 +1269,12 @@ export async function loadVinhetaSfxForLocalRoot(
   const atRoot = `${marcaDir}/${name}`;
   const at = (path: string, extra: Partial<SfxLoadDeps> = {}) => loadVinhetaSfx({ ...deps, ...extra, readConfig: () => sfxConfigOf(path, cfg.atS) });
   if (exists(atRoot)) return at(atRoot);
-  if (exists(cfg.path)) return at(cfg.path);
+  if (exists(cfg.path)) {
+    const copied = copyMarcaIntoRoot(cfg.path, atRoot, deps);
+    if (copied === null) return at(atRoot, { exists: () => true });
+    r.warn(`som da vinheta ausente em ${atRoot} e a cópia de ${cfg.path} falhou (${copied}): o XML aponta para ${cfg.path}, fora da raiz ${root}, offline onde esse caminho não existe (Mac); copie o arquivo para ${atRoot} (#13739)`);
+    return at(cfg.path);
+  }
   if (drive) {
     try {
       log(`[drive] som da vinheta ${name} ausente em ${marcaDir}/ e em ${cfg.path}: baixando da _marca/ do Drive (#13240)`);
@@ -2510,6 +2547,8 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   // #11504: a transcrição do áudio separado é guardada antes de qualquer coisa mexer no transcript.json.
   const audioPath = fromAudio ? normPath(fromAudio.audio) : undefined;
   if (audioPath && !existsSync(audioPath)) throw new Error(`--from-audio: arquivo não encontrado: ${audioPath}`);
+  // #13740: o áudio separado é transcrito logo abaixo; confere antes, como o bruto.
+  if (audioPath && ctx.mode !== "api") assertBrutosLocal("transcribe --from-audio", [audioPath]);
   const audioTr = audioPath ? stashAudioTranscript(ctx, audioPath, fromAudio?.transcript) : null;
   let src = multiPaths ? multiPaths[0] : sourceArg ? resolveSourceList([sourceArg], ctx.driveDir)[0] : undefined;
   if (!src) {
@@ -2548,6 +2587,9 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
       throw new Error(`--ordem dada pede ${multiPaths.join(" | ")}, mas o source.json tem ${sourceIdentity(cached)}: reordenar refaz a transcrição e os tempos; rode com --force (#12559)`);
     }
   }
+  // #13740: bruto ainda copiando ou só na nuvem do Drive for desktop para aqui, nomeando o arquivo, em vez de pendurar no ffprobe.
+  // No modo API o bruto é o do cache, baixado e conferido por esta execução.
+  if (ctx.mode !== "api") assertBrutosLocal("transcribe", multiPaths ?? [srcPath]);
   let source: SourceInfo;
   // source.json refeito = todos os derivados refeitos (áudio, loudness, silêncios, transcrição).
   let redo = ctx.force;
@@ -3079,6 +3121,8 @@ function cmdInventory(ctx: Ctx, dirArg: string | undefined, editionsArg: string 
   // A fala já transcrita desta edição, por arquivo (bruto em vários arquivos), quando houver.
   const known = existsSync(f(ctx, "source.json")) && existsSync(f(ctx, "transcript.json")) ? measuredSource(ctx) : null;
   const knownWords = known?.files?.length ? nonEmptyWords(f(ctx, "transcript.json"), "transcript.json") : [];
+  // #13740: o ffprobe de um vídeo ainda copiando ou só na nuvem pendura o inventário inteiro.
+  assertBrutosLocal("inventory", raw.candidates.map(({ name }) => join(dir, name).replace(/\\/g, "/")));
   const files: InventoryFile[] = raw.candidates.map(({ name }) => {
     const path = join(dir, name).replace(/\\/g, "/");
     const json = run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path]).stdout;
@@ -5368,9 +5412,13 @@ function buildTrechosOrNull(ctx: Ctx, picked: readonly SequencePlan[], source: S
   }
 }
 
-/** #12571: sequência sem card e sem CTA falado (nenhum item de `cta_*` na ordem dela) sai sem CTA nenhum. */
+/**
+ * #12571: sequência sem card e sem CTA falado sai sem CTA nenhum. CTA falado =
+ * clipe de `cta_*` ou o fecho com texto de CTA, para onde a proposta de blocos
+ * move a última fala `cta_*` (#13743, #13792).
+ */
 export function sequenceHasSpokenCta(plan: Pick<SequencePlan, "clips">): boolean {
-  return plan.clips.some((c) => (CTA_BLOCKS as readonly string[]).includes(c.block));
+  return clipsHaveSpokenCta(plan.clips, CTA_BLOCKS);
 }
 
 /** Título do D1 em `02-reviewed.md` da edição; ausente ou sem D1 = null. */
@@ -5706,7 +5754,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     }
   }
   for (const p of picked) {
-    if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
+    if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem CTA falado em cta_* ou no fecho) (#12571, #13792)`);
     // #13743: a sequência que acaba no comentário (sem o fecho) sai seca, direto no card.
     const ending = sequenceEndingWarning(p.spec.name, p.clips, file.holdBlocks ?? ["fecho"]);
     if (ending) console.error(`[aviso] ${ending}`);

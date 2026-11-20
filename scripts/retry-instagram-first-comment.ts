@@ -11,13 +11,21 @@
  * Saída: uma linha JSON no stdout com `action`:
  *   - `none`: nada pendente (exit 0);
  *   - `commented`: o comentário saiu e o registro ganhou `first_comment_id` (exit 0);
- *   - `failed`: a tentativa falhou e foi somada ao registro (exit 1);
+ *   - `failed`: a tentativa falhou e foi somada ao registro, ou (#13797) o
+ *     registro não gravou antes de qualquer POST e a pendência segue igual,
+ *     retentável; nos dois casos o timer tenta de novo (exit 1);
  *   - `exhausted` / `uncertain` / `invalid`: não tenta; só o editor resolve (exit 1);
  *   - `dry-run`: o que faria (exit 0).
  *
  * Efeito público: posta UM comentário no Reels da edição. Lê e grava só a
  * entrada `instagram` do arquivo do registro que a contém (principal ou o do
  * timer), sob o lock do `updateShortEntry`.
+ *
+ * #13791: antes do POST grava a marca de envio (`sending` + `uncertain`, a
+ * tentativa já somada); sem ela gravada, não comenta e sai `failed` não
+ * esgotada (#13797: a pendência não mudou, o timer retenta). Se o registro não gravar
+ * o resultado depois do POST, a marca fica, a saída é `uncertain` e a rodada
+ * seguinte do timer só alarma, nunca comenta de novo.
  */
 
 import { readFileSync } from "node:fs";
@@ -37,6 +45,7 @@ import {
 import {
   applyFirstCommentAttempt,
   firstCommentRetryState,
+  markFirstCommentSending,
   INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
   type FirstCommentAttempt,
 } from "./lib/diaria/instagram-first-comment-retry.ts";
@@ -57,6 +66,8 @@ export interface RetryFirstCommentDeps {
   /** Conta autora + token; `null` com o motivo quando não há credencial. */
   resolveAuthor: () => Promise<{ token: string; apiVersion: string } | { error: string }>;
   postComment: (mediaId: string, token: string, apiVersion: string, message: string) => Promise<FirstCommentAttempt>;
+  /** Gravação da entrada sob o lock do registro; o default é `updateShortEntry` (o teste injeta a falha, #13791). */
+  updateEntry?: typeof updateShortEntry;
 }
 
 /** Só os dois arquivos com escritor conhecido; cópia de conflito do sync não é gravada aqui. */
@@ -91,12 +102,49 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
   if (!writer) return { action: "invalid", reason: `a pendência está em ${basename(pendingHit.path)}, que não é o registro principal nem o do timer (cópia de conflito?): una o registro antes` };
   if (dryRun) return { action: "dry-run", media_id: state.mediaId, message: state.pending.message, attempts: state.pending.attempts };
 
-  const author = await deps.resolveAuthor();
-  const attempt: FirstCommentAttempt = "error" in author ? { ok: false, error: `sem credencial do Instagram: ${author.error}` } : await deps.postComment(state.mediaId, author.token, author.apiVersion, state.pending.message);
-  const updated = updateShortEntry(dir, aammdd, writer, "instagram", (entry) => {
+  const update = deps.updateEntry ?? updateShortEntry;
+  const sameMedia = (entry: ShortPublishedEntry): void => {
     if (entry.id !== state.mediaId) throw new Error(`a entrada instagram de ${basename(pendingHit.path)} mudou de mídia (${state.mediaId} → ${entry.id}) no meio da retentativa`);
-    return applyFirstCommentAttempt(entry, attempt, deps.now());
-  });
+  };
+  const author = await deps.resolveAuthor();
+  let attempt: FirstCommentAttempt;
+  if ("error" in author) {
+    attempt = { ok: false, error: `sem credencial do Instagram: ${author.error}` };
+  } else {
+    // #13791: a marca vai ao registro ANTES do POST; se não gravar, nada é postado.
+    try {
+      update(dir, aammdd, writer, "instagram", (entry) => {
+        sameMedia(entry);
+        return markFirstCommentSending(entry, deps.now());
+      });
+    } catch (e) {
+      // #13797: nada foi gravado nem postado, a pendência segue retentável; a saída
+      // é `failed` não esgotada (alarme `first-comment`: o timer tenta de novo), nunca
+      // `invalid`, que o timer lê como `first-comment-stuck` ("comente à mão").
+      return notRecorded(state.mediaId, state.pending, `a marca de envio não gravou no registro (${(e as Error).message}); nada foi postado`);
+    }
+    attempt = await deps.postComment(state.mediaId, author.token, author.apiVersion, state.pending.message);
+  }
+  let updated: ShortPublishedEntry;
+  try {
+    updated = update(dir, aammdd, writer, "instagram", (entry) => {
+      sameMedia(entry);
+      return applyFirstCommentAttempt(entry, attempt, deps.now());
+    });
+  } catch (e) {
+    // Nada postado: a pendência segue como estava e retentável (#13797).
+    if ("error" in author) return notRecorded(state.mediaId, state.pending, `${attempt.ok ? "" : attempt.error}; o registro não gravou a tentativa (${(e as Error).message})`);
+    // #13791: o POST rodou e o resultado não gravou; a marca de envio fica e a próxima rodada só alarma.
+    const what = attempt.ok ? `o comentário SAIU (id ${attempt.id})` : `a tentativa falhou (${attempt.error})`;
+    return {
+      action: "uncertain",
+      media_id: state.mediaId,
+      message: state.pending.message,
+      error: `${what}, mas o registro não gravou o resultado (${(e as Error).message}): fica a marca de envio, sem retentativa automática; confira os comentários do post antes de comentar à mão (#13791)`,
+      attempts: state.pending.attempts + 1,
+      max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
+    };
+  }
   if (attempt.ok) return { action: "commented", media_id: state.mediaId, comment_id: attempt.id, attempts: state.pending.attempts + 1 };
   const attempts = updated.first_comment_pending?.attempts ?? state.pending.attempts + 1;
   return {
@@ -108,6 +156,25 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
     max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
     exhausted: attempts >= INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
     uncertain: attempt.uncertain === true,
+  };
+}
+
+/**
+ * #13797: a rodada não postou e o registro não mudou (a gravação lançou antes
+ * de qualquer efeito). A pendência continua com as mesmas tentativas e
+ * retentável, então a saída é `failed` não esgotada e não incerta, que o timer
+ * traduz no alarme `first-comment` ("o timer tenta de novo sozinho").
+ */
+function notRecorded(mediaId: string, pending: { message: string; attempts: number }, error: string): RetryFirstCommentResult {
+  return {
+    action: "failed",
+    media_id: mediaId,
+    message: pending.message,
+    error,
+    attempts: pending.attempts,
+    max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
+    exhausted: false,
+    uncertain: false,
   };
 }
 
