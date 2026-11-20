@@ -39,9 +39,15 @@ import { YOUTUBE_API_BASE, explainYouTubeUploadError, type YouTubeUploadDeps } f
  */
 export const YOUTUBE_AUDIO_MIN_BITRATE_BPS = 32_000;
 
-/** Comando da checagem sob demanda, citado no log quando o processamento não terminou. */
-export function youtubeAudioCheckCommand(videoId: string, aammdd?: string): string {
-  return `npx tsx scripts/check-youtube-audio.ts --id ${videoId}${aammdd ? ` --edition ${aammdd}` : ""}`;
+/**
+ * Comando da checagem sob demanda, citado no log quando o processamento não terminou.
+ * #13734: o vertical de um corte avulso mora em `data/cortes/{slug}/`, não na pasta da
+ * edição: com `corteSlug` o comando leva `--corte SLUG` (o `--edition {data do corte}`
+ * não acha o registro e sai `exit 2`).
+ */
+export function youtubeAudioCheckCommand(videoId: string, aammdd?: string, corteSlug?: string): string {
+  const where = corteSlug ? ` --corte ${corteSlug}` : aammdd ? ` --edition ${aammdd}` : "";
+  return `npx tsx scripts/check-youtube-audio.ts --id ${videoId}${where}`;
 }
 
 /** Resultado gravado em `audio_check`. `status` é o único discriminante. */
@@ -199,8 +205,8 @@ export async function checkYouTubeAudio(
  * `[aviso]` no degradado e na falha de leitura; `[pendente]` com o comando da
  * checagem posterior quando o processamento não terminou.
  */
-export function describeYouTubeAudioCheck(check: YouTubeAudioCheck, videoId: string, aammdd?: string): string | null {
-  const cmd = youtubeAudioCheckCommand(videoId, aammdd);
+export function describeYouTubeAudioCheck(check: YouTubeAudioCheck, videoId: string, aammdd?: string, corteSlug?: string): string | null {
+  const cmd = youtubeAudioCheckCommand(videoId, aammdd, corteSlug);
   switch (check.status) {
     case "degraded":
       return `[aviso] áudio do YouTube degradado em ${videoId}: ${check.reason} (#13403). A origem tem áudio bom? Reenvie o vídeo e confira de novo com \`${cmd}\``;

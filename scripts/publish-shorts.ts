@@ -801,6 +801,15 @@ export function assignShortsDestinationOwners(
         task: CORTE_TIMER_TASK,
         note: `o timer do 300 (${CORTE_TIMER_TASK}, de hora em hora) publica na próxima execução, até 3 h depois do horário do corte, e alarma se falhar; só com o "pode publicar" do --publish --confirm-publish (#11912, #11964)`,
       });
+    } else if (action === "skip_delegated" && ctx.corteTimer && destination === PAGE_REPOST_DESTINATION) {
+      // #13733: o repost acompanha o vídeo do perfil no timer do corte (fila do Worker com a URN gravada).
+      owners.push({
+        destination,
+        action,
+        by: "timer-300",
+        task: CORTE_TIMER_TASK,
+        note: `o timer do 300 (${CORTE_TIMER_TASK}) publica o vídeo do perfil e, na mesma execução, põe o repost da página na fila do Worker com a URN recém-gravada; alarma o editor se não conseguir (#13733)`,
+      });
     } else if (action === "skip_delegated") {
       const task = SHORTS_TIMER_TASKS[destination];
       owners.push({ destination, action, by: "timer-300", ...(task ? { task } : {}), note: `o timer do 300${task ? ` (${task})` : ""} publica no horário do vertical e alarma se não sair` });
@@ -1512,7 +1521,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     return s;
   })();
 
-  const items: ShortsPlanItem[] = destinations.map((dest) => planDestination(dest));
+  // #13733: no corte com o timer, o vídeo do perfil sai depois pelo timer do corte, que entrega o
+  // repost à fila do Worker na mesma execução (a URN só existe depois do perfil): o repost é dele.
+  const items: ShortsPlanItem[] = corteTimer && corte
+    ? delegateCorteRepostToTimer(destinations.map((dest) => planDestination(dest)), corte.slug, input.aammdd)
+    : destinations.map((dest) => planDestination(dest));
 
   function planDestination(dest: ShortDestination): ShortsPlanItem {
     if (isDestinationDone(input.published, dest.id)) {
@@ -1990,6 +2003,37 @@ export const PROFILE_REPOST_CHAIN_MAX_MS = 12 * 60 * 60_000;
 
 export const PROFILE_REPOST_CHAIN_STALE_DETAIL =
   "passaram mais de 12 h do horário planejado do perfil e ele não saiu: o repost fica sem dono automático, falta intervenção do editor (publicar o perfil e registrar com --mark linkedin_profile=URL)";
+
+/**
+ * #13733: texto do repost da página que fica com o timer do corte. Na rodada
+ * manual do corte o vídeo do perfil ainda não existe (sai depois, pelo timer),
+ * então a URN que a fila do Worker pede (#11121) também não; antes disto o
+ * repost ficava "guiado" com dono `agent` e nenhuma task, e não saía.
+ */
+export function corteRepostTimerDetail(slug: string, aammdd: string): string {
+  return (
+    `repost pela página diar.ia.br: sai pelo timer do 300 (${CORTE_TIMER_TASK}) na mesma execução que publica o vídeo do perfil, ` +
+    `pela fila do Worker com a URN recém-gravada, e o timer alarma se não conseguir (#13733). Não repostar à mão (sairia em dobro). ` +
+    `Se o perfil sair por outro caminho (registrado com --mark), o repost vai à fila do Worker com: ${corteBaseCommand(slug)} --only ${PAGE_REPOST_DESTINATION} --publish ${publishConfirmSuffix(aammdd)}`
+  );
+}
+
+/**
+ * Pure (#13733): no corte com `corte_via_timer`, o repost guiado cujo vídeo do
+ * perfil está `pending_schedule` (o timer do corte é o dono do perfil) vira
+ * `skip_delegated`: o timer publica o perfil e, na mesma execução, põe o repost
+ * na fila do Worker (`shorts-corte-timer.ts`, `corteTimerCompanions`). Fora desse
+ * par, os itens voltam iguais.
+ */
+export function delegateCorteRepostToTimer(items: ShortsPlanItem[], slug: string, aammdd: string): ShortsPlanItem[] {
+  const profileToTimer = items.some((i) => i.destination === "linkedin_profile" && i.action === "pending_schedule");
+  if (!profileToTimer) return items;
+  return items.map((i) =>
+    i.destination === PAGE_REPOST_DESTINATION && i.action === "guided"
+      ? { destination: i.destination, mode: "api", action: "skip_delegated", detail: corteRepostTimerDetail(slug, aammdd) }
+      : i,
+  );
+}
 
 /** Pure (#12761): o perfil passou do teto da cadeia de re-agendamento do repost? */
 export function isProfileRepostChainStale(plannedProfileAt: string, now: Date): boolean {
@@ -3918,6 +3962,8 @@ export async function publishYouTubeShort(input: {
    * da edição e o dia acusariam o Short da EDIÇÃO do mesmo dia.
    */
   matchTitleOnly?: boolean;
+  /** #13734: corte avulso — o comando da checagem do áudio sai com `--corte SLUG`, não `--edition`. */
+  corteSlug?: string;
 }): Promise<PublishOutcome> {
   const missing = missingYouTubeCredentials(input.env);
   if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
@@ -3979,7 +4025,7 @@ export async function publishYouTubeShort(input: {
   if (result.rereadError) warnings.push(`releitura do estado falhou: ${result.rereadError}`);
   // #13403: a linha do guard vira aviso do destino (o CLI a imprime como `[aviso] youtube_shorts: ...`).
   // O alarme do degradado sai no CLI, depois de o registro estar gravado (`alarmYouTubeAudioDegraded`).
-  const audioLine = result.audio_check ? describeYouTubeAudioCheck(result.audio_check, result.videoId, input.aammdd) : null;
+  const audioLine = result.audio_check ? describeYouTubeAudioCheck(result.audio_check, result.videoId, input.aammdd, input.corteSlug) : null;
   if (audioLine) warnings.push(audioLine.replace(/^\[(aviso|pendente)\] /, ""));
   const failed = failedUploadStatus(result.rereadStatus);
   // #11547: `thumbnails.set` vale para Short (medido em 28/10/2026); falha só vira registro.
@@ -6635,6 +6681,7 @@ async function mainUnlocked(): Promise<number> {
           // #12279: o Short antigo de uma troca (private sem agendamento no canal) nunca conta como "já está lá".
           ignoreVideoIds: replacedYouTubeIds(dir),
           matchTitleOnly: corte !== null,
+          ...(corte ? { corteSlug: corte.slug } : {}),
           // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
           onBeforeBytes: (marker) => {
             published = persist(videoHash ? { ...marker, video_sha256: videoHash } : marker);
@@ -6858,7 +6905,7 @@ async function mainUnlocked(): Promise<number> {
     if (item.destination === "youtube_shorts") {
       await alarmYouTubeAudioDegraded(
         entry.audio_check,
-        { videoId: entry.id, url: entry.url ?? youtubeShortUrl(entry.id), label: `vertical (Short) da edição ${aammdd}` },
+        { videoId: entry.id, url: entry.url ?? youtubeShortUrl(entry.id), label: corte ? `vertical (Short) do corte ${corte.slug}` : `vertical (Short) da edição ${aammdd}` },
         notifyAudioDegraded,
         (l) => console.error(l),
       );
