@@ -1210,6 +1210,15 @@ export interface ItemFraming {
    * gravada difere do texto do roteiro (sem o id, casa pelo texto, #13140).
    */
   fala?: string;
+  /**
+   * Trechos do bruto (s, na linha do tempo do `source.json`) tirados de dentro
+   * do respiro da vinheta depois deste item (#13735): o aceno, o olhar para
+   * fora. Só vale no último item do bloco de abertura (o que ganha o
+   * respiro); o respiro vira pedaços com corte e troca de zoom, como numa
+   * pausa removida, e se estende no bruto pelo tanto tirado, até a palavra
+   * seguinte (`breathSkipCut`).
+   */
+  breathSkip?: Interval[];
 }
 
 /** Ponto do rosto em fração do quadro do bruto (já desespelhado). */
@@ -1650,6 +1659,15 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing do item precisa só de faceX, eyeY e (opcional) mouthY, entre 0 e 1 (fração do quadro; a caneca é a do framing do arquivo)`);
         errors.push(...validateSourceFit(it, label));
         if (it.fala !== undefined && (typeof it.fala !== "string" || !it.fala.trim())) errors.push(`${label}: fala precisa ser o id de uma fala do roteiro-falas.json (H6)`);
+        if (it.breathSkip !== undefined) {
+          // #13735: trechos tirados do respiro da vinheta.
+          if (!Array.isArray(it.breathSkip) || it.breathSkip.length === 0) errors.push(`${label}: breathSkip precisa ser uma lista de { start, end } (s do bruto)`);
+          else it.breathSkip.forEach((x, k) => {
+            if (!isObj(x) || !isNum(x.start) || !isNum(x.end) || x.start < 0 || !(x.end > x.start) || Object.keys(x).some((f) => f !== "start" && f !== "end")) {
+              errors.push(`${label}: breathSkip[${k}] precisa ser { start, end } em segundos do bruto, com end > start ≥ 0`);
+            }
+          });
+        }
       });
     }
   }
@@ -1961,6 +1979,7 @@ const scopeOf = (it: ItemScope & ItemFraming): ItemScope & ItemFraming => ({
   ...(it.falaId !== undefined ? { falaId: it.falaId } : {}),
   ...(it.fit !== undefined ? { fit: it.fit } : {}),
   ...(it.fala !== undefined ? { fala: it.fala } : {}),
+  ...(it.breathSkip ? { breathSkip: it.breathSkip.map((x) => ({ start: x.start, end: x.end })) } : {}),
 });
 
 export interface ResolveOptions {
@@ -2646,6 +2665,59 @@ export function pickVinhetaFiller(inp: FillerPickInput): FillerPick | null {
 }
 
 /**
+ * O respiro da vinheta com trechos tirados (`breathSkip`, #13735): de `from`
+ * (fim da última palavra) até `limit` (a palavra seguinte do bruto, ou o fim),
+ * pedindo `breath` segundos de respiro. O que se tira estende o respiro no
+ * bruto pelo mesmo tanto, até `limit`, para a vinheta não perder o espaço.
+ * `firstEnd` é onde o clipe com a última palavra termina; `pieces`, os pedaços
+ * seguintes (cada um vira um clipe, com corte e troca de zoom); `removed`, o
+ * total que saiu (inclui pedaço menor que `minClip`, descartado em `short`);
+ * `outside`, trecho pedido que não cai no respiro (ignorado).
+ */
+export function breathSkipCut(
+  from: number,
+  limit: number,
+  breath: number,
+  skips: readonly Interval[],
+  minClip: number,
+): { end: number; firstEnd: number; pieces: Interval[]; removed: number; used: Interval[]; short: Interval[]; outside: Interval[] } {
+  const merged: Interval[] = [];
+  for (const s of [...skips].sort((a, b) => a.start - b.start)) {
+    const last = merged[merged.length - 1];
+    if (last && s.start <= last.end + 1e-9) last.end = Math.max(last.end, s.end);
+    else merged.push({ start: s.start, end: s.end });
+  }
+  const clampTo = (end: number) => merged
+    .map((s) => ({ start: Math.max(s.start, from), end: Math.min(s.end, end) }))
+    .filter((s) => s.end - s.start > 1e-9);
+  let end = Math.max(from, Math.min(limit, from + breath));
+  let used = clampTo(end);
+  // Tirar um trecho estende o respiro, e a extensão pode alcançar o trecho seguinte: até estabilizar.
+  for (let k = 0; k <= merged.length; k++) {
+    const removed = used.reduce((a, s) => a + (s.end - s.start), 0);
+    const next = Math.max(from, Math.min(limit, from + breath + removed));
+    if (next <= end + 1e-9) break;
+    end = next;
+    used = clampTo(end);
+  }
+  const outside = merged.filter((s) => s.end <= from + 1e-9 || s.start >= end - 1e-9);
+  const segs: Interval[] = [];
+  let cursor = from;
+  for (const u of used) {
+    segs.push({ start: cursor, end: u.start });
+    cursor = u.end;
+  }
+  segs.push({ start: cursor, end });
+  const firstEnd = segs[0].end;
+  const rest = segs.slice(1).filter((s) => s.end - s.start > 1e-9);
+  const pieces = rest.filter((s) => s.end - s.start >= minClip - 1e-9);
+  const short = rest.filter((s) => s.end - s.start < minClip - 1e-9);
+  const removed = used.reduce((a, s) => a + (s.end - s.start), 0) + short.reduce((a, s) => a + (s.end - s.start), 0);
+  const r = (xs: Interval[]) => xs.map((s) => ({ start: round3(s.start), end: round3(s.end) }));
+  return { end: round3(end), firstEnd: round3(firstEnd), pieces: r(pieces), removed: round3(removed), used: r(used), short: r(short), outside: r(outside) };
+}
+
+/**
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
  * (`speechParts`); trechos contíguos no bruto (itens do roteiro escritos frase a
  * frase sobre uma fala contínua) se fundem e a escala alterna base/punch-in a
@@ -2743,22 +2815,46 @@ export function buildSequencePlan(
       // #12101: respiro sem fala depois do bloco (a vinheta do logo entra dentro dele), tirado do próprio bruto.
       const breath = opts.breathAfter?.[key];
       let breathFiller: { srcIn: number; srcOut: number } | null = null;
-      if (breath && !holding && n === mine.length - 1 && parts.length) {
+      // #13735: pedaços do respiro depois dos trechos tirados (`breathSkip`).
+      let breathPieces: Interval[] = [];
+      const breathHere = !!breath && !holding && n === mine.length - 1 && parts.length > 0;
+      if (it.breathSkip && !breathHere) {
+        warnings.push(`${spec.name}: ${key}[${idx}] tem breathSkip, mas o respiro da vinheta nesta versão não fica depois dele (só vale no último item do bloco de abertura); ignorado (#13735)`);
+      }
+      if (breath && breathHere) {
         const lastPart = parts[parts.length - 1];
         const from = it.lastWordEnd ?? lastPart.end;
-        const end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
-        lastPart.end = round3(end);
-        if (end - from < breath - VINHETA_BREATH_SLACK_S - 1e-9) {
+        let end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
+        let got = end - from;
+        if (it.breathSkip) {
+          const fileEnd = bounds ? bounds[file].end : Number.POSITIVE_INFINITY;
+          const cut = breathSkipCut(from, Math.min(it.holdLimit, source.durationS, fileEnd), breath, it.breathSkip, minClip);
+          for (const o of cut.outside) warnings.push(`${spec.name}: breathSkip ${o.start.toFixed(2)}–${o.end.toFixed(2)} s fora do respiro depois de ${key} (${from.toFixed(2)}–${cut.end.toFixed(2)} s); ignorado (#13735)`);
+          if (cut.used.length) {
+            end = cut.end;
+            breathPieces = cut.pieces;
+            got = Math.max(0, cut.end - from - cut.removed);
+            lastPart.end = round3(Math.max(lastPart.start, cut.firstEnd));
+            premises.push(
+              `${spec.name}: respiro depois de ${key} sem ${cut.used.map((u) => `${u.start.toFixed(2)}–${u.end.toFixed(2)} s`).join(", ")} (breathSkip, #13735): ` +
+                `${1 + cut.pieces.length} pedaço(s) com corte e troca de zoom, ${got.toFixed(2)} s de respiro (do bruto até ${cut.end.toFixed(2)} s)` +
+                (cut.short.length ? `; pedaço(s) abaixo de ${minClip} s descartado(s): ${cut.short.map((s) => `${s.start.toFixed(2)}–${s.end.toFixed(2)} s`).join(", ")}` : "") +
+                `; conferir os cortes no Premiere`,
+            );
+          } else lastPart.end = round3(end);
+        } else lastPart.end = round3(end);
+        if (got < breath - VINHETA_BREATH_SLACK_S - 1e-9) {
           // #13204: a vinheta nunca cobre fala. Sem silêncio bastante no bruto logo depois do bloco
           // (a fala seguinte vem colada), a pausa vem do silêncio mais próximo do mesmo arquivo:
           // fora de todo item resolvido (nunca fala de outro trecho) e nunca menor que um clipe.
-          const need = round3(Math.max(minClip, breath - Math.max(0, end - from)));
+          const need = round3(Math.max(minClip, breath - Math.max(0, got)));
           const fb = bounds ? bounds[file] : { start: 0, end: source.durationS };
           const all = Object.values(resolved).flatMap((xs) => xs ?? []);
           // #13239 item 3: fora do pré-roll, sem som, com o rosto parado, depois da fala, e só então o mais perto.
           const pick = pickVinhetaFiller({
             silences, need, from, file: fb, pad: 0.05,
-            busy: all.map((x) => x.interval),
+            // #13735: o trecho tirado do respiro e o próprio respiro nunca voltam como pausa.
+            busy: [...all.map((x) => x.interval), ...(it.breathSkip ? [{ start: from, end }] : [])],
             ...(opts.fillerEnergy ? { energy: opts.fillerEnergy } : {}),
             framings: all.flatMap((x) => (x.framing ? [{ interval: x.interval, framing: x.framing }] : [])),
             ...(it.framing ? { itemFraming: it.framing } : {}),
@@ -2766,20 +2862,21 @@ export function buildSequencePlan(
           if (pick) {
             breathFiller = { srcIn: pick.srcIn, srcOut: pick.srcOut };
             premises.push(
-              `${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s no bruto (a fala seguinte vem logo); ` +
+              `${spec.name}: respiro depois de ${key} de ${Math.max(0, got).toFixed(2)} s no bruto (a fala seguinte vem logo); ` +
                 `pausa completada com ${need.toFixed(2)} s de silêncio do bruto em ${breathFiller.srcIn.toFixed(2)}–${breathFiller.srcOut.toFixed(2)} s, para a vinheta não cobrir a fala (#13204): ` +
                 `${pick.why.join(", ")}; conferir esse trecho no Premiere (#13239)`,
             );
           } else {
             warnings.push(
-              `${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto, e nenhum silêncio de ${need.toFixed(2)} s no arquivo); ` +
+              `${spec.name}: respiro depois de ${key} de ${Math.max(0, got).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto, e nenhum silêncio de ${need.toFixed(2)} s no arquivo); ` +
                 `a vinheta pode cobrir o começo da fala seguinte (#12101, #13204)`,
             );
           }
         }
       }
       // Pedaço curto na ponta do item, sem silêncio ali, fica: emenda no item vizinho (#11753). O do fecho é medido depois do respiro.
-      const edge = parts.map((p, k) => !(holding && k === parts.length - 1) && touchesEdge(p, itStart, itEnd));
+      // #13735: o clipe com a última palavra, encurtado pelo trecho tirado do respiro, fica mesmo curto (os pedaços seguintes continuam o respiro).
+      const edge = parts.map((p, k) => (breathPieces.length > 0 && k === parts.length - 1) || (!(holding && k === parts.length - 1) && touchesEdge(p, itStart, itEnd)));
       const kept = parts.map((p, k) => ({ ...p, keepScale: keep.has(k), edge: edge[k] })).filter((p) => p.end - p.start >= minClip - 1e-9 || p.edge);
       if (kept.length === 0) {
         dropped.push(`${key}[${idx}]: some no corte (fala abaixo de ${minClip} s depois de tirar os silêncios)`);
@@ -2790,6 +2887,17 @@ export function buildSequencePlan(
         raws.push({
           block: key, srcIn: p.start, srcOut: p.end, script: it.text,
           ...(p.keepScale ? { keepScale: true as const } : {}),
+          ...(it.framing ? { framing: { ...it.framing } } : {}),
+          ...(bounds ? { file } : {}),
+          ...(it.fit !== undefined ? { fit: it.fit } : {}),
+        });
+      }
+      // #13735: o resto do respiro, depois de cada trecho tirado. São `filler` (pausa da vinheta, sem fala): o refino
+      // dos cortes não mexe nas bordas escolhidas, `titleBreathS` os conta no respiro, e cada um é corte de verdade,
+      // com troca de zoom (sem `keepScale`), como numa pausa removida.
+      for (const p of breathPieces) {
+        raws.push({
+          block: key, srcIn: p.start, srcOut: p.end, filler: true,
           ...(it.framing ? { framing: { ...it.framing } } : {}),
           ...(bounds ? { file } : {}),
           ...(it.fit !== undefined ? { fit: it.fit } : {}),
