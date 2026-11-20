@@ -71,6 +71,7 @@ export function textoDeCta(texto: string | undefined): boolean {
  * (ou o pedaço `cta_*` de um clipe fundido) e o clipe do `fecho` cujo texto é
  * de CTA: a proposta de blocos (#13743) passa a última fala `cta_*` para o
  * fecho, e sem isso o build avisava "sai sem CTA nenhum" com o CTA falado.
+ * Vale também para o clipe fundido que tem o `fecho` em `parts` (#13797).
  */
 export function clipsHaveSpokenCta(
   clips: ReadonlyArray<{ block: string; script?: string; filler?: boolean; parts?: ReadonlyArray<{ block: string }> }>,
@@ -79,7 +80,10 @@ export function clipsHaveSpokenCta(
   return clips.some((c) => {
     if (c.filler) return false;
     if (ctaBlocks.includes(c.block) || c.parts?.some((p) => ctaBlocks.includes(p.block))) return true;
-    return c.block === "fecho" && textoDeCta(c.script);
+    // #13797: clipe de outro bloco fundido ao `fecho` seguinte (corte contíguo, `assembleClips`)
+    // leva o nome do 1º bloco e só tem o `fecho` em `parts`; o `script` dele junta os textos.
+    const hasFecho = c.block === "fecho" || !!c.parts?.some((p) => p.block === "fecho");
+    return hasFecho && textoDeCta(c.script);
   });
 }
 

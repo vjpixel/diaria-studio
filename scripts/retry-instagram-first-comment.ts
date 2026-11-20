@@ -11,7 +11,9 @@
  * Saída: uma linha JSON no stdout com `action`:
  *   - `none`: nada pendente (exit 0);
  *   - `commented`: o comentário saiu e o registro ganhou `first_comment_id` (exit 0);
- *   - `failed`: a tentativa falhou e foi somada ao registro (exit 1);
+ *   - `failed`: a tentativa falhou e foi somada ao registro, ou (#13797) o
+ *     registro não gravou antes de qualquer POST e a pendência segue igual,
+ *     retentável; nos dois casos o timer tenta de novo (exit 1);
  *   - `exhausted` / `uncertain` / `invalid`: não tenta; só o editor resolve (exit 1);
  *   - `dry-run`: o que faria (exit 0).
  *
@@ -20,7 +22,8 @@
  * timer), sob o lock do `updateShortEntry`.
  *
  * #13791: antes do POST grava a marca de envio (`sending` + `uncertain`, a
- * tentativa já somada); sem ela gravada, não comenta. Se o registro não gravar
+ * tentativa já somada); sem ela gravada, não comenta e sai `failed` não
+ * esgotada (#13797: a pendência não mudou, o timer retenta). Se o registro não gravar
  * o resultado depois do POST, a marca fica, a saída é `uncertain` e a rodada
  * seguinte do timer só alarma, nunca comenta de novo.
  */
@@ -108,11 +111,18 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
   if ("error" in author) {
     attempt = { ok: false, error: `sem credencial do Instagram: ${author.error}` };
   } else {
-    // #13791: a marca vai ao registro ANTES do POST; se não gravar, lança e nada é postado.
-    update(dir, aammdd, writer, "instagram", (entry) => {
-      sameMedia(entry);
-      return markFirstCommentSending(entry, deps.now());
-    });
+    // #13791: a marca vai ao registro ANTES do POST; se não gravar, nada é postado.
+    try {
+      update(dir, aammdd, writer, "instagram", (entry) => {
+        sameMedia(entry);
+        return markFirstCommentSending(entry, deps.now());
+      });
+    } catch (e) {
+      // #13797: nada foi gravado nem postado, a pendência segue retentável; a saída
+      // é `failed` não esgotada (alarme `first-comment`: o timer tenta de novo), nunca
+      // `invalid`, que o timer lê como `first-comment-stuck` ("comente à mão").
+      return notRecorded(state.mediaId, state.pending, `a marca de envio não gravou no registro (${(e as Error).message}); nada foi postado`);
+    }
     attempt = await deps.postComment(state.mediaId, author.token, author.apiVersion, state.pending.message);
   }
   let updated: ShortPublishedEntry;
@@ -122,7 +132,8 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
       return applyFirstCommentAttempt(entry, attempt, deps.now());
     });
   } catch (e) {
-    if ("error" in author) throw e; // nada postado: a pendência segue como estava
+    // Nada postado: a pendência segue como estava e retentável (#13797).
+    if ("error" in author) return notRecorded(state.mediaId, state.pending, `${attempt.ok ? "" : attempt.error}; o registro não gravou a tentativa (${(e as Error).message})`);
     // #13791: o POST rodou e o resultado não gravou; a marca de envio fica e a próxima rodada só alarma.
     const what = attempt.ok ? `o comentário SAIU (id ${attempt.id})` : `a tentativa falhou (${attempt.error})`;
     return {
@@ -145,6 +156,25 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
     max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
     exhausted: attempts >= INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
     uncertain: attempt.uncertain === true,
+  };
+}
+
+/**
+ * #13797: a rodada não postou e o registro não mudou (a gravação lançou antes
+ * de qualquer efeito). A pendência continua com as mesmas tentativas e
+ * retentável, então a saída é `failed` não esgotada e não incerta, que o timer
+ * traduz no alarme `first-comment` ("o timer tenta de novo sozinho").
+ */
+function notRecorded(mediaId: string, pending: { message: string; attempts: number }, error: string): RetryFirstCommentResult {
+  return {
+    action: "failed",
+    media_id: mediaId,
+    message: pending.message,
+    error,
+    attempts: pending.attempts,
+    max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
+    exhausted: false,
+    uncertain: false,
   };
 }
 
