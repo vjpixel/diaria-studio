@@ -18,6 +18,13 @@
  * Sucesso troca a pendência pelo `first_comment_id`. Resposta sem id
  * (`uncertain`) nunca retenta: o comentário pode existir e sairia duplicado.
  *
+ * #13791: a retentativa grava a marca `sending` (com `uncertain` e a tentativa
+ * já somada) ANTES do POST. Se o registro não gravar depois do POST (lock
+ * ocupado, EBUSY do Drive sincronizando, processo morto), a marca fica e a
+ * pendência vale como incerta: a hora seguinte alarma em vez de comentar de
+ * novo. Sem a marca, o comentário saía e o registro seguia com a tentativa
+ * antiga, e o timer publicava outro comentário a cada hora, até 4.
+ *
  * Miolo puro: nada aqui chama a Graph API nem grava arquivo.
  */
 
@@ -51,6 +58,7 @@ export function parseFirstCommentPending(raw: unknown): InstagramFirstCommentPen
     attempts: p.attempts,
     last_attempt_at: typeof p.last_attempt_at === "string" ? p.last_attempt_at : "",
     ...(p.uncertain === true ? { uncertain: true } : {}),
+    ...(p.sending === true ? { sending: true } : {}),
   };
 }
 
@@ -71,7 +79,8 @@ export function firstCommentRetryState(
   if (entry.status !== "published" || !entry.url) {
     return { kind: "invalid", reason: `o Reels não está registrado como publicado com permalink (status ${entry.status}${entry.url ? "" : ", sem url"}): o id ${entry.id} pode não ser o da mídia` };
   }
-  if (pending.uncertain) return { kind: "uncertain", mediaId: entry.id, pending };
+  // #13791: marca de envio sem resultado gravado = o comentário pode existir.
+  if (pending.uncertain || pending.sending) return { kind: "uncertain", mediaId: entry.id, pending };
   if (pending.attempts >= INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS) return { kind: "exhausted", mediaId: entry.id, pending };
   return { kind: "retry", mediaId: entry.id, pending };
 }
@@ -85,8 +94,34 @@ export function initialFirstCommentPending(message: string, attempt: Extract<Fir
 }
 
 /**
+ * Pure (#13791): a entrada com a marca de envio, gravada ANTES do POST. A
+ * tentativa já conta (`attempts + 1`) e a pendência fica incerta: se nada
+ * gravar depois, o timer alarma (`first-comment-stuck`) e nunca comenta de novo.
+ */
+export function markFirstCommentSending(entry: ShortPublishedEntry, now: Date): ShortPublishedEntry {
+  const pending = parseFirstCommentPending(entry.first_comment_pending);
+  if (!pending) throw new Error("a entrada instagram não tem first_comment_pending legível: nada a retentar");
+  if (pending.sending || pending.uncertain) throw new Error("a pendência do 1º comentário já está incerta (resposta sem id ou envio sem resultado gravado): não comenta de novo");
+  const at = now.toISOString();
+  const attempts = pending.attempts + 1;
+  return {
+    ...entry,
+    first_comment_pending: {
+      ...pending,
+      error: `tentativa ${attempts} em envio desde ${at} sem resultado gravado: o comentário PODE ter saído (o registro não gravou depois do POST, ou o processo caiu); confira os comentários do post. Erro anterior: ${pending.error || "?"} (#13791)`,
+      attempts,
+      last_attempt_at: at,
+      uncertain: true,
+      sending: true,
+    },
+  };
+}
+
+/**
  * Pure: a entrada depois de uma tentativa. Sucesso grava `first_comment_id` e
- * apaga a pendência; falha soma a tentativa e guarda o erro.
+ * apaga a pendência; falha soma a tentativa e guarda o erro. Depois da marca
+ * de envio (#13791) a tentativa já foi somada: a falha só troca o erro e tira
+ * a marca (e o `uncertain` que veio com ela, salvo resposta sem id de novo).
  */
 export function applyFirstCommentAttempt(entry: ShortPublishedEntry, result: FirstCommentAttempt, now: Date): ShortPublishedEntry {
   const pending = parseFirstCommentPending(entry.first_comment_pending);
@@ -95,14 +130,15 @@ export function applyFirstCommentAttempt(entry: ShortPublishedEntry, result: Fir
     const { first_comment_pending: _drop, ...rest } = entry;
     return { ...rest, first_comment_id: result.id };
   }
+  const { sending: wasSending, uncertain: wasUncertain, ...base } = pending;
   return {
     ...entry,
     first_comment_pending: {
-      ...pending,
+      ...base,
       error: result.error,
-      attempts: pending.attempts + 1,
+      attempts: wasSending ? pending.attempts : pending.attempts + 1,
       last_attempt_at: now.toISOString(),
-      ...(result.uncertain ? { uncertain: true } : {}),
+      ...(result.uncertain || (wasUncertain && !wasSending) ? { uncertain: true } : {}),
     },
   };
 }
