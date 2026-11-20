@@ -159,7 +159,7 @@ describe("#13362 chamada sem link do TikTok não menciona ninguém", () => {
     assert.doesNotThrow(() => assertTikTokNoBioCtaLine(TIKTOK_NO_BIO_CTA_LINE));
   });
   it("a legenda do TikTok com a chamada não leva @diariabr", () => {
-    const { caption } = buildTikTokPost({ d1, ctaVertical: true, tiktokBioLink: false });
+    const { caption } = buildTikTokPost({ d1, ctaVertical: true });
     assert.match(caption, /Vídeo completo no canal diar\.ia\.br do YouTube/);
     assert.doesNotMatch(caption, /@diariabr/);
   });

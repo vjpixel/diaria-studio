@@ -555,6 +555,21 @@ export const LATEST_VIDEO_BIO_UTM = {
 export const LATEST_VIDEO_BIO_UTM_SOURCES = ["tiktok", "instagram", "threads"] as const;
 
 /**
+ * #13709: link por edição `diar.ia.br/video/{AAMMDD}` até o horizontal DA
+ * edição, no 1º comentário do Reels (Instagram) e na resposta ao próprio post
+ * (Threads). Montado por `editionVideoLink`
+ * (`scripts/lib/shared/latest-video-redirect.ts`). `medium` próprio, fora do
+ * `bio`, para o clique do comentário não colapsar com o do link da bio.
+ */
+export const EDITION_VIDEO_UTM = {
+  medium: "comentario",
+  campaign: "video-horizontal",
+} as const;
+
+/** Redes que levam o link por edição (o `utm_source` de cada uma). */
+export const EDITION_VIDEO_UTM_SOURCES = ["instagram", "threads"] as const;
+
+/**
  * #13323: links pro YouTube da seção "Vídeos" da home e da página
  * `diar.ia.br/videos` ("Ver no YouTube" de cada card e o botão "Inscreva-se
  * no canal"). `source`/`medium` iguais aos da página da edição
@@ -1063,6 +1078,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     originFile: "scripts/lib/shared/latest-video-redirect.ts",
     description:
       "Link fixo da bio (diar.ia.br/video, #12735): redireciona ao horizontal mais recente no YouTube; o editor cola o link na bio da rede. Leva ao YouTube, não ao cadastro.",
+    status: "ativo" as const,
+    noSignupExpected: true as const,
+  })),
+  ...EDITION_VIDEO_UTM_SOURCES.map((source) => ({
+    id: `${source}-comentario-video-horizontal-13709`,
+    label: `${source} — link por edição para o vídeo horizontal`,
+    source,
+    medium: EDITION_VIDEO_UTM.medium,
+    campaignPattern: EDITION_VIDEO_UTM.campaign,
+    originFile: "scripts/lib/shared/latest-video-redirect.ts",
+    description:
+      "Link por edição (diar.ia.br/video/{AAMMDD}, #13709) no 1º comentário do Reels (Instagram) ou na resposta ao próprio post (Threads): redireciona ao horizontal DA edição no YouTube. Leva ao YouTube, não ao cadastro.",
     status: "ativo" as const,
     noSignupExpected: true as const,
   })),

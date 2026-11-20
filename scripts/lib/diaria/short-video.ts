@@ -343,13 +343,29 @@ export function loadDiariaProfiles(raw: unknown): DiariaProfiles {
  */
 export const REELS_NEWSLETTER_SENTENCE = "A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos.";
 
-/** #13117: linha da legenda que aponta o vertical para o horizontal pela bio. */
-export const VERTICAL_BIO_CTA_LINE = "Vídeo completo: link na bio";
+/**
+ * #13709 (decisão do editor no briefing do overnight 261120, opção b): a
+ * legenda do vertical deixou de dizer "link na bio" (era a linha do #13117,
+ * "Vídeo completo: link na bio"): o editor recusou `diar.ia.br/video` na bio,
+ * que leva sempre ao horizontal mais recente. O link por edição
+ * (`diar.ia.br/video/{AAMMDD}`, `editionVideoLink`) vai no 1º comentário do
+ * Reels no Instagram e na resposta ao próprio post no Threads, e a legenda
+ * aponta para lá.
+ */
+export const VERTICAL_COMMENT_CTA_LINE = "Vídeo completo: link no primeiro comentário";
+/** #13709: a linha do Threads, que publica o link numa resposta ao próprio post (#13209). */
+export const VERTICAL_REPLY_CTA_LINE = "Vídeo completo: link na resposta";
+/** #13709: texto do 1º comentário (Instagram) e da resposta (Threads) com o link por edição. */
+export function verticalEditionLinkText(link: string): string {
+  return `Vídeo completo: ${link}`;
+}
 
 /**
- * #13274: chamada do TikTok enquanto a bio não tem link (conta pessoal sem o
- * campo Site; o TikTok libera a partir de 1.000 seguidores ou em conta
- * comercial). Não depende de link: aponta o canal do YouTube pelo nome. Curta
+ * #13274: chamada do TikTok sem link (conta pessoal sem o campo Site; o
+ * TikTok libera a partir de 1.000 seguidores ou em conta comercial). Não
+ * depende de link: aponta o canal do YouTube pelo nome. #13709: é a única
+ * chamada do TikTok (o editor decidiu TikTok sem link; a flag
+ * `publishing.shorts.tiktok_bio_link` saiu). Curta
  * de propósito (teto de 80 caracteres, `TIKTOK_NO_BIO_CTA_MAX_CHARS`, conferido
  * em `buildTikTokPost`).
  * #13362: sem `@`. Numa legenda do TikTok, `@handle` é menção a um usuário do
@@ -379,7 +395,9 @@ export function normalizeVideoTitle(title: string): string {
 
 /**
  * #13209 (decisão do editor no briefing do overnight 261116): a legenda do
- * vertical só leva "Vídeo completo: link na bio" quando o vertical tem o
+ * vertical só leva a chamada ao vídeo completo (#13709: "link no primeiro
+ * comentário" no Instagram, "link na resposta" no Threads, a chamada sem link
+ * no TikTok) quando o vertical tem o
  * MESMO título de um horizontal publicado. O link da bio leva ao horizontal
  * da edição; com outro título, o leitor não reconhece o vídeo que a linha
  * prometeu. Além disso segue valendo a fala `cta_vertical` do roteiro
@@ -432,15 +450,17 @@ export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo lin
  * sem link no texto). Exceção (#12465): na página VJ Pixel e no perfil
  * pessoal, `follow` acrescenta o perfil da diar.ia.br. #12735: no Facebook
  * (páginas e perfil pessoal), `horizontalLink` acrescenta o horizontal da
- * edição depois do gancho; no Instagram é ignorado (o caminho é a bio).
+ * edição depois do gancho; no Instagram é ignorado (#13709: o link por edição
+ * vai no 1º comentário, e `ctaVertical` põe a linha que aponta para ele).
  */
 export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null; ctaVertical?: boolean }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
-  // #12735: o horizontal da edição só no Facebook (a legenda do Reels no Instagram não tem link clicável; lá o caminho é a bio).
-  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : input.ctaVertical ? VERTICAL_BIO_CTA_LINE : "";
+  // #12735: o horizontal da edição só no Facebook (a legenda do Reels no Instagram não tem link clicável).
+  // #13709: no Instagram o link por edição vai no 1º comentário, e a legenda aponta para ele.
+  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : input.ctaVertical ? VERTICAL_COMMENT_CTA_LINE : "";
   // #12465: `follow` = `diariaFollowLine(destino)`, só nas contas pessoais (página VJ Pixel, perfil pessoal).
   const caption = [title, hook, link, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
@@ -459,18 +479,15 @@ export const TIKTOK_TITLE_MAX_CHARS = 90;
  * do Facebook (título, gancho, a frase da newsletter e as hashtags), sem link:
  * a legenda do TikTok não tem link clicável e o link da bio ainda não existe
  * (conta pessoal, sem o campo Site). Sem `#Shorts`, que é só do YouTube.
- * #13209: "Vídeo completo: link na bio" só entra com `ctaVertical` (já
- * resolvido por `resolveVerticalBioCta`) E `tiktokBioLink` (a flag
- * `publishing.shorts.tiktok_bio_link`, default desligada): sem o campo Site,
- * a linha prometeria um link que a bio não tem.
- * #13274: com a flag desligada (e as mesmas condições de `ctaVertical`), a
- * legenda leva `TIKTOK_NO_BIO_CTA_LINE`, chamada que não depende de link.
+ * #13274/#13709: com `ctaVertical` (já resolvido por `resolveVerticalBioCta`)
+ * a legenda leva `TIKTOK_NO_BIO_CTA_LINE`, chamada que não depende de link.
+ * TikTok fica sem link (decisão do editor, #13709): nunca "link na bio".
  */
-export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean; tiktokBioLink?: boolean }): { caption: string; title: string } {
+export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean }): { caption: string; title: string } {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const bioLine = input.ctaVertical !== true ? "" : input.tiktokBioLink === true ? VERTICAL_BIO_CTA_LINE : TIKTOK_NO_BIO_CTA_LINE;
+  const bioLine = input.ctaVertical === true ? TIKTOK_NO_BIO_CTA_LINE : "";
   // #13362: o teto da chamada sem link e a ausência de menção (`@`) valem para a linha que de fato sai.
   if (bioLine === TIKTOK_NO_BIO_CTA_LINE) assertTikTokNoBioCtaLine(bioLine);
   const caption = [title, hook, bioLine, REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
@@ -503,21 +520,23 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  * #12735: `horizontalLink` (o `05-video-url.txt` da edição) volta a pôr o
  * horizontal no texto do LinkedIn e do X (`shortHorizontalLinkLine`), depois
  * do gancho; no X ele nunca é cortado (sai o gancho antes). O Threads ignora
- * o link: lá o caminho é a bio (`shortHorizontalRoute`).
+ * o link no corpo: lá o link por edição vai numa resposta ao próprio post
+ * (#13709, `shortHorizontalRoute`), e `ctaVertical` põe a linha que aponta
+ * para ela.
  */
 export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null; ctaVertical?: boolean }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const follow = input.follow ?? "";
-  // #12735: o horizontal da edição entra no LinkedIn e no X; o Threads pessoal segue sem link (o caminho é a bio).
+  // #12735: o horizontal da edição entra no LinkedIn e no X; o Threads pessoal segue sem link no corpo (#13709: o link por edição vai na resposta).
   const link = input.platform === "threads" ? "" : shortHorizontalLinkLine(input.horizontalLink);
   if (input.platform === "linkedin") {
     const text = [title, hook, link, follow, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
-  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", [input.ctaVertical ? VERTICAL_BIO_CTA_LINE : "", follow].filter(Boolean).join("\n\n"));
+  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", [input.ctaVertical ? VERTICAL_REPLY_CTA_LINE : "", follow].filter(Boolean).join("\n\n"));
   return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", [link, follow].filter(Boolean).join("\n\n"));
 }
 
@@ -531,21 +550,28 @@ export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: S
  *   - `caption`: LinkedIn pessoal, X, páginas do Facebook e perfil pessoal do
  *     Facebook levam `Assista no YouTube: https://youtu.be/{id}` lido de
  *     `_internal/05-video-url.txt`;
- *   - `bio`: TikTok, Instagram e Threads pessoal não têm link clicável na
- *     legenda (Threads por decisão anterior, #11617); o caminho é o link da
- *     bio, `diar.ia.br/video?utm_source={rede}` (Worker do apex, sempre o
- *     horizontal mais recente). A troca da bio é passo manual do editor;
  *   - `related_video`: o YouTube Shorts leva ao horizontal pelo vídeo
  *     relacionado (#10811); link na descrição de Short não é clicável (#10831);
  *   - `repost`: o repost da página do LinkedIn herda o texto do perfil.
+ *
+ * #13709 (decisão do editor no briefing do overnight 261120, opção b): o
+ * caminho `bio` (o link fixo `diar.ia.br/video` na bio, sempre o horizontal
+ * mais recente) saiu. No lugar:
+ *   - `comment`: Instagram, o link por edição `diar.ia.br/video/{AAMMDD}` no
+ *     1º comentário do Reels;
+ *   - `reply`: Threads pessoal, o mesmo link numa resposta ao próprio post
+ *     (#13209);
+ *   - `none`: TikTok, sem link (a legenda cita o canal do YouTube, #13274).
  */
-export type ShortHorizontalRoute = "caption" | "bio" | "related_video" | "repost";
+export type ShortHorizontalRoute = "caption" | "comment" | "reply" | "none" | "related_video" | "repost";
 
 /** Destino → caminho até o horizontal (`facebook:{slug}` vale para toda página). */
 export function shortHorizontalRoute(destination: string): ShortHorizontalRoute {
   if (destination === "youtube_shorts") return "related_video";
   if (destination === "linkedin_page_repost") return "repost";
-  if (destination === "tiktok" || destination === "instagram" || destination === "threads_profile") return "bio";
+  if (destination === "instagram") return "comment";
+  if (destination === "threads_profile") return "reply";
+  if (destination === "tiktok") return "none";
   return "caption";
 }
 
@@ -671,13 +697,6 @@ export interface ShortsConfig {
   tiktok: boolean;
   /** #11515: canal TikTok na Buffer (`list_channels`, org "My Organization"). Obrigatório com `tiktok: true`. */
   tiktokBufferChannelId: string | null;
-  /**
-   * #13209 (premissa do briefing do overnight 261116): a bio do TikTok tem o
-   * link do horizontal (`publishing.shorts.tiktok_bio_link`). A conta é
-   * pessoal e não tinha o campo Site, então a legenda do TikTok só leva
-   * "Vídeo completo: link na bio" com esta flag ligada. Ausente = `false`.
-   */
-  tiktokBioLink?: boolean;
   /**
    * #11795: os destinos do corte avulso que a API não agenda (`linkedin_profile`,
    * `threads_profile`, `instagram`) saem pelo timer do 300
@@ -839,7 +858,6 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
     tiktok,
     tiktokBufferChannelId: tiktokChannel,
-    tiktokBioLink: optionalBool(raw, "tiktok_bio_link", false), // #13209: default desligado
     corteViaTimer: optionalBool(raw, "corte_via_timer", DEFAULT_SHORTS_CONFIG.corteViaTimer),
     diariaProfiles: loadDiariaProfiles(raw.diaria_profiles),
   };
@@ -920,6 +938,8 @@ export interface ShortPublishedEntry {
   video_sha256?: string;
   /** #13403: o áudio registrado pelo YouTube depois do upload (só `youtube_shorts`). */
   audio_check?: YouTubeAudioCheck;
+  /** #13709: id do 1º comentário do Reels com o link por edição (só `instagram`, pela API). */
+  first_comment_id?: string;
 }
 
 export interface ShortsPublishedFile {

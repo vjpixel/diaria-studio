@@ -303,7 +303,9 @@ import {
   buildYouTubeShortMetadata,
   resolveShortHorizontalTitle,
   resolveVerticalBioCta,
-  VERTICAL_BIO_CTA_LINE,
+  VERTICAL_COMMENT_CTA_LINE,
+  VERTICAL_REPLY_CTA_LINE,
+  verticalEditionLinkText,
   TIKTOK_NO_BIO_CTA_LINE,
   DIARIA_YOUTUBE_CHANNEL_URL,
   firstSentence,
@@ -358,8 +360,8 @@ import {
   notifyYouTubeAudioDegraded,
   type YouTubeAudioAlarmFn,
 } from "./lib/diaria/youtube-audio-check.ts";
-import { latestVideoBioLink, type LatestVideoBioNetwork } from "./lib/shared/latest-video-redirect.ts";
-import { describeLatestVideoOutcome, pollKvFromEnv, readEditionHorizontalUrl, updateLatestVideoRedirect } from "./set-latest-video-redirect.ts";
+import { editionVideoLink } from "./lib/shared/latest-video-redirect.ts";
+import { describeEditionVideoOutcome, describeLatestVideoOutcome, pollKvFromEnv, readEditionHorizontalUrl, updateEditionVideoRedirect, updateLatestVideoRedirect } from "./set-latest-video-redirect.ts";
 import {
   instagramTimerScopeError,
   linkedinTimerScopeError,
@@ -646,16 +648,20 @@ export interface ShortHorizontalLinkPlan {
   route: ShortHorizontalRoute;
   link: string | null;
   note: string;
-  /** #13117: resposta ao post do Threads, corpo continua sem URL. */
+  /** #13117: resposta ao post do Threads, corpo continua sem URL. #13709: leva o link por edição. */
   replyText?: string;
+  /** #13709: 1º comentário do Reels no Instagram, com o link por edição. */
+  commentText?: string;
 }
 
 /**
  * Pure (#12735): o caminho até o horizontal de cada destino do plano.
  * `horizontalUrl` = o `05-video-url.txt` da edição (`null` = ainda sem link,
- * ou edição sem vídeo: `noVideo`).
+ * ou edição sem vídeo: `noVideo`). #13709: `aammdd` monta o link por edição
+ * (`diar.ia.br/video/{AAMMDD}`) do Instagram (1º comentário) e do Threads
+ * (resposta); o TikTok fica sem link.
  */
-export function planShortHorizontalLinks(destinations: readonly string[], horizontalUrl: string | null, noVideo: boolean): Record<string, ShortHorizontalLinkPlan> {
+export function planShortHorizontalLinks(destinations: readonly string[], horizontalUrl: string | null, noVideo: boolean, aammdd: string): Record<string, ShortHorizontalLinkPlan> {
   const out: Record<string, ShortHorizontalLinkPlan> = {};
   for (const id of destinations) {
     const route = shortHorizontalRoute(id);
@@ -663,9 +669,20 @@ export function planShortHorizontalLinks(destinations: readonly string[], horizo
       out[id] = horizontalUrl
         ? { route, link: horizontalUrl, note: "na legenda (05-video-url.txt)" }
         : { route, link: null, note: noVideo ? "edição marcada sem vídeo: legenda sem link" : `${D1_VIDEO_URL_FILE} ausente: legenda sem link (rode depois do horizontal)` };
-    } else if (route === "bio") {
-      const network: LatestVideoBioNetwork = id === "threads_profile" ? "threads" : (id as "tiktok" | "instagram");
-      out[id] = { route, link: latestVideoBioLink(network), note: "link da bio (passo manual do editor na rede): sempre o horizontal mais recente; a legenda não tem link clicável" };
+    } else if (route === "comment" || route === "reply") {
+      // #13709: link por edição; o Worker do apex resolve o horizontal DESTA edição no clique.
+      const link = editionVideoLink(aammdd, id === "threads_profile" ? "threads" : "instagram");
+      out[id] = noVideo
+        ? { route, link: null, note: "edição marcada sem vídeo: sem link por edição" }
+        : {
+            route,
+            link,
+            note: route === "comment"
+              ? "link por edição no 1º comentário do Reels (a legenda não tem link clicável)"
+              : "link por edição numa resposta ao próprio post (o corpo segue sem URL)",
+          };
+    } else if (route === "none") {
+      out[id] = { route, link: null, note: "TikTok sem link (#13709): a legenda não tem link clicável e a bio não leva ao horizontal" };
     } else if (route === "related_video") {
       out[id] = { route, link: null, note: "vídeo relacionado do Short (#10811); link na descrição de Short não é clicável (#10831)" };
     } else {
@@ -1270,7 +1287,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         : bioCta.reason === "titulo-diferente"
           ? "o título do vertical difere do horizontal publicado e o roteiro não marca o vertical 1 como do horizontal (porVideo.vertical1.pertenceAoHorizontal, #13280)"
           : "sem horizontal publicado nesta edição (registro do upload)";
-    premises.push(`legenda do vertical sem "${VERTICAL_BIO_CTA_LINE}": ${motivo} (#13209)`);
+    premises.push(`legenda do vertical sem a chamada ao vídeo completo ("${VERTICAL_COMMENT_CTA_LINE}" / "${VERTICAL_REPLY_CTA_LINE}"), sem 1º comentário nem resposta: ${motivo} (#13209, #13709)`);
   }
   if (!corte && input.horizontalVideo?.roteiroWarning) warnings.push(input.horizontalVideo.roteiroWarning);
   const horizontalLink = corte || input.horizontalVideo?.noVideo ? null : (input.horizontalVideo?.url ?? null);
@@ -1444,7 +1461,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       platform,
       d1: d1In,
       follow: diariaFollowLine(platform === "linkedin" ? "linkedin_profile" : platform === "threads" ? "threads_profile" : "x", cfg.diariaProfiles),
-      horizontalLink, ctaVertical, // #13117: Threads aponta para a bio
+      horizontalLink, ctaVertical, // #13117/#13709: Threads aponta para a resposta com o link por edição
     });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
@@ -1655,7 +1672,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       }
       let post: { caption: string; title: string };
       try {
-        post = buildTikTokPost({ d1: d1In, ctaVertical, tiktokBioLink: cfg.tiktokBioLink === true }); // #13209
+        post = buildTikTokPost({ d1: d1In, ctaVertical }); // #13209, #13709: TikTok sem link
       } catch (e) {
         warnings.push(`tiktok: ${(e as Error).message}`);
         return { destination: dest.id, mode: "guided", action: "skip_invalid", detail: (e as Error).message };
@@ -1884,23 +1901,30 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   );
   const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
   // #12735: o dry-run mostra, por destino, o link do horizontal que o vertical usa.
-  const horizontalLinks = corte ? undefined : planShortHorizontalLinks(destinations.map((d) => d.id), horizontalLink, input.horizontalVideo?.noVideo ?? false);
+  const horizontalLinks = corte ? undefined : planShortHorizontalLinks(destinations.map((d) => d.id), horizontalLink, input.horizontalVideo?.noVideo ?? false, input.aammdd);
   // #13209: o aviso de horizontal ausente segue a FALA (o vídeo promete o
   // completo); a linha da bio e a resposta do Threads seguem a linha resolvida.
   if (horizontalLinks && ctaFala && !horizontalLink) {
     for (const id of Object.keys(horizontalLinks)) warnings.push(`${id}: roteiro com cta_vertical, mas falta horizontal desta edição (${D1_VIDEO_URL_FILE}); confira também o vídeo relacionado do Short (#13117)`);
   }
+  // #13709: sem link da bio. Instagram leva o link por edição no 1º comentário,
+  // Threads numa resposta ao próprio post, TikTok a chamada sem link.
   if (horizontalLinks && ctaVertical) {
     for (const [id, h] of Object.entries(horizontalLinks)) {
-      if (id === "tiktok" && cfg.tiktokBioLink !== true) {
-        h.note += `; legenda sem a linha da bio (publishing.shorts.tiktok_bio_link desligada, #13209); chamada sem link: ${TIKTOK_NO_BIO_CTA_LINE} (#13274)`;
-      } else if (h.route === "bio") {
-        h.note += `; legenda obrigatória: ${VERTICAL_BIO_CTA_LINE}`;
-        warnings.push(`${id}: bio NÃO conferida. Abra o perfil usado para publicar, confira o campo Site com ${h.link}, toque no link e confirme que abre o horizontal desta edição. Se o campo Site não existir (TikTok), habilite-o antes de confiar na chamada (#13117).`);
-      }
-      if (id === "threads_profile") {
-        h.note += `; resposta ao próprio post: ${horizontalLink ?? "FALTA LINK DO HORIZONTAL"}`;
-        if (horizontalLink) h.replyText = `Vídeo completo: ${horizontalLink}`;
+      if (h.route === "none") {
+        h.note += `; chamada sem link: ${TIKTOK_NO_BIO_CTA_LINE} (#13274)`;
+      } else if (h.route === "comment" && h.link) {
+        h.commentText = verticalEditionLinkText(h.link);
+        h.note += `; legenda: ${VERTICAL_COMMENT_CTA_LINE}; 1º comentário: ${h.commentText}`;
+        // O comentário sai pelo publish da API (timer do 300 ou rodada com --now). Fila do Worker
+        // (o Worker recusa first_comment com REELS) e rota à mão não comentam: passo do editor.
+        const ig = items.find((i) => i.destination === id);
+        if (ig && (ig.action === "enqueue" || ig.action === "guided")) {
+          warnings.push(`${id}: o 1º comentário NÃO sai sozinho nesta rota (${ig.action === "enqueue" ? "fila do Worker, que não comenta Reels" : "postagem à mão"}). Depois do Reels no ar, comente: ${h.commentText} (#13709)`);
+        }
+      } else if (h.route === "reply" && h.link) {
+        h.replyText = verticalEditionLinkText(h.link);
+        h.note += `; legenda: ${VERTICAL_REPLY_CTA_LINE}; resposta ao próprio post: ${h.replyText}`;
       }
     }
   }
@@ -2751,8 +2775,12 @@ export async function publishInstagramReel(
   caption: string,
   collaborators: string[] = [],
   cover?: ReelCoverUpload,
-  /** `beforePublish`: devolve o registro de outro processo (não publica) ou null; lançar também não publica. */
-  opts: { beforePublish?: () => ShortPublishedEntry | null | Promise<ShortPublishedEntry | null> } = {},
+  /**
+   * `beforePublish`: devolve o registro de outro processo (não publica) ou null; lançar também não publica.
+   * `firstComment` (#13709): texto do 1º comentário com o link por edição, postado logo depois do
+   * `media_publish` (fail-soft: o Reels já saiu; falha vira aviso, nunca republica).
+   */
+  opts: { beforePublish?: () => ShortPublishedEntry | null | Promise<ShortPublishedEntry | null>; firstComment?: string | null } = {},
 ): Promise<PublishOutcome> {
   const coverUrl = reelCoverUrl(cover);
   const file = Buffer.isBuffer(source) ? source : null;
@@ -2843,13 +2871,44 @@ export async function publishInstagramReel(
     deps.log(`[aviso] instagram: permalink indisponível (${(e as Error).message}) — o id ${pub.id} identifica o Reels`);
   }
   const warnings = collaborators.length ? await checkInstagramCollaborators(deps, pub.id, token, apiVersion, collaborators) : [];
+  const comment = opts.firstComment ? await postInstagramReelFirstComment(deps, pub.id, token, apiVersion, opts.firstComment) : null;
+  if (comment && !comment.ok) warnings.push(comment.warning);
   return {
     entry: withCoverRecord(
-      { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() },
+      {
+        destination: "instagram",
+        status: "published",
+        id: pub.id,
+        url,
+        scheduled_at: null,
+        at: deps.now().toISOString(),
+        ...(comment?.ok ? { first_comment_id: comment.id } : {}), // #13709
+      },
       reelCoverRecord(cover), // #11547, #11679
     ),
     ...(warnings.length ? { warnings } : {}),
   };
+}
+
+/**
+ * #13709: 1º comentário do Reels com o link por edição (`diar.ia.br/video/{AAMMDD}`),
+ * `POST /{ig-media-id}/comments` (mesmo endpoint do 4º post, #11724; exige
+ * `instagram_manage_comments` no token). Nunca lança: o Reels já está no ar.
+ */
+export async function postInstagramReelFirstComment(
+  deps: GraphDeps,
+  mediaId: string,
+  token: string,
+  apiVersion: string,
+  message: string,
+): Promise<{ ok: true; id: string } | { ok: false; warning: string }> {
+  try {
+    const res = await graphPost(deps, `${mediaId}/comments`, { message, access_token: token }, apiVersion);
+    if (res && typeof res.id === "string" && res.id) return { ok: true, id: res.id };
+    return { ok: false, warning: `Reels publicado (${mediaId}), 1º comentário sem id na resposta: ${JSON.stringify(res).slice(0, 200)}. Confira os comentários do post antes de comentar à mão: ${message} (#13709)` };
+  } catch (e) {
+    return { ok: false, warning: `Reels publicado (${mediaId}), 1º comentário não saiu: ${(e as Error).message}. Comente à mão (sem republicar o vídeo): ${message} (#13709)` };
+  }
 }
 
 /**
@@ -5233,7 +5292,6 @@ async function runUpdateScheduled(input: {
       entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
       horizontalLink: horizontal?.url ?? null, // #12735
       ctaVertical: horizontal ? verticalBioCtaFromHorizontal(horizontal, d1.title) : false, // #13117/#13209: nunca no corte (horizontal null)
-      tiktokBioLink: shortsCfg.tiktokBioLink === true, // #13209
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {
@@ -6413,7 +6471,19 @@ async function mainUnlocked(): Promise<number> {
     try {
       const kvEnv = pollKvFromEnv();
       if (!kvEnv.kv) console.error(`[aviso] diar.ia.br/video não atualizado: ${kvEnv.reason} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
-      else console.error(`[ok] ${describeLatestVideoOutcome(await updateLatestVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))} (#12735)`);
+      else {
+        try {
+          console.error(`[ok] ${describeLatestVideoOutcome(await updateLatestVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))} (#12735)`);
+        } catch (e) {
+          console.error(`[aviso] diar.ia.br/video não atualizado: ${(e as Error).message} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
+        }
+        // #13709: o link por edição do 1º comentário (Instagram) e da resposta (Threads), independente do mais recente.
+        try {
+          console.error(`[ok] ${describeEditionVideoOutcome(aammdd, await updateEditionVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))}`);
+        } catch (e) {
+          console.error(`[aviso] diar.ia.br/video/${aammdd} não atualizado: ${(e as Error).message} — o link do 1º comentário cai na lista do canal; rode set-latest-video-redirect.ts ${aammdd} --apply (#13709)`);
+        }
+      }
     } catch (e) {
       console.error(`[aviso] diar.ia.br/video não atualizado: ${(e as Error).message} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
     }
@@ -6766,7 +6836,10 @@ async function mainUnlocked(): Promise<number> {
             published = fresh;
           });
           const beforePublish = accountGate ? instagramTimerBeforePublish({ local: localRecheck, gate: accountGate, onAlready: onRecheckAlready }) : localRecheck;
-          return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, { beforePublish });
+          return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, {
+            beforePublish,
+            firstComment: plan.horizontalLinks?.instagram?.commentText ?? null, // #13709
+          });
         };
         if (instagramAccountGateApplies(writer, corte !== null)) {
           // #11265: o timer confere a conta antes — um Share feito por fora sem

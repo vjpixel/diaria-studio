@@ -31,6 +31,7 @@ import {
   LATEST_VIDEO_KV_KEY,
   buildLatestVideoTarget,
   latestVideoBioLink,
+  editionVideoLink,
   latestVideoClickCounterKey,
   latestVideoClickSource,
   parseLatestVideoRecord,
@@ -95,9 +96,12 @@ const base = {
 const byDest = (p: ReturnType<typeof planShortsPublish>) => Object.fromEntries(p.items.map((i) => [i.destination, i])) as Record<string, any>;
 
 describe("#12735 legenda: horizontal da edição onde a rede aceita link", () => {
-  it("rota por destino: legenda, bio, vídeo relacionado e repost", () => {
+  it("rota por destino: legenda, comentário, resposta, sem link, vídeo relacionado e repost", () => {
     for (const d of ["linkedin_profile", "x", "facebook:diaria", "facebook:vjpixel", "facebook_profile"]) assert.equal(shortHorizontalRoute(d), "caption", d);
-    for (const d of ["tiktok", "instagram", "threads_profile"]) assert.equal(shortHorizontalRoute(d), "bio", d);
+    // #13709: sem link da bio — Instagram no 1º comentário, Threads na resposta, TikTok sem link.
+    assert.equal(shortHorizontalRoute("instagram"), "comment");
+    assert.equal(shortHorizontalRoute("threads_profile"), "reply");
+    assert.equal(shortHorizontalRoute("tiktok"), "none");
     assert.equal(shortHorizontalRoute("youtube_shorts"), "related_video");
     assert.equal(shortHorizontalRoute("linkedin_page_repost"), "repost");
     assert.equal(shortHorizontalLinkLine(null), "");
@@ -121,7 +125,7 @@ describe("#12735 legenda: horizontal da edição onde a rede aceita link", () =>
     assert.ok(computeTwitterWeightedLength(t) <= TWITTER_CHAR_LIMIT);
   });
 
-  it("Reels: Facebook leva o link, Instagram não (o caminho lá é a bio)", () => {
+  it("Reels: Facebook leva o link, Instagram não (o caminho lá é o 1º comentário, #13709)", () => {
     assert.ok(buildReelsCaption({ platform: "facebook", d1: D1, horizontalLink: URL_H }).includes(LINE));
     assert.ok(!buildReelsCaption({ platform: "instagram", d1: D1, horizontalLink: URL_H }).includes("youtu"));
   });
@@ -143,12 +147,15 @@ describe("#12735 legenda: horizontal da edição onde a rede aceita link", () =>
     assert.deepEqual(Object.keys(h).sort(), plan.items.map((i) => i.destination).sort(), "um registro por destino do plano");
     assert.equal(h["linkedin_profile"].link, URL_H);
     assert.equal(h["x"].route, "caption");
-    assert.equal(h["tiktok"].link, latestVideoBioLink("tiktok"));
-    assert.equal(h["instagram"].link, latestVideoBioLink("instagram"));
-    assert.equal(h["threads_profile"].link, latestVideoBioLink("threads"));
+    // #13709: link por edição no Instagram (comentário) e no Threads (resposta); TikTok sem link.
+    assert.equal(h["tiktok"].link, null);
+    assert.equal(h["tiktok"].route, "none");
+    assert.equal(h["instagram"].link, editionVideoLink("261022", "instagram"));
+    assert.equal(h["threads_profile"].link, editionVideoLink("261022", "threads"));
     assert.equal(h["youtube_shorts"].route, "related_video");
     assert.equal(h["youtube_shorts"].link, null);
-    assert.ok(plan.premises.some((s) => s.startsWith("caminho até o horizontal (tiktok): bio https://diar.ia.br/video?utm_source=tiktok")));
+    assert.ok(plan.premises.some((s) => s.startsWith("caminho até o horizontal (instagram): comment https://diar.ia.br/video/261022?utm_source=instagram")));
+    assert.ok(!plan.premises.some((s) => s.includes("diar.ia.br/video?")), "nenhum destino usa o link fixo da bio");
   });
 
   it("sem 05-video-url.txt: legenda sem link e a nota diz por quê; edição sem vídeo idem", () => {
@@ -162,7 +169,7 @@ describe("#12735 legenda: horizontal da edição onde a rede aceita link", () =>
   });
 
   it("planShortHorizontalLinks: o repost herda o link do perfil", () => {
-    assert.equal(planShortHorizontalLinks(["linkedin_page_repost"], URL_H, false)["linkedin_page_repost"].link, URL_H);
+    assert.equal(planShortHorizontalLinks(["linkedin_page_repost"], URL_H, false, "261022")["linkedin_page_repost"].link, URL_H);
   });
 
   it("--update-scheduled mantém o link na legenda do Facebook e do X", () => {
@@ -328,26 +335,36 @@ describe("#12735 diar.ia.br/video: registro e redirect", () => {
 
 
 describe("#13117 chamada falada até o horizontal", () => {
-  // #13209: a linha só entra com o mesmo título do horizontal publicado; o TikTok, só com tiktok_bio_link.
-  const withTikTokBio = { ...base, config: { publishing: { shorts: { ...base.config.publishing.shorts, tiktok_bio_link: true } } } };
-  it("cta_vertical exige linha na bio e resposta Threads sem URL no corpo", () => {
-    const plan = planShortsPublish({ ...withTikTokBio, horizontalVideo: { recordTitle: D1.title, noVideo: false, url: URL_H, ctaVertical: true } });
+  // #13209: a chamada só entra com o mesmo título do horizontal publicado.
+  // #13709: nunca "link na bio"; Instagram aponta para o 1º comentário, Threads para a resposta, TikTok sem link.
+  it("cta_vertical: legenda aponta para comentário/resposta com o link por edição, sem URL no corpo e sem 'link na bio'", () => {
+    const plan = planShortsPublish({ ...base, horizontalVideo: { recordTitle: D1.title, noVideo: false, url: URL_H, ctaVertical: true } });
     const items = byDest(plan);
-    const ig = planShortsPublish({ ...withTikTokBio, only: ["instagram"], writer: "instagram-timer", horizontalVideo: { recordTitle: D1.title, noVideo: false, url: URL_H, ctaVertical: true } });
+    const ig = planShortsPublish({ ...base, only: ["instagram"], writer: "instagram-timer", horizontalVideo: { recordTitle: D1.title, noVideo: false, url: URL_H, ctaVertical: true } });
     items.instagram = byDest(ig).instagram;
+    const expected: Record<string, RegExp> = {
+      instagram: /Vídeo completo: link no primeiro comentário/,
+      threads_profile: /Vídeo completo: link na resposta/,
+      tiktok: /Vídeo completo no canal diar\.ia\.br do YouTube/,
+    };
     for (const id of ["instagram", "tiktok", "threads_profile"]) {
       const text = items[id].caption ?? items[id].text;
-      assert.match(text, /Vídeo completo: link na bio/, JSON.stringify(items[id]));
+      assert.match(text, expected[id], JSON.stringify(items[id]));
+      assert.doesNotMatch(text, /link na bio/);
       assert.ok(!text.includes(URL_H));
-      assert.ok(plan.warnings.some(w => w.includes(`${id}: bio NÃO conferida`) && w.includes(`utm_source=${id === "threads_profile" ? "threads" : id}`)));
+      assert.ok(!text.includes("diar.ia.br/video"), "o link vai no comentário/resposta, nunca no corpo");
     }
-    assert.equal(plan.horizontalLinks?.threads_profile.replyText, `Vídeo completo: ${URL_H}`);
+    assert.ok(!plan.warnings.some((w) => /bio NÃO conferida/.test(w)), "o aviso da bio saiu");
+    assert.equal(plan.horizontalLinks?.threads_profile.replyText, `Vídeo completo: ${editionVideoLink("261022", "threads")}`);
+    assert.equal(ig.horizontalLinks?.instagram.commentText, `Vídeo completo: ${editionVideoLink("261022", "instagram")}`);
+    assert.equal(plan.horizontalLinks?.tiktok.link, null);
   });
 
   it("sem CTA preserva legenda e não planeja resposta; CTA sem horizontal avisa por destino", () => {
     const old = planShortsPublish({ ...base, horizontalVideo: { recordTitle: null, noVideo: false, url: URL_H } });
     assert.equal(old.horizontalLinks?.threads_profile.replyText, undefined);
-    assert.doesNotMatch(byDest(old).threads_profile.caption, /Vídeo completo: link na bio/);
+    assert.equal(old.horizontalLinks?.instagram.commentText, undefined);
+    assert.doesNotMatch(byDest(old).threads_profile.caption, /Vídeo completo: link na resposta/);
     const missing = planShortsPublish({ ...base, horizontalVideo: { recordTitle: null, noVideo: true, ctaVertical: true } });
     for (const id of Object.keys(missing.horizontalLinks!)) assert.ok(missing.warnings.some(w => w.startsWith(`${id}: roteiro com cta_vertical`)));
   });
@@ -368,22 +385,17 @@ it("#13117 lê CTA do roteiro e avisa quando não pode conferir", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-describe("#13117 rotas de atualização de texto mantêm a linha da bio", () => {
-  const BIO = /Vídeo completo: link na bio/;
-  it("--update-scheduled: TikTok com ctaVertical leva a linha; sem, não", () => {
+describe("#13117 rotas de atualização de texto mantêm a chamada ao vídeo completo", () => {
+  it("--update-scheduled: TikTok com ctaVertical leva a chamada sem link; sem, não; nunca 'link na bio' (#13709)", () => {
     const entries = [{ destination: "tiktok", status: "scheduled", id: "buffer:t1", scheduled_at: "2026-10-22T15:00:00.000Z" } as any];
-    const run = (ctaVertical?: boolean, tiktokBioLink = true) => {
-      const [item] = planScheduledUpdates({ entries, d1: D1, now: new Date("2026-10-22T03:00:00Z"), coverPresent: false, ctaVertical, tiktokBioLink });
+    const run = (ctaVertical?: boolean) => {
+      const [item] = planScheduledUpdates({ entries, d1: D1, now: new Date("2026-10-22T03:00:00Z"), coverPresent: false, ctaVertical });
       assert.equal(item.action, "buffer_edit");
       return (item as { text: string }).text;
     };
-    assert.match(run(true), BIO);
-    assert.doesNotMatch(run(), BIO);
-    // #13209: flag desligada (o default) tira a linha mesmo com ctaVertical.
-    assert.doesNotMatch(run(true, false), BIO);
-    // #13274: no lugar dela, a chamada sem link; sem ctaVertical, nenhuma das duas.
-    assert.match(run(true, false), /Vídeo completo no canal diar\.ia\.br do YouTube/);
-    assert.doesNotMatch(run(false, false), /no YouTube: @diariabr/);
+    assert.match(run(true), /Vídeo completo no canal diar\.ia\.br do YouTube/);
+    assert.doesNotMatch(run(true), /link na bio/);
+    assert.doesNotMatch(run(), /Vídeo completo/);
   });
 
   it("--update-published: Instagram e Threads com ctaVertical levam a linha; sem, não", () => {
@@ -394,13 +406,15 @@ describe("#13117 rotas de atualização de texto mantêm a linha da bio", () => 
     ] as any[];
     const run = (ctaVertical?: boolean) => Object.fromEntries(planPublishedTextUpdates({ entries, d1: D1, now, ctaVertical }).map((i) => [i.destination, i]));
     const com = run(true);
+    const LINE: Record<string, RegExp> = { instagram: /Vídeo completo: link no primeiro comentário/, threads_profile: /Vídeo completo: link na resposta/ };
     for (const id of ["instagram", "threads_profile"]) {
       assert.equal(com[id].action, "ui");
-      assert.match((com[id] as { text: string }).text, BIO, id);
+      assert.match((com[id] as { text: string }).text, LINE[id], id);
+      assert.doesNotMatch((com[id] as { text: string }).text, /link na bio/, id);
       assert.ok(!(com[id] as { text: string }).text.includes(URL_H));
     }
     const sem = run();
-    for (const id of ["instagram", "threads_profile"]) assert.doesNotMatch((sem[id] as { text: string }).text, BIO, id);
+    for (const id of ["instagram", "threads_profile"]) assert.doesNotMatch((sem[id] as { text: string }).text, LINE[id], id);
   });
 });
 

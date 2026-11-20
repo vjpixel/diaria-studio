@@ -132,7 +132,14 @@ import {
   LATEST_VIDEO_KV_KEY,
   LATEST_VIDEO_PATH,
   buildLatestVideoTarget,
+  editionVideoClickCounterKey,
+  editionVideoClickSource,
+  editionVideoKvKey,
+  effectiveEditionVideoRecord,
   effectiveLatestVideoRecord,
+  matchEditionVideoPath,
+  parseEditionVideoRecord,
+  type LatestVideoPrevious,
   latestVideoClickCounterKey,
   latestVideoClickSource,
   parseLatestVideoRecord,
@@ -509,6 +516,22 @@ async function readLatestVideoRecord(env: Env): Promise<LatestVideoRecord | null
   }
 }
 
+/**
+ * #13709: registro do horizontal de UMA edição (`video:edition:{AAMMDD}` no
+ * KV `POLL`), lido pelo link por edição `diar.ia.br/video/{AAMMDD}`. Falha de
+ * leitura vira `null`: o redirect cai na lista de vídeos do canal.
+ */
+async function readEditionVideoRecord(env: Env, aammdd: string): Promise<LatestVideoPrevious | null> {
+  const key = editionVideoKvKey(aammdd);
+  try {
+    const buf = await env.POLL.get(key, "arrayBuffer");
+    return buf ? parseEditionVideoRecord(new TextDecoder().decode(buf)) : null;
+  } catch (err) {
+    console.error(`[video] leitura de ${key} falhou — redirect cai na lista do canal (#13709):`, err);
+    return null;
+  }
+}
+
 /** Conta o clique do dia; `incrementApoiarCounter` já é fail-soft (nunca lança). */
 async function countApoiarClick(env: Env, keyFn: (day: string) => string = apoiarClickCounterKey): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
@@ -713,6 +736,20 @@ export default {
       }
       // #12801: horizontal ainda privado (agendado para 06:00 BRT) cede ao anterior/lista do canal.
       return Response.redirect(buildLatestVideoTarget(reqUrl, effectiveLatestVideoRecord(record, new Date())), 302);
+    }
+
+    // #13709: /video/{AAMMDD} — link por edição (1º comentário do Reels no
+    // Instagram, resposta ao próprio post no Threads) até o horizontal DA
+    // edição. 302 pelo mesmo motivo do /video; antes do `public_at`, ou sem
+    // registro, cai na lista do canal (nunca um vídeo privado).
+    const editionAammdd = request.method === "GET" || request.method === "HEAD" ? matchEditionVideoPath(reqUrl.pathname) : null;
+    if (editionAammdd) {
+      const record = await readEditionVideoRecord(env, editionAammdd);
+      if (request.method === "GET") {
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, editionVideoClickCounterKey(editionVideoClickSource(reqUrl), day));
+      }
+      return Response.redirect(buildLatestVideoTarget(reqUrl, effectiveEditionVideoRecord(record, new Date())), 302);
     }
 
     const response = await env.ASSETS.fetch(request);

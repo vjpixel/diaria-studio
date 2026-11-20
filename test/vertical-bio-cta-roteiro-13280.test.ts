@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { VERTICAL_BIO_CTA_LINE, resolveVerticalBioCta } from "../scripts/lib/diaria/short-video.ts";
+import { VERTICAL_COMMENT_CTA_LINE, resolveVerticalBioCta } from "../scripts/lib/diaria/short-video.ts";
 import { validarRoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
 import { planShortsPublish, readHorizontalVideoForShort, readVerticalCta, verticalBioCtaFromHorizontal } from "../scripts/publish-shorts.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
@@ -27,7 +27,8 @@ const D1 = {
 /** O título do horizontal que veio do roteiro (`title_source: "roteiro"`), diferente do D1. */
 const TITULO_ROTEIRO = "IA rouba carteira: o caso que ninguém viu";
 const URL_H = "https://youtu.be/AbCdEfGhIjK";
-const BIO = /Vídeo completo: link na bio/;
+// #13709: a chamada ao vídeo completo deixou de dizer "link na bio": Instagram aponta o 1º comentário, Threads a resposta.
+const BIO = /Vídeo completo: link (?:no primeiro comentário|na resposta)/;
 const NO_BIO_CTA = /Vídeo completo no canal diar\.ia\.br do YouTube/;
 
 const REVIEWED = `DESTAQUE 1 | 🔐 SEGURANÇA
@@ -122,7 +123,7 @@ describe("#13280: a marcação do roteiro decide a chamada ao vídeo completo", 
   it("plano: sem marcação e títulos diferentes, a premissa aponta a marcação do roteiro", () => {
     const p = plan({ recordTitle: TITULO_ROTEIRO });
     assert.doesNotMatch(textOf(p, "threads_profile"), BIO);
-    assert.ok(p.premises.some((x) => x.includes(VERTICAL_BIO_CTA_LINE) && x.includes("título do vertical difere") && x.includes("pertenceAoHorizontal")), p.premises.join("\n"));
+    assert.ok(p.premises.some((x) => x.includes(VERTICAL_COMMENT_CTA_LINE) && x.includes("título do vertical difere") && x.includes("pertenceAoHorizontal")), p.premises.join("\n"));
   });
 
   it("plano: marcação false tira a linha e diz por quê", () => {

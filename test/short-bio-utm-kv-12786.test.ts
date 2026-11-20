@@ -103,22 +103,22 @@ describe("#12786 item 3: aviso de legenda sem o link do horizontal", () => {
   ] as unknown as ShortsPlanItem[];
 
   it("sem 05-video-url.txt: avisa os destinos de legenda que saem, com o comando de correção", () => {
-    const links = planShortHorizontalLinks(dests, null, false);
+    const links = planShortHorizontalLinks(dests, null, false, "261112");
     const w = missingHorizontalLinkWarning("261112", links, items, false);
     assert.ok(w);
     assert.match(w, /^facebook:diaria sai\(em\) sem o link/);
-    assert.ok(!w.includes("tiktok"), "tiktok é bio, não legenda");
+    assert.ok(!w.includes("tiktok"), "tiktok não é legenda (sem link, #13709)");
     assert.ok(!w.startsWith("facebook:diaria, x"), "x já saiu (skip_done)");
     assert.match(w, /--update-scheduled --publish --confirm-publish 261112/);
   });
 
   it("com o link: nada a avisar", () => {
-    const links = planShortHorizontalLinks(dests, "https://youtu.be/AbCdEfGhIjK", false);
+    const links = planShortHorizontalLinks(dests, "https://youtu.be/AbCdEfGhIjK", false, "261112");
     assert.equal(missingHorizontalLinkWarning("261112", links, items, false), null);
   });
 
   it("edição sem vídeo: nada a avisar", () => {
-    const links = planShortHorizontalLinks(dests, null, true);
+    const links = planShortHorizontalLinks(dests, null, true, "261112");
     assert.equal(missingHorizontalLinkWarning("261112", links, items, true), null);
   });
 

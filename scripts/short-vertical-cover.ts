@@ -22,15 +22,21 @@
  *   veredito `capa` quando sozinho), troca só `cover.vertical_feed` da entrada
  *   `youtube_shorts` para `"studio_web"` (e grava `cover.feed_check`), sob o
  *   lock do registro. O `--id` precisa ser o do Short registrado.
+ *   #13723: depois de gravar, relê a visão unida do registro (a que o
+ *   `publica-phase.ts join` usa). Se uma cópia de conflito tiver a entrada
+ *   `youtube_shorts` com `at` mais novo, ela vence a união e o passo segue
+ *   pendente: o `confirm` avisa qual arquivo venceu e sai 1, em vez de
+ *   declarar a capa confirmada.
  *
  * Não chama YouTube, Studio nem Chrome: só lê/grava arquivos da edição.
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { updateShortEntry } from "./lib/diaria/shorts-published-store.ts";
+import { listShortsRegistryFiles, updateShortEntry } from "./lib/diaria/shorts-published-store.ts";
+import type { ShortPublishedEntry } from "./lib/diaria/short-video.ts";
 import {
   SHORT_VERTICAL_COVER_DESTINATION,
   buildShortVerticalCoverOwner,
@@ -138,12 +144,46 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ShortVe
         (studioPersisted ? " (persistiu após reload no Studio)" : "") +
         (feedCheck ? `; feed: ${feedCheck.verdict}${feedCheck.distance !== undefined ? `, distância ${feedCheck.distance.toFixed(3)}` : ""}` : "; verificação do feed não registrada"),
     );
+    // #13723: a gravação foi no registro principal; a leitura unida pode seguir com outra entrada.
+    const after = readShortVerticalCoverStep(dir, aammdd);
+    if (after.state !== "done") {
+      const winner = findWinningRegistryFile(dir);
+      deps.err(
+        `[pendente] a confirmação foi gravada no registro principal, mas a leitura unida do registro segue com a entrada ${SHORT_VERTICAL_COVER_DESTINATION}` +
+          (winner ? ` de ${winner} (at mais novo, sem studio_web)` : " de outro arquivo do registro") +
+          ": o publica-phase join continua pendente. Una ou apague a cópia de conflito e rode o confirm de novo (#13723)",
+      );
+      deps.log(JSON.stringify({ ok: false, entry: updated, unified_state: after.state, winning_file: winner }, null, 2));
+      return 1;
+    }
     deps.log(JSON.stringify({ ok: true, entry: updated }, null, 2));
     return 0;
   } catch (e) {
     deps.err(`short-vertical-cover: ${(e as Error).message}`);
     return 1;
   }
+}
+
+/**
+ * #13723: o arquivo do registro cuja entrada `youtube_shorts` vence a união
+ * (maior `at`; empate fica com o primeiro da lista, o principal). `null` sem
+ * entrada ou com arquivo ilegível (só diagnóstico, nunca lança).
+ */
+export function findWinningRegistryFile(editionDir: string): string | null {
+  let best: { file: string; at: number } | null = null;
+  for (const path of listShortsRegistryFiles(editionDir)) {
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8")) as { entries?: ShortPublishedEntry[] };
+      const e = raw.entries?.find((x) => x.destination === SHORT_VERTICAL_COVER_DESTINATION);
+      if (!e) continue;
+      const at = Date.parse(e.at);
+      const t = Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+      if (!best || t > best.at) best = { file: basename(path), at: t };
+    } catch {
+      continue;
+    }
+  }
+  return best?.file ?? null;
 }
 
 if (isMainModule(import.meta.url)) {
