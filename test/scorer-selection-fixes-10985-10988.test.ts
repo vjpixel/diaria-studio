@@ -258,6 +258,32 @@ describe("#10988 — top3-merit-warning lê o trio que o editor vê", () => {
     assert.deepEqual(checkTop3Merit(dir), []);
   }));
 
+  // #13749: rebaixamento por data velha (#13341) e por repetição (#13662).
+  for (const [flag, value] of [
+    ["stale_date_demoted", { declared_iso: "2026-09-29", days: 49 }],
+    ["stale_repeat_demoted", { aammdd: "261010", days: 40 }],
+  ] as const) {
+    it(`#13749: Stage 1 ignora item com ${flag}`, () => edition((dir, save) => {
+      save("tmp-scored.json", {
+        highlights: [mh("old", 95), mh("b", 80), mh("c", 78)],
+        all_scored: [mh("old", 95), mh("b", 80), mh("c", 78), mh("d", 70)],
+      });
+      save("01-categorized.json", {
+        highlights: [mh("b", 80), mh("c", 78), mh("d", 70), mh("old", 95, { [flag]: value })],
+      });
+      assert.deepEqual(checkTop3Merit(dir), []);
+    }));
+
+    it(`#13749: Stage 4 ignora item com ${flag}`, () => edition((dir, save) => {
+      save("tmp-scored.json", { all_scored: [mh("old", 95), mh("b", 80), mh("c", 78), mh("d", 70)] });
+      save("01-categorized.json", {
+        highlights: [mh("b", 80), mh("c", 78), mh("d", 70), mh("old", 95, { [flag]: value })],
+      });
+      save("01-approved.json", { highlights: [mh("b", 80), mh("c", 78), mh("d", 70)], radar: [mh("old", 95)] });
+      assert.deepEqual(checkTop3Merit(dir), []);
+    }));
+  }
+
   it("compara URLs canonicalizadas (utm/trailing slash não viram item novo)", () => edition((dir, save) => {
     save("01-approved.json", {
       highlights: [

@@ -17,6 +17,7 @@ import {
   buildRenameMap,
   decideFinalsFolder,
   isFinalOrPreviewFile,
+  isFolderRecordFile,
   parseOrigemBrutosRename,
   parseVideoLiberada,
   pendingAgendamentosOf,
@@ -184,6 +185,72 @@ describe("duplicatas entre pastas (#13627)", () => {
       "261115/y.png:pasta-ainda-nao-liberada",
     ]);
     assert.equal(groups.every((g) => g.remove.length === 0), true);
+  });
+
+  // #13748: interação entre a regra de duplicatas (#13627), a guarda dos finais (#13630) e a renomeação (#13632).
+  it("regressão #13748: duplicata em Final/ não sai enquanto a pasta não tem os finais liberados", () => {
+    const files = [
+      f("261109", "Final/Diaria_V2-guia.mp4", 40, MD5_A),
+      f("261110", "Final/Diaria_V2-guia.mp4", 40, MD5_A),
+      f("261109", "261110 - previa vertical.mp4", 30, MD5_B),
+      f("261110", "261110 - previa vertical.mp4", 30, MD5_B),
+    ];
+    const refs = new Map([["261109", new Set<string>()], ["261110", new Set<string>()]]);
+    // 261110: brutos elegíveis (4 dias), mas o vertical 2 do D+7 ainda pendente no banco.
+    const held = planCrossFolderDuplicates(files, { removableFolders: new Set(["261109", "261110"]), finalsRemovableFolders: new Set(), referencedByFolder: refs });
+    assert.equal(held.every((g) => g.remove.length === 0), true);
+    assert.deepEqual(held.flatMap((g) => g.held.map((h) => h.reason)), ["finais-ainda-nao-liberados", "finais-ainda-nao-liberados"]);
+    // sem a opção (chamador antigo): também não sai nada
+    const legacy = planCrossFolderDuplicates(files, { removableFolders: new Set(["261109", "261110"]), referencedByFolder: refs });
+    assert.equal(legacy.every((g) => g.remove.length === 0), true);
+    // liberada e sem agendamento pendente: sai
+    const freed = planCrossFolderDuplicates(files, { removableFolders: new Set(["261109", "261110"]), finalsRemovableFolders: new Set(["261110"]), referencedByFolder: refs });
+    assert.deepEqual(freed.flatMap((g) => g.remove.map((x) => `${x.folder}/${x.path}`)).sort(), ["261110/261110 - previa vertical.mp4", "261110/Final/Diaria_V2-guia.mp4"]);
+  });
+
+  it("regressão #13748: _origem-brutos.json idêntico em duas pastas nunca é duplicata", () => {
+    const files = [
+      f("261109", "_origem-brutos.json", 64, MD5_A),
+      f("261110", "_origem-brutos.json", 64, MD5_A),
+      f("261109", "_outro-registro.json", 10, MD5_B),
+      f("261110", "_outro-registro.json", 10, MD5_B),
+    ];
+    const groups = planCrossFolderDuplicates(files, {
+      removableFolders: new Set(["261109", "261110"]),
+      finalsRemovableFolders: new Set(["261109", "261110"]),
+      referencedByFolder: new Map([["261109", new Set<string>()], ["261110", new Set<string>()]]),
+    });
+    assert.deepEqual(groups, []);
+    assert.equal(isFolderRecordFile("_origem-brutos.json"), true);
+    assert.equal(isFolderRecordFile("arquivo/_origem-brutos.json"), false);
+    assert.equal(isFolderRecordFile("origem.json"), false);
+  });
+
+  it("regressão #13748: a pasta que fica segue a renomeação (fica a nova, sai a antiga)", () => {
+    const files = [
+      f("261109", "261110_cta_card_vertical.png", 12, MD5_A),
+      f("261110", "261110_cta_card_vertical.png", 12, MD5_A),
+      // bruto gravado em 08/11 (dono 261109), edição renomeada para 261110
+      f("261109", "20261108_101010.mp4", 99, MD5_B),
+      f("261110", "20261108_101010.mp4", 99, MD5_B),
+    ];
+    const groups = planCrossFolderDuplicates(files, {
+      removableFolders: new Set(["261109", "261110"]),
+      referencedByFolder: new Map([["261109", new Set<string>()], ["261110", new Set<string>()]]),
+      renamedTo: { "261109": "261110" },
+    });
+    for (const g of groups) {
+      assert.deepEqual(g.keep.map((x) => x.folder), ["261110"], g.md5);
+      assert.deepEqual(g.remove.map((x) => x.folder), ["261109"], g.md5);
+    }
+    assert.equal(groups.length, 2);
+    // a pasta de destino fora do grupo não muda nada: fica a mais antiga, como antes
+    const solo = planCrossFolderDuplicates([f("261109", "a.png", 5, MD5_A), f("261111", "a.png", 5, MD5_A)], {
+      removableFolders: new Set(["261109", "261111"]),
+      referencedByFolder: new Map([["261111", new Set<string>()]]),
+      renamedTo: { "261109": "261110" },
+    });
+    assert.deepEqual(solo[0].keep.map((x) => x.folder), ["261109"]);
   });
 
   it("referencedNamesOfXmls: XML não lido anula; XML sem pathurl não anula", () => {

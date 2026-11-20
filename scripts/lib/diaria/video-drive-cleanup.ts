@@ -39,6 +39,12 @@
  *    edições), XML da raiz (é a versão vigente da pasta), arquivo com nome que
  *    uma montagem em curso usa, e cópia em pasta que ainda não saiu da rodada
  *    (`decideFolder` não elegível: a edição pode estar em montagem).
+ *    Desde o #13748: final, editado ou prévia só sai de pasta com os finais
+ *    liberados (`decideFinalsFolder` elegível; o vertical 2 "guia" do D+7 ainda
+ *    baixa de `Final/`), registro `_*.json` da raiz nunca entra na regra (o
+ *    `_origem-brutos.json` vale só na pasta onde está), e a pasta que fica
+ *    segue a renomeação: a cópia da pasta antiga de uma edição renomeada não
+ *    vence a da pasta nova.
  */
 
 import { editionsOfFolder, effectiveEditionsOfFolder, isBrutoFile } from "./video-bruto-archive.ts";
@@ -178,6 +184,7 @@ export type DuplicateHoldReason =
   | "xmls-da-pasta-ilegiveis"
   | "xml-atual-da-pasta"
   | "pasta-ainda-nao-liberada"
+  | "finais-ainda-nao-liberados"
   | "em-uso-pela-montagem"
   | "nome-duplicado-na-pasta";
 
@@ -213,9 +220,30 @@ export function isRootXml(relPath: string): boolean {
   return !relPath.includes("/") && /\.xml$/i.test(relPath);
 }
 
+/**
+ * Pura — registro da rotina guardado como `_*.json` na raiz da pasta (ex.:
+ * `_origem-brutos.json`, #13632). Fica fora da regra de duplicatas (#13748):
+ * o conteúdo igual em duas pastas não é cópia redundante, vale só na pasta
+ * onde está.
+ */
+export function isFolderRecordFile(relPath: string): boolean {
+  return !relPath.includes("/") && /^_.*\.json$/i.test(relPath);
+}
+
 export interface DuplicatePlanOptions {
   /** Pastas cujas cópias podem sair (a pasta já saiu da rodada: `decideFolder` elegível). */
   removableFolders: ReadonlySet<string>;
+  /**
+   * #13748: pastas com os finais liberados (`decideFinalsFolder` elegível).
+   * Cópia de final, editado ou prévia (`isFinalOrPreviewFile`) só sai de pasta
+   * que está aqui E em `removableFolders`. Ausente = nenhuma dessas sai.
+   */
+  finalsRemovableFolders?: ReadonlySet<string>;
+  /**
+   * #13748: renomeações `de → para` (#13632). A pasta que fica segue o destino:
+   * entre a pasta antiga e a nova de uma edição renomeada, fica a nova.
+   */
+  renamedTo?: Readonly<Record<string, string>>;
   /**
    * Nomes referenciados pelos XMLs da raiz de cada pasta (`xmlReferencedNames`).
    * `null` ou ausente = não deu para ler: nada sai daquela pasta.
@@ -241,7 +269,7 @@ export function planCrossFolderDuplicates(files: readonly FolderFile[], opts: Du
     pathCount.set(k, (pathCount.get(k) ?? 0) + 1);
   }
   for (const f of files) {
-    if (f.size <= 0 || !f.md5) continue;
+    if (f.size <= 0 || !f.md5 || isFolderRecordFile(f.path)) continue;
     const key = `${f.md5}:${f.size}`;
     const list = byKey.get(key) ?? [];
     list.push(f);
@@ -252,9 +280,16 @@ export function planCrossFolderDuplicates(files: readonly FolderFile[], opts: Du
     const folders = [...new Set(list.map((f) => f.folder))].sort();
     if (folders.length < 2) continue;
     const allBruto = list.every((f) => isBrutoFile(f.path));
-    let keeper = folders[0];
+    // #13748: pasta de edição única renomeada cede para a pasta de destino, quando ela está no grupo.
+    const followRename = (folder: string): string => {
+      const eds = editionsOfFolder(folder);
+      const to = eds && eds.length === 1 ? opts.renamedTo?.[eds[0]] : undefined;
+      return to && folders.includes(to) ? to : folder;
+    };
+    let keeper = followRename(folders[0]);
     if (allBruto) {
-      const owner = list.map((f) => brutoOwnerEdition(f.path)).find((e) => e !== null) ?? null;
+      const recorded = list.map((f) => brutoOwnerEdition(f.path)).find((e) => e !== null) ?? null;
+      const owner = recorded ? (opts.renamedTo?.[recorded] ?? recorded) : null;
       const ownerFolder = owner ? folders.find((fo) => (editionsOfFolder(fo) ?? []).includes(owner)) : undefined;
       if (ownerFolder) keeper = ownerFolder;
     }
@@ -267,6 +302,7 @@ export function planCrossFolderDuplicates(files: readonly FolderFile[], opts: Du
       const hold = (reason: DuplicateHoldReason) => g.held.push({ ...f, reason });
       if ((pathCount.get(`${f.folder}\u0000${f.path}`) ?? 0) > 1) hold("nome-duplicado-na-pasta");
       else if (!opts.removableFolders.has(f.folder)) hold("pasta-ainda-nao-liberada");
+      else if (isFinalOrPreviewFile(f.path) && !opts.finalsRemovableFolders?.has(f.folder)) hold("finais-ainda-nao-liberados");
       else if (isRootXml(f.path)) hold("xml-atual-da-pasta");
       else if (opts.inUseKeys?.has(baseName(f.path).toLowerCase())) hold("em-uso-pela-montagem");
       else {
@@ -297,9 +333,13 @@ export function referencedNamesOfXmls(texts: ReadonlyArray<string | null>): Set<
 }
 
 /** Pura — pastas que têm candidata a sair (para só ler os XMLs dessas). */
-export function foldersWithRemovalCandidates(files: readonly FolderFile[], removableFolders: ReadonlySet<string>): string[] {
+export function foldersWithRemovalCandidates(
+  files: readonly FolderFile[],
+  removableFolders: ReadonlySet<string>,
+  extra: Pick<DuplicatePlanOptions, "finalsRemovableFolders" | "renamedTo"> = {},
+): string[] {
   const everything = new Map<string, ReadonlySet<string>>();
   for (const f of files) everything.set(f.folder, new Set());
-  const groups = planCrossFolderDuplicates(files, { removableFolders, referencedByFolder: everything });
+  const groups = planCrossFolderDuplicates(files, { ...extra, removableFolders, referencedByFolder: everything });
   return [...new Set(groups.flatMap((g) => g.remove.map((f) => f.folder)))].sort();
 }

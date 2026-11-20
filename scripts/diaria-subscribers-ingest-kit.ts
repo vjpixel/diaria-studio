@@ -558,8 +558,23 @@ interface IngestIntoWorkDbCtx {
  * único (cópia de conflito): aí nem a cópia de trabalho deve virar o store.
  */
 async function ingestIntoWorkDb(ctx: IngestIntoWorkDbCtx): Promise<"commit" | "discard"> {
+  const db = openDiariaSubscribersDb(ctx.workPath);
+  // #13747: `main` commita a cópia de trabalho também quando o corpo lança, e
+  // `atomicCommitRebuild` exige a conexão FECHADA: o store roda em WAL, o
+  // commit faz o rename do `.db` e apaga o `-wal`. Com a conexão aberta, os
+  // frames ainda não checkpointados (o roster gravado, abaixo do
+  // autocheckpoint) sumiam e o store final podia nem abrir. O close limpo
+  // checkpointa. As saídas antecipadas do corpo já fecham; `isOpen` evita o
+  // 2º close, que no `node:sqlite` lança.
+  try {
+    return await ingestIntoOpenWorkDb(ctx, db);
+  } finally {
+    if (db.isOpen) db.close();
+  }
+}
+
+async function ingestIntoOpenWorkDb(ctx: IngestIntoWorkDbCtx, db: DatabaseSync): Promise<"commit" | "discard"> {
   const { argv, deps, dbPath, workPath, manifestPath, manifestOut, limit, broadcastFilter, configPath, dataRoot } = ctx;
-  const db = openDiariaSubscribersDb(workPath);
 
   // -------------------------------------------------------------------------
   // Passo 1 (#7174): ingestão de ROSTER — popula `subscription`, que a
