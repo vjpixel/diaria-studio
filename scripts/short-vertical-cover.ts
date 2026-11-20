@@ -77,7 +77,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ShortVe
   }
   let step: ShortVerticalCoverStep;
   try {
-    step = readShortVerticalCoverStep(dir, aammdd);
+    step = readShortVerticalCoverStep(dir, aammdd, deps.now());
   } catch (e) {
     deps.err(`short-vertical-cover: ${(e as Error).message}`);
     return 2;
@@ -145,7 +145,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: ShortVe
         (feedCheck ? `; feed: ${feedCheck.verdict}${feedCheck.distance !== undefined ? `, distância ${feedCheck.distance.toFixed(3)}` : ""}` : "; verificação do feed não registrada"),
     );
     // #13723: a gravação foi no registro principal; a leitura unida pode seguir com outra entrada.
-    const after = readShortVerticalCoverStep(dir, aammdd);
+    const after = readShortVerticalCoverStep(dir, aammdd, deps.now());
     if (after.state !== "done") {
       const winner = findWinningRegistryFile(dir);
       deps.err(

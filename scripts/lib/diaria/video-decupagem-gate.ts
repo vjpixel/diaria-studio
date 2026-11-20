@@ -106,6 +106,16 @@ export function decupagemGate(input: Gate1Input): Gate1Decision {
   }
 
   const premissas: string[] = [];
+  // #13742: a tomada que a janela de cauda separou sai sem o editor ouvir; a premissa diz qual e onde conferir.
+  for (const b of input.plan.blocks) {
+    b.rows.forEach((r, j) => {
+      if (!ON_AIR.has(r.suggestion)) return;
+      for (const s1 of r.segments) {
+        const o = input.origin?.[s1 - 1];
+        if (o?.tail) premissas.push(`Tomada colapsada resolvida pela cauda, ${b.key}.rows[${j}] (segmento ${s1}): ${o.note ?? "a última tomada"}`);
+      }
+    });
+  }
   if (input.takes.length) premissas.push(`Tomadas por frase (${input.takes.length}):`, ...input.takes.map((t) => `  - ${t}`));
   for (const c of input.contraDirecao) if (c.reason) premissas.push(`Contraria a direção com motivo: ${c.label}, segmento ${c.segment} (a direção aprovou o ${c.approved}): ${c.reason}`);
   if (input.alternativas) premissas.push(`${input.alternativas} linha(s) "alternativa": nenhum critério decidiu; vão ao Gate 2 como opção A/B`);

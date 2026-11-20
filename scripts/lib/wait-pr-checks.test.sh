@@ -533,6 +533,122 @@ else
 fi
 rm -f "$HB_LOG13726"
 
+# ── 19. #13744: emit_ci_wait_running só grava com agente E edição declarados ─
+# Inferir (default overnight + plan.json mais recente) atribuía a espera de CI
+# do develop/continuo à rodada overnight. Função REAL, `npx` falso (sem rede).
+NPX_LOG13744="$(mktemp)"
+emit_real_13744() {
+  (
+    # shellcheck source=./wait-pr-checks.sh
+    source "$DIR/wait-pr-checks.sh"
+    npx() { echo "$*" >> "$NPX_LOG13744"; }
+    emit_ci_wait_running 19 1200 1
+  )
+}
+: > "$NPX_LOG13744"
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; emit_real_13744 )
+assert_eq "sem agente nem edição -> não grava" "0" "$(wc -l < "$NPX_LOG13744" | tr -d ' ')"
+( unset WAIT_PR_CHECKS_AGENT; WAIT_PR_CHECKS_EDITION=261120 emit_real_13744 )
+assert_eq "só edição (agente não declarado) -> não grava (nunca assume overnight)" "0" "$(wc -l < "$NPX_LOG13744" | tr -d ' ')"
+( unset WAIT_PR_CHECKS_EDITION; WAIT_PR_CHECKS_AGENT=overnight emit_real_13744 )
+assert_eq "só agente (edição não declarada) -> não grava (nunca infere do plan.json)" "0" "$(wc -l < "$NPX_LOG13744" | tr -d ' ')"
+WAIT_PR_CHECKS_AGENT=develop WAIT_PR_CHECKS_EDITION=261120 emit_real_13744
+if grep -q -- "--edition 261120 --agent develop" "$NPX_LOG13744" && grep -q '"source": "wait-pr-checks"' "$NPX_LOG13744"; then
+  echo "ok: agente+edição declarados -> grava com eles e details.source=wait-pr-checks"
+else
+  echo "FAIL: chamada do log-event inesperada — $(cat "$NPX_LOG13744")"
+  FAILED=1
+fi
+rm -f "$NPX_LOG13744"
+
+# ── 20. #13744: sem rajada de heartbeat depois de fila longa ───────────────
+# 30 leituras só com fila (running=0), depois check rodando. Com o marco
+# somado ao antigo (900, 1800, ...), a 1ª volta rodando emitia várias vezes
+# seguidas até alcançar o elapsed; o marco agora conta da última emissão.
+HB_LOG13744="$(mktemp)"
+emit_ci_wait_running() { echo "$2" >> "$HB_LOG13744"; }
+fake_clock_on
+check_pr_checks_once() {
+  local n
+  n=$(gate_call_n)
+  if [ "$n" -le 30 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=1 pending=1 running=0"
+    return 2
+  fi
+  if [ "$n" -le 55 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=0 pending=1 running=1"
+    return 2
+  fi
+  return 0
+}
+CI_WAIT_HEARTBEAT_SECS=10 wait_pr_checks "20" 5 1 200 200 >/dev/null 2>&1
+RC20=$?
+fake_clock_off
+assert_eq "fila longa seguida de execução -> exit 0" "0" "$RC20"
+HB20=$(wc -l < "$HB_LOG13744" | tr -d ' ')
+BURST20=0
+PREV20=""
+while read -r e; do
+  if [ -n "$PREV20" ] && [ $(( e - PREV20 )) -lt 10 ]; then BURST20=1; fi
+  PREV20="$e"
+done < "$HB_LOG13744"
+if [ "$HB20" -ge 2 ] && [ "$HB20" -le 3 ] && [ "$BURST20" -eq 0 ]; then
+  echo "ok: heartbeat espaçado de CI_WAIT_HEARTBEAT_SECS mesmo após fila longa (${HB20}x)"
+else
+  echo "FAIL: rajada de heartbeat após fila — emissões em elapsed=[$(tr '\n' ' ' < "$HB_LOG13744")]"
+  FAILED=1
+fi
+rm -f "$HB_LOG13744"
+
+# ── 21. #13744: agente e edição como FLAGS do entrypoint ───────────────────
+# O allow do modo agendado libera `scripts/lib/wait-pr-checks.sh *`; o prefixo
+# `VAR=... scripts/...` pode ser negado. As flags sobrepõem o env (fallback).
+MAIN_LOG13744="$(mktemp)"
+main_13744() {
+  (
+    # shellcheck source=./wait-pr-checks.sh
+    source "$DIR/wait-pr-checks.sh"
+    npx() { echo "$*" >> "$MAIN_LOG13744"; }
+    wait_pr_checks() {
+      echo "args=$* agent=${WAIT_PR_CHECKS_AGENT:-} ed=${WAIT_PR_CHECKS_EDITION:-}" >> "$MAIN_LOG13744"
+      emit_ci_wait_running "$1" 1200 1
+    }
+    wait_pr_checks_main "$@"
+  )
+}
+: > "$MAIN_LOG13744"
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; main_13744 21 --agent overnight --edition 261120 )
+RC21=$?
+assert_eq "flags --agent/--edition -> exit 0" "0" "$RC21"
+if grep -q "args=21 1800 20 3600 3600 agent=overnight ed=261120" "$MAIN_LOG13744" \
+  && grep -q -- "--edition 261120 --agent overnight" "$MAIN_LOG13744"; then
+  echo "ok: flags definem agente+edição, posicionais ficam nos defaults e o heartbeat grava"
+else
+  echo "FAIL: flags não chegaram ao laço/heartbeat — $(cat "$MAIN_LOG13744")"
+  FAILED=1
+fi
+: > "$MAIN_LOG13744"
+( WAIT_PR_CHECKS_AGENT=overnight WAIT_PR_CHECKS_EDITION=000000 main_13744 21 60 5 --agent=develop --edition=261121 )
+if grep -q "args=21 60 5 3600 3600 agent=develop ed=261121" "$MAIN_LOG13744"; then
+  echo "ok: --agent=/--edition= sobrepõem o env e posicionais depois do PR seguem valendo"
+else
+  echo "FAIL: flag não sobrepôs o env — $(cat "$MAIN_LOG13744")"
+  FAILED=1
+fi
+: > "$MAIN_LOG13744"
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; main_13744 21 --edition 261120 )
+if grep -q "agent= ed=261120" "$MAIN_LOG13744" && ! grep -q -- "log-event" "$MAIN_LOG13744"; then
+  echo "ok: só --edition (sem agente) -> espera sem heartbeat"
+else
+  echo "FAIL: heartbeat gravado sem agente declarado — $(cat "$MAIN_LOG13744")"
+  FAILED=1
+fi
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; main_13744 21 --agent >/dev/null 2>&1 )
+assert_eq "--agent sem valor -> exit 2" "2" "$?"
+( main_13744 21 --edicao 261120 >/dev/null 2>&1 )
+assert_eq "flag desconhecida -> exit 2" "2" "$?"
+rm -f "$MAIN_LOG13744"
+
 rm -f "$FAKE_CLOCK13702" "$GATE_CALLS13702"
 
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
