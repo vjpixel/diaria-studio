@@ -333,13 +333,12 @@ const FUNCTION_WORDS = new Set(["a", "o", "as", "os", "e", "um", "uma", "de", "d
  * TERMINE no começo da cauda (a tomada abortada parou logo depois de abrir:
  * "A | OpenAI…", "…empresa, os | dois…").
  */
-function restartProven(before: string[], tail: string[]): boolean {
+function restartProven(before: string[], tail: string[], tailStartsAfterBefore: boolean): boolean {
   if (!before.includes(tail[0])) return false;
   if (!FUNCTION_WORDS.has(tail[0])) return true;
   for (let i = 0; i + 1 < before.length; i++) if (before[i] === tail[0] && before[i + 1] === tail[1]) return true;
-  for (let k = Math.min(before.length, tail.length); k >= 1; k--) {
-    if (before.slice(before.length - k).every((t, i) => t === tail[i])) return true;
-  }
+  // Fim do anterior == começo da cauda só vale se a cauda começa DEPOIS dele (senão é a mesma palavra, pega pela folga da janela).
+  if (tailStartsAfterBefore && before[before.length - 1] === tail[0]) return true;
   return false;
 }
 
@@ -358,7 +357,7 @@ function splitAtLastSuspect(seg: Segment, silences: Interval[], durationS?: numb
  * - as palavras da retranscrição dentro do segmento (mesma folga e vizinhos de
  *   `expandCollapsedSegments`), a partir da última vez em que o começo dela se
  *   repete (a cauda que pegou duas tomadas fica com a segunda);
- * - recomeço: a 1ª palavra dela foi dita antes da suspeita (a regravação
+ * - recomeço (`restartProven`): a 1ª palavra dela foi dita antes da suspeita (a regravação
  *   repete o começo: "a OpenAI…", "os dois…"); sem isso o vão pode ser só uma
  *   pausa barulhenta da MESMA tomada, e cortar o começo dela seria perder fala;
  * - cobre pelo menos `WHOLE_PHRASE_MIN` do que o segmento tem da suspeita em
@@ -384,7 +383,8 @@ export function tailTake(seg: Segment, prev: Segment | undefined, next: Segment 
     }
   }
   const beforeToks = split.before.map(tok).filter(Boolean);
-  if (!restartProven(beforeToks, words.map(tok))) return null;
+  const lastBefore = split.before[split.before.length - 1];
+  if (!restartProven(beforeToks, words.map(tok), words[0].start >= lastBefore.end)) return null;
   // Cobertura em letras, não em palavras: o Whisper longo e a cauda separam diferente ("chat GPT"/"ChatGPT",
   // "pra"/"para"), e a contagem por palavra reprovaria a tomada certa do segmento 51 da 261119.
   const want = split.after.map(tok).join("");
