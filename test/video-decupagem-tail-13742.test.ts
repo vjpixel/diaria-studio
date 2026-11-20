@@ -137,4 +137,15 @@ describe("#13742 janela de cauda", () => {
     const gap = tr([[3.0, 3.2, "a"], [3.2, 3.5, "OpenAI"], [6, 6.3, "lançou"], [6.3, 6.6, "dois"], [6.6, 7, "modelos"]]);
     assert.equal(tailTake(s, undefined, undefined, gap, []), null);
   });
+
+  it("#13784: artigo/conjunção sozinho não prova recomeço; palavra de conteúdo ou fim-da-tomada-abortada prova", () => {
+    // "a" dita no meio da frase antes da pausa, cauda começa em "a" sem a 2ª palavra antes: não é recomeço.
+    const s = seg(10, 20, [[10, 10.3, "eu"], [10.3, 10.6, "a"], [10.6, 10.9, "gente"], [14.5, 14.7, "a"], [14.7, 15, "IA"], [15, 15.3, "vai"], [15.3, 15.7, "mudar"], [15.7, 16.2, "tudo."]]);
+    const tail = tr([[14.5, 14.7, "a"], [14.7, 15, "IA"], [15, 15.3, "vai"], [15.3, 15.7, "mudar"], [15.7, 16.2, "tudo."]]);
+    assert.equal(tailTake(s, undefined, undefined, tail, []), null);
+    // Palavra de conteúdo repetida segue valendo como prova de 1 palavra.
+    const c = seg(10, 20, [[10, 10.3, "OpenAI"], [14.5, 14.9, "OpenAI"], [14.9, 15.3, "lançou"], [15.3, 15.7, "modelos."]]);
+    const ct = tr([[14.5, 14.9, "OpenAI"], [14.9, 15.3, "lançou"], [15.3, 15.7, "modelos."]]);
+    assert.ok(tailTake(c, undefined, undefined, ct, []));
+  });
 });

@@ -322,6 +322,27 @@ function lcsLength(a: string, b: string): number {
   return prev[y.length];
 }
 
+/** Palavras funcionais: sozinhas, não provam que a frase recomeçou (#13784). */
+const FUNCTION_WORDS = new Set(["a", "o", "as", "os", "e", "um", "uma", "de", "do", "da", "em", "no", "na", "que", "se", "pra", "para", "por", "com"]);
+
+/**
+ * A prova de recomeço (#13784): a 1ª palavra da cauda foi dita antes da
+ * suspeita. Palavra de conteúdo basta; artigo/conjunção sozinho é fraco (uma
+ * pausa barulhenta da MESMA tomada repete "a"/"o" por acaso), então exige as
+ * 2 primeiras palavras seguidas no que veio antes, ou que o que veio antes
+ * TERMINE no começo da cauda (a tomada abortada parou logo depois de abrir:
+ * "A | OpenAI…", "…empresa, os | dois…").
+ */
+function restartProven(before: string[], tail: string[]): boolean {
+  if (!before.includes(tail[0])) return false;
+  if (!FUNCTION_WORDS.has(tail[0])) return true;
+  for (let i = 0; i + 1 < before.length; i++) if (before[i] === tail[0] && before[i + 1] === tail[1]) return true;
+  for (let k = Math.min(before.length, tail.length); k >= 1; k--) {
+    if (before.slice(before.length - k).every((t, i) => t === tail[i])) return true;
+  }
+  return false;
+}
+
 /** As palavras do segmento antes da última suspeita e as dela em diante (a esticada entra no fim). */
 function splitAtLastSuspect(seg: Segment, silences: Interval[], durationS?: number): { before: Word[]; after: Word[] } | null {
   const ws = (seg.words ?? []).filter((w) => w.text.trim() !== "");
@@ -362,8 +383,8 @@ export function tailTake(seg: Segment, prev: Segment | undefined, next: Segment 
       break;
     }
   }
-  const said = new Set(split.before.map(tok).filter(Boolean));
-  if (!said.has(tok(words[0]))) return null;
+  const beforeToks = split.before.map(tok).filter(Boolean);
+  if (!restartProven(beforeToks, words.map(tok))) return null;
   // Cobertura em letras, não em palavras: o Whisper longo e a cauda separam diferente ("chat GPT"/"ChatGPT",
   // "pra"/"para"), e a contagem por palavra reprovaria a tomada certa do segmento 51 da 261119.
   const want = split.after.map(tok).join("");
