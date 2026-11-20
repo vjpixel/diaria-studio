@@ -53,8 +53,11 @@
 # run-log (via `emit_ci_wait_running`, sobrescrevível em teste) a cada
 # `ci_wait_heartbeat_secs` (env CI_WAIT_HEARTBEAT_SECS, default 900) enquanto
 # houver check rodando — o 1º aos 15 min, os seguintes de 15 em 15, sempre
-# dentro da janela de 45 min do watchdog. Edição vem de WAIT_PR_CHECKS_EDITION
-# e WAIT_PR_CHECKS_AGENT (default overnight); sem edição, infere do plan.json mais recente da rodada, que o watchdog exige. Falha do log nunca derruba a espera.
+# dentro da janela de 45 min do watchdog. Só grava com WAIT_PR_CHECKS_AGENT e
+# WAIT_PR_CHECKS_EDITION declaradas pelo chamador (#13744: nada de inferir
+# agente/edição). O evento leva `details.source = "wait-pr-checks"`, e o
+# watchdog só o conta até 20 min depois do último beacon da sessão (#12676):
+# o helper sobrevive à morte do coordenador. Falha do log nunca derruba a espera.
 #
 # Exit codes:
 #   0 = checks pararam de estar "pending" (chamador decide se PASSOU ou
@@ -122,20 +125,22 @@ check_pr_checks_once() {
 # `emit_ci_wait_running` (#13725): grava `ci_wait_running` no run-log. Função
 # separada pelo mesmo motivo de `check_pr_checks_once` (teste sobrescreve).
 emit_ci_wait_running() {
-  local pr="$1" elapsed="$2" running="$3" ed_args=() agent ed
-  agent="${WAIT_PR_CHECKS_AGENT:-overnight}"
+  local pr="$1" elapsed="$2" running="$3" agent ed
+  agent="${WAIT_PR_CHECKS_AGENT:-}"
   ed="${WAIT_PR_CHECKS_EDITION:-}"
-  # O watchdog só conta eventos com agent+edição da rodada; sem env, infere
-  # a edição do plan.json mais recente da rodada (checkout principal).
-  if [ -z "$ed" ]; then
-    ed=$(ls -t "$REPO_ROOT"/data/"$agent"/*/plan.json 2>/dev/null | head -n 1 | sed -E 's#.*/data/[^/]+/([^/]+)/plan.json#\1#')
+  # #13744: só grava com agente E edição DECLARADOS pelo chamador. Inferir
+  # (default `overnight` + plan.json mais recente) atribuía a espera de CI do
+  # develop/continuo à rodada overnight e renovava a atividade de uma rodada
+  # travada. Sem as duas variáveis, a espera segue sem heartbeat.
+  if [ -z "$agent" ] || [ -z "$ed" ]; then
+    return 0
   fi
-  if [ -n "$ed" ]; then
-    ed_args=(--edition "$ed")
-  fi
-  if ! ( cd "$REPO_ROOT" && npx tsx scripts/log-event.ts ${ed_args[@]+"${ed_args[@]}"} --agent "$agent" --level info \
+  # `source: wait-pr-checks`: o watchdog só conta este evento enquanto o
+  # beacon da sessão coordenadora estiver fresco (#13744) — o helper em
+  # background sobrevive à morte do coordenador.
+  if ! ( cd "$REPO_ROOT" && npx tsx scripts/log-event.ts --edition "$ed" --agent "$agent" --level info \
     --message "ci_wait_running" \
-    --details "{\"pr\": \"$pr\", \"elapsed_min\": $(( elapsed / 60 )), \"running\": $running}" ) >/dev/null 2>&1; then
+    --details "{\"source\": \"wait-pr-checks\", \"pr\": \"$pr\", \"elapsed_min\": $(( elapsed / 60 )), \"running\": $running}" ) >/dev/null 2>&1; then
     echo "[wait-pr-checks] warn: ci_wait_running não gravado (#13725)" >&2
   fi
 }
@@ -285,7 +290,9 @@ wait_pr_checks() {
     # `date` extra por volta)
     if [ "$last_running" -gt 0 ] && [ "$heartbeat_secs" -gt 0 ] && [ "$elapsed" -ge "$next_heartbeat" ]; then
       emit_ci_wait_running "$pr" "$elapsed" "$last_running"
-      next_heartbeat=$(( next_heartbeat + heartbeat_secs ))
+      # #13744: o próximo marco conta a partir DESTA emissão — somar ao marco
+      # antigo fazia, depois de uma fila longa, uma rajada de emissões.
+      next_heartbeat=$(( elapsed + heartbeat_secs ))
     fi
 
     sleep "$poll_secs"
