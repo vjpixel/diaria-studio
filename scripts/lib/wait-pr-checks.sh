@@ -20,7 +20,7 @@
 # rede real por iteração (ver `test/wait-pr-checks-6921.test.ts`).
 #
 # Uso:
-#   scripts/lib/wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600] [running_ceiling_secs=3600]
+#   scripts/lib/wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600] [running_ceiling_secs=3600] [--agent X --edition AAMMDD]
 #
 # Check EM EXECUÇÃO no HEAD vigente (#13685): enquanto a última leitura do
 # gate mostra check rodando (`running=R` > 0 na linha `queue:` — CheckRun
@@ -53,8 +53,9 @@
 # run-log (via `emit_ci_wait_running`, sobrescrevível em teste) a cada
 # `ci_wait_heartbeat_secs` (env CI_WAIT_HEARTBEAT_SECS, default 900) enquanto
 # houver check rodando — o 1º aos 15 min, os seguintes de 15 em 15, sempre
-# dentro da janela de 45 min do watchdog. Só grava com WAIT_PR_CHECKS_AGENT e
-# WAIT_PR_CHECKS_EDITION declaradas pelo chamador (#13744: nada de inferir
+# dentro da janela de 45 min do watchdog. Só grava com agente E edição declarados
+# pelo chamador: flags `--agent`/`--edition` ou, como fallback,
+# WAIT_PR_CHECKS_AGENT/WAIT_PR_CHECKS_EDITION (#13744: nada de inferir
 # agente/edição). O evento leva `details.source = "wait-pr-checks"`, e o
 # watchdog só o conta até 20 min depois do último beacon da sessão (#12676):
 # o helper sobrevive à morte do coordenador. Falha do log nunca derruba a espera.
@@ -299,15 +300,57 @@ wait_pr_checks() {
   done
 }
 
+# `wait_pr_checks_main` (#13744): entrypoint com parsing de flags. Agente e
+# edição entram como FLAGS (`--agent X --edition Y`, ou `--agent=X`) em
+# qualquer posição, e sobrepõem WAIT_PR_CHECKS_AGENT/WAIT_PR_CHECKS_EDITION
+# (o env vira só fallback). Flag em vez de prefixo de variável porque o allow
+# do modo agendado libera `scripts/lib/wait-pr-checks.sh *`: a forma
+# `VAR=... scripts/lib/wait-pr-checks.sh N` não começa pelo script e pode ser
+# negada. Os demais argumentos seguem posicionais.
+wait_pr_checks_main() {
+  local -a pos=()
+  local val
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --agent|--edition)
+        if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+          echo "[wait-pr-checks] uso: $1 exige valor" >&2
+          return 2
+        fi
+        if [ "$1" = "--agent" ]; then WAIT_PR_CHECKS_AGENT="$2"; else WAIT_PR_CHECKS_EDITION="$2"; fi
+        shift 2
+        ;;
+      --agent=*|--edition=*)
+        val="${1#*=}"
+        if [ -z "$val" ]; then
+          echo "[wait-pr-checks] uso: ${1%%=*} exige valor" >&2
+          return 2
+        fi
+        if [[ "$1" == --agent=* ]]; then WAIT_PR_CHECKS_AGENT="$val"; else WAIT_PR_CHECKS_EDITION="$val"; fi
+        shift
+        ;;
+      --*)
+        echo "[wait-pr-checks] flag desconhecida: $1" >&2
+        return 2
+        ;;
+      *)
+        pos+=("$1")
+        shift
+        ;;
+    esac
+  done
+  if [ -z "${pos[0]:-}" ]; then
+    echo "[wait-pr-checks] uso: wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600] [running_ceiling_secs=3600] [--agent X --edition AAMMDD]" >&2
+    return 2
+  fi
+  wait_pr_checks "${pos[0]}" "${pos[1]:-1800}" "${pos[2]:-20}" "${pos[3]:-3600}" "${pos[4]:-3600}"
+}
+
 # Guard #2019-style: só roda o entrypoint quando este arquivo é executado
 # diretamente, nunca quando `source`ado (mesmo padrão de
 # continuo-branch-prefix.sh) — permite ao teste de regressão sourcear e
 # sobrescrever `check_pr_checks_once` sem disparar o loop de verdade.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  if [ -z "${1:-}" ]; then
-    echo "[wait-pr-checks] uso: wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600] [running_ceiling_secs=3600]" >&2
-    exit 2
-  fi
-  wait_pr_checks "$1" "${2:-1800}" "${3:-20}" "${4:-3600}" "${5:-3600}"
+  wait_pr_checks_main "$@"
   exit $?
 fi

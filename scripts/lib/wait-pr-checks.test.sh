@@ -600,6 +600,55 @@ else
 fi
 rm -f "$HB_LOG13744"
 
+# ── 21. #13744: agente e edição como FLAGS do entrypoint ───────────────────
+# O allow do modo agendado libera `scripts/lib/wait-pr-checks.sh *`; o prefixo
+# `VAR=... scripts/...` pode ser negado. As flags sobrepõem o env (fallback).
+MAIN_LOG13744="$(mktemp)"
+main_13744() {
+  (
+    # shellcheck source=./wait-pr-checks.sh
+    source "$DIR/wait-pr-checks.sh"
+    npx() { echo "$*" >> "$MAIN_LOG13744"; }
+    wait_pr_checks() {
+      echo "args=$* agent=${WAIT_PR_CHECKS_AGENT:-} ed=${WAIT_PR_CHECKS_EDITION:-}" >> "$MAIN_LOG13744"
+      emit_ci_wait_running "$1" 1200 1
+    }
+    wait_pr_checks_main "$@"
+  )
+}
+: > "$MAIN_LOG13744"
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; main_13744 21 --agent overnight --edition 261120 )
+RC21=$?
+assert_eq "flags --agent/--edition -> exit 0" "0" "$RC21"
+if grep -q "args=21 1800 20 3600 3600 agent=overnight ed=261120" "$MAIN_LOG13744" \
+  && grep -q -- "--edition 261120 --agent overnight" "$MAIN_LOG13744"; then
+  echo "ok: flags definem agente+edição, posicionais ficam nos defaults e o heartbeat grava"
+else
+  echo "FAIL: flags não chegaram ao laço/heartbeat — $(cat "$MAIN_LOG13744")"
+  FAILED=1
+fi
+: > "$MAIN_LOG13744"
+( WAIT_PR_CHECKS_AGENT=overnight WAIT_PR_CHECKS_EDITION=000000 main_13744 21 60 5 --agent=develop --edition=261121 )
+if grep -q "args=21 60 5 3600 3600 agent=develop ed=261121" "$MAIN_LOG13744"; then
+  echo "ok: --agent=/--edition= sobrepõem o env e posicionais depois do PR seguem valendo"
+else
+  echo "FAIL: flag não sobrepôs o env — $(cat "$MAIN_LOG13744")"
+  FAILED=1
+fi
+: > "$MAIN_LOG13744"
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; main_13744 21 --edition 261120 )
+if grep -q "agent= ed=261120" "$MAIN_LOG13744" && ! grep -q -- "log-event" "$MAIN_LOG13744"; then
+  echo "ok: só --edition (sem agente) -> espera sem heartbeat"
+else
+  echo "FAIL: heartbeat gravado sem agente declarado — $(cat "$MAIN_LOG13744")"
+  FAILED=1
+fi
+( unset WAIT_PR_CHECKS_AGENT WAIT_PR_CHECKS_EDITION; main_13744 21 --agent >/dev/null 2>&1 )
+assert_eq "--agent sem valor -> exit 2" "2" "$?"
+( main_13744 21 --edicao 261120 >/dev/null 2>&1 )
+assert_eq "flag desconhecida -> exit 2" "2" "$?"
+rm -f "$MAIN_LOG13744"
+
 rm -f "$FAKE_CLOCK13702" "$GATE_CALLS13702"
 
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
