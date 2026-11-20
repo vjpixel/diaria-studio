@@ -37,7 +37,6 @@ import {
   type VocabRule,
   type SequenceRef,
   normalizeToken,
-  tokenize,
   tokensMatch,
   trimWordsToSilences,
   type CutAdjustment,
@@ -274,6 +273,39 @@ export interface EdgeDecision {
 }
 
 /**
+ * #13460: a mesma palavra curta que a retranscrição da borda escreve com uma
+ * letra a mais ou a menos no fim ("Envy." para o ".env" do roteiro, 261112,
+ * saída em 744,94 s cortada para 744,39 s e recolocada pelo editor). O
+ * `tokensMatch` só aceita 1 edição de distância a partir de 5 letras; aqui,
+ * só no refino da borda, vale também o prefixo com 1 letra de diferença a
+ * partir de 3 letras. Puro.
+ */
+export function edgeVariant(a: string, b: string): boolean {
+  const x = normalizeToken(a);
+  const y = normalizeToken(b);
+  if (x === y) return x !== "";
+  const [s, l] = x.length <= y.length ? [x, y] : [y, x];
+  return s.length >= 3 && l.length - s.length === 1 && l.startsWith(s);
+}
+
+/**
+ * #13460: os tokens do roteiro como são FALADOS na borda. Palavra escrita com
+ * ponto na frente (".env", ".gitignore") é dita "ponto env": o "ponto" entra
+ * antes do token, senão a retranscrição que o ouve não casa com o roteiro e a
+ * passada B tira a palavra como som fora do roteiro (261112). Puro.
+ */
+export function spokenScriptTokens(script: string): string[] {
+  const out: string[] = [];
+  for (const raw of script.split(/\s+/)) {
+    const tok = normalizeToken(raw);
+    if (!tok) continue;
+    if (/^[("'“‘]*\.[\p{L}\p{N}]/u.test(raw)) out.push("ponto");
+    out.push(tok);
+  }
+  return out;
+}
+
+/**
  * Passada B, uma borda: alinha a fala retranscrita (`heard`, tempo do bruto)
  * com as palavras do transcript dentro do clipe (`reference`). Na entrada, as
  * palavras ouvidas ANTES da 1ª casada, com o meio dentro do clipe e com
@@ -299,7 +331,7 @@ export function edgeExtras(input: {
   // Homófonos de borda: o Whisper pode ouvir "a" onde o roteiro diz "há".
   // Esta tolerância fica restrita ao refino; não muda o matcher da decupagem.
   const homophone = (s: string) => normalizeToken(s) === "ha" ? "a" : normalizeToken(s);
-  const eq: TokenMatcher = (a, b) => baseEq(a, b) || homophone(a) === homophone(b);
+  const eq: TokenMatcher = (a, b) => baseEq(a, b) || homophone(a) === homophone(b) || edgeVariant(a, b);
   const { srcIn, srcOut } = input.clip;
   // #13189: normaliza antes do alinhamento e da proteção pelo roteiro.
   const heard = applyVocabularyToWords(input.heard, input.rules ?? [], input.target);
@@ -322,7 +354,7 @@ export function edgeExtras(input: {
     if (b - a < 0.04) return false;
     return input.env.db.length === 0 || maxDbIn(input.env, a, b) >= input.thresholdDb + CUT_REFINE.extraAboveDb;
   };
-  const S = input.clip.script ? tokenize(input.clip.script) : [];
+  const S = input.clip.script ? spokenScriptTokens(input.clip.script) : [];
   // Posição no roteiro de uma palavra casada (1ª ocorrência a partir do começo, ou do fim).
   const scriptPos = (tok: string, fromEnd: boolean): number => {
     if (fromEnd) {
