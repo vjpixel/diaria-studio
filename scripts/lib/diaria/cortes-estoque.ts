@@ -172,7 +172,26 @@ export interface EstoqueItem {
   avisos: string[];
 }
 
-const SLUG_EDICAO_RE = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d{6})$/;
+const VIDEO_EXT_RE = /\.(mp4|mov|m4v|webm|mkv)$/i;
+
+/**
+ * Puro (#13730): a pasta de `data/cortes/` não é corte, é sobra do sync (ex.:
+ * `_conflitos-261117` com só `.shorts-corte-timer-heartbeat.json.conflict1` e
+ * `desktop.ini`). Não é corte a pasta cujo nome começa com `_` ou `.`, e a
+ * pasta sem `corte.json` e sem vídeo. `files` = nomes dos arquivos da pasta,
+ * ou `null` quando ela tem `corte.json` (aí só o nome conta). Devolve o motivo,
+ * ou `null` quando a pasta entra no estoque.
+ */
+export function pastaDeSyncNaoCorte(slug: string, files: readonly string[] | null): string | null {
+  if (slug.startsWith("_") || slug.startsWith(".")) return `nome começa com "${slug[0]}" (pasta do sync ou de serviço, não corte)`;
+  if (files === null) return null;
+  if (files.some((f) => VIDEO_EXT_RE.test(f))) return null;
+  return files.length
+    ? `sem corte.json e sem vídeo (só ${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""}): sobra do sync, não corte`
+    : "pasta vazia, sem corte.json: não é corte";
+}
+
+const SLUG_EDICAO_RE =/^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d{6})$/;
 
 /** Puro: `nvidia-261110` → `{ corte: "nvidia", edicao: "261110" }`; null se o nome não segue a convenção. */
 export function parseCorteSlug(slug: string): { corte: string; edicao: string } | null {

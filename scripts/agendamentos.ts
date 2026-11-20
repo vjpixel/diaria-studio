@@ -10,7 +10,13 @@
  *     (`--destinos vertical` = os destinos da vertical da edição na config,
  *      `publishing.shorts`, os mesmos do plano do `publish-shorts.ts`;
  *      ou `--alvo 2026-11-18T12:00:00-03:00` no lugar de `--dias`/`--hora`;
- *      `--dias N` conta a partir da edição, `--hora` é BRT, default 12:00)
+ *      `--dias N` conta a partir da edição, `--hora` é BRT, default 12:00;
+ *      #13729: com `--dias`/`--hora`, horário que já é da vertical principal do
+ *      dia útil, ou de outro item do banco no mesmo dia e destinos, vira o
+ *      seguinte livre de `rotation_times`, com uma linha `[horário]`;
+ *      `--hora-exata` mantém o pedido. #13736: dono que o Git Bash converteu
+ *      em caminho (`C:/Program Files/Git/diaria-publica …`) é recusado: rodar
+ *      com `MSYS_NO_PATHCONV=1`)
  *   npx tsx scripts/agendamentos.ts listar [--json] [--todos]
  *     (sem `--todos`, só os itens em aberto e os falhos)
  *   npx tsx scripts/agendamentos.ts marcar --id 261111-vertical-2 --estado pronto|agendado|falhou [--nota "..."]
@@ -55,6 +61,7 @@ import {
   type EstoqueBlocks,
   type EstoqueCorteDir,
   type EstoqueItem,
+  pastaDeSyncNaoCorte,
 } from "./lib/diaria/cortes-estoque.ts";
 import { CORTE_SPEC_FILE, CORTES_REL_DIR, parseCorteSpec, type CorteSpec } from "./lib/diaria/short-corte.ts";
 import { listShortDestinations, loadShortScheduleConfig, loadShortsConfig } from "./lib/diaria/short-video.ts";
@@ -67,6 +74,7 @@ import {
   addDaysAammdd,
   agendamentosPath,
   brtAlvoIso,
+  horarioLivreNoBanco,
   loadAgendamentos,
   removerAgendamento,
   saveAgendamentos,
@@ -83,6 +91,7 @@ export const SUBCOMMAND_SPECS: Record<string, CliSpec> = {
   registrar: {
     script: `${SCRIPT} registrar`,
     values: ["edicao", "peca", "destinos", "dias", "hora", "alvo", "dono", "estado", "nota"],
+    booleans: ["hora-exata"],
     numeric: ["dias"],
   },
   listar: { script: `${SCRIPT} listar`, booleans: ["json", "todos"] },
@@ -168,14 +177,23 @@ export function resolveDestinos(raw: string, root: string): string[] {
  * `{AAMMDD}`), as pastas de `data/cortes/` e o banco. Arquivo ilegível vira
  * aviso e não derruba a listagem; o banco ilegível lança (como no `listar`).
  */
-export function lerEstoque(root: string): { itens: EstoqueItem[]; avisos: string[] } {
+export function lerEstoque(root: string): { itens: EstoqueItem[]; avisos: string[]; ignoradas: string[] } {
   const avisos: string[] = [];
+  /** #13730: pastas de `data/cortes/` que são sobra do sync, fora do estoque (`pastaDeSyncNaoCorte`). */
+  const ignoradas: string[] = [];
   const blocks: EstoqueBlocks[] = [];
   const editionsDir = join(root, "data", "editions");
   const editionDirs: string[] = [];
   const subdirs = (dir: string): string[] => {
     try {
       return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch {
+      return [];
+    }
+  };
+  const listFiles = (dir: string): string[] => {
+    try {
+      return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name);
     } catch {
       return [];
     }
@@ -203,6 +221,11 @@ export function lerEstoque(root: string): { itens: EstoqueItem[]; avisos: string
   for (const slug of subdirs(cortesDir)) {
     const dir = join(cortesDir, slug);
     const specPath = join(dir, CORTE_SPEC_FILE);
+    const lixo = pastaDeSyncNaoCorte(slug, existsSync(specPath) ? null : listFiles(dir));
+    if (lixo) {
+      ignoradas.push(`data/cortes/${slug}: ${lixo}`);
+      continue;
+    }
     if (!existsSync(specPath)) {
       cortes.push({ slug, spec: null, entries: [], erro: `${CORTE_SPEC_FILE} ausente` });
       continue;
@@ -221,7 +244,7 @@ export function lerEstoque(root: string): { itens: EstoqueItem[]; avisos: string
     }
   }
   const banco = loadAgendamentos(agendamentosPath(root));
-  return { itens: montarEstoque({ blocks, cortes, banco }), avisos };
+  return { itens: montarEstoque({ blocks, cortes, banco }), avisos, ignoradas };
 }
 
 function formatEstoque(it: EstoqueItem): string[] {
@@ -270,10 +293,11 @@ export function runAgendamentosCli(argv: readonly string[], io: CliIo): number {
     }
 
     if (sub === "estoque") {
-      const { itens, avisos } = lerEstoque(io.root);
+      const { itens, avisos, ignoradas } = lerEstoque(io.root);
       for (const a of avisos) io.err(`[aviso] ${a}`);
+      for (const g of ignoradas) io.err(`[lixo de sync, fora do estoque] ${g} (#13730)`);
       const mostrar = flags.has("todos") ? itens : itens.filter((it) => !it.usado);
-      if (flags.has("json")) io.out(JSON.stringify({ itens: mostrar }, null, 2));
+      if (flags.has("json")) io.out(JSON.stringify({ itens: mostrar, ignoradas }, null, 2));
       else if (mostrar.length === 0) io.out(flags.has("todos") ? "(nenhum corte)" : "(nenhum corte pronto sem uso)");
       else for (const it of mostrar) for (const line of formatEstoque(it)) io.out(line);
       return 0;
@@ -312,14 +336,39 @@ export function runAgendamentosCli(argv: readonly string[], io: CliIo): number {
 
     if (sub === "registrar") {
       const edicao = required(values, "edicao");
+      const peca = required(values, "peca");
+      const destinos = resolveDestinos(required(values, "destinos"), io.root);
       let alvo = values.alvo;
       if (alvo && (values.dias !== undefined || values.hora !== undefined)) {
         throw new Error("use --alvo OU --dias/--hora, não os dois");
       }
+      if (alvo && flags.has("hora-exata")) throw new Error("--hora-exata só vale com --dias/--hora (--alvo já é exato)");
       if (!alvo) {
         const dias = Number(required(values, "dias"));
         if (!Number.isInteger(dias)) throw new Error("--dias precisa ser inteiro");
-        alvo = brtAlvoIso(addDaysAammdd(edicao, dias), values.hora ?? "12:00");
+        const dia = addDaysAammdd(edicao, dias);
+        let hora = values.hora ?? "12:00";
+        const configPath = join(io.root, "platform.config.json");
+        if (!flags.has("hora-exata") && !existsSync(configPath)) {
+          io.err(`[aviso] ${configPath} ausente: ${hora} não conferido contra a vertical principal do dia (#13729)`);
+        } else if (!flags.has("hora-exata")) {
+          // #13729: o horário pedido pode ser o da vertical principal do dia (ou de
+          // outro item do banco) nos mesmos destinos; troca pelo seguinte livre.
+          const config = JSON.parse(readFileSync(configPath, "utf8"));
+          const livre = horarioLivreNoBanco({
+            sched: loadShortScheduleConfig(config),
+            aammdd: dia,
+            hhmm: hora,
+            destinos,
+            destinosVertical: listShortDestinations(loadShortsConfig(config)).map((d) => d.id),
+            banco,
+            id: `${edicao}-${peca}`,
+          });
+          if (livre.ajustado) io.out(`[horário] ${livre.motivo}; --hora-exata mantém ${hora}`);
+          else if (livre.colide) io.err(`[aviso] ${livre.motivo}`);
+          hora = livre.hhmm;
+        }
+        alvo = brtAlvoIso(dia, hora);
       } else if (!/(Z|[+-]\d{2}:\d{2})$/.test(alvo)) {
         throw new Error("--alvo precisa de fuso explícito (ex.: 2026-11-18T12:00:00-03:00)");
       }
@@ -327,8 +376,8 @@ export function runAgendamentosCli(argv: readonly string[], io: CliIo): number {
         banco,
         {
           edicao,
-          peca: required(values, "peca"),
-          destinos: resolveDestinos(required(values, "destinos"), io.root),
+          peca,
+          destinos,
           alvo,
           dono: required(values, "dono"),
           estado: values.estado ? parseEstado(values.estado) : undefined,
