@@ -36,6 +36,7 @@ import {
 import { contentWords } from "./youtube-title-research.ts";
 import { ctaCardDurationFrom, CTA_CARD } from "./video-cta-card.ts";
 import { hasRecognizableSubject } from "./youtube-capa-hooks.ts";
+import { falaDeFecho } from "./video-sequence-fecho.ts";
 import { cortesDaFala, segmentosSemTrechos, SETA, validarRoteiroFalas, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type PecaVideo, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 
 /** Caminho do JSON do roteiro, relativo à pasta da edição. */
@@ -329,6 +330,13 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
       }
       if (segFixos?.length) falas.push({ id: f.id, bloco, texto: segFixos.join(" "), segmentos: segFixos, cortado: fixos.join(" / ") });
       else falas.push({ id: f.id, bloco, texto: f.texto });
+    }
+    // #13743: a última fala de encerramento (CTA, "me conta nos comentários") vai para o fecho, que segura o
+    // respiro no fim; sem isso a sequência terminava seca, direto no card (261119).
+    const ultima = falas[falas.length - 1];
+    if (ultima && !falas.some((x) => x.bloco === "fecho") && falaDeFecho(ultima.bloco, ultima.texto)) {
+      avisos.push(`${VIDEO_LABEL[v]}: a última fala, ${ultima.id} (${ultima.bloco}), é de encerramento e vai para o bloco fecho, que segura o respiro no fim (#13743)`);
+      ultima.bloco = "fecho";
     }
     if (falas.length) sequencias.push({ video: v, chave: chaveDe[v], ...pecas[v], ...(declarada ? { ordemDeclarada: true } : {}), falas });
     // A montagem ordena por bloco: uma ordem declarada que cruza blocos não sai como pedida.

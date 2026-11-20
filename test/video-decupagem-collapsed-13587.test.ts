@@ -203,7 +203,7 @@ test("#13587: a 1ª passada retranscreve todas as janelas que faltam numa chamad
   assert.equal(calls.length, 1, "uma chamada do Whisper para as 3 janelas");
   assert.equal(calls[0].kind, "janela");
   assert.equal(calls[0].keys.length, 3);
-  assert.deepEqual(res.transcribed, { windows: 3, subs: 0 });
+  assert.deepEqual(res.transcribed, { windows: 3, subs: 0, tails: 0 });
   assert.equal(res.resolved, 3);
   assert.equal(res.segments.length, TRANSCRIPT.length - 3 + 4 + 2 + 1);
   // A listagem numerada traz a nota da tomada separada.

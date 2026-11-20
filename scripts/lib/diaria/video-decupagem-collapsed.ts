@@ -111,6 +111,11 @@ export interface ListingOrigin {
    * gravada antes do #13600 (aí vale a nota, `collapsedStatus`).
    */
   collapsed?: "nao-separada" | "falso-comeco";
+  /**
+   * #13742: a linha é a última tomada que a janela de cauda separou
+   * (`tailTake`), sem o editor ouvir: vai ao Gate 1 como premissa, não parada.
+   */
+  tail?: true;
 }
 
 export interface CollapsedExpansion {
@@ -271,6 +276,112 @@ export function repetitionNote(rep: RepetitionCut | null, job: CollapsedSegmentJ
   return `falso começo "${rep.falseStart}" em ${rep.cut.start.toFixed(2)}–${rep.cut.end.toFixed(2)} s (subjanelas): o roteiro propõe o corte na linha repetição, a fala fica neste segmento (#11958, #13587)`;
 }
 
+// ── Janela de cauda (#13742) ──────────────────────────────────────────────
+
+/**
+ * #13742 (261119, segmentos 36 e 51): a janela inteira e as subjanelas não
+ * separaram, e a tomada saiu à mão com uma retranscrição que começava DEPOIS
+ * da última suspeita (`retranscribe --from 251.5 --to 266.0`, "a última tomada
+ * vale"). Duas causas, as duas da 1ª passada:
+ *
+ * - a janela do aviso cobre o segmento inteiro, e o Whisper nela repete o erro
+ *   do transcript longo (uma tomada só, com o mesmo vão ou a mesma palavra
+ *   esticada): a parte única tem suspeita própria e não conta como frase
+ *   inteira;
+ * - as subjanelas olham só a 1ª suspeita (`subRetranscribeWindow`), e no
+ *   segmento 36 a regravação estava na 2ª ("modelos" esticada por 5,4 s,
+ *   depois do vão de 12,1 s).
+ *
+ * A cauda é a janela da ÚLTIMA suspeita do segmento até o fim da janela dele:
+ * `leadS` antes da palavra depois do vão (ou `COLLAPSED_TAKE.marginS` antes da
+ * palavra esticada), onde a última tomada recomeça. `minS`: cauda mais curta
+ * que isso não tem frase para conferir.
+ */
+export const TAIL_WINDOW = { leadS: 1.5, minS: 1.5 } as const;
+
+/** A janela de cauda do segmento suspeito (`null` = a última suspeita já é o começo da janela ou a cauda é curta demais). */
+export function tailWindowFor(seg: Segment, job: CollapsedSegmentJob, silences: Interval[], durationS?: number): Interval | null {
+  const all = collapsedTakeSuspects(seg.words ?? [], silences, { durationS });
+  const last = all[all.length - 1] ?? job.suspect;
+  const start = last.kind === "intervalo" ? Math.max(last.at, last.end - TAIL_WINDOW.leadS) : Math.max(job.window.start, last.at - 0.5);
+  const end = job.window.end;
+  if (!(start > job.window.start + 1e-6) || end - start < TAIL_WINDOW.minS) return null;
+  return { start: round3(start), end: round3(end) };
+}
+
+/** Tamanho da maior subsequência comum de `a` e `b` (por caractere). */
+function lcsLength(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  let prev = new Array<number>(y.length + 1).fill(0);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = new Array<number>(y.length + 1).fill(0);
+    for (let j = 1; j <= y.length; j++) cur[j] = x[i - 1] === y[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    prev = cur;
+  }
+  return prev[y.length];
+}
+
+/** As palavras do segmento antes da última suspeita e as dela em diante (a esticada entra no fim). */
+function splitAtLastSuspect(seg: Segment, silences: Interval[], durationS?: number): { before: Word[]; after: Word[] } | null {
+  const ws = (seg.words ?? []).filter((w) => w.text.trim() !== "");
+  const all = collapsedTakeSuspects(ws, silences, { durationS });
+  const last = all[all.length - 1];
+  if (!last) return null;
+  const cut = last.kind === "intervalo" ? last.word + 1 : last.word;
+  return { before: ws.slice(0, cut), after: ws.slice(cut) };
+}
+
+/**
+ * A última tomada que a cauda ouviu, quando ela é de fato uma regravação:
+ * - as palavras da retranscrição dentro do segmento (mesma folga e vizinhos de
+ *   `expandCollapsedSegments`), a partir da última vez em que o começo dela se
+ *   repete (a cauda que pegou duas tomadas fica com a segunda);
+ * - recomeço: a 1ª palavra dela foi dita antes da suspeita (a regravação
+ *   repete o começo: "a OpenAI…", "os dois…"); sem isso o vão pode ser só uma
+ *   pausa barulhenta da MESMA tomada, e cortar o começo dela seria perder fala;
+ * - cobre pelo menos `WHOLE_PHRASE_MIN` do que o segmento tem da suspeita em
+ *   diante, e não tem suspeita própria.
+ * `null` = a cauda não decide; o segmento segue como parada do Gate 1.
+ */
+export function tailTake(seg: Segment, prev: Segment | undefined, next: Segment | undefined, tail: Transcript, silences: Interval[], durationS?: number): Segment | null {
+  const split = splitAtLastSuspect(seg, silences, durationS);
+  if (!split || !split.before.length || !split.after.length) return null;
+  const floor = Math.max(seg.start - EDGE_TOL_S, prev ? prev.end : Number.NEGATIVE_INFINITY);
+  const ceil = Math.min(seg.end + EDGE_TOL_S, next ? next.start : Number.POSITIVE_INFINITY);
+  let words = tail.segments
+    .flatMap((s) => s.words ?? [])
+    .filter((w) => w.text.trim() !== "" && (w.start + w.end) / 2 >= floor && (w.start + w.end) / 2 <= ceil)
+    .sort((a, b) => a.start - b.start);
+  if (words.length < 2) return null;
+  const tok = (w: Word) => normalizeToken(w.text);
+  // A cauda que pegou duas tomadas: fica a partir da última repetição do começo (as duas 1ªs palavras).
+  for (let j = words.length - 2; j > 0; j--) {
+    if (tok(words[j]) === tok(words[0]) && tok(words[j + 1]) === tok(words[1])) {
+      words = words.slice(j);
+      break;
+    }
+  }
+  const said = new Set(split.before.map(tok).filter(Boolean));
+  if (!said.has(tok(words[0]))) return null;
+  // Cobertura em letras, não em palavras: o Whisper longo e a cauda separam diferente ("chat GPT"/"ChatGPT",
+  // "pra"/"para"), e a contagem por palavra reprovaria a tomada certa do segmento 51 da 261119.
+  const want = split.after.map(tok).join("");
+  const got = words.map(tok).join("");
+  if (!want.length || lcsLength(got, want) < WHOLE_PHRASE_MIN * want.length) return null;
+  if (collapsedTakeSuspects(words, silences).length) return null;
+  const iv = takeInterval(words, { firstWord: 0, lastWord: words.length - 1 });
+  const guard = TAKE_DEFAULTS.guardS;
+  const lowBound = prev ? prev.end + guard : 0;
+  const highBound = next ? next.start - guard : Number.POSITIVE_INFINITY;
+  return {
+    start: round3(Math.max(iv.start, Math.min(words[0].start, lowBound))),
+    end: round3(Math.min(iv.end, Math.max(words[words.length - 1].end, highBound))),
+    text: joinWordTexts(words.map((w) => w.text.trim())),
+    words,
+  };
+}
+
 // ── Listagem congelada (`decupagem-segments.json`) ────────────────────────
 
 /** Arquivo da listagem expandida, no state dir. */
@@ -331,8 +442,8 @@ export interface CollapsedListingIO {
 
 export interface CollapsedListingResult extends CollapsedExpansion {
   jobs: CollapsedSegmentJob[];
-  /** Janelas e subjanelas retranscritas nesta passada (as já gravadas não contam). */
-  transcribed: { windows: number; subs: number };
+  /** Janelas, subjanelas e janelas de cauda (#13742) retranscritas nesta passada (as já gravadas não contam). */
+  transcribed: { windows: number; subs: number; tails: number };
   /** O áudio faltou para alguma retranscrição: as suspeitas ficam como aviso. */
   audioMissing: boolean;
 }
@@ -347,7 +458,7 @@ export function resolveCollapsedListing(
   const jobs = collapsedSegmentJobs(segments, silences, durationS);
   const allow = opts.retranscribe !== false;
   let audioMissing = false;
-  const transcribed = { windows: 0, subs: 0 };
+  const transcribed = { windows: 0, subs: 0, tails: 0 };
   const missing = missingWindows(jobs, (k) => io.readWindow(k) !== null);
   if (allow && missing.length) {
     if (io.transcribeWindows(missing, "janela")) transcribed.windows = missing.length;
@@ -374,6 +485,40 @@ export function resolveCollapsedListing(
         exp.origin[at] = { ...exp.origin[at], note: repetitionNote(rep, u.job), collapsed: rep ? "falso-comeco" : "nao-separada" };
       }
     }
+  }
+  // #13742: onde nem a janela nem as subjanelas separaram, a cauda (da última suspeita ao fim), numa chamada só.
+  const tails = exp.unresolved
+    .filter((u) => u.reason === "uma-tomada")
+    .map((u) => {
+      const at = exp.origin.findIndex((o) => o.original === u.job.segment + 1 && !o.retranscribed);
+      if (at < 0 || exp.origin[at].collapsed !== "nao-separada") return null;
+      const w = tailWindowFor(segments[u.job.segment], u.job, silences, durationS);
+      return w ? { u, at, w, key: retranscribeKey(w) } : null;
+    })
+    .filter((x): x is { u: CollapsedExpansion["unresolved"][number]; at: number; w: Interval; key: string } => x !== null);
+  const tailMissing = missingWindows(tails.map((t) => ({ ...t.u.job, window: t.w, key: t.key })), (k) => io.readWindow(k) !== null);
+  if (allow && tailMissing.length) {
+    if (io.transcribeWindows(tailMissing, "janela")) transcribed.tails = tailMissing.length;
+    else audioMissing = true;
+  }
+  for (const t of tails) {
+    const patch = io.readWindow(t.key);
+    if (!patch) continue;
+    const i = t.u.job.segment;
+    const take = tailTake(segments[i], segments[i - 1], segments[i + 1], patch, silences, durationS);
+    if (!take) {
+      exp.origin[t.at] = { ...exp.origin[t.at], note: `${exp.origin[t.at].note ?? ""}; a janela de cauda ${t.w.start.toFixed(1)}–${t.w.end.toFixed(1)} s também não separou (#13742)` };
+      continue;
+    }
+    exp.segments[t.at] = take;
+    exp.origin[t.at] = {
+      original: i + 1,
+      retranscribed: { file: windowFileName(t.key) },
+      tail: true,
+      note: `retranscrito pela cauda: a última tomada do segmento ${i + 1} do transcript (${take.start.toFixed(2)}–${take.end.toFixed(2)} s), depois de ${describeCollapsedSuspect(t.u.job.suspect)}; o começo do trecho (tomadas anteriores) sai como bastidor. Premissa sem ouvir, conferir no Gate 2 (${windowFileName(t.key)}, #13742)`,
+    };
+    exp.unresolved = exp.unresolved.filter((x) => x !== t.u);
+    exp.resolved++;
   }
   return { ...exp, jobs, transcribed, audioMissing };
 }

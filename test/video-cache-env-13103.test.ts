@@ -58,7 +58,7 @@ describe("#13103 montagem lê DIARIA_VIDEO_CACHE_DIR do .env", { skip: process.p
     await withSandbox(async (base) => {
       const hd = join(base, "hd-desmontado", "cache");
       writeFileSync(join(base, ".env"), `DIARIA_VIDEO_CACHE_DIR=${hd}\n`);
-      await assert.rejects(cliMain(args(base), noNetwork, base), (e: Error) => {
+      await assert.rejects(cliMain(args(base), noNetwork, base, { path: join(base, "gpu.lock") }), (e: Error) => {
         assert.match(e.message, /DIARIA_VIDEO_CACHE_DIR aponta para/);
         assert.ok(e.message.includes(hd), e.message);
         return true;
@@ -72,7 +72,7 @@ describe("#13103 montagem lê DIARIA_VIDEO_CACHE_DIR do .env", { skip: process.p
       const fromProcess = join(base, "do-processo");
       writeFileSync(join(base, ".env"), `DIARIA_VIDEO_CACHE_DIR=${fromEnvFile}\n`);
       process.env.DIARIA_VIDEO_CACHE_DIR = fromProcess;
-      await assert.rejects(cliMain(args(base), noNetwork, base), (e: Error) => {
+      await assert.rejects(cliMain(args(base), noNetwork, base, { path: join(base, "gpu.lock") }), (e: Error) => {
         assert.ok(e.message.includes(fromProcess), e.message);
         assert.ok(!e.message.includes(fromEnvFile), e.message);
         return true;
