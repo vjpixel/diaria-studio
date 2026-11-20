@@ -74,16 +74,26 @@ describe("#13460 — passada B não tira palavra do roteiro escrita com ponto", 
   });
 
   it("na entrada, o 'ponto' de uma palavra com ponto antes do 1º casado fica", () => {
+    // Silêncio entre "ponto" e "env": sem ele o `snapToValley` não acha vale e
+    // a entrada já ficava pela regra #12263 ("colado na 1ª palavra"), mesmo sem
+    // o `spokenScriptTokens`. Com o vale, só o "ponto" no roteiro falado segura.
     const h: Word[] = [
-      { start: 10.0, end: 10.3, text: "ponto" },
-      { start: 10.3, end: 10.7, text: "env" },
-      { start: 10.8, end: 11.1, text: "guarda" },
+      { start: 10.0, end: 10.25, text: "ponto" },
+      { start: 10.45, end: 10.8, text: "env" },
+      { start: 10.85, end: 11.1, text: "guarda" },
       { start: 11.1, end: 11.4, text: "as" },
       { start: 11.4, end: 11.9, text: "chaves" },
     ];
     const ref: Word[] = h.slice(1);
-    const d = edgeExtras({ edge: "in", clip: { srcIn: 9.95, srcOut: 11.95, script: "O .env guarda as chaves." }, heard: h, reference: ref, env, thresholdDb: -45 });
+    const db = new Float64Array(1300).fill(-70);
+    for (const w of h) for (let i = Math.round(w.start / 0.01); i <= Math.round(w.end / 0.01); i++) db[i] = -20;
+    const envFala: Envelope = { hopS: 0.01, db };
+    const d = edgeExtras({ edge: "in", clip: { srcIn: 9.95, srcOut: 11.95, script: "O .env guarda as chaves." }, heard: h, reference: ref, env: envFala, thresholdDb: -45 });
     assert.equal(d.to, undefined, `a entrada foi movida para ${d.to} (som a mais: ${d.extra})`);
+    // Controle: o mesmo envelope corta um som que não é o do roteiro.
+    const outro = h.map((w, i) => (i === 0 ? { ...w, text: "tipo" } : w));
+    const c = edgeExtras({ edge: "in", clip: { srcIn: 9.95, srcOut: 11.95, script: "O .env guarda as chaves." }, heard: outro, reference: ref, env: envFala, thresholdDb: -45 });
+    assert.ok(c.to !== undefined && c.to > 10.25 && c.to <= 10.45, `esperava corte no vale entre 10,25 e 10,45 s, veio ${c.to}`);
   });
 });
 
