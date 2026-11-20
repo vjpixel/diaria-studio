@@ -713,6 +713,8 @@ export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
 import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
+import { withGpuLock, type GpuLockDeps } from "./lib/diaria/video-gpu-lock.ts";
+import { sequenceEndingWarning } from "./lib/diaria/video-sequence-fecho.ts";
 import { falasSemTomada, falasSemTomadaAviso, readRoteiroFalasLista, videosForaDoBruto, videosForaDoBrutoAviso } from "./lib/diaria/video-roteiro-cobertura.ts";
 import { PROXY, cropOnProxy, proxyOutputArgs, proxySize, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
 import {
@@ -2830,7 +2832,7 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number, retranscribe = true, espelhoAm
       const s = tr.segments[u.job.segment];
       console.error(`[aviso] segmento ${u.job.segment + 1} do transcript (${clockTime(s.start)}–${clockTime(s.end)}): ${res.origin.find((o) => o.original === u.job.segment + 1 && !o.retranscribed)?.note ?? "possível tomada colapsada"}`);
     }
-    if (res.jobs.length) console.error(`[video-montagem] decupagem: ${res.jobs.length} segmento(s) com tomada colapsada, ${res.resolved} separado(s) pela retranscrição (${res.transcribed.windows} janela(s) e ${res.transcribed.subs} subjanela(s) retranscritas agora, #13587)`);
+    if (res.jobs.length) console.error(`[video-montagem] decupagem: ${res.jobs.length} segmento(s) com tomada colapsada, ${res.resolved} separado(s) pela retranscrição (${res.transcribed.windows} janela(s), ${res.transcribed.subs} subjanela(s) e ${res.transcribed.tails} janela(s) de cauda retranscritas agora, #13587, #13742)`);
     const segments = res.segments;
     writeJson(f(ctx, DECUPAGEM_SEGMENTS_FILE), freezeListing(ctx.edition, tr.segments, res));
     const notes = res.origin.map((o) => o.note);
@@ -5705,6 +5707,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   }
   for (const p of picked) {
     if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
+    // #13743: a sequência que acaba no comentário (sem o fecho) sai seca, direto no card.
+    const ending = sequenceEndingWarning(p.spec.name, p.clips, file.holdBlocks ?? ["fecho"]);
+    if (ending) console.error(`[aviso] ${ending}`);
   }
   // #13123 (em teste): a capa nos primeiros quadros das verticais; falha = sequência sem a capa, com aviso.
   const capaInicio = await renderCapaInicioAssets(ctx, file, picked, source.fps, mediaPath);
@@ -8023,9 +8028,14 @@ async function runCommand(
  * sobrescreve o ambiente (`loadProjectEnv`). Os testes chamam `main` direto,
  * sem ler o `.env` da máquina; `envRoot` existe para o teste de regressão.
  */
-export async function cliMain(argv = process.argv.slice(2), deps?: MontageDriveDeps, envRoot: string = ROOT): Promise<number> {
+export async function cliMain(argv = process.argv.slice(2), deps?: MontageDriveDeps, envRoot: string = ROOT, gpuLock: GpuLockDeps = {}): Promise<number> {
   loadProjectEnv(envRoot);
-  return main(argv, deps);
+  // #13741: um subcomando por vez na GPU da máquina (preview, review e gaze juntos travaram na 261119).
+  // Só na linha de comando: os testes chamam `main` direto. --help e argumento inválido não esperam o lock.
+  const { flags, positional } = parseArgs(argv);
+  const [cmd, edition] = positional;
+  const lockable = !!cmd && isSubcommand(cmd) && !!edition && /^\d{6}$/.test(edition) && !flags.has("help");
+  return withGpuLock(lockable ? cmd : undefined, edition, () => main(argv, deps), gpuLock);
 }
 
 if (isMainModule(import.meta.url)) {

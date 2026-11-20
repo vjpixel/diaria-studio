@@ -158,6 +158,8 @@ Campos do roteiro que a proposta já aplica (todos opcionais; sem eles, o compor
 
 A proposta também traz a duração estimada de cada vídeo (`duracoes` no `--json`, a 150 palavras por minuto, alvos em `publishing.video.roteiro`, #13130): é a do texto do roteiro, não a medida no bruto, que continua sendo a do `roteiro`.
 
+**O que roda em paralelo (#13741).** Os subcomandos do `video-montagem.ts` que usam a GPU (todos menos `blocks`, `fact-check-merge` e `upload`) rodam um por vez na máquina: na 261119, `preview`, `review` e `gaze` juntos travaram os três (ffmpeg com `cuda`/`h264_nvenc` e o faster-whisper na mesma placa). O segundo espera o primeiro sozinho, com `[aviso] GPU ocupada por …`, então disparar dois em background não ganha tempo nem trava; o que roda de fato junto com eles é o que não é subcomando (o agent `fact-checker`, a leitura do Doc, o `blocks`). `DIARIA_VIDEO_GPU_LOCK=0` desliga o lock.
+
 ### Passo 2b — Fact-check da fala em paralelo (#13597, #11956)
 
 A fala do vídeo não passa pelo `fact-checker` da Etapa 4 (que só vê newsletter e social), e na 261103 a checagem à mão, pedida pelo editor depois do Gate 2, achou 4 erros graves na fala gravada (benchmark atribuído ao modelo errado, modelo inexistente, "a Mistral e a IBM usam" a mesma definição, um 4º ponto sem fonte), resolvidos com cortes. Por isso o fact-check roda sempre, e desde o #13597 **logo depois do `blocks.json`** (item 5), sobre o texto final da decupagem, em vez de esperar o roteiro:
