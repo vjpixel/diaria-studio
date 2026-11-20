@@ -31,6 +31,7 @@ import { keepStudioWebVerticalFeed, type ShortCoverRecord } from "../scripts/lib
 import { SHORTS_PUBLISHED_FILE, type ShortPublishedEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 import { main as coverMain } from "../scripts/short-vertical-cover.ts";
 import { main as phaseMain, defaultPhaseCliDeps } from "../scripts/publica-phase.ts";
+import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts.ts";
 
 const ED = "261119";
 const VID = "AbCdEfGhIjK";
@@ -184,6 +185,22 @@ describe("CLI + publica-phase join (#13708)", () => {
 
   it("sem registro do vertical o join não muda (só horizontal)", async () => {
     assert.equal(await join_(), 0);
+  });
+
+  // #13726: o join (não só o assess puro) acusa os dois outros estados pendentes.
+  it("#13726: vertical_feed first_frame_cover: join 1 com a capa pendente", async () => {
+    writeRegistry(shortEntry({ cover: { method: "thumbnails_set", ok: true, vertical_feed: "first_frame_cover", first_frame_ms: 1000 } }));
+    assert.equal(await join_(), 1);
+    assert.match(errs.join("\n"), /capa vertical do Short AbCdEfGhIjK pendente \(vertical_feed: first_frame_cover\)/);
+  });
+
+  it("#13726: entrada gravada pelo --mark youtube_shorts=URL (sem cover): join 1 com a capa pendente", async () => {
+    const built = buildMarkEntry(parseMarkArg(`youtube_shorts=https://youtube.com/shorts/${VID}`), undefined, "2026-11-19T14:00:00.000Z");
+    assert.ok(built.ok);
+    assert.equal(built.entry.cover, undefined, "o --mark não grava cover");
+    writeRegistry(built.entry);
+    assert.equal(await join_(), 1);
+    assert.match(errs.join("\n"), /capa vertical do Short AbCdEfGhIjK pendente \(vertical_feed: ausente\)/);
   });
 
   it("pendente sem dono: join 1; defer: join 0 com o dono; confirm: studio_web e join 0", async () => {
