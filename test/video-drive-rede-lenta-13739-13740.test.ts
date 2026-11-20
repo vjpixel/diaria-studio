@@ -15,7 +15,6 @@ import { join } from "node:path";
 import {
   UPLOAD_CHUNK_BYTES,
   UPLOAD_CHUNK_RETRIES,
-  UPLOAD_CHUNK_THRESHOLD,
   chunkRetryDelayMs,
   chunkTimeoutMs,
   uploadToFolder,
@@ -85,8 +84,7 @@ const noSleep = { backoffMs: 0, sleep: async () => {} };
 
 describe("#13739 upload retomável em rede lenta", () => {
   it("acima de um bloco (8 MiB) já vai em blocos: o trecho de ~107 MB não sobe mais num PUT único", () => {
-    assert.equal(UPLOAD_CHUNK_THRESHOLD, UPLOAD_CHUNK_BYTES);
-    assert.ok(UPLOAD_CHUNK_THRESHOLD < 107e6);
+    assert.ok(UPLOAD_CHUNK_BYTES < 107e6);
   });
 
   it("teto do bloco: piso de 2 min, e o dobro do tempo na banda medida quando ela é lenta", () => {

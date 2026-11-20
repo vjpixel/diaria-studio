@@ -592,14 +592,16 @@ export async function findByName(
 /** Tentativas do upload (#13739: a sessão resumable é reaproveitada entre elas; sessão nova só se o Drive a expirou). */
 export const UPLOAD_ATTEMPTS = 3;
 
-export const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // múltiplo de 256 KiB
 /**
- * Acima disto o upload vai em blocos retomáveis (#13739). Era 256 MiB (#12269):
- * os 27 trechos do XML leve (~107 MB cada) e as prévias subiam num PUT único,
- * com o teto a 2 MB/s, e a 0,3 MB/s (Wi-Fi ruim do Neo, 261119) estouravam o
- * tempo e recomeçavam do zero. Até um bloco, o PUT único não tem o que retomar.
+ * Tamanho do bloco do upload retomável (múltiplo de 256 KiB) e também o limiar:
+ * acima de um bloco o upload vai em blocos retomáveis (#13739). O limiar era
+ * 256 MiB (#12269): os 27 trechos do XML leve (~107 MB cada) e as prévias
+ * subiam num PUT único, com o teto a 2 MB/s, e a 0,3 MB/s (Wi-Fi ruim do Neo,
+ * 261119) estouravam o tempo e recomeçavam do zero. Até um bloco, o PUT único
+ * não tem o que retomar. Um só export (sem alias de limiar): knip acusa export
+ * duplicado.
  */
-export const UPLOAD_CHUNK_THRESHOLD = UPLOAD_CHUNK_BYTES;
+export const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 /** Falhas seguidas de um bloco, sem progresso confirmado, antes de desistir da tentativa (#13739). */
 export const UPLOAD_CHUNK_RETRIES = 5;
 
@@ -743,7 +745,7 @@ export async function uploadToFolder(
     return found.length === 0 ? { file: null, duplicates: 0 as const } : { file: found[0], duplicates: found.length - 1 };
   };
   const size = statSync(localPath).size;
-  const chunked = size > UPLOAD_CHUNK_THRESHOLD;
+  const chunked = size > UPLOAD_CHUNK_BYTES;
   const content = chunked ? undefined : readFileSync(localPath);
   const mime = uploadMimeFor(name);
   const found = await findUsable();
