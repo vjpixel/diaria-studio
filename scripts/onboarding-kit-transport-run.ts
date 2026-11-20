@@ -1399,6 +1399,7 @@ export async function runProductionKitLot(
     sendAtFn: () => string;
     tagCheckAttempts?: number;
     tagCheckDelayMs?: number;
+    tagRetryDelayMs?: number;
     beforeCreate?: () => Promise<void>;
     alert?: OrphanBroadcastAlert;
   },
@@ -1413,7 +1414,20 @@ export async function runProductionKitLot(
     if (missing.length > 0) {
       throw new Error(`[onboarding-kit-transport] ${missing.length} destinatário(s) do lote ${lot.lot_id} sem kit_subscriber_id — abortando antes de criar o broadcast.`);
     }
-    for (const id of lot.recipient_subscription_ids) await deps.tagSubscriber(tagId, opts.kitIdBySubscription[id] as number);
+    for (const id of lot.recipient_subscription_ids) {
+      // #13801: 429 do Kit no meio da marcação não derruba o lote — backoff e
+      // nova tentativa (tagSubscriber é idempotente); esgotado, o lote segue
+      // `pending` e a próxima rodada o retoma.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await deps.tagSubscriber(tagId, opts.kitIdBySubscription[id] as number);
+          break;
+        } catch (err) {
+          if (attempt >= 3 || !/\b429\b/.test((err as Error).message)) throw err;
+          await new Promise((r) => setTimeout(r, (opts.tagRetryDelayMs ?? 5_000) * 2 ** attempt));
+        }
+      }
+    }
     await assertPilotTagAudience(deps, lot, lot.recipient_emails, opts.tagCheckAttempts, opts.tagCheckDelayMs);
 
     await opts.beforeCreate?.();

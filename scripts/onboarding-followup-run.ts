@@ -197,6 +197,21 @@ export interface ClaimFollowupLotResult {
   lot: FollowupLot | null;
 }
 
+/** #13801: lote mais recente `pending` sem broadcast da etapa (qualquer dia). */
+export function findResumablePendingLot(
+  lots: Readonly<Record<string, FollowupLot>>,
+  kind: FollowupStepKind,
+  variant?: FollowupLotVariant,
+): FollowupLot | null {
+  let best: FollowupLot | null = null;
+  for (const lot of Object.values(lots)) {
+    if (lot.kind !== kind || (lot.variant ?? null) !== (variant ?? null)) continue;
+    if (lot.status !== "pending" || lot.broadcast_id != null || lot.schedule_failed === true) continue;
+    if (best == null || lot.created_at > best.created_at) best = lot;
+  }
+  return best;
+}
+
 /**
  * Decide + persiste o lote `pending` da etapa/dia ATOMICAMENTE (lock + releitura
  * do disco), mesma disciplina de `claimLot` da escada: duas rodadas
@@ -211,6 +226,19 @@ export function claimFollowupLot(
   variant?: FollowupLotVariant,
 ): ClaimFollowupLotResult {
   return withStore<ClaimFollowupLotResult>(storePath, "reivindicar lote", (_store, block) => {
+    // #13801: lote `pending` sem broadcast de OUTRO dia (marcação de tags
+    // interrompida por 429) é retomado — mesma tag, mesmo lote — em vez de
+    // criar tag/lote novos com o mesmo público a cada rodada.
+    const resumable = findResumablePendingLot(block.lots, kind, variant);
+    if (resumable && !findLatestFollowupLot(block.lots, kind, dateIso, variant)) {
+      const ageMs = nowMs - Date.parse(resumable.created_at);
+      if (Number.isFinite(ageMs) && ageMs < LOT_STALE_AFTER_MS) {
+        return { result: { action: "blocked_concurrent", lot: resumable }, write: false };
+      }
+      resumable.recipient_subscription_ids = recipients.map((r) => String(r.kit_subscriber_id));
+      resumable.recipient_emails = recipients.map((r) => r.email);
+      return { result: { action: "recreate_after_timeout", lot: resumable }, write: true };
+    }
     const latest = findLatestFollowupLot(block.lots, kind, dateIso, variant);
     const decision = decideLotReconciliation<FollowupLot>(latest?.lot ?? null, nowMs, LOT_STALE_AFTER_MS);
     if (decision.action === "blocked_concurrent") return { result: { action: "blocked_concurrent", lot: decision.lot }, write: false };
