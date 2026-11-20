@@ -62,6 +62,17 @@
  *   rebaixado mantém o mtime original do vivo e o restauro (plano ausente)
  *   prefere a cópia que domina as outras, não só a de maior mtime: o
  *   rebaixado nunca volta como "backup mais novo" por cima da versão à frente.
+ *   **Avanços conhecidos não são divergência (#13717):** medido sobre as 31
+ *   cópias de conflito reais (OneDrive, 260810b a 261110d), a igualdade
+ *   estrita não reconhecia nenhuma como versão anterior do plano final; os
+ *   campos que barravam eram `goal.last_convergence_scan` (23), `status` (19),
+ *   `findings_depth` (18) e `review_1_5b_has_p2` (13). Por isso a cópia pode
+ *   ter `status` num posto maior de `PLAN_ISSUE_STATUS_RANK` (`pr-aberta` →
+ *   `mergeada`), `rescans_done`/`findings_depth` maiores, `review_1_5b_has_p2`
+ *   de `false` para `true` e `goal.last_convergence_scan` de `at` posterior.
+ *   Com isso o plano final passa a estar à frente de 6 das 31 cópias (só
+ *   `status` não fazia nenhuma passar), e nenhuma cópia fica à frente do
+ *   final. A ordem entre os dois lados continua vindo só de `timeline`/`pr`.
  *
  * Fail-soft: erro de I/O ao listar o diretório → `clean` (o leitor segue com
  * o comportamento de antes, que já trata ausência).
@@ -186,18 +197,105 @@ function liveValueContainedIn(live: unknown, copy: unknown): boolean {
 }
 
 /** Campos de cada issue que a dominância trata à parte: identidade (`number`,
- * `ref`, já usados na chave) e os marcos normalizados por `planProgressFacts`. */
-const ISSUE_FIELDS_COMPARED_APART = new Set(["number", "ref", "timeline", "pr"]);
+ * `ref`, já usados na chave), os marcos normalizados por `planProgressFacts`
+ * e `status`, que aceita avanço na ordem de `PLAN_ISSUE_STATUS_RANK` (#13717). */
+const ISSUE_FIELDS_COMPARED_APART = new Set(["number", "ref", "timeline", "pr", "status"]);
+
+/**
+ * Ordem conhecida do `status` de uma issue do plano durante a rodada (#13717):
+ * 0 = na fila (ainda não despachada), 1 = em voo (despachada, PR aberta),
+ * 2 = desfecho registrado do PR. Um `status` só pode andar para um posto
+ * MAIOR; fora desta tabela (`pulada`, `fora-da-rodada-por-track`, os
+ * `fechada-*` e os ~80 valores livres que as rodadas já gravaram) vale a
+ * igualdade estrita do #13703, porque não há ordem a seguir.
+ *
+ * O desfecho (posto 2) é o mesmo conjunto de `PR_ACCOUNTED_STATUSES`
+ * (`pr-terminal-state.ts`) mais o `merged` legado. Dois desfechos diferentes
+ * (`mergeada` contra `draft-ci-vermelho`) são divergência, não avanço.
+ */
+export const PLAN_ISSUE_STATUS_RANK: ReadonlyMap<string, number> = new Map([
+  ["elegivel", 0],
+  ["elegivel_especial", 0],
+  ["pendente", 0],
+  ["pre-classificada", 0],
+  ["nao-tentada", 0],
+  ["em-andamento", 1],
+  ["em_andamento", 1],
+  ["em-implementacao", 1],
+  ["pr-aberta", 1],
+  ["em-review", 1],
+  ["mergeada", 2],
+  ["merged", 2],
+  ["draft-ci-vermelho", 2],
+  ["retida-para-editor", 2],
+  ["fechada-sem-merge", 2],
+]);
+
+/**
+ * `true` quando o `status` do vivo cabe no da cópia (#13717): igual, ausente
+ * no vivo, ou os dois na tabela `PLAN_ISSUE_STATUS_RANK` com a cópia num posto
+ * maior (`pr-aberta` → `mergeada`, `elegivel` → `pr-aberta`). Pura.
+ */
+export function planIssueStatusContainedIn(live: unknown, copy: unknown): boolean {
+  if (live === null || live === undefined || Object.is(live, copy)) return true;
+  if (typeof live !== "string" || typeof copy !== "string") return false;
+  const from = PLAN_ISSUE_STATUS_RANK.get(live);
+  const to = PLAN_ISSUE_STATUS_RANK.get(copy);
+  return from !== undefined && to !== undefined && to > from;
+}
+
+/** Contadores de topo que só crescem durante a rodada (#13717): a cópia pode
+ * ter valor MAIOR ou igual ao do vivo. */
+const PLAN_MONOTONE_COUNTERS: ReadonlySet<string> = new Set(["rescans_done", "findings_depth"]);
+
+/** Flags de topo que só passam de `false` para `true` na rodada (#13717). */
+const PLAN_MONOTONE_FLAGS: ReadonlySet<string> = new Set(["review_1_5b_has_p2"]);
+
+/**
+ * Campo de topo do vivo contido no da cópia, com os avanços conhecidos da
+ * rodada (#13717) além do subconjunto do #13703: contador de
+ * `PLAN_MONOTONE_COUNTERS` maior na cópia, flag de `PLAN_MONOTONE_FLAGS` de
+ * `false` para `true`, e `goal.last_convergence_scan` substituído por uma
+ * varredura de `at` posterior (o objeto inteiro: `novas_encontradas` é da
+ * varredura, não acumula). O resto de `goal` segue o subconjunto. Pura.
+ */
+function planTopFieldContained(key: string, live: unknown, copy: unknown): boolean {
+  if (liveValueContainedIn(live, copy)) return true;
+  if (PLAN_MONOTONE_COUNTERS.has(key)) {
+    return typeof live === "number" && typeof copy === "number" && copy >= live;
+  }
+  if (PLAN_MONOTONE_FLAGS.has(key)) return live === false && copy === true;
+  if (key === "goal" && isPlainObject(live) && isPlainObject(copy)) {
+    for (const [k, v] of Object.entries(live)) {
+      if (k === "last_convergence_scan" && convergenceScanAdvanced(v, copy[k])) continue;
+      if (!liveValueContainedIn(v, copy[k])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** `true` quando a varredura da cópia é posterior (ou a mesma) à do vivo,
+ * pelo `at` ISO (#13717). `at` ausente/ilegível em qualquer lado → `false`. */
+function convergenceScanAdvanced(live: unknown, copy: unknown): boolean {
+  if (!isPlainObject(live) || !isPlainObject(copy)) return false;
+  const a = Date.parse(String(live.at ?? ""));
+  const b = Date.parse(String(copy.at ?? ""));
+  return Number.isFinite(a) && Number.isFinite(b) && b >= a;
+}
 
 /**
  * `true` quando todo campo do vivo fora de `timeline`/`pr` está contido na
  * cópia (#13703): os de topo (exceto `issues`) e os de cada issue, pareadas
- * pela chave. Issue do vivo ausente da cópia → `false`. Pura.
+ * pela chave. Issue do vivo ausente da cópia → `false`. Desde o #13717 os
+ * avanços conhecidos contam como contidos: `status` na ordem de
+ * `PLAN_ISSUE_STATUS_RANK` e os campos de topo de `planTopFieldContained`.
+ * Pura.
  */
 function planOtherFieldsContained(live: Record<string, unknown>, copy: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(live)) {
     if (k === "issues") continue;
-    if (!liveValueContainedIn(v, copy[k])) return false;
+    if (!planTopFieldContained(k, v, copy[k])) return false;
   }
   const copyByKey = new Map<string, Record<string, unknown>>();
   for (const entry of normalizeIssues<Record<string, unknown>>(copy)) {
@@ -210,6 +308,7 @@ function planOtherFieldsContained(live: Record<string, unknown>, copy: Record<st
     if (!key) continue;
     const other = copyByKey.get(key);
     if (!other) return false;
+    if (!planIssueStatusContainedIn(entry.status, other.status)) return false;
     for (const [field, v] of Object.entries(entry)) {
       if (ISSUE_FIELDS_COMPARED_APART.has(field)) continue;
       if (!liveValueContainedIn(v, other[field])) return false;
