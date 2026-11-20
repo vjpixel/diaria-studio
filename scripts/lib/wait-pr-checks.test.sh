@@ -452,6 +452,48 @@ if echo "$OUT16" | grep -q "em execução"; then
 else
   echo "ok: TIMEOUT sem a mensagem de execução"
 fi
+# ── 17. heartbeat ci_wait_running (#13725) ─────────────────────────────────
+# Espera estendida (check rodando) passa do limiar de stall do watchdog; o
+# laço grava ci_wait_running sozinho a cada CI_WAIT_HEARTBEAT_SECS, sem
+# depender do coordenador. Sem check rodando, nunca emite.
+HB_LOG13725="$(mktemp)"
+emit_ci_wait_running() { echo "$1 $2 $3" >> "$HB_LOG13725"; }
+fake_clock_on
+check_pr_checks_once() {
+  gate_call_n >/dev/null
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=0 pending=1 running=1"
+  return 2
+}
+CI_WAIT_HEARTBEAT_SECS=10 wait_pr_checks "17" 1 1 30 30 >/dev/null 2>&1
+RC17=$?
+fake_clock_off
+assert_eq "espera estendida estoura -> exit 1" "1" "$RC17"
+HB17=$(wc -l < "$HB_LOG13725" | tr -d ' ')
+if [ "$HB17" -ge 2 ]; then
+  echo "ok: heartbeat ci_wait_running emitido repetidamente (${HB17}x)"
+else
+  echo "FAIL: heartbeat ci_wait_running ausente/insuficiente — ${HB17} emissões"
+  FAILED=1
+fi
+if head -n 1 "$HB_LOG13725" | grep -q "^17 .* 1$"; then
+  echo "ok: heartbeat carrega PR e contagem de checks rodando"
+else
+  echo "FAIL: formato do heartbeat inesperado — $(head -n 1 "$HB_LOG13725")"
+  FAILED=1
+fi
+
+: > "$HB_LOG13725"
+fake_clock_on
+check_pr_checks_once() {
+  gate_call_n >/dev/null
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] queue: queued=1 pending=1 running=0"
+  return 2
+}
+CI_WAIT_HEARTBEAT_SECS=2 wait_pr_checks "17" 1 1 30 30 >/dev/null 2>&1
+fake_clock_off
+assert_eq "sem check rodando (só fila) -> nenhum heartbeat" "0" "$(wc -l < "$HB_LOG13725" | tr -d ' ')"
+rm -f "$HB_LOG13725"
+
 rm -f "$FAKE_CLOCK13702" "$GATE_CALLS13702"
 
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────

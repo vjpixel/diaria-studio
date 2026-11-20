@@ -47,6 +47,15 @@
 # RODANDO sem concluir tem extensão própria, `running_ceiling_secs`
 # (#13685, acima); passado esse teto é o caso "sem progresso" (rc=1).
 #
+# Heartbeat `ci_wait_running` (#13725): a espera estendida (#13685) passa do
+# limiar de stall do watchdog (45 min sem escrita em plan.json/run-log). Em
+# vez de depender do coordenador lembrar, o PRÓPRIO laço grava o evento no
+# run-log (via `emit_ci_wait_running`, sobrescrevível em teste) a cada
+# `ci_wait_heartbeat_secs` (env CI_WAIT_HEARTBEAT_SECS, default 900) enquanto
+# houver check rodando — o 1º aos 15 min, os seguintes de 15 em 15, sempre
+# dentro da janela de 45 min do watchdog. Edição vem de WAIT_PR_CHECKS_EDITION
+# e WAIT_PR_CHECKS_AGENT (default overnight); sem edição, infere do plan.json mais recente da rodada, que o watchdog exige. Falha do log nunca derruba a espera.
+#
 # Exit codes:
 #   0 = checks pararam de estar "pending" (chamador decide se PASSOU ou
 #       FALHOU rodando `check-pr-checks-gate.ts`/`gh pr checks` de novo —
@@ -110,6 +119,27 @@ check_pr_checks_once() {
   return $?
 }
 
+# `emit_ci_wait_running` (#13725): grava `ci_wait_running` no run-log. Função
+# separada pelo mesmo motivo de `check_pr_checks_once` (teste sobrescreve).
+emit_ci_wait_running() {
+  local pr="$1" elapsed="$2" running="$3" ed_args=() agent ed
+  agent="${WAIT_PR_CHECKS_AGENT:-overnight}"
+  ed="${WAIT_PR_CHECKS_EDITION:-}"
+  # O watchdog só conta eventos com agent+edição da rodada; sem env, infere
+  # a edição do plan.json mais recente da rodada (checkout principal).
+  if [ -z "$ed" ]; then
+    ed=$(ls -t "$REPO_ROOT"/data/"$agent"/*/plan.json 2>/dev/null | head -n 1 | sed -E 's#.*/data/[^/]+/([^/]+)/plan.json#\1#')
+  fi
+  if [ -n "$ed" ]; then
+    ed_args=(--edition "$ed")
+  fi
+  if ! ( cd "$REPO_ROOT" && npx tsx scripts/log-event.ts ${ed_args[@]+"${ed_args[@]}"} --agent "$agent" --level info \
+    --message "ci_wait_running" \
+    --details "{\"pr\": \"$pr\", \"elapsed_min\": $(( elapsed / 60 )), \"running\": $running}" ) >/dev/null 2>&1; then
+    echo "[wait-pr-checks] warn: ci_wait_running não gravado (#13725)" >&2
+  fi
+}
+
 # `wait_pr_checks`: o laço em si — separado do bloco de entrypoint abaixo
 # pelo mesmo motivo (testável isoladamente via source, sem herdar o `exit`
 # do script inteiro).
@@ -134,6 +164,9 @@ wait_pr_checks() {
   # Consequência deliberada: teto 0 também faz 1 leitura antes do TIMEOUT
   # (nenhum chamador do repo passa teto 0).
   local polled=0
+  # #13725: próximo marco (em segundos decorridos) do heartbeat ci_wait_running.
+  local heartbeat_secs="${CI_WAIT_HEARTBEAT_SECS:-900}" next_heartbeat
+  next_heartbeat="$heartbeat_secs"
 
   # O teto absoluto nunca fica abaixo do teto normal (chamador que passou
   # timeout > ceiling mantém o comportamento pré-#10578).
@@ -245,6 +278,14 @@ wait_pr_checks() {
     fi
     if [ "$last_running" -lt 0 ]; then
       last_running=0
+    fi
+
+    # #13725: check rodando e já passou do marco -> heartbeat no run-log.
+    # (usa `elapsed` da volta corrente: a defasagem é de 1 poll, e evita um
+    # `date` extra por volta)
+    if [ "$last_running" -gt 0 ] && [ "$heartbeat_secs" -gt 0 ] && [ "$elapsed" -ge "$next_heartbeat" ]; then
+      emit_ci_wait_running "$pr" "$elapsed" "$last_running"
+      next_heartbeat=$(( next_heartbeat + heartbeat_secs ))
     fi
 
     sleep "$poll_secs"
