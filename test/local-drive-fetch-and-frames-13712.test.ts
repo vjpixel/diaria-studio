@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { makeLocalDriveDeps } from "../scripts/lib/diaria/local-drive-deps.ts";
 import { parseFetchDriveVideoArgs, runFetchDriveVideo } from "../scripts/fetch-drive-video.ts";
@@ -131,7 +131,33 @@ describe("gen-youtube-thumb --frames-from-file (#13712)", () => {
   });
 
   it("resolveFramesSource: --frames-from-file resolve o caminho contra o cwd", () => {
-    assert.deepEqual(resolveFramesSource({ fromFile: true, raw: "bruto.mp4", cwd: "/w" }), { localFile: true, id: join("/w", "bruto.mp4") });
+    // #13726: `resolve`, como a implementação: `join("/w", …)` no Windows dá
+    // `\w\bruto.mp4` e o `resolve` dá `C:\w\bruto.mp4` (o CI só roda no Linux).
+    assert.deepEqual(resolveFramesSource({ fromFile: true, raw: "bruto.mp4", cwd: "/w" }), { localFile: true, id: resolve("/w", "bruto.mp4") });
+  });
+
+  // #13726: o teste acima cobre o helper, não o call site. Reintroduzir
+  // `resolve(fileId)` no `main()` do gen-youtube-thumb deixaria o helper verde
+  // e voltaria a transformar o FILE_ID do Drive em caminho.
+  it("call site: main() passa ao framesFromDrive o id do resolveFramesSource, sem resolve() próprio", () => {
+    const src = readFileSync(CLI, "utf8");
+    const start = src.indexOf('if (values["frames-from-drive"] !== undefined || flags.has("frames-from-drive") || fromFile)');
+    assert.ok(start > 0, "bloco --frames-from-drive/--frames-from-file não encontrado no main()");
+    const end = src.indexOf("return framesFromDrive(", start);
+    assert.ok(end > start, "chamada do framesFromDrive não encontrada no bloco");
+    const block = src.slice(start, src.indexOf("\n", end));
+    assert.match(block, /const src = resolveFramesSource\(\{ fromFile, raw: fileId \}\)/);
+    assert.match(block, /return framesFromDrive\(dir, src\.id, values, mirror, fromFinal, src\.localFile\)/);
+    assert.doesNotMatch(block, /\bresolve(?:Path)?\(\s*fileId/, "resolve(fileId) no call site viraria o FILE_ID do Drive em caminho");
+  });
+
+  it("call site: --frames-from-file relativo é resolvido contra o cwd do processo", () => {
+    const cwd = tmp();
+    const ed = join(cwd, "ed");
+    mkdirSync(ed);
+    const r = spawnSync(process.execPath, ["--import", TSX_LOADER, CLI, "261119", "--frames-from-file", "nao-existe.mp4", "--no-mirrored", "--edition-dir", ed], { cwd, encoding: "utf8" });
+    assert.equal(r.status, 1, r.stderr);
+    assert.ok(r.stderr.includes(`vídeo local ${resolve(cwd, "nao-existe.mp4")} não existe`), r.stderr);
   });
 
   it("CLI: extrai a folha do arquivo local e avisa do espelhamento default", (t) => {

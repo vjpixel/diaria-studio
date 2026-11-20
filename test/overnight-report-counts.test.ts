@@ -489,6 +489,35 @@ describe("template de --title dos SKILLs é conferível (#5521)", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// #13722: rodada sem merge mantém o marcador sobre tabela vazia
+// ---------------------------------------------------------------------------
+
+describe("REGRESSÃO #13722: SKILL do overnight não manda omitir o marcador em rodada sem merge", () => {
+  const md = readFileSync(join(ROOT, ".claude/skills/diaria-overnight/SKILL.md"), "utf-8");
+
+  it("a instrução antiga ('omita o marcador') saiu do SKILL", () => {
+    assert.ok(!/omita o marcador/i.test(md), "SKILL ainda manda omitir o marcador");
+    assert.ok(
+      !md.includes("marcador sobre tabela vazia é lido como formato quebrado"),
+      "SKILL ainda afirma que tabela vazia quebra o registro (falso desde o #13699)",
+    );
+  });
+
+  it("o SKILL manda manter o marcador com a tabela só com cabeçalho", () => {
+    const trecho = md.split("\n").find((l) => l.includes("NENHUMA unidade mergeada"));
+    assert.ok(trecho, "trecho da rodada sem merge não encontrado");
+    assert.match(trecho, /mantenha o marcador/);
+    assert.ok(trecho.includes("`| Issue(s) | PR | Status |`"), "cabeçalho da tabela vazia não citado");
+  });
+
+  it("a tabela que o SKILL prescreve confere o título '0 unidades, 0 issues'", () => {
+    const relatorio = ["<!-- unidades-mergeadas -->", "| Issue(s) | PR | Status |", "|---|---|---|", ""].join("\n");
+    assert.deepEqual(parseUnitsTable(relatorio), { found: true, rows: [], empty: true });
+    assert.ok(isTitleOk(compareTitleWithReport("diar.ia.br overnight 261120 — 0 unidades, 0 issues", relatorio)));
+  });
+});
+
 describe("título sem contagem conferível é reprovado (#5521)", () => {
   const REPORT = [
     "<!-- unidades-mergeadas -->",
