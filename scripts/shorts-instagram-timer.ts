@@ -106,8 +106,10 @@ import {
   resolveShortTime,
   shortInstagramVideoFileName,
   shortVideoFileName,
+  type ShortPublishedEntry,
 } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
+import { firstCommentRetryState, INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS, type FirstCommentRetryState } from "./lib/diaria/instagram-first-comment-retry.ts";
 import { watchCortesWithoutOwner } from "./lib/diaria/corte-owner-watch.ts";
 import { CORTES_REL_DIR } from "./lib/diaria/short-corte.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
@@ -169,7 +171,11 @@ export type InstagramTimerAlarmKey =
   /** #11368: o Reels saiu, mas o publish devolveu aviso (o Instagram descartou o convite de collab). */
   | "collab"
   /** #11368: o Drive não respondeu e o timer publicou o corte já baixado, sem conferir se ainda é o do Drive. */
-  | "cut-unverified";
+  | "cut-unverified"
+  /** #13759: o Reels saiu, mas o 1º comentário com o link por edição falhou; o timer retenta. */
+  | "first-comment"
+  /** #13759: o 1º comentário não sai sozinho (tentativas esgotadas, resposta sem id ou registro ilegível): o editor resolve. */
+  | "first-comment-stuck";
 
 /** O Reels ainda está no ar? Esses avisam com `acao`; o resto é "não saiu hoje" (`urgente`). */
 const PUBLISHED_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["published-unregistered", "check-permalink", "send-unknown"]);
@@ -191,7 +197,7 @@ const RETRY_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["publish-failed
 const LATE_BLOCKER_KEYS: ReadonlyArray<InstagramTimerAlarmKey> = ["guided", "preflight-blocked", "author-unchecked", "published-unregistered", "check-permalink", "send-unknown"];
 
 /** O Reels saiu (ou pode ter saído) e o editor só confere: `acao`, nunca `urgente`. */
-const ACAO_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["preflight-blocked", "author-unchecked", "collab", "cut-unverified"]);
+const ACAO_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["preflight-blocked", "author-unchecked", "collab", "cut-unverified", "first-comment", "first-comment-stuck"]);
 
 export function alarmSeverity(key: InstagramTimerAlarmKey): NotifySeverity {
   return PUBLISHED_KEYS.has(key) || ACAO_KEYS.has(key) ? "acao" : "urgente";
@@ -251,6 +257,11 @@ export function instagramOverApiCap(config: unknown, durationSeconds: number | n
 export type InstagramTimerDecision =
   /** `unseenLate`: passou de 3 h e só não alarma porque nada LOCAL mostra o vertical (o Drive ainda pode mostrar). */
   | { kind: "skip"; reason: string; unseenLate?: true }
+  /**
+   * #13759: o Reels está registrado com o 1º comentário pendente. `retry` roda
+   * a retentativa; os outros estados só alarmam (`first-comment-stuck`).
+   */
+  | { kind: "first-comment"; reason: string; state: Exclude<FirstCommentRetryState, { kind: "none" }> }
   | { kind: "wait"; reason: string; at: string; hhmm: string }
   | { kind: "late"; reason: string; at: string; hhmm: string }
   | { kind: "publish"; at: string; hhmm: string };
@@ -277,10 +288,22 @@ export function decideInstagramTimerRun(input: {
     return { kind: "skip", reason: `publishing.shorts.instagram_backend = ${cfg.instagramBackend} (o timer só age com timer-300)` };
   }
   if (!input.reviewedExists) return { kind: "skip", reason: `sem 02-reviewed.md da edição ${input.aammdd} (dia sem edição)` };
+  const registered: Array<{ path: string; entry: ShortPublishedEntry }> = [];
   for (const { path, raw } of input.registryRaws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o Reels).
     const entry = parseShortsPublishedFile(raw, input.aammdd, path).entries.find((e) => e.destination === "instagram");
-    if (entry) return { kind: "skip", reason: `instagram já registrado (${entry.status}${entry.url ? `, ${entry.url}` : ""} em ${basename(path)})` };
+    if (entry) registered.push({ path, entry });
+  }
+  if (registered.length) {
+    const { path, entry } = registered[0];
+    const skip: InstagramTimerDecision = { kind: "skip", reason: `instagram já registrado (${entry.status}${entry.url ? `, ${entry.url}` : ""} em ${basename(path)})` };
+    // #13759: comentário já registrado em qualquer arquivo vence a pendência de outro.
+    if (registered.some((r) => r.entry.first_comment_id)) return skip;
+    const pending = registered.find((r) => r.entry.first_comment_pending !== undefined);
+    if (!pending) return skip;
+    const state = firstCommentRetryState(pending.entry);
+    if (state.kind === "none") return skip;
+    return { kind: "first-comment", reason: `instagram registrado (${basename(pending.path)}) com o 1º comentário pendente: ${state.kind}`, state };
   }
   const { hhmm } = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd, "instagram");
   const at = resolveEditionScheduledAt(input.aammdd, hhmm);
@@ -456,6 +479,11 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
       if (e.status === "published" && !e.url) {
         return { kind: "alarm", key: "check-permalink", failed: false, detail: `Reels registrado sem permalink (id ${e.id})${warned}` };
       }
+      // #13759: o 1º comentário falhou no publish; vira alarme próprio (o timer retenta), não "collab".
+      if (!result.alreadyRegistered && e.first_comment_pending) {
+        const key: InstagramTimerAlarmKey = e.first_comment_pending.uncertain ? "first-comment-stuck" : "first-comment";
+        return { kind: "alarm", key, failed: false, detail: `Reels publicado (${e.status} ${where}), 1º comentário pendente: ${e.first_comment_pending.error ?? "?"}${warned}` };
+      }
       if (!result.alreadyRegistered && warnings.length) {
         return { kind: "alarm", key: "collab", failed: false, detail: `Reels publicado (${e.status} ${where}) com aviso: ${warnings.join("; ")}` };
       }
@@ -509,6 +537,56 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
   }
 }
 
+/**
+ * Puro (#13759): lê a saída do `retry-instagram-first-comment.ts`. Sucesso ou
+ * nada pendente = `done`; falha com tentativa sobrando = `first-comment`;
+ * esgotado, resposta sem id ou registro ilegível = `first-comment-stuck`.
+ */
+export function interpretFirstCommentRetryOutput(exitCode: number | null, stdout: string, stderrTail = ""): InstagramTimerOutcome {
+  let out: any;
+  try {
+    out = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+  } catch {
+    return { kind: "alarm", key: "first-comment-stuck", failed: false, detail: `retry-instagram-first-comment.ts sem JSON (exit ${exitCode})${stderrTail ? `. Fim do stderr:\n${stderrTail}` : ""}` };
+  }
+  const attempts = typeof out?.attempts === "number" ? ` (tentativa ${out.attempts} de ${out.max_attempts ?? "?"})` : "";
+  switch (out?.action) {
+    case "none":
+      return { kind: "done", detail: `1º comentário: nada pendente (${out.reason ?? "?"})` };
+    case "commented":
+      return { kind: "done", detail: `1º comentário publicado na retentativa: ${out.comment_id} no Reels ${out.media_id}` };
+    case "failed":
+      if (out.exhausted || out.uncertain) {
+        return {
+          kind: "alarm",
+          key: "first-comment-stuck",
+          failed: false,
+          detail: `1º comentário do Reels ${out.media_id} ${out.uncertain ? "com resposta sem id (pode existir)" : "não saiu e as tentativas acabaram"}${attempts}: ${out.error}. Texto: ${out.message}`,
+        };
+      }
+      return { kind: "alarm", key: "first-comment", failed: false, detail: `1º comentário do Reels ${out.media_id} falhou de novo${attempts}: ${out.error}. Texto: ${out.message}` };
+    case "exhausted":
+    case "uncertain":
+      return {
+        kind: "alarm",
+        key: "first-comment-stuck",
+        failed: false,
+        detail: `1º comentário do Reels ${out.media_id} ${out.action === "uncertain" ? "com resposta sem id (pode existir)" : "sem tentativa sobrando"}${attempts}: ${out.error}. Texto: ${out.message}`,
+      };
+    case "invalid":
+      return { kind: "alarm", key: "first-comment-stuck", failed: false, detail: `1º comentário pendente sem retentativa possível: ${out.reason ?? "?"}` };
+    default:
+      return { kind: "alarm", key: "first-comment-stuck", failed: false, detail: `retry-instagram-first-comment.ts com action inesperada (${String(out?.action)}, exit ${exitCode})` };
+  }
+}
+
+/** Puro (#13759): motivo do alarme para uma pendência que o timer nem tenta (esgotada, incerta, ilegível). */
+export function firstCommentStuckDetail(state: Exclude<FirstCommentRetryState, { kind: "none" | "retry" }>): string {
+  if (state.kind === "invalid") return `1º comentário pendente sem retentativa possível: ${state.reason}`;
+  const what = state.kind === "uncertain" ? "com resposta sem id (pode existir)" : "sem tentativa sobrando";
+  return `1º comentário do Reels ${state.mediaId} ${what} (tentativa ${state.pending.attempts}): ${state.pending.error}. Texto: ${state.pending.message}`;
+}
+
 /** Puro: corpo do alarme, por motivo, com os comandos já com a edição e o arquivo. */
 export function buildInstagramTimerAlarm(input: {
   aammdd: string;
@@ -560,6 +638,23 @@ export function buildInstagramTimerAlarm(input: {
       "O Instagram devolveu um aviso depois de publicar (ex.: o convite de collab descartado). Confira o Reels no app e, se o collab sumiu, convide a conta de novo editando o post.",
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: publicado com aviso (${key})`;
+  } else if (key === "first-comment") {
+    lines.push(
+      "O Reels está no ar e registrado; NÃO reposte.",
+      "A legenda diz que o link do vídeo completo está no 1º comentário, mas o comentário não saiu (ex.: token sem `instagram_manage_comments`).",
+      `O timer do 300 tenta de novo sozinho a cada execução (de hora em hora), até ${INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS} tentativas no total; se acabarem, sai outro alarme (\`first-comment-stuck\`).`,
+      "Não comente à mão enquanto o timer tenta: sairiam dois comentários. Para tentar já: " +
+        `\`npx tsx scripts/retry-instagram-first-comment.ts ${aammdd}\` (no 300).`,
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: 1º comentário com o link não saiu (${key}, o timer retenta)`;
+  } else if (key === "first-comment-stuck") {
+    lines.push(
+      "O Reels está no ar e registrado; NÃO reposte.",
+      "O 1º comentário com o link por edição não sai sozinho: as tentativas acabaram, a Graph respondeu sem id (o comentário pode existir) ou o registro não permite retentar.",
+      "O que fazer: confira os comentários do Reels no app. Se o link não está lá, comente à mão com o texto do motivo acima.",
+      "Este alarme sai uma vez por edição.",
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: comentar o link à mão (${key})`;
   } else if (key === "cut-unverified") {
     lines.push(
       "O Drive não respondeu e o timer publicou o corte `_Instagram_` já baixado, sem conferir se ele ainda é o que está no Drive.",
@@ -922,6 +1017,8 @@ async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boo
       if (check.kind === "error") lateNote = ` (o Drive não respondeu ao conferir se o dia teve vertical: ${check.reason} — se a edição saiu sem vídeo, ignore)`;
     }
   }
+  // #13759: Reels registrado com o 1º comentário pendente — retenta (ou alarma), sem tocar no vídeo.
+  if (decision.kind === "first-comment") return runFirstCommentRetry(aammdd, dir, dryRun, decision, deps);
   // #11389: o vídeo do Instagram já no disco passa do teto da API da conta? O
   // primeiro arquivo existente da lista decide (o corte vence o genérico).
   const durationOf = deps.videoDurationSeconds ?? readMp4Duration;
@@ -1058,7 +1155,7 @@ async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boo
     const outcome = interpretInstagramTimerOutput(r.status, r.stdout, tail(r.stderr));
     console.log(`${LOG_PREFIX} ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
     // #11368: o Reels saiu com o corte do disco sem conferir o Drive — avisa (acao), sem mudar o exit.
-    const reelOut = outcome.kind === "done" || (outcome.kind === "alarm" && outcome.key === "collab");
+    const reelOut = outcome.kind === "done" || (outcome.kind === "alarm" && (outcome.key === "collab" || outcome.key === "first-comment" || outcome.key === "first-comment-stuck"));
     if (reelOut && choice.kind === "use-local" && choice.unverified) {
       await alarm(dir, aammdd, "cut-unverified", `${choice.note ?? "Drive indisponível"}; ${outcome.detail}`, { at, videoPath: choice.path, driveFileId: null }, deps.notify);
     }
@@ -1067,6 +1164,53 @@ async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boo
     const driveFileId = choice.kind === "download" && !downloaded ? choice.fileId : null;
     const alarmed = await alarm(dir, aammdd, outcome.key, outcome.detail, { at, videoPath: choice.path, driveFileId }, deps.notify);
     return outcome.failed || !alarmed ? 1 : 0;
+  } finally {
+    release();
+  }
+}
+
+/** Argumentos da retentativa do 1º comentário (#13759). */
+export function firstCommentRetryArgs(aammdd: string, dir: string): string[] {
+  return ["scripts/retry-instagram-first-comment.ts", aammdd, "--edition-dir", dir];
+}
+
+/**
+ * #13759: o Reels está no ar com o 1º comentário pendente. Com tentativa
+ * sobrando, roda a retentativa sob o lock do timer (duas execuções juntas
+ * postariam dois comentários); sem, só alarma (`first-comment-stuck`, uma vez).
+ * O exit fica 0: o Reels saiu, o alarme é `acao`.
+ */
+async function runFirstCommentRetry(
+  aammdd: string,
+  dir: string,
+  dryRun: boolean,
+  decision: Extract<InstagramTimerDecision, { kind: "first-comment" }>,
+  deps: InstagramTimerRunDeps,
+): Promise<number> {
+  const { state } = decision;
+  if (state.kind !== "retry") {
+    const detail = firstCommentStuckDetail(state);
+    console.log(`${LOG_PREFIX} ${aammdd}: ${detail}`);
+    if (dryRun) return 0;
+    return (await alarm(dir, aammdd, "first-comment-stuck", detail, { videoPath: null }, deps.notify)) ? 0 : 1;
+  }
+  const args = firstCommentRetryArgs(aammdd, dir);
+  if (dryRun) {
+    console.log(`${LOG_PREFIX} dry-run: 1º comentário pendente (tentativa ${state.pending.attempts}); npx tsx ${args.join(" ")}`);
+    return 0;
+  }
+  const release = acquireTimerLock(join(dir, INSTAGRAM_TIMER_LOCK_FILE));
+  if (!release) {
+    console.log(`${LOG_PREFIX} ${aammdd}: outra execução está no meio (${INSTAGRAM_TIMER_LOCK_FILE}) — o 1º comentário fica para a próxima`);
+    return 0;
+  }
+  try {
+    const r = deps.runScript(args);
+    if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
+    const outcome = interpretFirstCommentRetryOutput(r.status, r.stdout, tail(r.stderr));
+    console.log(`${LOG_PREFIX} ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
+    if (outcome.kind !== "alarm") return 0;
+    return (await alarm(dir, aammdd, outcome.key, outcome.detail, { videoPath: null }, deps.notify)) ? 0 : 1;
   } finally {
     release();
   }

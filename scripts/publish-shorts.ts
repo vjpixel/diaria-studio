@@ -222,6 +222,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { initialFirstCommentPending } from "./lib/diaria/instagram-first-comment-retry.ts";
 loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
@@ -2778,7 +2779,8 @@ export async function publishInstagramReel(
   /**
    * `beforePublish`: devolve o registro de outro processo (não publica) ou null; lançar também não publica.
    * `firstComment` (#13709): texto do 1º comentário com o link por edição, postado logo depois do
-   * `media_publish` (fail-soft: o Reels já saiu; falha vira aviso, nunca republica).
+   * `media_publish` (fail-soft: o Reels já saiu; falha vira aviso e `first_comment_pending` na entrada,
+   * que o timer do Instagram retenta, #13759; nunca republica).
    */
   opts: { beforePublish?: () => ShortPublishedEntry | null | Promise<ShortPublishedEntry | null>; firstComment?: string | null } = {},
 ): Promise<PublishOutcome> {
@@ -2883,6 +2885,8 @@ export async function publishInstagramReel(
         scheduled_at: null,
         at: deps.now().toISOString(),
         ...(comment?.ok ? { first_comment_id: comment.id } : {}), // #13709
+        // #13759: a falha fica no registro; o timer do Instagram retenta e alarma.
+        ...(comment && !comment.ok && opts.firstComment ? { first_comment_pending: initialFirstCommentPending(opts.firstComment, comment, deps.now()) } : {}),
       },
       reelCoverRecord(cover), // #11547, #11679
     ),
@@ -2901,13 +2905,20 @@ export async function postInstagramReelFirstComment(
   token: string,
   apiVersion: string,
   message: string,
-): Promise<{ ok: true; id: string } | { ok: false; warning: string }> {
+): Promise<{ ok: true; id: string } | { ok: false; warning: string; error: string; uncertain?: boolean }> {
   try {
     const res = await graphPost(deps, `${mediaId}/comments`, { message, access_token: token }, apiVersion);
     if (res && typeof res.id === "string" && res.id) return { ok: true, id: res.id };
-    return { ok: false, warning: `Reels publicado (${mediaId}), 1º comentário sem id na resposta: ${JSON.stringify(res).slice(0, 200)}. Confira os comentários do post antes de comentar à mão: ${message} (#13709)` };
+    const error = `resposta sem id: ${JSON.stringify(res).slice(0, 200)}`;
+    // #13759: o comentário PODE existir — nunca retentado sozinho (sairia duplicado).
+    return { ok: false, uncertain: true, error, warning: `Reels publicado (${mediaId}), 1º comentário com ${error}. Confira os comentários do post antes de comentar à mão: ${message} (#13709, #13759: sem retentativa automática)` };
   } catch (e) {
-    return { ok: false, warning: `Reels publicado (${mediaId}), 1º comentário não saiu: ${(e as Error).message}. Comente à mão (sem republicar o vídeo): ${message} (#13709)` };
+    const error = (e as Error).message;
+    return {
+      ok: false,
+      error,
+      warning: `Reels publicado (${mediaId}), 1º comentário não saiu: ${error}. Fica pendente no registro (first_comment_pending): o timer do Instagram no 300 tenta de novo; não comente à mão sem conferir o post. Texto: ${message} (#13709, #13759)`,
+    };
   }
 }
 
