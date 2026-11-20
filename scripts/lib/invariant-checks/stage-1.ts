@@ -275,9 +275,18 @@ function isNegativeImpactHighlight(h: HighlightLike): boolean {
 /**
  * #10988: marcas de rebaixamento DELIBERADO — item que um passo do Stage 1
  * tirou do top-3 de propósito (mesmo fato #9100, política de negativo #10795,
- * penalidade de estudo genérico #9462). Score alto nele não é falha de mérito.
+ * penalidade de estudo genérico #9462, data declarada velha #13341, notícia
+ * repetida de 31-84 dias #13662). Score alto nele não é falha de mérito
+ * (#13749: sem as duas marcas `stale_*`, o aviso apontava justamente a
+ * história velha/repetida que o rebaixamento tirou do trio).
  */
-const DELIBERATE_DEMOTION_FLAGS = ["same_fact_demoted", "negative_promotion_excluded", "generic_study_demoted"] as const;
+const DELIBERATE_DEMOTION_FLAGS = [
+  "same_fact_demoted",
+  "negative_promotion_excluded",
+  "generic_study_demoted",
+  "stale_date_demoted",
+  "stale_repeat_demoted",
+] as const;
 
 function isDeliberatelyDemoted(h: HighlightLike): boolean {
   return DELIBERATE_DEMOTION_FLAGS.some((flag) => {

@@ -1052,6 +1052,8 @@ async function runArchiveLocked(
   const dedupWarnings = () => {
     report.warnings = [...new Set(report.warnings)];
   };
+  /** #13748: além dos brutos elegíveis, as duplicatas olham os finais liberados e a renomeação. */
+  const dupScope: DuplicateScope = { removable: eligible, finalsRemovable: finalsEligible, renamedTo };
   /** Pastas a listar: as dos brutos e as dos finais liberados, na ordem do nome. */
   const workFolders = [...new Set([...eligible, ...finalsEligible])].sort();
   const workFilesOf = (folder: string, files: RemoteFile[]): Array<{ f: RemoteFile; kind?: "final" }> => [
@@ -1082,7 +1084,7 @@ async function runArchiveLocked(
     }
     if (allFiles && refs.errors.length === 0) {
       const rest = allFiles.filter((f) => !leaving.has(`${f.folder}/${f.path}`));
-      for (const d of await planDuplicates(cfg, stop, rest, eligible, refs, report)) {
+      for (const d of await planDuplicates(cfg, stop, rest, dupScope, refs, report)) {
         if (wanted(d.file.folder)) report.files.push(duplicateResult(d, "duplicata-sairia"));
       }
     }
@@ -1090,7 +1092,8 @@ async function runArchiveLocked(
     return report;
   }
   dedupWarnings();
-  const maybeDuplicates = allFiles !== null && foldersWithRemovalCandidates(allFiles, new Set(eligible)).length > 0;
+  const maybeDuplicates =
+    allFiles !== null && foldersWithRemovalCandidates(allFiles, new Set(eligible), { finalsRemovableFolders: finalsEligible, renamedTo }).length > 0;
   if (workFolders.length === 0 && renameMoves.length === 0 && !maybeDuplicates) return report;
   // Sem saber que brutos uma montagem em curso usa, nada sai do Drive (#12602).
   if (refs.errors.length > 0) return report;
@@ -1177,7 +1180,7 @@ async function runArchiveLocked(
       const fresh = await listAllFolders(cfg, stop, new Set(editionFolders));
       if ("error" in fresh) report.errors.push(`duplicatas: ${fresh.error}`);
       else {
-        for (const d of await planDuplicates(cfg, stop, fresh.files, eligible, refs, report)) {
+        for (const d of await planDuplicates(cfg, stop, fresh.files, dupScope, refs, report)) {
           if (stop.signal) break;
           if (!wanted(d.file.folder)) continue;
           const res = await trashDuplicate(cfg, stop, d);
@@ -1338,18 +1341,29 @@ interface DuplicateRemoval {
   keptAt: string;
 }
 
+/** Pastas e renomeação que decidem o que pode sair como duplicata (#13627, #13748). */
+interface DuplicateScope {
+  /** Pastas dos brutos elegíveis (`decideFolder`). */
+  removable: readonly string[];
+  /** Pastas com os finais liberados (`decideFinalsFolder`): só delas sai final, editado ou prévia. */
+  finalsRemovable: ReadonlySet<string>;
+  /** Renomeações `de → para` (#13632): a pasta que fica segue o destino. */
+  renamedTo: Readonly<Record<string, string>>;
+}
+
 /** Plano das duplicatas: lê os XMLs da raiz só das pastas com candidata a sair; avisos dos retidos vão no relatório. */
 async function planDuplicates(
   cfg: ArchiveConfig,
   stop: StopController,
   files: readonly FolderFile[],
-  removable: readonly string[],
+  scope: DuplicateScope,
   refs: InUseRefs,
   report: ArchiveReport,
 ): Promise<DuplicateRemoval[]> {
-  const removableSet = new Set(removable);
+  const removableSet = new Set(scope.removable);
+  const extra = { finalsRemovableFolders: scope.finalsRemovable, renamedTo: scope.renamedTo };
   const referencedByFolder = new Map<string, ReadonlySet<string> | null>();
-  for (const folder of foldersWithRemovalCandidates(files, removableSet)) {
+  for (const folder of foldersWithRemovalCandidates(files, removableSet, extra)) {
     const texts: Array<string | null> = [];
     for (const x of files.filter((f) => f.folder === folder && isRootXml(f.path))) {
       const r = await run(stop, cfg.rclone, ["cat", ...DRIVE_FLAGS, `${cfg.remoteRoot}/${folder}/${x.path}`], { timeoutMs: 120_000 });
@@ -1359,7 +1373,7 @@ async function planDuplicates(
     if (names === null) report.warnings.push(`${folder}: algum XML da raiz não pôde ser lido; nenhuma duplicata sai da pasta (#13627)`);
     referencedByFolder.set(folder, names);
   }
-  const groups = planCrossFolderDuplicates(files, { removableFolders: removableSet, referencedByFolder, inUseKeys: new Set(refs.byKey.keys()) });
+  const groups = planCrossFolderDuplicates(files, { ...extra, removableFolders: removableSet, referencedByFolder, inUseKeys: new Set(refs.byKey.keys()) });
   const out: DuplicateRemoval[] = [];
   for (const g of groups) {
     const keptAt = `${g.keep[0].folder}/${g.keep[0].path}`;
