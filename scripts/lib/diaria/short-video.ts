@@ -940,6 +940,28 @@ export interface ShortPublishedEntry {
   audio_check?: YouTubeAudioCheck;
   /** #13709: id do 1º comentário do Reels com o link por edição (só `instagram`, pela API). */
   first_comment_id?: string;
+  /**
+   * #13759: o 1º comentário falhou e o timer do Instagram tenta de novo
+   * (`scripts/lib/diaria/instagram-first-comment-retry.ts`). Some quando o
+   * comentário sai (vira `first_comment_id`).
+   */
+  first_comment_pending?: InstagramFirstCommentPending;
+}
+
+/** #13759: pendência do 1º comentário do Reels (texto, último erro, tentativas). */
+export interface InstagramFirstCommentPending {
+  /** Texto do comentário (o mesmo do plano, com o link por edição). */
+  message: string;
+  /** Último erro (ou a resposta sem id). */
+  error: string;
+  /** Tentativas feitas, a do publish incluída. */
+  attempts: number;
+  last_attempt_at: string;
+  /**
+   * A Graph respondeu sem id: o comentário PODE existir. Nunca retenta sozinho
+   * (sairia duplicado); o editor confere os comentários do post.
+   */
+  uncertain?: boolean;
 }
 
 export interface ShortsPublishedFile {

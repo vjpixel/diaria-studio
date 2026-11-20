@@ -282,12 +282,13 @@ function resumableUpload(dir: string, aammdd: string): { videoId: string } | { p
 /**
  * #13708: o Passo B3a no join. Registro ou dono ilegível vira problema (o join
  * não dá a capa por feita às cegas); `pending` sem dono vira problema;
- * `pending` com dono e `done` viram nota.
+ * `pending` com dono vencido também (#13752); `pending` com dono no prazo e
+ * `done` viram nota.
  */
-function verticalCoverJoin(dir: string, aammdd: string): { step: ShortVerticalCoverStep | null; problem: string | null; note: string | null } {
+function verticalCoverJoin(dir: string, aammdd: string, now: Date): { step: ShortVerticalCoverStep | null; problem: string | null; note: string | null } {
   let step: ShortVerticalCoverStep;
   try {
-    step = readShortVerticalCoverStep(dir, aammdd);
+    step = readShortVerticalCoverStep(dir, aammdd, now);
   } catch (e) {
     return { step: null, problem: `capa vertical do Short não verificável: ${(e as Error).message} (#13708)`, note: null };
   }
@@ -525,7 +526,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     // Linha ilegível pode esconder uma tarefa pendente: o join não fecha às cegas.
     const problems = [...r.problems, ...parseProblems.map((p) => `linha ilegível: ${p}`)];
     // #13708: a capa vertical do Short (Passo B3a) é obrigatória: pendente sem dono segura o join.
-    const cover = verticalCoverJoin(a.dir, a.aammdd);
+    const cover = verticalCoverJoin(a.dir, a.aammdd, deps.now());
     if (cover.problem) problems.push(cover.problem);
     if (cover.note) deps.err(`publica-phase join: ${cover.note}`);
     for (const p of problems) deps.err(`publica-phase join: ${p}`);

@@ -57,16 +57,16 @@ function registry(...entries: ShortPublishedEntry[]): ShortsPublishedFile {
 
 describe("assessShortVerticalCoverStep (#13708)", () => {
   it("sem youtube_shorts no registro: não se aplica", () => {
-    assert.equal(assessShortVerticalCoverStep(registry(), null).state, "not-applicable");
-    assert.equal(assessShortVerticalCoverStep(null, null).state, "not-applicable");
+    assert.equal(assessShortVerticalCoverStep(registry(), null, NOW).state, "not-applicable");
+    assert.equal(assessShortVerticalCoverStep(null, null, NOW).state, "not-applicable");
   });
 
   it("cancelado: não se aplica", () => {
-    assert.equal(assessShortVerticalCoverStep(registry(shortEntry({ cancelled_at: "2026-11-19T15:00:00Z" })), null).state, "not-applicable");
+    assert.equal(assessShortVerticalCoverStep(registry(shortEntry({ cancelled_at: "2026-11-19T15:00:00Z" })), null, NOW).state, "not-applicable");
   });
 
   it("vertical_feed manual (o caso de 261119): pendente sem dono, e o join acusa", () => {
-    const step = assessShortVerticalCoverStep(registry(shortEntry()), null);
+    const step = assessShortVerticalCoverStep(registry(shortEntry()), null, NOW);
     assert.equal(step.state, "pending");
     const d = describeShortVerticalCoverStep(ED, step);
     assert.match(d.problem ?? "", /capa vertical do Short AbCdEfGhIjK pendente \(vertical_feed: manual\)/);
@@ -75,22 +75,22 @@ describe("assessShortVerticalCoverStep (#13708)", () => {
 
   it("first_frame_cover e cover ausente também ficam pendentes", () => {
     for (const cover of [{ method: "thumbnails_set", ok: true, vertical_feed: "first_frame_cover", first_frame_ms: 1000 } as ShortCoverRecord, undefined]) {
-      assert.equal(assessShortVerticalCoverStep(registry(shortEntry({ cover })), null).state, "pending");
+      assert.equal(assessShortVerticalCoverStep(registry(shortEntry({ cover })), null, NOW).state, "pending");
     }
   });
 
   it("studio_web: feito", () => {
-    const step = assessShortVerticalCoverStep(registry(shortEntry({ cover: { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" } })), null);
+    const step = assessShortVerticalCoverStep(registry(shortEntry({ cover: { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" } })), null, NOW);
     assert.equal(step.state, "done");
     assert.equal(describeShortVerticalCoverStep(ED, step).problem, null);
   });
 
   it("dono do mesmo vídeo vale; dono de outro vídeo não", () => {
     const owner = buildShortVerticalCoverOwner({ aammdd: ED, videoId: VID, now: NOW });
-    const ok = assessShortVerticalCoverStep(registry(shortEntry()), owner);
+    const ok = assessShortVerticalCoverStep(registry(shortEntry()), owner, NOW);
     assert.ok(ok.state === "pending" && ok.owner);
     assert.equal(describeShortVerticalCoverStep(ED, ok).problem, null);
-    const stale = assessShortVerticalCoverStep(registry(shortEntry()), { ...owner, video_id: "ZZZZZZZZZZZ" });
+    const stale = assessShortVerticalCoverStep(registry(shortEntry()), { ...owner, video_id: "ZZZZZZZZZZZ" }, NOW);
     assert.ok(stale.state === "pending" && !stale.owner && stale.stale_owner);
     assert.match(describeShortVerticalCoverStep(ED, stale).problem ?? "", /outro vídeo/);
   });
@@ -170,7 +170,7 @@ describe("CLI + publica-phase join (#13708)", () => {
   let out: string[];
   let errs: string[];
   const deps = () => ({ log: (l: string) => out.push(l), err: (l: string) => errs.push(l), now: () => NOW });
-  const join_ = () => phaseMain(["join", ED, "--edition-dir", dir], { ...defaultPhaseCliDeps, log: (l) => out.push(l), err: (l) => errs.push(l) });
+  const join_ = () => phaseMain(["join", ED, "--edition-dir", dir], { ...defaultPhaseCliDeps, log: (l) => out.push(l), err: (l) => errs.push(l), now: () => NOW });
   const writeRegistry = (...entries: ShortPublishedEntry[]) => {
     mkdirSync(join(dir, "_internal"), { recursive: true });
     writeFileSync(join(dir, SHORTS_PUBLISHED_FILE), JSON.stringify(registry(...entries), null, 2));

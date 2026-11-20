@@ -21,7 +21,8 @@
  *     não conta).
  *
  * `publica-phase.ts join` usa o veredito: `pending` sem dono sai 1 (a sessão
- * não se dá por concluída); com dono, o join passa e relata o dono.
+ * não se dá por concluída); com dono, o join passa e relata o dono, até o dono
+ * vencer (`at` + 2 h com o passo pendente, #13752): aí volta a sair 1.
  *
  * Miolo puro; o I/O fica nas funções `read*`/`write*` no fim e em
  * `scripts/short-vertical-cover.ts`. Nada aqui chama o YouTube.
@@ -76,6 +77,12 @@ export type ShortVerticalCoverStep =
       owner: ShortVerticalCoverOwner | null;
       /** Dono registrado para OUTRO vídeo (Short trocado): não vale. */
       stale_owner: ShortVerticalCoverOwner | null;
+      /**
+       * #13752: dono do mesmo vídeo cujo `at` + `SHORT_VERTICAL_COVER_OWNER_GRACE_MS`
+       * já passou com o passo ainda pendente (a task one-shot não rodou ou
+       * falhou). Vale como `owner` para o relato, mas o join acusa problema.
+       */
+      owner_overdue: boolean;
     };
 
 /**
@@ -94,10 +101,26 @@ export function youtubeVideoIdOf(entry: Pick<ShortPublishedEntry, "id" | "url">)
   return null;
 }
 
-/** Pure: o estado do passo para o registro (já unido) e o dono registrado. */
+/**
+ * #13752: margem depois do `at` do dono antes de o dono contar como vencido.
+ * A task one-shot roda em `at`; 2 h cobre a execução da skill e um atraso
+ * normal da máquina. Passado isso com o passo ainda pendente, a task não foi
+ * criada ou falhou, e o join volta a acusar (senão a pendência fica muda).
+ */
+export const SHORT_VERTICAL_COVER_OWNER_GRACE_MS = 2 * 60 * 60_000;
+
+/** Pure: o dono venceu em `now` (`at` + margem no passado). `at` ilegível conta como vencido. */
+export function isShortVerticalCoverOwnerOverdue(owner: Pick<ShortVerticalCoverOwner, "at">, now: Date): boolean {
+  const at = Date.parse(owner.at);
+  if (Number.isNaN(at)) return true;
+  return now.getTime() > at + SHORT_VERTICAL_COVER_OWNER_GRACE_MS;
+}
+
+/** Pure: o estado do passo para o registro (já unido), o dono registrado e o instante da leitura. */
 export function assessShortVerticalCoverStep(
   registry: ShortsPublishedFile | null,
   owner: ShortVerticalCoverOwner | null,
+  now: Date,
 ): ShortVerticalCoverStep {
   const entry = registry?.entries.find((e) => e.destination === SHORT_VERTICAL_COVER_DESTINATION);
   if (!entry) return { state: "not-applicable", reason: "sem youtube_shorts no registro do vertical" };
@@ -111,6 +134,7 @@ export function assessShortVerticalCoverStep(
     vertical_feed: entry.cover?.vertical_feed ?? null,
     owner: sameVideo ? owner : null,
     stale_owner: owner !== null && !sameVideo ? owner : null,
+    owner_overdue: sameVideo && owner !== null && isShortVerticalCoverOwnerOverdue(owner, now),
   };
 }
 
@@ -250,6 +274,16 @@ export function describeShortVerticalCoverStep(aammdd: string, step: ShortVertic
     };
   }
   const id = step.video_id ?? "{VIDEO_ID}";
+  if (step.owner && step.owner_overdue) {
+    return {
+      problem:
+        `capa vertical do Short ${id} pendente com dono vencido: ${step.owner.by} às ${step.owner.at}${step.owner.task ? ` (task ${step.owner.task})` : ""} ` +
+        `e o passo não fechou em ${SHORT_VERTICAL_COVER_OWNER_GRACE_MS / 3_600_000} h (a task one-shot não foi criada ou falhou). ` +
+        `Aplicar ${SHORT_COVER_FILE} no Studio web (Passo B3a) e fechar com npx tsx scripts/short-vertical-cover.ts confirm ${aammdd} --id ${id} --studio-persisted, ` +
+        `ou registrar dono novo com npx tsx scripts/short-vertical-cover.ts defer ${aammdd} e criar a task (#13752)`,
+      note: null,
+    };
+  }
   if (step.owner) {
     return {
       problem: null,
@@ -267,8 +301,8 @@ export function describeShortVerticalCoverStep(aammdd: string, step: ShortVertic
 }
 
 /** I/O: o estado do passo na pasta da edição (registro unido + dono). Lança com registro ou dono ilegível. */
-export function readShortVerticalCoverStep(editionDir: string, aammdd: string): ShortVerticalCoverStep {
-  return assessShortVerticalCoverStep(readShortsRegistry(editionDir, aammdd), readShortVerticalCoverOwner(editionDir));
+export function readShortVerticalCoverStep(editionDir: string, aammdd: string, now: Date): ShortVerticalCoverStep {
+  return assessShortVerticalCoverStep(readShortsRegistry(editionDir, aammdd), readShortVerticalCoverOwner(editionDir), now);
 }
 
 /** I/O: lê o dono registrado; ausente = null; ilegível lança. */
