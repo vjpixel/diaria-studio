@@ -22,7 +22,7 @@
  * que não bate com o SRT do vídeo citado; e `02-reviewed.md` mais novo que o
  * roteiro ou que o fact-check do roteiro (#13434).
  * Capa do roteiro que o `gen-youtube-thumb.ts` recusaria (vertical fora de 2 a
- * 5 palavras, `normalizeShortCoverHook`; horizontal fora do `splitHook`, com a
+ * 7 palavras, `normalizeShortCoverHook`; horizontal fora do `splitHook`, com a
  * quebra de `hookHorizontalDoRoteiro`) é `[erro]` com exit 4, depois da
  * proposta impressa (#13401, `errosCapaDoRoteiro`).
  * A saída traz a duração estimada de cada vídeo (`duracoes` no `--json`).
