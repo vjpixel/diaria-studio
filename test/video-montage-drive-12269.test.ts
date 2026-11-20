@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, openSync, closeSync, ftruncateSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { uploadToFolder, UPLOAD_CHUNK_BYTES as CHUNK, UPLOAD_CHUNK_THRESHOLD as LIMIT } from '../scripts/lib/diaria/video-montage-drive.ts';
+import { uploadToFolder, UPLOAD_CHUNK_BYTES as CHUNK } from '../scripts/lib/diaria/video-montage-drive.ts';
 
 for (const failure of ['network', '503', '429', 'lost-final', 'none']) {
   it(`#12269 bounded disk chunks and Range recovery: ${failure}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'drive-chunks-'));
     const path = join(dir, 'large.mp4');
-    const size = LIMIT + 17;
+    const size = CHUNK + 17; // limiar do upload em blocos = 1 bloco (#13739)
     const fd = openSync(path, 'w');
     ftruncateSync(fd, size); // sparse: no large fixture in memory
     closeSync(fd);

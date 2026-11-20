@@ -361,9 +361,21 @@ describe("#13240: modo local com raiz explícita (loadVinhetaSfxForLocalRoot, #1
     assert.deepEqual(s?.atS, [0.1, 0.333]);
   });
 
-  it("ausente na raiz e presente no caminho do config: usa o do config", async () => {
-    const s = await loadVinhetaSfxForLocalRoot(root, null, { readConfig: () => CFG_SOM, exists: (p) => p === SFX.path, probe: PROBE_OK, warn: () => assert.fail("sem aviso") });
+  it("ausente na raiz e presente no caminho do config: copia para {raiz}/_marca/ e o XML aponta para a raiz (#13739)", async () => {
+    const copies: Array<[string, string]> = [];
+    const s = await loadVinhetaSfxForLocalRoot(root, null, { readConfig: () => CFG_SOM, exists: (p) => p === SFX.path, probe: PROBE_OK, warn: () => assert.fail("sem aviso"), mkdir: () => {}, copy: (a, b) => { copies.push([a, b]); } });
+    assert.equal(s?.path, `${root}/_marca/${SFX_NAME}`);
+    assert.deepEqual(copies, [[SFX.path, `${root}/_marca/${SFX_NAME}`]]);
+  });
+
+  it("cópia para a raiz falha: usa o do config com [aviso] explícito do caminho fora da raiz (#13739)", async () => {
+    const warns: string[] = [];
+    const s = await loadVinhetaSfxForLocalRoot(root, null, { readConfig: () => CFG_SOM, exists: (p) => p === SFX.path, probe: PROBE_OK, warn: (m) => warns.push(m), mkdir: () => {}, copy: () => { throw new Error("EACCES"); } });
     assert.equal(s?.path, SFX.path);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /fora da raiz/);
+    assert.match(warns[0], /EACCES/);
+    assert.match(warns[0], /#13739/);
   });
 
   it("ausente nos dois e sem sessão do Drive: null + [aviso] + motivo", async () => {
