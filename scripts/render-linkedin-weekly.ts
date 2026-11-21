@@ -110,10 +110,23 @@ export const VIDEO_IMAGE_FILENAME = "video-04-d1-2x1.jpg";
  * manchete #1. `null` se a edição ou o arquivo não existirem — fail-soft,
  * ver docstring do módulo. Único I/O: `existsSync` (sem ler o arquivo).
  */
-export function resolveCoverImageSourcePath(editionsRootDir: string, headlineOneEditionDate: string): string | null {
+export function resolveCoverImageSourcePath(
+  editionsRootDir: string,
+  headlineOneEditionDate: string,
+  destaqueN?: number,
+): string | null {
   const editionDir = resolveEditionDir(editionsRootDir, headlineOneEditionDate);
-  const imgPath = join(editionDir, COVER_IMAGE_FILENAME);
+  const imgPath = join(editionDir, coverSourceFilename(destaqueN));
   return existsSync(imgPath) ? imgPath : null;
+}
+
+/**
+ * #13823: a manchete #1 pode ser o D2/D3 da edição de origem (seleção por clique) —
+ * a capa é a `04-d{N}-2x1.jpg` desse destaque. Sem `destaqueN` válido (1-3), D1.
+ */
+export function coverSourceFilename(destaqueN?: number): string {
+  const n = destaqueN === 2 || destaqueN === 3 ? destaqueN : 1;
+  return `04-d${n}-2x1.jpg`;
 }
 
 /**
@@ -163,7 +176,7 @@ function resolveTextArg(argv: string[], key: string, fallback?: string): string 
 interface SelectionJson {
   cycle: string;
   contentWindow?: string[];
-  headlines: Array<{ title: string; body: string; why: string; editionDate: string }>;
+  headlines: Array<{ title: string; body: string; why: string; editionDate: string; destaqueN?: number }>;
   useMelhor: { title: string; url: string; body: string } | null;
   weeklyEditions: Array<{ editionDate: string; url: string; destaques: string[] }>;
   /** #12081: principal vídeo da semana (o mais visto, #13023); `null` = medido e sem vídeo. */
@@ -384,13 +397,14 @@ export function main(rootDirOverride?: string) {
   if (selection.headlines.length > 0) {
     const headlineOneEditionDate = selection.headlines[0].editionDate;
     const editionsRootDir = join(rootDir, "data/editions");
-    const src = resolveCoverImageSourcePath(editionsRootDir, headlineOneEditionDate);
+    const headlineOneN = selection.headlines[0].destaqueN;
+    const src = resolveCoverImageSourcePath(editionsRootDir, headlineOneEditionDate, headlineOneN);
     if (src) {
       coverImagePath = join(outDir, COVER_IMAGE_FILENAME);
       copyFileSync(src, coverImagePath);
     } else {
       coverWarnings.push(
-        `Imagem de capa (#5536): ${COVER_IMAGE_FILENAME} não encontrada na edição de origem da manchete #1 ` +
+        `Imagem de capa (#5536): ${coverSourceFilename(headlineOneN)} não encontrada na edição de origem da manchete #1 ` +
           `(${headlineOneEditionDate}) — artigo sai sem capa, suba manualmente no LinkedIn se tiver uma imagem alternativa.`,
       );
     }
@@ -406,7 +420,7 @@ export function main(rootDirOverride?: string) {
       copyFileSync(src, videoImagePath);
     } else {
       coverWarnings.push(
-        `Imagem do vídeo (#12777): ${COVER_IMAGE_FILENAME} não encontrada na edição do vídeo ` +
+        `Imagem do vídeo (#12777): ${coverSourceFilename()} não encontrada na edição do vídeo ` +
           `(${selection.video.editionDate}) — a seção "Vídeo da semana" sai só com o texto, sem imagem para subir.`,
       );
     }
