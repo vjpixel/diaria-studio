@@ -21,8 +21,8 @@
  *     descrição/comentário, sem convite pra assinar embutido.
  *   - Texto de link NUNCA termina em domínio nu (auto-linkagem do LinkedIn
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
- *     rótulo de ação. Exceção escolhida pelo editor (#13045): o link do vídeo,
- *     "YouTube da diar.ia.br", com a correção no Passo 8c da skill (#13049).
+ *     rótulo de ação. A exceção do #13045 ("YouTube da diar.ia.br") saiu no
+ *     #13821: o link do vídeo é só "YouTube".
  *   - UTM: `utm_source=linkedin&utm_medium=newsletter&utm_campaign=ln-{cycle}
  *     &utm_content=mencao-abertura|cta-abertura|lista|cta-fim` (item-01/02/03
  *     SAÍRAM; `cta-abertura` e `mencao-abertura` ENTRARAM em 260803;
@@ -67,23 +67,22 @@ export type LinkedinWeeklyUtmContent = "cta-abertura" | "lista" | "cta-fim" | "v
 export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
 /**
  * #13045 (13/11/2026, decisão do editor, ciclo 26w46): a frase de abertura da
- * seção é fixa, "Eu comento o destaque acima no YouTube da diar.ia.br.", com o
- * link em "YouTube da diar.ia.br". Substitui o trecho fixo da #13023 ("No
+ * seção é fixa, "Eu comento o destaque acima no YouTube." (#13821; era "...no
+ * YouTube da diar.ia.br."), com o link em "YouTube". Substitui o trecho fixo da #13023 ("No
  * principal vídeo da semana no canal da diar.ia.br eu comento o destaque
  * acima."): o rótulo "principal vídeo da semana" fica só no título da seção da
  * Stack. Depois dela vem, quando o ciclo tem, a frase da semana sobre o que o
  * vídeo traz que o texto não traz (`video.pitch`, ver `WeeklyLinkedinRenderInput`).
  *
- * O rótulo termina no domínio nu (caso (c) de `context/publishers/linkedin.md`):
- * no paste real do 26w46 o LinkedIn partiu a âncora em "YouTube da" (href do
- * vídeo) + "diar.ia.br" (home sem UTM). O texto é escolha explícita do editor;
- * a auditoria do paste acusa a divisão com `TRAILING_WORDMARK_SPLIT_HINT`
- * (`linkedin-paste-audit.ts`) e o Passo 8c da skill traz a correção (#13049
- * item 3).
+ * #13821: a âncora é só "YouTube". "YouTube da diar.ia.br" terminava no
+ * domínio nu (caso (c) de `context/publishers/linkedin.md`) e o LinkedIn a
+ * partiu em "YouTube da" (href do vídeo) + "diar.ia.br" (home sem UTM) no 26w46
+ * e no 26w47; a correção pela toolbar não funcionou. A auditoria ainda acusa a
+ * divisão com `TRAILING_WORDMARK_SPLIT_HINT` (`linkedin-paste-audit.ts`).
  */
 export const LINKEDIN_WEEKLY_VIDEO_LEAD = "Eu comento o destaque acima no ";
 /** #13045: trecho linkado ao vídeo (utm_content=video). */
-export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "YouTube da diar.ia.br";
+export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "YouTube";
 /** #13045: pontuação que fecha a frase fixa, texto puro depois do link. */
 export const LINKEDIN_WEEKLY_VIDEO_TAIL = ".";
 

@@ -14,7 +14,7 @@ import { renderLinkedinWeeklyHtml, LINKEDIN_WEEKLY_VIDEO_LINK_TEXT, type WeeklyL
 import { renderCircleStackPost, CIRCLE_STACK_VIDEO_LEAD, type CircleStackItem, type CircleStackSelection } from "../scripts/lib/circle-stack-render.ts";
 import { renderCircleStackPreviewHtml } from "../scripts/lib/circle-stack-preview-html.ts";
 import { parseStackCopy, videoAudienceClaim } from "../scripts/lib/circle-stack-copy.ts";
-import { stripHtmlToText } from "../scripts/lib/linkedin-paste-audit.ts";
+import { stripHtmlToText, endsWithWordmarkAnchorText } from "../scripts/lib/linkedin-paste-audit.ts";
 
 const AUDIENCIA_RE = /mais\s+(assistid|vist)[oa]/i;
 const VIDEO_URL = "https://youtu.be/bbbbbbbbbbb";
@@ -64,10 +64,12 @@ const stackSel = (): CircleStackSelection => ({
 describe("#13023/#13045 — LinkedIn semanal: frase do vídeo", () => {
   it("a frase fixa da seção (#13045) não fala em audiência nem em 'principal vídeo da semana'", () => {
     // #13045: o rótulo "principal vídeo da semana" fica só na seção da Stack.
-    assert.equal(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT, "YouTube da diar.ia.br");
+    assert.equal(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT, "YouTube");
+    // #13821: o texto da âncora não termina no domínio nu (o LinkedIn a divide).
+    assert.equal(endsWithWordmarkAnchorText(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT), false);
     const { html } = renderLinkedinWeeklyHtml(linkedinInput());
     const text = stripHtmlToText(html);
-    assert.ok(text.includes("Eu comento o destaque acima no YouTube da diar.ia.br."), text);
+    assert.ok(text.includes("Eu comento o destaque acima no YouTube."), text);
     assert.doesNotMatch(text, /principal vídeo da semana/i);
     assert.doesNotMatch(text, AUDIENCIA_RE);
   });
