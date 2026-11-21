@@ -16,7 +16,12 @@
  *   `{pid, host, ts, token}` como o `file-lock.ts` e o órfão é removido pela
  *   mesma regra (`tryStealOrphan`, #9185).
  * - Fica de fora quem não toca a GPU (`GPU_FREE_COMMANDS`): `blocks`,
- *   `fact-check-merge` e `upload` leem e gravam JSON ou sobem arquivo.
+ *   `fact-check-merge`, `fact-check-input` e `upload` leem e gravam JSON ou
+ *   sobem arquivo; e, com a flag que desliga o Whisper, `decupagem`, `roteiro`
+ *   e `verify-xml` (`GPU_FREE_WITH_FLAG`, #13806).
+ * - O lock cobre só o trecho com GPU (#13806): quem baixa do Drive pega o lock
+ *   depois do download (`GPU_AFTER_DOWNLOAD_COMMANDS`, `gpuLockAfterDownload`)
+ *   e todos soltam antes do upload das saídas (`releaseGpuLockEarly`).
  * - `DIARIA_VIDEO_GPU_LOCK=0` desliga (escape para quem sabe que a máquina
  *   aguenta, ou para depurar); a espera tem teto (`GPU_LOCK.maxWaitS`) e, nele,
  *   o subcomando falha com a mensagem de quem segura, em vez de esperar para
@@ -34,8 +39,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lockHostId, tryStealOrphan } from "../file-lock.ts";
 
-/** Subcomandos que não usam a GPU: rodam sem esperar pelo lock. */
-export const GPU_FREE_COMMANDS: readonly string[] = ["blocks", "fact-check-merge", "upload"];
+/** Subcomandos que não usam a GPU: rodam sem esperar pelo lock. `fact-check-input` só lê e grava JSON (#13806). */
+export const GPU_FREE_COMMANDS: readonly string[] = ["blocks", "fact-check-merge", "upload", "fact-check-input"];
+
+/**
+ * #13806: subcomandos que só tocam a GPU num passo que a flag desliga (o
+ * Whisper da retranscrição ou da conferência). Com a flag, rodam sem o lock;
+ * sem ela seguem pegando, porque o passo roda por padrão.
+ */
+export const GPU_FREE_WITH_FLAG: Readonly<Record<string, string>> = {
+  decupagem: "no-retranscribe",
+  roteiro: "no-short-word-check",
+  "verify-xml": "no-transcribe",
+};
+
+/**
+ * #13806: subcomandos que, no modo API, baixam o bruto (ou o export) do Drive
+ * antes de usar a GPU. Para eles o lock só é pego em `gpuLockAfterDownload`,
+ * chamado depois do download: com Drive lento (0,3 MB/s no Neo, bruto de
+ * 9,57 GB na 261119) o download segurava o lock por horas com a GPU parada.
+ * O `runCommand` do `video-montagem.ts` chama o gate em cada um (guard de
+ * fiação no teste); sem download (modo local), o gate pega o lock na hora.
+ */
+export const GPU_AFTER_DOWNLOAD_COMMANDS: readonly string[] = ["transcribe", "preview", "review-final", "build", "srt", "face", "face-compare", "gaze", "frame"];
 
 /** `pollS`: intervalo entre tentativas; `noticeEveryS`: de quanto em quanto tempo o `[aviso]` de espera se repete; `maxWaitS`: teto da espera (3 h). */
 export const GPU_LOCK = { pollS: 2, noticeEveryS: 300, maxWaitS: 3 * 3600 } as const;
@@ -45,11 +71,13 @@ export function defaultGpuLockPath(dir: string = tmpdir()): string {
   return join(dir, "diaria-video-montagem-gpu.lock");
 }
 
-/** O subcomando precisa do lock da GPU? `DIARIA_VIDEO_GPU_LOCK=0` desliga para todos. */
-export function needsGpuLock(cmd: string | undefined, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+/** O subcomando precisa do lock da GPU? `DIARIA_VIDEO_GPU_LOCK=0` desliga para todos; `flags` = as da linha de comando (`GPU_FREE_WITH_FLAG`). */
+export function needsGpuLock(cmd: string | undefined, env: Readonly<Record<string, string | undefined>> = process.env, flags: ReadonlySet<string> = new Set()): boolean {
   if (!cmd) return false;
   if ((env.DIARIA_VIDEO_GPU_LOCK ?? "").trim() === "0") return false;
-  return !GPU_FREE_COMMANDS.includes(cmd);
+  if (GPU_FREE_COMMANDS.includes(cmd)) return false;
+  const off = Object.hasOwn(GPU_FREE_WITH_FLAG, cmd) ? GPU_FREE_WITH_FLAG[cmd] : undefined;
+  return !(off && flags.has(off));
 }
 
 export interface GpuLockHolder {
@@ -176,13 +204,62 @@ export async function acquireGpuLock(cmd: string, edition: string, deps: GpuLock
   }
 }
 
-/** Roda `fn` com o lock da GPU quando `cmd` precisa dele (`needsGpuLock`), soltando no fim (também no erro). */
-export async function withGpuLock<T>(cmd: string | undefined, edition: string | undefined, fn: () => Promise<T>, deps: GpuLockDeps & { env?: Readonly<Record<string, string | undefined>> } = {}): Promise<T> {
-  if (!needsGpuLock(cmd, deps.env ?? process.env)) return fn();
-  const lock = await acquireGpuLock(cmd!, edition ?? "", deps);
+/** O lock do subcomando em curso (`withGpuLock`): o acquire adiado (#13806) e o release. */
+interface ActiveGpuLock {
+  acquire: (() => Promise<void>) | null;
+  release: () => void;
+}
+let active: ActiveGpuLock | null = null;
+
+/**
+ * #13806: pega o lock adiado do subcomando em `GPU_AFTER_DOWNLOAD_COMMANDS`,
+ * depois do download do Drive e antes do 1º uso da GPU. Idempotente; no-op
+ * fora do `withGpuLock` (os testes chamam `main` direto), em subcomando que já
+ * pegou o lock no começo e em subcomando fora do lock.
+ */
+export async function gpuLockAfterDownload(): Promise<void> {
+  const cur = active;
+  const go = cur?.acquire;
+  if (!cur || !go) return;
+  cur.acquire = null;
+  await go();
+}
+
+/** #13806: solta o lock antes do upload das saídas para o Drive (o upload não usa a GPU). Idempotente. */
+export function releaseGpuLockEarly(): void {
+  active?.release();
+}
+
+/**
+ * Roda `fn` com o lock da GPU quando `cmd` precisa dele (`needsGpuLock`),
+ * soltando no fim (também no erro). Em `GPU_AFTER_DOWNLOAD_COMMANDS` o lock
+ * só é pego quando `fn` chama `gpuLockAfterDownload` (#13806).
+ */
+export async function withGpuLock<T>(
+  cmd: string | undefined,
+  edition: string | undefined,
+  fn: () => Promise<T>,
+  deps: GpuLockDeps & { env?: Readonly<Record<string, string | undefined>>; flags?: ReadonlySet<string> } = {},
+): Promise<T> {
+  if (!cmd || !needsGpuLock(cmd, deps.env ?? process.env, deps.flags)) return fn();
+  const held: { lock?: GpuLockHandle; released?: boolean } = {};
+  const release = () => {
+    if (!held.lock || held.released) return;
+    held.released = true;
+    held.lock.release();
+  };
+  const acquire = async () => {
+    if (held.lock || held.released) return;
+    held.lock = await acquireGpuLock(cmd, edition ?? "", deps);
+  };
+  const prev = active;
+  const mine: ActiveGpuLock = { acquire: GPU_AFTER_DOWNLOAD_COMMANDS.includes(cmd) ? acquire : null, release };
+  if (!mine.acquire) await acquire();
+  active = mine;
   try {
     return await fn();
   } finally {
-    lock.release();
+    release();
+    active = prev;
   }
 }

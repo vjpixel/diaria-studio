@@ -239,6 +239,12 @@ export function decideCorteTimerRun(input: {
    * `late` nele nesta execução.
    */
   sendingMarks?: ReadonlyArray<ShortSendingMark>;
+  /**
+   * #13807: estado dos alarmes do corte (`CORTE_TIMER_ALARM_STATE_FILE`). O
+   * `repost-failed` já entregue cobre o repost sem registro: o `unregistered`
+   * dele não sai de novo (era um 2º e-mail sobre o mesmo problema).
+   */
+  alarmStateRaw?: string | null;
   now: Date;
 }): CorteTimerDecision {
   const cfg = loadShortsConfig(input.config);
@@ -295,7 +301,9 @@ export function decideCorteTimerRun(input: {
     // #13731: os destinos autorizados que não são do timer (API agendada, Buffer, passo guiado,
     // repost) saem pela rodada manual; se 3 h depois do horário seguem sem registro, ninguém avisava.
     if (deltaMs > MAX_FIRE_LATENESS_MS) {
+      const repostCovered = corteRepostFailedDelivered(input.alarmStateRaw ?? null, spec);
       for (const d of authorized.filter((x) => known.has(x) && !CORTE_TIMER_DESTINATIONS.includes(x) && !done.has(x) && !inFlight.has(x))) {
+        if (d === CORTE_TIMER_REPOST_DESTINATION && repostCovered) continue;
         alarms.push({ destination: d, key: "unregistered", reason: corteUnregisteredReason(spec, d, deltaMs, done) });
       }
     }
@@ -664,6 +672,18 @@ export function corteAlarmVariant(key: CorteTimerAlarmKey, spec: CorteSpec, cont
   return corteAlarmPlanVariant(spec);
 }
 
+/**
+ * Puro (#13807): o `repost-failed` do repost da página, neste plano do corte,
+ * já chegou ao editor? Só o entregue conta: com o e-mail pendente o
+ * `repost-failed` não volta (o perfil saiu da fila do timer), e o
+ * `unregistered` é o que ainda avisa.
+ */
+export function corteRepostFailedDelivered(stateRaw: string | null, spec: CorteSpec): boolean {
+  const state = parseAlarmState(stateRaw);
+  const id = corteAlarmId(CORTE_TIMER_REPOST_DESTINATION, "repost-failed", corteAlarmVariant("repost-failed", spec, null));
+  return state.alarmed.includes(id) && !state.emailPending.includes(id);
+}
+
 /** #11967: variante do plano (`{data}-{hh:mm}`); `undefined` só sem data nem horário (spec sintética). */
 function corteAlarmPlanVariant(spec: Pick<CorteSpec, "date" | "hhmm">): string | undefined {
   return spec.date || spec.hhmm ? `${spec.date}-${spec.hhmm}` : undefined;
@@ -840,7 +860,15 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
   // #12001: marca ilegível lança (vira o alarme `crash` do main), nunca "nada em curso".
-  const decision = decideCorteTimerRun({ config: deps.config, spec, registryRaws: readShortsRegistryRaws(dir), sendingMarks: readShortsSending(dir, spec.date), now: deps.now });
+  const alarmStatePath = join(dir, CORTE_TIMER_ALARM_STATE_FILE);
+  const decision = decideCorteTimerRun({
+    config: deps.config,
+    spec,
+    registryRaws: readShortsRegistryRaws(dir),
+    sendingMarks: readShortsSending(dir, spec.date),
+    alarmStateRaw: existsSync(alarmStatePath) ? readFileSync(alarmStatePath, "utf8") : null,
+    now: deps.now,
+  });
   if ((decision.kind === "publish" || decision.kind === "late") && decision.inFlight?.length) {
     console.log(`${LOG_PREFIX} ${spec.slug}: envio em curso por outra rodada, fica de fora desta execução: ${decision.inFlight.join(", ")}`);
   }

@@ -235,9 +235,22 @@ export function claimFollowupLot(
       if (Number.isFinite(ageMs) && ageMs < LOT_STALE_AFTER_MS) {
         return { result: { action: "blocked_concurrent", lot: resumable }, write: false };
       }
-      resumable.recipient_subscription_ids = recipients.map((r) => String(r.kit_subscriber_id));
-      resumable.recipient_emails = recipients.map((r) => r.email);
-      return { result: { action: "recreate_after_timeout", lot: resumable }, write: true };
+      // #13804: a tag do lote pode ter qualquer um dos destinatários antigos
+      // (marcados antes do 429). Só retoma quando a lista de hoje contém
+      // todos eles; senão o guard de audiência acharia na tag um membro fora
+      // do lote e abortaria todo dia. Nesse caso o lote antigo é cancelado
+      // (tag dele nunca vira broadcast) e a rodada cria um lote/tag novos.
+      const today = new Set(recipients.map((r) => String(r.kit_subscriber_id)));
+      const dropped = resumable.recipient_subscription_ids.filter((id) => !today.has(id));
+      if (dropped.length === 0) {
+        resumable.recipient_subscription_ids = recipients.map((r) => String(r.kit_subscriber_id));
+        resumable.recipient_emails = recipients.map((r) => r.email);
+        return { result: { action: "recreate_after_timeout", lot: resumable }, write: true };
+      }
+      resumable.status = "cancelled";
+      resumable.last_error =
+        `lote pending não retomado em ${dateIso}: ${dropped.length} destinatário(s) da tag ${resumable.tag_name} ` +
+        `saíram da lista do dia; lote cancelado e substituído por um novo (#13804)`;
     }
     const latest = findLatestFollowupLot(block.lots, kind, dateIso, variant);
     const decision = decideLotReconciliation<FollowupLot>(latest?.lot ?? null, nowMs, LOT_STALE_AFTER_MS);

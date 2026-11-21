@@ -448,8 +448,12 @@ export function chooseInstagramVideo(input: {
 export type InstagramTimerOutcome =
   | { kind: "done"; detail: string }
   | { kind: "wait"; detail: string }
-  /** `failed`: sai exit 1 (unit `failed`) além do alarme. */
-  | { kind: "alarm"; key: InstagramTimerAlarmKey; detail: string; failed: boolean };
+  /**
+   * `failed`: sai exit 1 (unit `failed`) além do alarme. `unrecorded` (#13799,
+   * #13803): retentativa do 1º comentário que não gravou nada nem postou; o
+   * timer conta as seguidas e escala (`escalateUnrecordedFirstComment`).
+   */
+  | { kind: "alarm"; key: InstagramTimerAlarmKey; detail: string; failed: boolean; unrecorded?: true };
 
 type PlanAction = ShortsPlanItem["action"];
 
@@ -541,13 +545,25 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
  * Puro (#13759): lê a saída do `retry-instagram-first-comment.ts`. Sucesso ou
  * nada pendente = `done`; falha com tentativa sobrando = `first-comment`;
  * esgotado, resposta sem id ou registro ilegível = `first-comment-stuck`.
+ *
+ * #13803: filho sem JSON (crash no import, `.env` quebrado) e `error` (exceção
+ * da rodada) são falha de infraestrutura com a pendência retentável: viram
+ * `first-comment` com `unrecorded`, nunca stuck ("comente à mão") — o editor
+ * comentaria e a hora seguinte postaria outro. Se o POST chegou a rodar, a
+ * marca de envio (#13791) ficou gravada e a execução seguinte só alarma.
  */
 export function interpretFirstCommentRetryOutput(exitCode: number | null, stdout: string, stderrTail = ""): InstagramTimerOutcome {
   let out: any;
   try {
     out = JSON.parse(stdout.trim().split("\n").pop() ?? "");
   } catch {
-    return { kind: "alarm", key: "first-comment-stuck", failed: false, detail: `retry-instagram-first-comment.ts sem JSON (exit ${exitCode})${stderrTail ? `. Fim do stderr:\n${stderrTail}` : ""}` };
+    return {
+      kind: "alarm",
+      key: "first-comment",
+      failed: false,
+      unrecorded: true,
+      detail: `retry-instagram-first-comment.ts sem JSON (exit ${exitCode})${stderrTail ? `. Fim do stderr:\n${stderrTail}` : ""}`,
+    };
   }
   const attempts = typeof out?.attempts === "number" ? ` (tentativa ${out.attempts} de ${out.max_attempts ?? "?"})` : "";
   switch (out?.action) {
@@ -564,7 +580,15 @@ export function interpretFirstCommentRetryOutput(exitCode: number | null, stdout
           detail: `1º comentário do Reels ${out.media_id} ${out.uncertain ? "com resposta sem id (pode existir)" : "não saiu e as tentativas acabaram"}${attempts}: ${out.error}. Texto: ${out.message}`,
         };
       }
-      return { kind: "alarm", key: "first-comment", failed: false, detail: `1º comentário do Reels ${out.media_id} falhou de novo${attempts}: ${out.error}. Texto: ${out.message}` };
+      return {
+        kind: "alarm",
+        key: "first-comment",
+        failed: false,
+        ...(out.not_recorded === true ? { unrecorded: true as const } : {}),
+        detail: `1º comentário do Reels ${out.media_id} falhou de novo${attempts}: ${out.error}. Texto: ${out.message}`,
+      };
+    case "error":
+      return { kind: "alarm", key: "first-comment", failed: false, unrecorded: true, detail: `retentativa do 1º comentário falhou com exceção: ${out.reason ?? "?"}` };
     case "exhausted":
     case "uncertain":
       return {
@@ -586,6 +610,45 @@ export function firstCommentStuckDetail(state: Exclude<FirstCommentRetryState, {
   // #13791: a marca de envio que ficou (o registro não gravou depois do POST) também é incerta.
   const what = state.kind === "uncertain" ? (state.pending.sending ? "com uma tentativa sem resultado gravado (pode existir)" : "com resposta sem id (pode existir)") : "sem tentativa sobrando";
   return `1º comentário do Reels ${state.mediaId} ${what} (tentativa ${state.pending.attempts}): ${state.pending.error}. Texto: ${state.pending.message}`;
+}
+
+/**
+ * #13799: execuções SEGUIDAS da retentativa que não gravaram nada no registro
+ * (marca de envio que não grava, filho sem JSON, exceção). Essas não somam
+ * `attempts` no registro, então sem este contador o `first-comment-stuck` nunca
+ * sairia e o Reels terminaria o dia sem comentário e sem aviso.
+ */
+export const INSTAGRAM_FIRST_COMMENT_UNRECORDED_FILE = "_internal/.shorts-instagram-first-comment-unrecorded.json";
+
+/** #13799: a partir de quantas execuções seguidas sem gravar o timer escala para `first-comment-stuck`. */
+export const INSTAGRAM_FIRST_COMMENT_UNRECORDED_ESCALATE_AFTER = 3;
+
+/** Puro (#13799): o contador lido; ilegível ou de outra edição = 0. */
+export function parseFirstCommentUnrecordedCount(raw: string | null, aammdd: string): number {
+  if (!raw) return 0;
+  try {
+    const o = JSON.parse(raw);
+    return o?.aammdd === aammdd && Number.isInteger(o?.count) && o.count > 0 ? o.count : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Puro (#13799): a saída escalada. `first-comment` sem nada gravado pela
+ * `count`-ésima vez seguida vira `first-comment-stuck`; o resto passa igual.
+ */
+export function escalateUnrecordedFirstComment(outcome: InstagramTimerOutcome, count: number, message: string): InstagramTimerOutcome {
+  if (outcome.kind !== "alarm" || outcome.key !== "first-comment" || !outcome.unrecorded) return outcome;
+  if (count < INSTAGRAM_FIRST_COMMENT_UNRECORDED_ESCALATE_AFTER) return outcome;
+  // O editor comenta à mão com o texto: sem JSON e exceção não o trazem no detalhe.
+  const text = outcome.detail.includes("Texto: ") ? "" : `. Texto: ${message}`;
+  return {
+    kind: "alarm",
+    key: "first-comment-stuck",
+    failed: false,
+    detail: `a retentativa do 1º comentário rodou ${count} vezes seguidas sem gravar nada no registro (a gravação ou o próprio script falham, não a Graph): o timer para de tentar nesta edição. Última: ${outcome.detail}${text}`,
+  };
 }
 
 /** Puro: corpo do alarme, por motivo, com os comandos já com a edição e o arquivo. */
@@ -643,7 +706,7 @@ export function buildInstagramTimerAlarm(input: {
     lines.push(
       "O Reels está no ar e registrado; NÃO reposte.",
       "A legenda diz que o link do vídeo completo está no 1º comentário, mas o comentário não saiu (ex.: token sem `instagram_manage_comments`).",
-      `O timer do 300 tenta de novo sozinho a cada execução (de hora em hora), até ${INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS} tentativas no total; se acabarem, sai outro alarme (\`first-comment-stuck\`).`,
+      `O timer do 300 tenta de novo sozinho a cada execução (de hora em hora), até ${INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS} tentativas no total; se acabarem, ou se ${INSTAGRAM_FIRST_COMMENT_UNRECORDED_ESCALATE_AFTER} execuções seguidas falharem sem gravar nada no registro, sai outro alarme (\`first-comment-stuck\`) e o timer para de tentar.`,
       "Não comente à mão enquanto o timer tenta: sairiam dois comentários. Para tentar já: " +
         `\`npx tsx scripts/retry-instagram-first-comment.ts ${aammdd}\` (no 300).`,
     );
@@ -651,8 +714,9 @@ export function buildInstagramTimerAlarm(input: {
   } else if (key === "first-comment-stuck") {
     lines.push(
       "O Reels está no ar e registrado; NÃO reposte.",
-      "O 1º comentário com o link por edição não sai sozinho: as tentativas acabaram, a Graph respondeu sem id ou não respondeu, uma tentativa ficou sem resultado gravado (nos três casos o comentário pode existir, #13791) ou o registro não permite retentar.",
+      "O 1º comentário com o link por edição não sai sozinho: as tentativas acabaram, a Graph respondeu sem id ou não respondeu, uma tentativa ficou sem resultado gravado (nos três casos o comentário pode existir, #13791), a retentativa falhou várias vezes seguidas sem gravar nada (#13799) ou o registro não permite retentar.",
       "O que fazer: confira os comentários do Reels no app. Se o link não está lá, comente à mão com o texto do motivo acima.",
+      "Depois deste alarme o timer não comenta mais nesta edição (#13803), então comentar à mão não duplica.",
       "Este alarme sai uma vez por edição.",
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: comentar o link à mão (${key})`;
@@ -1170,6 +1234,42 @@ async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boo
   }
 }
 
+/**
+ * Puro (#13803): o `first-comment-stuck` desta edição já saiu (entregue) ou
+ * está com o e-mail pendente? Nos dois casos o editor foi (ou vai ser) mandado
+ * comentar à mão, e o timer não pode mais comentar sozinho.
+ */
+export function firstCommentStuckAlreadyRaised(stateRaw: string | null): boolean {
+  const state = parseAlarmState(stateRaw);
+  return [...state.alarmed, ...state.emailPending].some((id) => alarmKeyOf(id) === "first-comment-stuck");
+}
+
+/**
+ * #13799: grava o contador de execuções seguidas sem nada gravado e devolve o
+ * valor novo. Qualquer outro desfecho zera. Falha de gravação do contador só
+ * avisa no journal (o mesmo disco que recusou o registro pode recusar aqui) e
+ * devolve o valor calculado, que ainda escala nesta execução.
+ */
+function recordFirstCommentUnrecorded(dir: string, aammdd: string, outcome: InstagramTimerOutcome): number {
+  const path = join(dir, INSTAGRAM_FIRST_COMMENT_UNRECORDED_FILE);
+  const unrecorded = outcome.kind === "alarm" && outcome.unrecorded === true;
+  let prev = 0;
+  try {
+    prev = parseFirstCommentUnrecordedCount(existsSync(path) ? readFileSync(path, "utf8") : null, aammdd);
+  } catch (e) {
+    console.error(`${LOG_PREFIX} ${aammdd}: contador de retentativas sem gravação ilegível (${(e as Error).message}); recomeça do zero`);
+  }
+  const count = unrecorded ? prev + 1 : 0;
+  if (count === prev) return count;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileAtomic(path, JSON.stringify({ aammdd, count }, null, 2) + "\n");
+  } catch (e) {
+    console.error(`${LOG_PREFIX} ${aammdd}: contador de retentativas sem gravação não gravou (${(e as Error).message}); vale ${count} só nesta execução`);
+  }
+  return count;
+}
+
 /** Argumentos da retentativa do 1º comentário (#13759). */
 export function firstCommentRetryArgs(aammdd: string, dir: string): string[] {
   return ["scripts/retry-instagram-first-comment.ts", aammdd, "--edition-dir", dir];
@@ -1206,9 +1306,20 @@ async function runFirstCommentRetry(
     return 0;
   }
   try {
+    // #13803: o editor já recebeu "comente à mão" nesta edição (entregue ou com o
+    // e-mail pendente): retentar postaria um 2º comentário depois do dele. Só
+    // reenvia o e-mail pendente (ou o `alarm` reconhece como já avisado).
+    const statePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
+    if (firstCommentStuckAlreadyRaised(existsSync(statePath) ? readFileSync(statePath, "utf8") : null)) {
+      const detail = `o editor já foi avisado para comentar à mão (first-comment-stuck): o timer não retenta mais o 1º comentário do Reels ${state.mediaId} nesta edição (#13803). Último erro (tentativa ${state.pending.attempts}): ${state.pending.error}. Texto: ${state.pending.message}`;
+      console.log(`${LOG_PREFIX} ${aammdd}: ${detail}`);
+      return (await alarm(dir, aammdd, "first-comment-stuck", detail, { videoPath: null }, deps.notify)) ? 0 : 1;
+    }
     const r = deps.runScript(args);
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
-    const outcome = interpretFirstCommentRetryOutput(r.status, r.stdout, tail(r.stderr));
+    const raw = interpretFirstCommentRetryOutput(r.status, r.stdout, tail(r.stderr));
+    const count = recordFirstCommentUnrecorded(dir, aammdd, raw);
+    const outcome = escalateUnrecordedFirstComment(raw, count, state.pending.message);
     console.log(`${LOG_PREFIX} ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
     if (outcome.kind !== "alarm") return 0;
     return (await alarm(dir, aammdd, outcome.key, outcome.detail, { videoPath: null }, deps.notify)) ? 0 : 1;
