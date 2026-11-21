@@ -363,3 +363,35 @@ test("runDiskGuard: --check-only não limpa; statfs falhando sai 2", () => {
   assert.equal(guardRun([{ totalBytes: 100 * GIB, availableBytes: 1 * GIB }], { "check-only": "true" }).cleanups.length, 0);
   assert.equal(guardRun([new Error("EACCES")]).code, 2);
 });
+
+function guardWithDiscard(readings: number[], discardFn: (a: Record<string, string>) => void) {
+  let i = 0;
+  return runDiskGuard({}, {}, "/repo", {
+    measure: () => ({ totalBytes: 100 * GIB, availableBytes: readings[Math.min(i++, readings.length - 1)] * GIB }),
+    cleanup: () => {},
+    discardPreserved: discardFn,
+    log: () => {},
+    warn: () => {},
+  });
+}
+
+test("runDiskGuard: ainda baixo depois da limpeza descarta preservados e recupera (#13828)", () => {
+  const discards: Array<Record<string, string>> = [];
+  assert.equal(guardWithDiscard([1, 2, 40], (a) => discards.push(a)), 0);
+  assert.deepEqual(discards, [{ discard: "true" }]);
+});
+
+test("runDiskGuard: limpeza já recupera, não descarta preservados (#13828)", () => {
+  let n = 0;
+  assert.equal(guardWithDiscard([1, 40], () => n++), 0);
+  assert.equal(n, 0);
+});
+
+test("runDiskGuard: descarte que lança não derruba o guard (#13828)", () => {
+  assert.equal(
+    guardWithDiscard([1], () => {
+      throw new Error("boom");
+    }),
+    1,
+  );
+});

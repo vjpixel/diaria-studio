@@ -37,10 +37,13 @@ import {
   type DiskUsage,
 } from "./lib/disk-space-guard.ts";
 import { runCleanupWithRealCheckers } from "./cleanup-merged-worktrees.ts";
+import { realTriageDeps, runTriage } from "./triage-preserved-worktrees.ts";
 
 export interface DiskGuardDeps {
   measure: (path: string) => DiskUsage;
   cleanup: (args: Record<string, string>) => void;
+  /** Descarte com resgate dos preservados `descartavel` (#13828); opcional. */
+  discardPreserved?: (args: Record<string, string>) => void;
   log: (msg: string) => void;
   warn: (msg: string) => void;
 }
@@ -86,7 +89,18 @@ export function runDiskGuard(
     deps.warn(`[disk-guard] limpeza lançou: ${(e as Error).message}`);
   }
 
-  const after = measureSafe();
+  let after = measureSafe();
+  if (after !== null && after.verdict === "low" && deps.discardPreserved) {
+    // #13828: o cleanup preserva todo worktree sujo; sem isso o acúmulo
+    // trava o guard. Só os `descartavel` da triagem saem, com resgate em data/.
+    deps.log("[disk-guard] ainda baixo: descartando preservados `descartavel` (com resgate)");
+    try {
+      deps.discardPreserved(args["dry-run"] === "true" ? { discard: "true", "dry-run": "true" } : { discard: "true" });
+    } catch (e) {
+      deps.warn(`[disk-guard] descarte de preservados lançou: ${(e as Error).message}`);
+    }
+    after = measureSafe();
+  }
   if (after === null || after.verdict === "unknown") {
     deps.warn("[disk-guard] não deu para medir o disco depois da limpeza (exit 2).");
     return 2;
@@ -114,6 +128,9 @@ if (isMainModule(import.meta.url)) {
   process.exitCode = runDiskGuard(args, process.env, path, {
     measure: measureReal,
     cleanup: (cleanupArgs) => runCleanupWithRealCheckers(cleanupArgs, ROOT),
+    discardPreserved: (triageArgs) => {
+      runTriage(triageArgs, ROOT, realTriageDeps(ROOT));
+    },
     log: (m) => console.log(m),
     warn: (m) => console.warn(m),
   });
