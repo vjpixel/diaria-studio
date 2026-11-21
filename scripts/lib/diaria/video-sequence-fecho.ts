@@ -91,14 +91,21 @@ export function clipsHaveSpokenCta(
  * `[aviso]` do build para a sequência cujo último clipe falado (o `filler` da
  * vinheta não conta) é de um bloco sem o respiro do fecho. `null` = termina no
  * fecho (ou num `holdBlocks`), ou não tem clipe.
+ *
+ * #13805: o clipe fundido (`assembleClips`, corte contíguo no bruto) leva o
+ * `block` do 1º pedaço e guarda o resto em `parts`; o bloco em que a sequência
+ * TERMINA é o do último pedaço. Sem isso, comentário + fecho contíguos viravam
+ * um clipe `comentario` e o build mandava pôr no fecho o que já estava lá.
  */
 export function sequenceEndingWarning(
   name: string,
-  clips: ReadonlyArray<{ block: string; filler?: boolean }>,
+  clips: ReadonlyArray<{ block: string; filler?: boolean; parts?: ReadonlyArray<{ block: string }> }>,
   holdBlocks: readonly string[] = ["fecho"],
 ): string | null {
   const last = [...clips].reverse().find((c) => !c.filler);
-  if (!last || holdBlocks.includes(last.block)) return null;
-  const how = last.block === "comentario" ? "na última fala do comentário" : `no bloco ${last.block}`;
+  if (!last) return null;
+  const endBlock = last.parts?.length ? last.parts[last.parts.length - 1].block : last.block;
+  if (holdBlocks.includes(endBlock)) return null;
+  const how = endBlock === "comentario" ? "na última fala do comentário" : `no bloco ${endBlock}`;
   return `${name} termina ${how}, sem fecho: a sequência sai seca (sem a frase de encerramento e sem o respiro do fecho antes do card); pôr a fala de encerramento/CTA no bloco fecho e "fecho" no fim do order (#13743)`;
 }

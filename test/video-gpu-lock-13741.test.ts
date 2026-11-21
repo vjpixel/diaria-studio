@@ -8,11 +8,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  GPU_AFTER_DOWNLOAD_COMMANDS,
   GPU_FREE_COMMANDS,
+  GPU_FREE_WITH_FLAG,
   acquireGpuLock,
   describeGpuHolder,
+  gpuLockAfterDownload,
   needsGpuLock,
   readGpuLockHolder,
+  releaseGpuLockEarly,
   withGpuLock,
 } from "../scripts/lib/diaria/video-gpu-lock.ts";
 import { lockHostId } from "../scripts/lib/file-lock.ts";
@@ -140,7 +144,10 @@ describe("#13741 withGpuLock e cliMain", () => {
   it("solta o lock também quando o subcomando lança", async () => {
     const s = sandbox();
     try {
-      await assert.rejects(withGpuLock("preview", "261119", async () => { assert.ok(existsSync(s.path)); throw new Error("falhou"); }, { path: s.path, env: {} }), /falhou/);
+      await assert.rejects(withGpuLock("review", "261119", async () => { assert.ok(existsSync(s.path)); throw new Error("falhou"); }, { path: s.path, env: {} }), /falhou/);
+      assert.equal(existsSync(s.path), false);
+      // #13806: preview pega o lock depois do download (gate); lançando depois dele, solta igual.
+      await assert.rejects(withGpuLock("preview", "261119", async () => { await gpuLockAfterDownload(); assert.ok(existsSync(s.path)); throw new Error("falhou"); }, { path: s.path, env: {} }), /falhou/);
       assert.equal(existsSync(s.path), false);
     } finally {
       s.done();
@@ -172,5 +179,105 @@ describe("#13741 withGpuLock e cliMain", () => {
     assert.deepEqual(readGpuLockHolder("lixo"), {});
     assert.equal(describeGpuHolder({}), "outro subcomando");
     assert.equal(describeGpuHolder({ cmd: "gaze", edition: "261119", pid: 42, ts: Date.UTC(2026, 10, 18, 21, 3, 10) }), "gaze 261119 (pid 42, desde 21:03:10 UTC)");
+  });
+});
+
+describe("#13806 o lock cobre só o trecho com GPU", () => {
+  it("fact-check-input fica de fora; decupagem, roteiro e verify-xml só com a flag que desliga o Whisper", () => {
+    assert.equal(needsGpuLock("fact-check-input", {}), false);
+    for (const [c, flag] of Object.entries(GPU_FREE_WITH_FLAG)) {
+      assert.ok((SUBCOMMANDS as readonly string[]).includes(c), c);
+      assert.equal(needsGpuLock(c, {}), true, `${c} sem --${flag}`);
+      assert.equal(needsGpuLock(c, {}, new Set([flag])), false, `${c} --${flag}`);
+    }
+    // Flag de outro subcomando não tira ninguém do lock.
+    assert.equal(needsGpuLock("decupagem", {}, new Set(["no-transcribe"])), true);
+    assert.equal(needsGpuLock("constructor", {}), true);
+  });
+
+  it("os subcomandos de download adiado existem de verdade e usam a GPU", () => {
+    for (const c of GPU_AFTER_DOWNLOAD_COMMANDS) {
+      assert.ok((SUBCOMMANDS as readonly string[]).includes(c), c);
+      assert.equal(needsGpuLock(c, {}), true, c);
+    }
+  });
+
+  it("transcribe com Drive lento: o download roda sem o lock e o lock é pego depois dele", async () => {
+    const s = sandbox();
+    try {
+      const steps: string[] = [];
+      const code = await withGpuLock("transcribe", "261119", async () => {
+        // O download do bruto: o lock ainda não existe.
+        steps.push(`download lock=${existsSync(s.path)}`);
+        await gpuLockAfterDownload();
+        steps.push(`whisper cmd=${JSON.parse(readFileSync(s.path, "utf8")).cmd}`);
+        await gpuLockAfterDownload(); // idempotente
+        releaseGpuLockEarly();
+        steps.push(`upload lock=${existsSync(s.path)}`);
+        return 0;
+      }, { path: s.path, env: {} });
+      assert.equal(code, 0);
+      assert.deepEqual(steps, ["download lock=false", "whisper cmd=transcribe", "upload lock=false"]);
+      assert.equal(existsSync(s.path), false);
+    } finally {
+      s.done();
+    }
+  });
+
+  it("com a GPU ocupada por outro subcomando, o download não espera; só o passo com GPU espera", async () => {
+    const s = sandbox();
+    try {
+      writeFileSync(s.path, JSON.stringify({ pid: process.pid, host: lockHostId(), ts: 0, token: "x", cmd: "gaze", edition: "261119" }));
+      let downloaded = false;
+      let sleeps = 0;
+      await withGpuLock("preview", "261119", async () => {
+        downloaded = true;
+        await gpuLockAfterDownload();
+      }, {
+        path: s.path,
+        env: {},
+        stealOrphan: () => false,
+        log: () => {},
+        sleep: async () => {
+          assert.ok(downloaded, "esperou a GPU antes do download");
+          if (++sleeps === 2) rmSync(s.path);
+        },
+      });
+      assert.equal(sleeps, 2);
+    } finally {
+      s.done();
+    }
+  });
+
+  it("subcomando de lock imediato segue pegando no começo; o gate é no-op nele e fora do withGpuLock", async () => {
+    const s = sandbox();
+    try {
+      await gpuLockAfterDownload();
+      await withGpuLock("review", "261119", async () => {
+        assert.ok(existsSync(s.path));
+        await gpuLockAfterDownload();
+      }, { path: s.path, env: {} });
+      assert.equal(existsSync(s.path), false);
+    } finally {
+      s.done();
+    }
+  });
+
+  it("guard de fiação: runCommand chama o gate depois de cada download e o main solta antes do upload", () => {
+    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "video-montagem.ts"), "utf8");
+    const body = src.slice(src.indexOf("async function runCommand("), src.indexOf("export async function cliMain("));
+    // needLocalBruto (face, face-compare, gaze, frame, preview, build) termina no gate.
+    assert.match(body, /const needLocalBruto = async \(\) => \{[\s\S]*?await gpuLockAfterDownload\(\);\n  \};/);
+    for (const call of ["cmdTranscribe(", "cmdSrt(", "cmdSrtFromFinalNoPlan(", "cmdSrtFromFinal(", "cmdReviewFinal("]) {
+      const at = body.indexOf(`return ${call}`);
+      assert.ok(at > 0, call);
+      assert.match(body.slice(Math.max(0, at - 200), at), /await gpuLockAfterDownload\(\);\s*$/, `${call} sem o gate logo antes`);
+    }
+    assert.match(body, /await needLocalBruto\(\);\n\s*await gpuLockAfterDownload\(\);/, "build: o gate depois do download condicional");
+    assert.match(body, /return cmdPreview\(ctx, seq, d, [^\n]*needLocalBruto \}\)/);
+    for (const c of ["face", "face-compare", "gaze"]) assert.match(body, new RegExp(`case "${c}":\\n\\s*await needLocalBruto\\(\\);`), c);
+    assert.match(body, /case "frame": \{\n\s*await needLocalBruto\(\);/);
+    assert.match(src, /const code = await runCommand\(ctx, cmd, values, flags, seq, d\);\n[^\n]*\n  releaseGpuLockEarly\(\);/);
+    assert.match(src, /withGpuLock\(lockable \? cmd : undefined, edition, \(\) => main\(argv, deps\), \{ \.\.\.gpuLock, flags \}\)/);
   });
 });

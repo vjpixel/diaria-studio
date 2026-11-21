@@ -148,4 +148,23 @@ describe("#13742 janela de cauda", () => {
     const ct = tr([[14.5, 14.9, "OpenAI"], [14.9, 15.3, "lançou"], [15.3, 15.7, "modelos."]]);
     assert.ok(tailTake(c, undefined, undefined, ct, []));
   });
+
+  it("#13800: cauda que repete a última palavra funcional do anterior com pequeno desvio de horário não prova recomeço", () => {
+    // "dois" esticada (a última suspeita): a janela da cauda começa 0,5 s antes dela e pega de novo o "os",
+    // que a retranscrição põe 0,03 s depois do fim dele na longa (desvio maior que a duração da palavra).
+    const s = seg(10, 16, [[10, 10.4, "Tanto"], [10.4, 10.6, "no"], [10.6, 11, "plano"], [11, 11.32, "os"], [11.32, 14.5, "dois"], [14.5, 14.7, "já"], [14.7, 15, "estão"], [15, 15.4, "aqui."]]);
+    const tail = tr([[11.35, 11.6, "os"], [11.6, 11.9, "dois"], [11.9, 12.1, "já"], [12.1, 12.4, "estão"], [12.4, 12.8, "aqui."]]);
+    assert.equal(tailTake(s, undefined, undefined, tail, []), null);
+    // A regravação de verdade começa depois do vão, segundos adiante: segue valendo.
+    const late = tr([[13.6, 13.9, "os"], [13.9, 14.2, "dois"], [14.2, 14.5, "já"], [14.5, 14.8, "estão"], [14.8, 15.2, "aqui."]]);
+    assert.equal(tailTake(s, undefined, undefined, late, [])?.words?.[0].start, 13.6);
+  });
+
+  it("#13800: contrações e conjunções (ao, pro, pelo, mas…) também são funcionais e sozinhas não provam recomeço", () => {
+    for (const fw of ["ao", "pro", "nos", "dos", "pela", "mas", "ou"]) {
+      const s = seg(10, 20, [[10, 10.3, "eu"], [10.3, 10.6, fw], [10.6, 10.9, "lado"], [14.5, 14.7, fw], [14.7, 15, "fim"], [15, 15.3, "tudo"], [15.3, 15.7, "muda."]]);
+      const tail = tr([[14.5, 14.7, fw], [14.7, 15, "fim"], [15, 15.3, "tudo"], [15.3, 15.7, "muda."]]);
+      assert.equal(tailTake(s, undefined, undefined, tail, []), null, fw);
+    }
+  });
 });
