@@ -417,11 +417,8 @@ export function runTriage(args: Record<string, string>, repoRoot: string, deps: 
   return failed > 0 ? 1 : 0;
 }
 
-function main(): void {
-  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
-  const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
-  process.exitCode = runTriage(args, repoRoot, {
+export function realTriageDeps(repoRoot: string): TriageDeps {
+  return {
     prsForBranch: (branch) => prsForBranchViaGh(branch, repoRoot),
     listActiveSessions: () => {
       try {
@@ -434,7 +431,14 @@ function main(): void {
     removeWorktree: (path) => removeWorktreeSafe(path, repoRoot),
     nowMs: Date.now(),
     log: (line) => console.log(line),
-  });
+  };
+}
+
+function main(): void {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const args = parseArgs(process.argv.slice(2));
+  const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
+  process.exitCode = runTriage(args, repoRoot, realTriageDeps(repoRoot));
 }
 
 if (isMainModule(import.meta.url)) {

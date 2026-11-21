@@ -4,7 +4,8 @@
  * Guard de espaço livre entre ondas do `/diaria-overnight`. Mede o disco do
  * checkout; abaixo do limiar, roda `cleanup-merged-worktrees.ts` com
  * `--reclaim-open-pr` (inclui worktrees já enviados de PR aberta) e mede de
- * novo. Lógica pura em `scripts/lib/disk-space-guard.ts`.
+ * novo; se ainda baixo, descarta com resgate (data/worktree-rescue) os
+ * preservados `descartavel` da triagem (#13828). Lógica pura em `scripts/lib/disk-space-guard.ts`.
  *
  * Origem: rodada 261027e, disco do `300` em 100% com 150 worktrees (54 GB).
  *
@@ -37,10 +38,13 @@ import {
   type DiskUsage,
 } from "./lib/disk-space-guard.ts";
 import { runCleanupWithRealCheckers } from "./cleanup-merged-worktrees.ts";
+import { realTriageDeps, runTriage } from "./triage-preserved-worktrees.ts";
 
 export interface DiskGuardDeps {
   measure: (path: string) => DiskUsage;
   cleanup: (args: Record<string, string>) => void;
+  /** Descarte com resgate dos preservados `descartavel` (#13828); opcional. */
+  discardPreserved?: (args: Record<string, string>) => void;
   log: (msg: string) => void;
   warn: (msg: string) => void;
 }
@@ -86,7 +90,19 @@ export function runDiskGuard(
     deps.warn(`[disk-guard] limpeza lançou: ${(e as Error).message}`);
   }
 
-  const after = measureSafe();
+  let after = measureSafe();
+  if (after !== null && after.verdict === "low" && deps.discardPreserved) {
+    // #13828: o cleanup preserva todo worktree sujo; sem isso o acúmulo
+    // trava o guard. Só os `descartavel` da triagem saem, com resgate em data/.
+    deps.log("[disk-guard] ainda baixo: descartando preservados `descartavel` (com resgate)");
+    try {
+      // dry-run: só o relatório (sem `discard`); o runTriage não tem dry-run próprio.
+      deps.discardPreserved(args["dry-run"] === "true" ? {} : { discard: "true" });
+    } catch (e) {
+      deps.warn(`[disk-guard] descarte de preservados lançou: ${(e as Error).message}`);
+    }
+    after = measureSafe();
+  }
   if (after === null || after.verdict === "unknown") {
     deps.warn("[disk-guard] não deu para medir o disco depois da limpeza (exit 2).");
     return 2;
@@ -114,6 +130,10 @@ if (isMainModule(import.meta.url)) {
   process.exitCode = runDiskGuard(args, process.env, path, {
     measure: measureReal,
     cleanup: (cleanupArgs) => runCleanupWithRealCheckers(cleanupArgs, ROOT),
+    discardPreserved: (triageArgs) => {
+      const code = runTriage(triageArgs, ROOT, realTriageDeps(ROOT));
+      if (code !== 0) throw new Error(`triagem saiu com código ${code}`);
+    },
     log: (m) => console.log(m),
     warn: (m) => console.warn(m),
   });
