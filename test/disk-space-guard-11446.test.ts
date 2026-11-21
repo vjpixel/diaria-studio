@@ -395,3 +395,28 @@ test("runDiskGuard: descarte que lança não derruba o guard (#13828)", () => {
     1,
   );
 });
+
+test("runDiskGuard: --dry-run só pede o relatório, sem discard (#13828)", () => {
+  const calls: Array<Record<string, string>> = [];
+  let i = 0;
+  runDiskGuard({ "dry-run": "true" }, {}, "/repo", {
+    measure: () => ({ totalBytes: 100 * GIB, availableBytes: [1, 1][Math.min(i++, 1)] * GIB }),
+    cleanup: () => {},
+    discardPreserved: (a) => calls.push(a),
+    log: () => {},
+    warn: () => {},
+  });
+  assert.deepEqual(calls, [{}]);
+});
+
+test("runDiskGuard: --check-only não chega ao descarte (#13828)", () => {
+  let n = 0;
+  runDiskGuard({ "check-only": "true" }, {}, "/repo", {
+    measure: () => ({ totalBytes: 100 * GIB, availableBytes: 1 * GIB }),
+    cleanup: () => {},
+    discardPreserved: () => n++,
+    log: () => {},
+    warn: () => {},
+  });
+  assert.equal(n, 0);
+});

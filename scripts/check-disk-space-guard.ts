@@ -4,7 +4,8 @@
  * Guard de espaço livre entre ondas do `/diaria-overnight`. Mede o disco do
  * checkout; abaixo do limiar, roda `cleanup-merged-worktrees.ts` com
  * `--reclaim-open-pr` (inclui worktrees já enviados de PR aberta) e mede de
- * novo. Lógica pura em `scripts/lib/disk-space-guard.ts`.
+ * novo; se ainda baixo, descarta com resgate (data/worktree-rescue) os
+ * preservados `descartavel` da triagem (#13828). Lógica pura em `scripts/lib/disk-space-guard.ts`.
  *
  * Origem: rodada 261027e, disco do `300` em 100% com 150 worktrees (54 GB).
  *
@@ -95,7 +96,8 @@ export function runDiskGuard(
     // trava o guard. Só os `descartavel` da triagem saem, com resgate em data/.
     deps.log("[disk-guard] ainda baixo: descartando preservados `descartavel` (com resgate)");
     try {
-      deps.discardPreserved(args["dry-run"] === "true" ? { discard: "true", "dry-run": "true" } : { discard: "true" });
+      // dry-run: só o relatório (sem `discard`); o runTriage não tem dry-run próprio.
+      deps.discardPreserved(args["dry-run"] === "true" ? {} : { discard: "true" });
     } catch (e) {
       deps.warn(`[disk-guard] descarte de preservados lançou: ${(e as Error).message}`);
     }
@@ -129,7 +131,8 @@ if (isMainModule(import.meta.url)) {
     measure: measureReal,
     cleanup: (cleanupArgs) => runCleanupWithRealCheckers(cleanupArgs, ROOT),
     discardPreserved: (triageArgs) => {
-      runTriage(triageArgs, ROOT, realTriageDeps(ROOT));
+      const code = runTriage(triageArgs, ROOT, realTriageDeps(ROOT));
+      if (code !== 0) throw new Error(`triagem saiu com código ${code}`);
     },
     log: (m) => console.log(m),
     warn: (m) => console.warn(m),
