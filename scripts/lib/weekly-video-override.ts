@@ -98,4 +98,4 @@ export function applyVideoOverride<T extends Record<string, unknown>>(
   };
 }
 
-export const VIDEO_OVERRIDE_FLAGS = ["video-edition", "video-url"] as const;
+const VIDEO_OVERRIDE_FLAGS = ["video-edition", "video-url"] as const;
