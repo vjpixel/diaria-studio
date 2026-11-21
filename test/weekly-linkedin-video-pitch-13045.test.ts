@@ -2,7 +2,7 @@
  * test/weekly-linkedin-video-pitch-13045.test.ts (#13045, #13049)
  *
  * #13045: a seção "Vídeo da semana" do artigo semanal do LinkedIn abre com a
- * frase fixa "Eu comento o destaque acima no YouTube da diar.ia.br." (link em
+ * frase fixa "Eu comento o destaque acima no YouTube." (link em
  * "YouTube da diar.ia.br") e, quando o ciclo tem `video.pitch` em
  * `ln-selection.json`, fecha com a frase da semana. Sem o campo, só a frase
  * fixa. A frase da semana é validada contra a legenda do vídeo.
@@ -61,14 +61,14 @@ describe("#13045 — frase do vídeo no artigo", () => {
   it("com pitch: frase fixa (link em 'YouTube da diar.ia.br') + frase da semana, num parágrafo", () => {
     const { html } = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch: PITCH }));
     const p = videoParagraph(html);
-    assert.match(p, /^<p>Eu comento o destaque acima no <a href="https:\/\/youtu\.be\/bbbbbbbbbbb\?[^"]*utm_content=video">YouTube da diar\.ia\.br<\/a>\. No vídeo, explico/);
-    assert.equal(stripHtmlToText(p), `Eu comento o destaque acima no YouTube da diar.ia.br. ${PITCH}`);
+    assert.match(p, /^<p>Eu comento o destaque acima no <a href="https:\/\/youtu\.be\/bbbbbbbbbbb\?[^"]*utm_content=video">YouTube<\/a>\. No vídeo, explico/);
+    assert.equal(stripHtmlToText(p), `Eu comento o destaque acima no YouTube. ${PITCH}`);
   });
 
   it("sem pitch (ou vazio): só a frase fixa", () => {
     for (const pitch of [undefined, "", "   "]) {
       const { html } = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch }));
-      assert.equal(stripHtmlToText(videoParagraph(html)), "Eu comento o destaque acima no YouTube da diar.ia.br.");
+      assert.equal(stripHtmlToText(videoParagraph(html)), "Eu comento o destaque acima no YouTube.");
     }
   });
 
@@ -148,7 +148,7 @@ describe("#13045 — CLI grava video.pitch em ln-selection.json", () => {
     process.argv = ["node", "render-linkedin-weekly.ts", "--cycle", "26w46"];
     main(r);
     const html = readFileSync(join(r, "data", "weekly", "26w46", "ln-26w46.html"), "utf8");
-    assert.ok(stripHtmlToText(html).includes(`YouTube da diar.ia.br. ${PITCH}`));
+    assert.ok(stripHtmlToText(html).includes(`YouTube. ${PITCH}`));
   });
 
   it("frase inválida: recusa e não grava nada", () => {
@@ -215,7 +215,8 @@ describe("#13049 item 3 — âncora do vídeo dividida no paste", () => {
   });
 
   it("cenário real do 26w46: 'YouTube da' (vídeo) + 'diar.ia.br' (home) é acusado com o hint e a contagem", () => {
-    const sourceHtml = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch: PITCH })).html;
+    // #13821: o render não gera mais essa âncora; o fixture a simula na fonte.
+    const sourceHtml = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch: PITCH })).html.replace(">YouTube</a>", ">YouTube da diar.ia.br</a>");
     const src = extractAnchorsFromHtml(sourceHtml);
     const video = src.find((a) => a.text === "YouTube da diar.ia.br");
     assert.ok(video);

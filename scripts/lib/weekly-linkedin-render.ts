@@ -74,16 +74,15 @@ export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
  * Stack. Depois dela vem, quando o ciclo tem, a frase da semana sobre o que o
  * vídeo traz que o texto não traz (`video.pitch`, ver `WeeklyLinkedinRenderInput`).
  *
- * O rótulo termina no domínio nu (caso (c) de `context/publishers/linkedin.md`):
- * no paste real do 26w46 o LinkedIn partiu a âncora em "YouTube da" (href do
- * vídeo) + "diar.ia.br" (home sem UTM). O texto é escolha explícita do editor;
- * a auditoria do paste acusa a divisão com `TRAILING_WORDMARK_SPLIT_HINT`
- * (`linkedin-paste-audit.ts`) e o Passo 8c da skill traz a correção (#13049
- * item 3).
+ * #13821: a âncora é só "YouTube". "YouTube da diar.ia.br" terminava no
+ * domínio nu (caso (c) de `context/publishers/linkedin.md`) e o LinkedIn a
+ * partiu em "YouTube da" (href do vídeo) + "diar.ia.br" (home sem UTM) no 26w46
+ * e no 26w47; a correção pela toolbar não funcionou. A auditoria ainda acusa a
+ * divisão com `TRAILING_WORDMARK_SPLIT_HINT` (`linkedin-paste-audit.ts`).
  */
 export const LINKEDIN_WEEKLY_VIDEO_LEAD = "Eu comento o destaque acima no ";
 /** #13045: trecho linkado ao vídeo (utm_content=video). */
-export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "YouTube da diar.ia.br";
+export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "YouTube";
 /** #13045: pontuação que fecha a frase fixa, texto puro depois do link. */
 export const LINKEDIN_WEEKLY_VIDEO_TAIL = ".";
 
