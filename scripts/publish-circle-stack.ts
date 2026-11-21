@@ -166,6 +166,7 @@ import {
 import { renderCircleStackPreviewHtml } from "./lib/circle-stack-preview-html.ts";
 import { readUtf8WithContext } from "./lib/read-file-with-context.ts";
 import type { StackPostResult } from "./lib/stack-webhook.ts";
+import { applyVideoOverride, readVideoOverrideMarker, resolveVideoOverride, type WeeklyVideoOverrideMarker } from "./lib/weekly-video-override.ts"; // #13820
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import {
   stackTitleTranslationCandidates,
@@ -962,6 +963,71 @@ export function circleStackVideoField(top: TopEditionVideo | null, fallbackTitle
   return { title, url: top.videoUrl, editionDate: top.aammdd, views: top.views };
 }
 
+function readStoredJson(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #13820: vídeo da semana escolhido pelo editor. Precedência: `--video-edition`/
+ * `--video-url` > `videoOverride` da seleção gravada (sobrevive a `--reselect`) >
+ * `null` (vale o mais visto). `--video-auto` descarta o gravado. Flag inválida lança.
+ */
+export function chosenStackVideo(
+  argv: string[],
+  selectionPath: string,
+  dataRoot: string,
+  d1Titles: ReadonlyMap<string, string>,
+): { video: CircleStackVideo; marker: WeeklyVideoOverrideMarker; invalidated: string[] } | null {
+  if (hasFlag(argv, "video-auto")) return null;
+  const stored = readStoredJson(selectionPath);
+  const videoEdition = (getStringArg(argv, "video-edition") ?? "").trim();
+  const videoUrl = (getStringArg(argv, "video-url") ?? "").trim();
+  const marker = readVideoOverrideMarker(stored);
+  if (!videoEdition && !videoUrl && !marker) return null;
+  const resolved = resolveVideoOverride({
+    editionsRoot: join(dataRoot, "data", "editions"),
+    videoEdition: videoEdition || (videoUrl ? "" : marker!.editionDate),
+    videoUrl,
+    fallbackTitle: (d) => d1Titles.get(d) ?? "",
+  });
+  if (!resolved.ok) throw new Error(`--video-edition/--video-url (#13820): ${resolved.error}`);
+  const { selection, invalidated } = applyVideoOverride(stored ?? {}, resolved);
+  return { video: selection.video as CircleStackVideo, marker: selection.videoOverride, invalidated };
+}
+
+/** #13820: aplica a flag de vídeo na seleção JÁ gravada (regrava o arquivo). `null` se não há flag. */
+function applyStackVideoArgs(
+  argv: string[],
+  selectionPath: string,
+  dataRoot: string,
+  weeklyEditions: ReadonlyArray<{ editionDate: string; destaques: string[] }>,
+): { warnings: string[] } | null {
+  const has = hasFlag(argv, "video-edition") || hasFlag(argv, "video-url") || hasFlag(argv, "video-auto");
+  if (!has) return null;
+  const stored = readStoredJson(selectionPath);
+  if (!stored) return null;
+  if (hasFlag(argv, "video-auto")) {
+    const { video: _v, videoOverride: _o, ...rest } = stored;
+    writeFileAtomic(selectionPath, JSON.stringify(rest, null, 2));
+    return { warnings: ["Vídeo da semana volta ao automático (--video-auto): rode com --reselect para medir o mais visto."] };
+  }
+  const chosen = chosenStackVideo(argv, selectionPath, dataRoot, new Map(weeklyEditions.map((e) => [e.editionDate, e.destaques[0] ?? ""])));
+  if (!chosen) return null;
+  const { selection } = applyVideoOverride(stored, { video: chosen.video, marker: chosen.marker });
+  writeFileAtomic(selectionPath, JSON.stringify(selection, null, 2));
+  console.log(`Vídeo da semana trocado: ${chosen.video.title} (edição ${chosen.video.editionDate})`);
+  return {
+    warnings: chosen.invalidated.length
+      ? [`Vídeo da semana trocado: reescreva ${chosen.invalidated.join(" e ")} — era sobre o vídeo anterior.`]
+      : [],
+  };
+}
+
 /** CLI inteira com dependências injetáveis (#11005: teste de integração do caminho de `main()`). */
 export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): Promise<void> {
   const ROOT = deps.rootDir;
@@ -1024,6 +1090,12 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   if (existsSync(selectionPath) && !hasFlag(argv, "reselect")) {
     ({ selection, warnings } = parseStoredCircleStackSelection(readUtf8WithContext(selectionPath), selectionPath, cycle));
     console.log(`Reusando seleção existente: ${selectionPath} (--reselect refaz)`);
+    // #13820: --video-edition/--video-url troca o vídeo da semana na seleção já gravada.
+    const swapped = applyStackVideoArgs(argv, selectionPath, dataRoot, selection.weeklyEditions);
+    if (swapped) {
+      ({ selection, warnings } = parseStoredCircleStackSelection(readUtf8WithContext(selectionPath), selectionPath, cycle));
+      warnings = [...warnings, ...swapped.warnings];
+    }
     // #11005: --translate-titles traduz numa seleção já gravada (só o que segue sem
     // sinal de português; título reescrito à mão fica) e regrava o arquivo.
     if (hasFlag(argv, "translate-titles") && hasFlag(argv, "publish")) {
@@ -1057,10 +1129,13 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
           dirFor: (d) => resolveEditionDir(join(root, "data", "editions"), d),
           env: deps.env,
         }));
-    const videoField = circleStackVideoField(
-      await topVideoFn(built.contentWindow, dataRoot),
-      new Map(built.weeklyEditions.map((e) => [e.editionDate, e.destaques[0] ?? ""])),
-    );
+    // #13820: vídeo escolhido à mão (flag ou marcador da seleção anterior) vence o mais visto.
+    const d1Titles = new Map(built.weeklyEditions.map((e) => [e.editionDate, e.destaques[0] ?? ""]));
+    const chosen = chosenStackVideo(argv, selectionPath, dataRoot, d1Titles);
+    const videoField =
+      chosen?.video ??
+      circleStackVideoField(await topVideoFn(built.contentWindow, dataRoot), d1Titles);
+    if (chosen) built = { ...built, videoOverride: chosen.marker } as typeof built;
     if (videoField) {
       built = { ...built, video: videoField };
       // #13050: o número de views não é exibido (decisão do editor); segue só como critério de escolha.
@@ -1244,12 +1319,12 @@ ${rendered.markdown}
  */
 export const CLI_SPEC: CliSpec = {
   script: "scripts/publish-circle-stack.ts",
-  booleans: ["publish", "notify", "next-monday", "hello", "force", "reselect", "translate-titles", "no-translate", "resolve-skill-default-monday"],
-  values: ["publish-monday", "data-root", "opening-file", "closing-file"],
+  booleans: ["publish", "notify", "next-monday", "hello", "force", "reselect", "translate-titles", "no-translate", "resolve-skill-default-monday", "video-auto"],
+  values: ["publish-monday", "data-root", "opening-file", "closing-file", "video-edition", "video-url"],
   usage: [
     "uso: npx tsx scripts/publish-circle-stack.ts [--publish-monday AAMMDD | --next-monday] [--publish] [--notify]",
     "  [--reselect] [--translate-titles | --no-translate] [--opening-file <path>] [--closing-file <path>]",
-    "  [--force] [--data-root <dir>] [--hello] [--resolve-skill-default-monday] [--help | -h]",
+    "  [--video-edition AAMMDD | --video-url URL | --video-auto] [--force] [--data-root <dir>] [--hello] [--resolve-skill-default-monday] [--help | -h]",
     "",
     "Sem --publish só monta a seleção e a prévia (nada é enviado à Stack). --hello envia o post de teste.",
     "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 1 sem rodar nada (#12528).",
