@@ -11,6 +11,7 @@ import type { RoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
 import { propostaBlocosDoRoteiro } from "../scripts/lib/diaria/roteiro-videos.ts";
 import { falaDeFecho, sequenceEndingWarning } from "../scripts/lib/diaria/video-sequence-fecho.ts";
 import { blocksFromPlan } from "../scripts/lib/diaria/video-blocks-from-plan.ts";
+import { assembleClips } from "../scripts/lib/diaria/video-montage.ts";
 
 const FIXTURE = join(import.meta.dirname, "fixtures", "roteiro-video", "roteiro-falas-261118-v9.json");
 
@@ -74,6 +75,27 @@ describe("#13743 build: aviso quando a sequência termina sem fecho", () => {
     assert.equal(sequenceEndingWarning("V", [{ block: "fecho" }, { block: "comentario", filler: true }]), null);
     assert.equal(sequenceEndingWarning("V", [{ block: "cta_yt" }], ["fecho", "cta_yt"]), null);
     assert.equal(sequenceEndingWarning("V", []), null);
+  });
+
+  it("#13805: comentário e fecho contíguos no bruto viram um clipe só (block comentario, fecho em parts): sem aviso", () => {
+    const { clips } = assembleClips(
+      { scales: [100, 115] },
+      [
+        { block: "abertura", srcIn: 1, srcOut: 4, script: "Bom dia." },
+        { block: "comentario", srcIn: 10, srcOut: 14, script: "O que importa é isso." },
+        { block: "fecho", srcIn: 14, srcOut: 16, script: "Me conta nos comentários." },
+      ],
+      30,
+    );
+    const last = clips[clips.length - 1];
+    assert.equal(last.block, "comentario");
+    assert.deepEqual(last.parts?.map((p) => p.block), ["comentario", "fecho"]);
+    assert.equal(sequenceEndingWarning("Diaria comentada horizontal_V1", clips), null);
+    // O fundido que TERMINA no comentário (fecho antes, comentário depois) segue avisando.
+    assert.match(
+      sequenceEndingWarning("V", [{ block: "fecho", parts: [{ block: "fecho" }, { block: "comentario" }] }]) ?? "",
+      /termina na última fala do comentário, sem fecho/,
+    );
   });
 
   it("o build chama o aviso (guard de fiação)", () => {

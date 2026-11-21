@@ -715,7 +715,7 @@ export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { audioIdentity, sameAudio, type AudioIdentity } from "./lib/diaria/video-audio-identity.ts";
 import { batchFrameArgs, chunkFrameJobs, clipsToRedoOnCpu, createHwDecoder, ffmpegListsCuda, type FrameJob } from "./lib/diaria/video-hwaccel.ts";
-import { withGpuLock, type GpuLockDeps } from "./lib/diaria/video-gpu-lock.ts";
+import { gpuLockAfterDownload, releaseGpuLockEarly, withGpuLock, type GpuLockDeps } from "./lib/diaria/video-gpu-lock.ts";
 import { clipsHaveSpokenCta, sequenceEndingWarning } from "./lib/diaria/video-sequence-fecho.ts";
 import { falasSemTomada, falasSemTomadaAviso, readRoteiroFalasLista, videosForaDoBruto, videosForaDoBrutoAviso } from "./lib/diaria/video-roteiro-cobertura.ts";
 import { PROXY, cropOnProxy, proxyOutputArgs, proxySize, proxyUsable, runExtractWithProxy, type ProxyMeta } from "./lib/diaria/video-proxy.ts";
@@ -7815,6 +7815,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   // #13493: quanto o build espera os trechos do XML leve chegarem à nuvem (Drive for desktop); inválido para antes do build.
   const esperarNuvemS = cmd === "build" ? parseEsperarNuvemArg(values["esperar-nuvem"] ?? (flags.has("esperar-nuvem") ? "" : undefined), ESPERAR_NUVEM_DEFAULT_S) : 0;
   const code = await runCommand(ctx, cmd, values, flags, seq, d);
+  // #13806: a espera pela nuvem e o upload das saídas não usam a GPU: o próximo subcomando não espera por eles.
+  releaseGpuLockEarly();
   // #13493: no Drive for desktop (sem upload pela API), o XML leve só é dado por pronto com os trechos na nuvem.
   if (cmd === "build" && code === 0 && !uploads && ctx.buildTrechos?.length) {
     const cloud = mode === "local" && !flags.has("no-drive-api") && googleCredentialsPresent()
@@ -7939,10 +7941,14 @@ async function runCommand(
   seq: string | undefined,
   d: DriveSession | null,
 ): Promise<number> {
+  // #13806: o lock da GPU (GPU_AFTER_DOWNLOAD_COMMANDS) é pego depois do download do bruto, nunca durante.
   const needLocalBruto = async () => {
-    if (d) return ensureBrutoLocal(ctx, d, { audioCleanBuild: cmd === "build" });
-    const missing = localBrutoMissing(ctx);
-    if (missing) throw new Error(missing);
+    if (d) await ensureBrutoLocal(ctx, d, { audioCleanBuild: cmd === "build" });
+    else {
+      const missing = localBrutoMissing(ctx);
+      if (missing) throw new Error(missing);
+    }
+    await gpuLockAfterDownload();
   };
   switch (cmd) {
     case "transcribe": {
@@ -7956,6 +7962,7 @@ async function runCommand(
       const all = flags.has("all");
       const order = parseFileOrderArg(values["ordem"]);
       const source = values["source"] ?? (d && !all ? await fetchBruto(ctx, d, { fromAudio: audio }) : undefined);
+      await gpuLockAfterDownload();
       return cmdTranscribe(ctx, source, parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)), fromAudio, { all, order });
     }
     case "inventory":
@@ -8015,6 +8022,7 @@ async function runCommand(
         });
         // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
         if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
+        await gpuLockAfterDownload();
         // #12089: limiares do detector de fala sobrepostos à mão (padrão: relativos ao bruto).
         const speechOpts: SpeechDetectOptions = {
           ...(values["speech-full-db"] !== undefined || flags.has("speech-full-db") ? { fullDb: parseSpeechDbArg("--speech-full-db", values["speech-full-db"] ?? "") } : {}),
@@ -8029,6 +8037,7 @@ async function runCommand(
       if (final === undefined) {
         if (flags.has("heard-text")) throw new Error("--heard-text só vale com --from-final (a legenda pela fala do export, #12198)");
         if (flags.has("no-plan")) throw new Error("--no-plan só vale com --from-final (a legenda só pela fala do export, sem plan.json, #12429)");
+        await gpuLockAfterDownload();
         return cmdSrt(ctx, seq, flags.has("from-raw"));
       }
       if (flags.has("from-raw")) throw new Error("--from-final e --from-raw não se combinam: a legenda do export vem da fala do export");
@@ -8037,12 +8046,14 @@ async function runCommand(
         if (seq !== undefined && seq !== "youtube") throw new Error(`--from-final só gera a legenda do horizontal (--seq youtube), veio --seq ${seq}`);
         checkNoPlanAgainstPlan(ctx);
         if (d && !existsSync(final)) final = await fetchNamed(d, final, "final");
+        await gpuLockAfterDownload();
         return cmdSrtFromFinalNoPlan(ctx, final);
       }
       // --seq e o plano antes do download: um plano sem o horizontal não baixa o export à toa.
       const plan = loadFromFinalPlan(ctx, seq);
       // Como no review-final (#11639): no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
       if (d && !existsSync(final)) final = await fetchNamed(d, final, "final");
+      await gpuLockAfterDownload();
       return cmdSrtFromFinal(ctx, final, plan, flags.has("heard-text") ? "ouvido" : "roteiro");
     }
     case "preview":
@@ -8054,6 +8065,7 @@ async function runCommand(
       let file = values["file"];
       // #11639: no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
       if (d && file !== undefined && !existsSync(file)) file = await fetchNamed(d, file, "final");
+      await gpuLockAfterDownload();
       return cmdReviewFinal(ctx, file, seq, !flags.has("no-text"));
     }
     case "upload":
@@ -8083,7 +8095,8 @@ export async function cliMain(argv = process.argv.slice(2), deps?: MontageDriveD
   const { flags, positional } = parseArgs(argv);
   const [cmd, edition] = positional;
   const lockable = !!cmd && isSubcommand(cmd) && !!edition && /^\d{6}$/.test(edition) && !flags.has("help");
-  return withGpuLock(lockable ? cmd : undefined, edition, () => main(argv, deps), gpuLock);
+  // #13806: as flags decidem quem fica de fora (GPU_FREE_WITH_FLAG); quem baixa do Drive pega o lock depois do download.
+  return withGpuLock(lockable ? cmd : undefined, edition, () => main(argv, deps), { ...gpuLock, flags });
 }
 
 if (isMainModule(import.meta.url)) {

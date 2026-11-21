@@ -33,6 +33,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  COLLAPSED_TAKE,
   TAKE_DEFAULTS,
   alignTokens,
   collapsedTakeSuspects,
@@ -322,8 +323,23 @@ function lcsLength(a: string, b: string): number {
   return prev[y.length];
 }
 
-/** Palavras funcionais: sozinhas, não provam que a frase recomeçou (#13784). */
-const FUNCTION_WORDS = new Set(["a", "o", "as", "os", "e", "um", "uma", "de", "do", "da", "em", "no", "na", "que", "se", "pra", "para", "por", "com"]);
+/** Palavras funcionais: sozinhas, não provam que a frase recomeçou (#13784; contrações e conjunções do #13800). */
+const FUNCTION_WORDS = new Set([
+  "a", "o", "as", "os", "e", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
+  "ao", "aos", "que", "se", "pra", "pro", "pras", "pros", "para", "por", "pelo", "pela", "pelos", "pelas",
+  "com", "mas", "ou",
+]);
+
+/**
+ * Folga do "a cauda começa DEPOIS do fim do anterior" (#13800): os dois
+ * horários vêm de transcrições Whisper diferentes (a longa e a da cauda), que
+ * desviam alguns décimos na mesma palavra (261119: o "os" do segmento 51 sai em
+ * 429,61–429,93 s na longa e em 429,85 s na retranscrição da janela). Sem
+ * folga, a cauda que pegou de novo a última palavra funcional do anterior
+ * passaria por recomeço e cortaria a abertura do segmento. A regravação
+ * legítima ("…empresa, os | dois…") começa depois do vão, segundos adiante.
+ */
+const TAIL_RESTART_SLACK_S = COLLAPSED_TAKE.marginS;
 
 /**
  * A prova de recomeço (#13784): a 1ª palavra da cauda foi dita antes da
@@ -384,7 +400,7 @@ export function tailTake(seg: Segment, prev: Segment | undefined, next: Segment 
   }
   const beforeToks = split.before.map(tok).filter(Boolean);
   const lastBefore = split.before[split.before.length - 1];
-  if (!restartProven(beforeToks, words.map(tok), words[0].start >= lastBefore.end)) return null;
+  if (!restartProven(beforeToks, words.map(tok), words[0].start >= lastBefore.end + TAIL_RESTART_SLACK_S)) return null;
   // Cobertura em letras, não em palavras: o Whisper longo e a cauda separam diferente ("chat GPT"/"ChatGPT",
   // "pra"/"para"), e a contagem por palavra reprovaria a tomada certa do segmento 51 da 261119.
   const want = split.after.map(tok).join("");
