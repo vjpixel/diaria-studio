@@ -133,6 +133,7 @@ import {
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
 import { checkPorqueImportaGenericAdvice } from "./lib/lint-checks/porque-importa-generic-advice.ts"; // #9382
 import { checkPorqueImportaReaderImpact } from "./lib/lint-checks/porque-importa-reader-impact.ts"; // #11073
+import { checkPorqueImportaPrevisaoMarca } from "./lib/lint-checks/porque-importa-previsao-marca.ts"; // #13766
 import { checkNumberReferenceAntecedent } from "./lib/lint-checks/number-reference-antecedent.ts"; // #11196
 import {
   checkBannedLexicon,
@@ -667,6 +668,11 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
     runCheckSafely(push, "porque-importa-reader-impact", "#11073", "warn-only", () =>
       checkPorqueImportaReaderImpact(md),
     );
+    // #13766: no máximo 1 marca de previsão ("tende a"/"à medida que") por
+    // destaque, e só no "Por que isso importa". WARN-ONLY (#7401).
+    runCheckSafely(push, "porque-importa-previsao-marca", "#13766", "warn-only", () =>
+      checkPorqueImportaPrevisaoMarca(md),
+    );
     // #11196: "Os 33%" sem o número ter sido dado antes no bloco. WARN-ONLY
     // (no gate o texto pode já ser do editor, #7401).
     runCheckSafely(push, "number-reference-antecedent", "#11196", "warn-only", () =>
@@ -804,6 +810,12 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
   // #11073: WARN-ONLY.
   runCheckSafely(push, "porque-importa-reader-impact", "#11073", "warn-only", () =>
     checkPorqueImportaReaderImpact(md),
+  );
+
+  // #13766: WARN-ONLY — limite de 1 marca de previsão por destaque, só no
+  // "Por que isso importa"; não dispara retry do writer.
+  runCheckSafely(push, "porque-importa-previsao-marca", "#13766", "warn-only", () =>
+    checkPorqueImportaPrevisaoMarca(md),
   );
 
   // #11196: WARN-ONLY — não dispara retry do writer; visível ao editor.
