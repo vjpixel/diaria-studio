@@ -22,7 +22,7 @@ function mkTmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "render-linkedin-weekly-test-"));
 }
 
-function writeSelection(root: string, cycle: string, headlineOneEditionDate: string): void {
+function writeSelection(root: string, cycle: string, headlineOneEditionDate: string, destaqueN?: number): void {
   const dir = join(root, "data/weekly", cycle, "_internal");
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -31,7 +31,7 @@ function writeSelection(root: string, cycle: string, headlineOneEditionDate: str
       {
         cycle,
         headlines: [
-          { title: "Manchete 1", body: "Corpo 1", why: "", editionDate: headlineOneEditionDate },
+          { title: "Manchete 1", body: "Corpo 1", why: "", editionDate: headlineOneEditionDate, ...(destaqueN ? { destaqueN } : {}) },
           { title: "Manchete 2", body: "Corpo 2", why: "", editionDate: "260811" },
         ],
         useMelhor: null,
@@ -196,6 +196,48 @@ describe("render-linkedin-weekly.ts — abertura/fecho padrão sem pergunta (#80
 
       const meta = JSON.parse(readFileSync(join(root, "data/weekly/26w42/ln-26w42.json"), "utf8"));
       assert.ok(!(meta.warnings as string[]).some((w) => /ausente\/vazi[ao]/i.test(w)), JSON.stringify(meta.warnings));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("render-linkedin-weekly.ts — capa segue o destaque da manchete #1 (#13823)", () => {
+  for (const n of [2, 3]) {
+    it(`manchete #1 vinda do D${n}: copia 04-d${n}-2x1.jpg, não a do D1`, () => {
+      const root = mkTmpRoot();
+      try {
+        const cycle = `26w4${n}`;
+        writeSelection(root, cycle, "261116", n);
+        const editionDir = join(root, "data/editions/261116");
+        mkdirSync(editionDir, { recursive: true });
+        writeFileSync(join(editionDir, "04-d1-2x1.jpg"), "d1");
+        writeFileSync(join(editionDir, `04-d${n}-2x1.jpg`), `d${n}`);
+
+        runRender(root, cycle);
+
+        const cover = join(root, "data/weekly", cycle, COVER_IMAGE_FILENAME);
+        assert.equal(readFileSync(cover, "utf8"), `d${n}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("imagem do D2 ausente: sem capa e warning nomeando 04-d2-2x1.jpg (sem cair no D1)", () => {
+    const root = mkTmpRoot();
+    try {
+      writeSelection(root, "26w47", "261116", 2);
+      const editionDir = join(root, "data/editions/261116");
+      mkdirSync(editionDir, { recursive: true });
+      writeFileSync(join(editionDir, "04-d1-2x1.jpg"), "d1");
+
+      runRender(root, "26w47");
+
+      assert.ok(!existsSync(join(root, "data/weekly/26w47", COVER_IMAGE_FILENAME)));
+      const meta = JSON.parse(readFileSync(join(root, "data/weekly/26w47/ln-26w47.json"), "utf8"));
+      assert.equal(meta.coverImagePath, null);
+      assert.ok(meta.warnings.some((w: string) => w.includes("#5536") && w.includes("04-d2-2x1.jpg")));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
