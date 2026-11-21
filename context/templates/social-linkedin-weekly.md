@@ -139,7 +139,7 @@ utm_content=cta-abertura | lista | cta-fim | video
   auto-link do LinkedIn sem UTM). Desde o #13049 o link vai para a página
   da diar.ia.br no LinkedIn, sem UTM (até o 26w46 era a home com
   `utm_content=mencao-abertura`).
-- `video`: o link "YouTube da diar.ia.br" da seção "Vídeo da semana"
+- `video`: o link "YouTube" da seção "Vídeo da semana"
   (#12081, frase do #13045).
 - `cta-abertura`, `cta-fim`: os 2 convites de assinatura restantes (o bloco
   Use Melhor perdeu o seu em #8025) — existem separados de propósito, pra
