@@ -86,6 +86,7 @@ import {
   segmentTextByEdition,
 } from "./lib/intentional-error-scrub.ts";
 import { listedWeeklyEditions, renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
+import { applyVideoOverride, resolveVideoOverride } from "./lib/weekly-video-override.ts"; // #13820
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import { loadProjectEnv } from "./lib/env-loader.ts"; // #12081: credenciais do YouTube
 import { srtSpokenText, weeklyVideoPitchProblems } from "./lib/weekly-video-pitch.ts"; // #13045
@@ -286,6 +287,32 @@ export function applyVideoPitch(rootDir: string, cycle: string, pitch: string): 
  * apagá-lo à mão). Fail-soft: sem credencial ou com erro grava `null` e o
  * artigo sai sem a seção do vídeo. `topVideo` injetável para teste.
  */
+/**
+ * #13820: `--video-edition AAMMDD`/`--video-url URL` grava em `ln-selection.json`
+ * o vídeo escolhido (título e URL da edição, mesmo fora da janela) e o marcador
+ * `videoOverride` que a re-seleção reaplica. Trocar o vídeo descarta a frase
+ * (`video.pitch`), que era sobre o anterior. Sem as flags, não faz nada.
+ */
+export function applyVideoOverrideArg(
+  rootDir: string,
+  cycle: string,
+  argv: string[],
+): { applied: boolean; error?: string; invalidated: string[] } {
+  const videoEdition = getArg(argv, "video-edition").trim();
+  const videoUrl = getArg(argv, "video-url").trim();
+  if (!videoEdition && !videoUrl) return { applied: false, invalidated: [] };
+  const selectionPath = join(rootDir, weeklyLinkedinRelDir(cycle), "_internal", "ln-selection.json");
+  if (!existsSync(selectionPath)) return { applied: false, error: `${selectionPath} não existe`, invalidated: [] };
+  const selection = JSON.parse(readFileSync(selectionPath, "utf8")) as SelectionJson & Record<string, unknown>;
+  const editionsRoot = join(rootDir, "data/editions");
+  const d1ByDate = new Map(selection.weeklyEditions.map((e) => [e.editionDate, e.destaques[0] ?? ""]));
+  const resolved = resolveVideoOverride({ editionsRoot, videoEdition, videoUrl, fallbackTitle: (d) => d1ByDate.get(d) ?? "" });
+  if (!resolved.ok) return { applied: false, error: resolved.error, invalidated: [] };
+  const { selection: next, invalidated } = applyVideoOverride(selection, resolved);
+  writeFileSync(selectionPath, JSON.stringify(next, null, 2), "utf8");
+  return { applied: true, invalidated };
+}
+
 export async function ensureWeeklyVideo(
   rootDir: string,
   cycle: string,
@@ -485,6 +512,15 @@ if (isMainModule(import.meta.url)) {
   let prefetch: Promise<WeeklyVideoField | null> = Promise.resolve(null);
   if (isValidWeeklyCycle(cycleArg)) {
     loadProjectEnv(ROOT);
+    const ov = applyVideoOverrideArg(ROOT, cycleArg, process.argv.slice(2));
+    if (ov.error) {
+      console.error(`--video-edition/--video-url recusado (#13820), nada gravado: ${ov.error}`);
+      process.exit(2);
+    }
+    if (ov.applied) {
+      console.log("Vídeo da semana trocado em ln-selection.json (videoOverride).");
+      if (ov.invalidated.length > 0) console.warn(`Reescreva ${ov.invalidated.join(" e ")}: era sobre o vídeo anterior.`);
+    }
     prefetch = ensureWeeklyVideo(ROOT, cycleArg);
   }
   prefetch
