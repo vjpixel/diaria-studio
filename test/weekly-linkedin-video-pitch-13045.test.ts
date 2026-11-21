@@ -3,7 +3,7 @@
  *
  * #13045: a seção "Vídeo da semana" do artigo semanal do LinkedIn abre com a
  * frase fixa "Eu comento o destaque acima no YouTube." (link em
- * "YouTube da diar.ia.br") e, quando o ciclo tem `video.pitch` em
+ * "YouTube") e, quando o ciclo tem `video.pitch` em
  * `ln-selection.json`, fecha com a frase da semana. Sem o campo, só a frase
  * fixa. A frase da semana é validada contra a legenda do vídeo.
  *
@@ -58,7 +58,7 @@ function videoParagraph(html: string): string {
 }
 
 describe("#13045 — frase do vídeo no artigo", () => {
-  it("com pitch: frase fixa (link em 'YouTube da diar.ia.br') + frase da semana, num parágrafo", () => {
+  it("com pitch: frase fixa (link em 'YouTube') + frase da semana, num parágrafo", () => {
     const { html } = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch: PITCH }));
     const p = videoParagraph(html);
     assert.match(p, /^<p>Eu comento o destaque acima no <a href="https:\/\/youtu\.be\/bbbbbbbbbbb\?[^"]*utm_content=video">YouTube<\/a>\. No vídeo, explico/);

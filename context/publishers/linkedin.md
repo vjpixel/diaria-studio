@@ -446,8 +446,8 @@ menção da abertura sai do render com esse href, sem UTM (a UTM
 `mencao-abertura` saiu). O LinkedIn continua reescrevendo a âncora para
 `http://diar.ia.br` no paste (caso (f)); a auditoria acusa o href divergente
 com `WORDMARK_HREF_REWRITE_HINT` e o editor corrige pelo **Edit link** no
-Passo 9, como no 26w46. A âncora do vídeo era "YouTube da diar.ia.br" (texto
-do editor, #13045; desde o #13821 é só "YouTube"), terminava no domínio nu: no paste real do 26w46 o
+Passo 9, como no 26w46. A âncora do vídeo era "YouTube da diar.ia.br" (#13045) e
+terminava no domínio nu; desde o #13821 é só "YouTube". No paste real do 26w46 o
 LinkedIn a dividiu em "YouTube da" (href do vídeo com UTM) + "diar.ia.br"
 (`http://diar.ia.br/`, sem UTM), e a auditoria acusou "âncora não
 encontrada" e contagem 10 vs 9. A correção do 26w46 (selecionar por `Range` e usar o botão de link da

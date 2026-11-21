@@ -21,8 +21,8 @@
  *     descrição/comentário, sem convite pra assinar embutido.
  *   - Texto de link NUNCA termina em domínio nu (auto-linkagem do LinkedIn
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
- *     rótulo de ação. Exceção escolhida pelo editor (#13045): o link do vídeo,
- *     "YouTube da diar.ia.br", com a correção no Passo 8c da skill (#13049).
+ *     rótulo de ação. A exceção do #13045 ("YouTube da diar.ia.br") saiu no
+ *     #13821: o link do vídeo é só "YouTube".
  *   - UTM: `utm_source=linkedin&utm_medium=newsletter&utm_campaign=ln-{cycle}
  *     &utm_content=mencao-abertura|cta-abertura|lista|cta-fim` (item-01/02/03
  *     SAÍRAM; `cta-abertura` e `mencao-abertura` ENTRARAM em 260803;
@@ -67,8 +67,8 @@ export type LinkedinWeeklyUtmContent = "cta-abertura" | "lista" | "cta-fim" | "v
 export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
 /**
  * #13045 (13/11/2026, decisão do editor, ciclo 26w46): a frase de abertura da
- * seção é fixa, "Eu comento o destaque acima no YouTube da diar.ia.br.", com o
- * link em "YouTube da diar.ia.br". Substitui o trecho fixo da #13023 ("No
+ * seção é fixa, "Eu comento o destaque acima no YouTube." (#13821; era "...no
+ * YouTube da diar.ia.br."), com o link em "YouTube". Substitui o trecho fixo da #13023 ("No
  * principal vídeo da semana no canal da diar.ia.br eu comento o destaque
  * acima."): o rótulo "principal vídeo da semana" fica só no título da seção da
  * Stack. Depois dela vem, quando o ciclo tem, a frase da semana sobre o que o
