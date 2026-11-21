@@ -15,6 +15,7 @@
  *     registro não gravou antes de qualquer POST e a pendência segue igual,
  *     retentável; nos dois casos o timer tenta de novo (exit 1);
  *   - `exhausted` / `uncertain` / `invalid`: não tenta; só o editor resolve (exit 1);
+ *   - `error` (#13803): exceção da rodada; o timer retenta e conta as seguidas (exit 1);
  *   - `dry-run`: o que faria (exit 0).
  *
  * Efeito público: posta UM comentário no Reels da edição. Lê e grava só a
@@ -48,6 +49,7 @@ import {
   markFirstCommentSending,
   INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
   type FirstCommentAttempt,
+  type FirstCommentRetryState,
 } from "./lib/diaria/instagram-first-comment-retry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -57,9 +59,16 @@ export type RetryFirstCommentResult =
   | { action: "none"; reason: string }
   | { action: "dry-run"; media_id: string; message: string; attempts: number }
   | { action: "commented"; media_id: string; comment_id: string; attempts: number }
-  | { action: "failed"; media_id: string; message: string; error: string; attempts: number; max_attempts: number; exhausted: boolean; uncertain: boolean }
+  /** `not_recorded` (#13799): nada gravado nem postado nesta rodada; o timer conta as seguidas. */
+  | { action: "failed"; media_id: string; message: string; error: string; attempts: number; max_attempts: number; exhausted: boolean; uncertain: boolean; not_recorded?: true }
   | { action: "exhausted" | "uncertain"; media_id: string; message: string; error: string; attempts: number; max_attempts: number }
-  | { action: "invalid"; reason: string };
+  | { action: "invalid"; reason: string }
+  /**
+   * #13803: exceção da rodada (registro, lock, Graph lançando). A marca de envio
+   * (#13791) protege a retentativa: se o POST chegou a rodar, ela ficou gravada e
+   * a próxima execução só alarma. Por isso o timer lê como retentável, não stuck.
+   */
+  | { action: "error"; reason: string };
 
 export interface RetryFirstCommentDeps {
   now: () => Date;
@@ -106,18 +115,36 @@ export async function retryInstagramFirstComment(dir: string, aammdd: string, dr
   const sameMedia = (entry: ShortPublishedEntry): void => {
     if (entry.id !== state.mediaId) throw new Error(`a entrada instagram de ${basename(pendingHit.path)} mudou de mídia (${state.mediaId} → ${entry.id}) no meio da retentativa`);
   };
-  const author = await deps.resolveAuthor();
+  // #13803: exceção ao resolver a conta (config, páginas, rede na Graph) conta como a
+  // tentativa sem credencial: grava, soma e esgota como ela, nunca vira `invalid` (stuck)
+  // com a pendência ainda retentável.
+  let author: Awaited<ReturnType<RetryFirstCommentDeps["resolveAuthor"]>>;
+  try {
+    author = await deps.resolveAuthor();
+  } catch (e) {
+    author = { error: `falha ao resolver a conta autora (${(e as Error).message})` };
+  }
   let attempt: FirstCommentAttempt;
   if ("error" in author) {
     attempt = { ok: false, error: `sem credencial do Instagram: ${author.error}` };
   } else {
     // #13791: a marca vai ao registro ANTES do POST; se não gravar, nada é postado.
+    // #13799: o estado que a marca recusou (pendência já incerta ou ilegível) não é
+    // falha de gravação: é o registro dizendo que não dá para comentar.
+    // `as`: a atribuição acontece dentro do callback, que o TS não acompanha.
+    let refused = null as Exclude<FirstCommentRetryState, { kind: "retry" }> | null;
     try {
       update(dir, aammdd, writer, "instagram", (entry) => {
         sameMedia(entry);
+        const now = firstCommentRetryState(entry);
+        if (now.kind !== "retry") {
+          refused = now;
+          throw new Error("a pendência mudou antes da marca de envio");
+        }
         return markFirstCommentSending(entry, deps.now());
       });
     } catch (e) {
+      if (refused) return refusedByRegistry(state.mediaId, refused);
       // #13797: nada foi gravado nem postado, a pendência segue retentável; a saída
       // é `failed` não esgotada (alarme `first-comment`: o timer tenta de novo), nunca
       // `invalid`, que o timer lê como `first-comment-stuck` ("comente à mão").
@@ -175,6 +202,27 @@ function notRecorded(mediaId: string, pending: { message: string; attempts: numb
     max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
     exhausted: false,
     uncertain: false,
+    // #13799: o timer conta as rodadas seguidas assim e escala para `first-comment-stuck`.
+    not_recorded: true,
+  };
+}
+
+/**
+ * #13799: entre a leitura e a marca de envio o registro mudou (outra rodada, a
+ * CLI à mão sem o lock do timer): a pendência já está incerta, esgotada,
+ * ilegível ou resolvida. Nada foi postado; a saída diz o estado real, e não
+ * `failed` retentável, que o timer anunciaria como "tento de novo".
+ */
+function refusedByRegistry(mediaId: string, now: Exclude<FirstCommentRetryState, { kind: "retry" }>): RetryFirstCommentResult {
+  if (now.kind === "none") return { action: "none", reason: "o 1º comentário deixou de estar pendente no registro durante a retentativa" };
+  if (now.kind === "invalid") return { action: "invalid", reason: now.reason };
+  return {
+    action: now.kind,
+    media_id: mediaId,
+    message: now.pending.message,
+    error: `o registro mudou durante a retentativa (outra execução gravou a pendência como ${now.kind}); nada foi postado nesta. Último erro: ${now.pending.error || "?"}`,
+    attempts: now.pending.attempts,
+    max_attempts: INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
   };
 }
 
@@ -214,7 +262,9 @@ export async function main(argv: string[] = process.argv.slice(2), depsIn?: Retr
   try {
     result = await retryInstagramFirstComment(dir, aammdd, flags.has("dry-run"), deps);
   } catch (e) {
-    result = { action: "invalid", reason: (e as Error).message };
+    // #13803: era `invalid`, que o timer lia como `first-comment-stuck` ("comente à mão")
+    // com a pendência ainda retentável: a hora seguinte postava um 2º comentário.
+    result = { action: "error", reason: (e as Error).message };
   }
   console.log(JSON.stringify(result));
   return result.action === "none" || result.action === "commented" || result.action === "dry-run" ? 0 : 1;
