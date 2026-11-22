@@ -26,6 +26,12 @@ mais CTA próprio desde #8025):
 
 ---
 
+[Título do vídeo da semana — só quando há vídeo (#13818: 1º item, cabeçalho = `video.title`)]
+
+Eu comento esta notícia no YouTube. [frase da semana, se houver — #13045]
+
+---
+
 [Título do headline 1 — LITERAL, sem numeração (#11006)]
 [da edição de DD/MM]
 
@@ -139,8 +145,9 @@ utm_content=cta-abertura | lista | cta-fim | video
   auto-link do LinkedIn sem UTM). Desde o #13049 o link vai para a página
   da diar.ia.br no LinkedIn, sem UTM (até o 26w46 era a home com
   `utm_content=mencao-abertura`).
-- `video`: o link "YouTube" da seção "Vídeo da semana"
-  (#12081, frase do #13045).
+- `video`: o link "YouTube" da seção do vídeo da semana, 1º item do
+  artigo com o título do vídeo no cabeçalho (#12081, frase do #13045,
+  posição e cabeçalho do #13818).
 - `cta-abertura`, `cta-fim`: os 2 convites de assinatura restantes (o bloco
   Use Melhor perdeu o seu em #8025) — existem separados de propósito, pra
   saber qual posição converte.

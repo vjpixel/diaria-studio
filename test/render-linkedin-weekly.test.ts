@@ -157,7 +157,8 @@ describe("render-linkedin-weekly.ts — abertura/fecho padrão sem pergunta (#80
       const html = readFileSync(join(root, "data/weekly/26w45/ln-26w45.html"), "utf8");
       // 1. Dois parágrafos: o 1º fecha em "usar melhor as IAs.", o 2º abre em "Aqui no LinkedIn".
       assert.match(html, /usar melhor as IAs\.<\/p>\n<p>Aqui no LinkedIn, trago toda segunda/);
-      assert.match(html, /<p>Aqui no LinkedIn, trago toda segunda os três destaques que mais renderam cliques na semana\. As cinco edições completas ficam com os títulos no fim do post\.<\/p>/);
+      // #13819: fixture sem edição listada no fim — a frase sobre as edições sai junto com a seção.
+      assert.match(html, /<p>Aqui no LinkedIn, trago toda segunda os três destaques que mais renderam cliques na semana\.<\/p>/);
       // 2. "Assine grátis." sumiu do texto da abertura.
       assert.ok(!DEFAULT_OPENING.includes("Assine grátis"), "DEFAULT_OPENING não termina mais em 'Assine grátis.'");
       assert.ok(!html.includes("fim do post. Assine grátis."), "abertura renderizada sem 'Assine grátis.'");

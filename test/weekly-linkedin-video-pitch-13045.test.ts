@@ -1,8 +1,8 @@
 /**
  * test/weekly-linkedin-video-pitch-13045.test.ts (#13045, #13049)
  *
- * #13045: a seção "Vídeo da semana" do artigo semanal do LinkedIn abre com a
- * frase fixa "Eu comento o destaque acima no YouTube." (link em
+ * #13045: a seção do vídeo do artigo semanal do LinkedIn abre com a
+ * frase fixa "Eu comento esta notícia no YouTube." (#13818; link em
  * "YouTube") e, quando o ciclo tem `video.pitch` em
  * `ln-selection.json`, fecha com a frase da semana. Sem o campo, só a frase
  * fixa. A frase da semana é validada contra a legenda do vídeo.
@@ -54,21 +54,22 @@ function input(video: WeeklyLinkedinRenderInput["video"]): WeeklyLinkedinRenderI
 
 function videoParagraph(html: string): string {
   const lines = html.split("\n");
-  return lines[lines.indexOf("<h2>Vídeo da semana</h2>") + 1];
+  // #13818: o cabeçalho da seção é o título do vídeo ("T" nestes fixtures).
+  return lines[lines.indexOf("<h2>T</h2>") + 1];
 }
 
 describe("#13045 — frase do vídeo no artigo", () => {
   it("com pitch: frase fixa (link em 'YouTube') + frase da semana, num parágrafo", () => {
     const { html } = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch: PITCH }));
     const p = videoParagraph(html);
-    assert.match(p, /^<p>Eu comento o destaque acima no <a href="https:\/\/youtu\.be\/bbbbbbbbbbb\?[^"]*utm_content=video">YouTube<\/a>\. No vídeo, explico/);
-    assert.equal(stripHtmlToText(p), `Eu comento o destaque acima no YouTube. ${PITCH}`);
+    assert.match(p, /^<p>Eu comento esta notícia no <a href="https:\/\/youtu\.be\/bbbbbbbbbbb\?[^"]*utm_content=video">YouTube<\/a>\. No vídeo, explico/);
+    assert.equal(stripHtmlToText(p), `Eu comento esta notícia no YouTube. ${PITCH}`);
   });
 
   it("sem pitch (ou vazio): só a frase fixa", () => {
     for (const pitch of [undefined, "", "   "]) {
       const { html } = renderLinkedinWeeklyHtml(input({ title: "T", url: VIDEO_URL, editionDate: "261111", pitch }));
-      assert.equal(stripHtmlToText(videoParagraph(html)), "Eu comento o destaque acima no YouTube.");
+      assert.equal(stripHtmlToText(videoParagraph(html)), "Eu comento esta notícia no YouTube.");
     }
   });
 

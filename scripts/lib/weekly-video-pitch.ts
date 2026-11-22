@@ -2,8 +2,8 @@
  * weekly-video-pitch.ts (#13045)
  *
  * A frase da semana sobre o vídeo do artigo semanal do LinkedIn: o que o vídeo
- * traz que o texto não traz. Entra depois da frase fixa da seção "Vídeo da
- * semana" ("Eu comento o destaque acima no YouTube da diar.ia.br.", ver
+ * traz que o texto não traz. Entra depois da frase fixa da seção do vídeo
+ * ("Eu comento esta notícia no YouTube.", #13818/#13821, ver
  * `LINKEDIN_WEEKLY_VIDEO_LEAD` em `weekly-linkedin-render.ts`), gravada em
  * `ln-selection.json` como `video.pitch`. Mesmo desenho da `videoDescription`
  * do post da Stack (`circle-stack-copy.ts`, #12549): a skill escreve a partir

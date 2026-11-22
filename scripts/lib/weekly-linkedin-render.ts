@@ -55,24 +55,33 @@ export function linkedinWeeklyCampaign(cycle: string): string {
 /** `mencao-abertura` saiu da união no #13049 (a menção aponta para a página do LinkedIn, sem UTM). */
 export type LinkedinWeeklyUtmContent = "cta-abertura" | "lista" | "cta-fim" | "video";
 
-/**
- * #12777 (10/11/2026, decisão do editor, ciclo 26w45): o principal vídeo
- * da semana (o mais visto, #12081; apresentado como "principal" desde o
- * #13023) ganha seção própria, logo depois da manchete que ele comenta, no
- * lugar da linha única antes do fecho (#12081). O link do vídeo vai no TEXTO
+/*
+ * Seção do vídeo da semana. #12777 (10/11/2026, decisão do editor, ciclo
+ * 26w45): o principal vídeo da semana (o mais visto, #12081; apresentado como
+ * "principal" desde o #13023) ganha seção própria, no lugar da linha única
+ * antes do fecho (#12081). O link do vídeo vai no TEXTO
  * (`LINKEDIN_WEEKLY_VIDEO_LINK_TEXT`): o LinkedIn não permite link em imagem,
  * então o HTML colado não leva `<img>` e o editor sobe a imagem à mão (a sem
  * overlay de play, `04-d1-2x1.jpg`, copiada pela CLI como `video-04-d1-2x1.jpg`).
+ *
+ * #13818 (21/11/2026, decisão do editor, ciclo 26w47): a seção é o 1º item do
+ * artigo, logo depois da abertura e antes da manchete 1, e o cabeçalho é o
+ * título do vídeo (`video.title`), não mais o fixo "Vídeo da semana". Até aqui
+ * ela entrava depois da manchete que o vídeo comentava (casamento pelo D1 da
+ * edição do vídeo), e caía depois da manchete 1 com um warning quando o vídeo
+ * não comentava nenhuma (26w47).
  */
-export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
 /**
  * #13045 (13/11/2026, decisão do editor, ciclo 26w46): a frase de abertura da
- * seção é fixa, "Eu comento o destaque acima no YouTube." (#13821; era "...no
- * YouTube da diar.ia.br."), com o link em "YouTube". Substitui o trecho fixo da #13023 ("No
+ * seção é fixa, com o link em "YouTube". Substitui o trecho fixo da #13023 ("No
  * principal vídeo da semana no canal da diar.ia.br eu comento o destaque
  * acima."): o rótulo "principal vídeo da semana" fica só no título da seção da
  * Stack. Depois dela vem, quando o ciclo tem, a frase da semana sobre o que o
  * vídeo traz que o texto não traz (`video.pitch`, ver `WeeklyLinkedinRenderInput`).
+ *
+ * #13818: "Eu comento esta notícia no YouTube." (era "Eu comento o destaque
+ * acima no YouTube."). Com a seção antes das manchetes, "o destaque acima"
+ * deixou de fazer sentido em qualquer caso.
  *
  * #13821: a âncora é só "YouTube". "YouTube da diar.ia.br" terminava no
  * domínio nu (caso (c) de `context/publishers/linkedin.md`) e o LinkedIn a
@@ -80,7 +89,7 @@ export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
  * e no 26w47; a correção pela toolbar não funcionou. A auditoria ainda acusa a
  * divisão com `TRAILING_WORDMARK_SPLIT_HINT` (`linkedin-paste-audit.ts`).
  */
-export const LINKEDIN_WEEKLY_VIDEO_LEAD = "Eu comento o destaque acima no ";
+export const LINKEDIN_WEEKLY_VIDEO_LEAD = "Eu comento esta notícia no ";
 /** #13045: trecho linkado ao vídeo (utm_content=video). */
 export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "YouTube";
 /** #13045: pontuação que fecha a frase fixa, texto puro depois do link. */
@@ -207,38 +216,15 @@ export interface WeeklyLinkedinRenderInput {
   /**
    * #12081: o horizontal do D1 mais visto da semana (YouTube Data API, gravado
    * em `ln-selection.json` pelo `render-linkedin-weekly.ts`). Ausente = sem a
-   * seção do vídeo. `editionDate` (#12777) é a edição do vídeo: decide depois
-   * de qual manchete a seção entra (ver `videoSectionHeadlineIndex`).
+   * seção do vídeo, que entra antes da manchete 1 com `title` no cabeçalho
+   * (#13818). `editionDate` (#12777) é a edição do vídeo (imagem da seção,
+   * guard do erro intencional; a posição não depende mais dela).
    * `pitch` (#13045) é a frase da semana sobre o que o vídeo traz que o texto
    * não traz, escrita pela skill a partir da legenda do vídeo e já passada por
    * humanizador e Clarice (validada em `render-linkedin-weekly.ts`). Ausente ou
    * vazia, a seção sai só com a frase fixa.
    */
   video?: { title: string; url: string; editionDate?: string; pitch?: string } | null;
-}
-
-/**
- * Pure (#12777): índice da manchete depois da qual entra a seção do vídeo. O
- * texto da seção diz "eu comento o destaque acima", então ela vai depois da
- * manchete que é o D1 da edição do vídeo (casada por título normalizado contra
- * `weeklyEditions[].destaques[0]`). Sem casamento (edição do vídeo fora das
- * manchetes, ou `editionDate` ausente), fica a posição pedida pelo editor,
- * depois da manchete 1, e `matched: false` vira warning no render. `-1` = sem
- * manchete (a seção entra depois da abertura).
- */
-export function videoSectionHeadlineIndex(
-  headlines: readonly WeeklyLinkedinHeadlineInput[],
-  weeklyEditions: readonly WeeklyLinkedinEditionItem[],
-  videoEditionDate: string | undefined,
-): { index: number; matched: boolean } {
-  if (headlines.length === 0) return { index: -1, matched: false };
-  const d1 = videoEditionDate ? weeklyEditions.find((e) => e.editionDate === videoEditionDate)?.destaques[0] : undefined;
-  if (d1) {
-    const target = normalizeHighlightTitle(d1);
-    const i = headlines.findIndex((h) => normalizeHighlightTitle(h.title) === target);
-    if (i >= 0) return { index: i, matched: true };
-  }
-  return { index: 0, matched: false };
 }
 
 function escapeHtml(s: string): string {
@@ -375,6 +361,19 @@ export function otherWeeklyHighlights(
     .filter((x) => x.titles.length > 0);
 }
 
+/**
+ * Pure (#13819): as edições que "Outros destaques da semana" lista para este
+ * input, com o mesmo corte do render (manchetes e Use Melhor já mostrados).
+ * Fonte única da contagem que a abertura padrão cita (`render-linkedin-weekly.ts`,
+ * `defaultOpening`): a frase e a seção não podem divergir.
+ */
+export function listedWeeklyEditions(
+  input: Pick<WeeklyLinkedinRenderInput, "headlines" | "useMelhor" | "weeklyEditions">,
+): { item: WeeklyLinkedinEditionItem; titles: string[] }[] {
+  const shownTitles = [...input.headlines.map((h) => h.title), ...(input.useMelhor ? [input.useMelhor.title] : [])];
+  return otherWeeklyHighlights(input.weeklyEditions, shownTitles);
+}
+
 /** Pure: `AAMMDD` → "Edição de DD/MM" — rótulo do link de cada edição em "Outros destaques da semana", nunca termina em domínio nu. */
 export function editionLabel(aammdd: string): string {
   const dd = aammdd.slice(4, 6);
@@ -406,10 +405,9 @@ export interface WeeklyLinkedinRenderResult {
  * `input.closing`/`useMelhor.editorComment` já devem estar humanizados/
  * corrigidos (responsabilidade da skill, não deste módulo).
  *
- * Ordem de montagem (opening → headline 1 → headline 2 → Use Melhor →
- * headline 3 → Outros destaques da semana → closing; a seção "Vídeo da
- * semana", quando há vídeo, entra logo depois da manchete que ele comenta,
- * #12777) restaura o template original da
+ * Ordem de montagem (opening → vídeo da semana, quando há, #13818 → headline 1
+ * → headline 2 → Use Melhor → headline 3 → Outros destaques da semana →
+ * closing) restaura o template original da
  * issue #4456 — decisão do editor (#4489): o CTA de assinatura que fecha o
  * bloco Use Melhor é o primeiro convite da edição, e cair no meio (depois de
  * 2 dos 3 headlines) alcança o leitor engajado que não necessariamente lê a
@@ -458,33 +456,23 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push("<hr/>");
   }
 
-  // #12777: seção do vídeo logo depois da manchete que ele comenta.
-  const hasVideo = !!(input.video && input.video.title.trim() && input.video.url.trim());
-  const videoPos = hasVideo
-    ? videoSectionHeadlineIndex(input.headlines, input.weeklyEditions, input.video!.editionDate)
-    : { index: -2, matched: false };
-  if (hasVideo && !videoPos.matched) {
-    warnings.push(
-      `${LINKEDIN_WEEKLY_VIDEO_HEADING}: o vídeo (edição ${input.video!.editionDate ?? "?"}) não comenta nenhuma das manchetes; ` +
-        `a seção entrou ${videoPos.index < 0 ? "depois da abertura" : "depois da manchete 1"} e o texto diz "o destaque acima": revise antes de publicar.`,
-    );
-  }
-  function pushVideoSection(): void {
-    const videoUrl = buildLinkedinWeeklyUrl(input.video!.url, input.cycle, "video");
+  // #13818: seção do vídeo como 1º item, antes da manchete 1, com o título do
+  // vídeo no cabeçalho.
+  if (input.video && input.video.title.trim() && input.video.url.trim()) {
+    const videoTitle = input.video.title.replace(/\s+/g, " ").trim();
+    if (endsInBareDomainLabel(videoTitle)) {
+      warnings.push(`Vídeo da semana: título "${videoTitle}" termina em domínio nu — risco de auto-linkagem no paste do LinkedIn.`);
+    }
+    const videoUrl = buildLinkedinWeeklyUrl(input.video.url, input.cycle, "video");
     // #13045: frase fixa + frase da semana (`pitch`), um parágrafo só; sem
     // `pitch`, só a frase fixa.
-    const pitch = (input.video!.pitch ?? "").replace(/\s+/g, " ").trim();
-    parts.push(`<h2>${escapeHtml(LINKEDIN_WEEKLY_VIDEO_HEADING)}</h2>`);
+    const pitch = (input.video.pitch ?? "").replace(/\s+/g, " ").trim();
+    parts.push(`<h2>${escapeHtml(videoTitle)}</h2>`);
     parts.push(
       `<p>${escapeHtml(LINKEDIN_WEEKLY_VIDEO_LEAD)}<a href="${escapeHtml(videoUrl)}">${escapeHtml(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT)}</a>` +
         `${escapeHtml(LINKEDIN_WEEKLY_VIDEO_TAIL)}${pitch ? ` ${escapeHtml(pitch)}` : ""}</p>`,
     );
     parts.push("<hr/>");
-  }
-  if (hasVideo && videoPos.index === -1) pushVideoSection();
-  function pushHeadlineAt(h: WeeklyLinkedinHeadlineInput, i: number): void {
-    pushHeadline(h);
-    if (hasVideo && i === videoPos.index) pushVideoSection();
   }
 
   // Caso normal (3 headlines): USE MELHOR entra depois do 2º. Semana
@@ -492,7 +480,7 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   // "depois do 2º disponível"); com 1, entra logo depois dele (equivalente a
   // "no fim", já que não sobra headline 3); com 0, entra logo após a abertura.
   const useMelhorSplitIndex = Math.min(2, input.headlines.length);
-  input.headlines.slice(0, useMelhorSplitIndex).forEach((h, i) => pushHeadlineAt(h, i));
+  input.headlines.slice(0, useMelhorSplitIndex).forEach((h) => pushHeadline(h));
 
   let useMelhorRendered = false;
   if (input.useMelhor) {
@@ -521,7 +509,7 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     useMelhorRendered = true;
   }
 
-  input.headlines.slice(useMelhorSplitIndex).forEach((h, i) => pushHeadlineAt(h, useMelhorSplitIndex + i));
+  input.headlines.slice(useMelhorSplitIndex).forEach((h) => pushHeadline(h));
 
   // #11006 (23/10/2026, decisão do editor): "Outros destaques da semana" — só os
   // títulos que não apareceram acima, um por linha. A data (link da edição com a
@@ -529,8 +517,7 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   // Uma <ul> por edição, nunca aninhada: o editor de artigo do LinkedIn achata
   // <ul> aninhada (achado ao vivo 260803), mas lista simples sob parágrafo é
   // estrutura que ele suporta.
-  const shownTitles = [...input.headlines.map((h) => h.title), ...(input.useMelhor ? [input.useMelhor.title] : [])];
-  const others = otherWeeklyHighlights(input.weeklyEditions, shownTitles);
+  const others = listedWeeklyEditions(input);
   if (others.length > 0) {
     parts.push(`<h3>${escapeHtml(OTHER_HIGHLIGHTS_HEADING)}</h3>`);
     for (const { item, titles } of others) {
