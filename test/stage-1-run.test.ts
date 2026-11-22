@@ -1527,7 +1527,7 @@ describe("runStage1 --phase post-gate", () => {
         );
         // inbox arquivado
         assert.ok(nodeExistsSync(resolve(root, "data", "inbox-archive", "2026-04-23.md")));
-        assert.equal(readFileSync(resolve(root, "data", "inbox.md"), "utf8"), "");
+        assert.equal(readFileSync(resolve(root, "data", "inbox.md"), "utf8"), "# Inbox Editorial — diar.ia.br\n\n<!-- entries abaixo -->\n");
       });
     });
   });
