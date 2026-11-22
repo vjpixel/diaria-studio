@@ -520,12 +520,11 @@ async function main(): Promise<void> {
   }
   const inboxMdAbs = resolve(ROOT, inboxMdPath);
 
+  // #13841: inbox ausente = inbox vazio (arquivo some no Drive sync em dia sem submissão)
   if (!existsSync(inboxMdAbs)) {
-    console.error(`ERRO: inbox markdown não encontrado: ${inboxMdAbs}`);
-    process.exit(1);
+    console.error(`[inject-inbox-urls] inbox markdown ausente (${inboxMdAbs}) — tratando como vazio`);
   }
-
-  const inboxText = readFileSync(inboxMdAbs, "utf8");
+  const inboxText = existsSync(inboxMdAbs) ? readFileSync(inboxMdAbs, "utf8") : "";
   const allBlocks = parseInboxMd(inboxText);
   const editorBlocks = filterEditorBlocks(allBlocks, editorEmail);
   const injectedFromEditor = extractEditorUrls(editorBlocks);

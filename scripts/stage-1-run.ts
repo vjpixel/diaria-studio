@@ -1754,7 +1754,8 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
     const now = opts.nowIso ? new Date(opts.nowIso) : deps.now();
     const stamp = isoDateOnly(now);
     deps.renameFile(inboxPath, resolve(inboxArchiveDir, `${stamp}.md`));
-    deps.writeFile(inboxPath, "");
+    // #13841: cabeçalho padrão, não 0 bytes — arquivo vazio some no Drive sync e derruba o §1h
+    deps.writeFile(inboxPath, "# Inbox Editorial — diar.ia.br\n\n<!-- entries abaixo -->\n");
     report.note(`✅ inbox arquivado em data/inbox-archive/${stamp}.md.`);
   }
 

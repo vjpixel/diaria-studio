@@ -540,6 +540,19 @@ describe("--captured-articles integration (#1520)", () => {
     assert.ok(urls.includes("https://techcrunch.com/newsletter-article"), "captured newsletter article injected");
   });
 
+  it("#13841: inbox.md ausente é tratado como vazio, não aborta", () => {
+    const inboxPath = resolve(TMP_DIR, "inbox-ausente-13841.md");
+    const poolPath = resolve(TMP_DIR, "pool-13841.json");
+    const outPath = resolve(TMP_DIR, "out-13841.json");
+    writeFileSync(poolPath, JSON.stringify([{ url: "https://existing.com/a", source: "rss" }]), "utf8");
+    execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --pool "${poolPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const pool = JSON.parse(readFileSync(outPath, "utf8"));
+    assert.ok(pool.some((a: any) => a.url === "https://existing.com/a"));
+  });
+
   it("skips newsletter extraction from inbox.md when --captured-articles present", () => {
     const inboxPath = resolve(TMP_DIR, "inbox-with-newsletters.md");
     const capturedPath = resolve(TMP_DIR, "captured-empty.json");
