@@ -452,7 +452,9 @@ LinkedIn a dividiu em "YouTube da" (href do vídeo com UTM) + "diar.ia.br"
 (`http://diar.ia.br/`, sem UTM), e a auditoria acusou "âncora não
 encontrada" e contagem 10 vs 9. A correção do 26w46 (selecionar por `Range` e usar o botão de link da
 toolbar) não se repetiu no 26w47: o clique não abriu diálogo. A auditoria acusa esse padrão com
-`TRAILING_WORDMARK_SPLIT_HINT`.
+`TRAILING_WORDMARK_SPLIT_HINT`. Desde o #13821, se o split da âncora do vídeo
+aparecer, não tentar corrigir pela toolbar: seguir para o ajuste manual do
+editor no Passo 9, com a âncora dividida e o `href` da fonte no pedido.
 
 **Correção aplicada manualmente na 1ª publicação real (26w34, 260823):**
 selecionar a frase inteira ("diar.ia.br, newsletter de IA") via teclado
