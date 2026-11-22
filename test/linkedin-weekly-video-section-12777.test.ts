@@ -2,7 +2,9 @@
  * test/linkedin-weekly-video-section-12777.test.ts (#12777)
  *
  * Newsletter semanal do LinkedIn: o principal vídeo da semana (#13023) ganha seção
- * própria ("Vídeo da semana") logo depois da manchete que ele comenta, com o
+ * própria, desde o #13818 o 1º item do artigo (antes da manchete 1) com o título
+ * do vídeo no cabeçalho (até ali "Vídeo da semana", depois da manchete que ele
+ * comentava), com o
  * link no TEXTO (o LinkedIn não linka imagem) e sem `<img>` no HTML colado. A
  * linha única antes do fecho (#12081) saiu. A CLI copia a imagem sem overlay
  * da edição do vídeo para o editor subir à mão. A auditoria pós-paste desconta
@@ -16,8 +18,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   renderLinkedinWeeklyHtml,
-  videoSectionHeadlineIndex,
-  LINKEDIN_WEEKLY_VIDEO_HEADING,
   LINKEDIN_WEEKLY_VIDEO_LEAD,
   LINKEDIN_WEEKLY_VIDEO_LINK_TEXT,
   LINKEDIN_WEEKLY_VIDEO_TAIL,
@@ -53,14 +53,15 @@ function input(extra: Partial<WeeklyLinkedinRenderInput> = {}): WeeklyLinkedinRe
   };
 }
 
-const SECTION_H2 = `<h2>${LINKEDIN_WEEKLY_VIDEO_HEADING}</h2>`;
+// #13818: o cabeçalho da seção é o título do vídeo ("T" nestes fixtures).
+const SECTION_H2 = "<h2>T</h2>";
 
-describe("#12777 — seção Vídeo da semana no render", () => {
-  it("logo depois da manchete 1 quando o vídeo comenta o D1 dela, com o link no texto e sem <img>", () => {
+describe("#12777/#13818 — seção do vídeo da semana no render", () => {
+  it("#13818: 1º item, antes da manchete 1 e depois do CTA da abertura, com o link no texto e sem <img>", () => {
     const { html, warnings } = renderLinkedinWeeklyHtml(input({ video: { title: "T", url: VIDEO_URL, editionDate: "261103" } }));
     const sec = html.indexOf(SECTION_H2);
-    assert.ok(sec > html.indexOf("<h2>Golpe da selfie</h2>"), "depois da manchete 1");
-    assert.ok(sec < html.indexOf("<h2>Google paga para sair</h2>"), "antes da manchete 2");
+    assert.ok(sec > html.indexOf("Assinar a edição diária grátis"), "depois do CTA da abertura");
+    assert.ok(sec < html.indexOf("<h2>Golpe da selfie</h2>"), "antes da manchete 1");
     const after = html.slice(sec).split("\n");
     assert.equal(
       after[1],
@@ -76,53 +77,56 @@ describe("#12777 — seção Vídeo da semana no render", () => {
   it("regressão #12081: a linha antiga antes do fecho saiu", () => {
     const { html } = renderLinkedinWeeklyHtml(input({ video: { title: "Título do vídeo", url: VIDEO_URL, editionDate: "261103" } }));
     assert.ok(!html.includes("Vídeo mais assistido da semana no canal da diar.ia.br:"));
-    assert.ok(!html.includes("Título do vídeo"), "título do vídeo não aparece mais como âncora");
+    assert.ok(!/<a [^>]*>Título do vídeo<\/a>/.test(html), "título do vídeo não aparece como âncora");
     const fecho = html.indexOf("<p>Fecho.</p>");
     assert.ok(html.lastIndexOf("utm_content=video") < fecho);
   });
 
-  it("vai depois da manchete que o vídeo comenta (ex.: manchete 3, depois do Use Melhor)", () => {
-    const { html, warnings } = renderLinkedinWeeklyHtml(
-      input({
-        useMelhor: { title: "Use", url: "https://ex.com/u", description: "Desc.", editorComment: "" },
-        video: { title: "T", url: VIDEO_URL, editionDate: "261105" },
-      }),
+  it("#13818: cabeçalho é o título do vídeo (escapado, espaços colapsados), não 'Vídeo da semana'", () => {
+    const { html } = renderLinkedinWeeklyHtml(
+      input({ video: { title: "  Gemini 4   Hydrogen <beta> ", url: VIDEO_URL, editionDate: "261103" } }),
     );
-    const sec = html.indexOf(SECTION_H2);
-    assert.ok(sec > html.indexOf("<h2>Multa no STF</h2>"));
-    assert.ok(sec > html.indexOf("<h3>🛠️ Use melhor</h3>"));
-    assert.ok(!warnings.some((w) => w.startsWith(LINKEDIN_WEEKLY_VIDEO_HEADING)));
+    assert.ok(html.includes("<h2>Gemini 4 Hydrogen &lt;beta&gt;</h2>"), html);
+    assert.ok(!html.includes("<h2>Vídeo da semana</h2>"), "cabeçalho fixo antigo saiu");
   });
 
-  it("vídeo que não comenta nenhuma manchete: depois da manchete 1, com warning", () => {
-    const { html, warnings } = renderLinkedinWeeklyHtml(input({ video: { title: "T", url: VIDEO_URL, editionDate: "261106" } }));
-    const sec = html.indexOf(SECTION_H2);
-    assert.ok(sec > html.indexOf("<h2>Golpe da selfie</h2>") && sec < html.indexOf("<h2>Google paga para sair</h2>"));
-    assert.ok(warnings.some((w) => w.startsWith(LINKEDIN_WEEKLY_VIDEO_HEADING) && w.includes("destaque acima")), warnings.join("\n"));
+  it("#13818: frase fixa sem 'o destaque acima' (o vídeo vem antes das manchetes)", () => {
+    const { html } = renderLinkedinWeeklyHtml(input({ video: { title: "T", url: VIDEO_URL, editionDate: "261103" } }));
+    assert.equal(LINKEDIN_WEEKLY_VIDEO_LEAD, "Eu comento esta notícia no ");
+    assert.ok(!stripHtmlToText(html).includes("destaque acima"));
+    assert.ok(stripHtmlToText(html).includes("Eu comento esta notícia no YouTube."));
+  });
+
+  it("#13818: a posição não depende de qual manchete o vídeo comenta (manchete 3 ou nenhuma), sem warning", () => {
+    for (const editionDate of ["261105", "261106", undefined]) {
+      const { html, warnings } = renderLinkedinWeeklyHtml(
+        input({
+          useMelhor: { title: "Use", url: "https://ex.com/u", description: "Desc.", editorComment: "x" },
+          video: { title: "T", url: VIDEO_URL, editionDate },
+        }),
+      );
+      const sec = html.indexOf(SECTION_H2);
+      assert.ok(sec >= 0 && sec < html.indexOf("<h2>Golpe da selfie</h2>"), `antes da manchete 1 (edição ${editionDate})`);
+      assert.ok(sec < html.indexOf("<h3>🛠️ Use melhor</h3>"));
+      assert.deepEqual(warnings, [], `sem o warning de posição antigo (edição ${editionDate})`);
+    }
+  });
+
+  it("título do vídeo terminando em domínio nu: warning (auto-linkagem do LinkedIn)", () => {
+    const { warnings } = renderLinkedinWeeklyHtml(input({ video: { title: "Comento a diar.ia.br", url: VIDEO_URL } }));
+    assert.ok(warnings.some((w) => w.includes("domínio nu")), warnings.join("\n"));
   });
 
   it("sem vídeo (ou campo vazio), sem seção", () => {
     assert.ok(!renderLinkedinWeeklyHtml(input()).html.includes(SECTION_H2));
     assert.ok(!renderLinkedinWeeklyHtml(input({ video: null })).html.includes(SECTION_H2));
-    assert.ok(!renderLinkedinWeeklyHtml(input({ video: { title: " ", url: VIDEO_URL } })).html.includes(SECTION_H2));
+    assert.ok(!renderLinkedinWeeklyHtml(input({ video: { title: " ", url: VIDEO_URL } })).html.includes("utm_content=video"));
   });
 
   it("sem manchetes: seção logo depois da abertura", () => {
     const { html } = renderLinkedinWeeklyHtml(input({ headlines: [], video: { title: "T", url: VIDEO_URL, editionDate: "261103" } }));
     assert.ok(html.indexOf(SECTION_H2) > html.indexOf("Assinar a edição diária grátis"));
     assert.ok(html.indexOf(SECTION_H2) < html.indexOf("<p>Fecho.</p>"));
-  });
-
-  it("videoSectionHeadlineIndex casa por título normalizado do D1 da edição do vídeo", () => {
-    const h = input().headlines;
-    const e = input().weeklyEditions;
-    assert.deepEqual(videoSectionHeadlineIndex(h, e, "261104"), { index: 1, matched: true });
-    assert.deepEqual(videoSectionHeadlineIndex(h, [{ ...e[1], destaques: ["  google PAGA  para sair "] }], "261104"), {
-      index: 1,
-      matched: true,
-    });
-    assert.deepEqual(videoSectionHeadlineIndex(h, e, undefined), { index: 0, matched: false });
-    assert.deepEqual(videoSectionHeadlineIndex([], e, "261104"), { index: -1, matched: false });
   });
 });
 

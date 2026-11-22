@@ -39,9 +39,9 @@
  *
  * **#12081 — vídeo da semana.** Antes do render, a CLI mede na YouTube Data
  * API o horizontal do D1 mais visto entre as edições da semana e grava em
- * `ln-selection.json` (`video`); o artigo ganha a seção "Vídeo da semana"
- * logo depois da manchete que o vídeo comenta (#12777, era uma linha antes do
- * fecho) e a CLI copia a imagem dele (`VIDEO_IMAGE_FILENAME`). Só mede
+ * `ln-selection.json` (`video`); o artigo ganha a seção do vídeo como 1º
+ * item, antes da manchete 1, com o título do vídeo no cabeçalho (#13818; até
+ * ali ia depois da manchete que o vídeo comentava, #12777) e a CLI copia a imagem dele (`VIDEO_IMAGE_FILENAME`). Só mede
  * quando o campo ainda não existe (re-render reusa; o editor pode editar ou
  * apagar). Sem credencial/erro: `video: null`, sem a seção.
  *
@@ -85,7 +85,7 @@ import {
   loadWindowIntentionalErrors,
   segmentTextByEdition,
 } from "./lib/intentional-error-scrub.ts";
-import { renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
+import { listedWeeklyEditions, renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import { loadProjectEnv } from "./lib/env-loader.ts"; // #12081: credenciais do YouTube
 import { srtSpokenText, weeklyVideoPitchProblems } from "./lib/weekly-video-pitch.ts"; // #13045
@@ -98,7 +98,7 @@ export const COVER_IMAGE_FILENAME = "04-d1-2x1.jpg";
 
 /**
  * #12777: cópia da `04-d1-2x1.jpg` da edição do VÍDEO da semana, para o editor
- * subir na seção "Vídeo da semana". Nome próprio porque a edição do vídeo pode
+ * subir na seção do vídeo da semana. Nome próprio porque a edição do vídeo pode
  * não ser a da manchete 1 (a capa). A versão com overlay de play
  * (`04-d1-2x1-play.jpg`, #12692) não serve: sugere um clique que o LinkedIn
  * não oferece em imagem.
@@ -144,13 +144,32 @@ export function coverSourceFilename(destaqueN?: number): string {
  * `paragraphsHtml` já entende) e sem o "Assine grátis." final: o convite fica
  * só no CTA da abertura (`CTA_ABERTURA_LABEL`, "Assinar a edição diária
  * grátis").
+ *
+ * #13819 (21/11/2026, decisão do editor, ciclo 26w47): a frase sobre as edições
+ * do fim do post acompanha quantas edições "Outros destaques da semana" lista
+ * de fato (`listedWeeklyEditions`, o mesmo corte do render), em algarismo ("As
+ * 4 edições completas", grafia do 26w47); era fixa em "As cinco edições". Sem
+ * edição listada, a seção some e a frase sai junto. `DEFAULT_OPENING` é o texto
+ * da semana cheia (5 edições).
  */
-export const DEFAULT_OPENING =
-  "Desde o ano passado, escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +
-  "5 minutos por dia para se manter atualizado e usar melhor as IAs." +
-  "\n\n" +
-  "Aqui no LinkedIn, trago toda segunda os três destaques que mais renderam cliques na semana. " +
-  "As cinco edições completas ficam com os títulos no fim do post.";
+export function defaultOpening(listedEditions: number): string {
+  const n = Math.max(0, Math.floor(listedEditions));
+  const editionsSentence =
+    n === 0
+      ? ""
+      : n === 1
+        ? " A edição completa fica com os títulos no fim do post."
+        : ` As ${n} edições completas ficam com os títulos no fim do post.`;
+  return (
+    "Desde o ano passado, escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +
+    "5 minutos por dia para se manter atualizado e usar melhor as IAs." +
+    "\n\n" +
+    "Aqui no LinkedIn, trago toda segunda os três destaques que mais renderam cliques na semana." +
+    editionsSentence
+  );
+}
+
+export const DEFAULT_OPENING = defaultOpening(5);
 
 /** #8025 — texto padrão de fecho, mesma origem/evidência do `DEFAULT_OPENING` acima. */
 export const DEFAULT_CLOSING =
@@ -333,26 +352,30 @@ export function main(rootDirOverride?: string) {
     }
   }
 
-  const opening = resolveTextArg(argv, "opening", DEFAULT_OPENING);
-  const closing = resolveTextArg(argv, "closing", DEFAULT_CLOSING);
   // Comentário do Use Melhor segue genuinamente opcional (#5970) — sem fallback.
   const useMelhorComment = resolveTextArg(argv, "use-melhor-comment");
+  const headlines = selection.headlines.map((h) => ({ title: h.title, body: h.body, why: h.why, editionDate: h.editionDate }));
+  const useMelhor = selection.useMelhor
+    ? {
+        title: selection.useMelhor.title,
+        url: selection.useMelhor.url,
+        description: selection.useMelhor.body,
+        editorComment: useMelhorComment,
+      }
+    : undefined;
+  // #13819: a abertura padrão cita quantas edições o fim do post lista de fato.
+  const listedEditions = listedWeeklyEditions({ headlines, useMelhor, weeklyEditions: selection.weeklyEditions }).length;
+  const opening = resolveTextArg(argv, "opening", defaultOpening(listedEditions));
+  const closing = resolveTextArg(argv, "closing", DEFAULT_CLOSING);
 
   const input: WeeklyLinkedinRenderInput = {
     cycle,
-    headlines: selection.headlines.map((h) => ({ title: h.title, body: h.body, why: h.why, editionDate: h.editionDate })),
-    useMelhor: selection.useMelhor
-      ? {
-          title: selection.useMelhor.title,
-          url: selection.useMelhor.url,
-          description: selection.useMelhor.body,
-          editorComment: useMelhorComment,
-        }
-      : undefined,
+    headlines,
+    useMelhor,
     weeklyEditions: selection.weeklyEditions,
     opening,
     closing,
-    video: selection.video ?? null, // #12081; editionDate posiciona a seção (#12777)
+    video: selection.video ?? null, // #12081; seção antes da manchete 1 (#13818)
   };
 
   const result = renderLinkedinWeeklyHtml(input);
@@ -421,7 +444,7 @@ export function main(rootDirOverride?: string) {
     } else {
       coverWarnings.push(
         `Imagem do vídeo (#12777): ${coverSourceFilename()} não encontrada na edição do vídeo ` +
-          `(${selection.video.editionDate}) — a seção "Vídeo da semana" sai só com o texto, sem imagem para subir.`,
+          `(${selection.video.editionDate}) — a seção do vídeo sai só com o texto, sem imagem para subir.`,
       );
     }
   }

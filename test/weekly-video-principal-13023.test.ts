@@ -69,7 +69,7 @@ describe("#13023/#13045 — LinkedIn semanal: frase do vídeo", () => {
     assert.equal(endsWithWordmarkAnchorText(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT), false);
     const { html } = renderLinkedinWeeklyHtml(linkedinInput());
     const text = stripHtmlToText(html);
-    assert.ok(text.includes("Eu comento o destaque acima no YouTube."), text);
+    assert.ok(text.includes("Eu comento esta notícia no YouTube."), text); // #13818
     assert.doesNotMatch(text, /principal vídeo da semana/i);
     assert.doesNotMatch(text, AUDIENCIA_RE);
   });
