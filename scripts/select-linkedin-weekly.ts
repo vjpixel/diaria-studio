@@ -66,6 +66,7 @@ import { resolve, join } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyVideoOverride, readVideoOverrideMarker, resolveVideoOverride } from "./lib/weekly-video-override.ts"; // #13820
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir, parseAAMMDD } from "./lib/weekly-linkedin-cycle.ts";
@@ -379,6 +380,7 @@ export function main(rootDirOverride?: string) {
   const outPath = join(outDir, "ln-selection.json");
   const persistedOverride = useMelhorAuto ? null : readPersistedUseMelhorOverride(outPath);
   const useMelhorOverride = useMelhorUrlArg || persistedOverride || null;
+  const videoCarry = resolveVideoCarry(outPath, editionsRootDir, argv, editions);
   let useMelhor: WeeklyRankedCandidate | undefined;
   if (useMelhorOverride) {
     const resolved = resolveUseMelhorOverride(ranked, headlineUrls, useMelhorOverride);
@@ -560,6 +562,8 @@ export function main(rootDirOverride?: string) {
     // #11777: URL do Use Melhor escolhido à mão (`--use-melhor-url`), reaplicada
     // nas re-rodadas; `null` = automático (maior taxa).
     useMelhorOverride,
+    // #13820: vídeo da semana escolhido à mão, reaplicado nas re-rodadas (o render só mede o mais visto quando `video` não existe).
+    ...videoCarry,
     weeklyEditions,
     postsNeedingClicks: manifest,
     warnings,
@@ -714,6 +718,58 @@ export function applySharedLinkedinSelection(
     return { headlines: headlines.list, pendingGroup: group.list, pendingSlots: pending.slots, warnings, error: null };
   }
   return { headlines: headlines.list, pendingGroup: null, pendingSlots: 0, warnings, error: null };
+}
+
+/**
+ * #13820: vídeo da semana escolhido à mão. Precedência: `--video-edition`/`--video-url`
+ * > escolha gravada numa rodada anterior (`videoOverride`, reaplicada com o `video`
+ * e a frase já escritos) > nada (o render mede o mais visto). `--video-auto`
+ * descarta a gravada. Flag inválida sai 2. Exportada para teste.
+ */
+export function resolveVideoCarry(
+  selectionPath: string,
+  editionsRootDir: string,
+  argv: string[],
+  editions: ReadonlyArray<{ date: string; destaqueTitles: string[] }> = [],
+): Record<string, unknown> {
+  if (hasFlag(argv, "video-auto")) return {};
+  const videoEdition = getArg(argv, "video-edition").trim();
+  const videoUrl = getArg(argv, "video-url").trim();
+  let prev: Record<string, unknown> | null = null;
+  if (existsSync(selectionPath)) {
+    try {
+      prev = JSON.parse(readFileSync(selectionPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      prev = null;
+    }
+  }
+  if (videoEdition || videoUrl) {
+    const resolved = resolveVideoOverride({
+      editionsRoot: editionsRootDir,
+      videoEdition,
+      videoUrl,
+      fallbackTitle: (d) => editions.find((e) => e.date === d)?.destaqueTitles[0] ?? "",
+    });
+    if (!resolved.ok) {
+      console.error(`--video-edition/--video-url recusado (#13820): ${resolved.error}`);
+      process.exit(2);
+    }
+    const { selection, invalidated } = applyVideoOverride(prev ?? {}, resolved);
+    if (invalidated.length > 0) {
+      console.warn(`Vídeo da semana trocado para ${resolved.video.editionDate}: reescreva ${invalidated.join(" e ")} — era sobre o vídeo anterior.`);
+    }
+    return { video: selection.video, videoOverride: selection.videoOverride };
+  }
+  const marker = readVideoOverrideMarker(prev);
+  if (marker && prev?.video) return { video: prev.video, videoOverride: marker };
+  if (marker) {
+    // #13820 review: `video` apagado à mão com o marcador gravado — não some em silêncio.
+    console.warn(
+      `⚠ videoOverride gravado (edição ${marker.editionDate}) sem o campo video na seleção anterior: a escolha foi descartada e o render volta a medir o mais visto. ` +
+        `Para manter, rode com --video-edition ${marker.editionDate}.`,
+    );
+  }
+  return {};
 }
 
 /**
