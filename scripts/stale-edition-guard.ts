@@ -8,6 +8,9 @@
  * `--step 4 --caller-stage 5`; com ela, arquivo da edição recente (≤30 min)
  * sem o sentinel 4 sai 4 (`prev_gate_in_transit`: gate provavelmente aprovado
  * em outra máquina). Inteiro (`5` e `05` valem igual); outro valor sai 2.
+ * Os artefatos de vídeo que o `/diaria-publica` grava antes do assert
+ * (`05-video-url.txt`, `05-youtube-published.json` etc., `isPublicaVideoFile`)
+ * não contam como atividade recente (#13867).
  * `--force` (só com confirmação do editor): sai 0 e registra o override em
  * `data/run-log.jsonl` (`level: warn`, `message: stale_edition_guard_forced`,
  * com os sinais em `details`, #11714). `--edition` default = nome do
@@ -25,7 +28,7 @@ import { editionLockUnreadable, readEditionLock } from "./lib/edition-lock.ts";
 import { sentinelExists } from "./lib/pipeline-state.ts";
 import { findNewestFile, formatNewestFileEvidence } from "./lib/sentinel-absence-hint.ts";
 import { logEvent } from "./lib/run-log.ts";
-import { assessStaleEdition, describeSignals } from "./lib/stale-edition-guard.ts";
+import { assessStaleEdition, describeSignals, isPublicaVideoFile } from "./lib/stale-edition-guard.ts";
 
 export interface GuardCliOpts {
   /** Raiz para resolver o run-log (default cwd). Injetável em teste. */
@@ -37,8 +40,13 @@ export interface GuardCliOpts {
 const USAGE =
   "Uso: stale-edition-guard.ts check --edition-dir DIR --step N [--caller-stage M] [--outputs-missing] [--edition AAMMDD] [--force]";
 
+/**
+ * Idade do arquivo mais recente da edição, sem os artefatos de vídeo que o
+ * próprio `/diaria-publica` grava antes do assert da Etapa 5 (#13867): eles
+ * não são sinal de gate 4 aprovado em outra máquina.
+ */
 function newestAgeMs(dir: string, now: number): number | null {
-  const newest = findNewestFile(dir);
+  const newest = findNewestFile(dir, 4, isPublicaVideoFile);
   return newest ? now - newest.mtimeMs : null;
 }
 
@@ -105,10 +113,15 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     // decidir entre "o sync não chegou" e "a outra sessão morreu".
     const evidence = formatNewestFileEvidence(findNewestFile(dir), opts.now ?? Date.now());
     if (verdict.signals.every((s) => s.kind === "prev_gate_in_transit")) {
+      // #13867: a evidência é o mesmo arquivo que disparou o sinal (sem os de vídeo).
+      const transitEvidence = formatNewestFileEvidence(
+        findNewestFile(dir, 4, isPublicaVideoFile),
+        opts.now ?? Date.now(),
+      );
       // #13851: aqui re-rodar a Etapa 4 PODE ser a ação certa (gate nunca
       // aprovado); o "não re-rodar o stage" genérico abaixo induziria ao erro.
       console.error(
-        `[stale-edition-guard] Stage 4 sem sentinel nesta máquina, mas a edição teve atividade recente (${describeSignals(verdict.signals)}). ${evidence} Se o gate foi aprovado em outra máquina, aguardar o sync do Drive e re-rodar a Etapa 5; se o gate não foi aprovado (ou a revisão ainda está em andamento), concluir /diaria-4-revisao antes. Para seguir mesmo assim, o editor confirma e re-roda o guard com --force.`,
+        `[stale-edition-guard] Stage 4 sem sentinel nesta máquina, mas a edição teve atividade recente (${describeSignals(verdict.signals)}). ${transitEvidence} Se o gate foi aprovado em outra máquina, aguardar o sync do Drive e re-rodar a Etapa 5; se o gate não foi aprovado (ou a revisão ainda está em andamento), concluir /diaria-4-revisao antes. Para seguir mesmo assim, o editor confirma e re-roda o guard com --force.`,
       );
       return 4;
     }
