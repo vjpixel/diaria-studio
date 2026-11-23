@@ -51,3 +51,6 @@ openai.com/index/more-ways-to-move-care-forward-with-chatgpt-for-healthcare
 
 # edição 261118: NVIDIA DGX Spark HPC Developer Kit (kit de desenvolvedor, produto oficial; título sem sinal de ferramenta).
 blogs.nvidia.com/blog/dgx-spark-hpc-developer-kit-sc26
+
+# edição 261123: Inkling 2 Mini (modelo compacto lançado no blog oficial da Hugging Face; slug sem sinal de ferramenta).
+huggingface.co/blog/inkling2mini
