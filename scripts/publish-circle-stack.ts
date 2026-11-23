@@ -972,6 +972,29 @@ function readStoredJson(path: string): Record<string, unknown> | null {
   }
 }
 
+/** #13820 review: identidade do vídeo da seleção (edição + URL), `null` sem vídeo. */
+function videoIdentity(video: unknown): string | null {
+  if (!video || typeof video !== "object") return null;
+  const v = video as { editionDate?: unknown; url?: unknown };
+  return `${String(v.editionDate ?? "")}|${String(v.url ?? "")}`;
+}
+
+/**
+ * #13820 review: remove `videoDescription` do texto do ciclo (`circle-stack-copy.json`)
+ * depois que o vídeo da semana mudou — a descrição era sobre o vídeo anterior e um
+ * `circle-stack-copy.ts --apply` manual a reinjetaria (a validação só confere números).
+ * Sem o campo, `--check`/`--apply` acusam a ausência até o stack-writer reescrever.
+ * `true` se removeu. Arquivo ausente/ilegível ou sem o campo: nada muda.
+ */
+export function dropStaleStackCopyVideoDescription(copyPath: string): boolean {
+  const copy = readStoredJson(copyPath);
+  if (!copy || !("videoDescription" in copy)) return false;
+  const { videoDescription: _stale, ...rest } = copy;
+  writeFileAtomic(copyPath, JSON.stringify(rest, null, 2));
+  console.warn(`⚠ Vídeo da semana mudou: videoDescription removida de ${copyPath} (era sobre o vídeo anterior) — re-dispare o stack-writer.`);
+  return true;
+}
+
 /**
  * #13820: vídeo da semana escolhido pelo editor. Precedência: `--video-edition`/
  * `--video-url` > `videoOverride` da seleção gravada (sobrevive a `--reselect`) >
@@ -1007,7 +1030,8 @@ function applyStackVideoArgs(
   dataRoot: string,
   weeklyEditions: ReadonlyArray<{ editionDate: string; destaques: string[] }>,
 ): { warnings: string[] } | null {
-  const has = hasFlag(argv, "video-edition") || hasFlag(argv, "video-url") || hasFlag(argv, "video-auto");
+  // `hasFlag` só enxerga flag sem valor: `--video-edition X`/`--video-url X` vêm por `getStringArg`.
+  const has = Boolean(getStringArg(argv, "video-edition")) || Boolean(getStringArg(argv, "video-url")) || hasFlag(argv, "video-auto");
   if (!has) return null;
   const stored = readStoredJson(selectionPath);
   if (!stored) return null;
@@ -1083,6 +1107,14 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   mkdirSync(join(cycleDir, "_internal"), { recursive: true });
 
   const selectionPath = join(cycleDir, "_internal", "circle-stack-selection.json");
+  // #13820 review: na seleção já gravada, --video-auto só apaga o vídeo (o mais visto
+  // é medido no --reselect); com --publish o post sairia sem a seção do vídeo.
+  if (hasFlag(argv, "video-auto") && hasFlag(argv, "publish") && !hasFlag(argv, "reselect") && existsSync(selectionPath)) {
+    throw new Error(
+      "--video-auto com --publish exige --reselect (#13820): sem ele o vídeo da semana é apagado e não medido, e o post sairia sem a seção do vídeo.",
+    );
+  }
+  const previousStackVideo = videoIdentity(readStoredJson(selectionPath)?.video);
   let selection: CircleStackSelection;
   let warnings: string[];
   // Títulos sem sinal de português em seleção montada NESTA execução (#11005).
@@ -1157,6 +1189,12 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
     }
     selection = applyCircleStackExclusions(built);
     warnings = built.warnings;
+  }
+  // #13820 review: vídeo trocado (override, --video-auto ou outro mais visto) invalida a
+  // descrição escrita para o anterior no texto do ciclo; um --apply manual a reinjetaria.
+  if (previousStackVideo !== videoIdentity(selection.video)) {
+    const copyPath = join(cycleDir, "_internal", "circle-stack-copy.json");
+    dropStaleStackCopyVideoDescription(copyPath);
   }
   // #12553: os avisos gravados envelhecem (título reescrito à mão, feriado); recalcula sobre a seleção atual.
   const editionsRootForWarnings = join(dataRoot, "data", "editions");

@@ -762,6 +762,13 @@ export function resolveVideoCarry(
   }
   const marker = readVideoOverrideMarker(prev);
   if (marker && prev?.video) return { video: prev.video, videoOverride: marker };
+  if (marker) {
+    // #13820 review: `video` apagado à mão com o marcador gravado — não some em silêncio.
+    console.warn(
+      `⚠ videoOverride gravado (edição ${marker.editionDate}) sem o campo video na seleção anterior: a escolha foi descartada e o render volta a medir o mais visto. ` +
+        `Para manter, rode com --video-edition ${marker.editionDate}.`,
+    );
+  }
   return {};
 }
 
