@@ -97,5 +97,3 @@ export function applyVideoOverride<T extends Record<string, unknown>>(
     invalidated,
   };
 }
-
-const VIDEO_OVERRIDE_FLAGS = ["video-edition", "video-url"] as const;

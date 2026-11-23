@@ -281,13 +281,6 @@ export function applyVideoPitch(rootDir: string, cycle: string, pitch: string): 
 }
 
 /**
- * #12081: grava em `ln-selection.json` o horizontal do D1 mais visto da
- * semana (`video`), medido na YouTube Data API. Roda só quando o campo ainda
- * não existe: a re-renderização reusa o valor (e o editor pode editá-lo ou
- * apagá-lo à mão). Fail-soft: sem credencial ou com erro grava `null` e o
- * artigo sai sem a seção do vídeo. `topVideo` injetável para teste.
- */
-/**
  * #13820: `--video-edition AAMMDD`/`--video-url URL` grava em `ln-selection.json`
  * o vídeo escolhido (título e URL da edição, mesmo fora da janela) e o marcador
  * `videoOverride` que a re-seleção reaplica. Trocar o vídeo descarta a frase
@@ -313,6 +306,13 @@ export function applyVideoOverrideArg(
   return { applied: true, invalidated };
 }
 
+/**
+ * #12081: grava em `ln-selection.json` o horizontal do D1 mais visto da
+ * semana (`video`), medido na YouTube Data API. Roda só quando o campo ainda
+ * não existe: a re-renderização reusa o valor (e o editor pode editá-lo ou
+ * apagá-lo à mão). Fail-soft: sem credencial ou com erro grava `null` e o
+ * artigo sai sem a seção do vídeo. `topVideo` injetável para teste.
+ */
 export async function ensureWeeklyVideo(
   rootDir: string,
   cycle: string,
