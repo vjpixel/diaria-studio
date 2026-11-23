@@ -242,4 +242,11 @@ describe("#13851 sentinel do Stage 4 atrasado no sync", () => {
     writeFileSync(join(dir, "02-reviewed.md"), "x");
     assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "5"], { host: "neo" }), 4);
   });
+  it("--step 4 --caller-stage 5 (caminho do playbook) sai 4; sem --caller-stage sai 0", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), "x");
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--caller-stage", "5"], { host: "neo" }), 4);
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4"], { host: "neo" }), 0);
+  });
 });

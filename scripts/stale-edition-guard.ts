@@ -52,7 +52,8 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     localHost: opts.host ?? hostname(),
     outputsMissing,
     lockUnreadable: editionLockUnreadable(dir),
-    newestFileAgeMs: step === 5 ? newestAgeMs(dir, opts.now ?? Date.now()) : undefined,
+    callerStage: values["caller-stage"] ? Number(values["caller-stage"]) : undefined,
+    newestFileAgeMs: step === 5 || values["caller-stage"] === "5" ? newestAgeMs(dir, opts.now ?? Date.now()) : undefined,
     now: opts.now,
   });
   console.log(JSON.stringify(verdict));

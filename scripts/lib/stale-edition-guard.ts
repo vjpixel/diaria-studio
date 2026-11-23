@@ -31,6 +31,8 @@ export interface StaleEditionFacts {
    * desconhecida ou pasta vazia). Só usada com `step` 5 (#13851).
    */
   newestFileAgeMs?: number | null;
+  /** Etapa que está checando o pré-requisito (`--caller-stage 5` com `--step 4`, #13851). */
+  callerStage?: number;
   /** Relógio (ms) para a janela do tombstone de interrupção (#11713). Default `Date.now()`. */
   now?: number;
 }
@@ -87,7 +89,7 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
     if (s > f.step) signals.push({ kind: "later_sentinel", step: s });
   }
   if (
-    f.step === 5 &&
+    (f.step === 5 || f.callerStage === 5) &&
     !f.sentinelSteps.includes(4) &&
     typeof f.newestFileAgeMs === "number" &&
     f.newestFileAgeMs <= PREV_GATE_RECENT_WINDOW_MS
@@ -126,7 +128,7 @@ export function describeSignals(signals: StaleSignal[]): string {
   return signals
     .map((s) =>
       s.kind === "prev_gate_in_transit"
-        ? `sentinel do Stage 4 ausente com arquivo da edição de ${Math.round(s.newest_age_ms / 60_000)} min atrás: gate provavelmente aprovado em outra máquina, sync em trânsito`
+        ? `sentinel do Stage 4 ausente com arquivo da edição de ${Math.round(s.newest_age_ms / 60_000)} min atrás: gate possivelmente aprovado em outra máquina (sync em trânsito) ou ainda em andamento; confira antes de re-rodar a Etapa 4`
         : s.kind === "later_sentinel"
         ? `sentinel do Stage ${s.step} já existe`
         : s.kind === "unreadable_lock"
