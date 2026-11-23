@@ -1025,10 +1025,14 @@ async function main() {
   const subjectVsPastThresholdLowered = parseFloat(
     args["subject-vs-past-threshold-lowered"] ?? "0.55",
   );
+  // #13846: só títulos de itens efetivamente publicados — candidato aprovado e
+  // não publicado (01-approved.json) não pode barrar a história.
+  const publishedUrls = extractPastUrlsUnbounded(pastMd);
   const pastArticleTitles = extractPastEditionArticleTitles(
     editionsDir,
     window,
     currentAammdd,
+    publishedUrls,
   );
   if (pastArticleTitles.length > 0) {
     console.error(
@@ -1111,7 +1115,7 @@ async function main() {
   const pastEventDistanceDays = minDistanceByTitle(
     [
       ...extractPastTitlesWithEdition(pastMd, window),
-      ...extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd),
+      ...extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd, publishedUrls),
     ],
     currentAammdd,
   );
