@@ -138,6 +138,8 @@ import { readDestaqueCount } from "./stage-3.ts";
 import { extractUrlsWithLines } from "../../validate-domains.ts"; // #8993
 import { evaluateStaleness, findSocialContentMismatches } from "../../check-staleness.ts"; // #9820
 import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #9820
+import { claricePendingFor, describeProvenance, readRunRecord } from "../humanizer-run-record.ts"; // #13848
+import { computeSectionHashes as computeSocialSectionHashes } from "../social-lint-rules.ts"; // #13848
 import { isNonEditorialHost } from "../ctr-utils.ts"; // #8993
 import {
   readPastEditionsMd,
@@ -688,6 +690,37 @@ export function checkSocialHumanizerSealFresh(editionDir: string): InvariantViol
       file: resolve(editionDir, "03-social.md"),
     },
   ];
+}
+
+/**
+ * #13848 — seção do social selada com a Clarice PENDENTE (`check-humanizer-social.ts
+ * --record-clarice-pending`): humanizada, mas a Clarice não rodou porque a API
+ * estava fora do ar. Warning, uma linha por seção, para o resumo do gate trazer a
+ * pendência junto da `clarice-pending` da newsletter. Some quando a Clarice roda
+ * na seção e o passo é registrado com `--record-run --step clarice`.
+ */
+export function checkSocialClaricePending(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+  const socialMd = readFileSync(socialPath, "utf8");
+  const record = readRunRecord(editionDir);
+  const hashes = computeSocialSectionHashes(socialMd);
+  return describeProvenance(socialMd, record)
+    .filter((row) => row.clarice_pending)
+    .map((row) => {
+      const entry = claricePendingFor(hashes[row.section], record);
+      const why = entry ? `${entry.reason}${entry.detail ? `: ${entry.detail}` : ""}` : "motivo não registrado";
+      return {
+        rule: "social-clarice-pending",
+        message:
+          `⚠️ ${row.section}: Clarice não rodou no social (${why}); humanizador ok. ` +
+          "O editor decide entre aprovar sem a Clarice ou esperar a API; com a Clarice de volta, rodá-la na seção e " +
+          `registrar com npx tsx scripts/check-humanizer-social.ts --record-run --step clarice --edition-dir ${editionDir}/`,
+        source_issue: "#13848",
+        severity: "warning" as const,
+        file: socialPath,
+      };
+    });
 }
 
 function checkImageContentFresh(editionDir: string): InvariantViolation[] {
@@ -4658,6 +4691,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#9820",
     stage: 4,
     run: checkSocialHumanizerSealFresh,
+  },
+  {
+    id: "social-clarice-pending",
+    description: "seção do social selada com a Clarice pendente (API fora do ar) aparece no gate (#13848)",
+    source_issue: "#13848",
+    stage: 4,
+    run: checkSocialClaricePending,
   },
   {
     id: "image-content-fresh",

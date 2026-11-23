@@ -26,6 +26,16 @@ export interface StaleEditionFacts {
   outputsMissing?: boolean;
   /** Arquivo `edition-lock` existe mas está corrompido/ilegível (sync em trânsito): fail-closed. */
   lockUnreadable?: boolean;
+  /**
+   * Idade (ms) do arquivo mais recente da edição NESTA máquina (`null`/ausente =
+   * desconhecida ou pasta vazia). Só usada com `step` 5 (#13851).
+   */
+  newestFileAgeMs?: number | null;
+  /**
+   * Etapa que está checando o pré-requisito (`--caller-stage 5` com `--step 4`,
+   * #13851). Já normalizada para número (`"05"` → 5) pelo CLI.
+   */
+  callerStage?: number;
   /** Relógio (ms) para a janela do tombstone de interrupção (#11713). Default `Date.now()`. */
   now?: number;
 }
@@ -40,7 +50,15 @@ export interface StaleEditionFacts {
  */
 export const INTERRUPTED_TOMBSTONE_WINDOW_MS = 6 * 3_600_000;
 
+/**
+ * Janela em que arquivo recente da edição + sentinel do Stage 4 ausente conta
+ * como "gate aprovado em outra máquina, sentinel em trânsito" (#13851).
+ */
+export const PREV_GATE_RECENT_WINDOW_MS = 30 * 60_000;
+
 export type StaleSignal =
+  /** Etapa 5 sem `.step-4-done.json` mas com atividade recente na edição: sync em trânsito (#13851). */
+  | { kind: "prev_gate_in_transit"; newest_age_ms: number }
   | { kind: "unreadable_lock" }
   | { kind: "later_sentinel"; step: number }
   | { kind: "remote_lock"; host: string; stage: number; heartbeat_at: string }
@@ -65,6 +83,10 @@ export interface StaleEditionVerdict {
  *    cobrindo `step`, solto há menos de `INTERRUPTED_TOMBSTONE_WINDOW_MS`
  *    (`released_at` ilegível conta como recente). Independe do sentinel: o
  *    stage não concluiu lá, mas um arquivo editado lá pode estar em trânsito.
+ *  - Etapa 5 (`step` 5 ou `callerStage` 5) sem sentinel do Stage 4 e com
+ *    arquivo da edição de até `PREV_GATE_RECENT_WINDOW_MS` (#13851): gate
+ *    provavelmente aprovado em outra máquina, sentinel em trânsito. Não emite
+ *    quando a trava (viva ou tombstone) é deste host — a atividade é local.
  * Mesma máquina com estado consistente nunca bloqueia. `stage` ilegível conta
  * como à frente (fail-closed).
  */
@@ -73,9 +95,21 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
   for (const s of [...f.sentinelSteps].sort((a, b) => a - b)) {
     if (s > f.step) signals.push({ kind: "later_sentinel", step: s });
   }
-  if (f.lockUnreadable) signals.push({ kind: "unreadable_lock" });
   const l = f.lock;
   const otherHost = !!l && (typeof l.host !== "string" || l.host === "" || l.host !== f.localHost);
+  // Trava (viva ou tombstone) deste host: a atividade recente é local, não um
+  // gate aprovado em outra máquina — não há sync em trânsito a esperar.
+  const lockIsLocal = !!l && !otherHost;
+  if (
+    (f.step === 5 || f.callerStage === 5) &&
+    !lockIsLocal &&
+    !f.sentinelSteps.includes(4) &&
+    typeof f.newestFileAgeMs === "number" &&
+    f.newestFileAgeMs <= PREV_GATE_RECENT_WINDOW_MS
+  ) {
+    signals.push({ kind: "prev_gate_in_transit", newest_age_ms: Math.max(0, f.newestFileAgeMs) });
+  }
+  if (f.lockUnreadable) signals.push({ kind: "unreadable_lock" });
   if (l && otherHost) {
     const hostLabel = typeof l.host === "string" && l.host ? l.host : "(host ilegível)";
     if (l.released_at && l.interrupted_stage !== undefined) {
@@ -104,7 +138,9 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
 export function describeSignals(signals: StaleSignal[]): string {
   return signals
     .map((s) =>
-      s.kind === "later_sentinel"
+      s.kind === "prev_gate_in_transit"
+        ? `sentinel do Stage 4 ausente com arquivo da edição de ${Math.round(s.newest_age_ms / 60_000)} min atrás: gate possivelmente aprovado em outra máquina (sync em trânsito) ou ainda em andamento; confira antes de re-rodar a Etapa 4`
+        : s.kind === "later_sentinel"
         ? `sentinel do Stage ${s.step} já existe`
         : s.kind === "unreadable_lock"
           ? "edition-lock corrompido/ilegível (sync em trânsito?)"

@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 152 invariants.
+**Total**: 153 invariants.
 
 ## Static (estrutura do repo)
 
@@ -129,6 +129,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `reviewed-onedrive-conflict-copy` | avisa quando o OneDrive deixou cópia de conflito (*-safeBackup-*.md) de 02-reviewed.md/03-social.md — o principal pode ter perdido uma edição (#12259) | #12259 |
 | `reviewed-unknown-template-marker` | 02-reviewed.md com {{...}} que não é merge tag conhecida do ESP (ex.: {{OPENING}} do snippet de encerramento) — o leitor veria o marcador cru (#13252) | #13252 |
 | `secondary-theme-possible-repeat` | Item do pool que o passe secundário do Stage 1 marcou como possível repetição de tema (entidade + termo de conteúdo em comum com item publicado nas últimas edições) e segue no 02-reviewed.md final (warning-only) | #13143 |
+| `social-clarice-pending` | seção do social selada com a Clarice pendente (API fora do ar) aparece no gate (#13848) | #13848 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
 | `social-invite-drift` | convite social do PARA ENCERRAR diverge do SOCIAL_INVITE atual — não reconhecido (sai sem a borda de box) ou com texto desatualizado (#10835, warning-only) | #10835 |

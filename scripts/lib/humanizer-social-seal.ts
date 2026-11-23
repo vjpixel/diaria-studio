@@ -21,12 +21,55 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { computeSectionHashes } from "./social-lint-rules.ts";
+import { readEditionUrlTransition } from "./edition-url-transition.ts";
 
 export const HUMANIZER_SOCIAL_SENTINEL = ".humanizer-social-done.json";
 
 /** sha256 do conteúdo do `03-social.md` — mesma normalização (CRLF→LF) do `check-humanizer-social`. */
 export function hashSocialContent(content: string): string {
   return createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex");
+}
+
+export const EDITION_URL_PLACEHOLDER = "{edition_url}";
+const EDITION_URL_REL = join("_internal", "05-edition-url.txt");
+const HTTPS_URL = /^https:\/\/\S+$/;
+
+/**
+ * #13856: URLs da edição que o Stage 5 (`resolve-edition-url.ts
+ * --validate-social`) ou o Stage 6 (`kit-refresh-social-edition-url.ts`) pode
+ * ter escrito no lugar de `{edition_url}` em `03-social.md`, depois do selo:
+ * a de `_internal/05-edition-url.txt` e, com troca em curso (#11751), a de
+ * destino do marcador de transição. Mesmas candidatas da conferência de
+ * frescor do Stage 5 (`stage5-freshness.ts`). Arquivo ausente ou que não é
+ * URL https não entra (fail-closed: sem candidata, o hash cru decide).
+ */
+export function editionUrlCandidates(editionDir: string): string[] {
+  const out: string[] = [];
+  const p = join(editionDir, EDITION_URL_REL);
+  if (existsSync(p)) {
+    try {
+      const url = readFileSync(p, "utf8").trim();
+      if (HTTPS_URL.test(url)) out.push(url);
+    } catch {
+      // ilegível: sem candidata
+    }
+  }
+  const to = readEditionUrlTransition(editionDir)?.to;
+  if (to && !out.includes(to)) out.push(to);
+  return out;
+}
+
+/**
+ * #13856: o `03-social.md` atual bate com o hash do selo, aceitando também a
+ * versão com a URL da edição revertida ao placeholder `{edition_url}`. Resolver
+ * o placeholder não muda redação; só a URL exata da edição é revertida (nunca
+ * qualquer link do site), e cada candidata é tentada sozinha.
+ */
+export function socialMatchesSealHash(storedHash: string, content: string, editionUrls: readonly string[]): boolean {
+  if (hashSocialContent(content) === storedHash) return true;
+  return editionUrls.some(
+    (url) => url.length > 0 && content.includes(url) && hashSocialContent(content.replaceAll(url, EDITION_URL_PLACEHOLDER)) === storedHash,
+  );
 }
 
 /**
