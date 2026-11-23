@@ -936,6 +936,8 @@ export interface CliArgs {
   paragraphTimeoutMs?: number;
   /** #12257 — teto de tempo total da chamada (default: CLARICE_TOTAL_DEADLINE_MS). */
   deadlineMs?: number;
+  /** #13860 — teto de chars por chunk (default: CLARICE_CHUNK_THRESHOLD). Chunk menor = request mais curto. */
+  chunkChars?: number;
 }
 
 export function parseCliArgs(argv: string[]): CliArgs | null {
@@ -1007,6 +1009,15 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
       out.deadlineMs = n;
       i++;
     }
+    else if (flag === "--chunk-chars" && value) {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 200) {
+        console.error(`--chunk-chars deve ser inteiro >= 200 (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.chunkChars = n;
+      i++;
+    }
   }
   if (!out.inPath || !out.outPath) return null;
   return out as CliArgs;
@@ -1020,7 +1031,7 @@ export async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
-      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N] [--deadline-ms N] [--chunks-out <json>]",
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N] [--deadline-ms N] [--chunks-out <json>] [--chunk-chars N]",
     );
     process.exit(1);
   }
@@ -1105,7 +1116,7 @@ export async function main(): Promise<void> {
         { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
         policy,
         undefined,
-        undefined,
+        args.chunkChars,
         undefined,
         { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
       );
@@ -1126,7 +1137,7 @@ export async function main(): Promise<void> {
     }
     const result = await correctTextChunked(
       { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
-      undefined,
+      args.chunkChars,
       undefined,
       { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
     );
