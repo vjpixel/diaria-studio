@@ -749,7 +749,13 @@ export function readNewsletterHtmlDestaqueUrls(htmlPath: string): string[] {
   return urls;
 }
 
-export function readApprovedTitles(approvedPath: string): string[] {
+/**
+ * `publishedUrls` (#13846): quando presente e não vazio, só entram títulos de
+ * itens cuja URL canônica saiu de fato (past-editions.md). `01-approved.json`
+ * lista TODO candidato aprovado na pesquisa, inclusive o que ficou de fora da
+ * edição — sem o filtro, candidato nunca publicado barrava a história para sempre.
+ */
+export function readApprovedTitles(approvedPath: string, publishedUrls?: Set<string>): string[] {
   if (!existsSync(approvedPath)) return [];
   let parsed: ApprovedJsonShape;
   try {
@@ -773,7 +779,12 @@ export function readApprovedTitles(approvedPath: string): string[] {
   for (const bucket of buckets) {
     for (const item of bucket) {
       const t = item?.article?.title ?? item?.title;
-      if (t && typeof t === "string" && t.trim()) titles.add(t.trim());
+      if (!(t && typeof t === "string" && t.trim())) continue;
+      if (publishedUrls && publishedUrls.size > 0) {
+        const u = item?.article?.url ?? item?.url;
+        if (typeof u !== "string" || !publishedUrls.has(canonicalize(u))) continue;
+      }
+      titles.add(t.trim());
     }
   }
   return [...titles];
@@ -1008,8 +1019,9 @@ export function extractPastEditionArticleTitles(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
+  publishedUrls?: Set<string>,
 ): string[] {
-  return [...new Set(extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd).map((e) => e.title))];
+  return [...new Set(extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd, publishedUrls).map((e) => e.title))];
 }
 
 /**
@@ -1021,6 +1033,7 @@ export function extractPastEditionArticleTitlesWithEdition(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
+  publishedUrls?: Set<string>,
 ): { title: string; aammdd: string }[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
@@ -1037,7 +1050,7 @@ export function extractPastEditionArticleTitlesWithEdition(
     ];
     for (const path of candidates) {
       if (!existsSync(path)) continue;
-      for (const t of readApprovedTitles(path)) titles.push({ title: t, aammdd });
+      for (const t of readApprovedTitles(path, publishedUrls)) titles.push({ title: t, aammdd });
       break; // primeiro arquivo encontrado = source-of-truth da edição
     }
   }
