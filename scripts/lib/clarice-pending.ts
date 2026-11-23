@@ -449,6 +449,8 @@ export function resumeClarice(
     retryNow?: boolean;
     /** #13330 — teto total (`--deadline-ms`) repassado ao clarice-correct.ts; ausente = default dele (8 min). */
     deadlineMs?: number;
+    /** #13860 — teto de chars por chunk repassado ao clarice-correct.ts (`--chunk-chars`); ausente = default dele. */
+    chunkChars?: number;
     now?: () => Date;
     warn?: (msg: string) => void;
   } = {},
@@ -525,6 +527,7 @@ export function resumeClarice(
     "--stage", "4",
     ...(opts.edition ? ["--edition", opts.edition] : []),
     ...(opts.deadlineMs !== undefined ? ["--deadline-ms", String(Math.round(opts.deadlineMs))] : []),
+    ...(opts.chunkChars !== undefined ? ["--chunk-chars", String(opts.chunkChars)] : []),
   ];
   const raw = runner(args);
   const run: ClariceRunResult = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
@@ -693,6 +696,15 @@ export const RESUME_SPACING_MS = 120_000;
 export const RESUME_FIRST_ROUND_DEADLINE_MS = 270_000;
 export const RESUME_MIN_ROUND_MS = 120_000;
 export const RESUME_DEFAULT_ROUNDS = 2;
+/**
+ * #13860 — edição 261123: chunk de ~4 KB estourou 60 s em todas as tentativas
+ * enquanto payloads de até 428 bytes respondiam em 0,5–2,5 s. Depois de uma
+ * falha de API, as rodadas seguintes mandam chunks deste tamanho, e a 1ª
+ * rodada também quando o marcador já registra falha de API (continua
+ * correção completa, todos os chunks precisam responder; sem fallback por
+ * parágrafo).
+ */
+export const RESUME_SMALL_CHUNK_CHARS = 1_800;
 
 export interface ResumeRound {
   /** 1-based. */
@@ -701,6 +713,8 @@ export interface ResumeRound {
   startedAt: string;
   /** Teto total repassado ao clarice-correct.ts nesta rodada; ausente = default dele (8 min). */
   deadlineMs?: number;
+  /** #13860 — `--chunk-chars` desta rodada; ausente = chunk default. */
+  chunkChars?: number;
   status: ResumeOutcome["status"];
   exitCode?: number;
   reason?: string;
@@ -753,20 +767,29 @@ export function resumeClariceSpaced(
     return { outcome, rounds };
   };
 
+  // #13860 — se a invocação anterior já terminou em falha de API (exit 3/6),
+  // a 1ª rodada desta já vai com chunk menor: repetir 3 tentativas de 60 s com
+  // o chunk default é gastar a rodada no mesmo timeout.
+  const priorOutcome = /^failed:(\d+)$/.exec(readClaricePending(editionDir)?.last_outcome ?? "");
+  const priorApiFailure = priorOutcome !== null && COOLDOWN_EXITS.has(Number(priorOutcome[1]));
+
   // Uma rodada só: comportamento de antes (teto default do filho, sem corte).
   const single = total === 1;
   let deadline = single ? undefined : Math.min(firstDeadline, budget);
   for (let i = 1; ; i++) {
     const startedAt = iso();
+    const small = i > 1 || priorApiFailure;
     const outcome = resumeClarice(editionDir, runner, {
       ...opts,
       ...(i > 1 ? { retryNow: true } : {}),
       ...(deadline !== undefined ? { deadlineMs: deadline } : {}),
+      ...(small ? { chunkChars: RESUME_SMALL_CHUNK_CHARS } : {}),
     });
     const r: ResumeRound = {
       round: i,
       startedAt,
       ...(deadline !== undefined ? { deadlineMs: deadline } : {}),
+      ...(small ? { chunkChars: RESUME_SMALL_CHUNK_CHARS } : {}),
       status: outcome.status,
       ...(outcome.status === "failed" ? { exitCode: outcome.exitCode, reason: outcome.reason } : {}),
     };
