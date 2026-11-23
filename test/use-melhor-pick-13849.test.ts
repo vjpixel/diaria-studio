@@ -221,7 +221,9 @@ describe("#13849 item 1 — --url/--pick escolhe qualquer item do USE MELHOR fin
   it("CLI: --url sem valor e --url fora do USE MELHOR saem 2", () => {
     const dir = edition261123({ withState: true });
     const run = (...a: string[]) =>
-      spawnSync("npx", ["tsx", "scripts/select-use-melhor-post.ts", "--edition-dir", dir, ...a], { encoding: "utf8" });
+      spawnSync(process.execPath, ["--import", "tsx", "scripts/select-use-melhor-post.ts", "--edition-dir", dir, ...a], {
+        encoding: "utf8",
+      });
     assert.equal(run("--url").status, 2);
     const before = readFileSync(join(dir, "_internal", "use-melhor-post.json"), "utf8");
     const off = run("--pick", RADAR_TOP.url);
