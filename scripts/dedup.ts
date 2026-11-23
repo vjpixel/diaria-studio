@@ -51,6 +51,7 @@ import {
   extractPastUrls,
   extractPastUrlsWithinDays,
   extractPastUrlsUnbounded,
+  extractPastUrlsByEdition,
   extractPastTitles,
   extractPastItemTitles,
   extractPastThemeEntities,
@@ -1026,8 +1027,10 @@ async function main() {
     args["subject-vs-past-threshold-lowered"] ?? "0.55",
   );
   // #13846: só títulos de itens efetivamente publicados — candidato aprovado e
-  // não publicado (01-approved.json) não pode barrar a história.
-  const publishedUrls = extractPastUrlsUnbounded(pastMd);
+  // não publicado (01-approved.json) não pode barrar a história. #13866: o
+  // filtro é POR EDIÇÃO — edição ausente do past-editions.md mantém o approved
+  // inteiro (com o conjunto global, ela perdia todos os títulos).
+  const publishedUrls = extractPastUrlsByEdition(pastMd);
   const pastArticleTitles = extractPastEditionArticleTitles(
     editionsDir,
     window,
