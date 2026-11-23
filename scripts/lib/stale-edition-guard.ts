@@ -56,6 +56,50 @@ export const INTERRUPTED_TOMBSTONE_WINDOW_MS = 6 * 3_600_000;
  */
 export const PREV_GATE_RECENT_WINDOW_MS = 30 * 60_000;
 
+/**
+ * Arquivos que o próprio `/diaria-publica` grava na edição ANTES (Parte A, o
+ * horizontal) ou em paralelo (Parte B, o vertical em background, #12655) ao
+ * assert do sentinel 4 da Etapa 5 (#13867). Não provam que o gate 4 foi
+ * aprovado em outra máquina: a escrita é desta sessão de vídeo. Sem esta
+ * exclusão, `prev_gate_in_transit` disparava quase sempre que faltava o
+ * sentinel 4 nesse fluxo, inclusive com o gate nunca aprovado.
+ *
+ * Literais (e não import dos módulos de vídeo, que puxariam a cadeia do
+ * YouTube para este módulo puro); `test/stale-edition-guard-13867.test.ts`
+ * confere contra as constantes de origem.
+ */
+export const PUBLICA_VIDEO_FILES: readonly string[] = [
+  "_internal/05-video-url.txt", // D1_VIDEO_URL_FILE
+  "_internal/05-youtube-published.json", // YOUTUBE_PUBLISHED_FILE
+  "_internal/05-youtube-pending-approval.json", // YOUTUBE_PENDING_APPROVAL_FILE
+  "_internal/publica-phases.jsonl", // PUBLICA_PHASES_FILE
+  "_internal/06-shorts-published.json",
+  "_internal/04-youtube-short-capa.source.json", // SHORT_COVER_SOURCE_FILE
+  "04-youtube-thumb.jpg", // YOUTUBE_THUMB_FILE
+  "04-youtube-short-capa.jpg", // SHORT_COVER_FILE
+];
+/** Diretórios de trabalho da capa do horizontal (Passo A2). */
+export const PUBLICA_VIDEO_DIRS: readonly string[] = [
+  "_internal/youtube-thumb-frames/", // THUMB_FRAMES_DIR
+  "_internal/youtube-thumb-portraits/", // THUMB_PORTRAITS_DIR
+  "_internal/youtube-thumb-capa-bg/", // THUMB_CAPA_BG_DIR
+];
+/** Vídeo baixado e legenda (`youtubeVideoFileName`, `youtubeCaptionFileName`, o `-short` do vertical) e o plano com hash. */
+const PUBLICA_VIDEO_PATTERNS: readonly RegExp[] = [
+  /^diaria-comentada-\d{6}(-short)?\.(mp4|srt)$/,
+  /^_internal\/video-publish-plan\.[a-z-]+\.json$/,
+];
+
+/** Pura: `relPath` (relativo à pasta da edição, com `/`) é artefato de vídeo do `/diaria-publica` (#13867). */
+export function isPublicaVideoFile(relPath: string): boolean {
+  const p = relPath.replaceAll("\\", "/");
+  return (
+    PUBLICA_VIDEO_FILES.includes(p) ||
+    PUBLICA_VIDEO_DIRS.some((d) => p.startsWith(d)) ||
+    PUBLICA_VIDEO_PATTERNS.some((re) => re.test(p))
+  );
+}
+
 export type StaleSignal =
   /** Etapa 5 sem `.step-4-done.json` mas com atividade recente na edição: sync em trânsito (#13851). */
   | { kind: "prev_gate_in_transit"; newest_age_ms: number }
