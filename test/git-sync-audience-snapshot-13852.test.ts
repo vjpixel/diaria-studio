@@ -29,7 +29,7 @@ import {
   type SpawnResult,
   type SyncLock,
 } from "../scripts/lib/git-sync.ts";
-import { isAudienceSnapshotPath } from "../scripts/lib/audience-snapshot-pr.ts";
+import { hasRecentLocalAudienceSnapshot, isAudienceSnapshotPath } from "../scripts/lib/audience-snapshot-pr.ts";
 
 const ok = (stdout = ""): SpawnResult => ({ status: 0, stdout, stderr: "" });
 const fail = (stderr = ""): SpawnResult => ({ status: 1, stdout: "", stderr });
@@ -246,6 +246,9 @@ function setupRepos(): { tmp: string; local: string } {
   write(origin, PROFILE, "**subscribers ativos:** 1100\n");
   write(origin, "platform.config.json", '{"a":1}\n');
   write(origin, "scripts/keep.ts", "export const K = 1;\n");
+  // Diretório já versionado, como no repo real: o `git status --porcelain`
+  // lista cada snapshot untracked, não `?? docs/`.
+  write(origin, "docs/audience-history/2026-11-01.md", "**subscribers ativos:** 1000\n");
   git(origin, "add", ".");
   git(origin, "commit", "-qm", "1");
   git(tmp, "clone", "-q", "origin", "local");
@@ -315,6 +318,64 @@ describe("#13852 — syncCode com git real", () => {
       assert.deepEqual(r.discarded_identical_paths, [SNAP]);
       const stashed = git(local, "show", "--format=", "--name-only", `${r.preserved_stash!.ref}^3`);
       assert.match(stashed, /scripts\/lib\/novo-guard\.ts/, "a versão local do não-snapshot ficou no stash, recuperável");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── finding P2 da PR #13859: retomada de /diaria-edicao depois do 0i ─────────
+
+describe("#13852 — hasRecentLocalAudienceSnapshot (puro)", () => {
+  const NOW = new Date("2026-11-23T12:00:00Z");
+  it("snapshot de hoje ou de ontem (UTC) untracked/modificado → true", () => {
+    assert.equal(hasRecentLocalAudienceSnapshot(`?? docs/audience-history/2026-11-23.md\n`, NOW), true);
+    assert.equal(hasRecentLocalAudienceSnapshot(` M docs/audience-history/2026-11-22.md\n`, NOW), true);
+  });
+  it("snapshot antigo (cenário da issue), removido, só o profile ou nada → false", () => {
+    assert.equal(hasRecentLocalAudienceSnapshot(`?? ${SNAP}\n M ${PROFILE}\n`, NOW), false);
+    assert.equal(hasRecentLocalAudienceSnapshot(` D docs/audience-history/2026-11-23.md\n`, NOW), false);
+    assert.equal(hasRecentLocalAudienceSnapshot(` M ${PROFILE}\n`, NOW), false);
+    assert.equal(hasRecentLocalAudienceSnapshot("", NOW), false);
+  });
+});
+
+describe("#13852 — syncCode não troca o profile regenerado hoje pelo do master (git real)", () => {
+  const TODAY_SNAP = "docs/audience-history/2026-11-23.md";
+  const NOW = () => new Date("2026-11-23T12:00:00Z");
+
+  it("retomada depois do 0i: snapshot de hoje untracked + profile modificado → synced, profile local devolvido", () => {
+    const { tmp, local } = setupRepos();
+    try {
+      write(local, PROFILE, "**subscribers ativos:** 1210 (edição de hoje)\n");
+      write(local, TODAY_SNAP, "**subscribers ativos:** 1210 (edição de hoje)\n");
+      const r = syncCode(realSpawn(local), NOOP_LOCK, local, NO_SLEEP, NOW);
+      assert.equal(r.outcome, "synced", r.message);
+      assert.equal(r.up_to_date, true);
+      assert.equal(git(local, "stash", "list"), "", "nenhum stash criado");
+      assert.ok(fs.existsSync(join(local, "scripts/lib/novo-guard.ts")), "código novo do master chegou");
+      assert.equal(
+        fs.readFileSync(join(local, PROFILE), "utf8"),
+        "**subscribers ativos:** 1210 (edição de hoje)\n",
+        "a edição em curso segue lendo o profile que o 0i dela gerou",
+      );
+      assert.equal(r.restored_local_audience_profile, true);
+      assert.equal(fs.readFileSync(join(local, TODAY_SNAP), "utf8"), "**subscribers ativos:** 1210 (edição de hoje)\n");
+      assert.match(git(local, "status", "--porcelain"), /M context\/audience-profile\.md/, "profile segue sujo para a PR rolante");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("snapshot local antigo (cenário da issue) com o mesmo relógio → profile do master, sem devolução", () => {
+    const { tmp, local } = setupRepos();
+    try {
+      write(local, PROFILE, "**subscribers ativos:** 1190 (Neo)\n");
+      write(local, SNAP, "**subscribers ativos:** 1190 (Neo)\n");
+      const r = syncCode(realSpawn(local), NOOP_LOCK, local, NO_SLEEP, NOW);
+      assert.equal(r.outcome, "synced", r.message);
+      assert.equal(fs.readFileSync(join(local, PROFILE), "utf8"), "**subscribers ativos:** 1195 (300)\n");
+      assert.equal(r.restored_local_audience_profile, undefined);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

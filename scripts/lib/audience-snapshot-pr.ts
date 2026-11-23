@@ -50,6 +50,32 @@ export function isAudienceSnapshotPath(path: string): boolean {
   return path === "context/audience-profile.md" || /^docs\/audience-history\/[^/]+\.md$/.test(path);
 }
 
+/** O profile que a edição lê nas Etapas 1-2. */
+export const AUDIENCE_PROFILE_PATH = "context/audience-profile.md";
+
+/**
+ * #13852 (finding P2 da PR #13859): o checkout tem snapshot de audiência
+ * RECENTE gerado aqui e ainda não commitado? Lê `git status --porcelain`:
+ * `docs/audience-history/AAAA-MM-DD.md` untracked/modificado/adicionado com
+ * data de hoje ou de ontem em UTC (o `update-audience.ts` nomeia o arquivo
+ * por `toISOString().slice(0, 10)`; ontem cobre a edição que atravessa a
+ * meia-noite UTC, 21:00 BRT). Quando sim, o `context/audience-profile.md`
+ * local é o regenerado pelo 0i desta edição, e uma retomada de
+ * `/diaria-edicao` (o Passo 0 roda de novo depois do 0i) não pode trocá-lo
+ * pelo do master: o `sync-code.ts` o devolve ao working tree depois do ff.
+ * Snapshot antigo (o caso da issue, 2026-11-19 sincronizado em 22/11) não
+ * conta: ali o master é o canônico. Puro.
+ */
+export function hasRecentLocalAudienceSnapshot(porcelain: string, now: Date): boolean {
+  const day = 24 * 60 * 60 * 1000;
+  const recent = new Set([now, new Date(now.getTime() - day)].map((d) => d.toISOString().slice(0, 10)));
+  return selectSnapshotPaths(porcelain).some((e) => {
+    if (e.code.includes("D")) return false;
+    const m = /^docs\/audience-history\/(\d{4}-\d{2}-\d{2})\.md$/.exec(e.path);
+    return m !== null && recent.has(m[1]);
+  });
+}
+
 export interface SnapshotStatusEntry {
   code: string;
   path: string;

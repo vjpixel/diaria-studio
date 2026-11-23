@@ -171,7 +171,11 @@ import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GitSpawnFn, SpawnResult } from "./spawn-types.ts";
-import { isAudienceSnapshotPath } from "./audience-snapshot-pr.ts"; // #13852
+import {
+  AUDIENCE_PROFILE_PATH,
+  hasRecentLocalAudienceSnapshot,
+  isAudienceSnapshotPath,
+} from "./audience-snapshot-pr.ts"; // #13852
 
 export type { SpawnResult } from "./spawn-types.ts";
 
@@ -367,12 +371,21 @@ export interface GitSyncResult {
    * Também entram em `discarded_identical_paths`. Ausente quando nenhum.
    */
   discarded_snapshot_copies?: { path: string; blob: string }[];
+  /**
+   * #13852 (finding P2 da PR #13859): `context/audience-profile.md` local,
+   * regenerado pelo 0i desta edição (`hasRecentLocalAudienceSnapshot`), saiu
+   * só para o ff passar e foi devolvido ao working tree logo depois. A
+   * retomada de `/diaria-edicao` segue lendo o profile da própria edição, não
+   * o do master. Ausente quando não houve devolução.
+   */
+  restored_local_audience_profile?: true;
 }
 
 /** Estado interno passado de `syncCodeLocked` pra `syncCode` (anexado ao resultado). */
 interface SyncCtx {
   discardedIdentical?: string[];
   discardedSnapshotCopies?: { path: string; blob: string }[];
+  restoredLocalAudienceProfile?: true;
   ffRefusal?: FfRefusal;
   targetedStashPaths?: string[];
   reservedExcluded?: string[];
@@ -1729,6 +1742,8 @@ export function syncCode(
   // #13852: pausa antes de re-tentar o fetch recusado por lock de ref —
   // injetável só para testes (no-op), produção bloqueia de verdade.
   sleep: (ms: number) => void = sleepSync,
+  // #13852 (finding P2 da PR #13859): relógio de `hasRecentLocalAudienceSnapshot` — injetável só para testes.
+  now: () => Date = () => new Date(),
 ): GitSyncResult {
   // #7336: recusa ANTES de qualquer spawn git ou tentativa de lock — sync de
   // código só faz sentido no checkout principal. Rodar dentro do worktree
@@ -1783,7 +1798,7 @@ export function syncCode(
     // direto recusa — anexado aqui pra cobrir TODO outcome dali em diante sem
     // repetir o campo em cada `return`.
     const ctx: SyncCtx = {};
-    const result = syncCodeLocked(spawn, ctx, sleep);
+    const result = syncCodeLocked(spawn, ctx, sleep, repoRoot, now);
     // #6090: estado de sincronização é SEMPRE medido after-the-fact via
     // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
     // #8719: mesma disciplina para `stale_autostash_count` via
@@ -1800,6 +1815,7 @@ export function syncCode(
       ...(ctx.ffRetriedAfterPartialStash ? { ff_retried_after_partial_stash: true } : {}),
       ...(ctx.discardedIdentical ? { discarded_identical_paths: ctx.discardedIdentical } : {}),
       ...(ctx.discardedSnapshotCopies ? { discarded_snapshot_copies: ctx.discardedSnapshotCopies } : {}),
+      ...(ctx.restoredLocalAudienceProfile ? { restored_local_audience_profile: true as const } : {}),
     };
     return out;
   } finally {
@@ -1820,6 +1836,8 @@ function syncCodeLocked(
   spawn: SpawnFn,
   ctx: SyncCtx = {},
   sleep: (ms: number) => void = sleepSync,
+  repoRoot: string = REPO_ROOT,
+  now: () => Date = () => new Date(),
 ): Omit<GitSyncResult, "up_to_date" | "commits_behind" | "stale_autostash_count"> {
   const warnings: string[] = [];
 
@@ -2055,6 +2073,17 @@ function syncCodeLocked(
       // #13852: snapshot de audiência local diferente do master (gerado pelo
       // Stage 0 de outra máquina para a mesma data) também sai — sem isso ele
       // ia pro stash direcionado a cada edição, ou travava o ff junto da config.
+      // #13852 (finding P2 da PR #13859): retomada de /diaria-edicao depois
+      // do 0i — o profile local é o desta edição. Lido ANTES do descarte e
+      // devolvido ao working tree se o ff re-tentado passar.
+      let localProfile: string | null = null;
+      if (hasRecentLocalAudienceSnapshot(statusRes.stdout, now())) {
+        try {
+          localProfile = fs.readFileSync(resolve(repoRoot, AUDIENCE_PROFILE_PATH), "utf8");
+        } catch {
+          localProfile = null; // sem profile local legível: nada a devolver
+        }
+      }
       const identical = discardCollisionsIdenticalToUpstream(
         spawn,
         ffRefusal,
@@ -2069,6 +2098,26 @@ function syncCodeLocked(
         const retryFfRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
         if (retryFfRes.status === 0) {
           const upToDate = isAlreadyUpToDate(retryFfRes.stdout);
+          const profileCopy = identical.snapshotCopies.find((c) => c.path === AUDIENCE_PROFILE_PATH);
+          if (localProfile !== null && profileCopy) {
+            // Só no ff que passou: devolver antes de um stash posterior faria o
+            // profile colidir de novo na re-tentativa seguinte.
+            try {
+              fs.writeFileSync(resolve(repoRoot, AUDIENCE_PROFILE_PATH), localProfile);
+              ctx.restoredLocalAudienceProfile = true;
+              warnings.push(
+                `[git-sync] INFO: ${AUDIENCE_PROFILE_PATH} local devolvido ao working tree depois do ff (#13852): ` +
+                  `há snapshot de audiência recente gerado aqui e ainda não commitado (retomada da edição depois ` +
+                  `do 0i), então a edição segue com o profile dela, não o do master.`,
+              );
+            } catch (e) {
+              warnings.push(
+                `[git-sync] WARN: não consegui devolver o ${AUDIENCE_PROFILE_PATH} local depois do ff (#13852): ` +
+                  `${(e as Error).message}. A edição vai ler o profile do master; o local segue em ` +
+                  `'git cat-file -p ${profileCopy.blob}'.`,
+              );
+            }
+          }
           return {
             outcome: upToDate ? "already_up_to_date" : "synced",
             message:
