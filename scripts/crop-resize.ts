@@ -60,7 +60,7 @@ if (!existsSync(inputPath)) {
 
 try {
   const buf = readFileSync(inputPath);
-  const result = await sharp(buf)
+  const result = await sharp(buf, { limitInputPixels: false })
     .resize(width, height, { fit: "cover", position: "centre" })
     .jpeg({ quality, mozjpeg, progressive })
     .toBuffer();
