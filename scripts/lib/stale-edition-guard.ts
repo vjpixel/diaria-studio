@@ -26,6 +26,11 @@ export interface StaleEditionFacts {
   outputsMissing?: boolean;
   /** Arquivo `edition-lock` existe mas está corrompido/ilegível (sync em trânsito): fail-closed. */
   lockUnreadable?: boolean;
+  /**
+   * Idade (ms) do arquivo mais recente da edição NESTA máquina (`null`/ausente =
+   * desconhecida ou pasta vazia). Só usada com `step` 5 (#13851).
+   */
+  newestFileAgeMs?: number | null;
   /** Relógio (ms) para a janela do tombstone de interrupção (#11713). Default `Date.now()`. */
   now?: number;
 }
@@ -40,7 +45,15 @@ export interface StaleEditionFacts {
  */
 export const INTERRUPTED_TOMBSTONE_WINDOW_MS = 6 * 3_600_000;
 
+/**
+ * Janela em que arquivo recente da edição + sentinel do Stage 4 ausente conta
+ * como "gate aprovado em outra máquina, sentinel em trânsito" (#13851).
+ */
+export const PREV_GATE_RECENT_WINDOW_MS = 30 * 60_000;
+
 export type StaleSignal =
+  /** Etapa 5 sem `.step-4-done.json` mas com atividade recente na edição: sync em trânsito (#13851). */
+  | { kind: "prev_gate_in_transit"; newest_age_ms: number }
   | { kind: "unreadable_lock" }
   | { kind: "later_sentinel"; step: number }
   | { kind: "remote_lock"; host: string; stage: number; heartbeat_at: string }
@@ -73,6 +86,14 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
   for (const s of [...f.sentinelSteps].sort((a, b) => a - b)) {
     if (s > f.step) signals.push({ kind: "later_sentinel", step: s });
   }
+  if (
+    f.step === 5 &&
+    !f.sentinelSteps.includes(4) &&
+    typeof f.newestFileAgeMs === "number" &&
+    f.newestFileAgeMs <= PREV_GATE_RECENT_WINDOW_MS
+  ) {
+    signals.push({ kind: "prev_gate_in_transit", newest_age_ms: Math.max(0, f.newestFileAgeMs) });
+  }
   if (f.lockUnreadable) signals.push({ kind: "unreadable_lock" });
   const l = f.lock;
   const otherHost = !!l && (typeof l.host !== "string" || l.host === "" || l.host !== f.localHost);
@@ -104,7 +125,9 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
 export function describeSignals(signals: StaleSignal[]): string {
   return signals
     .map((s) =>
-      s.kind === "later_sentinel"
+      s.kind === "prev_gate_in_transit"
+        ? `sentinel do Stage 4 ausente com arquivo da edição de ${Math.round(s.newest_age_ms / 60_000)} min atrás: gate provavelmente aprovado em outra máquina, sync em trânsito`
+        : s.kind === "later_sentinel"
         ? `sentinel do Stage ${s.step} já existe`
         : s.kind === "unreadable_lock"
           ? "edition-lock corrompido/ilegível (sync em trânsito?)"

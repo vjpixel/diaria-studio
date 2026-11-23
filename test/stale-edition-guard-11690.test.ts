@@ -220,3 +220,26 @@ describe("follow-ups de review (#11697)", () => {
     assert.equal((stage5.match(/`--force`/g) ?? []).length >= 2, true);
   });
 });
+
+describe("#13851 sentinel do Stage 4 atrasado no sync", () => {
+  const base = { step: 5, lock: null, localHost: "neo" };
+  it("etapa 5, sentinel 4 ausente, arquivo recente → prev_gate_in_transit (não recomenda re-rodar a 4)", () => {
+    const v = assessStaleEdition({ ...base, sentinelSteps: [1, 2, 3], newestFileAgeMs: 3 * 60_000 });
+    assert.equal(v.ok, false);
+    assert.equal(v.signals[0].kind, "prev_gate_in_transit");
+  });
+  it("sentinel 4 presente, ou edição parada há horas, ou idade desconhecida → ok", () => {
+    assert.equal(assessStaleEdition({ ...base, sentinelSteps: [1, 2, 3, 4], newestFileAgeMs: 60_000 }).ok, true);
+    assert.equal(assessStaleEdition({ ...base, sentinelSteps: [1, 2, 3], newestFileAgeMs: 5 * 3_600_000 }).ok, true);
+    assert.equal(assessStaleEdition({ ...base, sentinelSteps: [1, 2, 3], newestFileAgeMs: null }).ok, true);
+  });
+  it("não afeta o Stage 4 (re-rodar legítimo logo após o Stage 3)", () => {
+    assert.equal(assessStaleEdition({ ...base, step: 4, sentinelSteps: [1, 2, 3], newestFileAgeMs: 1000 }).ok, true);
+  });
+  it("CLI --step 5 com arquivo recém-escrito sai 4", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), "x");
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "5"], { host: "neo" }), 4);
+  });
+});

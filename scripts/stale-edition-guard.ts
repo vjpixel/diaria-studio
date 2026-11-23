@@ -29,6 +29,11 @@ export interface GuardCliOpts {
   now?: number;
 }
 
+function newestAgeMs(dir: string, now: number): number | null {
+  const newest = findNewestFile(dir);
+  return newest ? now - newest.mtimeMs : null;
+}
+
 /** Roda o guard e devolve o exit code (sem `process.exit`, para teste). */
 export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): number {
   const { positional, values, flags } = parseArgs(argv);
@@ -47,6 +52,7 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     localHost: opts.host ?? hostname(),
     outputsMissing,
     lockUnreadable: editionLockUnreadable(dir),
+    newestFileAgeMs: step === 5 ? newestAgeMs(dir, opts.now ?? Date.now()) : undefined,
     now: opts.now,
   });
   console.log(JSON.stringify(verdict));
