@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 19 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 23 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Anthropic estreia na bolsa e levanta US$ 119,5 bi</title>
+      <link>https://diar.ia.br/p/anthropic-estreia-na-bolsa-e-levanta-us-119-5-bi</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/anthropic-estreia-na-bolsa-e-levanta-us-119-5-bi</guid>
+      <pubDate>Mon, 23 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Fraude com IA derruba ministro na Coreia do Sul | Google diz que o Gemini 4 Neon custa até 80% menos</description>
+    </item>
     <item>
       <title>OpenAI lança GPT-6.2 e corta preço em 20%</title>
       <link>https://diar.ia.br/p/openai-lanca-gpt-6-2-e-corta-preco-em-20</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/bots-da-openai-invadem-site-alemao</guid>
       <pubDate>Wed, 09 Sep 2026 09:00:00 GMT</pubDate>
       <description>Dominar IA, não pessoas, agora te promove | Seu rabisco vira imagem pronta no ChatGPT</description>
-    </item>
-    <item>
-      <title>Nvidia diz que a AGI chegou, cientistas duvidam</title>
-      <link>https://diar.ia.br/p/nvidia-diz-que-a-agi-chegou-cientistas-duvidam</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/nvidia-diz-que-a-agi-chegou-cientistas-duvidam</guid>
-      <pubDate>Tue, 08 Sep 2026 09:00:00 GMT</pubDate>
-      <description>Google lança Gemma 4 para codar sozinho | Seu ChatGPT ficou 47% mais rápido - e mais perigoso</description>
     </item>
   </channel>
 </rss>
