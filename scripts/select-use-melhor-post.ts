@@ -19,6 +19,15 @@
  *   # enquanto ele seguir renderizado no USE MELHOR final — só re-seleciona por
  *   # score quando ele saiu da edição (#9610). `--force` re-seleciona sempre.
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --reviewed [--force]
+ *   # #13849: a disputa inclui item movido de outro bucket (RADAR etc.) para o
+ *   # USE MELHOR no gate, com o score que ele tem no pool, limitado ao maior
+ *   # score do bucket `use_melhor` (escalas não comparáveis; empate fica com o
+ *   # item do `use_melhor`). Para escolher o item movido, use `--url`.
+ *
+ *   # #13849: o editor escolhe o item do 4º post pela URL (qualquer item do
+ *   # USE MELHOR final). Grava `selected_from: editor-override-pick` e baixa o
+ *   # texto da fonte. `--pick` é sinônimo. Exit 2 se a URL não está no USE MELHOR.
+ *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --url <url>
  *
  *   # Stage 4: linha(s) do 4º post pro resumo do gate ({use_melhor_post_block}).
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --status [--json]
@@ -36,12 +45,14 @@ import {
   enrichUseMelhorItem,
   describeUseMelhorPostStatus,
   loadUseMelhorPostConfigState,
-  readApprovedPoolForUseMelhor,
+  pickUseMelhorItem,
+  poolCandidatesForReviewed,
+  readApprovedSourcesForUseMelhor,
   readUseMelhorPostState,
   renderedUseMelhorUrls,
   selectUseMelhorItem,
+  USE_MELHOR_PICK_SELECTED_FROM,
   USE_MELHOR_SOURCE_TEXT_REL,
-  useMelhorCandidatesFromApproved,
   writeUseMelhorPostState,
   type UseMelhorPostConfigState,
   type UseMelhorPostState,
@@ -82,6 +93,12 @@ export function runSelection(
     now?: Date;
     /** #9599: tópicos de descontinuação; default = lidos de `data/past-editions.md`. */
     discontinuationTopics?: readonly DiscontinuationTopic[];
+    /**
+     * #13849: URL escolhida pelo editor (`--url`/`--pick`). Implica `useReviewed`;
+     * ignora score, preservação e filtro de descontinuação (a escolha é dele).
+     * URL fora do USE MELHOR final → lança `PickError`, sem gravar nada.
+     */
+    pickUrl?: string;
   } = {},
 ): { state: UseMelhorPostState; written: string | null; preserved?: boolean } {
   const topics = opts.discontinuationTopics ?? loadDiscontinuationTopics(ROOT);
@@ -94,6 +111,20 @@ export function runSelection(
   const previous = opts.useReviewed ? readUseMelhorPostState(editionDir) : null;
   let state = computeStage2UseMelhorPostState(editionDir, config, opts.now, { exclude });
   if (!state.enabled) return { state, written: null };
+  if (opts.pickUrl !== undefined) {
+    const reviewed = readIfExists(resolve(editionDir, "02-reviewed.md"));
+    if (reviewed === null) throw new PickError("02-reviewed.md ausente — --url só vale contra a edição revisada");
+    const pick = pickUseMelhorItem(opts.pickUrl, reviewed, readApprovedSourcesForUseMelhor(editionDir));
+    if (!pick.ok) throw new PickError(pick.reason);
+    const picked: UseMelhorPostState = {
+      enabled: true,
+      time: state.time,
+      item: pick.item,
+      selected_from: USE_MELHOR_PICK_SELECTED_FROM,
+      generated_at: state.generated_at,
+    };
+    return { state: picked, written: writeUseMelhorPostState(editionDir, picked) };
+  }
   if (opts.useReviewed) {
     const reviewed = readIfExists(resolve(editionDir, "02-reviewed.md"));
     // #9610: o item escolhido ainda está no USE MELHOR final → preserva-o
@@ -109,9 +140,10 @@ export function runSelection(
       return { state: previous, written: null, preserved: true };
     }
     // #9869: capped + pool completo — item do pool incluído no gate é elegível.
-    const approved = readApprovedPoolForUseMelhor(editionDir);
-    if (reviewed !== null && approved !== null) {
-      const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewed), {
+    // #13849: de qualquer bucket — item movido do RADAR para o USE MELHOR no gate também.
+    const sources = readApprovedSourcesForUseMelhor(editionDir);
+    if (reviewed !== null && sources.length > 0) {
+      const sel = selectUseMelhorItem(poolCandidatesForReviewed(sources), renderedUseMelhorUrls(reviewed), {
         exclude,
       });
       state = { ...state, ...sel, reason: sel.reason };
@@ -122,6 +154,25 @@ export function runSelection(
   return { state, written: writeUseMelhorPostState(editionDir, state) };
 }
 
+/** #13849: `--url`/`--pick` inválido (URL fora do USE MELHOR final, sem `02-reviewed.md`). */
+export class PickError extends Error {}
+
+/**
+ * Pure (#13849): aviso quando o `--url` foi ignorado porque o 4º post está
+ * desligado (`enabled: false`). Sem ele o CLI sairia 0 sem gravar nada e sem
+ * dizer que a escolha do editor não valeu. `null` quando não há o que avisar.
+ */
+export function pickIgnoredWarning(
+  pickUrl: string | undefined,
+state: Pick<UseMelhorPostState, "enabled" | "reason">,
+): string | null {
+  if (pickUrl === undefined || state.enabled) return null;
+  return (
+    `--url ${pickUrl} ignorado — 4º post desligado (${state.reason ?? "use_melhor_time ausente no config"}). ` +
+    "Nada gravado."
+  );
+}
+
 /**
  * #9585: seleção + corpo/passos da fonte no item gravado. Fail-soft — fetch
  * falho mantém o item sem `steps`/`body` (post no formato atual). O fetch
@@ -130,7 +181,14 @@ export function runSelection(
 export async function runSelectionWithSteps(
   editionDir: string,
   config: UseMelhorPostConfigState,
-  opts: { useReviewed?: boolean; forceReselect?: boolean; now?: Date; fetchImpl?: typeof fetch } = {},
+  opts: {
+    useReviewed?: boolean;
+    forceReselect?: boolean;
+    pickUrl?: string;
+    now?: Date;
+    fetchImpl?: typeof fetch;
+    discontinuationTopics?: readonly DiscontinuationTopic[];
+  } = {},
 ): Promise<{ state: UseMelhorPostState; written: string | null; preserved?: boolean }> {
   const res = runSelection(editionDir, config, opts);
   // `preserved` (#9610): não rebusca, mesmo sem `steps` — o `## um` foi escrito pro estado preservado.
@@ -160,7 +218,15 @@ async function main(): Promise<number | void> {
   const args = parseCliArgs(process.argv.slice(2));
   const editionDir = args.values["edition-dir"];
   if (!editionDir) {
-    console.error("uso: select-use-melhor-post.ts --edition-dir <dir> [--reviewed] [--status [--json]]");
+    console.error(
+      "uso: select-use-melhor-post.ts --edition-dir <dir> [--reviewed [--force] | --url <url> | --status [--json]]",
+    );
+    return 2;
+  }
+  // #13849: `--pick` é sinônimo de `--url`. Flag sem valor = uso errado.
+  const pickUrl = args.values["url"] ?? args.values["pick"];
+  if ((args.flags.has("url") || args.flags.has("pick") || pickUrl === "") && !pickUrl) {
+    console.error("select-use-melhor-post: --url/--pick exige a URL do item do USE MELHOR");
     return 2;
   }
   const config = loadUseMelhorPostConfigState(ROOT);
@@ -174,10 +240,24 @@ async function main(): Promise<number | void> {
     return;
   }
 
-  const { state, written, preserved } = await runSelectionWithSteps(editionDir, config, {
-    useReviewed: args.flags.has("reviewed"),
-    forceReselect: args.flags.has("force"),
-  });
+  let res: Awaited<ReturnType<typeof runSelectionWithSteps>>;
+  try {
+    res = await runSelectionWithSteps(editionDir, config, {
+      useReviewed: args.flags.has("reviewed"),
+      forceReselect: args.flags.has("force"),
+      pickUrl,
+    });
+  } catch (e) {
+    // #13849: escolha inválida do editor é uso errado (exit 2), não falha fail-soft.
+    if (e instanceof PickError) {
+      console.error(`select-use-melhor-post: --url recusado — ${e.message}. Nada gravado.`);
+      return 2;
+    }
+    throw e;
+  }
+  const { state, written, preserved } = res;
+  const ignoredPick = pickIgnoredWarning(pickUrl, state);
+  if (ignoredPick) console.error(`select-use-melhor-post: ${ignoredPick}`);
   if (preserved) {
     console.error(
       "select-use-melhor-post: item escolhido segue no USE MELHOR final — preservado (passe --force para re-selecionar por score).",

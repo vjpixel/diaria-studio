@@ -16,6 +16,7 @@ import { extractSection, extractDestaqueBlock } from "./extract-section.ts";
 import {
   USE_MELHOR_POST_ID,
   readApprovedForUseMelhor,
+  readApprovedSourcesForUseMelhor,
   readUseMelhorPostState,
   resolveUseMelhorCoverTitle,
   useMelhorUmMentionsBrand,
@@ -74,6 +75,7 @@ export function gatherUseMelhorStatusInput(
     state,
     reviewedMd,
     approved,
+    approvedSources: readApprovedSourcesForUseMelhor(editionDir), // #13849
     hasSocialSection: socialUm !== null,
     hasCurtoSection: readUseMelhorBlock(socialMd, "Curto") !== null,
     socialUmMentionsBrand: useMelhorUmMentionsBrand(socialUm), // #9756
