@@ -45,9 +45,24 @@
  *             como mais fraca ("sem sugestões" no --provenance, motivo no run).
  *             `--note` não vale para o humanizador (#11609).
  *
+ *   --record-clarice-pending --reason clarice_unavailable [--detail <desfecho>] [--sections a,b]
+ *             (#13848) Caminho oficial para "Clarice indisponível" no social (equivalente
+ *             ao `clarice-pending.ts skip` da newsletter, #12257): registra em
+ *             `.humanizer-run.json` (`clarice_pending`) as seções do texto atual que têm
+ *             prova do humanizador e não têm a da Clarice. O `--write` aceita essas
+ *             seções (o guard #11534 não relaxa: seção sem humanizador continua exit 4),
+ *             e o `--provenance` as mostra como "Clarice PENDENTE (motivo)". Nada a
+ *             registrar = exit 1. Quando a Clarice voltar, `--record-run --step clarice`
+ *             sobre o mesmo texto substitui a pendência pela prova.
+ *
  *   --provenance  (#11534) Imprime, por seção do `03-social.md` atual, se o texto
  *             passou pelo humanizador e pela Clarice (bloco do resumo do gate).
  *             Marca as seções aceitas pelo selo (`accepted_section_hashes`, #12377).
+ *
+ * `{edition_url}` (#13856): `--check`/`--write`/`--provenance` aceitam o `03-social.md`
+ * com a URL da edição (`_internal/05-edition-url.txt` ou o marcador de transição
+ * #11751) no lugar do placeholder como igual ao selo — resolver a URL no Stage 5/6
+ * não muda redação.
  *
  * Seções (#12383): `main_d{N}`, `main_d{N}-cards`, `main_um`, `comment_pixel_d{N}`,
  * `post_pixel`. Selo sem `cards_sections_tracked` (anterior à #12383) deixa os
@@ -98,11 +113,15 @@ import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
 import { computeSectionHashes, isCardsSection } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
-import { hashSocialContent } from "./lib/humanizer-social-seal.ts"; // #9679: fonte única do sha256
+import { editionUrlCandidates, hashSocialContent, socialMatchesSealHash } from "./lib/humanizer-social-seal.ts"; // #9679: fonte única do sha256
 import {
+  SOCIAL_CLARICE_PENDING_REASONS,
+  claricePendingFor,
   classifySealChanges,
   computeSectionFormatHashes,
   describeProvenance,
+  isSocialClaricePendingReason,
+  planClaricePending,
   planAcceptedSectionHashes,
   planRunRecord,
   planUnprovenOkWithoutChanges,
@@ -172,6 +191,7 @@ export class UnprovenSectionsError extends Error {
       `check-humanizer-social: seção(ões) com mudança de redação sem prova de humanizador + Clarice: ${detail}. ` +
         "Rodar o humanizador e a Clarice nessas seções e registrar cada passo com " +
         "--record-run --step humanizador|clarice antes do --write (#11534). " +
+        "Clarice fora do ar com o humanizador já registrado: --record-clarice-pending --reason clarice_unavailable (#13848). " +
         '--unproven-ok "<motivo>" só quando o editor pediu para manter o texto dele sem humanizar.',
     );
     this.name = "UnprovenSectionsError";
@@ -287,6 +307,10 @@ export function writeSentinelDetailed(
     } catch {
       // Sentinel corrompido — pode sobrescrever sem guard.
     }
+    // #13856: selo que bate com o texto a menos da URL da edição resolvida conta como batendo.
+    if (existing?.social_sha256 && socialMatchesSealHash(existing.social_sha256, readFileSync(socialPath, "utf8"), editionUrlCandidates(editionDir))) {
+      existing = { ...existing, social_sha256: computeSocialHash(socialPath) };
+    }
     if (existing?.social_sha256) {
       const currentHash = computeSocialHash(socialPath);
       if (existing.social_sha256 !== currentHash && !bypassReason) {
@@ -390,9 +414,10 @@ export function checkSentinel(editionDir: string): CheckResult {
     return { ok: false, reason: "sentinel_missing" };
   }
 
-  const current = computeSocialHash(socialPath);
-  if (stored.social_sha256 !== current) {
-    return { ok: false, reason: "hash_mismatch", stored: stored.social_sha256, current };
+  const content = readFileSync(socialPath, "utf8");
+  // #13856: `{edition_url}` resolvido depois do selo (Stage 5/6) não é mudança de redação.
+  if (!socialMatchesSealHash(stored.social_sha256, content, editionUrlCandidates(editionDir))) {
+    return { ok: false, reason: "hash_mismatch", stored: stored.social_sha256, current: hashSocialContent(content) };
   }
 
   return { ok: true };
@@ -564,12 +589,17 @@ export interface SealAcceptance {
  * selo batendo com o `03-social.md` atual. Selo anterior ao #12361 (sem
  * `accepted_section_hashes`) cai no `unproven_sections` por nome, como antes.
  */
-export function describeSealAcceptance(seal: HumanizerSocialSentinel | null, socialMd: string): SealAcceptance {
+export function describeSealAcceptance(
+  seal: HumanizerSocialSentinel | null,
+  socialMd: string,
+  editionUrls: readonly string[] = [],
+): SealAcceptance {
   const bySection: Record<string, AcceptedSectionReason> = {};
   if (seal) {
     const acc = seal.accepted_section_hashes;
     if (acc && typeof acc === "object") {
-      if (seal.social_sha256 === hashSocialContent(socialMd)) {
+      // #13856: `{edition_url}` resolvido depois do selo não desfaz o aceite.
+      if (typeof seal.social_sha256 === "string" && socialMatchesSealHash(seal.social_sha256, socialMd, editionUrls)) {
         for (const [section, hash] of Object.entries(computeSectionHashes(socialMd))) {
           const reason = acc[hash];
           if (reason === "formatting" || reason === "unproven_ok") bySection[section] = reason;
@@ -593,7 +623,7 @@ function main(): void {
 
   if (!editionDirArg) {
     console.error(
-      "Uso: check-humanizer-social.ts [--write|--check|--record-run|--provenance] --edition-dir data/editions/AAMMDD/ " +
+      "Uso: check-humanizer-social.ts [--write|--check|--record-run|--record-clarice-pending|--provenance] --edition-dir data/editions/AAMMDD/ " +
         "[--bypass-reason <motivo>] [--unproven-ok <motivo> [--unproven-ok-section d2,...]] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b] [--note <motivo>]]",
     );
     process.exit(1);
@@ -666,6 +696,48 @@ function main(): void {
     process.exit(0);
   }
 
+  if (flags.has("record-clarice-pending")) {
+    // #13848: caminho oficial para "Clarice indisponível" no social.
+    const reason = values["reason"];
+    if (!isSocialClaricePendingReason(reason)) {
+      console.error(
+        `Uso: --record-clarice-pending --reason ${SOCIAL_CLARICE_PENDING_REASONS.join("|")} [--detail "<desfecho da tentativa>"] [--sections a,b] --edition-dir DIR`,
+      );
+      process.exit(1);
+    }
+    const socialPath = resolve(editionDir, "03-social.md");
+    if (!existsSync(socialPath)) {
+      console.error(`[check-humanizer-social] ERRO: 03-social.md não existe em ${editionDir}`);
+      process.exit(1);
+    }
+    const sections = values["sections"]?.split(",").map((s) => s.trim()).filter(Boolean);
+    const available = Object.keys(computeSectionHashes(readFileSync(socialPath, "utf8")));
+    const resolvedSections = sections ? resolveSectionSelector(sections, available) : undefined;
+    if (resolvedSections && resolvedSections.unknown.length > 0) {
+      console.error(
+        `[check-humanizer-social] ERRO: --sections com seção inexistente em 03-social.md: ${resolvedSections.unknown.join(", ")} ` +
+          `(seções: ${available.join(", ")}). Nada foi gravado.`,
+      );
+      process.exit(1);
+    }
+    const plan = planClaricePending(readRunRecord(editionDir), readFileSync(socialPath, "utf8"), reason, {
+      sections: resolvedSections?.sections,
+      detail: values["detail"],
+    });
+    for (const s of plan.skipped) {
+      console.error(`[check-humanizer-social] sem pendência: ${s.section} — ${s.reason}`);
+    }
+    if (plan.recorded.length === 0) {
+      console.error("[check-humanizer-social] RECUSADO — nenhuma seção humanizada sem Clarice a registrar como pendente. Nada foi gravado (#13848).");
+      console.log(JSON.stringify({ ok: false, reason: "nothing_to_record", recorded: [], skipped: plan.skipped }));
+      process.exit(1);
+    }
+    const recordPath = writeRunRecord(editionDir, plan.record);
+    console.error(`[check-humanizer-social] Clarice PENDENTE (${reason}) registrada: ${plan.recorded.join(", ")}`);
+    console.log(JSON.stringify({ ok: true, record_path: recordPath, reason, recorded: plan.recorded, skipped: plan.skipped }));
+    process.exit(0);
+  }
+
   if (flags.has("provenance")) {
     const socialPath = resolve(editionDir, "03-social.md");
     if (!existsSync(socialPath)) {
@@ -673,7 +745,9 @@ function main(): void {
       process.exit(1);
     }
     const socialMd = readFileSync(socialPath, "utf8");
-    const rows = describeProvenance(socialMd, readRunRecord(editionDir));
+    const record = readRunRecord(editionDir);
+    const rows = describeProvenance(socialMd, record);
+    const sectionHashes = computeSectionHashes(socialMd);
     let seal: HumanizerSocialSentinel | null = null;
     const sentinelPath = join(editionDir, "_internal", SENTINEL_FILENAME);
     if (existsSync(sentinelPath)) {
@@ -683,8 +757,9 @@ function main(): void {
         console.error(`[check-humanizer-social] WARN: selo ilegível (${(e as Error).message}) — unproven_sections não listadas`);
       }
     }
-    const acceptance = describeSealAcceptance(seal, socialMd);
+    const acceptance = describeSealAcceptance(seal, socialMd, editionUrlCandidates(editionDir));
     const unprovenSections = acceptance.unprovenSections;
+    const claricePendingSections = rows.filter((r) => r.clarice_pending).map((r) => r.section);
     for (const r of rows) {
       const reason = acceptance.bySection[r.section];
       const extra =
@@ -695,8 +770,15 @@ function main(): void {
             : "";
       const kept = r.kept ? " (texto mantido)" : ""; // #11604
       const claricePlain = r.clarice_unchanged ? " (sem sugestões, --note)" : ""; // #11674
+      // #13848: pendência registrada com --record-clarice-pending.
+      const pending = r.clarice_pending ? claricePendingFor(sectionHashes[r.section], record) : undefined;
+      const clariceLabel = r.clarice
+        ? "sim"
+        : pending
+          ? `PENDENTE (${pending.reason}${pending.detail ? `: ${pending.detail}` : ""})`
+          : "NÃO";
       console.error(
-        `  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${r.clarice ? "sim" : "NÃO"}${claricePlain}${extra}`,
+        `  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${clariceLabel}${claricePlain}${extra}`,
       );
     }
     console.log(JSON.stringify({
@@ -704,6 +786,7 @@ function main(): void {
       sections: rows,
       unproven_sections: unprovenSections,
       accepted_sections: acceptance.bySection,
+      clarice_pending_sections: claricePendingSections,
     }));
     process.exit(0);
   }
@@ -718,6 +801,14 @@ function main(): void {
         console.error(`[check-humanizer-social] aceitas sem prova (--unproven-ok): ${unproven.join(", ")}`);
       } else if (unprovenOk) {
         console.error("[check-humanizer-social] --unproven-ok: nenhuma seção sem prova a aceitar.");
+      }
+      // #13848: seções seladas com a Clarice pendente (humanizador ok, Clarice fora do ar).
+      const pendingSections = describeProvenance(readFileSync(resolve(editionDir, "03-social.md"), "utf8"), readRunRecord(editionDir))
+        .filter((r) => r.clarice_pending)
+        .map((r) => r.section);
+      if (pendingSections.length > 0) {
+        out["clarice_pending_sections"] = pendingSections;
+        console.error(`[check-humanizer-social] selado com Clarice PENDENTE: ${pendingSections.join(", ")} (levar ao resumo do gate)`);
       }
       console.log(JSON.stringify(out));
       process.exit(0);

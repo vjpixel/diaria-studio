@@ -499,6 +499,17 @@ function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[
     .map((row) => {
       // #12383: cards de edição selada antes de a prova cobri-los não bloqueiam.
       const legacyCards = isCardsSection(row.section) && !seal.tracksCards;
+      // #13848: Clarice fora do ar com a pendência registrada é aviso (o gate mostra), não falta de prova.
+      if (row.clarice_pending) {
+        return {
+          rule: "social-humanizer-provenance-recorded",
+          message: `${row.section}: humanizador sim · Clarice PENDENTE (registrada com --record-clarice-pending, #13848). ` +
+            "Levar ao resumo do gate; quando a Clarice voltar, rodá-la na seção e registrar com --record-run --step clarice.",
+          source_issue: "#13848",
+          severity: "warning" as const,
+          file: "03-social.md",
+        };
+      }
       return {
         rule: "social-humanizer-provenance-recorded",
         message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
