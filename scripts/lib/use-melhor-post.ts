@@ -386,7 +386,11 @@ export function enrichUseMelhorItem(item: UseMelhorCandidate, text: string): Use
  * numérico ou sem `url` não é candidato (não dá pra ranquear).
  */
 export function useMelhorCandidatesFromApproved(approved: unknown): UseMelhorCandidate[] {
-  const list = (approved as { use_melhor?: unknown } | null)?.use_melhor;
+  return candidatesFromBucket((approved as { use_melhor?: unknown } | null)?.use_melhor);
+}
+
+/** Itens com `url` + `score` numérico de uma lista de bucket (aceita o wrapper `{article}`). */
+function candidatesFromBucket(list: unknown): UseMelhorCandidate[] {
   if (!Array.isArray(list)) return [];
   const out: UseMelhorCandidate[] = [];
   for (const raw of list) {
@@ -394,7 +398,7 @@ export function useMelhorCandidatesFromApproved(approved: unknown): UseMelhorCan
     const it = (raw && typeof raw === "object" && "article" in raw ? (raw as { article: unknown }).article : raw) as
       | Record<string, unknown>
       | null;
-    if (!it) continue;
+    if (!it || typeof it !== "object") continue;
     const score = (raw as Record<string, unknown>).score ?? it.score;
     if (typeof it.url !== "string" || !it.url || typeof score !== "number" || !Number.isFinite(score)) continue;
     out.push({
@@ -405,6 +409,81 @@ export function useMelhorCandidatesFromApproved(approved: unknown): UseMelhorCan
     });
   }
   return out;
+}
+
+/**
+ * Pure (#13849): candidatos com score de QUALQUER bucket dos JSONs aprovados,
+ * para a conferência contra o `02-reviewed.md` final. O editor pode mover um
+ * item do RADAR (ou outro bucket) para o USE MELHOR no gate
+ * (`move-pool-item.ts`); ele nunca esteve no bucket `use_melhor`, mas tem score
+ * no pool. Ordem: `use_melhor` de cada fonte primeiro (mesma ordem de
+ * `mergeUseMelhorPools`), depois os demais buckets; URL repetida fica com a 1ª
+ * ocorrência. Só entra na disputa quem estiver renderizado no USE MELHOR final
+ * (`selectUseMelhorItem` filtra), então item do RADAR que ficou no RADAR nunca
+ * vira o 4º post.
+ */
+export function poolCandidatesForReviewed(sources: readonly unknown[]): UseMelhorCandidate[] {
+  const out: UseMelhorCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (cs: UseMelhorCandidate[]): void => {
+    for (const c of cs) {
+      const k = normalizeUseMelhorUrl(c.url);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(c);
+    }
+  };
+  for (const s of sources) push(useMelhorCandidatesFromApproved(s));
+  for (const s of sources) {
+    if (!s || typeof s !== "object") continue;
+    for (const [key, list] of Object.entries(s as Record<string, unknown>)) {
+      if (key !== "use_melhor") push(candidatesFromBucket(list));
+    }
+  }
+  return out;
+}
+
+/** `selected_from` gravado por `--url`/`--pick` (#13849). Prefixo `editor-override-` = troca do editor (#9592). */
+export const USE_MELHOR_PICK_SELECTED_FROM = "editor-override-pick";
+
+export type UseMelhorPickResult = { ok: true; item: UseMelhorCandidate } | { ok: false; reason: string };
+
+/**
+ * Pure (#13849): o editor escolhe o item do 4º post pela URL. Aceita qualquer
+ * item renderizado no USE MELHOR do `02-reviewed.md` final, venha ele do bucket
+ * `use_melhor`, de outro bucket do pool (movido no gate) ou colado à mão.
+ * Título/resumo/score saem do pool quando a URL está lá; senão, do item
+ * renderizado (título sem `**`, resumo sem o "(N min)" final, score 0).
+ */
+export function pickUseMelhorItem(
+  url: string,
+  reviewedMd: string,
+  sources: readonly unknown[],
+): UseMelhorPickResult {
+  const target = normalizeUseMelhorUrl(url);
+  const section = parseSections(reviewedMd).find((s) => s.name === "USE MELHOR");
+  if (!section) return { ok: false, reason: "edição sem seção USE MELHOR renderizada no 02-reviewed.md" };
+  const rendered = section.items.find((i) => normalizeUseMelhorUrl(i.url) === target);
+  if (!rendered) {
+    return {
+      ok: false,
+      reason:
+        `a URL ${url} não está no USE MELHOR do 02-reviewed.md (itens: ` +
+        section.items.map((i) => i.url).join(", ") +
+        ") — mover o item para o USE MELHOR antes (move-pool-item.ts)",
+    };
+  }
+  const fromPool = poolCandidatesForReviewed(sources).find((c) => normalizeUseMelhorUrl(c.url) === target);
+  if (fromPool) return { ok: true, item: { ...fromPool } };
+  return {
+    ok: true,
+    item: {
+      url: rendered.url,
+      title: rendered.title.replace(/\*\*/g, "").trim(),
+      summary: (rendered.description ?? "").replace(/\s*\(\d+\s*min\)\s*$/i, "").trim(),
+      score: 0,
+    },
+  };
 }
 
 /**
@@ -744,6 +823,12 @@ export function mergeUseMelhorPools(capped: unknown | null, full: unknown | null
  * senão escolheria um item que nem foi renderizado.
  */
 export function readApprovedPoolForUseMelhor(editionDir: string): unknown | null {
+  const [capped, full] = readApprovedJsonPair(editionDir);
+  return mergeUseMelhorPools(capped, full);
+}
+
+/** `[01-approved-capped.json, 01-approved.json]`, cada um `null` se ausente/ilegível. */
+function readApprovedJsonPair(editionDir: string): [unknown | null, unknown | null] {
   const readOne = (name: string): unknown | null => {
     const p = resolve(editionDir, "_internal", name);
     if (!existsSync(p)) return null;
@@ -753,7 +838,16 @@ export function readApprovedPoolForUseMelhor(editionDir: string): unknown | null
       return null;
     }
   };
-  return mergeUseMelhorPools(readOne("01-approved-capped.json"), readOne("01-approved.json"));
+  return [readOne("01-approved-capped.json"), readOne("01-approved.json")];
+}
+
+/**
+ * (#13849) Fontes para `poolCandidatesForReviewed`/`pickUseMelhorItem`: capped e
+ * pool completo, os que existirem, nessa ordem. O capped sozinho não basta: o
+ * RADAR dele é só o renderizado no Stage 2.
+ */
+export function readApprovedSourcesForUseMelhor(editionDir: string): unknown[] {
+  return readApprovedJsonPair(editionDir).filter((a) => a !== null);
 }
 
 /**
