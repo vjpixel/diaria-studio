@@ -1291,25 +1291,21 @@
   <url>
     <loc>https://diar.ia.br/p/eua-exigem-licenca-para-chips-de-ia-no-brasil</loc>
     <lastmod>2026-11-18</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-18T00:00:00.000Z</news:publication_date>
-      <news:title>EUA exigem licença para chips de IA no Brasil</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/openai-lanca-gpt-6-2-e-corta-preco-em-20</loc>
     <lastmod>2026-11-19</lastmod>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/anthropic-estreia-na-bolsa-e-levanta-us-119-5-bi</loc>
+    <lastmod>2026-11-23</lastmod>
     <news:news>
       <news:publication>
         <news:name>diar.ia.br</news:name>
         <news:language>pt</news:language>
       </news:publication>
-      <news:publication_date>2026-11-19T00:00:00.000Z</news:publication_date>
-      <news:title>OpenAI lança GPT-6.2 e corta preço em 20%</news:title>
+      <news:publication_date>2026-11-23T00:00:00.000Z</news:publication_date>
+      <news:title>Anthropic estreia na bolsa e levanta US$ 119,5 bi</news:title>
     </news:news>
   </url>
 </urlset>
