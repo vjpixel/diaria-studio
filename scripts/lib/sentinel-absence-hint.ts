@@ -105,9 +105,14 @@ export function buildSentinelAbsenceHint(input: SentinelAbsenceHintInput): strin
 /**
  * Lê o disco: arquivo de mtime mais recente sob `dir` (recursivo, até
  * `maxDepth` níveis). `null` se a pasta não existe, está vazia ou não pode
- * ser lida. Nunca lança.
+ * ser lida. Nunca lança. `exclude` (#13867) recebe o caminho relativo (com
+ * `/`) de cada arquivo e tira da disputa os que devolverem `true`.
  */
-export function findNewestFile(dir: string, maxDepth = 4): NewestFile | null {
+export function findNewestFile(
+  dir: string,
+  maxDepth = 4,
+  exclude?: (relPath: string) => boolean,
+): NewestFile | null {
   let best: NewestFile | null = null;
   const walk = (current: string, depth: number): void => {
     let entries: string[];
@@ -129,8 +134,10 @@ export function findNewestFile(dir: string, maxDepth = 4): NewestFile | null {
         continue;
       }
       if (!st.isFile()) continue;
+      const relPath = relative(dir, full).replaceAll("\\", "/");
+      if (exclude?.(relPath)) continue;
       if (best === null || st.mtimeMs > best.mtimeMs) {
-        best = { relPath: relative(dir, full).replaceAll("\\", "/"), mtimeMs: st.mtimeMs };
+        best = { relPath, mtimeMs: st.mtimeMs };
       }
     }
   };

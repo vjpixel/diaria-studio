@@ -322,6 +322,35 @@ export function extractPastUrlsUnbounded(md: string): Set<string> {
 }
 
 /**
+ * #13866: URLs publicadas POR EDIÇÃO (AAMMDD da seção `## AAAA-MM-DD`), sem
+ * janela. O filtro do #13846 em `readApprovedTitles` precisa ser por edição:
+ * com o conjunto global, uma edição presente no disco e AUSENTE do
+ * `past-editions.md` (merge-local-pending falhou no Stage 0, edição agendada
+ * ainda não enviada) perdia TODOS os títulos — nenhuma URL dela bate com o
+ * conjunto. Edição sem seção = sem entrada no mapa = approved inteiro.
+ */
+export function extractPastUrlsByEdition(md: string): Map<string, Set<string>> {
+  const byEdition = new Map<string, Set<string>>();
+  const sectionRe = /^## (\d{2})(\d{2})-(\d{2})-(\d{2})/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  for (const section of parts) {
+    const dm = section.match(sectionRe);
+    if (!dm) continue;
+    const aammdd = `${dm[2]}${dm[3]}${dm[4]}`;
+    let urls = byEdition.get(aammdd);
+    if (!urls) {
+      urls = new Set<string>();
+      byEdition.set(aammdd, urls);
+    }
+    for (const line of section.split("\n")) {
+      const m = line.match(/^-\s+(https?:\/\/\S+)/);
+      if (m) urls.add(canonicalize(m[1].replace(/[.,);]+$/, "")));
+    }
+  }
+  return byEdition;
+}
+
+/**
  * Extrai títulos das últimas `window` edições publicadas (#231 defense-in-depth).
  * Captura o título de cada edição (`## YYYY-MM-DD — "Título"`) para comparação
  * de similaridade com artigos candidatos.
@@ -751,7 +780,9 @@ export function readNewsletterHtmlDestaqueUrls(htmlPath: string): string[] {
 
 /**
  * `publishedUrls` (#13846): quando presente e não vazio, só entram títulos de
- * itens cuja URL canônica saiu de fato (past-editions.md). `01-approved.json`
+ * itens cuja URL canônica saiu de fato NESTA edição (seção dela em
+ * past-editions.md; o conjunto é por edição desde o #13866, nunca global —
+ * ver `extractPastUrlsByEdition`). `01-approved.json`
  * lista TODO candidato aprovado na pesquisa, inclusive o que ficou de fora da
  * edição — sem o filtro, candidato nunca publicado barrava a história para sempre.
  */
@@ -1019,21 +1050,27 @@ export function extractPastEditionArticleTitles(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
-  publishedUrls?: Set<string>,
+  publishedUrlsByEdition?: Map<string, Set<string>>,
 ): string[] {
-  return [...new Set(extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd, publishedUrls).map((e) => e.title))];
+  return [...new Set(extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd, publishedUrlsByEdition).map((e) => e.title))];
 }
 
 /**
  * #8666: como `extractPastEditionArticleTitles`, mas com o AAMMDD da edição de
  * cada título (mesmo título em 2 edições aparece 2x — o consumidor escolhe a
  * mais próxima). Ordem: edição mais recente primeiro.
+ *
+ * `publishedUrlsByEdition` (#13846/#13866, de `extractPastUrlsByEdition`): o
+ * approved de cada edição é filtrado pelas URLs publicadas DAQUELA edição.
+ * Edição sem seção em `past-editions.md` (ou com seção sem URL) mantém o
+ * approved inteiro — melhor um falso positivo do que perder a edição toda no
+ * dedup quando o Stage 0 não a mesclou.
  */
 export function extractPastEditionArticleTitlesWithEdition(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
-  publishedUrls?: Set<string>,
+  publishedUrlsByEdition?: Map<string, Set<string>>,
 ): { title: string; aammdd: string }[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
@@ -1050,7 +1087,7 @@ export function extractPastEditionArticleTitlesWithEdition(
     ];
     for (const path of candidates) {
       if (!existsSync(path)) continue;
-      for (const t of readApprovedTitles(path, publishedUrls)) titles.push({ title: t, aammdd });
+      for (const t of readApprovedTitles(path, publishedUrlsByEdition?.get(aammdd))) titles.push({ title: t, aammdd });
       break; // primeiro arquivo encontrado = source-of-truth da edição
     }
   }
