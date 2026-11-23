@@ -53,11 +53,34 @@ export interface HumanizerRunRecord {
   clarice: string[];
   /** #11674: subconjunto de `clarice` — run sem mudança, aceito só com `--note`. */
   clarice_unchanged: string[];
-  runs: Array<{ at: string; step: RunStep; sections: string[]; note?: string }>;
+  /**
+   * #13848: seções (hash) humanizadas em que a Clarice não pôde rodar (API fora
+   * do ar). Não é prova da Clarice: o selo aceita a seção com humanizador +
+   * pendência registrada, e o `--provenance` e o gate mostram "Clarice PENDENTE".
+   * Opcional: registro gravado antes do #13848 (e literais de teste) não tem o campo.
+   */
+  clarice_pending?: ClaricePendingEntry[];
+  runs: Array<{ at: string; step: RunStep | "clarice-pending"; sections: string[]; note?: string }>;
+}
+
+/** #13848: motivos aceitos para registrar a Clarice como pendente (vocabulário do `clarice-pending.ts skip`). */
+export const SOCIAL_CLARICE_PENDING_REASONS = ["clarice_unavailable"] as const;
+export type SocialClaricePendingReason = (typeof SOCIAL_CLARICE_PENDING_REASONS)[number];
+
+export function isSocialClaricePendingReason(v: unknown): v is SocialClaricePendingReason {
+  return typeof v === "string" && (SOCIAL_CLARICE_PENDING_REASONS as readonly string[]).includes(v);
+}
+
+export interface ClaricePendingEntry {
+  hash: string;
+  reason: SocialClaricePendingReason;
+  /** Desfecho da tentativa (exit, mensagem do stderr), texto livre e opcional. */
+  detail?: string;
+  at: string;
 }
 
 export function emptyRunRecord(): HumanizerRunRecord {
-  return { version: 1, humanizador: [], humanizador_unchanged: [], clarice: [], clarice_unchanged: [], runs: [] };
+  return { version: 1, humanizador: [], humanizador_unchanged: [], clarice: [], clarice_unchanged: [], clarice_pending: [], runs: [] };
 }
 
 export function runRecordPath(editionDir: string): string {
@@ -79,6 +102,12 @@ export function readRunRecord(editionDir: string): HumanizerRunRecord {
       clarice: Array.isArray(raw.clarice) ? raw.clarice.filter((h) => typeof h === "string") : [],
       clarice_unchanged: Array.isArray(raw.clarice_unchanged)
         ? raw.clarice_unchanged.filter((h) => typeof h === "string")
+        : [],
+      clarice_pending: Array.isArray(raw.clarice_pending)
+        ? raw.clarice_pending.filter(
+            (e): e is ClaricePendingEntry =>
+              !!e && typeof e === "object" && typeof e.hash === "string" && isSocialClaricePendingReason(e.reason),
+          )
         : [],
       runs: Array.isArray(raw.runs) ? raw.runs : [],
     };
@@ -205,6 +234,7 @@ export function planRunRecord(
       humanizador_unchanged: [...unchanged],
       clarice: [...clarice],
       clarice_unchanged: [...clariceUnchanged],
+      clarice_pending: current.clarice_pending ?? [],
       runs: [
         ...current.runs,
         { at: now.toISOString(), step, sections: recorded, ...(note && noop && step === "clarice" ? { note } : {}) },
@@ -256,6 +286,8 @@ export interface SectionProvenance {
   change: "formatting" | "redaction";
   humanizador: boolean;
   clarice: boolean;
+  /** #13848: humanizada, sem Clarice, com a pendência registrada (`--record-clarice-pending`). */
+  clarice_pending?: true;
 }
 
 export interface SealChangeClassification {
@@ -267,9 +299,93 @@ export interface SealChangeClassification {
 }
 
 /** Proveniência do texto atual de uma seção, pelo registro. */
-export function sectionProof(hash: string, record: HumanizerRunRecord): { humanizador: boolean; clarice: boolean } {
+export function sectionProof(
+  hash: string,
+  record: HumanizerRunRecord,
+): { humanizador: boolean; clarice: boolean; clarice_pending?: true } {
   const clarice = record.clarice.includes(hash);
-  return { humanizador: clarice || record.humanizador.includes(hash), clarice };
+  const humanizador = clarice || record.humanizador.includes(hash);
+  // #13848: a pendência só conta sobre texto humanizado e sem prova da Clarice.
+  const pending = humanizador && !clarice && claricePendingFor(hash, record) !== undefined;
+  return { humanizador, clarice, ...(pending ? { clarice_pending: true as const } : {}) };
+}
+
+/**
+ * #13848: a seção está coberta pelo guard #11534 — humanizador E (Clarice OU
+ * Clarice pendente registrada). A pendência nunca cobre texto sem humanizador.
+ */
+export function isProofComplete(p: { humanizador: boolean; clarice: boolean; clarice_pending?: true }): boolean {
+  return p.humanizador && (p.clarice || p.clarice_pending === true);
+}
+
+/** #13848: a pendência registrada para o hash de uma seção (motivo + detalhe), se houver. */
+export function claricePendingFor(hash: string, record: HumanizerRunRecord): ClaricePendingEntry | undefined {
+  return (record.clarice_pending ?? []).find((e) => e.hash === hash);
+}
+
+export interface ClaricePendingPlan {
+  record: HumanizerRunRecord;
+  recorded: string[];
+  skipped: Array<{ section: string; reason: string }>;
+}
+
+/**
+ * #13848: caminho oficial para "Clarice indisponível" no social. Registra a
+ * pendência para cada seção do texto atual (ou das `sections` pedidas) que já
+ * tem prova do humanizador e ainda não tem prova da Clarice. Seção sem
+ * humanizador fica de fora (o guard #11534 não relaxa), e seção que já passou
+ * pela Clarice não precisa de pendência.
+ */
+export function planClaricePending(
+  current: HumanizerRunRecord,
+  currentMd: string,
+  reason: SocialClaricePendingReason,
+  opts: { sections?: string[]; detail?: string; now?: Date } = {},
+): ClaricePendingPlan {
+  const now = (opts.now ?? new Date()).toISOString();
+  const detail = opts.detail?.trim() || undefined;
+  const hashes = computeSectionHashes(currentMd);
+  const only = opts.sections && opts.sections.length > 0 ? new Set(opts.sections) : null;
+  const pending = [...(current.clarice_pending ?? [])];
+  const recorded: string[] = [];
+  const skipped: ClaricePendingPlan["skipped"] = [];
+  for (const [name, hash] of Object.entries(hashes)) {
+    if (only && !only.has(name)) continue;
+    const p = sectionProof(hash, current);
+    if (p.clarice) {
+      skipped.push({ section: name, reason: "já tem prova da Clarice" });
+      continue;
+    }
+    if (!p.humanizador) {
+      skipped.push({
+        section: name,
+        reason: "sem prova do humanizador — rodar o humanizador e registrar com --record-run antes (#11534)",
+      });
+      continue;
+    }
+    const entry: ClaricePendingEntry = { hash, reason, ...(detail ? { detail } : {}), at: now };
+    const i = pending.findIndex((e) => e.hash === hash);
+    if (i >= 0) pending[i] = entry;
+    else pending.push(entry);
+    recorded.push(name);
+  }
+  if (only) {
+    for (const name of only) {
+      if (!(name in hashes)) skipped.push({ section: name, reason: "seção ausente no 03-social.md atual" });
+    }
+  }
+  return {
+    record: {
+      ...current,
+      clarice_pending: pending,
+      runs:
+        recorded.length > 0
+          ? [...current.runs, { at: now, step: "clarice-pending", sections: recorded, note: detail ? `${reason}: ${detail}` : reason }]
+          : current.runs,
+    },
+    recorded,
+    skipped,
+  };
 }
 
 /** Campos do selo que a comparação selo × texto atual lê. */
@@ -312,8 +428,9 @@ export function classifySealChanges(
     const formatOnly = currentFormat[name] !== undefined && storedFormat.has(currentFormat[name]);
     changed.push({ section: name, change: formatOnly ? "formatting" : "redaction", ...sectionProof(hash, record) });
   }
+  // #13848: humanizador + Clarice pendente registrada também cobre.
   const unproven = changed
-    .filter((c) => c.change === "redaction" && !(c.humanizador && c.clarice))
+    .filter((c) => c.change === "redaction" && !isProofComplete(c))
     .map((c) => c.section);
   return { legacy, changed, unproven };
 }
@@ -353,8 +470,7 @@ export function planAcceptedSectionHashes(
   if (!stored) return out;
 
   const isCovered = (hash: string) => {
-    const p = sectionProof(hash, record);
-    return (p.humanizador && p.clarice) || hash in prevAccepted;
+    return isProofComplete(sectionProof(hash, record)) || hash in prevAccepted;
   };
   const currentFormat = computeSectionFormatHashes(currentMd);
   const storedHashes = stored.section_hashes ?? {};
@@ -362,7 +478,7 @@ export function planAcceptedSectionHashes(
   const cls = classifySealChanges(stored, currentMd, record);
   for (const c of cls.changed) {
     const hash = current[c.section];
-    if (hash === undefined || (c.humanizador && c.clarice)) continue;
+    if (hash === undefined || isProofComplete(c)) continue;
     if (c.change === "formatting") {
       const fmt = currentFormat[c.section];
       const predecessorCovered = Object.entries(storedFormat).some(
@@ -396,10 +512,7 @@ export function planUnprovenOkWithoutChanges(
 ): Array<{ section: string; hash: string }> {
   return Object.entries(computeSectionHashes(currentMd))
     .filter(([, hash]) => !(hash in accepted))
-    .filter(([, hash]) => {
-      const p = sectionProof(hash, record);
-      return !(p.humanizador && p.clarice);
-    })
+    .filter(([, hash]) => !isProofComplete(sectionProof(hash, record)))
     .map(([section, hash]) => ({ section, hash }));
 }
 
@@ -433,7 +546,14 @@ export function resolveSectionSelector(
 export function describeProvenance(
   currentMd: string,
   record: HumanizerRunRecord,
-): Array<{ section: string; humanizador: boolean; clarice: boolean; kept?: true; clarice_unchanged?: true }> {
+): Array<{
+  section: string;
+  humanizador: boolean;
+  clarice: boolean;
+  clarice_pending?: true;
+  kept?: true;
+  clarice_unchanged?: true;
+}> {
   return Object.entries(computeSectionHashes(currentMd)).map(([section, hash]) => ({
     section,
     ...sectionProof(hash, record),
