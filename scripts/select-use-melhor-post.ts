@@ -20,7 +20,9 @@
  *   # score quando ele saiu da edição (#9610). `--force` re-seleciona sempre.
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --reviewed [--force]
  *   # #13849: a disputa inclui item movido de outro bucket (RADAR etc.) para o
- *   # USE MELHOR no gate, com o score que ele tem no pool.
+ *   # USE MELHOR no gate, com o score que ele tem no pool, limitado ao maior
+ *   # score do bucket `use_melhor` (escalas não comparáveis; empate fica com o
+ *   # item do `use_melhor`). Para escolher o item movido, use `--url`.
  *
  *   # #13849: o editor escolhe o item do 4º post pela URL (qualquer item do
  *   # USE MELHOR final). Grava `selected_from: editor-override-pick` e baixa o
@@ -156,6 +158,22 @@ export function runSelection(
 export class PickError extends Error {}
 
 /**
+ * Pure (#13849): aviso quando o `--url` foi ignorado porque o 4º post está
+ * desligado (`enabled: false`). Sem ele o CLI sairia 0 sem gravar nada e sem
+ * dizer que a escolha do editor não valeu. `null` quando não há o que avisar.
+ */
+export function pickIgnoredWarning(
+  pickUrl: string | undefined,
+state: Pick<UseMelhorPostState, "enabled" | "reason">,
+): string | null {
+  if (pickUrl === undefined || state.enabled) return null;
+  return (
+    `--url ${pickUrl} ignorado — 4º post desligado (${state.reason ?? "use_melhor_time ausente no config"}). ` +
+    "Nada gravado."
+  );
+}
+
+/**
  * #9585: seleção + corpo/passos da fonte no item gravado. Fail-soft — fetch
  * falho mantém o item sem `steps`/`body` (post no formato atual). O fetch
  * tem timeout de 20s dentro de `fetchSourceText`.
@@ -238,6 +256,8 @@ async function main(): Promise<number | void> {
     throw e;
   }
   const { state, written, preserved } = res;
+  const ignoredPick = pickIgnoredWarning(pickUrl, state);
+  if (ignoredPick) console.error(`select-use-melhor-post: ${ignoredPick}`);
   if (preserved) {
     console.error(
       "select-use-melhor-post: item escolhido segue no USE MELHOR final — preservado (passe --force para re-selecionar por score).",

@@ -219,6 +219,15 @@ export interface UseMelhorCandidate {
    * `title`/`summary`/`steps`/`body`.
    */
   source_text_path?: string;
+  /**
+   * #13849: bucket do pool de onde o item veio quando NÃO é o `use_melhor`
+   * (ex.: `radar`, item movido para o USE MELHOR no gate). Ausente = bucket
+   * `use_melhor`. Na disputa por score o item desse bucket compete com o score
+   * limitado ao maior score do bucket `use_melhor` e perde o empate
+   * (`comparableUseMelhorScore`): as escalas do scorer não são comparáveis
+   * entre buckets (o RADAR chega a 105).
+   */
+  pool_bucket?: string;
 }
 
 const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{3,})$/i;
@@ -420,7 +429,8 @@ function candidatesFromBucket(list: unknown): UseMelhorCandidate[] {
  * `mergeUseMelhorPools`), depois os demais buckets; URL repetida fica com a 1ª
  * ocorrência. Só entra na disputa quem estiver renderizado no USE MELHOR final
  * (`selectUseMelhorItem` filtra), então item do RADAR que ficou no RADAR nunca
- * vira o 4º post.
+ * vira o 4º post. Item de outro bucket sai com `pool_bucket` (a disputa limita
+ * o score dele, ver `comparableUseMelhorScore`).
  */
 export function poolCandidatesForReviewed(sources: readonly unknown[]): UseMelhorCandidate[] {
   const out: UseMelhorCandidate[] = [];
@@ -437,7 +447,7 @@ export function poolCandidatesForReviewed(sources: readonly unknown[]): UseMelho
   for (const s of sources) {
     if (!s || typeof s !== "object") continue;
     for (const [key, list] of Object.entries(s as Record<string, unknown>)) {
-      if (key !== "use_melhor") push(candidatesFromBucket(list));
+      if (key !== "use_melhor") push(candidatesFromBucket(list).map((c) => ({ ...c, pool_bucket: key })));
     }
   }
   return out;
@@ -593,9 +603,31 @@ export function selectUseMelhorItem(
       selected_from,
     });
   }
+  const comparable = comparableUseMelhorScore(candidates);
   let best = pool[0];
-  for (const c of pool.slice(1)) if (c.score > best.score) best = c;
+  for (const c of pool.slice(1)) {
+    const d = comparable(c) - comparable(best);
+    // Empate: o item do bucket `use_melhor` vence o movido de outro bucket (#13849).
+    if (d > 0 || (d === 0 && best.pool_bucket !== undefined && c.pool_bucket === undefined)) best = c;
+  }
   return withExcluded({ item: best, selected_from });
+}
+
+/**
+ * Pure (#13849): score usado na disputa. Item do bucket `use_melhor` compete
+ * com o score dele; item de outro bucket (`pool_bucket`, movido no gate)
+ * compete com o score limitado ao maior score do bucket `use_melhor` entre os
+ * candidatos. As escalas do scorer não são comparáveis entre buckets (na
+ * 261123 o RADAR chegou a 105, o `use_melhor` costuma ficar abaixo de 80), e
+ * sem o limite o item movido ganharia só por vir do RADAR. Sem nenhum
+ * candidato do bucket `use_melhor`, não há limite.
+ */
+export function comparableUseMelhorScore(
+  candidates: readonly UseMelhorCandidate[],
+): (c: UseMelhorCandidate) => number {
+  let nativeMax = -Infinity;
+  for (const c of candidates) if (c.pool_bucket === undefined && c.score > nativeMax) nativeMax = c.score;
+  return (c) => (c.pool_bucket !== undefined && nativeMax > -Infinity ? Math.min(c.score, nativeMax) : c.score);
 }
 
 export type UseMelhorFinalCheck =
@@ -628,13 +660,19 @@ export function checkUseMelhorItemInFinal(item: UseMelhorCandidate, reviewedMd: 
  * score entre os renderizados (escolha do editor, ou item novo colado no
  * gate), devolve o de maior score pra uma nota informativa. `null` caso
  * contrário.
+ *
+ * #13849: olha todos os buckets, como a seleção `--reviewed`
+ * (`poolCandidatesForReviewed` + `selectUseMelhorItem`): item movido do RADAR
+ * para o USE MELHOR também conta. `approved` aceita um JSON aprovado ou a lista
+ * de fontes (`readApprovedSourcesForUseMelhor`).
  */
 export function higherScoredRenderedItem(
   item: UseMelhorCandidate,
   approved: unknown,
   reviewedMd: string,
 ): UseMelhorCandidate | null {
-  const top = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewedMd)).item;
+  const sources = Array.isArray(approved) ? approved : approved === null || approved === undefined ? [] : [approved];
+  const top = selectUseMelhorItem(poolCandidatesForReviewed(sources), renderedUseMelhorUrls(reviewedMd)).item;
   if (!top || normalizeUseMelhorUrl(top.url) === normalizeUseMelhorUrl(item.url)) return null;
   return top;
 }
@@ -886,6 +924,12 @@ export interface UseMelhorPostStatusInput {
   reviewedMd: string | null;
   /** JSON aprovado (scores), ou `null`. */
   approved: unknown | null;
+  /**
+   * #13849: capped + pool completo (`readApprovedSourcesForUseMelhor`), para a
+   * nota "há item de maior score" olhar todos os buckets, como a seleção.
+   * Ausente = só `approved`.
+   */
+  approvedSources?: readonly unknown[];
   /** `## um` presente em `# Social` / `# Curto` de `03-social.md`. */
   hasSocialSection: boolean;
   hasCurtoSection: boolean;
@@ -953,8 +997,8 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
     if (!final.ok) {
       level = "warn";
       lines.push(`   ⚠️ na edição final: ${final.reason} — 4º post será pulado.`);
-    } else if (input.approved !== null) {
-      const top = higherScoredRenderedItem(item, input.approved, input.reviewedMd);
+    } else if (input.approved !== null || (input.approvedSources?.length ?? 0) > 0) {
+      const top = higherScoredRenderedItem(item, input.approvedSources ?? input.approved, input.reviewedMd);
       if (top) {
         lines.push(
           `   ℹ️ "${top.title}" (score ${top.score}) tem score maior na edição final — o 4º post segue com o ` +

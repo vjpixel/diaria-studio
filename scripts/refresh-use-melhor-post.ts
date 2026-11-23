@@ -23,7 +23,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadUseMelhorPostConfigState, readUseMelhorPostState } from "./lib/use-melhor-post.ts";
 import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts";
 import { buildUseMelhorRefreshPlan } from "./lib/use-melhor-refresh-plan.ts";
-import { PickError, runSelectionWithSteps } from "./select-use-melhor-post.ts";
+import { PickError, pickIgnoredWarning, runSelectionWithSteps } from "./select-use-melhor-post.ts";
 
 const PENDING_REL = "_internal/use-melhor-refresh-pending.json";
 
@@ -50,11 +50,13 @@ async function main(): Promise<number | void> {
   const config = loadUseMelhorPostConfigState(ROOT, basename(resolve(editionDir)));
   const previous = config.enabled ? readUseMelhorPostState(editionDir) : null;
   try {
-    await runSelectionWithSteps(editionDir, config, {
+    const { state } = await runSelectionWithSteps(editionDir, config, {
       useReviewed: true,
       forceReselect: args.flags.has("force"),
       pickUrl,
     });
+    const ignoredPick = pickIgnoredWarning(pickUrl, state);
+    if (ignoredPick) console.error(`refresh-use-melhor-post: ${ignoredPick}`);
   } catch (e) {
     if (e instanceof PickError) {
       console.error(`refresh-use-melhor-post: --url recusado — ${e.message}. Nada gravado.`);
