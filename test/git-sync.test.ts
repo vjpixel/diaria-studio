@@ -1847,7 +1847,6 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
       {
         "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
         "git checkout master": ok("Switched to branch 'master'"),
-        "git fetch origin": ok(""),
         // #9107: com untracked presente, o pior caso ganha 1 spawn (`git diff
         // --name-only` que decide se o stash precisa de --include-untracked).
         "git status --porcelain": ok(" M arquivo.txt\n?? solto/"),
@@ -1877,6 +1876,11 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         ),
       },
       {
+        // #13852: fetch recusado por lock de ref é re-tentado uma vez (+1 spawn).
+        "git fetch origin": [
+          fail(" ! a1..b2  master -> origin/master  (unable to update local ref)\n"),
+          ok(""),
+        ],
         "git merge --ff-only origin/master": [
           fail(
             "error: Your local changes to the following files would be overwritten by merge:\n\tarquivo.txt\n" +
@@ -1892,7 +1896,7 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
       return seqSpawn(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT, () => {});
 
     assert.equal(
       r.outcome,

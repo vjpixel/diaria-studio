@@ -171,6 +171,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GitSpawnFn, SpawnResult } from "./spawn-types.ts";
+import { isAudienceSnapshotPath } from "./audience-snapshot-pr.ts"; // #13852
 
 export type { SpawnResult } from "./spawn-types.ts";
 
@@ -357,11 +358,21 @@ export interface GitSyncResult {
    * `discardCollisionsIdenticalToUpstream()`.
    */
   discarded_identical_paths?: string[];
+  /**
+   * #13852: cópias locais de SNAPSHOT DE AUDIÊNCIA (`isAudienceSnapshotPath`)
+   * que colidiam com o ff e DIFERIAM de origin/master — geradas pelo Stage 0
+   * de outra máquina/rodada para a mesma data — e foram descartadas em favor
+   * da versão do master. O conteúdo local foi gravado antes como blob no
+   * `.git` (`git hash-object -w`): `git cat-file -p <blob>` o recupera.
+   * Também entram em `discarded_identical_paths`. Ausente quando nenhum.
+   */
+  discarded_snapshot_copies?: { path: string; blob: string }[];
 }
 
 /** Estado interno passado de `syncCodeLocked` pra `syncCode` (anexado ao resultado). */
 interface SyncCtx {
   discardedIdentical?: string[];
+  discardedSnapshotCopies?: { path: string; blob: string }[];
   ffRefusal?: FfRefusal;
   targetedStashPaths?: string[];
   reservedExcluded?: string[];
@@ -789,9 +800,17 @@ export interface LockFs {
  * 6), `discardCollisionsIdenticalToUpstream()` roda até 4 spawns (hash-object,
  * ls-tree, clean, checkout) e, se descartou algo, 1 `merge --ff-only`
  * re-tentado. O pior caso é a re-tentativa recusar com stderr não reconhecido
- * e o fluxo seguir pelo stash amplo (passos 7-19). Valor atual: 24.
+ * e o fluxo seguir pelo stash amplo (passos 7-19).
+ *
+ * #13852 (23/11/2026): de 24 para 25 — o `git fetch origin` recusado por lock
+ * de ref ("unable to update local ref") é re-tentado uma vez. No pior caso,
+ * 2 dos spawns são fetch (`GIT_FETCH_TIMEOUT_MS`), refletido em
+ * `LOCK_STALE_MS`. Valor atual: 25.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 24;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 25;
+
+/** #13852: quantos dos `MAX_SEQUENTIAL_GIT_SPAWNS` são `git fetch origin` no pior caso (1ª tentativa + re-tentativa). */
+export const MAX_SEQUENTIAL_GIT_FETCHES = 2;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -840,7 +859,10 @@ export const MAX_SEQUENTIAL_GIT_SPAWNS = 24;
  * fórmula abaixo sem precisar editar o número aqui.
  */
 export const LOCK_STALE_MS =
-  ((MAX_SEQUENTIAL_GIT_SPAWNS - 1) * GIT_TIMEOUT_MS + GIT_FETCH_TIMEOUT_MS) * 2 + 2 * 60_000;
+  ((MAX_SEQUENTIAL_GIT_SPAWNS - MAX_SEQUENTIAL_GIT_FETCHES) * GIT_TIMEOUT_MS +
+    MAX_SEQUENTIAL_GIT_FETCHES * GIT_FETCH_TIMEOUT_MS) *
+    2 +
+  2 * 60_000;
 
 /** Nome do arquivo interno que guarda o token de propriedade do lock (#3430 gap 2). */
 const OWNER_TOKEN_FILE = "owner.json";
@@ -1520,8 +1542,19 @@ export function discardCollisionsIdenticalToUpstream(
   // protegida suja o fluxo cai no #9276 sem ff, e o tudo-ou-nada do #11654
   // continua valendo.
   allowPartial = false,
-): { discarded: string[]; warnings: string[] } {
-  const none = { discarded: [] as string[], warnings: [] as string[] };
+  // #13852: caminhos cuja cópia local é DERIVADA e regenerável, e para os
+  // quais a versão de origin/master é a canônica mesmo com bytes diferentes
+  // (snapshot de audiência: o Stage 0 de duas máquinas gera, para a mesma
+  // data, `docs/audience-history/AAAA-MM-DD.md` e `context/audience-profile.md`
+  // com números diferentes; só um vai ao master pela PR rolante). Para esses,
+  // "diferente do master" também conta como descartável, desde que o master
+  // tenha o arquivo (nunca descarta modificação local de arquivo que o
+  // upstream apagou). O conteúdo local é antes gravado como blob no `.git`
+  // (`hash-object -w`, mesmo spawn da medição): nada se perde sem rastro.
+  // Ausente (default, e o pull do trem #12223): só bytes idênticos.
+  equivalentPath?: (path: string) => boolean,
+): { discarded: string[]; warnings: string[]; snapshotCopies: { path: string; blob: string }[] } {
+  const none = { discarded: [] as string[], warnings: [] as string[], snapshotCopies: [] as { path: string; blob: string }[] };
   if (refusal.kind !== "local_changes_collide" && refusal.kind !== "untracked_collide") return none;
   const { tracked, untracked } = identicalDiscardCandidates(refusal.paths, porcelainStdout);
   const candidates = [...tracked, ...untracked];
@@ -1543,7 +1576,8 @@ export function discardCollisionsIdenticalToUpstream(
     };
   }
 
-  const hashRes = spawn("git", ["hash-object", "--", ...candidates]);
+  const hasEquivalent = equivalentPath !== undefined && candidates.some((p) => equivalentPath(p));
+  const hashRes = spawn("git", ["hash-object", ...(hasEquivalent ? ["-w"] : []), "--", ...candidates]);
   const hashes = hashRes.stdout.split("\n").map((h) => h.trim()).filter((h) => h.length > 0);
   if (hashRes.status !== 0 || hashes.length !== candidates.length) {
     return {
@@ -1565,7 +1599,15 @@ export function discardCollisionsIdenticalToUpstream(
     };
   }
   const upstream = parseLsTreeBlobs(treeRes.stdout);
-  const identical = new Set(candidates.filter((p, i) => upstream.get(p) === hashes[i]));
+  const localBlob = new Map(candidates.map((p, i) => [p, hashes[i]] as const));
+  // #13852: snapshot com bytes diferentes mas presente no master conta como
+  // descartável (a versão do master é a canônica; a local fica no blob).
+  const snapshotDiffering = new Set(
+    hasEquivalent
+      ? candidates.filter((p) => equivalentPath!(p) && upstream.has(p) && upstream.get(p) !== localBlob.get(p))
+      : [],
+  );
+  const identical = new Set(candidates.filter((p) => upstream.get(p) === localBlob.get(p) || snapshotDiffering.has(p)));
   if (allowPartial && identical.size === 0) return none;
   if (!allowPartial && identical.size < candidates.length) {
     const differing = candidates.filter((p) => !identical.has(p));
@@ -1601,14 +1643,51 @@ export function discardCollisionsIdenticalToUpstream(
           `${identicalTracked.join(", ")}. Stderr: ${coRes.stderr.trim() || "(vazio)"}`,
       );
   }
-  if (discarded.length > 0) {
+  const snapshotCopies = discarded
+    .filter((p) => snapshotDiffering.has(p))
+    .map((p) => ({ path: p, blob: localBlob.get(p)! }));
+  const plainIdentical = discarded.filter((p) => !snapshotDiffering.has(p));
+  if (plainIdentical.length > 0) {
     warnings.push(
-      `[git-sync] INFO: ${discarded.length} caminho(s) em colisão eram idênticos a origin/master e foram ` +
-        `descartados sem perda antes de re-tentar o ff (#11562): ${discarded.slice(0, 10).join(", ")}` +
-        `${discarded.length > 10 ? ` (+${discarded.length - 10})` : ""}.`,
+      `[git-sync] INFO: ${plainIdentical.length} caminho(s) em colisão eram idênticos a origin/master e foram ` +
+        `descartados sem perda antes de re-tentar o ff (#11562): ${plainIdentical.slice(0, 10).join(", ")}` +
+        `${plainIdentical.length > 10 ? ` (+${plainIdentical.length - 10})` : ""}.`,
     );
   }
-  return { discarded, warnings };
+  if (snapshotCopies.length > 0) {
+    warnings.push(
+      `[git-sync] INFO: ${snapshotCopies.length} snapshot(s) de audiência local(is) diferiam de origin/master e ` +
+        `foram trocados pela versão do master (#13852 — dado gerado, o master é a cópia canônica). Conteúdo ` +
+        `local guardado como blob no .git: ` +
+        snapshotCopies.map((c) => `${c.path} → git cat-file -p ${c.blob}`).join("; ") +
+        `.`,
+    );
+  }
+  return { discarded, warnings, snapshotCopies };
+}
+
+/**
+ * #13852: o stderr do `git fetch` indica que o ref local não pôde ser
+ * atualizado por lock/corrida (outro processo no mesmo `.git`), não por rede
+ * ou credencial. Formas do git: `! a..b  master -> origin/master  (unable to
+ * update local ref)` e `error: cannot lock ref 'refs/remotes/origin/master':
+ * ...` (`is at X but expected Y`, `Unable to create '...lock': File exists`).
+ * Puro.
+ */
+export function isFetchRefLockError(stderr: string): boolean {
+  return /unable to update local ref|cannot lock ref/i.test(stderr);
+}
+
+/** #13852: pausa antes de re-tentar o fetch recusado por lock de ref. */
+export const FETCH_REF_LOCK_RETRY_DELAY_MS = 3_000;
+
+/** Espera síncrona (o sync inteiro é síncrono, `spawnSync`). */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function firstLines(stderr: string, n = 3): string {
+  return stderr.trim().split("\n").slice(0, n).join(" | ") || "(vazio)";
 }
 
 function isAlreadyUpToDate(stdout: string): boolean {
@@ -1647,6 +1726,9 @@ export function syncCode(
   spawn: SpawnFn = defaultSpawn,
   lock?: SyncLock,
   repoRoot: string = REPO_ROOT,
+  // #13852: pausa antes de re-tentar o fetch recusado por lock de ref —
+  // injetável só para testes (no-op), produção bloqueia de verdade.
+  sleep: (ms: number) => void = sleepSync,
 ): GitSyncResult {
   // #7336: recusa ANTES de qualquer spawn git ou tentativa de lock — sync de
   // código só faz sentido no checkout principal. Rodar dentro do worktree
@@ -1701,7 +1783,7 @@ export function syncCode(
     // direto recusa — anexado aqui pra cobrir TODO outcome dali em diante sem
     // repetir o campo em cada `return`.
     const ctx: SyncCtx = {};
-    const result = syncCodeLocked(spawn, ctx);
+    const result = syncCodeLocked(spawn, ctx, sleep);
     // #6090: estado de sincronização é SEMPRE medido after-the-fact via
     // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
     // #8719: mesma disciplina para `stale_autostash_count` via
@@ -1717,6 +1799,7 @@ export function syncCode(
       ...(ctx.reservedExcluded ? { reserved_untracked_excluded: ctx.reservedExcluded } : {}),
       ...(ctx.ffRetriedAfterPartialStash ? { ff_retried_after_partial_stash: true } : {}),
       ...(ctx.discardedIdentical ? { discarded_identical_paths: ctx.discardedIdentical } : {}),
+      ...(ctx.discardedSnapshotCopies ? { discarded_snapshot_copies: ctx.discardedSnapshotCopies } : {}),
     };
     return out;
   } finally {
@@ -1736,6 +1819,7 @@ export function syncCode(
 function syncCodeLocked(
   spawn: SpawnFn,
   ctx: SyncCtx = {},
+  sleep: (ms: number) => void = sleepSync,
 ): Omit<GitSyncResult, "up_to_date" | "commits_behind" | "stale_autostash_count"> {
   const warnings: string[] = [];
 
@@ -1816,7 +1900,24 @@ function syncCodeLocked(
   // #5302: timeout PRÓPRIO (GIT_FETCH_TIMEOUT_MS, maior que GIT_TIMEOUT_MS) —
   // um fetch trazendo volume grande de refs novos pode legitimamente passar
   // dos 120s dos comandos rápidos sem ser um erro real.
-  const fetchRes = spawn("git", ["fetch", "origin"], GIT_FETCH_TIMEOUT_MS);
+  let fetchRes = spawn("git", ["fetch", "origin"], GIT_FETCH_TIMEOUT_MS);
+  // #13852: "unable to update local ref" / "cannot lock ref" = outro processo
+  // mexendo nos refs do MESMO .git (outro fetch de worktree/sessão/trem, o
+  // `.git` é compartilhado por todos os worktrees). É transitório: re-tenta
+  // UMA vez depois de uma pausa curta. Antes, a 1ª recusa já virava
+  // `fetch_failed` e o ff nem era tentado (incidente 22/11/2026, Stage 5 de
+  // 261123 rodou 35 commits atrás).
+  const fetchRefLockRace = fetchRes.status !== 0 && fetchRes.status !== null && isFetchRefLockError(fetchRes.stderr);
+  if (fetchRefLockRace) {
+    warnings.push(
+      `[git-sync] INFO: git fetch origin recusou atualizar ref local (contenção de lock com outro processo no ` +
+        `mesmo .git, #13852) — re-tentando uma vez em ${FETCH_REF_LOCK_RETRY_DELAY_MS / 1000}s. ` +
+        `Stderr: ${firstLines(fetchRes.stderr)}`,
+    );
+    sleep(FETCH_REF_LOCK_RETRY_DELAY_MS);
+    fetchRes = spawn("git", ["fetch", "origin"], GIT_FETCH_TIMEOUT_MS);
+    if (fetchRes.status === 0) warnings.push("[git-sync] INFO: git fetch origin re-tentado com sucesso (#13852).");
+  }
   if (fetchRes.status !== 0) {
     // #5302: distinguir kill por timeout (`spawnSync` mata o processo e
     // devolve `status === null`) de erro real do git (`status !== 0 && status
@@ -1830,9 +1931,16 @@ function syncCodeLocked(
         `atrasado) podem ser mortos pelo timeout mesmo já tendo atualizado boa parte ou todos os refs ` +
         `remotos no .git local antes do kill (#5302). Rode 'git fetch origin' manualmente para confirmar/` +
         `completar. Edição continua com código local nesta rodada.`
-      : `[git-sync] WARN: git fetch origin falhou (exit ${fetchRes.status} — offline, erro de rede, ou ` +
-        `credencial). Edição continua com código local. ` +
-        `Stderr: ${fetchRes.stderr.trim() || "(vazio)"}`;
+      : isFetchRefLockError(fetchRes.stderr)
+        ? `[git-sync] WARN: git fetch origin não conseguiu atualizar ref local${fetchRefLockRace ? " nem na re-tentativa" : ""} ` +
+          `(exit ${fetchRes.status}, #13852) — NÃO é rede nem credencial: outro processo segura o lock do ref no ` +
+          `mesmo .git (fetch concorrente de outro worktree/sessão) ou sobrou um '.lock' órfão de um processo ` +
+          `morto. Confira 'ls .git/refs/remotes/origin/*.lock .git/packed-refs.lock' e, sem git rodando, ` +
+          `remova o .lock; depois rode o sync de novo. Edição continua com código local. ` +
+          `Stderr: ${fetchRes.stderr.trim() || "(vazio)"}`
+        : `[git-sync] WARN: git fetch origin falhou (exit ${fetchRes.status} — offline, erro de rede, ou ` +
+          `credencial). Edição continua com código local. ` +
+          `Stderr: ${fetchRes.stderr.trim() || "(vazio)"}`;
     warnings.push(msg);
     return {
       outcome: isTimeout ? "fetch_timeout" : "fetch_failed",
@@ -1944,10 +2052,20 @@ function syncCodeLocked(
       // direcionado — descarte parcial dos idênticos é seguro e tira a
       // página/sitemap da edição do autostash.
       const allowPartial = findDirtyProtectedConfig(statusRes.stdout).length === 0;
-      const identical = discardCollisionsIdenticalToUpstream(spawn, ffRefusal, statusRes.stdout, allowPartial);
+      // #13852: snapshot de audiência local diferente do master (gerado pelo
+      // Stage 0 de outra máquina para a mesma data) também sai — sem isso ele
+      // ia pro stash direcionado a cada edição, ou travava o ff junto da config.
+      const identical = discardCollisionsIdenticalToUpstream(
+        spawn,
+        ffRefusal,
+        statusRes.stdout,
+        allowPartial,
+        isAudienceSnapshotPath,
+      );
       warnings.push(...identical.warnings);
       if (identical.discarded.length > 0) {
         ctx.discardedIdentical = identical.discarded;
+        if (identical.snapshotCopies.length > 0) ctx.discardedSnapshotCopies = identical.snapshotCopies;
         const retryFfRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
         if (retryFfRes.status === 0) {
           const upToDate = isAlreadyUpToDate(retryFfRes.stdout);

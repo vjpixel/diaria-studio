@@ -21,7 +21,11 @@
  * do merge, as cópias locais idênticas a origin/master são descartadas por
  * quem atualiza o checkout: o pull pós-merge do trem
  * (`syncLocalCheckoutAfterMerge`, #12223) e o `sync-code.ts` do início da
- * próxima edição (#11562, `discardCollisionsIdenticalToUpstream`).
+ * próxima edição (#11562, `discardCollisionsIdenticalToUpstream`). Desde o
+ * #13852 o `sync-code.ts` descarta também a cópia local que DIFERE do master
+ * (snapshot da mesma data gerado pelo Stage 0 de outra máquina): o master é
+ * a cópia canônica e o conteúdo local fica como blob no `.git`. O pull do
+ * trem segue só com cópias idênticas.
  *
  * As cópias ficam no checkout até o merge de propósito (#12223): a edição do
  * dia lê `context/audience-profile.md` nas Etapas 1-2, logo depois do 0i, e
