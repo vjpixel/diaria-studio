@@ -699,7 +699,8 @@ export const RESUME_DEFAULT_ROUNDS = 2;
 /**
  * #13860 — edição 261123: chunk de ~4 KB estourou 60 s em todas as tentativas
  * enquanto payloads de até 428 bytes respondiam em 0,5–2,5 s. Depois de uma
- * falha de API, as rodadas seguintes mandam chunks deste tamanho (continua
+ * falha de API, as rodadas seguintes mandam chunks deste tamanho, e a 1ª
+ * rodada também quando o marcador já registra falha de API (continua
  * correção completa, todos os chunks precisam responder; sem fallback por
  * parágrafo).
  */
@@ -766,22 +767,29 @@ export function resumeClariceSpaced(
     return { outcome, rounds };
   };
 
+  // #13860 — se a invocação anterior já terminou em falha de API (exit 3/6),
+  // a 1ª rodada desta já vai com chunk menor: repetir 3 tentativas de 60 s com
+  // o chunk default é gastar a rodada no mesmo timeout.
+  const priorOutcome = /^failed:(\d+)$/.exec(readClaricePending(editionDir)?.last_outcome ?? "");
+  const priorApiFailure = priorOutcome !== null && COOLDOWN_EXITS.has(Number(priorOutcome[1]));
+
   // Uma rodada só: comportamento de antes (teto default do filho, sem corte).
   const single = total === 1;
   let deadline = single ? undefined : Math.min(firstDeadline, budget);
   for (let i = 1; ; i++) {
     const startedAt = iso();
+    const small = i > 1 || priorApiFailure;
     const outcome = resumeClarice(editionDir, runner, {
       ...opts,
       ...(i > 1 ? { retryNow: true } : {}),
       ...(deadline !== undefined ? { deadlineMs: deadline } : {}),
-      ...(i > 1 ? { chunkChars: RESUME_SMALL_CHUNK_CHARS } : {}),
+      ...(small ? { chunkChars: RESUME_SMALL_CHUNK_CHARS } : {}),
     });
     const r: ResumeRound = {
       round: i,
       startedAt,
       ...(deadline !== undefined ? { deadlineMs: deadline } : {}),
-      ...(i > 1 ? { chunkChars: RESUME_SMALL_CHUNK_CHARS } : {}),
+      ...(small ? { chunkChars: RESUME_SMALL_CHUNK_CHARS } : {}),
       status: outcome.status,
       ...(outcome.status === "failed" ? { exitCode: outcome.exitCode, reason: outcome.reason } : {}),
     };
