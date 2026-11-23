@@ -142,7 +142,7 @@ describe("playbooks guardam re-run após aprovação remota (#11690)", () => {
     const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
     const stage5 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-5.md"), "utf8");
     assert.match(stage4, /edition-lock\.ts release --edition-dir \{EDITION_DIR\} --complete-stage 4/);
-    assert.match(stage5, /stale-edition-guard\.ts check --edition-dir \{EDITION_DIR\} --step 4 --outputs-missing/);
+    assert.match(stage5, /stale-edition-guard\.ts check --edition-dir \{EDITION_DIR\} --step 4 --caller-stage 5 --outputs-missing/);
     assert.match(stage5, /exit 4 → halt banner/);
   });
 });
@@ -215,7 +215,7 @@ describe("follow-ups de review (#11697)", () => {
     assert.match(stage4, /Qualquer exit ≠ 0 do guard/);
     assert.match(stage4, /halt do guard #11690, que não escreve nada/);
     assert.match(stage4, /--force/);
-    assert.match(stage5, /--step 4`; exit 4/);
+    assert.match(stage5, /--step 4 --caller-stage 5`; exit 4/);
     assert.equal((stage5.match(/Qualquer outro exit ≠ 0 \(2, crash\) = mesmo halt/g) ?? []).length, 2);
     assert.equal((stage5.match(/`--force`/g) ?? []).length >= 2, true);
   });
@@ -248,5 +248,28 @@ describe("#13851 sentinel do Stage 4 atrasado no sync", () => {
     writeFileSync(join(dir, "02-reviewed.md"), "x");
     assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--caller-stage", "5"], { host: "neo" }), 4);
     assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4"], { host: "neo" }), 0);
+  });
+  it("--caller-stage 05 vale como 5; valor não inteiro sai 2", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), "x");
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--caller-stage", "05"], { host: "neo" }), 4);
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--caller-stage", "x"], { host: "neo" }), 2);
+  });
+  it("trava deste host (viva ou tombstone) não emite prev_gate_in_transit; de outro host, sim", () => {
+    const recent = { ...base, sentinelSteps: [1, 2, 3], newestFileAgeMs: 60_000 };
+    assert.equal(assessStaleEdition({ ...recent, lock: lock("neo", 4) }).ok, true);
+    assert.equal(
+      assessStaleEdition({ ...recent, lock: { ...lock("neo", 4), released_at: "2026-10-29T10:00:00Z", interrupted_stage: 4 } }).ok,
+      true,
+    );
+    const remote = assessStaleEdition({ ...recent, lock: lock("300", 2) });
+    assert.deepEqual(remote.signals.map((s) => s.kind), ["prev_gate_in_transit"]);
+  });
+  it("playbook do Stage 5: os dois ramos (exit 1 e 2) passam --caller-stage 5", () => {
+    const stage5 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-5.md"), "utf8");
+    const calls = stage5.match(/stale-edition-guard\.ts check --edition-dir \{EDITION_DIR\} --step 4[^`]*`/g) ?? [];
+    assert.equal(calls.length, 2);
+    for (const c of calls) assert.match(c, /--step 4 --caller-stage 5/);
   });
 });

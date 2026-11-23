@@ -2,7 +2,12 @@
  * stale-edition-guard.ts (#11690) — CLI. Lógica em `scripts/lib/stale-edition-guard.ts`.
  *
  * Uso (antes de re-rodar um stage porque o sentinel dele/do anterior sumiu):
- *   npx tsx scripts/stale-edition-guard.ts check --edition-dir DIR --step N [--outputs-missing] [--edition AAMMDD]
+ *   npx tsx scripts/stale-edition-guard.ts check --edition-dir DIR --step N [--caller-stage M] [--outputs-missing] [--edition AAMMDD]
+ * `--caller-stage M` (#13851): etapa que está checando o pré-requisito, quando
+ * difere de `--step`. A Etapa 5 checa o sentinel ausente do Stage 4 com
+ * `--step 4 --caller-stage 5`; com ela, arquivo da edição recente (≤30 min)
+ * sem o sentinel 4 sai 4 (`prev_gate_in_transit`: gate provavelmente aprovado
+ * em outra máquina). Inteiro (`5` e `05` valem igual); outro valor sai 2.
  * `--force` (só com confirmação do editor): sai 0 e registra o override em
  * `data/run-log.jsonl` (`level: warn`, `message: stale_edition_guard_forced`,
  * com os sinais em `details`, #11714). `--edition` default = nome do
@@ -29,6 +34,9 @@ export interface GuardCliOpts {
   now?: number;
 }
 
+const USAGE =
+  "Uso: stale-edition-guard.ts check --edition-dir DIR --step N [--caller-stage M] [--outputs-missing] [--edition AAMMDD] [--force]";
+
 function newestAgeMs(dir: string, now: number): number | null {
   const newest = findNewestFile(dir);
   return newest ? now - newest.mtimeMs : null;
@@ -39,7 +47,12 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
   const { positional, values, flags } = parseArgs(argv);
   const step = Number(values.step);
   if (positional[0] !== "check" || !values["edition-dir"] || !Number.isInteger(step)) {
-    console.error("Uso: stale-edition-guard.ts check --edition-dir DIR --step N [--outputs-missing] [--edition AAMMDD] [--force]");
+    console.error(USAGE);
+    return 2;
+  }
+  const callerStage = values["caller-stage"] !== undefined ? Number(values["caller-stage"]) : undefined;
+  if (callerStage !== undefined && !Number.isInteger(callerStage)) {
+    console.error(USAGE);
     return 2;
   }
   const dir = resolve(values["edition-dir"]);
@@ -52,8 +65,8 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     localHost: opts.host ?? hostname(),
     outputsMissing,
     lockUnreadable: editionLockUnreadable(dir),
-    callerStage: values["caller-stage"] ? Number(values["caller-stage"]) : undefined,
-    newestFileAgeMs: step === 5 || values["caller-stage"] === "5" ? newestAgeMs(dir, opts.now ?? Date.now()) : undefined,
+    callerStage,
+    newestFileAgeMs: step === 5 || callerStage === 5 ? newestAgeMs(dir, opts.now ?? Date.now()) : undefined,
     now: opts.now,
   });
   console.log(JSON.stringify(verdict));
@@ -91,6 +104,14 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     // #11729: a idade do arquivo mais recente da edição aqui ajuda o editor a
     // decidir entre "o sync não chegou" e "a outra sessão morreu".
     const evidence = formatNewestFileEvidence(findNewestFile(dir), opts.now ?? Date.now());
+    if (verdict.signals.every((s) => s.kind === "prev_gate_in_transit")) {
+      // #13851: aqui re-rodar a Etapa 4 PODE ser a ação certa (gate nunca
+      // aprovado); o "não re-rodar o stage" genérico abaixo induziria ao erro.
+      console.error(
+        `[stale-edition-guard] Stage 4 sem sentinel nesta máquina, mas a edição teve atividade recente (${describeSignals(verdict.signals)}). ${evidence} Se o gate foi aprovado em outra máquina, aguardar o sync do Drive e re-rodar a Etapa 5; se o gate não foi aprovado (ou a revisão ainda está em andamento), concluir /diaria-4-revisao antes. Para seguir mesmo assim, o editor confirma e re-roda o guard com --force.`,
+      );
+      return 4;
+    }
     console.error(
       `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). ${evidence} Aguardar o sync do Drive (bisync do 300 / Drive for desktop) e tentar de novo; não re-rodar o stage. Se a outra sessão morreu (trava órfã), ou o tombstone de aprovação ficou para trás porque o sentinel/outputs foram removidos de propósito, o editor confirma e re-roda o guard com --force.`,
     );
