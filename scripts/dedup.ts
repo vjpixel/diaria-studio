@@ -69,8 +69,9 @@ import {
   extractPastEditionArticleTitlesWithEdition,
   extractPastEditionArticleTitleByUrl,
   extractDestaqueUpgradeEligibleUrls,
+  extractPastPublicationsWithinDays,
 } from "./lib/past-editions-extract.ts";
-import { DESTAQUE_ONLY_FIELD } from "./lib/destaque-upgrade.ts"; // #12193
+import { DESTAQUE_ONLY_FIELD, attachDestaqueOnlyOrigins } from "./lib/destaque-upgrade.ts"; // #12193, #13883
 // #2833: extraido pra scripts/lib/inbox-title-resolve.ts (movimentacao pura)
 // -- re-exportado abaixo pra manter compat com importadores existentes.
 import {
@@ -1152,6 +1153,22 @@ async function main() {
     extractPastItemTitles(pastMd, window, currentAammdd),
     destaqueUpgradeEligible,
   );
+
+  // #13883: o candidato a upgrade (#12193) leva onde já saiu — edição e
+  // seção — para o gate 1, o writer-destaque e o invariante do gate 4.
+  const marked = result.kept.filter((a) => typeof a[DESTAQUE_ONLY_FIELD] === "string");
+  if (marked.length > 0) {
+    const origins = extractPastPublicationsWithinDays(
+      marked.map((a) => a.url),
+      pastMd,
+      editionsDir,
+      urlWindowDays,
+      currentAammdd,
+      dedupUrlKey,
+    );
+    const n = attachDestaqueOnlyOrigins(marked, origins, dedupUrlKey);
+    console.error(`dedup (#13883): ${n}/${marked.length} candidata(s) a upgrade com edição/seção de origem gravada(s)`);
+  }
 
   console.error(
     `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, url-window=${urlWindowDays} dias, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold}, subject-vs-past-lowered=${subjectVsPastThresholdLowered})`
