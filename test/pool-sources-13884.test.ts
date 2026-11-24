@@ -10,7 +10,8 @@
  *     reusando o cache por URL;
  *   - download falho fica marcado com o motivo e aparece no gate 4
  *     (`source-not-read`) mesmo quando o resumo do Stage 1 era longo;
- *   - item com texto da página em disco não é acusado;
+ *   - página baixada não limpa o resumo curto enquanto nenhum writer lê o
+ *     texto (#13907, `test/source-not-read-pool-ok-13907.test.ts`);
  *   - promover item a destaque herda o texto já lido (sem rede).
  */
 import { describe, it } from "node:test";
@@ -173,10 +174,11 @@ describe("gate 4: source-not-read com o download do pool (#13884)", () => {
       const v = checkSourceNotRead(ed);
       assert.equal(v.length, 1);
       assert.equal(v[0].severity, "warning");
-      assert.match(v[0].message, /fonte não lida: 2 item/);
+      assert.match(v[0].message, /fonte não lida: 3 item/);
       assert.match(v[0].message, /"Seven new world-class models at scalable price-performance" \(download da página falhou: HTTP 403/);
       assert.match(v[0].message, /"Bloqueado" \(download da página falhou/);
-      assert.doesNotMatch(v[0].message, /Tutorial/, "página lida em disco vence o resumo curto");
+      // #13907: página baixada que nenhum writer lê não limpa o resumo curto.
+      assert.match(v[0].message, /"Tutorial" \(resumo de 6 caracteres/);
     } finally {
       rmSync(ed, { recursive: true, force: true });
     }
