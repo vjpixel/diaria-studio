@@ -30,8 +30,13 @@ export function consensusAIRelevant(item: Item & {url: string; title: string}): 
   return category === "noticias" ? isArticleAIRelevant(article) : !isNonAITopic(article);
 }
 
+/**
+ * `alwaysSenders`: chaves (`senderKey`) dos remetentes aprovados com `consensus_ai_always`
+ * no registro (`seed/newsletter-senders.json`, hoje o The News). Identifica pelo endereço,
+ * nunca pelo nome de exibição; o endereço mora no registro, não no código.
+ */
 export function buildNewsletterConsensus(links: ConsensusLink[], metadata: Item[], final: Item[], removals: Item[],
-  keyOf: (url: string) => string): NewsletterConsensus[] {
+  keyOf: (url: string) => string, alwaysSenders: ReadonlySet<string> = new Set()): NewsletterConsensus[] {
   const byUrl = new Map<string, Item>();
   for (const item of metadata) for (const alias of [item.url, item.original_url, item.resolvedFrom]) {
     if (typeof alias === "string") byUrl.set(keyOf(alias), {...byUrl.get(keyOf(alias)), ...item});
@@ -52,7 +57,7 @@ export function buildNewsletterConsensus(links: ConsensusLink[], metadata: Item[
   }
   return groups.flatMap((group) => {
     const senders = new Map(group.map((l) => [senderKey(l.newsletter), senderDisplayName(l.newsletter)]));
-    const theNews = group.some((l) => ["created@thenewscc.com.br", "newsletter@thenewscc.com.br"].includes(senderKey(l.newsletter)) && consensusAIRelevant({...l, summary: l.summary}));
+    const theNews = group.some((l) => alwaysSenders.has(senderKey(l.newsletter)) && consensusAIRelevant({...l, summary: l.summary}));
     if (senders.size < 2 && !theNews) return [];
     const best = [...group].sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity) || Number(realTitle(b.title)) - Number(realTitle(a.title)) || a.url.localeCompare(b.url))[0];
     const matches = (item: Item) => typeof item.url === "string" && group.some((l) =>

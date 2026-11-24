@@ -14,7 +14,7 @@ import { processThreads, type CapturedThread } from "./capture-newsletter-urls.t
 import type { DiscoveredThread, FetchManifestEvent } from "./fetch-newsletter-threads.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import {
-  classifySender, detectBulkService, loadSenderRegistry, senderKey, validateSenderDecision, validateSenderRegistry,
+  classifySender, consensusAlwaysSenders, detectBulkService, loadSenderRegistry, senderKey, validateSenderDecision, validateSenderRegistry,
   DEFAULT_BULK_SERVICE_DOMAINS, type SenderRegistry, type SenderDecision,
 } from "./lib/newsletter-senders.ts";
 import { computeIntakeFingerprint, reviewedEntries } from "./lib/newsletter-intake-fingerprint.ts";
@@ -196,7 +196,8 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
   let destaqueIndex = 0;
   const consensusFinal = finalItems.map((item) => ({...item,
     destination: item.destination === DESTAQUE ? `D${++destaqueIndex}` : item.destination}));
-  const consensus = buildNewsletterConsensus(links, [...metadata, ...scores, pool].flatMap(collectItems), consensusFinal, opts.removals ?? [], joinKey);
+  const consensus = buildNewsletterConsensus(links, [...metadata, ...scores, pool].flatMap(collectItems), consensusFinal, opts.removals ?? [], joinKey,
+    consensusAlwaysSenders(registry));
   return {rows, links, newsletter_consensus: consensus, cited_multi: citedMulti, pending_senders: [...pendingSenders].sort(), discovery, fingerprint_keys: [...fingerprintKeys].sort()};
 }
 function json(path: string): unknown { return JSON.parse(readFileSync(path, "utf8")); }
@@ -235,7 +236,11 @@ export function applyDecisions(path: string, batch: Record<string, SenderDecisio
     const key = senderKey(sender);
     validateSenderDecision(key, decision);
     if (decision.status === "rejeitado" && !offered?.has(key)) { skipped++; continue; }
-    next.senders[key] = decision; applied++;
+    // #13885: nova decisão sem o campo preserva a marca de consenso já gravada.
+    const prevFlag = next.senders[key]?.consensus_ai_always;
+    next.senders[key] = decision.consensus_ai_always === undefined && prevFlag !== undefined
+      ? {...decision, consensus_ai_always: prevFlag} : decision;
+    applied++;
   }
   validateSenderRegistry(next);
   const tmp = path + ".tmp";

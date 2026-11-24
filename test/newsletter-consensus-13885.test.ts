@@ -1,8 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildNewsletterConsensus, renderNewsletterConsensus, type ConsensusLink } from "../scripts/lib/newsletter-consensus.ts";
-import { buildIntake, joinKey } from "../scripts/audit-newsletter-intake.ts";
+import { applyDecisions, buildIntake, joinKey } from "../scripts/audit-newsletter-intake.ts";
+import { consensusAlwaysSenders, validateSenderRegistry } from "../scripts/lib/newsletter-senders.ts";
 const link = (url: string, title: string, newsletter: string, score: number | null = 70): ConsensusLink =>
   ({url, title, newsletter, score, destino: "fora da edição", in_pool: false});
 const build = (links: ConsensusLink[], final: Record<string, unknown>[] = [], removals: Record<string, unknown>[] = []) =>
@@ -22,13 +25,32 @@ describe("consenso por assunto #13885", () => {
     assert.equal(build([link("https://a.test/x", "(newsletter:A)", "a@x.test"),
       link("https://b.test/y", "(newsletter:A)", "b@x.test")]).length, 0);
   });
-  it("The News usa endereço exato, filtro do pool e inclui IA com uma só menção", () => {
-    for (const sender of ["created@thenewscc.com.br", "newsletter@thenewscc.com.br"]) {
-      const out = build([link("https://a.test/ia", "OpenAI announces ChatGPT update", `Renomeado <${sender}>`)]);
+  it("The News usa endereço exato do registro, filtro do pool e inclui IA com uma só menção", () => {
+    const always = new Set(["created@thenewscc.com.br", "newsletter@thenewscc.com.br"]);
+    const buildTN = (links: ConsensusLink[]) => buildNewsletterConsensus(links, [], [], [], joinKey, always);
+    for (const sender of always) {
+      const out = buildTN([link("https://a.test/ia", "OpenAI announces ChatGPT update", `Renomeado <${sender}>`)]);
       assert.equal(out.length, 1); assert.equal(out[0].the_news, true);
     }
-    assert.equal(build([link("https://a.test/sports", "Resultado da rodada de futebol", "created@thenewscc.com.br")]).length, 0);
-    assert.equal(build([link("https://a.test/ia", "ChatGPT update", "The News <fake@x.test>")]).length, 0);
+    assert.equal(buildTN([link("https://a.test/sports", "Resultado da rodada de futebol", "created@thenewscc.com.br")]).length, 0);
+    assert.equal(buildTN([link("https://a.test/ia", "ChatGPT update", "The News <fake@x.test>")]).length, 0);
+    // Sem a marca no registro, nem o endereço do The News ativa a exceção.
+    assert.equal(build([link("https://a.test/ia", "OpenAI announces ChatGPT update", "created@thenewscc.com.br")]).length, 0);
+  });
+  it("marca consensus_ai_always: só aprovados, validada, preservada em nova decisão e presente no seed real", () => {
+    const reg = {version: 1 as const, senders: {
+      "a@x.test": {status: "aprovado" as const, reason: "r", decided_at: "2026-11-24", consensus_ai_always: true},
+      "b@x.test": {status: "rejeitado" as const, reason: "r", decided_at: "2026-11-24", consensus_ai_always: true},
+      "c@x.test": {status: "aprovado" as const, reason: "r", decided_at: "2026-11-24"}}};
+    assert.deepEqual([...consensusAlwaysSenders(reg)], ["a@x.test"]);
+    assert.throws(() => validateSenderRegistry({version: 1, senders: {"a@x.test": {...reg.senders["a@x.test"], consensus_ai_always: "sim"}}}), /consensus_ai_always/);
+    const dir = mkdtempSync(join(tmpdir(), "consensus-13885-"));
+    const path = join(dir, "senders.json");
+    writeFileSync(path, JSON.stringify(reg));
+    applyDecisions(path, {"a@x.test": {status: "aprovado", reason: "redecidido", decided_at: "2026-11-25"}});
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).senders["a@x.test"].consensus_ai_always, true);
+    const seed = validateSenderRegistry(JSON.parse(readFileSync(new URL("../seed/newsletter-senders.json", import.meta.url), "utf8")));
+    assert.ok(consensusAlwaysSenders(seed).has("created@thenewscc.com.br"));
   });
   it("expõe remoção real e pendência sem inventar score ou motivo", () => {
     const links = [link("https://a.test/x", "Introducing Gemini 4 Neon", "a@x.test", null),
@@ -58,5 +80,15 @@ describe("consenso por assunto #13885", () => {
     assert.equal(result.newsletter_consensus[0].score, 82);
     assert.equal(result.newsletter_consensus[0].destino, "D1");
     assert.equal(result.newsletter_consensus[0].count, 2);
+  });
+  it("intake liga a marca do registro: IA do remetente marcado entra com 1 só newsletter", () => {
+    const url = "https://openai.com/index/solo-launch";
+    const mk = (flag: boolean) => ({version: 1 as const, senders: {"tn@x.test": {status: "aprovado" as const, reason: "t", decided_at: "2026-11-24",
+      ...(flag ? {consensus_ai_always: true} : {})}}});
+    const threads = [{thread_id: "t", sender: "The News <tn@x.test>", body: url, subject: "s", date: "2026-11-24"}];
+    const scores = [{articles: [{url, title: "OpenAI launches ChatGPT update", score: 75}]}];
+    const on = buildIntake(threads, mk(true), scores, [], []).newsletter_consensus;
+    assert.equal(on.length, 1); assert.equal(on[0].the_news, true); assert.equal(on[0].score, 75);
+    assert.equal(buildIntake(threads, mk(false), scores, [], []).newsletter_consensus.length, 0);
   });
 });
