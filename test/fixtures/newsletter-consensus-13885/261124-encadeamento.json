@@ -1,0 +1,101 @@
+{
+  "source": "261124/_internal/newsletter-link-scores.json; só as linhas dos assuntos Jensen Huang, Crossfade, seo-skills e páginas Home, sem corpo de e-mail (review da PR #13917)",
+  "links": [
+    {
+      "url": "https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Board-Reinstates-Jensen-Huang-as-President-CEO-and-Board-Director/default.aspx",
+      "title": "Jensen Huang está de volta à Nvidia 11 dias depois de sair",
+      "score": 102,
+      "newsletter": "AI Agents News <agentpulse@mail.beehiiv.com>",
+      "destino": "destaque",
+      "in_pool": true
+    },
+    {
+      "url": "https://techcrunch.com/2026/11/23/nvidia-reverses-course-and-brings-jensen-huang-back-as-ceo",
+      "title": "Nvidia reverses course and brings Jensen Huang back as CEO",
+      "score": 71,
+      "newsletter": "Cyberman <cyberman@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://247wallst.com/investing/2026/11/23/nvidia-stock-soars-27-before-the-bell-after-its-board-reinstated-jensen-huang-as-ceo-it-still-needs-50-to-get-back-to-its-record",
+      "title": "Nvidia Stock Soars 27% Before the Bell After Its Board Reinstated Jensen Huang as CEO. It Still Needs 50% to Get Back to Its Record",
+      "score": 60,
+      "newsletter": "AI Breakfast <aibreakfast@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://techcrunch.com/2026/11/17/nvidia-is-abandoning-china-after-jensen-huangs-ouster",
+      "title": "Nvidia is abandoning China after Jensen Huang's ouster",
+      "score": 55,
+      "newsletter": "\"7min.ai\" <email@newsletter.7min.ai>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://techcrunch.com/2026/11/17/sec-reportedly-investigating-nvidia-amid-huang-exit",
+      "title": "SEC reportedly investigating Nvidia amid Huang exit",
+      "score": 50,
+      "newsletter": "\"7min.ai\" <email@newsletter.7min.ai>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://crossfade.company/",
+      "title": "Crossfade: Claude Code, Codex and Cursor in your Figma file",
+      "score": 45,
+      "newsletter": "Evolving AI Insights <evolvingai@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://github.com/Illyism/seo-skills",
+      "title": "GitHub - Illyism/seo-skills: 30 open-source SEO skills (SKILL.md) for Claude Code, Cursor, Codex & AI agents: technical SEO roasts, Ahrefs & DataForSEO SERP workflows, first-hand proof KBs, backlinks & GEO",
+      "score": 43,
+      "newsletter": "AlphaSignal <news@alphasignal.ai>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://www.anthropic.com/",
+      "title": "Home",
+      "score": 30,
+      "newsletter": "AI Breakfast <aibreakfast@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://www.anthropic.com/",
+      "title": "Home",
+      "score": 30,
+      "newsletter": "AI Breakfast <aibreakfast@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": true
+    },
+    {
+      "url": "https://nvidianews.nvidia.com/news/nvidia-board-reinstates-jensen-huang-as-president-ceo-and-board-director",
+      "title": "NVIDIA Board Reinstates Jensen Huang as President, CEO and Board Director",
+      "score": null,
+      "newsletter": "AI Breakfast <aibreakfast@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": false
+    },
+    {
+      "url": "https://nvidianews.nvidia.com/news/nvidia-board-reinstates-jensen-huang-as-president-ceo-and-board-director",
+      "title": "NVIDIA Board Reinstates Jensen Huang as President, CEO and Board Director",
+      "score": null,
+      "newsletter": "\"Data Points @ DeepLearning.AI\" <datapoints@deeplearning.ai>",
+      "destino": "fora da edição",
+      "in_pool": false
+    },
+    {
+      "url": "https://www.deasylabs.com/?shad=1",
+      "title": "Home",
+      "score": null,
+      "newsletter": "\"Superhuman – Zain Kahn\" <superhuman@mail.joinsuperhuman.ai>",
+      "destino": "fora da edição",
+      "in_pool": false
+    }
+  ]
+}

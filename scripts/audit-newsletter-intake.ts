@@ -19,7 +19,7 @@ import {
 } from "./lib/newsletter-senders.ts";
 import { computeIntakeFingerprint, reviewedEntries } from "./lib/newsletter-intake-fingerprint.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { buildNewsletterConsensus, renderNewsletterConsensus } from "./lib/newsletter-consensus.ts";
+import { buildNewsletterConsensus, consensusUnscoredArticles, renderNewsletterConsensus } from "./lib/newsletter-consensus.ts";
 import { buildMultiCited, renderMultiCitedSection } from "./lib/newsletter-multi-cited.ts";
 import { linkMissing, linkMissingBlocks, linkMissingScore, linkMissingTitle, OUT_OF_EDITION } from "./lib/newsletter-intake-link-rules.ts";
 
@@ -420,8 +420,7 @@ export function main(argv = process.argv.slice(2)): void {
   const cell = (value: unknown) => String(value).replace(/[\r\n|]/g, " ");
   const scoreCell = (l: LinkAudit) => l.score ?? (l.fetch_error ? `FALHA FETCH (${cell(l.fetch_error)})` : "PENDENTE");
   writeFileSync(resolve(internal, "newsletter-consensus-gate.md"), renderNewsletterConsensus(result.newsletter_consensus).join("\n") + "\n");
-  const consensusUnscored = result.newsletter_consensus.filter((g) => g.score === null).map((g) =>
-    ({...metadataItems.find((i) => typeof i.url === "string" && joinKey(i.url) === joinKey(g.url)), url: g.url, title: g.title, flag: "newsletter_extracted"}));
+  const consensusUnscored = consensusUnscoredArticles(result.newsletter_consensus, metadataItems, joinKey);
   writeFileSync(resolve(internal, "newsletter-consensus-unscored.json"), JSON.stringify({articles: consensusUnscored,
     categorized: {radar: consensusUnscored, lancamento: [], use_melhor: [], video: []}}, null, 2) + "\n");
   const report = ["## Intake de newsletters de IA", ...warnings.map((w) => `⚠️ ${w}`), "", ...renderNewsletterConsensus(result.newsletter_consensus), ...renderMultiCitedSection(result.cited_multi),

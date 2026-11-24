@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildNewsletterConsensus, renderNewsletterConsensus, type ConsensusLink } from "../scripts/lib/newsletter-consensus.ts";
+import { buildNewsletterConsensus, consensusUnscoredArticles, realTitle, renderNewsletterConsensus, storyDate, type ConsensusLink } from "../scripts/lib/newsletter-consensus.ts";
 import { applyDecisions, buildIntake, joinKey } from "../scripts/audit-newsletter-intake.ts";
 import { consensusAlwaysSenders, validateSenderRegistry } from "../scripts/lib/newsletter-senders.ts";
 const link = (url: string, title: string, newsletter: string, score: number | null = 70): ConsensusLink =>
@@ -68,6 +68,62 @@ describe("consenso por assunto #13885", () => {
     assert.match(out[0].destino, /fora da edição/);
     const scored = fixture.links.map((l: ConsensusLink, i: number) => ({...l, score: i === 0 ? 82 : l.score}));
     assert.equal(build(scored)[0].score, 82);
+  });
+  describe("review da PR #13917: consenso falso e encadeamento", () => {
+    const fixture = () => JSON.parse(readFileSync(new URL("./fixtures/newsletter-consensus-13885/261124-encadeamento.json", import.meta.url), "utf8")).links as ConsensusLink[];
+    it("título genérico (Home, Home | Marca) não junta URLs diferentes nem vira assunto", () => {
+      assert.equal(realTitle("Home"), false); assert.equal(realTitle("Home | AI Dev & Research News (Marktechpost.com)"), false);
+      assert.equal(realTitle("Introducing Gemini 4 Neon"), true);
+      assert.equal(build([link("https://www.anthropic.com/", "Home", "a@x.test"),
+        link("https://www.deasylabs.com/?shad=1", "Home", "b@x.test")]).length, 0);
+      assert.equal(build(fixture()).some((g) => g.urls.includes("https://www.deasylabs.com/?shad=1")), false);
+    });
+    it("título de 1-2 palavras e raiz de site só juntam pela URL", () => {
+      assert.equal(build([link("https://a.test/p", "Anthropic", "a@x.test"), link("https://b.test/q", "Anthropic", "b@x.test")]).length, 0);
+      assert.equal(build([link("https://a.test/", "Anthropic launches Claude Sonnet 5.5", "a@x.test"),
+        link("https://b.test/y", "Anthropic launches Claude Sonnet 5.5", "b@x.test")]).length, 0);
+      // Mesma URL continua sendo consenso mesmo com título curto.
+      assert.equal(build([link("https://a.test/p", "Anthropic", "a@x.test"), link("https://a.test/p", "Anthropic", "b@x.test")])[0].count, 2);
+    });
+    it("rótulos próprios diferentes (Crossfade × seo-skills) não se juntam por ferramentas citadas", () => {
+      assert.equal(build(fixture()).some((g) => g.urls.includes("https://crossfade.company/")), false);
+    });
+    it("URL só entra casando com o representante, nunca com um membro intermediário", () => {
+      // B casa com A (Dots) e com C (Argon); C não casa com o representante A: sem single-linkage.
+      const out = build([link("https://a.test/1", "OpenAI launches Dots for ChatGPT users", "a@x.test"),
+        link("https://a.test/1", "OpenAI launches Dots for ChatGPT users", "b@x.test"),
+        link("https://b.test/2", "OpenAI pairs Dots with Argon in new bundle", "c@x.test"),
+        link("https://c.test/3", "OpenAI Argon model leaks ahead of launch", "d@x.test")]);
+      const group = out.find((g) => g.urls.includes("https://a.test/1"))!;
+      assert.equal(group.urls.includes("https://b.test/2"), true);
+      assert.equal(group.urls.includes("https://c.test/3"), false);
+      assert.equal(group.count, 3);
+    });
+    it("Jensen Huang (D1 261124) conta 4 newsletters, não 5: as matérias de 17/11 são outro evento", () => {
+      const out = build(fixture());
+      const jensen = out.find((g) => g.urls.some((u) => u.includes("nvidia-board-reinstates")))!;
+      assert.equal(jensen.count, 4);
+      assert.equal(jensen.newsletters.some((n) => /7min/.test(n)), false);
+      assert.equal(jensen.urls.some((u) => u.includes("/2026/11/17/")), false);
+    });
+    it("data vem do metadado ou do caminho da URL", () => {
+      assert.equal(storyDate("https://techcrunch.com/2026/11/17/x"), Date.UTC(2026, 10, 17));
+      assert.equal(storyDate("https://metr.org/blog/2026-11-20-q4"), Date.UTC(2026, 10, 20));
+      assert.equal(storyDate("https://x.test/a", {date: "2026-11-23T10:00:00Z"}), Date.UTC(2026, 10, 23));
+      assert.equal(storyDate("https://openai.com/index/x"), null);
+    });
+    it("Assunto sem título real mostra domínio+caminho e o placeholder não vai como title ao scorer", () => {
+      const out = build([link("https://thinkingmachines.ai/news/inkling-2-mini", "(newsletter:A)", "a@x.test", null),
+        link("https://thinkingmachines.ai/news/inkling-2-mini", "(newsletter:B)", "b@x.test", null)]);
+      assert.equal(out[0].title, "título pendente (thinkingmachines.ai/news/inkling-2-mini)");
+      assert.equal(out[0].title_pending, true);
+      assert.doesNotMatch(renderNewsletterConsensus(out).join("\n"), /\(newsletter:/);
+      const [art] = consensusUnscoredArticles(out, [{url: out[0].url, title: "(newsletter:A)", summary: "s"}], joinKey);
+      assert.equal(art.title, undefined); assert.equal(art.title_unresolved, true); assert.equal(art.summary, "s");
+      const [real] = consensusUnscoredArticles(build([link("https://a.test/x", "Introducing Gemini 4 Neon", "a@x.test", null),
+        link("https://a.test/x", "Introducing Gemini 4 Neon", "b@x.test", null)]), [], joinKey);
+      assert.equal(real.title, "Introducing Gemini 4 Neon");
+    });
   });
   it("intake inclui o bloco sem mudar os links e aceita pontuação suplementar", () => {
     const reg = {version: 1 as const, senders: {"a@x.test": {status: "aprovado" as const, reason: "teste", decided_at: "2026-11-24"},
