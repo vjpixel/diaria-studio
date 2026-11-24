@@ -1308,4 +1308,16 @@
       <news:title>Anthropic estreia na bolsa e levanta US$ 119,5 bi</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/jensen-huang-esta-de-volta-a-nvidia-11-dias-depois-de-sair</loc>
+    <lastmod>2026-11-24</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-24T00:00:00.000Z</news:publication_date>
+      <news:title>Jensen Huang está de volta à Nvidia 11 dias depois de sair</news:title>
+    </news:news>
+  </url>
 </urlset>
