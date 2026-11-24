@@ -44,6 +44,7 @@ import { readEiaAnswer } from "./lib/eia-answer.ts";
 import { roundFailureStreak, type OutcomeLike } from "./lib/source-runs.ts";
 import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
+import { DESTAQUE_ONLY_FIELD, formatPastPublications, readDestaqueOnlyOrigin } from "./lib/destaque-upgrade.ts"; // #13883
 
 // #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
 // de outro diretório não quebra resolução de inbox.md / platform.config.json.
@@ -164,6 +165,19 @@ export function isBrazilianTheme(article: { title?: string; summary?: string }):
 }
 
 /**
+ * #13883: marcador do gate 1 para o candidato a upgrade do #12193
+ * (`dedup_destaque_only`). `null` sem o marcador do dedup. Cita a edição e a
+ * seção de origem quando o dedup as gravou (`dedup_destaque_only_origin`).
+ */
+export function destaqueOnlyMarker(article: Article): string | null {
+  const note = article[DESTAQUE_ONLY_FIELD];
+  if (typeof note !== "string" || !note) return null;
+  const origins = readDestaqueOnlyOrigin(article);
+  const where = origins.length > 0 ? `já saiu em ${formatPastPublications(origins)}` : "já saiu fora dos destaques na janela";
+  return `🔁 (${where}; só volta como destaque e com fato novo, #13883)`;
+}
+
+/**
  * Monta linha: `{N}. [score] Título ⭐|✨ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD`
  * Usa lista numerada pra facilitar referência no gate humano (#322).
  */
@@ -193,6 +207,11 @@ export function renderLine(
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
   if (article.new_in_pool) markers.push("🆕");
+  // #13883: candidato a upgrade do #12193 (URL já publicada fora dos
+  // destaques). Sem travessão no texto: o parser do gate (`parseSections`)
+  // acha a URL pelo 1º " — https://" da linha.
+  const destaqueOnly = destaqueOnlyMarker(article);
+  if (destaqueOnly) markers.push(destaqueOnly);
   // #778: marker visual quando verify-accessibility falhou pra URL editor_submitted.
   // Editor mandou o link de propósito — mostramos no gate com o motivo do bloqueio
   // em vez de dropar silenciosamente. Só aplica a editor_submitted; outros artigos

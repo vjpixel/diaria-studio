@@ -127,13 +127,19 @@ import {
   extractDestaqueUrls,
   extractPromptUrl,
 } from "../../match-prompts-to-destaques.ts";
-import { urlsMatch, canonicalize } from "../url-utils.ts";
+import { urlsMatch, canonicalize, dedupUrlKey } from "../url-utils.ts";
 import {
   DESTAQUE_REQUEST_FIELD,
   findEditorDestaqueRequestIssues,
+  findRepeatedDestaques,
+  formatPastPublications,
+  readDestaqueOnlyOrigin,
+  UNKNOWN_SECTION,
   type DestaqueRequest,
   type FunnelItemLite,
-} from "../destaque-upgrade.ts"; // #12193
+  type PastPublication,
+  type RepeatedDestaque,
+} from "../destaque-upgrade.ts"; // #12193, #13883
 import { readDestaqueCount } from "./stage-3.ts";
 import { extractUrlsWithLines } from "../../validate-domains.ts"; // #8993
 import { evaluateStaleness, findSocialContentMismatches } from "../../check-staleness.ts"; // #9820
@@ -145,8 +151,8 @@ import {
   readPastEditionsMd,
   extractPastUrlsWithOriginWithinDays,
   DEDUP_URL_WINDOW_DAYS,
-  extractDestaqueUpgradeEligibleUrls,
-} from "../past-editions-extract.ts"; // #8993, #9955, #12193
+  extractPastPublicationsWithinDays,
+} from "../past-editions-extract.ts"; // #8993, #9955, #12193, #13883
 import {
   extractCurrentDeclarationFromMd,
   extractRevealFromFrontmatter,
@@ -2719,22 +2725,12 @@ function checkNoDuplicateUrlsAgainstPastEditions(editionDir: string): InvariantV
   // ancora na seção mais recente de past-editions.md).
   const edition = /^\d{6}$/.test(basename(editionDir)) ? basename(editionDir) : undefined;
   const pastOrigins = extractPastUrlsWithOriginWithinDays(pastMd, DEDUP_URL_WINDOW_DAYS, edition);
-  // #12193: destaque aprovado cuja URL saiu antes só em seção não-destaque é
-  // o "upgrade" que a regra permite — não é repetição a acusar.
-  const exempt = new Set<string>();
-  const approvedHighlights = readApprovedHighlightUrls(editionDir);
-  if (approvedHighlights.length > 0) {
-    const eligible = extractDestaqueUpgradeEligibleUrls(
-      pastMd,
-      resolve(ROOT, "data", "editions"),
-      DEDUP_URL_WINDOW_DAYS,
-      edition,
-    );
-    for (const u of approvedHighlights) {
-      const c = canonicalize(u);
-      if (eligible.has(c)) exempt.add(c);
-    }
-  }
+  // #13883: destaque aprovado repetido é acusado por
+  // `destaque-repeated-past-edition`, com a edição, a seção e o marcador do
+  // upgrade do #12193 — aqui ficaria em dobro (e o upgrade, que antes saía
+  // isento em silêncio, passou a ter aviso próprio). Este check fica com o
+  // resto: pool e link inserido no 02-reviewed.md fora dos destaques.
+  const exempt = new Set(readApprovedHighlightUrls(editionDir).map((u) => canonicalize(u)));
   const matches = findDuplicateUrlsAgainstPastEditions(md, pastOrigins, exempt);
 
   return matches.map(({ url, line, originDate }) => ({
@@ -2764,6 +2760,86 @@ function readApprovedHighlightUrls(editionDir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Pure (#13883): mensagem de cada destaque repetido. Separado de
+ * `checkDestaqueRepeatedPastEdition` (que lê o disco) para o teste não
+ * depender do `data/past-editions.md` real.
+ */
+export function formatRepeatedDestaqueMessage(r: RepeatedDestaque): string {
+  const label = `D${r.position}${r.title ? ` “${r.title}”` : ""}`;
+  const where = formatPastPublications(r.origins);
+  if (r.marked) {
+    const fact =
+      r.newerSources > 0
+        ? `${r.newerSources} fonte(s) do cluster com data posterior: conferir se trazem fato novo.`
+        : `Nenhuma fonte nova no cluster: se a notícia é a mesma, trocar o destaque no gate.`;
+    return (
+      `⚠️ ${label} repete link já publicado em ${where}: ${r.url}. Entrou pelo upgrade a destaque do #12193 ` +
+      `(URL que saiu fora dos destaques pode voltar como destaque), que vale para fato novo, não para repetir a mesma notícia. ${fact}`
+    );
+  }
+  return (
+    `🚨 ${label} repete link já publicado em ${where}: ${r.url}, sem o marcador do upgrade do #12193 ` +
+    `(dedup_destaque_only): o dedup do Stage 1 não liberou esta repetição (troca no gate ou falha do dedup). ` +
+    `Regra "sem links repetidos dos últimos ~30 dias" (context/editorial-rules.md): trocar o destaque, salvo atualização intencional da mesma história.`
+  );
+}
+
+/**
+ * #13883: destaque aprovado (`_internal/01-approved.json → highlights[]`)
+ * cuja URL já saiu na janela de dedup (`past-editions.md`, chave
+ * `dedupUrlKey`). Caso 261124: o D2 "Gemini agora clica e digita sozinho no
+ * seu Mac" era o mesmo link do RADAR de 261123; o upgrade do #12193 o
+ * liberou e nada apareceu no gate. Com o marcador do dedup é ⚠️ (upgrade
+ * permitido, mas pede fato novo); sem ele é 🚨 (repetição que o dedup não
+ * liberou). As duas formas são warning: o editor decide no gate, e travar o
+ * Stage 4 por uma escolha deliberada dele (atualização da mesma história)
+ * contraria o #7401 — mesma razão do `no-duplicate-urls-vs-past-editions`.
+ *
+ * A seção de origem sai do campo gravado pelo dedup
+ * (`dedup_destaque_only_origin`) quando presente; senão do `01-approved.json`
+ * da pasta local daquela edição (`extractPastPublicationsWithinDays`).
+ */
+export function checkDestaqueRepeatedPastEdition(
+  editionDir: string,
+  // Teste: fixtures no lugar de `data/past-editions.md`/`data/editions` reais.
+  paths: { pastEditionsPath?: string; editionsDir?: string } = {},
+): InvariantViolation[] {
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const approved = readJsonSafe(approvedPath) as { highlights?: unknown[] } | undefined;
+  const highlights = Array.isArray(approved?.highlights) ? approved.highlights : [];
+  if (highlights.length === 0) return [];
+  const pastMd = readPastEditionsMd(paths.pastEditionsPath ?? resolve(ROOT, "data", "past-editions.md"));
+  if (!pastMd.trim()) return [];
+  const edition = /^\d{6}$/.test(basename(editionDir)) ? basename(editionDir) : undefined;
+  const urls = readApprovedHighlightUrls(editionDir);
+  const pubs = extractPastPublicationsWithinDays(
+    urls,
+    pastMd,
+    paths.editionsDir ?? resolve(ROOT, "data", "editions"),
+    DEDUP_URL_WINDOW_DAYS,
+    edition,
+    dedupUrlKey,
+  );
+  // Seção gravada pelo dedup vence a "não identificada" lida das pastas.
+  for (const h of highlights) {
+    const art = ((h as { article?: unknown }).article ?? h) as { url?: unknown };
+    if (typeof art.url !== "string") continue;
+    const key = dedupUrlKey(art.url);
+    const list = pubs.get(key);
+    if (!list) continue;
+    const recorded = new Map<string, PastPublication>(readDestaqueOnlyOrigin(art).map((p) => [p.date, p]));
+    pubs.set(key, list.map((p) => (p.section === UNKNOWN_SECTION ? recorded.get(p.date) ?? p : p)));
+  }
+  return findRepeatedDestaques(highlights, pubs, dedupUrlKey).map((r) => ({
+    rule: "destaque-repeated-past-edition",
+    message: formatRepeatedDestaqueMessage(r),
+    source_issue: "#13883",
+    severity: "warning" as const,
+    file: approvedPath,
+  }));
 }
 
 function readJsonSafe(path: string): unknown {
@@ -4958,6 +5034,14 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#8993",
     stage: 4,
     run: checkNoDuplicateUrlsAgainstPastEditions,
+  },
+  {
+    id: "destaque-repeated-past-edition",
+    description:
+      "destaque aprovado cuja URL já saiu nos últimos ~30 dias, com edição e seção de origem: ⚠️ upgrade do #12193 (pede fato novo) ou 🚨 repetição sem o marcador do dedup (#13883, warning-only)",
+    source_issue: "#13883",
+    stage: 4,
+    run: (dir: string) => checkDestaqueRepeatedPastEdition(dir),
   },
   {
     id: "editor-destaque-request",
