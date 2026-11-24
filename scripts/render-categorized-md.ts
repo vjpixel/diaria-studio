@@ -183,8 +183,10 @@ export function destaqueOnlyMarker(article: Article): string | null {
  * com título e resumo (403/anti-bot, vídeo sem texto, resumo curto), a mesma
  * regra do invariante `source-not-read` do gate 4. Com `downloads` (manifest de
  * `_internal/pool-sources/` ou `fact-check-sources/`, presente quando o gate 1
- * é re-renderizado depois do download), o download da página decide antes do
- * resumo: texto em disco = lida, download falho = não lida, com o motivo.
+ * é re-renderizado depois do download), a entrada da URL decide antes do
+ * resumo: `ok` = lida, falha = não lida, com o motivo. Download `ok` do pool
+ * não gera entrada enquanto nenhum writer lê o texto (#13907): o resumo curto
+ * continua marcado.
  *
  * O motivo sai sem URL e sem travessão/`--`/en-dash: o parser do gate
  * (`parseSections`) acha a URL do item pelo 1º separador seguido de `https://`.
