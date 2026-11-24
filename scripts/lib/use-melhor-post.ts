@@ -222,7 +222,9 @@ export interface UseMelhorCandidate {
   /**
    * #13849: bucket do pool de onde o item veio quando NÃO é o `use_melhor`
    * (ex.: `radar`, item movido para o USE MELHOR no gate). Ausente = bucket
-   * `use_melhor`. Na disputa por score o item desse bucket compete com o score
+   * `use_melhor`. Também presente no item que já está no bucket `use_melhor`
+   * mas foi movido para lá por `move-pool-item.ts` (`moved_from`, #13878).
+   * Na disputa por score o item desse bucket compete com o score
    * limitado ao maior score do bucket `use_melhor` e perde o empate
    * (`comparableUseMelhorScore`): as escalas do scorer não são comparáveis
    * entre buckets (o RADAR chega a 105).
@@ -398,7 +400,26 @@ export function useMelhorCandidatesFromApproved(approved: unknown): UseMelhorCan
   return candidatesFromBucket((approved as { use_melhor?: unknown } | null)?.use_melhor);
 }
 
-/** Itens com `url` + `score` numérico de uma lista de bucket (aceita o wrapper `{article}`). */
+/**
+ * #13878: chave gravada por `move-pool-item.ts` no objeto do item em
+ * `01-approved*.json` quando ele sai do bucket em que o scorer o pontuou
+ * (ex.: `"radar"`). Mover de volta ao bucket de origem apaga a chave.
+ */
+export const USE_MELHOR_MOVED_FROM_KEY = "moved_from";
+
+/** Pure (#13878): bucket de origem gravado no item pelo move, quando não é o próprio `use_melhor`. */
+function movedFromBucket(raw: Record<string, unknown>, it: Record<string, unknown>): string | undefined {
+  const v = raw[USE_MELHOR_MOVED_FROM_KEY] ?? it[USE_MELHOR_MOVED_FROM_KEY];
+  if (typeof v !== "string" || !v.trim()) return undefined;
+  const b = v.trim();
+  return b === "use_melhor" || b === "tutorial" ? undefined : b;
+}
+
+/**
+ * Itens com `url` + `score` numérico de uma lista de bucket (aceita o wrapper `{article}`).
+ * Item com `moved_from` (#13878, movido por `move-pool-item.ts`) sai com
+ * `pool_bucket` = bucket de origem, para a disputa limitar o score dele.
+ */
 function candidatesFromBucket(list: unknown): UseMelhorCandidate[] {
   if (!Array.isArray(list)) return [];
   const out: UseMelhorCandidate[] = [];
@@ -410,12 +431,15 @@ function candidatesFromBucket(list: unknown): UseMelhorCandidate[] {
     if (!it || typeof it !== "object") continue;
     const score = (raw as Record<string, unknown>).score ?? it.score;
     if (typeof it.url !== "string" || !it.url || typeof score !== "number" || !Number.isFinite(score)) continue;
-    out.push({
+    const c: UseMelhorCandidate = {
       url: it.url,
       title: typeof it.title === "string" ? it.title : "",
       summary: typeof it.summary === "string" ? it.summary : "",
       score,
-    });
+    };
+    const movedFrom = movedFromBucket(raw as Record<string, unknown>, it);
+    if (movedFrom) c.pool_bucket = movedFrom;
+    out.push(c);
   }
   return out;
 }
@@ -603,7 +627,9 @@ export function selectUseMelhorItem(
       selected_from,
     });
   }
-  const comparable = comparableUseMelhorScore(candidates);
+  // #13878: o teto sai só dos itens em disputa (`pool`), nunca de um item do
+  // `use_melhor` que o editor cortou do USE MELHOR final.
+  const comparable = comparableUseMelhorScore(pool);
   let best = pool[0];
   for (const c of pool.slice(1)) {
     const d = comparable(c) - comparable(best);
@@ -615,9 +641,10 @@ export function selectUseMelhorItem(
 
 /**
  * Pure (#13849): score usado na disputa. Item do bucket `use_melhor` compete
- * com o score dele; item de outro bucket (`pool_bucket`, movido no gate)
+ * com o score dele; item de outro bucket (`pool_bucket`, movido no gate —
+ * inclusive pelo `move-pool-item.ts`, que grava `moved_from` no objeto, #13878)
  * compete com o score limitado ao maior score do bucket `use_melhor` entre os
- * candidatos. As escalas do scorer não são comparáveis entre buckets (na
+ * candidatos recebidos (`selectUseMelhorItem` passa só os em disputa). As escalas do scorer não são comparáveis entre buckets (na
  * 261123 o RADAR chegou a 105, o `use_melhor` costuma ficar abaixo de 80), e
  * sem o limite o item movido ganharia só por vir do RADAR. Sem nenhum
  * candidato do bucket `use_melhor`, não há limite.
