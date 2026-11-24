@@ -538,7 +538,7 @@ export function promoteToDestaque(
   const d = `d${position}`;
   const nextSteps = [
     // #9102: sem isto o writer-destaque escreve sem texto-fonte e o fact-checker lê manifest defasado.
-    `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
+    `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ --pool-sources — rodar UMA vez (o --pool-sources mantém em dia o texto do pool, #13884); passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
     `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido, substituindo o placeholder [RASCUNHO PENDENTE].`,
     `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório pelo final — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${editionDir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9755)`,
     `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto) e a ## ${d}-cards em # Social (texto dos cards do carrossel, #12094).`,

@@ -45,6 +45,7 @@ import { roundFailureStreak, type OutcomeLike } from "./lib/source-runs.ts";
 import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { DESTAQUE_ONLY_FIELD, formatPastPublications, readDestaqueOnlyOrigin } from "./lib/destaque-upgrade.ts"; // #13883
+import { readSourceDownloads, readSourceReadability, type SourceDownloads } from "./lib/diaria/source-readability.ts"; // #13884
 
 // #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
 // de outro diretório não quebra resolução de inbox.md / platform.config.json.
@@ -178,6 +179,30 @@ export function destaqueOnlyMarker(article: Article): string | null {
 }
 
 /**
+ * (#13884) Marcador de "fonte não lida" no gate 1: o item chegaria ao texto só
+ * com título e resumo (403/anti-bot, vídeo sem texto, resumo curto), a mesma
+ * regra do invariante `source-not-read` do gate 4. Com `downloads` (manifest de
+ * `_internal/pool-sources/` ou `fact-check-sources/`, presente quando o gate 1
+ * é re-renderizado depois do download), o download da página decide antes do
+ * resumo: texto em disco = lida, download falho = não lida, com o motivo.
+ *
+ * O motivo sai sem URL e sem travessão/`--`/en-dash: o parser do gate
+ * (`parseSections`) acha a URL do item pelo 1º separador seguido de `https://`.
+ * Devolve `null` quando a fonte foi lida. @pure
+ */
+export function sourceNotReadMarker(article: Article, downloads?: SourceDownloads): string | null {
+  const d = article.url ? downloads?.get(article.url) : undefined;
+  const r = d ? (d.ok ? { readable: true as const } : { readable: false as const, reason: d.reason }) : readSourceReadability(article);
+  if (r.readable) return null;
+  const reason = (r.reason ?? "fonte não lida")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\s*(?:—|–|--)\s*/g, " - ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return `📄❌ (fonte não lida: ${reason || "motivo desconhecido"})`;
+}
+
+/**
  * Monta linha: `{N}. [score] Título ⭐|✨ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD`
  * Usa lista numerada pra facilitar referência no gate humano (#322).
  */
@@ -186,6 +211,8 @@ export function renderLine(
   isHighlight?: boolean,
   isRunnerUp?: boolean,
   lineNumber?: number,
+  /** (#13884) Resultado do download das páginas, para o marcador de fonte não lida. */
+  downloads?: SourceDownloads,
 ): string {
   const scoreStr =
     typeof article.score === "number" ? `[${article.score}]` : "[--]";
@@ -216,7 +243,9 @@ export function renderLine(
   // Editor mandou o link de propósito — mostramos no gate com o motivo do bloqueio
   // em vez de dropar silenciosamente. Só aplica a editor_submitted; outros artigos
   // com verdict != accessible são removidos antes (per orchestrator spec 1i).
-  if (article.editor_submitted && article.verify_verdict && article.verify_verdict !== "accessible") {
+  const verifyMarkerShown =
+    !!article.editor_submitted && !!article.verify_verdict && article.verify_verdict !== "accessible";
+  if (verifyMarkerShown && article.verify_verdict) {
     const verdictMarkers: Record<string, string> = {
       paywall: "🔒",
       anti_bot: "🚫",
@@ -229,6 +258,12 @@ export function renderLine(
     const icon = verdictMarkers[article.verify_verdict] ?? "⚠️";
     const note = article.verify_note ? `: ${article.verify_note}` : "";
     markers.push(`${icon} (não checado: ${article.verify_verdict}${note})`);
+  }
+  // #13884: fonte não lida, com o motivo. Sem download registrado, o item
+  // que já levou o marcador #778 acima não repete o mesmo veredito.
+  if (!verifyMarkerShown || (article.url && downloads?.has(article.url))) {
+    const unread = sourceNotReadMarker(article, downloads);
+    if (unread) markers.push(unread);
   }
   // #658 review A: condição independe do flag — quando carry-over de inbox preserva
   // flag editor_submitted (boost +8 do categorizer), o marker ainda precisa aparecer.
@@ -260,6 +295,7 @@ export function renderDestaquesFromApproved(
   approvedPath: string,
   highlightUrls: Set<string>,
   runnerUpUrls: Set<string>,
+  downloads?: SourceDownloads,
 ): string | null {
   if (!existsSync(approvedPath)) return null;
   let approved: { highlights?: Array<{ url?: string; article?: Article }> };
@@ -275,7 +311,7 @@ export function renderDestaquesFromApproved(
   const lines = highlights.map((h, idx) => {
     const art: Article = (h.article ?? (h as unknown as Article)) as Article;
     if (!art.url && h.url) art.url = h.url;
-    return renderLine(art, highlightUrls.has(art.url), runnerUpUrls.has(art.url), idx + 1);
+    return renderLine(art, highlightUrls.has(art.url), runnerUpUrls.has(art.url), idx + 1, downloads);
   });
 
   return `## Destaques\n\n${lines.join("\n")}\n`;
@@ -399,6 +435,8 @@ export function renderSection(
   /** #579: numeração inicial pra seção. Default 1 (compat). Caller passa
    *  cumulative offset pra criar referência única contínua entre seções. */
   startNumber = 1,
+  /** (#13884) Download das páginas, para o marcador de fonte não lida. */
+  downloads?: SourceDownloads,
 ): string {
   if (articles.length === 0) {
     return `## ${title}\n\n_(vazio)_\n`;
@@ -419,7 +457,7 @@ export function renderSection(
   // Numeração contínua entre seções (#579) — startNumber + idx.
   // Editor referencia "linha 7" sem precisar contar offset por seção.
   const lines = sorted.map((a, idx) =>
-    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url), startNumber + idx),
+    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url), startNumber + idx, downloads),
   );
   return `## ${title}\n\n${lines.join("\n")}\n`;
 }
@@ -817,33 +855,37 @@ function main() {
     `>   - ✨ — próximos 6 melhores fora do top (runners-up do scorer-select + backfill por score — considerar se o top não couber).\n` +
     `>   - 🆕 — artigo novo desde a última curadoria (não estava no MD anterior).\n` +
     `> Mova **exatamente 3** linhas para a seção **Destaques** (a ordem define D1, D2, D3).\n` +
-    `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
+    `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n` +
+    `> Marcador \`📄❌\` indica fonte não lida (403, vídeo sem texto, resumo curto ou download falho), com o motivo: o item entraria só com título e resumo (#13884).\n`;
 
   // Determinar o diretório da edição a partir do path do arquivo de saída (#371).
   // O É IA? é embutido entre Pesquisas e Notícias para revisão integrada no gate da Etapa 1.
   const editionDir = cli.out ? dirname(resolve(cli.out)) : process.cwd();
   const eaiBlock = renderEaiBlock(editionDir);
+  // #13884: download das páginas (pool-sources/fact-check-sources), quando já
+  // existe (re-render depois do Stage 2). Ausente = só a regra do resumo.
+  const downloads = readSourceDownloads(resolve(editionDir, "_internal"));
 
   // #585: Quando 01-approved.json existe (gate aprovado), renderiza destaques
   // a partir dele em vez do placeholder. Evita re-renders apagarem a curadoria.
   const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
-  const destaquesFromApproved = renderDestaquesFromApproved(approvedPath, highlightUrls, runnerUpUrls);
+  const destaquesFromApproved = renderDestaquesFromApproved(approvedPath, highlightUrls, runnerUpUrls, downloads);
   const destaquesSection = destaquesFromApproved ?? `## Destaques\n\n_(mova 3 artigos para cá)_\n`;
 
   // #579: numeração contínua entre seções — editor referencia "linha N" sem
   // precisar contar offset por seção. Calcula offset acumulado conforme renderiza.
   // #1629: Pesquisas + Notícias fundidos em Radar; Tutorial renomeado Use melhor.
   let cumOffset = 1;
-  const lancSec = renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls, cumOffset);
+  const lancSec = renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls, cumOffset, downloads);
   cumOffset += data.lancamento.length;
-  const radarSec = renderSection("Radar", data.radar, highlightUrls, runnerUpUrls, cumOffset);
+  const radarSec = renderSection("Radar", data.radar, highlightUrls, runnerUpUrls, cumOffset, downloads);
   cumOffset += data.radar.length;
   const useMelhorSec = data.use_melhor && data.use_melhor.length > 0
-    ? renderSection("Use melhor", data.use_melhor, highlightUrls, runnerUpUrls, cumOffset)
+    ? renderSection("Use melhor", data.use_melhor, highlightUrls, runnerUpUrls, cumOffset, downloads)
     : null;
   if (useMelhorSec) cumOffset += data.use_melhor!.length;
   const vidSec = data.video && data.video.length > 0
-    ? renderSection("Vídeos", data.video, highlightUrls, runnerUpUrls, cumOffset)
+    ? renderSection("Vídeos", data.video, highlightUrls, runnerUpUrls, cumOffset, downloads)
     : null;
 
   const sections = [
