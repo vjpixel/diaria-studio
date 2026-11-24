@@ -45,6 +45,7 @@ import {
 import { extractDestaqueUrlsByNumber } from "./match-prompts-to-destaques.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import type { SourceCompleteness } from "./lib/diaria/paywall-preview.ts";
+import { readPoolSourceText } from "./lib/diaria/pool-sources.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -1109,6 +1110,25 @@ export async function prefetchHighlightSources(
     const url = currentUrls[i];
     if (!url) continue;
     const fetched_at = new Date().toISOString();
+    // #13884 item 4: item promovido do pool herda o texto já lido no Stage 2
+    // (`_internal/pool-sources/`, chave por URL), sem ir de novo à rede.
+    const inherited = readPoolSourceText(internalDir, url);
+    if (inherited) {
+      const path = join(dir, `d${i + 1}.txt`);
+      writeFileSync(path, inherited.text, "utf8");
+      out.push({ destaque: i + 1, url, path });
+      manifest.push({
+        destaque: i + 1,
+        url,
+        status: "ok",
+        erro: null,
+        bytes: Buffer.byteLength(inherited.text, "utf8"),
+        fetched_at: inherited.entry.fetched_at,
+        ...(inherited.entry.completeness ? { completeness: inherited.entry.completeness } : {}),
+        ...(typeof inherited.entry.words === "number" ? { words: inherited.entry.words } : {}),
+      });
+      continue;
+    }
     const r = await fetchSourceText(url, fetchImpl);
     if (r.ok) {
       const path = join(dir, `d${i + 1}.txt`);
