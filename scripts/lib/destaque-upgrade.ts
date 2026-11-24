@@ -18,6 +18,10 @@
  *   4. Gate 4: `no-duplicate-urls-vs-past-editions` não acusa o destaque
  *      promovido; `editor-destaque-request` avisa quando um link que o editor
  *      pediu como destaque ficou de fora (`findEditorDestaqueRequestIssues`).
+ *   5. #13883: o dedup grava também `DESTAQUE_ONLY_ORIGIN_FIELD` (edição e
+ *      seção em que a URL saiu); o gate 1 mostra o 🔁, o `writer-destaque`
+ *      é avisado e o invariante `destaque-repeated-past-edition` da Etapa 4
+ *      leva a repetição ao `{violations_block}` (`findRepeatedDestaques`).
  *
  * Módulo puro (só `url-utils`), importado por `past-editions-extract.ts`.
  */
@@ -178,4 +182,164 @@ export function findEditorDestaqueRequestIssues(
     issues.push({ ...req, reason: "fora da edição; motivo não registrado no funil do Stage 1 (stage1-funnel.json)" });
   }
   return issues;
+}
+
+// ---------------------------------------------------------------------------
+// #13883: o upgrade do #12193 precisa chegar ao editor e ao writer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Campo gravado pelo dedup ao lado de `DESTAQUE_ONLY_FIELD` (#13883): onde a
+ * URL já saiu (`[{ date: "2026-11-23", section: "RADAR" }]`). Lido no gate
+ * da Etapa 1 (`render-categorized-md.ts`), pelo `writer-destaque` e pelo
+ * invariante `destaque-repeated-past-edition` da Etapa 4.
+ */
+export const DESTAQUE_ONLY_ORIGIN_FIELD = "dedup_destaque_only_origin";
+
+export interface PastPublication {
+  /** Data da edição em que a URL saiu (YYYY-MM-DD). */
+  date: string;
+  /** Seção em que saiu (`RADAR`, `LANÇAMENTOS`...), ou `UNKNOWN_SECTION`. */
+  section: string;
+}
+
+/** Rótulo de leitura de cada bucket do `01-approved.json`. */
+const BUCKET_LABEL: Record<string, string> = {
+  lancamento: "LANÇAMENTOS",
+  radar: "RADAR",
+  use_melhor: "USE MELHOR",
+  video: "VÍDEOS",
+};
+
+/** Chaves do `01-approved.json` que não são seção do pool. */
+const NON_POOL_KEYS = new Set(["highlights", "runners_up", "coverage"]);
+
+export const UNKNOWN_SECTION = "seção não identificada";
+
+function highlightUrlOf(h: unknown): string | undefined {
+  const o = h as { url?: unknown; article?: { url?: unknown } } | null;
+  if (typeof o?.url === "string" && o.url) return o.url;
+  if (typeof o?.article?.url === "string" && o.article.url) return o.article.url;
+  return undefined;
+}
+
+/**
+ * Pure: seção em que `url` aparece no `01-approved.json` de uma edição
+ * passada. `DESTAQUE` quando é um dos highlights; `undefined` quando o JSON
+ * não tem a URL (ou não é objeto). `keyOf` normaliza as duas pontas.
+ */
+export function findApprovedSectionOf(
+  approved: unknown,
+  url: string,
+  keyOf: (url: string) => string = canonicalize,
+): string | undefined {
+  if (!approved || typeof approved !== "object") return undefined;
+  const key = keyOf(url);
+  const j = approved as Record<string, unknown>;
+  const hl = Array.isArray(j.highlights) ? j.highlights : [];
+  for (const h of hl) {
+    const hu = highlightUrlOf(h);
+    if (hu && keyOf(hu) === key) return "DESTAQUE";
+  }
+  for (const [bucket, items] of Object.entries(j)) {
+    if (NON_POOL_KEYS.has(bucket) || !Array.isArray(items)) continue;
+    for (const it of items) {
+      const u = (it as { url?: unknown } | null)?.url;
+      if (typeof u === "string" && keyOf(u) === key) return BUCKET_LABEL[bucket] ?? bucket.toUpperCase();
+    }
+  }
+  return undefined;
+}
+
+/** `2026-11-23 (RADAR)`, separados por `; `. */
+export function formatPastPublications(pubs: PastPublication[]): string {
+  return pubs.map((p) => `${p.date} (${p.section})`).join("; ");
+}
+
+/** Lê `DESTAQUE_ONLY_ORIGIN_FIELD` de um artigo; `[]` quando ausente/malformado. */
+export function readDestaqueOnlyOrigin(article: unknown): PastPublication[] {
+  const raw = (article as Record<string, unknown> | null)?.[DESTAQUE_ONLY_ORIGIN_FIELD];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (p): p is PastPublication =>
+      !!p && typeof (p as PastPublication).date === "string" && typeof (p as PastPublication).section === "string",
+  );
+}
+
+/**
+ * Pure (#13883): grava `DESTAQUE_ONLY_ORIGIN_FIELD` em cada artigo marcado
+ * com `DESTAQUE_ONLY_FIELD` cuja URL tem publicação passada conhecida. Muta
+ * os artigos; devolve quantos ganharam o campo.
+ */
+export function attachDestaqueOnlyOrigins(
+  articles: Array<{ url: string; [key: string]: unknown }>,
+  pastPublications: Map<string, PastPublication[]>,
+  keyOf: (url: string) => string,
+): number {
+  let n = 0;
+  for (const art of articles) {
+    if (typeof art[DESTAQUE_ONLY_FIELD] !== "string") continue;
+    const pubs = pastPublications.get(keyOf(art.url));
+    if (!pubs || pubs.length === 0) continue;
+    art[DESTAQUE_ONLY_ORIGIN_FIELD] = [...pubs].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    n++;
+  }
+  return n;
+}
+
+export interface RepeatedDestaque {
+  /** 1-based (D1, D2, D3). */
+  position: number;
+  url: string;
+  title?: string;
+  /** O item carrega `DESTAQUE_ONLY_FIELD` (o dedup do Stage 1 liberou o upgrade). */
+  marked: boolean;
+  /** Edições da janela em que a URL saiu, mais recente primeiro. */
+  origins: PastPublication[];
+  /** Fontes do cluster com data posterior à edição mais recente em que a URL saiu. */
+  newerSources: number;
+}
+
+/**
+ * Pure (#13883): destaques aprovados cuja URL já saiu na janela de dedup.
+ * `pastPublications` = chave de URL (a mesma `keyOf` aplicada aqui) →
+ * publicações passadas. O marcador do dedup (`DESTAQUE_ONLY_FIELD`) separa o
+ * upgrade liberado no Stage 1 da repetição que entrou por outro caminho
+ * (troca no gate, falha do dedup). `newerSources` conta as `cluster_sources`
+ * com `published_at` depois da publicação mais recente: é o indício
+ * mecânico de fato novo que o editor confere.
+ */
+export function findRepeatedDestaques(
+  highlights: unknown[],
+  pastPublications: Map<string, PastPublication[]>,
+  keyOf: (url: string) => string,
+): RepeatedDestaque[] {
+  const out: RepeatedDestaque[] = [];
+  highlights.forEach((h, idx) => {
+    const url = highlightUrlOf(h);
+    if (!url) return;
+    const pubs = pastPublications.get(keyOf(url));
+    if (!pubs || pubs.length === 0) return;
+    const origins = [...pubs].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    const art = ((h as { article?: unknown }).article ?? h) as Record<string, unknown>;
+    const latest = origins[0].date;
+    const cluster = Array.isArray(art.cluster_sources) ? art.cluster_sources : [];
+    let newerSources = 0;
+    for (const cs of cluster) {
+      const c = cs as { url?: unknown; published_at?: unknown } | null;
+      if (typeof c?.published_at !== "string" || typeof c.url !== "string") continue;
+      if (keyOf(c.url) === keyOf(url)) continue;
+      if (c.published_at.slice(0, 10) > latest) newerSources++;
+    }
+    const marker = art[DESTAQUE_ONLY_FIELD];
+    out.push({
+      position: idx + 1,
+      url,
+      title: typeof art.title === "string" ? art.title : undefined,
+      marked: typeof marker === "string" && marker.length > 0,
+      origins,
+      newerSources,
+    });
+  });
+  return out;
 }
