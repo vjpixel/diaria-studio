@@ -38,16 +38,16 @@
     "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html"
   ],
   "sample_rendered_lines": [
-    "- [--] Anthropic announces Claude 4.7 — https://anthropic.com/news/claude-4-7-launch/ — 2026-04-22",
-    "- [--] Anthropic announces expanded partnership and billion dollar deal — https://techcrunch.com/2026/04/23/anthropic-b-funding/ — 2026-04-23",
-    "- [--] Attention Routing in Large Language Models — https://arxiv.org/abs/2404.01234 — 2026-04-22",
-    "- [--] Google atualiza Gemini Pro com novos recursos — https://blog.google/technology/ai/gemini-pro-update/ — 2026-04-22",
-    "- [--] Governo do Brasil sanciona lei de regulação de IA 🇧🇷 — https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html — 2026-04-23",
-    "- [--] Nubank e iFood anunciam parceria de pagamentos 🇧🇷 — https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html — 2026-04-23",
-    "- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23"
+    "- [--] Anthropic announces Claude 4.7 📄❌ (fonte não lida: resumo de 56 caracteres (mínimo 60)) — https://anthropic.com/news/claude-4-7-launch/ — 2026-04-22",
+    "- [--] Anthropic announces expanded partnership and billion dollar deal 📄❌ (fonte não lida: resumo de 40 caracteres (mínimo 60)) — https://techcrunch.com/2026/04/23/anthropic-b-funding/ — 2026-04-23",
+    "- [--] Attention Routing in Large Language Models 📄❌ (fonte não lida: resumo de 44 caracteres (mínimo 60)) — https://arxiv.org/abs/2404.01234 — 2026-04-22",
+    "- [--] Google atualiza Gemini Pro com novos recursos 📄❌ (fonte não lida: resumo de 48 caracteres (mínimo 60)) — https://blog.google/technology/ai/gemini-pro-update/ — 2026-04-22",
+    "- [--] Governo do Brasil sanciona lei de regulação de IA 🇧🇷 📄❌ (fonte não lida: resumo de 51 caracteres (mínimo 60)) — https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html — 2026-04-23",
+    "- [--] Nubank e iFood anunciam parceria de pagamentos 🇧🇷 📄❌ (fonte não lida: resumo de 59 caracteres (mínimo 60)) — https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html — 2026-04-23",
+    "- [--] OpenAI lança GPT-5 📄❌ (fonte não lida: resumo de 49 caracteres (mínimo 60)) — https://openai.com/news/gpt-5-launch/ — 2026-04-23"
   ],
   "roundtrip": {
-    "rendered_md_snippet": "## Destaques\n\n\n## Lançamentos\n\n- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23\n- [--] Anthropic announces Claude 4.7 — https://anthropic.com/news/claude-4-7-launch/ — 20",
+    "rendered_md_snippet": "## Destaques\n\n\n## Lançamentos\n\n- [--] OpenAI lança GPT-5 📄❌ (fonte não lida: resumo de 49 caracteres (mínimo 60)) — https://openai.com/news/gpt-5-launch/ — 2026-04-23\n- [--] Anthropic announces Claud",
     "parsed_back": {
       "lancamento": 2,
       "radar": 5,
