@@ -1,0 +1,45 @@
+{
+  "source": "261124/_internal/newsletter-link-scores.json; somente linhas do assunto Gemini 4 Neon, sem corpo de e-mail",
+  "links": [
+    {
+      "url": "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon",
+      "title": "Introducing Gemini 4 Neon",
+      "score": null,
+      "score_status": "pendente",
+      "thread_id": "1a1f310fc69e200f",
+      "newsletter": "\"7min.ai\" <email@newsletter.7min.ai>",
+      "destino": "fora da edição",
+      "in_pool": false
+    },
+    {
+      "url": "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon",
+      "title": "Introducing Gemini 4 Neon",
+      "score": null,
+      "score_status": "pendente",
+      "thread_id": "1a1f8dc221d36573",
+      "newsletter": "\"Superhuman – Zain Kahn\" <superhuman@mail.joinsuperhuman.ai>",
+      "destino": "fora da edição",
+      "in_pool": false
+    },
+    {
+      "url": "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon",
+      "title": "Introducing Gemini 4 Neon",
+      "score": null,
+      "score_status": "pendente",
+      "thread_id": "1a1f8f29c78ed6e4",
+      "newsletter": "AI Breakfast <aibreakfast@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": false
+    },
+    {
+      "url": "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon",
+      "title": "Introducing Gemini 4 Neon",
+      "score": null,
+      "score_status": "pendente",
+      "thread_id": "1a1f9f4b52a6f6dc",
+      "newsletter": "Marktechpost AI <marktechpost-newsletter@mail.beehiiv.com>",
+      "destino": "fora da edição",
+      "in_pool": false
+    }
+  ]
+}

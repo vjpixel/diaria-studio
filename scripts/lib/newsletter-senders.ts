@@ -11,6 +11,8 @@ export interface SenderDecision {
   status: "aprovado" | "rejeitado";
   reason: string;
   decided_at: string;
+  /** #13885: assunto de IA citado por este remetente entra no consenso do gate 4 mesmo com 1 só newsletter (The News). */
+  consensus_ai_always?: boolean;
 }
 export interface SenderRegistry { version: 1; senders: Record<string, SenderDecision> }
 
@@ -26,6 +28,13 @@ export function validateSenderDecision(sender: string, decision: unknown): asser
   if (d.status !== "aprovado" && d.status !== "rejeitado") throw new Error(`Decisão inválida: ${sender} com status "${String(d.status)}"`);
   if (typeof d.reason !== "string" || !d.reason.trim()) throw new Error(`Decisão inválida: ${sender} sem reason`);
   if (typeof d.decided_at !== "string" || !Number.isFinite(Date.parse(d.decided_at))) throw new Error(`Decisão inválida: ${sender} com decided_at inválido`);
+  if (d.consensus_ai_always !== undefined && typeof d.consensus_ai_always !== "boolean") throw new Error(`Decisão inválida: ${sender} com consensus_ai_always não booleano`);
+}
+
+/** #13885: remetentes APROVADOS marcados para a exceção do consenso (assunto de IA com 1 só newsletter). */
+export function consensusAlwaysSenders(registry: SenderRegistry): Set<string> {
+  return new Set(Object.entries(registry.senders)
+    .filter(([, d]) => d.status === "aprovado" && d.consensus_ai_always === true).map(([s]) => s));
 }
 
 /** Valida o objeto já parseado do registro. Pura. */

@@ -79,7 +79,8 @@
     "created@thenewscc.com.br": {
       "status": "aprovado",
       "reason": "decisão do editor (delegada) no gate da edição 261112: newsletter diária brasileira que cobre notícias de IA e tecnologia",
-      "decided_at": "2026-11-10T18:15:00.000Z"
+      "decided_at": "2026-11-10T18:15:00.000Z",
+      "consensus_ai_always": true
     },
     "lenny+how-i-ai@substack.com": {
       "status": "aprovado",
