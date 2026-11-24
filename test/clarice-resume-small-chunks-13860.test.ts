@@ -57,6 +57,12 @@ describe("resume com chunk menor depois de timeout (#13860)", () => {
       edition: "261123", sleep: () => {}, clock: () => t,
     });
     assert.equal(calls[0].includes("--chunk-chars"), false);
+    assert.equal(calls[0].includes("--timeout-ms"), false);
+    // #13888: pequeno não implica rápido; permitir passar de 60s sem
+    // triplicar o orçamento por chunk nem remover o deadline da rodada.
+    assert.equal(calls[1][calls[1].indexOf("--timeout-ms") + 1], "120000");
+    assert.equal(calls[1][calls[1].indexOf("--max-attempts") + 1], "1");
+    assert.ok(calls[1].includes("--deadline-ms"));
     assert.equal(calls[1][calls[1].indexOf("--chunk-chars") + 1], String(RESUME_SMALL_CHUNK_CHARS));
     assert.ok(calls[1].includes("--no-paragraph-fallback"));
     assert.equal(rounds[1].chunkChars, RESUME_SMALL_CHUNK_CHARS);
@@ -81,6 +87,8 @@ describe("resume com chunk menor depois de timeout (#13860)", () => {
       return { exitCode: 3, stdout: TIMEOUT_STDOUT };
     }, { edition: "261123", rounds: 1, sleep: () => {} });
     assert.equal(calls.length, 1);
+    assert.equal(calls[0][calls[0].indexOf("--timeout-ms") + 1], "120000");
+    assert.equal(calls[0][calls[0].indexOf("--max-attempts") + 1], "1");
     assert.equal(calls[0][calls[0].indexOf("--chunk-chars") + 1], String(RESUME_SMALL_CHUNK_CHARS));
     assert.equal(rounds[0].chunkChars, RESUME_SMALL_CHUNK_CHARS);
   });
