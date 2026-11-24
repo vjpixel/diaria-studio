@@ -198,6 +198,8 @@ function significantWords(s: string): string[] {
  *     letras+dígitos, ver `hasDistinctiveCorrectMatch`) citado como palavra
  *     inteira;
  *   - (#8877) idem para `wrong_value` — reply que aponta só a grafia plantada;
+ *   - (#13918) `wrong_value` de palavra única citado inteiro com termo
+ *     significativo da localização (dispensa citar `correct_value`);
  *   - (#9792) `wrong_value` de 2+ palavras (>=6 chars úteis) citado inteiro e
  *     contíguo (`containsWholePhrase`);
  *   - (#10575) só o token de `wrong_value` multi-palavra que difere do
@@ -373,6 +375,20 @@ export function matchesIntentionalError(
   // ele aparece como palavra inteira na reply (fora da citação), é acerto — a
   // reply está citando exatamente o texto errado que o editor plantou.
   if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNorm)) return true;
+
+  // #13918: a grafia errada inteira + localização explícita também provam
+  // acerto em resposta longa, mesmo sem citar a correção. Exigir evidência
+  // real da localização (não o default true de hasDescMatch) e palavras
+  // inteiras evita aceitar ausência de contexto ou substrings incidentais.
+  if (
+    error.wrong_value &&
+    normalizePhrase(error.wrong_value).split(" ").length === 1 &&
+    normalizePhrase(error.wrong_value) !== normalizePhrase(error.correct_value ?? "") &&
+    containsWholePhrase(error.wrong_value, bodyNorm) &&
+    significantWords(error.location ?? "").some((w) => containsWholePhrase(w, bodyNorm))
+  ) {
+    return true;
+  }
 
   // #11056: reply terse com wrong_value de palavra única que é typo do
   // correct_value ("Amazom" -> "Amazon"), mesmo sem token distintivo.
