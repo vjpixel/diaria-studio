@@ -19,6 +19,7 @@ import {
 } from "./lib/newsletter-senders.ts";
 import { computeIntakeFingerprint, reviewedEntries } from "./lib/newsletter-intake-fingerprint.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { buildNewsletterConsensus, renderNewsletterConsensus } from "./lib/newsletter-consensus.ts";
 import { buildMultiCited, renderMultiCitedSection } from "./lib/newsletter-multi-cited.ts";
 import { linkMissing, linkMissingBlocks, linkMissingScore, linkMissingTitle, OUT_OF_EDITION } from "./lib/newsletter-intake-link-rules.ts";
 
@@ -36,6 +37,8 @@ export interface LinkAudit {
 // #12188/#12593: regras de bloqueio por link vivem em lib, compartilhadas com o invariante do Stage 4.
 export { linkMissing, linkMissingBlocks, linkMissingScore, linkMissingTitle, OUT_OF_EDITION } from "./lib/newsletter-intake-link-rules.ts";
 export interface IntakeOptions {
+  /** Registros reais de dedup/janela para explicar assuntos fora da edição. */
+  removals?: Item[];
   /** Threads da descoberta (`discovered-newsletters.json`) — só auditoria. */
   discovered?: DiscoveredThread[];
   bulkDomains?: string[];
@@ -189,7 +192,12 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     discovery.oferecidos.push({thread_id: thread.thread_id, remetente: thread.sender, assunto: thread.subject, data: thread.date, servico: service});
   }
   const citedMulti = buildMultiCited(links, joinKey); // #13314
-  return {rows, links, cited_multi: citedMulti, pending_senders: [...pendingSenders].sort(), discovery, fingerprint_keys: [...fingerprintKeys].sort()};
+  const finalItems = collectItemsSkipping(final, NOT_IN_EDITION_KEYS);
+  let destaqueIndex = 0;
+  const consensusFinal = finalItems.map((item) => ({...item,
+    destination: item.destination === DESTAQUE ? `D${++destaqueIndex}` : item.destination}));
+  const consensus = buildNewsletterConsensus(links, [...metadata, ...scores, pool].flatMap(collectItems), consensusFinal, opts.removals ?? [], joinKey);
+  return {rows, links, newsletter_consensus: consensus, cited_multi: citedMulti, pending_senders: [...pendingSenders].sort(), discovery, fingerprint_keys: [...fingerprintKeys].sort()};
 }
 function json(path: string): unknown { return JSON.parse(readFileSync(path, "utf8")); }
 function optional(path: string): unknown { return existsSync(path) ? json(path) : undefined; }
@@ -367,7 +375,10 @@ export function main(argv = process.argv.slice(2)): void {
   const failedThreads = captureEvents.flatMap((e) => (e.outcomes ?? []).filter((o) => o.outcome === "falhou").map((o) => ({thread_id: o.thread_id, error: o.error})));
   const fetchFailures = readFetchFailures(internal);
   const result = buildIntake(threads, loadSenderRegistry(registryPath), scores, pool, final, config?.newsletter_auto_capture?.always_consider_senders, metadata,
-    {discovered: discoveredRead.threads, bulkDomains, failedThreads, fetchFailures});
+    {discovered: discoveredRead.threads, bulkDomains, failedThreads, fetchFailures,
+      removals: ["tmp-dedup-output.json", "tmp-filtered.json", "tmp-dates-reviewed.json", "dedup-intra-edition-stats.json", "01-same-fact-removed.json"]
+        .flatMap((f) => { const data = optional(resolve(internal, f)) as {removed?: unknown} | undefined;
+          return collectItems(Array.isArray(data) ? data : data?.removed); })});
   // #12188 item 3: depois do buildIntake — a impressão digital do 02-reviewed.md
   // só cobre as URLs auditadas (trocar link de Radar não-newsletter não conta).
   const fingerprint = computeIntakeFingerprint(editionDir, registryPath, result.fingerprint_keys);
@@ -385,6 +396,8 @@ export function main(argv = process.argv.slice(2)): void {
   if (existsSync(resolve(internal, ".capture-newsletter-failed.json"))) warnings.push("capture_failed: captura Gmail falhou");
   if (result.rows.some((r) => r.estado === "falhou")) warnings.push("Há newsletters com estado falhou; conferir motivos no intake");
   if (result.rows.some((r) => r.estado === "parcial")) warnings.push("Há newsletters com links que não chegaram ao pool; conferir motivos no intake");
+  const pendingConsensus = result.newsletter_consensus.filter((g) => g.score === null);
+  if (pendingConsensus.length) warnings.push(`${pendingConsensus.length} assunto(s) de consenso sem score real; pontuar newsletter-consensus-unscored.json (informativo, não bloqueia)`);
   const fetchFailedLinks = result.links.filter((l) => l.fetch_error && linkMissing(l));
   if (fetchFailedLinks.length) warnings.push(`${fetchFailedLinks.length} link(s) sem score/título por falha de fetch/enrich registrada (paywall, 403, challenge) — auditoria, não bloqueia`);
   const outOfPool = result.links.filter((l) => !l.fetch_error && l.in_pool === false && linkMissing(l));
@@ -401,7 +414,12 @@ export function main(argv = process.argv.slice(2)): void {
   writeFileSync(resolve(internal, "newsletter-link-scores.json"), JSON.stringify({...result, warnings, input_fingerprint: fingerprint, registry_path: portableRegistryPath(registryPath)}, null, 2) + "\n");
   const cell = (value: unknown) => String(value).replace(/[\r\n|]/g, " ");
   const scoreCell = (l: LinkAudit) => l.score ?? (l.fetch_error ? `FALHA FETCH (${cell(l.fetch_error)})` : "PENDENTE");
-  const report = ["## Intake de newsletters de IA", ...warnings.map((w) => `⚠️ ${w}`), "", ...renderMultiCitedSection(result.cited_multi),
+  writeFileSync(resolve(internal, "newsletter-consensus-gate.md"), renderNewsletterConsensus(result.newsletter_consensus).join("\n") + "\n");
+  const consensusUnscored = result.newsletter_consensus.filter((g) => g.score === null).map((g) =>
+    ({...metadataItems.find((i) => typeof i.url === "string" && joinKey(i.url) === joinKey(g.url)), url: g.url, title: g.title, flag: "newsletter_extracted"}));
+  writeFileSync(resolve(internal, "newsletter-consensus-unscored.json"), JSON.stringify({articles: consensusUnscored,
+    categorized: {radar: consensusUnscored, lancamento: [], use_melhor: [], video: []}}, null, 2) + "\n");
+  const report = ["## Intake de newsletters de IA", ...warnings.map((w) => `⚠️ ${w}`), "", ...renderNewsletterConsensus(result.newsletter_consensus), ...renderMultiCitedSection(result.cited_multi),
     `Remetentes novos pendentes (decidir em um lote): ${result.pending_senders.join(", ") || "nenhum"}`,
     `Descoberta: ${result.discovery.threads} thread(s) fora da captura; ${result.discovery.oferecidos.length} de serviço de envio conhecido (oferecidas acima), ${result.discovery.fora_de_servico_conhecido} sem serviço conhecido (só contagem), ${result.discovery.rejeitados} de remetente rejeitado`,
     "", "| Score | Título | Newsletter | Destino | URL |", "| --- | --- | --- | --- | --- |",
