@@ -366,14 +366,82 @@ export function summarizePermissionDenials(raw: string): string | null {
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}×${c}`);
-  // Preserve the CLI denial payload: tool_input contains the command, while
-  // hook/rule diagnostics may be carried by additional fields.
+  // #13890: um detalhe por negação (comando e diagnóstico do hook/regra).
+  // #13909: resumido, redigido e truncado — nunca o `tool_input` inteiro.
   const details = list.flatMap((denial, index) => {
     if (!denial || typeof denial !== "object") return [];
     if (Object.keys(denial).every((key) => key === "tool_name")) return [];
-    return [`#${index + 1} ${JSON.stringify(denial)}`];
+    return [`#${index + 1} ${summarizeDenialDetail(denial as Record<string, unknown>)}`];
   });
   return `${list.length} permission_denials (${parts.join(", ")})${details.length ? ` | ${details.join(" | ")}` : ""}`;
+}
+
+/** #13909: teto de caracteres de cada detalhe de negação no failureTail/run-log. */
+export const DENIAL_DETAIL_MAX_CHARS = 300;
+
+/** Campos de `tool_input` que identificam a chamada; o resto (ex.: `content` de um Write) só entra como tamanho. */
+const DENIAL_INPUT_KEYS = ["command", "file_path", "path", "pattern", "url", "skill", "description"];
+
+/**
+ * #13909: padrões de segredo redigidos antes do detalhe ir pra `data/`
+ * (run-log sincronizado entre máquinas). Formatos de provedor espelham
+ * `.claude/hooks/lib/secret-patterns.mjs`; os genéricos cobrem
+ * `Authorization: Bearer`, `KEY=valor`/`token: valor` e token opaco longo.
+ */
+const DENIAL_SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/(Authorization:\s*Bearer\s+)\S+/gi, "$1[REDACTED]"],
+  [/sk-(?:or-|ant-|proj-)?[A-Za-z0-9_-]{20,}/g, "[REDACTED]"],
+  [/xkeysib-[A-Za-z0-9-]{20,}/g, "[REDACTED]"],
+  [/(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/g, "[REDACTED]"],
+  [/dp\.(?:st|pt|sa|ct|scim)\.[A-Za-z0-9_.-]{20,}/g, "[REDACTED]"],
+  [/xox[abprs]-[A-Za-z0-9-]{20,}/g, "[REDACTED]"],
+  [/AIza[A-Za-z0-9_-]{35}/g, "[REDACTED]"],
+  [/AKIA[A-Z0-9]{16}/g, "[REDACTED]"],
+  [/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, "[REDACTED]"],
+  [
+    /(\b[A-Za-z0-9_]*(?:api[_-]?key|apikey|token|secret|password|passwd|senha)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)[^\s"'&]{6,}/gi,
+    "$1[REDACTED]",
+  ],
+  [/\b[A-Za-z0-9_-]{40,}\b/g, "[REDACTED]"],
+];
+
+/** #13909 (pure): redige padrões de segredo de um texto de diagnóstico. */
+export function redactDenialSecrets(text: string): string {
+  let out = text;
+  for (const [re, replacement] of DENIAL_SECRET_PATTERNS) out = out.replace(re, replacement);
+  return out;
+}
+
+/**
+ * #13909 (pure): detalhe curto de UMA negação — `tool_name`, os campos de
+ * `tool_input` que identificam a chamada (comando, caminho) e os demais campos
+ * de diagnóstico (mensagem do hook/regra), redigido e truncado em
+ * `DENIAL_DETAIL_MAX_CHARS`. Campo volumoso do input (o `content` de um Write
+ * negado) entra só como tamanho.
+ */
+export function summarizeDenialDetail(denial: Record<string, unknown>, maxChars = DENIAL_DETAIL_MAX_CHARS): string {
+  const pieces: string[] = [];
+  if (typeof denial.tool_name === "string") pieces.push(denial.tool_name);
+  const input = denial.tool_input;
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const rec = input as Record<string, unknown>;
+    for (const key of DENIAL_INPUT_KEYS) {
+      if (typeof rec[key] === "string") pieces.push(`${key}=${JSON.stringify(rec[key])}`);
+    }
+    const rest = Object.keys(rec).filter((key) => !DENIAL_INPUT_KEYS.includes(key));
+    for (const key of rest) {
+      const value = rec[key];
+      pieces.push(typeof value === "string" ? `${key}=<${value.length} chars>` : `${key}=<${typeof value}>`);
+    }
+  } else if (input !== undefined) {
+    pieces.push(`tool_input=${JSON.stringify(input)}`);
+  }
+  for (const [key, value] of Object.entries(denial)) {
+    if (key === "tool_name" || key === "tool_input" || key === "tool_use_id") continue;
+    pieces.push(`${key}=${JSON.stringify(value) ?? String(value)}`);
+  }
+  const text = redactDenialSecrets(pieces.join(" "));
+  return text.length > maxChars ? `${text.slice(0, Math.max(0, maxChars - 1))}…` : text;
 }
 
 /**
