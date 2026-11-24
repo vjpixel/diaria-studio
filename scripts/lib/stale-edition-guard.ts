@@ -74,6 +74,7 @@ export const PUBLICA_VIDEO_FILES: readonly string[] = [
   "_internal/05-youtube-pending-approval.json", // YOUTUBE_PENDING_APPROVAL_FILE
   "_internal/publica-phases.jsonl", // PUBLICA_PHASES_FILE
   "_internal/06-shorts-published.json",
+  "_internal/06-shorts-replaced.json", // SHORTS_REPLACED_FILE (`--replace-scheduled`, #13873)
   "_internal/04-youtube-short-capa.source.json", // SHORT_COVER_SOURCE_FILE
   "04-youtube-thumb.jpg", // YOUTUBE_THUMB_FILE
   "04-youtube-short-capa.jpg", // SHORT_COVER_FILE
@@ -84,10 +85,16 @@ export const PUBLICA_VIDEO_DIRS: readonly string[] = [
   "_internal/youtube-thumb-portraits/", // THUMB_PORTRAITS_DIR
   "_internal/youtube-thumb-capa-bg/", // THUMB_CAPA_BG_DIR
 ];
-/** Vídeo baixado e legenda (`youtubeVideoFileName`, `youtubeCaptionFileName`, o `-short` do vertical) e o plano com hash. */
+/**
+ * Vídeo baixado e legenda (`youtubeVideoFileName`, `youtubeCaptionFileName`, o `-short` do vertical), o plano com hash
+ * e os demais arquivos do registro do vertical (#13873): os dos timers do 300
+ * (`06-shorts-published.{linkedin,instagram,threads}-timer.json`) e as cópias de conflito do sync
+ * (`06-shorts-published-Neo.json`), o mesmo conjunto de `isShortsRegistryFileName`.
+ */
 const PUBLICA_VIDEO_PATTERNS: readonly RegExp[] = [
   /^diaria-comentada-\d{6}(-short)?\.(mp4|srt)$/,
   /^_internal\/video-publish-plan\.[a-z-]+\.json$/,
+  /^_internal\/06-shorts-published[^/]*\.json$/,
 ];
 
 /** Pura: `relPath` (relativo à pasta da edição, com `/`) é artefato de vídeo do `/diaria-publica` (#13867). */
