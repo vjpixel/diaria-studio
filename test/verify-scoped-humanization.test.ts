@@ -237,3 +237,27 @@ describe("verify-scoped-humanization.ts (#3953) — --post deve ser o snapshot p
     }
   });
 });
+
+describe("#13889: passada scoped sem mudanças", () => {
+  for (const [label, pre, post, sections, note, status] of [
+    ["nota explícita aceita alvo mantido", SOCIAL_PRE, SOCIAL_PRE, "main_d2", "humanizador sem mudanças", 0],
+    ["nota vazia não prova passada", SOCIAL_PRE, SOCIAL_PRE, "main_d2", "   ", 1],
+    ["nota não aceita alvo ausente", SOCIAL_PRE, SOCIAL_PRE, "main_d3", "sem mudanças", 1],
+    ["nota não aceita mudança fora do escopo", SOCIAL_PRE, SOCIAL_POST_SCOPE_VIOLATED, "main_d2", "sem mudanças", 1],
+    ["run misto aceita somente alvo mantido", SOCIAL_PRE, SOCIAL_POST_SCOPED_OK, "main_d1,main_d2", "sem mudanças em D1", 0],
+  ] as const) {
+    it(label, () => {
+      const f = mkFiles(pre, post);
+      try {
+        const r = runScript(["--pre", f.prePath, "--post", f.postPath, "--sections", sections, "--note", note]);
+        assert.equal(r.status, status, r.stderr);
+        const result = JSON.parse(r.stdout);
+        if (status === 0) {
+          assert.ok(result.notedTargets.length > 0);
+          assert.equal(result.note, note);
+          assert.ok(result.notedTargets.every((s: string) => !result.touchedTargets.includes(s)));
+        }
+      } finally { f.cleanup(); }
+    });
+  }
+});
