@@ -440,6 +440,20 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
  * na prática (sem essa erosão), ou com um comparador tolerante a reescrita
  * leve.
  */
+/**
+ * #13886: a mensagem antiga só dizia "01-eia.md é o real", e quem a seguia
+ * rodava `sync-eia-block.ts` esperando espelhar 01→02 — mas o default do
+ * script é o sentido OPOSTO (02→01) e apagava a legenda real com o
+ * placeholder do mirror. Cita os dois sentidos com o comando exato.
+ */
+function eiaSyncHint(editionDir: string): string {
+  return (
+    `Se 01-eia.md está certo e só o espelho está defasado, espelhar 01 → 02 com ` +
+    `\`npx tsx scripts/sync-eia-block.ts --edition-dir ${editionDir} --from 01\`. ` +
+    `Sem \`--from 01\` o script vai no sentido 02 → 01 (propaga ao real a correção feita no espelho).`
+  );
+}
+
 function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -483,7 +497,8 @@ function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
         `02-reviewed.md (cosmético): "${mirror.credit}". ` +
         `01-eia.md (real, vai pro email): "${real.credit}". ` +
         `Fix: editar 01-eia.md com a legenda correta — editar só 02-reviewed.md não tem ` +
-        `efeito no email enviado (incidente 260722, #3825).`,
+        `efeito no email enviado (incidente 260722, #3825). ` +
+        `${eiaSyncHint(editionDir)}`,
       source_issue: "#3825",
       severity: "warning",
       file: eiaPath,
@@ -498,7 +513,8 @@ function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
         `de 01-eia.md (mesma fonte real do render, ver eia-credit-synced acima). ` +
         `02-reviewed.md: "${mirror.prevResultLine ?? "(ausente)"}". ` +
         `01-eia.md: "${real.prevResultLine ?? "(ausente)"}". ` +
-        `Fix: editar 01-eia.md — editar só 02-reviewed.md não tem efeito no email enviado (#3825).`,
+        `Fix: editar 01-eia.md — editar só 02-reviewed.md não tem efeito no email enviado (#3825). ` +
+        `${eiaSyncHint(editionDir)}`,
       source_issue: "#3825",
       severity: "warning",
       file: eiaPath,

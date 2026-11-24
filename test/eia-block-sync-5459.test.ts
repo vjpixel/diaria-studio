@@ -18,7 +18,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { syncEiaBlockFromReviewed } from "../scripts/lib/eia-sync.ts";
+import { runSyncEiaBlock } from "../scripts/sync-eia-block.ts";
 
 const EDITION_DIR = "/tmp/fake-edition-dir/260817";
 
@@ -150,5 +154,95 @@ describe("syncEiaBlockFromReviewed (#5459)", () => {
     assert.equal(result.changed, true);
     assert.match(result.newEiaMd, /^---\r?\nalgum_outro_campo: valor\r?\n---/);
     assert.ok(result.newEiaMd.includes("Crédito corrigido."));
+  });
+});
+
+/**
+ * #13886 (edição 261124, Stage 4): o `strip-emdashes-reviewed.ts` (#9379)
+ * roda antes deste sync e troca o ` — ` do placeholder por vírgula. A
+ * sentinela antiga casava só a frase com travessão, o placeholder passava
+ * por "legenda corrigida" e apagava a legenda real + o "Resultado da última
+ * edição" de 01-eia.md.
+ */
+describe("#13886: placeholder pós-strip-emdashes nunca apaga o 01-eia.md real", () => {
+  const PLACEHOLDER_POS_STRIP = "É IA?\n\n[É IA? ainda processando, bloco será inserido na Etapa 3]";
+  const CREDITO_REAL = "Foto do farol de Peggy's Cove, [Author](https://commons.wikimedia.org/wiki/User:X) / CC BY-SA 4.0.";
+  const RESULTADO = "Resultado da última edição: 88% das pessoas acertaram.";
+  const EIA_REAL = `---\neia_answer:\n  A: real\n  B: ia\n---\n\n**É IA?**\n\n${CREDITO_REAL}\n\n${RESULTADO}\n`;
+
+  function withDir(fn: (dir: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "eia-13886-"));
+    try {
+      fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("lib: mirror com o placeholder de vírgula → no-op mirror-is-placeholder", () => {
+    const r = syncEiaBlockFromReviewed(EIA_REAL, reviewedMdWithEiaBlock(PLACEHOLDER_POS_STRIP), EDITION_DIR);
+    assert.equal(r.changed, false);
+    assert.equal(r.reason, "mirror-is-placeholder");
+    assert.equal(r.newEiaMd, EIA_REAL);
+  });
+
+  it("lib: mirror sem a linha de resultado que o real tem → no-op mirror-loses-content", () => {
+    const r = syncEiaBlockFromReviewed(
+      EIA_REAL,
+      reviewedMdWithEiaBlock(`**É IA?**\n\n${CREDITO_REAL.replace("farol", "Farol")}`),
+      EDITION_DIR,
+    );
+    assert.equal(r.changed, false);
+    assert.equal(r.reason, "mirror-loses-content");
+  });
+
+  it("CLI default: 02 com placeholder + 01 real → exit 4, 01-eia.md byte-idêntico, mensagem cita --from 01", () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, "01-eia.md"), EIA_REAL, "utf8");
+      writeFileSync(join(dir, "02-reviewed.md"), reviewedMdWithEiaBlock(PLACEHOLDER_POS_STRIP), "utf8");
+      const out = runSyncEiaBlock(dir);
+      assert.equal(out.exitCode, 4);
+      assert.equal(out.wrote, undefined);
+      assert.match(out.message, /--from 01/);
+      assert.match(out.message, /02-reviewed\.md → 01-eia\.md/);
+      assert.equal(readFileSync(join(dir, "01-eia.md"), "utf8"), EIA_REAL);
+    });
+  });
+
+  it("CLI default: 02 com placeholder e 01-eia.md ausente (ordem normal do Stage 2) → exit 0", () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, "02-reviewed.md"), reviewedMdWithEiaBlock(PLACEHOLDER_POS_STRIP), "utf8");
+      const out = runSyncEiaBlock(dir);
+      assert.equal(out.exitCode, 0);
+      assert.equal(existsSync(join(dir, "01-eia.md")), false);
+    });
+  });
+
+  it("CLI --from 01: espelha o real no mirror de 02, 01-eia.md intacto, resto de 02 preservado", () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, "01-eia.md"), EIA_REAL, "utf8");
+      const reviewed = reviewedMdWithEiaBlock(PLACEHOLDER_POS_STRIP);
+      writeFileSync(join(dir, "02-reviewed.md"), reviewed, "utf8");
+      const out = runSyncEiaBlock(dir, "01");
+      assert.equal(out.exitCode, 0);
+      const after = readFileSync(join(dir, "02-reviewed.md"), "utf8");
+      assert.equal(after, reviewed.replace(PLACEHOLDER_POS_STRIP, `**É IA?**\n\n${CREDITO_REAL}\n\n${RESULTADO}`));
+      assert.ok(!after.includes("eia_answer"), "frontmatter de 01-eia.md não vai pro mirror");
+      assert.equal(readFileSync(join(dir, "01-eia.md"), "utf8"), EIA_REAL);
+      // Depois do --from 01, o default fica no-op (já sincronizado).
+      const again = runSyncEiaBlock(dir);
+      assert.equal(again.exitCode, 0);
+      assert.equal(readFileSync(join(dir, "01-eia.md"), "utf8"), EIA_REAL);
+    });
+  });
+
+  it("CLI --from 01 com 01-eia.md ausente → exit 3, 02 intacto", () => {
+    withDir((dir) => {
+      const reviewed = reviewedMdWithEiaBlock(PLACEHOLDER_POS_STRIP);
+      writeFileSync(join(dir, "02-reviewed.md"), reviewed, "utf8");
+      const out = runSyncEiaBlock(dir, "01");
+      assert.equal(out.exitCode, 3);
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), reviewed);
+    });
   });
 });
