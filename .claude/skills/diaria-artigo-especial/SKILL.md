@@ -650,8 +650,14 @@ npx tsx scripts/update-artigo-especial-box.ts \
   --gancho "{1 frase de gancho, derivada da description ou 1º leadParagraph}" \
   --mes "{Mês por extenso, ex: Setembro}" \
   --ano {ano} --slug {slug} \
-  [--no-pin] [--force]
+  [--expires AAAA-MM-DD] [--no-pin] [--force]
 ```
+
+**Validade do box (#13894):** o script grava `expires:` no header do snippet,
+por padrão o último dia do mês corrente (BRT) em que o Passo 5 roda; depois
+dessa data o box sai da seleção sozinho. Se o artigo for divulgado fora do mês
+do rótulo `--mes` (ex.: artigo "de Setembro" divulgado em 02/10), passar
+`--expires` com o fim do mês certo.
 
 **`--ano`/`--slug` não são cosméticos — são o que ativa o guard de
 idempotência do canal `box`** (`decideChannelAction` em

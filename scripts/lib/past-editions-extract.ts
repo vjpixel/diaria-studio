@@ -16,7 +16,12 @@ import { canonicalize } from "./url-utils.ts";
 import { isValidEditionDir } from "./edition-utils.ts"; // #1680: validador consolidado
 import { enumerateEditionDirs } from "./find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { decodeHtmlEntities } from "./clean-summary.ts"; // #9646: entidade HTML não vira token
-import { computeDestaqueUpgradeEligible } from "./destaque-upgrade.ts"; // #12193
+import {
+  computeDestaqueUpgradeEligible,
+  findApprovedSectionOf,
+  UNKNOWN_SECTION,
+  type PastPublication,
+} from "./destaque-upgrade.ts"; // #12193, #13883
 
 export { isValidEditionDir };
 
@@ -211,6 +216,61 @@ export function extractDestaqueUpgradeEligibleUrls(
     return set;
   };
   return computeDestaqueUpgradeEligible(urlDates, destaquesFor);
+}
+
+/**
+ * #13883: onde cada URL de `urls` já saiu na janela — data da edição e
+ * seção, lida do `01-approved.json` da pasta local daquela edição
+ * (`findApprovedSectionOf`). Sem pasta local ou sem a URL no JSON, a seção
+ * fica `UNKNOWN_SECTION` (a data vem de `past-editions.md` e é sempre
+ * conhecida). Chave do mapa = `keyOf(url)`; só entram URLs de `urls` que
+ * aparecem na janela. Lê só as edições em que essas URLs saíram.
+ */
+export function extractPastPublicationsWithinDays(
+  urls: Iterable<string>,
+  md: string,
+  editionsDir: string,
+  days: number = DEDUP_URL_WINDOW_DAYS,
+  referenceAammdd?: string,
+  keyOf: (url: string) => string = canonicalize,
+): Map<string, PastPublication[]> {
+  const wanted = new Set<string>();
+  for (const u of urls) wanted.add(keyOf(u));
+  const out = new Map<string, PastPublication[]>();
+  if (wanted.size === 0 || !md.trim()) return out;
+  const urlDates = extractPastUrlDatesWithinDays(md, days, referenceAammdd);
+  const dirs = existsSync(editionsDir) ? enumerateEditionDirs(editionsDir) : new Map<string, string>();
+  const approvedCache = new Map<string, unknown>();
+  const approvedFor = (isoDate: string): unknown => {
+    const aammdd = isoDate.slice(2).replace(/-/g, "");
+    if (approvedCache.has(aammdd)) return approvedCache.get(aammdd);
+    let json: unknown;
+    const dir = dirs.get(aammdd);
+    if (dir) {
+      for (const p of [resolve(dir, "_internal", "01-approved.json"), resolve(dir, "01-approved.json")]) {
+        if (!existsSync(p)) continue;
+        try {
+          json = JSON.parse(readFileSync(p, "utf8"));
+          break;
+        } catch {
+          // JSON ilegível: seção desconhecida, a data segue valendo
+        }
+      }
+    }
+    approvedCache.set(aammdd, json);
+    return json;
+  };
+  for (const [url, dates] of urlDates) {
+    const key = keyOf(url);
+    if (!wanted.has(key)) continue;
+    const list = out.get(key) ?? [];
+    for (const date of dates) {
+      if (list.some((p) => p.date === date)) continue;
+      list.push({ date, section: findApprovedSectionOf(approvedFor(date), url, keyOf) ?? UNKNOWN_SECTION });
+    }
+    out.set(key, list);
+  }
+  return out;
 }
 
 /**
