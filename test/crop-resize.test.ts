@@ -91,3 +91,28 @@ describe("crop-resize.ts — flags de compressão opcionais (#5136)", () => {
     }
   });
 });
+
+describe("crop-resize.ts — entrada acima do limite padrão do sharp (#13876)", () => {
+  it("redimensiona imagem > 268 MP (panorama POTD) sem estourar limitInputPixels", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "crop-resize-huge-"));
+    try {
+      const src = join(dir, "huge.png");
+      const dest = join(dir, "dest.jpg");
+      // 30349x8999 = 273 MP, > 268.402.689 (default do sharp). PNG de cor chapada é minúsculo.
+      await sharp({
+        create: { width: 30349, height: 8999, channels: 3, background: "#336699" },
+        limitInputPixels: false,
+      })
+        .png({ compressionLevel: 9 })
+        .toFile(src);
+
+      runCropResize([src, dest, "--width", "800", "--height", "450"]);
+
+      const meta = await sharp(readFileSync(dest)).metadata();
+      assert.equal(meta.width, 800);
+      assert.equal(meta.height, 450);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
