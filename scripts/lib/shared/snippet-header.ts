@@ -48,6 +48,25 @@ export function parseBoxHeaderField(content: string, key: string): string | null
   return m ? m[1].trim() : null;
 }
 
+/** #13894: grava `{key}: {value}` no header de comentário, cirúrgico (#495):
+ * troca só a linha do campo se ela existe; senão insere o campo como 1ª
+ * linha do header; sem header, cria um (`<!--\n{key}: {value}\n-->`) no
+ * topo. O resto do arquivo fica intacto. `key`/`value` não podem ter quebra
+ * de linha (lança: o campo é de uma linha só). */
+export function upsertBoxHeaderField(content: string, key: string, value: string): string {
+  if (/[\r\n]/.test(key) || /[\r\n]/.test(value)) {
+    throw new Error(`upsertBoxHeaderField: "${key}" precisa caber em uma linha`);
+  }
+  const m = /^(\s*<!--)([\s\S]*?)(-->)/.exec(content);
+  if (!m) return `<!--\n${key}: ${value}\n-->\n\n${content}`;
+  const inner = m[2];
+  const re = new RegExp(`^([ \\t]*)${key}[ \\t]*:.*$`, "im");
+  const nextInner = re.test(inner)
+    ? inner.replace(re, (_line, indent: string) => `${indent}${key}: ${value}`)
+    : `\n${key}: ${value}${inner.startsWith("\n") ? "" : "\n"}${inner}`;
+  return m[1] + nextInner + m[3] + content.slice(m[0].length);
+}
+
 /** `true` se o header de comentário declara `runtime: false` (#4500, movida
  * de `scripts/studio-ui/studio-boxes.ts` pra cá em #4504 — a checagem passou
  * a ser necessária também no pipeline core, `scripts/stitch-newsletter.ts`/
