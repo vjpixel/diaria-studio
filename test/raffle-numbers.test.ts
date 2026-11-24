@@ -714,3 +714,40 @@ describe("matchesIntentionalError (#11056) — reply terse com wrong_value de pa
     assert.equal(matchesIntentionalError("Obrigado!", error), false);
   });
 });
+
+
+describe("matchesIntentionalError (#13918) — palavra errada com localização", () => {
+  const error = {
+    wrong_value: "Microsfot",
+    correct_value: "Microsoft",
+    location: "DESTAQUE 1, Por que isso importa",
+  };
+  const body = "O erro está na palavra Microsfot na seção por que isso importa? da notícia sobre a fraude na Coreia do Sul.";
+
+  it("aceita o caso real sem mencionar a correção", () => {
+    assert.equal(matchesIntentionalError(body, error), true);
+  });
+
+  it("aceita saudação e assinatura em resposta longa", () => {
+    assert.equal(matchesIntentionalError(`Bom dia!\n${body}\nObrigado pela edição de hoje.\n-- \nLeitor`, error), true);
+  });
+
+  it("exige localização presente no corpo, como palavra inteira", () => {
+    assert.equal(matchesIntentionalError(body, { ...error, location: undefined }), false);
+    assert.equal(matchesIntentionalError(body, { ...error, location: "radar" }), false);
+    assert.equal(matchesIntentionalError(body, { ...error, location: "importante" }), false);
+  });
+
+  it("não aceita substring da palavra errada", () => {
+    assert.equal(matchesIntentionalError(body.replace("Microsfot", "Microsfotzinha"), error), false);
+  });
+
+  it("não usa a citação como evidência de palavra ou localização", () => {
+    assert.equal(matchesIntentionalError(`Obrigado!\n> ${body}`, error), false);
+    assert.equal(matchesIntentionalError(`O texto menciona Microsfot e gostei muito da edição de hoje.\n> ${body}`, error), false);
+  });
+
+  it("não aceita wrong_value igual ao correct_value", () => {
+    assert.equal(matchesIntentionalError(body, { ...error, correct_value: "Microsfot", description: "outro assunto", location: "radar" }), false);
+  });
+});
