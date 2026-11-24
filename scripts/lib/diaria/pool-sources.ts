@@ -264,15 +264,3 @@ export async function prefetchPoolSources(
       .map((e) => ({ url: e.url, bucket: e.bucket, title: e.title, status: e.status, erro: e.erro })),
   };
 }
-
-/**
- * Motivo de "fonte não lida" que o manifest dá a uma URL, ou `null` quando a
- * fonte foi lida, foi pulada (vídeo do YouTube, julgado pelo resumo) ou não há
- * manifest (edição anterior ao #13884). @pure
- */
-export function poolSourceUnreadReason(manifest: PoolSourceEntry[], url: string): string | null {
-  const e = manifest.find((m) => m.url === url);
-  if (!e) return null;
-  if (e.status === "blocked" || e.status === "error") return `download da página falhou: ${e.erro ?? e.status}`;
-  return null;
-}

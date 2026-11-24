@@ -145,9 +145,16 @@ const APPROVED_BUCKETS = ["highlights", "lancamento", "radar", "use_melhor", "vi
  * (#13884) Resultado do download da página por URL, lido dos manifests de
  * `_internal/pool-sources/` (itens de pool) e `_internal/fact-check-sources/`
  * (destaques). `ok: true` = há texto da página em disco; `ok: false` = o
- * download falhou (403, erro), com o motivo.
+ * download falhou (403, erro) ou trouxe só a prévia do paywall, com o motivo.
  */
 export type SourceDownloads = ReadonlyMap<string, { ok: boolean; reason?: string }>;
+
+/**
+ * (#13884) Motivo de "fonte não lida" para download `ok` com `completeness:
+ * "preview"` (#12537): o texto em disco é só a prévia que o paywall serve, não
+ * o artigo.
+ */
+const PAYWALL_PREVIEW_REASON = "só a prévia do paywall foi baixada";
 
 /**
  * (#13884) Monta `SourceDownloads` a partir dos manifests da edição. Entrada
@@ -157,7 +164,8 @@ export type SourceDownloads = ReadonlyMap<string, { ok: boolean; reason?: string
 export function readSourceDownloads(internalDir: string): Map<string, { ok: boolean; reason?: string }> {
   const out = new Map<string, { ok: boolean; reason?: string }>();
   for (const e of readPoolSourcesManifest(internalDir)) {
-    if (e.status === "ok") out.set(e.url, { ok: true });
+    if (e.status === "ok" && e.completeness === "preview") out.set(e.url, { ok: false, reason: PAYWALL_PREVIEW_REASON });
+    else if (e.status === "ok") out.set(e.url, { ok: true });
     else if (e.status === "blocked" || e.status === "error") {
       out.set(e.url, { ok: false, reason: `download da página falhou: ${e.erro ?? e.status}` });
     }
@@ -167,9 +175,11 @@ export function readSourceDownloads(internalDir: string): Map<string, { ok: bool
     try {
       const raw = JSON.parse(readFileSync(fc, "utf8")) as unknown;
       if (Array.isArray(raw)) {
-        for (const e of raw as Array<{ url?: unknown; status?: unknown; erro?: unknown }>) {
+        for (const e of raw as Array<{ url?: unknown; status?: unknown; erro?: unknown; completeness?: unknown }>) {
           if (!e || typeof e.url !== "string") continue;
-          if (e.status === "ok") out.set(e.url, { ok: true });
+          if (e.status === "ok" && e.completeness === "preview") {
+            if (!out.get(e.url)?.ok) out.set(e.url, { ok: false, reason: PAYWALL_PREVIEW_REASON });
+          } else if (e.status === "ok") out.set(e.url, { ok: true });
           else if (!out.get(e.url)?.ok) {
             out.set(e.url, { ok: false, reason: `download da página falhou: ${typeof e.erro === "string" ? e.erro : String(e.status)}` });
           }

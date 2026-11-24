@@ -198,6 +198,34 @@ describe("gate 4: source-not-read com o download do pool (#13884)", () => {
       rmSync(ed, { recursive: true, force: true });
     }
   });
+
+  it("download ok com só a prévia do paywall (completeness preview) conta como fonte não lida", () => {
+    const ed = setup();
+    try {
+      mkdirSync(join(ed, "_internal", "pool-sources"), { recursive: true });
+      writeFileSync(
+        join(ed, "_internal", "pool-sources", "manifest.json"),
+        JSON.stringify([{ url: OK, bucket: "use_melhor", title: "Tutorial", file: "x.txt", status: "ok", erro: null, bytes: 10, fetched_at: "x", completeness: "preview", words: 40 }]),
+      );
+      mkdirSync(join(ed, "_internal", "fact-check-sources"), { recursive: true });
+      writeFileSync(
+        join(ed, "_internal", "fact-check-sources", "manifest.json"),
+        JSON.stringify([
+          { destaque: 1, url: HL[0], status: "ok", erro: null, bytes: 10, fetched_at: "x", completeness: "preview" },
+          { destaque: 2, url: HL[1], status: "ok", erro: null, bytes: 10, fetched_at: "x", completeness: "full" },
+        ]),
+      );
+      const downloads = readSourceDownloads(join(ed, "_internal"));
+      assert.deepEqual(downloads.get(OK), { ok: false, reason: "só a prévia do paywall foi baixada" });
+      assert.equal(downloads.get(HL[0])?.ok, false);
+      assert.equal(downloads.get(HL[1])?.ok, true);
+      const items = findUnreadItemsInEdition(approvedFixture(), md, downloads);
+      assert.match(items.find((i) => i.url === OK)!.reason, /prévia do paywall/);
+      assert.ok(items.find((i) => i.url === HL[0])?.highlight);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("promoção a destaque herda o texto do pool (#13884 item 4)", () => {
