@@ -21,7 +21,7 @@
  * `--sections` (inclusive nos cards) sai em `unexpectedChanges`.
  *
  * Exit code:
- *   0 = ok — apenas as seções pedidas mudaram, e todas elas mudaram
+ *   0 = ok — apenas as seções pedidas mudaram; alvos mantidos exigem --note (#13889)
  *   1 = escopo violado (untouchedTargets e/ou unexpectedChanges não-vazios)
  *       ou erro de args/leitura
  *
@@ -42,14 +42,15 @@
  *   4. Exit 1 → não confiar no resultado: se `unexpectedChanges` não-vazio,
  *      considerar re-humanização completa (a skill não respeitou o escopo);
  *      se `untouchedTargets` não-vazio, re-invocar a skill apenas para essas
- *      seções antes de seguir.
+ *      seções antes de seguir. Se a passada manteve o texto, usar --note
+ *      "humanizador sem mudanças" para os alvos mantidos (#13889), também no --record-run.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { checkScopedHumanizerCoverage } from "./lib/social-lint-rules.ts";
+import { computeSectionHashes, checkScopedHumanizerCoverage } from "./lib/social-lint-rules.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -82,11 +83,22 @@ function main(): void {
 
   const result = checkScopedHumanizerCoverage(preMd, postMd, targetSections);
 
-  console.log(JSON.stringify(result));
+  // #13889: a nota atesta somente alvos existentes e mantidos, nunca mudanças
+  // fora do escopo. Não chamar uma seção mantida de "tocada".
+  const note = values["note"]?.trim();
+  const hashes = computeSectionHashes(postMd);
+  const notedTargets = note ? result.untouchedTargets.filter((s) => s in hashes) : [];
+  result.untouchedTargets = result.untouchedTargets.filter((s) => !notedTargets.includes(s));
+  const missingTargets = targetSections.filter((s) => !(s in hashes));
+  for (const s of missingTargets) {
+    if (!result.untouchedTargets.includes(s)) result.untouchedTargets.push(s);
+  }
+  result.ok = result.untouchedTargets.length === 0 && result.unexpectedChanges.length === 0;
+  console.log(JSON.stringify({ ...result, notedTargets, ...(notedTargets.length ? { note } : {}) }));
 
   if (result.ok) {
     console.error(
-      `[verify-scoped-humanization] OK — humanizador tocou exatamente as seções pedidas: ${targetSections.join(", ")}`,
+      `[verify-scoped-humanization] OK — escopo conferido (diff ou nota explícita): ${targetSections.join(", ")}`,
     );
     process.exit(0);
   }

@@ -43,7 +43,8 @@
  *             gravado) — não distingue "rodou sem sugestões" de "não rodou". Se a
  *             Clarice rodou e não sugeriu nada, `--note "<motivo>"` registra a prova
  *             como mais fraca ("sem sugestões" no --provenance, motivo no run).
- *             `--note` não vale para o humanizador (#11609).
+ *             #13889: humanizador sem mudanças também aceita --note explícito,
+ *             por seção (--sections), com prova mais fraca visível no --provenance.
  *
  *   --record-clarice-pending --reason clarice_unavailable [--detail <desfecho>] [--sections a,b]
  *             (#13848) Caminho oficial para "Clarice indisponível" no social (equivalente
@@ -649,14 +650,6 @@ function main(): void {
       process.exit(1);
     }
     const note = values["note"]?.trim() || undefined;
-    if (note && step === "humanizador") {
-      // #11609: snapshots idênticos não provam o humanizador nem com motivo — o caminho é --unproven-ok no --write.
-      console.error(
-        "[check-humanizer-social] ERRO: --note só vale para --step clarice (#11674). Humanizador que devolveu tudo idêntico " +
-          'não gera prova (#11609); use --unproven-ok "<motivo>" no --write.',
-      );
-      process.exit(1);
-    }
     const prePath = resolve(ROOT, pre);
     const postPath = resolve(ROOT, post);
     if (!existsSync(prePath) || !existsSync(postPath)) {
@@ -672,12 +665,12 @@ function main(): void {
       sections,
       { note },
     );
-    if (plan.noop && step === "clarice" && !note) {
-      // #11674: recusa sem gravar — --pre igual a --post não prova que a Clarice rodou.
+    if (plan.noop && !note) {
+      // #11674/#13889: recusa sem gravar — snapshots iguais exigem nota explícita.
       console.error(
-        "[check-humanizer-social] RECUSADO — --pre e --post são idênticos em todo o escopo: nada prova que a Clarice rodou. " +
-          'Se ela rodou e não sugeriu nada, repita com --note "<motivo>" (fica gravado no run e aparece como ' +
-          '"sem sugestões" no --provenance). Nada foi gravado (#11674).',
+        "[check-humanizer-social] RECUSADO — --pre e --post são idênticos em todo o escopo: nada prova que o passo rodou. " +
+          'Se o passo rodou sem mudanças, repita com --note "<motivo>" (fica gravado no run e aparece como ' +
+          '"texto mantido/sem sugestões" no --provenance). Nada foi gravado (#11674/#13889).',
       );
       for (const s of plan.skipped) {
         console.error(`[check-humanizer-social] sem prova (${step}): ${s.section} — ${s.reason}`);
@@ -685,7 +678,7 @@ function main(): void {
       console.log(JSON.stringify({ ok: false, step, reason: "noop_without_note", recorded: [], skipped: plan.skipped }));
       process.exit(1);
     }
-    if (note && !plan.noop) {
+    if (note && !plan.noop && step === "clarice") {
       console.error("[check-humanizer-social] WARN: --note ignorado — houve mudança entre --pre e --post (#11674).");
     }
     const recordPath = writeRunRecord(editionDir, plan.record);
@@ -768,7 +761,7 @@ function main(): void {
           : reason === "formatting"
             ? " · aceita (só formatação sobre texto provado)"
             : "";
-      const kept = r.kept ? " (texto mantido)" : ""; // #11604
+      const kept = r.kept ? " (texto mantido; prova mais fraca)" : ""; // #11604
       const claricePlain = r.clarice_unchanged ? " (sem sugestões, --note)" : ""; // #11674
       // #13848: pendência registrada com --record-clarice-pending.
       const pending = r.clarice_pending ? claricePendingFor(sectionHashes[r.section], record) : undefined;
