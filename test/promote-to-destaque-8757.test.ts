@@ -124,6 +124,8 @@ describe("promoteToDestaque — ponta a ponta (#8757)", () => {
       // #9102: 1º passo re-baixa a fonte do destaque novo (writer + fact-check)
       assert.match(r.next_steps[0], /refresh-destaque-sources\.ts/);
       assert.match(r.next_steps[0], /destaque === 1/);
+      // #13884: o refresh do gate 4 mantém em dia o texto do pool
+      assert.match(r.next_steps[0], /refresh-destaque-sources\.ts --edition-dir \S+ --pool-sources/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

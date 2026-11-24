@@ -5,7 +5,7 @@
  * Extracted from render-newsletter-html.ts — byte-identical functions.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
@@ -2123,6 +2123,32 @@ export function matchBoxSelectionFileByContent(
 }
 
 /**
+ * #13897: entre TODOS os snippets de `data/snippets/` (só o nível de cima,
+ * `_arquivo/` fora), o ÚNICO cujo conteúdo aparece no texto do box. Mesmo
+ * critério de `matchBoxSelectionFileByContent`; `null` com 0 ou ≥2 matches
+ * ou diretório ilegível (o caller segue o lookup por número de slot). Nunca
+ * lança.
+ */
+export function matchSnippetLibraryByContent(
+  boxText: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
+  let files: string[];
+  try {
+    files = readdirSync(resolve(rootDir, "data", "snippets"), { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.endsWith(".md"))
+      .map((d) => d.name);
+  } catch {
+    return null;
+  }
+  return matchBoxSelectionFileByContent(
+    files.map((file) => ({ file })),
+    boxText,
+    (f) => readSnippetFile(f, rootDir),
+  );
+}
+
+/**
  * #9172: sentinela de `readBoxSelectionFileForSlot` pra "o slot foi
  * ESVAZIADO de propósito pela seleção" (`mode: "fallback-ineligible"`, #9155
  * — o `boxes_divulgacao.slotN` do config foi recusado e o slot sai com
@@ -2136,7 +2162,9 @@ export const BOX_SLOT_EMPTIED: unique symbol = Symbol("box-slot-emptied");
  * Snippet EFETIVAMENTE usado no slot 1/2/3 segundo `_internal/box-selection.json`
  * (#5457/#8119). Fonte única — o invariant de alt do Stage 4 importa esta
  * mesma função (antes mantinha uma cópia, #9172). Retornos:
- * - nome do arquivo: casado pelo conteúdo do box (#8756) ou pela entry do slot;
+ * - nome do arquivo: casado pelo conteúdo do box (#8756) — entre as entries ou,
+ *   sem match nelas, entre todos os snippets de `data/snippets/` (#13897) —
+ *   ou pela entry do slot;
  * - `BOX_SLOT_EMPTIED`: slot esvaziado pela seleção (fallback recusado, #9155)
  *   e o box não casa com nenhum snippet — o caller NÃO cai no config;
  * - `null`: sem informação (arquivo ausente/malformado, sem entry) — o caller
@@ -2169,6 +2197,14 @@ export function readBoxSelectionFileForSlot(
       );
       const byContent = matchBoxSelectionFileByContent(candidates, boxText, (f) => readSnippetFile(f, rootDir));
       if (byContent) return byContent;
+      // #13897: o editor trocou o box editando o `.md` (gate 4/6) por OUTRO
+      // snippet, que não está em `box-selection.json` (congelado no stitch).
+      // Sem isto, o lookup por número de slot abaixo devolvia o snippet
+      // antigo, e o box novo saía com rótulo/alt dele (261124: livros com o
+      // rótulo "Artigo Especial"). O box casa com um único snippet de
+      // `data/snippets/` → os metadados são os desse snippet.
+      const byLibrary = matchSnippetLibraryByContent(boxText, rootDir);
+      if (byLibrary) return byLibrary;
     }
     const entry = data.find(
       (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,

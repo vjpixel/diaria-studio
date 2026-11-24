@@ -528,6 +528,11 @@ export function resumeClarice(
     ...(opts.edition ? ["--edition", opts.edition] : []),
     ...(opts.deadlineMs !== undefined ? ["--deadline-ms", String(Math.round(opts.deadlineMs))] : []),
     ...(opts.chunkChars !== undefined ? ["--chunk-chars", String(opts.chunkChars)] : []),
+    // #13888: uma janela contínua maior para o chunk lento, em vez de
+    // reiniciar o mesmo processamento três vezes aos 60s. O deadline global
+    // continua sendo imposto pelo filho, inclusive entre chunks.
+    ...(opts.chunkChars !== undefined && opts.chunkChars <= RESUME_SMALL_CHUNK_CHARS
+      ? ["--timeout-ms", "120000", "--max-attempts", "1"] : []),
   ];
   const raw = runner(args);
   const run: ClariceRunResult = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
@@ -625,13 +630,36 @@ export function resumeClarice(
  * rodou); o diff leva o `02-normalized.md` como 4º argumento quando existe
  * (sinaliza reversão do humanizador, #3929).
  */
-export function postResumeSteps(editionDir: string): Array<{ name: string; args: string[]; reportOnly: boolean }> {
+/** Passo pós-Clarice. `onRefusal`: exit que significa "recusei, rode o
+ * sentido inverso" e os argumentos desse 2º passo (#13908). */
+export interface PostResumeStep {
+  name: string;
+  args: string[];
+  reportOnly: boolean;
+  onRefusal?: { exit: number; args: string[] };
+}
+
+/** Exit do `sync-eia-block.ts` que significa recusa no sentido 02→01 (#13886). */
+export const SYNC_EIA_REFUSED_EXIT = 4;
+
+export function postResumeSteps(editionDir: string): PostResumeStep[] {
   const pre = join(editionDir, PRE_RESUME_REL);
   const reviewed = join(editionDir, REVIEWED_REL);
   const normalized = join(editionDir, NORMALIZED_REL);
   return [
     { name: "strip-emdashes-reviewed", args: ["scripts/strip-emdashes-reviewed.ts", "--edition-dir", editionDir], reportOnly: false },
-    { name: "sync-eia-block", args: ["scripts/sync-eia-block.ts", "--edition-dir", editionDir], reportOnly: false },
+    {
+      name: "sync-eia-block",
+      args: ["scripts/sync-eia-block.ts", "--edition-dir", editionDir],
+      reportOnly: false,
+      // #13908: o espelho de 02-reviewed.md é o placeholder do stitch (ou perdeu
+      // a legenda) e o 01-eia.md tem conteúdo real. O sync 02→01 recusa (exit 4)
+      // e o fix documentado é espelhar 01→02; o 01-eia.md é a fonte do render.
+      onRefusal: {
+        exit: SYNC_EIA_REFUSED_EXIT,
+        args: ["scripts/sync-eia-block.ts", "--edition-dir", editionDir, "--from", "01"],
+      },
+    },
     { name: "verify-clarice-url-stability", args: ["scripts/verify-clarice-url-stability.ts", "--pre", pre, "--post", reviewed], reportOnly: true },
     { name: "verify-clarice-coupons", args: ["scripts/verify-clarice-coupons.ts", "--pre", pre, "--post", reviewed], reportOnly: true },
     {
@@ -654,23 +682,54 @@ export interface PostStepRun {
   reportOnly: boolean;
   exit: number;
   crashed?: string;
+  /** 2º passo rodado porque o 1º saiu com o exit de `onRefusal` (#13908). */
+  fallback?: { args: string[]; exit: number; crashed?: string };
+}
+
+/**
+ * Roda os passos pós-Clarice com o runner dado. Passo que sai com o exit de
+ * `onRefusal` (e não crashou) ganha o 2º passo, registrado em `fallback`
+ * (#13908: `sync-eia-block` exit 4 → `--from 01`).
+ */
+export function runPostResumeSteps(steps: PostResumeStep[], run: ClariceRunner): PostStepRun[] {
+  const toRun = (raw: number | ClariceRunResult): ClariceRunResult =>
+    typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
+  return steps.map((s) => {
+    const r = toRun(run(s.args));
+    const out: PostStepRun = { name: s.name, reportOnly: s.reportOnly, exit: r.exitCode, ...(r.crashed ? { crashed: r.crashed } : {}) };
+    if (!r.crashed && s.onRefusal && r.exitCode === s.onRefusal.exit) {
+      const f = toRun(run(s.onRefusal.args));
+      out.fallback = { args: s.onRefusal.args, exit: f.exitCode, ...(f.crashed ? { crashed: f.crashed } : {}) };
+    }
+    return out;
+  });
 }
 
 /**
  * Classifica os passos pós-Clarice: falha dura (passo que conserta sozinho com
  * exit ≠ 0, qualquer `verify-*` com exit ≥ 2 ou crash) versus achado para o
- * gate (`verify-*` com exit 1).
+ * gate (`verify-*` com exit 1). Passo cuja recusa foi resolvida pelo
+ * `fallback` (exit 0) vai para `recovered`, não para falha (#13908); fallback
+ * com exit ≠ 0 ou crash é falha dura.
  */
-export function classifyPostSteps(steps: PostStepRun[]): { hardFailures: PostStepRun[]; attention: PostStepRun[] } {
+export function classifyPostSteps(steps: PostStepRun[]): {
+  hardFailures: PostStepRun[];
+  attention: PostStepRun[];
+  recovered: PostStepRun[];
+} {
   const hardFailures: PostStepRun[] = [];
   const attention: PostStepRun[] = [];
+  const recovered: PostStepRun[] = [];
   for (const s of steps) {
     if (s.crashed) hardFailures.push(s);
-    else if (s.exit === 0) continue;
+    else if (s.fallback) {
+      if (!s.fallback.crashed && s.fallback.exit === 0) recovered.push(s);
+      else hardFailures.push(s);
+    } else if (s.exit === 0) continue;
     else if (s.reportOnly && s.exit === 1) attention.push(s);
     else hardFailures.push(s);
   }
-  return { hardFailures, attention };
+  return { hardFailures, attention, recovered };
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,12 @@
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --check   # só diz se está defasado
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --approved .../_internal/01-approved-capped.json --record-writer-inputs  # Stage 2 (#9252, #9648)
  *
+ * `--pool-sources` (#13884): baixa também o texto de cada item de pool para
+ * `_internal/pool-sources/` (`lib/diaria/pool-sources.ts`). Implícito em
+ * `--record-writer-inputs`, que é o passo 0 do Stage 2. Nenhum writer lê esse
+ * texto ainda (#13907): a descrição do item de pool sai do `summary` do
+ * Stage 1, e só a falha do download chega ao gate (`source-not-read`).
+ *
  * `--record-writer-inputs` (#9648, SÓ no Stage 2): grava também
  * `_internal/02-writer-inputs.json` + cópia de cada texto em
  * `_internal/02-writer-inputs/d{N}-{sha12}.txt` — o registro do que cada
@@ -70,6 +76,7 @@ import {
   type WriterInputGap,
 } from "./lib/writer-inputs-record.ts";
 import { syncExtraSources, type ExtraSourceEntry } from "./lib/fact-check-extra-sources.ts";
+import { prefetchPoolSources, type PoolPrefetchResult } from "./lib/diaria/pool-sources.ts";
 
 export interface RefreshResult {
   /** true se as URLs do manifest em disco NÃO correspondiam às dos destaques atuais (ou manifest/txt ausente). */
@@ -87,6 +94,16 @@ export interface RefreshResult {
   extra_sources?: ExtraSourceEntry[];
   /** (#11531) Falha ao sincronizar as fontes adicionais (fail-soft). */
   extra_sources_error?: string;
+  /**
+   * (#13884) Texto-fonte dos itens de pool (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS)
+   * em `_internal/pool-sources/`. Só com `poolSources` (implícito em
+   * `recordWriterInputs`, o passo 0 do Stage 2). `manifest_path` aponta o
+   * manifest, que o gate e o fact-check leem (nenhum writer o recebe ainda,
+   * #13907); `unread` lista o que não foi lido, com o motivo.
+   */
+  pool_sources?: PoolPrefetchResult;
+  /** (#13884) Falha ao baixar as fontes do pool (fail-soft). */
+  pool_sources_error?: string;
 }
 
 /**
@@ -130,6 +147,8 @@ export async function refreshDestaqueSources(
     fetchImpl?: typeof fetch;
     approvedPath?: string;
     recordWriterInputs?: boolean;
+    /** (#13884) Baixa também as fontes do pool. Default: igual a `recordWriterInputs` (Stage 2). */
+    poolSources?: boolean;
     now?: Date;
     /** Raiz onde fica `data/run-log.jsonl` (default: cwd). Injetável pra teste. */
     runLogRootDir?: string;
@@ -157,6 +176,19 @@ export async function refreshDestaqueSources(
   } catch (e) {
     result.extra_sources_error = (e as Error).message;
     console.error(`refresh-destaque-sources: WARN — fontes adicionais não sincronizadas: ${result.extra_sources_error}`);
+  }
+  if (opts.poolSources ?? opts.recordWriterInputs) {
+    // #13884: fail-soft como as extras — falha aqui deixa o writer só com o
+    // summary (comportamento anterior) e o gate 4 acusa via `source-not-read`.
+    try {
+      result.pool_sources = await prefetchPoolSources(approved, internalDir, { fetchImpl: opts.fetchImpl });
+      for (const u of result.pool_sources.unread) {
+        console.error(`refresh-destaque-sources: WARN — fonte do pool não lida (${u.bucket}): ${u.title} — ${u.erro} (${u.url})`);
+      }
+    } catch (e) {
+      result.pool_sources_error = (e as Error).message;
+      console.error(`refresh-destaque-sources: WARN — fontes do pool não baixadas: ${result.pool_sources_error}`);
+    }
   }
   if (opts.recordWriterInputs) {
     // Fail-soft: o registro é auditoria — falha ao gravá-lo nunca derruba o
@@ -195,7 +227,7 @@ export async function refreshDestaqueSources(
 async function main(): Promise<number | void> {
   const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
-    console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--approved <path>] [--check | --record-writer-inputs]");
+    console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--approved <path>] [--check | --record-writer-inputs] [--pool-sources]");
     return 1;
   }
   const check = flags.has("check");
@@ -204,6 +236,7 @@ async function main(): Promise<number | void> {
     result = await refreshDestaqueSources(resolve(process.cwd(), args["edition-dir"]), {
       check,
       recordWriterInputs: flags.has("record-writer-inputs"),
+      poolSources: flags.has("pool-sources") ? true : undefined,
       approvedPath: args.approved ? resolve(process.cwd(), args.approved) : undefined,
     });
   } catch (e) {

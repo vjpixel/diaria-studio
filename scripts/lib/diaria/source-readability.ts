@@ -26,6 +26,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantViolation } from "../invariant-checks/types.ts";
+import { readPoolSourcesManifest } from "./pool-sources.ts";
 
 /**
  * Vereditos de `verify-accessibility.ts` em que o texto da página não chegou
@@ -141,10 +142,115 @@ export interface UnreadItemInEdition {
 const APPROVED_BUCKETS = ["highlights", "lancamento", "radar", "use_melhor", "video"] as const;
 
 /**
- * Itens de `01-approved.json` com fonte não lida que estão no texto final
- * (`02-reviewed.md`, por URL). Item cortado da edição não entra. @pure
+ * (#13884) Resultado do download da página por URL, lido dos manifests de
+ * `_internal/pool-sources/` (itens de pool) e `_internal/fact-check-sources/`
+ * (destaques). `ok: true` = alguém do pipeline LEU o texto da página (hoje só
+ * o fact-checker, nos destaques, #13907); `ok: false` = o download falhou
+ * (403, erro), trouxe só a prévia do paywall ou uma página quase vazia, com o
+ * motivo. URL sem entrada segue a regra do resumo (`readSourceReadability`).
  */
-export function findUnreadItemsInEdition(approved: unknown, reviewedMd: string): UnreadItemInEdition[] {
+export type SourceDownloads = ReadonlyMap<string, { ok: boolean; reason?: string }>;
+
+/**
+ * (#13907) Texto baixado com menos palavras que isto não conta como página
+ * lida: `fetchSourceText` devolve `ok` para qualquer texto não vazio, e a
+ * casca de uma página montada por JS chega como poucas dezenas de palavras.
+ * Premissa sem medição (nenhuma edição tinha `words` no manifest do pool
+ * antes do #13884): 100 palavras ficam abaixo de qualquer notícia curta real
+ * e acima da casca típica. Entrada sem `words` (manifest anterior ao #12537)
+ * não passa pelo piso.
+ */
+export const SOURCE_TEXT_MIN_WORDS = 100;
+
+/**
+ * (#13907) Nenhum writer lê hoje o texto de `_internal/pool-sources/`: o
+ * Stage 2 baixa a página, mas a descrição do item de pool sai do `summary`
+ * do Stage 1 (o item 2 da #13884, descrição a partir do texto lido, ainda não
+ * existe). Enquanto for `false`, download `ok` do pool NÃO limpa a regra do
+ * resumo curto (o `source-not-read` seguiria mudo para o caso que motivou a
+ * #13884); só a falha do download acrescenta motivo. Virar `true` junto com o
+ * consumidor do texto.
+ */
+export const POOL_SOURCE_TEXT_CONSUMED = false;
+
+/** (#13907) Motivo para download `ok` abaixo de `SOURCE_TEXT_MIN_WORDS`. */
+function thinPageReason(words: number): string {
+  return `página baixada com ${words} palavras (mínimo ${SOURCE_TEXT_MIN_WORDS})`;
+}
+
+/** (#13907) Download `ok` com `words` abaixo do piso (casca de JS). @pure */
+function isThinText(words: unknown): words is number {
+  return typeof words === "number" && words < SOURCE_TEXT_MIN_WORDS;
+}
+
+/**
+ * (#13884) Motivo de "fonte não lida" para download `ok` com `completeness:
+ * "preview"` (#12537): o texto em disco é só a prévia que o paywall serve, não
+ * o artigo.
+ */
+const PAYWALL_PREVIEW_REASON = "só a prévia do paywall foi baixada";
+
+/**
+ * (#13884) Monta `SourceDownloads` a partir dos manifests da edição. Entrada
+ * `skipped` (vídeo do YouTube) não entra: segue julgada pela regra do resumo.
+ * Manifest ausente ou ilegível = sem entradas (edição anterior ao #13884).
+ *
+ * (#13907) Entrada `ok` do pool só vira `ok: true` com
+ * `POOL_SOURCE_TEXT_CONSUMED`; hoje fica sem entrada e o item segue na regra
+ * do resumo. Prévia de paywall e falha de download seguem acrescentando o
+ * motivo. No manifest do fact-check (o fact-checker lê o texto), `ok` abaixo
+ * de `SOURCE_TEXT_MIN_WORDS` conta como não lida.
+ */
+export function readSourceDownloads(internalDir: string): Map<string, { ok: boolean; reason?: string }> {
+  const out = new Map<string, { ok: boolean; reason?: string }>();
+  for (const e of readPoolSourcesManifest(internalDir)) {
+    if (e.status === "ok" && e.completeness === "preview") out.set(e.url, { ok: false, reason: PAYWALL_PREVIEW_REASON });
+    else if (e.status === "ok") {
+      if (!POOL_SOURCE_TEXT_CONSUMED) continue;
+      out.set(e.url, isThinText(e.words) ? { ok: false, reason: thinPageReason(e.words) } : { ok: true });
+    } else if (e.status === "blocked" || e.status === "error") {
+      out.set(e.url, { ok: false, reason: `download da página falhou: ${e.erro ?? e.status}` });
+    }
+  }
+  const fc = resolve(internalDir, "fact-check-sources", "manifest.json");
+  if (existsSync(fc)) {
+    try {
+      const raw = JSON.parse(readFileSync(fc, "utf8")) as unknown;
+      if (Array.isArray(raw)) {
+        for (const e of raw as Array<{ url?: unknown; status?: unknown; erro?: unknown; completeness?: unknown; words?: unknown }>) {
+          if (!e || typeof e.url !== "string") continue;
+          if (e.status === "ok" && e.completeness === "preview") {
+            if (!out.get(e.url)?.ok) out.set(e.url, { ok: false, reason: PAYWALL_PREVIEW_REASON });
+          } else if (e.status === "ok" && isThinText(e.words)) {
+            if (!out.get(e.url)?.ok) out.set(e.url, { ok: false, reason: thinPageReason(e.words) });
+          } else if (e.status === "ok") out.set(e.url, { ok: true });
+          else if (!out.get(e.url)?.ok) {
+            out.set(e.url, { ok: false, reason: `download da página falhou: ${typeof e.erro === "string" ? e.erro : String(e.status)}` });
+          }
+        }
+      }
+    } catch {
+      // manifest ilegível: sem informação de download
+    }
+  }
+  return out;
+}
+
+/**
+ * Itens de `01-approved.json` com fonte não lida que estão no texto final
+ * (`02-reviewed.md`, por URL). Item cortado da edição não entra.
+ *
+ * (#13884) Com `downloads`, a entrada da URL decide antes do resumo: `ok` =
+ * fonte lida (mesmo com resumo curto ou veredito de acesso ruim no Stage 1);
+ * falha = fonte não lida, com o motivo do download. URL sem entrada cai na
+ * regra de sempre. Download `ok` do pool não gera entrada enquanto nenhum
+ * writer lê o texto (#13907, ver `readSourceDownloads`). @pure
+ */
+export function findUnreadItemsInEdition(
+  approved: unknown,
+  reviewedMd: string,
+  downloads?: SourceDownloads,
+): UnreadItemInEdition[] {
   if (!approved || typeof approved !== "object") return [];
   const out: UnreadItemInEdition[] = [];
   const seen = new Set<string>();
@@ -157,7 +263,8 @@ export function findUnreadItemsInEdition(approved: unknown, reviewedMd: string):
       const a = (wrapped && typeof wrapped === "object" ? wrapped : item) as { url?: unknown; title?: unknown };
       const url = typeof a.url === "string" ? a.url : typeof (item as { url?: unknown }).url === "string" ? (item as { url: string }).url : null;
       if (!url || seen.has(url) || !reviewedMd.includes(url)) continue;
-      const r = readSourceReadability(item);
+      const d = downloads?.get(url);
+      const r: SourceReadability = d ? (d.ok ? { readable: true } : { readable: false, reason: d.reason }) : readSourceReadability(item);
       if (r.readable) continue;
       seen.add(url);
       out.push({
@@ -185,7 +292,7 @@ export function checkSourceNotRead(editionDir: string): InvariantViolation[] {
   } catch {
     return []; // JSON ilegível já é acusado por outras regras do Stage 4
   }
-  const items = findUnreadItemsInEdition(approved, readFileSync(mdPath, "utf8"));
+  const items = findUnreadItemsInEdition(approved, readFileSync(mdPath, "utf8"), readSourceDownloads(resolve(editionDir, "_internal")));
   if (items.length === 0) return [];
   const fmt = (i: UnreadItemInEdition) => `${i.highlight ? "[DESTAQUE] " : ""}"${i.title}" (${i.reason}) ${i.url}`;
   const highlights = items.filter((i) => i.highlight).length;

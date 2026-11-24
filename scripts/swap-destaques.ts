@@ -276,7 +276,7 @@ export function buildSwapNextSteps(editionDir: string, slots: SlotSwap[]): strin
   const ds = slots.map((s) => `d${s.position}`).join(", ");
   const dir = editionDir.replace(/\/+$/, "");
   return [
-    `Re-baixar a fonte dos destaques novos (${ds}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} — rodar UMA vez, antes dos writer-destaque (#9102).`,
+    `Re-baixar a fonte dos destaques novos (${ds}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} --pool-sources — rodar UMA vez, antes dos writer-destaque (#9102); o --pool-sources baixa também o texto do item que desceu ao pool (#13884).`,
     ...slots.map(
       (s) =>
         `Escrever DESTAQUE ${s.position} em 02-reviewed.md (writer-destaque, item: "${s.title}", source_text_path = path da entrada de sources com destaque === ${s.position} no stdout do refresh)`,

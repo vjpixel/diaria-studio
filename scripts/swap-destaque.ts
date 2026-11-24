@@ -520,7 +520,7 @@ export function buildSwapDestaqueSteps(
         ]
       : [];
   return [
-    `Re-baixar a fonte do destaque promovido (d${position}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} — antes do writer-destaque (#9102).`,
+    `Re-baixar a fonte do destaque promovido (d${position}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} --pool-sources — antes do writer-destaque (#9102); o --pool-sources baixa também o texto do item que desceu ao pool (#13884).`,
     `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
     `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${toProvisionalTitulo(promotedTitle)}" pelo título final do D${position} — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9601)`,
     ...poolStep,
