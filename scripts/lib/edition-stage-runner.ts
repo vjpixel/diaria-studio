@@ -39,7 +39,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
-import { resolveRunLogPath } from "./run-log.ts";
+import { logEvent, resolveRunLogPath } from "./run-log.ts";
 import {
   parseCliJsonUsage,
   parseCliRunMeta,
@@ -366,7 +366,14 @@ export function summarizePermissionDenials(raw: string): string | null {
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}×${c}`);
-  return `${list.length} permission_denials (${parts.join(", ")})`;
+  // Preserve the CLI denial payload: tool_input contains the command, while
+  // hook/rule diagnostics may be carried by additional fields.
+  const details = list.flatMap((denial, index) => {
+    if (!denial || typeof denial !== "object") return [];
+    if (Object.keys(denial).every((key) => key === "tool_name")) return [];
+    return [`#${index + 1} ${JSON.stringify(denial)}`];
+  });
+  return `${list.length} permission_denials (${parts.join(", ")})${details.length ? ` | ${details.join(" | ")}` : ""}`;
 }
 
 /**
@@ -477,7 +484,12 @@ export function recordStageRun(
   stage: number,
   stdout: string,
   onProgress: (m: string) => void,
+  repoRootAbs: string = process.cwd(),
 ): void {
+  const denials = summarizePermissionDenials(stdout);
+  if (denials) {
+    logEvent({ edition: aammdd, stage, agent: "edition-stage-runner", level: "warn", message: denials }, repoRootAbs);
+  }
   try {
     const meta = parseCliRunMeta(stdout);
     const usage = parseCliJsonUsage(stdout);
@@ -777,7 +789,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         const diagnosticText = resultTextOrRaw(stdoutText);
         // #9222/#9312: persiste num_turns/terminal_reason/custo da tentativa
         // ANTES do `continue` do retry — senão a tentativa 1 nem era gravada.
-        recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress);
+        recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress, repoRootAbs);
         if (shouldRetryBackgroundWait(diagnosticText, stdoutText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
@@ -806,7 +818,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // #8560: captura usage/custo REAL direto do JSON de resposta do CLI
       // (ver `scripts/lib/cli-usage-json.ts`); #9222: + num_turns/
       // terminal_reason e falha de captura persistida. Fail-soft.
-      recordStageRun(editionDir, aammdd, stage, typeof stdout === "string" ? stdout : "", onProgress);
+      recordStageRun(editionDir, aammdd, stage, typeof stdout === "string" ? stdout : "", onProgress, repoRootAbs);
 
       outcomes.push({ stage, skill, status: "ok", exitCode: 0, durationMs: nowMs() - startedAt });
       stageOutcome = null;
@@ -824,7 +836,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // #9222: exit != 0 (ex: error_max_turns) também carrega o envelope JSON
       // em err.stdout — persistir num_turns/terminal_reason/custo.
       if (typeof err.stdout === "string" && err.stdout) {
-        recordStageRun(editionDir, aammdd, stage, err.stdout, onProgress);
+        recordStageRun(editionDir, aammdd, stage, err.stdout, onProgress, repoRootAbs);
       }
       // #6045: mesmo tratamento no caminho de exceção — retry único quando a
       // assinatura background-wait está presente.
@@ -839,13 +851,14 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // #9597: idem caminho de sucesso-sem-sentinela — error_max_turns com
       // exit != 0 também nomeia o motivo no resumo.
       const runMeta = typeof err.stdout === "string" && err.stdout ? formatRunMetaLabel(err.stdout) : null;
+      const denials = typeof err.stdout === "string" ? summarizePermissionDenials(err.stdout) : null;
       stageOutcome = {
         stage,
         skill,
         status: "failed",
         exitCode,
         durationMs: nowMs() - startedAt,
-        failureTail: `${runMeta ? `${runMeta} | ` : ""}${summarizeFailure(combined)}`,
+        failureTail: `${runMeta ? `${runMeta} | ` : ""}${denials ? `${denials} | ` : ""}${summarizeFailure(combined)}`,
       };
       break;
     }

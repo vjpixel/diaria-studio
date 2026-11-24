@@ -528,6 +528,11 @@ export function resumeClarice(
     ...(opts.edition ? ["--edition", opts.edition] : []),
     ...(opts.deadlineMs !== undefined ? ["--deadline-ms", String(Math.round(opts.deadlineMs))] : []),
     ...(opts.chunkChars !== undefined ? ["--chunk-chars", String(opts.chunkChars)] : []),
+    // #13888: uma janela contínua maior para o chunk lento, em vez de
+    // reiniciar o mesmo processamento três vezes aos 60s. O deadline global
+    // continua sendo imposto pelo filho, inclusive entre chunks.
+    ...(opts.chunkChars !== undefined && opts.chunkChars <= RESUME_SMALL_CHUNK_CHARS
+      ? ["--timeout-ms", "120000", "--max-attempts", "1"] : []),
   ];
   const raw = runner(args);
   const run: ClariceRunResult = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
