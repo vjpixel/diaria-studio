@@ -17,7 +17,8 @@
  *     texto e o manteve. Mas só quando ao menos outra seção do escopo do mesmo
  *     run mudou (#11609, opção a do editor): snapshots idênticos em todo o
  *     escopo são indistinguíveis de "a Skill não rodou" e não provam nada —
- *     run de uma única seção mantida cai em `--unproven-ok`. Os hashes
+ *     desde #13889, uma nota explícita também aceita o run sem mudanças como
+ *     prova mais fraca. Os hashes
  *     mantidos ficam também em `humanizador_unchanged`, pra auditoria e pro
  *     `--provenance` mostrar "texto mantido". O escopo continua sendo o
  *     `--sections` pedido (ou o arquivo inteiro na passada full-file).
@@ -130,8 +131,8 @@ export interface RunRecordPlan {
 export interface PlanRunOptions {
   now?: Date;
   /**
-   * #11674: só para a Clarice — motivo de um run sem mudança ("Clarice sem
-   * sugestões"). Sem ele, run da Clarice sem mudança não prova nada.
+   * #11674/#13889: motivo explícito de um run sem mudança ("Clarice sem
+   * sugestões" ou "humanizador sem mudanças"). Sem ele, run sem mudança não prova nada.
    */
   note?: string;
 }
@@ -170,7 +171,8 @@ export function planRunRecord(
   // humanizador leu e manteve" de "o humanizador não rodou" (Skill pulada ou
   // falha silenciosa deixa os dois snapshots iguais). Seção idêntica só vira
   // prova se ao menos outra seção do escopo deste run mudou — sinal de que o
-  // passo de fato reescreveu o arquivo. Run em que nada mudou não prova nada.
+  // passo de fato reescreveu o arquivo. #13889: nota explícita permite registrar
+  // a passada sem mudanças como prova mais fraca, auditável no run.
   const inScope = Object.entries(post).filter(([name]) => !only || only.has(name));
   const runChangedSomething = inScope.some(([name, postHash]) => pre[name] !== postHash);
   const noop = inScope.length > 0 && !runChangedSomething;
@@ -179,7 +181,7 @@ export function planRunRecord(
     const preHash = pre[name];
     if (step === "humanizador") {
       if (preHash === postHash) {
-        if (!runChangedSomething) {
+        if (!runChangedSomething && !note) {
           skipped.push({
             section: name,
             reason:
@@ -237,7 +239,7 @@ export function planRunRecord(
       clarice_pending: current.clarice_pending ?? [],
       runs: [
         ...current.runs,
-        { at: now.toISOString(), step, sections: recorded, ...(note && noop && step === "clarice" ? { note } : {}) },
+        { at: now.toISOString(), step, sections: recorded, ...(note && (noop || step === "humanizador") ? { note } : {}) },
       ],
     },
     recorded,
