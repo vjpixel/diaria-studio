@@ -135,15 +135,32 @@ describe("#11674: --record-run da Clarice com --pre igual a --post", () => {
     }
   });
 
-  it("CLI: --note no passo do humanizador é rejeitado (#11609)", () => {
+  it("#13889: nota prova só a seção mantida selecionada e ainda exige Clarice", () => {
+    const h = planRunRecord(emptyRunRecord(), "humanizador", humanized, humanized,
+      ["main_d1"], { note: "humanizador sem mudanças" });
+    assert.deepEqual(h.recorded, ["main_d1"]);
+    assert.equal(h.record.humanizador_unchanged.length, 1);
+    assert.equal(h.record.runs.at(-1)?.note, "humanizador sem mudanças");
+    const rows = describeProvenance(humanized, h.record);
+    assert.deepEqual(rows.find((r) => r.section === "main_d1"),
+      { section: "main_d1", humanizador: true, clarice: false, kept: true });
+    assert.equal(rows.find((r) => r.section === "main_d2")?.humanizador, false);
+    const refused = planRunRecord(emptyRunRecord(), "humanizador", humanized, humanized,
+      ["main_d1"], { note: "  " });
+    assert.deepEqual(refused.recorded, []);
+  });
+
+  it("CLI: --note permite humanizador sem mudanças com prova mais fraca (#13889)", () => {
     const { dir, cleanup } = mkEdition();
     try {
       const f = join(dir, "_internal", "x.md");
       writeFileSync(f, humanized, "utf8");
       const r = runCli(["--record-run", "--step", "humanizador", "--pre", f, "--post", f, "--note", "x", "--edition-dir", dir]);
-      assert.equal(r.status, 1);
-      assert.match(r.stderr, /--note só vale para --step clarice/);
-      assert.equal(existsSync(runRecordPath(dir)), false);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(readRunRecord(dir).runs.at(-1)?.note, "x");
+      writeFileSync(join(dir, "03-social.md"), humanized);
+      const shown = runCli(["--provenance", "--edition-dir", dir]);
+      assert.match(shown.stderr, /texto mantido; prova mais fraca/);
     } finally {
       cleanup();
     }
