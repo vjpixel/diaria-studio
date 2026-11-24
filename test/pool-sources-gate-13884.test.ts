@@ -96,7 +96,8 @@ describe("gate 1: marcador de fonte não lida (#13884 resíduo item 2)", () => {
       });
       const downloads = readSourceDownloads(internal);
       assert.match(renderLine(art({ url: MS, summary: LONG } as never), false, false, 1, downloads), /📄❌ \(fonte não lida: download da página falhou: HTTP 403/);
-      assert.doesNotMatch(renderLine(art({ url: SHORT, summary: "Curto." } as never), false, false, 2, downloads), /📄❌/);
+      // #13907: download ok do pool não limpa o resumo curto (nenhum writer lê o texto).
+      assert.match(renderLine(art({ url: SHORT, summary: "Curto." } as never), false, false, 2, downloads), /📄❌ \(fonte não lida: resumo de 6 caracteres/);
     } finally {
       rmSync(ed, { recursive: true, force: true });
     }

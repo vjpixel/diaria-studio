@@ -35,8 +35,9 @@
  *
  * `--pool-sources` (#13884): baixa também o texto de cada item de pool para
  * `_internal/pool-sources/` (`lib/diaria/pool-sources.ts`). Implícito em
- * `--record-writer-inputs`, que é o passo 0 do Stage 2 — o writer recebe
- * `pool_sources.manifest_path` como `pool_sources_path`.
+ * `--record-writer-inputs`, que é o passo 0 do Stage 2. Nenhum writer lê esse
+ * texto ainda (#13907): a descrição do item de pool sai do `summary` do
+ * Stage 1, e só a falha do download chega ao gate (`source-not-read`).
  *
  * `--record-writer-inputs` (#9648, SÓ no Stage 2): grava também
  * `_internal/02-writer-inputs.json` + cópia de cada texto em
@@ -96,8 +97,9 @@ export interface RefreshResult {
   /**
    * (#13884) Texto-fonte dos itens de pool (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS)
    * em `_internal/pool-sources/`. Só com `poolSources` (implícito em
-   * `recordWriterInputs`, o passo 0 do Stage 2). `manifest_path` vai ao writer
-   * como `pool_sources_path`; `unread` lista o que não foi lido, com o motivo.
+   * `recordWriterInputs`, o passo 0 do Stage 2). `manifest_path` aponta o
+   * manifest, que o gate e o fact-check leem (nenhum writer o recebe ainda,
+   * #13907); `unread` lista o que não foi lido, com o motivo.
    */
   pool_sources?: PoolPrefetchResult;
   /** (#13884) Falha ao baixar as fontes do pool (fail-soft). */
