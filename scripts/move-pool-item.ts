@@ -60,7 +60,7 @@ import {
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts";
 import { countSelectedItems, lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts";
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts";
-import { readUseMelhorPostState } from "./lib/use-melhor-post.ts";
+import { readUseMelhorPostState, USE_MELHOR_MOVED_FROM_KEY } from "./lib/use-melhor-post.ts";
 import { estimateUseMelhorTempoDetailed } from "./lib/use-melhor-curation.ts";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { fetchBodyForCache } from "./stitch-newsletter.ts";
@@ -165,7 +165,41 @@ export function moveInApprovedJson(
       item = item ?? toInsert;
     }
   }
+  if (from !== null && applyMoveOrigin(json, url, from, to)) changed = true;
   return { from, item, changed };
+}
+
+/**
+ * Pure (muta `item`, #13878): registra em `moved_from` o bucket em que o
+ * scorer pontuou o item, para o seletor do 4º post (`poolCandidatesForReviewed`)
+ * tratá-lo como item de outro bucket e limitar o score dele
+ * (`comparableUseMelhorScore`). A origem é a PRIMEIRA (o `moved_from` já
+ * gravado vence o bucket de onde o item sai agora); voltar ao bucket de origem
+ * apaga a chave. Retorna se mudou algo.
+ */
+export function markMovedFrom(item: Record<string, unknown>, from: SectionBucket, to: SectionBucket): boolean {
+  const prev = item[USE_MELHOR_MOVED_FROM_KEY];
+  const origin = typeof prev === "string" && prev.trim() ? prev.trim() : from;
+  if (origin === to) {
+    if (!(USE_MELHOR_MOVED_FROM_KEY in item)) return false;
+    delete item[USE_MELHOR_MOVED_FROM_KEY];
+    return true;
+  }
+  if (prev === origin) return false;
+  item[USE_MELHOR_MOVED_FROM_KEY] = origin;
+  return true;
+}
+
+/**
+ * Pure (muta `json`, #13878): marca a origem no objeto do item em `json[to]`.
+ * Também usado no arquivo que NÃO tinha o item fora do destino (recebeu a cópia
+ * do outro arquivo, ou já o tinha no destino), com a origem achada no outro —
+ * senão `01-approved.json` e `01-approved-capped.json` divergem e o seletor lê
+ * o item como nativo do USE MELHOR.
+ */
+export function applyMoveOrigin(json: Record<string, unknown>, url: string, from: SectionBucket, to: SectionBucket): boolean {
+  const moved = (json[to] as unknown[] | undefined)?.find((it) => sameUrl((it as { url?: unknown })?.url, url));
+  return !!moved && typeof moved === "object" && markMovedFrom(moved as Record<string, unknown>, from, to);
 }
 
 // ─── 02-reviewed.md ────────────────────────────────────────────────────────
@@ -464,9 +498,12 @@ export function movePoolItem(
   }
 
   const writes: VerifiedWrite[] = [];
-  for (const f of approvedFiles) {
-    const r = moveInApprovedJson(f.data, url, to, fallback);
-    if (r.changed) writes.push({ path: f.path, content: JSON.stringify(f.data, null, 2) + "\n" });
+  const moves = approvedFiles.map((f) => ({ f, r: moveInApprovedJson(f.data, url, to, fallback) }));
+  // #13878: a origem achada num arquivo vale também para o que não tinha o item fora do destino.
+  const origin = moves.find((m) => m.r.from !== null)?.r.from ?? null;
+  for (const { f, r } of moves) {
+    const marked = origin !== null && r.from === null && applyMoveOrigin(f.data, url, origin, to);
+    if (r.changed || marked) writes.push({ path: f.path, content: JSON.stringify(f.data, null, 2) + "\n" });
   }
   writes.push({ path: mdPath, content: mdResult.md });
   if (!dryRun) writeFilesVerified(writes, "move-pool-item");
