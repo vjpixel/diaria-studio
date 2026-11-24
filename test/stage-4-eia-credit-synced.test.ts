@@ -161,6 +161,10 @@ describe("checkEiaCreditSynced (#3825)", () => {
       assert.equal(creditViolation!.file, resolve(dir, "01-eia.md"));
       // A mensagem deve instruir editar 01-eia.md (não 02-reviewed.md de novo).
       assert.match(creditViolation!.message, /editar 01-eia\.md/i);
+      // #13886: cita o comando exato para espelhar 01 → 02, e avisa que o
+      // default do script é o sentido oposto.
+      assert.match(creditViolation!.message, /sync-eia-block\.ts --edition-dir \S+ --from 01/);
+      assert.match(creditViolation!.message, /02 → 01/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

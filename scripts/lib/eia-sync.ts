@@ -52,12 +52,19 @@ function normalizeLine(s?: string): string {
   return s ? normalize(s) : "";
 }
 
-/** Trecho estável do placeholder que `stitch-newsletter.ts::readEiaBlock`
- * grava no mirror quando `01-eia.md` ainda não existe no momento do stitch
+/** Sentinela do placeholder que `stitch-newsletter.ts::readEiaBlock` grava
+ * no mirror quando `01-eia.md` ainda não existe no momento do stitch
  * ("É IA?\n\n[É IA? ainda processando — bloco será inserido na Etapa 3]").
- * Usado como sentinela: só o miolo entre colchetes, tolerante a variação de
- * whitespace via `normalize()` — não precisamos bater a linha inteira. */
-const EIA_PLACEHOLDER_MARKER = "ainda processando — bloco será inserido na Etapa 3";
+ *
+ * #13886: casar a frase com o travessão literal falhava depois do
+ * `strip-emdashes-reviewed.ts` (#9379), que roda ANTES deste sync e troca o
+ * ` — ` do placeholder por vírgula ("[É IA? ainda processando, bloco será
+ * inserido na Etapa 3]"). Sem casar, o placeholder era tratado como legenda
+ * corrigida e sobrescrevia o `01-eia.md` real (edição 261124: sumiram a
+ * legenda do Wikimedia e o "Resultado da última edição"). Por isso a
+ * sentinela é só "ainda processando", tolerante a qualquer separador, a
+ * caixa e a whitespace: nenhuma legenda real de É IA? traz essa frase. */
+const EIA_PLACEHOLDER_RE = /ainda\s+processando/i;
 
 /**
  * #5459 review (PR #5466): guarda contra a race onde `eia-composer` termina
@@ -68,8 +75,8 @@ const EIA_PLACEHOLDER_MARKER = "ainda processando — bloco será inserido na Et
  * mirror extraído é o próprio placeholder, não há correção pós-Clarice pra
  * propagar: é sempre no-op.
  */
-function isPlaceholderMirror(block: string): boolean {
-  return normalize(block).includes(normalize(EIA_PLACEHOLDER_MARKER));
+export function isPlaceholderMirror(block: string): boolean {
+  return EIA_PLACEHOLDER_RE.test(normalize(block));
 }
 
 export interface EiaSyncResult {
@@ -81,7 +88,7 @@ export interface EiaSyncResult {
   newEiaMd: string;
   /** Motivo do no-op, só presente quando `changed` é `false` — útil pro
    * wrapper de CLI logar sem precisar re-derivar. */
-  reason?: "no-mirror" | "already-synced" | "mirror-is-placeholder";
+  reason?: "no-mirror" | "already-synced" | "mirror-is-placeholder" | "mirror-loses-content";
 }
 
 /**
@@ -123,9 +130,75 @@ export function syncEiaBlockFromReviewed(
     return { changed: false, newEiaMd: eiaMdText, reason: "already-synced" };
   }
 
+  // #13886: o sentido 02→01 existe para propagar a correção de texto que o
+  // humanizador/Clarice fizeram no mirror, nunca para APAGAR conteúdo do real.
+  // Mirror sem legenda (ou sem a linha "Resultado da última edição") contra um
+  // 01-eia.md que a tem não é correção: é mirror defasado/quebrado. Recusa
+  // (no-op) e o CLI sai ≠ 0 apontando o `--from 01`.
+  const realHasCredit = normalize(real.credit) !== "";
+  const mirrorHasCredit = normalize(mirror.credit) !== "";
+  const dropsCredit = realHasCredit && !mirrorHasCredit;
+  const dropsPrevResult = !!normalizeLine(real.prevResultLine) && !normalizeLine(mirror.prevResultLine);
+  if (dropsCredit || dropsPrevResult) {
+    return { changed: false, newEiaMd: eiaMdText, reason: "mirror-loses-content" };
+  }
+
   const fmMatch = eiaMdText.match(FRONTMATTER_RE);
   const frontmatter = fmMatch ? fmMatch[0] : "";
   const newEiaMd = `${frontmatter}${mirrorBlock.trim()}\n`;
 
   return { changed: true, newEiaMd };
+}
+
+/** `true` quando o corpo de `01-eia.md` (sem frontmatter) tem legenda real:
+ * não vazio e não o placeholder. Usado pelo CLI para decidir se o no-op de
+ * mirror-placeholder é inofensivo (01 ainda não existe/vazio, ordem normal do
+ * Stage 2) ou uma recusa que precisa sair ≠ 0 (#13886). */
+export function eiaMdHasRealContent(eiaMdText: string): boolean {
+  const body = eiaMdText.replace(FRONTMATTER_RE, "").trim();
+  if (!body) return false;
+  return !isPlaceholderMirror(body);
+}
+
+export interface EiaMirrorFromEiaResult {
+  /** `true` quando `newReviewedMd` traz o mirror trocado pelo corpo de
+   * `01-eia.md`. */
+  changed: boolean;
+  newReviewedMd: string;
+  reason?: "no-mirror" | "already-synced" | "eia-empty";
+}
+
+/**
+ * Pure. Sentido INVERSO do `syncEiaBlockFromReviewed` (#13886, `--from 01`):
+ * espelha o corpo de `01-eia.md` (a fonte real do render) no bloco
+ * `**É IA?**` de `02-reviewed.md`. É o fix do invariante `eia-credit-synced`
+ * quando o 01 está certo e o mirror está defasado (placeholder do stitch,
+ * mirror anterior à Etapa 3). Mesmo corpo que `stitch-newsletter.ts::
+ * readEiaBlock` grava: frontmatter removido, `trim()`.
+ *
+ * Só toca o bloco mirror; o resto de `02-reviewed.md` sai byte-idêntico
+ * (CRLF preservado quando o arquivo usa CRLF).
+ */
+export function syncReviewedMirrorFromEia(eiaMdText: string, reviewedMdText: string): EiaMirrorFromEiaResult {
+  const body = eiaMdText.replace(FRONTMATTER_RE, "").trim();
+  if (!body || isPlaceholderMirror(body)) {
+    return { changed: false, newReviewedMd: reviewedMdText, reason: "eia-empty" };
+  }
+  const usesCrlf = reviewedMdText.includes("\r\n");
+  const text = reviewedMdText.replace(/\r\n/g, "\n");
+  const mirrorBlock = extractEiaMirrorBlock(text);
+  if (!mirrorBlock) {
+    return { changed: false, newReviewedMd: reviewedMdText, reason: "no-mirror" };
+  }
+  const bodyLf = body.replace(/\r\n/g, "\n");
+  if (mirrorBlock === bodyLf) {
+    return { changed: false, newReviewedMd: reviewedMdText, reason: "already-synced" };
+  }
+  const idx = text.indexOf(mirrorBlock);
+  if (idx < 0) {
+    // extractEiaMirrorBlock devolve trecho trimado de `text`; sempre achável.
+    return { changed: false, newReviewedMd: reviewedMdText, reason: "no-mirror" };
+  }
+  const replaced = text.slice(0, idx) + bodyLf + text.slice(idx + mirrorBlock.length);
+  return { changed: true, newReviewedMd: usesCrlf ? replaced.replace(/\n/g, "\r\n") : replaced };
 }

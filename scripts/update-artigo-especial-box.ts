@@ -79,7 +79,18 @@
  *     --ano 2026 --slug engenharia-de-ilusao \
  *     [--snippets-file data/snippets/artigo-especial-apoiadores.md] \
  *     [--config platform.config.json] [--data-dir data] \
- *     [--slot 2] [--no-pin] [--unpin] [--force] [--dry-run]
+ *     [--slot 2] [--no-pin] [--unpin] [--force] [--dry-run] [--expires AAAA-MM-DD]
+ *
+ * ## Validade: `expires:` até o fim do mês (#13894)
+ *
+ * O box do Artigo Especial só vale até o fim do mês corrente do artigo
+ * (pedido do editor, 24/11/2026: na edição 261124 o box ainda anunciava o
+ * "Artigo Especial de Setembro"). A cada reuso o script grava no header
+ * `expires: {último dia do mês}` (mês corrente em BRT no momento da execução;
+ * `--expires AAAA-MM-DD` sobrepõe). Passada a data, a seleção
+ * (`select-boxes-by-clicks.ts`) e o stitch já pulam a caixa vencida sem erro
+ * duro, e o invariante `box-divulgacao-expiry` avisa no gate do Stage 4 se
+ * ela ainda estiver pinada ou presente na edição (#10174/#10214).
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -87,6 +98,7 @@ import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { applyBoxPin, serializeConfigSurgically, isBoxSlotOwnedBy, type BoxesDivulgacaoConfig } from "./lib/box-slot-pin.ts";
 import { parseArgs, isMainModule, getIntArg } from "./lib/cli-args.ts";
+import { upsertBoxHeaderField } from "./lib/shared/snippet-header.ts";
 import {
   artigoEspecialStatePath,
   readArtigoEspecialState,
@@ -138,6 +150,33 @@ export interface ArtigoEspecialBoxInput {
    * CTA intocado (comportamento anterior).
    */
   ctaUrl?: string;
+  /**
+   * #13894 — último dia (`AAAA-MM-DD`, inclusive) em que o box pode sair.
+   * Gravado como `expires:` no header. Ausente = header intocado.
+   */
+  expires?: string;
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * #13894 — último dia do mês civil de `now` em BRT (America/Sao_Paulo, sem
+ * horário de verão desde 2019: UTC-3 fixo), como `AAAA-MM-DD`.
+ */
+export function lastDayOfMonthBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 3_600_000);
+  const y = brt.getUTCFullYear();
+  const m = brt.getUTCMonth(); // 0-11
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(last).padStart(2, "0")}`;
+}
+
+function withExpires(content: string, expires: string | undefined): string {
+  if (expires === undefined) return content;
+  if (!ISO_DATE_RE.test(expires)) {
+    throw new ArtigoEspecialBoxFormatError(`--expires "${expires}" não é uma data AAAA-MM-DD (#13894).`);
+  }
+  return upsertBoxHeaderField(content, "expires", expires);
 }
 
 /** Seed usado quando o arquivo ainda não existe (bootstrap). */
@@ -194,8 +233,9 @@ export function applyArtigoEspecialBoxUpdate(content: string, input: ArtigoEspec
 
 /** Orquestra bootstrap-ou-update — usada pelo `main()` e por testes de integração leve. */
 export function renderArtigoEspecialBox(existingContent: string | null, input: ArtigoEspecialBoxInput): string {
-  if (existingContent === null) return buildDefaultArtigoEspecialBox(input);
-  return applyArtigoEspecialBoxUpdate(existingContent, input);
+  const body =
+    existingContent === null ? buildDefaultArtigoEspecialBox(input) : applyArtigoEspecialBoxUpdate(existingContent, input);
+  return withExpires(body, input.expires); // #13894
 }
 
 // ── platform.config.json: pin/unpin ─────────────────────────────────────
@@ -273,7 +313,13 @@ export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpd
   const existingContent = existsSync(snippetsFile) ? readFileSync(snippetsFile, "utf8") : null;
   let nextContent: string;
   try {
-    nextContent = renderArtigoEspecialBox(existingContent, { titulo, gancho, mesLabel, ctaUrl: options.ctaUrl });
+    nextContent = renderArtigoEspecialBox(existingContent, {
+      titulo,
+      gancho,
+      mesLabel,
+      ctaUrl: options.ctaUrl,
+      expires: options.expires,
+    });
   } catch (e) {
     if (state && statePath) {
       writeArtigoEspecialState(
@@ -335,7 +381,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: npx tsx scripts/update-artigo-especial-box.ts --titulo \"...\" --gancho \"...\" --mes \"Agosto\" " +
         "[--ano AAAA --slug slug] [--cta-url https://apoia.se/...] [--snippets-file path] [--config path] [--data-dir path] " +
-        "[--slot 2] [--no-pin] [--unpin] [--force] [--dry-run]",
+        "[--slot 2] [--no-pin] [--unpin] [--force] [--dry-run] [--expires AAAA-MM-DD]",
     );
     process.exit(2);
   }
@@ -380,6 +426,8 @@ async function main(): Promise<void> {
     ano: values["ano"],
     slug: values["slug"],
     ctaUrl: values["cta-url"],
+    // #13894: validade até o fim do mês corrente (BRT), salvo --expires.
+    expires: values["expires"] ?? lastDayOfMonthBrt(new Date()),
   });
 }
 
