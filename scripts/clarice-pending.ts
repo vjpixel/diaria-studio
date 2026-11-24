@@ -39,7 +39,10 @@
  *   8 — resume não aplicado: a Clarice corrigiu o erro intencional declarado, ou
  *       mexeu no reveal da edição anterior a ponto de não dar para restaurá-lo
  *   9 — resume aplicado, mas um passo pós-Clarice que conserta sozinho
- *       (strip-emdashes-reviewed, sync-eia-block, clarice-diff) falhou
+ *       (strip-emdashes-reviewed, sync-eia-block, clarice-diff) falhou.
+ *       Recusa do sync-eia-block (exit 4, espelho placeholder com 01-eia.md
+ *       real) não conta: o resume roda `--from 01` e só falha se esse falhar
+ *       (#13908; campo `recovered` no JSON)
  *  10 — resume não aplicado: correção parcial (fallback por parágrafo ou resumo
  *       ilegível do filho); o marcador fica com `reason: "partial"`
  *  11 — resume não aplicado: 02-reviewed.md ausente, ou
@@ -73,6 +76,7 @@ import {
   resumeClariceSpaced,
   spacedFailureMessage,
   resumeCommandFor,
+  runPostResumeSteps,
   skipClarice,
   type ClariceRunResult,
   type ClariceRunner,
@@ -192,6 +196,7 @@ export function resumedStderrLines(
   protectedSuggestions: Array<{ from: string; to: string }>,
   attention: PostStepRun[],
   hardFailures: PostStepRun[],
+  recovered: PostStepRun[] = [],
 ): string[] {
   return [
     "[clarice-pending] Clarice aplicada ao 02-reviewed.md e marcador removido. " +
@@ -202,9 +207,15 @@ export function resumedStderrLines(
         `${JSON.stringify(p.from)} → ${JSON.stringify(p.to)}. Levar ao gate.`,
     ),
     ...attention.map((s) => `[clarice-pending] ⚠️ ${s.name} achou algo (exit 1): levar ao gate (não auto-restaurar).`),
-    ...hardFailures.map(
-      (s) => `[clarice-pending] ⚠️ ${s.name} não rodou direito (${s.crashed ?? `exit ${s.exit}`}): rodar à mão antes do gate.`,
+    ...recovered.map(
+      (s) =>
+        `[clarice-pending] ${s.name} recusou (exit ${s.exit}) e o sentido inverso resolveu: ` +
+        `${s.fallback?.args.slice(1).join(" ") ?? ""} (exit 0).`,
     ),
+    ...hardFailures.map((s) => {
+      const fb = s.fallback ? `; fallback ${s.fallback.crashed ?? `exit ${s.fallback.exit}`}` : "";
+      return `[clarice-pending] ⚠️ ${s.name} não rodou direito (${s.crashed ?? `exit ${s.exit}`}${fb}): rodar à mão antes do gate.`;
+    }),
   ];
 }
 
@@ -328,11 +339,8 @@ function main(): void {
   }
 
   // resumed: passos pós-Clarice do Stage 2 contra o texto pré-resume.
-  const steps: PostStepRun[] = postResumeSteps(editionDir).map((s) => {
-    const r = runTsx(s.args);
-    return { name: s.name, reportOnly: s.reportOnly, exit: r.exitCode, ...(r.crashed ? { crashed: r.crashed } : {}) };
-  });
-  const { hardFailures, attention } = classifyPostSteps(steps);
+  const steps: PostStepRun[] = runPostResumeSteps(postResumeSteps(editionDir), runTsx);
+  const { hardFailures, attention, recovered } = classifyPostSteps(steps);
   const code = hardFailures.length
     ? RESUME_POST_STEP_FAILED_EXIT
     : attention.length
@@ -344,6 +352,7 @@ function main(): void {
     post_steps: steps,
     attention: attention.map((s) => s.name),
     hard_failures: hardFailures.map((s) => s.name),
+    recovered: recovered.map((s) => s.name),
     exit: code,
   };
   logEvent({
@@ -355,7 +364,7 @@ function main(): void {
     details: result,
   });
   console.log(JSON.stringify(result));
-  for (const line of resumedStderrLines(outcome.protectedSuggestions, attention, hardFailures)) console.error(line);
+  for (const line of resumedStderrLines(outcome.protectedSuggestions, attention, hardFailures, recovered)) console.error(line);
   if (code !== 0) process.exit(code);
 }
 
