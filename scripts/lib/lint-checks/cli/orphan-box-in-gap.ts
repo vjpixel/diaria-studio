@@ -8,7 +8,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { lintCalloutPlacement } from "../callout-placement.ts";
+import { lintCalloutPlacement, formatTitleOptionErrors } from "../callout-placement.ts";
 import { findOrphanBoxWarnings } from "../../newsletter-parse.ts";
 
 // Modo --check orphan-box-in-gap (#3204, estendido pro slot 3 em #3476) —
@@ -35,20 +35,24 @@ export function runCli(args: Record<string, string>, root: string): void {
   const ok = placement.ok && orphanGaps.length === 0;
   console.log(JSON.stringify({ ok, calloutPlacement: placement, orphanGaps }, null, 2));
   if (!ok) {
-    console.error(
-      `\n❌ possível box de divulgação órfão (marcador não reconhecido NÃO é mais o problema — a extração é por posição; o problema é ESTRUTURA ambígua):`,
-    );
-    for (const m of placement.matches) {
+    if (placement.matches.length > 0 || orphanGaps.length > 0) {
       console.error(
-        `  linha ${m.line}: "${m.context}" — parece um box colado DENTRO de uma seção de destaque, sem \`---\` isolando-o.`,
+        `\n❌ possível box de divulgação órfão (marcador não reconhecido NÃO é mais o problema — a extração é por posição; o problema é ESTRUTURA ambígua):`,
+      );
+      for (const m of placement.matches) {
+        console.error(
+          `  linha ${m.line}: "${m.context}" — parece um box colado DENTRO de uma seção de destaque, sem \`---\` isolando-o.`,
+        );
+      }
+      for (const w of orphanGaps) {
+        console.error(`  ${w.reason}`);
+      }
+      console.error(
+        `\n   Fix: isole o box em sua PRÓPRIA seção, entre o \`---\` que fecha o destaque anterior e o \`---\` que abre o próximo — exatamente 1 bloco extra por lacuna.`,
       );
     }
-    for (const w of orphanGaps) {
-      console.error(`  ${w.reason}`);
-    }
-    console.error(
-      `\n   Fix: isole o box em sua PRÓPRIA seção, entre o \`---\` que fecha o destaque anterior e o \`---\` que abre o próximo — exatamente 1 bloco extra por lacuna.`,
-    );
+    // #13887: opções extras de título do writer — o fix é podar, não mover caixa.
+    for (const line of formatTitleOptionErrors(placement.titleOptions)) console.error(line);
     process.exit(1);
   }
   return;

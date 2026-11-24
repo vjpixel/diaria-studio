@@ -74,9 +74,29 @@ export interface CalloutPlacementMatch {
   context: string;
 }
 
+/**
+ * #13887: opção extra de título — `**[Título](url)**` logo depois do título do
+ * destaque, com a MESMA url. É o bloco de 3 opções do `writer-destaque`
+ * integrado sem poda (promoção de destaque no gate 4, §4d.1b): não é caixa
+ * colada, e o fix é podar para 1 título.
+ */
+export interface TitleOptionMatch extends CalloutPlacementMatch {
+  destaque: number;
+  hint: string;
+}
+
 export interface CalloutPlacementResult {
   ok: boolean;
   matches: CalloutPlacementMatch[];
+  /** #13887: opções extras de título (fora de `matches`). Também deixam `ok: false`. */
+  titleOptions: TitleOptionMatch[];
+}
+
+/** #13887: `**[Título](url)**` como parágrafo inteiro → url; senão `null`. */
+const TITLE_LINK_PARAGRAPH_RE = /^\*\*\[[^\]\n]+\]\(([^)\s]+)\)\*\*$/;
+function titleLinkUrl(joined: string): string | null {
+  const m = TITLE_LINK_PARAGRAPH_RE.exec(joined);
+  return m ? m[1] : null;
 }
 
 // Separador casado na linha BRUTA (sem trim), espelhando `parseDestaques`
@@ -109,6 +129,20 @@ const EMOJI_LEAD_RE =
  * alternado que justifica "exatamente 2 ocorrências" em vez de só checar
  * início/fim.
  */
+/**
+ * #13887: linhas de erro das opções extras de título, compartilhadas pelos
+ * CLIs `callout-placement` e `orphan-box-in-gap` (mesma frase nos dois).
+ */
+export function formatTitleOptionErrors(titleOptions: readonly TitleOptionMatch[]): string[] {
+  if (titleOptions.length === 0) return [];
+  return [
+    `\n❌ ${titleOptions.length} opção(ões) extra(s) de título (não são caixas de divulgação):`,
+    ...titleOptions.map((t) => `  linha ${t.line}: "${t.context}" — ${t.hint}`),
+    `\n   Fix: deixar 1 título por destaque e apagar as outras linhas \`**[Título](url)**\` ` +
+      `(a opção 1 é a que \`swap-destaque.ts --finalize-titulo\` usa no TÍTULO/SUBTÍTULO).`,
+  ];
+}
+
 function isSingleBoldWrap(joined: string): boolean {
   return FULL_BOLD_LINE_RE.test(joined) && countDoubleAsterisk(joined) === 2;
 }
@@ -116,8 +150,13 @@ function isSingleBoldWrap(joined: string): boolean {
 export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const matches: CalloutPlacementMatch[] = [];
+  const titleOptions: TitleOptionMatch[] = [];
   let inDestaqueSection = false;
+  let destaqueNum = 0;
   let sawTitle = false; // já vimos o 1º parágrafo de conteúdo (= título) desta seção?
+  // #13887: url do título, enquanto os parágrafos seguintes ainda podem ser
+  // opções de título (zera no 1º parágrafo que não é uma delas).
+  let titleOptionUrl: string | null = null;
   // #3282: acumula o parágrafo inteiro (multi-linha) antes de avaliar — mesmo
   // padrão de `lintStackedIntroCallouts` abaixo (`paraLines`/`flushParagraph`).
   let paraLines: string[] = [];
@@ -131,7 +170,19 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
         // sinalizado, mesmo bold-wrapped (`**[Título](url)**` também bate em
         // FULL_BOLD_LINE_RE). Reconhecido por POSIÇÃO, não por forma.
         sawTitle = true;
+        titleOptionUrl = titleLinkUrl(paraLines.join("\n"));
+      } else if (titleOptionUrl !== null && titleLinkUrl(paraLines.join("\n")) === titleOptionUrl) {
+        // #13887: 2ª/3ª opção de título do writer, colada sob a 1ª.
+        titleOptions.push({
+          line: paraStartLine,
+          context: paraLines[0].slice(0, 80),
+          destaque: destaqueNum,
+          hint:
+            `opção extra de título do DESTAQUE ${destaqueNum} (mesma url do título) — não é caixa: ` +
+            `podar para 1 título (o Stage 4 exige 1 por destaque).`,
+        });
       } else {
+        titleOptionUrl = null;
         // Testa o parágrafo INTEIRO (join por \n — FULL_BOLD_LINE_RE usa
         // `[\s\S]` no meio, então casa através de quebras de linha) — pega
         // tanto o callout de 1 linha quanto o hard-wrapped em várias. O
@@ -156,6 +207,7 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
       flushParagraph();
       inDestaqueSection = false;
       sawTitle = false;
+      titleOptionUrl = null;
       continue;
     }
     const t = raw.trim();
@@ -166,7 +218,9 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
     if (DESTAQUE_HEADER_RE.test(t)) {
       flushParagraph();
       inDestaqueSection = true;
+      destaqueNum = Number(/DESTAQUE\s+([123])/.exec(t)?.[1] ?? 0);
       sawTitle = false;
+      titleOptionUrl = null;
       continue;
     }
     if (paraLines.length === 0) paraStartLine = i + 1;
@@ -174,7 +228,7 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   }
   flushParagraph(); // edge case: arquivo termina em meio a parágrafo, sem `---`/blank final
 
-  return { ok: matches.length === 0, matches };
+  return { ok: matches.length === 0 && titleOptions.length === 0, matches, titleOptions };
 }
 
 // ---------------------------------------------------------------------------
