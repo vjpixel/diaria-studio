@@ -96,6 +96,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `clarice-pending` | revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only) | #12257 |
 | `clarice-pending-footer-credit` | rodapé PARA ENCERRAR afirma a revisão da Clarice com o marcador _internal/02-clarice-pending.json ativo; o render omite a oração (#13711, warning-only) | #13711 |
 | `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
+| `dedup-recurrence` | Item isento antigo ou tema entidade + evento de destaque nos últimos 10 dias (#13923, warning-only) | #13923 |
 | `destaque-repeated-past-edition` | destaque aprovado cuja URL já saiu nos últimos ~30 dias, com edição e seção de origem: ⚠️ upgrade do #12193 (pede fato novo) ou 🚨 repetição sem o marcador do dedup (#13883, warning-only) | #13883 |
 | `edition-sync-conflicts` | pasta da edição sem cópia .conflictN do sync e com os arquivos obrigatórios presentes (#13545) | #13545 |
 | `editor-destaque-request` | link enviado pelo editor com pedido explícito de destaque (inbox) que ficou fora dos destaques ou em outra posição, com o motivo (#12193, warning-only) | #12193 |

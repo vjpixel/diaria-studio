@@ -1,3 +1,4 @@
+import { RECURRING_EVENTS } from "./recurring-events-config.ts";
 /**
  * lib/event-dedup.ts (#9249)
  *
@@ -55,6 +56,14 @@
  *
  * Puro, sem I/O.
  */
+
+/** Evento normalizado; entidade sozinha nunca é um tema de evento. */
+export function recurringEventThemes(title: string): string[] {
+  const text = " " + title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ") + " ";
+  return RECURRING_EVENTS.flatMap(event =>
+    event.aliases.some(alias => text.includes(" " + alias + " "))
+      ? [...companiesIn(title)].map(company => `${event.name} ${company}`) : []);
+}
 
 /** Empresas (e aliases de produto → empresa). Chave/valor normalizados. */
 export const EVENT_COMPANY_ALIASES: Record<string, string> = {
@@ -484,6 +493,9 @@ export function sameEvent(a: string, b: string, opts: SameEventOptions = {}): Ev
   const compA = companiesIn(a);
   const compB = companiesIn(b);
   const sharedCompanies = [...compA].filter((c) => compB.has(c));
+  const recurringB = new Set(recurringEventThemes(b));
+  const recurring = recurringEventThemes(a).filter(theme => recurringB.has(theme));
+  if (recurring.length) return { signal: "event_concepts", shared: recurring, removable: true };
   // (A1) mesma empresa + nome distintivo de um lado presente (qualquer caixa)
   // no outro — "Google anuncia Argon" vs "Gemini 4 Argon: ...".
   if (sharedCompanies.length > 0) {
