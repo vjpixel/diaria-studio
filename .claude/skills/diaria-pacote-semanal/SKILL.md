@@ -90,6 +90,19 @@ O `{cycle}` sai impresso pelo Passo 1 (`weekly-shared-selection.ts`).
    `--day-offset` ou pular um modo; com `--no-gates`, aplica a sugestão e
    registra a premissa). Rodando no sábado depois do horário do highlights,
    é aqui que aparece.
+   **Slot curto (#13822):** o `--check-slot` só acusa slot já vencido. Com
+   `status: ok`, ler o `minutesFromNow` do highlights no JSON: abaixo de
+   **120 min** (tempo típico de produção + passes + gate do pacote; no 26w47,
+   69 min de folga não bastaram e o slot das 11:00 venceu antes do pós-gate),
+   registrar o risco `slotCurto` com o horário, a folga em minutos e um
+   horário alternativo (`--time HH:MM` a pelo menos 120 min de agora,
+   arredondado ao quarto de hora; sem horário no mesmo dia, `--day-offset`),
+   num banner já no Passo 0. O alternativo vale só para o highlights: no
+   Passo 7 o agendamento sai em duas chamadas, `--mode highlights --time
+   {HH:MM}` e `--mode clicked` (`--time` com `--mode both` moveria também o
+   clicked de `{D}`). Com `--no-gates`, aplicar o alternativo sozinho e
+   registrar a premissa. Sem `--no-gates`, levar o `slotCurto` ao topo do
+   gate (Passo 6, item 1).
 3. `npx tsx scripts/kit-sync.ts` (#7629), uma vez para os três.
 4. Conferir `data/editions/{AAMMDD}/02-reviewed.md` das 5 edições da semana;
    as que faltarem entram no bloco de avisos do gate.
@@ -165,6 +178,24 @@ vídeo"): lê a legenda `diaria-comentada-{video.editionDate}.srt` da edição
 do vídeo e escreve UMA frase (até 280 caracteres) com o que o vídeo explica
 e o artigo não traz, gravada em `{scratchpad}/ln-video-pitch-{cycle}.txt`.
 
+**Trocar o vídeo da semana (#13820).** Se o editor pedir outro vídeo (no
+gate ou antes), a troca é uma só e vale para LinkedIn e Stack: rodar
+`npx tsx scripts/select-linkedin-weekly.ts --publish-monday {M} --shared-selection {arquivo} --video-edition AAMMDD`
+(ou `--video-url URL`) e
+`npx tsx scripts/publish-circle-stack.ts --publish-monday {M} --video-edition AAMMDD`,
+com a mesma edição nas duas. A edição pode ser de fora da janela; título e
+URL vêm do `_internal/05-video-url.txt` e do `_internal/05-youtube-published.json`
+dela. A escolha fica gravada em `videoOverride` e a re-seleção do Passo 7
+(`--require-approved`, `--reselect`) a reaplica, então não editar `video` à
+mão nem salvar e restaurar o campo. Trocar o vídeo apaga a frase do vídeo
+(#13045) e a descrição do vídeo da Stack (#12549), que eram sobre o
+anterior: reescrever a frase a partir da legenda
+`diaria-comentada-{AAMMDD}.srt` da edição nova e re-disparar o
+`stack-writer` (com um novo `circle-stack-copy.ts --manifest`) antes do
+Passo 4; troca feita no gate repassa esses dois textos pelo
+humanizador/Clarice e refaz os renders do Passo 5. `--video-auto` volta ao
+mais visto.
+
 ## Passo 4 — Humanizador + Clarice numa leva
 
 Todos os textos novos de uma vez, na ordem da diária. `{P}` = o arquivo de
@@ -236,7 +267,12 @@ MCP segue o halt #738. Sem Chrome ou com `--no-gates`, não colar.
 (imagens e HTMLs de apoio copiados para a mesma pasta e publicados em
 `files`; nada de `data/` direto, #12788). Título "Pacote semanal {cycle}".
 
-1. **Bloco de avisos no topo**, juntando os de todos os scripts: avisos do
+1. **Bloco de avisos no topo**, abrindo pelo `slotCurto` do Passo 0, quando
+   houver (#13822), refeito com o relógio da hora do gate: "O slot do
+   highlights às {HH:MM} vence antes da aprovação provável (folga de {N}
+   min); sugestão: `--time {HH:MM alternativo}`." Slot já vencido na hora do
+   gate (`--check-slot` de novo, exit 2) entra no mesmo lugar, com as opções
+   do Passo 0. Depois, juntando os de todos os scripts: avisos do
    `shared-selection.json` (empates pendentes com a sugestão, trocas que não
    se aplicaram a um produto, edição sem dado de clique), a **tabela de
    idade do dado de clique por edição** com as edições de menos de 48 h
