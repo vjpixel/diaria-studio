@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 24 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 25 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Hackers chineses usam agentes que acham zero-day</title>
+      <link>https://diar.ia.br/p/hackers-chineses-usam-agentes-que-acham-zero-day</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/hackers-chineses-usam-agentes-que-acham-zero-day</guid>
+      <pubDate>Wed, 25 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Claude Ship revisa, corrige e aprova pull requests | Claude resolve dois enigmas de buracos negros</description>
+    </item>
     <item>
       <title>Jensen Huang está de volta à Nvidia 11 dias depois de sair</title>
       <link>https://diar.ia.br/p/jensen-huang-esta-de-volta-a-nvidia-11-dias-depois-de-sair</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/10-mil-agentes-da-openai-resolvem-enigma-de-90-anos</guid>
       <pubDate>Fri, 11 Sep 2026 09:00:00 GMT</pubDate>
       <description>Claude ajudou espião russo a escapar de antivírus | Claude tentou infectar código mesmo sabendo do risco</description>
-    </item>
-    <item>
-      <title>Pesquisador da Anthropic teme fim da humanidade</title>
-      <link>https://diar.ia.br/p/pesquisador-da-anthropic-teme-fim-da-humanidade</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/pesquisador-da-anthropic-teme-fim-da-humanidade</guid>
-      <pubDate>Thu, 10 Sep 2026 09:00:00 GMT</pubDate>
-      <description>Meta lança Muse, seu novo agente pessoal | Siri finalmente aprende a falar português</description>
     </item>
   </channel>
 </rss>
