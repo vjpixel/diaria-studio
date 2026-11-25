@@ -106,6 +106,32 @@ describe("consenso por assunto #13885", () => {
       assert.equal(jensen.newsletters.some((n) => /7min/.test(n)), false);
       assert.equal(jensen.urls.some((u) => u.includes("/2026/11/17/")), false);
     });
+    it("#13921: anúncio (17/11) e cobertura do mesmo fato (20/11) seguem no mesmo assunto", () => {
+      const links = [link("https://a.test/2026/11/17/x", "Anthropic launches Claude Sonnet 5.5 for everyone", "a@x.test"),
+        link("https://b.test/2026/11/20/y", "Anthropic launches Claude Sonnet 5.5 for all users", "b@x.test")];
+      const out = build(links);
+      assert.equal(out.length, 1); assert.equal(out[0].count, 2);
+      // Metadado do pool (data de publicação) vale igual à data da URL.
+      const meta = [{url: "https://c.test/p", date: "2026-11-17"}, {url: "https://d.test/q", published_date: "2026-11-20T08:00:00Z"}];
+      const viaMeta = buildNewsletterConsensus([link("https://c.test/p", links[0].title, "a@x.test"),
+        link("https://d.test/q", links[1].title, "b@x.test")], meta, [], [], joinKey);
+      assert.equal(viaMeta.length, 1); assert.equal(viaMeta[0].count, 2);
+    });
+    it("#13921: representante expulso pela data não deixa os restantes juntos só por casarem com ele", () => {
+      // Os 3 de 23/11 casam com o representante de 17/11, mas não entre si.
+      const out = build([link("https://a.test/2026/11/17/dots", "OpenAI launches Dots for ChatGPT users", "a@x.test"),
+        link("https://a.test/2026/11/17/dots", "OpenAI launches Dots for ChatGPT users", "b@x.test"),
+        link("https://b.test/2026/11/23/worldwide", "Dots launches for ChatGPT users worldwide", "c@x.test"),
+        link("https://c.test/2026/11/23/brazil", "Launches Dots for ChatGPT users in Brazil", "d@x.test"),
+        link("https://d.test/2026/11/23/today", "Dots for ChatGPT users launches today", "e@x.test")]);
+      assert.deepEqual(out.map((g) => [g.urls, g.count]), [[["https://a.test/2026/11/17/dots"], 2]]);
+    });
+    it("#13921: dia ou mês inválido no caminho da URL não vira outra data", () => {
+      assert.equal(storyDate("https://x.test/2026/11/45/a"), null);
+      assert.equal(storyDate("https://x.test/2026/02/30/a"), null);
+      assert.equal(storyDate("https://x.test/2026/13/01/a"), null);
+      assert.equal(storyDate("https://x.test/2028/02/29/a"), Date.UTC(2028, 1, 29));
+    });
     it("data vem do metadado ou do caminho da URL", () => {
       assert.equal(storyDate("https://techcrunch.com/2026/11/17/x"), Date.UTC(2026, 10, 17));
       assert.equal(storyDate("https://metr.org/blog/2026-11-20-q4"), Date.UTC(2026, 10, 20));
