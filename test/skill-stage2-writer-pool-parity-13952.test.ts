@@ -54,6 +54,25 @@ describe("#13952 — writer-pool na skill /diaria-2-escrita", () => {
     assert.ok(step < cp, "passo do writer-pool depois do cp 02-draft → 02-reviewed");
   });
 
+  // #13956: o passo (2) usa `--since {DISPATCH_AT}`; na skill isolada nada o
+  // definia (no orchestrator ele vem do dispatch dos writers, linha "Antes
+  // desta mensagem"), e o placeholder literal faz `parseSince` recusar.
+  it("{DISPATCH_AT} é definido (verify-agent-outputs --now) antes de cada uso", () => {
+    const DEF = "`npx tsx scripts/verify-agent-outputs.ts --now` → `{DISPATCH_AT}`";
+    for (const [label, md] of [["SKILL.md", skill], ["orchestrator-stage-2.md", orch]] as const) {
+      const def = md.indexOf(DEF);
+      assert.ok(def >= 0, `${label}: {DISPATCH_AT} nunca é definido com verify-agent-outputs.ts --now`);
+      const uses = [...md.matchAll(/--since \{DISPATCH_AT\}/g)].map((m) => m.index!);
+      assert.ok(uses.length > 0, `${label}: nenhum uso de --since {DISPATCH_AT}`);
+      for (const u of uses) assert.ok(def < u, `${label}: uso de {DISPATCH_AT} na posição ${u} antes da definição (${def})`);
+    }
+    // Na skill, a definição fica no próprio passo do writer-pool, fora dos
+    // passos (1)-(4) comparados com o orchestrator.
+    const line = skill.split("\n").find((l) => l.startsWith(HEADER))!;
+    const defInLine = line.indexOf(DEF);
+    assert.ok(defInLine >= 0 && defInLine < line.indexOf("(1) "), "SKILL.md: definição fora do cabeçalho do passo do writer-pool");
+  });
+
   it("Fallback e modo newsletter remetem ao passo", () => {
     const fallback = skill.slice(skill.indexOf("### Fallback (writer único legacy)"), skill.indexOf("### Se `$2 = newsletter`:"));
     assert.match(fallback, /#13952[\s\S]*pool-descriptions\.ts --input → writer-pool/);
