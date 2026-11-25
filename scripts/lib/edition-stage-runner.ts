@@ -402,14 +402,34 @@ const DENIAL_SECRET_PATTERNS: Array<[RegExp, string]> = [
     /(\b[A-Za-z0-9_]*(?:api[_-]?key|apikey|token|secret|password|passwd|senha)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)[^\s"'&]{6,}/gi,
     "$1[REDACTED]",
   ],
-  [/\b[A-Za-z0-9_-]{40,}\b/g, "[REDACTED]"],
 ];
 
-/** #13909 (pure): redige padrões de segredo de um texto de diagnóstico. */
-export function redactDenialSecrets(text: string): string {
+/** #13909: token opaco longo sem prefixo de provedor (genérico, roda por último). */
+const DENIAL_OPAQUE_TOKEN = /\b[A-Za-z0-9_-]{40,}\b/g;
+
+/**
+ * #13916: nome em kebab/snake minúsculo (`edition-stage-runner-denial-truncate-13909`,
+ * `fix-13916-redacao-preserva-caminhos`), 3+ segmentos curtos de `[a-z0-9]`.
+ * Token aleatório em base64/base64url quase nunca sai assim (teria de vir todo
+ * em minúsculas e com 2+ separadores), e hex sem separador (SHA, token clássico
+ * do GitHub) segue redigido.
+ */
+const DENIAL_WORDLIKE_NAME = /^[a-z0-9]{1,24}(?:[-_][a-z0-9]{1,24}){2,}$/;
+
+/** #13916: campos de `tool_input` que são caminho de arquivo; o genérico de token opaco não roda neles. */
+const DENIAL_PATH_KEYS = new Set(["file_path", "path"]);
+
+/**
+ * #13909 (pure): redige padrões de segredo de um texto de diagnóstico.
+ * #13916: o genérico de token opaco poupa nomes em kebab/snake minúsculo, e
+ * `opaqueTokens: false` (campos de caminho) desliga só esse genérico. Os
+ * formatos de provedor e `KEY=valor` rodam sempre.
+ */
+export function redactDenialSecrets(text: string, opts: { opaqueTokens?: boolean } = {}): string {
   let out = text;
   for (const [re, replacement] of DENIAL_SECRET_PATTERNS) out = out.replace(re, replacement);
-  return out;
+  if (opts.opaqueTokens === false) return out;
+  return out.replace(DENIAL_OPAQUE_TOKEN, (match) => (DENIAL_WORDLIKE_NAME.test(match) ? match : "[REDACTED]"));
 }
 
 /**
@@ -421,12 +441,14 @@ export function redactDenialSecrets(text: string): string {
  */
 export function summarizeDenialDetail(denial: Record<string, unknown>, maxChars = DENIAL_DETAIL_MAX_CHARS): string {
   const pieces: string[] = [];
-  if (typeof denial.tool_name === "string") pieces.push(denial.tool_name);
+  if (typeof denial.tool_name === "string") pieces.push(redactDenialSecrets(denial.tool_name));
   const input = denial.tool_input;
   if (input && typeof input === "object" && !Array.isArray(input)) {
     const rec = input as Record<string, unknown>;
     for (const key of DENIAL_INPUT_KEYS) {
-      if (typeof rec[key] === "string") pieces.push(`${key}=${JSON.stringify(rec[key])}`);
+      if (typeof rec[key] !== "string") continue;
+      const piece = `${key}=${JSON.stringify(rec[key])}`;
+      pieces.push(redactDenialSecrets(piece, { opaqueTokens: !DENIAL_PATH_KEYS.has(key) }));
     }
     const rest = Object.keys(rec).filter((key) => !DENIAL_INPUT_KEYS.includes(key));
     for (const key of rest) {
@@ -434,13 +456,13 @@ export function summarizeDenialDetail(denial: Record<string, unknown>, maxChars 
       pieces.push(typeof value === "string" ? `${key}=<${value.length} chars>` : `${key}=<${typeof value}>`);
     }
   } else if (input !== undefined) {
-    pieces.push(`tool_input=${JSON.stringify(input)}`);
+    pieces.push(redactDenialSecrets(`tool_input=${JSON.stringify(input)}`));
   }
   for (const [key, value] of Object.entries(denial)) {
     if (key === "tool_name" || key === "tool_input" || key === "tool_use_id") continue;
-    pieces.push(`${key}=${JSON.stringify(value) ?? String(value)}`);
+    pieces.push(redactDenialSecrets(`${key}=${JSON.stringify(value) ?? String(value)}`));
   }
-  const text = redactDenialSecrets(pieces.join(" "));
+  const text = pieces.join(" ");
   return text.length > maxChars ? `${text.slice(0, Math.max(0, maxChars - 1))}…` : text;
 }
 
