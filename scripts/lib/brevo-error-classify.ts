@@ -2,7 +2,7 @@
  * scripts/lib/brevo-error-classify.ts (#6035, #5942, #5653)
  *
  * Classificador PURO de erro HTTP da Brevo — dado status + corpo da
- * resposta, decide em qual das 5 classes acionáveis o erro cai, extraindo
+ * resposta, decide em qual das classes acionáveis o erro cai, extraindo
  * o IP citado quando aplicável. Nasceu do achado ao vivo (24-25/08/2026,
  * #6124/#6132/#6137) de que um 401 "unrecognised IP" (bloqueio de allowlist
  * por CONTA) e um 401 de credencial inválida/revogada são hoje
@@ -25,6 +25,7 @@ export { AUTHORISED_IPS_URL };
 
 export type BrevoErrorClass =
   | "ip-nao-autorizado"
+  | "list-capacity"
   | "rate-limit"
   | "auth-invalida"
   | "transitorio"
@@ -48,6 +49,7 @@ export interface BrevoErrorClassification {
  *  - 429 → `rate-limit` (100 req/hora por CONTA na família
  *    `/v3/emailCampaigns*`, ver docs/brevo-rate-limits.md — ação: esperar a
  *    janela ou desistir se o Retry-After não couber no orçamento).
+ *  - 405 com "list creation limit" → `list-capacity` (ação: consolidar listas).
  *  - >=500 → `transitorio` (erro do servidor Brevo — retry pode ajudar).
  *  - qualquer outro status → `desconhecido` (sem ação específica conhecida).
  */
@@ -59,6 +61,9 @@ export function classifyBrevoError(
     const ip = parseUnrecognisedIpBody(bodyText);
     if (ip) return { errorClass: "ip-nao-autorizado", ip };
     return { errorClass: "auth-invalida", ip: null };
+  }
+  if (status === 405 && /list creation limit/i.test(bodyText ?? "")) {
+    return { errorClass: "list-capacity", ip: null };
   }
   if (status === 429) return { errorClass: "rate-limit", ip: null };
   if (status >= 500) return { errorClass: "transitorio", ip: null };
@@ -74,6 +79,9 @@ export function describeBrevoErrorAction(c: BrevoErrorClassification): string | 
         `por CONTA, não uma credencial errada.`;
     case "auth-invalida":
       return "possível credencial inválida/revogada (não é bloqueio de IP) — confira a API key usada.";
+    case "list-capacity":
+      return "AÇÃO: teto de listas atingido — rode npx tsx scripts/clarice-consolidate-lists.ts " +
+        "(dry-run), revise o plano e execute --apply na conta Clarice autorizada (#9532/#13966).";
     case "rate-limit":
       return "rate limit da Brevo (100 req/hora por CONTA, família /v3/emailCampaigns* — " +
         "ver docs/brevo-rate-limits.md).";
