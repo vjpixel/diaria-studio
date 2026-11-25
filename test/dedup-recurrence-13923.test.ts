@@ -51,7 +51,7 @@ describe('#13923 regressões de recorrência', () => {
       const editions=resolve(root,'data/editions'), current=resolve(editions,'261125'), old=resolve(editions,'261123');
       mkdirSync(resolve(current,'_internal'),{recursive:true}); mkdirSync(old,{recursive:true});
       const url='https://anthropic.com/ipo';
-      const filtered=filterDateWindow({radar:[{url,title:ipo,date:'2026-11-17',always_consider:true}]},'2026-11-25',4);
+      const filtered=filterDateWindow({lancamento:[],use_melhor:[],radar:[{url,title:ipo,date:'2026-11-17',always_consider:true}]},'2026-11-25',4);
       const item=filtered.kept.radar[0];
       assert.match(String(item.date_window_warning),/8 dias, isento por sender/);
       assert.match(renderLine({ url: item.url, title: item.title, date: item.date ?? undefined, date_window_warning: item.date_window_warning }),/8 dias, isento por sender/);
@@ -70,7 +70,7 @@ describe('#13923 regressões de recorrência', () => {
       const outside=resolve(editions,'261114'); mkdirSync(outside,{recursive:true});
       writeFileSync(resolve(outside,'02-reviewed.md'),`**DESTAQUE 2**\n\n**[${past}](https://example.com/outside)**\n`);
       assert.equal(checkDedupRecurrence(current,editions).length,3);
-      const recent=filterDateWindow({radar:[{url,date:'2026-11-18',always_consider:true}]},'2026-11-25',4);
+      const recent=filterDateWindow({lancamento:[],use_melhor:[],radar:[{url,date:'2026-11-18',always_consider:true}]},'2026-11-25',4);
       assert.equal(recent.kept.radar[0].date_window_warning,undefined);
       writeFileSync(resolve(current,'02-reviewed.md'),'**📡 RADAR**\n\nAnthropic lança ferramenta\nhttps://example.com/new\nResumo.\n');
       assert.equal(checkDedupRecurrence(current,editions).length,0);
