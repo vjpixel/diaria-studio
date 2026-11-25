@@ -19,9 +19,8 @@ class_name = "InfraWatchdog"
 tag = "v1"
 new_sqlite_classes = ["InfraWatchdog"]
 
-# Deliberately disabled: activation is a separate operational action.
+# Activated 25/11/2026 (#12981): secrets provisioned, 300 heartbeat timer armed.
 [triggers]
-crons = []
-# Activation cadence: */5 * * * *
+crons = ["*/5 * * * *"]
 # Secrets required: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 # GOOGLE_REFRESH_TOKEN (gmail.send), EDITOR_EMAIL. Never copy credentials into git.

@@ -53,8 +53,9 @@ exactly-once distribuído. O sinal operacional independe do sucesso do e-mail.
    `infra/infra-300-heartbeat/` (ajustar WorkingDirectory ao checkout real,
    confirmar `npx` no PATH do serviço), e habilitar o timer. Os templates
    não são instalados pelo merge nem pelo remediador de tasks do projeto.
-5. Configurar o Cron Trigger `*/5 * * * *` após o primeiro heartbeat. O TOML
-   mantém `crons = []` deliberadamente para não agendar pela implementação.
+5. Configurar o Cron Trigger `*/5 * * * *` após o primeiro heartbeat. Feito em
+   25/11/2026: o TOML passou a declarar `crons = ["*/5 * * * *"]` (o deploy
+   aplica o cron; um cron posto só pelo painel seria apagado no deploy seguinte).
 6. Em janela supervisionada, parar só o timer por 30 min, conferir 1 e-mail
    e `down-since`, retomar e conferir 1 retorno e remoção do sinal. Confirmar
    também logs do Worker para erros de OAuth/envio. Não parar o 300 inteiro.
