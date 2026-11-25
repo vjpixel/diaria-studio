@@ -57,12 +57,45 @@ import { RECURRING_EVENTS } from "./recurring-events-config.ts";
  * Puro, sem I/O.
  */
 
-/** Evento normalizado; entidade sozinha nunca é um tema de evento. */
+/**
+ * #13951: palavras que, coladas a uma empresa, a tornam COADJUVANTE do título
+ * em vez de sujeito do evento: "Nvidia-backed CoreWeave", "Cerebras, Nvidia
+ * rival", "apoiada pela Nvidia", "backed by Nvidia". O IPO nesses títulos é de
+ * OUTRA empresa (fora do léxico de empresas), e juntar "IPO" com a coadjuvante
+ * casava dois IPOs diferentes no mesmo tema ("IPO nvidia").
+ */
+const RECURRING_MODIFIER_AFTER = new Set([
+  "backed", "funded", "supported", "owned", "rival", "rivals", "competitor", "competitors",
+  "partner", "partners", "investor", "investors", "concorrente", "concorrentes", "parceira", "parceiro",
+]);
+const RECURRING_MODIFIER_BEFORE = new Set([
+  "by", "rival", "rivals", "competitor", "concorrente", "pela", "pelo", "investida", "investido",
+]);
+
+/** Empresas citadas como SUJEITO (não coadjuvante) nos tokens normalizados — #13951. */
+function recurringSubjectCompanies(tokens: string[]): Set<string> {
+  const out = new Set<string>();
+  tokens.forEach((t, i) => {
+    const c = EVENT_COMPANY_ALIASES[t];
+    if (!c) return;
+    if (RECURRING_MODIFIER_AFTER.has(tokens[i + 1] ?? "") || RECURRING_MODIFIER_BEFORE.has(tokens[i - 1] ?? "")) return;
+    out.add(c);
+  });
+  return out;
+}
+
+/**
+ * Evento normalizado; entidade sozinha nunca é um tema de evento. #13951: só
+ * a empresa SUJEITO entra no tema — empresa coadjuvante ("Nvidia-backed X",
+ * "X, Nvidia rival") fica de fora.
+ */
 export function recurringEventThemes(title: string): string[] {
   const text = " " + title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ") + " ";
+  const subjects = recurringSubjectCompanies(text.trim().split(" "));
+  const companies = [...companiesIn(title)].filter((c) => subjects.has(c));
   return RECURRING_EVENTS.flatMap(event =>
     event.aliases.some(alias => text.includes(" " + alias + " "))
-      ? [...companiesIn(title)].map(company => `${event.name} ${company}`) : []);
+      ? companies.map(company => `${event.name} ${company}`) : []);
 }
 
 /** Empresas (e aliases de produto → empresa). Chave/valor normalizados. */
@@ -486,16 +519,28 @@ export interface EventMatch {
  * suficiente (default seguro: na dúvida, NÃO remove). Sinais A1/A2/B valem
  * sempre; o (C) (#8666, mesma empresa + 1 conceito forte) só com
  * `opts.distanceDays` conhecido e ≤ `STRONG_CONCEPT_MAX_DISTANCE_DAYS` —
- * use `SAME_EDITION` para dois títulos da mesma edição.
+ * use `SAME_EDITION` para dois títulos da mesma edição. Evento recorrente
+ * (IPO, #13923) com a mesma empresa sujeito só é removível na mesma janela
+ * do (C); fora dela volta `removable: false` (#13951).
  */
 export function sameEvent(a: string, b: string, opts: SameEventOptions = {}): EventMatch | null {
   if (!a || !b) return null;
   const compA = companiesIn(a);
   const compB = companiesIn(b);
   const sharedCompanies = [...compA].filter((c) => compB.has(c));
+  const d = opts.distanceDays;
+  const shortWindow =
+    typeof d === "number" && Number.isFinite(d) && d >= 0 && d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS;
   const recurringB = new Set(recurringEventThemes(b));
   const recurring = recurringEventThemes(a).filter(theme => recurringB.has(theme));
-  if (recurring.length) return { signal: "event_concepts", shared: recurring, removable: true };
+  // #13951: evento recorrente (IPO) tem fases distintas ao longo de semanas
+  // ("files for IPO" → "stock market debut"), então só REMOVE na mesma janela
+  // curta do (C). Fora dela (ou sem distância conhecida) é evidência fraca:
+  // os sinais A1/B abaixo ainda podem remover; senão, só marca.
+  if (recurring.length && shortWindow) return { signal: "event_concepts", shared: recurring, removable: true };
+  const weakRecurring: EventMatch | null = recurring.length
+    ? { signal: "event_concepts", shared: recurring, removable: false }
+    : null;
   // (A1) mesma empresa + nome distintivo de um lado presente (qualquer caixa)
   // no outro — "Google anuncia Argon" vs "Gemini 4 Argon: ...".
   if (sharedCompanies.length > 0) {
@@ -528,18 +573,14 @@ export function sameEvent(a: string, b: string, opts: SameEventOptions = {}): Ev
   }
 
   // (C) #8666: mesma empresa + 1 conceito FORTE, só em janela curta conhecida.
-  const d = opts.distanceDays;
-  if (
-    sharedCompanies.length > 0 &&
-    typeof d === "number" && Number.isFinite(d) && d >= 0 && d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS
-  ) {
+  if (sharedCompanies.length > 0 && shortWindow) {
     const sB = strongEventConcepts(b);
     const strong = [...strongEventConcepts(a)].filter((c) => sB.has(c));
     if (strong.length > 0) {
       return { signal: "strong_concept", shared: [...sharedCompanies, ...strong], removable: true };
     }
   }
-  return null;
+  return weakRecurring;
 }
 
 /**
