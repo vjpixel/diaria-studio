@@ -639,8 +639,15 @@ Pulado se `--skip box` ou já `done` sem `--force`.
 
 ```bash
 npx tsx scripts/update-retrospectiva-box.ts --cycle $CYCLE \
-  --temas "{tema 1}|{tema 2}|{tema 3}" [--no-pin] [--force] [--dry-run]
+  --temas "{tema 1}|{tema 2}|{tema 3}" [--expires AAAA-MM-DD] [--no-pin] [--force] [--dry-run]
 ```
+
+**Validade do box (#13924):** o script grava `expires:` no header do snippet,
+por padrão o último dia do mês de ENVIO do ciclo (`2610-11` → `2026-11-30`);
+depois dessa data o box sai da seleção sozinho e o slot 2 volta à seleção por
+cliques. Envio fora do mês de envio do ciclo (manual ou `--schedule`
+sobreposto): passar `--expires` com a data certa. Se a data já passou, o
+script avisa que o box nasce vencido.
 
 `--temas` = as 3 linhas de `divulgacao/box-temas.md` unidas por `|`
 (exatamente 3 — outro número aborta antes de tocar em qualquer arquivo).
