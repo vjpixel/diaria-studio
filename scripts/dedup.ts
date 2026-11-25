@@ -1,3 +1,4 @@
+import { copyComparisonTitle, sameContentCopy } from "./lib/content-copy.ts";
 /**
  * dedup.ts
  *
@@ -786,7 +787,7 @@ export function dedup(
       for (const member of cluster) {
         const memberTitle = member.title;
         if (!memberTitle || isNonDescriptiveTitle(memberTitle)) continue;
-        if (titleSimilarity(artTitle, memberTitle) >= titleThreshold) {
+        if (titleSimilarity(copyComparisonTitle(artTitle, art.source, art.url), copyComparisonTitle(memberTitle, member.source, member.url)) >= titleThreshold || sameContentCopy(art, member)) {
           cluster.push(art);
           placed = true;
           break;

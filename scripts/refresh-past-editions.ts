@@ -1,3 +1,4 @@
+import { recurringEventThemes } from "./lib/event-dedup.ts";
 /**
  * Regera `data/past-editions.md` a partir de `data/past-editions-raw.json`.
  *
@@ -551,6 +552,17 @@ export function extractThemesFromApproved(
     }
   };
   addEntities(editionTitle);
+  for (const theme of recurringEventThemes(editionTitle)) entities.add(theme);
+  const dir = resolveEditionDir(resolve(root, "data", "editions"), yymmdd);
+  const reviewed = resolve(dir, "02-reviewed.md");
+  // Usa os títulos efetivamente publicados, incluindo D2/D3, não candidatos.
+  if (existsSync(reviewed)) {
+    for (const block of readFileSync(reviewed, "utf8").split(/^---$/m)) {
+      if (!/\*\*DESTAQUE\s+\d/m.test(block)) continue;
+      const title = block.match(/\[([^\]]+)\]\(https?:/);
+      if (title) for (const theme of recurringEventThemes(title[1])) entities.add(theme);
+    }
+  }
   return [...entities];
 }
 
