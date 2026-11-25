@@ -40,6 +40,12 @@ import type { SourceCompleteness } from "./paywall-preview.ts";
 
 export const POOL_SOURCES_DIR = "pool-sources";
 export const POOL_SOURCES_MANIFEST = "manifest.json";
+/**
+ * (#13884) Registro das URLs cuja descrição o `writer-pool` reescreveu a partir
+ * do texto baixado (`scripts/pool-descriptions.ts --apply`). É o que faz o
+ * download `ok` contar como fonte LIDA no `source-not-read`.
+ */
+export const POOL_DESCRIPTIONS_APPLIED = "descriptions-applied.json";
 
 /** Seções de pool cujos itens têm a fonte baixada. */
 export const POOL_BUCKETS = ["lancamento", "radar", "use_melhor", "video"] as const;
@@ -79,6 +85,8 @@ export interface PoolPrefetchResult {
   fetched: number;
   reused: number;
   ok: number;
+  /** (#13884 item 6) Tempo de parede do prefetch, em ms (custo medido por edição). */
+  duration_ms: number;
   /** Itens sem texto lido nesta edição, com o motivo. */
   unread: Array<{ url: string; bucket: PoolBucket; title: string; status: PoolSourceStatus; erro: string | null }>;
 }
@@ -186,6 +194,32 @@ export function readPoolSourceText(
   }
 }
 
+export interface PoolDescriptionApplied {
+  url: string;
+  /** Arquivo de texto (em `pool-sources/`) do qual a descrição foi escrita. */
+  file: string;
+  applied_at: string;
+}
+
+/** URLs com descrição reescrita do texto lido (#13884). Ausente/ilegível = vazio. */
+export function readPoolDescriptionsApplied(internalDir: string): Map<string, PoolDescriptionApplied> {
+  const out = new Map<string, PoolDescriptionApplied>();
+  const p = join(internalDir, POOL_SOURCES_DIR, POOL_DESCRIPTIONS_APPLIED);
+  if (!existsSync(p)) return out;
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8")) as unknown;
+    if (!Array.isArray(raw)) return out;
+    for (const e of raw as Array<Partial<PoolDescriptionApplied>>) {
+      if (e && typeof e.url === "string" && typeof e.file === "string") {
+        out.set(e.url, { url: e.url, file: e.file, applied_at: typeof e.applied_at === "string" ? e.applied_at : "" });
+      }
+    }
+  } catch {
+    // ilegível: nada aplicado
+  }
+  return out;
+}
+
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
@@ -208,6 +242,7 @@ export async function prefetchPoolSources(
   internalDir: string,
   opts: { fetchImpl?: typeof fetch; concurrency?: number; now?: () => Date } = {},
 ): Promise<PoolPrefetchResult> {
+  const startedAt = Date.now();
   const dir = join(internalDir, POOL_SOURCES_DIR);
   mkdirSync(dir, { recursive: true });
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -259,6 +294,7 @@ export async function prefetchPoolSources(
     fetched,
     reused,
     ok: entries.filter((e) => e.status === "ok").length,
+    duration_ms: Date.now() - startedAt,
     unread: entries
       .filter((e) => e.status === "blocked" || e.status === "error")
       .map((e) => ({ url: e.url, bucket: e.bucket, title: e.title, status: e.status, erro: e.erro })),

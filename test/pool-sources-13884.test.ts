@@ -173,8 +173,8 @@ describe("gate 4: source-not-read com o download do pool (#13884)", () => {
       await prefetchPoolSources(approvedFixture(), join(ed, "_internal"), { fetchImpl: fakeFetch([], new Set([BLOCKED, MS])) });
       const v = checkSourceNotRead(ed);
       assert.equal(v.length, 1);
-      assert.equal(v[0].severity, "warning");
-      assert.match(v[0].message, /fonte não lida: 3 item/);
+      assert.equal(v[0].severity, "error", "item de pool sem texto lido bloqueia o gate (#13884, decisão de 25/11/2026)");
+      assert.match(v[0].message, /fonte não lida: 3 item\(ns\) de pool/);
       assert.match(v[0].message, /"Seven new world-class models at scalable price-performance" \(download da página falhou: HTTP 403/);
       assert.match(v[0].message, /"Bloqueado" \(download da página falhou/);
       // #13907: página baixada que nenhum writer lê não limpa o resumo curto.

@@ -7,7 +7,9 @@
  * texto não vazio (casca de página montada por JS).
  *
  * Contrato:
- *   - download `ok` do pool não limpa a regra do resumo curto (gate 4 e gate 1);
+ *   - download `ok` do pool não limpa a regra do resumo curto (gate 4 e gate 1)
+ *     enquanto o `writer-pool` não reescreveu a descrição a partir dele (sem a
+ *     URL em `pool-sources/descriptions-applied.json`, #13884);
  *   - falha do download do pool segue acrescentando o motivo;
  *   - no manifest do fact-check (o fact-checker lê o texto), `ok` com menos de
  *     `SOURCE_TEXT_MIN_WORDS` palavras conta como não lida.
@@ -18,7 +20,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  POOL_SOURCE_TEXT_CONSUMED,
   SOURCE_TEXT_MIN_WORDS,
   checkSourceNotRead,
   findUnreadItemsInEdition,
@@ -83,8 +84,7 @@ function setupEdition(): string {
 }
 
 describe("source-not-read com download ok do pool (#13907)", () => {
-  it("premissa: nenhum writer lê o texto do pool; piso de palavras é 100", () => {
-    assert.equal(POOL_SOURCE_TEXT_CONSUMED, false);
+  it("premissa: piso de palavras é 100", () => {
     assert.equal(SOURCE_TEXT_MIN_WORDS, 100);
   });
 
@@ -92,7 +92,8 @@ describe("source-not-read com download ok do pool (#13907)", () => {
     const ed = setupEdition();
     try {
       const v = checkSourceNotRead(ed);
-      assert.equal(v.length, 1);
+      // #13884: pool (MS + bloqueado) é error; o D2 de casca de JS segue warning.
+      assert.deepEqual(v.map((x) => x.severity), ["error", "warning"]);
       assert.match(v[0].message, /"Seven new world-class models" \(resumo de 24 caracteres \(mínimo 60\)\)/);
     } finally {
       rmSync(ed, { recursive: true, force: true });
