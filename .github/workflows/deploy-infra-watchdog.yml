@@ -1,7 +1,8 @@
 name: Deploy infra-watchdog Worker
 
-# #12981: deployment remains opt-in until provisioning and Gmail custody
-# are authorized. See docs/infra-300-watchdog.md. Cron stays disabled separately.
+# #12981: deployment stays gated by INFRA_300_WATCHDOG_DEPLOY_ENABLED (true since
+# 25/11/2026). The cron is declared in wrangler.toml, so every deploy arms it.
+# See docs/infra-300-watchdog.md.
 on:
   push:
     branches: [master]
