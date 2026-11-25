@@ -1519,6 +1519,11 @@ describe("runStage1 --phase post-gate", () => {
       const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec, now: () => new Date("2026-04-23T08:00:00Z") }) } as Stage1RunDeps;
       return runStage1(["--phase", "post-gate", "--edition", "260423", "--auto"], deps).then((result) => {
         assert.equal(result.code, 0);
+        const repeatCall = calls.find(c => c.script.endsWith("apply-same-fact-removal.ts") && c.args.includes("--current-edition"));
+        assert.ok(repeatCall, "#13844: final highlights compared in both gate modes");
+        assert.ok(repeatCall.args.includes("260423"));
+        assert.ok(calls.indexOf(repeatCall) > calls.findIndex(c => c.script.endsWith("apply-gate-edits.ts")));
+
         const applyCall = calls.find((c) => c.script.endsWith("apply-gate-edits.ts"));
         assert.ok(applyCall!.args.includes("--auto"));
         assert.equal(
@@ -1557,6 +1562,11 @@ describe("runStage1 --phase post-gate", () => {
       const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec, now: () => new Date("2026-04-23T08:00:00Z") }) } as Stage1RunDeps;
       return runStage1(["--phase", "post-gate", "--edition", "260423", "--md", `${editionDir}/01-categorized.md`], deps).then((result) => {
         assert.equal(result.code, 0);
+        const repeatCall = calls.find(c => c.script.endsWith("apply-same-fact-removal.ts") && c.args.includes("--current-edition"));
+        assert.ok(repeatCall, "#13844: final highlights compared in both gate modes");
+        assert.ok(repeatCall.args.includes("260423"));
+        assert.ok(calls.indexOf(repeatCall) > calls.findIndex(c => c.script.endsWith("apply-gate-edits.ts")));
+
         assert.ok(calls.some((c) => c.script.endsWith("render-categorized-md.ts")));
         assert.ok(calls.some((c) => c.script.endsWith("validate-lancamentos.ts")));
       });
