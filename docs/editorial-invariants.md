@@ -155,6 +155,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `use-melhor-image-key-without-file` | 06-public-images.json com chave um_carousel_* de slide que não existe mais no disco — sobra de carrossel do 4º post com mais slides (#9795, warning-only) | #9795 |
 | `use-melhor-post-item-rendered` | item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — bloqueia o gate até realinhar seleção e ## um (#12898) | #9592 |
 | `use-melhor-sentinel` | itens USE MELHOR sem descrição real (sentinel [DESCRIÇÃO PENDENTE] presente, #2464) | #2464 |
+| `use-melhor-social-source` | Link do ## um corresponde à fonte selecionada (#13927) | #13927 |
 | `use-melhor-tempo` | cada item USE MELHOR tem estimativa de tempo na descrição (#2372) | #2372 |
 | `use-melhor-tempo-item-sem-medicao` | warning individual por item USE MELHOR com tempo estimado por título ou sem fonte de medição (#10765) | #10765 |
 | `use-melhor-tempo-title-heuristic-share` | itens USE MELHOR cuja estimativa veio de title-heuristic (body não cacheado) — sinal de qualidade, warning-only (#7668) | #7668 |

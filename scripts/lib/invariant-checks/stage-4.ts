@@ -62,6 +62,7 @@ import {
   type NewsletterHtmlFreshness,
 } from "../newsletter-html-freshness.ts"; // #10258
 import {
+  normalizeUseMelhorUrl,
   USE_MELHOR_POST_ID,
   checkUseMelhorItemInFinal,
   loadUseMelhorPostConfigState,
@@ -3953,6 +3954,24 @@ function checkUseMelhorCarouselStaleAtGate(
   ];
 }
 
+/** #13927: URLs explícitas permitem detectar troca sem inferir o assunto do texto. */
+export function checkUseMelhorSocialSource(
+  editionDir: string,
+  config = loadUseMelhorPostConfigState(ROOT),
+): InvariantViolation[] {
+  if (!config.enabled) return [];
+  const state = readUseMelhorPostState(editionDir);
+  const file = resolve(editionDir, "03-social.md");
+  if (!state?.item || !existsSync(file)) return [];
+  const section = extractSection(readFileSync(file, "utf8"), "Social");
+  const block = section ? extractDestaqueBlock(section, "um") : null;
+  if (!block) return [];
+  const urls = block.match(/https?:\/\/[^\s<>)\]]+/g) ?? [];
+  if (!urls.length || urls.some(url => normalizeUseMelhorUrl(url) === normalizeUseMelhorUrl(state.item!.url))) return [];
+  return [{ rule: "use-melhor-social-source", source_issue: "#13927", severity: "warning", file,
+    message: `## um cita outra fonte: esperado ${state.item.url}. Rode swap-use-melhor-post.ts --edition-dir ${editionDir} --url <item do USE MELHOR> e reescreva # Social ## um e # Curto ## um.` }];
+}
+
 /**
  * (#9592) O 4º post (USE MELHOR) só sai se o item ESCOLHIDO — o de
  * `_internal/use-melhor-post.json`, pro qual o `## um` foi escrito — seguir
@@ -5194,6 +5213,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#11124",
     stage: 4,
     run: checkCurtoXWeightInvariant,
+  },
+  {
+    id: "use-melhor-social-source",
+    description: "Link do ## um corresponde à fonte selecionada (#13927)",
+    source_issue: "#13927",
+    stage: 4,
+    run: checkUseMelhorSocialSource,
   },
   {
     id: "use-melhor-post-item-rendered",

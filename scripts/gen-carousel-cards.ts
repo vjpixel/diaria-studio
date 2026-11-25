@@ -316,7 +316,7 @@ export async function genCarouselCards(
  * propagando, mesma severidade dos destaques: se a fonte de marca falta,
  * nenhum card sai certo.
  */
-async function genUseMelhorCarousel(
+export async function genUseMelhorCarousel(
   editionDir: string,
   socialMd: string,
   opts: { force?: boolean; ctaOverride?: CarouselCtaOverride | null; render: RenderUseMelhorSlidesFn },
