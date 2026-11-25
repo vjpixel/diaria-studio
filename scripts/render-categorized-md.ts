@@ -185,8 +185,8 @@ export function destaqueOnlyMarker(article: Article): string | null {
  * `_internal/pool-sources/` ou `fact-check-sources/`, presente quando o gate 1
  * é re-renderizado depois do download), a entrada da URL decide antes do
  * resumo: `ok` = lida, falha = não lida, com o motivo. Download `ok` do pool
- * não gera entrada enquanto nenhum writer lê o texto (#13907): o resumo curto
- * continua marcado.
+ * só gera entrada quando o `writer-pool` reescreveu a descrição a partir dele
+ * (#13907/#13884): sem isso o resumo curto continua marcado.
  *
  * O motivo sai sem URL e sem travessão/`--`/en-dash: o parser do gate
  * (`parseSections`) acha a URL do item pelo 1º separador seguido de `https://`.

@@ -4845,7 +4845,8 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "source-not-read",
-    description: "lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258)",
+    description:
+      "lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto); error para item de pool sem texto lido nem aceite do editor (#12258, #13884)",
     source_issue: "#12258",
     stage: 4,
     run: checkSourceNotRead,

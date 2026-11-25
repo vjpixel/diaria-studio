@@ -35,9 +35,10 @@
  *
  * `--pool-sources` (#13884): baixa também o texto de cada item de pool para
  * `_internal/pool-sources/` (`lib/diaria/pool-sources.ts`). Implícito em
- * `--record-writer-inputs`, que é o passo 0 do Stage 2. Nenhum writer lê esse
- * texto ainda (#13907): a descrição do item de pool sai do `summary` do
- * Stage 1, e só a falha do download chega ao gate (`source-not-read`).
+ * `--record-writer-inputs`, que é o passo 0 do Stage 2. O `writer-pool`
+ * reescreve a descrição do item a partir desse texto logo depois do stitch
+ * (`scripts/pool-descriptions.ts`, #13884); o stdout traz `duration_ms` do
+ * download (custo medido por edição).
  *
  * `--record-writer-inputs` (#9648, SÓ no Stage 2): grava também
  * `_internal/02-writer-inputs.json` + cópia de cada texto em

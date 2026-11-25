@@ -135,7 +135,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
 | `social-invite-drift` | convite social do PARA ENCERRAR diverge do SOCIAL_INVITE atual — não reconhecido (sai sem a borda de box) ou com texto desatualizado (#10835, warning-only) | #10835 |
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
-| `source-not-read` | lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258) | #12258 |
+| `source-not-read` | lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto); error para item de pool sem texto lido nem aceite do editor (#12258, #13884) | #12258 |
 | `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
 | `stale-highlight-repeat` | Destaque que é notícia velha: URL publicada há 31-84 dias ou mesmo incidente contado de novo depois de 30 dias (heurístico, warning-only) | #13313 |
 | `story-continuation` | Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only) | #11897 |
