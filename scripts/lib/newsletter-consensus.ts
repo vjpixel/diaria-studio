@@ -66,8 +66,12 @@ export function pendingTitleLabel(url: string): string {
   } catch { return "título pendente"; }
 }
 const DAY_MS = 86_400_000;
-/** Janela (dias) entre datas de URLs diferentes ainda tratadas como o mesmo evento. */
-export const CONSENSUS_DATE_WINDOW_DAYS = 2;
+/**
+ * Janela (dias) entre datas de URLs diferentes ainda tratadas como o mesmo evento.
+ * #13921: era 2 e separava anúncio (17/11) da cobertura do mesmo fato (20/11); 4 cobre
+ * esse atraso e ainda separa o caso que motivou a janela (Jensen Huang, 17/11 × 23/11).
+ */
+export const CONSENSUS_DATE_WINDOW_DAYS = 4;
 /** Data da matéria: metadado do pool, senão a data no caminho da URL (/2026/11/17/, 2026-11-20). */
 export function storyDate(url: string, meta?: Item): number | null {
   for (const key of ["date", "published_date", "published_at", "publishedAt"]) {
@@ -78,8 +82,11 @@ export function storyDate(url: string, meta?: Item): number | null {
   try { path = new URL(url).pathname; } catch { return null; }
   const m = path.match(/(?:^|\/|\D)(20\d\d)[/-](\d\d)[/-](\d\d)(?=\/|-|\.|$|\D)/);
   if (!m) return null;
-  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return Number.isFinite(t) && Number(m[2]) >= 1 && Number(m[2]) <= 12 ? t : null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = Date.UTC(y, mo - 1, d);
+  // #13921: Date.UTC normaliza dia inválido (/2026/11/45/ viraria 15/12); só aceita data que volta igual.
+  const back = new Date(t);
+  return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d ? t : null;
 }
 /** Reusa categoria + filtro temático do pool, inclusive a denylist de assuntos não IA. */
 export function consensusAIRelevant(item: Item & {url: string; title: string}): boolean {
@@ -115,12 +122,18 @@ export function buildNewsletterConsensus(links: ConsensusLink[], metadata: Item[
   // intermediários (review da PR #13917). Ordem determinística, mais citada primeiro.
   const ordered = [...units.values()].sort((a, b) => unitSenders(b) - unitSenders(a) ||
     Number(matchableTitle(unitTitle(b))) - Number(matchableTitle(unitTitle(a))) || keyOf(a[0].url).localeCompare(keyOf(b[0].url)));
-  const clusters: {rep: string; units: Link[][]}[] = [];
-  for (const unit of ordered) {
-    const title = unitTitle(unit);
-    const target = isRootUrl(unit[0].url) ? undefined : clusters.find((c) => !isRootUrl(c.units[0][0].url) && sameTitle(c.rep, title));
-    if (target) target.units.push(unit); else clusters.push({rep: title, units: [unit]});
-  }
+  type Cluster = {rep: string; units: Link[][]};
+  /** Agrupa por representante: cada unidade só entra casando com o `rep` (1ª unidade) de um grupo. */
+  const clusterByRep = (list: Link[][]): Cluster[] => {
+    const out: Cluster[] = [];
+    for (const unit of list) {
+      const title = unitTitle(unit);
+      const target = isRootUrl(unit[0].url) ? undefined : out.find((c) => !isRootUrl(c.units[0][0].url) && sameTitle(c.rep, title));
+      if (target) target.units.push(unit); else out.push({rep: title, units: [unit]});
+    }
+    return out;
+  };
+  const clusters = clusterByRep(ordered);
   // 3) Desempate por data: matérias com data a mais de CONSENSUS_DATE_WINDOW_DAYS da data
   // dominante do grupo são outro evento da mesma empresa (Jensen Huang sai em 17/11,
   // volta em 23/11) e saem do grupo; sem data, ficam.
@@ -133,7 +146,11 @@ export function buildNewsletterConsensus(links: ConsensusLink[], metadata: Item[
     const weight = (d: number) => new Set(dated.filter((u) => near(u[0].date!, d)).flatMap((u) => u.map((l) => senderKey(l.newsletter)))).size;
     const anchor = dated.map((u) => u[0].date!).sort((a, b) => weight(b) - weight(a) || b - a)[0];
     const outliers = anchor === undefined ? [] : cluster.units.filter((u) => u[0].date !== null && !near(u[0].date, anchor));
-    groups.push(cluster.units.filter((u) => !outliers.includes(u)).flat());
+    const kept = cluster.units.filter((u) => !outliers.includes(u));
+    // #13921: se o representante saiu pela data, os que ficaram só estavam juntos por
+    // casarem com ele; reagrupam entre si contra um representante novo (mesma ordem).
+    if (outliers.includes(cluster.units[0])) pending.unshift(...clusterByRep(kept));
+    else groups.push(kept.flat());
     // Os expulsos reagrupam entre si (podem formar o seu próprio assunto).
     for (const unit of outliers) {
       const title = unitTitle(unit);
