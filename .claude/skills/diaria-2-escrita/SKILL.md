@@ -188,6 +188,8 @@ npx tsx scripts/stitch-newsletter.ts --edition-dir {EDIR}/
 
 Output: `{EDIR}/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA? + seções secundárias + ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR).
 
+**Descrição do pool a partir do texto lido (#13884, #13952) — logo depois do stitch (ou do writer único, no Fallback e no modo `newsletter`), antes do `cp` do 2b-news e dos lints.** Mesmo passo de `orchestrator-stage-2.md`. O stitch monta a descrição de LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS do `summary`; este passo a reescreve da página baixada no passo 0 (`_internal/pool-sources/`, implícito em `--record-writer-inputs`). Sem ele `descriptions-applied.json` nunca é gravado e o `source-not-read` (ERRO para item de pool) trava o gate 4. (1) `npx tsx scripts/pool-descriptions.ts --input --edition-dir {EDIR}/` — stdout `{ input_path, items, skipped[] }`; `items: 0` → pular (2)-(3); item de `skipped[]` (403, prévia de paywall, página quase vazia, YouTube) fica com a descrição do `summary` e o `source-not-read` do gate 4 o julga. (2) `Agent` → `writer-pool` com `input_path` e `out_path = {EDIR}/_internal/02-pool-descriptions.json` (síncrono, sem polling #9223); conferir com `verify-agent-outputs.ts --agent writer-pool --since {DISPATCH_AT} --paths {out_path}` (#9962), ausente = log warn e pular (3). (3) `npx tsx scripts/pool-descriptions.ts --apply --edition-dir {EDIR}/` — troca a descrição no `02-draft.md`, preserva o tempo do USE MELHOR e grava as URLs aplicadas em `pool-sources/descriptions-applied.json` (é o que faz o `source-not-read` contar a página como lida); descrição rejeitada pela forma (fora de 60-280 chars, markdown, seta, URL) vai ao stderr e o item fica como estava; exit ≠ 0 = log warn e seguir. (4) Custo: `<usage>` do `writer-pool` em `record-agent-costs.ts --stage 2 --costs {EDIR}/_internal/tmp-agent-costs-stage2-pool.json` (o `cost.json` acumula).
+
 ### Fallback (writer único legacy)
 
 Quando `highlights.length < 2 || highlights.length > 3` ou falha de dispatch parallel:
@@ -198,6 +200,9 @@ Agent({
   description: "Etapa 2 — newsletter writer (fallback legacy)",
   prompt: "Escreve a newsletter completa da edição $1 a partir de {EDIR}/_internal/01-approved-capped.json (já com caps de #358 aplicados em Passo 1b). Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: {EDIR}/_internal/02-draft.md"
 })
+// #13952: quando o writer único retornar, rodar o passo "Descrição do pool a
+// partir do texto lido" acima (pool-descriptions.ts --input → writer-pool →
+// --apply) sobre o 02-draft.md dele, antes do cp do 2b-news.
 
 Agent({
   subagent_type: "social-writer",
@@ -214,7 +219,7 @@ Agent({
 
 ### Se `$2 = newsletter`:
 
-Dispatchar só `writer`. Pular steps de social abaixo.
+Dispatchar só `writer`. Pular steps de social abaixo. Depois do `writer`, rodar o passo "Descrição do pool a partir do texto lido" acima antes do `cp` do 2b-news (#13952).
 
 ### Se `$2 = social`:
 
@@ -223,6 +228,8 @@ Dispatchar `social-writer` (#3991) + `social-curto` (#3992) em paralelo. Pular s
 ## Passo 2b — Merge dos outputs
 
 ### 2b-news — assim que `writer` retornar
+
+Pré-requisito: o passo "Descrição do pool a partir do texto lido" (#13884, #13952) já rodou sobre o `02-draft.md` — depois do stitch, do writer único do Fallback ou do `writer` do modo `newsletter`.
 
 ```bash
 cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
