@@ -1,6 +1,6 @@
 # Vigia externo do 300 (#12981)
 
-Implementado localmente; NÃO deployado, NÃO armado, NÃO validado com e-mail real.
+Deployado e armado em 25/11/2026 (Worker com secrets Gmail, cron `*/5`, timer de heartbeat no 300). Ainda NÃO validado com e-mail real: falta o ensaio do passo 6.
 
 ## Infra investigada
 
@@ -11,7 +11,7 @@ bundle. O namespace existente `diaria-ops-state`, configurado em
 `platform.config.json`, já é consumido pelo Neo (#12982). O novo Worker usa
 esse mesmo namespace; não inventa um namespace ou um serviço de e-mail.
 
-`workers/infra-watchdog` lê `infra:heartbeat:300` a cada 5 min quando ativado.
+`workers/infra-watchdog` lê `infra:heartbeat:300` a cada 5 min (cron ativo desde 25/11/2026).
 O valor é JSON `{timestamp: ISO-8601 UTC, hostname: string}`. Idade >20 min é
 `atrasado`; ausência, JSON inválido ou relógio >1 min no futuro é `ausente`.
 Ambos abrem incidente. Falha de leitura lança erro e não abre/fecha incidente.
@@ -41,7 +41,8 @@ exactly-once distribuído. O sinal operacional independe do sucesso do e-mail.
    mas só executa quando a variável de repositório
    `INFRA_300_WATCHDOG_DEPLOY_ENABLED` é exatamente `true` (inclusive no
    dispatch manual). Deixá-la ausente/desabilitada até autorização; depois,
-   habilitá-la e disparar o workflow para provisionar. Isso não arma o cron.
+   habilitá-la e disparar o workflow para provisionar. Com o cron declarado no
+   TOML (passo 5), todo deploy deste Worker também arma o cron.
 2. Provisionar secrets `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
    `GOOGLE_REFRESH_TOKEN` com escopo `gmail.send` e `EDITOR_EMAIL`, usando
    a conta editorial autorizada dos alarmes. Confirmar que o token é válido
@@ -53,13 +54,18 @@ exactly-once distribuído. O sinal operacional independe do sucesso do e-mail.
    `infra/infra-300-heartbeat/` (ajustar WorkingDirectory ao checkout real,
    confirmar `npx` no PATH do serviço), e habilitar o timer. Os templates
    não são instalados pelo merge nem pelo remediador de tasks do projeto.
-5. Configurar o Cron Trigger `*/5 * * * *` após o primeiro heartbeat. O TOML
-   mantém `crons = []` deliberadamente para não agendar pela implementação.
+5. Configurar o Cron Trigger `*/5 * * * *` após o primeiro heartbeat. Feito em
+   25/11/2026: o TOML passou a declarar `crons = ["*/5 * * * *"]` (o deploy
+   aplica o cron; um cron posto só pelo painel seria apagado no deploy seguinte).
 6. Em janela supervisionada, parar só o timer por 30 min, conferir 1 e-mail
    e `down-since`, retomar e conferir 1 retorno e remoção do sinal. Confirmar
    também logs do Worker para erros de OAuth/envio. Não parar o 300 inteiro.
 
-Rollback: desativar cron e timer; remover `down-since` somente após confirmar
+Rollback: desligar o cron ANTES de qualquer outra coisa, por PR que volta o
+TOML a `crons = []` (desligar só no painel é desfeito pelo próximo deploy; se
+for urgente, desligar no painel e pôr `INFRA_300_WATCHDOG_DEPLOY_ENABLED=false`
+até a PR entrar). Com o cron ligado, o Worker regrava `down-since` a cada 5 min
+durante a queda. Depois, parar o timer do heartbeat no 300; remover `down-since` somente após confirmar
 que o 300 está saudável, evitando induzir o Neo a tomar posse indevidamente.
 Não alterar o lease `infra:scheduler-owner` por este monitor.
 
