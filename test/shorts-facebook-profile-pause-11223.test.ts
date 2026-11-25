@@ -86,4 +86,12 @@ describe("#11223 publishing.shorts.facebook_profile", () => {
     assert.equal(typeof config.publishing.shorts.facebook_profile, "boolean");
     assert.equal(loadShortsConfig(config).facebookProfile, config.publishing.shorts.facebook_profile);
   });
+
+  it("na volta da viagem em 25/11/2026, a config real restaura o destino guiado", () => {
+    const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    assert.equal(config.publishing.shorts.facebook_profile, true);
+    const destination = listShortDestinations(loadShortsConfig(config)).find((d) => d.id === "facebook_profile");
+    assert.ok(destination);
+    assert.equal(destination.mode, "guided");
+  });
 });
