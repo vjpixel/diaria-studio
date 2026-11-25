@@ -1716,6 +1716,11 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
   }
 
   // --- pós-gate-apply invariants (warn, nunca bloqueia — sentinel ainda é escrito) ---
+  // #13844: final selection (including manual gate edits), in both modes.
+  step(deps, report, "remove current highlight repeats (#13844)", "scripts/apply-same-fact-removal.ts", [
+    "--approved", approvedPath, "--current-edition", opts.edition,
+    "--out-log", internalPath(editionDir, "01-same-fact-removed.json"),
+  ]);
   const invariants = deps.exec("scripts/check-invariants.ts", ["--stage", "1", "--edition-dir", `${editionDir}/`]);
   if (invariants.code === 1) {
     report.note("⚠️  check-invariants --stage 1 (pós-gate) falhou — bug downstream, seguindo (sentinel ainda é escrito).");
