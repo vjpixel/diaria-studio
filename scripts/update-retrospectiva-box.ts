@@ -53,7 +53,7 @@
  *
  * Uso:
  *   npx tsx scripts/update-retrospectiva-box.ts --cycle 2609-10 \
- *     --temas "{tema 1}|{tema 2}|{tema 3}" [--no-pin] [--force] [--dry-run]
+ *     --temas "{tema 1}|{tema 2}|{tema 3}" [--expires AAAA-MM-DD] [--no-pin] [--force] [--dry-run]
  *   npx tsx scripts/update-retrospectiva-box.ts --unpin [--cycle 2609-10] [--dry-run]
  *   [--snippets-file path] [--config path]
  *
@@ -65,6 +65,20 @@
  * uma 2ª execução pula (idempotência) e NÃO re-pina — se o Artigo Especial
  * assumiu o slot 2 depois, devolver o slot à Retrospectiva é decisão
  * consciente: `--force`.
+ *
+ * ## Validade: `expires:` até o fim do mês de ENVIO (#13924)
+ *
+ * Equivalente ao #13894 do Artigo Especial. A cada execução fora do `--unpin`
+ * o script grava no header `expires: {último dia do mês de ENVIO do ciclo}`
+ * (ciclo `2610-11` → `2026-11-30`; `2612-01` → `2027-01-31`). O mês de envio
+ * e não o de conteúdo porque a Retrospectiva sai no 1º sábado do mês de envio
+ * (`lib/mensal/monthly-send-schedule.ts`): pelo mês de conteúdo o box já
+ * nasceria vencido. Derivado do ciclo, não do relógio, para a validade não
+ * depender do dia em que o Passo 7 roda. `--expires AAAA-MM-DD` sobrepõe
+ * (envio manual fora do mês, por exemplo). Passada a data, a seleção
+ * (`select-boxes-by-clicks.ts`) e o stitch pulam a caixa vencida e o slot 2
+ * volta à seleção por cliques (#10174/#10214). O campo é inserido/trocado
+ * com `upsertBoxHeaderField` (só a linha `expires:`, #495).
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -80,6 +94,8 @@ import {
 } from "./lib/box-slot-pin.ts";
 import { decideChannelAction, buildDoneChannelState, buildFailedChannelState, withChannelState } from "./lib/artigo-especial-state.ts";
 import { monthlyDir } from "./lib/mensal/monthly-paths.ts";
+import { cycleSendYearMonth } from "./lib/mensal/monthly-send-schedule.ts";
+import { upsertBoxHeaderField } from "./lib/shared/snippet-header.ts";
 import {
   contentMonthLabel,
   retrospectivaUrl,
@@ -210,9 +226,50 @@ export interface RetrospectivaBoxInput {
   /** Exatamente 3 frases curtas, minúsculas, sem ponto final (#9845). */
   temas: readonly string[];
   url: string;
+  /**
+   * #13924 — último dia (`AAAA-MM-DD`, inclusive) em que o box pode sair,
+   * gravado como `expires:` no header. Ausente = header intocado.
+   */
+  expires?: string;
 }
 
 export class RetrospectivaBoxFormatError extends Error {}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Pura: `AAAA-MM-DD` de calendário real (rejeita `2026-02-30`). */
+export function isIsoCalendarDate(s: string): boolean {
+  if (!ISO_DATE_RE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+/**
+ * Pura (#13924): validade default do box — último dia do mês de ENVIO do
+ * ciclo `{YYMM}-{MM}` (ver docstring do arquivo). Data de calendário, sem
+ * fuso: `expires` é comparado à data da edição (AAMMDD, já em BRT).
+ */
+export function defaultRetrospectivaExpires(cycle: string): string {
+  const { year, month } = cycleSendYearMonth(cycle);
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, "0")}-${String(last).padStart(2, "0")}`;
+}
+
+/** Pura: data de hoje em BRT (UTC-3 fixo desde 2019) como `AAAA-MM-DD`. */
+export function todayBrt(now: Date): string {
+  return new Date(now.getTime() - 3 * 3_600_000).toISOString().slice(0, 10);
+}
+
+function withExpires(content: string, expires: string | undefined): string {
+  if (expires === undefined) return content;
+  if (!isIsoCalendarDate(expires)) {
+    throw new Error(`--expires "${expires}" não é uma data AAAA-MM-DD válida (#13924).`);
+  }
+  // `upsertBoxHeaderField` insere com `\n`; num arquivo CRLF (preservado pelo
+  // resto do script) isso deixaria `\n\r\n` no header.
+  if (!content.includes("\r\n")) return upsertBoxHeaderField(content, "expires", expires);
+  return upsertBoxHeaderField(content.replace(/\r\n/g, "\n"), "expires", expires).replace(/\n/g, "\r\n");
+}
 
 /** Seed do arquivo (bootstrap, arquivo ausente). */
 export function buildDefaultRetrospectivaBox(input: RetrospectivaBoxInput): string {
@@ -283,7 +340,10 @@ export function applyRetrospectivaBoxUpdate(content: string, input: Retrospectiv
 }
 
 export function renderRetrospectivaBox(existing: string | null, input: RetrospectivaBoxInput): string {
-  return existing === null ? buildDefaultRetrospectivaBox(input) : applyRetrospectivaBoxUpdate(existing, input);
+  const body = existing === null ? buildDefaultRetrospectivaBox(input) : applyRetrospectivaBoxUpdate(existing, input);
+  // Depois da troca do header legado (#9474): a comparação literal dele não
+  // pode ver a linha `expires:` (#13924).
+  return withExpires(body, input.expires);
 }
 
 // ── Orquestração (testável) ─────────────────────────────────────────────
@@ -301,6 +361,14 @@ export interface RunRetrospectivaBoxOptions {
   configPath: string;
   /** Diretório do ciclo (`monthlyDir(cycle)`) — injetável pra teste. */
   cycleDir?: string;
+  /**
+   * #13924 — `expires:` gravado no header. O CLI passa sempre (default
+   * `defaultRetrospectivaExpires(cycle)`); ausente = header intocado. Ignorado
+   * no `--unpin`.
+   */
+  expires?: string;
+  /** Relógio injetável (aviso de box que já nasce vencido). */
+  now?: Date;
 }
 
 export type RunRetrospectivaBoxResult =
@@ -317,6 +385,19 @@ export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRet
   // Valida a contagem ANTES de tocar em state/arquivo: erro de uso não é
   // falha do canal.
   const temas = o.unpin ? null : normalizeTemas(o.temas!);
+  const expires = o.unpin ? undefined : o.expires;
+  if (expires !== undefined) {
+    if (!isIsoCalendarDate(expires)) {
+      throw new Error(`--expires "${expires}" não é uma data AAAA-MM-DD válida (#13924).`);
+    }
+    const today = todayBrt(o.now ?? new Date());
+    if (expires < today) {
+      console.warn(
+        `[box] AVISO: expires ${expires} já passou (hoje ${today} BRT) — o box nasce vencido e a seleção o pula. ` +
+          "Passe --expires AAAA-MM-DD se a divulgação ainda vale.",
+      );
+    }
+  }
   const statePath = o.cycle ? retrospectivaDivulgacaoStatePath(o.cycleDir ?? monthlyDir(o.cycle)) : null;
   let state = o.cycle && statePath ? readRetrospectivaDivulgacaoState(statePath, o.cycle) : null;
 
@@ -339,6 +420,7 @@ export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRet
         mesLabel: contentMonthLabel(o.cycle!),
         temas: temas!,
         url: retrospectivaUrl(o.cycle!),
+        expires,
       });
     } catch (e) {
       if (state && statePath && !o.dryRun) {
@@ -417,8 +499,13 @@ const ROOT = resolve(import.meta.dirname, "..");
 
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
+  const cycle = values["cycle"];
+  // #13924: validade até o fim do mês de ENVIO do ciclo, salvo --expires.
+  // Sem ciclo (só `--unpin`) não há snippet a gravar.
+  const expires = values["expires"] ?? (cycle && !flags.has("unpin") ? defaultRetrospectivaExpires(cycle) : undefined);
   runUpdateRetrospectivaBox({
-    cycle: values["cycle"],
+    cycle,
+    expires,
     // `--unpin` ignora `--temas` — não validar o que não vai ser usado.
     temas: !flags.has("unpin") && values["temas"] !== undefined ? parseTemasArg(values["temas"]) : undefined,
     unpin: flags.has("unpin"),
