@@ -18,17 +18,18 @@
  *     --html <input.html> \
  *     --images <06-public-images.json> \
  *     --edition-dir <data/editions/AAMMDD/> \
- *     --out <output.html>
+ *     --out <output.html> --require-all-embedded
  *
  * Resolve cada `img.url` de 06-public-images.json pelo `img.filename`
  * correspondente no disco (raiz da edição), lê os bytes localmente — não
- * depende da URL remota estar acessível.
+ * depende da URL remota estar acessível. Lista src HTTP(S) restantes em
+ * remaining_remote; --require-all-embedded faz esses resíduos saírem com exit 1.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface PublicImage {
   url: string;
@@ -60,6 +61,7 @@ export interface EmbedResult {
   html: string;
   embedded: string[];
   missing: string[];
+  remaining_remote: string[];
 }
 
 /**
@@ -113,12 +115,17 @@ export function embedImagesAsDataUri(
     }
   }
 
-  return { html: result, embedded, missing };
+  // Inspeciona o HTML final: URLs antigas podem não existir mais no JSON.
+  const remaining_remote = [...new Set(
+    [...result.matchAll(/<img\b[^>]*?\ssrc\s*=\s*(?:"(https?:\/\/[^"]*)"|'(https?:\/\/[^']*)'|(https?:\/\/[^\s>]+))/gi)]
+      .map((match) => match[1] ?? match[2] ?? match[3]),
+  )];
+  return { html: result, embedded, missing, remaining_remote };
 }
 
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
+  const { values: args, flags } = parseArgs(process.argv.slice(2));
   const htmlArg = args.html;
   const imagesArg = args.images;
   const editionDirArg = args["edition-dir"];
@@ -127,7 +134,7 @@ function main(): void {
   if (!htmlArg || !imagesArg || !editionDirArg || !outArg) {
     console.error(
       "Uso: embed-images-base64.ts --html <input.html> --images <06-public-images.json> " +
-        "--edition-dir <data/editions/AAMMDD/> --out <output.html>",
+        "--edition-dir <data/editions/AAMMDD/> --out <output.html> [--require-all-embedded]",
     );
     process.exit(1);
   }
@@ -155,11 +162,19 @@ function main(): void {
         out_path: outPath,
         embedded: result.embedded,
         missing: result.missing,
+        remaining_remote: result.remaining_remote,
       },
       null,
       2,
     ),
   );
+
+  if (result.remaining_remote.length > 0) {
+    console.error(
+      `⚠️  ${result.remaining_remote.length} imagem(ns) com src remoto: ${result.remaining_remote.join(", ")}. Re-renderize o HTML com o 06-public-images.json atual antes de embutir novamente.`,
+    );
+    if (flags.has("require-all-embedded")) process.exitCode = 1;
+  }
 
   if (result.missing.length > 0) {
     console.error(

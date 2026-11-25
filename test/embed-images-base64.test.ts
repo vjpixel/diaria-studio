@@ -2,6 +2,7 @@ import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { embedImagesAsDataUri } from "../scripts/embed-images-base64.ts";
 
@@ -108,5 +109,40 @@ describe("embedImagesAsDataUri — ícones do site (rodapé 'Siga a diar.ia.br:'
   it("sem siteAssetsDir mantém a URL remota (comportamento anterior)", () => {
     const html = `<img src="https://diar.ia.br/icons/social/x.png">`;
     assert.equal(embedImagesAsDataUri(html, {}, site).html, html);
+  });
+});
+
+describe("regressão #13928 — HTML antigo após novo upload", () => {
+  it("lista src remotos restantes e falha apenas com --require-all-embedded", () => {
+    const dir = mkdtempSync(join(tmpdir(), "embed-stale-"));
+    try {
+      const oldUrl = "https://eia.diar.ia.br/old.jpg";
+      const html = `<a href="https://example.com">link</a><img src="${oldUrl}"><IMG SRC = 'http://example.com/other.jpg'><img src=https://example.com/bare.jpg><img src="data:image/png;base64,AA==">`;
+      const images = { cover: { url: "https://eia.diar.ia.br/new.jpg", filename: "cover.jpg" } };
+      writeFileSync(join(dir, "cover.jpg"), Buffer.from([0xff, 0xd8]));
+      writeFileSync(join(dir, "input.html"), html);
+      writeFileSync(join(dir, "images.json"), JSON.stringify({ images }));
+      const result = embedImagesAsDataUri(html, images, dir);
+      assert.deepEqual(result.missing, []);
+      assert.deepEqual(result.remaining_remote, [oldUrl, "http://example.com/other.jpg", "https://example.com/bare.jpg"]);
+      for (const strict of [false, true]) {
+        const run = spawnSync(process.execPath, [
+          "--import", "tsx", "scripts/embed-images-base64.ts",
+          "--html", join(dir, "input.html"), "--images", join(dir, "images.json"),
+          "--edition-dir", dir, "--out", join(dir, "output.html"),
+          ...(strict ? ["--require-all-embedded"] : []),
+        ], { encoding: "utf8" });
+        assert.equal(run.status, strict ? 1 : 0, run.stderr);
+        assert.deepEqual(JSON.parse(run.stdout).remaining_remote, result.remaining_remote);
+        assert.match(run.stderr, /Re-renderize/);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("aceita HTML totalmente embutido", () => {
+    const result = embedImagesAsDataUri('<img src="data:image/png;base64,AA==">', {}, tmpdir());
+    assert.deepEqual(result.remaining_remote, []);
   });
 });
