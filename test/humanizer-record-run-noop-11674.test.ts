@@ -143,7 +143,7 @@ describe("#11674: --record-run da Clarice com --pre igual a --post", () => {
     assert.equal(h.record.runs.at(-1)?.note, "humanizador sem mudanças");
     const rows = describeProvenance(humanized, h.record);
     assert.deepEqual(rows.find((r) => r.section === "main_d1"),
-      { section: "main_d1", humanizador: true, clarice: false, kept: true });
+      { section: "main_d1", humanizador: true, clarice: false, kept: true, kept_noted: true });
     assert.equal(rows.find((r) => r.section === "main_d2")?.humanizador, false);
     const refused = planRunRecord(emptyRunRecord(), "humanizador", humanized, humanized,
       ["main_d1"], { note: "  " });
@@ -160,7 +160,7 @@ describe("#11674: --record-run da Clarice com --pre igual a --post", () => {
       assert.equal(readRunRecord(dir).runs.at(-1)?.note, "x");
       writeFileSync(join(dir, "03-social.md"), humanized);
       const shown = runCli(["--provenance", "--edition-dir", dir]);
-      assert.match(shown.stderr, /texto mantido; prova mais fraca/);
+      assert.match(shown.stderr, /texto mantido, run sem mudanças aceito por --note; prova mais fraca/);
     } finally {
       cleanup();
     }
