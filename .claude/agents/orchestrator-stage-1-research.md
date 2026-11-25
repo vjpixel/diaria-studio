@@ -724,6 +724,9 @@ npx tsx scripts/apply-gate-edits.ts --auto --json {EDITION_DIR}/_internal/01-cat
 ```
 Em seguida (#9386, só no `--auto`, fail-soft — `stage-1-run.ts` já roda): `npx tsx scripts/apply-same-fact-removal.ts --approved {EDITION_DIR}/_internal/01-approved.json --theme-check {EDITION_DIR}/_internal/01-highlight-theme-check.json --out-log {EDITION_DIR}/_internal/01-same-fact-removed.json` — remove do RADAR/LANÇAMENTOS os itens com `same_fact_warnings` (sem gate 1 o aviso não tinha onde agir); destaques ficam só com aviso; a lista vai para o gate 4.
 
+Depois do gate 1, em ambos os modos (#13844; `stage-1-run.ts` já roda): `npx tsx scripts/apply-same-fact-removal.ts --approved {EDITION_DIR}/_internal/01-approved.json --current-edition {AAMMDD} --out-log {EDITION_DIR}/_internal/01-same-fact-removed.json`. Compara RADAR/LANÇAMENTOS/USE MELHOR com os destaques finais, preserva itens pinados e registra cada item completo em `removed[].item` para restauração no gate 4. Não altera os destaques.
+
+
 **Derivar pedidos editoriais do gate do Stage 1 (#7964).** Em SEQUÊNCIA, sempre (auto ou editor — a função internamente é no-op quando `auto_approved: true`, ver docstring de `deriveStage1`):
 ```bash
 npx tsx scripts/derive-editor-requests.ts derive-stage1 --edition {AAMMDD}
