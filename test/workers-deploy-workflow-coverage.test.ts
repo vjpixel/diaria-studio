@@ -98,7 +98,9 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
     );
     assert.match(workflow.content, /^      worker: infra-watchdog$/m);
     const wrangler = readFileSync(resolve(ROOT, "workers/infra-watchdog/wrangler.toml"), "utf8");
-    assert.match(wrangler, /^crons = \[\]$/m, "deploy não deve armar o vigia antes da ativação");
+    // Ativado em 25/11/2026 (#12981): heartbeat armado no 300 e secrets no Worker.
+    // O cron fica declarado no TOML porque o deploy sobrescreve os triggers.
+    assert.match(wrangler, /^crons = \["\*\/5 \* \* \* \*"\]$/m, "o vigia ativo confere o heartbeat a cada 5 min");
   });
 
   it("todo worker descoberto tem um .github/workflows/*.yml que referencia workers/{dir}/**", () => {
