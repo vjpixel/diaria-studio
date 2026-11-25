@@ -73,7 +73,8 @@ import {
 } from "./lib/use-melhor-carousel.ts"; // #9568
 import { pruneStaleUseMelhorPublicImages } from "./lib/use-melhor-slide-files.ts"; // #9795
 import { readUseMelhorBlock } from "./lib/use-melhor-status.ts"; // #10834
-import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs } from "node:util";
+import { isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "./lib/extract-section.ts"; // #12094
@@ -502,16 +503,26 @@ export function slideSourceText(editionDir: string, destaque: string, text: stri
 }
 
 async function main(): Promise<void> {
+  const args = parseArgs({
+    options: {
+      "edition-dir": { type: "string" },
+      force: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  if (args.values.help) {
+    console.log("uso: gen-carousel-cards.ts --edition-dir <dir> [--force]\n\nGera os slides do carrossel da edição.\n  --edition-dir <dir>  Diretório da edição\n  --force              Regenera os slides existentes\n  --help, -h           Mostra esta ajuda sem escrever arquivos");
+    return;
+  }
   // Mesmo guard de gen-social-card-4x5.ts (#4090) — sem isso os cards saem
   // com fallback de fonte, fora da marca, em silêncio.
   await assertBrandSerifAvailable("gen-carousel-cards");
-  const args = parseCliArgs(process.argv.slice(2));
   const editionDir = args.values["edition-dir"] ?? "";
   if (!editionDir) {
     console.error("uso: gen-carousel-cards.ts --edition-dir <dir> [--force]");
     process.exit(1);
   }
-  const force = args.flags.has("force");
+  const force = args.values.force ?? false;
 
   const result = await genCarouselCards(editionDir, { force });
   console.log(JSON.stringify(result, null, 2));

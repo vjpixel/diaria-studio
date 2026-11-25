@@ -6,6 +6,11 @@
  * e que o `03-social.md` não foi editado depois da humanização sem re-humanizar.
  *
  * Modos:
+ *   --reseal-surgical --edition-dir DIR --reason "motivo do editor/pipeline"
+ *             Reaproveita snapshot selado: 1–3 seções, até 25% e 400 caracteres
+ *             por seção. Preserva Clarice pendente; sem pendência exige prova
+ *             Clarice do texto atual. Rewrite amplo é recusado sem gravar estado.
+ *
  *   --write   Grava `_internal/.humanizer-social-done.json` com sha256 do
  *             `03-social.md` atual. Chamar APÓS humanização bem-sucedida.
  *
@@ -107,13 +112,15 @@
  * que qualquer edição/reorder pós-Stage-2 re-dispara o humanizador.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, copyFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { refreshSocialHash } from "./refresh-social-hash.ts";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
-import { computeSectionHashes, isCardsSection } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
+import { computeSectionHashes, extractSocialSections, isCardsSection } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
 import { editionUrlCandidates, hashSocialContent, socialMatchesSealHash } from "./lib/humanizer-social-seal.ts"; // #9679: fonte única do sha256
 import {
   SOCIAL_CLARICE_PENDING_REASONS,
@@ -618,13 +625,87 @@ export function describeSealAcceptance(
   };
 }
 
+/** #13929: editor/pipeline attests a small gate edit; never invokes either service.
+ * All validation and seal generation happen in isolation before touching edition state.
+ */
+export function resealSurgical(editionDir: string, reason: string): { changed_sections: string[] } {
+  if (!reason?.trim()) throw new Error("--reseal-surgical exige --reason com o motivo da edição do editor/pipeline");
+  const internal = join(editionDir, "_internal");
+  const snapshot = readFileSync(join(internal, "03-social-post-humanizador.md"), "utf8");
+  const current = readFileSync(join(editionDir, "03-social.md"), "utf8");
+  const seal = JSON.parse(readFileSync(join(internal, SENTINEL_FILENAME), "utf8")) as HumanizerSocialSentinel;
+  if (!seal.cards_sections_tracked || !socialMatchesSealHash(seal.social_sha256, snapshot, editionUrlCandidates(editionDir))) {
+    throw new Error("snapshot anterior não corresponde ao selo com cards; re-humanizar pelo fluxo completo");
+  }
+  const before = extractSocialSections(snapshot);
+  const after = extractSocialSections(current);
+  const preHashes = computeSectionHashes(snapshot);
+  const postHashes = computeSectionHashes(current);
+  if (!Object.keys(before).length || JSON.stringify(Object.keys(before)) !== JSON.stringify(Object.keys(after))) {
+    throw new Error("edição não cirúrgica: seções adicionadas, removidas ou reordenadas");
+  }
+  const changed = Object.keys(before).filter((k) => preHashes[k] !== postHashes[k]);
+  if (!changed.length || changed.length > 3) throw new Error("edição não cirúrgica: exige 1 a 3 seções alteradas");
+  // At most 25% of a section and 400 characters in one contiguous edit.
+  for (const k of changed) {
+    const a = before[k], b = after[k];
+    let start = 0, end = 0;
+    while (start < Math.min(a.length, b.length) && a[start] === b[start]) start++;
+    while (end < Math.min(a.length, b.length) - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+    const span = Math.max(a.length, b.length) - start - end;
+    if (span > 400 || span > a.length * 0.25) throw new Error(`edição não cirúrgica em ${k}; re-humanizar pelo fluxo completo`);
+  }
+  // Unknown/untracked changes must not piggyback on an allowed section edit.
+  let reconstructed = snapshot;
+  for (const k of changed) reconstructed = reconstructed.replace(before[k], () => after[k]);
+  if (reconstructed !== current) throw new Error("edição fora das seções conhecidas; re-humanizar pelo fluxo completo");
+  const original = readRunRecord(editionDir);
+  for (const k of changed) {
+    if (!original.humanizador.includes(preHashes[k])) throw new Error(`snapshot sem prova do humanizador: ${k}`);
+  }
+  let record = planRunRecord(original, "humanizador", snapshot, current, changed, { note: `reseal-surgical: ${reason.trim()}` }).record;
+  for (const k of changed) {
+    const pending = claricePendingFor(preHashes[k], original);
+    if (pending) record = planClaricePending(record, current, pending.reason, { sections: [k], detail: pending.detail }).record;
+    // A completed Clarice run is never fabricated for new wording.
+  }
+  const staged = mkdtempSync(join(tmpdir(), "social-reseal-"));
+  const names = [".humanizer-run.json", SENTINEL_FILENAME, "03-social-post-humanizador.md", ".social-source-hash.json"];
+  try {
+    mkdirSync(join(staged, "_internal"));
+    writeFileSync(join(staged, "03-social.md"), current);
+    copyFileSync(join(internal, SENTINEL_FILENAME), join(staged, "_internal", SENTINEL_FILENAME));
+    copyFileSync(join(internal, "01-approved.json"), join(staged, "_internal", "01-approved.json"));
+    writeRunRecord(staged, record);
+    writeSentinel(staged, `reseal-surgical: ${reason.trim()}`);
+    writeFileSync(join(staged, "_internal", "03-social-post-humanizador.md"), current);
+    refreshSocialHash(staged);
+    const backups = names.map((name) => {
+      const path = join(internal, name);
+      return existsSync(path) ? readFileSync(path) : null;
+    });
+    try {
+      for (const name of names) copyFileSync(join(staged, "_internal", name), join(internal, name));
+    } catch (error) {
+      names.forEach((name, i) => {
+        if (backups[i] === null) rmSync(join(internal, name), { force: true });
+        else writeFileSync(join(internal, name), backups[i]!);
+      });
+      throw error;
+    }
+    return { changed_sections: changed };
+  } finally {
+    rmSync(staged, { recursive: true, force: true });
+  }
+}
+
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
 
   if (!editionDirArg) {
     console.error(
-      "Uso: check-humanizer-social.ts [--write|--check|--record-run|--record-clarice-pending|--provenance] --edition-dir data/editions/AAMMDD/ " +
+      "Uso: check-humanizer-social.ts [--write|--check|--reseal-surgical|--record-run|--record-clarice-pending|--provenance] --edition-dir data/editions/AAMMDD/ " +
         "[--bypass-reason <motivo>] [--unproven-ok <motivo> [--unproven-ok-section d2,...]] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b] [--note <motivo>]]",
     );
     process.exit(1);
@@ -639,6 +720,18 @@ function main(): void {
   if (unprovenOkSectionsArg !== undefined && !unprovenOk) {
     console.error("[check-humanizer-social] ERRO: --unproven-ok-section só vale junto com --unproven-ok \"<motivo>\" (#12511).");
     process.exit(1);
+  }
+
+  if (flags.has("reseal-surgical")) {
+    try {
+      const incompatible = [...flags].some((f) => f !== "reseal-surgical");
+      if (incompatible || Object.keys(values).some((k) => !["edition-dir", "reason"].includes(k))) throw new Error("--reseal-surgical só aceita --edition-dir e --reason");
+      console.log(JSON.stringify({ ok: true, ...resealSurgical(editionDir, values["reason"]) }));
+      process.exit(0);
+    } catch (error) {
+      console.error(`[check-humanizer-social] RECUSADO: ${(error as Error).message}`);
+      process.exit(1);
+    }
   }
 
   if (flags.has("record-run")) {
