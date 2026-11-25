@@ -854,7 +854,13 @@ function main(): void {
           : reason === "formatting"
             ? " · aceita (só formatação sobre texto provado)"
             : "";
-      const kept = r.kept ? " (texto mantido; prova mais fraca)" : ""; // #11604
+      // #11604: mantida com outra seção alterada no mesmo run. Só o run sem mudança
+      // nenhuma, aceito por --note (#13889), é prova mais fraca (#13925).
+      const kept = r.kept_noted
+        ? " (texto mantido, run sem mudanças aceito por --note; prova mais fraca)"
+        : r.kept
+          ? " (texto mantido)"
+          : "";
       const claricePlain = r.clarice_unchanged ? " (sem sugestões, --note)" : ""; // #11674
       // #13848: pendência registrada com --record-clarice-pending.
       const pending = r.clarice_pending ? claricePendingFor(sectionHashes[r.section], record) : undefined;
