@@ -139,6 +139,7 @@ import {
   linkedInDailyDocumentFallbackFingerprint,
   prepareDailyLinkedInDocument,
   resolveLinkedInDocumentTitle,
+  clampLinkedInDocumentTitle, // #13847 — título do documento do 4º post
   LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK,
   type LinkedInDailyFormat,
   type LinkedInDocument,
@@ -252,7 +253,16 @@ export function buildUseMelhorLinkedInPost(input: {
   socialMd: string;
   plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
-}): { ok: true; text: string; imageUrl: string } | { ok: false; reason: string } {
+}):
+  | {
+      ok: true;
+      text: string;
+      imageUrl: string;
+      /** #13847 — slides do carrossel do 4º post (capa → p1..pN → CTA), base
+       *  do documento PDF; `null` quando algum slide falta (tudo-ou-nada). */
+      carouselUrls: string[] | null;
+    }
+  | { ok: false; reason: string } {
   let text: string;
   try {
     // #10201: título do item como 1ª linha — no LinkedIn não há capa que abra o post.
@@ -264,14 +274,91 @@ export function buildUseMelhorLinkedInPost(input: {
     return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
   }
   if (!text.trim()) return { ok: false, reason: "'## um' vazio em '# Social'" };
-  const { coverUrl } = resolveUseMelhorImages(input.images, input.plan);
+  const { coverUrl, carouselUrls } = resolveUseMelhorImages(input.images, input.plan);
   if (!coverUrl) {
     return {
       ok: false,
       reason: input.plan.imageWarning ?? "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json",
     };
   }
-  return { ok: true, text, imageUrl: coverUrl };
+  return { ok: true, text, imageUrl: coverUrl, carouselUrls };
+}
+
+const USE_MELHOR_LINKEDIN_ID = "um";
+
+/**
+ * #13847 — plano do documento PDF do 4º post (USE MELHOR) no LinkedIn, o
+ * mesmo formato padrão dos destaques desde o #12584: `ready` tenta documento
+ * → carrossel → imagem única (com `format` no store e a chave idempotente
+ * `linkedin-daily:{AAMMDD}:um:main`); `skip` vai na imagem única gravando o
+ * motivo. Antes o ramo do `um` despachava só `imageUrl`, sem plano, e o post
+ * saía sempre como imagem única.
+ *
+ * Título do documento: o mesmo título que abre a legenda (`captionTitle`, o
+ * da capa); sem ele, o genérico com a data da edição.
+ */
+export function useMelhorLinkedInDocumentPlan(input: {
+  carouselUrls: string[] | null;
+  optOut: boolean;
+  captionTitle: string | undefined;
+  editionDir: string;
+  editionDate: string;
+  upload: LinkedInPdfUploader;
+  buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
+}): LinkedInDocumentPlan {
+  if (input.optOut) return { status: "skip", reason: "opt_out" };
+  const slides = input.carouselUrls;
+  if (!slides) return { status: "skip", reason: "carousel_incomplete" };
+  const title = clampLinkedInDocumentTitle(input.captionTitle?.trim() || `diar.ia.br ${input.editionDate} — Use melhor`);
+  return {
+    status: "ready",
+    carouselImageUrls: slides,
+    prepareDocument: () =>
+      prepareDailyLinkedInDocument({
+        editionDir: input.editionDir,
+        destaque: USE_MELHOR_LINKEDIN_ID,
+        carouselImageUrls: slides,
+        title,
+        upload: input.upload,
+        buildPdf: input.buildPdf,
+      }),
+  };
+}
+
+/**
+ * #13847 — `DispatchInput` do 4º post (página diar.ia.br), com o plano do
+ * documento PDF. É o que `main()` despacha: o plano sai junto da entrada, e
+ * não como campo opcional que o chamador pode esquecer (foi o que aconteceu
+ * no #12584, quando só o loop dos destaques ganhou o plano).
+ */
+export function useMelhorLinkedInDispatchInput(input: {
+  built: { text: string; imageUrl: string; carouselUrls: string[] | null };
+  scheduledAt: string | null;
+  optOut: boolean;
+  captionTitle: string | undefined;
+  editionDir: string;
+  editionDate: string;
+  upload: LinkedInPdfUploader;
+  buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
+}): DispatchInput {
+  return {
+    destaque: USE_MELHOR_LINKEDIN_ID,
+    subtype: "main",
+    text: input.built.text,
+    imageUrl: input.built.imageUrl,
+    scheduledAt: input.scheduledAt,
+    webhookTarget: "diaria",
+    action: "post",
+    linkedInDocument: useMelhorLinkedInDocumentPlan({
+      carouselUrls: input.built.carouselUrls,
+      optOut: input.optOut,
+      captionTitle: input.captionTitle,
+      editionDir: input.editionDir,
+      editionDate: input.editionDate,
+      upload: input.upload,
+      buildPdf: input.buildPdf,
+    }),
+  };
 }
 
 /**
@@ -558,9 +645,9 @@ export interface DispatchInput {
    * Default true preserva o comportamento legado (fallback worker→make). */
   allowImmediateFallback?: boolean;
   /** #12584 — documento PDF, o formato padrão do LinkedIn na diária
-   * (D1/D2/D3 main). `ready` tenta documento → carrossel → imagem única;
+   * (D1/D2/D3 main e, desde o #13847, o 4º post USE MELHOR). `ready` tenta documento → carrossel → imagem única;
    * `skip` vai direto na imagem única e grava o motivo. Ausente (comments,
-   * 4º post, artigo especial): imagem única, sem `format` no store — mesmo
+   * artigo especial): imagem única, sem `format` no store — mesmo
    * comportamento de antes do #12584. */
   linkedInDocument?: LinkedInDocumentPlan;
   /** #12584 item 5 — chave idempotente do post na fila do Worker. Ausente,
@@ -668,7 +755,8 @@ export async function dispatchEntry(
   }, ctx.rootDir);
 
   // #12584 — campos de formato gravados no store quando o post tem plano de
-  // documento. Ficam vazios sem plano (comments, 4º post, artigo especial).
+  // documento. Ficam vazios sem plano (comments, artigo especial). O 4º post
+  // (USE MELHOR) tem plano desde o #13847.
   const docPlan = input.linkedInDocument;
   const formatTag = (format: LinkedInDailyFormat, extra: Record<string, string | undefined> = {}): Record<string, string> => {
     if (!docPlan) return {};
@@ -1625,7 +1713,7 @@ async function main(): Promise<number | void> {
           reportUseMelhorImageFallback("linkedin", umPlan, resolveUseMelhorImages(umImages, umPlan), {
             editionId: editionDate,
             rootDir: logRootDir,
-            usesCarousel: false,
+            usesCarousel: true, // #13847 — o 4º post também sai como documento/carrossel
           });
           let umAt: string | null = null;
           let scheduleError: string | null = null;
@@ -1658,15 +1746,16 @@ async function main(): Promise<number | void> {
             appendSocialPosts(publishedPath, [entry]);
             results.push(entry);
           } else {
-            results.push(await dispatchEntry({
-              destaque: "um",
-              subtype: "main",
-              text: built.text,
-              imageUrl: built.imageUrl,
+            // #13847 — documento PDF → carrossel → imagem única, como D1-D3.
+            results.push(await dispatchEntry(useMelhorLinkedInDispatchInput({
+              built,
               scheduledAt: umAt,
-              webhookTarget: "diaria",
-              action: "post",
-            }, ctx));
+              optOut: documentOptOut,
+              captionTitle: umPlan.captionTitle,
+              editionDir,
+              editionDate,
+              upload: pdfUploader,
+            }), ctx));
           }
         }
       }
