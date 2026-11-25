@@ -235,6 +235,7 @@ export function renderLine(
   if (article.editor_submitted) markers.push("[inbox]");
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
+  if (article.date_window_warning) markers.push(`[${article.date_window_warning}]`);
   if (article.new_in_pool) markers.push("🆕");
   // #13883: candidato a upgrade do #12193 (URL já publicada fora dos
   // destaques). Sem travessão no texto: o parser do gate (`parseSections`)
