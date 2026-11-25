@@ -473,6 +473,8 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     for (const envVar of ["STRIPE_API_KEY", "BREVO_CLARICE_API_KEY", "MILLION_VERIFIER_API_KEY"]) {
       if (!process.env[envVar]) throw new NovosAbort(`❌ ${envVar} não definida.`);
     }
+    // #13966: aborta antes de persistir seleção; a unit failed aciona o alarme existente.
+    step(deps, report, "clarice-check-list-capacity", "scripts/clarice-check-list-capacity.ts", []);
     const stale = step(deps, report, "clarice-check-derived-stale", "scripts/clarice-check-derived-stale.ts", []);
     if (String(stale.result.stdout).trim() === "stale") {
       report.note("↻ store derivado stale — reingerindo (clarice-build-db.ts) antes de montar a rodada.");
