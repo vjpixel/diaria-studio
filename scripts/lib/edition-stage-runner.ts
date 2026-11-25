@@ -389,6 +389,13 @@ const DENIAL_INPUT_KEYS = ["command", "file_path", "path", "pattern", "url", "sk
  * `Authorization: Bearer`, `KEY=valor`/`token: valor` e token opaco longo.
  */
 const DENIAL_SECRET_PATTERNS: Array<[RegExp, string]> = [
+  // #13965: contexto explícito permite cobrir frases hifenizadas sem KEY=,
+  // sem tratar todo slug/caminho minúsculo como senha. Aceita também aspas
+  // escapadas pelo JSON.stringify usado no detalhe da negação.
+  [
+    /((?:^|\s)--(?:password|passwd|passphrase|senha)(?:\s+)(?:\\?["'])?)[^\s"'\\]{6,}/gi,
+    "$1[REDACTED]",
+  ],
   [/(Authorization:\s*Bearer\s+)\S+/gi, "$1[REDACTED]"],
   [/sk-(?:or-|ant-|proj-)?[A-Za-z0-9_-]{20,}/g, "[REDACTED]"],
   [/xkeysib-[A-Za-z0-9-]{20,}/g, "[REDACTED]"],
