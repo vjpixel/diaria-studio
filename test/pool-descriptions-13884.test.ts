@@ -116,8 +116,8 @@ describe("source-not-read: item de pool sem texto lido bloqueia o gate (#13884)"
       assert.doesNotMatch(err!.message, /\[DESTAQUE\]/);
 
       const r = spawnSync(
-        "npx",
-        ["tsx", "scripts/check-invariants.ts", "--stage", "4", "--rule", "source-not-read", "--edition-dir", ed],
+        process.execPath,
+        ["--import", "tsx", "scripts/check-invariants.ts", "--stage", "4", "--rule", "source-not-read", "--edition-dir", ed],
         { cwd: ROOT, encoding: "utf8" },
       );
       assert.equal(r.status, 1, `gate 4 tem de bloquear; stderr: ${r.stderr}`);
