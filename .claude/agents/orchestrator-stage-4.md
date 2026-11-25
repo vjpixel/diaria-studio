@@ -111,13 +111,13 @@ npx tsx scripts/render-halt-banner.ts \
 
     Gerar a variante embedded (`newsletter-final.html` fica intacto, com a merge tag de identidade do voto — `{{poll_token}}`, #4487; era `{{email}}` — preservada pro paste real da Etapa 5):
     ```bash
-    npx tsx scripts/embed-images-base64.ts \
+    npx tsx scripts/embed-images-base64.ts --require-all-embedded \
       --html {EDITION_DIR}/_internal/newsletter-final.html \
       --images {EDITION_DIR}/06-public-images.json \
       --edition-dir {EDITION_DIR}/ \
       --out {EDITION_DIR}/_internal/newsletter-final-embedded.html
     ```
-    `missing` no stdout (exit 1 é só sinal de falha PARCIAL, não fatal) = imagem sem arquivo local — logar warn, preview mantém URL remota só pra essa imagem específica.
+    `missing` indica arquivo local ausente; `remaining_remote` lista os src HTTP(S) restantes (#13928). Exit 1 bloqueia servir/republicar esse preview: corrigir os arquivos ausentes ou re-renderizar o HTML com o `06-public-images.json` atual (especialmente após regenerar/upload de imagens), embutir novamente e só seguir com exit 0. A mesma regra vale nos passos de re-serve abaixo.
 
     Servir localmente em background (porta efêmera) e persistir `{newsletter_url}` + PID (pra teardown em §4e):
     ```bash
@@ -141,7 +141,7 @@ npx tsx scripts/render-halt-banner.ts \
    npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
 
    # Variante embedded (data: URI) — mesmo script/motivo do step 2b.
-   npx tsx scripts/embed-images-base64.ts \
+   npx tsx scripts/embed-images-base64.ts --require-all-embedded \
      --html {EDITION_DIR}/_internal/social-preview.html \
      --images {EDITION_DIR}/06-public-images.json \
      --edition-dir {EDITION_DIR}/ \
@@ -395,7 +395,7 @@ Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b
 OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/04-newsletter-url.json','utf8')).newsletter_url_pid||'')}catch(e){}")
 [ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
 
-npx tsx scripts/embed-images-base64.ts \
+npx tsx scripts/embed-images-base64.ts --require-all-embedded \
   --html {EDITION_DIR}/_internal/newsletter-final.html \
   --images {EDITION_DIR}/06-public-images.json \
   --edition-dir {EDITION_DIR}/ \
@@ -417,7 +417,7 @@ npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDI
 OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/05-social-preview.json','utf8')).social_preview_url_pid||'')}catch(e){}")
 [ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
 
-npx tsx scripts/embed-images-base64.ts \
+npx tsx scripts/embed-images-base64.ts --require-all-embedded \
   --html {EDITION_DIR}/_internal/social-preview.html \
   --images {EDITION_DIR}/06-public-images.json \
   --edition-dir {EDITION_DIR}/ \
