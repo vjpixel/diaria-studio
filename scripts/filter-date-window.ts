@@ -284,7 +284,11 @@ export function filterDateWindow(
         // editor reconsiderar no gate — `date_window_spared` documenta que
         // teria sido removido não fosse a isenção.
         if (isDateWindowExempt) {
-          kept[bucket].push({ ...article, date_unverified: true, date_window_spared: true });
+          const ageDays = Math.floor((Date.parse(anchorDate) - Date.parse(normDate)) / 86400000);
+          const warning = ageDays >= 2 * bucketDays
+            ? `${ageDays} dias, isento por ${isAlwaysConsider ? "sender" : "envio do editor"} (janela ${bucketDays} dias)` : undefined;
+          kept[bucket].push({ ...article, date_unverified: true, date_window_spared: true,
+            ...(warning ? { date_window_warning: warning } : {}) });
           continue;
         }
         removed.push({
