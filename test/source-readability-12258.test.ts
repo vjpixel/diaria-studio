@@ -168,20 +168,25 @@ describe("source-not-read no Stage 4 (#12258)", () => {
     ]);
   });
 
-  it("regra registrada no Stage 4 como warning, lista os itens", () => {
+  it("regra registrada no Stage 4: item de pool é error (#13884), destaque é warning", () => {
     writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify(approved));
     writeFileSync(join(dir, "02-reviewed.md"), md);
     const rule = getRulesForStage(4).find((r) => r.id === "source-not-read");
     assert.ok(rule, "source-not-read deve estar no Stage 4");
     const v = rule.run(dir);
-    assert.equal(v.length, 1);
-    assert.equal(v[0].severity, "warning");
-    assert.match(v[0].message, /fonte não lida: 2 item/);
-    assert.match(v[0].message, /\(403, vídeo sem texto ou resumo curto\): \[DESTAQUE\]/);
-    assert.match(v[0].message, /\[DESTAQUE\] "Vídeo do g1"/);
-    assert.match(v[0].message, /Weird alien minds/);
-    assert.doesNotMatch(v[0].message, /Cortado/);
-    assert.doesNotMatch(v[0].message, /Vídeo com descrição/, "vídeo com descrição longa não é fonte não lida (#12320)");
+    assert.equal(v.length, 2);
+    const [err, warn] = v;
+    assert.equal(err.severity, "error");
+    assert.match(err.message, /fonte não lida: 1 item\(ns\) de pool/);
+    assert.match(err.message, /Weird alien minds/);
+    assert.doesNotMatch(err.message, /\[DESTAQUE\]/);
+    assert.equal(warn.severity, "warning");
+    assert.match(warn.message, /fonte não lida: 1 item/);
+    assert.match(warn.message, /\(403, vídeo sem texto ou resumo curto\): \[DESTAQUE\] "Vídeo do g1"/);
+    for (const x of v) {
+      assert.doesNotMatch(x.message, /Cortado/);
+      assert.doesNotMatch(x.message, /Vídeo com descrição/, "vídeo com descrição longa não é fonte não lida (#12320)");
+    }
     assert.deepEqual(checkSourceNotRead(dir), v);
   });
 

@@ -1,3 +1,4 @@
+import { recurringEventThemes, editionDaysBefore } from "../event-dedup.ts";
 import { findFactRecurrences, findIntraEditionFactRecurrences, type IntraEditionItem } from "../fact-recurrence.ts";
 import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts"; // #11496
 import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
@@ -2843,6 +2844,51 @@ export function checkDestaqueRepeatedPastEdition(
   }));
 }
 
+/** #13923: avisos técnicos, sem mudar a política de seleção do #13901. */
+export function checkDedupRecurrence(
+  editionDir: string,
+  editionsDir: string = resolve(ROOT, "data", "editions"),
+): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const current = readIntraEditionItems(readFileSync(file, "utf8"));
+  const selected = [...current.highlights, ...current.pool];
+  const out: InvariantViolation[] = [];
+  const warn = (message: string) => out.push({ rule: "dedup-recurrence", message, severity: "warning", source_issue: "#13923", file });
+  // Ler o marcador tanto na seleção quanto no pool de pesquisa: o scorer
+  // pode projetar só parte dos campos no approved.json.
+  const warned = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    const item = value as Record<string, unknown>;
+    if (typeof item.url === "string" && typeof item.date_window_warning === "string" &&
+        selected.some(s => dedupUrlKey(s.url) === dedupUrlKey(item.url as string)) && !warned.has(item.url)) {
+      warned.add(item.url);
+      warn(`⚠️ ${item.title ?? item.url}: ${item.date_window_warning}. ${item.url}`);
+    }
+    Object.values(item).forEach(visit);
+  };
+  for (const name of ["01-approved.json", "01-categorized.json"]) visit(readJsonSafe(resolve(editionDir, "_internal", name)));
+  const edition = basename(editionDir);
+  const past = [...enumerateEditionDirs(editionsDir)].filter(([date]) => {
+    const days = editionDaysBefore(date, edition);
+    return days !== undefined && days > 0 && days <= 10;
+  });
+  for (const item of current.pool.filter(i => /radar|use melhor/i.test(i.label))) {
+    const themes = recurringEventThemes(item.title);
+    if (!themes.length) continue;
+    for (const [date, dir] of past) {
+      const reviewed = resolve(dir, "02-reviewed.md");
+      if (!existsSync(reviewed)) continue;
+      const match = readIntraEditionItems(readFileSync(reviewed, "utf8")).highlights.find(h =>
+        recurringEventThemes(h.title).some(theme => themes.includes(theme)));
+      if (match) warn(`⚠️ ${item.label}: “${item.title}” repete tema de destaque de ${date}: “${match.title}”. Conferir fato novo. ${item.url}`);
+    }
+  }
+  return out;
+}
+
 function readJsonSafe(path: string): unknown {
   if (!existsSync(path)) return undefined;
   try {
@@ -4864,7 +4910,8 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "source-not-read",
-    description: "lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258)",
+    description:
+      "lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto); error para item de pool sem texto lido nem aceite do editor (#12258, #13884)",
     source_issue: "#12258",
     stage: 4,
     run: checkSourceNotRead,
@@ -5053,6 +5100,11 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#8993",
     stage: 4,
     run: checkNoDuplicateUrlsAgainstPastEditions,
+  },
+  {
+    id: "dedup-recurrence",
+    description: "Item isento antigo ou tema entidade + evento de destaque nos últimos 10 dias (#13923, warning-only)",
+    source_issue: "#13923", stage: 4, run: (dir: string) => checkDedupRecurrence(dir),
   },
   {
     id: "destaque-repeated-past-edition",

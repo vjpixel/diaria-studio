@@ -50,6 +50,13 @@ export interface HumanizerRunRecord {
   humanizador: string[];
   /** #11604: subconjunto de `humanizador` — seções que o humanizador devolveu idênticas. */
   humanizador_unchanged: string[];
+  /**
+   * #13925: subconjunto de `humanizador_unchanged` — seções mantidas num run sem
+   * nenhuma mudança no escopo, aceito só com `--note` (#13889). É essa a prova
+   * mais fraca; a mantida com outra seção alterada no mesmo run (#11604) não é.
+   * Opcional: registro gravado antes do #13925 não tem o campo.
+   */
+  humanizador_noted?: string[];
   /** sha256 de seções que saíram da Clarice a partir de texto já humanizado. */
   clarice: string[];
   /** #11674: subconjunto de `clarice` — run sem mudança, aceito só com `--note`. */
@@ -99,6 +106,9 @@ export function readRunRecord(editionDir: string): HumanizerRunRecord {
       humanizador: Array.isArray(raw.humanizador) ? raw.humanizador.filter((h) => typeof h === "string") : [],
       humanizador_unchanged: Array.isArray(raw.humanizador_unchanged)
         ? raw.humanizador_unchanged.filter((h) => typeof h === "string")
+        : [],
+      humanizador_noted: Array.isArray(raw.humanizador_noted)
+        ? raw.humanizador_noted.filter((h) => typeof h === "string")
         : [],
       clarice: Array.isArray(raw.clarice) ? raw.clarice.filter((h) => typeof h === "string") : [],
       clarice_unchanged: Array.isArray(raw.clarice_unchanged)
@@ -162,6 +172,7 @@ export function planRunRecord(
   const only = sections && sections.length > 0 ? new Set(sections) : null;
   const humanizador = new Set(current.humanizador);
   const unchanged = new Set(current.humanizador_unchanged);
+  const noted = new Set(current.humanizador_noted ?? []);
   const clarice = new Set(current.clarice);
   const clariceUnchanged = new Set(current.clarice_unchanged);
   const recorded: string[] = [];
@@ -191,6 +202,8 @@ export function planRunRecord(
         }
         // #11604: idêntica com outra seção alterada no mesmo run = o humanizador manteve o texto.
         unchanged.add(postHash);
+        // #13925: run sem mudança nenhuma, aceito só pela nota (#13889) = prova mais fraca.
+        if (!runChangedSomething) noted.add(postHash);
       }
       humanizador.add(postHash);
       recorded.push(name);
@@ -234,6 +247,7 @@ export function planRunRecord(
       version: 1,
       humanizador: [...humanizador],
       humanizador_unchanged: [...unchanged],
+      humanizador_noted: [...noted],
       clarice: [...clarice],
       clarice_unchanged: [...clariceUnchanged],
       clarice_pending: current.clarice_pending ?? [],
@@ -554,12 +568,15 @@ export function describeProvenance(
   clarice: boolean;
   clarice_pending?: true;
   kept?: true;
+  kept_noted?: true;
   clarice_unchanged?: true;
 }> {
   return Object.entries(computeSectionHashes(currentMd)).map(([section, hash]) => ({
     section,
     ...sectionProof(hash, record),
     ...(record.humanizador_unchanged.includes(hash) ? { kept: true as const } : {}),
+    // #13925: só o run sem mudanças aceito por --note (#13889) é prova mais fraca.
+    ...(record.humanizador_noted?.includes(hash) ? { kept_noted: true as const } : {}),
     // #11674: Clarice registrada sem mudança, por --note (prova mais fraca).
     ...(record.clarice_unchanged.includes(hash) ? { clarice_unchanged: true as const } : {}),
   }));

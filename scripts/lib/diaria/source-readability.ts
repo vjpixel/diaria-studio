@@ -26,7 +26,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantViolation } from "../invariant-checks/types.ts";
-import { readPoolSourcesManifest } from "./pool-sources.ts";
+import { readPoolDescriptionsApplied, readPoolSourcesManifest } from "./pool-sources.ts";
 
 /**
  * Vereditos de `verify-accessibility.ts` em que o texto da página não chegou
@@ -144,8 +144,9 @@ const APPROVED_BUCKETS = ["highlights", "lancamento", "radar", "use_melhor", "vi
 /**
  * (#13884) Resultado do download da página por URL, lido dos manifests de
  * `_internal/pool-sources/` (itens de pool) e `_internal/fact-check-sources/`
- * (destaques). `ok: true` = alguém do pipeline LEU o texto da página (hoje só
- * o fact-checker, nos destaques, #13907); `ok: false` = o download falhou
+ * (destaques). `ok: true` = alguém do pipeline LEU o texto da página (o
+ * fact-checker, nos destaques, #13907; o `writer-pool`, nos itens de pool cuja
+ * descrição reescreveu, #13884); `ok: false` = o download falhou
  * (403, erro), trouxe só a prévia do paywall ou uma página quase vazia, com o
  * motivo. URL sem entrada segue a regra do resumo (`readSourceReadability`).
  */
@@ -163,16 +164,13 @@ export type SourceDownloads = ReadonlyMap<string, { ok: boolean; reason?: string
 export const SOURCE_TEXT_MIN_WORDS = 100;
 
 /**
- * (#13907) Nenhum writer lê hoje o texto de `_internal/pool-sources/`: o
- * Stage 2 baixa a página, mas a descrição do item de pool sai do `summary`
- * do Stage 1 (o item 2 da #13884, descrição a partir do texto lido, ainda não
- * existe). Enquanto for `false`, download `ok` do pool NÃO limpa a regra do
- * resumo curto (o `source-not-read` seguiria mudo para o caso que motivou a
- * #13884); só a falha do download acrescenta motivo. Virar `true` junto com o
- * consumidor do texto.
+ * (#13884, decisão do editor de 25/11/2026) O texto baixado de um item de pool
+ * só conta como LIDO quando a descrição do item foi reescrita a partir dele
+ * pelo `writer-pool` (Stage 2, `scripts/pool-descriptions.ts --apply`), que
+ * grava a URL em `_internal/pool-sources/descriptions-applied.json`. Download
+ * `ok` sem esse registro não limpa a regra do resumo curto (#13907): baixar a
+ * página não é ler, a descrição continuaria saindo só do `summary`.
  */
-export const POOL_SOURCE_TEXT_CONSUMED = false;
-
 /** (#13907) Motivo para download `ok` abaixo de `SOURCE_TEXT_MIN_WORDS`. */
 function thinPageReason(words: number): string {
   return `página baixada com ${words} palavras (mínimo ${SOURCE_TEXT_MIN_WORDS})`;
@@ -195,18 +193,20 @@ const PAYWALL_PREVIEW_REASON = "só a prévia do paywall foi baixada";
  * `skipped` (vídeo do YouTube) não entra: segue julgada pela regra do resumo.
  * Manifest ausente ou ilegível = sem entradas (edição anterior ao #13884).
  *
- * (#13907) Entrada `ok` do pool só vira `ok: true` com
- * `POOL_SOURCE_TEXT_CONSUMED`; hoje fica sem entrada e o item segue na regra
- * do resumo. Prévia de paywall e falha de download seguem acrescentando o
- * motivo. No manifest do fact-check (o fact-checker lê o texto), `ok` abaixo
- * de `SOURCE_TEXT_MIN_WORDS` conta como não lida.
+ * (#13907/#13884) Entrada `ok` do pool só vira `ok: true` quando o
+ * `writer-pool` reescreveu a descrição a partir do texto
+ * (`readPoolDescriptionsApplied`); sem isso fica sem entrada e o item segue na
+ * regra do resumo. Prévia de paywall e falha de download seguem acrescentando
+ * o motivo. `ok` abaixo de `SOURCE_TEXT_MIN_WORDS` conta como não lida (no
+ * pool e no manifest do fact-check).
  */
 export function readSourceDownloads(internalDir: string): Map<string, { ok: boolean; reason?: string }> {
   const out = new Map<string, { ok: boolean; reason?: string }>();
+  const consumed = readPoolDescriptionsApplied(internalDir);
   for (const e of readPoolSourcesManifest(internalDir)) {
     if (e.status === "ok" && e.completeness === "preview") out.set(e.url, { ok: false, reason: PAYWALL_PREVIEW_REASON });
     else if (e.status === "ok") {
-      if (!POOL_SOURCE_TEXT_CONSUMED) continue;
+      if (!consumed.has(e.url)) continue;
       out.set(e.url, isThinText(e.words) ? { ok: false, reason: thinPageReason(e.words) } : { ok: true });
     } else if (e.status === "blocked" || e.status === "error") {
       out.set(e.url, { ok: false, reason: `download da página falhou: ${e.erro ?? e.status}` });
@@ -243,8 +243,9 @@ export function readSourceDownloads(internalDir: string): Map<string, { ok: bool
  * (#13884) Com `downloads`, a entrada da URL decide antes do resumo: `ok` =
  * fonte lida (mesmo com resumo curto ou veredito de acesso ruim no Stage 1);
  * falha = fonte não lida, com o motivo do download. URL sem entrada cai na
- * regra de sempre. Download `ok` do pool não gera entrada enquanto nenhum
- * writer lê o texto (#13907, ver `readSourceDownloads`). @pure
+ * regra de sempre. Download `ok` do pool só gera entrada quando o
+ * `writer-pool` reescreveu a descrição a partir dele (#13907/#13884, ver
+ * `readSourceDownloads`). @pure
  */
 export function findUnreadItemsInEdition(
   approved: unknown,
@@ -278,9 +279,48 @@ export function findUnreadItemsInEdition(
   return out;
 }
 
+/** (#13884) Arquivo do aceite do editor para item de pool com fonte não lida. */
+export const SOURCE_NOT_READ_ACK_FILE = "source-not-read-ack.json";
+
+export interface SourceNotReadAck {
+  url: string;
+  reason: string;
+  acked_at: string;
+}
+
 /**
- * Invariante Stage 4 `source-not-read` (warning, #12258): lista no gate os
- * itens da edição cuja fonte não foi lida.
+ * (#13884) Aceites registrados pelo editor (`scripts/ack-source-not-read.ts`)
+ * em `_internal/source-not-read-ack.json`. Ausente ou ilegível = nenhum
+ * (fail-closed: sem aceite legível o item segue bloqueando o gate).
+ */
+export function readSourceNotReadAcks(internalDir: string): Map<string, SourceNotReadAck> {
+  const out = new Map<string, SourceNotReadAck>();
+  const p = resolve(internalDir, SOURCE_NOT_READ_ACK_FILE);
+  if (!existsSync(p)) return out;
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8")) as { acks?: unknown };
+    if (!Array.isArray(raw?.acks)) return out;
+    for (const a of raw.acks as Array<Partial<SourceNotReadAck>>) {
+      if (a && typeof a.url === "string" && typeof a.reason === "string" && a.reason.trim()) {
+        out.set(a.url, { url: a.url, reason: a.reason.trim(), acked_at: typeof a.acked_at === "string" ? a.acked_at : "" });
+      }
+    }
+  } catch {
+    // ilegível: nenhum aceite
+  }
+  return out;
+}
+
+/**
+ * Invariante Stage 4 `source-not-read` (#12258; severidade dividida no #13884).
+ *
+ * Decisão do editor de 25/11/2026: item de POOL (LANÇAMENTOS, RADAR, USE
+ * MELHOR, VÍDEOS) com fonte não lida é **error** — bloqueia o gate e, com
+ * `--no-gates`, para a edição em halt banner (`orchestrator-stage-4.md` §5).
+ * Só entra com decisão explícita do editor: tirar/trocar o item, ou registrar
+ * o aceite (`scripts/ack-source-not-read.ts`), que o rebaixa a warning.
+ * Destaque com fonte não lida segue **warning**: o fact-check do destaque já
+ * expõe o problema (NOT_FOUND_IN_SOURCE) e trocar um destaque é decisão maior.
  */
 export function checkSourceNotRead(editionDir: string): InvariantViolation[] {
   const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
@@ -292,23 +332,45 @@ export function checkSourceNotRead(editionDir: string): InvariantViolation[] {
   } catch {
     return []; // JSON ilegível já é acusado por outras regras do Stage 4
   }
-  const items = findUnreadItemsInEdition(approved, readFileSync(mdPath, "utf8"), readSourceDownloads(resolve(editionDir, "_internal")));
+  const internalDir = resolve(editionDir, "_internal");
+  const items = findUnreadItemsInEdition(approved, readFileSync(mdPath, "utf8"), readSourceDownloads(internalDir));
   if (items.length === 0) return [];
+  const acks = readSourceNotReadAcks(internalDir);
   const fmt = (i: UnreadItemInEdition) => `${i.highlight ? "[DESTAQUE] " : ""}"${i.title}" (${i.reason}) ${i.url}`;
-  const highlights = items.filter((i) => i.highlight).length;
-  return [
-    {
+  const blocking = items.filter((i) => !i.highlight && !acks.has(i.url));
+  const highlights = items.filter((i) => i.highlight);
+  const acked = items.filter((i) => !i.highlight && acks.has(i.url));
+  const out: InvariantViolation[] = [];
+  if (blocking.length > 0) {
+    out.push({
       rule: "source-not-read",
       message:
-        `fonte não lida: ${items.length} item(ns) da edição chegaram ao texto só com título e resumo, sem ninguém ler a página ` +
-        `(403, vídeo sem texto ou resumo curto): ${items.map(fmt).join("; ")}.` +
-        (highlights > 0 ? ` ${highlights} é(são) destaque: o fact-check desses tende a sair NOT_FOUND_IN_SOURCE.` : "") +
+        `fonte não lida: ${blocking.length} item(ns) de pool chegaram ao texto só com título e resumo, sem ninguém ler a página ` +
+        `(403, vídeo sem texto ou resumo curto): ${blocking.map(fmt).join("; ")}. ` +
+        `Item de pool sem texto lido não entra sem decisão do editor (#13884): tirar ou trocar o item, ou registrar o aceite com ` +
+        `\`npx tsx scripts/ack-source-not-read.ts --edition-dir ${editionDir} --url {URL} --reason "{motivo}"\`. ` +
+        `Com --no-gates, halt banner (sem editor para decidir).`,
+      source_issue: "#13884",
+      severity: "error",
+      file: mdPath,
+    });
+  }
+  const soft = [...highlights, ...acked];
+  if (soft.length > 0) {
+    const fmtSoft = (i: UnreadItemInEdition) => (acks.has(i.url) && !i.highlight ? `${fmt(i)} [aceito pelo editor: ${acks.get(i.url)!.reason}]` : fmt(i));
+    out.push({
+      rule: "source-not-read",
+      message:
+        `fonte não lida: ${soft.length} item(ns) da edição chegaram ao texto só com título e resumo, sem ninguém ler a página ` +
+        `(403, vídeo sem texto ou resumo curto): ${soft.map(fmtSoft).join("; ")}.` +
+        (highlights.length > 0 ? ` ${highlights.length} é(são) destaque: o fact-check desses tende a sair NOT_FOUND_IN_SOURCE.` : "") +
         ` Abrir a fonte antes de aprovar ou trocar o item (#12258).`,
       source_issue: "#12258",
       severity: "warning",
       file: mdPath,
-    },
-  ];
+    });
+  }
+  return out;
 }
 
 /** Aviso padrão ao promover a destaque um item com fonte não lida. @pure */

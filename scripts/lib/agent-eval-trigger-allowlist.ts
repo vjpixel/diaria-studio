@@ -95,6 +95,10 @@ function excludedGroup(agents: readonly string[], reason: string): AgentEvalExcl
  */
 export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
   ...excludedGroup(
+    ["writer-pool"],
+    "descrição de uma linha dos itens de pool a partir do texto lido (#13884): a forma é validada por scripts/lib/diaria/pool-descriptions.ts antes de entrar no draft, e os graders mecânicos da #8143 medem destaque/social, não a linha de item secundário.",
+  ),
+  ...excludedGroup(
     ["revisor-roteiro-video"],
     "revisor somente leitura do roteiro de fala do vídeo (#13131): devolve crítica por vídeo para o coordenador filtrar antes do editor, não produz texto de destaque/social que os graders mecânicos da #8143 avaliem.",
   ),
