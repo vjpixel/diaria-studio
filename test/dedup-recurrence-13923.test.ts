@@ -17,11 +17,15 @@ const past = 'Anthropic estreia na bolsa e levanta US$ 119,5 bi';
 const release = 'A Cora apresenta seis dicas para pequenos negócios usarem inteligência artificial na rotina. A primeira é organizar as finanças e acompanhar os pagamentos dos clientes. A segunda consiste em planejar campanhas e revisar mensagens antes do envio. Outra recomendação envolve analisar o estoque e comparar fornecedores para reduzir custos sem perder qualidade no atendimento aos consumidores.';
 describe('#13923 regressões de recorrência', () => {
   it('normaliza IPO em inglês e português sem casar entidade genérica', () => {
-    assert.ok(sameEvent(ipo, past)?.removable);
+    // #13951: removível só na janela curta (≤2 dias úteis); sem distância, só marca.
+    assert.ok(sameEvent(ipo, past, { distanceDays: 1 })?.removable);
+    assert.equal(sameEvent(ipo, past)?.removable, false);
     assert.equal(sameEvent(ipo, 'Anthropic lança nova ferramenta'), null);
     assert.equal(sameEvent(ipo, 'Google estreia na bolsa'), null);
     assert.deepEqual(recurringEventThemes('Anthropic'), []);
-    assert.equal(dedup([{url:'https://anthropic.com/ipo',title:ipo}],new Set(),.85,[past]).kept.length,0);
+    const flagged = dedup([{url:'https://anthropic.com/ipo',title:ipo}],new Set(),.85,[past]).kept;
+    assert.equal(flagged.length,1);
+    assert.match(String(flagged[0].event_dedup_flagged),/IPO anthropic/);
   });
   it('clusteriza três cópias Cora com títulos divergentes, preservando fontes', () => {
     const result = dedup([
