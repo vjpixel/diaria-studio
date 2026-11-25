@@ -1,6 +1,6 @@
 # Vigia externo do 300 (#12981)
 
-Deployado e armado em 25/11/2026 (Worker com secrets Gmail, cron `*/5`, timer de heartbeat no 300). Ainda NÃO validado com e-mail real: falta o ensaio do passo 6.
+Deployado e armado em 25/11/2026 (Worker com secrets Gmail, cron `*/5`, timer de heartbeat no 300). Ensaio do passo 6 feito no mesmo dia: timer parado às 18:12Z, `down-since` gravado e 1 e-mail "[infra] 300 sem heartbeat" às 18:30Z, nenhum repetido no ciclo seguinte, timer religado às 18:38Z, sinal removido e 1 e-mail "[infra] 300 voltou" às 18:41Z.
 
 ## Infra investigada
 
