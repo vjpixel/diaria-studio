@@ -18,7 +18,7 @@
  * arquivo inteiro (ver docstring de `replaceBoxesDivulgacaoBlock`).
  *
  * Arquivo PRÓPRIO desta fatia (mesma convenção de `studio-review.ts` #3559 /
- * `studio-apoios.ts` #3602): `server.ts` só registra rotas, toda a lógica
+ * `apoios-data.ts` #3602): `server.ts` só registra rotas, toda a lógica
  * mora aqui.
  *
  * **Fonte da verdade da lista** é o diretório em si — nenhum índice

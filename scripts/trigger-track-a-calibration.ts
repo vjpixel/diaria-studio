@@ -66,7 +66,7 @@ import { computeCanarySeries } from "./check-track-a-negative-impact-canary.ts";
 import { analyzeCanaryTrend, type CanaryTrendResult } from "./lib/track-a-negative-impact-canary.ts";
 import { evaluateCadence, rankQueuedCandidates, type CadenceState, type QueuedCandidate, type RankedCandidate } from "./lib/calibration-cadence-guard.ts";
 import { calibrateTrackAWeights, type CalibrateTrackAResult } from "./calibrate-track-a-weights.ts";
-import { listReports } from "./studio-ui/studio-reports.ts";
+import { listReports } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 

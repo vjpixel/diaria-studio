@@ -4,7 +4,7 @@
  * Store dedicado de PROMESSAS de apoio (apoia.se) ainda não confirmadas como
  * pagamento — separado de `contacts.jsonl` de propósito.
  *
- * `scripts/lib/apoia-se-gmail-drain.ts` + `scripts/studio-ui/studio-apoios.ts`
+ * `scripts/lib/apoia-se-gmail-drain.ts` + `scripts/lib/apoios-data.ts`
  * já sabem drenar promessas e criar um contato PENDENTE a partir delas
  * (`importPendingApoiadoresFromGmail`, #3912) — mas isso só roda dentro de
  * `refreshApoiosData`, usado pelo botão "Atualizar status" do painel Apoios

@@ -541,7 +541,7 @@ npx tsx scripts/send-edition-report.ts \
 
 **#3714 (decisão do editor, 260720 — substitui o antigo draft de Gmail, não soma a ele):**
 o comando acima já registra o relatório na superfície de Relatórios do Studio
-(`scripts/studio-ui/studio-reports.ts::registerReport`, chamado de dentro de
+(`scripts/lib/reports-registry.ts::registerReport`, chamado de dentro de
 `writeReportFile` — file-based, fail-soft, nunca depende do `npm run studio` estar no ar) e
 imprime o summary JSON em stderr com o campo `studio_report_url`. Ler esse campo do JSON e
 usar essa URL no "Resumo final" (abaixo) como o link do relatório — **NÃO criar mais draft

@@ -53,7 +53,7 @@ import {
   type BrevoApoiadorMember,
 } from "../scripts/sync-apoio-nivel-brevo.ts";
 import { computeDesiredApoioLevels } from "../scripts/lib/apoio-nivel-sync.ts";
-import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
+import type { ContactWithStatus } from "../scripts/lib/apoios-data.ts";
 
 const NO_HISTORY_MONTH = "2026-08";
 

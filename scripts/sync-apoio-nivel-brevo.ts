@@ -100,7 +100,7 @@ import {
   type DesiredApoioLevel,
 } from "./lib/apoio-nivel-sync.ts";
 import type { ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
-import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
+import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./lib/apoios-data.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

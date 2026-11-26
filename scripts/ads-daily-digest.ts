@@ -52,7 +52,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
-import { registerReport, reportId, type ReportRegistryInput, type RegisterReportResult } from "./studio-ui/studio-reports.ts";
+import { registerReport, reportId, type ReportRegistryInput, type RegisterReportResult } from "./lib/reports-registry.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
 import { readSpendCsv } from "./lib/aquisicao-spend.ts";
@@ -98,7 +98,7 @@ export interface AdsDailyDigestDeps {
    * `cac-report.ts`). */
   rootDir: string;
   /** `registerReport` injetável (#7960) — substituiu o antigo `sendEmail`.
-   * Default a implementação real de `scripts/studio-ui/studio-reports.ts`,
+   * Default a implementação real de `scripts/lib/reports-registry.ts`,
    * que é file-based e fail-soft (nunca lança, nunca depende do servidor do
    * Studio estar no ar). */
   registerReportFn: (rootDir: string, input: ReportRegistryInput) => RegisterReportResult;

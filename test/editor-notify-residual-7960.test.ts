@@ -39,7 +39,7 @@ import { notifyHaltViaPush } from "../scripts/render-halt-banner.ts";
 import { runPushNotifyTick } from "../scripts/studio-ui/studio-push-notify.ts";
 import type { StudioState } from "../scripts/studio-ui/studio-state.ts";
 import { createInMemoryNotifiedStore } from "../scripts/lib/push-notify.ts";
-import { isReportKind } from "../scripts/studio-ui/studio-reports.ts";
+import { isReportKind } from "../scripts/lib/reports-registry.ts";
 
 function withTmpDir<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "notify-residual-7960-"));

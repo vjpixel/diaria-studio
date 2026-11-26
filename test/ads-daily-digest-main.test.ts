@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, type AdsDailyDigestDeps } from "../scripts/ads-daily-digest.ts";
 import { buildAdsTestRunState } from "../scripts/lib/ads-test-run-state.ts";
-import type { RegisterReportResult, ReportRegistryInput } from "../scripts/studio-ui/studio-reports.ts";
+import type { RegisterReportResult, ReportRegistryInput } from "../scripts/lib/reports-registry.ts";
 
 async function withTmpDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ads-daily-digest-"));

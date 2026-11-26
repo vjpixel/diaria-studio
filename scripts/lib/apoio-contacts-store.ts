@@ -2,14 +2,14 @@
  * scripts/lib/apoio-contacts-store.ts (#5899)
  *
  * Store de contatos do CRM de Apoios (apoia.se) — extraído VERBATIM de
- * `scripts/studio-ui/studio-apoios.ts` pela regra 4 de
+ * `scripts/studio-ui/studio-apoios.ts` (hoje `scripts/lib/apoios-data.ts`, #14000) pela regra 4 de
  * `test/lib-boundary.test.ts` (#5899): `scripts/lib/**` não importa de
  * `scripts/studio-ui/**`. Quem puxava isso pra dentro de lib/ era
  * `apoio-reconciliation-cycle.ts` (importNewApoiadoresFromGmail/
  * loadContacts/saveContacts/ApoioContact) — lógica de dados pura que nunca
  * devolveu ao servidor HTTP nada do que tomou emprestado.
  *
- * `studio-apoios.ts` REEXPORTA tudo que moveu pra cá — rotas do server e
+ * `apoios-data.ts` REEXPORTA tudo que moveu pra cá — rotas do server e
  * testes existentes continuam importando de lá sem mudança. Mesmo padrão da
  * extração do `apoio-month-key.ts` (que já tinha quebrado um ciclo
  * studio-apoios ↔ sync-apoio-nivel-kit).
