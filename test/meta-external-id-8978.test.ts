@@ -43,6 +43,7 @@ import {
 } from "../scripts/lib/google-ads-confirmation-batch.ts";
 import { runMetaConfirmationBatch, type MetaSendFn } from "../scripts/lib/meta-capi-confirmation-batch.ts";
 import type { SubscriberStateRecord } from "../scripts/lib/subscriber-state-snapshot.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 describe("visitor-id.ts (#8978)", () => {
   it("isValidVisitorId aceita UUID/hex de 16-64 chars, rejeita lixo/vazio", () => {
@@ -290,32 +291,11 @@ function makeFetchMock(status = 201, body: unknown = { subscriber: { id: 1 } }):
   return fn;
 }
 
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      return m.get(key) ?? null;
-    },
-    async getWithMetadata(key: string) {
-      return { value: m.get(key) ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cursor: undefined };
-    },
-  };
-}
-
 const VID = "550e8400-e29b-41d4-a716-446655440000";
 
 function pollKitEnv(overrides: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -414,7 +394,7 @@ describe("handleJogarSubscribe (worker poll) — persiste origem_external_id do 
 
 function pollBeehiivEnv(overrides: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -481,7 +461,7 @@ describe("subscribeToBeehiiv (worker poll) — persiste origem_external_id via c
 function cursosKitEnv(overrides: Partial<CursosEnv> = {}): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as CursosEnv["ASSETS"],
-    CURSOS_SUBSCRIBERS: makeMapKV() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
+    CURSOS_SUBSCRIBERS: makeTrackedKv() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
     COOKIE_HMAC_SECRET: "cookie-secret",
     SUBSCRIBE_BACKEND: "kit",
     KIT_API_KEY: "test-kit-key",
@@ -544,7 +524,7 @@ describe("handleGateSubscribe (worker cursos) — persiste origem_external_id do
 function cursosBeehiivEnv(overrides: Partial<CursosEnv> = {}): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as CursosEnv["ASSETS"],
-    CURSOS_SUBSCRIBERS: makeMapKV() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
+    CURSOS_SUBSCRIBERS: makeTrackedKv() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
     COOKIE_HMAC_SECRET: "cookie-secret",
     // SUBSCRIBE_BACKEND ausente — mesmo default beehiiv de resolveBackend.
     BEEHIIV_API_KEY: "test-beehiiv-key",

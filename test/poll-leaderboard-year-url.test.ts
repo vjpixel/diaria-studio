@@ -14,6 +14,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { renderEia } from "../scripts/lib/mensal/monthly-render.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // ── (a) monthly-render.ts — URL anual no link do leaderboard ───────────────
 
@@ -65,26 +66,9 @@ describe("renderEia — link do leaderboard usa URL anual (#2114a)", () => {
 
 import workerDefault from "../workers/poll/src/index.ts";
 
-function makeKv(): KVNamespace {
-  const data: Record<string, string> = {};
-  return {
-    get: async (key: string) => data[key] ?? null,
-    put: async (key: string, value: string) => { data[key] = value; },
-    delete: async (key: string) => { delete data[key]; },
-    getWithMetadata: async () => ({ value: null, metadata: null }),
-    list: async (opts?: { prefix?: string }) => {
-      const prefix = opts?.prefix ?? "";
-      const keys = Object.keys(data)
-        .filter((k) => k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true };
-    },
-  } as unknown as KVNamespace;
-}
-
 function makeEnv(): import("../workers/poll/src/index.ts").Env {
   return {
-    POLL: makeKv(),
+    POLL: makeTrackedKvNamespace(),
     POLL_SECRET: "test-secret",
     ADMIN_SECRET: "test-admin",
     ALLOWED_ORIGINS: "*",

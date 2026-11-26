@@ -67,6 +67,7 @@ import {
 } from "../workers/brevo-dashboard/src/index.ts";
 import { loadLinkTitleMapForCycle } from "../scripts/lib/mensal/monthly-link-sections.ts";
 import { classifyLinkContent } from "../workers/brevo-dashboard/src/link-content.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // ─── loadLinkTitleMapForCycle (fail-soft I/O wrapper) ──────────────────────
 
@@ -159,20 +160,6 @@ describe("linkTitlesKvKey (#4198)", () => {
 
 // ─── readLinkTitlesByCycle (KV mock) ────────────────────────────────────────
 
-function makeKv(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial));
-  return {
-    get: async (key: string, type?: string) => {
-      const val = store.get(key);
-      if (val == null) return null;
-      return type === "json" ? JSON.parse(val) : val;
-    },
-    put: async (key: string, value: string) => { store.set(key, value); },
-    delete: async (key: string) => { store.delete(key); },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-}
-
 describe("readLinkTitlesByCycle (#4198)", () => {
   test("sem env.STATS_CACHE → {} sem nenhuma chamada de rede", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -181,14 +168,14 @@ describe("readLinkTitlesByCycle (#4198)", () => {
   });
 
   test("cycles vazio → {} mesmo com KV presente (sem custo de leitura)", async () => {
-    const kv = makeKv({ [linkTitlesKvKey("2606-07")]: JSON.stringify({ a: "Título A" }) });
+    const kv = makeTrackedKvNamespace({ [linkTitlesKvKey("2606-07")]: JSON.stringify({ a: "Título A" }) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await readLinkTitlesByCycle({ STATS_CACHE: kv } as any, []);
     assert.deepEqual(result, {});
   });
 
   test("lê titulo:{ciclo} do KV pra cada ciclo, em paralelo, com dedup automático", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [linkTitlesKvKey("2606-07")]: JSON.stringify({ "gpt 5 (openai.com)": "Anthropic capta US$ 65 bi" }),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -197,7 +184,7 @@ describe("readLinkTitlesByCycle (#4198)", () => {
   });
 
   test("ciclo ausente do KV (chave nunca gravada) é omitido do resultado, não vira entrada vazia", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [linkTitlesKvKey("2606-07")]: JSON.stringify({ a: "Título A" }),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -207,7 +194,7 @@ describe("readLinkTitlesByCycle (#4198)", () => {
   });
 
   test("JSON corrompido no KV para um ciclo é omitido (fail-soft), outros ciclos não são afetados", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [linkTitlesKvKey("2606-07")]: JSON.stringify({ a: "Título A" }),
       [linkTitlesKvKey("2605-06")]: "{ json malformado sem fechar",
     });
@@ -310,7 +297,7 @@ const AMAZON_BASE = classifyLinkContent("https://link.amazon/B0249coGp").content
 
 describe("buildRateLimitFallback: título editorial via KV (#4198)", () => {
   test("com titulo:{ciclo} presente no KV → título editorial aparece no fallback de 429", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleAmazonCampaign], scheduled: [], generatedAt: "2026-07-20T10:00:00.000Z",
       }),
@@ -325,7 +312,7 @@ describe("buildRateLimitFallback: título editorial via KV (#4198)", () => {
   });
 
   test("SEM titulo:{ciclo} no KV → rótulo derivado da URL, sem crash (regressão)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleAmazonCampaign], scheduled: [], generatedAt: "2026-07-20T10:00:00.000Z",
       }),
@@ -341,7 +328,7 @@ describe("buildRateLimitFallback: título editorial via KV (#4198)", () => {
 
 describe("buildFatalErrorFallback: título editorial via KV (#4198)", () => {
   test("com titulo:{ciclo} presente no KV → título editorial aparece no catch de última instância", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleAmazonCampaign], scheduled: [], generatedAt: "2026-07-20T10:00:00.000Z",
       }),
@@ -356,7 +343,7 @@ describe("buildFatalErrorFallback: título editorial via KV (#4198)", () => {
   });
 
   test("SEM titulo:{ciclo} no KV → nunca lança (regressão)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleAmazonCampaign], scheduled: [],
       }),
