@@ -36,7 +36,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
 import { logEvent, resolveRunLogPath } from "./run-log.ts";
@@ -139,6 +139,35 @@ export const SESSION_SUPERVISED_FLAG = "--session-supervised";
  * sentinel do Stage 4 (gate aprovado sem o editor).
  */
 export const STAGE4_PREGATE_FLAG = "--pre-gate-only";
+
+/**
+ * Exit code do runner quando o spawn do pré-gate escreveu o sentinel do
+ * Stage 4 (#14034, P1 do review da PR #14103). Próprio, diferente do `1` de
+ * falha comum: a falha comum deixa a sessão do editor seguir com a Etapa 4
+ * inline; esta manda PARAR e reportar (o gate foi aprovado sem o editor).
+ */
+export const PREGATE_SENTINEL_REJECTED_EXIT = 7;
+
+/** Sentinel do Stage 4 escrito pelo pré-gate vai para cá (quarentena). */
+export const PREGATE_REJECTED_SENTINEL_REL = "_internal/.step-4-done.rejected-pregate.json";
+
+/**
+ * Tira de cena o sentinel do Stage 4 escrito pelo spawn do pré-gate. Sem
+ * isto ele ficaria no disco e, na reexecução, o runner pularia o Stage 4
+ * ("gate já aprovado") e a sessão do editor nunca veria o gate. Devolve o
+ * caminho da quarentena, ou `null` se não conseguiu mover.
+ */
+export function quarantinePregateSentinel(editionDir: string): string | null {
+  const src = join(editionDir, "_internal", ".step-4-done.json");
+  const dst = join(editionDir, PREGATE_REJECTED_SENTINEL_REL);
+  try {
+    if (!existsSync(src)) return null;
+    renameSync(src, dst);
+    return dst;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * #14034 (finding P2 do self-review da PR #14103): solta a trava da edição
@@ -777,6 +806,8 @@ export interface RunEditionStagesOptions {
   /** #14034: leitura/release da trava órfã do pré-gate (injetáveis para teste). */
   readEditionLockFn?: typeof readEditionLock;
   releaseEditionLockFn?: (editionDir: string, sessionId: string) => void;
+  /** #14034: quarentena do sentinel escrito pelo pré-gate (injetável para teste). */
+  quarantineSentinelFn?: (editionDir: string) => string | null;
   execFn?: typeof execFileSync;
   /**
    * `assertSentinel`, NÃO `sentinelExists` (achados P0/P1 do review da PR #5753).
@@ -1121,6 +1152,27 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       };
       break;
     }
+    }
+    if (preGate && (assertSentinelFn(editionDir, 4).ok || existsSync(join(editionDir, "_internal", ".step-4-done.json")))) {
+      // #14034 (P1 do review da #14103): o pré-gate escreveu o sentinel do
+      // Stage 4, em qualquer caminho (saída 0 ou exceção). Quarentena + exit
+      // próprio: a sessão do editor para e reporta, nunca segue para o gate
+      // como se ele já tivesse sido aprovado.
+      const moved = (opts.quarantineSentinelFn ?? quarantinePregateSentinel)(editionDir);
+      if (stageOutcome === null && outcomes.length > 0 && outcomes[outcomes.length - 1].stage === stage) outcomes.pop();
+      exitCode = PREGATE_SENTINEL_REJECTED_EXIT;
+      failedStage = stage;
+      stageOutcome = {
+        stage,
+        skill,
+        status: "failed",
+        exitCode: PREGATE_SENTINEL_REJECTED_EXIT,
+        durationMs: stageOutcome?.durationMs ?? 0,
+        failureTail:
+          `o pré-gate escreveu o sentinel do Stage 4 (gate aprovado sem o editor) — ` +
+          (moved ? `movido para ${PREGATE_REJECTED_SENTINEL_REL}` : `NÃO consegui mover _internal/.step-4-done.json: mover à mão antes de reexecutar`) +
+          `. PARAR e reportar ao editor; não seguir para o gate nem para a Etapa 5.`,
+      };
     }
     if (preGate) {
       releaseOrphanPregateLock(editionDir, pregateSessionIds, {

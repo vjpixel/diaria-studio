@@ -14,7 +14,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,11 +24,17 @@ import {
   buildStagePrompt,
   runEditionStages,
   releaseOrphanPregateLock,
+  PREGATE_SENTINEL_REJECTED_EXIT,
+  PREGATE_REJECTED_SENTINEL_REL,
   STAGE_PLAN,
 } from "../scripts/lib/edition-stage-runner.ts";
 import {
   checkStage4Pregate,
   writeStage4Pregate,
+  snapshotStage4Pregate,
+  deterministicBlocking,
+  contentFiles,
+  type CheckRunner,
   main as pregateMain,
   PREGATE_SUMMARY_REL,
   PREGATE_MARKER_REL,
@@ -47,6 +54,18 @@ function writeSummary(dir: string, text = "## fact_check_block\n✅ ok\n"): void
   writeFileSync(join(dir, PREGATE_SUMMARY_REL), text);
 }
 
+/** Checks determinísticos todos limpos (fake: nenhum processo real). */
+const CLEAN: CheckRunner = (script) =>
+  script === "lint-newsletter-md.ts"
+    ? { status: 0, stdout: JSON.stringify({ stage: 4, passed: true, checks: [] }), stderr: "" }
+    : { status: 0, stdout: "", stderr: "" };
+
+/** snapshot + write, como o playbook faz no fim do pré-gate. */
+function seal(dir: string, opts: { blocking?: string[]; runCheck?: CheckRunner } = {}) {
+  snapshotStage4Pregate(dir);
+  return writeStage4Pregate(dir, { runCheck: CLEAN, ...opts });
+}
+
 describe("stage4-pregate — marcador (#14034)", () => {
   it("sem marcador = absent, não usável", () => {
     const dir = tmpEdition();
@@ -63,9 +82,9 @@ describe("stage4-pregate — marcador (#14034)", () => {
   it("write recusa sem resumo (gate sem lints nem fact-check é pior que o fluxo inline)", () => {
     const dir = tmpEdition();
     try {
-      assert.throws(() => writeStage4Pregate(dir), /resumo do pré-gate ausente/);
+      assert.throws(() => seal(dir), /resumo do pré-gate ausente/);
       writeSummary(dir, "   \n");
-      assert.throws(() => writeStage4Pregate(dir), /ausente ou vazio/);
+      assert.throws(() => seal(dir), /ausente ou vazio/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -75,7 +94,7 @@ describe("stage4-pregate — marcador (#14034)", () => {
     const dir = tmpEdition();
     try {
       writeSummary(dir);
-      writeStage4Pregate(dir);
+      seal(dir);
       const c = checkStage4Pregate(dir);
       assert.equal(c.usable, true);
       assert.equal(c.reason, "ok");
@@ -90,7 +109,7 @@ describe("stage4-pregate — marcador (#14034)", () => {
       const dir = tmpEdition();
       try {
         writeSummary(dir);
-        writeStage4Pregate(dir);
+        seal(dir);
         writeFileSync(join(dir, file), "conteúdo editado pelo editor\n");
         const c = checkStage4Pregate(dir);
         assert.equal(c.usable, false, file);
@@ -107,7 +126,7 @@ describe("stage4-pregate — marcador (#14034)", () => {
     const dir = tmpEdition();
     try {
       writeSummary(dir);
-      writeStage4Pregate(dir, { blocking: ["fact-check exit 2: D2 claim sem fonte", "  "] });
+      seal(dir, { blocking: ["fact-check exit 2: D2 claim sem fonte", "  "] });
       const c = checkStage4Pregate(dir);
       assert.equal(c.usable, false);
       assert.equal(c.completed, true);
@@ -124,7 +143,7 @@ describe("stage4-pregate — marcador (#14034)", () => {
       writeFileSync(join(dir, PREGATE_MARKER_REL), "{nao json");
       assert.equal(checkStage4Pregate(dir).reason, "corrupt");
       writeSummary(dir);
-      writeStage4Pregate(dir);
+      seal(dir);
       rmSync(join(dir, PREGATE_SUMMARY_REL));
       assert.equal(checkStage4Pregate(dir).reason, "summary_missing");
     } finally {
@@ -137,22 +156,176 @@ describe("stage4-pregate — marcador (#14034)", () => {
     const out: string[] = [];
     const err: string[] = [];
     try {
-      assert.equal(pregateMain(["check", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s)), 1);
+      assert.equal(pregateMain(["check", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s), CLEAN), 1);
       writeSummary(dir);
-      assert.equal(pregateMain(["write", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s)), 0);
-      assert.equal(pregateMain(["check", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s)), 0);
+      assert.equal(pregateMain(["write", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s), CLEAN), 2, "sem snapshot, recusa");
+      assert.equal(pregateMain(["snapshot", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s), CLEAN), 0);
+      assert.equal(pregateMain(["write", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s), CLEAN), 0);
+      assert.equal(pregateMain(["check", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s), CLEAN), 0);
       assert.equal(
-        pregateMain(["write", "--edition-dir", dir, "--blocking", "a", "--blocking", "b"], (s) => out.push(s), (s) => err.push(s)),
+        pregateMain(["write", "--edition-dir", dir, "--blocking", "a", "--blocking", "b"], (s) => out.push(s), (s) => err.push(s), CLEAN),
         0,
       );
       assert.deepEqual(JSON.parse(readFileSync(join(dir, PREGATE_MARKER_REL), "utf8")).blocking, ["a", "b"]);
-      assert.equal(pregateMain(["check", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s)), 1);
-      assert.equal(pregateMain(["write", "--edition-dir"], (s) => out.push(s), (s) => err.push(s)), 2);
-      assert.equal(pregateMain(["check", "--edition-dir", dir, "--blocking", "x"], (s) => out.push(s), (s) => err.push(s)), 2);
+      assert.equal(pregateMain(["check", "--edition-dir", dir], (s) => out.push(s), (s) => err.push(s), CLEAN), 1);
+      assert.equal(pregateMain(["write", "--edition-dir"], (s) => out.push(s), (s) => err.push(s), CLEAN), 2);
+      assert.equal(pregateMain(["check", "--edition-dir", dir, "--blocking", "x"], (s) => out.push(s), (s) => err.push(s), CLEAN), 2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("stage4-pregate — snapshot depois da última autocorreção (P2 do review da #14103)", () => {
+  it("write sem snapshot recusa e não grava marcador", () => {
+    const dir = tmpEdition();
+    try {
+      writeSummary(dir);
+      assert.throws(() => writeStage4Pregate(dir, { runCheck: CLEAN }), /snapshot do conteúdo ausente/);
+      assert.ok(!existsSync(join(dir, PREGATE_MARKER_REL)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("texto mudado entre o snapshot e o write = recusa, sem marcador", () => {
+    const dir = tmpEdition();
+    try {
+      writeSummary(dir);
+      snapshotStage4Pregate(dir);
+      writeFileSync(join(dir, "03-social.md"), "editado depois do snapshot\n");
+      assert.throws(() => writeStage4Pregate(dir, { runCheck: CLEAN }), /mudou depois do snapshot \(03-social\.md\)/);
+      assert.ok(!existsSync(join(dir, PREGATE_MARKER_REL)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("texto mudado DURANTE os checks também recusa", () => {
+    const dir = tmpEdition();
+    try {
+      writeSummary(dir);
+      snapshotStage4Pregate(dir);
+      const mutating: CheckRunner = (script, args) => {
+        if (script === "check-invariants.ts") writeFileSync(join(dir, "02-reviewed.md"), "mexido\n");
+        return CLEAN(script, args);
+      };
+      assert.throws(() => writeStage4Pregate(dir, { runCheck: mutating }), /mudou durante os checks/);
+      assert.ok(!existsSync(join(dir, PREGATE_MARKER_REL)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("stage4-pregate — bloqueios determinísticos (P2 do review da #14103)", () => {
+  const dir = "/x/edicao";
+  const runner = (over: Record<string, Partial<{ status: number; stdout: string; stderr: string }>>): CheckRunner =>
+    (script, args) => ({ ...CLEAN(script, args), ...(over[script] ?? {}) }) as ReturnType<CheckRunner>;
+
+  it("tudo limpo = nenhum bloqueio, e o fact-check roda com --check-blocking sobre o fact-check.json", () => {
+    const calls: Array<[string, string[]]> = [];
+    const r = deterministicBlocking(dir, (s, a) => (calls.push([s, a]), CLEAN(s, a)));
+    assert.deepEqual(r, []);
+    const fc = calls.find(([s]) => s === "run-fact-checker.ts");
+    assert.ok(fc && fc[1].includes("--check-blocking") && fc[1].some((a) => a.endsWith("fact-check.json")));
+    assert.deepEqual(
+      calls.map(([s]) => s),
+      ["run-fact-checker.ts", "check-invariants.ts", "lint-newsletter-md.ts", "validate-lancamentos.ts", "validate-domain-diversity.ts", "validate-amazon-affiliate-tags.ts"],
+    );
+  });
+
+  it("fact-check exit 2 e exit 1 DEFASADO bloqueiam; exit 1 comum (indisponível) não", () => {
+    assert.match(deterministicBlocking(dir, runner({ "run-fact-checker.ts": { status: 2 } })).join(), /NOT_FOUND_IN_SOURCE/);
+    assert.match(
+      deterministicBlocking(dir, runner({ "run-fact-checker.ts": { status: 1, stderr: "FACT-CHECK DEFASADO (#11685)" } })).join(),
+      /DEFASADO/,
+    );
+    assert.deepEqual(deterministicBlocking(dir, runner({ "run-fact-checker.ts": { status: 1, stderr: "fact-check.json ausente" } })), []);
+  });
+
+  it("lint GATE-BLOCKING, invariante e validate-* com exit != 0 bloqueiam; lint ilegível também", () => {
+    const lintFail = JSON.stringify({
+      stage: 4,
+      passed: false,
+      checks: [
+        { id: "no-xml-artifacts", severity: "gate-blocking", ok: false },
+        { id: "algum-warn", severity: "warn", ok: false },
+      ],
+    });
+    const r = deterministicBlocking(
+      dir,
+      runner({
+        "lint-newsletter-md.ts": { status: 1, stdout: lintFail },
+        "check-invariants.ts": { status: 1 },
+        "validate-domain-diversity.ts": { status: 1 },
+      }),
+    );
+    assert.equal(r.length, 3, r.join(" | "));
+    assert.match(r.join(), /no-xml-artifacts/);
+    assert.ok(!r.join().includes("algum-warn"));
+    assert.match(deterministicBlocking(dir, runner({ "lint-newsletter-md.ts": { status: 1, stdout: "crash" } })).join(), /sem JSON legível/);
+  });
+
+  it("write grava os bloqueios do disco mesmo sem --blocking, e soma o --blocking do playbook", () => {
+    const d = tmpEdition();
+    try {
+      writeSummary(d);
+      snapshotStage4Pregate(d);
+      const m = writeStage4Pregate(d, { runCheck: runner({ "run-fact-checker.ts": { status: 2 } }), blocking: ["halt banner"] });
+      assert.equal(m.blocking.length, 2);
+      assert.equal(checkStage4Pregate(d).reason, "blocked");
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("stage4-pregate — o hash cobre imagens, 01-approved.json e 01-eia.md (P3 do review da #14103)", () => {
+  function prepared() {
+    const dir = tmpEdition();
+    writeFileSync(join(dir, "01-eia.md"), "eia\n");
+    writeFileSync(join(dir, "_internal", "01-approved.json"), "{}\n");
+    writeFileSync(join(dir, "04-d1-2x1.jpg"), "img1");
+    writeFileSync(join(dir, "04-d1-carousel-p1-4x5.jpg"), "card1");
+    writeFileSync(join(dir, "01-eia-A.jpg"), "a");
+    writeFileSync(join(dir, "04-livros-promo.jpg"), "fora");
+    writeSummary(dir);
+    seal(dir);
+    return dir;
+  }
+
+  it("lista de arquivos cobertos", () => {
+    const dir = prepared();
+    try {
+      const files = contentFiles(dir);
+      for (const f of ["02-reviewed.md", "03-social.md", "01-eia.md", "_internal/01-approved.json", "04-d1-2x1.jpg", "04-d1-carousel-p1-4x5.jpg", "01-eia-A.jpg"]) {
+        assert.ok(files.includes(f), f);
+      }
+      assert.ok(!files.includes("04-livros-promo.jpg"), "promo de livros não é imagem de destaque");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const [what, mutate] of [
+    ["imagem de destaque trocada", (d: string) => writeFileSync(join(d, "04-d1-2x1.jpg"), "img nova")],
+    ["card do carrossel novo", (d: string) => writeFileSync(join(d, "04-d2-carousel-p2-4x5.jpg"), "novo")],
+    ["imagem removida", (d: string) => rmSync(join(d, "04-d1-carousel-p1-4x5.jpg"))],
+    ["01-approved.json mudou", (d: string) => writeFileSync(join(d, "_internal", "01-approved.json"), '{"x":1}\n')],
+    ["01-eia.md mudou", (d: string) => writeFileSync(join(d, "01-eia.md"), "outro\n")],
+  ] as const) {
+    it(`${what} = stale`, () => {
+      const dir = prepared();
+      try {
+        assert.equal(checkStage4Pregate(dir).usable, true);
+        mutate(dir);
+        assert.equal(checkStage4Pregate(dir).reason, "stale");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 describe("edition-stage-runner — prompt do pré-gate (#14034)", () => {
@@ -229,9 +402,56 @@ describe("edition-stage-runner — pós-condição do pré-gate (#14034)", () =>
 
   it("spawn que escreve o sentinel do Stage 4 = falha alta (gate aprovado sem o editor)", () => {
     const { runOpts } = world({ spawnWrites: "sentinel" });
-    const r = runEditionStages(runOpts);
-    assert.equal(r.exitCode, 1);
-    assert.match(r.outcomes[0].failureTail ?? "", /gate aprovado sem o editor/);
+    const quarantined: string[] = [];
+    const r = runEditionStages({ ...runOpts, quarantineSentinelFn: (d) => (quarantined.push(d), "q") });
+    assert.equal(r.exitCode, PREGATE_SENTINEL_REJECTED_EXIT);
+    assert.equal(r.outcomes.length, 1);
+    assert.equal(r.outcomes[0].exitCode, PREGATE_SENTINEL_REJECTED_EXIT);
+    assert.match(r.outcomes[0].failureTail ?? "", /gate aprovado sem o editor.*PARAR/);
+    assert.deepEqual(quarantined, [runOpts.editionDir]);
+  });
+
+  it("P1 (#14103): sentinel do pré-gate vai para quarentena em disco e a reexecução mostra o gate de novo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pregate-q-14034-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "02-reviewed.md"), "x\n");
+      writeFileSync(join(dir, "03-social.md"), "y\n");
+      const prompts: string[] = [];
+      let spawnWritesSentinel = true;
+      const execFn = ((_c: string, args: string[]) => {
+        prompts.push(args[args.length - 1]);
+        if (spawnWritesSentinel) {
+          writeSentinel(dir, 4, ["02-reviewed.md", "03-social.md"]);
+          throw Object.assign(new Error("crash depois de aprovar"), { status: 1 });
+        }
+        writeSummary(dir);
+        seal(dir);
+        return "";
+      }) as unknown as typeof import("node:child_process").execFileSync;
+      const base = {
+        aammdd: "261127",
+        editionDir: dir,
+        repoRootAbs: dir,
+        resolveClaudeBin: () => "/fake/bin/claude",
+        env: {} as NodeJS.ProcessEnv,
+        plan: [{ stage: 4, skill: "diaria-4-revisao" }],
+        stage4PreGate: true,
+        execFn,
+        nowMs: () => 0,
+        readEditionLockFn: () => null,
+      };
+      const r1 = runEditionStages(base);
+      assert.equal(r1.exitCode, PREGATE_SENTINEL_REJECTED_EXIT);
+      assert.ok(!existsSync(join(dir, "_internal", ".step-4-done.json")), "sentinel não pode ficar no lugar");
+      assert.ok(existsSync(join(dir, PREGATE_REJECTED_SENTINEL_REL)));
+      spawnWritesSentinel = false;
+      const r2 = runEditionStages(base);
+      assert.equal(prompts.length, 2, "a reexecução tem de spawnar o pré-gate de novo, não pular como 'gate aprovado'");
+      assert.equal(r2.exitCode, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("gate já aprovado ou pré-gate já feito para o conteúdo atual = SKIP, sem spawn", () => {
@@ -355,7 +575,8 @@ describe("run-edition-stages CLI — --stage4-pre-gate (#14034)", () => {
       if (stage === 4) {
         // o spawn do pré-gate grava resumo + marcador (o que o playbook manda)
         writeFileSync(join(editionDir, PREGATE_SUMMARY_REL), "## violations_block\n✅\n");
-        writeStage4Pregate(editionDir);
+        snapshotStage4Pregate(editionDir);
+        writeStage4Pregate(editionDir, { runCheck: CLEAN });
       } else {
         done.add(stage);
       }
