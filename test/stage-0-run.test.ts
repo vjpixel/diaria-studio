@@ -440,6 +440,22 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.equal(stateCall!.args[idx + 1], "false");
   });
 
+  it("ping real da Clarice (#14084): exit 1 (não executou) grava null, não false, com aviso próprio", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "clarice-healthcheck.ts": (args) => (args.includes("--real-chunk") ? fail(1) : ok()),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      baseDeps({ exec, execAsync }),
+    );
+    const stateCall = calls.find((c) => c.script.includes("preflight-state"));
+    assert.equal(stateCall!.args[stateCall!.args.indexOf("--clarice-real-probe") + 1], "null");
+    assert.ok(result.notes.some((n) => /ping real da Clarice não executou/.test(n)));
+  });
+
   it("ping real da Clarice (#14029): fase preflight não paga os 60 s do ping real", async () => {
     const { exec, calls } = makeFakeExec({
       "find-current-edition.ts": () => ({ code: 0, stdout: "data/editions/2604/260423\n", stderr: "" }),

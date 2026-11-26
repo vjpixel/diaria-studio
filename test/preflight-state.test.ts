@@ -20,6 +20,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   readPreflightState,
+  readPreflightStateDetailed,
   writePreflightState,
   type PreflightState,
 } from "../scripts/lib/preflight-state.ts";
@@ -266,6 +267,26 @@ describe("preflight-state.ts CLI (#5414)", () => {
     );
     assert.equal(state.clariceRealProbe, false);
     assert.equal(state.clariceRest, true);
+    // #14084: "null" sobrescreve o false de uma rodada anterior.
+    execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--clarice-real-probe", "null"], { cwd: ROOT, shell: true });
+    const after = JSON.parse(
+      execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], { encoding: "utf8", cwd: ROOT, shell: true }).trim(),
+    );
+    assert.equal(after.clariceRealProbe, null);
+  });
+
+  it("readPreflightStateDetailed distingue ausente de ilegível (#14084)", () => {
+    const own = mkdtempSync(join(tmpdir(), "preflight-state-detailed-"));
+    try {
+      assert.equal(readPreflightStateDetailed(own).error, null);
+      mkdirSync(join(own, "_internal"), { recursive: true });
+      writeFileSync(join(own, "_internal", "preflight-state.json"), "{nope");
+      const r = readPreflightStateDetailed(own);
+      assert.match(r.error ?? "", /JSON inválido/);
+      assert.equal(r.state.clariceRealProbe, null);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
   });
 
   it("sem --edition-dir -> exit != 0", () => {

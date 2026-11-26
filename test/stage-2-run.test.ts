@@ -100,6 +100,20 @@ describe("teto da Clarice na Etapa 2 (#14029)", () => {
     assert.equal(CLARICE_DEGRADED_DEADLINE_MS, 90_000);
   });
 
+  it("o reason degradado fala da newsletter e não promete skip no social (#14084)", () => {
+    const { reason } = resolveClariceStage2DeadlineMs({ clariceRealProbe: false });
+    assert.match(reason, /newsletter/);
+    assert.match(reason, /social mantém o teto normal/);
+    assert.doesNotMatch(reason, /social[^.]*skip/);
+  });
+
+  it("estado ilegível → teto normal com stateError e reason verdadeiro", () => {
+    const d = resolveClariceStage2DeadlineMs({ clariceRealProbe: null }, "JSON inválido em x");
+    assert.equal(d.deadlineMs, 480_000);
+    assert.equal(d.stateError, "JSON inválido em x");
+    assert.match(d.reason, /ilegível/);
+  });
+
   it("o teto normal é o mesmo do clarice-correct.ts", () => {
     assert.equal(CLARICE_NORMAL_DEADLINE_MS, CLARICE_TOTAL_DEADLINE_MS);
   });
@@ -218,6 +232,20 @@ describe("--phase post-writers", () => {
     }
     assert.equal(r.pendingAgentDispatch[0]?.agent, "writer-pool");
     assert.ok(readRunState(dir)?.poolDispatchAt);
+  });
+
+  it("Curto ausente: 1ª vez re-dispatch (code 3), 2ª vez aviso no gate (#14084)", async () => {
+    await preDispatch();
+    const curtoFails: Handler = (args) => (args.includes("social-curto") ? fail(1, "", "03-curto.tmp.md missing") : ok());
+    const first = makeDeps({ "verify-agent-outputs.ts": curtoFails });
+    const r1 = await runStage2(["--phase", "post-writers", "--edition", E], first.deps);
+    assert.equal(r1.code, 3);
+    assert.match(r1.fixes[0].action, /social-curto/);
+    const second = makeDeps({ "verify-agent-outputs.ts": curtoFails });
+    const r2 = await runStage2(["--phase", "post-writers", "--edition", E], second.deps);
+    assert.equal(r2.code, 0);
+    assert.ok(r2.gateNotes.some((n) => /Curto ausente/.test(n)));
+    assert.ok(readRunState(dir)?.curtoWarn);
   });
 
   it("# Social duplicado → code 1", async () => {
@@ -366,7 +394,9 @@ describe("--phase post-humanize", () => {
     const clariceCalls = calls.filter((c) => c.script.includes("clarice-correct"));
     assert.equal(clariceCalls.length, 2, "newsletter e social, em série");
     assert.equal(argOf(clariceCalls[0], "--deadline-ms"), "90000");
-    assert.equal(argOf(clariceCalls[1], "--deadline-ms"), "90000");
+    assert.ok(Number(argOf(clariceCalls[1], "--deadline-ms")) > 90_000, "o social não herda o teto degradado da newsletter (#14084)");
+    assert.equal(r.nextPhase, "post-checks", "a fase termina depois da prova do social (#14084)");
+    assert.ok(!calls.some((c) => c.script.includes("check-stage2-invariants")), "post-checks é outra chamada");
     const skip = calls.find((c) => c.script.includes("clarice-pending") && c.args[0] === "skip");
     assert.equal(argOf(skip, "--reason"), "clarice_unavailable");
     assert.equal(r.clarice?.newsletter, "unavailable-skipped");
@@ -388,13 +418,42 @@ describe("--phase post-humanize", () => {
     assert.match(r.haltRequired!.action, /--social-clarice-only/);
     assert.ok(!first.calls.some((c) => c.script.includes("check-humanizer-social")), "sem prova de Clarice gravada");
 
+    assert.equal(readRunState(dir)?.clariceDone?.newsletter, "applied", "a newsletter fica registrada mesmo com o halt do social");
     const retry = makeDeps({ ...happyChecks, "clarice-correct.ts": writeCorrected });
-    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only"], retry.deps);
+    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only", "--deadline-ms", "300000"], retry.deps);
     assert.equal(r2.code, 0);
     const clariceCalls = retry.calls.filter((c) => c.script.includes("clarice-correct"));
     assert.equal(clariceCalls.length, 1, "a newsletter não roda de novo");
     assert.ok(isSocial(clariceCalls[0].args));
+    assert.equal(argOf(clariceCalls[0], "--deadline-ms"), "300000", "override do teto na retomada");
     assert.equal(r2.clarice?.social, "applied");
+  });
+
+  it("retomada do social com ping real falho usa o teto normal, não 90 s (#14084 P1)", async () => {
+    await upToHumanize();
+    humanizeDone();
+    write("_internal/preflight-state.json", JSON.stringify({ clariceRealProbe: false }));
+    const { deps, calls } = makeDeps({ ...happyChecks, "clarice-correct.ts": writeCorrected });
+    await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only"], deps);
+    assert.equal(argOf(calls.find((c) => c.script.includes("clarice-correct")), "--deadline-ms"), "480000");
+  });
+
+  it("--deadline-ms sem --social-clarice-only → code 1", async () => {
+    const { deps } = makeDeps();
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E, "--deadline-ms", "1000"], deps);
+    assert.equal(r.code, 1);
+  });
+
+  it("preflight-state.json corrompido → teto normal com aviso no gate e log (#14084)", async () => {
+    await upToHumanize();
+    humanizeDone();
+    write("_internal/preflight-state.json", "{corrompido");
+    const { deps, calls } = makeDeps({ ...happyChecks, "clarice-correct.ts": writeCorrected });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], deps);
+    assert.ok(r.clarice?.stateError);
+    assert.ok(r.gateNotes.some((n) => /ilegível/.test(n)));
+    assert.ok(calls.some((c) => c.script.includes("log-event") && c.args.join(" ").includes("preflight-state ilegível")));
+    assert.equal(argOf(calls.find((c) => c.script.includes("clarice-correct")), "--deadline-ms"), "480000");
   });
 
   it("ping real ok → teto normal de 480 s", async () => {
@@ -433,13 +492,37 @@ describe("--phase post-humanize", () => {
     assert.match(readFileSync(join(dir, "03-social.md"), "utf8"), /A3/);
     assert.equal(r.clarice?.social, "applied");
     assert.ok(calls.some((c) => c.script.includes("clarice-pending") && c.args[0] === "clear"));
-    assert.equal(r.nextPhase, "post-gate");
+    assert.equal(r.nextPhase, "post-checks");
+    assert.deepEqual(readRunState(dir)?.clariceDone, { newsletter: "applied", social: "applied" });
   });
 });
 
+function markClariceDone(): void {
+  const st = readRunState(dir)!;
+  writeFileSync(join(dir, "_internal", "02-stage2-run-state.json"), JSON.stringify({ ...st, clariceDone: { newsletter: "applied", social: "applied" } }));
+}
+
 describe("--phase post-checks", () => {
+  it("sem as Clarices registradas pelo post-humanize → code 1", async () => {
+    await preDispatch();
+    const { deps } = makeDeps(happyChecks);
+    const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
+    assert.equal(r.code, 1);
+  });
+
+  it("--no-gates do pre-dispatch vale no re-run sem a flag (#14084)", async () => {
+    const pre = makeDeps();
+    await runStage2(["--phase", "pre-dispatch", "--edition", E, "--no-gates"], pre.deps);
+    markClariceDone();
+    write("02-reviewed.md", "x\n");
+    const { deps, calls } = makeDeps(happyChecks);
+    await runStage2(["--phase", "post-checks", "--edition", E], deps);
+    assert.ok(calls.some((c) => c.script.includes("plant-intentional-error")));
+  });
+
   it("check-stage2-invariants exit 1 → code 3, re-rodar post-checks", async () => {
     await preDispatch();
+    markClariceDone();
     write("02-reviewed.md", "x\n");
     const { deps } = makeDeps({ ...happyChecks, "check-stage2-invariants.ts": () => fail(1, "", "humanizer-ran") });
     const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
@@ -449,6 +532,7 @@ describe("--phase post-checks", () => {
 
   it("plantio só com --no-gates", async () => {
     await preDispatch();
+    markClariceDone();
     write("02-reviewed.md", "x\n");
     const a = makeDeps(happyChecks);
     await runStage2(["--phase", "post-checks", "--edition", E], a.deps);
@@ -476,6 +560,21 @@ describe("--phase post-gate", () => {
     const w = second.calls.find((c) => c.script.includes("pipeline-sentinel"));
     assert.equal(w?.args[0], "write");
     for (const rel of STAGE2_SNAPSHOTS) assert.ok(!existsSync(join(dir, rel)), `${rel} removido depois do sentinel`);
+  });
+
+  it("intentional-error.json incompleto: interativo para antes do sentinel; --no-gates segue (#14084)", async () => {
+    await preDispatch();
+    write("02-reviewed.md", "x\n");
+    write("_internal/02-pre-title-picker.md", "x\n");
+    const a = makeDeps({ "validate-frontmatter-yaml.ts": () => fail(1, "", "{PREENCHER}") });
+    const r = await runStage2(["--phase", "post-gate", "--edition", E, "--after-title-picker"], a.deps);
+    assert.equal(r.code, 3);
+    assert.deepEqual(r.rerunArgs, ["--after-title-picker"]);
+    assert.ok(!a.calls.some((c) => c.script.includes("pipeline-sentinel")));
+    const b = makeDeps({ "validate-frontmatter-yaml.ts": () => fail(1, "", "{PREENCHER}") });
+    const r2 = await runStage2(["--phase", "post-gate", "--edition", E, "--after-title-picker", "--no-gates"], b.deps);
+    assert.equal(r2.code, 0);
+    assert.ok(b.calls.some((c) => c.script.includes("pipeline-sentinel")));
   });
 
   it("sentinel recusado por invariante → code 3 e snapshots preservados", async () => {

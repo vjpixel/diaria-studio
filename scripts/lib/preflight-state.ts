@@ -121,24 +121,33 @@ function normalizeState(raw: Partial<PreflightState>): PreflightState {
  * silêncio) ou JSON corrompido/shape inesperado -> todos os campos `null`
  * (equivalente a "nunca verificado"). */
 export function readPreflightState(editionDir: string): PreflightState {
+  return readPreflightStateDetailed(editionDir).state;
+}
+
+/**
+ * Igual a `readPreflightState`, mas devolve também o motivo quando o arquivo
+ * EXISTE e não pôde ser lido (erro de FS, JSON inválido) — #14084: quem decide
+ * algo pelo estado (o teto da Clarice no Stage 2) precisa distinguir "nunca
+ * sondado" de "arquivo ilegível", em vez de cair no default em silêncio.
+ * Arquivo ausente → `error: null` (legítimo).
+ */
+export function readPreflightStateDetailed(editionDir: string): { state: PreflightState; error: string | null } {
   const p = statePath(editionDir);
   let raw: string | null;
   try {
     raw = tryReadRaw(p);
   } catch (err) {
-    console.error(
-      `preflight-state: falha ao ler ${p}: ${(err as Error).message} — tratando como nunca verificado`,
-    );
-    return { ...DEFAULT_STATE };
+    const error = `falha ao ler ${p}: ${(err as Error).message}`;
+    console.error(`preflight-state: ${error} — tratando como nunca verificado`);
+    return { state: { ...DEFAULT_STATE }, error };
   }
-  if (raw === null) return { ...DEFAULT_STATE };
+  if (raw === null) return { state: { ...DEFAULT_STATE }, error: null };
   try {
-    return normalizeState(JSON.parse(raw) as Partial<PreflightState>);
+    return { state: normalizeState(JSON.parse(raw) as Partial<PreflightState>), error: null };
   } catch (err) {
-    console.error(
-      `preflight-state: JSON inválido em ${p}: ${(err as Error).message} — tratando como nunca verificado`,
-    );
-    return { ...DEFAULT_STATE };
+    const error = `JSON inválido em ${p}: ${(err as Error).message}`;
+    console.error(`preflight-state: ${error} — tratando como nunca verificado`);
+    return { state: { ...DEFAULT_STATE }, error };
   }
 }
 
@@ -203,10 +212,13 @@ const FIELD_BY_FLAG: Record<string, keyof Omit<PreflightState, "capturedAt">> = 
   "cloudflare-token-ok": "cloudflareTokenOk",
 };
 
-function parseBoolFlag(raw: string, flag: string): boolean {
+function parseBoolFlag(raw: string, flag: string): boolean | null {
   if (raw === "true") return true;
   if (raw === "false") return false;
-  throw new Error(`--${flag} deve ser "true" ou "false", recebido "${raw}"`);
+  // #14084: `null` = "não medido" (ex.: ping real que não executou), para
+  // sobrescrever um valor de rodada anterior.
+  if (raw === "null") return null;
+  throw new Error(`--${flag} deve ser "true", "false" ou "null", recebido "${raw}"`);
 }
 
 // CLI:
