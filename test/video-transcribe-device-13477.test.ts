@@ -68,6 +68,14 @@ def decode_audio(path, sampling_rate=16000):
     return [0.0] * (sampling_rate * 30)
 `,
   );
+  // #13989: o compute type da GPU sai de ctranslate2.get_supported_compute_types("cuda"). Um
+  // ctranslate2 falso com int8_float16 (GPU tipo Neo) deixa estes testes independentes do
+  // ctranslate2 real que a máquina tiver (no 300, a GTX 1060 não lista int8_float16).
+  mkdirSync(join(dir, "ctranslate2"));
+  writeFileSync(
+    join(dir, "ctranslate2", "__init__.py"),
+    `def get_supported_compute_types(device):\n    return {"float32", "int8", "int8_float32", "int8_float16", "float16"}\n`,
+  );
   const audio = join(dir, "a.wav");
   writeFileSync(audio, "x");
   return { dir, audio, log };
