@@ -749,6 +749,109 @@ describe("#7867 item 1 — main() com --schedule", () => {
     }
   });
 
+  // #14012: a criação agendada detectava a audiência errada e deixava o envio
+  // na fila (só o --update desagendava). Kit fake com estado: a criação agenda,
+  // a releitura ecoa filtro divergente, o PATCH `send_at: null` desagenda.
+  function makeStatefulCreateKit(opts: { unscheduleSticks?: boolean; patchThrows?: boolean } = {}) {
+    const patches: { id: number; input: UpdateBroadcastInput }[] = [];
+    let sendAt: string | null = null;
+    const overrides: Partial<ApoiadoresKitDeps> = {
+      createBroadcast: async (input) => {
+        sendAt = input.send_at ?? null;
+        return { id: 999 };
+      },
+      getBroadcast: async () => ({
+        subscriber_filter: [],
+        status: sendAt ? "scheduled" : "draft",
+        send_at: sendAt,
+      }),
+      updateBroadcast: async (id, input) => {
+        patches.push({ id, input });
+        if (opts.patchThrows) throw new Error("HTTP 503");
+        if (opts.unscheduleSticks !== false && "send_at" in input) sendAt = input.send_at ?? null;
+      },
+    };
+    return { overrides, patches, liveSendAt: () => sendAt };
+  }
+
+  async function runScheduledCreate(kit: ReturnType<typeof makeStatefulCreateKit>) {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--schedule",
+        "2026-09-15T10:00:00-03:00",
+      ];
+      mockProcessExit();
+      const spy = makeSpy(kit.overrides);
+      let error: unknown = null;
+      try {
+        await main(root, spy.deps);
+      } catch (e) {
+        error = e;
+      }
+      return { spy, error };
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("#14012 regressão: criação AGENDADA com audiência divergente DESAGENDA o broadcast antes de lançar", async () => {
+    const kit = makeStatefulCreateKit();
+    const { spy, error } = await runScheduledCreate(kit);
+
+    assert.ok(error, "audiência divergente continua abortando alto");
+    assert.match(String(error), /AUDIÊNCIA NÃO CONFERE/);
+    assert.match(String(error), /DESAGENDADO/);
+    assert.match(String(error), /nada será enviado/);
+    assert.match(String(error), /id=999/);
+    assert.deepEqual(kit.patches, [{ id: 999, input: { send_at: null } }], "um único PATCH send_at:null no broadcast criado");
+    assert.equal(kit.liveSendAt(), null, "o Kit não tem mais envio na fila");
+    assert.equal(spy.written.length, 1);
+    assert.equal(spy.written[0].state.status, "draft_prepared", "nunca 'sent'");
+    assert.equal(spy.written[0].state.kitAudienceVerified, false);
+    assert.equal(spy.written[0].state.kitBroadcastId, 999);
+  });
+
+  it("#14012: desagendamento que NÃO pega na releitura -> erro ALTO nomeando o broadcast id", async () => {
+    const kit = makeStatefulCreateKit({ unscheduleSticks: false });
+    const { error } = await runScheduledCreate(kit);
+    assert.match(String(error), /NÃO pegou/);
+    assert.match(String(error), /broadcast id=999 SEGUE AGENDADO/);
+    assert.match(String(error), /DESAGENDE À MÃO/);
+    assert.doesNotMatch(String(error), /nada será enviado/);
+    assert.equal(kit.liveSendAt(), "2026-09-15T10:00:00-03:00");
+  });
+
+  it("#14012: PATCH de desagendamento que FALHA -> erro ALTO nomeando o broadcast id", async () => {
+    const kit = makeStatefulCreateKit({ patchThrows: true });
+    const { error } = await runScheduledCreate(kit);
+    assert.match(String(error), /desagendar FALHOU \(HTTP 503\)/);
+    assert.match(String(error), /broadcast id=999 pode SEGUIR AGENDADO/);
+    assert.match(String(error), /DESAGENDE À MÃO/);
+  });
+
+  it("#14012: caminho feliz agendado continua agendando, sem nenhum PATCH", async () => {
+    const kit = makeStatefulCreateKit();
+    kit.overrides.getBroadcast = async () => ({
+      subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }],
+      status: kit.liveSendAt() ? "scheduled" : "draft",
+      send_at: kit.liveSendAt(),
+    });
+    const { spy, error } = await runScheduledCreate(kit);
+    assert.equal(error, null);
+    assert.equal(kit.patches.length, 0);
+    assert.equal(kit.liveSendAt(), "2026-09-15T10:00:00-03:00");
+    assert.equal(spy.written[0].state.status, "sent");
+  });
+
   it("#7867 review (PR #7882): releitura NÃO CONFIRMÁVEL (verified:null) + --schedule NUNCA marca 'sent'", async () => {
     // Regressão do achado do silent-failure-hunter: `verified` tem 3
     // estados (true/false/null), e só `false` lançava antes do fix — `null`

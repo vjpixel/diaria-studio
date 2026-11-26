@@ -46,6 +46,7 @@ import {
   hashCarouselSlideTexts,
   readCarouselSourceHashes,
   findOverflowingCarouselSlides, // #6078
+  carouselCardsParagraphCountProblem, // #14019
   readCarouselCardParagraphs, // #11211
   resolveCarouselCardText, // #11211
   DAILY_CAROUSEL_BODY_SIZE, // #6078
@@ -3714,8 +3715,30 @@ function checkCarouselTextOverflow(
     if (!cardsSrc) continue;
     const dText = cardsSrc.text;
     const sectionId = cardsSrc.sectionId;
+    const cardText = resolveCarouselCardText(dText.trim(), storedParagraphs);
 
-    const overflowing = findOverflowingCarouselSlides(resolveCarouselCardText(dText.trim(), storedParagraphs), ctaOverride);
+    // #14019: `## d{N}-cards` com outra contagem que não 3 parágrafos. O gen
+    // aborta nesse caso; aqui o editor fica sabendo antes do gate, com o texto
+    // na mão. Arte mantida pelo editor (#11210, com slides no disco) não é
+    // rasterizada de novo, então o aviso desce para warning.
+    if (cardsSrc.source === "cards") {
+      const problema = carouselCardsParagraphCountProblem(d, sectionId, cardText);
+      if (problema) {
+        const mantida = keepArt[d] && carouselSlidesOnDisk(editionDir, d);
+        violations.push({
+          rule: "carousel-text-overflow",
+          message: mantida
+            ? `${problema} A arte foi MANTIDA pelo editor em _internal/${CAROUSEL_KEEP_ART_FILENAME}: "${keepArt[d]}"; o carrossel publica com a arte existente.`
+            : `${problema} Enquanto isso, "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" FALHA.`,
+          source_issue: "#14019",
+          severity: mantida ? "warning" : "error",
+          file: mantida ? carouselKeepArtPath(editionDir) : socialPath,
+        });
+        continue; // overflow mediria cards que o gen não vai montar
+      }
+    }
+
+    const overflowing = findOverflowingCarouselSlides(cardText, ctaOverride);
     if (overflowing.length === 0) continue;
 
     const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");
@@ -5176,7 +5199,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "carousel-text-overflow",
-    description: "parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210)",
+    description: "parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210); `## d{N}-cards` sem exatamente 3 parágrafos também (#14019)",
     source_issue: "#6078",
     stage: 4,
     run: (editionDir) => checkCarouselTextOverflow(editionDir),

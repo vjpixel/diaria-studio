@@ -25,9 +25,15 @@
  * comportamento é idêntico ao de antes do #4361 (sempre exit 0 neste modo).
  * (#11685) Com o flag, fact-check defasado + claim bloqueante sumido do texto
  * (removido ou reescrito, sem re-checagem) sai com exit 1: re-despachar o agente.
+ *
+ * (#14035) Re-run incremental por unidade: o modo padrão grava
+ * `_internal/fact-check-scope.json` (COMPLETO | PARCIAL com as unidades d{N}/pool
+ * que mudaram | NENHUMA) e diz como despachar; `--full` força o completo. O
+ * passo 2 parcial é `--input-json _internal/fact-check.partial.json
+ * --merge-partial [--check-blocking]` (ver `scripts/lib/fact-check-units.ts`).
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { sectionHeaderRegex, ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
@@ -42,6 +48,18 @@ import {
   partitionBlockingByContent,
   type FactCheckContentHash,
 } from "./lib/fact-check-staleness.ts";
+import {
+  computeUnitHashes,
+  mergePartialClaims,
+  parseUnitHashes,
+  partialCoverageProblems,
+  PARTIAL_FILE,
+  planFactCheckScope,
+  readUnitSourceInputs,
+  SCOPE_FILE,
+  type FactCheckScopeFile,
+  type FactCheckUnitHashes,
+} from "./lib/fact-check-units.ts";
 import { extractDestaqueUrlsByNumber } from "./match-prompts-to-destaques.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import type { SourceCompleteness } from "./lib/diaria/paywall-preview.ts";
@@ -143,6 +161,14 @@ export interface FactCheckResult {
    * mudar sai como defasada. Ausente em fact-check.json anterior ao #11671.
    */
   content_hash?: FactCheckContentHash;
+  /**
+   * (#14035) Hash por unidade (d1..d3, pool, global) do conteúdo checado —
+   * base do re-run incremental. Mesma regra de preservação do `content_hash`.
+   * Ausente em fact-check.json anterior ao #14035 (re-run sai completo).
+   */
+  unit_hashes?: FactCheckUnitHashes;
+  /** (#14035) Presente quando o resultado veio de um merge parcial. */
+  incremental?: { units: string[]; reused: string[]; merged_at: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -919,12 +945,14 @@ export function normalizeFactCheckResult(
   };
 
   const contentHash = parseContentHash(obj.content_hash);
+  const unitHashes = parseUnitHashes(obj.unit_hashes);
   return {
     edition,
     checked_at: typeof obj.checked_at === "string" ? obj.checked_at : new Date().toISOString(),
     claims,
     summary,
     ...(contentHash ? { content_hash: contentHash } : {}),
+    ...(unitHashes ? { unit_hashes: unitHashes } : {}),
   };
 }
 
@@ -971,6 +999,146 @@ export function formatDestaqueUrlDriftWarning(drift: DestaqueUrlDrift[], edition
     );
   }
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Fact-check incremental por unidade (#14035)
+// ---------------------------------------------------------------------------
+
+/** Carimbos atuais (arquivo inteiro + por unidade) lidos do disco. */
+export function currentStamps(
+  editionDir: string,
+  newsletterMd: string,
+  socialMd: string,
+): { content_hash: FactCheckContentHash; unit_hashes: FactCheckUnitHashes } {
+  return {
+    content_hash: computeContentHash(newsletterMd, socialMd),
+    unit_hashes: computeUnitHashes(newsletterMd, socialMd, readUnitSourceInputs(join(editionDir, "_internal"))),
+  };
+}
+
+/**
+ * (#14035) Passo 1 do §4c.6: compara o conteúdo atual com o carimbo por
+ * unidade do `fact-check.json` existente e grava `_internal/fact-check-scope.json`.
+ * Rodar DEPOIS do pré-download (as fontes entram no hash do destaque).
+ */
+export function planScopeForEdition(editionDir: string, opts: { forceFull?: boolean } = {}): FactCheckScopeFile {
+  const internalDir = join(editionDir, "_internal");
+  const newsletterMd = readFileSync(join(editionDir, "02-reviewed.md"), "utf8");
+  const socialMd = readFileSync(join(editionDir, "03-social.md"), "utf8");
+  const stamps = currentStamps(editionDir, newsletterMd, socialMd);
+  type PreviousResult = { unit_hashes?: unknown; claims?: unknown } | null;
+  let previous: PreviousResult;
+  try {
+    previous = JSON.parse(readFileSync(join(internalDir, "fact-check.json"), "utf8")) as PreviousResult;
+  } catch {
+    previous = null;
+  }
+  const hasPreviousResult = !!previous && Array.isArray(previous.claims);
+  const scope = planFactCheckScope(parseUnitHashes(previous?.unit_hashes), stamps.unit_hashes, {
+    hasPreviousResult,
+    forceFull: opts.forceFull,
+  });
+  const file: FactCheckScopeFile = { ...scope, planned_at: new Date().toISOString(), ...stamps };
+  mkdirSync(internalDir, { recursive: true });
+  writeFileSync(join(internalDir, SCOPE_FILE), JSON.stringify(file, null, 2), "utf8");
+  return file;
+}
+
+/**
+ * (#14035) Carimbos do plano COMPLETO em `fact-check-scope.json`, para o passo 2
+ * sem `--merge-partial`. `null` (cai no carimbo do conteúdo atual, o
+ * comportamento anterior) quando não há plano legível, o plano não é `full`, ou
+ * a saída do agente é anterior ao plano (não é a resposta a ele).
+ */
+export function fullPlanStamps(
+  internalDir: string,
+  inputPath: string,
+): { content_hash: FactCheckContentHash; unit_hashes: FactCheckUnitHashes } | null {
+  const scopePath = join(internalDir, SCOPE_FILE);
+  try {
+    const scope = JSON.parse(readFileSync(scopePath, "utf8")) as Partial<FactCheckScopeFile>;
+    if (scope.mode !== "full") return null;
+    if (statSync(inputPath).mtimeMs < statSync(scopePath).mtimeMs) return null;
+    const contentHash = parseContentHash(scope.content_hash);
+    const unitHashes = parseUnitHashes(scope.unit_hashes);
+    return contentHash && unitHashes ? { content_hash: contentHash, unit_hashes: unitHashes } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function formatScopeInstructions(scope: FactCheckScopeFile, editionDir: string): string[] {
+  const internal = `${editionDir.replace(/[/\\]+$/, "")}/_internal`;
+  if (scope.mode === "none") {
+    return [
+      `  Escopo do fact-check (#14035): NENHUMA unidade mudou (${scope.reason}) — não despachar o fact-checker;`,
+      `    seguir direto para o passo 2 com --input-json ${internal}/fact-check.json --check-blocking.`,
+    ];
+  }
+  if (scope.mode === "partial") {
+    return [
+      `  Escopo do fact-check (#14035): PARCIAL — rechecar ${scope.units.join(", ")}; reaproveitar ${scope.reused.join(", ") || "(nada)"}.`,
+      `    Despachar o fact-checker com units: ${JSON.stringify(scope.units)} e out_path: ${internal}/${PARTIAL_FILE};`,
+      `    passo 2: --input-json ${internal}/${PARTIAL_FILE} --merge-partial --check-blocking.`,
+    ];
+  }
+  return [
+    `  Escopo do fact-check (#14035): COMPLETO (${scope.reason}) — despachar sem units, out_path: ${internal}/fact-check.json.`,
+  ];
+}
+
+/**
+ * (#14035) Passo 2 parcial: junta `fact-check.partial.json` (só as unidades do
+ * plano) com o `fact-check.json` anterior e carimba com os hashes DO PLANO —
+ * se o texto mudou entre o plano e o merge, o resultado sai defasado e o
+ * `--check-blocking` acusa, nunca o contrário. Lança em qualquer estado que
+ * não garanta o recorte (o caller cai no exit 1: re-despachar completo),
+ * inclusive parcial que não cobre o plano (`partialCoverageProblems`: `units`
+ * ecoado diferente, `d{N}` sem claim `headline`, claim fora do escopo).
+ */
+export function mergePartialIntoResult(
+  editionDir: string,
+  partialPath: string,
+  edition: string,
+  manifest: ManifestEntry[] | null,
+): FactCheckResult {
+  const internalDir = join(editionDir, "_internal");
+  const scopePath = join(internalDir, SCOPE_FILE);
+  const prevPath = join(internalDir, "fact-check.json");
+  if (!existsSync(scopePath)) throw new Error(`${SCOPE_FILE} ausente — rodar o passo 1 (sem --input-json) antes`);
+  const scope = JSON.parse(readFileSync(scopePath, "utf8")) as FactCheckScopeFile;
+  if (scope.mode !== "partial" || !Array.isArray(scope.units) || scope.units.length === 0) {
+    throw new Error(`plano em ${SCOPE_FILE} não é parcial (mode=${scope.mode}) — usar --input-json sem --merge-partial`);
+  }
+  const unitHashes = parseUnitHashes(scope.unit_hashes);
+  const contentHash = parseContentHash(scope.content_hash);
+  if (!unitHashes || !contentHash) throw new Error(`${SCOPE_FILE} sem carimbos — re-rodar o passo 1`);
+  if (statSync(partialPath).mtimeMs < statSync(scopePath).mtimeMs) {
+    throw new Error(`${partialPath} é anterior ao plano de ${scope.planned_at} — re-despachar o fact-checker`);
+  }
+  if (!existsSync(prevPath)) throw new Error("fact-check.json anterior ausente — re-check completo");
+  const previous = normalizeFactCheckResult(JSON.parse(readFileSync(prevPath, "utf8")) as unknown, edition, { manifest });
+  const rawPartial = JSON.parse(readFileSync(partialPath, "utf8")) as unknown;
+  const partial = normalizeFactCheckResult(rawPartial, edition, { manifest });
+  const problems = partialCoverageProblems(
+    scope.units,
+    (rawPartial as { units?: unknown } | null)?.units,
+    partial.claims,
+  );
+  if (problems.length > 0) throw new Error(`parcial não cobre o plano: ${problems.join("; ")}`);
+  const { claims } = mergePartialClaims(previous.claims, partial.claims, scope.units);
+  const merged = normalizeFactCheckResult(
+    { claims, checked_at: partial.checked_at, content_hash: contentHash, unit_hashes: unitHashes },
+    edition,
+    { manifest },
+  );
+  merged.incremental = {
+    units: scope.units,
+    reused: scope.reused,
+    merged_at: new Date().toISOString(),
+  };
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,16 +1428,46 @@ async function main(): Promise<number | void> {
       console.error(`[run-fact-checker] --input-json não encontrado: ${inputPath}`);
       return 1;
     }
-    const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
     const manifest = readExistingManifest(join(internalDir, "fact-check-sources"));
-    const result = normalizeFactCheckResult(raw, edition, { manifest });
+    let result: FactCheckResult;
+    if (flags.has("merge-partial")) {
+      // #14035: re-run parcial — junta as unidades rechecadas com as intactas.
+      try {
+        result = mergePartialIntoResult(editionDir, inputPath, edition, manifest);
+      } catch (e) {
+        console.error(`[run-fact-checker] --merge-partial recusado (#14035): ${(e as Error).message}`);
+        console.error("  Ação: re-despachar o fact-checker COMPLETO (passo 1 com --full) e rodar o passo 2 sem --merge-partial.");
+        return 1;
+      }
+      const inc = result.incremental!;
+      console.log(
+        `  Fact-check incremental (#14035): rechecado ${inc.units.join(", ")}; reaproveitado ${inc.reused.join(", ") || "(nada)"}.`,
+      );
+    } else {
+      const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
+      result = normalizeFactCheckResult(raw, edition, { manifest });
+    }
     // #11671: carimbo do conteúdo checado. Preservado se já existe (re-rodar
     // --check-blocking depois de editar o texto NÃO recarimba — senão a
     // defasagem nunca apareceria); gravado na 1ª passada após o agente.
+    // #14035: o carimbo por unidade segue a mesma regra.
     const newsletterMd = readFileSync(newsletterPath, "utf8");
     const socialMd = readFileSync(socialPath, "utf8");
-    const currentHash = computeContentHash(newsletterMd, socialMd);
-    if (!result.content_hash) result.content_hash = currentHash;
+    const stamps = currentStamps(editionDir, newsletterMd, socialMd);
+    const currentHash = stamps.content_hash;
+    // #14035: no COMPLETO, carimba com os hashes do PLANO (passo 1, antes do
+    // agente), como o merge parcial já faz: edição do Studio durante os ~90 s
+    // do agente sai DEFASADA e entra no próximo re-run, nunca marcada como
+    // checada.
+    const planStamps = !flags.has("merge-partial") ? fullPlanStamps(internalDir, inputPath) : null;
+    // Só carimba por unidade junto com o carimbo inteiro (saída fresca do
+    // agente): num fact-check.json anterior ao #14035, carimbar agora marcaria
+    // como checado um texto que talvez já tenha mudado — o próximo re-run
+    // sai completo.
+    if (!result.content_hash) {
+      result.content_hash = planStamps?.content_hash ?? currentHash;
+      if (!result.unit_hashes) result.unit_hashes = planStamps?.unit_hashes ?? stamps.unit_hashes;
+    }
     const staleness = factCheckStaleness(result.content_hash, currentHash);
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
@@ -1391,6 +1589,14 @@ async function main(): Promise<number | void> {
     }
   } catch (e) {
     console.log(`  Fontes brutas: pré-download falhou (${(e as Error).message}); usar WebFetch.`);
+  }
+  // #14035: escopo do re-run, depois do pré-download (as fontes entram no hash).
+  try {
+    const scope = planScopeForEdition(editionDir, { forceFull: flags.has("full") });
+    for (const line of formatScopeInstructions(scope, args["edition-dir"])) console.log(line);
+  } catch (e) {
+    console.log(`  Escopo do fact-check (#14035): plano falhou (${(e as Error).message}) — despachar COMPLETO.`);
+    rmSync(join(internalDir, SCOPE_FILE), { force: true });
   }
   console.log("");
   console.log(

@@ -1,6 +1,5 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
@@ -8,6 +7,7 @@ import {
   shouldBlockRawPrReviewComment as shouldBlock,
   RAW_PR_REVIEW_COMMENT_BLOCK_REASON,
 } from "../.claude/hooks/block-raw-pr-review-comment.mjs";
+import { armedBashPreToolUseGuards } from "./_helpers/bash-pretooluse-guards.ts";
 
 // #11300 — na PR #11285 o dev-implementador postou o self-review por `gh api`
 // cru, sem o marcador `<!-- diaria-auto-review -->`; `resolve-review-threads.ts`
@@ -105,10 +105,7 @@ describe("hook block-raw-pr-review-comment.mjs (processo)", () => {
     assert.equal(bad.status, 0);
     assert.equal(bad.stdout, "");
   });
-  it("registrado em .claude/settings.json (PreToolUse Bash)", () => {
-    const settings = JSON.parse(readFileSync(join(import.meta.dirname, "..", ".claude", "settings.json"), "utf8"));
-    const bash = settings.hooks.PreToolUse.find((h: { matcher: string }) => h.matcher === "Bash");
-    const args = bash.hooks.flatMap((h: { args?: string[] }) => h.args ?? []);
-    assert.ok(args.some((a: string) => a.endsWith("block-raw-pr-review-comment.mjs")));
+  it("registrado em .claude/settings.json (PreToolUse Bash, via despachante #14045)", () => {
+    assert.ok(armedBashPreToolUseGuards().includes("block-raw-pr-review-comment.mjs"));
   });
 });

@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveLinkedinWorkerUrl } from "./verify-social-worker-dispatch.ts";
+import { resolveSocialWorkerToken } from "./lib/worker-queue-client.ts"; // #14062
 import { resolveWeeklyPublishedPath, verifyWeeklyWorkerDispatch } from "./lib/weekly-worker-dispatch.ts";
 import { notifyWeeklyDlqAlarm, evaluateWeeklyWorkerDlqAlarm } from "./lib/weekly-worker-dlq-alarm.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
@@ -79,7 +80,7 @@ async function main(): Promise<void> {
   }
 
   const workerUrl = resolveLinkedinWorkerUrl();
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerToken = resolveSocialWorkerToken();
   if (!workerUrl || !workerToken) {
     console.log(
       "[verify-weekly-worker] DIARIA_LINKEDIN_CRON_URL/TOKEN ausente — pulando reconciliação " +

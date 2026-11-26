@@ -115,6 +115,7 @@ import {
   waitForThreadsContainer,
   ThreadsApiError,
 } from "./lib/threads-api.ts"; // #10772 — cliente compartilhado com o vertical do perfil pessoal
+import { resolveSocialWorkerToken, resolveSocialWorkerUrl } from "./lib/worker-queue-client.ts"; // #14062
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -713,12 +714,8 @@ async function main(): Promise<number | void> {
   let workerToken = "";
   const platformConfig = gateConfig; // já lido acima pro gate de enabled:false
   if (doSchedule) {
-    workerUrl =
-      process.env.DIARIA_LINKEDIN_CRON_URL ??
-      platformConfig?.publishing?.social?.threads?.cloudflare_worker_url ??
-      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-      "";
-    workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    workerUrl = resolveSocialWorkerUrl(platformConfig, { preferSlot: "threads" });
+    workerToken = resolveSocialWorkerToken();
     // Mesmo fail-fast de publish-instagram.ts (#3817): sem Worker configurado,
     // --schedule não tem pra onde ir — a Threads API não agenda nativo, então
     // não existe fallback de fire-now "que ao menos publica"; abortar é mais

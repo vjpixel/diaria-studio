@@ -1,6 +1,6 @@
 /**
  * #11223: diagnóstico do ambiente da capa do vídeo do dia, para rodar o
- * `/diaria-publica-video` no `300` sem o Neo.
+ * `/diaria-publica` no `300` sem o Neo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -34,7 +34,7 @@ describe("#11223 video-env-check", () => {
     assert.match(rembg.fix!, /setup-rembg\.py/);
     const text = formatVideoEnvReport(r);
     assert.match(text, /\[falta\] rembg \(venv ausente\)/);
-    assert.match(text, /O resto do \/diaria-publica-video segue/);
+    assert.match(text, /O resto do \/diaria-publica segue/);
   });
 
   it("Georgia no Linux: instrução de copiar do Neo, nunca versionar a fonte", () => {

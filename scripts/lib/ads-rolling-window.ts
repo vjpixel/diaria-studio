@@ -51,6 +51,7 @@
 import type { ClicksCsvRow } from "./ads-test-watch.ts";
 import { pausedDatesInRange, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
 import { canonicalChannelName } from "./shared/channel-key-specs.ts";
+import { BRT_MINUS_UTC_HOURS } from "./shared/brt.ts";
 
 /**
  * BRT (America/Sao_Paulo) não tem horário de verão desde 2019 — offset fixo.
@@ -62,8 +63,11 @@ import { canonicalChannelName } from "./shared/channel-key-specs.ts";
  * aqui é a mais simples de propósito — só é preciso TRUNCAR para o dia, nunca
  * decompor hora/minuto —, mas é a menos durável das duas. Se a política mudar,
  * este é um dos lugares a corrigir.
+ *
+ * O offset vem de `shared/brt.ts` (`BRT_MINUS_UTC_HOURS = -3`, #14055): até
+ * lá esta constante se chamava `BRT_UTC_OFFSET_HOURS`, mesmo nome de outra
+ * que valia +3 em `edition-scheduled-at.ts`.
  */
-export const BRT_UTC_OFFSET_HOURS = -3;
 
 /** Tamanho padrão da janela, em dias fechados. Decisão do editor (#7577). */
 export const DEFAULT_WINDOW_DAYS = 3;
@@ -81,7 +85,7 @@ export const MIN_CADASTROS_PARA_COMPARAR = 3;
 /** Dia BRT (`YYYY-MM-DD`) de um instante. Ver "Fuso" na docstring do módulo. */
 export function brtDateOf(instant: Date | string): string {
   const d = typeof instant === "string" ? new Date(instant) : instant;
-  return new Date(d.getTime() + BRT_UTC_OFFSET_HOURS * 3600_000).toISOString().slice(0, 10);
+  return new Date(d.getTime() + BRT_MINUS_UTC_HOURS * 3600_000).toISOString().slice(0, 10);
 }
 
 /** `YYYY-MM-DD` − `n` dias. Puro, sem fuso: opera sobre a data civil. */

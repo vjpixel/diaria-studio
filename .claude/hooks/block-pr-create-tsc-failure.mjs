@@ -287,6 +287,17 @@ function denyOutput(reason) {
 }
 
 /**
+ * Primeiro filtro do hook: só Bash com `gh pr create` guardado pelo
+ * typecheck. Exportado para o despachante único (#14045), que só spawna este
+ * hook quando ele se aplica; `handlePayload` usa a mesma função, então o
+ * filtro dos dois é um só.
+ */
+export function appliesTo(payload) {
+  if (payload?.tool_name && payload.tool_name !== "Bash") return false;
+  return isTscGuardedPrCreate(payload?.tool_input?.command);
+}
+
+/**
  * Corpo do hook (#13539): decide sobre um payload PreToolUse e devolve o
  * objeto de saída (deny) ou `undefined` (segue o fluxo normal de permissão).
  * Tudo que toca processo, disco ou git é injetável em `deps`, pra que o teste
@@ -307,9 +318,8 @@ export function handlePayload(payload, deps = {}) {
     logFn = logTscGuardEvent,
   } = deps;
 
-  if (payload?.tool_name && payload.tool_name !== "Bash") return;
+  if (!appliesTo(payload)) return;
   const command = payload?.tool_input?.command;
-  if (!isTscGuardedPrCreate(command)) return;
 
   const cwd = resolveRepoRoot(payload, hookDir, command);
   if (cwd === null) return; // fail-open: nenhum candidato é repo git

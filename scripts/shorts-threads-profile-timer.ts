@@ -60,6 +60,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { hhmmBrt } from "./lib/shared/brt.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
@@ -161,7 +162,7 @@ export function decideThreadsTimerRun(input: {
 }): ThreadsTimerDecision {
   const cfg = loadShortsConfig(input.config);
   if (!cfg.threadsProfile) return { kind: "skip", reason: "publishing.shorts.threads_profile = false" };
-  if (!cfg.threadsProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.threads_profile_via_timer = false (o /diaria-publica-video publica)" };
+  if (!cfg.threadsProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.threads_profile_via_timer = false (o /diaria-publica publica)" };
   if (!input.reviewedExists) return { kind: "skip", reason: `sem 02-reviewed.md da edição ${input.aammdd} (dia sem edição)` };
   for (const { path, raw } of input.registryRaws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
@@ -223,7 +224,7 @@ export function interpretThreadsVerticalLookup(exitCode: number | null, stdout: 
     if (out.selection === "orientation-mismatch") {
       return { kind: "needs-editor", selection: "orientation-mismatch", reason: `vertical no Drive com a proporção errada (#13389): ${out.reason ?? "sem motivo"}` };
     }
-    return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe` };
+    return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica); o timer não escolhe` };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
 }
@@ -299,11 +300,6 @@ export function interpretThreadsTimerOutput(exitCode: number | null, stdout: str
       return { kind: "alarm", key: "publish-failed", failed: true, detail: `ação inesperada do plano: ${String(unknown)} (exit ${exitCode})` };
     }
   }
-}
-
-/** Puro: `HH:MM` BRT de um instante. */
-function hhmmBrt(ms: number): string {
-  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
 }
 
 /** Puro: corpo do alarme, por motivo, com os comandos já com a edição. */

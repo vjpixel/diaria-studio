@@ -113,6 +113,7 @@ import {
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import {
   postToWorkerQueue as sharedPostToWorkerQueue,
+  resolveSocialWorkerToken,
   type WorkerQueuePayload,
 } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
 import { dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010
@@ -718,7 +719,7 @@ async function main(): Promise<number | void> {
   let workerToken = "";
   if (doSchedule) {
     workerUrl = resolveInstagramWorkerUrl(platformConfig); // #11750 — mesma precedência da sonda do Stage 4
-    workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    workerToken = resolveSocialWorkerToken();
     // #923-like fail-fast (publish-linkedin.ts): sem Worker configurado,
     // --schedule não tem pra onde ir — a API do Instagram não agenda nativo
     // (ver header deste arquivo), então NÃO existe fallback de fire-now

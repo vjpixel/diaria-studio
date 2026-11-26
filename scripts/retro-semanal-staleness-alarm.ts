@@ -44,6 +44,7 @@ import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./l
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveWeeklyPublishedPath } from "./lib/weekly-worker-dispatch.ts";
 import { fetchWorkerList, resolveLinkedinWorkerUrl, type FetchJsonFn } from "./verify-social-worker-dispatch.ts";
+import { resolveSocialWorkerToken } from "./lib/worker-queue-client.ts"; // #14062
 import {
   mostRecentSaturday,
   toAAMMDD,
@@ -176,7 +177,7 @@ export async function lookupWorkerQueue(
   fetchJson: FetchJsonFn = fetchJsonWithTimeout,
 ): Promise<RetroSemanalWorkerLookup> {
   const workerUrl = resolveLinkedinWorkerUrl(rootDir);
-  const token = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const token = resolveSocialWorkerToken();
   if (!workerUrl || !token) {
     return { ok: false, error: "DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN ausente" };
   }

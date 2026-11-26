@@ -289,8 +289,8 @@ export function campaignContentDiverges(params: {
 }
 
 /**
- * Pura/testável (#5677) — espelha `decidePublishBrevoAction` de
- * `monthly-apoiadores-state.ts`: decide se `main()` cria uma campanha Brevo
+ * Pura/testável (#5677) — espelha `decidePublishKitAction` de
+ * `monthly-apoiadores-state.ts` (o gêmeo Brevo de lá saiu no #14102): decide se `main()` cria uma campanha Brevo
  * NOVA ou reaproveita a já registrada em `brevo-diaria-published.json` pra
  * esta edição. Sem `--force`, qualquer `campaign_id` já registrado (status
  * `draft` OU `test_sent` — ambos significam "a campanha já existe na

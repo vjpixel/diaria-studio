@@ -39,7 +39,9 @@ it("atribuição do commit segue a sessão do subagente, nunca o modelo do coord
   assert.match(item9, /PRÓPRIA sessão/);
   assert.match(item9, /Nunca copiar o modelo\s+do coordenador/);
   const dispatchList = skill.slice(skill.indexOf("O prompt do subagente inclui, obrigatoriamente:"), skill.indexOf("O subagente implementa,"));
-  assert.match(dispatchList, /atribuição de commit e PR \(#12535\)/);
+  // #14044: o prompt cita o item 9 em vez de repetir a regra.
+  assert.match(dispatchList, /atribuição da sessão do próprio subagente \(#12535\) \(item 9\)/);
+  assert.match(dispatchList, /nunca dita modelo de atribuição nem copia o do coordenador/);
 });
 
 it("o dispatch da Fase 1 arma o timer em background, não ScheduleWakeup (#12535)", () => {

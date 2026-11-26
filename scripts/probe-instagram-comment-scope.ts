@@ -37,6 +37,7 @@ import {
   type InstagramCommentScopeProbe,
   type InstagramCommentScopeSource,
 } from "./lib/instagram-comment-scope.ts";
+import { resolveSocialWorkerToken } from "./lib/worker-queue-client.ts"; // #14062
 
 const ROOT = resolve(import.meta.dirname, "..");
 const INSTAGRAM_API_VERSION_DEFAULT = "v25.0";
@@ -49,7 +50,7 @@ export async function probeCommentScope(
   const fetchImpl = input.fetchImpl ?? fetch;
   if (source === "worker") {
     const workerUrl = resolveInstagramWorkerUrl(input.platformConfig, input.env);
-    const workerToken = input.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    const workerToken = resolveSocialWorkerToken(input.env);
     if (!workerUrl || !workerToken) {
       return { ok: false, reason: "worker: DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN não configurados" };
     }

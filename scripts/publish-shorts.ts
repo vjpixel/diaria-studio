@@ -414,7 +414,14 @@ import {
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
 import { loadR2UploadConfig, r2ObjectHasBody, r2PublicUrl, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
-import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
+import {
+  buildReelsQueuePayload,
+  postToWorkerQueue,
+  resolveSocialWorkerToken,
+  resolveSocialWorkerUrl,
+  WorkerQueueError,
+  type WorkerQueuePayload,
+} from "./lib/worker-queue-client.ts";
 import { buildPageRepostPayload, enqueuePageAction, linkedInPostUrnFrom, type EnqueueFn, type PageActionResult } from "./lib/diaria/linkedin-page-actions.ts"; // #11121
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, updatePersonalPostCommentary, type PersonalCreds } from "./lib/linkedin-personal.ts";
@@ -867,7 +874,7 @@ export function assignShortsDestinationOwners(
       const at = item.at;
       const later = at !== undefined && Date.parse(at) - ctx.now.getTime() > OWNER_SCHEDULE_MIN_LEAD_MS;
       if (ctx.baseCommand) {
-        // #11795: o corte não tem skill de re-execução (a `/diaria-publica-video` só conhece edição) e o
+        // #11795: o corte não tem skill de re-execução (a `/diaria-publica` só conhece edição) e o
         // comando do corte só imprime o plano de um passo guiado: o agente desta rodada é o dono real.
         owners.push({
           destination,
@@ -888,7 +895,7 @@ export function assignShortsDestinationOwners(
               action,
               by: "agent-scheduled-task",
               at,
-              command: ctx.baseCommand ?? `/diaria-publica-video ${ctx.aammdd} --so vertical`,
+              command: ctx.baseCommand ?? `/diaria-publica ${ctx.aammdd} --so vertical`,
               note: `passo guiado da skill (Chrome) às ${at}: a skill agenda a própria re-execução para esse horário`,
             }
           : { destination, action, by: "agent", note: "passo guiado da skill (Chrome), executado pelo agente nesta rodada" },
@@ -1777,7 +1784,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
       // #11794: a rota à mão tem a mesma autoria da API (@diar.ia.br autora, @vjpixel em collab).
       const detail =
-        `${igFit.reason} — poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
+        `${igFit.reason} — poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
         `ou no app, ${instagramChromeRouteText()}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
         `e registre com --confirm-instagram (lê a conta da @${INSTAGRAM_CHROME_ROUTE.authorUsername}; ou --url URL do Reel) ou --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
@@ -2807,7 +2814,7 @@ export async function publishInstagramReel(
       // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
       if (/ProcessingFailedError/.test(msg)) {
         throw new Error(
-          `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video) ou no app ` +
+          `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica) ou no app ` +
             `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
             `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
         );
@@ -2835,7 +2842,7 @@ export async function publishInstagramReel(
     if (st.status_code === "FINISHED") break;
     if (st.status_code === "ERROR" || st.status_code === "EXPIRED") {
       // #11355: o Reels não saiu; a rota à mão segue valendo.
-      const hint = file ? "" : " — pela rota video_url (#11355); se persistir, poste pelo Chrome (Passo B3b do /diaria-publica-video) e registre com --confirm-instagram";
+      const hint = file ? "" : " — pela rota video_url (#11355); se persistir, poste pelo Chrome (Passo B3b do /diaria-publica) e registre com --confirm-instagram";
       throw new Error(`container ${containerId}: ${st.status_code} ${st.status ?? ""}${hint}`);
     }
     await deps.sleep(10_000);
@@ -6234,12 +6241,8 @@ async function mainUnlocked(): Promise<number> {
   }
   const editionUrlIn = resolveEditionUrlInput(dir, values["edition-url"]);
   // #10823: fila do Worker pro Reels com horário futuro (mesmas vars do publish-instagram.ts --schedule).
-  const workerUrl: string =
-    process.env.DIARIA_LINKEDIN_CRON_URL ??
-    config?.publishing?.social?.instagram?.cloudflare_worker_url ??
-    config?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-    "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl: string = resolveSocialWorkerUrl(config, { preferSlot: "instagram" });
+  const workerToken = resolveSocialWorkerToken();
   const r2 = loadR2UploadConfig(process.env);
   // #10772: LinkedIn pessoal (mesmo token do 4º post) e o vídeo completo do YouTube pro texto.
   const liCreds = readPersonalCreds(process.env, new Date());

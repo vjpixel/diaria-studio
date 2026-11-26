@@ -15,8 +15,76 @@
  * cliente HTTP genérico).
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { CONFIG } from "./config.ts";
 import { parseWorkerQueueResponse } from "./schemas/linkedin-payload.ts";
+
+// ─── URL e token do Worker social (#14062) ──────────────────────────────
+//
+// Ponto único de verdade da resolução que antes vivia copiada à mão em ~16
+// scripts. Precedência (a de sempre): env `DIARIA_LINKEDIN_CRON_URL` >
+// `publishing.social.{preferSlot}.cloudflare_worker_url` (quando o caller
+// pede um slot próprio, #11750) > `publishing.social.linkedin.cloudflare_worker_url`
+// > `""` (não configurado). É a mesma instância `diaria-linkedin-cron` para
+// todos os canais; só o slot `linkedin` tem o campo no config hoje.
+
+/** Slot de `publishing.social` consultado ANTES do `linkedin`. */
+export type SocialWorkerConfigSlot = "instagram" | "threads";
+
+export interface ResolveSocialWorkerUrlOptions {
+  env?: Record<string, string | undefined>;
+  /** Slot lido antes do `linkedin` (Instagram/Threads, #11750). Omitido = só `linkedin`. */
+  preferSlot?: SocialWorkerConfigSlot;
+  /**
+   * `true`: env vazia (`""`) cai para o config — a forma `if (fromEnv) return
+   * fromEnv` dos verificadores (verify-stage-4/verify-social-worker/
+   * delete-test-schedules). Default `false`: env definida vence mesmo vazia
+   * (a forma `??` dos publicadores).
+   */
+  emptyEnvFallsThrough?: boolean;
+}
+
+export function resolveSocialWorkerUrl(
+  platformConfig: unknown,
+  opts: ResolveSocialWorkerUrlOptions = {},
+): string {
+  const env = opts.env ?? process.env;
+  const fromEnv = env.DIARIA_LINKEDIN_CRON_URL;
+  if (opts.emptyEnvFallsThrough ? Boolean(fromEnv) : fromEnv !== undefined) return fromEnv as string;
+  const social = (platformConfig as {
+    publishing?: { social?: Record<string, { cloudflare_worker_url?: string } | undefined> };
+  } | null | undefined)?.publishing?.social;
+  return (
+    (opts.preferSlot ? social?.[opts.preferSlot]?.cloudflare_worker_url : undefined) ??
+    social?.linkedin?.cloudflare_worker_url ??
+    ""
+  );
+}
+
+/**
+ * Igual a `resolveSocialWorkerUrl`, lendo `{rootDir}/platform.config.json`
+ * fail-soft: arquivo ausente ou JSON inválido = sem config (só o env conta).
+ */
+export function resolveSocialWorkerUrlFromRoot(
+  rootDir: string,
+  opts: ResolveSocialWorkerUrlOptions = {},
+): string {
+  let config: unknown = null;
+  try {
+    config = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+  } catch {
+    config = null;
+  }
+  return resolveSocialWorkerUrl(config, opts);
+}
+
+/** Token do Worker social (`X-Diaria-Token`). `""` = não configurado. */
+export function resolveSocialWorkerToken(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+}
 
 export interface WorkerQueuePayload {
   text: string;

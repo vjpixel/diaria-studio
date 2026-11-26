@@ -80,6 +80,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { resolveSocialWorkerToken, resolveSocialWorkerUrlFromRoot } from "./lib/worker-queue-client.ts"; // #14062
 export type { PostEntry, SocialPublished };
 
 loadProjectEnv();
@@ -101,18 +102,8 @@ const REAL_DELIVERY_CONFIRMATION_PLATFORMS = new Set(["instagram", "threads"]);
  * verify-stage-4-dispatch.ts/publish-linkedin.ts: env > platform.config.json.
  */
 export function resolveLinkedinWorkerUrl(rootDir: string = ROOT): string {
-  const fromEnv = process.env.DIARIA_LINKEDIN_CRON_URL;
-  if (fromEnv) return fromEnv;
-  try {
-    const config = JSON.parse(
-      readFileSync(resolve(rootDir, "platform.config.json"), "utf8"),
-    ) as {
-      publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
-    };
-    return config.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
-  } catch {
-    return "";
-  }
+  // #14062: env vazia cai pro config (forma `if (fromEnv)` de sempre).
+  return resolveSocialWorkerUrlFromRoot(rootDir, { emptyEnvFallsThrough: true });
 }
 
 /**
@@ -474,7 +465,7 @@ async function main(): Promise<number | void> {
   }
 
   const workerUrl = resolveLinkedinWorkerUrl();
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerToken = resolveSocialWorkerToken();
   if (!workerUrl || !workerToken) {
     console.log(
       "[verify-social-worker] DIARIA_LINKEDIN_CRON_URL/TOKEN ausente — pulando reconciliação " +

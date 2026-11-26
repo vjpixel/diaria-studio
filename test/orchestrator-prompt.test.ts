@@ -164,7 +164,8 @@ describe("orchestrator-prompt (#634)", () => {
       // #4846: +9 linhas (novo passo 1y-bis — dispatch opcional/desligado
       // por padrão de scripts/experiment-d3-radar.ts logo após os invariants
       // pós-gate-apply, antes do sentinel do Stage 1). Teto bumped de
-      // 810→825 com headroom (era 813 medido pós-#4846).
+      // 810→825 com headroom (era 813 medido pós-#4846). O experimento foi
+      // apagado no #14052 (script, chave de config e menções no playbook).
       // #4988/#4985/#4986: +2 linhas líquidas (contrato explícito da
       // transformação pool-flatten em §1g-ter + 2 checkpoints determinísticos
       // de integridade de `summary`, 1m-bis e 1q.3-bis — detalhe completo

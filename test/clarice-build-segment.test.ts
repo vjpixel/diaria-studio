@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Papa from "papaparse";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -24,6 +24,7 @@ import {
   sentOrQueuedFilePath,
   findOrphanedSentOrQueuedEmails,
   unblockOrphanedSentOrQueuedEmails,
+  SentOrQueuedCorruptError,
   checkRoundSizeCap,
   checkRecencyMonotonic,
   checkCorruptedNames,
@@ -488,10 +489,82 @@ test("loadSentOrQueuedEmails: arquivo ausente -> Set vazio (1ª invocação do c
   assert.deepEqual(loadSentOrQueuedEmails(dir), new Set());
 });
 
-test("loadSentOrQueuedEmails: JSON corrompido -> Set vazio (tolerante, nunca lança)", () => {
-  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-corrupt-"));
-  writeFileSync(sentOrQueuedFilePath(dir), "{ isto não é json válido", "utf8");
-  assert.deepEqual(loadSentOrQueuedEmails(dir), new Set());
+// REGRESSÃO (#14139): arquivo PRESENTE e corrompido caía num Set vazio em
+// silêncio (o build reselecionava quem já tinha sido escolhido no ciclo) e o
+// append recomeçava de `[]` (apagando o histórico). Agora é fail-closed.
+const CORRUPT_SENT_OR_QUEUED: Array<[string, string]> = [
+  ["JSON truncado", '{ "cycle": "2606-07", "emails": ["a@x.com", "b@x'],
+  ["não-objeto (array)", '["a@x.com"]'],
+  ["null", "null"],
+  ["sem campo emails", '{ "cycle": "2606-07", "history": [] }'],
+  ["emails não é lista de strings", '{ "cycle": "2606-07", "emails": [1, 2], "history": [] }'],
+  ["history não é lista", '{ "cycle": "2606-07", "emails": ["a@x.com"], "history": "x" }'],
+];
+
+for (const [label, content] of CORRUPT_SENT_OR_QUEUED) {
+  test(`REGRESSÃO (#14139): loadSentOrQueuedEmails com arquivo corrompido (${label}) LANÇA SentOrQueuedCorruptError, nunca devolve Set vazio`, () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-corrupt-"));
+    const file = sentOrQueuedFilePath(dir);
+    writeFileSync(file, content, "utf8");
+    assert.throws(
+      () => loadSentOrQueuedEmails(dir),
+      (e: unknown) =>
+        e instanceof SentOrQueuedCorruptError && e.file === file && e.message.includes(file) && /restaure/.test(e.message),
+    );
+  });
+}
+
+test("REGRESSÃO (#14139): appendSentOrQueuedEmails com arquivo corrompido LANÇA e NÃO sobrescreve o arquivo", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-corrupt-append-"));
+  const file = sentOrQueuedFilePath(dir);
+  const content = '{ "cycle": "2606-07", "emails": ["ja-escolhido@x.com"';
+  writeFileSync(file, content, "utf8");
+  assert.throws(() => appendSentOrQueuedEmails(dir, "2606-07", "daily", ["novo@x.com"]), SentOrQueuedCorruptError);
+  assert.equal(readFileSync(file, "utf8"), content, "arquivo corrompido fica intacto pra restauração");
+});
+
+test("REGRESSÃO (#14139): unblockOrphanedSentOrQueuedEmails com arquivo corrompido LANÇA (antes devolvia 0 em silêncio) e não escreve", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-corrupt-unblock-"));
+  const file = sentOrQueuedFilePath(dir);
+  writeFileSync(file, "{ lixo", "utf8");
+  assert.throws(() => unblockOrphanedSentOrQueuedEmails(dir, "2606-07", ["a@x.com"]), SentOrQueuedCorruptError);
+  assert.equal(readFileSync(file, "utf8"), "{ lixo");
+});
+
+test("#14139: arquivo válido segue lido normalmente (inclusive sem 'history', formato mínimo)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-valid-"));
+  writeFileSync(sentOrQueuedFilePath(dir), '{ "cycle": "2606-07", "emails": [" A@X.com"] }', "utf8");
+  assert.deepEqual(loadSentOrQueuedEmails(dir), new Set(["a@x.com"]));
+  appendSentOrQueuedEmails(dir, "2606-07", "daily", ["b@x.com"]);
+  const parsed = JSON.parse(readFileSync(sentOrQueuedFilePath(dir), "utf8")) as SentOrQueuedFile;
+  assert.deepEqual(parsed.emails, ["a@x.com", "b@x.com"]);
+  assert.equal(parsed.history.length, 1);
+});
+
+test("REGRESSÃO (#14139): main() sem --dry-run com sent-or-queued.json corrompido aborta sem selecionar nem escrever nada", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-corrupt-main-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('real@x.com','Real',2,3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const segDir = clariceSegmentsDir("2606-07", dir);
+  mkdirSync(segDir, { recursive: true });
+  const file = sentOrQueuedFilePath(segDir);
+  const content = '{ "cycle": "2606-07", "emails": ["real@x.com"'; // truncado: real@x.com JÁ foi escolhido
+  writeFileSync(file, content, "utf8");
+
+  await assert.rejects(
+    withFakeBrevoFetch(() =>
+      captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir])),
+    ),
+    SentOrQueuedCorruptError,
+  );
+  assert.equal(existsSync(resolve(segDir, "engajados.csv")), false, "nenhum CSV de seleção escrito");
+  assert.equal(readFileSync(file, "utf8"), content, "sent-or-queued.json corrompido fica intacto");
 });
 
 test("excludeSentOrQueued: filtra por email normalizado (trim+lowercase), preserva ordem", () => {

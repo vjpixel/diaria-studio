@@ -187,6 +187,17 @@ export const BARE_PUSH_IN_WORKTREE_BLOCK_REASON =
   "out) e passam normalmente. Ver context/overnight-dispatch-rules.md e a issue #7722 pro incidente " +
   "completo.";
 
+/**
+ * Filtro do despachante único (#14045): o mesmo primeiro filtro do `runHook`
+ * abaixo (tool Bash + `git push` nu), antes de olhar o disco. Puro; o
+ * despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  return typeof command === "string" && commandHasBareGitPush(command);
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
@@ -197,7 +208,17 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
@@ -207,7 +228,7 @@ if (
       const hookDir = dirname(fileURLToPath(import.meta.url));
       const checkoutRoot = join(hookDir, "..", "..");
       if (!isLinkedWorktree(checkoutRoot)) return; // fora de escopo: só worktree
-      process.stdout.write(
+      write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
@@ -219,7 +240,6 @@ if (
     } catch {
       // Fail-open, sempre: um hook quebrado não pode travar Bash legítimo.
     }
-  });
 }
 
 /** true quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma

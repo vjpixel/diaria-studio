@@ -12,6 +12,7 @@ import {
   protectedPathWriteReason,
   isInterpreterCodeFinding,
 } from "../scripts/lib/protected-path-bash-write.mjs";
+import { armedBashPreToolUseGuards } from "./_helpers/bash-pretooluse-guards.ts";
 
 // #12009 — overnight 261103, unidade #11990: o dev-implementador alterou
 // `.claude/skills/diaria-video-montagem/SKILL.md` por script Python no Bash,
@@ -492,12 +493,13 @@ describe("shouldBlockProtectedPathWrite / hook (#12009)", () => {
     assert.equal(bad.status, 0);
     assert.equal(bad.stdout, "");
   });
-  it("armado no .claude/settings.json (PreToolUse/Bash, exec form)", () => {
+  it("armado no .claude/settings.json (PreToolUse/Bash, exec form, via despachante #14045)", () => {
     const settings = JSON.parse(readFileSync(join(ROOT, ".claude", "settings.json"), "utf8"));
     const bash = settings.hooks.PreToolUse.filter((g: { matcher: string }) => g.matcher === "Bash");
-    const armed = bash.some((g: { hooks: Array<{ command: string; args?: string[] }> }) =>
-      g.hooks.some((h) => h.command === "node" && (h.args ?? []).some((a) => a.endsWith("/.claude/hooks/block-bash-protected-path-write.mjs"))),
+    const dispatcherArmed = bash.some((g: { hooks: Array<{ command: string; args?: string[] }> }) =>
+      g.hooks.some((h) => h.command === "node" && (h.args ?? []).some((a) => a.endsWith("/.claude/hooks/pretooluse-bash-dispatch.mjs"))),
     );
-    assert.ok(armed, "hook não registrado no settings.json");
+    assert.ok(dispatcherArmed, "despachante não registrado no settings.json");
+    assert.ok(armedBashPreToolUseGuards().includes("block-bash-protected-path-write.mjs"), "hook fora do despachante");
   });
 });

@@ -806,7 +806,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "carousel-text-overflow",
-    description: "parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo — mesma checagem do Stage 4, rodada cedo (#6439, #6078)",
+    description: "parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo, ou `## d{N}-cards` sem exatamente 3 parágrafos — mesma checagem do Stage 4, rodada cedo (#6439, #6078, #14019)",
     source_issue: "#6439",
     stage: 2,
     run: checkCarouselTextOverflowStage2,

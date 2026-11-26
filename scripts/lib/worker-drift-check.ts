@@ -215,6 +215,13 @@ export interface WorkerDriftCheckInput {
    * `deploy_blocked` (reporta, não alarma). Omitido/vazio preserva o
    * comportamento pré-#7092. */
   deployBlockedBy?: readonly string[];
+  /** Imports do worker que o fecho (`computeWorkerExternalImports`) não
+   * resolveu, ou a falha do cálculo do fecho (#14097). Não-vazio = o
+   * `lastCommitAt` pode ter ficado cego para um módulo que entra no bundle:
+   * NÃO muda o `status` (o drift dos arquivos resolvidos continua valendo),
+   * mas o worker sai marcado como "fecho incompleto" no relatório, no e-mail
+   * e numa issue própria. Omitido/vazio = fecho completo. */
+  closureIncomplete?: readonly string[];
 }
 
 export interface WorkerDriftResult {
@@ -232,6 +239,20 @@ export interface WorkerDriftResult {
   /** Ecoa `deployBlockedBy` do input (`[]` quando nada bloqueia) — pro
    * relatório nomear QUAL placeholder precisa ser resolvido. */
   deployBlockedBy: readonly string[];
+  /** Ecoa `closureIncomplete` do input (#14097) — presente só quando
+   * não-vazio, para não mudar o shape dos resultados de fecho completo. */
+  closureIncomplete?: readonly string[];
+}
+
+/** Pura (#14097) — `true` quando o fecho de imports do worker ficou incompleto. */
+export function hasIncompleteClosure(r: Pick<WorkerDriftResult, "closureIncomplete">): boolean {
+  return (r.closureIncomplete?.length ?? 0) > 0;
+}
+
+/** Pura (#14097) — sufixo da linha de relatório de um worker com fecho incompleto (`""` se completo). */
+export function closureIncompleteReportSuffix(r: Pick<WorkerDriftResult, "closureIncomplete">): string {
+  if (!hasIncompleteClosure(r)) return "";
+  return ` [fecho incompleto: ${r.closureIncomplete!.length} import(s) não resolvido(s) — ${r.closureIncomplete!.join("; ")}]`;
 }
 
 /** Pura — mensagem de `deploy_blocked`: o fato de drift observado MAIS o
@@ -253,6 +274,13 @@ function blockedMessage(workerDir: string, placeholders: readonly string[], drif
  * há um segundo timestamp de deploy pra subtrair).
  */
 export function evaluateWorkerDrift(input: WorkerDriftCheckInput, now: Date = new Date()): WorkerDriftResult {
+  const result = evaluateWorkerDriftStatus(input, now);
+  // #14097: o fecho incompleto é ecoado à parte e nunca muda o status.
+  const closureIncomplete = input.closureIncomplete ?? [];
+  return closureIncomplete.length > 0 ? { ...result, closureIncomplete: [...closureIncomplete] } : result;
+}
+
+function evaluateWorkerDriftStatus(input: WorkerDriftCheckInput, now: Date): WorkerDriftResult {
   const { workerName, workerDir, lastDeployedAt, lastCommitAt, deployError } = input;
   const deployBlockedBy = input.deployBlockedBy ?? [];
 
@@ -634,6 +662,19 @@ export function buildWorkerDriftAlarmEmail(
     );
     for (const r of blocked) {
       lines.push(`  - ${r.workerName} (workers/${r.workerDir}/): ${r.message}`);
+    }
+  }
+
+  const incomplete = results.filter(hasIncompleteClosure);
+  if (incomplete.length > 0) {
+    // #14097: import que o parser do fecho não resolveu deixa um módulo do
+    // bundle fora da comparação — o drift dele pode estar escondido.
+    lines.push(
+      "",
+      `Aviso — ${incomplete.length} worker(s) com fecho de imports incompleto (drift de módulo compartilhado pode estar escondido):`,
+    );
+    for (const r of incomplete) {
+      lines.push(`  - ${r.workerName} (workers/${r.workerDir}/): ${r.closureIncomplete!.join("; ")}`);
     }
   }
 
