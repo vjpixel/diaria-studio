@@ -41,7 +41,7 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { readClariceHourTestState, toHourTestKvState, readInvalidHourTestDays } from "./lib/clarice-hour-test.ts";
-import { HOUR_TEST_KV_KEY } from "../workers/brevo-dashboard/src/types.ts";
+import { HOUR_TEST_KV_KEY } from "./lib/shared/brevo-dashboard-types.ts";
 
 loadProjectEnv();
 

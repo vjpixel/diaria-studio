@@ -16,7 +16,7 @@
  *   { changed: boolean, sections: [{ name, before, after, count }] }
  *
  * Roda no Stage 2 pós-normalize, antes do humanizador (ver
- * orchestrator-stage-2.md § 2c).
+ * orchestrator-stage-2-fallback.md §2b).
  */
 
 import { readFileSync, writeFileSync } from "node:fs";

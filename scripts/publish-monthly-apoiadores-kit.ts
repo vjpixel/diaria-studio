@@ -585,7 +585,9 @@ export async function unscheduleOnAudienceMismatch(opts: {
  *      silêncio (armadilha 4 de `kit-client.ts`, #8208).
  *   3. Relê de novo e confere filtro, horário e conteúdo. `send_at` que voltou
  *      `null` com alvo agendado é reagendado uma vez e conferido; continuando
- *      errado, falha com instrução manual.
+ *      errado, falha com instrução manual. Com alvo agendado, a releitura
+ *      final ainda passa por `confirmKitBroadcastSent` (#12739, #14212):
+ *      status fora de scheduled/sending/completed falha sem gravar `sent`.
  *   4. Filtro DIVERGENTE num broadcast agendado: desagenda (`send_at: null`)
  *      antes de devolver a falha — o pior caso é a base inteira receber a
  *      recompensa de apoiador.
@@ -676,6 +678,9 @@ export async function updateApoiadoresKitBroadcast(opts: {
   }
 
   let sendAtRescued = false;
+  // #14212: a conferência de status usa a releitura FINAL (a do resgate do
+  // send_at, quando houve), não a primeira.
+  let finalReread: RereadBroadcast = reread;
   let finalSendAt: string | null | undefined = reread.send_at;
   if (!sameInstant(finalSendAt ?? null, target.scheduleAt)) {
     log(
@@ -684,7 +689,8 @@ export async function updateApoiadoresKitBroadcast(opts: {
     );
     try {
       await deps.updateBroadcast(broadcastId, { send_at: target.scheduleAt }, kitConfig);
-      finalSendAt = (await deps.getBroadcast(broadcastId, kitConfig)).send_at;
+      finalReread = await deps.getBroadcast(broadcastId, kitConfig);
+      finalSendAt = finalReread.send_at;
     } catch (e) {
       return {
         ok: false,
@@ -708,6 +714,25 @@ export async function updateApoiadoresKitBroadcast(opts: {
       };
     }
     sendAtRescued = true;
+  }
+
+  // #14212: mesma regra do caminho de criação (#12739) — o horário certo na
+  // releitura não prova agendamento. Com alvo agendado, só segue `ok` (e o
+  // state só vira `sent`) se o Kit devolver scheduled/sending/completed.
+  if (target.scheduleAt !== null) {
+    const confirmation = confirmKitBroadcastSent(finalReread, broadcastId);
+    if (!confirmation.ok) {
+      return {
+        ok: false,
+        broadcastId,
+        untouched: false,
+        audience,
+        reason:
+          `send_at=${String(finalSendAt)} confere, mas a releitura NÃO confirma o agendamento: ${confirmation.reason} ` +
+          "O state fica em draft_prepared (não 'sent'); confira no painel e rode " +
+          "'send-monthly-apoiadores.ts --mark-sent' depois de agendar.",
+      };
+    }
   }
 
   return {

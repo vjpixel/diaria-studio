@@ -51,7 +51,7 @@ const PROBE_TEXT = "ola";
  * O cortex responde entre ~2,8s e ~16,3s mesmo pro probe de 3 chars (medido
  * 2026-07-15). O default anterior de 5s abortava de forma INTERMITENTE — Stage 0
  * marcava CLARICE_REST=false com o REST saudável, e Stage 2 pulava direto pro
- * halt banner sem tentar o fallback (orchestrator-stage-2.md §266). O modo de
+ * halt banner sem tentar o fallback (orchestrator-stage-2-fallback.md §2b). O modo de
  * falha ser intermitente é o que escondeu o bug: falha constante seria óbvia,
  * flake ocasional lê como "desconexão misteriosa". Alinhado com o default sem
  * --retry de clarice-correct.ts.

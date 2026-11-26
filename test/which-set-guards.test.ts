@@ -27,8 +27,12 @@ describe("regressão do #7030/#7038 — converter workers/artigos dispara os 2 g
   it("wrangler.toml + src/index.ts de um worker disparam workers-observability-guard e worker-bundle-node-only-imports", () => {
     const report = matchingSetGuards(["workers/artigos/wrangler.toml", "workers/artigos/src/index.ts"]);
     assert.equal(report.triggered, true);
-    const ids = report.hits.map((h) => h.ruleId).sort();
-    assert.deepEqual(ids, ["worker-bundle-node-only-imports", "workers-observability-guard"]);
+    const ids = report.hits.map((h) => h.ruleId);
+    // Desde o #14215 o mesmo diff também dispara robots-txt, deploy-workflow e
+    // spawn-npx (que varrem workers/ também) — o que esta regressão trava é que
+    // os 2 do incidente estão na lista.
+    assert.ok(ids.includes("worker-bundle-node-only-imports"), ids.join(", "));
+    assert.ok(ids.includes("workers-observability-guard"), ids.join(", "));
     assert.ok(
       report.testFilesToRun.includes("test/workers-observability-guard.test.ts"),
       "precisa apontar o teste de observabilidade a rodar",
@@ -41,8 +45,9 @@ describe("regressão do #7030/#7038 — converter workers/artigos dispara os 2 g
 
   it("só o wrangler.toml (sem tocar src/) já dispara os 2 — main= sozinho já converte o worker", () => {
     const report = matchingSetGuards(["workers/artigos/wrangler.toml"]);
-    const ids = report.hits.map((h) => h.ruleId).sort();
-    assert.deepEqual(ids, ["worker-bundle-node-only-imports", "workers-observability-guard"]);
+    const ids = report.hits.map((h) => h.ruleId);
+    assert.ok(ids.includes("worker-bundle-node-only-imports"), ids.join(", "));
+    assert.ok(ids.includes("workers-observability-guard"), ids.join(", "));
   });
 });
 
@@ -130,9 +135,109 @@ describe("regressão do #7277 — orchestrator-stage-*.md dispara o guard de sna
   });
 });
 
+/**
+ * #14215: os 7 guards de varredura que derrubaram ciclos de dev-fixer. Para
+ * cada um: um arquivo coberto pela varredura (inclusive em subdiretório, já que
+ * scripts/ ganhou scripts/publish-shorts/, scripts/lib/shared/, etc.) lista o
+ * teste; um arquivo fora dela não lista.
+ */
+describe("#14215 — guards de varredura que derrubavam ciclos de dev-fixer", () => {
+  const cases: ReadonlyArray<{
+    id: string;
+    testFile: string;
+    hits: readonly string[];
+    misses: readonly string[];
+  }> = [
+    {
+      id: "process-exit-fetch-guard-9911",
+      testFile: "test/process-exit-fetch-guard-9911.test.ts",
+      hits: ["scripts/fetch-rss.ts", "scripts/publish-shorts/upload.ts", "scripts/lib/process-exit-fetch-scan.ts"],
+      misses: ["test/fetch-rss.test.ts", "workers/arquivo/src/index.ts", "docs/random.md"],
+    },
+    {
+      id: "fetch-body-cancel-9991",
+      testFile: "test/fetch-body-cancel-9991.test.ts",
+      hits: ["scripts/clarice-plan-wave.ts", "scripts/lib/invariant-checks/stage-4/x.ts"],
+      misses: ["test/fetch-body-cancel-9991-fixture.json", "workers/poll/src/index.ts"],
+    },
+    {
+      id: "spawn-npx-windows-guard",
+      testFile: "test/spawn-npx-windows-guard.test.ts",
+      hits: ["test/algum.test.ts", "test/_helpers/x.ts", "scripts/x.ts", "scripts/lib/shared/x.ts", "workers/poll/src/index.ts"],
+      misses: ["workers/poll/wrangler.toml", "docs/random.md", "hermes/scripts/x.sh"],
+    },
+    {
+      id: "getarg-nullish-fallback-11472",
+      testFile: "test/getarg-nullish-fallback-11472.test.ts",
+      hits: ["scripts/short-related-missed-alarm.ts", "scripts/lib/cli-args.ts", "scripts/publish-shorts/x.ts"],
+      misses: ["test/x.test.ts", "workers/poll/src/index.ts"],
+    },
+    {
+      id: "fake-gh-safety-guard-11487",
+      testFile: "test/fake-gh-safety-guard-11487.test.ts",
+      hits: ["test/algum.test.ts", "test/_helpers/fake-gh.ts"],
+      misses: ["scripts/x.ts", "test/fixtures/x.json"],
+    },
+    {
+      id: "worker-robots-txt-guard-4777",
+      testFile: "test/worker-robots-txt-guard-4777.test.ts",
+      hits: [
+        "workers/poll/wrangler.toml",
+        "workers/artigos/public/robots.txt",
+        "workers/poll/src/router/index.ts",
+        "scripts/lib/worker-public-hosts.ts",
+        "scripts/lib/shared/robots-txt.ts",
+      ],
+      misses: ["workers/poll/public/index.html", "scripts/fetch-rss.ts", "test/x.test.ts"],
+    },
+    {
+      id: "workers-deploy-workflow-coverage",
+      testFile: "test/workers-deploy-workflow-coverage.test.ts",
+      hits: [
+        "workers/poll/wrangler.toml",
+        "workers/x/wrangler.jsonc",
+        "workers/poll/package.json",
+        "package-lock.json",
+        ".github/workflows/deploy-poll.yml",
+        "workers/poll/src/index.ts",
+        "scripts/lib/shared/robots-txt.ts",
+      ],
+      misses: ["workers/poll/public/index.html", "docs/random.md", "test/fixtures/x.json"],
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.id}: arquivo coberto pela varredura lista o teste`, () => {
+      for (const path of c.hits) {
+        const report = matchingSetGuards([path]);
+        assert.ok(report.hits.some((h) => h.ruleId === c.id), `${path} devia disparar ${c.id}`);
+        assert.ok(report.testFilesToRun.includes(c.testFile), `${path} devia listar ${c.testFile}`);
+      }
+    });
+
+    it(`${c.id}: arquivo fora da varredura não lista o teste`, () => {
+      for (const path of c.misses) {
+        const report = matchingSetGuards([path]);
+        assert.equal(report.hits.some((h) => h.ruleId === c.id), false, `${path} não devia disparar ${c.id}`);
+        assert.equal(report.testFilesToRun.includes(c.testFile), false, `${path} não devia listar ${c.testFile}`);
+      }
+    });
+  }
+
+  it("os 7 entram no SET_GUARDS sem duplicar testFile de regra já existente", () => {
+    const owners = new Map<string, string[]>();
+    for (const rule of SET_GUARDS) {
+      for (const f of rule.testFiles) owners.set(f, [...(owners.get(f) ?? []), rule.id]);
+    }
+    for (const c of cases) assert.deepEqual(owners.get(c.testFile), [c.id], c.testFile);
+  });
+});
+
 describe("matchingSetGuards — casos negativos e degenerados", () => {
   it("diff sem nenhum path de conjunto → triggered:false, testFilesToRun vazio", () => {
-    const report = matchingSetGuards(["CLAUDE.md", "test/algum-teste.test.ts", "docs/random.md"]);
+    // Um .ts em test/ dispara fake-gh e spawn-npx desde o #14215 (eles varrem
+    // test/ inteiro), por isso o arquivo de test/ aqui é um fixture não-.ts.
+    const report = matchingSetGuards(["CLAUDE.md", "test/fixtures/algum-fixture.json", "docs/random.md"]);
     assert.equal(report.triggered, false);
     assert.deepEqual(report.hits, []);
     assert.deepEqual(report.testFilesToRun, []);
@@ -157,18 +262,20 @@ describe("matchingSetGuards — casos negativos e degenerados", () => {
   });
 
   it("um diff com arquivos de guards diferentes dispara os dois, sem interferência", () => {
-    // `scripts/build-hub-page.ts` casa só com hub-page-drift — não mora sob
-    // `workers/` nem `scripts/lib/`, então não cruza com nenhuma outra regra.
-    // Path escolhido de propósito pra este par ficar genuinamente disjunto.
-    const report = matchingSetGuards(["seed/courses/cursos-ia.json", "scripts/build-hub-page.ts"]);
+    // `docs/scheduled-tasks-registry.md` casa só com scheduled-tasks e o seed só
+    // com seed-html-sync — nenhum dos dois é .ts, então não cruzam com as
+    // varreduras de scripts/**/*.ts do #14215. Par escolhido de propósito pra
+    // ficar genuinamente disjunto.
+    const report = matchingSetGuards(["seed/courses/cursos-ia.json", "docs/scheduled-tasks-registry.md"]);
     const ids = report.hits.map((h) => h.ruleId).sort();
-    assert.deepEqual(ids, ["hub-page-drift", "seed-html-sync"]);
+    assert.deepEqual(ids, ["scheduled-tasks", "seed-html-sync"]);
   });
 
   it("um path pode disparar MAIS de 1 guard quando os conjuntos se sobrepõem de verdade (scripts/lib/hubs/** ⊂ scripts/lib/**)", () => {
     const report = matchingSetGuards(["scripts/lib/hubs/google-gemini.ts"]);
-    const ids = report.hits.map((h) => h.ruleId).sort();
-    assert.deepEqual(ids, ["hub-page-drift", "lib-boundary"]);
+    const ids = report.hits.map((h) => h.ruleId);
+    assert.ok(ids.includes("hub-page-drift"), ids.join(", "));
+    assert.ok(ids.includes("lib-boundary"), ids.join(", "));
   });
 });
 

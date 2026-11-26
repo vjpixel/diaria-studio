@@ -46,7 +46,7 @@
  * decide o N ("por mais de um ciclo", #5399).
  */
 
-import { resolveSpamSignal, POSTMASTER_DATA_STALE_MS, type SpamSignalIndeterminateReason } from "../../workers/brevo-dashboard/src/thresholds.ts";
+import { resolveSpamSignal, POSTMASTER_DATA_STALE_MS, type SpamSignalIndeterminateReason } from "./shared/brevo-health-thresholds.ts";
 
 export { POSTMASTER_DATA_STALE_MS };
 

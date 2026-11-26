@@ -1,11 +1,11 @@
 {
   "_formato": "orchestrator-prompt-snapshot/v2 (#9709): uma entrada por playbook, separadas por linha em branco para PRs em playbooks diferentes não conflitarem",
 
-  "orchestrator.md": { "hash": "859b9c6e2ebd3811", "lines": 166 },
+  "orchestrator.md": { "hash": "fe65ee04422c8b6b", "lines": 166 },
 
   "orchestrator-stage-0-preflight.md": { "hash": "4f988c5f3b1a1fb1", "lines": 239 },
 
-  "orchestrator-stage-0-fallback.md": { "hash": "bdfb5027110408d4", "lines": 349 },
+  "orchestrator-stage-0-fallback.md": { "hash": "80658968f85c874b", "lines": 349 },
 
   "orchestrator-stage-0-replies.md": { "hash": "c4ccdf753659a910", "lines": 47 },
 
@@ -13,11 +13,13 @@
 
   "orchestrator-stage-1-fallback.md": { "hash": "6066de638fe69fa8", "lines": 508 },
 
-  "orchestrator-stage-2.md": { "hash": "88634ba70b0cfd97", "lines": 585 },
+  "orchestrator-stage-2.md": { "hash": "7b1d5ce68c7ea7a2", "lines": 150 },
+
+  "orchestrator-stage-2-fallback.md": { "hash": "2e3beb1e325be038", "lines": 501 },
 
   "orchestrator-stage-3.md": { "hash": "712799ac061b0b1e", "lines": 147 },
 
-  "orchestrator-stage-4.md": { "hash": "824817b0f364edee", "lines": 539 },
+  "orchestrator-stage-4.md": { "hash": "d5b6678e9f0a3256", "lines": 539 },
 
   "orchestrator-stage-4-gate.md": { "hash": "86bc5a8a033f93bd", "lines": 480 },
 

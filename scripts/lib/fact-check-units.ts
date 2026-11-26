@@ -15,7 +15,9 @@
  *     `manifest.json`, entradas do `extras.json`, cada uma com o hash do texto
  *     baixado: `d{N}.txt`, `d{N}-extra-{k}.txt`). Mudança no social do D{N}
  *     recheca o D{N} inteiro; fonte nova registrada pelo editor
- *     (`add-destaque-source.ts`) também.
+ *     (`add-destaque-source.ts`) também. Um `---` DENTRO do destaque (texto de
+ *     destaque depois dele) deixa a partição ambígua e o plano sai completo
+ *     (#14197).
  *   - `pool`: o resto da newsletter (cabeçalho, boxes, LANÇAMENTOS, RADAR, USE
  *     MELHOR...) + a seção `## um` do social. Os claims `"secondary"` do
  *     fact-checker (#8992, #9900) pertencem a ela.
@@ -89,6 +91,13 @@ export interface UnitSourceInputs {
 const DESTAQUE_HEADER_RE = /^(?:\*\*)?DESTAQUE (\d+)\s*\|/;
 const SEPARATOR_RE = /^-{3,}$/;
 /**
+ * Linha que só existe no corpo de um destaque (#14197). Achada depois do `---`
+ * que fechou um destaque, antes do próximo header, sinaliza um `---` DENTRO do
+ * destaque: o resto dele caiu no `pool`, e o plano parcial deixaria o destaque
+ * sem recheck. Box de divulgação entre destaques não traz essas linhas.
+ */
+const DESTAQUE_BODY_MARKER_RE = /^(?:\*\*|_)?\s*(?:por que isso importa|aprofunde)\b/iu;
+/**
  * Header de seção que fecha um bloco de destaque mesmo sem `---`: as seções do
  * pool pelo registro canônico (`SECTIONS` de `section-naming.ts`, o mesmo do
  * stitch/render) mais as seções fixas depois dos destaques (É IA?, ERRO
@@ -126,23 +135,39 @@ export function splitNewsletterUnits(md: string): Record<string, string> {
  * Partição com diagnóstico. O bloco de destaque fecha no `---`, no header de
  * outro destaque ou num header de seção conhecido (LANÇAMENTOS, RADAR, USE
  * MELHOR, VÍDEOS, É IA?, ERRO INTENCIONAL). `ambiguous` quando o fim não é
- * claro (bloco que vai até o fim do arquivo, ou o mesmo `DESTAQUE N` duas
- * vezes): aí o plano sai completo.
+ * claro (bloco que vai até o fim do arquivo, o mesmo `DESTAQUE N` duas vezes,
+ * ou texto de destaque — "Por que isso importa", "Aprofunde" — depois do `---`
+ * que fechou o bloco, antes do próximo header, #14197): aí o plano sai
+ * completo. A partição em si não muda: o `---` segue fechando o bloco, para o
+ * box entre destaques continuar no `pool`.
  */
 export function partitionNewsletter(md: string): { units: Record<string, string>; ambiguous?: string } {
   const out: Record<string, string[]> = { [POOL_UNIT]: [] };
   const seen = new Set<string>();
   const problems: string[] = [];
   let current: string | null = null;
+  /** Destaque fechado por `---` cujo próximo header ainda não veio (#14197). */
+  let closedBySeparator: string | null = null;
+  const flaggedSeparator = new Set<string>();
   for (const line of md.replace(/\r\n/g, "\n").split("\n")) {
     const t = line.trim();
     const header = DESTAQUE_HEADER_RE.exec(t);
     if (header) {
       current = `d${Number(header[1])}`;
+      closedBySeparator = null;
       if (seen.has(current)) problems.push(`header DESTAQUE ${header[1]} repetido`);
       seen.add(current);
-    } else if (current && (SEPARATOR_RE.test(t) || SECTION_HEADER_RE.test(t))) {
+    } else if (SECTION_HEADER_RE.test(t)) {
       current = null;
+      closedBySeparator = null;
+    } else if (current && SEPARATOR_RE.test(t)) {
+      closedBySeparator = current;
+      current = null;
+    } else if (!current && closedBySeparator && DESTAQUE_BODY_MARKER_RE.test(t)) {
+      if (!flaggedSeparator.has(closedBySeparator)) {
+        flaggedSeparator.add(closedBySeparator);
+        problems.push(`\`---\` dentro de ${closedBySeparator}: texto de destaque depois do separador`);
+      }
     }
     const key = current ?? POOL_UNIT;
     (out[key] ??= []).push(line);

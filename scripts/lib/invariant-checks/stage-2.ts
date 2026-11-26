@@ -280,7 +280,7 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
   //
   // #3929: comparar contra o snapshot PÓS-humanizador/PRÉ-Clarice
   // (`_internal/03-social-post-humanizador.md`, escrito pelo orchestrator logo
-  // antes de invocar a Clarice — orchestrator-stage-2.md §2c) quando ele
+  // antes de invocar a Clarice — orchestrator-stage-2-fallback.md §2c) quando ele
   // existir, em vez do `03-social.md` final (que já passou pela Clarice). Esse
   // check roda em `check-invariants.ts --stage 2`, que é disparado DEPOIS da
   // Clarice (§2d) — comparar contra o arquivo final tratava uma reversão
@@ -530,7 +530,7 @@ function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[
 /**
  * #6337: registra em `STAGE_2_RULES` os checks de
  * `scripts/check-stage2-invariants.ts` (#1072/#1073) que até aqui só rodavam
- * como passo em prosa do playbook (`orchestrator-stage-2.md` ~L375-380).
+ * como passo em prosa do playbook (`orchestrator-stage-2-fallback.md` §2b, "Validator final Stage 2").
  * Mesma classe de gap que o #6305 fechou para o sentinel do humanizador
  * social (`checkSocialHumanizerSentinelWritten` acima): `pipeline-sentinel.ts
  * write --step 2` (#6009) não cobria nenhum destes 5 — uma sessão que

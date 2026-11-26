@@ -59,7 +59,7 @@ export interface SnapshotPair {
  * - Social: 03-social.md vs _internal/03-social-pre-humanizador.md (existe se humanizer rodou)
  *
  * Convenção dos arquivos snapshot existe há tempo no playbook
- * (orchestrator-stage-2.md §2b/§2c). Esta função só assert.
+ * (orchestrator-stage-2-fallback.md §2b/§2c). Esta função só assert.
  */
 export const DEFAULT_SNAPSHOT_PAIRS: SnapshotPair[] = [
   {

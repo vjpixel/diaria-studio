@@ -36,9 +36,9 @@
  * `{transient, retryAfterSecs, status, reason}`, e o chamador (`clarice-envio-
  * guard.ts`) decide se retenta com backoff em vez de abortar.
  */
-import { pickStats } from "../workers/brevo-dashboard/src/sections-core.ts";
-import { resolveSpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts";
-import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
+import { pickStats } from "./lib/shared/brevo-campaign-stats.ts";
+import { resolveSpamSignal } from "./lib/shared/brevo-health-thresholds.ts";
+import type { BrevoCampaign } from "./lib/shared/brevo-dashboard-types.ts";
 import {
   DEFAULT_DASHBOARD_URL,
   DEFAULT_DASHBOARD_LIMIT,

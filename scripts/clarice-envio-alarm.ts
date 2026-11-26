@@ -75,7 +75,7 @@ import {
   type ClariceEnvioBaseCollapseRead,
   type ClariceEnvioHaltRead,
 } from "./lib/clarice-envio-halt.ts";
-import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "./lib/shared/clarice-weekly-plan.ts";
 import { computeExpectedEnvioCycle } from "./lib/clarice-envio-cycle.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {

@@ -53,7 +53,7 @@ import {
   HALT_WRITE_FAILED_REPORT_SUFFIX,
   describeBaseCollapseActions,
 } from "./clarice-envio-halt.ts";
-import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "../../workers/brevo-dashboard/src/weekly-plan.ts";
+import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "./shared/clarice-weekly-plan.ts";
 
 export type EnvioAlarmVerdict = "ok" | "alarm-no-report" | "alarm-failure";
 
