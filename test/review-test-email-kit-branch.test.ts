@@ -45,12 +45,13 @@ describe("review-test-email branch kit (#6113)", () => {
     );
   });
 
-  it("platform = kit roda SÓ o Processo Kit (pula seções Beehiiv)", () => {
+  it("platform = kit roda SÓ o Processo Kit (o Beehiiv nem está no prompt, #14041)", () => {
     assert.match(
       reviewAgent,
-      /Se `platform = "kit"`.*Pular todo o processo Beehiiv/s,
-      "dispatch por platform=kit deve pular o processo Beehiiv",
+      /Se `platform = "kit"`\*\* → executar apenas o \*\*Processo Kit\*\*/,
+      "dispatch por platform=kit deve rodar só o Processo Kit",
     );
+    assert.doesNotMatch(reviewAgent, /^## Processo Beehiiv/m, "Processo Beehiiv saiu do prompt (#14041)");
   });
 
   it("K1: busca Gmail pelo remetente próprio oi@news.diar.ia.br (não beehiiv.com)", () => {

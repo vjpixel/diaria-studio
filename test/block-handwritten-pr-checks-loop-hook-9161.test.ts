@@ -1,12 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   commandHasHandwrittenPrChecksLoop as has,
   HANDWRITTEN_PR_CHECKS_LOOP_BLOCK_REASON,
 } from "../.claude/hooks/block-handwritten-pr-checks-loop.mjs";
+import { armedBashPreToolUseGuards } from "./_helpers/bash-pretooluse-guards.ts";
 
 // #9161 — 3 laços `until gh pr checks ...; do sleep 30; done` escritos à mão
 // ficaram órfãos 103-242min vigiando PRs já mergeadas (#9130, #9147).
@@ -108,10 +108,7 @@ describe("hook entrypoint (#9161)", () => {
     assert.equal(edit.status, 0);
     assert.equal(edit.stdout, "");
   });
-  it("registrado em .claude/settings.json (PreToolUse Bash)", () => {
-    const settings = JSON.parse(readFileSync(join(import.meta.dirname, "..", ".claude", "settings.json"), "utf8"));
-    const bash = settings.hooks.PreToolUse.find((h: { matcher: string }) => h.matcher === "Bash");
-    const args = bash.hooks.flatMap((h: { args?: string[] }) => h.args ?? []);
-    assert.ok(args.some((a: string) => a.endsWith("block-handwritten-pr-checks-loop.mjs")));
+  it("registrado em .claude/settings.json (PreToolUse Bash, via despachante #14045)", () => {
+    assert.ok(armedBashPreToolUseGuards().includes("block-handwritten-pr-checks-loop.mjs"));
   });
 });

@@ -514,6 +514,65 @@ export type UpdateApoiadoresKitResult =
     };
 
 /**
+ * Resultado de `unscheduleOnAudienceMismatch` (#14012).
+ * - `unscheduled`: PATCH `send_at: null` aceito e a releitura confirmou
+ *   `send_at` vazio — nada será enviado.
+ * - `still_scheduled`: PATCH aceito, mas a releitura ainda mostra `send_at`.
+ * - `failed`: o PATCH ou a releitura lançou; estado no Kit incerto.
+ * - `was_draft`: já não havia agendamento, nada a desagendar.
+ */
+export type UnscheduleOutcome = "unscheduled" | "still_scheduled" | "failed" | "was_draft";
+
+/**
+ * Desagenda (`send_at: null`) um broadcast cuja audiência relida diverge da
+ * tag e confirma por releitura (#14012). Usado pela criação e pelo `--update`:
+ * o código que detecta audiência errada não pode deixar o envio na fila,
+ * porque a rodada pode ser desassistida e o pior caso é a base INTEIRA receber
+ * a recompensa paga (#6126). Nunca lança: falha vira `failed`/`still_scheduled`
+ * com uma nota que nomeia o broadcast id para o editor agir à mão.
+ */
+export async function unscheduleOnAudienceMismatch(opts: {
+  broadcastId: number;
+  /** `send_at` visto na releitura (ou pedido na criação). Vazio = rascunho. */
+  liveSendAt: string | null | undefined;
+  deps: Pick<ApoiadoresKitDeps, "getBroadcast" | "updateBroadcast">;
+  kitConfig?: KitConfig;
+}): Promise<{ outcome: UnscheduleOutcome; note: string }> {
+  const { broadcastId, deps, kitConfig } = opts;
+  if (!opts.liveSendAt) {
+    return {
+      outcome: "was_draft",
+      note: ` O broadcast id=${broadcastId} está como rascunho, sem envio na fila — NÃO dispare sem conferir a audiência.`,
+    };
+  }
+  try {
+    await deps.updateBroadcast(broadcastId, { send_at: null }, kitConfig);
+    const after = await deps.getBroadcast(broadcastId, kitConfig);
+    if (after.send_at) {
+      return {
+        outcome: "still_scheduled",
+        note:
+          ` A tentativa de desagendar NÃO pegou (send_at=${after.send_at}) — o broadcast id=${broadcastId} ` +
+          "SEGUE AGENDADO e VAI DISPARAR: DESAGENDE À MÃO no Kit AGORA.",
+      };
+    }
+    return {
+      outcome: "unscheduled",
+      note:
+        ` O broadcast id=${broadcastId} foi DESAGENDADO (send_at: null, confirmado por releitura) — ` +
+        "nada será enviado até alguém reagendar.",
+    };
+  } catch (e) {
+    return {
+      outcome: "failed",
+      note:
+        ` A tentativa de desagendar FALHOU (${(e as Error).message}) — o broadcast id=${broadcastId} pode ` +
+        "SEGUIR AGENDADO e DISPARAR: DESAGENDE À MÃO no Kit AGORA.",
+    };
+  }
+}
+
+/**
  * Rede (deps injetados, #11813): atualiza o broadcast JÁ registrado em vez de
  * criar outro. Antes, corrigir um broadcast agendado exigia `--force`, que
  * cria um 2º e deixa o 1º órfão e AGENDADO: envio duplo se ninguém apagar à
@@ -607,21 +666,13 @@ export async function updateApoiadoresKitBroadcast(opts: {
   const audience = verifyAudienceFilter(reread.subscriber_filter, expectedFilter);
   if (audience.verified === false) {
     // Desagendar é o que impede o disparo com audiência errada.
-    let unscheduleNote: string;
-    if (reread.send_at) {
-      try {
-        await deps.updateBroadcast(broadcastId, { send_at: null }, kitConfig);
-        const after = await deps.getBroadcast(broadcastId, kitConfig);
-        unscheduleNote = after.send_at
-          ? ` A tentativa de desagendar NÃO pegou (send_at=${after.send_at}) — DESAGENDE À MÃO no Kit AGORA.`
-          : " O broadcast foi DESAGENDADO (send_at: null, confirmado por releitura).";
-      } catch (e) {
-        unscheduleNote = ` A tentativa de desagendar FALHOU (${(e as Error).message}) — DESAGENDE À MÃO no Kit AGORA.`;
-      }
-    } else {
-      unscheduleNote = " O broadcast está como rascunho — NÃO dispare sem conferir a audiência.";
-    }
-    return { ok: false, broadcastId, untouched: false, audience, reason: `${audience.reason}${unscheduleNote}` };
+    const unschedule = await unscheduleOnAudienceMismatch({
+      broadcastId,
+      liveSendAt: reread.send_at,
+      deps,
+      kitConfig,
+    });
+    return { ok: false, broadcastId, untouched: false, audience, reason: `${audience.reason}${unschedule.note}` };
   }
 
   let sendAtRescued = false;
@@ -1011,8 +1062,10 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   // #12739: a mesma releitura decide se o agendamento PEGOU no Kit. Sem ela
   // (rede), "não confirmável" — o state nunca vira `sent` pelo 2xx da criação.
   let sendConfirmation: KitSentConfirmation | null = null;
+  let rereadSendAt: string | null | undefined;
   try {
     const reread = await deps.getBroadcast(created.id, kitConfig);
+    rereadSendAt = reread.send_at;
     verification = verifyAudienceFilter(reread.subscriber_filter, buildTagFilter(tagId));
     if (scheduleAt) sendConfirmation = confirmKitBroadcastSent(reread, created.id);
   } catch (e) {
@@ -1064,17 +1117,25 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     } catch (e) {
       persistError = (e as Error).message;
     }
-    // Com --schedule, o broadcast já está AGENDADO — não é mais um rascunho
-    // inerte no painel, é um envio real na fila do Kit. A mensagem precisa
-    // deixar isso explícito: o risco não é "não dispare", é "isto VAI disparar
-    // sozinho pra possivelmente a base inteira se ninguém intervier".
+    // #14012: com --schedule, o broadcast entrou AGENDADO — é um envio real na
+    // fila do Kit, e a rodada pode ser desassistida. Desagendar aqui (mesmo
+    // helper do --update) é o que impede o disparo pra audiência errada; o
+    // aviso manual só sobra quando o desagendamento não se confirma. Na
+    // dúvida (releitura sem send_at), tenta desagendar mesmo assim: PATCH
+    // `send_at: null` num rascunho é inócuo.
     const acao = scheduleAt
-      ? `este broadcast está AGENDADO para ${scheduleAt} e VAI DISPARAR SOZINHO — cancele/reagende AGORA no ` +
-        "painel do Kit (Broadcasts) se a audiência estiver errada"
+      ? (
+          await unscheduleOnAudienceMismatch({
+            broadcastId: created.id,
+            liveSendAt: rereadSendAt || scheduleAt,
+            deps,
+            kitConfig,
+          })
+        ).note.trim() + ` (horário pedido: AGENDADO para ${scheduleAt})`
       : "NÃO dispare esse rascunho sem antes conferir a audiência no painel do Kit";
     throw new Error(
       `AUDIÊNCIA NÃO CONFERE: o broadcast Kit id=${created.id} FOI CRIADO, mas ${verification.reason} ` +
-        `${acao} — no pior caso ele está mirando a base INTEIRA em vez da tag de apoiadores.` +
+        `${acao} — no pior caso ele estaria mirando a base INTEIRA em vez da tag de apoiadores.` +
         (persistError
           ? ` ADICIONALMENTE, o state local não pôde ser gravado (${persistError}) — o guard de idempotência ` +
             "NÃO vai reconhecer este broadcast e uma reexecução criaria um 2º rascunho."

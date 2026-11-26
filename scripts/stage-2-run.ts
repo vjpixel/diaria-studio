@@ -49,9 +49,11 @@
  * `clariceRealProbe`): 90 s quando o ping real do Stage 0 falhou, 480 s no
  * resto; arquivo ilegível vira 480 s com aviso no gate. Exit 6
  * (`clarice_unavailable`) da newsletter segue pelo `clarice-pending.ts skip`,
- * como antes. O SOCIAL usa sempre o teto normal (não tem `resume`), limitado
- * ao que sobra de um orçamento de 540 s (mínimo 60 s), porque as duas
- * Clarices rodam na mesma chamada e a Bash tool corta em 10 min. O runner usa só o caminho REST: script Node não chama o MCP
+ * como antes. O SOCIAL usa sempre o teto normal de 480 s inteiro (não tem
+ * `resume`): as duas Clarices dividem um orçamento de 540 s por chamada (a
+ * Bash tool corta em 10 min), e quando a da newsletter deixa menos de 480 s o
+ * runner devolve exit 3 com `rerunArgs: ["--social-clarice-only"]`, e a do
+ * social roda numa chamada própria (#14093). O runner usa só o caminho REST: script Node não chama o MCP
  * `mcp__clarice__correct_text` (1.491 das 1.510 tentativas de 20/10-25/11 já
  * eram REST).
  *
@@ -323,6 +325,8 @@ export interface RunState {
   curtoMissingCount?: number;
   /** Aviso warn-only do Curto (2ª ausência), repetido no gate pelo post-checks. */
   curtoWarn?: string | null;
+  /** Aviso do normalize que falhou no post-pool (#14094), repetido no gate pelo post-checks. */
+  normalizeWarn?: string | null;
   /** Dispatch do social-curto gravado no pre-dispatch, devolvido no fix de re-dispatch. */
   curtoDispatch?: PendingAgentDispatch | null;
   /** Avisos da Clarice do post-humanize (skip/resume, cabeçalhos, degradado, stateError), repetidos no post-checks. */
@@ -340,14 +344,36 @@ function statePath(editionDir: string): string {
   return resolve(editionDir, "_internal", RUN_STATE_FILE);
 }
 
+/** O estado existe mas não é um JSON de objeto legível (#14094) — diferente de ausente. */
+export class RunStateUnreadableError extends Error {
+  constructor(
+    readonly path: string,
+    readonly cause: string,
+  ) {
+    super(`${RUN_STATE_FILE} ilegível (${cause})`);
+    this.name = "RunStateUnreadableError";
+  }
+}
+
+/**
+ * `null` só quando o arquivo não existe. Arquivo ilegível lança
+ * `RunStateUnreadableError` (#14094): tratá-lo como ausente mandava rodar o
+ * pre-dispatch de novo, que sobrescreve `clariceDone`/`poolApplied` e
+ * re-despacha todos os writers.
+ */
 export function readRunState(editionDir: string): RunState | null {
   const p = statePath(editionDir);
   if (!existsSync(p)) return null;
+  let parsed: unknown;
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as RunState;
-  } catch {
-    return null;
+    parsed = JSON.parse(readFileSync(p, "utf8"));
+  } catch (err) {
+    throw new RunStateUnreadableError(p, (err as Error).message);
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new RunStateUnreadableError(p, "não é um objeto JSON");
+  }
+  return parsed as RunState;
 }
 
 function writeRunState(editionDir: string, state: RunState): void {
@@ -639,7 +665,16 @@ function phasePreDispatch(ctx: Ctx): Stage2RunResult {
 // ---------------------------------------------------------------------------
 
 function loadState(ctx: Ctx): RunState {
-  const st = readRunState(ctx.editionDir);
+  let st: RunState | null;
+  try {
+    st = readRunState(ctx.editionDir);
+  } catch (err) {
+    if (!(err instanceof RunStateUnreadableError)) throw err;
+    ctx.log("error", "estado da Etapa 2 ilegível — fase abortada sem sobrescrever", { path: err.path, cause: err.cause });
+    throw new Stage2Abort(
+      `${err.message} em ${err.path} — NÃO rodar --phase pre-dispatch (sobrescreve clariceDone/poolApplied e re-despacha os writers); corrigir ou restaurar o JSON e re-rodar esta fase.`,
+    );
+  }
   if (!st) throw new Stage2Abort(`estado ${RUN_STATE_FILE} ausente — rodar --phase pre-dispatch antes.`);
   if (!ctx.opts.scopeExplicit) {
     // fase chamada sem --scope: herda o do pre-dispatch.
@@ -827,8 +862,17 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
     const norm = ctx.run("normalize-newsletter", "scripts/normalize-newsletter.ts", ["--in", draft, "--out", normalized]);
     writeFileSync(ctx.p("_internal/02-normalize-report.json"), norm.stderr, "utf8");
     if (norm.code !== 0 || !existsSync(ctx.p("_internal/02-normalized.md"))) {
-      ctx.note("⚠️  normalize-newsletter falhou — 02-normalized.md = cópia do draft.");
+      // Vai ao gate e ao run-log (#14094): o humanizador roda sobre o draft cru.
+      st.normalizeWarn = `⚠️  normalize-newsletter falhou (exit ${norm.code}) — 02-normalized.md é cópia do draft; humanizador e Clarice rodam sobre texto não normalizado.`;
+      ctx.note(st.normalizeWarn);
+      ctx.gateNotes.push(st.normalizeWarn);
+      ctx.log("warn", "normalize-newsletter falhou — 02-normalized.md = cópia do draft", {
+        exit: norm.code,
+        stderr: norm.stderr.trim().slice(0, 600),
+      });
       copyFileSync(ctx.p("_internal/02-draft.md"), ctx.p("_internal/02-normalized.md"));
+    } else {
+      st.normalizeWarn = null;
     }
     ctx.soft("singularize-md-sections", "scripts/singularize-md-sections.ts", ["--md", normalized]);
     pending.push({
@@ -866,10 +910,20 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
 
 /** Orçamento das duas Clarices numa chamada: a Bash tool corta em 600 s. */
 export const CLARICE_PHASE_BUDGET_MS = 540_000;
-export const CLARICE_SOCIAL_MIN_MS = 60_000;
 
-export function socialClariceDeadlineMs(baseDeadlineMs: number, newsletterElapsedMs: number): number {
-  return Math.min(baseDeadlineMs, Math.max(CLARICE_SOCIAL_MIN_MS, CLARICE_PHASE_BUDGET_MS - newsletterElapsedMs));
+export type SocialClaricePlan = { mode: "inline"; deadlineMs: number } | { mode: "own-call"; remainingMs: number };
+
+/**
+ * Onde roda a Clarice do social depois da da newsletter (#14093). Ela só roda
+ * na mesma chamada quando o que sobra do orçamento da fase ainda cabe o teto
+ * inteiro (`baseDeadlineMs`, 480 s); senão vai para uma chamada Bash própria
+ * (`--social-clarice-only`), com o teto inteiro, como antes do runner. Nunca
+ * recebe uma sobra encolhida: o social não tem `resume` no Stage 4 e estourar
+ * o teto é halt. No dia rápido (newsletter abaixo de 60 s) nada muda.
+ */
+export function planSocialClarice(baseDeadlineMs: number, newsletterElapsedMs: number): SocialClaricePlan {
+  const remainingMs = CLARICE_PHASE_BUDGET_MS - Math.max(0, newsletterElapsedMs);
+  return remainingMs >= baseDeadlineMs ? { mode: "inline", deadlineMs: baseDeadlineMs } : { mode: "own-call", remainingMs };
 }
 
 function failureLine(stdout: string): string {
@@ -946,7 +1000,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
       ctx.log("error", "pre-clarice snapshot missing — aborting before Clarice call");
       throw new Stage2Abort("snapshot pré-Clarice ausente — re-rodar a Etapa 2 do zero.");
     }
-    const t0 = Date.now();
+    const t0 = ctx.deps.now().getTime();
     const r = ctx.run(`clarice-correct (newsletter, teto ${deadline.deadlineMs / 1000}s)`, "scripts/clarice-correct.ts", [
       "--in",
       ctx.e(`_internal/${inputName}`),
@@ -960,7 +1014,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
       "--deadline-ms",
       String(deadline.deadlineMs),
     ]);
-    newsletterElapsed = Date.now() - t0;
+    newsletterElapsed = ctx.deps.now().getTime() - t0;
     if (r.code === 0) {
       copyFileSync(ctx.p("_internal/02-clarice-corrected.md"), ctx.p("02-reviewed.md"));
       ctx.soft("clarice-diff (newsletter)", "scripts/clarice-diff.ts", [
@@ -1005,15 +1059,28 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
 
   // 3. Clarice do social.
   if (ctx.social) {
-    copyFileSync(ctx.p("03-social.md"), ctx.p("_internal/03-social-post-humanizador.md"));
     // O teto degradado (90 s) é só da newsletter, a única com `resume` no
-    // Stage 4 (#14084): o social usa o teto normal, limitado ao que sobra do
-    // orçamento da fase; na retomada `--social-clarice-only` vale o override.
-    const socialDeadline = socialOnly
-      ? (ctx.opts.deadlineMsOverride ?? CLARICE_NORMAL_DEADLINE_MS)
-      : ctx.newsletter
-        ? socialClariceDeadlineMs(CLARICE_NORMAL_DEADLINE_MS, newsletterElapsed)
-        : CLARICE_NORMAL_DEADLINE_MS;
+    // Stage 4 (#14084): o social usa sempre o teto normal de 480 s inteiro.
+    // Se a Clarice da newsletter comeu o orçamento a ponto de não caber, o
+    // social vai para uma chamada Bash própria (#14093) em vez de rodar com a
+    // sobra; na retomada `--social-clarice-only` vale o override.
+    let socialDeadline = ctx.opts.deadlineMsOverride ?? CLARICE_NORMAL_DEADLINE_MS;
+    if (!socialOnly && ctx.newsletter && clarice.newsletter) {
+      const plan = planSocialClarice(CLARICE_NORMAL_DEADLINE_MS, newsletterElapsed);
+      if (plan.mode === "own-call") {
+        ctx.note(
+          `Clarice da newsletter levou ${Math.round(newsletterElapsed / 1000)}s; sobram ${Math.round(plan.remainingMs / 1000)}s do orçamento da fase, menos que o teto de ${CLARICE_NORMAL_DEADLINE_MS / 1000}s do social: a Clarice do social roda numa chamada própria (#14093).`,
+        );
+        ctx.fixes.push({
+          check: "clarice-social-own-call",
+          action: `re-rodar npx tsx scripts/stage-2-run.ts --phase post-humanize --edition ${ctx.opts.edition} --social-clarice-only numa chamada Bash própria (timeout 600000); nada a corrigir, a newsletter já ficou resolvida`,
+          detail: `newsletter ${Math.round(newsletterElapsed / 1000)}s, sobra ${Math.round(plan.remainingMs / 1000)}s < ${CLARICE_NORMAL_DEADLINE_MS / 1000}s`,
+        });
+        return fixNeeded(ctx, "post-humanize", { rerunArgs: ["--social-clarice-only"], clarice });
+      }
+      socialDeadline = plan.deadlineMs;
+    }
+    copyFileSync(ctx.p("03-social.md"), ctx.p("_internal/03-social-post-humanizador.md"));
     const r = ctx.run(`clarice-correct (social, teto ${Math.round(socialDeadline / 1000)}s)`, "scripts/clarice-correct.ts", [
       "--in",
       ctx.e("03-social.md"),
@@ -1056,9 +1123,12 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
           ? `Clarice indisponível no social (clarice_unavailable, teto ${Math.round(socialDeadline / 1000)}s)`
           : (CLARICE_HALT_REASON[r.code] ?? `clarice-correct exit ${r.code}`);
       const detail = failureLine(r.stdout);
+      // Dia degradado (#14093): o halt segue (o social nunca pula a Clarice em
+      // silêncio), mas o banner diz que o ping real do Stage 0 já tinha falhado.
+      const degradedHint = deadline.degraded ? " (o ping real da Clarice já tinha falhado no Stage 0: API degradada hoje)" : "";
       return halt(
         ctx,
-        `social: ${why}${detail ? ` — ${detail}` : ""}`,
+        `social: ${why}${detail ? ` — ${detail}` : ""}${degradedHint}`,
         `responder 'retry' (re-rodar npx tsx scripts/stage-2-run.ts --phase post-humanize --edition ${ctx.opts.edition} --social-clarice-only) ou 'abort'`,
       );
     }
@@ -1204,6 +1274,7 @@ function phasePostChecks(ctx: Ctx): Stage2RunResult {
   // Avisos de fases anteriores voltam ao gate (#14084): o gate lê o post-checks.
   for (const w of st.clariceWarns ?? []) ctx.gateNotes.push(w);
   if (st.curtoWarn) ctx.gateNotes.push(st.curtoWarn);
+  if (st.normalizeWarn) ctx.gateNotes.push(st.normalizeWarn);
   return runPostChecks(ctx, st);
 }
 
@@ -1251,6 +1322,9 @@ function phasePostGate(ctx: Ctx): Stage2RunResult {
               detail: "Depois re-rodar --phase post-gate --after-title-picker.",
             },
           ],
+          // Sem a flag o re-run sobrescreve o snapshot com o texto já mexido
+          // e o validate-section-structure nunca roda (#14094).
+          rerunArgs: ["--after-title-picker"],
         });
       }
     } else {
@@ -1266,7 +1340,7 @@ function phasePostGate(ctx: Ctx): Stage2RunResult {
           action: "re-apresentar o gate: deletar os títulos excedentes em 02-reviewed.md e re-rodar --phase post-gate --after-title-picker",
           detail: (titles.stderr || titles.stdout).trim().slice(0, 400),
         });
-        return fixNeeded(ctx, "post-gate", { mode: st.mode });
+        return fixNeeded(ctx, "post-gate", { mode: st.mode, rerunArgs: ["--after-title-picker"] });
       }
     }
     const fm = ctx.run("validate-frontmatter-yaml", "scripts/validate-frontmatter-yaml.ts", ["--md", reviewed]);
