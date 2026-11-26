@@ -20,6 +20,8 @@ import {
   computeStaleDerivedImages,
   staleDerivedImagePaths,
   resolveWideImageIntegrity,
+  sdPromptPathFor,
+  forcedRegenPurgePaths,
 } from "../scripts/image-generate.ts";
 
 describe("staleDerivedImagePaths — paths dos formatos derivados por destaque (#6010)", () => {
@@ -61,5 +63,39 @@ describe("computeStaleDerivedImages — CASO REAL #6010: só invalida derivados 
     assert.deepEqual(action, { kind: "skip" });
     const stale = computeStaleDerivedImages(action, "data/editions/260824/", "d1");
     assert.deepEqual(stale, []);
+  });
+});
+
+describe("geração em paralelo do 2x1 e do 4x5 (#14036)", () => {
+  it("--keep-4x5-nativo: o 2x1 regerado purga só o master, nunca o nativo que o 4x5 paralelo está gravando", () => {
+    const action = resolveWideImageIntegrity(false, false);
+    const stale = computeStaleDerivedImages(action, "data/editions/260824/", "d1", { keep4x5Nativo: true });
+    assert.deepEqual(stale, ["data/editions/260824/04-d1-master.jpg"]);
+  });
+
+  it("sem a flag, a purga segue igual (nativo + master)", () => {
+    const action = resolveWideImageIntegrity(false, false);
+    assert.equal(computeStaleDerivedImages(action, "data/editions/260824/", "d1", {}).length, 2);
+  });
+
+  it("sdPromptPathFor: 2x1 e 4x5 do mesmo destaque gravam o prompt em arquivos diferentes", () => {
+    const p2 = sdPromptPathFor("data/editions/260824", "d1", "2x1");
+    const p45 = sdPromptPathFor("data/editions/260824/", "d1", "4x5");
+    assert.equal(p2, "data/editions/260824/04-d1-sd-prompt.json"); // nome histórico (invariante do Stage 3)
+    assert.equal(p45, "data/editions/260824/04-d1-4x5-sd-prompt.json");
+    assert.notEqual(p2, p45);
+    assert.equal(sdPromptPathFor("x/", "d2", "master"), "x/04-d2-master-sd-prompt.json");
+    assert.equal(sdPromptPathFor("x/", "d2", "1x1"), "x/04-d2-sd-prompt.json");
+  });
+
+  it("4x5 --force apaga o nativo antigo antes do backend: falha na geração não deixa a arte velha para um re-run sem --force", () => {
+    const nativo = "data/editions/260824/04-d1-4x5-nativo.jpg";
+    // Cenário do finding: 2x1 regerado com --keep-4x5-nativo, 4x5 forçado.
+    // Sem a purga, a falha deixava o nativo antigo e o re-run pulava por "já existe".
+    assert.deepEqual(forcedRegenPurgePaths("4x5", true, true, nativo), [nativo]);
+    assert.deepEqual(forcedRegenPurgePaths("4x5", true, false, nativo), []); // nada a apagar
+    assert.deepEqual(forcedRegenPurgePaths("4x5", false, true, nativo), []); // sem --force: skip-if-exists de sempre
+    assert.deepEqual(forcedRegenPurgePaths("master", true, true, "x/04-d1-master.jpg"), []);
+    assert.deepEqual(forcedRegenPurgePaths("1x1", true, true, "x/04-d1-1x1.jpg"), []);
   });
 });
