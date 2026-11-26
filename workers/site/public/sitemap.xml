@@ -1324,4 +1324,16 @@
       <news:title>Hackers chineses usam agentes que acham zero-day</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos</loc>
+    <lastmod>2026-11-26</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-26T00:00:00.000Z</news:publication_date>
+      <news:title>Anthropic: empresas não demitem, mas contratam menos</news:title>
+    </news:news>
+  </url>
 </urlset>

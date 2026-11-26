@@ -74,6 +74,7 @@ function makeFakeExec(handlers: Record<string, Handler>): { exec: ExecFn; calls:
 function goldenHandlers(opts: { cicloMensal?: string; shouldSendTest?: boolean } = {}): Record<string, Handler> {
   const cicloMensal = opts.cicloMensal ?? "2607-08";
   return {
+    "scripts/clarice-check-list-capacity.ts": textResult("listas: 269/300"),
     "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
     "scripts/clarice-build-db.ts": textResult(""),
     "scripts/clarice-stripe-delta.ts": jsonResult({ mode: "execute", since: "2026-08-01", rows: 12, out: "x.csv" }),
@@ -126,6 +127,24 @@ describe("clarice-novos-run (#4941)", () => {
     for (const k of ENV_KEYS) {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k];
+    }
+  });
+
+  it("#13966: capacidade esgotando aborta antes da seleção e preserva ação no relatório", async () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-list-cap-"));
+    try {
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-list-capacity.ts": {
+          code: 1, stdout: "", stderr: "270/300 listas — rode clarice-consolidate-lists.ts",
+        },
+      });
+      const result = await runNovos([], baseDeps(root, { exec }));
+      assert.equal(result.code, 1);
+      assert.deepEqual(calls.map((c) => c.script), ["scripts/clarice-check-list-capacity.ts"]);
+      assert.match(result.reportMarkdown, /270\/300.*clarice-consolidate-lists/);
+      assert.doesNotMatch(result.reportMarkdown, /seleção desta rodada já está/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -321,6 +340,7 @@ describe("clarice-novos-run (#4941)", () => {
 
       const scripts = calls.map((c) => c.script);
       assert.deepEqual(scripts, [
+        "scripts/clarice-check-list-capacity.ts",
         "scripts/clarice-check-derived-stale.ts",
         "scripts/clarice-stripe-delta.ts",
         "scripts/clarice-build-db.ts",
@@ -671,7 +691,8 @@ describe("clarice-novos-run (#4941)", () => {
       assert.equal(result.code, 0, result.reportMarkdown);
       const scripts = calls.map((c) => c.script);
       // stale -> check-derived-stale, build-db(pré-stale), stripe-delta, build-db(pós-delta), ...
-      assert.deepEqual(scripts.slice(0, 4), [
+      assert.deepEqual(scripts.slice(0, 5), [
+        "scripts/clarice-check-list-capacity.ts",
         "scripts/clarice-check-derived-stale.ts",
         "scripts/clarice-build-db.ts",
         "scripts/clarice-stripe-delta.ts",

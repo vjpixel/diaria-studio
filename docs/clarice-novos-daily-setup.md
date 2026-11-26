@@ -106,3 +106,22 @@ systemctl --user list-timers diaria-clarice-novos.timer diaria-clarice-novos-tar
 ```
 
 **Achado desta unidade, não corrigido aqui (fora do escopo exato da #5447):** `Diaria-Clarice-Novos` (09:00) agora colide, no minuto exato, com `Diaria-Clarice-Opens-Catchup-Alarm` (também 09:00, `#4740`/`#4722` item 4). São dois timers systemd independentes, sem recurso compartilhado óbvio (um lê um relatório de catch-up de opens; o outro toca Stripe/MV/Brevo), então não é um conflito funcional — mas quebra a convenção do resto do registro de manter dailies em minutos distintos, e nenhum teste do arquivo pega colisões globais (só pares específicos comentados task a task). Documentado aqui e no self-review do PR para o coordenador decidir se vale desencostar um dos dois horários numa unidade futura.
+
+### Capacidade de listas (#13966)
+
+Antes de selecionar contatos, as duas rodadas de `clarice-novos-run.ts`
+executam `clarice-check-list-capacity.ts`: um GET em `/contacts/lists`
+lê o total da conta Clarice. A partir de **270 listas (inclusive)**,
+a rodada aborta com exit 1, grava a orientação no relatório e deixa a
+unit failed para o alarme de units existente. A checagem também roda em
+`--dry-run`, mas fica depois do kill switch e da validação de ambiente.
+Resposta sem contagem válida ou falha de leitura também aborta antes da seleção.
+
+O operador deve rodar `npx tsx scripts/clarice-consolidate-lists.ts`
+(dry-run), revisar o plano e executar `--apply` no host e na conta
+autorizados, respeitando as pré-condições do script (#9532). Depois de
+liberar espaço abaixo do limiar, a próxima rodada retoma normalmente.
+A checagem nunca altera listas, contatos ou campanhas. O erro 405 com
+`list creation limit` também passa a nomear esse procedimento no log.
+Seleções já presas antes desta prevenção exigem recuperação separada
+conforme #13966/#13098; esta checagem não as libera.

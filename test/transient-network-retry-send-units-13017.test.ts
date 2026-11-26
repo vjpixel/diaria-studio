@@ -92,6 +92,7 @@ function fakeExec(handlers: Record<string, StepResult | StepResult[]>): { exec: 
 
 function preSendHandlers(selected: number): Record<string, StepResult | StepResult[]> {
   return {
+    "scripts/clarice-check-list-capacity.ts": { code: 0, stdout: "capacidade ok", stderr: "" },
     "scripts/clarice-check-derived-stale.ts": { code: 0, stdout: "fresh", stderr: "" },
     "scripts/clarice-build-db.ts": { code: 0, stdout: "", stderr: "" },
     "scripts/clarice-stripe-delta.ts": json({ mode: "execute", since: "2026-11-13", rows: 5 }),
