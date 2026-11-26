@@ -110,6 +110,7 @@
  * os CSVs de wave sob um tmpdir isolado em vez do disco de produção.
  */
 
+import { allRows } from "./lib/sqlite-rows.ts";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1372,13 +1373,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const db = openClariceDb(getArg(argv, "db") || DEFAULT_DB_PATH);
     let rows: StoreRow[];
     try {
-      rows = db
+      rows = allRows<(StoreRow & { name: string | null })>(db
         .prepare(
           `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
                   opens_count, last_sent_at, mv_bucket, brevo_list_ids
              FROM clarice_users`,
-        )
-        .all() as unknown as (StoreRow & { name: string | null })[];
+        ));
     } finally {
       db.close();
     }

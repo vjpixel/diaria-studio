@@ -43,6 +43,7 @@ import {
   type SectionPair,
 } from "./lib/social-rewrite-diff.ts";
 import { canonicalizeUrl } from "./apply-gate-edits.ts";
+import type { Article } from "./lib/types/article.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   SNAPSHOT_DIR,
@@ -63,6 +64,14 @@ import {
   type AutofixReplacement,
   type TitlePick,
 } from "./lib/manual-edit-diff.ts";
+
+// Only the fields consumed by the diff; optional for historical/partial snapshots.
+type DiffArticle = Partial<Pick<Article, "url" | "title" | "score" | "score_base" | "bonuses_applied" | "source" | "rank">> & {
+  cluster_sources?: Array<{ url?: string } | null>;
+};
+type DiffItem = DiffArticle & ({ article?: null } | { article: DiffArticle });
+type SelectionSnapshot = Partial<Record<"highlights" | "runners_up" | "lancamento" | "radar" | "use_melhor" | "video", DiffItem[]>>;
+type ClassifiedDiff = ReturnType<DiffClassifier["classify"]>;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -406,33 +415,33 @@ export function wordSimilarity(a: string, b: string): number {
  *   esse dispensa o score.
  * `official:` deixou de ser sinal suficiente; só muda a descrição.
  */
-function inheritsScoring(outH: any, innH: any): boolean {
+function inheritsScoring(outH: DiffItem, innH: DiffItem): boolean {
   const a = outH?.article ?? outH ?? {};
   const b = innH?.article ?? innH ?? {};
   if (clusterLinked(a, outH, b, innH)) return true;
-  const score = (h: any, x: any) => (typeof x?.score === "number" ? x.score : typeof h?.score === "number" ? h.score : null);
+  const score = (h: DiffItem, x: DiffArticle) => (typeof x?.score === "number" ? x.score : typeof h?.score === "number" ? h.score : null);
   const sa = score(outH, a);
   const sb = score(innH, b);
   if (sa === null || sb === null || sa !== sb) return false;
   const bonusesA = Array.isArray(a.bonuses_applied) ? a.bonuses_applied : [];
   const sameBase = typeof a.score_base === "number" && a.score_base === b.score_base &&
     bonusesA.length > 0 && JSON.stringify(bonusesA) === JSON.stringify(b.bonuses_applied ?? null);
-  const titleOf = (x: any, h: any) => String(x?.title ?? h?.title ?? "").trim().toLowerCase();
+  const titleOf = (x: DiffArticle, h: DiffItem) => String(x?.title ?? h?.title ?? "").trim().toLowerCase();
   const ta = titleOf(a, outH);
   const sameTitle = ta !== "" && ta === titleOf(b, innH);
   return sameBase || sameTitle;
 }
 
 /** #9942: a URL de um lado aparece nas `cluster_sources` do outro (mesma história, outra fonte). */
-function clusterLinked(a: any, outH: any, b: any, innH: any): boolean {
-  const urlOf = (x: any, h: any) => {
+function clusterLinked(a: DiffArticle, outH: DiffItem, b: DiffArticle, innH: DiffItem): boolean {
+  const urlOf = (x: DiffArticle, h: DiffItem) => {
     const u = x?.url ?? h?.url;
     return typeof u === "string" && u !== "" ? articleUrlKey(u) : null;
   };
-  const clusterKeys = (x: any, h: any) =>
+  const clusterKeys = (x: DiffArticle, h: DiffItem) =>
     new Set(
       [...(x?.cluster_sources ?? []), ...(h?.cluster_sources ?? [])]
-        .map((cs: any) => (typeof cs?.url === "string" && cs.url !== "" ? articleUrlKey(cs.url) : null))
+        .map((cs) => (typeof cs?.url === "string" && cs.url !== "" ? articleUrlKey(cs.url) : null))
         .filter((k): k is string => k !== null),
     );
   const ua = urlOf(a, outH);
@@ -446,7 +455,7 @@ function clusterLinked(a: any, outH: any, b: any, innH: any): boolean {
  * MESMA história (`inheritsScoring`). Casamento guloso, na ordem: cada item que
  * entrou fica com o 1º item que saiu e cuja pontuação ele herda.
  */
-function matchSourceUpgrades<T extends { h: any }>(left: T[], entered: T[]): Array<{ out: T; inn: T }> {
+function matchSourceUpgrades<T extends { h: DiffItem }>(left: T[], entered: T[]): Array<{ out: T; inn: T }> {
   const used = new Set<T>();
   const pairs: Array<{ out: T; inn: T }> = [];
   for (const inn of entered) {
@@ -472,9 +481,9 @@ export function sourceUpgradeAliases(oldContent: string | undefined, newContent:
   const aliases = new Map<string, string>();
   if (!oldContent || !newContent) return aliases;
   try {
-    const oldH: any[] = JSON.parse(oldContent)?.highlights ?? [];
-    const newH: any[] = JSON.parse(newContent)?.highlights ?? [];
-    const keyOf = (h: any): string | null => {
+    const oldH: DiffItem[] = JSON.parse(oldContent)?.highlights ?? [];
+    const newH: DiffItem[] = JSON.parse(newContent)?.highlights ?? [];
+    const keyOf = (h: DiffItem): string | null => {
       const url = h?.article?.url ?? h?.url;
       return typeof url === "string" && url !== "" ? articleUrlKey(url) : null;
     };
@@ -1026,7 +1035,7 @@ export function classifySocialDiff(
 }
 
 /** Buckets do pool no `01-approved.json` → `target` da taxonomia de pedidos. */
-const POOL_BUCKET_TARGETS: ReadonlyArray<readonly [string, RequestTarget]> = [
+const POOL_BUCKET_TARGETS: ReadonlyArray<readonly ["lancamento" | "radar" | "use_melhor" | "video", RequestTarget]> = [
   ["lancamento", "lancamentos"],
   ["radar", "radar"],
   ["use_melhor", "use-melhor"],
@@ -1047,7 +1056,7 @@ interface PoolItem {
 }
 
 /** URLs da mesma história (canônica + `cluster_sources[].url`), normalizadas via Set (sem duplicar a própria URL). */
-function clusterUrlsOf(url: string, item: any): Set<string> {
+function clusterUrlsOf(url: string, item: DiffItem): Set<string> {
   const urls = new Set<string>([url]);
   for (const cs of item?.cluster_sources ?? []) {
     if (typeof cs?.url === "string" && cs.url !== "") urls.add(cs.url);
@@ -1056,7 +1065,7 @@ function clusterUrlsOf(url: string, item: any): Set<string> {
 }
 
 /** Indexa os itens do pool por URL. Item duplicado entre buckets: 1º bucket vence. */
-function indexPool(json: any): Map<string, PoolItem> {
+function indexPool(json: SelectionSnapshot | null | undefined): Map<string, PoolItem> {
   const byUrl = new Map<string, PoolItem>();
   for (const [key, target] of POOL_BUCKET_TARGETS) {
     for (const item of json?.[key] ?? []) {
@@ -1086,7 +1095,7 @@ function indexPoolByClusterUrl(pool: Map<string, PoolItem>): Map<string, PoolIte
 }
 
 /** URLs que estão em `highlights` — pertencem ao caminho destaque-*, não ao pool. */
-function highlightUrls(json: any): Set<string> {
+function highlightUrls(json: SelectionSnapshot | null | undefined): Set<string> {
   const urls = new Set<string>();
   for (const h of json?.highlights ?? []) {
     const url = h?.url ?? h?.article?.url;
@@ -1131,7 +1140,7 @@ function bucketLabel(bucket: string): string {
  * `destaque-cut`/`destaque-promote` acima, e contá-las de novo como
  * `pool-cut`/`pool-add` inflaria a recorrência com o mesmo evento duas vezes.
  */
-export function classifyPoolDiff(oldJson: any, newJson: any): Array<{
+export function classifyPoolDiff(oldJson: SelectionSnapshot | null | undefined, newJson: SelectionSnapshot | null | undefined): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -1249,8 +1258,8 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
   }> = [];
 
   try {
-    const oldJson = JSON.parse(oldContent);
-    const newJson = JSON.parse(newContent);
+    const oldJson: SelectionSnapshot = JSON.parse(oldContent);
+    const newJson: SelectionSnapshot = JSON.parse(newContent);
 
     const oldHighlights = oldJson.highlights ?? [];
     const newHighlights = newJson.highlights ?? [];
@@ -1261,21 +1270,21 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
     // ordem → `destaque-swap` (target = posição do item novo); saiu sem par →
     // `destaque-cut`; entrou sem par → `destaque-promote`. Permutação pura não
     // gera nada aqui (a reordenação sai como `section-order` abaixo).
-    const keyOf = (h: any): string | null => {
+    const keyOf = (h: DiffItem): string | null => {
       const url = h?.article?.url ?? h?.url;
       return typeof url === "string" && url !== "" ? articleUrlKey(url) : null;
     };
     const oldKeys = oldHighlights.map(keyOf);
     const newKeys = newHighlights.map(keyOf);
-    const titleOf = (h: any) => h?.article?.title ?? h?.title;
-    const urlOf = (h: any) => h?.article?.url ?? h?.url;
-    type Slot = { h: any; position: number; key: string };
+    const titleOf = (h: DiffItem) => h?.article?.title ?? h?.title;
+    const urlOf = (h: DiffItem) => h?.article?.url ?? h?.url;
+    type Slot = { h: DiffItem; position: number; key: string };
     const leftAll: Slot[] = oldHighlights
-      .map((h: any, i: number) => ({ h, position: i + 1, key: oldKeys[i] }))
-      .filter((x: { key: string | null }) => x.key !== null && !newKeys.includes(x.key));
+      .map((h: DiffItem, i: number) => ({ h, position: i + 1, key: oldKeys[i] }))
+      .filter((x): x is Slot => x.key !== null && !newKeys.includes(x.key));
     const enteredAll: Slot[] = newHighlights
-      .map((h: any, i: number) => ({ h, position: i + 1, key: newKeys[i] }))
-      .filter((x: { key: string | null }) => x.key !== null && !oldKeys.includes(x.key));
+      .map((h: DiffItem, i: number) => ({ h, position: i + 1, key: newKeys[i] }))
+      .filter((x): x is Slot => x.key !== null && !oldKeys.includes(x.key));
 
     // #9936: troca de URL pra fonte (oficial) da MESMA história — o item novo
     // herda a pontuação do que saiu (`inheritsScoring`). É problema de link,
@@ -1343,8 +1352,8 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
 
     // Detectar mudança de ordem
     if (oldHighlights.length === newHighlights.length && oldHighlights.length > 1) {
-      const oldUrls = oldHighlights.map((h: any) => h?.article?.url);
-      const newUrls = newHighlights.map((h: any) => h?.article?.url);
+      const oldUrls = oldHighlights.map((h: DiffItem) => h?.article?.url);
+      const newUrls = newHighlights.map((h: DiffItem) => h?.article?.url);
       // Por chave canônica (#9753), coerente com o casamento de swap acima.
       // #9936: troca de fonte da mesma história não desfaz a reordenação.
       const newStoryKeys = newKeys.map(story);
@@ -1353,7 +1362,7 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
         results.push({
           request_type: "section-order",
           target: "newsletter",
-          description: `Reordenação de destaques: ${oldUrls.map((u: string, i: number) => `D${i+1}=${u}`).join(" → ")} → ${newUrls.map((u: string, i: number) => `D${i+1}=${u}`).join(" → ")}`,
+          description: `Reordenação de destaques: ${oldUrls.map((u, i) => `D${i+1}=${u}`).join(" → ")} → ${newUrls.map((u, i) => `D${i+1}=${u}`).join(" → ")}`,
           resolution: "accepted",
           context: { old_order: oldUrls, new_order: newUrls },
         });
@@ -1425,11 +1434,11 @@ function diffAndClassify(
   editionDir: string,
   snapshotLabel: string,
   currentFiles: readonly string[],
-  classifierMap: Map<string, (oldC: string, newC: string) => any[]>,
+  classifierMap: Map<string, (oldC: string, newC: string) => ClassifiedDiff>,
   stage: number
-): Array<Omit<EditorRequestEntry, "timestamp" | "edition">> {
+): Array<Omit<EditorRequestEntry, "timestamp" | "edition" | "source">> {
   const snapshots = readSnapshots(editionDir, snapshotLabel, currentFiles);
-  const results: Array<Omit<EditorRequestEntry, "timestamp" | "edition">> = [];
+  const results: Array<Omit<EditorRequestEntry, "timestamp" | "edition" | "source">> = [];
 
   for (const file of currentFiles) {
     const currentPath = resolve(editionDir, file);
@@ -1590,7 +1599,7 @@ export function buildDestaqueUrlMap(editionDir: string): Map<string, string> {
 function buildStage2FilesClassifierMap(
   editionDir: string,
   baselineLabel: string,
-): Map<string, (oldC: string, newC: string) => any[]> {
+): Map<string, (oldC: string, newC: string) => ClassifiedDiff> {
   const destaqueUrls = buildDestaqueUrlMap(editionDir);
   const baselineApproved = readSnapshots(editionDir, baselineLabel, ["_internal/01-approved.json"]).get("_internal/01-approved.json");
   const baselineDestaqueUrls = destaqueUrlMapFromApproved(baselineApproved);
@@ -1603,7 +1612,7 @@ function buildStage2FilesClassifierMap(
     currentApproved = undefined; // fail-soft, como buildDestaqueUrlMap: sem aliases
   }
   const sameStory = sourceUpgradeAliases(baselineApproved, currentApproved);
-  return new Map<string, (oldC: string, newC: string) => any[]>([
+  return new Map<string, (oldC: string, newC: string) => ClassifiedDiff>([
     ["02-reviewed.md", (oldC, newC) => classifyNewsletterDiff(oldC, newC, sameStory, { before: baselineDestaqueUrls, after: destaqueUrls })],
     ["03-social.md", (oldC, newC) => classifySocialDiff(oldC, newC, destaqueUrls, baselineDestaqueUrls)],
     ["_internal/01-approved.json", classifyApprovedDiff],
@@ -1611,8 +1620,8 @@ function buildStage2FilesClassifierMap(
 }
 
 /** Classificador do snapshot "stage4-pre-render" (#5782) — ver classifyHtmlDiff. */
-function buildStage4FilesClassifierMap(): Map<string, (oldC: string, newC: string) => any[]> {
-  return new Map<string, (oldC: string, newC: string) => any[]>([
+function buildStage4FilesClassifierMap(): Map<string, (oldC: string, newC: string) => ClassifiedDiff> {
+  return new Map<string, (oldC: string, newC: string) => ClassifiedDiff>([
     ["_internal/newsletter-final.html", classifyHtmlDiff("newsletter")],
     ["_internal/social-preview.html", classifyHtmlDiff("social")],
   ]);
@@ -1729,10 +1738,10 @@ export function readTitlePicks(editionDir: string): TitlePick[] {
   if (!existsSync(p)) return [];
   try {
     const json = JSON.parse(readFileSync(p, "utf8"));
-    const picks = Array.isArray(json?.picks) ? json.picks : [];
+    const picks: unknown[] = Array.isArray(json?.picks) ? json.picks : [];
     return picks
-      .filter((x: any) => typeof x?.destaque === "number" && typeof x?.chosen === "string")
-      .map((x: any) => ({ destaque: x.destaque, chosen: x.chosen }));
+      .filter((x): x is TitlePick => typeof x === "object" && x !== null && "destaque" in x && typeof x.destaque === "number" && "chosen" in x && typeof x.chosen === "string")
+      .map((x) => ({ destaque: x.destaque, chosen: x.chosen }));
   } catch {
     return [];
   }
@@ -1744,10 +1753,10 @@ export function readAppliedAutofixes(editionDir: string): AutofixReplacement[] {
   if (!existsSync(p)) return [];
   try {
     const json = JSON.parse(readFileSync(p, "utf8"));
-    const entries = Array.isArray(json?.entries) ? json.entries : [];
+    const entries: Array<{ status?: unknown; text?: unknown; suggested_fix?: unknown; sources?: unknown } | null> = Array.isArray(json?.entries) ? json.entries : [];
     return entries
-      .filter((e: any) => e?.status === "applied" && typeof e?.text === "string" && typeof e?.suggested_fix === "string")
-      .map((e: any) => ({ text: e.text, suggested_fix: e.suggested_fix, sources: Array.isArray(e.sources) ? e.sources : [] }));
+      .filter((e): e is { text: string; suggested_fix: string; sources?: unknown } => e?.status === "applied" && typeof e?.text === "string" && typeof e?.suggested_fix === "string")
+      .map((e) => ({ text: e.text, suggested_fix: e.suggested_fix, sources: Array.isArray(e.sources) ? e.sources : [] }));
   } catch {
     return [];
   }
@@ -1936,7 +1945,7 @@ function backfillStage4(editionDir: string, edition: string, write: boolean): nu
  * `destaque-promote` (mais um item promovido do que caiu do top-3 — não
  * deveria estourar o teto de 3, mas o pareamento não assume isso).
  */
-export function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Array<{
+export function classifyStage1DestaqueDiff(categorizedJson: SelectionSnapshot | null | undefined, approvedJson: SelectionSnapshot | null | undefined): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -2159,8 +2168,8 @@ function deriveStage1(editionDir: string, edition: string): number {
     return 0;
   }
 
-  let categorizedJson: any;
-  let approvedJson: any;
+  let categorizedJson: SelectionSnapshot | null | undefined;
+  let approvedJson: SelectionSnapshot | null | undefined;
   try {
     categorizedJson = JSON.parse(readFileSync(catPath, "utf8"));
     approvedJson = JSON.parse(readFileSync(apprPath, "utf8"));

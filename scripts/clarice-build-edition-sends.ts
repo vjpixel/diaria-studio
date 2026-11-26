@@ -60,6 +60,7 @@
  * vezes o store mudou entre invocações.
  */
 
+import { allRows } from "./lib/sqlite-rows.ts";
 import { readdirSync, unlinkSync, existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
@@ -477,13 +478,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const db = openClariceDb(dbPath);
   let storeRows: (StoreRow & { name?: string | null })[];
   try {
-    storeRows = db
+    storeRows = allRows<(StoreRow & { name?: string | null })>(db
       .prepare(
         `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
                 brevo_list_ids
            FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
-      )
-      .all(...(cohort ? [cohort] : [])) as unknown as (StoreRow & { name?: string | null })[];
+      ), ...(cohort ? [cohort] : []));
   } finally {
     db.close();
   }
