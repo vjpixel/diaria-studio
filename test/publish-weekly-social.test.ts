@@ -714,14 +714,16 @@ describe("main(): dispatch mockado", () => {
       return { out, err, restore: () => ((console.log = ol), (console.error = oe)) };
     }
 
-    it("cenário da issue: --mode both no sábado 12:01 BRT — highlights vencido (exit 2), clicked de domingo ok, sem ler edição", async () => {
+    // #10305: o slot fixo de sábado passou de 11:00 para 19:00 (25/11/2026),
+    // então o "61 min atrasado" da issue vira 20:01.
+    it("cenário da issue: --mode both no sábado 20:01 BRT — highlights vencido (exit 2), clicked de domingo ok, sem ler edição", async () => {
       const cap = captureStd();
       try {
         await expectMockedExit(
           () =>
             main(["--saturday", "261017", "--mode", "both", "--editions-root", editionsRoot, "--check-slot"], {
               dataRoot,
-              now: new Date("2026-10-17T12:01:00-03:00"),
+              now: new Date("2026-10-17T20:01:00-03:00"),
             }),
           2,
         );
@@ -733,7 +735,7 @@ describe("main(): dispatch mockado", () => {
       assert.equal(byMode.highlights.status, "expired");
       assert.equal(byMode.highlights.minutesFromNow, -61);
       assert.equal(byMode.clicked.status, "ok");
-      assert.match(cap.err.join("\n"), /--mode highlights --time 12:45/);
+      assert.match(cap.err.join("\n"), /--mode highlights --time 20:45/);
       assert.equal(existsSync(resolve(dataRoot, "weekly")), false);
     });
 
@@ -770,7 +772,7 @@ describe("main(): dispatch mockado", () => {
       try {
         await main(
           ["--saturday", "261017", "--mode", "highlights", "--editions-root", editionsRoot, "--force-incomplete-week"],
-          { dataRoot, now: new Date("2026-10-17T12:01:00-03:00") },
+          { dataRoot, now: new Date("2026-10-17T20:01:00-03:00") },
         );
       } finally {
         cap.restore();
@@ -1428,7 +1430,7 @@ describe("main(): dispatch mockado", () => {
 
       // Agendado no PRÓPRIO sábado (dayOffset=0), não no domingo (dayOffset
       // default do modo "clicked") — diferença-chave do #5330.
-      assert.equal(capturedBody.scheduled_at, "2027-12-25T11:00:00-03:00");
+      assert.equal(capturedBody.scheduled_at, "2027-12-25T19:00:00-03:00");
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const post = out.posts.find((p: any) => p.platform === "instagram");
@@ -3771,8 +3773,8 @@ describe("main(): dispatch mockado", () => {
       assert.equal(highlights.status, "scheduled");
       assert.equal(clicked.status, "scheduled");
       // highlights agenda no PRÓPRIO sábado (offset 0), clicked no domingo seguinte (offset 1, #5330).
-      assert.match(highlights.scheduled_at as string, /^2027-12-25T11:00:00/);
-      assert.match(clicked.scheduled_at as string, /^2027-12-26T11:00:00/);
+      assert.match(highlights.scheduled_at as string, /^2027-12-25T19:00:00/);
+      assert.match(clicked.scheduled_at as string, /^2027-12-26T19:00:00/);
     });
 
     it("falha em um modo não impede o outro — clicked sem dado de clique falha, highlights agenda normalmente, processo sai com código 1", async () => {

@@ -22,7 +22,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { nonCanonicalEditionDir, planShortsPublish } from "../scripts/publish-shorts.ts";
 import {
   CORTE_WATCH_HORIZON_MS,
@@ -165,10 +165,11 @@ describe("#11911 porta 1: --edition-dir fora de data/editions não delega aos ti
   });
 
   it("nonCanonicalEditionDir compara pelo caminho real (data/ é symlink pro OneDrive)", () => {
-    const real = (p: string) => p.replace("/repo/data/", "/onedrive/data/");
+    // A função entrega caminhos já resolvidos ("C:\repo\data\..." no Windows, #13738).
+    const real = (p: string) => p.replace(resolve("/repo/data"), resolve("/onedrive/data"));
     assert.equal(nonCanonicalEditionDir("/repo/data/editions/261102", "/repo/data/editions/261102", real), undefined);
     assert.equal(nonCanonicalEditionDir("/onedrive/data/editions/261102", "/repo/data/editions/261102", real), undefined);
-    assert.equal(nonCanonicalEditionDir(OUT, "/repo/data/editions/261102", real), OUT);
+    assert.equal(nonCanonicalEditionDir(OUT, "/repo/data/editions/261102", real), resolve(OUT));
   });
 });
 

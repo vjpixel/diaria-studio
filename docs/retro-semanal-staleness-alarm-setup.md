@@ -24,7 +24,7 @@ O estado do carrossel `clicked` (domingo) aparece no corpo da issue como informa
 
 ## Horário: sábado 07:00 BRT
 
-O carrossel `highlights` publica às 11:00 fora do teste rotativo. Durante o teste (#10305), `publishing.social.rotation.weekend_candidates` inclui 08:00. Às 07:00 ainda sobra tempo antes do candidato mais cedo. A issue sugeria 09:00 como exemplo, mas nesse horário o aviso poderia chegar depois do slot.
+O carrossel `highlights` publica às 19:00 desde o fim do teste rotativo (#10305, grade fixa de 25/11/2026; era 11:00). Durante o teste, `publishing.social.rotation.weekend_candidates` incluía 08:00, e o 07:00 foi escolhido para vir antes desse candidato. A issue sugeria 09:00 como exemplo, mas nesse horário o aviso poderia chegar depois do slot.
 
 ## Idempotência
 

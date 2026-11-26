@@ -36,6 +36,11 @@ import {
 import { THUMB_CAPA_BG_DIR, THUMB_CAPA_BG_PROMPT, buildCapaBackgroundPrompt, parseCapaScene } from "../scripts/lib/diaria/youtube-thumb-capa-bg.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// No Windows o pango do sharp não carrega o `fontfile` (sem fontconfig): a Anton não
+// resolve e o guard recusa o gancho grande, de propósito (#13738). Lá os testes que
+// rasterizam a Anton são pulados; no Linux (300, CI) nunca, o guard segue estrito.
+const ANTON_SKIP: string | false =
+  process.platform === "win32" ? await assertAntonAvailable().then(() => false, () => "Anton não resolve no rasterizador do Windows") : false;
 const TEAL: [number, number, number] = [0, 160, 160];
 const ORANGE: [number, number, number] = [220, 90, 30];
 
@@ -126,7 +131,7 @@ describe("#13235 — fonte Anton versionada", () => {
     const ofl = readFileSync(join(dirname(ANTON_FONT_FILE), "OFL.txt"), "utf8");
     assert.match(ofl, /SIL Open Font License/);
   });
-  it("resolve no rasterizador (sem depender de fonte instalada)", async () => {
+  it("resolve no rasterizador (sem depender de fonte instalada)", { skip: ANTON_SKIP }, async () => {
     await assertAntonAvailable();
   });
   it("o gancho grande cabe na largura pedida, com a tarja teal", async () => {
@@ -147,7 +152,7 @@ describe("#13235 — hookWidthBesideLeft", () => {
 });
 
 describe("#13235 — composeYouTubeThumb com gancho grande", () => {
-  it("tarja teal no canto SUPERIOR direito; logo abaixo do gancho, no mesmo lado", async () => {
+  it("tarja teal no canto SUPERIOR direito; logo abaixo do gancho, no mesmo lado", { skip: ANTON_SKIP }, async () => {
     const { jpeg, warnings } = await composeYouTubeThumb({
       background: await background(),
       portrait: await cutout(400, 600, [200, 150, 120]),
@@ -169,7 +174,7 @@ describe("#13235 — composeYouTubeThumb com gancho grande", () => {
     assert.ok(logo.minX > YOUTUBE_THUMB_W / 2);
   });
 
-  it("layout right: o gancho grande vai para a esquerda", async () => {
+  it("layout right: o gancho grande vai para a esquerda", { skip: ANTON_SKIP }, async () => {
     const { jpeg } = await composeYouTubeThumb({
       background: await background(),
       portrait: await cutout(400, 600, [200, 150, 120]),

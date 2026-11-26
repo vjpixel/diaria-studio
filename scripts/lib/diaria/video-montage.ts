@@ -28,6 +28,7 @@
  *   - autorrevisão (`reviewPreview`): diff de palavras prévia × roteiro.
  */
 
+import { parsePremiereBrutoRoot } from "./premiere-bruto-root.ts";
 import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
@@ -3495,6 +3496,67 @@ export function premiereRootFrom(flag: string | undefined, config: unknown): { r
 
 function isAbsoluteRoot(p: string): boolean {
   return /^\//.test(p) || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/**
+ * #13229 (decisão do editor de 25/11/2026): `publishing.video.premiere_bruto_root`,
+ * a pasta LOCAL do Mac (fora do Drive) onde `scripts/video/prepara-bruto-mac.ts`
+ * copia o bruto de cada edição, em `{raiz}/{AAMMDD}/`. Com ela o build grava, ao
+ * lado de cada XML, um XML "local" (`localXmlFileName`) em que só os vídeos do
+ * bruto apontam para essa pasta. Ausente ou vazia = `null` (o build de sempre,
+ * sem XML local); presente e relativa = erro explícito.
+ */
+export function premiereBrutoRootFrom(config: unknown): string | null {
+  const c = (config as { publishing?: { video?: { premiere_bruto_root?: unknown } } })?.publishing?.video?.premiere_bruto_root;
+  const r = parsePremiereBrutoRoot(c);
+  if ("error" in r) throw new Error(r.error);
+  return r.ok;
+}
+
+/** #13229: o nome do XML local ao lado do normal (`…_V3.xml` → `…_V3-local.xml`, variante `-local` da família do XML, #13610). */
+export function localXmlFileName(xmlName: string): string {
+  return /\.xml$/i.test(xmlName) ? `${xmlName.slice(0, -4)}-local.xml` : `${xmlName}-local.xml`;
+}
+
+function decodeXmlText(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * #13229 — pura: o XML "local" a partir do XML do build. Só os `<file>` do
+ * bruto (`file-1`, `file-2`…, os de `buildXmeml`) passam a apontar para
+ * `{brutoDir}/{nome}`; áudio tratado, PNGs, card, vinheta, trechos e legenda
+ * ficam como estavam (no `premiere_root`). Reescrever o texto do XML, e não
+ * gerar outro, mantém o XML local igual ao normal em tudo o mais, inclusive
+ * depois do `srt` pôr a faixa de legenda (#13332). `rewritten` = os nomes
+ * trocados; vazio (XML leve, #13219, que não referencia o bruto) = nada a gravar.
+ */
+export function localBrutoXml(xml: string, brutoDir: string): { xml: string; rewritten: string[] } {
+  const dir = trimRoot(brutoDir);
+  const rewritten: string[] = [];
+  const out = xml.replace(/(<file id="file-\d+"><name>)([^<]+)(<\/name><pathurl>)([^<]*)(<\/pathurl>)/g, (_all, a: string, name: string, b: string, _url: string, c: string) => {
+    const plain = decodeXmlText(name);
+    rewritten.push(plain);
+    return `${a}${name}${b}${escapeXml(pathUrl(`${dir}/${plain}`))}${c}`;
+  });
+  return { xml: out, rewritten };
+}
+
+/** #13229: nomes de arquivo do bruto repetidos (dois arquivos de pastas diferentes iriam para o mesmo `{brutoDir}/{nome}`). */
+export function duplicateBrutoNames(paths: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  for (const p of paths) {
+    const n = baseName(p).normalize("NFC");
+    seen.set(n, (seen.get(n) ?? 0) + 1);
+  }
+  return [...seen].filter(([, k]) => k > 1).map(([n]) => n);
 }
 
 function baseName(path: string): string {

@@ -4,7 +4,9 @@
  *
  * Compara, para cada Worker do repo (`workers/*`), o timestamp do último
  * deploy publicado na Cloudflare contra o timestamp do último commit local
- * que tocou `workers/{nome}/**`. Se o commit for mais recente que o deploy
+ * que tocou `workers/{nome}/**` ou um arquivo de fora que entra no bundle
+ * (fecho de imports em `scripts/lib/**`, #13993 — ver `getWorkerTrackedPaths`).
+ * Se o commit for mais recente que o deploy
  * (ou o worker nunca foi deployado mas já tem código commitado), alarma o
  * editor por e-mail — nomeando o(s) worker(s) defasado(s), há quanto tempo,
  * e o comando de deploy pra rodar.
@@ -114,6 +116,7 @@ import {
   notifyEditorResultReachedEditor,
 } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { computeWorkerExternalImports, type WorkerClosure } from "./lib/worker-import-closure.ts";
 import {
   parseWranglerTomlName,
   parseWranglerJsoncName,
@@ -308,7 +311,8 @@ export function resolveProductionRef(root: string = ROOT): string {
 }
 
 /**
- * `git log -1 --format=%aI {ref} -- workers/{dir}` — `%aI` é a data do autor em
+ * `git log -1 --format=%aI {ref} -- workers/{dir} {extraPaths...}` (#13993:
+ * `extraPaths` é o fecho de imports de `getWorkerTrackedPaths`) — `%aI` é a data do autor em
  * ISO 8601 estrito (com offset), a mesma disciplina de timestamp usada em
  * outros comparadores de tempo do repo (ver docstring de `sentDate` em
  * `brevo-client.ts`). `ref`, se omitido, vem de `resolveProductionRef` —
@@ -324,16 +328,61 @@ export function resolveProductionRef(root: string = ROOT): string {
  * produção (não deveria acontecer na prática — o diretório existe
  * versionado em master — mas tratado como edge case, não uma exceção).
  */
-export function getLastCommitAt(workerDir: string, root: string = ROOT, ref?: string): string | null {
+export function getLastCommitAt(
+  workerDir: string,
+  root: string = ROOT,
+  ref?: string,
+  extraPaths: readonly string[] = [],
+  runGit: GitRunner = defaultGitRunner,
+): string | null {
   const resolvedRef = ref ?? resolveProductionRef(root);
-  const res = spawnSync("git", ["log", "-1", "--format=%aI", resolvedRef, "--", join("workers", workerDir)], {
-    encoding: "utf8",
-    cwd: root,
-    timeout: 30_000,
-  });
+  // #13993: `extraPaths` = arquivos de `scripts/lib/**` (e afins) que entram no
+  // bundle do worker — ver `getWorkerTrackedPaths`. Um `git log -1` só com
+  // todos os paths devolve o commit mais recente que toca QUALQUER um deles.
+  const paths = [join("workers", workerDir), ...extraPaths];
+  const res = runGit(["log", "-1", "--format=%aI", resolvedRef, "--", ...paths], root);
   if (res.status !== 0) return null;
   const out = res.stdout.trim();
   return out || null;
+}
+
+/** Executor de `git` injetável (#13993) — o default é `spawnSync`; testes passam um fake. */
+export type GitRunner = (args: string[], cwd: string) => { status: number | null; stdout: string };
+
+const defaultGitRunner: GitRunner = (args, cwd) => {
+  const res = spawnSync("git", args, { encoding: "utf8", cwd, timeout: 30_000 });
+  return { status: res.status, stdout: res.stdout ?? "" };
+};
+
+/**
+ * Arquivos FORA de `workers/{dir}/` que entram no bundle do worker (#13993):
+ * o fecho de imports relativos de `computeWorkerExternalImports`, o mesmo
+ * que `test/workers-deploy-workflow-coverage.test.ts` exige no `paths:` do
+ * workflow de deploy (#10637). Sem eles, um commit só num módulo de
+ * `scripts/lib/**` importado pelo worker — que dispara o redeploy — nunca
+ * entrava na comparação, e um deploy FALHO dessa mudança passava sem alarme.
+ *
+ * O fecho é lido do disco do checkout (não da ref de produção): erra no
+ * máximo por um arquivo de diferença numa branch de feature, e o
+ * `git log` seguinte continua limitado à ref de produção (#6413), então um
+ * arquivo que só existe na branch não produz commit. Falha ao calcular o
+ * fecho é fail-soft: loga e cai pro comportamento anterior (só
+ * `workers/{dir}`), nunca derruba a checagem dos demais workers.
+ */
+export function getWorkerTrackedPaths(
+  workerDir: string,
+  root: string = ROOT,
+  computeClosure: (root: string, workerDir: string) => WorkerClosure = computeWorkerExternalImports,
+): string[] {
+  try {
+    return computeClosure(root, workerDir).external;
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} aviso: fecho de imports de workers/${workerDir}/ falhou (${(err as Error).message}) — ` +
+        "comparando só workers/{dir}/.",
+    );
+    return [];
+  }
 }
 
 // ─── Cloudflare API: timestamp do último deploy por worker (I/O) ───────────
@@ -460,7 +509,9 @@ async function main(): Promise<void> {
     workerName: w.workerName,
     workerDir: w.workerDir,
     lastDeployedAt: metadata ? resolveLastDeployedAt(w.workerName, metadata) : null,
-    lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef),
+    // #13993: fecho calculado 1x por worker — inclui os módulos de scripts/lib
+    // que entram no bundle, não só workers/{dir}/.
+    lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef, getWorkerTrackedPaths(w.workerDir, ROOT)),
     deployError: metadataError,
     deployBlockedBy: w.deployBlockedBy,
   }));

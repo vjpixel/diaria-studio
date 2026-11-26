@@ -76,6 +76,7 @@
  *   --db PATH     path alternativo do store SQLite (default: DEFAULT_DB_PATH).
  */
 
+import { allRows, getRow } from "./lib/sqlite-rows.ts";
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -147,16 +148,15 @@ export function computeMvStatusFromStore(db: DatabaseSync, now: Date = new Date(
 
   // Universo de cohorts T02+ conhecidos (equivalente aos stripe-export-t{02+}-*.csv da base).
   const cohorts = (
-    db
+    allRows<CohortRow>(db
       .prepare(
         `SELECT DISTINCT cohort FROM clarice_users WHERE cohort IS NOT NULL AND cohort != ?`,
-      )
-      .all(COHORT_ASSINANTES_ATIVOS) as unknown as CohortRow[]
+      ), COHORT_ASSINANTES_ATIVOS)
   ).map((r) => r.cohort);
 
   // Universo de ciclos conhecidos (equivalente aos diretórios {YYMM}-{MM} existentes).
   const cycles = (
-    db.prepare(`SELECT DISTINCT mv_cycle FROM clarice_users WHERE mv_cycle IS NOT NULL`).all() as unknown as CycleRow[]
+    allRows<CycleRow>(db.prepare(`SELECT DISTINCT mv_cycle FROM clarice_users WHERE mv_cycle IS NOT NULL`))
   ).map((r) => r.mv_cycle);
 
   const aggStmt = db.prepare(`
@@ -186,13 +186,13 @@ export function computeMvStatusFromStore(db: DatabaseSync, now: Date = new Date(
   `);
   const verifiedPctByCohort = new Map<string, number | null>();
   for (const cohort of cohorts) {
-    const row = cohortCompletionStmt.get(cohort) as unknown as { total: number; done: number | null };
+    const row = getRow<{ total: number; done: number | null }>(cohortCompletionStmt, cohort)!;
     verifiedPctByCohort.set(cohort, row.total > 0 ? ((row.done ?? 0) / row.total) * 100 : null);
   }
 
   for (const cycle of cycles) {
     for (const cohort of cohorts) {
-      const row = aggStmt.get(cohort, cycle) as unknown as AggRow;
+      const row = getRow<AggRow>(aggStmt, cohort, cycle)!;
       const verified = row.verified ?? 0;
       const rejected = row.rejected ?? 0;
       const unknown = row.unknown ?? 0;

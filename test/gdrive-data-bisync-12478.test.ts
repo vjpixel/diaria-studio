@@ -46,6 +46,13 @@ import {
 import { readBisyncStamp } from "../scripts/gdrive-sync-alarm.ts";
 import { evaluateGdriveQuota } from "../scripts/lib/gdrive-quota.ts";
 
+/** `resolveDataBisyncConfig` com o diretório do wrapper num caminho POSIX
+ * (#13738): o default é o `scripts/systemd` do checkout, que no Windows sai
+ * `C:\…` e vira erro "precisa ser caminho absoluto" que o 300 nunca vê. */
+const POSIX_SCRIPT_DIR = process.platform === "win32" ? "/repo/scripts/systemd" : undefined;
+const resolveDataBisyncConfigPosix = (env: NodeJS.ProcessEnv, readText: (path: string) => string | null) =>
+  resolveDataBisyncConfig(env, readText, POSIX_SCRIPT_DIR);
+
 /** Ambiente do CLI do alarme sem nenhuma GDRIVE_* da máquina e com um arquivo
  * de env de TESTE (nunca o ~/.config real). */
 function cliEnv(sb: string, extra: Record<string, string>): NodeJS.ProcessEnv {
@@ -651,36 +658,36 @@ describe("alarme do bisync de data/ (#12478)", () => {
   });
 
   it("config: arquivo ilegível, GDRIVE_DATA_ENV_FILE explícito inexistente ou relativo são erro; default ausente não", () => {
-    assert.deepEqual(resolveDataBisyncConfig({ HOME: "/h" }, () => null).errors, []);
-    const unreadable = resolveDataBisyncConfig({ HOME: "/h" }, () => {
+    assert.deepEqual(resolveDataBisyncConfigPosix({ HOME: "/h" }, () => null).errors, []);
+    const unreadable = resolveDataBisyncConfigPosix({ HOME: "/h" }, () => {
       throw new Error("EACCES");
     });
     assert.match(unreadable.errors.join(" "), /não é um arquivo legível/);
-    assert.match(resolveDataBisyncConfig({ HOME: "/h", GDRIVE_DATA_ENV_FILE: "/nao.env" }, () => null).errors.join(" "), /não existe/);
-    assert.match(resolveDataBisyncConfig({ HOME: "/h", GDRIVE_DATA_ENV_FILE: "rel.env" }, () => null).errors.join(" "), /absoluto/);
+    assert.match(resolveDataBisyncConfigPosix({ HOME: "/h", GDRIVE_DATA_ENV_FILE: "/nao.env" }, () => null).errors.join(" "), /não existe/);
+    assert.match(resolveDataBisyncConfigPosix({ HOME: "/h", GDRIVE_DATA_ENV_FILE: "rel.env" }, () => null).errors.join(" "), /absoluto/);
   });
 
   it("config: caminhos relativos, remote sem ':' e remote igual ao do bisync grande são erro", () => {
     for (const k of ["GDRIVE_DATA_LOCAL", "GDRIVE_DATA_MOUNT", "GDRIVE_DATA_FILTERS", "GDRIVE_DATA_STATE_DIR", "GDRIVE_DATA_WORKDIR"]) {
-      const c = resolveDataBisyncConfig({ HOME: "/h", [k]: "relativo/x" }, () => null);
+      const c = resolveDataBisyncConfigPosix({ HOME: "/h", [k]: "relativo/x" }, () => null);
       assert.match(c.errors.join(" "), new RegExp(`${k} precisa ser caminho absoluto`), k);
     }
-    assert.match(resolveDataBisyncConfig({ HOME: "/h", GDRIVE_DATA_REMOTE: "semdoispontos" }, () => null).errors.join(" "), /remote:pasta/);
-    assert.match(resolveDataBisyncConfig({ HOME: "/h", GDRIVE_DATA_REMOTE: "gdrive:diaria-studio-data" }, () => null).errors.join(" "), /mesmo do bisync/);
+    assert.match(resolveDataBisyncConfigPosix({ HOME: "/h", GDRIVE_DATA_REMOTE: "semdoispontos" }, () => null).errors.join(" "), /remote:pasta/);
+    assert.match(resolveDataBisyncConfigPosix({ HOME: "/h", GDRIVE_DATA_REMOTE: "gdrive:diaria-studio-data" }, () => null).errors.join(" "), /mesmo do bisync/);
     assert.match(
-      resolveDataBisyncConfig({ HOME: "/h", GDRIVE_REMOTE: "outro:", GDRIVE_DATA_REMOTE: "outro:x" }, () => null).errors.join(" "),
+      resolveDataBisyncConfigPosix({ HOME: "/h", GDRIVE_REMOTE: "outro:", GDRIVE_DATA_REMOTE: "outro:x" }, () => null).errors.join(" "),
       /mesmo do bisync/,
     );
-    assert.deepEqual(resolveDataBisyncConfig({ HOME: "/h", GDRIVE_REMOTE: "outro:", GDRIVE_DATA_REMOTE: "gdrive:x" }, () => null).errors, []);
-    assert.equal(resolveDataBisyncConfig({ HOME: "/h" }, () => null).remoteName, "gdrive-diaria:");
+    assert.deepEqual(resolveDataBisyncConfigPosix({ HOME: "/h", GDRIVE_REMOTE: "outro:", GDRIVE_DATA_REMOTE: "gdrive:x" }, () => null).errors, []);
+    assert.equal(resolveDataBisyncConfigPosix({ HOME: "/h" }, () => null).remoteName, "gdrive-diaria:");
   });
 
   it("config resolvida: defaults reais e workdir derivado do state dir", () => {
-    const c = resolveDataBisyncConfig({ HOME: "/h" }, () => null);
+    const c = resolveDataBisyncConfigPosix({ HOME: "/h" }, () => null);
     assert.equal(c.remote, "gdrive-diaria:diaria-studio-data");
     assert.equal(c.local, "/mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data");
     assert.equal(c.workdir, "/h/.cache/diaria/gdrive-data-bisync/rclone-workdir");
-    const m = resolveDataBisyncConfig({ HOME: "/h" }, () => "GDRIVE_DATA_MOUNT=/m\n");
+    const m = resolveDataBisyncConfigPosix({ HOME: "/h" }, () => "GDRIVE_DATA_MOUNT=/m\n");
     assert.equal(m.local, "/m/GoogleDrive-diaria/diaria-studio-data");
   });
 

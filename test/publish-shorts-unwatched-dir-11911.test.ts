@@ -166,16 +166,17 @@ describe("#11911 checkCorteDir: pasta do corte fora de data/cortes/ é recusada"
 
   it("realpathLenient só sobe ao ancestral em ENOENT/ENOTDIR; outro erro é relançado", () => {
     const err = (code: string) => Object.assign(new Error(code), { code });
+    // `realpathLenient` resolve o caminho antes: no Windows "/a" chega como "C:\a" (#13738).
     const enoent = (p: string) => {
-      if (p === "/a") return "/real-a";
+      if (p === resolve("/a")) return "/real-a";
       throw err("ENOENT");
     };
-    assert.equal(realpathLenient("/a/b/c", enoent), "/real-a/b/c");
+    assert.equal(realpathLenient("/a/b/c", enoent), join("/real-a", "b", "c"));
     const enotdir = (p: string) => {
-      if (p === "/a") return "/real-a";
+      if (p === resolve("/a")) return "/real-a";
       throw err("ENOTDIR");
     };
-    assert.equal(realpathLenient("/a/b", enotdir), "/real-a/b");
+    assert.equal(realpathLenient("/a/b", enotdir), join("/real-a", "b"));
     assert.throws(() => realpathLenient("/a/b", () => { throw err("EACCES"); }), /EACCES/);
     assert.throws(() => realpathLenient("/a/b", () => { throw err("ELOOP"); }), /ELOOP/);
   });
@@ -280,7 +281,7 @@ describe("#11911 modo edição: --edition-dir fora de data/editions/{AAMM}/{AAMM
   });
 
   it("canonicalShortsEditionDir é absoluta pela raiz do repo, nunca pelo cwd", () => {
-    assert.equal(canonicalShortsEditionDir(SYNTH, "/r"), `/r/${SYNTH_CANON_REL}`);
+    assert.equal(canonicalShortsEditionDir(SYNTH, "/r"), resolve("/r", SYNTH_CANON_REL));
     assert.equal(canonicalShortsEditionDir(SYNTH), join(ROOT, SYNTH_CANON_REL));
   });
 
@@ -301,7 +302,7 @@ describe("#11911 modo edição: --edition-dir fora de data/editions/{AAMM}/{AAMM
     const fora = tmp("diaria-cortes-261102-");
     const r = runCli([SYNTH, "--only", "instagram", "--instagram-timer", "--now", "--edition-dir", fora]);
     assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /fica fora da pasta canônica da edição 991231 \(.*data\/editions\/9912\/991231\)/);
+    assert.match(r.stderr, /fica fora da pasta canônica da edição 991231 \(.*data[\\/]editions[\\/]9912[\\/]991231\)/);
     assert.match(r.stderr, /--allow-unwatched-dir/);
     assert.equal(r.stdout, "");
   });
@@ -359,7 +360,7 @@ describe("#11911 modo edição: --edition-dir fora de data/editions/{AAMM}/{AAMM
     const edition = { ...base, corte: undefined, reviewedMd: REVIEWED, editionUrl: "https://diar.ia.br/p/x" };
     const p = planShortsPublish({ ...edition, editionDirOverride: fora, unwatchedEditionWarning: warning });
     assert.ok(p.warnings.includes(warning), p.warnings.join("\n"));
-    assert.ok(p.warnings.some((w) => w.includes("fica fora de data/editions/2611/261102")), p.warnings.join("\n"));
+    assert.ok(p.warnings.some((w) => /fica fora de data[\\/]editions[\\/]2611[\\/]261102/.test(w)), p.warnings.join("\n"));
     const owner = p.owners.find((o) => o.destination === "instagram")!;
     assert.equal(owner.by, "agent-scheduled-task");
     assert.ok(owner.command!.includes(`--edition-dir ${shellQuote(fora)} --allow-unwatched-dir --only instagram`), owner.command);
@@ -414,7 +415,7 @@ describe("#11944 resíduos do guard de pasta", () => {
   it("a comparação real ignora caixa só no Windows", () => {
     const real = (p: string) => p;
     assert.equal(nonCanonicalEditionDir("/DATA/Edicao", "/data/edicao", real, "win32"), undefined);
-    assert.equal(nonCanonicalEditionDir("/DATA/Edicao", "/data/edicao", real, "linux"), "/DATA/Edicao");
+    assert.equal(nonCanonicalEditionDir("/DATA/Edicao", "/data/edicao", real, "linux"), resolve("/DATA/Edicao")); // resolvido: "C:\DATA\Edicao" no Windows (#13738)
   });
 
   it("grava o aviso também num corte existente sem alterar o plano ou perder a autorização", () => {

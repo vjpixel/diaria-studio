@@ -27,6 +27,7 @@ import {
 } from "../scripts/lib/retro-semanal-staleness-alarm.ts";
 import { toAlarmFinding, readWeeklyStore, lookupWorkerQueue } from "../scripts/retro-semanal-staleness-alarm.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+import { DEFAULT_WEEKLY_CAROUSEL_TIME } from "../scripts/lib/social-schedule-rotation.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -238,9 +239,10 @@ describe("SCHEDULED_TASKS — Diaria-Retro-Semanal-Staleness-Alarm registrada (#
     assert.equal(task!.enabled ?? true, true);
     assert.deepEqual(task!.schedule, { kind: "weekly", dayOfWeek: "Saturday", hour: 7, minute: 0 });
   });
-  it("horário fica antes do candidato de fim de semana mais cedo da rotação (#10305)", () => {
+  it("horário fica antes do slot de sábado mais cedo: o fixo e, com a rotação ligada, os candidatos (#10305)", () => {
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-    const candidates: string[] = cfg?.publishing?.social?.rotation?.weekend_candidates ?? ["11:00"];
+    const rot = cfg?.publishing?.social?.rotation;
+    const candidates: string[] = [DEFAULT_WEEKLY_CAROUSEL_TIME, ...(rot?.enabled === true ? (rot.weekend_candidates ?? []) : [])];
     const earliest = candidates.map((c) => Number(c.split(":")[0]) * 60 + Number(c.split(":")[1])).sort((a, b) => a - b)[0];
     const task = getScheduledTaskByName("Diaria-Retro-Semanal-Staleness-Alarm")!;
     assert.equal(task.schedule.kind, "weekly");
