@@ -47,6 +47,12 @@
  *       desfazer). Com ele desligado: o store da Brevo tem contatos
  *       `kit-sem-abertura:` em `in_brevo`, ou não pôde ser lido. Nunca agenda
  *       pra base inteira no lugar.
+ *   8 — (#13982) rede/Kit indisponível ao listar os segmentos (sem resposta
+ *       HTTP depois de 6 tentativas espaçadas, ou 5xx/429 persistente). Mesma
+ *       recusa do 7 (nada agendado, nunca base inteira), mas é falha
+ *       transitória: aguardar e repetir o mesmo comando, sem investigar
+ *       segmento/config. JSON leva `reason_kind: "network"`. O exit 7 segue
+ *       só para audiência divergente/config.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,7 +60,7 @@ import { readFileSync } from "node:fs";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { updateBroadcast, listSegments, type KitSubscriberFilter } from "./lib/kit-broadcasts.ts";
-import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
+import { DIARIA_AUDIENCE_SEGMENTS_RETRY, hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437, #13982
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
@@ -288,7 +294,11 @@ export function productionDeps(): ScheduleNewsletterKitDeps {
  * direto (mata o processo, inviável de testar) em vez de `process.exitCode`
  * + `return`.
  */
-export async function main(rootDirOverride?: string): Promise<void> {
+export async function main(
+  rootDirOverride?: string,
+  /** #13982 — só pra teste: espera do retry da listagem de segmentos sem dormir de verdade. */
+  opts: { sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
   loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
@@ -325,9 +335,18 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (moved.warning) process.stderr.write(`[schedule-newsletter-kit] warn: ${moved.warning} (#10437).\n`);
   const audience = await resolveDiariaAudience(
     platformConfig.kit?.diaria_exclusion_segment,
-    { listSegments: () => listSegments() },
+    {
+      listSegments: () =>
+        listSegments(undefined, { ...DIARIA_AUDIENCE_SEGMENTS_RETRY, ...(opts.sleep ? { sleep: opts.sleep } : {}) }),
+    },
     { movedToBrevoCount: moved.count, brevoCampaignPublished: hasBrevoDiariaCampaign(editionDir) },
   );
+  if (!audience.ok && audience.reason_kind === "network") {
+    // #13982 — falha transitória: exit próprio, mesma recusa (nada agendado).
+    console.log(JSON.stringify({ ok: false, code: 8, reason_kind: "network", reason: audience.reason }));
+    process.exitCode = 8;
+    return;
+  }
   if (!audience.ok) {
     console.log(JSON.stringify({ ok: false, code: 7, reason: audience.reason }));
     process.exitCode = 7;
