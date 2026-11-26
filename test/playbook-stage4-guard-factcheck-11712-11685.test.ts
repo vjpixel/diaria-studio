@@ -59,26 +59,39 @@ describe("Stage 2: Clarice sem sugestões no social usa --note (#11685 item 2)",
   });
 });
 
-describe("Stage 4 §4c.6: exit 1 DEFASADO re-despacha o fact-checker (#11685 item 1)", () => {
+// Desde o #14116 o passo 2 de §4c.6 é o composto `stage4-factcheck-post.ts`,
+// que traduz o "exit 1 + FACT-CHECK DEFASADO" do `--check-blocking` para o
+// exit próprio `3` (OUTCOME_EXIT.stale). O contrato do #11685 é o mesmo:
+// defasado → re-despachar o fact-checker; o exit 1 restante é "indisponível".
+describe("Stage 4 §4c.6: fact-check DEFASADO re-despacha o fact-checker (#11685 item 1, exit 3 do composto #14116)", () => {
   const marker = "FACT-CHECK DEFASADO (#11685)";
-  it("o marcador do playbook é o que o script imprime", () => {
+  const compound = read("scripts/stage4-factcheck-post.ts");
+  it("o marcador do playbook é o que o script imprime e o que o composto reconhece", () => {
     assert.ok(factChecker.includes(marker), "run-fact-checker.ts não imprime mais o marcador");
+    assert.ok(compound.includes(`"${marker}"`), "stage4-factcheck-post.ts não reconhece mais o marcador");
+    assert.match(compound, /\bstale: 3,/, "composto não mapeia mais DEFASADO (stale) para o exit 3");
   });
-  it("§4c.6 trata o exit 1 DEFASADO como re-despacho, não como indisponível", () => {
+  it("§4c.6 trata o DEFASADO (exit 3) como re-despacho, não como indisponível", () => {
     const sec = stage4.slice(stage4.indexOf("**4c.6 — Fact-check"), stage4.indexOf("**4c.6b —"));
-    const bullet = sec.split("\n").find((l) => l.startsWith("- `1` com") && l.includes(marker));
-    assert.ok(bullet, "bullet do exit 1 DEFASADO ausente em §4c.6");
+    const lines = sec.split("\n");
+    const bullet = lines.find((l) => l.startsWith("- `3`") && l.includes(marker));
+    assert.ok(bullet, "bullet do exit 3 DEFASADO ausente em §4c.6");
+    assert.match(bullet, /não é o "indisponível" comum/);
     assert.match(bullet, /re-despachar o subagente `fact-checker`/);
     assert.match(bullet, /NÃO montar o gate ainda/);
     // re-despacho limitado a 1 tentativa, sem loop; falha de dispatch cai no #8996
     assert.match(bullet, /uma única vez/);
     assert.match(bullet, /Fact-check defasado — verificar manualmente/);
     assert.match(bullet, /#8996/);
-    const exit2 = sec.split("\n").find((l) => l.startsWith("- `2` →"));
-    assert.ok(exit2?.includes("até sair `0` ou `1` sem o marcador `FACT-CHECK DEFASADO`"), "exit 2 não exclui o 1 DEFASADO");
+    // o exit 1 que sobra é o indisponível, e não carrega o marcador
+    const exit1 = lines.find((l) => l.startsWith("- `1`"));
+    assert.ok(exit1?.includes("Fact-check indisponível"), "exit 1 deixou de ser o indisponível");
+    assert.ok(!exit1?.includes(marker), "exit 1 voltou a citar o DEFASADO");
+    const exit2 = lines.find((l) => l.startsWith("- `2` →"));
+    assert.ok(exit2?.includes("até o composto sair `0` ou `1`"), "exit 2 não exclui o DEFASADO (exit 3)");
     // em --no-gates não segue para a Etapa 5
     const noGates = sec.slice(sec.indexOf("**Comportamento em `auto_approve = true`"));
-    assert.ok(noGates.includes(marker), "parágrafo --no-gates não cita o exit 1 DEFASADO");
+    assert.match(noGates, /exit 3 \(DEFASADO\) também vale aqui/, "parágrafo --no-gates não cita o DEFASADO");
     assert.match(noGates, /halt banner em vez de seguir para a Etapa 5/);
   });
 });
