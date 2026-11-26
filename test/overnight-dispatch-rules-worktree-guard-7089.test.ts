@@ -18,7 +18,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DISPATCH_RULES = resolve(ROOT, "context/overnight-dispatch-rules.md");
+// #14043: o item 22 é critério do coordenador e mora em overnight-coordinator-rules.md.
+const DISPATCH_RULES = resolve(ROOT, "context/overnight-coordinator-rules.md");
 const rules = readFileSync(DISPATCH_RULES, "utf8");
 
 describe("#7089 — item 22: isolation worktree recusado não é corrupção de .git", () => {

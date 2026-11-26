@@ -103,7 +103,7 @@ O prazo do concurso "ache o erro" é "antes do envio da edição seguinte", ent�
 
 **Condição:** mesma do Passo 1b — só com o editor presente (sem `--no-gates`/`auto_approve`) e com Gmail MCP disponível. Fora disso, logar o skip com as mesmas mensagens de `buildRepliesSkipLogArgs()` (`scripts/lib/replies-skip-log.ts` — `"0-replies skipped: Gmail MCP unavailable"` / `"0-replies skipped: headless --no-gates"`), trocando só `--stage 0` por `--stage 6`, e seguir — nunca em silêncio, nunca bloqueia.
 
-Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0-replies" com 2 ajustes:
+Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-replies.md` § "0-replies" (#14030) com 2 ajustes:
 
 1. Gravar a captura desta passada em `{EDITION_DIR}/_internal/captured-replies-late-pass.json` (sobrescrito a cada execução; nunca sobrescrever `captured-replies.json` do Passo 1b nem o ledger `captured-replies-late.json`).
 2. Filtrar (passo 3) excluindo o que o Passo 1b E execuções anteriores deste Stage 6 já processaram (mesma `thread_id` + `date`) — re-executar o Stage 6 (ex.: retomada via `/diaria-6-agendamento`) não pode rascunhar de novo as replies tardias da execução anterior:

@@ -10,16 +10,28 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { dispatchRulesSection, readCoordinatorRules, readSubagentRules } from "./_helpers/dispatch-rules-text.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const rules = readFileSync(resolve(ROOT, "context/overnight-dispatch-rules.md"), "utf8");
 
+// #14043: item 35 é dividido — implementador em overnight-dispatch-rules.md,
+// coordenador em overnight-coordinator-rules.md. A seção volta inteira.
 function section(n: number): string {
-  const start = rules.indexOf(`\n## ${n}. `);
-  assert.ok(start >= 0, `item ${n} existe`);
-  const next = rules.indexOf("\n## ", start + 1);
-  return rules.slice(start, next < 0 ? undefined : next);
+  const s = dispatchRulesSection(n);
+  assert.ok(s.length > 0, `item ${n} existe`);
+  return s;
 }
+
+describe("#14043 item 35: cada lado no arquivo de quem o lê", () => {
+  it("implementador lê a seção literal; o coordenador, a aplicação pós-merge", () => {
+    const sub = readSubagentRules();
+    const coord = readCoordinatorRules();
+    assert.match(sub, /Regra para o implementador/);
+    assert.match(sub, /## Escrita pendente em `data\/` \(#11780\)/);
+    assert.match(coord, /Regra para o coordenador/);
+    assert.match(coord, /depois do merge e nunca antes/);
+  });
+});
 
 describe("#11780 escrita em data/ volta ao coordenador", () => {
   it("item 35 define a seção literal do corpo da PR e o papel de cada lado", () => {

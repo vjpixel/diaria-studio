@@ -250,7 +250,7 @@ export function checkRevealTemporalPrefix(editionDir: string): CheckResult {
 /**
  * #4730: entry do output per-edição de `verify-accessibility.ts`
  * (`_internal/link-verify-all.json`, ver invocação em
- * `orchestrator-stage-1-research.md` step 1i). Diferente do cache
+ * `orchestrator-stage-1-fallback.md` step 1i). Diferente do cache
  * cross-edição (`VerifyCacheShape`), este arquivo é escrito POR ESTA edição
  * — inclui verdicts não-cacheáveis como `needs_reverify`/`uncertain`, que o
  * cache cross-edição nunca persiste (`isCacheableVerdict`).

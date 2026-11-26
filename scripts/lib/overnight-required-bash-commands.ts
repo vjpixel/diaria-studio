@@ -47,6 +47,7 @@
 export type RequiredCommandSource =
   | ".claude/skills/diaria-overnight/SKILL.md"
   | "context/overnight-dispatch-rules.md"
+  | "context/overnight-coordinator-rules.md"
   | ".claude/agents/dev-fixer.md"
   | ".claude/skills/diaria-develop/SKILL.md";
 
@@ -96,19 +97,19 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "git fetch origin master", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "git fetch origin master" },
   {
     command: "git worktree add -b overnight/fix-1-x .claude/worktrees/x origin/master",
-    source: "context/overnight-dispatch-rules.md",
+    source: "context/overnight-coordinator-rules.md",
     mention: "git worktree add -b <branch> .claude/worktrees/<nome> origin/master",
   },
   { command: "git worktree prune", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "git worktree prune" },
-  { command: "git worktree list", source: "context/overnight-dispatch-rules.md", mention: "git worktree list" },
+  { command: "git worktree list", source: "context/overnight-coordinator-rules.md", mention: "git worktree list" },
   { command: "git push origin --delete overnight/fix-1-x", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "git push origin --delete overnight/fix-NNNN" },
-  { command: "git -C ../diaria-design fetch origin", source: "context/overnight-dispatch-rules.md", mention: "git -C ../diaria-design fetch origin" },
+  { command: "git -C ../diaria-design fetch origin", source: "context/overnight-coordinator-rules.md", mention: "git -C ../diaria-design fetch origin" },
   {
     command: "git -C ../diaria-design worktree add -b overnight/fix-2-x .claude/worktrees/x origin/main",
-    source: "context/overnight-dispatch-rules.md",
+    source: "context/overnight-coordinator-rules.md",
     mention: "git -C ../diaria-design worktree add -b {branch} .claude/worktrees/{nome}",
   },
-  { command: "gh repo clone vjpixel/diaria-design ../diaria-design", source: "context/overnight-dispatch-rules.md", mention: "gh repo clone vjpixel/diaria-design ../diaria-design" },
+  { command: "gh repo clone vjpixel/diaria-design ../diaria-design", source: "context/overnight-coordinator-rules.md", mention: "gh repo clone vjpixel/diaria-design ../diaria-design" },
 
   // Coordenador: triagem e registro nas issues.
   { command: "gh auth status", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh auth status" },
@@ -146,7 +147,7 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
     source: ".claude/skills/diaria-overnight/SKILL.md",
     mention: "npx tsx scripts/gh-pr-update-branch.ts --pr {N} [--repo {repo}]",
   },
-  { command: "gh pr view 1 --json state,mergedAt", source: "context/overnight-dispatch-rules.md", mention: "--json state,mergedAt" },
+  { command: "gh pr view 1 --json state,mergedAt", source: "context/overnight-coordinator-rules.md", mention: "--json state,mergedAt" },
   { command: "gh pr list --state open", source: "context/overnight-dispatch-rules.md", mention: "gh pr list --state open" },
   // `gh api` só via helpers de escopo fixo (#11235, review da PR #11250): uma
   // regra `Bash(gh api ...*)` deixaria o `*` atravessar espaço e casar
@@ -158,7 +159,7 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   },
   {
     command: "npx tsx scripts/resolve-review-threads.ts --pr 1 --list",
-    source: "context/overnight-dispatch-rules.md",
+    source: "context/overnight-coordinator-rules.md",
     mention: "npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] --list",
   },
   {

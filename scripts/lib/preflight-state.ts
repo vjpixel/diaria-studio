@@ -34,7 +34,7 @@
  * stage por falta do arquivo (ex: edição criada antes desta issue).
  *
  * @see CLAUDE.md, context/overnight-dispatch-rules.md
- * @see .claude/agents/orchestrator-stage-0-preflight.md §0c
+ * @see .claude/agents/orchestrator-stage-0-fallback.md §0c (pings MCP no orchestrator-stage-0-preflight.md, #14030)
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";

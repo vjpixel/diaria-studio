@@ -1573,6 +1573,27 @@ describe("runStage1 --phase post-gate", () => {
     });
   });
 
+  // #14030: derive-stage1 só existia na prosa do §1y; o runner nunca rodava,
+  // e uma sessão headless que saía logo depois do post-gate perdia a derivação.
+  for (const mode of ["--auto", "--md"] as const) {
+    it(`#14030 ${mode}: roda derive-editor-requests derive-stage1 antes do sentinel; falha não bloqueia`, async () => {
+      return withTmpRoot(`stage-1-run-p5-derive-${mode.slice(2)}-`, (root, editionDir) => {
+        const { exec, calls } = makeFakeExec(happyHandlers({ "derive-editor-requests.ts": () => fail(1, "boom") }));
+        const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+        const argv = ["--phase", "post-gate", "--edition", "260423", ...(mode === "--auto" ? ["--auto"] : ["--md", `${editionDir}/01-categorized.md`])];
+        return runStage1(argv, deps).then((result) => {
+          assert.equal(result.code, 0);
+          const deriveIdx = calls.findIndex((c) => c.script.endsWith("derive-editor-requests.ts"));
+          assert.ok(deriveIdx > -1, "derive-stage1 não foi chamado");
+          assert.deepEqual(calls[deriveIdx].args, ["derive-stage1", "--edition", "260423"]);
+          const sentinelIdx = calls.findIndex((c) => c.script.endsWith("pipeline-sentinel.ts") && c.args[0] === "write");
+          assert.ok(sentinelIdx > deriveIdx, "derive-stage1 deve vir antes do sentinel");
+          assert.ok(deriveIdx > calls.findIndex((c) => c.script.endsWith("apply-gate-edits.ts")));
+        });
+      });
+    });
+  }
+
   it("check-invariants pós-gate falha -> warn, NÃO bloqueia (sentinel ainda escrito)", async () => {
     return withTmpRoot("stage-1-run-p5-inv-", (root, editionDir) => {
       const { exec, calls } = makeFakeExec(happyHandlers({ "check-invariants.ts": () => fail(1, "bug downstream") }));

@@ -3,7 +3,7 @@
  *
  * Endereços de envio conhecidos para os quais uma resposta de assinante pode
  * chegar em `To:` — usados pelo §0-replies do Stage 0
- * (`orchestrator-stage-0-preflight.md`) pra montar a query de busca do
+ * (`orchestrator-stage-0-replies.md`) pra montar a query de busca do
  * Gmail. Extraído pra cá (em vez de hardcoded na prosa do playbook, que era
  * `to:vjpixel@gmail.com` sozinho) porque essa lista muda toda vez que o
  * backend/domínio de envio muda — e já mudou 3x sem que a query
