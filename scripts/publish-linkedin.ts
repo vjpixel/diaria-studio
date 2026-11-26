@@ -284,8 +284,6 @@ export function buildUseMelhorLinkedInPost(input: {
   return { ok: true, text, imageUrl: coverUrl, carouselUrls };
 }
 
-const USE_MELHOR_LINKEDIN_ID = "um";
-
 /**
  * #13847 — plano do documento PDF do 4º post (USE MELHOR) no LinkedIn, o
  * mesmo formato padrão dos destaques desde o #12584: `ready` tenta documento
@@ -309,14 +307,19 @@ export function useMelhorLinkedInDocumentPlan(input: {
   if (input.optOut) return { status: "skip", reason: "opt_out" };
   const slides = input.carouselUrls;
   if (!slides) return { status: "skip", reason: "carousel_incomplete" };
-  const title = clampLinkedInDocumentTitle(input.captionTitle?.trim() || `diar.ia.br ${input.editionDate} — Use melhor`);
+  // `clampLinkedInDocumentTitle` tira negrito markdown: um título só de `**`
+  // sairia vazio e o Worker recusa `document_title` vazio, então o genérico
+  // entra DEPOIS do clamp, não antes.
+  const title =
+    clampLinkedInDocumentTitle(input.captionTitle ?? "") ||
+    clampLinkedInDocumentTitle(`diar.ia.br ${input.editionDate} — Use melhor`);
   return {
     status: "ready",
     carouselImageUrls: slides,
     prepareDocument: () =>
       prepareDailyLinkedInDocument({
         editionDir: input.editionDir,
-        destaque: USE_MELHOR_LINKEDIN_ID,
+        destaque: USE_MELHOR_POST_ID,
         carouselImageUrls: slides,
         title,
         upload: input.upload,
@@ -342,7 +345,7 @@ export function useMelhorLinkedInDispatchInput(input: {
   buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
 }): DispatchInput {
   return {
-    destaque: USE_MELHOR_LINKEDIN_ID,
+    destaque: USE_MELHOR_POST_ID,
     subtype: "main",
     text: input.built.text,
     imageUrl: input.built.imageUrl,

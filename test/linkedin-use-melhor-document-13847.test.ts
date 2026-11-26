@@ -242,6 +242,75 @@ describe("#13847 4º post (USE MELHOR) do LinkedIn como documento PDF", () => {
     });
   });
 
+  it("título só de markdown (`**`) recai no genérico em vez de sair vazio", async () => {
+    await withDir(async (dir) => {
+      const plan = useMelhorLinkedInDocumentPlan({
+        carouselUrls: SLIDE_URLS,
+        optOut: false,
+        captionTitle: "** **",
+        editionDir: dir,
+        editionDate: "260999",
+        upload: async (_f, k) => `https://img.test/${k}`,
+        buildPdf: async () => PDF_BYTES,
+      });
+      assert.equal(plan.status, "ready");
+      if (plan.status === "ready") assert.equal((await plan.prepareDocument()).title, "diar.ia.br 260999 — Use melhor");
+    });
+  });
+
+  it("5xx/timeout no degrau do documento vira `failed`, sem outro formato por cima (#11106)", async () => {
+    // Worker sempre 503: o cliente esgota os retries no documento e não pode
+    // descer pro carrossel nem pra imagem única (a entry pode ter sido gravada).
+    const w = fakeWorker(Array(20).fill(503));
+    try {
+      await withDir(async (dir) => {
+        const entry = await dispatchEntry(umInput(dir), ctx(dir));
+        assert.equal(entry.status, "failed");
+        assert.ok(w.bodies.length >= 1);
+        for (const b of w.bodies) assert.ok(b.document_url !== undefined, "só o degrau do documento foi tentado");
+        assert.equal(w.makeCalls(), 0, "sem fallback Make por cima");
+      });
+    } finally {
+      w.restore();
+    }
+  });
+
+  it("carrossel do 4º post com 10 slides (capa + 8 parágrafos + CTA) sai inteiro no documento e no carrossel", async () => {
+    const slots = ["cover", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "cta"];
+    const imgs: Record<string, { url?: string }> = {};
+    for (const s of slots) imgs[useMelhorSlideImageKey(s)] = { url: `https://cdn.test/um-${s}.jpg` };
+    const urls = slots.map((s) => `https://cdn.test/um-${s}.jpg`);
+    const built = buildUseMelhorLinkedInPost({ socialMd: SOCIAL_MD, plan: { ...PLAN, slots }, images: imgs });
+    assert.ok(built.ok);
+    if (!built.ok) return;
+    assert.deepEqual(built.carouselUrls, urls);
+    let pdfUrls: readonly string[] = [];
+    const w = fakeWorker([422, 202]);
+    try {
+      await withDir(async (dir) => {
+        const input = useMelhorLinkedInDispatchInput({
+          built,
+          scheduledAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          optOut: false,
+          captionTitle: PLAN.captionTitle,
+          editionDir: dir,
+          editionDate: "260999",
+          upload: async (_f, k) => `https://img.test/${k}`,
+          buildPdf: async (u) => {
+            pdfUrls = u;
+            return PDF_BYTES;
+          },
+        });
+        const entry = await dispatchEntry(input, ctx(dir));
+        assert.deepEqual(pdfUrls, urls, "o PDF leva os 10 slides");
+        assert.equal(entry.format, "carousel");
+        assert.deepEqual(w.bodies[1].image_urls, urls, "o carrossel leva os 10 slides");
+      });
+    } finally {
+      w.restore();
+    }
+  });
+
   it("main() despacha o 4º post pelo builder com plano de documento", () => {
     // Guard estrutural do call site: o bug foi o ramo do `um` montar o
     // DispatchInput à mão, sem `linkedInDocument`.
