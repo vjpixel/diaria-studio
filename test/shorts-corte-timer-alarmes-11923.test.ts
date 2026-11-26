@@ -105,7 +105,10 @@ const alarmsOf = (d: CorteTimerDecision): CorteTimerSideAlarm[] => (d.kind === "
 const grant = (dir: string, only: string) => recordCortePublishAuthorization(dir, only, KNOWN, corteContentFingerprint(dir, readSpec(dir)), AT, () => {});
 
 describe("#11923 item 4: capa existente e ilegível não grava o 'pode publicar'", () => {
-  it("readShortCover devolve unreadable quando a capa existe e a leitura falha", () => {
+  // O fixture (diretório no lugar do jpg) depende de `stat` de diretório ter size > 0, o que só
+  // vale no Linux: no NTFS o size é 0 e a capa conta como ausente (#13738). Sem chmod efetivo no
+  // Windows, não há outro jeito portátil de ter "existe e não lê".
+  it("readShortCover devolve unreadable quando a capa existe e a leitura falha", { skip: process.platform === "win32" ? "stat de diretório no NTFS tem size 0" : false }, () => {
     const dir = corteDir();
     mkdirSync(join(dir, SHORT_COVER_FILE)); // diretório no lugar do jpg: stat ok (size > 0), a leitura lança
     const cover = readShortCover(dir);

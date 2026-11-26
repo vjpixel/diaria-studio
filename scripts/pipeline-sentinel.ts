@@ -41,6 +41,13 @@
  * também imprime a dica. `find-current-edition.ts --stage N` sem candidatos e
  * o exit 4 do `stale-edition-guard.ts` mostram a mesma idade.
  *
+ * `--wait-seconds N [--poll-seconds S]` em `assert` (#13851): enquanto o
+ * sentinel não passar (ausente, ou presente com outputs ausentes), relê a cada
+ * S segundos (default 30) por até N segundos antes de decidir o exit. É a
+ * espera curta pelo sync do Drive na pré-condição da Etapa 5: na edição 261123
+ * o gate 4 foi aprovado no `300` três minutos antes e o sentinel ainda não
+ * tinha chegado ao Neo. Sem a flag, o `assert` decide na hora (resume check).
+ *
  * `write` (#6009): antes de gravar o sentinel de um stage 1-6 no layout
  * padrão da diária (sem `--dir`, `--edition` AAMMDD), roda as regras de
  * `check-invariants --stage N` (via `checkStageInvariantsForWrite`) e recusa
@@ -71,6 +78,7 @@ import {
   sentinelExists,
   writeMarker,
   writeSentinel,
+  type AssertResult,
 } from "./lib/pipeline-state.js";
 import {
   applyUpdate,
@@ -379,6 +387,84 @@ export function closeSessionHandoffOnStage4Sentinel(
   }
 }
 
+export interface WaitForSentinelOptions {
+  /** Janela total de espera em ms (0 = uma leitura só). */
+  waitMs: number;
+  /** Intervalo entre releituras em ms. */
+  intervalMs: number;
+  /** Injetável nos testes; default dorme de verdade (síncrono). */
+  sleep?: (ms: number) => void;
+  /** Injetável nos testes; default `Date.now`. */
+  now?: () => number;
+  /** Chamado antes de cada espera (para o log no stderr). */
+  onWait?: (attempt: number, remainingMs: number, result: AssertResult) => void;
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * #13851: relê o sentinel do `step` até ele passar ou a janela acabar.
+ * Devolve o último `AssertResult` lido; quem chama decide o exit com ele,
+ * do mesmo jeito que sem espera.
+ */
+export function waitForSentinel(
+  editionDir: string,
+  step: number,
+  opts: WaitForSentinelOptions,
+): AssertResult {
+  const sleep = opts.sleep ?? sleepSync;
+  const now = opts.now ?? Date.now;
+  const deadline = now() + Math.max(0, opts.waitMs);
+  const interval = Math.max(1, opts.intervalMs);
+  let attempt = 1;
+  let result = assertSentinel(editionDir, step);
+  while (!result.ok) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    opts.onWait?.(attempt, remaining, result);
+    sleep(Math.min(interval, remaining));
+    attempt += 1;
+    result = assertSentinel(editionDir, step);
+  }
+  return result;
+}
+
+/** Exit de erro de uso de `--wait-seconds`/`--poll-seconds` (EX_USAGE), distinto do 1 de sentinel ausente. */
+export const WAIT_USAGE_EXIT = 64;
+
+/** Motivo legível da releitura: `outputs_missing` lista os outputs que faltam. */
+export function describeWaitReason(r: AssertResult): string {
+  if (r.ok) return "ok";
+  if (r.reason === "outputs_missing") return `outputs_missing (${r.missingOutputs.join(", ")})`;
+  return r.reason;
+}
+
+/** Linha `[aguardando]` do stderr, antes de cada releitura. */
+export function formatWaitLine(
+  step: number,
+  attempt: number,
+  remainingMs: number,
+  intervalMs: number,
+  r: AssertResult,
+): string {
+  return `[aguardando] sentinel step ${step} ${describeWaitReason(r)} (leitura ${attempt}); relendo em até ${Math.ceil(Math.min(intervalMs, remainingMs) / 1000)} s, janela restante ${Math.ceil(remainingMs / 1000)} s (#13851: sync do Drive)`;
+}
+
+/** Lê `--wait-seconds`/`--poll-seconds`; `null` = flag ausente; lança em valor inválido. */
+export function parseWaitArgs(values: Record<string, string>): { waitMs: number; intervalMs: number } | null {
+  const raw = values["wait-seconds"];
+  if (raw === undefined) return null;
+  // `Number("")` é 0: valor em branco (`--wait-seconds=`) viraria "sem espera" em silêncio.
+  const wait = raw.trim() === "" ? Number.NaN : Number(raw);
+  if (!Number.isFinite(wait) || wait < 0) throw new Error(`--wait-seconds inválido: "${raw}"`);
+  const rawPoll = values["poll-seconds"] ?? "30";
+  const poll = rawPoll.trim() === "" ? Number.NaN : Number(rawPoll);
+  if (!Number.isFinite(poll) || poll <= 0) throw new Error(`--poll-seconds inválido: "${rawPoll}"`);
+  return { waitMs: wait * 1000, intervalMs: poll * 1000 };
+}
+
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
   const parsedArgs = parseCliArgs(rest);
@@ -488,7 +574,25 @@ function main(): void {
       // #11729: dica de defasagem de sync do OneDrive só com --sync-hint
       // (o assert também é o resume check, onde ausência é o caso normal).
       const syncHint = parsedArgs.flags.has("sync-hint");
-      const result = assertSentinel(editionDir, step);
+      let waitArgs: { waitMs: number; intervalMs: number } | null;
+      try {
+        if (parsedArgs.flags.has("wait-seconds") || parsedArgs.flags.has("poll-seconds")) {
+          throw new Error("--wait-seconds/--poll-seconds exigem um valor em segundos");
+        }
+        waitArgs = parseWaitArgs(args);
+      } catch (e) {
+        console.error(`[error] ${(e as Error).message}`);
+        // Exit próprio de uso (EX_USAGE), para não se confundir com o 1 de
+        // "sentinel ausente" na tabela de saídas da Etapa 5.
+        process.exit(WAIT_USAGE_EXIT);
+      }
+      const result = waitArgs
+        ? waitForSentinel(editionDir, step, {
+            ...waitArgs,
+            onWait: (attempt, remainingMs, r) =>
+              console.error(formatWaitLine(step, attempt, remainingMs, waitArgs!.intervalMs, r)),
+          })
+        : assertSentinel(editionDir, step);
       if (result.ok) {
         // #2374: resume path — sentinel exists but stage-status may still be
         // "running" or "pending" from the interrupted session. Repair it here
