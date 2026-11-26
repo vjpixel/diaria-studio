@@ -86,10 +86,9 @@ export interface ApoiadoresState {
    * Id da campanha Brevo real criada por `scripts/publish-monthly-apoiadores-brevo.ts`
    * (Passo 2, #4572/#4593) — `null` enquanto nenhuma campanha Brevo foi criada
    * pra este ciclo (inclui todo state legado do fluxo Beehiiv, que nunca setava
-   * este campo). Guard de idempotência do Passo 2 (`decidePublishBrevoAction`):
-   * uma vez não-null, uma nova invocação sem `--force` é bloqueada — fecha o
-   * "Gap conhecido" do SKILL.md (rodar o Passo 2 2x criava DOIS rascunhos
-   * duplicados na Brevo, sem essa trava).
+   * este campo). Era o guard de idempotência do Passo 2 Brevo
+   * (`decidePublishBrevoAction`, removido no #14102, depois que o publisher saiu no #14049):
+   * uma vez não-null, uma nova invocação sem `--force` era bloqueada.
    */
   brevoCampaignId: number | null;
   /**
@@ -326,7 +325,7 @@ export function decideMarkSentAction(state: ApoiadoresState | null): MarkSentDec
  * spread inline em `send-monthly-apoiadores.ts::main()`
  * (`{ ...decision.state, status: "sent", sentAt: ... }`) — mesma disciplina
  * que este módulo já cobra de si mesmo (`buildPreparedState`,
- * `buildApoiadoresBrevoPublishedState`): construir `ApoiadoresState` só via
+ * `buildApoiadoresKitPublishedState`): construir `ApoiadoresState` só via
  * builder testado, nunca ad hoc no `main()` de um script (o bug histórico do
  * #4521 self-review, documentado acima em `buildPreparedState`, é exatamente
  * o tipo de erro que um spread inline sem teste pode reintroduzir). Preserva
@@ -339,104 +338,18 @@ export function buildSentState(state: ApoiadoresState, sentAt: string): Apoiador
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// #4572/#4593 — guard de idempotência Passo 1 ↔ Passo 2 (fecha o "Gap
-// conhecido" do SKILL.md: `publish-monthly-apoiadores-brevo.ts` criava uma
-// campanha Brevo real sem consultar nem gravar este state file, então rodar
-// o Passo 2 2x pro mesmo ciclo criava DOIS rascunhos duplicados na Brevo).
-// ─────────────────────────────────────────────────────────────────────────
-
-export type PublishBrevoDecision = { action: "create" } | { action: "blocked"; reason: string };
-
-/**
- * Pura/testável: decide se `publish-monthly-apoiadores-brevo.ts` (Passo 2)
- * pode criar uma campanha Brevo nova pra este ciclo. Dois motivos de bloqueio
- * independentes, cada um com `--force` como escape hatch explícito (mesma
- * disciplina de `decidePrepareAction`):
- *
- *   1. `status === "sent"` — ciclo já confirmado como enviado (`--mark-sent`,
- *      Passo 3). Criar outra campanha pra um ciclo já enviado é bloqueado por
- *      padrão (mesmo racional do dedup do Passo 1).
- *   2. `brevoCampaignId != null` — já existe uma campanha Brevo criada pra
- *      este ciclo (Passo 2 já rodou com sucesso antes), rascunho ou não. Sem
- *      este guard, rodar o Passo 2 de novo cria um 2º rascunho duplicado na
- *      Brevo (ruído no painel, não um blast radius alto — ambos exigem ação
- *      manual do editor pra sair de rascunho — mas é exatamente o gap que o
- *      SKILL.md documentava como aceito/não resolvido).
- *
- * `force: true` ignora os dois — mesmo `--force` que a skill já expõe
- * (SKILL.md `--force`), não introduz uma 2ª flag.
- */
-export function decidePublishBrevoAction(state: ApoiadoresState | null, force: boolean): PublishBrevoDecision {
-  if (force) return { action: "create" };
-  if (state?.status === "sent") {
-    return {
-      action: "blocked",
-      reason:
-        `Ciclo ${state.cycle} já foi marcado como ENVIADO pros apoiadores em ${state.sentAt}. ` +
-        "Criar uma nova campanha Brevo pra um ciclo já confirmado como enviado é bloqueado por padrão " +
-        "(mesmo dedup do Passo 1). Use --force se realmente precisa (ex: reenviar uma correção).",
-    };
-  }
-  if (state?.brevoCampaignId != null) {
-    return {
-      action: "blocked",
-      reason:
-        `Já existe uma campanha Brevo criada pro ciclo ${state.cycle} (id ${state.brevoCampaignId}, criada em ` +
-        `${state.preparedAt}) — rodar de novo sem --force criaria um 2º rascunho duplicado na Brevo. Confira o ` +
-        "painel Brevo (Campaigns → Drafts); use --force se realmente precisa criar outro.",
-    };
-  }
-  return { action: "create" };
-}
-
-/**
- * Pura/testável: monta o `ApoiadoresState` gravado após o Passo 2 criar a
- * campanha Brevo com sucesso. Sempre `status: "draft_prepared"`/`sentAt:
- * null` — mesma filosofia de `buildPreparedState` (nunca herdar `sentAt`):
- * mesmo que `previous?.status === "sent"` (só alcançável aqui via `--force`,
- * ver `decidePublishBrevoAction`), a campanha recém-criada é NOVA e ainda não
- * foi enviada, então o estado correto é "preparado, não enviado" — não a data
- * de envio antiga carimbada por cima de um rascunho diferente.
- */
-export function buildApoiadoresBrevoPublishedState(
-  previous: ApoiadoresState | null,
-  cycle: string,
-  preparedAt: string,
-  htmlPath: string,
-  subject: string,
-  brevoCampaignId: number,
-): ApoiadoresState {
-  return {
-    cycle,
-    status: "draft_prepared",
-    preparedAt,
-    sentAt: null,
-    htmlPath,
-    subject,
-    segments: previous?.segments ?? [],
-    brevoCampaignId,
-    // #7633: preserva o id do OUTRO canal — mesmo motivo de `buildPreparedState`
-    // repassar os ids (fato monotônico), e o único jeito de o rascunho Kit de um
-    // ciclo não sumir do registro se alguém rodar o publisher Brevo legado depois.
-    kitBroadcastId: previous?.kitBroadcastId ?? null,
-    kitAudienceVerified: previous?.kitAudienceVerified ?? null,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// #7633 — mesmos 2 guards, canal Kit (`publish-monthly-apoiadores-kit.ts`).
-// Gêmeos deliberados dos de Brevo acima em vez de uma função genérica
-// parametrizada pelo canal: as mensagens de bloqueio citam o painel e o
-// vocabulário certos ("broadcast"/"Broadcasts" no Kit, "campanha"/"Drafts" na
-// Brevo), e é justamente a mensagem que o operador lê pra decidir o que fazer.
+// #7633 — guard de idempotência Passo 1 ↔ Passo 2, canal Kit
+// (`publish-monthly-apoiadores-kit.ts`). Nasceu gêmeo dos guards do canal
+// Brevo (#4572/#4593), removidos no #14102 depois que o publisher Brevo saiu
+// (#14049).
 // ─────────────────────────────────────────────────────────────────────────
 
 export type PublishKitDecision = { action: "create" } | { action: "blocked"; reason: string };
 
 /**
  * Pura/testável: decide se `publish-monthly-apoiadores-kit.ts` (Passo 2) pode
- * criar um broadcast Kit novo pra este ciclo. Mesmos 2 motivos de bloqueio de
- * `decidePublishBrevoAction`, lidos do campo do PRÓPRIO canal:
+ * criar um broadcast Kit novo pra este ciclo. Dois motivos de bloqueio, lidos
+ * do campo do PRÓPRIO canal:
  *
  *   1. `status === "sent"` — ciclo já confirmado como enviado (`--mark-sent`).
  *   2. `kitBroadcastId != null` — já existe broadcast criado pra este ciclo.
@@ -474,7 +387,7 @@ export function decidePublishKitAction(state: ApoiadoresState | null, force: boo
 
 /**
  * Pura/testável: monta o `ApoiadoresState` gravado depois do Passo 2 Kit criar
- * o broadcast com sucesso. Mesma filosofia de `buildApoiadoresBrevoPublishedState`
+ * o broadcast com sucesso. Mesma filosofia de `buildPreparedState`
  * (nunca herdar `sentAt`; preservar `segments` e o id do outro canal).
  */
 export function buildApoiadoresKitPublishedState(

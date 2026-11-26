@@ -23,8 +23,6 @@ import {
   decideMarkSentAction,
   buildPreparedState,
   buildSentState,
-  decidePublishBrevoAction,
-  buildApoiadoresBrevoPublishedState,
   decidePublishKitAction,
   buildApoiadoresKitPublishedState,
   buildApoiadoresKitScheduledState,
@@ -272,92 +270,8 @@ test("buildPreparedState (#7633): id de UM canal não vaza pro campo do outro", 
 });
 
 // ---------------------------------------------------------------------------
-// decidePublishBrevoAction / buildApoiadoresBrevoPublishedState (#4572/#4593
-// -- guard de idempotência Passo 1 <-> Passo 2, fecha o "Gap conhecido" do
-// SKILL.md: publish-monthly-apoiadores-brevo.ts criava uma campanha Brevo
-// real sem consultar/gravar este state file, então rodar o Passo 2 2x pro
-// mesmo ciclo criava DOIS rascunhos duplicados na Brevo).
-// ---------------------------------------------------------------------------
-
-test("decidePublishBrevoAction: sem state prévio -> sempre permite criar", () => {
-  assert.deepEqual(decidePublishBrevoAction(null, false), { action: "create" });
-});
-
-test("decidePublishBrevoAction: state prévio sem brevoCampaignId (ex: só Passo 1 rodou) -> permite criar", () => {
-  assert.deepEqual(decidePublishBrevoAction(PREPARED, false), { action: "create" });
-});
-
-test("decidePublishBrevoAction: brevoCampaignId já setado, SEM --force -> bloqueia (evita rascunho duplicado)", () => {
-  const state: ApoiadoresState = { ...PREPARED, brevoCampaignId: 555 };
-  const decision = decidePublishBrevoAction(state, false);
-  assert.equal(decision.action, "blocked");
-  if (decision.action === "blocked") {
-    assert.match(decision.reason, /555/);
-    assert.match(decision.reason, /--force/);
-  }
-});
-
-test("decidePublishBrevoAction: brevoCampaignId já setado, COM --force -> permite criar outro", () => {
-  const state: ApoiadoresState = { ...PREPARED, brevoCampaignId: 555 };
-  assert.deepEqual(decidePublishBrevoAction(state, true), { action: "create" });
-});
-
-test("decidePublishBrevoAction: status sent, SEM --force -> bloqueia (mesmo sem brevoCampaignId)", () => {
-  const state: ApoiadoresState = { ...PREPARED, status: "sent", sentAt: "2026-08-04T09:00:00.000Z" };
-  const decision = decidePublishBrevoAction(state, false);
-  assert.equal(decision.action, "blocked");
-  if (decision.action === "blocked") {
-    assert.match(decision.reason, /já foi marcado como ENVIADO/);
-  }
-});
-
-test("decidePublishBrevoAction: status sent, COM --force -> permite criar", () => {
-  const state: ApoiadoresState = { ...PREPARED, status: "sent", sentAt: "2026-08-04T09:00:00.000Z" };
-  assert.deepEqual(decidePublishBrevoAction(state, true), { action: "create" });
-});
-
-test("buildApoiadoresBrevoPublishedState: state novo (sem previous) -> status draft_prepared, sentAt null, brevoCampaignId gravado", () => {
-  const s = buildApoiadoresBrevoPublishedState(null, "2607-08", "2026-08-04T10:00:00.000Z", "/x/apoiadores-brevo-preview.html", "Assunto", 555);
-  assert.deepEqual(s, {
-    cycle: "2607-08",
-    status: "draft_prepared",
-    preparedAt: "2026-08-04T10:00:00.000Z",
-    sentAt: null,
-    htmlPath: "/x/apoiadores-brevo-preview.html",
-    subject: "Assunto",
-    segments: [],
-    brevoCampaignId: 555,
-    kitBroadcastId: null,
-    kitAudienceVerified: null,
-  });
-});
-
-test("buildApoiadoresBrevoPublishedState: NUNCA herda sentAt de um previous 'sent' (mesma disciplina de buildPreparedState)", () => {
-  const previous: ApoiadoresState = { ...PREPARED, status: "sent", sentAt: "2026-08-04T09:00:00.000Z" };
-  const s = buildApoiadoresBrevoPublishedState(previous, "2607-08", "2026-08-05T10:00:00.000Z", "/x/y.html", "Assunto novo", 777);
-  assert.equal(s.status, "draft_prepared");
-  assert.equal(s.sentAt, null);
-  assert.equal(s.brevoCampaignId, 777);
-});
-
-test("buildApoiadoresBrevoPublishedState: preserva segments do previous quando presente", () => {
-  const s = buildApoiadoresBrevoPublishedState(PREPARED, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 555);
-  assert.deepEqual(s.segments, PREPARED.segments);
-});
-
-test("buildApoiadoresBrevoPublishedState (#7633): preserva o kitBroadcastId do previous", () => {
-  // O publisher Brevo legado não pode apagar o rastro do rascunho Kit — os
-  // dois ids são fatos monotônicos independentes, cada um guardando o guard
-  // de duplicata do seu canal.
-  const previous: ApoiadoresState = { ...PREPARED, kitBroadcastId: 999 };
-  const s = buildApoiadoresBrevoPublishedState(previous, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 555);
-  assert.equal(s.kitBroadcastId, 999);
-  assert.equal(s.brevoCampaignId, 555);
-});
-
-// ---------------------------------------------------------------------------
-// decidePublishKitAction / buildApoiadoresKitPublishedState (#7633 — mesmos 2
-// guards do canal Brevo, lidos do campo do canal Kit).
+// decidePublishKitAction / buildApoiadoresKitPublishedState (#7633 — guards de
+// idempotência do canal Kit; os gêmeos Brevo saíram no #14102).
 // ---------------------------------------------------------------------------
 
 test("decidePublishKitAction: sem state prévio -> sempre permite criar", () => {
