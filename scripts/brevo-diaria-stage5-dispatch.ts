@@ -37,6 +37,13 @@
  * canal no dispatch paralelo: loga warning e segue — não deve derrubar
  * newsletter/LinkedIn/Facebook/Instagram/Threads.
  *
+ * Background (#14037): o orchestrator lança este script com
+ * `run_in_background` logo depois do §5c-pre e junta o resultado com
+ * `scripts/brevo-diaria-stage5-join.ts` antes do sentinel do §5h. Para isso o
+ * CLI grava `running` e depois `done` (com o mesmo JSON do stdout) em
+ * `<edition-dir>/_internal/05-brevo-stage5-dispatch.json`
+ * (`scripts/lib/brevo-stage5-background.ts`).
+ *
  * Uso:
  *   npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir>
  *
@@ -63,6 +70,7 @@ import { computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
 import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts";
 import { checkSemanalCapacity, countKitSemAberturaInBrevo, decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #11226
+import { currentHost, writeBrevoStage5Record, type BrevoStage5Record } from "./lib/brevo-stage5-background.ts"; // #14037
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -282,6 +290,61 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
 }
 
 // ---------------------------------------------------------------------------
+// Registro do background (#14037)
+// ---------------------------------------------------------------------------
+
+export interface RecordIo {
+  write: (record: BrevoStage5Record) => void;
+  warn: (msg: string) => void;
+  now: () => string;
+  pid: number;
+  host: string;
+}
+
+/**
+ * #14037 — roda o dispatch gravando `running` antes e `done` depois em
+ * `_internal/05-brevo-stage5-dispatch.json`, para o orchestrator lançar este
+ * script com `run_in_background` e juntar o resultado com
+ * `brevo-diaria-stage5-join.ts` antes do sentinel do §5h. O `result` gravado é
+ * o MESMO objeto impresso no stdout. Exceção do dispatch vira `failed`
+ * (step `crash`) no registro e no stdout, nunca some. Falha ao GRAVAR o
+ * registro só avisa no stderr: o resultado do canal sai no stdout igual.
+ */
+export function runStage5BrevoDispatchWithRecord(
+  run: () => Stage5BrevoResult,
+  io: RecordIo,
+): { result: Stage5BrevoResult; exitCode: number } {
+  const startedAt = io.now();
+  const base = { pid: io.pid, host: io.host, started_at: startedAt };
+  const safeWrite = (record: BrevoStage5Record) => {
+    try {
+      io.write(record);
+    } catch (e) {
+      io.warn(
+        `[brevo-diaria stage5] AVISO (#14037): registro ${record.state} não gravado (${(e as Error).message}) — ` +
+          `o join vai acusar o processo como morto/não lançado; o resultado real está no stdout deste comando.`,
+      );
+    }
+  };
+  safeWrite({ ...base, state: "running" });
+  let result: Stage5BrevoResult;
+  try {
+    result = run();
+  } catch (e) {
+    result = { status: "failed", step: "crash", reason: (e as Error).message ?? String(e) };
+  }
+  const exitCode = result.status === "failed" ? 1 : 0;
+  safeWrite({
+    ...base,
+    state: "done",
+    finished_at: io.now(),
+    exit_code: exitCode,
+    result: result as unknown as { status: string; [k: string]: unknown },
+  });
+  return { result, exitCode };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -293,11 +356,26 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
   // #9427: resolve contra a raiz do repo (antes era `process.cwd()`). Argumento
-  // inválido vira JSON `failed` (contrato do orchestrator), sem rodar passo algum.
+  // inválido vira JSON `failed` (contrato do orchestrator), sem rodar passo algum
+  // e sem registro (#14037: não há pasta de edição onde gravar; o join acusa
+  // `not_launched`).
   const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: ROOT });
-  const result: Stage5BrevoResult = resolvedArg.ok
-    ? runStage5BrevoDispatch(resolvedArg.editionDir, productionDeps(ROOT))
-    : { status: "failed", step: "args", reason: resolvedArg.error };
-  console.log(JSON.stringify(result));
-  process.exitCode = result.status === "failed" ? 1 : 0;
+  if (!resolvedArg.ok) {
+    console.log(JSON.stringify({ status: "failed", step: "args", reason: resolvedArg.error } satisfies Stage5BrevoResult));
+    process.exitCode = 1;
+  } else {
+    const editionDir = resolvedArg.editionDir;
+    const { result, exitCode } = runStage5BrevoDispatchWithRecord(
+      () => runStage5BrevoDispatch(editionDir, productionDeps(ROOT)),
+      {
+        write: (record) => writeBrevoStage5Record(editionDir, record),
+        warn: (msg) => process.stderr.write(msg + "\n"),
+        now: () => new Date().toISOString(),
+        pid: process.pid,
+        host: currentHost(),
+      },
+    );
+    console.log(JSON.stringify(result));
+    process.exitCode = exitCode;
+  }
 }

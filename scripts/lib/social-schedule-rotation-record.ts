@@ -17,6 +17,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { editionDir } from "./edition-paths.ts";
+import { withFileLock } from "./file-lock.ts";
 import {
   HHMM_RE,
   type RotationPlanRow,
@@ -57,15 +58,32 @@ export function newRowsToRecord(existing: string, rows: RotationPlanRow[]): Rota
   return rows.filter((r) => !seen.has(rowKey(r)));
 }
 
-/** Acrescenta ao JSONL as linhas ainda não gravadas. Devolve quantas eram novas. */
-export function recordRotationRows(logPath: string, rows: RotationPlanRow[], recordedAt = new Date().toISOString()): number {
-  const existing = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-  const fresh = newRowsToRecord(existing, rows);
-  if (fresh.length > 0) {
-    mkdirSync(dirname(logPath), { recursive: true });
-    appendFileSync(logPath, fresh.map((r) => JSON.stringify({ ...r, recorded_at: recordedAt })).join("\n") + "\n");
-  }
-  return fresh.length;
+/**
+ * Acrescenta ao JSONL as linhas ainda não gravadas. Devolve quantas eram novas.
+ *
+ * #14037: os 4 publicadores sociais rodam ao mesmo tempo (`publish-social-concurrent.ts`)
+ * e cada um chama isto. Ler, filtrar e acrescentar sob o lock de `{logPath}.lock`
+ * evita que dois processos leiam o arquivo sem a linha e os dois a acrescentem.
+ */
+export function recordRotationRows(
+  logPath: string,
+  rows: RotationPlanRow[],
+  recordedAt = new Date().toISOString(),
+  lockTimeoutMs = 10_000,
+): number {
+  mkdirSync(dirname(logPath), { recursive: true });
+  return withFileLock(
+    logPath + ".lock",
+    () => {
+      const existing = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+      const fresh = newRowsToRecord(existing, rows);
+      if (fresh.length > 0) {
+        appendFileSync(logPath, fresh.map((r) => JSON.stringify({ ...r, recorded_at: recordedAt })).join("\n") + "\n");
+      }
+      return fresh.length;
+    },
+    lockTimeoutMs,
+  );
 }
 
 /**
