@@ -200,7 +200,8 @@ export type SessionGcAction = "removed" | "kept";
 export interface SessionGcResult {
   /** Rótulo legível da identidade avaliada — `{kind}-{machineTag}-{sessionId}`
    * pro grupo ancorado num arquivo real, ou `orphan-backup:{arquivo}` pra um
-   * backup sem arquivo real correspondente. */
+   * backup sem arquivo real correspondente, ou `worktree-claim-mirror:{stem}`
+   * pro espelho que `claimWorktree` gravava até o #14214. */
   identity: string;
   /** Paths ABSOLUTOS de todo arquivo pertencente a esta identidade (arquivo
    * real + backups do grupo, ou só o próprio arquivo pra um órfão). */
@@ -435,6 +436,27 @@ function decideSessionGc(
 }
 
 /**
+ * Reconhece o espelho `worktree_claim` que `claimWorktree` gravava até o
+ * #14214 (`{kind fixo "continuo"}-{tag da máquina}-{sessionId}.json`, com
+ * conteúdo `{ session_id, worktree_claim }`, sem `sessionId` nem `kind`).
+ * Só casa o formato exato do espelho: um record de sessão de verdade sempre
+ * tem `sessionId` e `kind`, e um JSON corrompido ou de outro formato segue
+ * caindo em "ilegível" (mantido).
+ */
+function isWorktreeClaimMirror(raw: unknown): raw is {
+  session_id: string;
+  worktree_claim: { expires_at: number };
+} {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  if ("sessionId" in r || "kind" in r) return false;
+  if (typeof r.session_id !== "string" || r.session_id === "") return false;
+  const claim = r.worktree_claim as Record<string, unknown> | undefined;
+  if (!claim || typeof claim !== "object" || Array.isArray(claim)) return false;
+  return typeof claim.expires_at === "number" && Number.isFinite(claim.expires_at);
+}
+
+/**
  * Plano PURO (sem tocar disco) de GC de `data/sessions/` (#6130) — avalia
  * todo grupo ancorado num arquivo real (arquivo real + seus backups, ver
  * `readMergedSessionGroups`) e todo backup ÓRFÃO (sem arquivo real
@@ -479,14 +501,31 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
   }
 
   const results: SessionGcResult[] = [];
+  // #14214: espelhos `worktree_claim` são decididos depois do laço, quando já
+  // se sabe se a sessão dona tem grupo mantido (viva ou sem sinal confiável).
+  const mirrorCandidates: { stem: string; paths: string[]; sessionId: string; expiresAt: number }[] = [];
 
   for (const realName of realNames) {
     const stem = realName.slice(0, -".json".length);
     const groupNames = [realName, ...(backupsByRealStem.get(stem) ?? [])];
     const groupPaths = groupNames.map((n) => join(dir, n));
-    const records = groupNames
-      .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
-      .filter((r): r is SessionRecord => r !== null && !!r.sessionId && !!r.kind);
+    const raws = groupNames.map((n) => readJsonSafe<unknown>(join(dir, n)));
+    const records = raws.filter(
+      (r): r is SessionRecord => r !== null && !!(r as SessionRecord).sessionId && !!(r as SessionRecord).kind,
+    );
+    if (records.length === 0 && raws.length > 0 && raws.every(isWorktreeClaimMirror)) {
+      const mirrors = raws as { session_id: string; worktree_claim: { expires_at: number } }[];
+      const sessionIds = new Set(mirrors.map((m) => m.session_id));
+      if (sessionIds.size === 1) {
+        mirrorCandidates.push({
+          stem,
+          paths: groupPaths,
+          sessionId: mirrors[0]!.session_id,
+          expiresAt: Math.max(...mirrors.map((m) => m.worktree_claim.expires_at)),
+        });
+        continue;
+      }
+    }
     if (records.length === 0) {
       results.push({
         identity: stem,
@@ -521,6 +560,44 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
     }
     const decision = decideSessionGc(records, now, conservativeMaxAgeMs, isPidAlive, localTag);
     results.push({ identity, files: groupPaths, ...decision, ...who });
+  }
+
+  // #14214: o espelho segue a vida da sessão dona. Fica enquanto algum grupo
+  // com o mesmo `sessionId` foi mantido (sessão viva, ou sem sinal confiável
+  // de fim) e enquanto a claim espelhada não venceu há mais que a janela de
+  // liveness (folga para relógio adiantado de outra máquina). Fora disso,
+  // sessão dona removida ou já ausente do disco e claim vencida, sai.
+  const mirrorGraceMs = softStaleMsForKind("continuo");
+  for (const m of mirrorCandidates) {
+    const ownerKept = results.find((r) => r.sessionId === m.sessionId && r.action === "kept");
+    const identity = `worktree-claim-mirror:${m.stem}`;
+    if (ownerKept) {
+      results.push({
+        identity,
+        files: m.paths,
+        action: "kept",
+        reason: `espelho worktree_claim (#14214) da sessão ${m.sessionId}, que o GC manteve (${ownerKept.identity})`,
+        sessionId: m.sessionId,
+      });
+    } else if (m.expiresAt + mirrorGraceMs > now) {
+      results.push({
+        identity,
+        files: m.paths,
+        action: "kept",
+        reason: "espelho worktree_claim (#14214) com claim ainda dentro da validade (mais a folga de liveness)",
+        sessionId: m.sessionId,
+      });
+    } else {
+      results.push({
+        identity,
+        files: m.paths,
+        action: "removed",
+        reason:
+          "espelho worktree_claim (#14214) órfão: claim vencida e nenhum registro mantido da sessão dona — " +
+          "resíduo do mirror que claimWorktree gravava com kind/tag errados",
+        sessionId: m.sessionId,
+      });
+    }
   }
 
   for (const backup of orphanBackups) {
@@ -570,7 +647,8 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
     // #6624: lê o record ANTES de remover, só pra grupos coordenadores com
     // arquivo real (identity sem o prefixo "orphan-backup:") — instrumentação,
     // nunca afeta a decisão de remoção em si.
-    const isOrphanGroup = entry.identity.startsWith("orphan-backup:");
+    const isOrphanGroup =
+      entry.identity.startsWith("orphan-backup:") || entry.identity.startsWith("worktree-claim-mirror:");
     let lifecycleRecord: SessionRecord | null = null;
     // #13114: grupo de sessão que já chamou `end` não é "removido sem end".
     if (!isOrphanGroup && entry.endedAt === undefined) {
