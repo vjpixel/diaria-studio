@@ -413,8 +413,9 @@ export function reportUseMelhorPlan(
 /**
  * Warn (stderr + run-log) quando o 4º post SAI, mas degradado: carrossel
  * defasado/ausente, ou incompleto em `06-public-images.json` e o canal caiu
- * pra capa única / só texto. `usesCarousel: false` (LinkedIn página, que só
- * usa a capa) só avisa do carimbo, nunca de slide faltando.
+ * pra capa única / só texto. `usesCarousel: false` (canal que só usa a capa)
+ * só avisa do carimbo, nunca de slide faltando. O LinkedIn página passa `true`
+ * desde o #13847: o 4º post sai como documento PDF/carrossel dos slides.
  */
 export function reportUseMelhorImageFallback(
   channel: string,
