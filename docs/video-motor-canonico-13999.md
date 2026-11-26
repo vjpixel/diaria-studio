@@ -32,8 +32,8 @@ Os portes já correram nos dois sentidos, sem regra escrita:
    e `verify-xml` (#12561, `video-xml-verify.ts`). Os cabeçalhos desses
    arquivos dizem "portado de `vjpixel/edicao-video`": é o histórico, não o
    sentido atual.
-3. Desde então o diaria-studio seguiu com cadência quase diária (mais de 300
-   commits no motor desde 27/10/2026) e o edicao-video parou: o motor de lá
+3. Desde então o diaria-studio seguiu com cadência quase diária (179 commits
+   no motor entre 27/10 e 26/11/2026) e o edicao-video parou: o motor de lá
    (`montagem.ts`, `core.ts` e os dois `.py`) não muda desde 08/11/2026, e o
    último push do repo foi em 18/11/2026, fora do motor.
 
