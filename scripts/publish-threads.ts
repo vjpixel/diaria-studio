@@ -77,7 +77,11 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, readSocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
+// #6095/#6104 — leitura best-effort de 06-public-images.json; mora na lib
+// desde o #14125 e segue exportada daqui (testes e callers antigos).
+import { loadPublicImagesFile } from "./lib/public-images-file.ts";
+export { loadPublicImagesFile };
 import { formatRetryOutsideDispatch, parseRetryIdList, RETRYABLE_STATUSES, retryIdsOutsideDispatch } from "./lib/social-retry.ts"; // #13076; #13089 id fora do envio
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
@@ -123,13 +127,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Limite de caracteres por post no Threads. */
 export const THREADS_CHAR_LIMIT = THREADS_TEXT_MAX_CHARS;
-
-function loadPublished(path: string): SocialPublished {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, "utf8"));
-  }
-  return { posts: [] };
-}
 
 /**
  * Extrai a lista de destaques da seção `# Curto` do 03-social.md.
@@ -229,24 +226,6 @@ export function warnMissingEditionUrl(
  * Retorna lista com 1+ chunks. Se o texto cabe em um único post,
  * retorna `[text]` sem modificação.
  */
-/**
- * #6095/#6104 — lê 06-public-images.json best-effort para resolver o
- * carrossel diário. Ausência do arquivo OU JSON corrompido nunca lança —
- * ambos degradam pra "sem carrossel" ({}), preservando o contrato
- * tudo-ou-nada de `resolveCarouselImageUrls` e nunca abortando o dispatch
- * (mesmo helper duplicado em publish-facebook.ts — scripts não compartilham
- * import entre si, ver test/lib-boundary.test.ts).
- */
-export function loadPublicImagesFile(publicImagesPath: string): { images?: Record<string, { url?: string }> } {
-  if (!existsSync(publicImagesPath)) return {};
-  try {
-    return JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> };
-  } catch (e: any) {
-    console.warn(`WARN: falha ao parsear ${publicImagesPath} (${e.message}) — seguindo sem carrossel.`);
-    return {};
-  }
-}
-
 export function splitIntoThreadChunks(text: string, maxLen = THREADS_CHAR_LIMIT): string[] {
   if (text.length <= maxLen) return [text];
 
@@ -656,7 +635,7 @@ async function main(): Promise<number | void> {
     }
     const publishedPath = resolve(editionDir, "_internal/06-social-published.json");
     try {
-      const state = loadPublished(publishedPath);
+      const state = readSocialPublished(publishedPath);
       const entries = state.posts.filter((p) => p.platform === "threads" && p.destaque === id && resolveSubtype(p) === "main");
       if (entries.length !== 1) throw new Error("Exige exatamente uma entrada Threads principal existente para o id informado.");
       appendSocialPosts(publishedPath, [completePartialThread(entries[0])]);
@@ -847,7 +826,7 @@ async function main(): Promise<number | void> {
   for (const d of dispatchIds) {
     const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568
     // Releitura a cada iteração para detectar entradas concorrentes
-    const published = loadPublished(publishedPath);
+    const published = readSocialPublished(publishedPath);
 
     // #11076 resume (send_unknown não é refeito) + #11105 `--retry`.
     // Só a entry `main` (a que este script grava; o upsert do store é por subtype).

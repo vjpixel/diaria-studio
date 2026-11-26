@@ -318,7 +318,7 @@ Exit code handling:
 
   **#2529 — Tic lint automático no exit 2:** quando o hash diverge, o guard roda automaticamente `lintAntithesisReveal` sobre o `03-social.md` atual e emite WARNs adicionais no stderr. Se o stderr contiver `⚠️  TICS DE IA DETECTADOS`, incluir esses tics no bloco `{violations_block}` do gate como `⚠️ Social editado pós-humanizador acusa tics de IA (lista abaixo) — considere re-humanizar`. Se o stderr contiver apenas `ℹ️  Lint de tics: nenhum tic detectado`, a edição pode ter sido só remoção de tic — apresentar essa informação ao editor para auxiliar a decisão. O evento é sempre logado no run-log automaticamente. **Nota (#4352):** esta chamada interna permanece informativa por design — o exit 2 já é GATE-BLOCKING independente de tics (hash divergiu, ponto final). O bloqueio de fato para os tiques em si vem das chamadas explícitas e incondicionais de §4c.2b acima (`no-antithesis-reveal`/`no-trailing-editorial-hook`, que rodam sempre, hash tendo divergido ou não) — são essas que capturam o cenário do #4352 (tique sobrevivendo apesar do sentinel bater, porque foi introduzido ANTES do `--write` final).
 
-  **Re-humanizar antes de aprovar** (quando exit 2, independente de tics) — seguir o mesmo fluxo SCOPED/FULL-FILE de **§4d.1 passo 6** (`orchestrator-stage-4-gate.md` §4d.1 passo 6, ou receita K do cartão; re-humanização scoped #3446): a saída do `--check` acima já traz `{ legacy, changed_sections }` no stdout — usar direto, sem rodar o check de novo.
+  **Re-selar ou re-humanizar antes de aprovar** (exit 2, com ou sem tics) — **§4d.1 passo 6** (`orchestrator-stage-4-gate.md`; receita K): correção pequena do editor/pipeline usa `--reseal-surgical` (passo 6.0, #13929); o resto, SCOPED/FULL-FILE (#3446). O `{ legacy, changed_sections }` do `--check` acima serve direto.
 
 **Proveniência do social no resumo do gate (#11534):** a cada apresentação do gate, rodar `npx tsx scripts/check-humanizer-social.ts --provenance --edition-dir {EDITION_DIR}/` e incluir as linhas do stderr (`main_d1: humanizador sim · Clarice sim`, etc.) no resumo. Seção com `NÃO`, `PENDENTE` ou `aceita sem prova (--unproven-ok)` vai como ⚠️ nomeando a seção — o editor vê o que não passou por humanizador e Clarice em vez de descobrir perguntando. **Clarice pendente no social (#13848):** seção com `Clarice PENDENTE (motivo)` (invariante `social-clarice-pending`, warning) vai junto da linha `⚠️ clarice não rodou` da newsletter, com o mesmo trato: o editor decide entre aprovar sem a Clarice ou esperar a API. Informativo, nunca bloqueia (o bloqueio é o exit 4 do `--write`). **Clarice pendente na newsletter (#12257):** se o invariante `clarice-pending` (warning) acusar, o `resume` de §4a não aplicou a Clarice. Pôr a linha `⚠️ clarice não rodou ({motivo})` no topo do resumo do gate, com o desfecho do `resume` (exit e motivo do stderr); o editor decide entre aprovar sem a Clarice ou esperar a API. Não rodar o `resume` aqui: depois do fact-check e dos lints, o texto que eles checaram mudaria sem ninguém conferir de novo. **"Esperar a API" = voltar ao §4a:** rodar o `resume` de novo (com `--retry-now` se a última tentativa falhou há menos de 20 min, senão ele devolve o mesmo exit sem chamar a Clarice) e, com a Clarice aplicada (exit 0/13), refazer o Stage 4 do §4b em diante (pré-render, lints, fact-check, resumo) antes de reapresentar o gate.
 
@@ -353,40 +353,34 @@ Agent("fact-checker", {
 })
 ```
 
-**Escopo (#14035): seguir o que o passo 1 imprime.** `COMPLETO`: dispatch acima. `PARCIAL`: dispatch com `units: [lista]` e `out_path` `_internal/fact-check.partial.json`; passo 2 `run-fact-checker.ts --input-json {partial} --merge-partial --check-blocking`; `recusado` (exit 1): passo 1 com `--full`, refazer completo. `NENHUMA`: só o passo 2. Contrato: `docs/fact-check-incremental.md`.
+**Escopo (#14035): seguir o que o passo 1 imprime.** `COMPLETO`: dispatch acima. `PARCIAL`: dispatch com `units: [lista]` e `out_path` `_internal/fact-check.partial.json`; passo 2 com `--merge-partial`; `recusado` (exit 4 do composto): passo 1 com `--full`, refazer completo. `NENHUMA`: só o passo 2. Contrato: `docs/fact-check-incremental.md`.
 
-**Fallback de ENOENT sob a junction OneDrive (#5083).** O subagente pode reportar que o Write direto em `_internal/fact-check.json` falhou com `ENOENT` (harness, ver `.claude/agents/fact-checker.md` §4) e gravou o JSON no scratchpad da própria sessão em vez disso. Se isso acontecer, copiar o arquivo do path reportado para `{EDITION_DIR}/_internal/fact-check.json` (`cp` ou `Write` do nível top — não sofre do mesmo bug) antes de prosseguir para o passo 2 abaixo. **Retry automático em erro de rede/API (#8996):** se o dispatch do Agent `fact-checker` EM SI (não `run-fact-checker.ts`) falhar com erro de API/rede (ex: `API Error: Can't reach the API server (ENOTFOUND)`, timeout, 5xx — achado ao vivo edição 260929), fazer 1 retry automático do mesmo dispatch antes de desistir; se o retry também falhar, montar a mensagem do gate com `npx tsx scripts/run-fact-checker.ts --unavailable-message --reason "{erro}" --network-error` em vez do texto genérico do exit 1 abaixo (não-bloqueante em ambos os casos — só a redação muda).
+**Fallback de ENOENT sob a junction OneDrive (#5083).** O subagente pode reportar que o Write direto em `_internal/fact-check.json` falhou com `ENOENT` (harness, ver `.claude/agents/fact-checker.md` §4) e gravou o JSON no scratchpad da própria sessão em vez disso. Se isso acontecer, passar o path reportado em `--copy-from` no passo 2 abaixo (o composto copia para `{EDITION_DIR}/_internal/fact-check.json`; o top-level não sofre do mesmo bug). **Retry automático em erro de rede/API (#8996):** se o dispatch do Agent `fact-checker` EM SI (não `run-fact-checker.ts`) falhar com erro de API/rede (ex: `API Error: Can't reach the API server (ENOTFOUND)`, timeout, 5xx — achado ao vivo edição 260929), fazer 1 retry automático do mesmo dispatch antes de desistir; se o retry também falhar, montar a mensagem do gate com `npx tsx scripts/run-fact-checker.ts --unavailable-message --reason "{erro}" --network-error` em vez do texto genérico do exit 1 abaixo (não-bloqueante em ambos os casos — só a redação muda).
 
-Após o subagente concluir (gravar `_internal/fact-check.json`, direto ou via fallback acima), formatar o gate summary e checar bloqueio (#4361):
+Após o subagente concluir, o passo 2 é um comando composto (#14116): numa chamada, `run-fact-checker.ts --input-json … --check-blocking` (#4361; formata o gate summary), o autofix de §4c.6b e as re-checagens de §4c.6c. Uma linha JSON no stdout: `fact_check.summary` (seção do gate) e `.stderr`, `autofix`, `rerender` (`newsletter`/`social`), `checks[]`.
 ```bash
-# 2. Formatar seção pro gate e checar claims GATE-BLOCKING (--check-blocking, #4361):
-npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ \
-  --input-json {EDITION_DIR}/_internal/fact-check.json --check-blocking
+# 2. Check-blocking + autofix + re-checagens pós-autofix:
+npx tsx scripts/stage4-factcheck-post.ts --edition-dir {EDITION_DIR}/ [--merge-partial] [--copy-from {path}]
 ```
 
-**Exit code handling:**
-- `0` → capturar stdout (seção formatada) e incluir na seção `━━━ FACT-CHECK` do gate.
-- `1` com `FACT-CHECK DEFASADO (#11685)` no stderr → **não é o "indisponível" comum:** claim bloqueante sumiu do texto depois da checagem (removido ou REESCRITO, ex.: número trocado) e nunca foi checado de novo. **NÃO montar o gate ainda.** Ação: re-despachar o subagente `fact-checker` (passo 1 acima) **uma única vez** e rodar o passo 2 de novo. Se depois desse re-despacho ainda sair exit 1 DEFASADO, não abrir nova iteração: montar o gate com `⚠️ Fact-check defasado — verificar manualmente antes de publicar.` no lugar do bloco de fact-check. Se o próprio re-despacho falhar (erro de API/rede), vale o caminho do #8996 acima (1 retry do dispatch, depois a mensagem de indisponível via `--unavailable-message`), nunca uma nova volta deste loop. Em `auto_approve` não seguir para a Etapa 5 com este exit 1 (ver parágrafo `--no-gates` abaixo).
+**Exit code handling** (o composto devolve um exit por desfecho; os comandos individuais citados nesta seção seguem válidos como fallback):
+- `0` → incluir `fact_check.summary` na seção `━━━ FACT-CHECK` do gate e seguir com o JSON para §4c.6b.
+- `3` (`FACT-CHECK DEFASADO (#11685)` em `fact_check.stderr`) → **não é o "indisponível" comum:** claim bloqueante sumiu do texto depois da checagem (removido ou REESCRITO, ex.: número trocado) e nunca foi checado de novo. **NÃO montar o gate ainda.** Ação: re-despachar o subagente `fact-checker` (passo 1 acima) **uma única vez** e rodar o passo 2 de novo. Se depois desse re-despacho ainda sair exit 3 (DEFASADO), não abrir nova iteração: montar o gate com `⚠️ Fact-check defasado — verificar manualmente antes de publicar.` no lugar do bloco de fact-check. Se o próprio re-despacho falhar (erro de API/rede), vale o caminho do #8996 acima (1 retry do dispatch, depois a mensagem de indisponível via `--unavailable-message`), nunca uma nova volta deste loop. Em `auto_approve` não seguir para a Etapa 5 com este exit 3 (ver parágrafo `--no-gates` abaixo).
 - `1` (demais casos) → fact-checker não rodou (pré-condição falhou ou arquivo ausente) → mostrar `⚠️ Fact-check indisponível: {motivo do stderr}` no gate (ou a mensagem `--network-error` do parágrafo acima, se for esse o motivo). **Não bloquear** — fact-check é assistido, não gate-blocking.
-- `2` → **GATE-BLOCKING (#4361):** ao menos 1 claim `NOT_FOUND_IN_SOURCE` não-superlativo (`getBlockingClaims`) — a fonte primária foi verificada com sucesso e o claim simplesmente não está lá (caso real: `docs/orchestrator-stage-narrative-history.md#stage-4-fact-check-caso-real`). **NÃO montar o gate ainda.** Ação: ler os claims no stderr (D{N} + texto + note), reescrever/remover o claim de `02-reviewed.md`/`03-social.md` (ou achar suporte adicional na fonte — se o fato vem de OUTRA fonte da mesma história, indicada pelo editor ou achada por você, registrá-la com `npx tsx scripts/add-destaque-source.ts --edition-dir {EDITION_DIR}/ --destaque N --url {URL}` e redespachar o fact-checker, nunca editar `d{N}.txt` à mão, #11531), re-rodar o fact-checker até sair `0` ou `1` sem o marcador `FACT-CHECK DEFASADO`, antes de §4c.6b. Escopo estreito de propósito (não over-broaden, #4361): exclui `claim_type: "superlative"` (mais subjetivo, continua informativo) e `DIVERGENT`/`SUSTAINED`/`INFERRED`/`SOURCE_UNREACHABLE` (DIVERGENT já é auto-corrigido em §4c.6b; os demais não confirmam ausência).
+- `2` → **GATE-BLOCKING (#4361):** ao menos 1 claim `NOT_FOUND_IN_SOURCE` não-superlativo (`getBlockingClaims`) — a fonte primária foi verificada com sucesso e o claim simplesmente não está lá (caso real: `docs/orchestrator-stage-narrative-history.md#stage-4-fact-check-caso-real`). **NÃO montar o gate ainda.** Ação: ler os claims no stderr (D{N} + texto + note), reescrever/remover o claim de `02-reviewed.md`/`03-social.md` (ou achar suporte adicional na fonte — se o fato vem de OUTRA fonte da mesma história, indicada pelo editor ou achada por você, registrá-la com `npx tsx scripts/add-destaque-source.ts --edition-dir {EDITION_DIR}/ --destaque N --url {URL}` e redespachar o fact-checker, nunca editar `d{N}.txt` à mão, #11531), re-rodar o fact-checker até o composto sair `0` ou `1`, antes de §4c.6b. Escopo estreito de propósito (não over-broaden, #4361): exclui `claim_type: "superlative"` (mais subjetivo, continua informativo) e `DIVERGENT`/`SUSTAINED`/`INFERRED`/`SOURCE_UNREACHABLE` (DIVERGENT já é auto-corrigido em §4c.6b; os demais não confirmam ausência).
+- `4` → `--merge-partial` recusado (#14035): passo 1 com `--full` e refazer completo.
+- `5` → o autofix quebrou uma re-checagem de §4c.6c (`checks[]` com `code ≠ 0`): ver "Exit code handling" de §4c.6c.
+- `7` → JSON do autofix ausente/ilegível (`autofix.unreadable`): bloqueia; re-rodar o autofix, conferir o diff.
 
-**Fact-check defasado (#11671):** `--input-json` carimba `fact-check.json` com o hash de `02-reviewed.md`/`03-social.md` na 1ª passada e preserva o carimbo nas seguintes. Se o texto mudou depois da checagem, o stdout traz `Fact-check DEFASADO` (aviso, nunca bloqueio por si só): claim bloqueante cujo trecho sumiu do texto atual sai do exit 2; o que ainda aparece segue bloqueando. Se sobrar só claim sumido (nenhum ainda presente), o `--check-blocking` sai com exit 1 + `FACT-CHECK DEFASADO (#11685)`, nunca exit 0 — "sumiu" também é o claim reescrito sem re-checagem; tratar como no exit 1 DEFASADO acima. Re-despachar o fact-checker antes de aprovar o gate.
+**Fact-check defasado (#11671):** `--input-json` carimba `fact-check.json` com o hash de `02-reviewed.md`/`03-social.md` na 1ª passada e preserva o carimbo nas seguintes. Se o texto mudou depois da checagem, o stdout traz `Fact-check DEFASADO` (aviso, nunca bloqueio por si só): claim bloqueante cujo trecho sumiu do texto atual sai do exit 2; o que ainda aparece segue bloqueando. Se sobrar só claim sumido (nenhum ainda presente), o `--check-blocking` sai com exit 1 + `FACT-CHECK DEFASADO (#11685)`, nunca exit 0 — "sumiu" também é o claim reescrito sem re-checagem; tratar como no exit 3 acima. Re-despachar o fact-checker antes de aprovar o gate.
 
-**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`, roda `--check-blocking`), mas pular a apresentação no gate (que é pulado inteiramente). **O exit 2 (GATE-BLOCKING) ainda vale** — mesmo sem gate visual, o orchestrator não pode prosseguir para Etapa 5 com um claim NOT_FOUND_IN_SOURCE não resolvido; parar e renderizar halt banner (mesmo padrão do #738) explicando o motivo, já que não há editor no gate pra decidir aqui. **O exit 1 com `FACT-CHECK DEFASADO (#11685)` também vale aqui:** re-despachar o fact-checker e repetir o passo 2; se depois disso o check ainda sair exit 1 DEFASADO ou exit 2, parar com halt banner em vez de seguir para a Etapa 5 (sem editor, ninguém leria o aviso). O arquivo fica disponível para auditoria pós-edição em qualquer caso.
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`, roda `--check-blocking`), mas pular a apresentação no gate (que é pulado inteiramente). **O exit 2 (GATE-BLOCKING) ainda vale** — mesmo sem gate visual, o orchestrator não pode prosseguir para Etapa 5 com um claim NOT_FOUND_IN_SOURCE não resolvido; parar e renderizar halt banner (mesmo padrão do #738) explicando o motivo, já que não há editor no gate pra decidir aqui. **O exit 3 (DEFASADO) também vale aqui:** re-despachar o fact-checker e repetir o passo 2; se depois disso ainda sair exit 3 ou 2, parar com halt banner em vez de seguir para a Etapa 5 (sem editor, ninguém leria o aviso). O arquivo fica disponível para auditoria pós-edição em qualquer caso.
 
 **4c.6b — Auto-fix de DIVERGENT determinístico (#2598, estendido a social em #3224):**
 
-Após o subagente gravar `_internal/fact-check.json`, aplicar correções automáticas de claims `DIVERGENT` com `suggested_fix` presente — antes de montar o gate:
+O composto do passo 2 (§4c.6) já aplicou as correções automáticas de claims `DIVERGENT` com `suggested_fix` (`apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/`, mesmo script, só que rodado por ele): o desfecho está em `autofix` do JSON e em `_internal/fact-check-autofix.json`. `autofix.code` = `1` → logar warn; seguir sem auto-fix (não bloqueia o gate).
 
-```bash
-npx tsx scripts/apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/
-```
-
-Exit code handling:
-- `0` → capturar stdout e JSON `_internal/fact-check-autofix.json`.
-- `1` → logar warn; continuar sem auto-fix (não bloqueia gate).
-
-**⚠️ Re-render obrigatório quando `applied > 0` (#2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Se `fact-check-autofix.json` mostra `summary.applied > 0`, re-rodar render + substitute para garantir que o HTML reflita o texto corrigido, e republicar o preview:
+**⚠️ Re-render obrigatório quando `applied > 0` (`rerender.newsletter`, #2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Nesse caso, re-rodar render + substitute para garantir que o HTML reflita o texto corrigido, e republicar o preview:
 
 ```bash
 # Re-render newsletter HTML com o 02-reviewed.md já corrigido
@@ -442,37 +436,20 @@ npx tsx scripts/serve-preview.ts \
 ```
 (#3546 — mesmo padrão stop-old → embed → serve-new de §4b step 3 / §4c.6b acima.) **Re-publicar o Artifact social também (#6003)** — mesmo `file_path` do step 3, redeploy pra mesma URL; atualizar `{social_artifact_url}` em `05-social-preview.json`, warning-only.
 
-Confirmar que o sentinel bate com o social já corrigido antes de seguir pro gate (deve dar exit 0 — o próprio script já regravou):
-```bash
-npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
-```
-Se por algum motivo o exit não for 0 aqui (ex: `writeSentinel` falhou e o script apenas logou warn — ver stderr de `apply-factcheck-autofix.ts`), tratar como o exit 2 padrão de §4c.2b (re-humanizar e re-selar antes do gate).
+Confirmar que o sentinel bate com o social corrigido: o composto já rodou (`check-humanizer-social.ts --check`, item `humanizer-social-check` de `checks[]`; deve dar 0, o próprio autofix regravou). Se o código não for 0 ali (ex: `writeSentinel` falhou e o script apenas logou warn — ver stderr de `apply-factcheck-autofix.ts`), tratar como o exit 2 padrão de §4c.2b (re-humanizar e re-selar antes do gate).
 
 **4c.6c — Re-validar lints estruturais pós-autofix (#3306):**
 
 O autofix acima usa `replaceAll` no escopo do destaque/seção (#3274/#3275) — o `suggested_fix` é texto bruto do fact-checker LLM, sem consciência de markdown/estrutura. Uma correção pode reescrever mais do que o esperado e quebrar um invariante que os lints de §4c.2/§4c.2b passaram intactos ANTES do autofix rodar. Nenhum desses lints roda de novo depois — só o sentinel de hash do humanizador acima (que confere que o social foi re-humanizado, não que a estrutura ficou íntegra). Este passo fecha essa lacuna, re-rodando os lints estruturais que operam sobre texto de destaque.
 
-Rodar SOMENTE os lints relevantes ao arquivo que o autofix de fato tocou:
+O composto do passo 2 (§4c.6) roda SOMENTE os lints do arquivo que o autofix de fato tocou, e devolve cada um em `checks[]` (saída só dos que falharam):
 
-- Se `_internal/fact-check-autofix.json` mostra `summary.applied > 0` (newsletter pode ter sido corrigida):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts --check callout-placement --md {EDITION_DIR}/02-reviewed.md
-  ```
-  (mesma `lintCalloutPlacement` de #3282, já usada por `orphan-box-in-gap` em §4c.2 — aqui chamada direto pra checar só a estrutura do callout, sem repetir a checagem de gaps órfãos.)
+- `summary.applied > 0` (newsletter): `lint-newsletter-md.ts --check callout-placement` em `02-reviewed.md` (mesma `lintCalloutPlacement` de #3282, já usada por `orphan-box-in-gap` em §4c.2 — só a estrutura do callout).
+- `social_modified === true`: `lint-social-md.ts --check` `post_pixel-matches-d1`, `linkedin-page-link`, `platform-headers-unicos`, `no-antithesis-reveal` e `no-trailing-editorial-hook` em `03-social.md` (#4352 item 2 — os 2 últimos são os tic-lints GATE-BLOCKING de §4c.2b: o autofix mexe no social DEPOIS do humanizador e pode reintroduzir um tique tipo "não é X, é Y").
 
-- Se `_internal/fact-check-autofix.json` mostra `social_modified === true` (03-social.md foi corrigido):
-  ```bash
-  npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check linkedin-page-link --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
-  ```
-  (#4352 item 2 — os 2 últimos são os tic-lints GATE-BLOCKING de §4c.2b: o autofix mexe em `03-social.md` DEPOIS do humanizador já ter rodado e pode reintroduzir um tique tipo "não é X, é Y"; sem re-auditar aqui, só o sentinel de HASH era re-selado, sem re-verificar o CONTEÚDO.)
-
-Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-social.ts --check` já usa logo acima: se falhar, tratar como o exit 2 padrão de §4c.2b (re-corrigir e re-selar antes do gate, nunca deixar a violação vazar pro resumo do editor):
-- `0` em todos os lints rodados → continuar.
-- `1` em qualquer um → **GATE-BLOCKING.** O autofix quebrou um invariante estrutural que sobrevivia intacto antes da correção. NÃO montar o gate ainda. Ação:
+Exit code handling — **GATE-BLOCKING**, mesmo padrão do `check-humanizer-social.ts --check`: se falhar, tratar como o exit 2 padrão de §4c.2b (re-corrigir e re-selar antes do gate, nunca deixar a violação vazar pro resumo do editor). Para re-rodar um lint isolado: `npx tsx scripts/lint-social-md.ts --check {lint} --md {EDITION_DIR}/03-social.md` (ou `lint-newsletter-md.ts` no `02-reviewed.md`).
+- composto com exit `0` → continuar.
+- exit `5` (algum `checks[]` com `code ≠ 0`) → **GATE-BLOCKING.** O autofix quebrou um invariante estrutural que sobrevivia intacto antes da correção. NÃO montar o gate ainda. Ação:
   1. Ler o output do lint (linha + contexto da violação) e o `entry` correspondente em `_internal/fact-check-autofix.json` (mesmo `destaque`/`suggested_fix`) para identificar qual correção causou a quebra.
   2. Corrigir cirurgicamente (#495 — `Edit` com `old_string` mínimo, nunca substituir blocos grandes) o arquivo afetado, preservando o valor factual já corrigido mas restaurando a estrutura esperada pelo lint (callout isolado por `---`, ou bloco `post_pixel`/link do LinkedIn realinhado).
   3. Re-rodar o lint que falhou até sair `0`.

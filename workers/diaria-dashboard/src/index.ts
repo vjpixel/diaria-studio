@@ -644,9 +644,7 @@ export function renderPollEiaSection(data: DashboardData, opts: RenderDashboardO
   <p class="section-note muted">Dados não disponíveis. Requer push do <code>workers/poll</code>.</p>
   <p class="section-note muted">
     Para habilitar: o worker poll precisa escrever <code>data/poll-eia-summary.json</code>
-    (via <code>npx tsx scripts/build-poll-eia-data.ts --push</code>) com o schema <code>PollEiaSummary</code>.
-    <!-- TODO #2475: cross-worker KV read ou push do workers/poll — requer POLL KV namespace ID -->
-  </p>
+    (via <code>npx tsx scripts/build-poll-eia-data.ts --push</code>) com o schema <code>PollEiaSummary</code>.  </p>
 </section>`;
   }
 
@@ -942,11 +940,10 @@ const STUDIO_SNAPSHOT_STALE_MINUTES = 10;
  * (o único jeito confiável de saber que o Studio local não está mais
  * pushando é a IDADE do último push, não um "heartbeat" ativo).
  *
- * TODO(#3564): botão "me avise quando eu voltar" — a issue #3565 permite
- * anotar isso como TODO em vez de implementar, já que #3564 (notificações
- * push via e-mail/deep-link, canal definido em #5341) segue OPEN (checado
- * no momento desta fatia) sem a infra de push pronta pra integrar. Quando
- * #3564 mergear, plugar aqui sem violar o invariante "zero ações" desta
+ * Não implementado, sem issue aberta (#14123): botão "me avise quando eu
+ * voltar". A #3565 o deixou de fora enquanto a #3564 (notificações push via
+ * e-mail/deep-link, canal definido em #5341) não existia; as duas fecharam
+ * sem ele. Se entrar, não pode violar o invariante "zero ações" desta
  * view — o botão dispararia uma notificação num canal externo (e-mail),
  * nunca um comando executado a partir DESTE Worker/processo.
  */

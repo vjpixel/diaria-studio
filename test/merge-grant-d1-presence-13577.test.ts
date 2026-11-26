@@ -37,7 +37,7 @@ import {
   sessionsDir,
 } from "../scripts/lib/session-registry.ts";
 import { createFakeD1, failingD1, type FakeD1 } from "./_helpers/fake-d1.ts";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 
 const guard = (await import(new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url).href)) as {
   acceptD1MergeGrant: (

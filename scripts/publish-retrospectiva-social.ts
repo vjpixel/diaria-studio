@@ -11,7 +11,7 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
  *   | canal             | formato                                  | via |
  *   |-------------------|------------------------------------------|-----|
  *   | `linkedin_pagina` | documento PDF dos 5 slides + texto (#12584; fallback carrossel → capa 4:5) | `dispatchEntry` (`publish-linkedin.ts`), Worker, `allowImmediateFallback: false` e SEM URL do Make (o `make_now` falha em vez de publicar na hora) |
- *   | `facebook`        | imagem (capa 4:5) + texto                | `publishFacebookCarouselByUrl` (`publish-facebook.ts`), agendamento nativo da Graph API, 1 foto |
+ *   | `facebook`        | imagem (capa 4:5) + texto                | `dispatchFacebookCarousel` (`publish-facebook.ts`, retry sem duplicar #14170), agendamento nativo da Graph API, 1 foto |
  *   | `instagram`       | carrossel de 5 (capa + 3 parágrafos + CTA) | `postToWorkerQueue` com `image_urls` (#6005 Parte B) |
  *   | `threads`         | carrossel de 5                           | `postToWorkerQueue` com `image_urls` (#6095) |
  *   | `x`               | até 4 imagens (capa + 3 parágrafos, sem o CTA — #8202) | **não despacha**: devolve o payload da mutation `createPost` do Buffer, que só o top-level alcança (MCP); o registro vem depois via `append-twitter-published.ts` + `mark-retrospectiva-channel.ts --channel x:dN` |
@@ -99,7 +99,7 @@ import {
   resolveSocialWorkerToken,
   resolveSocialWorkerUrl,
 } from "./lib/worker-queue-client.ts";
-import { publishFacebookCarouselByUrl, validateScheduledTime } from "./publish-facebook.ts";
+import { dispatchFacebookCarousel, facebookOutcomeEntry, validateScheduledTime } from "./publish-facebook.ts"; // #14170
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
   applyFacebookPageUtm,
@@ -425,6 +425,49 @@ export function findLegacyLinkedinSingle(published: SocialPublished): PostEntry 
         typeof p.worker_queue_key === "string",
     ) ?? null
   );
+}
+
+/**
+ * #14170 — post da Retrospectiva numa página do Facebook, com o retry sem
+ * duplicar do publicador diário (`dispatchFacebookCarousel`, #14131): falha
+ * ambígua (5xx/timeout) consulta `/scheduled_posts` antes de repetir o POST;
+ * achou, adota o id; leitura falhou, entry `send_unknown` (o
+ * `findLiveSocialDispatch` a trata como viva e a reexecução não reenvia).
+ * `failed` (nada criado, provado) lança, como antes. Valida o horário antes.
+ */
+export async function dispatchRetrospectivaFacebookPage(
+  i: SocialDispatchInput,
+  page: { slug: string; pageId: string; token: string },
+  apiVersion: string,
+  opts: { sleep?: (ms: number) => Promise<void>; lookupDelayMs?: number } = {},
+): Promise<PostEntry> {
+  validateScheduledTime(i.scheduledAt);
+  const label = retrospectivaFacebookStateKey(page.slug, i.historia);
+  const outcome = await dispatchFacebookCarousel({
+    pageId: page.pageId,
+    pageToken: page.token,
+    apiVersion,
+    caption: i.text,
+    scheduledAt: i.scheduledAt,
+    imageUrls: i.imageUrls,
+    label,
+    sleep: opts.sleep,
+    lookupDelayMs: opts.lookupDelayMs,
+  });
+  if (outcome.kind === "failed") throw new Error(outcome.reason);
+  if (outcome.kind === "send_unknown") {
+    console.error(`SEND_UNKNOWN ${label}: ${outcome.reason}`);
+    console.warn(
+      `AVISO ${label}: envio não confirmado (send_unknown). Conferir os posts agendados da página; se o post não existe, ` +
+        `trocar o status desta entry para failed no store da história e rodar de novo (a reexecução não reenvia send_unknown).`,
+    );
+  }
+  return facebookOutcomeEntry(outcome, {
+    pageId: page.pageId,
+    pageSlug: page.slug,
+    destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
+    scheduledAt: i.scheduledAt,
+  });
 }
 
 /** Pura: imagens de cada rede, a partir das 5 da história (mesmo recorte da diária). */
@@ -887,6 +930,16 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       results.push({ ...base, action: "failed", reason });
       continue;
     }
+    // #14170: envio ambíguo do Facebook (o post pode existir na página). Sai
+    // como falha no resumo (exit != 0, o editor confere a página), mas o
+    // store guarda `send_unknown`, que `findLiveSocialDispatch` trata como
+    // vivo: a reexecução não reenvia (senão duplicaria o post).
+    if (entry.status === "send_unknown") {
+      const reason = entry.reason ?? "send_unknown: envio não confirmado";
+      record(stateKey, false, reason, null);
+      results.push({ ...base, action: "failed", reason });
+      continue;
+    }
     record(stateKey, true, null, entry);
     results.push({ ...base, action: "dispatched", entry });
     if (WORKER_CHANNELS.has(channel) && entry.status === "scheduled") workerDispatched.add(historia);
@@ -1304,18 +1357,7 @@ async function main(): Promise<void> {
       facebook: async (i, slug) => {
         const pg = fbBySlug.get(slug);
         if (!pg || pg.missing.length > 0) throw new Error(`página Facebook ${slug} sem credencial (${pg?.missing.join("/") ?? "fora do config"})`);
-        validateScheduledTime(i.scheduledAt);
-        const res = await publishFacebookCarouselByUrl(pg.pageId, pg.token, fbApiVersion, i.imageUrls, i.text, i.scheduledAt);
-        const postId = res.post_id || res.id;
-        return {
-          platform: "facebook",
-          page: slug,
-          destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
-          url: `https://www.facebook.com/${pg.pageId}/posts/${postId}`,
-          status: "scheduled",
-          scheduled_at: i.scheduledAt,
-          fb_post_id: postId,
-        };
+        return dispatchRetrospectivaFacebookPage(i, pg, fbApiVersion); // #14170: retry sem duplicar
       },
       worker: async (channel, i) => {
         const res = await postToWorkerQueue(

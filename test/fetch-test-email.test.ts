@@ -17,6 +17,7 @@ import {
   EXIT_BY_STATUS,
   fetchTestEmail,
   findBodyPart,
+  initialWaitMs,
   isKitUiTestUnmarked,
   kitTestHints,
   parseSentAfter,
@@ -581,6 +582,94 @@ describe("fetchTestEmail: ordem de query e corte default do modo UI (#10411)", (
       assert.equal(s.status, "not_found_timeout");
       assert.equal(warnings.length, 1);
       assert.match(warnings[0], /newsletter-kit-published\.json ilegível/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+// #14117: a espera inicial (20 s no Kit) contava da CHAMADA, não do envio do
+// teste. Na 261119 o teste saiu 04:56:23 e o fetch rodou 05:05:55 — dormiu 20 s
+// à toa. Agora conta do `test_sent_at`/`--sent-after` e só dorme o que falta.
+describe("fetchTestEmail: espera inicial conta do envio do teste (#14117)", () => {
+  const SENT_ISO = "2026-11-19T04:56:23.000Z";
+  const SENT = Date.parse(SENT_ISO);
+
+  it("initialWaitMs: enviado há 5 s → 15 s; há 60 s → 0; sem âncora → 20 s; futuro → no máximo 20 s", () => {
+    assert.equal(initialWaitMs(20, SENT, SENT + 5_000), 15_000);
+    assert.equal(initialWaitMs(20, SENT, SENT + 60_000), 0);
+    assert.equal(initialWaitMs(20, SENT, SENT + 20_000), 0);
+    assert.equal(initialWaitMs(20, undefined, SENT), 20_000);
+    assert.equal(initialWaitMs(20, NaN, SENT), 20_000);
+    assert.equal(initialWaitMs(20, SENT + 3_600_000, SENT), 20_000, "âncora no futuro nunca estica a espera");
+    assert.equal(initialWaitMs(0, SENT, SENT), 0);
+  });
+
+  // Relógio injetado começando em `start`; `sleep` avança o relógio e registra cada espera.
+  function clockDeps(start: number, sleeps: number[]): FetchDeps {
+    let t = start;
+    return {
+      gmailGet: async (path) => {
+        if (path.startsWith("threads?")) return { threads: [] };
+        throw new Error(`rota não mockada: ${path}`);
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        t += ms;
+      },
+      now: () => t,
+    };
+  }
+  const writeKitState = (dir: string, state: unknown) =>
+    writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), JSON.stringify(state));
+
+  // timeoutSeconds: 0 → uma rodada de busca e sai, sem sleep de polling:
+  // `sleeps` só registra a espera inicial.
+  for (const [label, elapsedMs, expected] of [
+    ["enviado há 5 s → dorme 15 s", 5_000, [15_000]],
+    ["enviado há 60 s → não dorme", 60_000, []],
+    ["relógio torto (envio 1 min no futuro) → dorme os 20 s, nunca mais", -60_000, [20_000]],
+  ] as const) {
+    it(`REGRESSÃO Kit, test_sent_at do estado: ${label}`, async () => {
+      const dir = makeEditionDir("fetch-test-email-14117-");
+      try {
+        writeKitState(dir, { broadcast_id: 555, status: "test_sent", test_mode: "broadcast", test_sent_at: SENT_ISO });
+        const sleeps: number[] = [];
+        const s = await fetchTestEmail(
+          { editionDir: dir, platform: "kit", title: "T", timeoutSeconds: 0 },
+          clockDeps(SENT + elapsedMs, sleeps),
+        );
+        assert.equal(s.status, "not_found_timeout");
+        assert.deepEqual(sleeps, [...expected]);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+  }
+
+  it("sem test_sent_at (estado ausente) → espera cheia de 20 s, como antes", async () => {
+    const dir = makeEditionDir("fetch-test-email-14117-");
+    try {
+      const sleeps: number[] = [];
+      await fetchTestEmail({ editionDir: dir, platform: "kit", title: "T", timeoutSeconds: 0 }, clockDeps(SENT + 60_000, sleeps));
+      assert.deepEqual(sleeps, [20_000]);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("--sent-after explícito também ancora a espera; Beehiiv sem âncora segue 15 s", async () => {
+    const dir = makeEditionDir("fetch-test-email-14117-");
+    try {
+      const sleeps: number[] = [];
+      await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "T", timeoutSeconds: 0, sentAfterMs: SENT },
+        clockDeps(SENT + 8_000, sleeps),
+      );
+      assert.deepEqual(sleeps, [12_000]);
+      const sleepsB: number[] = [];
+      await fetchTestEmail({ editionDir: dir, platform: "beehiiv", title: "T", timeoutSeconds: 0 }, clockDeps(SENT + 60_000, sleepsB));
+      assert.deepEqual(sleepsB, [15_000]);
     } finally {
       rmSync(dir, { recursive: true });
     }

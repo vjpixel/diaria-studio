@@ -123,8 +123,9 @@ describe("#14033: divisão do playbook da Etapa 4", () => {
       "promote-to-destaque.ts",      // promover (2 destaques)
       "splice-social-sections.ts",   // reescrever social
       "run-fact-checker.ts",         // refazer fact-check
+      "stage4-factcheck-post.ts",    // refazer fact-check: composto pós-agente (#14116)
       "stage4-cascade-status.ts",    // cascata
-      "check-humanizer-social.ts",   // re-humanização
+      "stage4-social-reseal.ts",     // re-humanização: composto (#14116)
     ];
     for (const s of required) {
       assert.ok(recipes.includes(s), `cartão sem ${s}`);

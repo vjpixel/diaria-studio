@@ -3,7 +3,8 @@
  * scripts/build-apoiador-allowlist.ts (#3940)
  *
  * Constrói a allowlist de e-mails com direito à **Retrospectiva do Mês** — o
- * recap mensal servido por `workers/artigo-mensal` (`artigo.diar.ia.br`).
+ * recap mensal servido por `workers/retrospectiva` (`retrospectiva.diar.ia.br`;
+ * absorveu o antigo `workers/artigo-mensal` no #7658).
  * Limiar: Conselho (id interno `mantenedor`) R$25+/mês do mês vigente (ver `RETROSPECTIVA_DO_MES_NIVEIS`
  * abaixo; era R$10+ até o #7658, que alinhou o gate à recompensa anunciada).
  *
@@ -86,7 +87,7 @@ const REPO_ROOT = resolve(__dir, "..");
 
 /**
  * Namespace KV do binding `ALLOWLIST`, lido de
- * `workers/artigo-mensal/wrangler.toml` — a MESMA fonte que o `wrangler deploy`
+ * `workers/retrospectiva/wrangler.toml` — a MESMA fonte que o `wrangler deploy`
  * consome.
  *
  * Função, e não `const` de módulo: a leitura acontece só no caminho que grava.

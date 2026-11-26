@@ -331,12 +331,23 @@ describe("carrossel diário no dispatch do Facebook (#6095)", () => {
 
   it("main() lê 06-public-images.json best-effort (nunca lança se ausente)", () => {
     assert.match(src, /06-public-images\.json/);
-    assert.match(src, /existsSync\(publicImagesPath\)/);
+    // #14125: a leitura fail-soft mora em lib/public-images-file.ts.
+    assert.match(src, /loadPublicImagesFile\(publicImagesPath\)/);
+    const lib = readFileSync(resolve(__ROOT, "scripts/lib/public-images-file.ts"), "utf8");
+    assert.match(lib, /existsSync\(publicImagesPath\)/);
   });
 
   it("main() chama publishFacebookCarouselByUrl quando carouselImageUrls está resolvido, senão publishPhoto (fallback single-image)", () => {
-    assert.match(src, /carouselImageUrls\s*\?\s*await publishFacebookCarouselByUrl\(/);
-    assert.match(src, /:\s*await publishPhoto\(/);
+    // #14131: a escolha saiu do main() para dispatchFacebookPost (retry com
+    // reconciliação). O contrato é o mesmo, em duas metades: (1) o main repassa
+    // o carouselImageUrls resolvido ao dispatch; (2) o dispatch manda carrossel
+    // quando há URLs e foto única (arquivo local) quando não há.
+    assert.match(src, /await dispatchFacebookPost\(\{[\s\S]*?\bcarouselImageUrls,[\s\S]*?\}\);/);
+    const dispatchBody = src.slice(src.indexOf("export async function dispatchFacebookPost("));
+    assert.match(
+      dispatchBody,
+      /input\.carouselImageUrls\s*\?\s*publishFacebookCarouselByUrl\([^)]*input\.carouselImageUrls[^)]*\)\s*:\s*publishPhoto\([^)]*input\.imagePath[^)]*\)/,
+    );
   });
 
   const fullImages = {

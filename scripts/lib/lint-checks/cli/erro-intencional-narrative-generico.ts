@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { extractCurrentDeclarationFromMd, narrativeIsGenericPlaceholder } from "../../../render-erro-intencional.ts";
 
 // Modo --check erro-intencional-narrative-generico (#2377) — verifica que a
@@ -22,18 +21,7 @@ import { extractCurrentDeclarationFromMd, narrativeIsGenericPlaceholder } from "
 // Bloqueante: o editor precisa escrever a narrativa real ("Nessa edição, escrevi
 // que [X], quando o correto é [Y]") antes de aprovar o gate.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error(
-      "Uso: lint-newsletter-md.ts --check erro-intencional-narrative-generico --md <md-path>",
-    );
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "erro-intencional-narrative-generico");
   const extracted = extractCurrentDeclarationFromMd(md);
   let isGeneric = false;
   let label: string | undefined;

@@ -22,6 +22,9 @@ on:
     branches: [master]
     paths:
       - 'workers/linkedin-cron/**'
+      # #14124: módulo de fora do Worker que entra no bundle (versão da Graph
+      # da Meta). Trava: test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/shared/meta-graph.ts'
   workflow_dispatch:
 
 concurrency:

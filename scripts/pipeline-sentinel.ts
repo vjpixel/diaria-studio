@@ -24,6 +24,9 @@
  *       output também estiver ausente (caso sem --outputs → sempre 1)
  *   2 — sentinel presente mas outputs ausentes (hard fail)
  *   3 — sentinel ausente MAS todos os arquivos em --outputs existem (legacy/migração — warn)
+ *   4 — sentinel presente mas malformado (#14133): JSON ilegível, não-objeto,
+ *       ou `outputs` ausente/não-array/com item não-string. Hard fail, e não
+ *       é "stage não rodou": quem lê o exit não deve re-rodar o stage às cegas
  *
  * Exit codes para `assert-marker`:
  *   0 — marker presente (pass)
@@ -440,7 +443,20 @@ export const WAIT_USAGE_EXIT = 64;
 export function describeWaitReason(r: AssertResult): string {
   if (r.ok) return "ok";
   if (r.reason === "outputs_missing") return `outputs_missing (${r.missingOutputs.join(", ")})`;
+  if (r.reason === "sentinel_malformed") return `sentinel_malformed (${r.detail})`;
   return r.reason;
+}
+
+/**
+ * #14133: exit de `assert` para sentinel presente mas malformado, distinto do
+ * 1 de "sentinel ausente" (que o resume check lê como "stage não rodou") e do
+ * 2 de "outputs ausentes".
+ */
+export const SENTINEL_MALFORMED_EXIT = 4;
+
+/** Mensagem do `[error]` de sentinel malformado (#14133). */
+export function formatMalformedSentinelError(step: number, r: { path: string; detail: string }): string {
+  return `[error] sentinel step ${step} presente mas inválido: ${r.path} — ${r.detail}. Não é "stage não rodou": o arquivo existe, mas não foi gravado pelo writeSentinel (pipeline-sentinel.ts write). Conferir o arquivo antes de re-rodar o stage.`;
 }
 
 /** Linha `[aguardando]` do stderr, antes de cada releitura. */
@@ -619,6 +635,10 @@ function main(): void {
           console.log(`stage-status auto-updated on resume: stage ${step} → done`);
         }
         process.exit(0);
+      }
+      if (result.reason === "sentinel_malformed") {
+        console.error(formatMalformedSentinelError(step, result));
+        process.exit(SENTINEL_MALFORMED_EXIT);
       }
       if (result.reason === "sentinel_missing") {
         if (args.outputs) {

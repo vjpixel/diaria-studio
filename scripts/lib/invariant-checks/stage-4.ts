@@ -4572,11 +4572,10 @@ export function checkKitHtmlSize(editionDir: string): InvariantViolation[] {
  *     publicar sem agir manda a próxima edição pro fixture, hard bounce
  *     certo).
  *   - `2` (`KIT_API_KEY` ausente, ou API do Kit indisponível) → `warning`,
- *     não `error`. O Kit ainda não é o backend principal de newsletter
- *     (`platform.config.json.newsletter` = `"beehiiv"`) — exigir a
- *     credencial em toda edição bloquearia Stage 4 pra qualquer ambiente
- *     sem Kit configurado (CI, clone fresco, sessão cloud) por causa de uma
- *     verificação sobre um sistema secundário ainda em migração. Mesma
+ *     não `error`. O Kit é o backend principal de newsletter desde o
+ *     #11225, mas exigir a credencial aqui bloquearia o Stage 4 em
+ *     qualquer ambiente sem Kit configurado (CI, clone fresco, sessão
+ *     cloud) por causa de uma auditoria auxiliar, que não é o envio. Mesma
  *     disciplina fail-soft de integração opcional já usada no repo (ex:
  *     `data/` ausente em `studio-boxes.ts`).
  *   - qualquer outro exit code (script crashou) → `error`, mesma severidade

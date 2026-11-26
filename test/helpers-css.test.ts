@@ -1,7 +1,7 @@
 /**
  * test/helpers-css.test.ts (#5480)
  *
- * Cobre `stripCssComments` (`test/helpers/css.ts`), que virou infraestrutura
+ * Cobre `stripCssComments` (`test/_helpers/css.ts`), que virou infraestrutura
  * COMPARTILHADA de duas invariantes (`studio-css-no-raw-hex` #4674 e
  * `studio-css-var-defined` #5480).
  *
@@ -13,7 +13,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { stripCssComments } from "./helpers/css.ts";
+import { stripCssComments } from "./_helpers/css.ts";
 
 describe("stripCssComments", () => {
   it("remove comentário simples e preserva o resto", () => {

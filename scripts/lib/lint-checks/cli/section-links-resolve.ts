@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkSectionLinksResolve } from "../section-links-resolve.ts";
 
 // Modo --check section-links-resolve (#3821) — roda o parser REAL
@@ -15,16 +14,7 @@ import { checkSectionLinksResolve } from "../section-links-resolve.ts";
 // url vazia (formato não reconhecido por nenhum branch de parseListItems,
 // ex: 2 links markdown na mesma linha em VÍDEOS).
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check section-links-resolve --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "section-links-resolve");
   const result = checkSectionLinksResolve(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

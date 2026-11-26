@@ -67,8 +67,19 @@ const KV_PREFIX = "html:";
 // irrelevante.
 export const TTL_SECONDS = 90 * 24 * 60 * 60; // 90d (#1782 — antes 12h)
 
-function extractKey(path: string): string {
-  return decodeURIComponent(path.slice(1));
+/**
+ * Key do path, decodificada. `null` quando o path tem `%` malformado
+ * (`/%`, `/%zz`, sequência UTF-8 truncada como `/%E0%A4%A` — link de preview
+ * cortado ao colar): `decodeURIComponent` lança `URIError`, que sem este guard
+ * virava 500/1101 e exceção no log do Worker (#14137). O caller responde 400.
+ */
+function extractKey(path: string): string | null {
+  try {
+    return decodeURIComponent(path.slice(1));
+  } catch (err) {
+    if (err instanceof URIError) return null;
+    throw err;
+  }
 }
 
 /**
@@ -89,6 +100,9 @@ export function legacyKeyFromNew(key: string): string | null {
 
 export async function handleGet(path: string, env: Env): Promise<Response> {
   const key = extractKey(path);
+  if (key === null) {
+    return new Response("invalid key", { status: 400, headers: CORS_HEADERS });
+  }
   if (!key) {
     return new Response("not found", { status: 404, headers: CORS_HEADERS });
   }
@@ -126,6 +140,12 @@ export async function handlePut(
   env: Env,
 ): Promise<Response> {
   const key = extractKey(path);
+  if (key === null) {
+    return new Response(JSON.stringify({ error: "invalid key" }), {
+      status: 400,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  }
   if (!key) {
     return new Response(JSON.stringify({ error: "key required" }), {
       status: 400,

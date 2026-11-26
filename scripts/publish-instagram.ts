@@ -61,7 +61,7 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, readSocialPublished } from "./lib/social-published-store.ts";
 import { decideResumeOrRetry, formatRetryOutsideDispatch, parseRetryIdList, retryIdsOutsideDispatch } from "./lib/social-retry.ts"; // #13076 — `--retry dN`, mesma regra do Threads (#11105); #13089 id fora do envio
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
@@ -117,11 +117,17 @@ import {
   type WorkerQueuePayload,
 } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
 import { dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010
+import {
+  fetchInstagramContainerStatus,
+  findRecentInstagramMediaByCaption,
+  publishInstagramImmediate,
+} from "./lib/instagram-immediate-publish.ts"; // #14132 — publicação imediata sem republicar
+import { META_GRAPH_HOST, META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const INSTAGRAM_API_BASE = "https://graph.facebook.com"; // mesma base da Graph API
-const INSTAGRAM_API_VERSION = "v25.0";
+const INSTAGRAM_API_BASE = META_GRAPH_HOST; // mesma base da Graph API
+const INSTAGRAM_API_VERSION = META_GRAPH_VERSION;
 
 /** #13076 — ids aceitos por `--retry` (destaques + 4º post USE MELHOR). */
 export const INSTAGRAM_RETRY_IDS = ["d1", "d2", "d3", "um"] as const;
@@ -153,13 +159,6 @@ export function summarizeInstagramResults(results: PostEntry[], skippedCount: nu
     send_unknown: results.filter((r) => r.status === "send_unknown").length,
     skipped: skippedCount,
   };
-}
-
-function loadPublished(path: string): SocialPublished {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, "utf8"));
-  }
-  return { posts: [] };
 }
 
 /**
@@ -901,7 +900,7 @@ async function main(): Promise<number | void> {
   for (const d of dispatchIds) {
     const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568
     // Releitura a cada iteração para detectar entradas concorrentes
-    const published = loadPublished(publishedPath);
+    const published = readSocialPublished(publishedPath);
 
     // #13074: a retomada pula `send_unknown` (envio ambíguo ou ausente do
     // feed, #13009) — repostar sem conferir o perfil duplica o post.
@@ -1097,79 +1096,72 @@ async function main(): Promise<number | void> {
       continue; // não cai no fluxo de publicação imediata abaixo
     }
 
-    // Publicar com retry + exponential backoff (análogo a publish-facebook.ts)
-    let lastError = "";
-    let success = false;
+    // Publicar com retry (#14132): o container pode ser recriado, mas o
+    // /media_publish só se repete sobre o MESMO container, e depois de uma
+    // falha o estado vem do status_code do container, nunca de uma nova
+    // publicação (ver scripts/lib/instagram-immediate-publish.ts).
+    console.log(`Publishing instagram/${d}...`);
+    const outcome = await publishInstagramImmediate({
+      label: `instagram/${d}`,
+      // #6005 Parte B — single-image ou carrossel, conforme imageUrls.length.
+      createContainer: () => createPostContainer(igUserId, accessToken, imageUrls, caption, apiVersion),
+      publishContainer: (containerId) => publishMediaContainer(igUserId, accessToken, containerId, apiVersion),
+      containerStatus: (containerId) =>
+        fetchInstagramContainerStatus({ apiBase: INSTAGRAM_API_BASE, apiVersion, containerId, accessToken }),
+      findPublishedMedia: () =>
+        findRecentInstagramMediaByCaption({ apiBase: INSTAGRAM_API_BASE, apiVersion, igUserId, accessToken, caption }),
+      sleep: isTest ? async () => {} : undefined,
+    });
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        console.log(`Publishing instagram/${d} (attempt ${attempt})...`);
-
-        // Passo 1: criar media container (#6005 Parte B — single-image ou
-        // carrossel, conforme imageUrls.length; ver createPostContainer).
-        const containerId = await createPostContainer(
-          igUserId,
-          accessToken,
-          imageUrls,
-          caption,
-          apiVersion,
-        );
-        console.log(`  Container criado: ${containerId}`);
-
-        // Passo 2: publicar container
-        const mediaId = await publishMediaContainer(igUserId, accessToken, containerId, apiVersion);
-        console.log(`  Publicado: ${mediaId}`);
-
-        // O media_id NÃO é o shortcode da URL pública — buscar o permalink real.
-        // Se falhar, registramos url: null em vez de um link 404.
-        const postUrl = await fetchPermalink(mediaId, accessToken, apiVersion);
-        const entry: PostEntry = {
-          platform: "instagram",
-          destaque: d,
-          url: postUrl,
-          status: "published",
-          scheduled_at: null,
-          ig_media_id: mediaId,
-          ig_container_id: containerId,
-        };
-        // #11724: comentário com o permalink no 4º post. Fail-soft — o post já
-        // saiu; falha fica registrada na entry e no log, nunca derruba o canal.
-        if (umReady?.firstComment) {
-          const comment = await postInstagramComment(mediaId, umReady.firstComment, accessToken, apiVersion);
-          if (comment.ok) {
-            entry.ig_first_comment_id = comment.id;
-          } else {
-            entry.first_comment_error = comment.reason;
-            console.warn(`WARN instagram/${d}: post publicado, ${comment.reason} (#11724)`);
-          }
-        }
-
-        tagAndAppend(entry);
-        results.push(entry);
-        console.log(`OK instagram/${d} — published — ${postUrl ?? `(media_id ${mediaId})`}`);
-        success = true;
-        break;
-      } catch (e: any) {
-        lastError = e.message;
-        console.error(`Attempt ${attempt}/3 failed for instagram/${d}: ${lastError}`);
-        if (attempt < 3) {
-          const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
-          if (!isTest) {
-            await new Promise((r) => setTimeout(r, delaySec * 1000));
-          }
+    if (outcome.kind === "published") {
+      const mediaId = outcome.mediaId;
+      if (mediaId) console.log(`  Publicado: ${mediaId}`);
+      // O media_id NÃO é o shortcode da URL pública — buscar o permalink real.
+      // Se falhar, registramos url: null em vez de um link 404.
+      const postUrl = mediaId ? await fetchPermalink(mediaId, accessToken, apiVersion) : null;
+      const entry: PostEntry = {
+        platform: "instagram",
+        destaque: d,
+        url: postUrl,
+        status: "published",
+        scheduled_at: null,
+        ...(mediaId && { ig_media_id: mediaId }),
+        ig_container_id: outcome.containerId,
+        ...(outcome.recovered && { recovered: outcome.recovered }), // #14132
+      };
+      // #11724: comentário com o permalink no 4º post. Fail-soft — o post já
+      // saiu; falha fica registrada na entry e no log, nunca derruba o canal.
+      if (umReady?.firstComment) {
+        const comment = mediaId
+          ? await postInstagramComment(mediaId, umReady.firstComment, accessToken, apiVersion)
+          : { ok: false as const, reason: "comentário não enviado: media_id não localizado (#14132)" };
+        if (comment.ok) {
+          entry.ig_first_comment_id = comment.id;
+        } else {
+          entry.first_comment_error = comment.reason;
+          console.warn(`WARN instagram/${d}: post publicado, ${comment.reason} (#11724)`);
         }
       }
-    }
 
-    if (!success) {
+      tagAndAppend(entry);
+      results.push(entry);
+      console.log(`OK instagram/${d} — published — ${postUrl ?? (mediaId ? `(media_id ${mediaId})` : `(container ${outcome.containerId})`)}`);
+    } else {
+      // #14132: `failed` só quando nada foi publicado (provado); `send_unknown`
+      // quando o post pode ter saído — a retomada pula este, refaz aquele.
       const entry: PostEntry = {
         platform: "instagram",
         destaque: d,
         url: null,
-        status: "failed",
+        status: outcome.kind,
         scheduled_at: null,
-        reason: lastError,
+        reason: outcome.reason,
+        ...(outcome.containerId && { ig_container_id: outcome.containerId }),
       };
+      if (outcome.kind === "send_unknown") {
+        console.error(`SEND_UNKNOWN instagram/${d}: ${outcome.reason}`);
+        console.warn(sendUnknownInstagramHint(d));
+      }
       tagAndAppend(entry);
       results.push(entry);
     }

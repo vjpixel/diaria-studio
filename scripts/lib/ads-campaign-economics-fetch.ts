@@ -50,6 +50,7 @@ import type { KitConfig } from "./kit-config.ts";
 import { META_ADS_AD_ACCOUNT_ID } from "./meta-ads-ingest.ts";
 import type { ChannelDailyMetric, ChannelDailySignup } from "./ads-campaign-economics.ts";
 import { isEditorTestEmail } from "./google-ads-enhanced-conversions.ts";
+import { META_ADS_GRAPH_VERSION } from "./shared/meta-graph.ts"; // #14124
 import { EDITOR_WORKSPACE_EMAIL } from "./editor-copy.ts";
 
 export interface ChannelFetchResult {
@@ -177,7 +178,7 @@ export const META_ADS_TESTE_CANAL = META_ADS_UTM_CANAL;
  *  permite injetar mock em teste. */
 export type MetaFetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-const META_GRAPH_API_VERSION_DEFAULT = "v21.0";
+const META_GRAPH_API_VERSION_DEFAULT = META_ADS_GRAPH_VERSION;
 /** Teto de páginas — a `insights` com `time_increment=1` e `limit=100`
  *  nunca deveria precisar de mais que 1 página pro lookback de 30-90 dias
  *  desta unidade; existe só como guard de custo/latência (mesmo espírito de

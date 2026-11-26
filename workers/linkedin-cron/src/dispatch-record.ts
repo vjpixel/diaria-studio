@@ -1,6 +1,7 @@
 import type { Env, QueueEntry } from "./index";
 import type { FireOutcome } from "./dispatch";
 import { defaultLinkedInApiVersion } from "./linkedin-api-version";
+import { META_GRAPH_VERSION, metaGraphBase } from "../../../scripts/lib/shared/meta-graph.ts"; // #14124
 
 export interface DispatchRecord {
   key: string;
@@ -41,7 +42,7 @@ export async function verifyDispatchRecord(record: DispatchRecord, env: Env): Pr
   const headers: Record<string, string> = {};
   if (record.channel === "instagram") {
     token = record.ig_account === "vjpixel" ? env.INSTAGRAM_VJPIXEL_ACCESS_TOKEN : env.INSTAGRAM_ACCESS_TOKEN;
-    url = `https://graph.facebook.com/${env.INSTAGRAM_API_VERSION || "v25.0"}/${encodeURIComponent(id)}?fields=id`;
+    url = `${metaGraphBase(env.INSTAGRAM_API_VERSION || META_GRAPH_VERSION)}/${encodeURIComponent(id)}?fields=id`;
   } else if (record.channel === "threads") {
     token = env.THREADS_ACCESS_TOKEN;
     url = `https://graph.threads.net/${env.THREADS_API_VERSION || "v1.0"}/${encodeURIComponent(id)}?fields=id`;

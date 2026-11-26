@@ -2,6 +2,10 @@
 
 Referência de `/diaria-video-montagem`, lida sob demanda (#14040). Gatilho: interpretar um `[aviso]`/`[premissa]` do `build` ou do `verify-xml` sobre a pausa da vinheta, o som dos pontos, o corte de pausas pelo detector de fala, as bordas (`SOM CORTADO`, `curta`, `sem-abertura`) ou o 2º leitor (OTIO), ou mudar um desses critérios. Citado no Passo 4 do SKILL.md.
 
+## Em background (#14118)
+
+O `build` roda pelo wrapper com `run_in_background: true` (`npx tsx scripts/video-montagem-job.ts run build {AAMMDD} [opções]`, as mesmas opções do `video-montagem.ts`), nunca em primeiro plano: com o XML leve e o refino de áudio ele passa do teto de 600 s do Bash. Os `[aviso]`/`[premissa]` desta página saem na saída do job e no log dele; `npx tsx scripts/video-montagem-job.ts status {AAMMDD} --cmd build [--seq S] --tail 60` mostra o fim do log. Rodar o mesmo `run` de novo com o build ainda vivo não lança outro: espera o que está rodando. O `verify-xml` segue como antes, depois do fim do build.
+
 ## 2º leitor do XML (#13372)
 
 **2º leitor (#13372):** o mesmo XML também é lido pelo adapter FCP7 do OpenTimelineIO (`scripts/video/otio_read_xml.py`), que confere número de clipes de áudio, in/out de cada um, fim do áudio e duração total contra o leitor próprio. Opcional e não bloqueante: sem OTIO no Python (`DIARIA_OTIO_PYTHON` ou o da montagem; `scripts/video/otio-requirements.txt`) sai um `[aviso]` de indisponível; divergência ou XML que o adapter não lê sai como `[aviso]` e em `otio` no `verify-xml.json`, nunca no exit 1. Divergência é para conferir no Premiere (o adapter não modela filtros, marcadores, título nem vinheta).

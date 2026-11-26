@@ -2,8 +2,8 @@
  * build-article-page.ts (#3940)
  *
  * Constrói o HTML público do artigo mensal — servido pelo worker
- * `artigo-mensal` atrás do paywall de apoiador R$10+/mês (ver
- * `workers/artigo-mensal/`) — a partir do `draft.md` do ciclo.
+ * `retrospectiva` (antigo `artigo-mensal`, #7658) atrás do gate de apoiador
+ * (ver `workers/retrospectiva/`) — a partir do `draft.md` do ciclo.
  *
  * PURO. Desde o #9872 a página é HTML web semântico (`monthly-web-render.ts`,
  * no estilo do Artigo Especial), não mais o documento do e-mail
@@ -311,7 +311,7 @@ export function cutDraftAfterFirstDestaque(draftMd: string, cycle: string): stri
  * duplicação. A diferença é só o markdown de entrada, já cortado.
  *
  * O bloco de paywall (fade + CTA) NÃO entra aqui: ele é montado pelo Worker
- * (`workers/artigo-mensal/src/render.ts`), onde o CTA já vive. Assim mudar o
+ * (`workers/retrospectiva/src/render-mensal.ts`), onde o CTA já vive. Assim mudar o
  * texto do convite não exige reconstruir e republicar todos os ciclos.
  */
 export function buildArticleTeaserHtml(draftMd: string, cycle: string, opts: ArticleBuildOptions = {}): ArticlePage {

@@ -30,7 +30,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { stripCssComments } from "./helpers/css.ts";
+import { stripCssComments } from "./_helpers/css.ts";
 
 const CSS_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
