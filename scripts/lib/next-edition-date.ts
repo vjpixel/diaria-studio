@@ -15,8 +15,9 @@
  * Extraído como lib para permitir testes determinísticos (#633 / #2068).
  */
 
-/** Fuso horário canônico do Brasil (Brasília). */
-export const BRT_TIMEZONE = "America/Sao_Paulo";
+/** Fuso horário canônico do Brasil (Brasília). Fonte única em `shared/brt.ts` (#14055). */
+import { BRT_TIMEZONE } from "./shared/brt.ts";
+export { BRT_TIMEZONE };
 
 /**
  * Retorna a data de amanhã no fuso America/Sao_Paulo no formato AAMMDD

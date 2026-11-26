@@ -35,6 +35,7 @@ import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação; #7358: evento de conversão no sucesso do cadastro
 import { fbCookieValueFromDocumentCookieJs } from "./shared/meta-fbc-bootstrap.ts"; // #8978: fbc/fbp no corpo do POST cross-origin (achado 1 do fleet review, #8983)
 import { renderSiteSocialIcons } from "./shared/site-social.ts"; // #13321: ícones das redes no rodapé
+import { brtDayKey } from "./shared/brt.ts"; // #14055: fonte única do dia civil BRT (o BRT_TIMEZONE duplicado daqui saiu)
 import { DIARIA_YOUTUBE_SUBSCRIBE_URL } from "./canonical-urls.ts"; // #13323
 import { SITE_VIDEOS_UTM } from "./shared/utm-registry.ts"; // #13323
 import { renderSiteNav, renderSiteFooterLinks } from "./shared/site-nav.ts"; // #8497: menu global + rodapé alinhado — a home consome os MESMOS helpers que as demais páginas, em vez do markup próprio que só ela tinha
@@ -486,18 +487,14 @@ export function estimateReadingMinutes(html: string): number | null {
  * comparação só ficaria ambígua para um canal que publicasse entre 21:00 e
  * 00:00 BRT (aí o dia UTC do `<lastmod>` já seria o seguinte). Se algum dia
  * existir esse canal, o conserto é em `publishDateToIso`, não aqui.
- */
-export const BRT_TIMEZONE = "America/Sao_Paulo";
-
-/**
+ *
  * Dia civil em BRT no formato `YYYY-MM-DD` — mesma comparação lexicográfica
- * que `<lastmod>` usa. `en-CA` porque é o locale cujo formato de data curta
- * JÁ é ISO (`YYYY-MM-DD`), idioma idêntico ao de
- * `clarice-envio-policy.ts` — não reimplementar com `toISOString()`, que
- * devolveria o dia em UTC.
+ * que `<lastmod>` usa. Delega a `brtDayKey` de `shared/brt.ts` (#14055), que
+ * tem o corpo que morava aqui (`toLocaleDateString("en-CA", …)`); não
+ * reimplementar com `toISOString()`, que devolveria o dia em UTC.
  */
 export function brtDateString(now: Date = new Date()): string {
-  return now.toLocaleDateString("en-CA", { timeZone: BRT_TIMEZONE });
+  return brtDayKey(now);
 }
 
 /**

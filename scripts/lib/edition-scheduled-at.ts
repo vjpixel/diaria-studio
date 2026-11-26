@@ -30,8 +30,12 @@ import { parseEditionDate } from "../compute-social-schedule.ts";
 const HHMM_RE = /^(\d{1,2}):(\d{2})$/;
 const AAMMDD_RE = /^\d{6}$/;
 
-/** BRT = UTC-3, fixo (sem DST desde 2019) — mesmo fato usado em `clarice-wave-plan.ts`/`ads-rolling-window.ts`. */
-export const BRT_UTC_OFFSET_HOURS = 3;
+/**
+ * BRT = UTC-3, fixo (sem DST desde 2019): `UTC_MINUS_BRT_HOURS = 3` vem de
+ * `shared/brt.ts` (#14055). Até lá chamava-se `BRT_UTC_OFFSET_HOURS`, mesmo
+ * nome de outra constante que valia -3 em `ads-rolling-window.ts`.
+ */
+import { UTC_MINUS_BRT_HOURS } from "./shared/brt.ts";
 
 /** Horário default de agendamento da Etapa 6 (06:00 BRT) — mesmo default já documentado em `orchestrator-stage-6.md` §6c. */
 export const DEFAULT_EDITION_SCHEDULE_HHMM = "06:00";
@@ -71,7 +75,7 @@ export function resolveEditionScheduledAt(
     throw new Error(`resolveEditionScheduledAt: HH:MM fora do intervalo válido: "${hhmm}" (HH 0-23, MM 0-59).`);
   }
 
-  const utcMs = Date.UTC(year, month - 1, day, hourBrt + BRT_UTC_OFFSET_HOURS, minute, 0, 0);
+  const utcMs = Date.UTC(year, month - 1, day, hourBrt + UTC_MINUS_BRT_HOURS, minute, 0, 0);
   return new Date(utcMs).toISOString();
 }
 
@@ -122,7 +126,7 @@ export function checkScheduledAtMatchesEditionDate(
   // pontos do repo pra converter instante → dia-calendário BRT sem depender
   // de Intl/tabela de timezone — BRT é offset fixo, #8207 mesma disciplina
   // do resto do módulo).
-  const shifted = new Date(scheduledMs - BRT_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  const shifted = new Date(scheduledMs - UTC_MINUS_BRT_HOURS * 60 * 60 * 1000);
   const scheduledAammddBrt =
     String(shifted.getUTCFullYear() - 2000).padStart(2, "0") +
     String(shifted.getUTCMonth() + 1).padStart(2, "0") +
@@ -168,13 +172,13 @@ export function nextViableScheduledAt(now: Date): string {
 
 /** ISO UTC → "HH:MM" em BRT (offset fixo), pra o gate oferecer `ok HH:MM`. */
 export function isoToBrtHhmm(iso: string): string {
-  const shifted = new Date(Date.parse(iso) - BRT_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  const shifted = new Date(Date.parse(iso) - UTC_MINUS_BRT_HOURS * 60 * 60 * 1000);
   return `${String(shifted.getUTCHours()).padStart(2, "0")}:${String(shifted.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 /** ISO UTC → AAMMDD do dia civil em BRT. */
 export function isoToBrtAammdd(iso: string): string {
-  const shifted = new Date(Date.parse(iso) - BRT_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  const shifted = new Date(Date.parse(iso) - UTC_MINUS_BRT_HOURS * 60 * 60 * 1000);
   return (
     String(shifted.getUTCFullYear() - 2000).padStart(2, "0") +
     String(shifted.getUTCMonth() + 1).padStart(2, "0") +

@@ -48,6 +48,7 @@ import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { brtDayKey } from "./lib/shared/brt.ts";
 import { loadKitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers, listAllFormSubscribers } from "./lib/kit-subscribers.ts";
 import { listSubscribers } from "./lib/kit-client.ts";
@@ -75,11 +76,6 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const LOG_PREFIX = "[subscriber-state-snapshot]";
-
-/** Mesma fórmula de `brtDayKey` usada no resto do domínio — hoje em BRT. */
-function todayBrtDayKey(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-}
 
 export interface SnapshotRunSummary {
   date: string;
@@ -189,7 +185,7 @@ async function runRecent(config: ReturnType<typeof loadKitConfig>, isDryRun: boo
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
-  const date = getArg(argv, "date") || todayBrtDayKey();
+  const date = getArg(argv, "date") || brtDayKey();
   const root = getArg(argv, "root") || snapshotRootDefault(DATA_DIR);
   const isDryRun = hasFlag(argv, "dry-run");
 

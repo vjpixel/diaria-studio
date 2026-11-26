@@ -85,6 +85,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { hhmmBrt } from "./lib/shared/brt.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
@@ -227,11 +228,6 @@ export function alarmId(key: InstagramTimerAlarmKey, detail: string): string {
 /** Puro: a chave de um id do estado (`publish-failed#ab12cd34` → `publish-failed`). */
 export function alarmKeyOf(id: string): string {
   return id.split("#")[0] ?? id;
-}
-
-/** Puro: `HH:MM` BRT de um instante ISO. */
-function hhmmBrt(ms: number): string {
-  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
 }
 
 /** Puro: `HH:MM` BRT do fim da janela do timer (`horário do vertical + 3 h`). */
