@@ -369,8 +369,19 @@ function saveManifest(path: string, manifest: IngestManifest): void {
 // main
 // ---------------------------------------------------------------------------
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  loadProjectEnv();
+/** Dependências injetáveis de `main` (#14075). `loadEnv` default carrega o
+ *  `.env` real do projeto; teste passa um no-op (ou `loadProjectEnv(tmp)`)
+ *  pra que uma key presente no `.env` local não volte depois de apagada de
+ *  `process.env`. */
+export interface BrevoIngestMainDeps {
+  loadEnv?: () => void;
+}
+
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  deps: BrevoIngestMainDeps = {},
+): Promise<void> {
+  (deps.loadEnv ?? loadProjectEnv)();
 
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const manifestPath = getArg(argv, "manifest") || DEFAULT_MANIFEST_PATH;
