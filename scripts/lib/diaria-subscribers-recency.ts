@@ -122,6 +122,7 @@
  * @see https://github.com/vjpixel/diaria-studio/issues/7163 (épico)
  */
 
+import { allRows } from "./sqlite-rows.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { type Platform, PLATFORMS } from "./diaria-subscribers-db.ts";
 import {
@@ -195,9 +196,8 @@ export function isSyntheticSubscriberEmail(email: string | null | undefined): bo
  * reusar o `Set` resultante — nunca dentro de um loop por subscriber.
  */
 export function getSyntheticSubscriberIds(db: DatabaseSync): Set<number> {
-  const rows = db
-    .prepare("SELECT DISTINCT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL")
-    .all() as unknown as Array<{ subscriber_id: number; email: string }>;
+  const rows = allRows<{ subscriber_id: number; email: string }>(db
+    .prepare("SELECT DISTINCT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL"));
   const ids = new Set<number>();
   for (const row of rows) {
     if (isSyntheticSubscriberEmail(row.email)) ids.add(row.subscriber_id);

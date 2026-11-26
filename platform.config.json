@@ -453,21 +453,21 @@
         "diaria_linkedin_page_url": "https://www.linkedin.com/company/diar.ia.br/"
       },
       "fallback_schedule": {
-        "d1_time": "09:45",
-        "d2_time": "12:15",
-        "d3_time": "17:15",
+        "d1_time": "18:00",
+        "d2_time": "12:00",
+        "d3_time": "21:00",
         "day_offset": 0
       },
-      "use_melhor_time": "07:45",
+      "use_melhor_time": "09:00",
       "linkedin_weekly_article_time": "09:30",
       "rotation": {
-        "enabled": true,
+        "enabled": false,
         "start_date": "2026-10-20",
         "end_date": "2026-11-20",
         "weekday_candidates": ["07:00", "09:00", "11:00", "13:00", "15:00", "17:00", "19:00", "21:00"],
         "weekend_candidates": ["08:00", "11:00", "15:00", "19:00"],
         "linkedin_weekly_article_candidates": ["07:30", "09:30", "12:30", "18:30"],
-        "note": "#10305: teste rotativo de horários (decisão do editor 18/10/2026, método do comentário de 15/10). Dia útil: cada tipo (um/d1/d2/d3) anda 1 candidato por dia útil — 8 candidatos = ciclo de 8 dias úteis em que cada horário recebe cada tipo 1 vez; 2026-10-20..2026-11-20 = 24 dias úteis = 3 ciclos. Sábado/domingo e artigo de segunda do LinkedIn alternam candidatos semana a semana. Fora da janela (ou enabled=false) valem fallback_schedule/use_melhor_time/DEFAULT_WEEKLY_TIME/linkedin_weekly_article_time. Feriados (02/11, 20/11): o ciclo conta dias úteis do CALENDÁRIO, então dia sem edição perde as 4 células daquele dia sem deslocar as seguintes; pra repor a cobertura uniforme, estender end_date em 1 dia útil por feriado sem edição (ex.: 2026-11-20 → 2026-11-24 com os dois feriados) — não muda nenhum dia anterior. Post deslocado pelo past-slot guard (Stage 5 rodando tarde) perde a célula: o stderr loga \"[rotação #10305] WARN: célula perdida\" e a medição descarta comparando scheduled_at real com o plano. Registro: os publicadores em --schedule gravam o dia sozinhos em data/social-schedule-rotation.jsonl (idempotente). A linha do Use Melhor (um) só é gravada quando algum publicador de fato agendou o post um naquele dia (#10427) e nunca sem use_melhor_time; o --record manual da CLI lê data/editions/{AAMM}/{AAMMDD}/06-social-published.json e só grava a linha um se o post um estiver scheduled/published; arquivo ausente = linha um não gravada + WARN no stderr (rodar --record de novo depois do Stage 5). Plano: npx tsx scripts/social-schedule-rotation.ts --plan. Lógica: scripts/lib/social-schedule-rotation.ts."
+        "note": "#10305: ENCERRADO em 25/11/2026 (decisão do editor, /diaria-develop 261125): enabled=false e a grade fixa vale sempre — dia útil nas 5 redes D1 18:00, D2 12:00, D3 21:00 (fallback_schedule), Use Melhor 09:00 quando sair (use_melhor_time; sem ele a grade fica com 3 posts), sábado e domingo 19:00 (DEFAULT_WEEKLY_CAROUSEL_TIME em scripts/lib/social-schedule-rotation.ts). O bloco fica como registro do teste: datas e candidatos reconstroem o plano da janela 2026-10-20..2026-11-20 (o registro real está em data/social-schedule-rotation.jsonl, não apagar). Histórico do teste: teste rotativo de horários (decisão do editor 18/10/2026, método do comentário de 15/10). Dia útil: cada tipo (um/d1/d2/d3) anda 1 candidato por dia útil — 8 candidatos = ciclo de 8 dias úteis em que cada horário recebe cada tipo 1 vez; 2026-10-20..2026-11-20 = 24 dias úteis = 3 ciclos. Sábado/domingo e artigo de segunda do LinkedIn alternam candidatos semana a semana. Fora da janela (ou enabled=false) valem fallback_schedule/use_melhor_time/DEFAULT_WEEKLY_TIME/linkedin_weekly_article_time. Feriados (02/11, 20/11): o ciclo conta dias úteis do CALENDÁRIO, então dia sem edição perde as 4 células daquele dia sem deslocar as seguintes; pra repor a cobertura uniforme, estender end_date em 1 dia útil por feriado sem edição (ex.: 2026-11-20 → 2026-11-24 com os dois feriados) — não muda nenhum dia anterior. Post deslocado pelo past-slot guard (Stage 5 rodando tarde) perde a célula: o stderr loga \"[rotação #10305] WARN: célula perdida\" e a medição descarta comparando scheduled_at real com o plano. Registro: os publicadores em --schedule gravam o dia sozinhos em data/social-schedule-rotation.jsonl (idempotente). A linha do Use Melhor (um) só é gravada quando algum publicador de fato agendou o post um naquele dia (#10427) e nunca sem use_melhor_time; o --record manual da CLI lê data/editions/{AAMM}/{AAMMDD}/06-social-published.json e só grava a linha um se o post um estiver scheduled/published; arquivo ausente = linha um não gravada + WARN no stderr (rodar --record de novo depois do Stage 5). Plano: npx tsx scripts/social-schedule-rotation.ts --plan. Lógica: scripts/lib/social-schedule-rotation.ts."
       },
       "timezone": "America/Sao_Paulo"
     }

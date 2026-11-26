@@ -47,6 +47,7 @@
  * `openDiariaSubscribersDb`, que é o caminho de ESCRITA dos ingestores).
  */
 
+import { allRows } from "../sqlite-rows.ts";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
@@ -138,9 +139,8 @@ function earliestIso(values: readonly (string | null)[]): string | null {
 }
 
 function firstTsByType(db: DatabaseSync, type: string): Map<number, string> {
-  const rows = db
-    .prepare(`SELECT subscriber_id, MIN(ts) AS ts FROM event WHERE subscriber_id IS NOT NULL AND type = ? GROUP BY subscriber_id`)
-    .all(type) as unknown as Array<{ subscriber_id: number; ts: string }>;
+  const rows = allRows<{ subscriber_id: number; ts: string }>(db
+    .prepare(`SELECT subscriber_id, MIN(ts) AS ts FROM event WHERE subscriber_id IS NOT NULL AND type = ? GROUP BY subscriber_id`), type);
   return new Map(rows.map((r) => [r.subscriber_id, r.ts]));
 }
 
@@ -148,9 +148,8 @@ function firstTsByType(db: DatabaseSync, type: string): Map<number, string> {
  *  o 1º clique VÁLIDO depende do cadastro resolvido da pessoa (ver
  *  `firstClickAtOrAfter`), então não dá pra resolver com um `MIN(ts)` cego. */
 function clicksBySubscriber(db: DatabaseSync): Map<number, Array<{ platform: string; edicao: string | null; ts: string }>> {
-  const rows = db
-    .prepare(`SELECT subscriber_id, platform, edicao, ts FROM event WHERE subscriber_id IS NOT NULL AND type = 'click'`)
-    .all() as unknown as Array<{ subscriber_id: number; platform: string; edicao: string | null; ts: string }>;
+  const rows = allRows<{ subscriber_id: number; platform: string; edicao: string | null; ts: string }>(db
+    .prepare(`SELECT subscriber_id, platform, edicao, ts FROM event WHERE subscriber_id IS NOT NULL AND type = 'click'`));
   const map = new Map<number, Array<{ platform: string; edicao: string | null; ts: string }>>();
   for (const { subscriber_id, ...rest } of rows) {
     const list = map.get(subscriber_id);
@@ -182,9 +181,8 @@ export function firstClickAtOrAfter(clickTs: readonly string[], enteredAt: strin
 
 function maxTsByPlatform(db: DatabaseSync, types: readonly string[]): Map<string, string> {
   const ph = types.map(() => "?").join(", ");
-  const rows = db
-    .prepare(`SELECT platform, MAX(ts) AS ts FROM event WHERE type IN (${ph}) GROUP BY platform`)
-    .all(...types) as unknown as Array<{ platform: string; ts: string | null }>;
+  const rows = allRows<{ platform: string; ts: string | null }>(db
+    .prepare(`SELECT platform, MAX(ts) AS ts FROM event WHERE type IN (${ph}) GROUP BY platform`), ...types);
   const map = new Map<string, string>();
   for (const r of rows) if (r.ts) map.set(r.platform, r.ts);
   return map;

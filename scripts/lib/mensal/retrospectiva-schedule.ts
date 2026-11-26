@@ -5,11 +5,13 @@
  * (`/diaria-mensal-apoiadores`). Âncora com a mesma regra do Artigo Especial
  * (#6014), decidida pelo editor no #9474:
  *
- *   - **Post único da página (#9474, legado): D+1 09:00 BRT**
+ *   - **Post único da página (#9474, legado): D+1 09:30 BRT** (09:00 até
+ *     25/11/2026; acompanha `ARTIGO_ESPECIAL_PAGINA_TIME`, #10305)
  *   - **Perfil pessoal LinkedIn (manual): D+2 09:30 BRT**
  *
  * Os 15 posts por história (#9508, abaixo) saem em D+1 nos MESMOS slots da
- * diária (`09:45 d1 | 12:15 d2 | 17:15 d3`, de `fallback_schedule`).
+ * diária (`18:00 d1 | 12:00 d2 | 21:00 d3` desde 25/11/2026, #10305, de
+ * `fallback_schedule`; antes 09:45 | 12:15 | 17:15).
  *
  * **A diferença pro Artigo Especial é a âncora "D"**: aqui D é a data do
  * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou — explícita
@@ -90,7 +92,7 @@ export function resolveRetrospectivaScheduledAts(
  * `compute-social-schedule.ts`), com as 5 redes ao mesmo tempo, sem
  * escalonar. Default quando o config não traz o slot.
  */
-export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "09:45", d2: "12:15", d3: "17:15" };
+export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "18:00", d2: "12:00", d3: "21:00" };
 
 export type RetrospectivaPostSchedule = Record<RetrospectivaHistoria, Record<RetrospectivaPostChannel, string>>;
 
@@ -181,7 +183,7 @@ export function retrospectivaPostDay(input: RetrospectivaScheduleInput, timeZone
 /**
  * Resolve o horário de cada post (rede × história) — decisão do editor no
  * #9508: o dia é D+1 do envio (`retrospectivaPostDay`); história N sai no slot
- * d{N} da diária (`fallback_schedule.d{N}_time`: 09:45 | 12:15 | 17:15) e as
+ * d{N} da diária (`fallback_schedule.d{N}_time`: 18:00 | 12:00 | 21:00) e as
  * 5 redes de uma história saem no MESMO horário. Não lança por horário no
  * passado: quem decide é o pré-voo do publisher, por post (≥10 min), pra que
  * `--skip {rede}:d1` destrave as histórias 2/3 quando só a 1 já passou.

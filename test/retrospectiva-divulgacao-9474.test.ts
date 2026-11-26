@@ -204,13 +204,13 @@ describe("deriveEmailChannelState — projeção do state do publisher Kit", () 
   });
 });
 
-describe("agenda (#9474) — D+1 09:00 / D+2 09:30 relativos à data do ENVIO", () => {
+describe("agenda (#9474) — D+1 09:30 / D+2 09:30 relativos à data do ENVIO", () => {
   const CONFIG = { publishing: { social: { fallback_schedule: { d3_time: "17:30", day_offset: 0 }, timezone: "America/Sao_Paulo" } } };
   const now = Date.parse("2026-10-01T10:00:00-03:00");
 
   it("baseDate explícita (1º sábado 03/10) ancora a agenda, não o 'hoje'", () => {
     const r = resolveRetrospectivaScheduledAts(CONFIG, { baseDate: "2026-10-03", now });
-    assert.equal(r.pagina, "2026-10-04T09:00:00-03:00");
+    assert.equal(r.pagina, "2026-10-04T09:30:00-03:00");
     assert.equal(r.perfil, "2026-10-05T09:30:00-03:00");
   });
   it("AAMMDD também é aceito e equivale ao ISO", () => {
@@ -218,7 +218,7 @@ describe("agenda (#9474) — D+1 09:00 / D+2 09:30 relativos à data do ENVIO", 
   });
   it("sem baseDate: hoje (mesmo default do Artigo Especial)", () => {
     const r = resolveRetrospectivaScheduledAts(CONFIG, { now });
-    assert.equal(r.pagina, "2026-10-02T09:00:00-03:00");
+    assert.equal(r.pagina, "2026-10-02T09:30:00-03:00");
   });
   it("--at explícito vale pros dois e é validado (passado lança)", () => {
     const r = resolveRetrospectivaScheduledAts(CONFIG, { at: "2026-10-10T08:00:00-03:00", now });
