@@ -5,11 +5,13 @@
  * pasta de vídeo do Drive (modo streaming) para uma pasta LOCAL, fora do Drive
  * (`publishing.video.premiere_bruto_root`, em `{raiz}/{AAMMDD}/`), que é para
  * onde o `…-local.xml` do `/diaria-video-montagem build` aponta os vídeos do
- * bruto. O Premiere lendo o bruto pelo Drive em streaming travava em
- * "Preparing audio" e trocava quadros por preto (261116); com o bruto local
- * o projeto abriu rápido (validado à mão na 261116).
+ * bruto. Na 261116 o Premiere, lendo o bruto pelo Drive em streaming, travou em
+ * "Preparing audio" e trocou quadros por preto; com o XML apontando o bruto
+ * para uma pasta local (copiada à mão por um script de sessão) o projeto abriu
+ * rápido.
  *
- * Sem dependência além do Node: só módulos `node:`. Roda com
+ * Sem dependência além do Node: só módulos `node:` e o validador sem imports
+ * `../lib/diaria/premiere-bruto-root.ts`. Roda com
  * `node scripts/video/prepara-bruto-mac.ts AAMMDD` (Node 22.18+/23.6+, que
  * executa .ts direto) ou `npx tsx scripts/video/prepara-bruto-mac.ts AAMMDD`.
  *
@@ -17,30 +19,34 @@
  *   1. Limpeza: apaga as cópias locais de edições anteriores a hoje, arquivo
  *      por arquivo, SÓ depois de conferir que o original continua no Drive com
  *      o mesmo nome e o mesmo tamanho (`planCleanup`). Nunca toca no Drive.
- *      `--dry-run` só lista. Pasta local com nome que não é de edição nunca é
- *      tocada.
- *   2. Vigia `{drive}/{AAMMDD}/`: cada vídeo do bruto que aparece é copiado
- *      quando o tamanho fica estável (`stabilityStep`), para `.part` e depois
- *      renomeado, com progresso (arquivo, tamanho, velocidade, quanto falta) e
- *      conferência do tamanho da cópia.
+ *      `--dry-run` só afeta a limpeza (lista em vez de apagar). Pasta local com
+ *      nome que não é de edição nunca é tocada.
+ *   2. Vigia `{drive}/{AAMMDD}/` (e, com XML local, a origem de cada vídeo que
+ *      ele referencia, mesmo fora dessa pasta, como `261116-17/`): cada vídeo é
+ *      copiado quando o tamanho fica estável (`stabilityStep`, por caminho
+ *      completo), para `.part` e depois renomeado, com progresso e conferência
+ *      do tamanho da cópia.
  *   3. Com `…-local.xml` na pasta da edição, o alvo passa a ser exatamente os
- *      vídeos que ele referencia (`xmlTargets`; a origem de cada um sai do XML
- *      normal ao lado, o que cobre bruto de outra pasta, como `261116-17/`).
- *      Termina quando todos estão locais e conferidos; sem XML, termina depois
- *      de `--idle-min` minutos sem arquivo novo (ou com Ctrl+C).
+ *      vídeos que ele referencia (`xmlTargets`). Termina quando todos estão
+ *      locais e conferidos; sem XML, termina depois de `--idle-min` minutos sem
+ *      arquivo novo (ou com Ctrl+C).
  *
- * Saída: 0 = tudo que havia para copiar está local; 3 = parou (ocioso ou
- * `--once`) com vídeo do XML ainda faltando; 2 = uso/config inválido.
+ * Saída: 0 = tudo que havia para copiar está local e conferido (também
+ * `--clean-only`); 3 = parou (ocioso ou `--once`) com vídeo faltando, com XML
+ * local ou sem ele, ou com erro de leitura (XML ilegível, stat com EIO); 2 =
+ * uso ou config inválido, incluindo XML local sem nenhum vídeo sob a pasta
+ * local; 1 = exceção não tratada.
  */
 
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isAbsoluteRootPath, normalizeRootPath, parsePremiereBrutoRoot } from "../lib/diaria/premiere-bruto-root.ts";
 
 // ── Pura: o que é bruto, estabilidade, XML, limpeza ─────────────────────────
 
 /** Na pasta local de cada edição: nome → caminho do original no Drive, gravado a cada cópia (a limpeza confere por ele). */
-const ORIGINS_FILE = ".origem.json";
+export const ORIGINS_FILE = ".origem.json";
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv)$/i;
 /** Derivado da montagem (`{AAMMDD}_{coisa}-{hash}.ext`: card, trecho, título): nunca é bruto. */
 const HASHED_ASSET = /^\d{6}_.+-[0-9a-f]{8,}\.[A-Za-z0-9]+$/;
@@ -54,8 +60,16 @@ export function isBrutoCandidate(name: string): boolean {
   return true;
 }
 
+/** O `stat` de um caminho: arquivo, ausente (ENOENT/ENOTDIR), ou erro de leitura com o código (EIO, ETIMEDOUT: pendente, não "sumiu"). */
+export type StatResult = { kind: "file"; size: number; mtimeMs: number } | { kind: "absent" } | { kind: "error"; code: string };
+
+export function describeStat(s: StatResult): string {
+  return s.kind === "file" ? `${s.size} B` : s.kind === "absent" ? "ausente" : `erro ${s.code}`;
+}
+
 export interface Observed {
-  name: string;
+  /** Caminho completo (a chave do estado: dois arquivos de mesmo nome em pastas diferentes não se misturam). */
+  path: string;
   size: number;
   mtimeMs: number;
 }
@@ -65,13 +79,13 @@ export interface StabilityEntry extends Observed {
   polls: number;
 }
 
-/** Pura — junta a observação nova ao estado anterior: mesmo tamanho e mtime soma uma volta; mudou, volta a 1. */
+/** Pura — junta a observação nova ao estado anterior, por caminho: mesmo tamanho e mtime soma uma volta; mudou, volta a 1. */
 export function stabilityStep(prev: ReadonlyMap<string, StabilityEntry>, observed: readonly Observed[]): Map<string, StabilityEntry> {
   const next = new Map<string, StabilityEntry>();
   for (const o of observed) {
-    const p = prev.get(o.name);
+    const p = prev.get(o.path);
     const same = p !== undefined && p.size === o.size && p.mtimeMs === o.mtimeMs;
-    next.set(o.name, { ...o, polls: same ? p.polls + 1 : 1 });
+    next.set(o.path, { ...o, polls: same ? p.polls + 1 : 1 });
   }
   return next;
 }
@@ -128,25 +142,32 @@ export interface CopyTarget {
   src: string;
 }
 
-function trimSlash(p: string): string {
-  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+/** Pura — `child` está dentro de `parent` (ou é ele)? Sem caixa (o APFS padrão não diferencia) e com `/` como separador. */
+export function isInsidePath(child: string, parent: string): boolean {
+  const c = normalizeRootPath(child).normalize("NFC").toLowerCase();
+  const p = normalizeRootPath(parent).normalize("NFC").toLowerCase();
+  return c === p || c.startsWith(p === "/" ? "/" : `${p}/`);
 }
 
 /**
  * Pura — os vídeos que o XML local referencia sob `localDir`, com a origem de
  * cada um no XML normal (mesmo `file id`). `<file>` do XML local fora de
- * `localDir` (XML de outra edição ou de outra raiz) fica de fora.
+ * `localDir` (XML de outra edição ou de outra raiz) sai em `discarded`.
  */
-export function xmlTargets(localXml: string, normalXml: string | null, localDir: string, driveEditionDir: string): CopyTarget[] {
-  const dir = trimSlash(localDir);
+export function xmlTargets(localXml: string, normalXml: string | null, localDir: string, driveEditionDir: string): { targets: CopyTarget[]; discarded: string[] } {
+  const dir = normalizeRootPath(localDir);
   const normal = normalXml ? brutoFilePaths(normalXml) : new Map<string, string>();
-  const out: CopyTarget[] = [];
+  const targets: CopyTarget[] = [];
+  const discarded: string[] = [];
   for (const [id, dest] of brutoFilePaths(localXml)) {
-    if (!dest.startsWith(`${dir}/`) || dest.slice(dir.length + 1).includes("/")) continue;
+    if (!dest.startsWith(`${dir}/`) || dest.slice(dir.length + 1).includes("/")) {
+      discarded.push(`${id}: ${dest}`);
+      continue;
+    }
     const name = dest.slice(dir.length + 1);
-    out.push({ name, dest, src: normal.get(id) ?? `${trimSlash(driveEditionDir)}/${name}` });
+    targets.push({ name, dest, src: normal.get(id) ?? `${normalizeRootPath(driveEditionDir)}/${name}` });
   }
-  return out;
+  return { targets, discarded };
 }
 
 /** Pura — junta alvos de vários XMLs locais (as sequências da edição) sem repetir destino. */
@@ -156,11 +177,30 @@ export function mergeTargets(lists: readonly (readonly CopyTarget[])[]): CopyTar
   return [...seen.values()];
 }
 
-/** Pura — a edição mais nova que o nome da pasta cobre (`261116` → 261116; `261116-17` → 261117); `null` = não é pasta de edição. */
+/**
+ * Pura — a edição mais nova que o nome da pasta cobre: `261116` → 261116;
+ * `261116-17` → 261117; `261130-01` → 261201 (o 2º dia menor que o 1º vira o
+ * mês seguinte, e dezembro vira janeiro do ano seguinte). `null` = não é pasta
+ * de edição (inclui dia ou mês fora de 01–31 / 01–12).
+ */
 export function newestEditionOf(folder: string): string | null {
-  const m = /^(\d{6})(?:-(\d{2}))?$/.exec(folder);
+  const m = /^(\d{2})(\d{2})(\d{2})(?:-(\d{2}))?$/.exec(folder);
   if (!m) return null;
-  return m[2] ? `${m[1].slice(0, 4)}${m[2]}` : m[1];
+  let [yy, mm] = [Number(m[1]), Number(m[2])];
+  const dd = Number(m[3]);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  if (!m[4]) return `${m[1]}${m[2]}${m[3]}`;
+  const d2 = Number(m[4]);
+  if (d2 < 1 || d2 > 31) return null;
+  if (d2 < dd) {
+    mm += 1;
+    if (mm > 12) {
+      mm = 1;
+      yy = (yy + 1) % 100;
+    }
+  }
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(yy)}${p(mm)}${m[4]}`;
 }
 
 /** Pura — AAMMDD do dia na hora local da máquina. */
@@ -169,10 +209,27 @@ export function todayAAMMDD(d: Date): string {
   return `${p(d.getFullYear() % 100)}${p(d.getMonth() + 1)}${p(d.getDate())}`;
 }
 
+/**
+ * Pura — o conteúdo da `.origem.json` aceito: só valor texto, absoluto e
+ * dentro de `driveRoot` (origem fora do Drive cairia em conferir o próprio
+ * arquivo local). O resto sai em `rejected`, e aquele arquivo volta ao
+ * caminho padrão `{drive}/{pasta}/{nome}`.
+ */
+export function validOrigins(raw: unknown, driveRoot: string): { origins: Record<string, string>; rejected: string[] } {
+  const origins: Record<string, string> = {};
+  const rejected: string[] = [];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { origins, rejected: raw === undefined ? [] : ["(não é objeto)"] };
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string" && isAbsoluteRootPath(v) && isInsidePath(v, driveRoot)) origins[k] = normalizeRootPath(v);
+    else rejected.push(k);
+  }
+  return { origins, rejected };
+}
+
 export interface LocalEditionFolder {
   folder: string;
   files: { name: string; size: number }[];
-  /** `.origem.json` da pasta: nome → caminho do original no Drive, gravado na cópia. */
+  /** `.origem.json` da pasta, já validada (`validOrigins`). */
   origins?: Record<string, string>;
 }
 
@@ -187,11 +244,11 @@ export interface CleanupAction {
 /**
  * Pura — o que a limpeza faz com as cópias locais. Só pasta de edição mais
  * velha que `today` (pela edição mais nova do nome) e diferente de `current`;
- * cada arquivo sai só se o original (o da `.origem.json`, senão
+ * cada vídeo sai só se o original (o da `.origem.json`, senão
  * `{drive}/{pasta}/{nome}`) existe com o MESMO tamanho. `.part` (cópia
- * interrompida) sai quando o original com o nome sem `.part` existe, e o
- * `.DS_Store` do Finder sai sempre (não é cópia de nada). O resto
- * fica, com o motivo. `driveSize` devolve `null` para arquivo ausente.
+ * interrompida) sai sem conferir tamanho, mas só quando o original com o nome
+ * sem `.part` existe; o `.DS_Store` do Finder sai sempre (não é cópia de
+ * nada). Original com erro de leitura (EIO) conta como não conferido: fica.
  */
 export function planCleanup(input: {
   today: string;
@@ -199,11 +256,11 @@ export function planCleanup(input: {
   localRoot: string;
   driveRoot: string;
   folders: readonly LocalEditionFolder[];
-  driveSize: (path: string) => number | null;
+  driveStat: (path: string) => StatResult;
 }): CleanupAction[] {
   const out: CleanupAction[] = [];
-  const localRoot = trimSlash(input.localRoot);
-  const driveRoot = trimSlash(input.driveRoot);
+  const localRoot = normalizeRootPath(input.localRoot);
+  const driveRoot = normalizeRootPath(input.driveRoot);
   for (const f of input.folders) {
     const newest = newestEditionOf(f.folder);
     if (!newest || newest >= input.today || f.folder === input.current) continue;
@@ -217,10 +274,10 @@ export function planCleanup(input: {
       const partial = /\.part$/i.test(file.name);
       const name = partial ? file.name.slice(0, -5) : file.name;
       const original = f.origins?.[name] ?? `${driveRoot}/${f.folder}/${name}`;
-      const size = input.driveSize(original);
-      if (size === null) out.push({ folder: f.folder, name: file.name, path, action: "keep", reason: `original ausente no Drive (${original}): a cópia local fica` });
+      const st = input.driveStat(original);
+      if (st.kind !== "file") out.push({ folder: f.folder, name: file.name, path, action: "keep", reason: `original ${describeStat(st)} no Drive (${original}): a cópia local fica` });
       else if (partial) out.push({ folder: f.folder, name: file.name, path, action: "delete", reason: `cópia interrompida; original no Drive (${original})` });
-      else if (size !== file.size) out.push({ folder: f.folder, name: file.name, path, action: "keep", reason: `tamanho diferente no Drive (${size} B no Drive, ${file.size} B local): a cópia local fica` });
+      else if (st.size !== file.size) out.push({ folder: f.folder, name: file.name, path, action: "keep", reason: `tamanho diferente no Drive (${st.size} B no Drive, ${file.size} B local): a cópia local fica` });
       else out.push({ folder: f.folder, name: file.name, path, action: "delete", reason: `original no Drive com o mesmo nome e tamanho (${original})` });
     }
   }
@@ -265,28 +322,30 @@ export const USAGE = `uso: node scripts/video/prepara-bruto-mac.ts AAMMDD [opç�
   --interval S        segundos entre varreduras (default 10)
   --stable-polls N    varreduras com o mesmo tamanho para dar o upload por terminado (default 3)
   --stable-age S      arquivo sem mudar há S segundos já conta como estável (default 120)
-  --idle-min M        sem XML local, termina depois de M minutos sem arquivo novo (default 30)
-  --dry-run           a limpeza só lista o que apagaria (a cópia segue normal)
+  --idle-min M        termina depois de M minutos sem arquivo novo (default 30)
+  --dry-run           só a limpeza: lista o que apagaria (a cópia segue normal)
   --no-clean          não limpa as edições passadas
-  --clean-only        só a limpeza
-  --once              uma varredura só, sem esperar`;
+  --clean-only        só a limpeza (sai 0)
+  --once              uma varredura só, sem esperar
+saída: 0 = tudo local e conferido; 3 = faltou vídeo ou houve erro de leitura; 2 = uso/config; 1 = exceção`;
 
 /** Pura — os argumentos da linha de comando. Erro = mensagem para o stderr (saída 2). */
 export function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
   const o: CliOptions = { edition: "", driveRoot: null, localRoot: null, config: null, intervalS: 10, stablePolls: 3, stableAgeS: 120, idleMin: 30, dryRun: false, noClean: false, cleanOnly: false, once: false };
-  const num = (flag: string, v: string | undefined, min: number): number | { error: string } => {
-    const n = Number(v);
-    return v !== undefined && Number.isFinite(n) && n >= min ? n : { error: `${flag} precisa de um número >= ${min} (veio ${v ?? "nada"})` };
-  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
-    if (a === "--drive-root") o.driveRoot = next() ?? null;
-    else if (a === "--local-root") o.localRoot = next() ?? null;
-    else if (a === "--config") o.config = next() ?? null;
-    else if (a === "--interval" || a === "--stable-polls" || a === "--stable-age" || a === "--idle-min") {
-      const n = num(a, next(), a === "--stable-polls" ? 1 : a === "--interval" ? 1 : 0);
-      if (typeof n !== "number") return n;
+    if (a === "--drive-root" || a === "--local-root" || a === "--config") {
+      const v = next();
+      if (!v) return { error: `${a} precisa de um caminho` };
+      if (a === "--drive-root") o.driveRoot = v;
+      else if (a === "--local-root") o.localRoot = v;
+      else o.config = v;
+    } else if (a === "--interval" || a === "--stable-polls" || a === "--stable-age" || a === "--idle-min") {
+      const v = next();
+      const min = a === "--stable-polls" || a === "--interval" ? 1 : 0;
+      const n = Number(v);
+      if (v === undefined || !Number.isFinite(n) || n < min) return { error: `${a} precisa de um número >= ${min} (veio ${v ?? "nada"})` };
       if (a === "--interval") o.intervalS = n;
       else if (a === "--stable-polls") o.stablePolls = Math.floor(n);
       else if (a === "--stable-age") o.stableAgeS = n;
@@ -299,59 +358,109 @@ export function parseArgs(argv: readonly string[]): CliOptions | { error: string
     else return { error: `argumento desconhecido: ${a}` };
   }
   if (!o.edition) return { error: "falta o AAMMDD da edição" };
+  if (o.noClean && o.cleanOnly) return { error: "--no-clean e --clean-only juntos não fazem nada: escolha um" };
   return o;
 }
 
-/** Pura — `premiere_root` e `premiere_bruto_root` do config (absolutos; vazio/ausente = `null`). */
-export function rootsFromConfig(config: unknown): { driveRoot: string | null; localRoot: string | null } {
+/** Pura — `premiere_root` e `premiere_bruto_root` do config, pelo mesmo validador do build; `errors` = valor presente e inválido. */
+export function rootsFromConfig(config: unknown): { driveRoot: string | null; localRoot: string | null; errors: string[] } {
   const v = (config as { publishing?: { video?: { premiere_root?: unknown; premiere_bruto_root?: unknown } } })?.publishing?.video;
-  const abs = (x: unknown) => (typeof x === "string" && x.trim().startsWith("/") ? trimSlash(x.trim()) : null);
-  return { driveRoot: abs(v?.premiere_root), localRoot: abs(v?.premiere_bruto_root) };
+  const errors: string[] = [];
+  const pick = (x: unknown, label: string): string | null => {
+    const r = parsePremiereBrutoRoot(x, label);
+    if ("error" in r) {
+      errors.push(r.error);
+      return null;
+    }
+    return r.ok;
+  };
+  return { driveRoot: pick(v?.premiere_root, "publishing.video.premiere_root"), localRoot: pick(v?.premiere_bruto_root, "publishing.video.premiere_bruto_root"), errors };
 }
 
 // ── I/O ──────────────────────────────────────────────────────────────────────
 
-
-function sizeOf(path: string): number | null {
+export function statPath(path: string): StatResult {
   try {
     const s = statSync(path);
-    return s.isFile() ? s.size : null;
-  } catch {
-    return null;
+    return s.isFile() ? { kind: "file", size: s.size, mtimeMs: s.mtimeMs } : { kind: "absent" };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "EUNKNOWN";
+    return code === "ENOENT" || code === "ENOTDIR" ? { kind: "absent" } : { kind: "error", code };
   }
 }
 
-function listFiles(dir: string): Observed[] {
-  if (!existsSync(dir)) return [];
-  const out: Observed[] = [];
-  for (const name of readdirSync(dir)) {
-    try {
-      const s = statSync(join(dir, name));
-      if (s.isFile()) out.push({ name, size: s.size, mtimeMs: s.mtimeMs });
-    } catch {
-      // sumiu entre o readdir e o stat: entra na próxima varredura
-    }
+interface DirListing {
+  files: (Observed & { name: string })[];
+  /** Arquivos que o `stat` não leu (EIO, ETIMEDOUT): pendentes, nunca dados por sumidos. */
+  pending: { name: string; code: string }[];
+  /** Erro ao listar a pasta (fora ENOENT, que é pasta vazia). */
+  dirError?: string;
+}
+
+function listDir(dir: string): DirListing {
+  const out: DirListing = { files: [], pending: [] };
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "EUNKNOWN";
+    if (code !== "ENOENT") out.dirError = code;
+    return out;
+  }
+  for (const name of names) {
+    const path = `${normalizeRootPath(dir)}/${name}`;
+    const st = statPath(path);
+    if (st.kind === "file") out.files.push({ name, path, size: st.size, mtimeMs: st.mtimeMs });
+    else if (st.kind === "error") out.pending.push({ name, code: st.code });
+    // ausente: sumiu entre o readdir e o stat, ou é pasta
   }
   return out;
 }
 
-function readOrigins(dir: string): Record<string, string> {
+function writeFileAtomicSync(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
+}
+
+/** A `.origem.json` validada. Corrompida = aviso + `corrupt` (o `recordOrigin` guarda o arquivo antes de regravar). */
+export function readOrigins(dir: string, driveRoot: string): { origins: Record<string, string>; corrupt: boolean } {
+  const path = join(dir, ORIGINS_FILE);
+  if (!existsSync(path)) return { origins: {}, corrupt: false };
+  let raw: unknown;
   try {
-    const j = JSON.parse(readFileSync(join(dir, ORIGINS_FILE), "utf8")) as unknown;
-    return j && typeof j === "object" ? (j as Record<string, string>) : {};
-  } catch {
-    return {};
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    console.error(`[origem] ${path} ilegível (${(e as Error).message}): a limpeza confere pelo caminho padrão no Drive`);
+    return { origins: {}, corrupt: true };
   }
+  const v = validOrigins(raw, driveRoot);
+  if (v.rejected.length) console.error(`[origem] ${path}: entrada(s) ignorada(s) (não texto ou fora de ${driveRoot}): ${v.rejected.join(", ")}`);
+  return { origins: v.origins, corrupt: false };
 }
 
-function recordOrigin(dir: string, name: string, src: string): void {
-  const o = readOrigins(dir);
-  o[name] = src;
-  writeFileSync(join(dir, ORIGINS_FILE), `${JSON.stringify(o, null, 2)}\n`);
+/** Grava a origem de uma cópia (atômico). `.origem.json` corrompida é guardada ao lado como `.origem.json.corrompido-{ms}`, nunca sobrescrita em silêncio. */
+export function recordOrigin(dir: string, driveRoot: string, name: string, src: string): void {
+  const path = join(dir, ORIGINS_FILE);
+  const cur = readOrigins(dir, driveRoot);
+  if (cur.corrupt) {
+    const keep = `${path}.corrompido-${Date.now()}`;
+    renameSync(path, keep);
+    console.error(`[origem] ${ORIGINS_FILE} corrompida guardada em ${keep}; regravando só com as origens novas`);
+  }
+  writeFileAtomicSync(path, `${JSON.stringify({ ...cur.origins, [name]: src }, null, 2)}\n`);
 }
 
-function runCleanup(opt: { localRoot: string; driveRoot: string; today: string; current: string; dryRun: boolean }): void {
-  if (!existsSync(opt.localRoot)) return;
+export interface CleanupSummary {
+  deleted: string[];
+  wouldDelete: string[];
+  kept: string[];
+  removedFolders: string[];
+}
+
+export function runCleanup(opt: { localRoot: string; driveRoot: string; today: string; current: string; dryRun: boolean }): CleanupSummary {
+  const sum: CleanupSummary = { deleted: [], wouldDelete: [], kept: [], removedFolders: [] };
+  if (!existsSync(opt.localRoot)) return sum;
   const folders: LocalEditionFolder[] = [];
   for (const folder of readdirSync(opt.localRoot)) {
     const dir = join(opt.localRoot, folder);
@@ -360,56 +469,64 @@ function runCleanup(opt: { localRoot: string; driveRoot: string; today: string; 
     } catch {
       continue;
     }
-    folders.push({ folder, files: listFiles(dir).map(({ name, size }) => ({ name, size })), origins: readOrigins(dir) });
+    const listing = listDir(dir);
+    for (const p of listing.pending) console.error(`[limpeza] ${folder}/${p.name}: stat com erro ${p.code}, fica`);
+    folders.push({ folder, files: listing.files.map(({ name, size }) => ({ name, size })), origins: readOrigins(dir, opt.driveRoot).origins });
   }
-  const actions = planCleanup({ today: opt.today, current: opt.current, localRoot: opt.localRoot, driveRoot: opt.driveRoot, folders, driveSize: sizeOf });
+  const actions = planCleanup({ today: opt.today, current: opt.current, localRoot: opt.localRoot, driveRoot: opt.driveRoot, folders, driveStat: statPath });
   if (!actions.length) {
     console.log(`[limpeza] nada de edições anteriores a ${opt.today} em ${opt.localRoot}`);
-    return;
+    return sum;
   }
   let freed = 0;
   for (const a of actions) {
-    const sz = sizeOf(a.path) ?? 0;
+    const st = statPath(a.path);
+    const sz = st.kind === "file" ? st.size : 0;
+    const id = `${a.folder}/${a.name}`;
     if (a.action === "keep") {
-      console.log(`[limpeza] fica ${a.folder}/${a.name}: ${a.reason}`);
-      continue;
-    }
-    if (opt.dryRun) {
-      console.log(`[limpeza] --dry-run: apagaria ${a.folder}/${a.name} (${formatBytes(sz)}): ${a.reason}`);
-      continue;
-    }
-    try {
-      unlinkSync(a.path);
-      freed += sz;
-      console.log(`[limpeza] apagado ${a.folder}/${a.name} (${formatBytes(sz)}): ${a.reason}`);
-    } catch (e) {
-      console.error(`[limpeza] não apagou ${a.folder}/${a.name}: ${(e as Error).message}`);
-    }
-  }
-  if (!opt.dryRun) {
-    for (const folder of new Set(actions.map((a) => a.folder))) {
-      const dir = join(opt.localRoot, folder);
-      const left = listFiles(dir).filter((f) => f.name !== ORIGINS_FILE);
-      if (left.length) continue;
+      sum.kept.push(id);
+      console.log(`[limpeza] fica ${id}: ${a.reason}`);
+    } else if (opt.dryRun) {
+      sum.wouldDelete.push(id);
+      console.log(`[limpeza] --dry-run: apagaria ${id} (${formatBytes(sz)}): ${a.reason}`);
+    } else {
       try {
-        if (existsSync(join(dir, ORIGINS_FILE))) unlinkSync(join(dir, ORIGINS_FILE));
-        rmdirSync(dir);
-        console.log(`[limpeza] pasta ${folder}/ removida (vazia)`);
+        unlinkSync(a.path);
+        freed += sz;
+        sum.deleted.push(id);
+        console.log(`[limpeza] apagado ${id} (${formatBytes(sz)}): ${a.reason}`);
       } catch (e) {
-        console.error(`[limpeza] pasta ${folder}/ ficou: ${(e as Error).message}`);
+        sum.kept.push(id);
+        console.error(`[limpeza] não apagou ${id}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
       }
     }
-    console.log(`[limpeza] ${formatBytes(freed)} liberados`);
   }
+  if (opt.dryRun) return sum;
+  for (const folder of new Set(actions.map((a) => a.folder))) {
+    const dir = join(opt.localRoot, folder);
+    const listing = listDir(dir);
+    if (listing.pending.length || listing.dirError || listing.files.some((f) => f.name !== ORIGINS_FILE)) continue;
+    try {
+      if (existsSync(join(dir, ORIGINS_FILE))) unlinkSync(join(dir, ORIGINS_FILE));
+      rmdirSync(dir);
+      sum.removedFolders.push(folder);
+      console.log(`[limpeza] pasta ${folder}/ removida (vazia)`);
+    } catch (e) {
+      console.error(`[limpeza] pasta ${folder}/ ficou: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
+    }
+  }
+  console.log(`[limpeza] ${formatBytes(freed)} liberados`);
+  return sum;
 }
 
 /** Cópia com `.part` + rename e conferência de tamanho. `false` = a origem mudou ou a cópia não bateu (tenta de novo na próxima varredura). */
 async function copyOne(src: string, dest: string, name: string): Promise<boolean> {
-  const total = sizeOf(src);
-  if (total === null) {
-    console.error(`[cópia] ${name}: origem ausente (${src})`);
+  const before = statPath(src);
+  if (before.kind !== "file") {
+    console.error(`[cópia] ${name}: origem ${describeStat(before)} (${src})`);
     return false;
   }
+  const total = before.size;
   const part = `${dest}.part`;
   const t0 = Date.now();
   let done = 0;
@@ -437,46 +554,81 @@ async function copyOne(src: string, dest: string, name: string): Promise<boolean
     });
   } catch (e) {
     if (tty) process.stdout.write("\n");
-    console.error(`[cópia] ${name}: falhou (${(e as Error).message}); tenta de novo na próxima varredura`);
+    console.error(`[cópia] ${name}: falhou (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}); tenta de novo na próxima varredura`);
     return false;
   }
   if (tty) process.stdout.write("\n");
-  const copied = sizeOf(part);
-  const srcNow = sizeOf(src);
-  if (copied !== total || srcNow !== total) {
-    console.error(`[cópia] ${name}: tamanho não confere (origem ${total} → ${srcNow ?? "ausente"} B, cópia ${copied ?? "ausente"} B); tenta de novo`);
+  const copied = statPath(part);
+  const srcNow = statPath(src);
+  if (copied.kind !== "file" || copied.size !== total || srcNow.kind !== "file" || srcNow.size !== total) {
+    console.error(`[cópia] ${name}: tamanho não confere (origem ${total} B, agora ${describeStat(srcNow)}; cópia ${describeStat(copied)}); tenta de novo`);
     try {
       unlinkSync(part);
     } catch {
-      // .part some na limpeza seguinte
+      // .part sai na limpeza de um dia seguinte
     }
     return false;
   }
   renameSync(part, dest);
-  console.log(`[cópia] ${name}: ok, ${formatBytes(total)} conferidos em ${Math.round((Date.now() - t0) / 1000)} s (${progressLine(name, total, total, Date.now() - t0).split(", ")[1]})`);
+  const el = Date.now() - t0;
+  console.log(`[cópia] ${name}: ok, ${formatBytes(total)} conferidos em ${Math.round(el / 1000)} s (${progressLine(name, total, total, el).split(", ")[1]})`);
   return true;
 }
 
-function localXmlTargets(driveEditionDir: string, localDir: string): { xmls: string[]; targets: CopyTarget[] } {
-  if (!existsSync(driveEditionDir)) return { xmls: [], targets: [] };
-  const xmls = readdirSync(driveEditionDir).filter((n) => /-local\.xml$/i.test(n));
+interface XmlScan {
+  xmls: string[];
+  targets: CopyTarget[];
+  discarded: string[];
+  errors: string[];
+}
+
+function scanLocalXmls(driveEditionDir: string, localDir: string): XmlScan {
+  const scan: XmlScan = { xmls: [], targets: [], discarded: [], errors: [] };
+  let names: string[];
+  try {
+    names = readdirSync(driveEditionDir);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "EUNKNOWN";
+    if (code !== "ENOENT") scan.errors.push(`${driveEditionDir}: ${code}`);
+    return scan;
+  }
+  scan.xmls = names.filter((n) => /-local\.xml$/i.test(n)).sort();
   const lists: CopyTarget[][] = [];
-  for (const n of xmls) {
+  for (const n of scan.xmls) {
     try {
       const local = readFileSync(join(driveEditionDir, n), "utf8");
       const normalPath = join(driveEditionDir, n.replace(/-local\.xml$/i, ".xml"));
       const normal = existsSync(normalPath) ? readFileSync(normalPath, "utf8") : null;
-      lists.push(xmlTargets(local, normal, localDir, driveEditionDir));
+      const r = xmlTargets(local, normal, localDir, driveEditionDir);
+      lists.push(r.targets);
+      scan.discarded.push(...r.discarded.map((d) => `${n} ${d}`));
     } catch (e) {
-      console.error(`[xml] ${n} ilegível (${(e as Error).message}): fica para a próxima varredura`);
+      scan.errors.push(`${n}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
     }
   }
-  return { xmls, targets: mergeTargets(lists) };
+  scan.targets = mergeTargets(lists);
+  return scan;
+}
+
+/** O realpath do caminho, ou do ancestral mais próximo que existe + o resto (a pasta local pode ainda não existir). */
+function realpathNearest(p: string): string {
+  const segs: string[] = [];
+  let cur = resolve(p);
+  for (;;) {
+    try {
+      return normalizeRootPath([realpathSync(cur), ...segs].join("/"));
+    } catch {
+      const up = dirname(cur);
+      if (up === cur) return normalizeRootPath(p);
+      segs.unshift(cur.slice(up.length).replace(/^[\\/]+/, ""));
+      cur = up;
+    }
+  }
 }
 
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
-export async function main(argv: readonly string[]): Promise<number> {
+export async function main(argv: readonly string[], deps: { now?: () => Date } = {}): Promise<number> {
   const parsed = parseArgs(argv);
   if ("error" in parsed) {
     console.error(`prepara-bruto-mac: ${parsed.error}\n${USAGE}`);
@@ -487,76 +639,128 @@ export async function main(argv: readonly string[]): Promise<number> {
   let fromConfig = { driveRoot: null as string | null, localRoot: null as string | null };
   if (existsSync(configPath)) {
     try {
-      fromConfig = rootsFromConfig(JSON.parse(readFileSync(configPath, "utf8")));
+      const r = rootsFromConfig(JSON.parse(readFileSync(configPath, "utf8")));
+      fromConfig = r;
+      if (r.errors.length && (!opt.driveRoot || !opt.localRoot)) {
+        console.error(`prepara-bruto-mac: ${r.errors.join("; ")}`);
+        return 2;
+      }
     } catch (e) {
       console.error(`[aviso] ${configPath} ilegível (${(e as Error).message}): use --drive-root e --local-root`);
     }
   }
-  const driveRoot = opt.driveRoot ? trimSlash(opt.driveRoot) : fromConfig.driveRoot;
-  const localRoot = opt.localRoot ? trimSlash(opt.localRoot) : fromConfig.localRoot;
+  const flagRoot = (v: string | null, label: string): string | null | { error: string } => {
+    if (v === null) return null;
+    const r = parsePremiereBrutoRoot(v, label);
+    return "error" in r ? r : r.ok;
+  };
+  const d = flagRoot(opt.driveRoot, "--drive-root");
+  const l = flagRoot(opt.localRoot, "--local-root");
+  for (const x of [d, l]) if (x && typeof x === "object") {
+    console.error(`prepara-bruto-mac: ${x.error}`);
+    return 2;
+  }
+  const driveRoot = (d as string | null) ?? fromConfig.driveRoot;
+  const localRoot = (l as string | null) ?? fromConfig.localRoot;
   if (!driveRoot || !localRoot) {
-    console.error(`prepara-bruto-mac: falta ${!driveRoot ? "a pasta do Drive (--drive-root ou publishing.video.premiere_root)" : "a pasta local (--local-root ou publishing.video.premiere_bruto_root)"}`);
+    console.error(`prepara-bruto-mac: falta ${!driveRoot ? "a pasta do Drive (--drive-root ou publishing.video.premiere_root)" : "a pasta local (--local-root ou publishing.video.premiere_bruto_root)"}. No Mac o config lido é o do checkout de lá: git pull, ou passe --local-root`);
     return 2;
   }
-  if (localRoot === driveRoot || localRoot.startsWith(`${driveRoot}/`)) {
-    console.error(`prepara-bruto-mac: a pasta local (${localRoot}) não pode ficar dentro da do Drive (${driveRoot})`);
+  if (isInsidePath(localRoot, driveRoot) || isInsidePath(realpathNearest(localRoot), realpathNearest(driveRoot))) {
+    console.error(`prepara-bruto-mac: a pasta local (${localRoot}) não pode ficar dentro da do Drive (${driveRoot}), nem por symlink`);
     return 2;
   }
-  const today = todayAAMMDD(new Date());
+  const today = todayAAMMDD((deps.now ?? (() => new Date()))());
   if (!opt.noClean) runCleanup({ localRoot, driveRoot, today, current: opt.edition, dryRun: opt.dryRun });
   if (opt.cleanOnly) return 0;
 
   const driveDir = `${driveRoot}/${opt.edition}`;
   const localDir = `${localRoot}/${opt.edition}`;
   mkdirSync(localDir, { recursive: true });
-  console.log(`[vigia] ${driveDir} → ${localDir} (a cada ${opt.intervalS} s; Ctrl+C para parar)`);
+  console.log(`[vigia] ${driveDir} para ${localDir} (a cada ${opt.intervalS} s; Ctrl+C para parar)`);
+  const stab = { stablePolls: opt.stablePolls, stableAgeMs: opt.stableAgeS * 1000 };
   let state = new Map<string, StabilityEntry>();
   let lastActivity = Date.now();
-  let announcedXml = "";
+  let announced = "";
   for (;;) {
-    const observed = listFiles(driveDir).filter((f) => isBrutoCandidate(f.name));
-    const prevNames = new Set(state.keys());
-    const nextState = stabilityStep(state, observed);
-    if ([...nextState.values()].some((e) => !prevNames.has(e.name) || e.polls === 1)) lastActivity = Date.now();
-    state = nextState;
-    const { xmls, targets } = localXmlTargets(driveDir, localDir);
-    if (xmls.join("|") !== announcedXml) {
-      announcedXml = xmls.join("|");
-      if (xmls.length) console.log(`[xml] ${xmls.join(", ")}: ${targets.length} vídeo(s) do bruto (${targets.map((t) => t.name).join(", ")})`);
+    const listing = listDir(driveDir);
+    const readErrors: string[] = [];
+    if (listing.dirError) readErrors.push(`${driveDir}: ${listing.dirError}`);
+    for (const p of listing.pending) readErrors.push(`${p.name}: ${p.code}`);
+    const scan = scanLocalXmls(driveDir, localDir);
+    readErrors.push(...scan.errors);
+    if (scan.xmls.length && !scan.targets.length && !scan.errors.length) {
+      console.error(
+        `prepara-bruto-mac: ${scan.xmls.join(", ")} sem nenhum vídeo do bruto sob ${localDir}. O XML foi gerado com outro premiere_bruto_root; ` +
+          `confira a chave no config do build ou passe --local-root com a raiz do XML. <file> descartados: ${scan.discarded.join("; ") || "nenhum <file> do bruto"}`,
+      );
+      return 2;
     }
-    // Com XML local, o alvo é o que ele referencia; sem ele, cada candidato estável da pasta da edição.
+    if (scan.discarded.length) console.error(`[xml] <file> fora de ${localDir}, ignorados: ${scan.discarded.join("; ")}`);
+    const key = scan.xmls.join("|");
+    if (key !== announced) {
+      announced = key;
+      if (scan.xmls.length) console.log(`[xml] ${scan.xmls.join(", ")}: ${scan.targets.length} vídeo(s) do bruto (${scan.targets.map((t) => t.name).join(", ")})`);
+    }
+    // O estado acompanha os candidatos da pasta da edição e as origens do XML de fora dela (261116-17/).
+    const observed: Observed[] = listing.files.filter((f) => isBrutoCandidate(f.name)).map(({ path, size, mtimeMs }) => ({ path, size, mtimeMs }));
+    const seen = new Set(observed.map((o) => o.path));
+    for (const t of scan.targets) {
+      if (seen.has(t.src)) continue;
+      const st = statPath(t.src);
+      if (st.kind === "file") observed.push({ path: t.src, size: st.size, mtimeMs: st.mtimeMs });
+      else if (st.kind === "error") readErrors.push(`${t.src}: ${st.code}`);
+      seen.add(t.src);
+    }
+    const prevKeys = new Set(state.keys());
+    state = stabilityStep(state, observed);
+    if ([...state.values()].some((e) => !prevKeys.has(e.path) || e.polls === 1)) lastActivity = Date.now();
     const now = Date.now();
-    const work: CopyTarget[] = xmls.length
-      ? targets
-      : [...state.values()].filter((e) => isStable(e, now, { stablePolls: opt.stablePolls, stableAgeMs: opt.stableAgeS * 1000 })).map((e) => ({ name: e.name, dest: `${localDir}/${e.name}`, src: `${driveDir}/${e.name}` }));
+    const work: CopyTarget[] = scan.xmls.length
+      ? scan.targets
+      : [...state.values()].map((e) => {
+          const name = e.path.slice(e.path.lastIndexOf("/") + 1);
+          return { name, dest: `${localDir}/${name}`, src: e.path };
+        });
     for (const t of work) {
-      const srcSize = sizeOf(t.src);
-      if (srcSize === null || srcSize <= 0) continue;
-      if (sizeOf(t.dest) === srcSize) continue;
-      const entry = state.get(basename(t.src));
-      if (entry && !isStable(entry, Date.now(), { stablePolls: opt.stablePolls, stableAgeMs: opt.stableAgeS * 1000 })) continue;
+      const entry = state.get(t.src);
+      if (!entry || !isStable(entry, now, stab)) continue;
+      const dest = statPath(t.dest);
+      if (dest.kind === "file" && dest.size === entry.size) continue;
       if (await copyOne(t.src, t.dest, t.name)) {
-        recordOrigin(localDir, t.name, t.src);
+        recordOrigin(localDir, driveRoot, t.name, t.src);
         lastActivity = Date.now();
       }
     }
-    if (xmls.length) {
-      const missing = targets.filter((t) => {
-        const s = sizeOf(t.src);
-        return s === null || sizeOf(t.dest) !== s;
+    for (const e of readErrors) console.error(`[leitura] ${e} (pendente, tenta de novo)`);
+    const stop = opt.once || (Date.now() - lastActivity) / 60_000 >= opt.idleMin;
+    const missingOf = (ts: readonly CopyTarget[]) =>
+      ts.filter((t) => {
+        const s = statPath(t.src);
+        const c = statPath(t.dest);
+        return s.kind !== "file" || c.kind !== "file" || c.size !== s.size;
       });
-      if (!missing.length && targets.length) {
-        console.log(`[conferência] ${targets.length} vídeo(s) do XML local em ${localDir}, tamanhos iguais aos do Drive: pode abrir o ${xmls.join(" / ")} no Premiere`);
+    if (scan.xmls.length) {
+      const missing = missingOf(scan.targets);
+      if (!missing.length && !readErrors.length) {
+        console.log(`[conferência] ${scan.targets.length} vídeo(s) do XML local em ${localDir}, tamanhos iguais aos do Drive: pode abrir o ${scan.xmls.join(" / ")} no Premiere`);
         return 0;
       }
-      if (opt.once || (Date.now() - lastActivity) / 60_000 >= opt.idleMin) {
-        console.error(`[conferência] faltam ${missing.length} vídeo(s) do XML local: ${missing.map((t) => `${t.name} (${sizeOf(t.src) === null ? "ausente no Drive" : "não copiado"})`).join(", ")}`);
+      if (stop) {
+        console.error(
+          `[conferência] faltam ${missing.length} vídeo(s) do XML local: ${missing.map((t) => `${t.name} (origem ${describeStat(statPath(t.src))})`).join(", ") || "nenhum"}` +
+            (readErrors.length ? `; ${readErrors.length} erro(s) de leitura` : ""),
+        );
         return 3;
       }
-    } else if (opt.once || (Date.now() - lastActivity) / 60_000 >= opt.idleMin) {
-      const pending = [...state.values()].filter((e) => sizeOf(`${localDir}/${e.name}`) !== e.size);
-      console.log(`[vigia] ${opt.once ? "--once" : `sem arquivo novo há ${opt.idleMin} min`}, sem XML local ainda; ${state.size - pending.length} de ${state.size} vídeo(s) local(is)${pending.length ? `; pendentes: ${pending.map((e) => e.name).join(", ")}` : ""}`);
-      return pending.length ? 3 : 0;
+    } else if (stop) {
+      const pending = missingOf(work);
+      console.log(
+        `[vigia] ${opt.once ? "--once" : `sem arquivo novo há ${opt.idleMin} min`}, sem XML local ainda; ${work.length - pending.length} de ${work.length} vídeo(s) local(is)` +
+          (pending.length ? `; pendentes: ${pending.map((t) => t.name).join(", ")}` : "") +
+          (readErrors.length ? `; ${readErrors.length} erro(s) de leitura` : ""),
+      );
+      return pending.length || readErrors.length ? 3 : 0;
     }
     await sleep(opt.intervalS * 1000);
   }

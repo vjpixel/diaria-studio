@@ -383,7 +383,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
 
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5975,30 +5975,42 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
 
 /**
  * #13229: grava `{xml}-local.xml` ao lado do XML (o do build ou o do `srt`, já
- * com a legenda), com só os vídeos do bruto em `ctx.premiereBrutoDir`. Sem a
- * chave no config, nada (o build de sempre). Devolve o caminho gravado, ou
- * `null` (sem a chave, sem o premiere_root, nome de bruto repetido, XML leve
- * sem bruto, ou falha de escrita, que é aviso: o XML normal já está gravado).
+ * com a legenda), com só os vídeos do bruto em `ctx.premiereBrutoDir`. Devolve
+ * o caminho gravado, ou `null` quando não grava: sem a chave no config, sem o
+ * premiere_root, XML leve sem bruto, nome de bruto repetido, ou falha de
+ * leitura/escrita (aviso: o XML normal já está gravado). Em TODO caminho que
+ * não grava, o `-local.xml` irmão de um build anterior é apagado (com aviso),
+ * para o editor nunca importar um XML local velho, de outro plano.
  */
-function writeLocalBrutoXml(ctx: Ctx, xmlPath: string): string | null {
-  if (!ctx.premiereBrutoDir) return null;
+export function writeLocalBrutoXml(ctx: Pick<Ctx, "premiereBrutoDir" | "premierePaths" | "edition">, xmlPath: string): string | null {
   const name = basename(xmlPath);
+  const out = join(dirname(xmlPath), localXmlFileName(name));
+  const dropStale = (why: string): null => {
+    if (!existsSync(out)) return null;
+    try {
+      unlinkSync(out);
+      console.error(`[aviso] ${basename(out)} anterior apagado (${why}): ele era de outro build e apontaria um plano velho (#13229)`);
+    } catch (e) {
+      console.error(`[aviso] ${basename(out)} anterior NÃO apagado (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}): está defasado, não importar no Premiere (#13229)`);
+    }
+    return null;
+  };
+  if (!ctx.premiereBrutoDir) return dropStale("sem publishing.video.premiere_bruto_root no config");
   if (!ctx.premierePaths) {
     console.error(`[aviso] ${name}: publishing.video.premiere_bruto_root sem premiere_root (ou --premiere-root off): XML local não gravado, ele é só para o Premiere do Mac (#13229)`);
-    return null;
+    return dropStale("sem premiere_root");
   }
   try {
     const local = localBrutoXml(readFileSync(xmlPath, "utf8"), ctx.premiereBrutoDir);
     if (!local.rewritten.length) {
       console.error(`[premissa] ${name}: nenhum vídeo do bruto no XML (XML leve, #13219): XML local não gravado, o normal já serve (#13229)`);
-      return null;
+      return dropStale("XML leve, sem bruto");
     }
     const dup = duplicateBrutoNames(local.rewritten);
     if (dup.length) {
       console.error(`[aviso] ${name}: bruto com nome repetido (${dup.join(", ")}) iria para o mesmo arquivo em ${ctx.premiereBrutoDir}: XML local não gravado; usar o XML normal (#13229)`);
-      return null;
+      return dropStale("nome de bruto repetido");
     }
-    const out = join(dirname(xmlPath), localXmlFileName(name));
     writeFileAtomic(out, local.xml);
     console.error(
       `[video-montagem] XML local ${basename(out)}: ${local.rewritten.length} vídeo(s) do bruto em ${ctx.premiereBrutoDir}/ (${local.rewritten.join(", ")}); ` +
@@ -6007,7 +6019,7 @@ function writeLocalBrutoXml(ctx: Ctx, xmlPath: string): string | null {
     return out;
   } catch (e) {
     console.error(`[aviso] ${name}: XML local falhou (${(e as Error).message.split("\n")[0]}): use o XML normal (#13229)`);
-    return null;
+    return dropStale("falha ao gravar o novo");
   }
 }
 

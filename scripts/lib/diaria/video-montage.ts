@@ -28,6 +28,7 @@
  *   - autorrevisão (`reviewPreview`): diff de palavras prévia × roteiro.
  */
 
+import { parsePremiereBrutoRoot } from "./premiere-bruto-root.ts";
 import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
@@ -3507,11 +3508,9 @@ function isAbsoluteRoot(p: string): boolean {
  */
 export function premiereBrutoRootFrom(config: unknown): string | null {
   const c = (config as { publishing?: { video?: { premiere_bruto_root?: unknown } } })?.publishing?.video?.premiere_bruto_root;
-  if (c === undefined || c === null) return null;
-  if (typeof c !== "string") throw new Error(`publishing.video.premiere_bruto_root precisa ser texto (veio ${JSON.stringify(c)}) (#13229)`);
-  if (!c.trim()) return null;
-  if (!isAbsoluteRoot(c.trim())) throw new Error(`publishing.video.premiere_bruto_root precisa ser um caminho absoluto do Mac (veio "${c}") (#13229)`);
-  return trimRoot(c.trim());
+  const r = parsePremiereBrutoRoot(c);
+  if ("error" in r) throw new Error(r.error);
+  return r.ok;
 }
 
 /** #13229: o nome do XML local ao lado do normal (`…_V3.xml` → `…_V3-local.xml`, variante `-local` da família do XML, #13610). */
