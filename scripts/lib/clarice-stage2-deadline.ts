@@ -60,7 +60,7 @@ export function resolveClariceStage2DeadlineMs(
       deadlineMs: CLARICE_DEGRADED_DEADLINE_MS,
       degraded: true,
       reason:
-        "ping real da Clarice falhou no Stage 0 (clariceRealProbe=false): teto de 90 s na Clarice da newsletter; estourando, clarice-pending skip e resume no Stage 4. O social mantém o teto normal de 480 s",
+        "ping real da Clarice falhou no Stage 0 (clariceRealProbe=false): teto de 90 s na Clarice da newsletter; estourando, clarice-pending skip e resume no Stage 4. O social mantém o teto normal de 480 s inteiro, numa chamada própria quando não cabe na mesma (#14093)",
       stateError: null,
     };
   }
