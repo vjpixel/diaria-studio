@@ -972,8 +972,8 @@ function perplexityExtractUsage(json: unknown): GeoProviderUsage | undefined {
 /** Timeout DEFAULT por chamada de provider (usado pelo Google; OpenAI tem
  * `OPENAI_GEO_TIMEOUT_MS` próprio desde #8064) —
  * mesma referência de 25s já usada pro fetch in-page do Beehiiv
- * (`DEFAULT_FETCH_TIMEOUT_MS`, `scripts/lib/beehiiv-insert-text.ts`,
- * documentado em `context/publishers/beehiiv-playbook.md` §Fase 3). Sem
+ * (`DEFAULT_FETCH_TIMEOUT_MS` da antiga `beehiiv-insert-text.ts`, removida no #14048,
+ * documentado em `docs/archive/beehiiv-playbook.md` §Fase 3). Sem
  * isso, até 24 chamadas seriais (3 providers × 8 perguntas) podiam travar
  * o processo inteiro numa conexão pendurada (achado #4616 do fleet
  * review). **Anthropic usa um valor maior** (`GeoProviderDef.timeoutMs`,

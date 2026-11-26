@@ -8,8 +8,8 @@ name: Deploy draft Worker
 #
 # Verificação pré-workflow (#4084): NÃO é protótipo — `workers/draft` hospeda
 # preview HTML usado pelo fluxo de publicação real (`scripts/upload-html-public.ts`,
-# `scripts/monthly-preview-cloudflare.ts`, `scripts/lib/beehiiv-insert-text.ts`,
-# `context/publishers/beehiiv-playbook.md`, `platform.config.json`) e já tem
+# `scripts/monthly-preview-cloudflare.ts`, `platform.config.json`; antes do
+# #11225 também o publisher Beehiiv, registrado em `docs/archive/beehiiv-playbook.md`) e já tem
 # KV namespace real (não placeholder) e secret ADMIN_SECRET configurados.
 #
 # Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):

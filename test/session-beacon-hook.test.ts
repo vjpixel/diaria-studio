@@ -1353,7 +1353,8 @@ describe("#6952 — beacon e session-registry se excluem mutuamente no mesmo reg
     // Guard barato contra a drift que o teste acima detectaria só por acidente
     // de timing: se um lado mudar `${path}.lock`, os dois continuam passando
     // nos seus próprios testes e param de se excluir.
-    const registrySrc = readFileSync(REGISTRY_CLI, "utf8");
+    // #14004: a escrita com lock mora em `scripts/lib/sessions/store.ts`.
+    const registrySrc = readFileSync(fileURLToPath(new URL("../scripts/lib/sessions/store.ts", import.meta.url)), "utf8");
     const beaconSrc = readFileSync(REAL_HOOK, "utf8");
     for (const [nome, src] of [["session-registry.ts", registrySrc], [".mjs do beacon", beaconSrc]] as const) {
       assert.match(
