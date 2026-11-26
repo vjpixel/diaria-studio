@@ -33,34 +33,10 @@ import {
   WEB_SESSION_COOKIE,
   issueWebSessionCookie,
 } from "../workers/poll/src/web-gate.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
-
-const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-  POLL: makeMapKV(),
+const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+  POLL: makeTrackedKv(),
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",
@@ -375,11 +351,11 @@ describe("#4253 item 6 SEGURANÇA: proteção de histórico órfão (#3996) pres
   it("e-mail com score PRÉ-EXISTENTE sob OUTRO token → pending:true, NÃO mergeia na hora (mesmo vindo do gate, com nome preenchido)", async () => {
     const attackerAnonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         // vítima já tem histórico estabelecido sob um token DIFERENTE do atacante.
         "web:score:vitima@example.com": JSON.stringify({ total: 500, correct: 400, streak: 10, last_edition: "260701" }),
         [`web:score:${attackerAnonEmail}`]: JSON.stringify({ total: 3, correct: 1, streak: 1, last_edition: "260701" }),
-      }) as unknown as ReturnType<typeof makeMapKV>,
+      }) as unknown as ReturnType<typeof makeTrackedKv>,
     });
     const res = await worker.fetch(
       new Request("https://poll.test/jogar/identify?brand=web", {
@@ -409,9 +385,9 @@ describe("#4253 item 6: POST /jogar/identify (máquina reusada, ver poll-jogar-i
   it("merge imediato: histórico anônimo + nickname a partir de name aparecem em score:{email}", async () => {
     const anonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         [`web:score:${anonEmail}`]: JSON.stringify({ total: 3, correct: 2, streak: 2, last_edition: "260701" }),
-      }) as unknown as ReturnType<typeof makeMapKV>,
+      }) as unknown as ReturnType<typeof makeTrackedKv>,
     });
     const res = await worker.fetch(
       new Request("https://poll.test/jogar/identify?brand=web", {

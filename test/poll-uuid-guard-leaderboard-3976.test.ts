@@ -47,6 +47,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { isValidWebToken, WEB_TOKEN_DOMAIN } from "../workers/poll/src/lib.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 // ── isValidWebToken (pure, lib.ts) ──────────────────────────────────────────
 
@@ -97,33 +98,8 @@ describe("isValidWebToken (pure, #3976)", () => {
 
 // ── GET /vote?brand=web ──────────────────────────────────────────────────
 
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
-
-const makeEnv = (seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-  POLL: makeMapKV(seed),
+const makeEnv = (seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+  POLL: makeTrackedKv(seed),
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",

@@ -13,19 +13,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { apoiarClickCounterKey, incrementApoiarCounter } from "../scripts/lib/shared/apoiar-counters.ts";
-
-function makeMapKV(initial: Record<string, string> = {}): KVNamespace {
-  const store = new Map(Object.entries(initial));
-  return {
-    get: async (key: string) => store.get(key) ?? null,
-    put: async (key: string, value: string) => {
-      store.set(key, value);
-    },
-    delete: async (key: string) => {
-      store.delete(key);
-    },
-  } as unknown as KVNamespace;
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 describe("apoiarClickCounterKey", () => {
   test("formato estável — 1 chave cumulativa por dia (#8498: a chave de view saiu)", () => {
@@ -35,7 +23,7 @@ describe("apoiarClickCounterKey", () => {
 
 describe("incrementApoiarCounter", () => {
   test("chave ausente → cria com valor '1'", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const key = apoiarClickCounterKey("2026-09-15");
     await incrementApoiarCounter(kv, key);
     assert.equal(await kv.get(key), "1");
@@ -43,14 +31,14 @@ describe("incrementApoiarCounter", () => {
 
   test("chave existente → soma 1 ao valor atual", async () => {
     const key = apoiarClickCounterKey("2026-09-15");
-    const kv = makeMapKV({ [key]: "4" });
+    const kv = makeTrackedKvNamespace({ [key]: "4" });
     await incrementApoiarCounter(kv, key);
     assert.equal(await kv.get(key), "5");
   });
 
   test("valor corrompido (não-numérico) no KV → trata como 0, não lança", async () => {
     const key = apoiarClickCounterKey("2026-09-15");
-    const kv = makeMapKV({ [key]: "lixo" });
+    const kv = makeTrackedKvNamespace({ [key]: "lixo" });
     await incrementApoiarCounter(kv, key);
     assert.equal(await kv.get(key), "1");
   });
@@ -82,7 +70,7 @@ describe("incrementApoiarCounter", () => {
   });
 
   test("dias distintos não se cruzam sob incrementos repetidos", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const day1 = apoiarClickCounterKey("2026-09-15");
     const day2 = apoiarClickCounterKey("2026-09-16");
     await incrementApoiarCounter(kv, day1);
