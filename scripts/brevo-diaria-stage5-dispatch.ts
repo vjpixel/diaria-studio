@@ -51,7 +51,15 @@
  * `{status: "busy", active_launch_id, ...}`, exit 5.
  *
  * Uso:
- *   npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>]
+ *   npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>] [--force]
+ *
+ * Acima do teto de 30 min (#14096) o registro `running` antigo só deixa de
+ * barrar quando dá para provar que acabou: neste host com dispatch e worker
+ * mortos, ou com o pid vivo rodando outro programa (pid reciclado). Pid vivo
+ * ainda rodando o dispatch Brevo barra sempre (sairia um 2º rascunho, porque
+ * o `brevo-diaria-published.json` só é gravado no fim). Registro de outro
+ * host, ou pid vivo com o comando ilegível (fora do Linux), barra até um
+ * `--force` explícito, depois de o operador conferir o processo.
  *
  * Exit codes: 0 = "ok" ou "already_done" ou "skipped" (fail-soft, nunca é
  * erro do orchestrator); 1 = "failed" (sub-script falhou) — ainda assim
@@ -82,12 +90,14 @@ import {
   brevoStage5RecordDir,
   brevoStage5WorkerPidPath,
   currentHost,
-  findActiveLaunch,
   isPidAlive,
   listBrevoStage5Records,
   readWorkerPid,
   removeWorkerPidFile,
   writeBrevoStage5Record,
+  findActiveLaunchWithReason,
+  readProcessCommand,
+  type ActiveLaunch,
   type BrevoStage5Record,
 } from "./lib/brevo-stage5-background.ts"; // #14037
 import { withFileLock } from "./lib/file-lock.ts"; // #14037
@@ -331,8 +341,11 @@ export interface RecordIo {
   host: string;
   /** `--launch-id` do orchestrator; o join só aceita o registro com o mesmo id. */
   launchId: string;
-  /** Lançamento ATIVO desta edição (outro processo rodando), ou `null`. */
-  findActive: () => BrevoStage5Record | null;
+  /**
+   * Lançamento ATIVO desta edição (outro processo rodando), ou `null`. Com o
+   * porquê (`ActiveLaunch`, #14096) o motivo entra no `reason` do JSON `busy`.
+   */
+  findActive: () => BrevoStage5Record | ActiveLaunch | null;
   /** Serializa a checagem de lançamento ativo + gravação do `running`. Default: sem lock. */
   withLaunchLock?: <T>(fn: () => T) => T;
   /** Chamado depois do `done`: remove o `.worker.json` deste lançamento. */
@@ -346,6 +359,8 @@ export interface Stage5BrevoBusy {
   active_launch_id: string;
   active_pid: number;
   active_host: string;
+  /** Por que o lançamento ativo barra este (#14096), quando conhecido. */
+  active_reason?: string;
 }
 
 /**
@@ -358,6 +373,8 @@ export interface Stage5BrevoBusy {
  *   `running` de outro host dentro do teto) → `busy`, exit 5, nada roda.
  * - Falha ao gravar o `running` → `failed` (step `record`), exit 1, nada roda:
  *   sem registro o join não teria como juntar o resultado.
+ * - Lock do registro que não sai (timeout, EACCES/ENOSPC) → `failed` (step
+ *   `lock`), exit 1, nada roda (#14096): JSON no stdout, nunca stack trace.
  * - Exceção do dispatch vira `failed` (step `crash`), nunca some.
  * - Falha ao gravar o `done` só avisa no stderr: o trabalho já foi feito e o
  *   resultado sai no stdout.
@@ -369,20 +386,24 @@ export function runStage5BrevoDispatchWithRecord(
   const startedAt = io.now();
   const base = { launch_id: io.launchId, pid: io.pid, host: io.host, started_at: startedAt };
   const lock = io.withLaunchLock ?? (<T>(fn: () => T) => fn());
-  const gate = lock((): { result: Stage5BrevoResult | Stage5BrevoBusy; exitCode: number } | null => {
+  type Gate = { result: Stage5BrevoResult | Stage5BrevoBusy; exitCode: number } | null;
+  const checkAndMark = (): Gate => {
     // Inclui o MESMO launch-id: um processo anterior com este id ainda vivo
     // também barra (a gravação deste sobrescreveria o registro dele).
-    const active = io.findActive();
-    if (active) {
+    const found = io.findActive();
+    if (found) {
+      const active = "record" in found ? found.record : found;
+      const why = "record" in found ? found.reason : undefined;
       return {
         result: {
           status: "busy",
           reason:
             `outro lançamento do Brevo desta edição está ativo (launch_id ${active.launch_id}, pid ${active.pid}, host ${active.host}, ` +
-            `iniciado ${active.started_at}) — não iniciar outro; juntar aquele com o join.`,
+            `iniciado ${active.started_at})${why ? `: ${why}` : ""} — não iniciar outro; juntar aquele com o join.`,
           active_launch_id: active.launch_id,
           active_pid: active.pid,
           active_host: active.host,
+          ...(why ? { active_reason: why } : {}),
         },
         exitCode: BUSY_EXIT_CODE,
       };
@@ -400,7 +421,23 @@ export function runStage5BrevoDispatchWithRecord(
       };
     }
     return null;
-  });
+  };
+  let gate: Gate;
+  try {
+    gate = lock(checkAndMark);
+  } catch (e) {
+    // #14096: lock que não sai (timeout, `.lock` de outro host chegando pela
+    // sync do `data/`, EACCES/ENOSPC) vira JSON `failed`, nunca stack trace.
+    // Nada rodou e nenhum `running` foi gravado.
+    return {
+      result: {
+        status: "failed",
+        step: "lock",
+        reason: `lock do registro não obtido (${(e as Error).message}) — dispatch não iniciado, nada despachado.`,
+      },
+      exitCode: 1,
+    };
+  }
   if (gate) return gate;
   let result: Stage5BrevoResult;
   try {
@@ -439,7 +476,7 @@ if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   const editionDirArg = getStringArg(argv, "edition-dir");
   if (!editionDirArg) {
-    process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>]\n");
+    process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>] [--force]\n");
     process.exit(2);
   }
   // #9427: resolve contra a raiz do repo (antes era `process.cwd()`). Argumento
@@ -457,6 +494,10 @@ if (isMainModule(import.meta.url)) {
     const launchId = getStringArg(argv, "launch-id") ?? `auto-${new Date().toISOString()}-${process.pid}`;
     process.stderr.write(`[brevo-diaria stage5] launch-id=${launchId}\n`);
     const host = currentHost();
+    // #14096: `--force` só desarma registro `running` ACIMA do teto que não
+    // deu para verificar (outro host, comando do pid ilegível). Pid vivo
+    // rodando o dispatch Brevo continua barrando mesmo com ele.
+    const force = argv.includes("--force");
     const { result, exitCode } = runStage5BrevoDispatchWithRecord(
       () => runStage5BrevoDispatch(editionDir, productionDeps(ROOT, { workerPidFile: brevoStage5WorkerPidPath(editionDir, launchId) })),
       {
@@ -467,12 +508,14 @@ if (isMainModule(import.meta.url)) {
         host,
         launchId,
         findActive: () =>
-          findActiveLaunch(listBrevoStage5Records(editionDir), {
+          findActiveLaunchWithReason(listBrevoStage5Records(editionDir), {
             host,
             isPidAlive,
             workerPidOf: (id) => readWorkerPid(editionDir, id),
+            processCommandOf: readProcessCommand,
             nowEpochMs: Date.now(),
             maxTotalMs: DEFAULT_MAX_TOTAL_MS,
+            force,
           }),
         withLaunchLock: <T>(fn: () => T) => {
           mkdirSync(brevoStage5RecordDir(editionDir), { recursive: true });

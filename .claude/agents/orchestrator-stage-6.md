@@ -20,6 +20,8 @@ Interacao humana SO neste stage (alem do Stage 4) — e dentro dele, **uma únic
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
 
+**Comandos de registro encadeados (#14039):** `log-event.ts` e `update-stage-status.ts` vão no MESMO Bash do comando que reportam, nunca num turno próprio, com o exit do comando principal guardado (`; rc=$?`) e devolvido no fim (`(exit $rc)`). Forma completa, níveis por exit, `--details` com o JSON do stdout e as exceções sempre standalone (`edition-lock.ts`, `session-registry.ts` e os demais alvos do `inject-session-id.mjs`): seção "Comandos de registro encadeados" de `orchestrator-stage-5.md`, que vale igual aqui com `--stage 6`.
+
 ### Pre-condicao: sentinel Stage 5
 
 **Rodar SEMPRE, inclusive vindo do Stage 5 na mesma sessao (#7983).** O `assert` le o sentinel do DISCO, nunca a memoria da sessao — quando a fusao encadeou ate aqui, o §5h acabou de escrever o arquivo e o assert sai `0` em milissegundos. Pular o check porque "acabei de rodar o Stage 5" e exatamente o tipo de atalho que a fusao NAO autoriza: e ele que pega dispatch parcial (canal que falhou depois do sentinel) e backend errado (exit `2`, #7963).
@@ -40,15 +42,13 @@ Exit code handling:
 
 ### 6a. Pre-requisitos
 
-**Marcar Stage 6 `running` no inicio (#1783):**
+**Marcar Stage 6 `running` no inicio (#1783) e logar o inicio, num Bash so (#14039):**
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status running
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status running; rc=$?
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'etapa 6 agendamento started'
+(exit $rc)
 ```
 
-- Logar inicio:
-  ```bash
-  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'etapa 6 agendamento started'
-  ```
 - Ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_status`/`review_attempts`/`review_reason`/`review_final_issues` vêm de `_internal/05-review-kit.json` (gravado por `record-kit-review.ts` no fim do §5f, #9594). **Arquivo ausente/inválido NÃO é "review ok"** — é o review que não rodou (edição 261005): rodar `npx tsx scripts/check-invariants.ts --stage 5 --rule stage-5-review-completed --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`) e, se o JSON trouxer a violação, o `{review_status_block}` do gate (§6c) vira `⚠ review automático NÃO rodou na Etapa 5 ({mensagem da violação}) — conferir o e-mail de teste com atenção redobrada`. Nunca rodar o `review-test-email` aqui pra "completar" — a parada única do §6c já pede a revisão visual.
 - Ler `_internal/06-social-published.json` → extrair: horarios agendados dos 3 posts LinkedIn e 3 posts Facebook (`scheduled_at` por destaque).
 - Ler `_internal/06-verify-dispatch.json` (se existir) → extrair quaisquer warnings de verificacao.
@@ -139,10 +139,13 @@ npx tsx scripts/substitute-image-urls.ts --html {EDITION_DIR}/_internal/newslett
 npx tsx scripts/publish-edition-site-page.ts \
   --edition-dir {EDITION_DIR} \
   {--slug {slug_atual_do_get_post} | --slug-from-d1 pro Kit} \
-  --sitemap workers/site/public/sitemap.xml --no-wait-merge
+  --sitemap workers/site/public/sitemap.xml --no-wait-merge; rc=$?
 npx tsx scripts/reconcile-site-sitemap.ts
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 fallback publish: exit {code}"
+case $rc in 0|2) lvl=info ;; *) lvl=warn ;; esac  # {info se 0/2, warn se 3/4/5}
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level "$lvl" --message "site-page stage6 fallback publish: exit $rc"
+(exit $rc)
 ```
+Um Bash so (#14039): o exit que volta e o do `publish-edition-site-page.ts`.
 
 **A home NÃO passa a mostrar esta edição agora, e isso é o comportamento correto (#7686).** `buildHomeFeed` descarta entrada de sitemap cuja `<lastmod>` (= data de ENVIO) ainda não chegou, em BRT — então o `index.html` regenerado neste commit sai SEM a edição que você acabou de publicar. Quem a faz aparecer é o workflow `.github/workflows/regen-home.yml`, às 06:00 BRT, junto do envio real. Decisão do editor (08/09/2026): a página `/p/{slug}` pode ficar pronta antes, sem problema; só a HOME espera. **Não "corrija" isso** — antes do #7686 a home anunciava a edição ~9h antes de qualquer assinante recebê-la, e a home é destino de campanha paga (#7575). Se a home amanhecer sem a edição do dia, o culpado é o workflow das 06:00 ter falhado, nunca o filtro: checar `gh run list --workflow=regen-home.yml`.
 
@@ -278,6 +281,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
   --message "newsletter kit stage6 schedule: exit {code}" \
   --details '{json de saída do script}'
 ```
+Este log vai no MESMO Bash do `schedule-newsletter-kit.ts` (#14039): `out=$(npx tsx scripts/schedule-newsletter-kit.ts ...); rc=$?; echo "$out"`, o nível por `case $rc`, `--details "$out"` e `(exit $rc)` no fim, para a tabela acima ler o exit do script.
 
 **Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup`.
 
@@ -300,6 +304,7 @@ URL própria já resolvida, `reason:"already_own_domain"`):
 npx tsx scripts/kit-refresh-social-edition-url.ts --edition-dir {EDITION_DIR}/
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se ok:true, error se ok:false} --message "kit-refresh-social-edition-url stage6: {resolved/reason}" --details '{json}'
 ```
+Os dois no mesmo Bash (#14039): `out=$(npx tsx scripts/kit-refresh-social-edition-url.ts ...); rc=$?; echo "$out"`; nível `error` se `"ok":false` no `$out` (`case "$out" in *'"ok":false'*) lvl=error ;; *) lvl=info ;; esac`), `--details "$out"`, `(exit $rc)`.
 
 `resolved:false` (`already_own_domain` — caminho feliz desde o #7420 —,
 `no_slug_yet`/`already_resolved` — só edições pré-#7420) →
@@ -348,6 +353,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
   --message "brevo-diaria stage6 schedule: exit {code}" \
   --details '{json de saída do script}'
 ```
+Mesmo Bash do `schedule-daily-brevo.ts` (#14039), na forma do §6d-kit: `out=$(...); rc=$?; echo "$out"`, log, `(exit $rc)`.
 
 ### 6d-pessoal. (aposentado, #11398)
 
@@ -504,17 +510,15 @@ e a transicao tem sucesso. **Isto fecha o timer da edicao (#3457)** — o `end` 
 auto-carimbado agora, ANTES de qualquer trabalho de montar/enviar o rascunho de e-mail
 (6b-8), pra que o tempo desse envio nao va pra dentro da duracao do Stage 6:
 
+**Capturar custo/tokens reais (#3441) no mesmo Bash (#14039)** — o exit que volta e o do `update-stage-status`:
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status done
-```
-
-**Capturar custo/tokens reais (#3441):**
-```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status done; rc=$?
 npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 6
 # #9594 — backstop do Stage 5 (mesma sessão em /diaria-5-publicacao): só
 # captura se a row do Stage 5 ainda está sem custo; senão imprime
 # {"source":"skipped","reason":"already_captured"} e não toca nada.
 npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 5 --if-missing
+(exit $rc)
 ```
 
 Falha (exit != 0) → logar warn com o motivo impresso pelo script; nao bloquear o resto do

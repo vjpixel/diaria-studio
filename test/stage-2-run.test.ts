@@ -14,10 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   runStage2,
-  socialClariceDeadlineMs,
+  planSocialClarice,
   readRunState,
+  RunStateUnreadableError,
   CLARICE_PHASE_BUDGET_MS,
-  CLARICE_SOCIAL_MIN_MS,
   STAGE2_SNAPSHOTS,
   type StepResult,
   type Stage2RunDeps,
@@ -118,11 +118,12 @@ describe("teto da Clarice na Etapa 2 (#14029)", () => {
     assert.equal(CLARICE_NORMAL_DEADLINE_MS, CLARICE_TOTAL_DEADLINE_MS);
   });
 
-  it("o social recebe o que sobra do orçamento da fase, com piso de 60 s", () => {
-    assert.equal(socialClariceDeadlineMs(480_000, 10_000), 480_000);
-    assert.equal(socialClariceDeadlineMs(480_000, 480_000), CLARICE_PHASE_BUDGET_MS - 480_000);
-    assert.equal(socialClariceDeadlineMs(480_000, 530_000), CLARICE_SOCIAL_MIN_MS);
-    assert.equal(socialClariceDeadlineMs(90_000, 90_000), 90_000);
+  it("o social roda na mesma chamada só com o teto inteiro; senão, chamada própria (#14093)", () => {
+    assert.deepEqual(planSocialClarice(480_000, 10_000), { mode: "inline", deadlineMs: 480_000 });
+    assert.deepEqual(planSocialClarice(480_000, CLARICE_PHASE_BUDGET_MS - 480_000), { mode: "inline", deadlineMs: 480_000 });
+    assert.deepEqual(planSocialClarice(480_000, 90_000), { mode: "own-call", remainingMs: 450_000 });
+    assert.deepEqual(planSocialClarice(480_000, 450_000), { mode: "own-call", remainingMs: 90_000 });
+    assert.deepEqual(planSocialClarice(480_000, -5), { mode: "inline", deadlineMs: 480_000 }, "relógio que volta não dá teto maior");
   });
 });
 
@@ -199,6 +200,37 @@ async function preDispatch(handlers: Record<string, Handler> = {}): Promise<void
   const r = await runStage2(["--phase", "pre-dispatch", "--edition", E], deps);
   assert.equal(r.code, 0);
 }
+
+describe("estado ilegível ≠ ausente (#14094)", () => {
+  it("readRunState: ausente → null; JSON quebrado ou não-objeto → RunStateUnreadableError", () => {
+    assert.equal(readRunState(dir), null);
+    write("_internal/02-stage2-run-state.json", "{ quebrado");
+    assert.throws(() => readRunState(dir), RunStateUnreadableError);
+    write("_internal/02-stage2-run-state.json", "[]");
+    assert.throws(() => readRunState(dir), RunStateUnreadableError);
+  });
+
+  it("fase com estado ilegível → code 1 sem mandar re-rodar o pre-dispatch, arquivo intacto, erro no run-log", async () => {
+    write("_internal/02-stage2-run-state.json", '{"clariceDone": {"newsletter": "applied"');
+    const { deps, calls } = makeDeps();
+    const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
+    assert.equal(r.code, 1);
+    const msg = r.notes.join("\n");
+    assert.match(msg, /ilegível/);
+    assert.match(msg, /NÃO rodar --phase pre-dispatch/);
+    assert.doesNotMatch(msg, /ausente — rodar --phase pre-dispatch/);
+    assert.equal(readFileSync(join(dir, "_internal", "02-stage2-run-state.json"), "utf8"), '{"clariceDone": {"newsletter": "applied"');
+    const log = calls.find((c) => c.script.includes("log-event"));
+    assert.equal(argOf(log, "--level"), "error");
+  });
+
+  it("estado ausente segue mandando rodar o pre-dispatch", async () => {
+    const { deps } = makeDeps();
+    const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
+    assert.equal(r.code, 1);
+    assert.match(r.notes.join("\n"), /ausente — rodar --phase pre-dispatch/);
+  });
+});
 
 describe("--phase post-writers", () => {
   it("sem estado do pre-dispatch → code 1", async () => {
@@ -341,6 +373,41 @@ describe("--phase post-pool", () => {
     assert.equal(st.clariceDone, undefined, "post-pool limpa clariceDone");
     assert.equal(st.postChecksDone, false);
     assert.deepEqual(st.clariceWarns, []);
+  });
+});
+
+describe("normalize falho chega ao gate (#14094)", () => {
+  it("post-pool: aviso em gateNotes + run-log + estado; post-checks repete no gate; sucesso posterior limpa", async () => {
+    await preDispatch();
+    seedWriterOutputs();
+    const { deps, calls } = makeDeps({
+      "lint-newsletter-md.ts": () => ok(JSON.stringify({ passed: true, checks: [] })),
+      "normalize-newsletter.ts": () => fail(1, "", "boom"),
+    });
+    const r = await runStage2(["--phase", "post-pool", "--edition", E], deps);
+    assert.equal(r.code, 0);
+    assert.equal(readFileSync(join(dir, "_internal/02-normalized.md"), "utf8"), "draft\n", "fallback = cópia do draft");
+    assert.ok(r.gateNotes.some((n) => /normalize-newsletter falhou/.test(n)), "aviso no gate do post-pool");
+    const log = calls.find((c) => c.script.includes("log-event") && /normalize/.test(argOf(c, "--message") ?? ""));
+    assert.equal(argOf(log, "--level"), "warn");
+    assert.match(readRunState(dir)?.normalizeWarn ?? "", /normalize-newsletter falhou/);
+
+    markClariceDone();
+    write("02-reviewed.md", "x\n");
+    const pc = makeDeps(happyChecks);
+    const r2 = await runStage2(["--phase", "post-checks", "--edition", E], pc.deps);
+    assert.ok(r2.gateNotes.some((n) => /normalize-newsletter falhou/.test(n)), "o gate (post-checks) vê o aviso");
+
+    const again = makeDeps({
+      "lint-newsletter-md.ts": () => ok(JSON.stringify({ passed: true, checks: [] })),
+      "normalize-newsletter.ts": () => {
+        write("_internal/02-normalized.md", "normalized\n");
+        return ok();
+      },
+    });
+    const r3 = await runStage2(["--phase", "post-pool", "--edition", E], again.deps);
+    assert.ok(!r3.gateNotes.some((n) => /normalize/.test(n)));
+    assert.equal(readRunState(dir)?.normalizeWarn, null);
   });
 });
 
@@ -527,6 +594,97 @@ function markClariceDone(): void {
   writeFileSync(join(dir, "_internal", "02-stage2-run-state.json"), JSON.stringify({ ...st, clariceDone: { newsletter: "applied", social: "applied" } }));
 }
 
+describe("--phase post-humanize — orçamento da Clarice do social (#14093)", () => {
+  const writeCorrectedB: Handler = (args) => {
+    const out = argOf({ script: "", args }, "--corrected-out")!;
+    writeFileSync(out, out.includes("02-") ? "corrigido\n" : "# Social\n\n## d1\n\nA3\n\n## d2\n\nB3\n\n## d3\n\nC3\n", "utf8");
+    return ok();
+  };
+  const isSocialB = (args: string[]): boolean => (argOf({ script: "", args }, "--in") ?? "").endsWith("03-social.md");
+
+  /** Relógio injetado: a Clarice da newsletter "leva" `newsletterMs` sem esperar de verdade. */
+  function clockedDeps(newsletterMs: number, handlers: Record<string, Handler>): ReturnType<typeof makeDeps> {
+    let t = Date.UTC(2026, 10, 26, 3, 0, 0);
+    const clarice = handlers["clarice-correct.ts"];
+    const made = makeDeps({
+      ...handlers,
+      "clarice-correct.ts": (args) => {
+        if (!isSocialB(args)) t += newsletterMs;
+        return clarice(args);
+      },
+    });
+    made.deps.now = () => new Date(t);
+    return made;
+  }
+  const clariceCalls = (calls: Call[]): Call[] => calls.filter((c) => c.script.includes("clarice-correct"));
+
+  it("dia rápido (newsletter em 30 s): as duas Clarices na mesma chamada, social com 480 s", async () => {
+    await upToHumanize();
+    humanizeDone();
+    const { deps, calls } = clockedDeps(30_000, { ...happyChecks, "clarice-correct.ts": writeCorrectedB });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], deps);
+    assert.equal(r.code, 0);
+    assert.equal(r.nextPhase, "post-checks");
+    const cc = clariceCalls(calls);
+    assert.equal(cc.length, 2);
+    assert.equal(argOf(cc[1], "--deadline-ms"), "480000");
+    assert.equal(r.clarice?.social, "applied");
+  });
+
+  it("dia lento (newsletter em 450 s): social NÃO roda com a sobra de 90 s; vai para chamada própria com 480 s", async () => {
+    await upToHumanize();
+    humanizeDone();
+    const first = clockedDeps(450_000, { ...happyChecks, "clarice-correct.ts": writeCorrectedB });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], first.deps);
+    assert.equal(r.code, 3, "nem halt nem sucesso: re-rodar só o social");
+    assert.equal(r.rerunPhase, "post-humanize");
+    assert.deepEqual(r.rerunArgs, ["--social-clarice-only"]);
+    assert.ok(r.fixes.some((f) => f.check === "clarice-social-own-call"));
+    assert.equal(r.haltRequired, undefined);
+    assert.equal(clariceCalls(first.calls).length, 1, "só a newsletter nesta chamada");
+    assert.ok(!first.calls.some((c) => c.script.includes("check-humanizer-social")), "o social ainda não tem prova de Clarice");
+    assert.equal(readRunState(dir)?.clariceDone?.newsletter, "applied");
+    assert.equal(readRunState(dir)?.clariceDone?.social, undefined);
+
+    const second = clockedDeps(0, { ...happyChecks, "clarice-correct.ts": writeCorrectedB });
+    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, ...r.rerunArgs!], second.deps);
+    assert.equal(r2.code, 0);
+    assert.equal(r2.nextPhase, "post-checks");
+    const cc = clariceCalls(second.calls);
+    assert.equal(cc.length, 1);
+    assert.ok(isSocialB(cc[0].args));
+    assert.equal(argOf(cc[0], "--deadline-ms"), "480000", "teto inteiro, não a sobra");
+    assert.equal(readRunState(dir)?.clariceDone?.newsletter, "applied");
+    assert.equal(readRunState(dir)?.clariceDone?.social, "applied");
+  });
+
+  it("dia degradado: newsletter pulada em 90 s, social em chamada própria; se falhar, halt que cita o ping (nunca skip)", async () => {
+    await upToHumanize();
+    humanizeDone();
+    write("_internal/preflight-state.json", JSON.stringify({ clariceRealProbe: false }));
+    const pending: Handler = (args) => {
+      if (args[0] === "skip") write("02-reviewed.md", "humanized\n");
+      return ok();
+    };
+    const first = clockedDeps(90_000, {
+      ...happyChecks,
+      "clarice-correct.ts": (args) => (isSocialB(args) ? writeCorrectedB(args) : fail(6)),
+      "clarice-pending.ts": pending,
+    });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], first.deps);
+    assert.equal(r.code, 3);
+    assert.deepEqual(r.rerunArgs, ["--social-clarice-only"]);
+    assert.equal(r.clarice?.newsletter, "unavailable-skipped");
+    assert.ok((readRunState(dir)?.clariceWarns ?? []).some((n) => /clarice-pending\.ts resume/.test(n)), "o aviso do resume fica no estado");
+
+    const second = clockedDeps(0, { ...happyChecks, "clarice-correct.ts": () => fail(6), "clarice-pending.ts": pending });
+    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only"], second.deps);
+    assert.equal(r2.code, 2);
+    assert.match(r2.haltRequired!.reason, /clarice_unavailable.*ping real/);
+    assert.ok(!second.calls.some((c) => c.script.includes("clarice-pending") && c.args[0] === "skip"), "o social nunca vira skip");
+  });
+});
+
 describe("--phase post-checks", () => {
   it("sem as Clarices registradas pelo post-humanize → code 1", async () => {
     await preDispatch();
@@ -613,6 +771,7 @@ describe("--phase post-gate", () => {
     const r1 = await runStage2(["--phase", "post-gate", "--edition", E], first.deps);
     assert.equal(r1.code, 0);
     assert.equal(r1.pendingAgentDispatch[0]?.agent, "title-picker");
+    assert.deepEqual(r1.rerunArgs, ["--after-title-picker"], "o re-run do contrato leva a flag (#14094)");
     assert.ok(!first.calls.some((c) => c.script.includes("pipeline-sentinel")));
 
     const second = makeDeps();
@@ -621,6 +780,32 @@ describe("--phase post-gate", () => {
     const w = second.calls.find((c) => c.script.includes("pipeline-sentinel"));
     assert.equal(w?.args[0], "write");
     for (const rel of STAGE2_SNAPSHOTS) assert.ok(!existsSync(join(dir, rel)), `${rel} removido depois do sentinel`);
+  });
+
+  it("re-run com o rerunArgs do title-picker valida a estrutura contra o snapshot pré-title-picker (#14094)", async () => {
+    await preDispatch();
+    markChecksDone();
+    write("02-reviewed.md", "antes\n");
+    const first = makeDeps({ "lint-newsletter-md.ts": () => fail(1) });
+    const r1 = await runStage2(["--phase", "post-gate", "--edition", E], first.deps);
+    write("02-reviewed.md", "mexido pelo title-picker\n");
+    const second = makeDeps({ "validate-section-structure.ts": () => fail(1) });
+    await runStage2(["--phase", "post-gate", "--edition", E, ...(r1.rerunArgs ?? [])], second.deps);
+    const struct = second.calls.find((c) => c.script.includes("validate-section-structure"));
+    assert.ok(struct, "validate-section-structure rodou");
+    assert.equal(readFileSync(join(dir, "_internal/02-pre-title-picker.md"), "utf8"), "antes\n", "snapshot não sobrescrito");
+    assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "antes\n", "estrutura corrompida restaurada");
+  });
+
+  it("títulos excedentes depois do title-picker → code 3 com rerunArgs (#14094)", async () => {
+    await preDispatch();
+    markChecksDone();
+    write("02-reviewed.md", "x\n");
+    write("_internal/02-pre-title-picker.md", "x\n");
+    const { deps } = makeDeps({ "lint-newsletter-md.ts": () => fail(1) });
+    const r = await runStage2(["--phase", "post-gate", "--edition", E, "--after-title-picker"], deps);
+    assert.equal(r.code, 3);
+    assert.deepEqual(r.rerunArgs, ["--after-title-picker"]);
   });
 
   it("intentional-error.json incompleto: interativo para antes do sentinel; --no-gates segue (#14084)", async () => {

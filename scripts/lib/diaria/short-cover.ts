@@ -16,7 +16,7 @@
  *     parte e, sem miniatura vertical própria, cai no frame automático (#12100). A
  *     YouTube Data API não tem chamada para ela: o registro grava
  *     `vertical_feed: "manual"` e o agente aplica a capa vertical no Studio web
- *     (Passo B3a de `/diaria-publica-video`, #12254). Desde a opção 2 do
+ *     (Passo B3a de `/diaria-publica`, #12254). Desde a opção 2 do
  *     #12100 (11/11/2026) o vertical enviado leva a capa nos primeiros frames
  *     (`short-first-frame-cover.ts`) e o registro grava `first_frame_cover`,
  *     sem confirmação até a medição do `oar2.jpg`;
@@ -63,7 +63,7 @@ export interface ShortCoverRecord {
    * 16:9 foi trocada; a capa do feed de Shorts (`sardefault.jpg`, #12251) não muda pela API
    * e fica para o Studio web (`manual`, Passo B3a, #12254). Depois que o agente
    * aplica o JPG vertical pelo Studio web e confere a persistência, o Passo B3a
-   * de `/diaria-publica-video` troca o valor para `studio_web` (#12436).
+   * de `/diaria-publica` troca o valor para `studio_web` (#12436).
    * Desde a opção 2 do #12100 (11/11/2026), o vertical enviado ao YouTube leva
    * a capa nos primeiros ~1 s (400 ms até 16/11/2026; arredondado ao frame; `first_frame_ms` grava
    * o valor efetivo) e o valor é `first_frame_cover`: aplicado, mas
@@ -223,12 +223,12 @@ export function youtubeFirstFrameCoverPlan(ms: number): string {
  * #12251/#12254: como aplicar a capa vertical do Short, citado nos avisos do
  * verificador (`check-short-feed-cover.ts`) e do registro `vertical_feed:
  * "manual"`. O passo é do agente no Studio web (Passo B3a de
- * `/diaria-publica-video`), nunca uma tarefa do editor no app do celular: os
+ * `/diaria-publica`), nunca uma tarefa do editor no app do celular: os
  * avisos diziam "no app do YouTube, Editar → Miniatura" depois que o #12254
  * mudou o passo no SKILL.md.
  */
 export const SHORT_VERTICAL_COVER_HOWTO =
-  "no Studio web (studio.youtube.com), Detalhes → Miniatura → enviar o JPG 1080x1920, salvar e conferir após reload (Passo B3a de /diaria-publica-video, #12254)";
+  "no Studio web (studio.youtube.com), Detalhes → Miniatura → enviar o JPG 1080x1920, salvar e conferir após reload (Passo B3a de /diaria-publica, #12254)";
 
 /**
  * #12100/#12251: imagem que a aba Shorts do canal mostra. Medido pelo editor na

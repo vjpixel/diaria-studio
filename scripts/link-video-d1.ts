@@ -81,7 +81,7 @@ import {
   readD1LinkedInTextHint,
   type PageActionResult,
 } from "./lib/diaria/linkedin-page-actions.ts";
-import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
+import { postToWorkerQueue, resolveSocialWorkerToken, resolveSocialWorkerUrl } from "./lib/worker-queue-client.ts";
 import {
   d1SocialSlotAtFromConfig,
   gateVideoLink,
@@ -186,8 +186,8 @@ async function linkedInCommentForSave(
   const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
     publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
   };
-  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? cfg.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
-  const token = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl = resolveSocialWorkerUrl(cfg);
+  const token = resolveSocialWorkerToken();
   const payload = buildD1VideoCommentPayload({
     aammdd,
     videoUrl,

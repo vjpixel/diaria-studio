@@ -55,7 +55,11 @@
  * não iniciou ou foi pedido sem consent (ver `failed_channels`,
  * `requested_not_dispatched` e o `exit_code` de cada um, que preserva o
  * significado do publisher: Instagram/Threads exit 2 = Worker não configurado);
- * 2 = argumento inválido ou consent ausente/ilegível (nada despachado);
+ * 2 = argumento inválido, consent ausente/ilegível, ou lock/progresso
+ * indisponível (#14096: timeout do lock, EACCES/ENOSPC; o stdout traz
+ * `{status: "failed", step: "lock", dispatched: false, reason}`) — nada
+ * despachado. Rejeição depois dos spawns sai 1 com `step: "run"` e
+ * `dispatched: null` (conferir o progresso);
  * 5 = canal da rodada ainda rodando de uma rodada anterior (nada despachado).
  *
  * Uso:
@@ -404,6 +408,74 @@ export async function runConcurrent(
   return { run_id: runId, results, failed_channels: failedOf(results), requested_not_dispatched, wall_ms: nowMs() - t0 };
 }
 
+/** Exit "nada despachado" (mesmo do consent ausente): o playbook não lê `failed_channels`. */
+export const SOCIAL_NOTHING_DISPATCHED_EXIT_CODE = 2;
+
+/** JSON de erro estruturado do wrapper (#14096): sai no stdout no lugar do resultado. */
+export interface ConcurrentWrapperError {
+  status: "failed";
+  step: "lock" | "run";
+  reason: string;
+  /** `false` = nenhum canal iniciou; `null` = não dá para saber (conferir o progresso). */
+  dispatched: false | null;
+  progress_path: string;
+}
+
+/**
+ * #14096: roda a fase "checar canal ocupado + iniciar os filhos" sob o lock
+ * do progresso e converte uma exceção dessa fase em erro estruturado. Antes
+ * o `withFileLock` ficava fora de try: timeout do lock (`.lock` de outro host
+ * chegando pela sync do `data/`, que o `file-lock` não rouba), `EACCES` ou
+ * `ENOSPC` derrubavam o wrapper com stack trace e exit 1, que o playbook lê
+ * como "algum canal falhou". Nessa fase nenhum filho iniciou: os spawns são
+ * o último passo, e um erro dentro do `runConcurrent` (async) vira promessa
+ * rejeitada, tratada à parte pelo `awaitConcurrentRun`.
+ */
+export function startUnderLock<S>(
+  withLock: <T>(fn: () => T) => T,
+  body: () => S,
+  progressPath: string,
+): { ok: true; value: S } | { ok: false; error: ConcurrentWrapperError } {
+  try {
+    return { ok: true, value: withLock(body) };
+  } catch (e) {
+    return {
+      ok: false,
+      error: {
+        status: "failed",
+        step: "lock",
+        reason: `lock/progresso de ${progressPath} indisponível (${(e as Error).message ?? String(e)}) — nenhum canal despachado.`,
+        dispatched: false,
+        progress_path: progressPath,
+      },
+    };
+  }
+}
+
+/**
+ * #14096: espera a rodada; rejeição depois dos spawns vira erro estruturado
+ * com `dispatched: null` (algum canal pode ter iniciado) e exit 1.
+ */
+export async function awaitConcurrentRun(
+  run: Promise<ConcurrentResult>,
+  progressPath: string,
+): Promise<{ ok: true; result: ConcurrentResult } | { ok: false; error: ConcurrentWrapperError }> {
+  try {
+    return { ok: true, result: await run };
+  } catch (e) {
+    return {
+      ok: false,
+      error: {
+        status: "failed",
+        step: "run",
+        reason: `wrapper falhou depois de iniciar os canais (${(e as Error).message ?? String(e)}) — conferir ${progressPath} antes de re-rodar.`,
+        dispatched: null,
+        progress_path: progressPath,
+      },
+    };
+  }
+}
+
 /** Exit do wrapper: 1 se algum canal falhou ou um canal pedido não rodou. */
 export function concurrentExitCode(result: ConcurrentResult): number {
   return result.failed_channels.length > 0 || result.requested_not_dispatched.length > 0 ? 1 : 0;
@@ -563,16 +635,30 @@ if (isMainModule(import.meta.url)) {
   // síncrona antes de devolver a promessa, então uma 2ª rodada concorrente lê
   // os pids desta. Cada publisher recebe o --edition-dir exatamente como veio
   // (mesmo comando do §5c-3); o path resolvido serve só para o consent e o progresso.
-  mkdirSync(dirname(progressPath), { recursive: true });
   type Start =
     | { busy: ReturnType<typeof busyChannels> }
     | { run: Promise<ConcurrentResult> };
-  const start: Start = withFileLock(progressPath + ".lock", (): Start => {
-    const previous = readProgress(progressPath);
-    const busy = busyChannels(previous, plan, { host, isPidAlive, nowEpochMs: Date.now() });
-    if (busy.length > 0) return { busy };
-    return { run: runConcurrent(plan, editionDirArg, realRunChild(ROOT, live), { onProgress: writeProgress, host, previous }) };
-  });
+  // #14096: mkdir + lock + checagem dentro do mesmo guard; falha aqui sai com
+  // JSON de erro e exit 2 ("nada despachado"), nunca stack trace + exit 1.
+  const started = startUnderLock(
+    <T>(fn: () => T): T => {
+      mkdirSync(dirname(progressPath), { recursive: true });
+      return withFileLock(progressPath + ".lock", fn);
+    },
+    (): Start => {
+      const previous = readProgress(progressPath);
+      const busy = busyChannels(previous, plan, { host, isPidAlive, nowEpochMs: Date.now() });
+      if (busy.length > 0) return { busy };
+      return { run: runConcurrent(plan, editionDirArg, realRunChild(ROOT, live), { onProgress: writeProgress, host, previous }) };
+    },
+    progressPath,
+  );
+  if (!started.ok) {
+    process.stderr.write(`ERRO (#14096): ${started.error.reason}\n`);
+    console.log(JSON.stringify(started.error, null, 2));
+    process.exit(SOCIAL_NOTHING_DISPATCHED_EXIT_CODE);
+  }
+  const start: Start = started.value;
   if ("busy" in start) {
     process.stderr.write(
       `ERRO (#14037): canal ainda rodando de uma rodada anterior (${start.busy.map((b) => `${b.channel} pid ${b.pid} em ${b.host}`).join(", ")}) — ` +
@@ -581,7 +667,13 @@ if (isMainModule(import.meta.url)) {
     console.log(JSON.stringify({ status: "busy", busy: start.busy }, null, 2));
     process.exit(SOCIAL_BUSY_EXIT_CODE);
   }
-  const result = await start.run;
-  console.log(JSON.stringify(result, null, 2));
-  process.exitCode = concurrentExitCode(result);
+  const awaited = await awaitConcurrentRun(start.run, progressPath);
+  if (!awaited.ok) {
+    process.stderr.write(`ERRO (#14096): ${awaited.error.reason}\n`);
+    console.log(JSON.stringify(awaited.error, null, 2));
+    process.exitCode = 1;
+  } else {
+    console.log(JSON.stringify(awaited.result, null, 2));
+    process.exitCode = concurrentExitCode(awaited.result);
+  }
 }

@@ -36,7 +36,7 @@ import { logEvent } from "./lib/run-log.ts";
 import { missingYouTubeCredentials } from "./lib/diaria/youtube-upload.ts";
 import { readEditionVideoMeta } from "./lib/edition-video-meta.ts"; // #12080
 import { siteVideoRepublishDecision } from "./lib/site-page-video-republish.ts"; // #12080
-import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #10983
+import { postToWorkerQueue, resolveSocialWorkerToken, resolveSocialWorkerUrlFromRoot } from "./lib/worker-queue-client.ts"; // #10983, #14062
 import type { EnqueueFn } from "./lib/diaria/linkedin-page-actions.ts"; // #10983
 import {
   VIDEO_D1_WATCH_DEADLINE_BRT,
@@ -72,17 +72,8 @@ function resolveFacebookTarget(env: Record<string, string | undefined>, log: (m:
  * página no Worker (#8816) são conferidos pelo próprio enqueue.
  */
 function resolveLinkedInQueue(env: Record<string, string | undefined>, log: (m: string) => void): EnqueueFn | null {
-  let configUrl: string | undefined;
-  try {
-    const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
-      publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
-    };
-    configUrl = config.publishing?.social?.linkedin?.cloudflare_worker_url;
-  } catch {
-    configUrl = undefined;
-  }
-  const url = env.DIARIA_LINKEDIN_CRON_URL ?? configUrl ?? "";
-  const token = env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const url = resolveSocialWorkerUrlFromRoot(ROOT, { env });
+  const token = resolveSocialWorkerToken(env);
   if (!url || !token) {
     log("linkedin: sem DIARIA_LINKEDIN_CRON_URL/TOKEN — comentário do D1 fica manual");
     return null;

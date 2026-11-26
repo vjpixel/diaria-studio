@@ -1091,6 +1091,23 @@ export function shouldBlockBranchCheckout(activeCoordinatorSessionIds, callerSes
   return !coordinators.has(callerSessionId);
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando o comando PODE criar ou
+ * trocar branch. Superconjunto do filtro do `runHook` abaixo
+ * (`resolveBranchCreateTargets(...).length > 0`, que só devolve alvo para
+ * `checkout`/`switch` literais): aqui basta a palavra aparecer no texto,
+ * sem continuação de linha, aspas nem barra invertida. Puro, sem disco; o despachante só roda o
+ * hook, em processo próprio, quando dá `true`, e o hook decide como antes.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  if (typeof command !== "string") return false; // o hook não acha alvo (lista vazia)
+  // Continuação de linha (`\` + newline) some antes, como no parser do hook:
+  // `git che\<newline>ckout -b x` é `git checkout -b x` para o shell.
+  return /checkout|switch/i.test(command.replace(/\\\r?\n/g, "").replace(/[\\'"]/g, ""));
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-branch-checkout-main-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -1103,7 +1120,17 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
@@ -1130,7 +1157,7 @@ if (
         shouldBlockBranchCheckout(readActiveCoordinatorSessionIds(root), payload.session_id),
       );
       if (blocked) {
-        process.stdout.write(
+        write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -1145,5 +1172,4 @@ if (
       // Fail-open, sempre: um hook quebrado não pode travar `git checkout`
       // legítimo de uma sessão coordenadora ou interativa comum.
     }
-  });
 }

@@ -102,6 +102,7 @@ import {
 import { resolveArtigoEspecialScheduledAts, validateExplicitAt } from "./lib/artigo-especial-schedule.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { readArtigoMeta } from "./lib/artigo-especial-meta.ts";
+import { resolveSocialWorkerToken, resolveSocialWorkerUrl } from "./lib/worker-queue-client.ts"; // #14062
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -553,8 +554,8 @@ async function main(): Promise<void> {
     publishing?: { social?: { linkedin?: { make_webhook_url?: string; cloudflare_worker_url?: string } } };
   };
   const webhookUrl = process.env.MAKE_LINKEDIN_WEBHOOK_URL ?? config.publishing?.social?.linkedin?.make_webhook_url ?? "";
-  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? config.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl = resolveSocialWorkerUrl(config);
+  const workerToken = resolveSocialWorkerToken();
   const useWorkerForScheduled = workerUrl !== "" && workerToken !== "";
 
   // Fail-fast (ver docstring do módulo): sem Worker, "perfil" (pixel) não

@@ -26,6 +26,8 @@ import {
   firstDrainCutoffIso,
   sinceForNewFailures,
   FIRST_DRAIN_WINDOW_DAYS,
+  buildGmailSearchQuery,
+  AFTER_SAFETY_MARGIN_SECONDS,
 } from "../scripts/inbox-drain.ts";
 import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
 import {
@@ -41,6 +43,46 @@ describe("#10026 — catch-all de main() é falha local, não MCP", () => {
     assert.notEqual(r.reason, "gmail_mcp_error");
     assert.equal(r.skipped, true);
     assert.equal(r.error, "EACCES: data/inbox.md");
+  });
+});
+
+describe("#14022 — after: da busca em segundos de época, imune ao fuso do Gmail", () => {
+  const Q = "in:sent";
+  const afterOf = (query: string): string => {
+    const m = query.match(/ after:(\S+)$/);
+    assert.ok(m, `query sem after: — ${query}`);
+    return m![1];
+  };
+
+  it("cursor da madrugada UTC (02:30Z = 23:30 BRT) gera epoch, nunca after:AAAA/MM/DD", () => {
+    const q = buildGmailSearchQuery(Q, "2026-11-25T02:30:00Z");
+    const after = afterOf(q);
+    assert.match(after, /^\d+$/);
+    assert.doesNotMatch(q, /after:\d{4}\/\d{2}\/\d{2}/);
+    assert.ok(Number(after) <= 1795573800, `after ${after} > epoch do cursor`);
+    assert.equal(Number(after), 1795573800 - AFTER_SAFETY_MARGIN_SECONDS);
+    assert.ok(q.startsWith(`${Q} after:`));
+  });
+
+  it("submissão às 01:00 BRT (04:00Z) depois do cursor das 02:30Z fica DENTRO da janela", () => {
+    // Bug: after:2026/11/25 o Gmail lia como 2026-11-25T08:00Z (meia-noite PST)
+    // e a submissão das 04:00Z não voltava na busca.
+    const after = Number(afterOf(buildGmailSearchQuery(Q, "2026-11-25T02:30:00Z")));
+    const submissionSec = Date.parse("2026-11-25T04:00:00Z") / 1000;
+    const oldGmailLowerBoundSec = Date.parse("2026-11-25T08:00:00Z") / 1000;
+    assert.ok(submissionSec > after, "submissão das 04:00Z deve estar depois do after:");
+    assert.ok(submissionSec < oldGmailLowerBoundSec, "premissa do cenário: era perdida pela query antiga");
+  });
+
+  it("cursor nulo usa o corte da 1ª execução (firstDrainCutoffIso), em epoch", () => {
+    const now = new Date("2026-11-25T03:00:00.000Z");
+    const after = Number(afterOf(buildGmailSearchQuery(Q, null, now)));
+    const cutoffSec = Date.parse(firstDrainCutoffIso(now)) / 1000;
+    assert.equal(after, cutoffSec - AFTER_SAFETY_MARGIN_SECONDS);
+  });
+
+  it("cursor inválido lança em vez de montar query lixo", () => {
+    assert.throws(() => buildGmailSearchQuery(Q, "não-é-data"), /cursor inválido/);
   });
 });
 
@@ -910,6 +952,39 @@ describe("inbox-drain main() integration (#306)", () => {
     const cursor2 = JSON.parse(readFileSync(fakeCursorPath(), "utf8"));
     assert.equal(cursor2.last_drain_iso, "2026-04-09T10:00:00.000Z", "retry de thread antiga não recua o cursor");
     assert.equal(cursor2.failed_threads, undefined, "pendente resolvida sai do cursor");
+  });
+
+  it("#14022: cursor 02:30Z, submissão 04:00Z — main() manda after: em epoch e a submissão entra", async () => {
+    writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: "2026-11-25T02:30:00.000Z" }), "utf8");
+    const queries: string[] = [];
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads?")) {
+        const q = new URL(u).searchParams.get("q") ?? "";
+        queries.push(q);
+        // Fake com a semântica do Gmail: `after:AAAA/MM/DD` = meia-noite PST
+        // (08:00Z em novembro); `after:{epoch}` = segundos exatos.
+        const raw = q.match(/after:(\S+)/)?.[1] ?? "";
+        const lowerMs = /^\d+$/.test(raw)
+          ? Number(raw) * 1000
+          : Date.parse(`${raw.replace(/\//g, "-")}T08:00:00Z`);
+        const submissionMs = Date.parse("2026-11-25T04:00:00Z");
+        return makeGmailResponse({ threads: submissionMs > lowerMs ? [{ id: "t-madrugada" }] : [] });
+      }
+      if (u.includes("/threads/t-madrugada")) {
+        return makeGmailResponse(threadAt("t-madrugada", "https://example.com/madrugada", "2026-11-25T04:00:00Z"));
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.equal(queries.length, 1);
+    assert.match(queries[0], / after:\d+$/);
+    assert.doesNotMatch(queries[0], /after:\d{4}\/\d{2}\/\d{2}/);
+    assert.equal(output.new_entries, 1, "submissão das 01:00 BRT não pode ficar fora da janela");
+    assert.ok(readFileSync(fakeInboxMdPath(), "utf8").includes("example.com/madrugada"));
+    const cursor = JSON.parse(readFileSync(fakeCursorPath(), "utf8"));
+    assert.equal(cursor.last_drain_iso, "2026-11-25T04:00:00.000Z");
   });
 
   it("#10031: searchThreads pagina por nextPageToken — threads da 2a página entram", async () => {

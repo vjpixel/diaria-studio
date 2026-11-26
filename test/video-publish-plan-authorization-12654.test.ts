@@ -625,7 +625,7 @@ describe("#12654 máquina e dono no consumo", () => {
     assert.match(commandMatchesOwner(`${MAIN_CMD} --only x`, owner(MAIN_CMD), "facebook") ?? "", /não inclui facebook/);
     assert.match(commandMatchesOwner(`${MAIN_CMD} --now`, owner(MAIN_CMD), "facebook") ?? "", /flags/);
     assert.match(commandMatchesOwner(MAIN_CMD, owner(TASK_CMD), "threads_profile") ?? "", /--only/);
-    assert.equal(commandMatchesOwner(MAIN_CMD, owner(`/diaria-publica-video ${ED} --so vertical`), "linkedin_page_repost", MAIN_CMD), null);
+    assert.equal(commandMatchesOwner(MAIN_CMD, owner(`/diaria-publica ${ED} --so vertical`), "linkedin_page_repost", MAIN_CMD), null);
     assert.match(commandMatchesOwner(`npx tsx scripts/publish-youtube.ts ${ED} --upload`, owner(MAIN_CMD), "facebook") ?? "", /não é o do dono/);
   });
   it("consumo com o comando efetivo diferente do dono aprovado: recusa e nada é consumido", () => {

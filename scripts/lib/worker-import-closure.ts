@@ -23,8 +23,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
-/** Extrai os especificadores RELATIVOS (`./`, `../`) de um fonte TS/JS. */
-export function extractRelativeSpecifiers(source: string): string[] {
+/** Todos os especificadores (`from "…"`, `import "…"`, `import("…")`) de um fonte TS/JS. */
+function extractAllSpecifiers(source: string): string[] {
   const specs = new Set<string>();
   const patterns: RegExp[] = [
     // `… from "…"` — cobre import/export nomeado, default, namespace e
@@ -38,8 +38,24 @@ export function extractRelativeSpecifiers(source: string): string[] {
   for (const re of patterns) {
     for (const m of source.matchAll(re)) specs.add(m[1]);
   }
+  return [...specs];
+}
 
-  return [...specs].filter((s) => s.startsWith("./") || s.startsWith("../"));
+/** Extrai os especificadores RELATIVOS (`./`, `../`) de um fonte TS/JS. */
+export function extractRelativeSpecifiers(source: string): string[] {
+  return extractAllSpecifiers(source).filter((s) => s.startsWith("./") || s.startsWith("../"));
+}
+
+/**
+ * Especificadores com cara de ALIAS local (#14097): `@/…`, `~/…` (paths do
+ * tsconfig/bundler) e `#…` (subpath imports do `package.json`). Nenhum deles
+ * é nome de pacote npm válido (escopo npm é `@escopo/nome`, nunca `@/`), então
+ * apontam para código do repo que este parser não sabe resolver. Antes do
+ * #14097 caíam no filtro de `extractRelativeSpecifiers` e sumiam do fecho sem
+ * aviso; agora entram em `unresolved`.
+ */
+export function extractAliasSpecifiers(source: string): string[] {
+  return extractAllSpecifiers(source).filter((s) => s.startsWith("@/") || s.startsWith("~/") || s.startsWith("#"));
 }
 
 const RESOLVE_EXTENSIONS = [".ts", ".mts", ".tsx", ".js", ".mjs"];
@@ -120,7 +136,11 @@ export function computeWorkerExternalImports(root: string, workerDir: string): W
 
     // Só código é varrido; JSON/HTML/etc. importados entram no fecho mas não têm imports.
     if (!/\.(m?[jt]sx?|mts)$/.test(file)) continue;
-    for (const spec of extractRelativeSpecifiers(readFileSync(file, "utf8"))) {
+    const source = readFileSync(file, "utf8");
+    for (const spec of extractAliasSpecifiers(source)) {
+      unresolved.push(`${toRepoPath(root, file)}: ${spec} (alias não suportado pelo parser)`);
+    }
+    for (const spec of extractRelativeSpecifiers(source)) {
       const target = resolveRelativeSpecifier(file, spec);
       if (target === null) {
         unresolved.push(`${toRepoPath(root, file)}: ${spec}`);

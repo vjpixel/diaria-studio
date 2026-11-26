@@ -52,6 +52,7 @@ import { join, resolve } from "node:path";
 
 import type { FactClaim, FactCheckResult, ClaimDestaque } from "./run-fact-checker.ts";
 import { computeContentHash, factCheckStaleness, parseContentHash } from "./lib/fact-check-staleness.ts";
+import { computeUnitHashes, parseUnitHashes, readUnitSourceInputs, sameUnitHashes } from "./lib/fact-check-units.ts";
 import {
   destaqueFromLocation,
   loadIntentionalErrorJson,
@@ -643,6 +644,9 @@ async function main(): Promise<void> {
   const socialBeforeAutofix = social;
   // #11671: hash do conteúdo ANTES do autofix, pra recarimbar o fact-check.
   const hashBeforeAutofix = computeContentHash(newsletter, socialExists ? social : null);
+  // #14035: idem para o carimbo por unidade (as fontes não mudam no autofix).
+  const unitSources = readUnitSourceInputs(internalDir);
+  const unitHashesBeforeAutofix = computeUnitHashes(newsletter, socialExists ? social : null, unitSources);
 
   // Extrair destaque do erro intencional (#3222: _internal/intentional-error.json)
   const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
@@ -788,6 +792,13 @@ async function main(): Promise<void> {
         try {
           const rawFc = JSON.parse(readFileSync(factCheckPath, "utf8")) as Record<string, unknown>;
           rawFc.content_hash = computeContentHash(newsletter, socialExists ? social : null);
+          // #14035: só recarimba por unidade se o carimbo estava em dia antes
+          // do autofix; senão a unidade mudada antes seguiria marcada para
+          // re-check (nunca o contrário).
+          const unitStamp = parseUnitHashes(rawFc.unit_hashes);
+          if (unitStamp && sameUnitHashes(unitStamp, unitHashesBeforeAutofix)) {
+            rawFc.unit_hashes = computeUnitHashes(newsletter, socialExists ? social : null, unitSources);
+          }
           writeFileSync(factCheckPath, JSON.stringify(rawFc, null, 2), "utf8");
         } catch (e) {
           console.warn(`[apply-factcheck-autofix] WARN: falha ao recarimbar fact-check.json — ${(e as Error).message}`);

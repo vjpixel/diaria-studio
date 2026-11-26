@@ -2008,6 +2008,18 @@ export function strictAllReposResolution(allowed = loadAllowedForeignRepos()) {
   };
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando o hook tem algo a
+ * decidir. É o mesmo primeiro filtro do `runHook` abaixo (tool Bash +
+ * `detectMergeForGuard`, que já trata exceção na detecção como merge). Puro:
+ * não lê `data/` nem chama git; o despachante só roda o hook, em processo
+ * próprio, quando ele dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  return detectMergeForGuard(payload.tool_input?.command).isMerge;
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-gh-pr-merge-subagent-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -2020,7 +2032,17 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", async () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export async function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
@@ -2077,7 +2099,7 @@ if (
       if (repoRoot === null) {
         // Nenhum candidato é o checkout do diaria-studio: não dá pra ler o
         // registro das rodadas. Mesmo tratamento de varredura degradada.
-        process.stdout.write(
+        write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -2337,7 +2359,7 @@ if (
       // #12842: falha do D1 aparece ao usuário, permita ou bloqueie.
       const d1SystemMessage = d1Notices.length > 0 ? { systemMessage: d1Notices.join("\n") } : {};
       if (blockCause !== null) {
-        process.stdout.write(
+        write(
           JSON.stringify({
             ...d1SystemMessage,
             hookSpecificOutput: {
@@ -2361,10 +2383,9 @@ if (
       }
       // Sem bloqueio: não emitir decisão — cai no fluxo normal de permissão.
       // Só o aviso do D1, quando houver (`systemMessage` não decide nada).
-      else if (d1Notices.length > 0) process.stdout.write(JSON.stringify(d1SystemMessage));
+      else if (d1Notices.length > 0) write(JSON.stringify(d1SystemMessage));
     } catch {
       // Fail-open, sempre: um hook quebrado não pode travar `gh pr merge`
       // legítimo de uma sessão coordenadora ou interativa comum.
     }
-  });
 }

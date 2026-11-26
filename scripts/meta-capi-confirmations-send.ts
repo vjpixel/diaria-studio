@@ -26,6 +26,7 @@
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { brtDayKey } from "./lib/shared/brt.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadKitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
@@ -50,10 +51,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[meta-capi-confirmations]";
 export const DEFAULT_META_CONFIRMATION_INDEX_PATH = resolve(ROOT, "data/meta-capi/_confirmation-sent.json");
 
-function todayBrtDayKey(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-}
-
 async function defaultListRoster(): Promise<ConfirmationRosterEntry[]> {
   return listAllKitSubscribers(loadKitConfig(LOG_PREFIX), { status: "all" });
 }
@@ -77,7 +74,7 @@ export async function main(
   const snapshotRoot = getStringArg(argv, "snapshot-root") ?? snapshotRootDefault(resolve(ROOT, "data"));
   const indexPath = getStringArg(argv, "index") ?? DEFAULT_META_CONFIRMATION_INDEX_PATH;
 
-  const todayKey = todayBrtDayKey();
+  const todayKey = brtDayKey();
   const baseDate = pickBaseSnapshotDate(listSubscriberStateSnapshotDates(snapshotRoot), todayKey, lookbackDays);
   if (!baseDate) {
     console.error(
