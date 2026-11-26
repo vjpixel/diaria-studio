@@ -201,47 +201,45 @@ Linha em branco entre 2 itens do MESMO card do `## um`: linha só com
 Correção pequena do editor ou do pipeline (nunca texto de LLM): tentar antes
 `check-humanizer-social.ts --reseal-surgical --edition-dir {EDITION_DIR}/
 --reason "{motivo}"` (§4d.1 passo 6.0). Exit 0 = lints do 6.7 e `--check`;
-exit 1 = receita abaixo.
+exit 1 = composto abaixo.
+
+Composto em 3 chamadas (#14116), cada uma devolve uma linha JSON:
 
 ```bash
-npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/   # exit 2 esperado; ler { legacy, changed_sections }
-cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md
+npx tsx scripts/stage4-social-reseal.ts prepare --edition-dir {EDITION_DIR}/   # flow scoped|full-file + changed_sections; grava o snapshot pré
 # Skill humanizador SÓ nas changed_sections (regra da 1ª frase, #13427), depois:
-npx tsx scripts/lint-social-md.ts --check no-unanchored-opening --md {EDITION_DIR}/03-social.md
-cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-post-humanizador.md
-npx tsx scripts/check-humanizer-social.ts --record-run --step humanizador --pre {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md --post {EDITION_DIR}/_internal/03-social-post-humanizador.md --sections {seções} --edition-dir {EDITION_DIR}/
+npx tsx scripts/stage4-social-reseal.ts after-humanizer --edition-dir {EDITION_DIR}/ --sections {seções}   # lint de abertura, snapshot pós, record-run, verify
 # Clarice por seção, filtrada, aplicar só o filtrado:
 npx tsx scripts/clarice-filter.ts --edition-dir {EDITION_DIR} --suggestions {EDITION_DIR}/_internal/clarice-stage4-{seção}.json --out {EDITION_DIR}/_internal/clarice-stage4-{seção}-filtrado.json
-npx tsx scripts/check-humanizer-social.ts --record-run --step clarice --pre {EDITION_DIR}/_internal/03-social-post-humanizador.md --post {EDITION_DIR}/03-social.md --edition-dir {EDITION_DIR}/
-npx tsx scripts/verify-scoped-humanization.ts --pre {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md --post {EDITION_DIR}/_internal/03-social-post-humanizador.md --sections {seções}
-npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "humanizador re-rodou ({scoped: seções | full-file}) após ajuste {descrição} no Stage 4" --edition-dir {EDITION_DIR}/
-# lints síncronos do passo 6.7 (no-xml-artifacts, no-antithesis-reveal e no-trailing-editorial-hook são GATE-BLOCKING), depois:
-npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
+npx tsx scripts/stage4-social-reseal.ts seal --edition-dir {EDITION_DIR}/ --sections {seções} --reason "humanizador re-rodou ({scoped: seções | full-file}) após ajuste {descrição} no Stage 4"
 ```
 
-`legacy: true` cai no fluxo FULL-FILE (6.2'). Clarice sem sugestões: repetir
-o `--record-run --step clarice` com `--note "Clarice sem sugestões"`. Clarice
-fora do ar: `--record-clarice-pending --reason clarice_unavailable --detail
-"..." --sections {seções}`, nunca `--unproven-ok`. Exit 4/5 do `--write` e os
-casos de `--unproven-ok`: §4d.1 passo 6.6. Os 7 `lint-social-md.ts --check`
-do passo 6.7 (`humanizer-section-coverage` contra o snapshot
-pós-humanizador) estão no playbook.
+`flow: full-file` (selo legacy ou ausente): Skill no arquivo inteiro e
+`after-humanizer`/`seal` sem `--sections`. `after-humanizer` exit 3 = alvo não
+tocado: re-invocar a Skill nele; exit 7 = erro de I/O do verify
+(`verify_error`), nunca re-humanizar. `seal` faz o registro da Clarice, o `--write`,
+os 7 lints do passo 6.7 e o `--check` final. Clarice sem sugestões:
+`--clarice-no-suggestions`; fora do ar: `--clarice-pending "{exit e motivo}"`,
+nunca `--unproven-ok`. `seal` exit 3 (`--write` recusou, exit 4/5 do filho em
+`steps`) e os casos de `--unproven-ok`: §4d.1 passo 6.6; exit 4 = lint
+GATE-BLOCKING.
 
 ## L. Refazer o fact-check (§4c.6 do pré-gate)
 
 ```bash
 npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/
 # Escopo COMPLETO: Agent("fact-checker", { newsletter_path, social_path, approved_json_path, out_path: {EDITION_DIR}/_internal/fact-check.json })
-npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/fact-check.json --check-blocking
 # Escopo PARCIAL (#14035): Agent("fact-checker", { ..., units: [lista impressa], out_path: {EDITION_DIR}/_internal/fact-check.partial.json })
-npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/fact-check.partial.json --merge-partial --check-blocking
-npx tsx scripts/apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/
+# Composto (#14116): check-blocking + autofix + re-checagens; PARCIAL com --merge-partial
+npx tsx scripts/stage4-factcheck-post.ts --edition-dir {EDITION_DIR}/ [--merge-partial]
 ```
 
 O passo 1 diz o escopo (#14035): COMPLETO, PARCIAL (só as unidades `dN`/`pool`
-que mudaram) ou NENHUMA (não despachar, só o `--input-json fact-check.json`).
-`--merge-partial` recusado (exit 1) ou claim que cruza destaques: passo 1 com
-`--full` e refazer completo.
+que mudaram) ou NENHUMA (não despachar, só o composto). `--merge-partial`
+recusado (exit 4) ou claim que cruza destaques: passo 1 com `--full` e refazer
+completo. Exit 3 = defasado (re-despachar 1 vez); 5 = o autofix quebrou um
+lint (`checks[]`); 7 = JSON do autofix ilegível (bloqueia, re-rodar o
+autofix); `rerender` diz quais previews refazer.
 
 Exit 2 = claim `NOT_FOUND_IN_SOURCE` bloqueia; fonte adicional da mesma
 história via `npx tsx scripts/add-destaque-source.ts --edition-dir
