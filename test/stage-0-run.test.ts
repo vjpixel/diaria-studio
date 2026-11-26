@@ -419,6 +419,68 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(statusDoneCall);
   });
 
+  it("ping real da Clarice (#14029): roda --real-chunk só na fase continue e grava --clarice-real-probe", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "clarice-healthcheck.ts": (args) =>
+          args.includes("--real-chunk") ? { code: 2, stdout: JSON.stringify({ ok: false, error: "timeout" }), stderr: "" } : ok(),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+    await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      deps,
+    );
+    const realCalls = calls.filter((c) => c.script.includes("clarice-healthcheck") && c.args.includes("--real-chunk"));
+    assert.equal(realCalls.length, 1, "ping real roda uma vez na fase continue");
+    const stateCall = calls.find((c) => c.script.includes("preflight-state"));
+    const idx = stateCall!.args.indexOf("--clarice-real-probe");
+    assert.ok(idx >= 0, "preflight-state recebe --clarice-real-probe");
+    assert.equal(stateCall!.args[idx + 1], "false");
+  });
+
+  it("ping real da Clarice (#14084): exit 1 (não executou) grava null, não false, com aviso próprio", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "clarice-healthcheck.ts": (args) => (args.includes("--real-chunk") ? fail(1) : ok()),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      baseDeps({ exec, execAsync }),
+    );
+    const stateCall = calls.find((c) => c.script.includes("preflight-state"));
+    assert.equal(stateCall!.args[stateCall!.args.indexOf("--clarice-real-probe") + 1], "null");
+    assert.ok(result.notes.some((n) => /ping real da Clarice não executou/.test(n)));
+  });
+
+  it("ping real da Clarice (#14029): fase preflight não paga os 60 s do ping real", async () => {
+    const { exec, calls } = makeFakeExec({
+      "find-current-edition.ts": () => ({ code: 0, stdout: "data/editions/2604/260423\n", stderr: "" }),
+      "check-cloudflare-token.ts": () => ok(),
+      "clarice-healthcheck.ts": () => ok(),
+      "preflight-external-locks.ts": () => ok(),
+    });
+    await runStage0(["--edition", "260423", "--now", "2026-04-23T08:00:00Z"], baseDeps({ exec }));
+    assert.equal(calls.filter((c) => c.args.includes("--real-chunk")).length, 0);
+  });
+
+  it("ping real da Clarice (#14029): ping mínimo falho grava false sem chamar o ping real", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({ "clarice-healthcheck.ts": (args) => (args.includes("--mcp") ? ok() : fail(2)) }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      baseDeps({ exec, execAsync }),
+    );
+    assert.equal(calls.filter((c) => c.args.includes("--real-chunk")).length, 0);
+    const stateCall = calls.find((c) => c.script.includes("preflight-state"));
+    assert.equal(stateCall!.args[stateCall!.args.indexOf("--clarice-real-probe") + 1], "false");
+  });
+
   it("sem --mcp-beehiiv: roda até o fim e não grava --beehiiv-mcp no preflight-state (#11225)", async () => {
     const { exec, calls } = makeFakeExec(happyExecHandlers());
     const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
