@@ -725,7 +725,7 @@ LinkedIn para a home: a auditoria desconta essas
   âncora do vídeo é "YouTube"); se for de um render antigo, re-renderizar
   (Passo 7), esvaziar o corpo já colado antes de colar de novo (foco no
   `contenteditable` do corpo, selecionar tudo com `ctrl+a`/`cmd+a` e
-  apagar com `Delete`; conferir pelo snippet abaixo que
+  apagar com `Delete`; conferir pelo snippet acima que
   `textContent.length` ficou 0 e que não sobrou âncora, senão o paste
   duplica o artigo), então colar pelo 8b e repetir a auditoria; (2) com o render atual e o split ainda lá, **não tentar a
   correção pela toolbar**: no 26w47, com o texto inteiro selecionado por
@@ -740,7 +740,10 @@ LinkedIn para a home: a auditoria desconta essas
   nem entregar ao editor. Apresentar `result.issues` ao editor. Se algum
   issue citar o padrão conhecido de split de âncora "diar.ia.br" (PR #5987,
   mesmo achado documentado em `context/publishers/linkedin.md` §"Newsletter
-  LinkedIn"), aplicar a correção de lá: selecionar a âncora completa via
+  LinkedIn"), aplicar a correção de lá, **exceto** quando o issue é o
+  `TRAILING_WORDMARK_SPLIT_HINT` da âncora do vídeo, que segue só o bullet
+  "Âncora do vídeo dividida" acima (sem toolbar, ajuste manual no Passo 9):
+  selecionar a âncora completa via
   teclado (nunca clicar direto sobre o link colado — risco de deslocar a
   seleção e apagar outro parágrafo em silêncio, mesmo achado) e
   sobrescrever via popup **Edit link** da toolbar. Nunca use `ctrl+k`

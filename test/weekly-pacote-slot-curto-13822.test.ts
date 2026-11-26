@@ -24,7 +24,8 @@ test('Passo 0 do pacote trata slot do highlights com folga < 120 min como slotCu
   assert.match(p0, /--time HH:MM/);
   // Com --no-gates aplica sozinho; o alternativo não pode mover o clicked junto.
   assert.match(p0, /--no-gates`?, aplicar o alternativo sozinho/);
-  assert.match(p0, /--mode highlights --time/);
+  assert.match(p0, /--saturday \{S\} --mode\s+highlights --time/);
+  assert.match(p0, /--saturday \{S\} --mode\s+clicked/);
 });
 
 test('topo do gate (Passo 6) avisa quando o slot vence antes da aprovação (#13822)', () => {
@@ -38,6 +39,18 @@ test('Passo 7 do pacote agenda em duas chamadas quando há slotCurto (#13822)', 
   const p7 = pacoteStep(7);
   assert.match(p7, /slotCurto[\s\S]*--mode highlights --time \{HH:MM alternativo\} --schedule/);
   assert.match(p7, /--mode clicked --shared-selection \{arquivo\} --schedule/);
+  // As duas chamadas levam --saturday (sem ele o script sai 1).
+  assert.match(p7, /publish-weekly-social\.ts --saturday \{S\} --mode highlights --time \{HH:MM alternativo\} --schedule/);
+  assert.match(p7, /publish-weekly-social\.ts --saturday \{S\} --mode clicked --shared-selection/);
+  assert.match(p7, /--day-offset N/);
+  // O registro da rotação grava o horário real do highlights.
+  assert.match(p7, /social-schedule-rotation\.ts --record --date \{S\} --kind weekend --time \{HH:MM alternativo\}/);
+});
+
+test('Passo 0 e gate descrevem o --check-slot com too-soon, não só vencido (#13822)', () => {
+  assert.match(pacoteStep(0), /`expired`\/`too-soon`, exit 2/);
+  assert.match(pacoteStep(6), /`expired`\/`too-soon`/);
+  assert.doesNotMatch(pacoteStep(0), /só acusa slot já vencido/);
 });
 
 test('Passo 3 do pacote documenta a troca do vídeo da semana por flag (#13820)', () => {
@@ -49,6 +62,7 @@ test('Passo 3 do pacote documenta a troca do vídeo da semana por flag (#13820)'
   assert.match(p3, /--require-approved/);
   assert.match(p3, /não editar `video` à\s+mão/);
   assert.match(p3, /--video-auto/);
+  assert.match(p3, /publish-circle-stack\.ts --publish-monday \{M\} --video-auto --reselect/);
 });
 
 test('Passo 7 do LinkedIn: vídeo como 1º item, título no cabeçalho e frase fixa nova (#13818, #13821)', () => {
@@ -67,5 +81,9 @@ test('Passo 8c não manda mais corrigir a âncora do vídeo pela toolbar (#13821
   // Recolar exige esvaziar o corpo antes, senão o artigo duplica.
   assert.match(c, /esvaziar o corpo já colado antes de colar de novo/);
   assert.match(c, /`textContent\.length` ficou 0/);
+  assert.match(c, /pelo snippet acima/);
+  // A regra geral de ok === false exclui o split da âncora do vídeo.
+  const okFalse = c.split('`result.ok === false`')[1] ?? '';
+  assert.match(okFalse, /\*\*exceto\*\* quando o issue é o\s+`TRAILING_WORDMARK_SPLIT_HINT` da âncora do vídeo/);
   assert.doesNotMatch(c, /Corrigir assim:\s+selecionar o texto inteiro da âncora por `Range`/);
 });
