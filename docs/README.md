@@ -1,72 +1,232 @@
 # Índice — docs/
 
-Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLAUDE.md`); `docs/` é documentação de apoio — setup one-time, runbooks operacionais, análises/decisões de produto, e o arquivo histórico de spikes/investigações encerradas.
+<!-- Gerado por `npx tsx scripts/docs-index.ts --write` (#14061). Não editar à mão: o check `docs-index --check` do pr-checks.yml reprova o PR em que este arquivo diverge de docs/. Para mudar o texto fixo, editar HEADER em scripts/docs-index.ts. -->
 
-## Setup (one-time, por máquina ou por integração)
+`context/` é o que entra no prompt das sessões (curado, ver `CLAUDE.md`); `docs/` é documentação de apoio, lida sob demanda: setup de máquina ou integração, runbooks, registros de decisão, análises e o arquivo histórico.
 
-| Doc | O que cobre |
-|---|---|
-| [`installation.md`](./installation.md) | Passo-a-passo completo do zero ao primeiro `/diaria-edicao` funcional (~30-45min) |
-| [`setup.md`](./setup.md) | Setup (1x) por máquina extraído do `CLAUDE.md` (#8228) — Clarice key, Node, Doppler, junction `data/`, skill `humanizador`, plugin `pr-review-toolkit`, MCPs, inbox editorial, sync de config `~/.claude` |
-| [`comfyui-setup.md`](./comfyui-setup.md) | Instalar/configurar ComfyUI + LoRA Van Gogh impasto pras imagens da Fase 2 |
-| [`browser-publish-setup.md`](./browser-publish-setup.md) | MCP Claude in Chrome pros Stages 5-6 (publicação Beehiiv/LinkedIn/Facebook) |
-| [`gmail-inbox-setup.md`](./gmail-inbox-setup.md) | Forward + label pro inbox editorial `diariaeditor@gmail.com` |
-| [`facebook-setup.md`](./facebook-setup.md) | Facebook Graph API do publisher do Stage 5 |
-| [`make-linkedin-setup.md`](./make-linkedin-setup.md) | Scenario Make.com pra publicação LinkedIn "fire-now" via webhook |
-| [`make-595-comments-setup.md`](./make-595-comments-setup.md) | Extensão do scenario Make (#595) pra suportar comments automáticos no LinkedIn |
-| [`linkedin-cron-worker-setup.md`](./linkedin-cron-worker-setup.md) | Cloudflare Worker `diaria-linkedin-cron` pra agendamento real de posts (substitui Make Data Store) |
-| [`clarice-dashboard-access-setup.md`](./clarice-dashboard-access-setup.md) | Cookie-token auth do clarice-dashboard |
-| [`google-oauth-production.md`](./google-oauth-production.md) | App OAuth Google em "Produção" desde 22/10/2026 (#10785): histórico da expiração de 7 dias do modo Testing |
-| [`branch-protection.md`](./branch-protection.md) | Exigir CI verde antes de merge em `master` |
-| [`scheduled-edicao-setup.md`](./scheduled-edicao-setup.md) | **DEPRECATED (260711, #3259)** — Agendamento automático (Task Scheduler) da edição diária (#2068); task removida, doc mantido como histórico |
-| [`overnight-watchdog-setup.md`](./overnight-watchdog-setup.md) | Watchdog de stall do `/diaria-overnight` via Task Scheduler (#2688) |
+## Convenções
 
-## Operação (runbooks, manutenção contínua)
+- **Índice gerado.** A lista abaixo sai do próprio `docs/`: título (1º cabeçalho) e primeira linha de texto de cada doc. Doc novo, renomeado ou apagado exige rodar `npx tsx scripts/docs-index.ts --write` e commitar o `docs/README.md` junto. Resumo ruim se corrige na primeira linha do doc, não aqui.
+- **Status no topo.** Doc superado ou parcialmente defasado abre com uma linha `Status:` (ou um aviso em citação) dizendo o que vale hoje; é essa linha que aparece no índice.
+- **`archive/` e `agents-archive/`**: spikes, análises encerradas e specs de agentes substituídos. Ficam pelo racional histórico e não descrevem o código atual.
+- **Docs auto-gerados** (`editorial-invariants.md`, `bug-heatmap.md`, os `*-status-*.md`) dizem no topo qual script os gera; não editar à mão. No índice aparecem só pelo título (`TITLE_ONLY_DOCS` em `scripts/docs-index.ts`), porque a 1ª linha deles muda a cada geração.
+- **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
+- **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-| Doc | O que cobre |
-|---|---|
-| [`pipeline-detail.md`](./pipeline-detail.md) | Tabela detalhada de scripts/subagentes/outputs por etapa (extraído do `CLAUDE.md`, #8228) — fonte viva é o playbook `orchestrator-stage-N-*.md` de cada etapa |
-| [`pr-review-effort.md`](./pr-review-effort.md) | Trajetória de decisão e mecanismo completo do effort do review automatizado por PR (#4234, extraído do `CLAUDE.md` no #8228) |
-| [`secret-rotation.md`](./secret-rotation.md) | Ponto único de consulta pra rotação/expiração das 7 credenciais da pipeline |
-| [`archival.md`](./archival.md) | `scripts/archive-editions.ts` — mover edições antigas de `data/editions/` pra manter o working tree leve |
-| [`editorial-invariants.md`](./editorial-invariants.md) | **Auto-gerado** (`npx tsx scripts/list-invariants.ts`) — não editar à mão |
-| [`bug-heatmap.md`](./bug-heatmap.md) | **Auto-gerado** (`scripts/bug-heatmap.ts`) — não editar à mão |
-| [`validate-stage-1-output-semantics.md`](./validate-stage-1-output-semantics.md) | Semântica canônica dos exit codes de `scripts/validate-stage-1-output.ts` (#581, #828, #832) |
-| [`dashboard-schedule.md`](./dashboard-schedule.md) | Agendamento do push do clarice-dashboard (#2471) |
-| [`cohorts-schedule.md`](./cohorts-schedule.md) | Agendamento do crawl de coortes de engajamento do dashboard (#2426) |
-| [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons do dashboard (#2750) |
-| [`runbooks/poll-secret-rotation.md`](./runbooks/poll-secret-rotation.md) | Runbook de rotação do secret HMAC do poll É IA? |
-| [`seo-notes.md`](./seo-notes.md) | Registro de fatos apurados sobre `data/seo/` (#4548) — evita reinterpretar `opportunities: 0`/canônica divergente como achado novo antes do checkpoint |
-| [`audience-source-notes.md`](./audience-source-notes.md) | Registro de decisão sobre fontes de cadastro conhecidas na Beehiiv (#5095 — SparkLoop/Techzip) — evita reabrir investigação já concluída |
-| [`conversion-tracking-setup.md`](./conversion-tracking-setup.md) | Estado final publicado da instrumentação GTM de conversão de cadastro (#5500) — IDs de referência, tags/triggers por plataforma, verificação ao vivo |
+## Índice (181 arquivos)
 
-## Produto / estratégia / análises vivas
+### `docs/` (166)
 
-| Doc | O que cobre |
-|---|---|
-| [`agent-migration-triage.md`](./agent-migration-triage.md) | Triagem viva agente-a-agente (LLM vs script determinístico), source-of-truth desde 2026-05-11 (#1094) |
-| [`clarice-unified-db.md`](./clarice-unified-db.md) | Store único SQLite de usuários da Clarice (#2647) |
-| [`beehiiv-mcp-write-evaluation.md`](./beehiiv-mcp-write-evaluation.md) | Avaliação custo/benefício do upgrade de plano pro MCP Write do Beehiiv |
-| [`claude-pilot-design.md`](./claude-pilot-design.md) | Design do piloto de newsletter focada em Claude/Anthropic (#60) |
-| [`lean-canvas-vigil-ia.md`](./lean-canvas-vigil-ia.md) | Lean Canvas do guarda-chuva Vigil.ia.br (#856) — living document |
-| [`token-reduction-analysis.md`](./token-reduction-analysis.md) | Análise de redução de tokens da pipeline de edição (#2452) |
-| [`growth-partnerships.md`](./growth-partnerships.md) | Critério e processo de prospecção de parcerias de audiência no modelo Clarice (#4555) — rascunho de abordagem e dados de contato só em `data/parceria-clarice/`; issue guarda estado/decisão. Artigo assinado com link na bio é outro canal (#5917) |
-| [`beehiiv-vs-kit-migration.md`](./beehiiv-vs-kit-migration.md) | Migração Beehiiv→Kit da **diária** — **reativada em 24/08/2026** (plano vivo: issue #461). Referência histórica: comparativo de mercado + spike de inventário; inventário e preços defasados, caminho de fases e critério de abort ainda válidos |
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`6343-arquitetura-alvo.md`](./6343-arquitetura-alvo.md) | Referência: Migração diar.ia.br (issue #6343) — estado verificado | Status: REATIVADA (24/08/2026, decisão do editor confirmada ao vivo na edição 260827). Esta não é a migração completa — é o registro de arquitetura alvo e… |
+| [`acquisition-health-alarm-setup.md`](./acquisition-health-alarm-setup.md) | Alarme semanal de saúde de aquisição por canal | Não existia nenhuma tarefa vigiando degradação de canal de aquisição. Este alarme roda semanalmente — a fonte depende de… |
+| [`ads-confirmation-secondary-actions.md`](./ads-confirmation-secondary-actions.md) | Confirmação (DOI) como ação SECUNDÁRIA nas plataformas de anúncio (#8387) | Runbook do que resta da Etapa 1 do #8387. Nenhuma meta primária muda antes de 27/09/2026 (fim da janela do teste 2608); ações novas nascem secundárias. |
+| [`agent-migration-triage.md`](./agent-migration-triage.md) | Triagem: agentes LLM → scripts TS determinísticos (#1094) | Decisão por agente atual em `.claude/agents/`, com follow-ups concretos. Substitui (consolida) as análises prévias em `archive/llm-ts-migration-analysis.md` e… |
+| [`ai-crawlers-policy.md`](./ai-crawlers-policy.md) | Crawlers de IA ficam liberados nas nossas superfícies | Movido do `CLAUDE.md` (#6935 PR 2 — curadoria do teto de bytes). Enforcement real é a config de zona da Cloudflare + os `robots.txt` servidos pelos Workers de… |
+| [`apex-cutover-rollback.md`](./apex-cutover-rollback.md) | Plano de rollback do cutover do apex `diar.ia.br` (#467) | Preparado em 25/08/2026, antes de qualquer ação. Existe porque a capacidade central do cutover — `custom_domain = true` no apex depois que a Beehiiv soltar o… |
+| [`apex-cutover-status-5125.md`](./apex-cutover-status-5125.md) | Verificação do cutover do apex — #5125 |  |
+| [`apoia-se-campanha-exemplos-8498.md`](./apoia-se-campanha-exemplos-8498.md) | Texto da campanha Apoia.se — exemplos, enquadramento e cumulatividade (#8498, Parte 2) | Ação do editor no painel do Apoia.se (não é código). Tempo estimado: ~5 min (colar 4 trechos). O texto abaixo está pronto pra colar; as recompensas ficam em… |
+| [`apoios-diff-alarm-setup.md`](./apoios-diff-alarm-setup.md) | Alarme diário de diff pendente do sync de apoio | Fecha a lacuna do #4485: a cadência de `/diaria-apoios-sync` era zero — só invocação manual. Sem alarme, um diff pendente entre o nível de apoio no apoia.se e… |
+| [`aquisicao-reconcile-panel-template.json`](./aquisicao-reconcile-panel-template.json) |  |  |
+| [`archival.md`](./archival.md) | Arquivamento de edições antigas | A pipeline acumula 1 diretório por edição em `data/editions/{AAMMDD}/` (~5MB cada por causa das imagens). Em produção sustentada, isso vira gigabytes em poucos… |
+| [`audience-source-notes.md`](./audience-source-notes.md) | Audiência — fontes de cadastro conhecidas (registro de decisão) | Registro de decisão editorial sobre fontes de cadastro na Beehiiv que poderiam, sem este documento, ser reinterpretadas como incidente/achado novo por uma… |
+| [`beehiiv-backup-setup.md`](./beehiiv-backup-setup.md) | Snapshot semanal da publicação Beehiiv | `scripts/backup-beehiiv.ts` (#1742) existia desde 2026-06-03 como backup manual sob demanda — nunca rodou agendado. Os dois únicos snapshots em… |
+| [`beehiiv-mcp-write-evaluation.md`](./beehiiv-mcp-write-evaluation.md) | Avaliação: MCP Write do Beehiiv — custo/benefício do upgrade de plano | Gerado em: 2026-06-20 |
+| [`beehiiv-vs-kit-migration.md`](./beehiiv-vs-kit-migration.md) | Beehiiv → Kit: comparativo + spike técnico (referência histórica) | Status: REATIVADA em 24/08/2026. Decisão do editor: a migração da diária pro Kit está de volta, e as issues do eixo diária (#461, #463, #464, #466, #467) foram… |
+| [`bing-ai-performance.md`](./bing-ai-performance.md) | Bing AI Performance e Topics Portfolio — investigação #12241 | Verificado em 07/11/2026 (UTC). Resultado: não foi localizado contrato público oficial para obter AI Performance/Topics Portfolio pela API JSON usada no… |
+| [`branch-protection.md`](./branch-protection.md) | Branch Protection — master | Setup único pra exigir CI verde antes de merge em `master`. Não é strictly necessário (ninguém deveria commitar direto em master), mas protege contra… |
+| [`brevo-apoiadores-registro.md`](./brevo-apoiadores-registro.md) | Registro do canal Brevo dos apoiadores mensais (2607-08) | Registro histórico do único envio do digest mensal para os apoiadores Mantenedor/Patrono feito pela Brevo. O canal foi aposentado no #7633 (o envio passou para… |
+| [`brevo-diaria-guardrail-setup.md`](./brevo-diaria-guardrail-setup.md) | Circuit breaker de campanha do canal `brevo_diaria` | Pausa o rollout inteiro do canal `brevo_diaria` (reativação via segmento Pending da Beehiiv) quando a saúde agregada da conta se degrada — camada DIFERENTE do… |
+| [`brevo-rate-limits.md`](./brevo-rate-limits.md) | Rate limit real da Brevo (dashboard `clarice-dashboard`) | Vários comentários em `workers/brevo-dashboard/src/brevo-api.ts` (desde o #2144, 2026-06) assumiam que o teto da Brevo era 100 requisições por MINUTO. Nunca… |
+| [`browser-publish-setup.md`](./browser-publish-setup.md) | Claude in Chrome — setup e onde a pipeline usa o navegador | Setup da extensão Claude in Chrome e lista do que ainda passa pelo navegador logado do editor. Reescrito no #14061: a versão anterior descrevia a publicação da… |
+| [`bug-heatmap.md`](./bug-heatmap.md) | Bug Heatmap — diar.ia.br |  |
+| [`cac-report-setup.md`](./cac-report-setup.md) | Custo por leitor por canal (`scripts/cac-report.ts`) + `/ads` no Studio | Onde botar o orçamento de aquisição (R$ 4.000+/mês, decisão do editor 260814 — teto de CAC revogado, o custo ranqueia, não reprova). A tela `/ads` do Studio… |
+| [`clarice-brevo-cluster-audit.md`](./clarice-brevo-cluster-audit.md) | Auditoria do cluster Clarice/Brevo (#7122, fatia 10 do épico #7112) | Data: 02/09/2026. Escopo: os 94 scripts + 111 testes (~76.033 LOC) citados pela issue de origem, cobrindo o programa Clarice News (digest mensal enviado via… |
+| [`clarice-campaign-box-swap.md`](./clarice-campaign-box-swap.md) | Troca de box por campanha Clarice (#12249) | Uso supervisionado pelo editor, como os demais modos de reapply: |
+| [`clarice-dashboard-access-setup.md`](./clarice-dashboard-access-setup.md) | clarice-dashboard — access setup | Cookie-token auth gates the entire dashboard. A single shared token is configured as a Worker secret and validated via a `cf-dash-auth` cookie (HttpOnly… |
+| [`clarice-dashboard-precompute-setup.md`](./clarice-dashboard-precompute-setup.md) | Precompute horário do dashboard clarice-dashboard (Diaria-Clarice-Dashboard-Precompute) | `workers/brevo-dashboard` (o dashboard `clarice-dashboard`) serve `dash:lastgood:campaigns` como fallback quando a Brevo entra em rate-limit ou sai do ar… |
+| [`clarice-envio-alarm-setup.md`](./clarice-envio-alarm-setup.md) | Alarme de rodada falha do Diaria-Clarice-Envio | `scripts/clarice-envio-alarm.ts` + `scripts/lib/clarice-envio-alarm.ts` fecham o buraco de observabilidade encontrado ao vivo em 260811: a task… |
+| [`clarice-envio-daily-setup.md`](./clarice-envio-daily-setup.md) | Par de tasks diárias: envio automático da rampa Clarice | Um script de setup, DUAS tasks indivisíveis (decisão do editor 260811 — armar uma sem a outra é uma configuração que ninguém quer): |
+| [`clarice-envio-guard-alarm-setup.md`](./clarice-envio-guard-alarm-setup.md) | Alarme próprio do guard das 05:00 (Diaria-Clarice-Envio-Guard-Alarm) | `scripts/clarice-envio-guard-alarm.ts` + `scripts/lib/clarice-envio-guard-alarm.ts` cobrem o Gap 2 achado ao vivo na mesma issue que introduziu o… |
+| [`clarice-guardrail-alarm-setup.md`](./clarice-guardrail-alarm-setup.md) | Alarme de guardrail furado do ramp Clarice | Avalia, ~10h após cada envio, se algum guardrail de saúde do ramp de migração Clarice (bounce/unsub/spam — abertura aparece só como contexto no e-mail, nunca… |
+| [`clarice-novos-daily-setup.md`](./clarice-novos-daily-setup.md) | Task diária: envio automático aos cadastros novos da Clarice | Task `Diaria-Clarice-Novos` (`scripts/lib/scheduled-tasks.ts`) → `npx tsx scripts/clarice-novos-run.ts`, rodando diariamente às 09:00 BRT (mudou de 11:00 em… |
+| [`clarice-opens-catchup-alarm-setup.md`](./clarice-opens-catchup-alarm-setup.md) | Alarme de falha sustentada do catch-up de opens da Clarice | O catch-up de opens (`#4688`) roda dentro de todo `clarice-sync-brevo.ts --incremental` (inclusive a task diária `Diaria-Clarice-Sync`, 08:30) e é fail-soft… |
+| [`clarice-rest-timeout-13888.md`](./clarice-rest-timeout-13888.md) | Clarice REST: diagnóstico de 24/11/2026 (#13888) | Fonte: registros `clarice_rest_attempt` em `data/run-log.jsonl`, edição 261124, Stage 4. Horários UTC; bytes são o payload registrado pelo cliente. |
+| [`clarice-sync-daily-setup.md`](./clarice-sync-daily-setup.md) | Sync incremental diário do store Clarice | Mantém o store SQLite de contatos Clarice (usado por `clarice-build-segment.ts` e vizinhos) e a dashboard sincronizados com a Brevo, sem pagar o custo de um… |
+| [`clarice-unified-db.md`](./clarice-unified-db.md) | Store único de usuários da Clarice (#2647) | Um SQLite local (`data/clarice-subscribers/clarice-users.db`, keyed por email) que consolida o que antes vivia fragmentado e lossy em CSVs de tier, arquivos MV… |
+| [`claude-config-sync.md`](./claude-config-sync.md) | Sync de configuração do Claude Code entre máquinas (#4804) | O editor usa Claude Code em mais de uma máquina. `~/.claude` é local por máquina — sem isso, preferências (modelo, hooks, statusline, comandos, skills… |
+| [`claude-md-historical-incidents.md`](./claude-md-historical-incidents.md) | Histórico narrativo extraído do CLAUDE.md (#7127) | Este arquivo agrega narrativa histórica — relatos de incidente, "achado ao vivo", "caso concreto que motivou", trajetória de decisão — extraída da seção… |
+| [`claude-pilot-design.md`](./claude-pilot-design.md) | Piloto: newsletter focada em Claude (Anthropic ecossistema) — Design (#60) | Versão: draft 2026-05-08 · Owner: Pixel · Status: pre-launch experiment design |
+| [`claude-session-version-drift-alarm-setup.md`](./claude-session-version-drift-alarm-setup.md) | Alarme de drift de versão em sessão Claude Code de vida longa | Isto é um alarme SEM POLÍTICA (opção 3 do #6927, decisão do editor). Ele não reinicia sessão nenhuma, não desliga o auto-update, e não escolhe entre as duas… |
+| [`codex-image-setup.md`](./codex-image-setup.md) | Codex como gerador de imagens (#9088) | `platform.config.json → image_generator = "codex"` gera as imagens (Stage 1 É IA? e Stage 3 destaques) pelo Codex CLI, que usa a assinatura ChatGPT — sem… |
+| [`cohorts-schedule.md`](./cohorts-schedule.md) | Agendamento do crawl de coortes de engajamento (#2426, só v2 desde #9330) | A tabela de Coortes de engajamento do clarice-dashboard é um snapshot pré-computado: o dashboard só lê o KV (`cohorts:engagement`); quem popula é… |
+| [`comfyui-setup.md`](./comfyui-setup.md) | ComfyUI Setup — diar.ia.br Studio | Guia para instalar e configurar o ComfyUI com LoRA Van Gogh impasto para geração das imagens da newsletter. |
+| [`context-caching-audit-3438.md`](./context-caching-audit-3438.md) | Auditoria de context caching — `context/` (#3438) | Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`. `context/` passou de 24 arquivos / 204.888 bytes para 36 / 277.077 (+35% em 24 dias); o… |
+| [`continuo-consumidor-externo.md`](./continuo-consumidor-externo.md) | Infra do kind `continuo`: consumidor externo, não é código morto (#6056/#6059/#6060) | Movido do `CLAUDE.md` no #14002. O `CLAUDE.md` mantém uma linha com o aviso (não remover nada de `continuo` sem checar a skill `hermes-diaria-continuo` no… |
+| [`continuo-decisoes.md`](./continuo-decisoes.md) | Decisões e histórico de `/diaria-continuo` | Rationale e histórico de implementação da skill `/diaria-continuo` (`.claude/skills/diaria-continuo/SKILL.md`) — extraído de lá em #5344 Parte B4 (mesma… |
+| [`continuo-pr-audit-12907.md`](./continuo-pr-audit-12907.md) | Auditoria das PRs do contínuo — #12907 | Investigação em 12/11/2026, por REST (`pulls/N` e todos os comentários de `issues/N/comments`). A issue #12907 não tinha comentários na releitura. Escopo: os… |
+| [`conversion-tracking-setup.md`](./conversion-tracking-setup.md) | Instrumentação de conversão do teste de 3 canais — estado final (#5500) | Documenta o estado já publicado e verificado ao vivo do container GTM `GTM-TC8C65ZN`, depois que as tags novas (Meta, Microsoft UET) foram importadas e… |
+| [`coordenacao-merges.md`](./coordenacao-merges.md) | Coordenação única de merges entre sessões interativas | Decisão do editor em 09/09/2026 ("sim, coordenação única"; "acato o protocolo"). Registrada aqui porque instrução verbal não muda invariante escrito: duas… |
+| [`corpus-index-status-5125.md`](./corpus-index-status-5125.md) | Cobertura dos índices por mês e por tema (#5125) |  |
+| [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons (#2750) | O tab Cupons do dashboard (`clarice-dashboard.diaria.workers.dev`) lê o KV `coupons:usage`, que carrega, por assinatura com cupom NEWS50/NEWS25: o valor pago… |
+| [`cursos-worker-alarm-setup.md`](./cursos-worker-alarm-setup.md) | Worker `cursos`: sync do KV de assinantes | O worker `cursos` (hosting da página "Cursos sobre IA", `cursos.diar.ia.br`) loga todo caminho de degradação e tem `[observability] enabled = true` no… |
+| [`definicao-leitor.md`](./definicao-leitor.md) | Definição canônica de `leitor-v1` | Primeira metade da camada de dados de aquisição que destrava decisão de gasto em ads (#4466). A segunda é o mapa de origem recuperada… |
+| [`develop-token-analysis-3328.md`](./develop-token-analysis-3328.md) | `/diaria-develop` — análise de consumo de tokens (#3328) | Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`. Este doc é de 260711 e era declaradamente especulativo por falta de dados de rodada real… |
+| [`diaria-dashboard-access-setup.md`](./diaria-dashboard-access-setup.md) | diaria-dashboard — access setup (#5133) | Até 12/08/2026 o Worker `diaria-dashboard` era servido sem nenhuma autenticação — `X-Robots-Tag: noindex` + `Disallow: /` (#5097) impedem INDEXAÇÃO por… |
+| [`doppler-env-sync.md`](./doppler-env-sync.md) | Sync de `.env` entre máquinas via Doppler (#5149) | O projeto usa ~40 credenciais (`.env`, ver `.env.example`) espalhadas por Beehiiv, Brevo, Cloudflare, Clarice, Facebook/Instagram/Threads, Stripe, apoia.se… |
+| [`edicao-anual.md`](./edicao-anual.md) | Edição ANUAL (`/diaria-anual`, #7569) | Movido do `CLAUDE.md` no #14002: lá fica só a regra, com ponteiro para cá. Fluxo completo: `.claude/skills/diaria-anual/SKILL.md`. |
+| [`editorial-invariants.md`](./editorial-invariants.md) | Editorial invariants (auto-generated) |  |
+| [`entity-page-candidates.md`](./entity-page-candidates.md) | Candidatas a página de entidade (#5125 item 4) | Levantamento mecânico do corpus (`data/beehiiv-cache/posts/*.json`, 249 edições, auditado 14/08/2026) para identificar candidatas de cauda longa ao formato… |
+| [`entity-pages-regen-setup.md`](./entity-pages-regen-setup.md) | Regeneração automática das páginas de entidade (`especial.diar.ia.br/entidades/`) | Atualização #7147 (02/09/2026): as 2 metades abaixo passaram a rodar em CADENCES diferentes — a task diária armada em 17/08 (ver "Setup" no fim deste doc) hoje… |
+| [`evaluate-brevo-diaria-setup.md`](./evaluate-brevo-diaria-setup.md) | Task diária: evaluate do canal `brevo_diaria` | O envio diário do canal `brevo_diaria` (`scripts/publish-daily-brevo.ts`) mira a lista inteira na Brevo — não consulta o store por contato. Isso significa que… |
+| [`facebook-setup.md`](./facebook-setup.md) | Facebook Graph API Setup (Stage 5) | Setup do publisher Facebook do Stage 5 (Publicação, #1694) (`scripts/publish-facebook.ts`) para agendar/publicar posts via Graph API. |
+| [`failover-neo.md`](./failover-neo.md) | Contingência do 300 no Neo (#12982) | O `300` roda todas as tasks agendadas `Diaria-*` (systemd). Desde o #5074, nenhuma delas roda no Windows. Este runbook descreve a exceção temporária e… |
+| [`ga4-api-setup.md`](./ga4-api-setup.md) | Acesso programático ao GA4 (#5248) | Estado e passo-a-passo do acesso à Google Analytics Data API v1beta para a propriedade `Diaria`. Fecha a decisão registrada na issue #5248: "GA4 está coletando… |
+| [`ga4-data-api-setup.md`](./ga4-data-api-setup.md) | GA4 Data API — ingestão de comportamento pós-clique (#5248) | `diar.ia.br` (a home hospedada) é um custom hostname da Beehiiv — fora da nossa zona Cloudflare. `scripts/lib/shared/ai-referrer-log.ts` (log de `Referer` de… |
+| [`ga4-setup-checklist.md`](./ga4-setup-checklist.md) | GA4: checklist de conserto no painel GTM/GA4 | Decisão do editor (14/08/2026): CONSERTAR GA4, não aposentar. GA4 fica como instrumentação viva, complementar ao log próprio de referrer de assistente de IA… |
+| [`generic-study-shadow-zero-hits-11328.md`](./generic-study-shadow-zero-hits-11328.md) | Penalidade de estudo genérico: por que o modo sombra não marcou nada em outubro (#11328) | Investigação de 27/10/2026, pedida pela #11328 e ligada à decisão pendente da #9673 (ligar ou não `selection.generic_study_penalty.enabled`, #9462). |
+| [`geo-citation-monitor-setup.md`](./geo-citation-monitor-setup.md) | Monitor semanal de citação por assistente de IA | Pergunta a cada provedor de LLM com API key configurada as perguntas fixas de `GEO_QUESTIONS` (ex: "Qual a melhor newsletter diária sobre inteligência… |
+| [`geo-citation-staleness-alarm-setup.md`](./geo-citation-staleness-alarm-setup.md) | Alarme de staleness do monitor de citação GEO | O monitor semanal de citação GEO (`geo-citation-monitor.ts`, task `Diaria-Geo-Citation-Monitor`, domingos 07:00) registra em `data/geo-citations/history.jsonl`… |
+| [`geo-hub-experiment.md`](./geo-hub-experiment.md) | Hubs temáticos GEO — sem grupo de controle (decisão do editor, 10/08/2026) | Registro da decisão citada no #4905 (Refs #4558). Não é runbook — é o mesmo tipo de "nota de fato apurado" que `docs/seo-notes.md` mantém pra dado de SEO, aqui… |
+| [`gmail-inbox-setup.md`](./gmail-inbox-setup.md) | Setup: Gmail inbox para `diariaeditor@gmail.com` | O drain do inbox (`scripts/inbox-drain.ts`) lê e-mails pela Gmail REST API com OAuth Google — o token em `data/.credentials.json`, gerado por… |
+| [`goal-modelo-local-continuo.md`](./goal-modelo-local-continuo.md) | Briefing — escolha do modelo local do contínuo | Material de apoio para o `/goal` que busca o modelo local ideal da skill `hermes-diaria-continuo` no 300. Reúne o que já foi medido em 06/09/2026 para que a… |
+| [`google-ads-api-setup.md`](./google-ads-api-setup.md) | Acesso programático ao Google Ads (#5262) | Estado e passo-a-passo do acesso à Google Ads API. Destrava #5237 (MCP oficial read-only), #5236 (relatório de custo por leitor) e, mais adiante, o Offline… |
+| [`google-oauth-production.md`](./google-oauth-production.md) | Publicar o app OAuth Google em "Produção" (causa-raiz da expiração de 7 dias) | Estado atual (#10785): feito. O app OAuth do projeto GCP `gen-lang-client-0315370011` (client de `GOOGLE_CLIENT_ID`) foi publicado em produção em 22/10/2026… |
+| [`growth-partnerships.md`](./growth-partnerships.md) | Parcerias de audiência — critério e processo (#4555) | Metodologia reusável para prospectar parcerias de aquisição orgânica no modelo Clarice (canal com melhor conversão medida em ago/2026, ver `CLAUDE.md`… |
+| [`gtm-confirmation-secondary-import-proposal.json`](./gtm-confirmation-secondary-import-proposal.json) |  |  |
+| [`gtm-signup-container-import-proposal.json`](./gtm-signup-container-import-proposal.json) |  |  |
+| [`gtm-signup-tracking-setup.md`](./gtm-signup-tracking-setup.md) | GTM — material de importação: gatilho único de cadastro (#5546) | Preparado para a #5500 ("gatilho único de cadastro no GTM"), que carrega a label `windows` e exige interface logada — a importação, publicação e verificação em… |
+| [`home-meta-check-setup.md`](./home-meta-check-setup.md) | Smoke-test dos eixos de drift da home/edição pública | Nome herdado, escopo mudou (#6498, 28/08/2026). Até o cutover do apex (#467), a home `https://diar.ia.br/` era um tema Beehiiv — daí o nome original… |
+| [`hub-drift-check-setup.md`](./hub-drift-check-setup.md) | Smoke-test de drift entre HUB_META e o Worker `arquivo` publicado | `test/hub-registry-completeness.test.ts` cruza os 3 registries de hub temático (`HUB_LOADERS`, `HUB_REGISTRY`, `HUB_META`) entre si — 6 asserções, CI… |
+| [`infra-300-watchdog.md`](./infra-300-watchdog.md) | Vigia externo do 300 (#12981) | Deployado e armado em 25/11/2026 (Worker com secrets Gmail, cron `*/5`, timer de heartbeat no 300). Ensaio feito no mesmo dia (passo 6 abaixo): 1 e-mail… |
+| [`installation.md`](./installation.md) | Installation — diar.ia.br Studio | Passo-a-passo end-to-end, do zero ao primeiro `/diaria-edicao` funcional. Estimativa: 30–45 min na primeira vez. |
+| [`jev-ab-runbook-8421.md`](./jev-ab-runbook-8421.md) | Runbook A/B Jev (#8421) | ENCERRADO em 04/10/2026 (#9551). O editor encerrou o A/B ao vivo e aposentou o perfil Jev a partir da avaliação consolidada do epic #8412 (veredito do dedup na… |
+| [`jev.md`](./jev.md) | Jev — harness de medição (#8413, Fase 0 do epic #8412) | Jev é o apelido do classificador externo TypeSafe System One (modelo `jev-latest`) — o mesmo serviço que o #8211/#8219 já usam como tie-breaker semântico do… |
+| [`kit-creator-network.md`](./kit-creator-network.md) | Kit Creator Network — estado e decisões | Status: NO AR desde 01/09/2026 — perfil publicado, 3 criadores curados e a página de recomendações servindo na navegação de `diariabr.kit.com`. O setup inicial… |
+| [`kit-doi-confirmation-copy-proposta-6812.md`](./kit-doi-confirmation-copy-proposta-6812.md) | Copy do e-mail de confirmação (double opt-in) do Kit — pronta pra colar | Status: aguardando aprovação do editor. Refs #6812. Nada disto foi colado no Kit — é só o texto proposto. |
+| [`kit-doi-confirmation-copy.md`](./kit-doi-confirmation-copy.md) | Copy do e-mail de confirmação (double opt-in) — CANÔNICA | Fonte: o e-mail real que a Beehiiv enviava. Recuperado em 09/09/2026 do Gmail do editor (remetente `diaria` em `mail.beehiiv.com`, thread `1a03e8a2c2bf1bb9`… |
+| [`kit-welcome-sequence-draft.md`](./kit-welcome-sequence-draft.md) | Sequence de boas-vindas do Kit — proposta de conteúdo (draft) | Status: aguardando aprovação do editor. Refs #6508. Nada disto foi criado no Kit — é só o texto proposto, pronto pra colar assim que aprovado. |
+| [`lane-glm.md`](./lane-glm.md) | Lane de piloto em modelo de gateway (#6930) — ENCERRADA (#10387) | Encerrada em 18/10/2026 (#10387). Decisão do editor: "não estou mais usando modelos pagos no OpenRouter". A lane existia para medir um modelo PAGO de gateway… |
+| [`late-refresh-github-feeds.md`](./late-refresh-github-feeds.md) | Refresh tardio do gate 4: feeds do GitHub de xAI, DeepSeek e Qwen (#9424) | O refresh tardio (`scripts/late-refresh-candidates.ts`, miolo em `scripts/lib/late-refresh.ts`, §4c.9 do Stage 4) lista o que saiu nas fontes oficiais dos… |
+| [`lead-rewrite-analysis-10791.md`](./lead-rewrite-analysis-10791.md) | Análise das reescritas de lead (#10791) | Decisão do editor no briefing do overnight 261022b: comparar o texto gerado com o final e ajustar `writer-destaque`/`writer`/`context/templates/newsletter.md`… |
+| [`lean-canvas-vigil-ia.md`](./lean-canvas-vigil-ia.md) | Lean Canvas — Vigil.ia.br (#856) | Versão: draft 2026-05-08 · Owner: Pixel · Status: living document |
+| [`linkedin-cron-worker-setup.md`](./linkedin-cron-worker-setup.md) | Cloudflare Worker `diaria-linkedin-cron` Setup | One-time setup pra ativar agendamento real de posts LinkedIn da diar.ia.br. Substitui a abordagem Make.com Data Store (que não funcionou — ver… |
+| [`linkedin-personal-setup.md`](./linkedin-personal-setup.md) | LinkedIn pessoal automatizado (#9568) | O post diário do 4º item no perfil pessoal foi APOSENTADO em 27/10/2026 (#11398, pedido do editor). O Stage 6 não arma nem lembra mais esse post, e a task… |
+| [`linkedin-weekly-staleness-alarm-setup.md`](./linkedin-weekly-staleness-alarm-setup.md) | Alarme de staleness da newsletter semanal do LinkedIn | `scripts/linkedin-weekly-staleness-alarm.ts` + `scripts/lib/linkedin-weekly-staleness-alarm.ts` fecham o buraco de observabilidade encontrado ao vivo em… |
+| [`make-595-comments-setup.md`](./make-595-comments-setup.md) | Make scenarios setup — comments LinkedIn (#595) | #3627 (260716): aposentado. `social-linkedin` não gera mais `comment_diaria`/`comment_pixel` (decisão do editor — postagem manual de comentários auxiliares não… |
+| [`make-linkedin-setup.md`](./make-linkedin-setup.md) | Make.com → LinkedIn Setup | One-time setup to enable programmatic LinkedIn publishing via Make.com webhook instead of Chrome automation. |
+| [`manual-publish-prep.md`](./manual-publish-prep.md) | Publicação manual requer `prep-manual-publish.ts` antes | Movido do `CLAUDE.md` (#6935 PR 2 — curadoria do teto de bytes, ver "Otimização de tokens" no `CLAUDE.md`). Enforcement real do que segue vive em código… |
+| [`mensal-apoiadores-canal-kit.md`](./mensal-apoiadores-canal-kit.md) | `/diaria-mensal-apoiadores`: canal Kit (#7633) | Movido do `CLAUDE.md` no #14002: lá fica só a regra, com ponteiro para cá. Fluxo completo: `.claude/skills/diaria-mensal-apoiadores/SKILL.md`. |
+| [`meta-ads-mcp-tools.md`](./meta-ads-mcp-tools.md) | Meta Ads MCP — tools e política de escrita (#5238) | Conector conectado em claude.ai (sessão develop 260816c, 16/08/2026) — `mcp.facebook.com/ads`, OAuth via Meta Business. Não há escopo restrito a uma conta: o… |
+| [`microsoft-ads-encerramento.md`](./microsoft-ads-encerramento.md) | Microsoft Ads: canal encerrado (21/10/2026) | Decisão do editor, 21/10/2026 (`/diaria-develop 261021`, issue #10755): a diar.ia.br não usa mais o Microsoft Ads. Antes de reativar o canal, leia esta página. |
+| [`model-mix-historico.md`](./model-mix-historico.md) | Histórico do mix de modelos (Sonnet 5 #2745, Opus 5 #4042, #8941) | Movido do `CLAUDE.md` no #14002. O mix vigente (#9003, que revisa o #8941 onde diverge) segue no `CLAUDE.md`, seção "Otimização de tokens"; estes três… |
+| [`npm-version-drift-alarm-setup.md`](./npm-version-drift-alarm-setup.md) | Alarme de defasagem de versão do Claude Code (disco × npm upstream) | Isto é um alarme SEM POLÍTICA (opção 3 do #6927, decisão do editor — mesmo registers que o alarme irmão). Ele não atualiza o binário, não reinicia sessão… |
+| [`on-hold-vencimento-alarm-setup.md`](./on-hold-vencimento-alarm-setup.md) | Alarme semanal de vencimento das issues `on-hold` | Achado ao vivo na mesma sessão: 4 issues (#4556, #4469, #4554, #4549) carregavam a label `on-hold` com data de vencimento escrita só no título — nada no repo… |
+| [`onboarding-kit-cutover.md`](./onboarding-kit-cutover.md) | Corte e rollback: transporte do onboarding Brevo → Kit (#7922) | Status: FLIP AUTORIZADO pelo editor em 20/10/2026 ("pode ligar", sessão `/diaria-develop` 261020, depois de aprovar os e-mails do piloto). O PR do flip… |
+| [`onedrive-dependencias-cloudflare.md`](./onedrive-dependencias-cloudflare.md) | Dependências do `data/` sincronizado e o que pode ir para a Cloudflare (#12736) | Mapa pedido na #12736: tudo que lê ou grava em `data/` por meio do sync de arquivo (OneDrive hoje, Google Drive depois do cutover da #12359), separado entre… |
+| [`onedrive-safe-rename.md`](./onedrive-safe-rename.md) | Nunca renomear em rodízio dentro de `data/` (#8058) | `data/` é uma directory junction/symlink apontando para uma pasta sincronizada pelo OneDrive (ver CLAUDE.md, item 2b). Renomear arquivos ali — seja via `mv`… |
+| [`onedrive-sync-setup.md`](./onedrive-sync-setup.md) | Setup do cliente OneDrive (`onedrive.service`, systemd --user) | Item 1 da issue (religar o serviço) já foi resolvido antes desta unidade — verificado ao vivo pelo coordenador em 17/08 14:47 UTC: `systemctl --user status… |
+| [`orchestrator-stage-1-research-historia.md`](./orchestrator-stage-1-research-historia.md) | Histórico — `.claude/agents/orchestrator-stage-1-research.md` | Narrativa histórica de incidente/decisão extraída do playbook operacional do Stage 1 (#4816 — reduzir volume de prompt lido em toda edição sem perder o… |
+| [`orchestrator-stage-narrative-history.md`](./orchestrator-stage-narrative-history.md) | Histórico narrativo dos playbooks de stage (#4816) | Este arquivo agrega a narrativa histórica extraída dos 7 playbooks `.claude/agents/orchestrator-stage-{0-preflight,1-research,2,3,4,5,6}.md` (#4816) — relatos… |
+| [`overnight-nightly-chain.md`](./overnight-nightly-chain.md) | Cadeia noturna: review diário e overnight agendado | Todas as noites, às 00:15 BRT, no `300`: |
+| [`overnight-token-analysis-3327.md`](./overnight-token-analysis-3327.md) | `/diaria-overnight` — análise de consumo de tokens (#3327) | Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`. Os números abaixo são da rodada 260711, sob o regime `DEFAULT_EFFORT = "low"` do #3326 (1… |
+| [`overnight-watchdog-setup.md`](./overnight-watchdog-setup.md) | Watchdog de Stall Overnight | O watchdog detecta stall em rodadas overnight de forma independente do coordenador. O coordenador é event-driven — não roda entre eventos, então se todos os… |
+| [`pipeline-detail.md`](./pipeline-detail.md) | Pipeline — detalhe por etapa (scripts/subagentes/outputs) | Movido do `CLAUDE.md` na rodada de enxugamento do #8228. A fonte viva desse detalhe são os playbooks `.claude/agents/orchestrator-stage-{0-preflight… |
+| [`plugin-review-drift-check-setup.md`](./plugin-review-drift-check-setup.md) | Drift-check do system prompt do plugin `pr-review-toolkit` | `REVIEW_AGENT = "pr-review-toolkit:code-reviewer"` (`.claude/hooks/pr-create-review.mjs`) resolve pra um arquivo do marketplace, fora deste repo: |
+| [`postmaster-spam-sync-setup.md`](./postmaster-spam-sync-setup.md) | Sync automático do spamRate do Google Postmaster Tools | Substitui a leitura MANUAL do painel do Google Postmaster Tools (`scripts/postmaster-spam-entry.ts`, mantido como fallback) por um sync automático. |
+| [`pr-review-effort.md`](./pr-review-effort.md) | Effort do review automatizado (#4234) | Movido do `CLAUDE.md` na rodada de enxugamento do #8228 — a regra viva ficou lá em 1-2 linhas; a trajetória de decisão e o mecanismo completo ficam aqui. |
+| [`preflight-utm-cookie-roteiro.md`](./preflight-utm-cookie-roteiro.md) | Roteiro do preflight — UTM (#5522) + cookies de atribuição (#5543) | Reescrito no #7359 (03/09/2026) pro fluxo real. A versão anterior deste documento descrevia o widget JS da Beehiiv com double opt-in hospedado na publicação… |
+| [`primary-source-lookup.md`](./primary-source-lookup.md) | Primary-source lookup (#5664) | After the Stage 1 approval gate, the orchestrator may try to replace a secondary article URL with the cited company's official source. The search is scoped to… |
+| [`publica-video-fluxo-hibrido.md`](./publica-video-fluxo-hibrido.md) | Publica-video: diagnóstico e fluxo híbrido (#12622) | Levantamento em 10/11/2026, a partir do corpo e comentário OWNER da issue via REST API. As filhas entregaram os guards: #12654 (autorização vinculada ao hash… |
+| [`render-unification-analysis-3269.md`](./render-unification-analysis-3269.md) | Unificação do render HTML diário (Beehiiv) vs mensal (Brevo/Clarice) — análise (#3269) | Status: investigação concluída. Não implementa a unificação — produz o mapeamento e a recomendação para uma decisão de arquitetura informada. Um extra de… |
+| [`retro-semanal-staleness-alarm-setup.md`](./retro-semanal-staleness-alarm-setup.md) | Alarme de staleness da retro semanal | `scripts/retro-semanal-staleness-alarm.ts` + `scripts/lib/retro-semanal-staleness-alarm.ts` avisam quando a `/diaria-retro-semanal` ainda não agendou o… |
+| [`robots-txt-drift-check-setup.md`](./robots-txt-drift-check-setup.md) | Smoke-test do `robots.txt` SERVIDO pelos Workers de curadoria | `scripts/lib/shared/robots-txt.ts` produz um `robots.txt` PRÓPRIO por Worker de curadoria (`renderCuradoriaRobotsTxt`), e guards existentes… |
+| [`rodadas-autonomas-historico.md`](./rodadas-autonomas-historico.md) | Rodadas autônomas: histórico das regras | Arquivo de consulta, nunca carregado por padrão (#14043, #14044). Guarda os incidentes, medições, linhas do tempo e justificativas longas que motivaram as… |
+| [`run-tests-concurrency.md`](./run-tests-concurrency.md) | Concorrência e prioridade do `npm test` (#7875) | Por que `scripts/run-tests.ts` satura a máquina de propósito, por que reduzir a concorrência foi medido e reprovado, e o que de fato resolve. |
+| [`scheduled-edicao-setup.md`](./scheduled-edicao-setup.md) | Agendamento automático da edição diária | CANCELADO POR DECISÃO DO EDITOR (19/08/2026). Não há edição diária agendada em máquina nenhuma, e isso é intencional — a edição passou a ser rodada à mão. O… |
+| [`scheduled-tasks-registry.md`](./scheduled-tasks-registry.md) | Registro operacional de tasks agendadas | Extraído do `CLAUDE.md` (#5344 Parte B2, 15/08/2026) — `CLAUDE.md` é o único arquivo de prompt carregado incondicionalmente em toda sessão e em todo dispatch… |
+| [`secret-rotation.md`](./secret-rotation.md) | Rotação de credenciais e playbook de emergência | Este doc é o ponto único de consulta quando alguma credencial expira, é revogada, ou precisa rotação proativa. Cobre as credenciais usadas pela pipeline da… |
+| [`seo-backlinks-8333-submissoes.md`](./seo-backlinks-8333-submissoes.md) | Backlinks #8333 — textos prontos e passo a passo do editor | Material de apoio à execução dos 5 primeiros alvos do plano (`docs/seo-backlinks-plan.md`, #8068) e do pitch ao Distrito. Nenhuma submissão foi feita por… |
+| [`seo-backlinks-plan.md`](./seo-backlinks-plan.md) | Plano de backlinks — SEO autoridade (#8068) | Registro de decisão/plano, não runbook de execução automática. Contexto: `docs/seo-notes.md` Fato 1 já registrou que, com indexação em 88% (#index-status… |
+| [`seo-notes.md`](./seo-notes.md) | SEO — registro de fatos apurados (#4548) | Notas operacionais sobre a leitura do output de `scripts/seo-pull.ts` e `scripts/seo-index-check.ts` (task semanal `Diaria-Seo-Weekly`, grava em `data/seo/`)… |
+| [`session-coordination-model.md`](./session-coordination-model.md) | Camada de coordenação de sessão — modelo único (#7123) | Fatia 11 do epic #7112. Antes deste documento, "a sessão travou?" e "esta PR pode mergear agora?" eram respondidas por mecanismos espalhados por… |
+| [`setup.md`](./setup.md) | Setup completo (1x por máquina) | Premissa original: Neo, Windows x64 do editor, é a máquina de mídia/capas. Desde o #11223 (viagem do editor, o Neo ligado poucas horas por dia) o mesmo setup… |
+| [`shorts-duracao-retencao-13200.json`](./shorts-duracao-retencao-13200.json) |  |  |
+| [`shorts-duracao-retencao-13200.md`](./shorts-duracao-retencao-13200.md) | Shorts: duração × percentual assistido × views | Medição de 16/11/2026 para a issue #13200, usando o snapshot de #12075. |
+| [`shorts-fim-retencao-13190.md`](./shorts-fim-retencao-13190.md) | Queda de retenção no fim dos Shorts, com e sem chamada final (#13190) | Medição pedida na #13190 (épica #12072). Decisão do editor no briefing overnight 261116b: a rodada entrega só a medição, sem mudar a regra do fim dos verticais… |
+| [`shorts-replace-scheduled.md`](./shorts-replace-scheduled.md) | Trocar o vídeo de um vertical já agendado (#12279) | Nenhuma plataforma troca a mídia de um post existente. Para pôr o V2 no lugar do V1 já agendado, o post antigo sai e um novo sobe no mesmo horário. O… |
+| [`site-page-publish-mechanism.md`](./site-page-publish-mechanism.md) | Mecanismo de publicação da página do acervo (§6d-site, #6202/#6598/#8158) | Movido de `.claude/agents/orchestrator-stage-6.md` (#3445, orçamento de linhas por arquivo) — referência sob demanda, não carregada incondicionalmente. |
+| [`social-signup-cta-test.md`](./social-signup-cta-test.md) | Preparação do teste de assinatura social (#12038) | Decisão do editor de 03/11/2026: testar por quatro semanas, prevalecendo sobre as duas semanas da proposta inicial. Este incremento prepara copy e tracking… |
+| [`stage-0-incident-history.md`](./stage-0-incident-history.md) | Histórico de incidentes — Stage 0 (Preflight) | Narrativa histórica extraída de `.claude/agents/orchestrator-stage-0-preflight.md` (#4816 — prova de conceito da separação narrativa/operacional). A instrução… |
+| [`stage-1-run-cutover-plan.md`](./stage-1-run-cutover-plan.md) | Plano de cutover — `scripts/stage-1-run.ts` (#5415, follow-up) | Este documento é a spec de como o playbook FUTURO (`.claude/agents/orchestrator-stage-1-research.md`) deve orquestrar `scripts/stage-1-run.ts`. Não é… |
+| [`studio-review-conflict-guard.md`](./studio-review-conflict-guard.md) | Conflito editor(Studio)×pipeline em `02-reviewed.md`/`03-social.md` | Movido do `CLAUDE.md` (#6935 PR 2 — curadoria do teto de bytes). Enforcement real vive em código (`scripts/studio-ui/studio-review.ts`, `server.ts`… |
+| [`studio-ui-remote-setup.md`](./studio-ui-remote-setup.md) | Studio UI — acesso remoto (Cloudflare Tunnel + Access) | Expõe o `studio-server` (hoje só `http://127.0.0.1:4174`, ver `scripts/studio-ui/server.ts`) num hostname público dedicado (ex: `studio.diar.ia.br`), acessível… |
+| [`studio-ui-ux-guidelines.md`](./studio-ui-ux-guidelines.md) | Studio UI — Guidelines de UX (#3866) | Regras acionáveis para telas do Studio (`scripts/studio-ui/`), destiladas de: lições já pagas neste repo (#2622, #2379/#2688, #573, #738, #3617), auditoria das… |
+| [`subscribe-redirect-drift-check-setup.md`](./subscribe-redirect-drift-check-setup.md) | Smoke-test do destino do redirect `/subscribe` (perfil hospedado Kit) | O Worker `diaria-site` faz `/subscribe` retornar 302 pra `https://diar-ia-br.kit.com/` (o perfil hospedado padrão da conta Kit — não há landing page própria… |
+| [`sync-conflict-restore.md`](./sync-conflict-restore.md) | Restaurar arquivos da edição após `.conflictN` do sync (#13545) | O sync de `data/` (rclone bisync, `scripts/systemd/gdrive-data-bisync.sh`, que chama o `gdrive-bisync.sh`) roda com `--conflict-resolve newer --conflict-loser… |
+| [`sync-data-alternativas.md`](./sync-data-alternativas.md) | Alternativas ao Google Drive para sincronizar `data/` entre máquinas (#13851) | Documento pedido no comentário do editor na #13851 (23/11/2026). Recomenda, não migra: cada migração vira issue própria. |
+| [`systemd-env-divergence.md`](./systemd-env-divergence.md) | Aviso "já está definida no ambiente com um valor diferente" nas units do 300 (#12477) | O `env-loader` (`scripts/lib/env-loader.ts`) compara cada chave do `.env` com o que já está em `process.env` e avisa quando os valores diferem (#8237). O… |
+| [`token-reduction-analysis.md`](./token-reduction-analysis.md) | Token Reduction Analysis — Pipeline de Edição (#2452) | Status: análise + 1 corte implementado (0b-bis Gmail). Medição antes/depois deferida para a próxima edição de controle (ver Seção 6). |
+| [`token-usage-audit-260809.md`](./token-usage-audit-260809.md) | Auditoria de consumo de tokens — refresh de agosto (260809) | Status: levantamento concluído. Nenhum corte aplicado — este doc mede e prioriza; a execução vai nas issues abertas ao final. |
+| [`utm-superficies-externas.md`](./utm-superficies-externas.md) | UTM das superfícies externas (#4525) | Links pra `diar.ia.br` que não nascem de código: campo de bio, site de perfil, homepage de repositório. O inventário vive em… |
+| [`validate-stage-1-output-semantics.md`](./validate-stage-1-output-semantics.md) | `validate-stage-1-output.ts` — semântica canônica (#581, #828, #832) | Documento canônico dos exit codes e modo de uso do `scripts/validate-stage-1-output.ts`. |
+| [`video-bruto-local-mac-13229.md`](./video-bruto-local-mac-13229.md) | Bruto local no Mac antes do Premiere (#13229) | O XML normal da montagem aponta o bruto para `/Users/Shared/diaria-studio-video/{AAMMDD}/` (`publishing.video.premiere_root`, #12707), que é o Drive do Mac em… |
+| [`video-d1-link-watch-setup.md`](./video-d1-link-watch-setup.md) | Link do vídeo no D1 sem o editor — `Diaria-Video-D1-Link-Watch` | Até aqui, depois das 06:00 o editor conferia no YouTube Studio se o vídeo horizontal do dia tinha ficado público e rodava `link-video-d1.ts {AAMMDD} --save… |
+| [`video-ferramentas-externas-13199.md`](./video-ferramentas-externas-13199.md) | Ferramentas externas de edição de vídeo × fluxo de vídeo da diar.ia.br (#13199) | Levantamento feito em 16/11/2026 (rodada overnight 261116b). Escopo decidido pelo editor no briefing: só o levantamento (itens 1 e 2 do entregável da issue)… |
+| [`video-medicoes-r2-r3.md`](./video-medicoes-r2-r3.md) | Medições R2 e R3 do vídeo (#13369, #13370) | Recomendações R2 e R3 do levantamento da #13199 (`docs/video-ferramentas-externas-13199.md`), aprovadas pelo editor no briefing overnight 261117b com a… |
+| [`video-montagem-resolucao-tomadas-13463.md`](./video-montagem-resolucao-tomadas-13463.md) | Resolução de tomadas entre o Gate 1 e o Gate 2 (#13463) | Investigação pedida pelo editor na montagem da 261118: a etapa entre a decupagem aprovada (Gate 1) e o roteiro final (Gate 2) está lenta. O pedido era… |
+| [`video-motor-canonico-13999.md`](./video-motor-canonico-13999.md) | Motor de montagem de vídeo: o diaria-studio é a fonte canônica (#13999) | Decisão do editor de 25/11/2026 (briefing overnight 261125c e sessão da revisão de arquitetura #13984): o diaria-studio é a fonte canônica do motor de montagem… |
+| [`video-vad-vs-energia-13598.md`](./video-vad-vs-energia-13598.md) | Silero VAD contra o detector de energia (#13598, filha da #13463) | Só medição: o detector do `build` (`speechIslands` + F0, #12089) não muda. |
+| [`viral-score-calibration.md`](./viral-score-calibration.md) | Calibração do bônus "viral" contra clique real (#8672) | Decisão: o bônus de viralização foi descartado em 07/10/2026 por decisão do editor, com base nesta calibração. O POC (`scripts/lib/viral-score.ts`… |
+| [`worker-drift-check-setup.md`](./worker-drift-check-setup.md) | Check de drift entre o código publicado e o master de cada Worker | O Worker `reativar` ficou 4 dias em produção com código defasado — um commit mergeou em `master` mas ninguém rodou `wrangler deploy`. Não havia nenhum sinal… |
+| [`youtube-capa-ctr.md`](./youtube-capa-ctr.md) | Impressões e taxa de cliques da capa no YouTube (#13192) | Parte 1 da #13192 (épica #12072): medir quantas vezes a capa (miniatura) de cada vídeo foi mostrada e quantas dessas viraram clique, para saber se uma capa… |
+| [`youtube-capa-texto-benchmark.md`](./youtube-capa-texto-benchmark.md) | Texto da capa: benchmark em canais de IA (#13253) | Complementa `docs/youtube-capa-texto.md` (diretriz do texto, #12737) e `docs/youtube-capa-visual.md` (benchmark visual, #13217). Aqui o objeto é só o texto… |
+| [`youtube-capa-texto.md`](./youtube-capa-texto.md) | Texto da capa do vídeo: benchmark e diretriz (#12737) | Vale para o gancho das duas capas do vídeo "diar.ia.br: notícias de IA": a horizontal (`04-youtube-thumb.jpg`, Passo A2 do `/diaria-publica`) e a do Short… |
+| [`youtube-capa-visual.md`](./youtube-capa-visual.md) | Capa do vídeo: benchmark visual em canais de IA (#13217) | Complementa `docs/youtube-capa-texto.md`, que trata só do texto da capa. Aqui fica o visual: rosto, tamanho e fonte do texto, fundo, logo, elemento de alerta… |
+| [`youtube-short-related-video.md`](./youtube-short-related-video.md) | Vídeo relacionado do Short: o que a YouTube Data API expõe (#10811) | Investigação de 22/10/2026, pedida pelo editor antes de decidir o caminho da tarefa das 06:30 que vincularia o vídeo horizontal da edição como "vídeo… |
 
-## Histórico (spikes e análises encerradas — `docs/archive/`, `docs/agents-archive/`)
+### `docs/agents-archive/` (1)
 
-Preservados por valor histórico (racional de decisões passadas), mas superados ou já resolvidos — não refletem necessariamente o estado atual do código. Cada doc tem um header "Status" explicando o desfecho.
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`agents-archive/eia-composer.md`](./agents-archive/eia-composer.md) | eia-composer | Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, sorteia A/B (#192), escreve `01-eia.md` (com frontmatter `eia_answer`) +… |
 
-| Doc | Desfecho |
-|---|---|
-| [`archive/spike-275-beehiiv-automation.md`](./archive/spike-275-beehiiv-automation.md) | Mapeamento inicial da DOM do editor Beehiiv (#275) — alimentou a Phase 2 de automação |
-| [`archive/spike-1046-clipboard-paste.md`](./archive/spike-1046-clipboard-paste.md) | Investigação de paste HTML grande no TipTap (#1046/#312) — método encontrado depois substituído pelo fluxo Worker-hosted atual |
-| [`archive/spike-1113-embeddings-filtro2.md`](./archive/spike-1113-embeddings-filtro2.md) | Proposta de embeddings pro Filtro 2 do `research-reviewer` (#1113) — nunca implementada, hold indefinido |
-| [`archive/eai-poll-api-test.md`](./archive/eai-poll-api-test.md) | Teste de hipótese pra Trivia Poll API (#107) — issue fechada por rota diferente (`fetch-beehiiv-poll-stats.ts`) |
-| [`archive/llm-ts-migration-analysis.md`](./archive/llm-ts-migration-analysis.md) | Análise original de migração LLM→TS — superada por `agent-migration-triage.md` |
-| [`archive/script-migration-plan.md`](./archive/script-migration-plan.md) | Plano original de migração LLM→TS — superado por `agent-migration-triage.md` |
-| [`agents-archive/eia-composer.md`](./agents-archive/eia-composer.md) | Spec do agente `eia-composer`, substituído pelo script determinístico `scripts/eia-compose.ts` |
+### `docs/archive/` (8)
 
-## Outros diretórios
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`archive/beehiiv-playbook.md`](./archive/beehiiv-playbook.md) | Playbook: Beehiiv (Etapa 5 — newsletter daily) | ARQUIVO HISTÓRICO — nenhuma etapa roda este playbook desde o #11225 (27/10/2026). O envio da diária é só Kit (`scripts/publish-newsletter-kit.ts`… |
+| [`archive/eai-poll-api-test.md`](./archive/eai-poll-api-test.md) | Teste — Beehiiv Trivia Poll API exposure (#107) | Status: arquivado — issue #107 fechada via #201/PR #200, mas não pela via testada aqui. A solução real foi `scripts/fetch-beehiiv-poll-stats.ts` +… |
+| [`archive/llm-ts-migration-analysis.md`](./archive/llm-ts-migration-analysis.md) | Análise: Migração de Agentes LLM → Scripts TypeScript | Status: superado por `docs/agent-migration-triage.md` (a partir de 2026-05-11, esse é o source-of-truth da triagem agente-a-agente). Mantido como registro do… |
+| [`archive/script-migration-plan.md`](./archive/script-migration-plan.md) | Plano de migração: agentes LLM → scripts determinísticos | Status: superado por `docs/agent-migration-triage.md` (a partir de 2026-05-11, esse é o source-of-truth da triagem agente-a-agente). Mantido como registro do… |
+| [`archive/spike-1046-clipboard-paste.md`](./archive/spike-1046-clipboard-paste.md) | Spike #1046 / #312 — paste HTML grande no TipTap (Beehiiv) | Status: arquivado — issues #1046 e #312 fechadas. O método canônico encontrado aqui (`editor.commands.insertContent({type:'text',...})` via `tr`) foi… |
+| [`archive/spike-1113-embeddings-filtro2.md`](./archive/spike-1113-embeddings-filtro2.md) | Spike #1113 — Embeddings pra Filtro 2 de research-reviewer | Status: arquivado — issue #1113 fechada, decisão hold indefinido. A proposta de substituir o Filtro 2 (Haiku pinned) por embeddings nunca foi implementada; não… |
+| [`archive/spike-275-beehiiv-automation.md`](./archive/spike-275-beehiiv-automation.md) | Spike #275 — Beehiiv automation: investigação Phase 1 | Status: arquivado — issue #275 fechada. Os selectors/achados desta Phase 1 alimentaram a Phase 2 (implementação de `publish-newsletter`), que por sua vez foi… |
+| [`archive/tier2-orchestrator-scoping.md`](./archive/tier2-orchestrator-scoping.md) | Scoping Tier 2 — orquestradores determinísticos (#5192) | Continuação de #5191 (Tier 1). Trabalho de scoping puro — nenhum código implementado nesta unidade (2 das 4 candidatas já foram implementadas por outras… |
 
-- `docs/audience-history/` — snapshots datados do perfil de audiência (gerados, não são docs de referência).
+### `docs/experiments/` (2)
+
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`experiments/cta-ab-mensal-2606-07.md`](./experiments/cta-ab-mensal-2606-07.md) | Experimento CTA-01 — copy do CTA do topo (digest mensal Clarice, ciclo 2606-07) | Status: ENCERRADO em 26/07/2026 sem vencedor; decisão final em 27/07/2026 — braço A permanece, não haverá novo round. O braço B teve entrega degradada… |
+| [`experiments/d3-radar-4846.md`](./experiments/d3-radar-4846.md) | Experimento D3 vs slot 1 do Radar (#4846) | Status: PRÉ-REGISTRADO, mecanismo implementado e DESLIGADO. `platform.config.json` → `experiment_d3_radar.enabled` está em `false` — nenhuma edição foi… |
+
+### `docs/measurements/` (2)
+
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`measurements/writer-cost-replay-11034.md`](./measurements/writer-cost-replay-11034.md) | writer-destaque: replay de custo do candidato #11007 | Medição de 24/10/2026 para a issue #11034. Nenhum prompt foi alterado e nenhum gasto recorrente foi aprovado. |
+| [`measurements/youtube-capa-texto-benchmark-2026-11-17.json`](./measurements/youtube-capa-texto-benchmark-2026-11-17.json) |  |  |
+
+### `docs/reports/` (1)
+
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`reports/kit-agent-domains-12036.md`](./reports/kit-agent-domains-12036.md) | Monitoramento de domínios de agentes — itens 2 e 3 da #12036 | Consulta somente de leitura em 03/11/2026, 18:39 UTC. Issue e comentários relidos pela API REST GitHub; consideradas apenas associações… |
+
+### `docs/runbooks/` (1)
+
+| Doc | Título | Primeira linha |
+|---|---|---|
+| [`runbooks/poll-secret-rotation.md`](./runbooks/poll-secret-rotation.md) | Runbook: POLL_SECRET rotation | Issue tracker: #1082 |

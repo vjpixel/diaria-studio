@@ -27,7 +27,7 @@
  *     não pode importar `scripts/studio-ui/**` (regra 4 de
  *     `test/lib-boundary.test.ts` — `scripts/lib/**` nunca importa de
  *     `studio-ui/`), então a integração REAL com `registerReport`
- *     (`scripts/studio-ui/studio-reports.ts`) fica a cargo do CALLER (que
+ *     (`scripts/lib/reports-registry.ts`) fica a cargo do CALLER (que
  *     não mora em `lib/` e pode importar dos dois lados) — ver item 4/5 da
  *     #7957, follow-up. Aqui, `"info"` só garante que o achado fica visível
  *     em `data/run-log.jsonl` (`scripts/lib/run-log.ts`, já lido pelo

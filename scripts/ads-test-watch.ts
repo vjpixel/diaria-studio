@@ -54,7 +54,7 @@ import { applyOrigemOverride, filterInternalAndTestSubscribers, type CacReport }
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
 import { main as cacReportMain, cacReportSnapshotId, cacReportRelPath, DEFAULT_ORIGEM_MAP_PATH, loadOrigemIndex } from "./cac-report.ts";
-import { reportId } from "./studio-ui/studio-reports.ts";
+import { reportId } from "./lib/reports-registry.ts";
 import {
   planAdsTestWatchActions,
   emptyAdsTestWatchState,

@@ -237,6 +237,18 @@ export function evaluate(command, cwd, readFile = (p) => readFileSync(p, "utf8")
   );
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando uma das duas checagens
+ * do `runHook` abaixo tem o que olhar (comando que publica no GitHub, ou
+ * `--body-file` de `gh issue|pr`). As duas leem arquivo só nesses casos.
+ * Puro; o despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  return isGhPublishCommand(command) || ghBodyFileValues(command).length > 0;
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 const isMain =
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
@@ -247,7 +259,17 @@ const isMain =
 if (isMain) {
   let raw = "";
   process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(raw));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(raw, write = (s) => process.stdout.write(s)) {
     try {
       const payload = JSON.parse(raw);
       if (payload.tool_name !== "Bash") return;
@@ -268,7 +290,7 @@ if (isMain) {
       }
       reason = reason ?? bodyFile.deny;
       if (reason) {
-        process.stdout.write(
+        write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -279,7 +301,7 @@ if (isMain) {
         );
       } else if (bodyFile.warn) {
         // #12746: aviso sem recusa — o comando segue o fluxo normal.
-        process.stdout.write(
+        write(
           JSON.stringify({
             systemMessage: bodyFile.warn,
             hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: bodyFile.warn },
@@ -290,5 +312,4 @@ if (isMain) {
       // fail-open, com o erro no stderr
       process.stderr.write(`block-gh-comment-secrets: erro, comando liberado: ${err?.stack ?? err}\n`);
     }
-  });
 }

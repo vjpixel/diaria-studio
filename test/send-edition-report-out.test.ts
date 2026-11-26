@@ -58,7 +58,7 @@ describe("send-edition-report --out (#1579)", () => {
       // aqui explicitamente — este teste roda a CLI real via spawnSync, então
       // sem a flag um `npm test` local numa máquina com data/.credentials.json
       // configurado bateria no Gmail REAL (o fix sistêmico em
-      // defaultHasCredentials/studio-reports.ts já cobre o caso geral, mas
+      // defaultHasCredentials/reports-registry.ts já cobre o caso geral, mas
       // este caller específico também ganha a flag explícita, nunca só uma
       // camada).
       const r = runCli(

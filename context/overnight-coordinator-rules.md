@@ -328,8 +328,10 @@ escopo.
 dispatch (overnight: Fase 0 passo 4, "Classificar", pra toda issue que sai
 `elegivel`; develop: Fase 1 passo 4, "Compor a onda", pra cada issue da onda
 antes do fan-out; continuo: passo 1 do "Loop invariável", "Trabalhar a fila
-desbloqueada", antes de dispatchar cada unidade — ver o `SKILL.md` de cada
-skill pro texto exato). O preflight do subagente (item 14) **continua como
+desbloqueada", antes de dispatchar cada unidade). Este item é o texto
+canônico: o `SKILL.md` de cada skill marca o ponto de plugar e cita este
+item, acrescentando só o que é próprio da skill (no develop, o motivo
+`ja-resolvida-antes-da-sessao` com `ja_resolvida_evidencia`). O preflight do subagente (item 14) **continua como
 rede de segurança** — não é substituído por este passo, só deixa de ser a
 primeira linha de defesa.
 
@@ -558,8 +560,10 @@ por PR candidata (o custo desta checagem inteira é 1 `gh pr list`, contra um
 dispatch de subagente inteiro).
 
 **Onde plugar:** logo depois do item 21 (mesmo passo — overnight: Fase 0
-passo 4; develop: Fase 1 passo 4; continuo: passo 1 do "Loop invariável" —
-ver o `SKILL.md` de cada skill pro texto exato). Não substitui o item 21 nem
+passo 4; develop: Fase 1 passo 4; continuo: passo 1 do "Loop invariável").
+Este item é o texto canônico; o `SKILL.md` de cada skill marca o ponto de
+plugar e o cita (o overnight acrescenta gravar `orphan_action` no
+`plan.json`). Não substitui o item 21 nem
 o item 14 (preflight do subagente) — os três cobrem estados diferentes da
 mesma pergunta ("essa issue já está sendo/foi resolvida?"): merged, em voo,
 e rede de segurança pós-dispatch.

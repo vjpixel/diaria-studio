@@ -60,7 +60,7 @@ import { type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
 import { readApoioGateEditorEmails } from "./lib/apoio-gate-editor-emails.ts";
-import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
+import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./lib/apoios-data.ts";
 import {
   computeDesiredApoioLevels,
   isPreviousMonthSnapshotMissing,

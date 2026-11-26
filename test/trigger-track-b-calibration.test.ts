@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { featureFromCalibrationReportTitle, decideTrackBTrigger } from "../scripts/trigger-track-b-calibration.ts";
-import { registerReport } from "../scripts/studio-ui/studio-reports.ts";
+import { registerReport } from "../scripts/lib/reports-registry.ts";
 
 describe("featureFromCalibrationReportTitle (#7979)", () => {
   it("extrai o nome da feature do formato gerado por generate-calibration-evidence-report.ts", () => {

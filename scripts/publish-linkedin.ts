@@ -655,7 +655,8 @@ export interface DispatchInput {
   linkedInDocument?: LinkedInDocumentPlan;
   /** #12584 item 5 — chave idempotente do post na fila do Worker. Ausente,
    * com plano de documento: a da diária (`linkedInDailyIdempotencyKey`, com
-   * `ctx.idempotencyNamespace`). String: esta chave (Retrospectiva mensal, uma
+   * `ctx.idempotencyNamespace`); num comentário da diária, a mesma chave com o
+   * `subtype` no lugar de `main` (#14011). String: esta chave (Retrospectiva mensal, uma
    * por história). `null`: sem chave, como antes do #12661 — só com plano
    * `skip` (artigo especial, que só registra o formato no store); um plano
    * `ready` sem chave vira `failed`, porque o documento depende dela pra não
@@ -773,12 +774,21 @@ export async function dispatchEntry(
   // #12661 — mesma chave nos três degraus (documento → carrossel → imagem
   // única na fila do Worker): retry depois de resposta perdida e degrau por
   // cima de entry gravada sem resposta caem na MESMA entry, um post só.
+  // #14011 — os comentários da diária (`comment_diaria`, `comment_pixel`) também
+  // levam chave, com o `subtype` no lugar de `main`: sem ela, um 5xx/timeout
+  // depois do commit duplicava a entry no retry e pulava o lookup do #12664,
+  // e o fallback Make publicava o comentário na hora, por cima do agendado.
+  const isDailyComment = subtype === "comment_diaria" || subtype === "comment_pixel";
   const dailyIdempotencyKey =
     input.idempotencyKey === null
       ? undefined
       : (input.idempotencyKey ??
-        (docPlan
-          ? linkedInDailyIdempotencyKey(ctx.editionDate, d, { isTest: ctx.isTest === true, namespace: ctx.idempotencyNamespace })
+        (docPlan || isDailyComment
+          ? linkedInDailyIdempotencyKey(ctx.editionDate, d, {
+              isTest: ctx.isTest === true,
+              namespace: ctx.idempotencyNamespace,
+              slot: isDailyComment ? subtype : "main",
+            })
           : undefined));
 
   try {

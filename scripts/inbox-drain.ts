@@ -557,6 +557,36 @@ export function firstDrainCutoffIso(now: Date = new Date()): string {
 }
 
 /**
+ * #14022: margem (segundos) que o `after:` recua antes do cursor. Reprocessar
+ * esse trecho é inofensivo: o filtro por mensagem de `iterateThreads`
+ * (`iso <= cutoff`) descarta o que já foi ingerido e `appendToInbox` é
+ * idempotente (#10031). Cobre arredondamento do Gmail e relógio desalinhado.
+ */
+export const AFTER_SAFETY_MARGIN_SECONDS = 300;
+
+/**
+ * #14022: monta a query da busca no Gmail. O `after:` vai em segundos de época,
+ * nunca como `AAAA/MM/DD`: o Gmail lê a data como meia-noite no fuso do
+ * Pacífico (08:00Z em novembro), e com cursor entre 00:00Z e 08:00Z
+ * (21:00–05:00 BRT) a submissão entre o cursor e as 08:00Z ficava fora da
+ * busca para sempre. A premissa do #442 (Gmail lê a data em UTC) estava errada.
+ * Cursor nulo usa o corte da 1ª execução (`firstDrainCutoffIso`). Pure.
+ */
+export function buildGmailSearchQuery(
+  gmailQuery: string,
+  lastDrainIso: string | null,
+  now: Date = new Date(),
+): string {
+  const cutoffIso = lastDrainIso ?? firstDrainCutoffIso(now);
+  const cutoffMs = Date.parse(cutoffIso);
+  if (Number.isNaN(cutoffMs)) {
+    throw new Error(`[inbox-drain] cursor inválido para o after: da busca: ${JSON.stringify(cutoffIso)}`);
+  }
+  const afterEpoch = Math.max(0, Math.floor(cutoffMs / 1000) - AFTER_SAFETY_MARGIN_SECONDS);
+  return `${gmailQuery} after:${afterEpoch}`;
+}
+
+/**
  * #10052: `since` gravado para uma falha NOVA. Com cursor nulo, gravar `null`
  * fazia o retry por ID ingerir a thread inteira (o `after:` só limita a busca,
  * não o retry) — usa o mesmo corte de 3 dias da janela da busca. Pure.
@@ -775,16 +805,9 @@ async function main(rootDir: string = ROOT): Promise<void> {
   // #10055: um único `now` para o `after:` da busca e o `since` das falhas novas
   // (dois `new Date()` divergiam ao cruzar 00:00 UTC com cursor nulo).
   const now = new Date();
-  let afterDate: string;
-  if (!cursor.last_drain_iso) {
-    // Primeira execução: 3 dias atrás (#442: em UTC — ver firstDrainCutoffIso).
-    afterDate = firstDrainCutoffIso(now).slice(0, 10).replace(/-/g, "/");
-  } else {
-    // #442: cursor já é ISO string — fatiar diretamente sem conversão de timezone.
-    afterDate = cursor.last_drain_iso.slice(0, 10).replace(/-/g, "/");
-  }
-
-  const query = `${gmailQuery} after:${afterDate}`;
+  // #14022: `after:` em segundos de época (imune ao fuso do Gmail), com margem.
+  // Cursor nulo = 1ª execução, 3 dias atrás (firstDrainCutoffIso).
+  const query = buildGmailSearchQuery(gmailQuery, cursor.last_drain_iso, now);
 
   // #3217: busca única, direto em Sent — sem label, sem forward, sem query de
   // fallback. searchThreads early return: falha de listagem é explicitamente

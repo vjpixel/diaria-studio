@@ -33,7 +33,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { runApoioReconciliationCycle } from "../scripts/lib/apoio-reconciliation-cycle.ts";
-import { contactsFilePath } from "../scripts/studio-ui/studio-apoios.ts";
+import { contactsFilePath } from "../scripts/lib/apoios-data.ts";
 import { pendingPromisesPath, type PendingPromise } from "../scripts/lib/apoio-promise-store.ts";
 import { RateLimiter } from "../scripts/lib/apoia-se.ts";
 import type { DrainApoiaSeResult } from "../scripts/lib/apoia-se-gmail-drain.ts";

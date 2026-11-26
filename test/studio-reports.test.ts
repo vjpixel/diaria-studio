@@ -1,7 +1,7 @@
 /**
  * test/studio-reports.test.ts (#3714)
  *
- * Cobertura de `scripts/studio-ui/studio-reports.ts` — a lógica pura +
+ * Cobertura de `scripts/lib/reports-registry.ts` — a lógica pura +
  * I/O de arquivo por trás da superfície de Relatórios do Studio:
  * `registerReport` (append-only, file-based, fail-soft), `listReports`
  * (dedup por id + ordenação por createdAt desc), `getReportById` e
@@ -25,7 +25,7 @@ import {
   pruneReportsRegistry,
   type ReportEntry,
   type ReportNotifyDeps,
-} from "../scripts/studio-ui/studio-reports.ts";
+} from "../scripts/lib/reports-registry.ts";
 
 let root: string | null = null;
 

@@ -49,9 +49,11 @@
  * `clariceRealProbe`): 90 s quando o ping real do Stage 0 falhou, 480 s no
  * resto; arquivo ilegível vira 480 s com aviso no gate. Exit 6
  * (`clarice_unavailable`) da newsletter segue pelo `clarice-pending.ts skip`,
- * como antes. O SOCIAL usa sempre o teto normal (não tem `resume`), limitado
- * ao que sobra de um orçamento de 540 s (mínimo 60 s), porque as duas
- * Clarices rodam na mesma chamada e a Bash tool corta em 10 min. O runner usa só o caminho REST: script Node não chama o MCP
+ * como antes. O SOCIAL usa sempre o teto normal de 480 s inteiro (não tem
+ * `resume`): as duas Clarices dividem um orçamento de 540 s por chamada (a
+ * Bash tool corta em 10 min), e quando a da newsletter deixa menos de 480 s o
+ * runner devolve exit 3 com `rerunArgs: ["--social-clarice-only"]`, e a do
+ * social roda numa chamada própria (#14093). O runner usa só o caminho REST: script Node não chama o MCP
  * `mcp__clarice__correct_text` (1.491 das 1.510 tentativas de 20/10-25/11 já
  * eram REST).
  *
@@ -866,10 +868,20 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
 
 /** Orçamento das duas Clarices numa chamada: a Bash tool corta em 600 s. */
 export const CLARICE_PHASE_BUDGET_MS = 540_000;
-export const CLARICE_SOCIAL_MIN_MS = 60_000;
 
-export function socialClariceDeadlineMs(baseDeadlineMs: number, newsletterElapsedMs: number): number {
-  return Math.min(baseDeadlineMs, Math.max(CLARICE_SOCIAL_MIN_MS, CLARICE_PHASE_BUDGET_MS - newsletterElapsedMs));
+export type SocialClaricePlan = { mode: "inline"; deadlineMs: number } | { mode: "own-call"; remainingMs: number };
+
+/**
+ * Onde roda a Clarice do social depois da da newsletter (#14093). Ela só roda
+ * na mesma chamada quando o que sobra do orçamento da fase ainda cabe o teto
+ * inteiro (`baseDeadlineMs`, 480 s); senão vai para uma chamada Bash própria
+ * (`--social-clarice-only`), com o teto inteiro, como antes do runner. Nunca
+ * recebe uma sobra encolhida: o social não tem `resume` no Stage 4 e estourar
+ * o teto é halt. No dia rápido (newsletter abaixo de 60 s) nada muda.
+ */
+export function planSocialClarice(baseDeadlineMs: number, newsletterElapsedMs: number): SocialClaricePlan {
+  const remainingMs = CLARICE_PHASE_BUDGET_MS - Math.max(0, newsletterElapsedMs);
+  return remainingMs >= baseDeadlineMs ? { mode: "inline", deadlineMs: baseDeadlineMs } : { mode: "own-call", remainingMs };
 }
 
 function failureLine(stdout: string): string {
@@ -946,7 +958,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
       ctx.log("error", "pre-clarice snapshot missing — aborting before Clarice call");
       throw new Stage2Abort("snapshot pré-Clarice ausente — re-rodar a Etapa 2 do zero.");
     }
-    const t0 = Date.now();
+    const t0 = ctx.deps.now().getTime();
     const r = ctx.run(`clarice-correct (newsletter, teto ${deadline.deadlineMs / 1000}s)`, "scripts/clarice-correct.ts", [
       "--in",
       ctx.e(`_internal/${inputName}`),
@@ -960,7 +972,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
       "--deadline-ms",
       String(deadline.deadlineMs),
     ]);
-    newsletterElapsed = Date.now() - t0;
+    newsletterElapsed = ctx.deps.now().getTime() - t0;
     if (r.code === 0) {
       copyFileSync(ctx.p("_internal/02-clarice-corrected.md"), ctx.p("02-reviewed.md"));
       ctx.soft("clarice-diff (newsletter)", "scripts/clarice-diff.ts", [
@@ -1005,15 +1017,28 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
 
   // 3. Clarice do social.
   if (ctx.social) {
-    copyFileSync(ctx.p("03-social.md"), ctx.p("_internal/03-social-post-humanizador.md"));
     // O teto degradado (90 s) é só da newsletter, a única com `resume` no
-    // Stage 4 (#14084): o social usa o teto normal, limitado ao que sobra do
-    // orçamento da fase; na retomada `--social-clarice-only` vale o override.
-    const socialDeadline = socialOnly
-      ? (ctx.opts.deadlineMsOverride ?? CLARICE_NORMAL_DEADLINE_MS)
-      : ctx.newsletter
-        ? socialClariceDeadlineMs(CLARICE_NORMAL_DEADLINE_MS, newsletterElapsed)
-        : CLARICE_NORMAL_DEADLINE_MS;
+    // Stage 4 (#14084): o social usa sempre o teto normal de 480 s inteiro.
+    // Se a Clarice da newsletter comeu o orçamento a ponto de não caber, o
+    // social vai para uma chamada Bash própria (#14093) em vez de rodar com a
+    // sobra; na retomada `--social-clarice-only` vale o override.
+    let socialDeadline = ctx.opts.deadlineMsOverride ?? CLARICE_NORMAL_DEADLINE_MS;
+    if (!socialOnly && ctx.newsletter && clarice.newsletter) {
+      const plan = planSocialClarice(CLARICE_NORMAL_DEADLINE_MS, newsletterElapsed);
+      if (plan.mode === "own-call") {
+        ctx.note(
+          `Clarice da newsletter levou ${Math.round(newsletterElapsed / 1000)}s; sobram ${Math.round(plan.remainingMs / 1000)}s do orçamento da fase, menos que o teto de ${CLARICE_NORMAL_DEADLINE_MS / 1000}s do social: a Clarice do social roda numa chamada própria (#14093).`,
+        );
+        ctx.fixes.push({
+          check: "clarice-social-own-call",
+          action: `re-rodar npx tsx scripts/stage-2-run.ts --phase post-humanize --edition ${ctx.opts.edition} --social-clarice-only numa chamada Bash própria (timeout 600000); nada a corrigir, a newsletter já ficou resolvida`,
+          detail: `newsletter ${Math.round(newsletterElapsed / 1000)}s, sobra ${Math.round(plan.remainingMs / 1000)}s < ${CLARICE_NORMAL_DEADLINE_MS / 1000}s`,
+        });
+        return fixNeeded(ctx, "post-humanize", { rerunArgs: ["--social-clarice-only"], clarice });
+      }
+      socialDeadline = plan.deadlineMs;
+    }
+    copyFileSync(ctx.p("03-social.md"), ctx.p("_internal/03-social-post-humanizador.md"));
     const r = ctx.run(`clarice-correct (social, teto ${Math.round(socialDeadline / 1000)}s)`, "scripts/clarice-correct.ts", [
       "--in",
       ctx.e("03-social.md"),
@@ -1056,9 +1081,12 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
           ? `Clarice indisponível no social (clarice_unavailable, teto ${Math.round(socialDeadline / 1000)}s)`
           : (CLARICE_HALT_REASON[r.code] ?? `clarice-correct exit ${r.code}`);
       const detail = failureLine(r.stdout);
+      // Dia degradado (#14093): o halt segue (o social nunca pula a Clarice em
+      // silêncio), mas o banner diz que o ping real do Stage 0 já tinha falhado.
+      const degradedHint = deadline.degraded ? " (o ping real da Clarice já tinha falhado no Stage 0: API degradada hoje)" : "";
       return halt(
         ctx,
-        `social: ${why}${detail ? ` — ${detail}` : ""}`,
+        `social: ${why}${detail ? ` — ${detail}` : ""}${degradedHint}`,
         `responder 'retry' (re-rodar npx tsx scripts/stage-2-run.ts --phase post-humanize --edition ${ctx.opts.edition} --social-clarice-only) ou 'abort'`,
       );
     }

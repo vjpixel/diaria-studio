@@ -1,5 +1,5 @@
 /**
- * studio-apoios.ts (#3602 — Studio UI: CRM simples de apoios apoia.se)
+ * apoios-data.ts (#3602 — Studio UI: CRM simples de apoios apoia.se)
  *
  * Camada de leitura/escrita + cruzamento de status pro painel "Apoios" do
  * Studio: base de contatos própria (a apoia.se não tem endpoint de listagem,
@@ -9,7 +9,9 @@
  *
  * Arquivo PRÓPRIO desta fatia (mesma convenção de `studio-review.ts` #3559 /
  * `studio-issues.ts` #3562): `server.ts` só registra rotas, toda a lógica
- * mora aqui.
+ * mora aqui. Morava em `scripts/studio-ui/studio-apoios.ts` até o #14000:
+ * os CLIs do pipeline (`sync-apoio-nivel-kit.ts`, `apoios-diff-alarm.ts`, ...)
+ * importavam do servidor do Studio; aqui em `scripts/lib/` o Studio vira folha.
  *
  * **Dado pessoal (LGPD):** contatos vivem SÓ em `data/apoia-se/contacts.jsonl`
  * (junction OneDrive local, blanket-gitignored — nunca no repo, nunca em KV).
@@ -141,7 +143,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { writeFileAtomic } from "../lib/atomic-write.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 import {
   applyContactUpdate,
   normalizeEmailList,
@@ -156,7 +158,7 @@ import {
   type CreateContactInput,
   type CreateContactOptions,
   type UpdateContactPatch,
-} from "../lib/apoio-contacts-store.ts";
+} from "./apoio-contacts-store.ts";
 
 // Store de contatos movido pra `scripts/lib/apoio-contacts-store.ts` (#5899,
 // regra 4 de lib-boundary: lib não importa de studio-ui). Reexportado AQUI
@@ -177,7 +179,7 @@ export {
   type CreateContactInput,
   type CreateContactOptions,
   type UpdateContactPatch,
-} from "../lib/apoio-contacts-store.ts";
+} from "./apoio-contacts-store.ts";
 import {
   checkBacker,
   readApoiaSeEnv,
@@ -188,22 +190,22 @@ import {
   type ApoiaSeEnv,
   type BackerStatus,
   type CheckBackerOptions,
-} from "../lib/apoia-se.ts";
-import { previousMonthKey } from "../lib/apoio-month-key.ts";
-import type { ApoioNivel } from "../lib/shared/apoio-nivel-types.ts";
+} from "./apoia-se.ts";
+import { previousMonthKey } from "./apoio-month-key.ts";
+import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
 import {
   REWARD_TIER_AMIGO_MIN,
   REWARD_TIER_APOIADOR_MIN,
   REWARD_TIER_MANTENEDOR_MIN,
   REWARD_TIER_PATRONO_MIN,
   computeRewardGroup as rewardGroupFromLib,
-} from "../lib/reward-tier-thresholds.ts";
+} from "./reward-tier-thresholds.ts";
 import {
   drainApoiaSeNotifications,
   type ApoioNotification,
   type DrainedPromessa,
   type DrainApoiaSeResult,
-} from "../lib/apoia-se-gmail-drain.ts";
+} from "./apoia-se-gmail-drain.ts";
 
 // ── tipos ────────────────────────────────────────────────────────────────
 
@@ -540,14 +542,14 @@ export type RewardGroup = ApoioNivel;
  * Regra de atribuição: MAIOR faixa cujo limiar ≤ valor. Patrono é o teto
  * (não há nível acima).
  *
- * Valores em `../lib/reward-tier-thresholds.ts` (extraídos de propósito pra
+ * Valores em `./reward-tier-thresholds.ts` (extraídos de propósito pra
  * `scripts/lib/`, #8137 follow-up) — o gate do Artigo Especial
  * (`scripts/lib/shared/artigo-especial-gate-cta.ts`) precisa dos mesmos números e
  * `scripts/lib/**` não pode importar de `scripts/studio-ui/**`
  * (`test/lib-boundary.test.ts` regra 4). `computeRewardGroup` continua
  * declarado AQUI, sem mudar de módulo — só as 4 constantes viraram import;
  * nenhum dos call sites que importam `computeRewardGroup` de
- * `studio-apoios.ts` precisa mudar.
+ * `apoios-data.ts` precisa mudar.
  */
 
 /**

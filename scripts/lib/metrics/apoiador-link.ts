@@ -14,7 +14,7 @@
  * chamador (`scripts/studio-ui/studio-subscribers.ts`) resolve os dois
  * lados (subscribers via `diaria-subscribers-db.ts`, apoiadores via
  * `loadContacts`/`readMonthCache`/`readPastMonthSnapshots` de
- * `apoio-contacts-store.ts`/`apoia-se.ts`/`studio-apoios.ts`) e injeta aqui
+ * `apoio-contacts-store.ts`/`apoia-se.ts`/`apoios-data.ts`) e injeta aqui
  * já resolvido.
  *
  * ## Vínculo é por E-MAIL, com limitações documentadas — nunca fabricadas

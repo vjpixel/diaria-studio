@@ -24,7 +24,7 @@ import {
   compareTitleWithReport,
   isTitleOk,
 } from "../scripts/lib/overnight-report-counts.ts";
-import { registerReport, type ReportNotifyDeps } from "../scripts/studio-ui/studio-reports.ts";
+import { registerReport, type ReportNotifyDeps } from "../scripts/lib/reports-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

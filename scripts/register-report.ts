@@ -1,7 +1,7 @@
 /**
  * register-report.ts (#3714)
  *
- * CLI fina sobre `scripts/studio-ui/studio-reports.ts::registerReport` — o
+ * CLI fina sobre `scripts/lib/reports-registry.ts::registerReport` — o
  * ponto de chamada dos fechos de pipeline que rodam como PROMPT de agente
  * (não código): `/diaria-overnight` e `/diaria-develop` narram o fecho da
  * sessão em markdown (`.claude/skills/{skill}/SKILL.md`), então precisam de um
@@ -44,7 +44,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { registerReport, isReportKind } from "./studio-ui/studio-reports.ts";
+import { registerReport, isReportKind } from "./lib/reports-registry.ts";
 import { compareTitleWithReport, UNITS_TABLE_MARKER } from "./lib/overnight-report-counts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

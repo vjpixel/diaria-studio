@@ -3,7 +3,7 @@
  *
  * `previousMonthKey`, módulo próprio e sem dependências. Consumido pela lógica
  * de nível (`lib/apoio-nivel-sync.ts`) e pelo painel Apoios
- * (`scripts/studio-ui/studio-apoios.ts`), que decide quem entra no grupo "ainda
+ * (`scripts/lib/apoios-data.ts`), que decide quem entra no grupo "ainda
  * não pagou esse mês" (#4437, Entrega 1) com o mesmo raciocínio de virada de ano.
  */
 
