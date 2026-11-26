@@ -82,7 +82,8 @@ export const STAGE_PLAN: ReadonlyArray<EditionStage> = [
  * `/diaria-edicao` setava `auto_approve = true` internamente para os Stages
  * 1-3 ("pre-gate mode", #1523) e resolvia o gate do Stage 4 pelo próprio
  * `--no-gates`. Ao trocar essa invocação por skills standalone, esse
- * auto-approve DESAPARECE: `orchestrator-stage-0-preflight` recebe
+ * auto-approve DESAPARECE: o Stage 0 (`orchestrator-stage-0-fallback.md`
+ * §0a, #14030) recebe
  * `auto_approve` com default `false`. Em `--print` não há quem responda ao
  * gate — a sessão gastaria seus turnos tentando e morreria sem escrever
  * sentinela nenhuma.

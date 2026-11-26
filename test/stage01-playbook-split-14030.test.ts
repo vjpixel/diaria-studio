@@ -96,6 +96,11 @@ describe("#14030: ponteiro para o fallback no ponto em que o runner manda ler", 
     assert.match(sec, /0-replies skipped: headless --no-gates/);
     assert.match(sec, /0-replies skipped: Gmail MCP unavailable/);
   });
+  it("§0-replies passo 1 traz o comando que imprime a query real (Stage 6 e Stage 1 interativo seguem os passos 1-5)", () => {
+    const replies = agent(S0_REPLIES);
+    const step1 = replies.slice(replies.indexOf("\n1. Buscar"), replies.indexOf("\n2. Para cada thread"));
+    assert.ok(step1.includes(`npx tsx -e "import { buildRepliesSearchQuery } from './scripts/lib/newsletter-reply-addresses.ts'; console.log(buildRepliesSearchQuery())"`));
+  });
   it("Stage 1: parágrafo Fallback manda ler orchestrator-stage-1-fallback.md", () => {
     const block = runnerBlock(agent(S1_MAIN));
     const fb = block.slice(block.indexOf("**Fallback**"));
@@ -124,11 +129,15 @@ describe("#14030: passos delegados pelos runners ficam no arquivo principal", ()
       });
     }
   }
-  it("Stage 1: derive-stage1 (fora do runner) segue no §1y do principal", () => {
+  it("Stage 1: derive-stage1 roda na fase post-gate do runner, antes do sentinel, e o §1y diz isso", () => {
     const main = agent(S1_MAIN);
     const y = main.slice(main.indexOf("### 1y."));
     assert.match(y, /derive-editor-requests\.ts derive-stage1/);
-    assert.ok(!read("scripts/stage-1-run.ts").includes("derive-stage1"), "se o runner passou a rodar derive-stage1, revisar a nota de §1y");
+    assert.match(y, /antes do sentinel desde o #14030/);
+    const src = read("scripts/stage-1-run.ts");
+    const deriveIdx = src.indexOf('"derive-stage1"');
+    const sentinelIdx = src.indexOf('["write", "--edition", opts.edition, "--step", "1"');
+    assert.ok(deriveIdx > -1 && sentinelIdx > deriveIdx, "runner deve chamar derive-stage1 antes de gravar o sentinel do Stage 1");
   });
 });
 

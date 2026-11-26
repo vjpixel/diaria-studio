@@ -56,7 +56,7 @@ Design de 5 fases (o script é um processo Node puro — não alcança MCP, Skil
      --fallback-scored-json {EDITION_DIR}/_internal/tmp-scored.json
    ```
 
-5. **Fase `post-gate`** — §1y — aplica as edições do gate (ou `--auto`), re-renderiza MD, re-valida lançamentos, invariantes pós-apply (warn, não bloqueia), experimento D3-radar (opt-in via config), escreve sentinel, arquiva inbox, fecha stage-status + captura de custo.
+5. **Fase `post-gate`** — §1y — aplica as edições do gate (ou `--auto`), re-renderiza MD, re-valida lançamentos, invariantes pós-apply (warn, não bloqueia), experimento D3-radar (opt-in via config), deriva os pedidos editoriais do gate (`derive-stage1`), escreve sentinel, arquiva inbox, fecha stage-status + captura de custo.
    ```bash
    # Se editor editou o MD:
    npx tsx scripts/stage-1-run.ts --phase post-gate --edition {AAMMDD} --md {EDITION_DIR}/01-categorized.md
@@ -254,7 +254,7 @@ Chamada idempotente — reapresentações (após "rejeitar e re-rodar") não sob
 
 ### 1y. Aplicar edições do gate (ou auto_approve)
 
-**No caminho do runner (#14030):** a fase `post-gate` roda o `apply-gate-edits.ts` (editor ou `--auto`), as duas passadas do `apply-same-fact-removal.ts`, as invariantes pós-apply, o experimento D3-radar, o sentinel, §1y-bis e §1y-ter. A derivação de pedidos editoriais (`derive-editor-requests.ts derive-stage1`, abaixo) **não** está no runner: rodar logo depois da fase `post-gate`, sempre.
+**No caminho do runner (#14030):** a fase `post-gate` roda o `apply-gate-edits.ts` (editor ou `--auto`), as duas passadas do `apply-same-fact-removal.ts`, as invariantes pós-apply, o experimento D3-radar, a derivação de pedidos editoriais (`derive-editor-requests.ts derive-stage1`, abaixo, antes do sentinel desde o #14030), o sentinel, §1y-bis e §1y-ter. Nada destes passos é repetido à mão depois da fase.
 
 Se editor editou o MD:
 ```bash

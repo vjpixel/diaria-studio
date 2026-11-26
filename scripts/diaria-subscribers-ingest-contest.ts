@@ -16,7 +16,7 @@
  * `data/contest-entries.jsonl` não é mais escrito por nenhum script deste
  * checkout. A fonte viva pós-#2724 é `data/raffle-numbers.json`
  * (`scripts/lib/raffle-numbers.ts`), escrita pelo playbook §0-replies do
- * Stage 0 (`.claude/agents/orchestrator-stage-0-preflight.md`) toda vez que
+ * Stage 0 (`.claude/agents/orchestrator-stage-0-replies.md`, #14030) toda vez que
  * um leitor acerta o erro intencional. Cada `RaffleEntry` = 1 pessoa + 1
  * edição confirmadas — mapeado 1:1 pra `ContestEntryRecord` via
  * `mapRaffleEntryToContestEntry`.
