@@ -2,7 +2,7 @@
  * stage4-adjust-timing.ts (#8123 Fatia 5 — instrumentação)
  *
  * A issue #8123 pede, por ajuste feito no loop "ajustar" do gate Stage 4
- * (§4d.1 de `.claude/agents/orchestrator-stage-4.md`): logar t(pedido →
+ * (§4d.1 de `.claude/agents/orchestrator-stage-4-gate.md`): logar t(pedido →
  * edição no disco), t(edição → preview servido) e o nº de chamadas de
  * ferramenta até o preview refletir a mudança — alvo ~10s pedido→preview.
  *

@@ -26,9 +26,9 @@
  * `lib-boundary.test.ts`: a fronteira é curada, não inferida).
  *
  * Exceções deliberadas (NÃO cobertas por este guard, ver corpo do PR #4424):
- *   - `context/publishers/linkedin.md` e `context/publishers/facebook.md`:
- *     o texto "Diar.ia"/"página Diar.ia" ali referencia o NOME REAL configurado
- *     hoje na LinkedIn Company Page / Facebook Page (ativo externo, fora do
+ *   - `context/publishers/linkedin.md` (e, até o #14060, `context/publishers/facebook.md`,
+ *     apagado sem leitor): o texto "Diar.ia"/"página Diar.ia" ali referencia o NOME REAL configurado
+ *     hoje na LinkedIn Company Page (ativo externo, fora do
  *     repo) que o playbook de browser automation usa pra SELECIONAR a página
  *     certa por texto visível — não é copy nossa. Renomear só o texto do doc
  *     sem renomear o ativo de verdade faria o agente procurar por
@@ -36,9 +36,9 @@
  *     (ou, pior, publicar no contexto errado). Corrigir isso é ação externa
  *     do editor (renomear a Page), não deste PR — mesma categoria do "Sender
  *     name / og:title fora do repo" já listado como exceção no corpo do #4424.
- *   - `context/publishers/beehiiv-playbook.md` linha ~298 ("Selecionar
- *     workspace Diar.ia se houver seletor"): mesma categoria — nome do
- *     workspace Beehiiv configurado hoje, usado pra seleção visual na UI.
+ *   - Até o #14048, `context/publishers/beehiiv-playbook.md` ("Selecionar
+ *     workspace Diar.ia se houver seletor"): mesma categoria. O playbook foi
+ *     arquivado em `docs/archive/beehiiv-playbook.md`, fora desta varredura.
  *   - `test/__snapshots__/ds-golden-full-render.snap.json`: regenerado via
  *     `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/ds-golden-full-render.test.ts`,
  *     nunca editado à mão — não faz sentido um guard estático aqui (o próprio
@@ -135,11 +135,11 @@ const PROTECTED_DIRS: string[] = [
 
 /**
  * `context/publishers/` varrido por inteiro MENOS os arquivos que referenciam
- * nome de ativo externo (LinkedIn Page / Facebook Page / Beehiiv workspace) —
+ * nome de ativo externo (LinkedIn Page) —
  * ver exceções documentadas no header do módulo.
  */
 const PUBLISHERS_DIR = "context/publishers";
-const PUBLISHERS_EXCEPTIONS = new Set(["linkedin.md", "facebook.md", "beehiiv-playbook.md"]);
+const PUBLISHERS_EXCEPTIONS = new Set(["linkedin.md"]);
 
 /**
  * `.claude/agents/` — só os agentes de ESCRITA/copy (#4424: "trocar o prompt
@@ -203,7 +203,7 @@ describe("Fatia 1 (#4424) — sem a grafia antiga 'Diar.ia' na superfície do le
     });
   }
 
-  it("context/publishers/ (varrido por inteiro, exceto linkedin.md/facebook.md/beehiiv-playbook.md — nome de ativo externo, ver header do módulo)", () => {
+  it("context/publishers/ (varrido por inteiro, exceto linkedin.md — nome de ativo externo, ver header do módulo)", () => {
     const files = filesUnder(PUBLISHERS_DIR, mdOrHtmlOrTs).filter(
       (rel) => !PUBLISHERS_EXCEPTIONS.has(rel.slice(PUBLISHERS_DIR.length + 1)),
     );
@@ -262,17 +262,17 @@ describe("data/snippets/ (#5300) — sem a grafia antiga 'Diar.ia' no conteúdo 
 /**
  * Fatia 2 (superfície do editor) — sem guard próprio dedicado (ver header do
  * módulo: "mecânico, baixo risco de regressão"). Essa suposição furou uma vez:
- * `scripts/studio-ui/studio-reports.ts` reintroduziu "Diar.ia" (subject de
+ * `scripts/lib/reports-registry.ts` reintroduziu "Diar.ia" (subject de
  * e-mail pro editor) via PR #4478, mergeado DEPOIS da Fatia 2/3 (#4481) já ter
  * fechado o diretório inteiro. Protege pontualmente o arquivo que já
  * regrediu — não um guard de diretório inteiro (baixo volume, resto da Fatia
  * 2 permanece coberto só pela disciplina mecânica, ver `PROTECTED_DIRS`
  * acima pro padrão equivalente na Fatia 1 caso o volume justifique escalar).
  */
-const FATIA_2_PROTECTED_FILES: string[] = ["scripts/studio-ui/studio-reports.ts"];
+const FATIA_2_PROTECTED_FILES: string[] = ["scripts/lib/reports-registry.ts"];
 
 describe("Fatia 2 (#4424) — regressão pontual pós-merge (#4478, e-mail de relatório pro editor)", () => {
-  it("scripts/studio-ui/studio-reports.ts não reintroduz 'Diar.ia' (achado 260803, ver buildReportEmail)", () => {
+  it("scripts/lib/reports-registry.ts não reintroduz 'Diar.ia' (achado 260803, ver buildReportEmail)", () => {
     const v = collectViolations(FATIA_2_PROTECTED_FILES);
     assert.deepEqual(v, [], `Grafia antiga da marca encontrada:\n  ${v.join("\n  ")}`);
   });

@@ -4,14 +4,14 @@
 // triagem.js/app.js — #3555/#3562).
 //
 // A mutação de edição (editar contato) chama PUT /api/apoios/contacts/:id
-// (studio-apoios.ts) e depois refaz o fetch completo de /api/apoios — sem
+// (apoios-data.ts) e depois refaz o fetch completo de /api/apoios — sem
 // estado otimista client-side, mais simples e sempre consistente com o
 // servidor (fonte única de verdade é o contacts.jsonl).
 //
 // #3862 (decisão do editor 260722): o form manual "Adicionar contato" foi
 // removido — contatos passam a vir do e-mail/apoia.se (#3859), não digitados à
 // mão. A rota POST /api/apoios/contacts que o form chamava também saiu do
-// server (server.ts/studio-apoios.ts) — a importação automática (#3859
+// server (server.ts/apoios-data.ts) — a importação automática (#3859
 // metade 1) chama `createContact` direto, in-process, nunca via HTTP.
 // `parseEmailsInput` segue em uso pelo form de EDIÇÃO.
 //
@@ -21,7 +21,7 @@
 // recompensa.
 //
 // #3844 parte 2 (decisão do editor 260722): visão por grupo — `rewardGroups`
-// já vem PRONTO no payload de /api/apoios (studio-apoios.ts::computeRewardGroups),
+// já vem PRONTO no payload de /api/apoios (apoios-data.ts::computeRewardGroups),
 // client só renderiza; nenhuma agregação acontece aqui.
 //
 // Botão "Atualizar" (unificado — decisão do editor 260723): faz o fluxo
@@ -63,7 +63,7 @@ const el = {
 let data = { contacts: [], campaign: null, rewardGroups: null, error: null, generatedAt: null };
 
 /** #4437: forma vazia de rewardGroups usada como default client-side —
- * espelha scripts/studio-ui/studio-apoios.ts::emptyRewardGroupsView. */
+ * espelha scripts/lib/apoios-data.ts::emptyRewardGroupsView. */
 const EMPTY_REWARD_GROUPS = { amigo: [], apoiador: [], mantenedor: [], patrono: [], nao_pagou_ainda: [] };
 
 const filters = { status: "" };
@@ -77,7 +77,7 @@ const STATUS_LABEL = {
 
 // #3844 parte 2: rótulo + ordem de exibição (do nível mais alto pro mais
 // baixo — mais fácil bater o olho em quem tem mais recompensa a cumprir).
-// Faixas espelham exatamente scripts/studio-ui/studio-apoios.ts::computeRewardGroup.
+// Faixas espelham exatamente scripts/lib/apoios-data.ts::computeRewardGroup.
 // #4437 Entrega 1: "nao_pagou_ainda" vai por ÚLTIMO — não é uma faixa de
 // valor, é um estado de cobrança (carência de 1 mês), visualmente distinto
 // dos 4 níveis (ver .reward-group-pending em apoios.css).
@@ -383,7 +383,7 @@ async function fetchApoios() {
 // #3859: POST /api/apoios/refresh — (1) importa apoiadores novos via e-mail
 // apoia.se (inclui promessas, #3912) e (2) força re-consulta na apoia.se só
 // pra contatos ainda não confirmados como "apoiando" (o servidor decide quem
-// — ver refreshApoiosData em studio-apoios.ts). Resposta tem o MESMO formato
+// — ver refreshApoiosData em apoios-data.ts). Resposta tem o MESMO formato
 // de GET /api/apoios, então só substitui `data` e renderiza de novo (mesma
 // disciplina "sem estado otimista" do resto do arquivo). Enquanto roda, o
 // botão fica desabilitado com rótulo de progresso — a operação leva alguns

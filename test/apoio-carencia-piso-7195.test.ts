@@ -46,8 +46,8 @@ import {
   isPreviousMonthSnapshotMissing,
   previousMonthKey,
 } from "../scripts/lib/apoio-nivel-sync.ts";
-import type { MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
-import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
+import type { MonthSnapshot } from "../scripts/lib/apoios-data.ts";
+import type { ContactWithStatus } from "../scripts/lib/apoios-data.ts";
 
 function contact(id: string, emails: string[], status: ContactWithStatus["status"]): ContactWithStatus {
   return {

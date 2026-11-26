@@ -67,7 +67,7 @@
  *     estratégia de rewrite, servindo `public/apoios.html`. Consome
  *     `GET /api/apoios` (contatos + status cruzado via `checkBacker` +
  *     agregação de campanha) e `PUT /api/apoios/contacts/:id` (editar
- *     contato existente) — ver `studio-apoios.ts` pro detalhe. Dado pessoal:
+ *     contato existente) — ver `apoios-data.ts` pro detalhe. Dado pessoal:
  *     só em `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no
  *     repo). (#3862: o form manual "Adicionar contato" e a rota
  *     `POST /api/apoios/contacts` que ele chamava foram removidos — contato
@@ -77,7 +77,7 @@
  *     `POST /api/apoios/contacts/:id/outreach` — foram removidos; a área
  *     refoca em visão por grupo/nível de recompensa, ainda pendente.)
  *     (#3859: `POST /api/apoios/refresh` — botão "Atualizar status".
- *     `refreshApoiosData` em `studio-apoios.ts` faz DUAS coisas em sequência:
+ *     `refreshApoiosData` em `apoios-data.ts` faz DUAS coisas em sequência:
  *     (metade 1) drena notificações "novo apoio" do Gmail pessoal via REST
  *     não-MCP (`scripts/lib/apoia-se-gmail-drain.ts`, mesmo mecanismo de
  *     `inbox-drain.ts`) e cria contato automaticamente pra apoiador ainda não
@@ -87,7 +87,7 @@
  *     a outra nem quebra a rota, só documenta em `error`.)
  *   - `GET /api/reports` (#3714) — lista os relatórios de fim de trabalho
  *     (edição diária, overnight, develop, mensal) registrados no índice
- *     file-based `data/reports/index.jsonl` (`studio-reports.ts::listReports`),
+ *     file-based `data/reports/index.jsonl` (`reports-registry.ts::listReports`),
  *     mais recentes primeiro. Substitui o antigo draft de e-mail (decisão do
  *     editor #3714, 260720) — o registro é feito pelos próprios scripts que
  *     geram cada relatório (`send-edition-report.ts`, `register-report.ts`
@@ -208,7 +208,7 @@
  * escreve SÓ `data/apoia-se/contacts.jsonl` (dado pessoal, junction OneDrive,
  * nunca no repo/KV) — nunca toca credenciais nem a API apoia.se em modo de
  * escrita (o cruzamento de status é sempre leitura via `checkBacker`). Toda a
- * lógica mora em `studio-apoios.ts`. (#3862: a rota de criação manual,
+ * lógica mora em `apoios-data.ts`. (#3862: a rota de criação manual,
  * `POST /api/apoios/contacts`, foi removida junto com o form que a chamava —
  * `createContact` segue existindo, mas só é invocado in-process pelo drain
  * de e-mail abaixo, nunca mais via HTTP.)
@@ -299,8 +299,8 @@ import { buildRoundPayload, isRoundKind, listRoundSummaries } from "./studio-rou
 // trabalho (edição/overnight/develop/mensal) registrados via
 // `scripts/register-report.ts` (overnight/develop) ou direto por
 // `send-edition-report.ts` (edição). Read-only: só lê o registry + os
-// arquivos de relatório já persistidos por outros scripts — ver studio-reports.ts.
-import { listReports, getReportById, resolveReportHtml } from "./studio-reports.ts";
+// arquivos de relatório já persistidos por outros scripts — ver reports-registry.ts.
+import { listReports, getReportById, resolveReportHtml } from "../lib/reports-registry.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 import { handlePainelTokens } from "./dashboard-tokens.ts";
@@ -332,14 +332,14 @@ import { buildImagesGallery, startRegenerateJob } from "./studio-images.ts";
 import { decideGateApproveAction, readStage4Decision, writeStage4ApprovedDecision } from "../lib/stage4-decision.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
-// isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
+// isolado (nenhuma outra rota depende dele). Ver apoios-data.ts.
 import {
   buildApoiosData,
   refreshApoiosData,
   updateContactById,
   parseUpdateContactBody,
   type ApoiosMutationResult,
-} from "./studio-apoios.ts";
+} from "../lib/apoios-data.ts";
 import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
 // #3564/#5341: notificação push por e-mail (gate 4/6 pendente) com dedup —
 // arquivo próprio desta fatia, import isolado (nenhuma outra rota depende
@@ -1162,7 +1162,7 @@ function handleApiApoiosGet(rootDir: string, res: ServerResponse): void {
  * contato automaticamente pra apoiador ainda não cadastrado; (2) força
  * re-consulta do mês corrente na apoia.se, mas só pra contatos AINDA NÃO
  * confirmados como "apoiando" (protege o teto de 5.000 req/mês) — ver
- * `refreshApoiosData` em `studio-apoios.ts`. Sempre 200: fail-soft no mesmo
+ * `refreshApoiosData` em `apoios-data.ts`. Sempre 200: fail-soft no mesmo
  * padrão de `handleApiApoiosGet` (falha de qualquer uma das duas etapas vira
  * `error` no payload, nunca derruba a outra nem a rota). */
 function handleApiApoiosRefresh(

@@ -48,7 +48,7 @@ apply final do `sim` (o conector só devolve o export inline, então cada ida
 ao disco é retranscrição); durante o gate, `status` (sem export) diz o que o
 pipeline mudou desde o conteúdo do doc. `check-roundtrip` virou opcional e
 `enable` religa um sync desligado com o mesmo critério. Fluxo no playbook
-`orchestrator-stage-4.md` §4b step 3b / §4d / §4e.
+`orchestrator-stage-4.md` §4b step 3b / `orchestrator-stage-4-gate.md` §4d / §4e.
 
 ## Reports Drive sync — descontinuado (#3713)
 

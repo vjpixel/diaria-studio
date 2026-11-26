@@ -20,6 +20,7 @@ import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ORCHESTRATOR_FILES } from "../scripts/lib/orchestrator-files.ts";
+import { readStage0Playbook, readStage1Playbook } from "../scripts/lib/stage01-playbook.ts";
 import {
   buildSnapshot,
   diffSnapshot,
@@ -28,6 +29,7 @@ import {
   parseSnapshot,
   serializeSnapshot,
 } from "../scripts/lib/orchestrator-snapshot.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AGENTS_DIR = resolve(ROOT, ".claude/agents");
@@ -152,7 +154,13 @@ describe("orchestrator-prompt (#634)", () => {
       // Arquivo foi a 610 linhas (contagem de `content.split("\n").length`,
       // igual à usada por este teste). Teto bumped de 535→625 com headroom
       // pequeno.
-      "orchestrator-stage-0-preflight.md": 625,
+      // #14030: a prosa de fallback saiu para orchestrator-stage-0-fallback.md
+      // e o §0-replies para orchestrator-stage-0-replies.md. Principal 239,
+      // fallback 349, replies 47 linhas; tetos com headroom pequeno. O teto
+      // de bytes é o de test/stage01-playbook-split-14030.test.ts.
+      "orchestrator-stage-0-preflight.md": 255,
+      "orchestrator-stage-0-fallback.md": 365,
+      "orchestrator-stage-0-replies.md": 60,
       // #4846: +9 linhas (novo passo 1y-bis — dispatch opcional/desligado
       // por padrão de scripts/experiment-d3-radar.ts logo após os invariants
       // pós-gate-apply, antes do sentinel do Stage 1). Teto bumped de
@@ -162,7 +170,10 @@ describe("orchestrator-prompt (#634)", () => {
       // de integridade de `summary`, 1m-bis e 1q.3-bis — detalhe completo
       // movido pro histórico pra caber no budget). Teto bumped de 825→835
       // com headroom (era 826 medido pós-#4988/#4985/#4986).
-      "orchestrator-stage-1-research.md": 835,
+      // #14030: os passos cobertos pelo runner saíram para
+      // orchestrator-stage-1-fallback.md. Principal 299, fallback 508 linhas.
+      "orchestrator-stage-1-research.md": 315,
+      "orchestrator-stage-1-fallback.md": 525,
       // #3929: +11 linhas (snapshot pós-humanizador/pré-Clarice + diff legível
       // do social em §2c, 4º arg opcional de pré-Humanizador no clarice-diff.ts
       // da newsletter em §2b, e menção ao novo diff no gate §2d — decorrelaciona
@@ -318,7 +329,11 @@ describe("orchestrator-prompt (#634)", () => {
       // #11534: +3 linhas (prova de humanizador + Clarice via `--record-run`
       // em §4d.1 passo 6 e bloco `--provenance` no resumo do gate). Arquivo
       // foi a 992 linhas. Teto 990→1000.
-      "orchestrator-stage-4.md": 1000,
+      // #14033: §4d–§4e saíram para orchestrator-stage-4-gate.md; o pré-gate
+      // ficou com 549 linhas e o gate com 466. Tetos com headroom pequeno; o
+      // teto de bytes é o de test/stage-playbook-byte-budget-14033.test.ts.
+      "orchestrator-stage-4.md": 565,
+      "orchestrator-stage-4-gate.md": 485,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
@@ -440,7 +455,7 @@ describe("orchestrator-prompt (#634)", () => {
     // Pós-#158 os published.json moram em _internal/. Se o §0b checar a raiz, o
     // resume não detecta Stage 4 completo → re-publica (rascunho Beehiiv duplicado
     // + re-agenda 6 posts). Toda menção deve ser _internal/-prefixada.
-    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    const stage0 = readStage0Playbook();
     // Remove TODAS as refs _internal/-prefixadas; qualquer ocorrência remanescente
     // do filename é, por definição, BARE (raiz) — pega tanto " 05-published.json"
     // (prosa) quanto ".../06-social-published.json" (path no glob inline JS, a
@@ -471,7 +486,7 @@ describe("orchestrator-prompt (#634)", () => {
   });
 
   it("#2288: §0-replies condicionado a pre_gate (não auto_approve) — roda no /diaria-edicao pre-gate, pula em --no-gates", () => {
-    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    const stage0 = readStage0Playbook();
     // Condição correta: pre_gate === true (editor presente, gate no Stage 4)
     assert.ok(
       stage0.includes("pre_gate === true"),
@@ -585,7 +600,8 @@ describe("#3530: Stages 0-3 usam {EDITION_DIR} resolvido — sem split-brain com
     /data\/editions\/\{edição\}/,
   ];
 
-  for (const file of STAGE_0_3_FILES) {
+  // #14030: os arquivos de fallback e o §0-replies também entram na varredura.
+  for (const file of [...STAGE_0_3_FILES, "orchestrator-stage-0-fallback.md", "orchestrator-stage-0-replies.md", "orchestrator-stage-1-fallback.md"]) {
     it(`${file} não monta mais data/editions/{AAMMDD} (ou variantes) à mão para a edição corrente`, () => {
       const content = readFileSync(resolve(AGENTS_DIR, file), "utf8");
       for (const pattern of FORBIDDEN_PATTERNS) {
@@ -598,7 +614,7 @@ describe("#3530: Stages 0-3 usam {EDITION_DIR} resolvido — sem split-brain com
   }
 
   it("orchestrator-stage-0-preflight.md resolve {EDITION_DIR} ANTES do mkdir de criação da edição", () => {
-    const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-0-preflight.md"), "utf8");
+    const content = readStage0Playbook();
     const resolveIdx = content.indexOf("find-current-edition.ts --resolve");
     const mkdirIdx = content.indexOf("mkdir -p {EDITION_DIR}");
     assert.ok(resolveIdx !== -1, "stage-0 não resolve EDITION_DIR via find-current-edition.ts --resolve");
@@ -647,7 +663,8 @@ describe("#3727: teardown do fallback 127.0.0.1 exclui explicitamente a porta fi
   // mensal) precisa mencionar explicitamente a exclusão da porta do Studio
   // perto da menção a `127.0.0.1`.
   const cases: Array<{ label: string; path: string }> = [
-    { label: "orchestrator-stage-4.md (diário)", path: resolve(AGENTS_DIR, "orchestrator-stage-4.md") },
+    // Teardown do gate mora no arquivo do gate desde o #14033.
+    { label: "orchestrator-stage-4-gate.md (diário)", path: resolve(AGENTS_DIR, "orchestrator-stage-4-gate.md") },
     {
       label: "diaria-mensal/SKILL.md (mensal)",
       path: resolve(ROOT, ".claude/skills/diaria-mensal/SKILL.md"),
@@ -693,7 +710,7 @@ describe("#3842: Stage 1 loga qual websearch path (A/B) foi escolhido e por quê
   // explicitamente um log-event.ts para os 3 desfechos possíveis, com o nível
   // de severidade correto (info só quando Path A de fato rodou; warn nos dois
   // motivos de cair pro Path B).
-  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-1-research.md"), "utf8");
+  const content = readStage1Playbook();
   const section1f = content.slice(
     content.indexOf("### 1f. Dispatch de researchers e discovery"),
     content.indexOf("### 1g. Registrar saúde"),
@@ -767,7 +784,7 @@ describe("#3947: fluxo scoped/full-file de re-humanização social (§4d.1) não
   // vulnerabilidade (#3947) — o fix é gravar `03-social-post-humanizador.md`
   // ANTES de invocar a Clarice, em ambos os fluxos, e usar esse snapshot (não
   // o arquivo final) no passo 6.7.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
 
   it("fluxo SCOPED (passo 6.3): snapshot pós-humanizador é gravado ANTES da chamada à Clarice", () => {
@@ -824,7 +841,7 @@ describe("#3953: passo 6.4 (verify-scoped-humanization.ts --post) usa o snapshot
   // reusar o snapshot `03-social-post-humanizador.md` (já gravado no passo
   // 6.3/6.2' pelo #3947) como --post do passo 6.4, com o mesmo fallback
   // condicional usado no passo 6.7.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
 
   it("passo 6.4: verify-scoped-humanization.ts --post usa o snapshot pós-humanizador (com fallback), não {EDITION_DIR}/03-social.md hardcoded", () => {
@@ -939,7 +956,7 @@ describe("#4505 item 2: re-auditoria sistemática dos tic-lints no loop 'ajustar
   // reintroduziu antítese-revelação 3x seguidas na mesma sessão, cada uma só
   // pega porque o EDITOR notou e pediu "passa o humanizador de novo" — sem
   // re-auditoria automática no passo 6.7, nada fechava esse loop sozinho.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
 
   function step67Text(): string {
@@ -1001,7 +1018,7 @@ describe("#4636: backstop no-xml-artifacts no próprio loop 'ajustar' (§4d.1)",
   // auto-detecção em runtime do próprio orchestrator — não por nenhum lint
   // determinístico. Este teste garante que o loop "ajustar" agora re-audita
   // os dois arquivos que ele pode escrever.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
 
   it("passo 2 roda no-xml-artifacts sobre 02-reviewed.md logo após a edição inline, como GATE-BLOCKING", () => {
@@ -1044,7 +1061,7 @@ describe("#4505 item 3: critic pass social opcional (§4c.6d)", () => {
   // humanizador) sobre 03-social.md já com todas as correções mecânicas
   // aplicadas — cobre tiques que os 2 tic-lints determinísticos (regex) não
   // reconhecem.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const section4c6d = stage4.slice(stage4.indexOf("**4c.6d"), stage4.indexOf("**4c.7"));
 
   it("§4c.6d existe e referencia o flag opt-in social_critic_pass.enabled", () => {
@@ -1135,7 +1152,7 @@ describe("#4942: §1x (GATE HUMANO) guarda contra auto_approve", () => {
   // skip da seção inteira quando auto_approve=true, no mesmo padrão já
   // usado em §6c (orchestrator-stage-6.md) e no gate de fact-check de
   // orchestrator-stage-4.md.
-  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-1-research.md"), "utf8");
+  const content = readStage1Playbook();
   const section1x = content.slice(
     content.indexOf("### 1x. GATE HUMANO"),
     content.indexOf("### 1y. Pós-gate"),
@@ -1178,7 +1195,7 @@ describe("#5566: caminho erro-intencional-placeholder do Stage 4 referencia o fi
   // diretrizes já documentado em orchestrator-stage-2.md. Guard: o parágrafo
   // do check `erro-intencional-placeholder` em §4c.2 precisa referenciar
   // explicitamente editorial-rules.md §10 e o filtro de segurança de Stage 2.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const checkIdx = stage4.indexOf("`erro-intencional-placeholder`");
 
   it("§4c.2 documenta o check `erro-intencional-placeholder`", () => {
@@ -1245,7 +1262,7 @@ describe("#6003: gate de revisão publica newsletter/social como Artifact, em pa
   // precisam chamar a tool Artifact sobre a MESMA variante embedded já
   // usada pelo preview local, com fallback warning-only, e o gate (§4d)
   // precisa expor as duas URLs resultantes.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
 
   it("§4b step 2b publica a variante embedded da newsletter como Artifact", () => {
     assert.ok(
@@ -1327,7 +1344,7 @@ describe("#6171: fronteira de contexto pós-gate 4 — /diaria-edicao nunca enca
   // de playbook (parar sempre após o gate 4, instruir sessão nova) — estas
   // assertions pinam a instrução em si, não só o hash opaco do snapshot, pra
   // detectar reversão silenciosa da "PARE aqui SEMPRE".
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const stage5 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-5.md"), "utf8");
 
   it("Stage 4 instrui parar SEMPRE após o gate, mesmo vindo de /diaria-edicao", () => {
@@ -1437,7 +1454,7 @@ describe("#6444: gate 4 consome a decisão gravada pelo painel do Studio (/revis
   // assertions pinam o lado que fecha #6444 — sem elas, uma reversão futura do
   // §4d faria o gate voltar a ignorar a decisão do painel e apresentar sempre o
   // resumo completo, mesmo quando o editor já aprovou tudo remotamente.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
 
   it("§4d roda o CLI de leitura com freshness check antes do resumo consolidado", () => {
     const checkIdx = stage4.indexOf("scripts/lib/stage4-decision.ts --edition-dir");
@@ -1491,7 +1508,7 @@ describe("#7402: §4c.8/{ramp_gmail_line} saem do Stage 4 — a proposta de onda
   // exibiria essa linha genérica pra sempre, o mesmo ruído que a remoção do
   // #7402 existe pra eliminar. Este teste tranca a remoção — nenhum resíduo do
   // mecanismo antigo pode reaparecer sem querer.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
 
   it("não instrui mais ler kit-gmail-ramp-proposal.json nem referencia {ramp_gmail_line}", () => {
     assert.ok(
@@ -1531,7 +1548,7 @@ describe("#7243: revalidação final do erro intencional em §4e cobre auto_appr
   // headless nunca segue pra Etapa 5 sozinho quando a checagem falha — senão
   // o buraco do incidente 260902 (algo desaparece, ninguém é avisado) reaparece
   // justamente no caminho desassistido que esta PR existe pra fechar.
-  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const section4eIdx = stage4.indexOf("### 4e. Escrever sentinel de conclusão");
   const revalidacaoIdx = stage4.indexOf("Revalidação final do erro intencional, GATE-BLOCKING (#7243)");
   const sentinelWriteIdx = stage4.indexOf("scripts/pipeline-sentinel.ts write");

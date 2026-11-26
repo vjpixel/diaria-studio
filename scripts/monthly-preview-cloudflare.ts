@@ -60,11 +60,9 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export interface MonthlyPublicImage {
-  url: string;
-  filename: string;
-  mime_type: string;
-}
+// #14049: o tipo mora em lib/mensal/monthly-public-images.ts (lib não importa CLI de topo, #14001).
+import type { MonthlyPublicImage } from "./lib/mensal/monthly-public-images.ts";
+export type { MonthlyPublicImage };
 
 /**
  * Infere mime_type pela extensão do filename — evita hardcode fixo (self-review

@@ -1,6 +1,6 @@
 /**
  * test/studio-apoios.test.ts (#3602) — cobertura de
- * scripts/studio-ui/studio-apoios.ts: CRUD puro de contato, derivação de
+ * scripts/lib/apoios-data.ts: CRUD puro de contato, derivação de
  * status (apoiando/não apoia/apoiou e parou, cruzando múltiplos emails),
  * agregação de campanha, parsing/serialização de `contacts.jsonl`, e a
  * orquestração fail-soft de `buildApoiosData` (data/ ausente, credenciais
@@ -67,7 +67,7 @@ import {
   type VinculoCache,
   type SegmentsInfo,
   type SegmentsCache,
-} from "../scripts/studio-ui/studio-apoios.ts";
+} from "../scripts/lib/apoios-data.ts";
 import { buildSegmentsCache } from "../scripts/sync-apoio-segments-kit.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
 import type { DrainApoiaSeResult, DrainedPromessa } from "../scripts/lib/apoia-se-gmail-drain.ts";

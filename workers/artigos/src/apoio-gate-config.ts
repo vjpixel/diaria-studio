@@ -9,7 +9,7 @@
  *
  * A correspondência valor-em-R$ ↔ nível (`amigo` = R$5–10, `apoiador` =
  * R$10–25, `mantenedor` = R$25–50, `patrono` = R$50+ — mesmas faixas de
- * `computeRewardGroup` em `scripts/studio-ui/studio-apoios.ts`) está
+ * `computeRewardGroup` em `scripts/lib/apoios-data.ts`) está
  * documentada em `scripts/lib/apoio-segments-canonical-kit.ts`, o lugar
  * apontado pra isso desde a versão anterior deste arquivo.
  */

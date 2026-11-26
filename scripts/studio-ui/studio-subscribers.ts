@@ -86,7 +86,7 @@ import {
 } from "../lib/metrics/apoiador-link.ts";
 import { loadContacts, type ApoioContact } from "../lib/apoio-contacts-store.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth, readMonthCache } from "../lib/apoia-se.ts";
-import { deriveContactStatus, readPastMonthSnapshots } from "./studio-apoios.ts";
+import { deriveContactStatus, readPastMonthSnapshots } from "../lib/apoios-data.ts";
 
 // ---------------------------------------------------------------------------
 // Camada de DB compartilhada pelas 2 rotas
@@ -491,7 +491,7 @@ const LINK_NOTE =
  * (`APOIA_SE_CAMPAIGN`/etc não configuradas nesta sessão) ou
  * `contacts.jsonl` corrompido devolvem `apoiadores: []` + `error` explícito
  * — nunca lança pro caller. Injetáveis (`contacts`/`env`/`cacheDir`/`now`),
- * mesmo padrão de `BuildApoiosDataOptions` em `studio-apoios.ts` — evita I/O
+ * mesmo padrão de `BuildApoiosDataOptions` em `apoios-data.ts` — evita I/O
  * real e `.env` real em teste.
  *
  * Exportado (#7917): `studio-onboarding.ts` reusa este mesmo loader pra

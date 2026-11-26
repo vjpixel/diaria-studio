@@ -48,12 +48,13 @@ import {
   PRE_RESUME_REL,
   RESUME_COOLDOWN_MS,
   RESUME_SUGGESTIONS_TMP_REL,
-} from "../scripts/lib/clarice-pending.ts";
+} from "../scripts/lib/diaria/clarice-pending.ts";
 import { resumeExitCode, resumedStderrLines, spawnResultToRun, RESUME_POST_STEP_FAILED_EXIT } from "../scripts/clarice-pending.ts";
 import { signalsFromClaricePendingAtPublish, signalsFromClariceSkips } from "../scripts/collect-edition-signals.ts";
 import { checkClaricePending, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { checkClaricePendingAtPublish, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
 import { checkClariceRan } from "../scripts/check-stage2-invariants.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 /** fetch que nunca responde, mas respeita o AbortSignal (como a rede real com timeout). */
 const hangingFetch: typeof fetch = (_url, init) =>
@@ -887,7 +888,7 @@ describe("#12257 — guard de prosa dos playbooks", () => {
   });
 
   it("Stage 4: resume no §4a (antes do 4b) e exits 7/8/9/10/11 documentados", () => {
-    const s4 = read(".claude/agents/orchestrator-stage-4.md");
+    const s4 = readStage4Playbook();
     const resumeAt = s4.indexOf("clarice-pending.ts resume");
     assert.ok(resumeAt > 0 && resumeAt < s4.indexOf("### 4b."), "resume antes do pré-render/fact-check");
     const para = s4.slice(resumeAt, s4.indexOf("### 4b."));
@@ -902,7 +903,7 @@ describe("#12257 — guard de prosa dos playbooks", () => {
 
   it("Stage 6 mostra o marcador no gate (o banner do Stage 5 promete isso); Stage 4 documenta exits 12/13 e o 'esperar a API'", () => {
     assert.match(read(".claude/agents/orchestrator-stage-6.md"), /Clarice não rodou \(#12257\)[^\n]*02-clarice-pending\.json/);
-    const s4 = read(".claude/agents/orchestrator-stage-4.md");
+    const s4 = readStage4Playbook();
     const para = s4.slice(s4.indexOf("clarice-pending.ts resume"), s4.indexOf("### 4b."));
     assert.ok(para.includes("**12**") && para.includes("**13**"));
     assert.match(s4, /"Esperar a API" = voltar ao §4a[^\n]*--retry-now[^\n]*§4b em diante/);

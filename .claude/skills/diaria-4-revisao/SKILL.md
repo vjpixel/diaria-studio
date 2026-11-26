@@ -11,6 +11,9 @@ Dispara a Etapa 4 da pipeline diar.ia.br: **Revisão editorial assistida**. Mont
 
 - `$1` = data da edição no formato `AAMMDD` (ex: `260418`).
 - `--no-gates` (opcional, #5738) = auto-aprova o gate deste stage. Existe para o runner AGENDADO (`scripts/overnight/run-scheduled-edicao.ts`), que desde o #5738 invoca uma skill `/diaria-N-*` por sessão em modo `--print`: sem esta flag o gate seria apresentado e ninguém responderia, queimando os turnos da sessão sem escrever sentinela. Equivale ao `auto_approve = true` que `/diaria-edicao` já setava internamente para os Stages 1-3 (pre-gate mode, #1523). **Nunca alcança publicação** — Stages 5/6 não estão em `STAGE_PLAN` e o runner nunca os invoca.
+- `--pre-gate-only` (opcional, #14034) = roda só §4a–§4c (pré-render, lints, fact-check, resumo) e para antes do gate, gravando `_internal/04-pregate-summary.md` e o marcador de `scripts/lib/stage4-pregate.ts`. Existe para o spawn headless de `run-edition-stages.ts --stage4-pre-gate`, chamado pelo `/diaria-edicao`; a sessão do editor abre já no gate. Setar `pre_gate_only = true` e seguir as regras desse modo no topo de `orchestrator-stage-4.md`. **Não aprova o gate:** nunca escreve `.step-4-done.json`. Não combinar com `--no-gates`.
+
+**Abertura no gate (#14034):** sem `--no-gates` e sem `--pre-gate-only`, a sessão começa pelo `stage4-pregate.ts check` descrito no topo de `orchestrator-stage-4.md`; se o pré-gate headless já rodou para o conteúdo atual, vai direto ao gate.
 
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 4` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`.
@@ -32,7 +35,7 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 
 ## O que faz
 
-Você (top-level Claude Code) **lê `.claude/agents/orchestrator-stage-4.md` como playbook e executa diretamente**. As etapas são:
+Você (top-level Claude Code) **lê `.claude/agents/orchestrator-stage-4.md` (pré-gate, §4a–§4c) como playbook e executa diretamente; ao chegar no gate, lê `.claude/agents/orchestrator-stage-4-gate.md` (§4d–§4e e fronteira pós-gate, #14033) e, no loop `ajustar`, consulta o cartão `context/stage-4-gate-receitas.md` em vez de reler os playbooks**. As etapas são:
 
 ### Etapa 4a. Pré-requisitos + sync
 
@@ -42,7 +45,7 @@ Verificar sentinel Stage 3, marcar Stage 4 `running`, sync pull.
 
 - capture-livros-promo (screenshot, opcional)
 - upload-images-public (newsletter + social)
-- Pre-render newsletter HTML (beehiiv-playbook steps 1-5 sem dispatch)
+- Pre-render newsletter HTML (`context/publishers/newsletter-prerender.md` §1.1-1.4, #14048)
 - Pre-render social preview HTML
 - close-poll (set gabarito)
 - check-invariants --stage 4
@@ -53,7 +56,7 @@ Coleta destaques (D1/D2/D3 com títulos e URLs), verifica acessibilidade, roda l
 
 Respostas aceitas: `sim` (aprovar), `editar` (halt para edição local/Studio, re-rodar), `ajustar` (edição inline no chat, volta ao gate), `abortar` (encerrar sem sentinel).
 
-**Reordenação/swap de destaques dentro do `ajustar` usa SEMPRE `npx tsx scripts/reorder-destaques.ts` — nunca rename manual de `04-d{N}-*` em `data/` (#8679).** Ver `.claude/agents/orchestrator-stage-4.md` §4d.1 passo 4 para o fluxo completo (post_pixel, ratio de imagem) e o porquê: `data/` sincroniza por OneDrive, e um rename manual em rodízio pode ser silenciosamente descartado pelo provedor de sync minutos depois.
+**Reordenação/swap de destaques dentro do `ajustar` usa SEMPRE `npx tsx scripts/reorder-destaques.ts` — nunca rename manual de `04-d{N}-*` em `data/` (#8679).** Ver `.claude/agents/orchestrator-stage-4-gate.md` §4d.1 passo 4 para o fluxo completo (post_pixel, ratio de imagem) e o porquê: `data/` sincroniza por OneDrive, e um rename manual em rodízio pode ser silenciosamente descartado pelo provedor de sync minutos depois.
 
 **Mover item ENTRE seções do pool (ex.: RADAR → USE MELHOR) usa `npx tsx scripts/move-pool-item.ts --edition-dir {EDITION_DIR} --url {url} --to {lancamento|radar|use_melhor|video} [--tempo N]` (#9680)** — atualiza `02-reviewed.md`, `01-approved.json` e `01-approved-capped.json` (senão `url-bucket` reprova) e a contagem da intro; indo pro USE MELHOR sem "(N min)" exige `--tempo` com os minutos que o editor informar (o script não estima). Seguir o `next_steps` do JSON — inclusive a re-seleção do 4º post `## um` quando o item escolhido saiu do USE MELHOR. **Remover item do pool (corte, não mudança de seção) usa `npx tsx scripts/remove-pool-item.ts --edition-dir {EDITION_DIR} --url {url}` (#10598)** — tira o item de `02-reviewed.md`, recalcula a intro "selecionei os N" e remove a seção que ficar vazia; `01-approved.json` fica intacto de propósito (#8121 `approved-item-removal`).
 

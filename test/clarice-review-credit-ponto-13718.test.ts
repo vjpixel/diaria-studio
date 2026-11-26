@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { hasClariceReviewCredit, omitClariceReviewCredit } from "../scripts/lib/clarice-review-credit.ts";
+import { hasClariceReviewCredit, omitClariceReviewCredit } from "../scripts/lib/diaria/clarice-review-credit.ts";
 
 const LINK = "([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria))";
 

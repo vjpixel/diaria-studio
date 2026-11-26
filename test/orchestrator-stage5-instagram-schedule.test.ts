@@ -30,7 +30,8 @@ const STAGE5_PATH = resolve(ROOT, ".claude/agents/orchestrator-stage-5.md");
 
 function readStage5DispatchBlock(): string {
   const src = readFileSync(STAGE5_PATH, "utf8");
-  const blockStart = src.indexOf("**Em uma unica mensagem, disparar simultaneamente**");
+  // #14037: o bloco passou a abrir com o wrapper concorrente (antes "Em uma unica mensagem, disparar simultaneamente").
+  const blockStart = src.indexOf("**Rodar os 4 publishers sociais concorrentes num so Bash**");
   assert.ok(blockStart >= 0, "bloco de dispatch paralelo (§5c-3) não encontrado em orchestrator-stage-5.md");
   // Bloco cobre os itens numerados 1-4 (facebook/linkedin/instagram/threads) e termina
   // no item 5 (brevo). Antes era uma janela fixa de 2000 chars, que estourava quando a

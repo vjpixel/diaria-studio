@@ -46,7 +46,7 @@
  * confirmados como pagantes, nunca pros já confirmados) por quem chama,
  * justamente pra não estourar o teto mensal reconsultando quem não tem como
  * mudar de status dentro do mesmo mês-competência. Ver
- * `scripts/studio-ui/studio-apoios.ts::refreshApoiosData` pro caller.
+ * `scripts/lib/apoios-data.ts::refreshApoiosData` pro caller.
  *
  * **TTL do cache do mês CORRENTE (#4490 causa 1 e 2):** o force-refresh acima
  * exige alguém clicar o botão — sem isso, o cache do mês corrente era tratado
@@ -333,7 +333,7 @@ export function readMonthCache(cacheDir: string, month: string): Record<string, 
  * `computeValorLayer`/`computeLtvSection`). Callers que precisam decidir
  * disponibilidade (arquivo presente E parseável) usam isto em vez de
  * `existsSync(path)` solto. Não muda o comportamento de `readMonthCache`
- * (usado por `studio-apoios.ts`/`studio-subscribers.ts`, que só querem `{}`
+ * (usado por `apoios-data.ts`/`studio-subscribers.ts`, que só querem `{}`
  * fail-soft sem se importar com a distinção).
  */
 export function readMonthCacheDetailed(

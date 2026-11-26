@@ -46,6 +46,9 @@ const COPY = [
   "test/__snapshots__/orchestrator-prompt.snap.json",
   "scripts/lib/orchestrator-files.ts",
   "scripts/lib/orchestrator-snapshot.ts",
+  // #14030: orchestrator-prompt.test.ts lê os playbooks 0/1 por este helper.
+  "scripts/lib/stage01-playbook.ts",
+  "scripts/lib/stage4-playbook.ts",
   "package.json",
   "tsconfig.json",
 ];

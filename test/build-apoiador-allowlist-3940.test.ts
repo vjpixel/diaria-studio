@@ -25,7 +25,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeApoiadorAllowlist, findTransientFailureContacts } from "../scripts/build-apoiador-allowlist.ts";
-import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
+import type { ContactWithStatus } from "../scripts/lib/apoios-data.ts";
 
 function contact(
   emails: string[],

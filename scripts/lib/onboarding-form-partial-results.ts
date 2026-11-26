@@ -38,6 +38,7 @@ import {
   normalizeFormEmail,
   otherTextFieldId,
   splitMultiAnswer,
+  summarizeFormResponses,
   type FormQuestion,
   type FormResponse,
 } from "./onboarding-form-contract.ts";
@@ -102,6 +103,11 @@ export interface FormPartialResults {
   /** Data (AAAA-MM-DD) da resposta mais antiga e da mais recente consideradas. */
   primeira: string | null;
   ultima: string | null;
+  /** #13979: `submitted_at` (ISO, UTC) da resposta mais antiga e da mais recente consideradas, para exibir a data em BRT. */
+  primeira_em: string | null;
+  ultima_em: string | null;
+  /** #13979: mediana de `duration_s` (segundos) dos respondentes, sem os testes; `null` = nenhuma resposta com tempo registrado. */
+  duracao_mediana_s: number | null;
   perguntas: FormChoiceTally[];
   abertas: FormOpenAnswersBlock[];
   /** #12715: respondentes (sobre `total`) na persona 2, "Quem já paga para aprender". */
@@ -278,6 +284,7 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
 
   const current = kept.filter((r) => formVersionOf(r) === currentVersion);
   const dates = kept.map((r) => day(r.submitted_at)).filter((d) => d !== "").sort();
+  const stamps = kept.map((r) => String(r.submitted_at ?? "")).filter((t) => t !== "").sort();
 
   const perguntas: FormChoiceTally[] = [];
   const abertas: FormOpenAnswersBlock[] = [];
@@ -346,6 +353,9 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
     versao_atual: currentVersion,
     primeira: dates[0] ?? null,
     ultima: dates[dates.length - 1] ?? null,
+    primeira_em: stamps[0] ?? null,
+    ultima_em: stamps[stamps.length - 1] ?? null,
+    duracao_mediana_s: summarizeFormResponses(kept).median_s,
     perguntas,
     abertas,
     persona2: kept.filter((r) => isPersona2(r.answers)).length,

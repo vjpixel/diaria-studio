@@ -2444,10 +2444,18 @@ describe("acquireMergeLock — atomicidade sob concorrência (#5161 item 1)", ()
  * usado em `test/lib-boundary.test.ts`.
  */
 describe("merge lock — invariante de documentação (#6182)", () => {
-  const SRC = readFileSync(
-    resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lib", "session-registry.ts"),
-    "utf8",
-  );
+  // #14004: a implementação foi dividida em `scripts/lib/sessions/`; o texto
+  // que este invariante guarda é o do registro inteiro (entrada + módulos).
+  const LIB = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lib");
+  const SRC = [
+    join(LIB, "session-registry.ts"),
+    ...readdirSync(join(LIB, "sessions"))
+      .filter((f) => f.endsWith(".ts"))
+      .sort()
+      .map((f) => join(LIB, "sessions", f)),
+  ]
+    .map((p) => readFileSync(p, "utf8"))
+    .join("\n");
 
   it("o docblock declara explicitamente que entre máquinas o lock é advisory", () => {
     assert.match(

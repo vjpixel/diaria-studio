@@ -27,6 +27,15 @@ export interface StepSentinel {
    * fora do mapa trava a Etapa 5 (`no_hash`) até o Stage 4 regravar o sentinel.
    */
   output_hashes?: Record<string, string>;
+  /**
+   * Sessão do Claude Code que gravou o sentinel (#14038), lida de
+   * `CLAUDE_CODE_SESSION_ID` pelo `pipeline-sentinel.ts write`. Ausente
+   * quando o ambiente não traz o id (teste, harness antigo, script fora do
+   * Claude Code) e em todo sentinel anterior ao #14038. Consumidor:
+   * `scripts/check-publish-session-boundary.ts`, que barra a Etapa 5 na
+   * mesma sessão que aprovou o gate 4 (#6171).
+   */
+  session_id?: string;
 }
 
 /** sha256 hex de um conteúdo. Fonte única do hash de `output_hashes` (#11698). */
@@ -63,14 +72,17 @@ export function writeSentinel(
   editionDir: string,
   step: number,
   outputs: string[],
+  opts: { sessionId?: string | null } = {},
 ): void {
   const internalDir = resolve(editionDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
+  const sessionId = opts.sessionId?.trim();
   const sentinel: StepSentinel = {
     step,
     completed_at: new Date().toISOString(),
     outputs,
     output_hashes: computeOutputHashes(editionDir, outputs),
+    ...(sessionId ? { session_id: sessionId } : {}),
   };
   writeFileSync(sentinelPath(editionDir, step), JSON.stringify(sentinel, null, 2) + "\n", "utf8");
 }

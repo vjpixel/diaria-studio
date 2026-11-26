@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { assessVideoBeforePublish, BLOCKING_STATUSES } from "../scripts/lib/diaria/video-before-publish.ts";
 import { readD1VideoUrlForPosts } from "../scripts/lib/diaria/d1-video-link-file.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -210,7 +211,7 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
   const sequence = /\/diaria-video-montagem[\s\S]{0,400}\/diaria-publica(?![-\w])[\s\S]{0,300}Etapas 5 e 6/;
 
   it("mensagem de fim do Stage 4 cita a sequência nova, a exigência do link e diz que nada encadeia", () => {
-    const stage4 = read(".claude/agents/orchestrator-stage-4.md");
+    const stage4 = readStage4Playbook();
     const msg = stage4.slice(stage4.indexOf("Stage 4 aprovado — edição {AAMMDD}."));
     assert.match(msg.slice(0, 1800), sequence);
     assert.match(msg.slice(0, 1800), /nenhum encadeia/);
@@ -232,7 +233,8 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
     assert.match(s5, /check-video-before-publish\.ts/);
     assert.match(s5, /exit 3[\s\S]{0,200}parar antes de qualquer dispatch/);
     assert.doesNotMatch(s5, /Aviso de vídeo do D1 \(#10943, aviso, não gate\)/);
-    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /pipeline-sentinel\.ts exists --edition \{AAMMDD\} --step 4/);
+    // #14027: o Passo 0 passou de `exists` para `assert` com a espera do sync.
+    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /pipeline-sentinel\.ts assert --edition \{AAMMDD\} --step 4/);
   });
 
   it("#12591: /diaria-publica-video roda horizontal, depois o /diaria-5-publicacao inteiro, depois o vertical", () => {
@@ -291,6 +293,7 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
   it("#12620: as mensagens que indicam o próximo comando usam o nome novo", () => {
     for (const p of [
       ".claude/agents/orchestrator-stage-4.md",
+      ".claude/agents/orchestrator-stage-4-gate.md",
       ".claude/skills/diaria-edicao/SKILL.md",
       ".claude/skills/diaria-4-revisao/SKILL.md",
       ".claude/skills/diaria-video-montagem/SKILL.md",

@@ -23,7 +23,7 @@
  *     regra 1 de `context/overnight-dispatch-rules.md`) — o envio real
  *     continua manual (Custom HTML paste + Audience tab + Schedule, mesmo
  *     fluxo do #4482).
- *   - `publish-monthly-apoiadores-brevo.ts` (Passo 2, #4572/#4593) chama a
+ *   - `publish-monthly-apoiadores-brevo.ts` (Passo 2, #4572/#4593, apagado no #14049) chamava a
  *     API de escrita da Brevo DE VERDADE (`POST /emailCampaigns`) pra criar
  *     a campanha — sempre como RASCUNHO, nunca agenda/envia sozinho. Este
  *     módulo é quem dá a idempotência dessa escrita (`brevoCampaignId`
@@ -103,8 +103,9 @@ export interface ApoiadoresState {
    * `campaignId`: durante a transição um mesmo ciclo pode ter registro dos
    * dois canais, e colapsá-los faria o guard de um canal bloquear o outro (ou,
    * pior, um `--force` num canal apagar o rastro do rascunho órfão do outro).
-   * Quando `brevo_apoiadores` for aposentado de vez (depois do 1º envio Kit
-   * real, ver #7633), o campo Brevo pode virar só leitura de histórico.
+   * Desde o #14049 (`brevo_apoiadores` e o publisher Brevo apagados) o campo
+   * Brevo é só leitura de histórico: o único envio real foi a campanha 12
+   * (ciclo 2607-08), registrada em `docs/brevo-apoiadores-registro.md`.
    */
   kitBroadcastId: number | null;
   /**
@@ -150,8 +151,8 @@ export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null 
     process.stderr.write(
       `[monthly-apoiadores-state] AVISO: ${path} existe mas ${reason} — tratando como "nunca preparado" ` +
         "(fail-soft), mas isso pode mascarar um brevoCampaignId ou status 'sent' já gravado. Confira o arquivo " +
-        "manualmente antes de rodar de novo qualquer um dos 3 scripts que leem este state — " +
-        "send-monthly-apoiadores.ts (Passo 1/3) ou publish-monthly-apoiadores-brevo.ts (Passo 2).\n",
+        "manualmente antes de rodar de novo qualquer um dos scripts que leem este state — " +
+        "send-monthly-apoiadores.ts (Passo 1/3) ou publish-monthly-apoiadores-kit.ts (Passo 2).\n",
     );
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ApoiadoresState>;

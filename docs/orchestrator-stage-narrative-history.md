@@ -282,9 +282,38 @@ desinformação real se não pego). O editor pegou o problema (#5566) antes de
 aprovar o gate; a correção adiciona a mesma referência explícita ao caminho
 `erro-intencional-placeholder` do Stage 4.
 
+### stage-4-pesquisa-nova-sincrona
+
+Movido do §4d.1 no #14033. A issue #8123 também pedia que o passo 0 do
+`ajustar` (pesquisa nova via `discovery-searcher`) rodasse em background sem
+travar outros ajustes, condicionado a "se #4990 já existir". O #4990 está
+fechado, mas resolveu um incidente específico (seção ausente por pesquisa não
+completada, ver `check-pending-research.ts` no passo 0) e não criou
+infraestrutura de dispatch assíncrono de Agent: o `discovery-searcher` é uma
+chamada `Agent`, que bloqueia o turno do orchestrator até voltar, ao contrário
+de `image-generate.ts`/`gen-carousel-cards.ts`, que são scripts TS rodáveis
+via `Bash(..., run_in_background: true)`. Tornar isso não bloqueante exigiria
+uma arquitetura de dispatch assíncrono de subagente que o orchestrator não
+tem. O passo 0 seguiu como melhor esforço síncrono.
+
+### stage-4-fronteira-pos-gate-6171
+
+Movido da seção "Fluxo pós-gate" no #14033. O gate do Stage 4 é o mais longo
+do pipeline por natureza (433 turnos/1h49 numa edição real, #5414): é o editor
+iterando, e isso não deve ser encurtado. O problema era o que vinha depois:
+numa sessão `/diaria-edicao` contínua, as Etapas 5 e 6 herdavam esses 433
+turnos de contexto e os reliam a cada chamada de tool, 268M tokens de
+`cache_read` medidos numa edição só (260826), a maior fatia do custo total. O
+#5744 já tinha cortado o problema para os Stages 1→4 (cada um roda num
+processo `claude` próprio, spawnado por `run-edition-stages.ts`); o Stage 4
+não entra nesse laço porque o gate humano precisa da sessão do editor. A
+fronteira depois do gate nenhum laço automático cruza (Stage 5 nunca é
+spawnado headless: `STAGE_PLAN` exclui os Stages 5/6 de propósito). A saída
+foi a mesma do #5578 para as demais transições: sessão nova, contexto limpo.
+
 ## Stage 5 (publicação)
 
-(Ver `context/publishers/beehiiv-playbook.md` §Fase 3 para o histórico
+(Ver `docs/archive/beehiiv-playbook.md` §Fase 3 para o histórico
 completo da recuperação do fetch in-page do Worker — #4816 não duplica
 esse relato aqui, ele já vive na fonte única #4196.)
 

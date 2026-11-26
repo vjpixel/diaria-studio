@@ -344,6 +344,10 @@ Esta skill **não reescreve** o mecanismo de implementação — ele já está
 documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
 `context/overnight-dispatch-rules.md`. O coordenador desta skill:
 
+- **Lê `context/overnight-coordinator-rules.md` no início da sessão (#14043)**:
+  as regras do coordenador (itens 9, 11, 15-18, 21, 22, 24-26, 28, 32, 33, 35
+  e 36, mesma numeração das citações "de `context/overnight-dispatch-rules.md`"
+  nesta skill).
 - **Lê `context/overnight-dispatch-rules.md` no início da sessão** (mesmo
   checklist canônico que todo subagente implementador do overnight/develop
   lê) e o cita — não reproduz — no prompt de dispatch de cada subagente

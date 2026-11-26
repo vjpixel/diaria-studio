@@ -10,7 +10,7 @@ conteúdo aqui.
 
 Produzido domingo (janela de conteúdo = segunda a sexta que acabou de
 terminar), publicado segunda ~09:30 BRT. Diferente do post comum de feed
-(`context/templates/social-linkedin.md`, `## d{N}` do `03-social.md`) — é
+(`## d{N}` do `03-social.md`, escrito pelo `social-writer`) — é
 outro produto, ver "Sobreposição" no `SKILL.md` da skill.
 
 ## Estrutura do artigo

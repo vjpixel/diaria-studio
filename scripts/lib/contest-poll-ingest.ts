@@ -63,7 +63,7 @@
  * uma-vez — mas **não é mais a fonte viva**. O mecanismo VIVO pós-#2724 é
  * `data/raffle-numbers.json` (`scripts/lib/raffle-numbers.ts`), escrito
  * pelo playbook §0-replies do Stage 0
- * (`.claude/agents/orchestrator-stage-0-preflight.md`) toda vez que um
+ * (`.claude/agents/orchestrator-stage-0-replies.md`, #14030) toda vez que um
  * leitor acerta o erro intencional e ganha um número novo pro sorteio —
  * exatamente o fato "resposta confirmada por pessoa e por edição" que esta
  * issue pede. `mapRaffleEntryToContestEntry` (abaixo) adapta `RaffleEntry`

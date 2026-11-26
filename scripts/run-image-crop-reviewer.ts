@@ -76,7 +76,7 @@ import {
   isSilencedCropWarn, // #12226
   CROP_REVIEW_IMAGE_VARIANTS, // #10333: ordem nativo → master → 2x1, fonte única
   type CropReviewImageVariant,
-} from "./lib/invariant-checks/stage-4.ts";
+} from "./lib/crop-review-entry.ts"; // #13997: era invariant-checks/stage-4.ts
 import {
   addEstiloFalsePositives, // #10328
   readEstiloFalsePositiveMd5s,

@@ -32,8 +32,8 @@ import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repea
 import { readMarker } from "../pipeline-state.ts";
 import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
 import { linkScoreBlocks, linkTitleBlocks } from "../newsletter-intake-link-rules.ts"; // #12593
-import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257, #12693
-import { hasClariceReviewCredit } from "../clarice-review-credit.ts"; // #13711
+import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending, resumeCommandFor } from "../diaria/clarice-pending.ts"; // #12257, #12693
+import { hasClariceReviewCredit } from "../diaria/clarice-review-credit.ts"; // #13711
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
@@ -52,6 +52,14 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
+import {
+  CROP_REVIEW_IMAGE_VARIANTS,
+  type CropReviewImageVariant,
+  isCropReviewImageVariant,
+  cropReviewImageSuffix,
+  isCropReviewEntryStale,
+  isSilencedCropWarn,
+} from "../crop-review-entry.ts"; // #13997
 // #10346: ciclo de import com run-image-crop-reviewer.ts (que importa isCropReviewEntryStale daqui) é
 // seguro — os dois lados só usam o outro dentro de funções, nunca no topo do módulo.
 import { planEstiloRegenerationForEdition } from "../../run-image-crop-reviewer.ts";
@@ -424,7 +432,7 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
  * #3825).** A issue original pedia GATE-BLOCKING "ou pelo menos warn-loud —
  * nunca silencioso", deixando a escolha em aberto. `warning` ainda aparece
  * no `{violations_block}` do gate humano do Stage 4 (nunca silencioso —
- * `orchestrator-stage-4.md` linha 471 lista ⚠️ junto com ❌), mas não falha
+ * `orchestrator-stage-4-gate.md` §4d, regra `{violations_block}`, lista ⚠️ junto com ❌), mas não falha
  * o exit code. Motivo: o mirror em `02-reviewed.md` é inserido verbatim de
  * `01-eia.md` no stitch (Stage 2, `stitch-newsletter.ts::readEiaBlock`), mas
  * DEPOIS passa pelo humanizador + Clarice — ambos operam sobre o
@@ -1452,7 +1460,7 @@ export function replantCommand(editionDir: string): string {
  * o RADAR no Stage 4" não tinha guarda nenhuma). O call site que fecha essa
  * janela de fato — reinvocar só esta regra imediatamente antes de escrever o
  * sentinel de Stage 4, cobrindo o fast-path do painel Studio (#6444) que pula
- * o loop `sim/ajustar` inteiro — vive em `orchestrator-stage-4.md` §4e, não
+ * o loop `sim/ajustar` inteiro — vive em `orchestrator-stage-4-gate.md` §4e, não
  * aqui (esta função é só o pure check; o card mecânico completo, incluindo
  * QUANDO ele roda, é responsabilidade do playbook).
  *
@@ -1684,7 +1692,7 @@ function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolat
 /**
  * #2693 item 3: registro dos 2 lints de título (#2664 sufixo de veículo,
  * #2672 ponto final) em `invariant-checks/`. Antes rodavam como invocação
- * CLI separada em `orchestrator-stage-4.md` (`lint-newsletter-md.ts --check
+ * CLI separada no pré-gate (`orchestrator-stage-4.md` §4c.2, #14033) (`lint-newsletter-md.ts --check
  * title-publisher-suffix`/`title-trailing-period`) — funcionais, mas fora do
  * registry, então invisíveis em `docs/editorial-invariants.md`. Severity
  * "warning" preserva o comportamento atual (backstop deliberadamente amplo,
@@ -1960,51 +1968,17 @@ function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolati
  * reorder não invalida nada. Entrada sem `image_md5`/`ratio` (persistida antes
  * do #9598) segue o comportamento antigo — sem como saber de qual imagem era.
  */
-/**
- * #10325: arquivos alternativos contra os quais uma entrada pode ser carimbada
- * (`04-{destaque}-{variante}.jpg`). O achado de Noite Estrelada no 4:5 julga a
- * ARTE de fundo, não o card com título por cima — carimbar o card fazia a
- * entrada virar "desatualizada" só porque o título mudou e o card foi
- * recomposto, e o erro `image-starry-night-detected` sumia com a mesma arte.
- */
-export const CROP_REVIEW_IMAGE_VARIANTS = ["4x5-nativo", "master", "2x1"] as const;
-export type CropReviewImageVariant = (typeof CROP_REVIEW_IMAGE_VARIANTS)[number];
-
-export function isCropReviewImageVariant(v: unknown): v is CropReviewImageVariant {
-  return typeof v === "string" && (CROP_REVIEW_IMAGE_VARIANTS as readonly string[]).includes(v);
-}
-
-/** Sufixo do arquivo carimbado: a variante (#10325) quando houver, senão o ratio (#9598). */
-export function cropReviewImageSuffix(entry: { ratio?: string; image_variant?: string }): string {
-  return isCropReviewImageVariant(entry.image_variant) ? entry.image_variant : (entry.ratio ?? "");
-}
-
-export function isCropReviewEntryStale(
-  editionDir: string,
-  entry: { destaque?: string; ratio?: string; image_md5?: string; image_variant?: string },
-): boolean {
-  if (typeof entry.image_md5 !== "string" || !entry.destaque || !entry.ratio) return false;
-  // #10333: a variante é escolhida uma vez, no persist (`cropReviewStampVariant`,
-  // ordem nativo → master → 2x1). Se depois nasce uma variante anterior na
-  // ordem (ex.: `image-generate --ratio 4x5 --force` cria o nativo sem apagar o
-  // master), o card passa a usar a arte nova sem o arquivo carimbado mudar — a
-  // entrada já não fala da arte atual e não pode valer (nem um falso positivo
-  // marcado sobre o md5 antigo).
-  if (isCropReviewImageVariant(entry.image_variant)) {
-    const destaque = entry.destaque;
-    const current = CROP_REVIEW_IMAGE_VARIANTS.find((v) =>
-      existsSync(resolve(editionDir, `04-${destaque}-${v}.jpg`)),
-    );
-    if (current !== entry.image_variant) return true;
-  }
-  const imgPath = resolve(editionDir, `04-${entry.destaque}-${cropReviewImageSuffix(entry)}.jpg`);
-  if (!existsSync(imgPath)) return true;
-  try {
-    return md5OfFile(imgPath) !== entry.image_md5;
-  } catch {
-    return false; // ilegível agora — não descarta o aviso por falha de I/O
-  }
-}
+// #13997: helpers do veredito de crop moram em lib/crop-review-entry.ts
+// (módulo-folha), para que run-image-crop-reviewer.ts não puxe este arquivo
+// e, por ele, o corretor Clarice de lib/diaria/ (fronteira #13998).
+export {
+  CROP_REVIEW_IMAGE_VARIANTS,
+  type CropReviewImageVariant,
+  isCropReviewImageVariant,
+  cropReviewImageSuffix,
+  isCropReviewEntryStale,
+  isSilencedCropWarn,
+};
 
 interface CropReviewFileEntry {
   destaque?: string;
@@ -2040,18 +2014,6 @@ function isCurrentStarryNight(editionDir: string, r: CropReviewFileEntry, falseP
     !isEstiloFalsePositive(r, falsePositives) &&
     !isCropReviewEntryStale(editionDir, r)
   );
-}
-
-/**
- * #12226: achado de CROP (categoria `crop`, default) sobre o ratio `1x1`
- * (veredito legado) ou `2x1` não chega ao gate. O 1:1 não vai ao leitor (e
- * deixou de ser gerado); o par `2x1` é a arte original da newsletter, sem
- * corte a julgar. O 4:5 continua avisando, e o achado de ESTILO (Noite
- * Estrelada, #8989) vale em qualquer ratio — o par `2x1` existe justamente pra
- * ele olhar a imagem da newsletter.
- */
-export function isSilencedCropWarn(entry: { ratio?: string; categoria?: string }): boolean {
-  return (entry.ratio === "1x1" || entry.ratio === "2x1") && (entry.categoria ?? "crop") === "crop";
 }
 
 function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
@@ -2662,6 +2624,17 @@ export function findDuplicateUrlsAgainstPastEditions(
   exemptCanonical: Set<string> = new Set(),
 ): DuplicateUrlMatch[] {
   if (pastOrigins.size === 0) return [];
+  // #14020/#14021: compara pela chave do dedup (`dedupUrlKey`: sem prefixo de
+  // idioma, sem `www.`, http→https), a mesma do Pass 1 de `dedup.ts`. Com
+  // `canonicalize`, a variante `/pt-BR/` ou `www.` do link passado passava
+  // calada. Na colisão de chaves fica a 1ª origem do mapa (a mais recente,
+  // ordem de `extractPastUrlsWithOriginWithinDays`).
+  const pastByKey = new Map<string, string>();
+  for (const [u, date] of pastOrigins) {
+    const k = dedupUrlKey(u);
+    if (!pastByKey.has(k)) pastByKey.set(k, date);
+  }
+  const exemptKeys = new Set([...exemptCanonical].map(dedupUrlKey));
   const matches: DuplicateUrlMatch[] = [];
   const seenCanonical = new Set<string>(); // 1 match por URL repetida, não por ocorrência
   for (const { url, line } of extractUrlsWithLines(reviewedMd)) {
@@ -2673,9 +2646,9 @@ export function findDuplicateUrlsAgainstPastEditions(
     }
     if (isNonEditorialHost(host)) continue;
 
-    const canonical = canonicalize(url);
-    const originDate = pastOrigins.get(canonical);
-    if (!originDate || seenCanonical.has(canonical) || exemptCanonical.has(canonical)) continue;
+    const canonical = dedupUrlKey(url);
+    const originDate = pastByKey.get(canonical);
+    if (!originDate || seenCanonical.has(canonical) || exemptKeys.has(canonical)) continue;
     seenCanonical.add(canonical);
     matches.push({ url, line, originDate });
   }
@@ -2695,7 +2668,7 @@ export function findDuplicateUrlsAgainstPastEditions(
  * Reusa `extractUrlsWithLines`/`isNonEditorialHost` (mesmo par que
  * `validate-domain-diversity.ts` usa pra extrair só links EDITORIAIS — exclui
  * rodapé/crédito de imagem/link de casa, ex: *.diar.ia.br, linkedin.com,
- * apoia.se) e `canonicalize`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
+ * apoia.se) e `dedupUrlKey`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
  * dedup de Stage 1, `scripts/dedup.ts`), pra ficar consistente com o que já
  * é considerado "mesmo link" em todo o resto do pipeline.
  *

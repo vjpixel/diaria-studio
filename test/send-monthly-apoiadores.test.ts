@@ -12,7 +12,7 @@
  * (#7121 trocou o render de Beehiiv pra Brevo — mesma limitação, nome
  * novo): os dois resolvem `monthlyDir(cycle)` contra o `data/monthly/` REAL
  * (junction pro OneDrive de produção neste worktree) — mesma limitação já
- * aceita por `test/render-monthly-apoiadores-brevo.test.ts`, que testa as
+ * aceita por `test/render-monthly-apoiadores-brevo.test.ts` (apagado no #14049), que testava as
  * peças puras (`missingImageKeys`, `draftToEmailApoiadoresBrevo`,
  * `buildRelink`) em vez do CLI inteiro. A idempotência/dedup (a lógica nova
  * desta issue) é 100% pura e está coberta em `test/monthly-apoiadores-state.test.ts`.

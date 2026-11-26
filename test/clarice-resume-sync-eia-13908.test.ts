@@ -17,7 +17,7 @@ import {
   postResumeSteps,
   runPostResumeSteps,
   SYNC_EIA_REFUSED_EXIT,
-} from "../scripts/lib/clarice-pending.ts";
+} from "../scripts/lib/diaria/clarice-pending.ts";
 import { resumedStderrLines, runTsx } from "../scripts/clarice-pending.ts";
 
 const PLACEHOLDER_POS_STRIP = "É IA?\n\n[É IA? ainda processando, bloco será inserido na Etapa 3]";

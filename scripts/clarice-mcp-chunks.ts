@@ -57,7 +57,7 @@ import {
   splitIntoChunks,
   type ApplyResult,
   type ClariceChunkSuggestion,
-} from "./lib/clarice-chunk.ts";
+} from "./lib/diaria/clarice-chunk.ts";
 import { parseClariceSuggestions } from "./lib/schemas/clarice-suggestions.ts";
 
 export interface ChunkManifestEntry {

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import {
   classifyClariceMeaningChange,
   filterClariceSuggestions,
-} from "../scripts/lib/clarice-suggestion-guard.ts";
+} from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 
 test("troca de identificador de modelo é descartada (caso 26w46)", () => {
   const cases = [

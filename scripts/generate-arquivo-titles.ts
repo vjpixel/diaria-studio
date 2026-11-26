@@ -81,14 +81,14 @@ export interface RawCachedPost {
   publish_date?: number | null;
   status?: string;
   /** URL da cover/thumbnail do post, se a Beehiiv tiver uma associada —
-   * mesmo campo `get_post.thumbnail_url` que `beehiiv-cover-upload.ts` já lê
+   * mesmo campo `get_post.thumbnail_url` que a antiga `beehiiv-cover-upload.ts` (removida no #14048) lia
    * como verificação READ-only pós-upload (#2341). Alimenta `coverImageUrl`
    * abaixo (#5131) — reusa o MESMO dataset já lido por este script em vez de
    * abrir um 2º pipeline contra `data/editions/{ed}/_internal/06-public-images.json`
    * (que exigiria cruzar publishDate↔pasta de edição, e nem toda edição
    * antiga tem esse arquivo — 77/101 no momento do #5131). Como
    * `06-public-images.json.images.cover.url` é o que se sobe como thumbnail
-   * (#2341, `beehiiv-cover-upload.ts`), `thumbnail_url` É essa mesma imagem,
+   * (#2341, antiga `beehiiv-cover-upload.ts`), `thumbnail_url` É essa mesma imagem,
    * só espelhada pelo CDN da Beehiiv em vez de `eia.diar.ia.br` — decisão
    * de engenharia registrada aqui, não um desvio silencioso do que a issue
    * pedia ("host nosso"). */

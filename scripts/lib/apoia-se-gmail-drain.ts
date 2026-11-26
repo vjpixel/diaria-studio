@@ -33,7 +33,7 @@
  * cada mensagem é tentada primeiro contra `parseApoioNotificationEmail`
  * (confirmado) e, se não bater, contra `parsePromessaEmail` (promessa).
  * Promessa vira contato PENDENTE (não "apoiando" — quem decide isso é sempre
- * `checkBacker`, ver `scripts/studio-ui/studio-apoios.ts::importPendingApoiadoresFromGmail`)
+ * `checkBacker`, ver `scripts/lib/apoios-data.ts::importPendingApoiadoresFromGmail`)
  * pra que o próximo force-refresh tenha a chance de confirmar a conversão
  * mesmo quando a apoia.se NÃO reenvia um e-mail de "novo apoio" (caso
  * comprovado: Ivan, 260722 — promessa converteu em pagamento sem 2º e-mail).
@@ -119,7 +119,7 @@ const PROMESSA_LINE_RE =
  * Parseia o corpo text/plain de uma notificação "nova promessa" da apoia.se
  * (#3912). Retorna `null` se o corpo não bate com o padrão esperado — nunca
  * lança. Promessa é intencionalmente NÃO tratada como pagamento confirmado:
- * ver `importPendingApoiadoresFromGmail` em `studio-apoios.ts`.
+ * ver `importPendingApoiadoresFromGmail` em `apoios-data.ts`.
  */
 export function parsePromessaEmail(bodyText: string): PromessaNotification | null {
   if (!bodyText) return null;

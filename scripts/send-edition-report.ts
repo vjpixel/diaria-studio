@@ -7,7 +7,7 @@
  *
  * #3714 (decisão do editor, 260720): quando `--out` é passado, o relatório
  * escrito é registrado na superfície de Relatórios do Studio
- * (`scripts/studio-ui/studio-reports.ts::registerReport` via `writeReportFile`
+ * (`scripts/lib/reports-registry.ts::registerReport` via `writeReportFile`
  * — file-based, fail-soft, nunca depende do Studio estar no ar) e a URL sai
  * no summary JSON como `studio_report_url`. **Substitui** o antigo fluxo de
  * o orchestrator repassar o HTML via Gmail MCP `create_draft` — esse call
@@ -49,7 +49,7 @@ import {
   loadDoc,
 } from "./update-stage-status.ts";
 import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
-import { registerReport, reportId } from "./studio-ui/studio-reports.ts"; // #3714
+import { registerReport, reportId } from "./lib/reports-registry.ts"; // #3714
 import {
   STREAK_GOAL,
   computeEditionManualEdits,

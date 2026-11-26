@@ -1,6 +1,6 @@
 // relatorios.js (#3714) — cockpit de Relatórios: lista os relatórios de fim
 // de trabalho (edição diária, overnight, develop, mensal) registrados via
-// `GET /api/reports` (studio-reports.ts), mais recentes no topo. Vanilla JS,
+// `GET /api/reports` (reports-registry.ts), mais recentes no topo. Vanilla JS,
 // sem build step (mesmo princípio de triagem.js/app.js — #3555/#3562).
 //
 // READ-ONLY: só lista + linka pra `GET /relatorios/:id` (abre em nova aba,

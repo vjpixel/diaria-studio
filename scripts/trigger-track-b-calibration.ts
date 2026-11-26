@@ -37,7 +37,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { DEFAULT_LABEL_SOURCE, type CalibrationLabelSource } from "./lib/calibration-labels.ts";
 import { buildPowerReport, CANDIDATE_FEATURES } from "./calibration-power-report.ts";
 import { evaluateCadence, rankQueuedCandidates, type CadenceState, type QueuedCandidate, type RankedCandidate } from "./lib/calibration-cadence-guard.ts";
-import { listReports } from "./studio-ui/studio-reports.ts";
+import { listReports } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 

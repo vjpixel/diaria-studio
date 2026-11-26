@@ -27,10 +27,16 @@
 export const ORCHESTRATOR_FILES = [
   "orchestrator.md",
   "orchestrator-stage-0-preflight.md",
+  // #14030: prosa de fallback do runner e §0-replies fora do caminho padrão.
+  "orchestrator-stage-0-fallback.md",
+  "orchestrator-stage-0-replies.md",
   "orchestrator-stage-1-research.md",
+  "orchestrator-stage-1-fallback.md",
   "orchestrator-stage-2.md",
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
+  // #14033: §4d–§4e (gate humano + sentinel) separados do pré-gate.
+  "orchestrator-stage-4-gate.md",
   "orchestrator-stage-5.md",
   "orchestrator-stage-6.md",
 ] as const;
