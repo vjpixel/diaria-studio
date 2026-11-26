@@ -15,6 +15,7 @@ import {
   formatIntegrityReport,
   packageNameFromPath,
   repairCommand,
+  repairCommandPowerShell,
 } from "../scripts/lib/node-modules-integrity.ts";
 
 const NM = join(tmpdir(), "fake-root-14070", "node_modules");
@@ -67,6 +68,13 @@ describe("repairCommand (#14070)", () => {
       "rm -rf node_modules/@poppinss/dumper node_modules/formatly && npm install",
     );
   });
+  it("forma PowerShell (shell padrão do Neo): Remove-Item com lista por vírgula e `;`", () => {
+    assert.equal(
+      repairCommandPowerShell(["formatly", "@poppinss/dumper", "formatly"]),
+      "Remove-Item -Recurse -Force node_modules\\@poppinss\\dumper, node_modules\\formatly; npm install",
+    );
+    assert.equal(repairCommandPowerShell(["formatly"]), "Remove-Item -Recurse -Force node_modules\\formatly; npm install");
+  });
 });
 
 describe("checkNodeModulesIntegrity — node_modules real em disco (#14070)", () => {
@@ -100,6 +108,10 @@ describe("checkNodeModulesIntegrity — node_modules real em disco (#14070)", ()
     assert.equal(byPkg["@types/only"].kind, "not-importable");
     const report = formatIntegrityReport(verdicts);
     assert.match(report, /rm -rf node_modules\/cjs-half node_modules\/esm-half && npm install/);
+    assert.ok(
+      report.includes("Remove-Item -Recurse -Force node_modules\\cjs-half, node_modules\\esm-half; npm install"),
+      "o relatório traz também a forma PowerShell",
+    );
   });
 
   it("com o arquivo reposto (como o 0 byte de um clone novo), fica íntegro", () => {

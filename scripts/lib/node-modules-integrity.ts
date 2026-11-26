@@ -114,9 +114,24 @@ export function classifyImportProbe(probe: ImportProbe, nodeModulesDir: string):
  * pacote, ele reinstala aquele pacote e deixa o resto como está.
  */
 export function repairCommand(brokenPackages: string[]): string {
-  const uniq = [...new Set(brokenPackages)].sort();
-  const paths = uniq.map((p) => `node_modules/${p}`).join(" ");
+  const paths = uniqueSorted(brokenPackages).map((p) => `node_modules/${p}`).join(" ");
   return `rm -rf ${paths} && npm install`;
+}
+
+/**
+ * Mesmo reparo na sintaxe do PowerShell, o shell padrão do Neo: lá `rm -rf`
+ * não é aceito e `&&` depende da versão. `Remove-Item` recebe a lista
+ * separada por vírgula; `;` encadeia em qualquer versão.
+ */
+export function repairCommandPowerShell(brokenPackages: string[]): string {
+  const paths = uniqueSorted(brokenPackages)
+    .map((p) => `node_modules\\${p.replace("/", "\\")}`)
+    .join(", ");
+  return `Remove-Item -Recurse -Force ${paths}; npm install`;
+}
+
+function uniqueSorted(xs: string[]): string[] {
+  return [...new Set(xs)].sort();
 }
 
 export function formatIntegrityReport(verdicts: ImportVerdict[]): string {
@@ -133,7 +148,9 @@ export function formatIntegrityReport(verdicts: ImportVerdict[]): string {
   if (broken.length > 0) {
     lines.push("");
     lines.push("node_modules com arquivo faltando. Reparo (na raiz do checkout):");
-    lines.push(`  ${repairCommand(broken.map((b) => b.brokenPackage))}`);
+    const pkgs = broken.map((b) => b.brokenPackage);
+    lines.push(`  bash/Git Bash: ${repairCommand(pkgs)}`);
+    lines.push(`  PowerShell:    ${repairCommandPowerShell(pkgs)}`);
     lines.push("Ou reinstalar tudo com `npm ci` (apaga o node_modules antes; ver docs/setup.md).");
   } else {
     lines.push("");
