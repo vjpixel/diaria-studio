@@ -238,8 +238,9 @@ O passo 1 diz o escopo (#14035): COMPLETO, PARCIAL (só as unidades `dN`/`pool`
 que mudaram) ou NENHUMA (não despachar, só o composto). `--merge-partial`
 recusado (exit 4) ou claim que cruza destaques: passo 1 com `--full` e refazer
 completo. Exit 3 = defasado (re-despachar 1 vez); 5 = o autofix quebrou um
-lint (`checks[]`); 7 = JSON do autofix ilegível (bloqueia, re-rodar o
-autofix); `rerender` diz quais previews refazer.
+lint (`checks[]`); 7 = JSON do autofix ilegível, ou autofix que falhou
+depois de gravar o texto (`wrote_before_failure`, #14174) (bloqueia, re-rodar
+o autofix); `rerender` diz quais previews refazer.
 
 Exit 2 = claim `NOT_FOUND_IN_SOURCE` bloqueia; fonte adicional da mesma
 história via `npx tsx scripts/add-destaque-source.ts --edition-dir
