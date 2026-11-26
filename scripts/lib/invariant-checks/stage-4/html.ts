@@ -223,7 +223,8 @@ export function checkKitHtmlSize(editionDir: string): InvariantViolation[] {
 
 /**
  * #6336: audita a base Kit de produção por assinante ATIVO cujo e-mail bate
- * padrão de fixture de teste (`ana@example.com` e vizinhos — ver docstring
+ * padrão de fixture de teste (o endereço de exemplo da `description` da regra
+ * `kit-fixture-audit` em `../stage-4.ts` e vizinhos — ver docstring
  * de `scripts/lib/kit-fixture-patterns.ts`). Achado ao vivo 26/08/2026: uma
  * verificação manual de funil (poll/cursos/reativar) deixou 13 resíduos
  * desse tipo, 2 deles `active` — receberiam a próxima edição pelo Kit, e
