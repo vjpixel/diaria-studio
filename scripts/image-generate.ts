@@ -253,6 +253,20 @@ export function computeStaleDerivedImages(
 }
 
 /**
+ * Arquivos a apagar antes de uma regeneração FORÇADA do 4x5 nativo (#14036).
+ * Pura, sem disco. Com o 2x1 e o 4x5 em paralelo, o 2x1 regerado não purga
+ * mais o nativo (`--keep-4x5-nativo`); quem regera o nativo é o `--ratio 4x5
+ * --force`. Se essa geração falhar com o nativo antigo ainda no disco, um
+ * re-run sem `--force` pula por "já existe" e o card sai com a arte do prompt
+ * anterior. Apagar antes reproduz a ordem antiga (o 2x1 apagava, o 4x5
+ * recriava): falhou, o card cai no fallback 2:1. Só o 4x5; master e 1x1 são
+ * manuais e mantêm o comportamento de sempre.
+ */
+export function forcedRegenPurgePaths(ratio: ImageRatio, force: boolean, outExists: boolean, outJpgPath: string): string[] {
+  return ratio === "4x5" && force && outExists ? [outJpgPath] : [];
+}
+
+/**
  * Path do JSON de prompt que o gerador lê (#14036). O 2x1 (default) e o 1x1
  * mantêm o nome histórico `04-{d}-sd-prompt.json` (é o que o invariante do
  * Stage 3 e os scripts de swap/reorder procuram); 4x5 e master gravam um
@@ -422,6 +436,13 @@ function main() {
       console.error(`Imagem ${outJpgPath} já existe — use --force pra regenerar.`);
       process.stdout.write(outJpgPath + "\n");
       process.exit(0);
+    }
+    // #14036: regeneração forçada do nativo apaga o antigo ANTES do backend.
+    // Se a geração falhar, nenhuma arte velha fica no disco para um re-run sem
+    // --force reaproveitar em silêncio (o card cai no fallback 2:1).
+    for (const staleP of forcedRegenPurgePaths(ratio, force, outExists, outJpgPath)) {
+      console.error(`image-generate: apagando ${staleP} — regeneração forçada do 4x5 nativo (#14036).`);
+      unlinkSync(staleP);
     }
   }
 

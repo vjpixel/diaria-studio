@@ -21,6 +21,7 @@ import {
   staleDerivedImagePaths,
   resolveWideImageIntegrity,
   sdPromptPathFor,
+  forcedRegenPurgePaths,
 } from "../scripts/image-generate.ts";
 
 describe("staleDerivedImagePaths — paths dos formatos derivados por destaque (#6010)", () => {
@@ -85,5 +86,16 @@ describe("geração em paralelo do 2x1 e do 4x5 (#14036)", () => {
     assert.notEqual(p2, p45);
     assert.equal(sdPromptPathFor("x/", "d2", "master"), "x/04-d2-master-sd-prompt.json");
     assert.equal(sdPromptPathFor("x/", "d2", "1x1"), "x/04-d2-sd-prompt.json");
+  });
+
+  it("4x5 --force apaga o nativo antigo antes do backend: falha na geração não deixa a arte velha para um re-run sem --force", () => {
+    const nativo = "data/editions/260824/04-d1-4x5-nativo.jpg";
+    // Cenário do finding: 2x1 regerado com --keep-4x5-nativo, 4x5 forçado.
+    // Sem a purga, a falha deixava o nativo antigo e o re-run pulava por "já existe".
+    assert.deepEqual(forcedRegenPurgePaths("4x5", true, true, nativo), [nativo]);
+    assert.deepEqual(forcedRegenPurgePaths("4x5", true, false, nativo), []); // nada a apagar
+    assert.deepEqual(forcedRegenPurgePaths("4x5", false, true, nativo), []); // sem --force: skip-if-exists de sempre
+    assert.deepEqual(forcedRegenPurgePaths("master", true, true, "x/04-d1-master.jpg"), []);
+    assert.deepEqual(forcedRegenPurgePaths("1x1", true, true, "x/04-d1-1x1.jpg"), []);
   });
 });
