@@ -32,7 +32,7 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 
 ## O que faz
 
-Você (top-level Claude Code) **lê `.claude/agents/orchestrator-stage-4.md` como playbook e executa diretamente**. As etapas são:
+Você (top-level Claude Code) **lê `.claude/agents/orchestrator-stage-4.md` (pré-gate, §4a–§4c) como playbook e executa diretamente; ao chegar no gate, lê `.claude/agents/orchestrator-stage-4-gate.md` (§4d–§4e e fronteira pós-gate, #14033) e, no loop `ajustar`, consulta o cartão `context/stage-4-gate-receitas.md` em vez de reler os playbooks**. As etapas são:
 
 ### Etapa 4a. Pré-requisitos + sync
 
@@ -42,7 +42,7 @@ Verificar sentinel Stage 3, marcar Stage 4 `running`, sync pull.
 
 - capture-livros-promo (screenshot, opcional)
 - upload-images-public (newsletter + social)
-- Pre-render newsletter HTML (beehiiv-playbook steps 1-5 sem dispatch)
+- Pre-render newsletter HTML (`context/publishers/newsletter-prerender.md` §1.1-1.4, #14048)
 - Pre-render social preview HTML
 - close-poll (set gabarito)
 - check-invariants --stage 4
@@ -53,7 +53,7 @@ Coleta destaques (D1/D2/D3 com títulos e URLs), verifica acessibilidade, roda l
 
 Respostas aceitas: `sim` (aprovar), `editar` (halt para edição local/Studio, re-rodar), `ajustar` (edição inline no chat, volta ao gate), `abortar` (encerrar sem sentinel).
 
-**Reordenação/swap de destaques dentro do `ajustar` usa SEMPRE `npx tsx scripts/reorder-destaques.ts` — nunca rename manual de `04-d{N}-*` em `data/` (#8679).** Ver `.claude/agents/orchestrator-stage-4.md` §4d.1 passo 4 para o fluxo completo (post_pixel, ratio de imagem) e o porquê: `data/` sincroniza por OneDrive, e um rename manual em rodízio pode ser silenciosamente descartado pelo provedor de sync minutos depois.
+**Reordenação/swap de destaques dentro do `ajustar` usa SEMPRE `npx tsx scripts/reorder-destaques.ts` — nunca rename manual de `04-d{N}-*` em `data/` (#8679).** Ver `.claude/agents/orchestrator-stage-4-gate.md` §4d.1 passo 4 para o fluxo completo (post_pixel, ratio de imagem) e o porquê: `data/` sincroniza por OneDrive, e um rename manual em rodízio pode ser silenciosamente descartado pelo provedor de sync minutos depois.
 
 **Mover item ENTRE seções do pool (ex.: RADAR → USE MELHOR) usa `npx tsx scripts/move-pool-item.ts --edition-dir {EDITION_DIR} --url {url} --to {lancamento|radar|use_melhor|video} [--tempo N]` (#9680)** — atualiza `02-reviewed.md`, `01-approved.json` e `01-approved-capped.json` (senão `url-bucket` reprova) e a contagem da intro; indo pro USE MELHOR sem "(N min)" exige `--tempo` com os minutos que o editor informar (o script não estima). Seguir o `next_steps` do JSON — inclusive a re-seleção do 4º post `## um` quando o item escolhido saiu do USE MELHOR. **Remover item do pool (corte, não mudança de seção) usa `npx tsx scripts/remove-pool-item.ts --edition-dir {EDITION_DIR} --url {url}` (#10598)** — tira o item de `02-reviewed.md`, recalcula a intro "selecionei os N" e remove a seção que ficar vazia; `01-approved.json` fica intacto de propósito (#8121 `approved-item-removal`).
 

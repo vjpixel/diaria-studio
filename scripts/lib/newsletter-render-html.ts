@@ -2101,7 +2101,7 @@ export function buildWhatsappShareBlock(d1Title: string, editionUrl: string): st
 /**
  * #4570: URL da EDIÇÃO (não mais a home) com UTM anexado — mesmo algoritmo
  * `seoSlug(title)` usado pelo playbook de publicação pra setar o slug SEO do
- * post (`context/publishers/beehiiv-playbook.md` §4a-bis) e por
+ * post (`docs/archive/beehiiv-playbook.md` §4a-bis) e por
  * `scripts/resolve-edition-url.ts` pra `{edition_url}` do social — reusa
  * `deriveEditionUrl`/`appendUtmToEditionUrl` (`scripts/lib/edition-url.ts`,
  * #2454/#4295) em vez de duplicar a construção de URL. `edition` (AAMMDD)

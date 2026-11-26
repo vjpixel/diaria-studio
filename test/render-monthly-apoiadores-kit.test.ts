@@ -1,7 +1,7 @@
 /**
  * test/render-monthly-apoiadores-kit.test.ts (#7633)
  *
- * Espelho de `test/render-monthly-apoiadores-brevo.test.ts` para o canal Kit,
+ * Espelho de `test/render-monthly-apoiadores-brevo.test.ts` (apagado no #14049) para o canal Kit,
  * e existe pelo mesmo motivo concreto que aquele: no #4482/#4510 um review
  * achou que `buildRelink`/`relinkMonthlyEditionHtml` hardcodavam
  * `utm_source=clarice` nos links de destaque relinkados MESMO na variante

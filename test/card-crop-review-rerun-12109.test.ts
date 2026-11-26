@@ -29,6 +29,7 @@ import {
   partialCropReviewOutPath,
 } from "../scripts/run-image-crop-reviewer.ts";
 import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const projectRoot = join(import.meta.dirname, "..");
 
@@ -350,7 +351,7 @@ describe("gen-social-card-4x5.ts sinaliza a re-revisão do card recomposto (#121
 
 describe("playbook do Stage 4 consome o sinal (#12109)", () => {
   it("§4d.1a manda seguir crop_review_rerun com out_path parcial antes de aceitar sim", () => {
-    const md = readFileSync(join(projectRoot, ".claude", "agents", "orchestrator-stage-4.md"), "utf8");
+    const md = readStage4Playbook();
     const i = md.indexOf("**Card 4:5 recomposto sem arte nova (troca de título, #12109).**");
     assert.ok(i > md.indexOf("### 4d.1a"), "parágrafo vive em §4d.1a, não em §4c.6 (fact-check)");
     const para = md.slice(i, md.indexOf("\n", i));

@@ -6,11 +6,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
-const md = readFileSync(
-  new URL("../.claude/agents/orchestrator-stage-4.md", import.meta.url),
-  "utf8",
-);
+const md = readStage4Playbook();
 
 describe("orchestrator-stage-4 §4e sentinel (#10263)", () => {
   it("exit 1 do sentinel por invariante volta ao gate, nunca warn", () => {

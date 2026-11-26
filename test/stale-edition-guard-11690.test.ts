@@ -14,6 +14,7 @@ import { runStaleEditionGuard } from "../scripts/stale-edition-guard.ts";
 import {
   acquireEditionLock, decideEditionLock, EDITION_LOCK_TTL_MS, formatLockAge, readEditionLock, releaseEditionLock,
 } from "../scripts/lib/edition-lock.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lock = (host: string, stage = 4) => ({
@@ -139,7 +140,7 @@ describe("tombstone de conclusão (release --complete-stage)", () => {
 
 describe("playbooks guardam re-run após aprovação remota (#11690)", () => {
   it("Stage 4 preserva tombstone no release e Stage 5 guarda outputs ausentes", () => {
-    const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const stage4 = readStage4Playbook();
     const stage5 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-5.md"), "utf8");
     assert.match(stage4, /edition-lock\.ts release --edition-dir \{EDITION_DIR\} --complete-stage 4/);
     assert.match(stage5, /stale-edition-guard\.ts check --edition-dir \{EDITION_DIR\} --step 4 --caller-stage 5 --outputs-missing/);
@@ -210,7 +211,7 @@ describe("follow-ups de review (#11697)", () => {
     assert.equal(run([]).status === 0, false);
   });
   it("playbooks: exit ≠ 0 é halt, --force documentado, guard fora do release do §4a, Stage 5 exit 1 e 2 guardados", () => {
-    const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const stage4 = readStage4Playbook();
     const stage5 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-5.md"), "utf8");
     assert.match(stage4, /Qualquer exit ≠ 0 do guard/);
     assert.match(stage4, /halt do guard #11690, que não escreve nada/);

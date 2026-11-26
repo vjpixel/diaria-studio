@@ -330,7 +330,8 @@ import { fileURLToPath } from "node:url";
 import { availableParallelism, constants as osConstants, setPriority } from "node:os";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { createHash } from "node:crypto";
 import { listTestFiles } from "./assert-test-discovery.ts";
 import { isMainModule, getArg } from "./lib/cli-args.ts";
 
@@ -558,6 +559,71 @@ export function chunk<T>(items: T[], size: number): T[][] {
     out.push(items.slice(i, i + size));
   }
   return out;
+}
+
+/**
+ * #14003 — shard da suíte entre vários runners do CI.
+ *
+ * O `ci.yml` roda o `npm test` em N jobs de `matrix`; cada job passa
+ * `RUN_TESTS_SHARD_INDEX` (1..N) e `RUN_TESTS_SHARD_TOTAL` (N), e este
+ * script roda só a fatia daquele índice. A partição é por HASH do caminho
+ * relativo do arquivo (separador `/`), não pela posição na lista: um arquivo
+ * novo só cai num shard e não desloca os outros, e a fatia de um arquivo é a
+ * mesma em qualquer máquina ou checkout. Cada arquivo cai em exatamente um
+ * shard (a função é total: todo hash tem um resto `mod N`), então a união
+ * das N fatias é a suíte inteira, sem sobreposição. O preço é o balanceamento
+ * só aproximado por contagem de arquivos, não por tempo.
+ *
+ * Sem as duas variáveis, roda a suíte inteira (uso local e `weekly-e2e.yml`).
+ * Só uma das duas, valor não inteiro ou índice fora de 1..N é erro: um shard
+ * mal configurado que rodasse tudo, ou nada, em silêncio é exatamente a
+ * classe do #6991 (gate verde sem a cobertura que diz ter).
+ */
+export interface ShardSpec {
+  /** 1-based. */
+  index: number;
+  total: number;
+}
+
+const SHARD_INT_RE = /^\d+$/;
+
+/** Pure: lê o shard do ambiente. `null` = sem shard (suíte inteira).
+ *  Lança em configuração parcial ou inválida. */
+export function parseShardSpec(env: NodeJS.ProcessEnv = process.env): ShardSpec | null {
+  const rawIndex = env.RUN_TESTS_SHARD_INDEX?.trim() ?? "";
+  const rawTotal = env.RUN_TESTS_SHARD_TOTAL?.trim() ?? "";
+  if (rawIndex === "" && rawTotal === "") return null;
+  if (rawIndex === "" || rawTotal === "") {
+    throw new Error(
+      `RUN_TESTS_SHARD_INDEX e RUN_TESTS_SHARD_TOTAL vão juntos (recebido INDEX=${JSON.stringify(rawIndex)}, TOTAL=${JSON.stringify(rawTotal)}) (#14003)`,
+    );
+  }
+  if (!SHARD_INT_RE.test(rawIndex) || !SHARD_INT_RE.test(rawTotal)) {
+    throw new Error(`shard inválido: INDEX=${rawIndex} TOTAL=${rawTotal} — os dois precisam ser inteiros (#14003)`);
+  }
+  const index = Number(rawIndex);
+  const total = Number(rawTotal);
+  if (total < 1 || index < 1 || index > total) {
+    throw new Error(`shard inválido: INDEX=${index} fora de 1..${total} (#14003)`);
+  }
+  return { index, total };
+}
+
+/** Pure: shard (1-based) de um caminho relativo, estável por hash. */
+export function shardOfPath(relPath: string, total: number): number {
+  if (!Number.isInteger(total) || total < 1) throw new Error(`shardOfPath: total deve ser inteiro >= 1, recebeu ${total}`);
+  // `\` → `/`: o `relative()` do Windows usa `\`, e o hash tem que dar o
+  // mesmo shard nas duas plataformas.
+  const normalized = relPath.replace(/\\/g, "/");
+  const digest = createHash("sha1").update(normalized).digest();
+  return (digest.readUInt32BE(0) % total) + 1;
+}
+
+/** Pure: filtra `files` (absolutos, sob `root`) para a fatia de `spec`,
+ *  preservando a ordem original. `spec` nulo devolve a lista inteira. */
+export function selectShardFiles(files: string[], root: string, spec: ShardSpec | null): string[] {
+  if (spec === null) return files;
+  return files.filter((f) => shardOfPath(relative(root, f), spec.total) === spec.index);
 }
 
 export interface RunTestsOptions {
@@ -1977,7 +2043,24 @@ if (isMainModule(import.meta.url)) {
     runAsWorker(workerPayloadPath);
   } else {
     const root = fileURLToPath(new URL("..", import.meta.url));
-    const files = listTestFiles(root);
+    const allFiles = listTestFiles(root);
+    // #14003: no CI cada job da matrix roda só a sua fatia.
+    let shard: ShardSpec | null = null;
+    try {
+      shard = parseShardSpec(process.env);
+    } catch (err) {
+      console.error(`run-tests: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    const files = selectShardFiles(allFiles, root, shard);
+    if (shard !== null) {
+      process.stderr.write(`run-tests: shard ${shard.index}/${shard.total} — ${files.length} de ${allFiles.length} arquivos (#14003).\n`);
+      if (files.length === 0 && allFiles.length > 0) {
+        // Fatia vazia com suíte não vazia: o job sairia verde sem rodar nada.
+        console.error(`run-tests: shard ${shard.index}/${shard.total} ficou sem nenhum arquivo — total de shards alto demais? (#14003)`);
+        process.exit(1);
+      }
+    }
     const extraArgs = process.argv.slice(2);
     // #6822: `process.exit(code)` síncrono, chamado logo após o último
     // `stdout.write`/`stderr.write`, pode truncar a cauda do buffer se a
