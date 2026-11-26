@@ -113,7 +113,8 @@ export interface Signal {
     | "recurring_editor_request"
     | "session1_handoff"
     | "writer_source_text_gap"
-    | "clarice_pending_at_publish";
+    | "clarice_pending_at_publish"
+    | "kit_schedule_network";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -1831,6 +1832,59 @@ export function signalsFromPublicImagesR2Inert(lines: string[], edition: string 
 }
 
 // ===========================================================================
+// Signal 5d (#13982): Schedule do Kit recusado por rede/Kit indisponível
+// ===========================================================================
+
+/** Mensagem que o §6d-kit loga depois do `schedule-newsletter-kit.ts` com exit 8. */
+export const KIT_SCHEDULE_NETWORK_LOG_MESSAGE = "newsletter kit stage6 schedule: exit 8";
+
+/**
+ * Lê os eventos do §6d-kit em que o `schedule-newsletter-kit.ts` saiu com
+ * exit 8 (`reason_kind: "network"`): a listagem de segmentos do Kit falhou por
+ * rede/Kit fora do ar e o agendamento foi recusado (fail-closed). Mesmo que o
+ * `retry` seguinte tenha agendado, a janela de indisponibilidade fica
+ * registrada. Casa pela mensagem OU pelo `details` (o JSON do script).
+ * Incondicional (mesmo racional do 5b). Várias tentativas viram um signal só.
+ */
+export function signalsFromKitScheduleNetwork(lines: string[], edition: string | null): Signal[] {
+  let count = 0;
+  const at: string[] = [];
+  let sampleReason = "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: LogEntry;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (edition && parsed.edition && parsed.edition !== edition) continue;
+    if (edition && !parsed.edition) continue;
+    const d = parsed.details;
+    const byMessage = (parsed.message ?? "").startsWith(KIT_SCHEDULE_NETWORK_LOG_MESSAGE);
+    const byDetails = d?.reason_kind === "network" && d?.code === 8;
+    if (!byMessage && !byDetails) continue;
+    count++;
+    if (!sampleReason && typeof d?.reason === "string") sampleReason = d.reason;
+    if (typeof parsed.timestamp === "string" && at.length < 5) at.push(parsed.timestamp);
+  }
+  if (count === 0) return [];
+  return [
+    {
+      kind: "kit_schedule_network",
+      severity: "low",
+      title: `Schedule do Kit recusado ${count}× por rede/Kit indisponível ao listar segmentos (#13982)`,
+      details: { count, occurrences: at, sample_reason: sampleReason || null },
+      suggested_action:
+        "Falha transitória (fail-closed, nada foi agendado nessas tentativas). Se repetir em várias edições, " +
+        "medir a disponibilidade da API do Kit nesse horário ou alongar `DIARIA_AUDIENCE_SEGMENTS_RETRY` " +
+        "(`scripts/lib/kit-diaria-audience.ts`).",
+      related_issue: "#13982",
+    },
+  ];
+}
+
+// ===========================================================================
 // Signal 5 (opt-in via --include-test-warnings, #519): generic error/warn
 // events na edição agrupados por agent + mensagem normalizada.
 //
@@ -1880,6 +1934,8 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   new RegExp(`^${RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX}`, "i"),
   // #12194 — R2 de imagens inerte, já capturado por signalsFromPublicImagesR2Inert.
   new RegExp(`^${PUBLIC_IMAGES_R2_INERT_LOG_PREFIX}`, "i"),
+  // #13982 — exit 8 do Schedule do Kit, já capturado por signalsFromKitScheduleNetwork.
+  new RegExp(`^${KIT_SCHEDULE_NETWORK_LOG_MESSAGE}`, "i"),
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
@@ -2152,6 +2208,8 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       signals.push(...signalsFromPlaceholderGuardWarnings(lines, edition));
       // Signal 5c (#12194): R2 de imagens inerte — incondicional, mesmo racional do 5b.
       signals.push(...signalsFromPublicImagesR2Inert(lines, edition));
+      // Signal 5d (#13982): Schedule do Kit recusado por rede — incondicional, mesmo racional do 5b.
+      signals.push(...signalsFromKitScheduleNetwork(lines, edition));
       // Signal 6b (#1210 reopen): runtime_fix_lite — mesmo racional do 5b
       // acima, incondicional por design (o caminho leve só cumpre a promessa
       // de "sempre vira signal" se não depender de --include-test-warnings).
