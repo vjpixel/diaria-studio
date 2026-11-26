@@ -52,7 +52,8 @@
  *
  * A conta `brevo_diaria` hospeda MAIS de uma lista — pelo menos
  * `brevo_diaria.list_id` (reativação Pending, `platform.config.json`),
- * `brevo_apoiadores.list_id` (digest mensal) e a lista dinâmica de
+ * a lista 8 do digest mensal dos apoiadores (era `brevo_apoiadores.list_id`;
+ * a chave saiu do config no #14049, a lista segue na conta) e a lista dinâmica de
  * onboarding D+10 (`onboarding-welcome-run.ts` § `ensureD10List`) — a lista
  * pode crescer, não é um trio fechado. `GET /v3/contacts` (sem filtro)
  * enumera a conta INTEIRA — misturaria todos esses públicos como se fossem

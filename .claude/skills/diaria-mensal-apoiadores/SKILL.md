@@ -749,8 +749,8 @@ do plano Scale, e nunca chegou a enviar); esta é consolidação:
 `publishing.newsletter.backend` virou `"kit"` (#7388) e a base inteira migrou
 (#7386). **O que a troca custa (#7655):** a Brevo enviou 1 edição real, e
 comparar com ela exige buscar os números na Brevo (campanha 12). Os scripts
-`*-apoiadores-brevo.ts` e a chave `brevo_apoiadores` continuam no repo;
-quando forem removidos, o registro daquele envio precisa sobreviver.
+`*-apoiadores-brevo.ts` e a chave `brevo_apoiadores` saíram do repo no
+#14049; o registro daquele envio ficou em `docs/brevo-apoiadores-registro.md`.
 
 ## ⚠️ Audiência é TAG, nunca segmento
 

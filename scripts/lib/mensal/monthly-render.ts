@@ -176,7 +176,7 @@ export interface MonthlyUtmProfile {
    * apoiadores, não assinantes Clarice/Brevo) misturava votos no MESMO
    * leaderboard da Clarice. Cada perfil aponta pro seu próprio `Brand`
    * (`CLARICE_UTM_PROFILE` → `"clarice"`; `APOIADORES_BREVO_UTM_PROFILE`,
-   * `monthly-apoiadores-brevo-render.ts` → `"mensal-apoiadores-brevo"`,
+   * `lib/shared/utm-registry.ts` desde o #14049 → `"mensal-apoiadores-brevo"`,
    * registrado em `BRAND_INFO` com `leaderboardPeriod: "year"` — OBRIGATÓRIO
    * pra esse brand aceitar edição em formato de ciclo, ver comentário lá;
    * `BEEHIIV_UTM_PROFILE`, o perfil original que motivou este design,
@@ -1715,7 +1715,7 @@ export function livroAbreComParagrafoDeLink(chunk: string): boolean {
  *   "Criada com ComfyUI"). Default: "Criada com IA". Lida de platform.config.json pelo caller.
  * @param utmProfile #4482 — perfil de UTM (source/medium/campaign builder) injetado em todo
  *   link do host de marca. Default `CLARICE_UTM_PROFILE` (comportamento histórico, #2975/#4040).
- *   A variante Brevo apoiadores (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`) passa
+ *   A variante Brevo apoiadores (`monthly-apoiadores-brevo-render.ts`, apagado no #14049) passava
  *   `APOIADORES_BREVO_UTM_PROFILE` (sucessora de `BEEHIIV_UTM_PROFILE`, removida por #7121).
  */
 export function draftToEmail(

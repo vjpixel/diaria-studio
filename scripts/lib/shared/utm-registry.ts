@@ -86,8 +86,8 @@ export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
  * ao vivo — o envio Beehiiv nunca saiu do estágio de draft órfão, #4572): os
  * 3 são audiência/canal distintos e misturar a atribuição refaria o mesmo
  * problema que o #2975 original corrigiu.
- * Consumido por `APOIADORES_BREVO_UTM_PROFILE` em
- * `scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`.
+ * Consumido por `APOIADORES_BREVO_UTM_PROFILE` abaixo (neste arquivo desde o
+ * #14049, quando o render Brevo dos apoiadores foi apagado).
  */
 export const MENSAL_APOIADORES_BREVO_UTM_SOURCE = "mensal-apoiadores-brevo";
 export const MENSAL_APOIADORES_BREVO_UTM_MEDIUM = "email";
@@ -196,6 +196,29 @@ export function buildMensalApoiadoresBrevoCampaign(ciclo: string, posicao: strin
   const p = slugifySecao(posicao);
   return `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-${ciclo}-${p}`;
 }
+
+/**
+ * Perfil de UTM da variante Brevo do envio apoiadores (#4593), canal
+ * aposentado: o render que o usava (`monthly-apoiadores-brevo-render.ts`) foi
+ * apagado no #14049 e o perfil desceu pra cá, ao lado da entrada
+ * `mensal-apoiadores-brevo` de `UTM_EMITTERS`, que fica pelos cliques e votos
+ * históricos do envio de 04/08/2026 (`docs/brevo-apoiadores-registro.md`).
+ * Os testes de isolamento entre perfis mensais e do contrato com o
+ * `BRAND_INFO` do worker poll ainda o leem, porque o brand
+ * `mensal-apoiadores-brevo` segue no leaderboard.
+ *
+ * Mesma forma de `MonthlyUtmProfile` (`lib/mensal/monthly-render.ts`), sem
+ * importar o tipo: `lib/shared/` não importa de `lib/mensal/`
+ * (`test/lib-boundary.test.ts`). Merge tag Brevo `{{ contact.EMAIL }}` no
+ * voto, `pollBrand` isolado da audiência Clarice.
+ */
+export const APOIADORES_BREVO_UTM_PROFILE = {
+  source: MENSAL_APOIADORES_BREVO_UTM_SOURCE,
+  medium: MENSAL_APOIADORES_BREVO_UTM_MEDIUM,
+  buildCampaign: buildMensalApoiadoresBrevoCampaign,
+  pollMergeTag: "{{ contact.EMAIL }}",
+  pollBrand: "mensal-apoiadores-brevo",
+} as const;
 
 /**
  * Compõe o `utm_campaign` da variante Kit do envio extra pra apoiadores
@@ -1183,7 +1206,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     source: MENSAL_APOIADORES_BREVO_UTM_SOURCE,
     medium: MENSAL_APOIADORES_BREVO_UTM_MEDIUM,
     campaignPattern: `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-{ciclo}-{posicao}`,
-    originFile: "scripts/lib/mensal/monthly-apoiadores-brevo-render.ts",
+    originFile: "scripts/lib/shared/utm-registry.ts", // #14049: o render Brevo foi apagado; o perfil mora aqui
     description:
       "Envio EXTRA do digest mensal pra apoiadores Conselho/Núcleo via Brevo (#4572/#4593) — " +
       "sucessor do canal Beehiiv ('mensal-beehiiv' acima, aposentado sem nunca ter enviado ao " +

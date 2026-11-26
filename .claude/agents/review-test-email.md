@@ -191,7 +191,7 @@ O conteudo do email (via Gmail MCP) contem o resultado final que o leitor vera �
 >    query (query curta ~8s, mais longa/específica ~15s). Reproduzido ao
 >    vivo: clique real + `type`, seguido de **espera de pelo menos 10s antes
 >    da 1ª checagem**, insistindo até ~20s se ainda vazio, faz a lista
->    renderizar normalmente (ver `beehiiv-playbook.md` §7 pro procedimento
+>    renderizar normalmente (ver `docs/archive/beehiiv-playbook.md` §7 pro procedimento
 >    completo). Só depois de ~20s sem nenhum resultado é sinal de regressão
 >    nova — reabrir #6608 com essa evidência (query usada + tempo esperado).
 >    `--send-mode generic` continua existindo como fallback só pra quando não

@@ -3,7 +3,7 @@
  *
  * Dimensão fixa da capa 2:1 gerada pelo pipeline diário (`scripts/image-generate.ts`,
  * saída D1 `04-d1-2x1.jpg` — sempre 1600×800). É essa mesma imagem que vira
- * `thumbnail_url` do post na Beehiiv via upload (#2341, `beehiiv-cover-upload.ts`)
+ * `thumbnail_url` do post na Beehiiv via upload (#2341, antiga `beehiiv-cover-upload.ts`, removida no #14048)
  * — o Beehiiv não expõe dimensão de imagem na API, então quem consome
  * `coverImageUrl` (via `titles-cache.json`, ver `generate-arquivo-titles.ts`)
  * pra montar `og:image:width`/`og:image:height` assume este valor fixo em

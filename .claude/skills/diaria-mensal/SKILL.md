@@ -900,16 +900,17 @@ convergida com quem tem nível Mantenedor/Patrono por
 membresia de segmento do Kit não é legível pela API (`segment_id` é ignorado
 em silêncio nas leituras), então segmento seria enviar sem poder conferir a
 audiência. Os scripts `*-apoiadores-brevo.ts` e a chave `brevo_apoiadores`
-seguem no repo até o 1º envio Kit real. O canal ORIGINAL era Beehiiv, mas o
+saíram do repo no #14049 (registro do envio de 04/08 em
+`docs/brevo-apoiadores-registro.md`). O canal ORIGINAL era Beehiiv, mas o
 mecanismo de audiência multi-segmento ("Include and exclude segments") ficou
 bloqueado atrás do plano Scale (workspace é Launch/free, confirmado ao vivo
 no #4572/260804). **#7121 (260902): `scripts/render-monthly-beehiiv.ts`
 foi removido** (sem consumidor de runtime — `readPublicImages`/`EXPECTED_IMAGE_KEYS`/
-`missingImageKeys`, canal-agnósticas, migraram pra `scripts/render-monthly-apoiadores-brevo.ts`);
+`missingImageKeys`, canal-agnósticas, migraram pra `scripts/render-monthly-apoiadores-brevo.ts` e, desde o #14049, moram em `scripts/lib/mensal/monthly-public-images.ts`);
 `scripts/lib/mensal/monthly-draft-filter.ts` continua no repo, mas perdeu
 `draftToEmailBeehiiv`/`BEEHIIV_UTM_PROFILE` (idem, sem consumidor) — o que
 sobra (`filterDraftForApoiadores`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
-NÃO é órfão: é reusado sem modificação pelo render Brevo real acima.
+NÃO é órfão: é reusado sem modificação pelo render Kit (e antes pelo render Brevo).
 
 Resumo das decisões de produto (issue #4482, sessão develop 260802b/260803,
 não reabertas pela migração de canal): cadência = envio EXTRA num dia sem
