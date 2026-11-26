@@ -1100,10 +1100,10 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/retro-semanal-staleness-alarm.ts" }],
     logPath: "weekly/.retro-semanal-staleness-alarm.log",
     // Sábado 07:00 BRT, não 09:00 como a issue sugeria de exemplo: durante o
-    // teste rotativo (#10305) o carrossel de sábado pode cair em 08:00
-    // (`publishing.social.rotation.weekend_candidates`), e 09:00 avisaria
-    // depois do slot. 07:00 deixa 1h antes do candidato mais cedo e 4h antes
-    // do 11:00 padrão. Slot livre no sábado (04:30 Hotmart-Vendas-Sync,
+    // teste rotativo (#10305, encerrado em 25/11/2026) o carrossel de sábado
+    // podia cair em 08:00 (`publishing.social.rotation.weekend_candidates`),
+    // e 09:00 avisaria depois do slot. Com a grade fixa o sábado sai às 19:00
+    // (`DEFAULT_WEEKLY_CAROUSEL_TIME`), então 07:00 sobra com folga. Slot livre no sábado (04:30 Hotmart-Vendas-Sync,
     // 03:40 Gc-Data-Dir-Weekly — nada às 07:00).
     schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 7, minute: 0 },
     // Sem guard de `requiredFile`: store ausente é justamente o achado; o

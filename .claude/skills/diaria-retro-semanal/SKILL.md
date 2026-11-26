@@ -17,16 +17,14 @@ não como etapa do pipeline diário.
 
 | Modo | Conteúdo | Seleção | Publica |
 |---|---|---|---|
-| `highlights` | Os 5 D1 da semana | Ordem cronológica, SEM ranking por clique — não depende de dado de clique nenhum | **Sábado** (o próprio `AAMMDD-do-sabado`), 11:00 |
-| `clicked` | Os 5 itens mais clicados da semana (D1/D2/D3/RADAR) | Ranking por taxa de clique verificado, ver `weekly-instagram-select.ts` | **Domingo** seguinte, 11:00 |
+| `highlights` | Os 5 D1 da semana | Ordem cronológica, SEM ranking por clique — não depende de dado de clique nenhum | **Sábado** (o próprio `AAMMDD-do-sabado`), 19:00 |
+| `clicked` | Os 5 itens mais clicados da semana (D1/D2/D3/RADAR) | Ranking por taxa de clique verificado, ver `weekly-instagram-select.ts` | **Domingo** seguinte, 19:00 |
 
-**Horário durante o teste rotativo (#10305):** dentro da janela de
-`publishing.social.rotation`, sem `--time` explícito, sábado e domingo
-alternam `weekend_candidates` semana a semana (na mesma semana os dois dias
-caem em horários diferentes) — o 11:00 da tabela vale fora da janela. O
-script imprime o horário escolhido no stderr. Depois de agendar, registre:
-`npx tsx scripts/social-schedule-rotation.ts --record --date {AAMMDD-do-sabado} --kind weekend`
-e o mesmo com a data do domingo.
+**Horário fixo (#10305):** sábado e domingo às 19:00 BRT
+(`DEFAULT_WEEKLY_CAROUSEL_TIME`), decisão do editor de 25/11/2026 ao fim do
+teste rotativo, que alternava `weekend_candidates` semana a semana. Com
+`publishing.social.rotation.enabled: false` não há registro de fim de semana
+a gravar; `--time` explícito continua sobrepondo o horário.
 
 **Sem `--mode` explícito, a skill roda os DOIS (#5903)** — ver "Argumentos"
 abaixo. `clicked` isolado só é o default de quem chama
@@ -310,7 +308,7 @@ Não lê edição nem cache: só calcula o horário de cada modo contra o relóg
 e imprime `{saturday, now, slots: [{mode, scheduledAt, status,
 minutesFromNow, advice}]}`. Sai **0** com todos os slots `ok` e **2** com
 algum `expired` (já passou) ou `too-soon` (menos de 10min, margem da Graph
-API). Invocação tardia no sábado (depois das 11:00) cai aqui no
+API). Invocação tardia no sábado (depois das 19:00) cai aqui no
 `highlights`. Antes do #10389 isso só aparecia como erro no `--images-only`
 do Passo 2a, depois do Passo 1 e do preview.
 

@@ -29,6 +29,7 @@
  * Exit code: sempre 0 (relatório, não guard — nunca bloqueia nada).
  */
 
+import { allRows } from "./lib/sqlite-rows.ts";
 import { existsSync } from "node:fs";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
@@ -72,7 +73,7 @@ function main(): void {
   const db = openClariceDb(dbPath);
   let result: CorruptedNameAuditResult;
   try {
-    const rows = db.prepare("SELECT email, name FROM clarice_users").all() as unknown as CorruptedNameAuditRow[];
+    const rows = allRows<CorruptedNameAuditRow>(db.prepare("SELECT email, name FROM clarice_users"));
     result = auditCorruptedNames(rows, includeEmails);
   } finally {
     db.close();

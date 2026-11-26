@@ -23,7 +23,7 @@
  * texto/item — nem a capa é usada.
  *
  * Horário: `publishing.social.use_melhor_time` (decisão do editor de
- * 04/10/2026, slot único nas 5 redes; 07:45 BRT desde 05/10/2026), aplicado por
+ * 04/10/2026, slot único nas 5 redes; 09:00 BRT desde 25/11/2026, #10305; antes 07:45), aplicado por
  * `computeScheduledAt({ destaque: "um" })` em `compute-social-schedule.ts`.
  */
 

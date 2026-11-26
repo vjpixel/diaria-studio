@@ -68,26 +68,26 @@ describe("resolveArtigoEspecialScheduledAt (#5979)", () => {
     assert.equal(iso, "2026-09-02T17:30:00-03:00");
   });
 
-  it("default: D+1 09:00 BRT (pagina) a partir de 'now' (#6014 item 1)", () => {
-    // 23/ago/2026 (domingo) 10:00 BRT -> D+1 = 24/ago 09:00 BRT.
+  it("default: D+1 09:30 BRT (pagina) a partir de 'now' (#6014 item 1)", () => {
+    // 23/ago/2026 (domingo) 10:00 BRT -> D+1 = 24/ago 09:30 BRT.
     const now = Date.parse("2026-08-23T10:00:00-03:00");
     const iso = resolveArtigoEspecialScheduledAt(CONFIG, { now });
-    assert.equal(iso, "2026-08-24T09:00:00-03:00");
+    assert.equal(iso, "2026-08-24T09:30:00-03:00");
   });
 
   it("default respeita virada de mes/ano (D+1 de 31/dez)", () => {
     const now = Date.parse("2026-12-31T10:00:00-03:00");
     const iso = resolveArtigoEspecialScheduledAt(CONFIG, { now });
-    assert.equal(iso, "2027-01-01T09:00:00-03:00");
+    assert.equal(iso, "2027-01-01T09:30:00-03:00");
   });
 
-  it("#6014: NAO lanca sem fallback_schedule.d3_time — horarios default sao fixos (09:00/09:30)", () => {
+  it("#6014: NAO lanca sem fallback_schedule.d3_time — horarios default sao fixos (09:30/09:30)", () => {
     const now = Date.parse("2026-08-23T10:00:00-03:00");
     const iso = resolveArtigoEspecialScheduledAt(
       { publishing: { social: { timezone: "America/Sao_Paulo" } } },
       { now },
     );
-    assert.equal(iso, "2026-08-24T09:00:00-03:00");
+    assert.equal(iso, "2026-08-24T09:30:00-03:00");
   });
 });
 
@@ -99,11 +99,11 @@ describe("resolveArtigoEspecialScheduledAts (#6014 item 1)", () => {
     assert.equal(r.perfil, "2026-09-02T17:30:00-03:00");
   });
 
-  it("default #6014: pagina D+1 09:00, perfil D+2 09:30 — sem colidir com d3 17:30", () => {
-    // 23/ago/2026 (domingo) 10:00 BRT -> pagina 24/ago 09:00; perfil 25/ago 09:30.
+  it("default #6014: pagina D+1 09:30, perfil D+2 09:30 — sem colidir com d3 17:30", () => {
+    // 23/ago/2026 (domingo) 10:00 BRT -> pagina 24/ago 09:30; perfil 25/ago 09:30.
     const now = Date.parse("2026-08-23T10:00:00-03:00");
     const r = resolveArtigoEspecialScheduledAts(CONFIG, { now });
-    assert.equal(r.pagina, "2026-08-24T09:00:00-03:00");
+    assert.equal(r.pagina, "2026-08-24T09:30:00-03:00");
     assert.equal(r.perfil, "2026-08-25T09:30:00-03:00");
   });
 
@@ -113,7 +113,7 @@ describe("resolveArtigoEspecialScheduledAts (#6014 item 1)", () => {
       { publishing: { social: { fallback_schedule: { d3_time: "23:59", day_offset: 5 }, timezone: "America/Sao_Paulo" } } },
       { now },
     );
-    assert.equal(r.pagina, "2026-08-24T09:00:00-03:00");
+    assert.equal(r.pagina, "2026-08-24T09:30:00-03:00");
     assert.equal(r.perfil, "2026-08-25T09:30:00-03:00");
   });
 
