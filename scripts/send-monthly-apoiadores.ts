@@ -42,8 +42,8 @@
  * lado de EFEITO DE ESTADO (`htmlPath`/`subject` gravados no state local) —
  * o canal Beehiiv nunca chegou a enviar nada ao vivo (#4572). O Passo 2
  * (`publish-monthly-apoiadores-brevo.ts`) já é quem de fato cria a campanha
- * e já grava `status: draft_prepared` sozinho (`decidePublishBrevoAction`
- * aceita `state: null` — não depende deste Passo 1 ter rodado antes), então
+ * e já grava `status: draft_prepared` sozinho (`decidePublishBrevoAction`,
+ * removido no #14102, aceitava `state: null` — não dependia deste Passo 1), então
  * a única função remanescente deste Passo 1 é permitir preparar/registrar o
  * ciclo ANTES de rodar o Passo 2 (ex: pra inspecionar o HTML localmente
  * primeiro). Trocado pra renderizar via `renderMonthlyApoiadoresBrevoEmail`

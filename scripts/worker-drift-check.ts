@@ -6,6 +6,9 @@
  * deploy publicado na Cloudflare contra o timestamp do último commit local
  * que tocou `workers/{nome}/**` ou um arquivo de fora que entra no bundle
  * (fecho de imports em `scripts/lib/**`, #13993 — ver `getWorkerTrackedPaths`).
+ * Import que o fecho não resolve marca o worker como "fecho incompleto"
+ * (aviso em stderr, sufixo no relatório, seção no e-mail e issue P3 própria,
+ * #14097 — ver `getWorkerClosureReport`), sem mudar o status de drift.
  * Se o commit for mais recente que o deploy
  * (ou o worker nunca foi deployado mas já tem código commitado), alarma o
  * editor por e-mail — nomeando o(s) worker(s) defasado(s), há quanto tempo,
@@ -118,6 +121,8 @@ import {
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { computeWorkerExternalImports, type WorkerClosure } from "./lib/worker-import-closure.ts";
 import {
+  hasIncompleteClosure,
+  closureIncompleteReportSuffix,
   parseWranglerTomlName,
   parseWranglerJsoncName,
   parseDeployBlockingPlaceholders,
@@ -229,6 +234,39 @@ export function toAlarmFinding(r: WorkerDriftResult): AlarmFinding {
     ].join("\n"),
     labels: ["bug"],
     priority: "P2",
+  };
+}
+
+/** #14097 — achado de fecho de imports incompleto de UM worker (pré-condição:
+ * `hasIncompleteClosure(r)`). Eixo próprio (`check` distinto do drift), para
+ * a issue abrir/fechar sozinha independente do status de deploy. O
+ * fingerprint inclui a lista: um import novo não resolvido abre achado novo;
+ * resolver tudo fecha a issue após `CLOSE_ALARM_ISSUE_AFTER_RUNS` execuções
+ * limpas. P3: falso negativo em caso de borda, mesma prioridade da #14097. */
+export function toClosureIncompleteAlarmFinding(r: WorkerDriftResult): AlarmFinding {
+  const items = [...(r.closureIncomplete ?? [])].sort();
+  return {
+    check: `fecho-incompleto:${r.workerName}`,
+    fingerprint: `${r.workerName}:fecho-incompleto:${items.join("|")}`,
+    family: "estado",
+    title: `[diar.ia.br] worker "${r.workerName}" com fecho de imports incompleto no alarme de drift`,
+    body: [
+      "Achado automático do alarme `Diaria-Worker-Drift-Check`",
+      "(`scripts/worker-drift-check.ts`, #14097).",
+      "",
+      `Worker: \`${r.workerName}\` (workers/${r.workerDir}/)`,
+      "O fecho de imports (`scripts/lib/worker-import-closure.ts`) não resolveu:",
+      ...items.map((i) => `- \`${i}\``),
+      "",
+      "Enquanto isso, um commit nesses módulos não entra na comparação com o",
+      "último deploy: o drift deles pode estar escondido. Corrigir o import",
+      "(arquivo renomeado/movido) ou ensinar o resolvedor (extensão, alias).",
+      "",
+      "Esta issue é criada automaticamente pelo alarme e será fechada sozinha",
+      `quando o achado deixar de reproduzir por ${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas.`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P3",
   };
 }
 
@@ -368,21 +406,59 @@ const defaultGitRunner: GitRunner = (args, cwd) => {
  * arquivo que só existe na branch não produz commit. Falha ao calcular o
  * fecho é fail-soft: loga e cai pro comportamento anterior (só
  * `workers/{dir}`), nunca derruba a checagem dos demais workers.
+ *
+ * Wrapper de `getWorkerClosureReport` que devolve só os paths (mantido pelos
+ * testes do #13993); o `main()` usa o relatório completo.
  */
 export function getWorkerTrackedPaths(
   workerDir: string,
   root: string = ROOT,
   computeClosure: (root: string, workerDir: string) => WorkerClosure = computeWorkerExternalImports,
 ): string[] {
+  return getWorkerClosureReport(workerDir, root, computeClosure).paths;
+}
+
+export interface WorkerClosureReport {
+  /** Arquivos do fecho fora de `workers/{dir}/` — entram no `git log`. */
+  paths: string[];
+  /** Imports não resolvidos (`arquivo: spec`) ou a falha do cálculo do fecho
+   * (#14097). `[]` = fecho completo. */
+  incomplete: string[];
+}
+
+/**
+ * Fecho + o que ele NÃO conseguiu cobrir (#14097). Antes, `unresolved` era
+ * descartado em silêncio: um import relativo para um arquivo de
+ * `scripts/lib/` renomeado/movido, uma extensão que o resolvedor não conhece
+ * ou um alias (`@/`, `~/`, `#`) tirava o módulo do fecho, e uma mudança não
+ * deployada nele voltava a passar sem alarme — a classe de falso negativo
+ * que o #13993 fechou. Agora cada item vai para stderr (um aviso por import,
+ * nomeando o worker) e para `incomplete`, que o `main()` repassa como
+ * `closureIncomplete` (relatório, e-mail e issue própria). A falha do cálculo
+ * do fecho também conta como fecho incompleto. Nunca lança: a checagem dos
+ * demais workers segue.
+ */
+export function getWorkerClosureReport(
+  workerDir: string,
+  root: string = ROOT,
+  computeClosure: (root: string, workerDir: string) => WorkerClosure = computeWorkerExternalImports,
+): WorkerClosureReport {
+  let closure: WorkerClosure;
   try {
-    return computeClosure(root, workerDir).external;
+    closure = computeClosure(root, workerDir);
   } catch (err) {
-    console.error(
-      `${LOG_PREFIX} aviso: fecho de imports de workers/${workerDir}/ falhou (${(err as Error).message}) — ` +
-        "comparando só workers/{dir}/.",
-    );
-    return [];
+    const reason = `falha ao calcular o fecho de imports (${(err as Error).message})`;
+    console.error(`${LOG_PREFIX} aviso: workers/${workerDir}/: ${reason} — comparando só workers/${workerDir}/.`);
+    return { paths: [], incomplete: [reason] };
   }
+  const incomplete = [...(closure.unresolved ?? [])];
+  for (const item of incomplete) {
+    console.error(
+      `${LOG_PREFIX} aviso: workers/${workerDir}/: import não resolvido no fecho (${item}) — ` +
+        "o módulo fica fora da comparação de drift.",
+    );
+  }
+  return { paths: closure.external, incomplete };
 }
 
 // ─── Cloudflare API: timestamp do último deploy por worker (I/O) ───────────
@@ -505,22 +581,36 @@ async function main(): Promise<void> {
   // `spawnSync("git", ["rev-parse", ...])` extra por worker (11 workers hoje).
   const productionRef = resolveProductionRef();
 
-  const inputs: WorkerDriftCheckInput[] = workers.map((w) => ({
-    workerName: w.workerName,
-    workerDir: w.workerDir,
-    lastDeployedAt: metadata ? resolveLastDeployedAt(w.workerName, metadata) : null,
+  const inputs: WorkerDriftCheckInput[] = workers.map((w) => {
     // #13993: fecho calculado 1x por worker — inclui os módulos de scripts/lib
-    // que entram no bundle, não só workers/{dir}/.
-    lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef, getWorkerTrackedPaths(w.workerDir, ROOT)),
-    deployError: metadataError,
-    deployBlockedBy: w.deployBlockedBy,
-  }));
+    // que entram no bundle, não só workers/{dir}/. #14097: o que o fecho não
+    // resolveu vira `closureIncomplete`, nunca some em silêncio.
+    const closure = getWorkerClosureReport(w.workerDir, ROOT);
+    return {
+      workerName: w.workerName,
+      workerDir: w.workerDir,
+      lastDeployedAt: metadata ? resolveLastDeployedAt(w.workerName, metadata) : null,
+      lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef, closure.paths),
+      deployError: metadataError,
+      deployBlockedBy: w.deployBlockedBy,
+      closureIncomplete: closure.incomplete,
+    };
+  });
 
   const now = new Date();
   const results: WorkerDriftResult[] = evaluateAllWorkerDrift(inputs, now);
 
   for (const r of results) {
-    console.log(`${LOG_PREFIX} ${r.workerName} (workers/${r.workerDir}/): ${r.status} — ${r.message}`);
+    console.log(
+      `${LOG_PREFIX} ${r.workerName} (workers/${r.workerDir}/): ${r.status} — ${r.message}${closureIncompleteReportSuffix(r)}`,
+    );
+  }
+  const incompleteCount = results.filter(hasIncompleteClosure).length;
+  if (incompleteCount > 0) {
+    console.error(
+      `${LOG_PREFIX} aviso: ${incompleteCount} worker(s) com fecho de imports incompleto — ` +
+        "drift de módulo compartilhado pode estar escondido (#14097).",
+    );
   }
 
   const state = loadState();
@@ -597,7 +687,12 @@ async function main(): Promise<void> {
   // home-meta-check.ts. Roda toda execução não-dry-run, independente
   // de um e-mail novo disparar nesta rodada.
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "never_deployed");
-  const alarmFindings = driftedResults.map(toAlarmFinding);
+  const driftFindings = driftedResults.map(toAlarmFinding);
+  // #14097: fecho incompleto abre issue própria (P3). Entra na MESMA
+  // reconciliação (um estado só: chamadas separadas fechariam os achados
+  // uma da outra), mas fica fora do gate de e-mail/cursor do drift abaixo.
+  const alarmFindings = [...driftFindings, ...results.filter(hasIncompleteClosure).map(toClosureIncompleteAlarmFinding)];
+  const driftFingerprints = new Set(driftFindings.map((f) => f.fingerprint));
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
   // #7960 (fatia 6) — alimenta `notifyEditorForOutcomes` no bloco de alarme
@@ -615,15 +710,18 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    findingOutcomes = outcomes;
+    // Só os outcomes de DRIFT alimentam o e-mail e o cursor (#14097): uma
+    // issue de fecho incompleto criada com sucesso não pode contar como
+    // "alarme de drift chegou ao editor".
+    findingOutcomes = outcomes.filter((o) => driftFingerprints.has(o.fingerprint));
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     issueRefs = new Map(
-      findingOutcomes.map((o) => [
+      outcomes.map((o) => [
         o.fingerprint,
         { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
       ]),
     );
-    for (const o of findingOutcomes) {
+    for (const o of outcomes) {
       if (o.action === "failed") {
         console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
       } else {

@@ -13,7 +13,7 @@
  */
 
 import { dirname } from "node:path";
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   type D1Client,
   d1AcquireLock,
@@ -55,21 +55,84 @@ export interface MergeLockIo {
   readCurrent: (path: string) => MergeLockRecord | null;
   /** Sobrescreve `path` com `data`, sem exclusividade. */
   overwrite: (path: string, data: string) => void;
+  /**
+   * #14013: `true` quando `path` existe e foi modificado há no máximo
+   * `MERGE_LOCK_CREATE_GRACE_MS` (relógio real). `acquireMergeLock` só pergunta
+   * isto depois de `readCurrent` devolver `null` sobre um arquivo que a criação
+   * exclusiva acabou de achar ocupado: arquivo vazio ou JSON parcial recente é
+   * um hold EM CRIAÇÃO por outra sessão, nunca um lock corrompido a contestar.
+   * Opcional para os "discos" fake dos testes; ausente = comportamento anterior.
+   */
+  isRecentlyModified?: (path: string) => boolean;
+}
+
+/**
+ * #14013: por quanto tempo um arquivo de lock ilegível (vazio ou JSON parcial)
+ * conta como hold em criação. A janela natural entre o `open` e o `write` é de
+ * microssegundos; 10s cobre um writer atrasado (antivírus, sync) sem travar por
+ * muito tempo um arquivo genuinamente corrompido, que depois disso volta a ser
+ * contestado como antes.
+ */
+export const MERGE_LOCK_CREATE_GRACE_MS = 10_000;
+
+/**
+ * Códigos com que `link()` falha quando o filesystem não oferece hard link
+ * (FUSE do Drive/rclone, FAT, alguns montados de rede). Nesses casos a criação
+ * cai no `writeFileSync(..., { flag: "wx" })` antigo, e o leitor fica coberto
+ * por `isRecentlyModified`.
+ */
+const LINK_UNSUPPORTED_CODES = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK", "EACCES"]);
+
+/**
+ * #14013: criação exclusiva sem expor o arquivo vazio. `writeFileSync(path,
+ * data, { flag: "wx" })` abre com `O_CREAT|O_EXCL` (o arquivo passa a existir
+ * com 0 bytes) e só depois grava; uma 2ª sessão que chega nesse intervalo lia
+ * `null` e contestava o hold como corrompido, e as duas devolviam `true`. Aqui
+ * o JSON vai inteiro para um temporário e o lock nasce por `link(tmp, path)`,
+ * que é atômico e falha com `EEXIST` como o `O_EXCL`: quem vê o arquivo vê o
+ * conteúdo completo. Sem suporte a hard link, cai no `wx` (ver
+ * `LINK_UNSUPPORTED_CODES`). Exportada para teste.
+ */
+export function createLockFileExclusive(path: string, data: string): boolean {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.create-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+  writeFileSync(tmp, data, { flag: "wx" });
+  try {
+    linkSync(tmp, path);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "EEXIST") return false;
+    if (!code || !LINK_UNSUPPORTED_CODES.has(code)) throw e;
+    // sem hard link: segue para o `wx` abaixo
+  } finally {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // temporário órfão começa com "." e não termina em .json: nenhuma
+      // varredura de `data/sessions/` o lê.
+    }
+  }
+  try {
+    writeFileSync(path, data, { flag: "wx" });
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "EEXIST") return false;
+    throw e;
+  }
 }
 
 const REAL_MERGE_LOCK_IO: MergeLockIo = {
-  tryCreateExclusive: (path, data) => {
-    try {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, data, { flag: "wx" });
-      return true;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code === "EEXIST") return false;
-      throw e;
-    }
-  },
+  tryCreateExclusive: (path, data) => createLockFileExclusive(path, data),
   readCurrent: (path) => readJsonSafe<MergeLockRecord>(path),
   overwrite: (path, data) => writeJsonSafe(path, JSON.parse(data)),
+  isRecentlyModified: (path) => {
+    try {
+      return Date.now() - statSync(path).mtimeMs <= MERGE_LOCK_CREATE_GRACE_MS;
+    } catch {
+      return false;
+    }
+  },
 };
 
 /**
@@ -199,8 +262,9 @@ export function assessCrossMachineSyncFreshness(
  * do MESMO filesystem; entre máquinas o lock segue advisory, e nenhuma das
  * duas partes muda isso.) Fix em duas partes:
  *   1. **Fast path (mesma máquina — nenhuma concorrência com outro inode):**
- *      criação exclusiva atômica (`writeFileSync(path, data, { flag: "wx" })`,
- *      que mapeia pra `O_CREAT | O_EXCL`). Entre processos DIFERENTES no
+ *      criação exclusiva atômica (`createLockFileExclusive`: `link(tmp, path)`
+ *      desde o #14013, com o `writeFileSync(path, data, { flag: "wx" })` de
+ *      antes como fallback; os dois falham com `EEXIST` como `O_CREAT | O_EXCL`). Entre processos DIFERENTES no
  *      MESMO kernel/filesystem, no máximo UMA chamada com o MESMO path
  *      ausente pode suceder. **Entre máquinas via OneDrive, NÃO é atômica:**
  *      cada máquina vê um inode distinto no mesmo junction, ambas podem
@@ -273,6 +337,13 @@ export function acquireMergeLock(
     }
     // acquiredAt ilegível (campo corrompido, mas JSON válido) — cai pro
     // tratamento de "stale" abaixo, mesma política de antes.
+  } else if (io.isRecentlyModified?.(path)) {
+    // #14013: arquivo ilegível (vazio ou JSON parcial) e recente é um hold em
+    // criação por outra sessão (o `open` com O_EXCL já aconteceu, o `write`
+    // ainda não, por exemplo numa versão antiga sem `link`). Contestar aqui
+    // daria dois detentores. Só depois de `MERGE_LOCK_CREATE_GRACE_MS` ele
+    // volta a contar como corrompido.
+    return false;
   }
 
   // Stale (TTL expirado) ou corrompido/ilegível: contesta. Não-atômico — ver
@@ -463,6 +534,13 @@ export async function acquireMergeLockShared(
     // #6334: hold fresco da PRÓPRIA sessão no arquivo (tomado no fallback). O
     // D1 o adota (a linha fica), e a 2ª aquisição segue recusada.
     return { ok: false, backend: "d1", d1Holder: sessionId };
+  }
+  if (fileHolder === undefined && io.isRecentlyModified?.(path)) {
+    // #14013: o `local()` recusou um arquivo ilegível e recente, um hold em
+    // criação por quem só usa o arquivo (o waiter da página do site). Mesma
+    // decisão do holder não registrado abaixo: devolve o D1 e recusa.
+    await rollbackD1Lock(d1, name, sessionId, opts.d1Now !== undefined ? { now: opts.d1Now } : {}, warn, "merge-lock-acquire");
+    return { ok: false, backend: "local", d1Holder: null };
   }
   if (fileHolder !== undefined && !isRegisteredSessionId(repoRoot, fileHolder)) {
     // #12967: holder que não é sessão registrada (o waiter de merge da página
