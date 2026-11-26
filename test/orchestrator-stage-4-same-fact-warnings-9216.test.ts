@@ -30,7 +30,9 @@ describe("orchestrator-stage-4 same_fact_warnings (#9216)", () => {
     // Bloco §4c.2 (lints consolidados): a linha da instrução é a do agregador (#5416).
     assert.match(p, /^\*\*4c\.2 — Lints consolidados:\*\*/);
     const line = p.split("\n").find((l) => l.includes("same_fact_warnings"))!;
-    assert.match(line, /^\(#5416\) O 2º comando substitui/);
+    // #14195: o histórico da troca (15 invocações → agregador) foi para docs/;
+    // a linha segue sendo a do agregador.
+    assert.match(line, /^\(#5416\) O último comando é o agregador/);
     assert.ok(!p.includes("radar-summary-matches-title"));
   });
   it("o artefato citado é o que o Stage 1 grava", () => {

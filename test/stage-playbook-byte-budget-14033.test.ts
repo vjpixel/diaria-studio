@@ -115,6 +115,17 @@ describe("#14033: divisão do playbook da Etapa 4", () => {
     }
   });
 
+  it("toda âncora #stage-4-* citada pelo pré-gate existe em docs/ (#14195)", () => {
+    // #14195 moveu narrativa do pré-gate para o doc de histórico, deixando no
+    // playbook só a referência pela âncora: âncora sem seção é link morto.
+    const history = readFileSync(resolve(ROOT, "docs/orchestrator-stage-narrative-history.md"), "utf8");
+    const anchors = [...new Set(pre.match(/#stage-4-[a-z0-9-]+/g) ?? [])];
+    assert.ok(anchors.length >= 20, `pré-gate cita só ${anchors.length} âncoras #stage-4-*`);
+    for (const a of anchors) {
+      assert.ok(history.includes(`\n### ${a.slice(1)}\n`), `docs/ sem a seção ${a.slice(1)} citada pelo pré-gate`);
+    }
+  });
+
   it("cartão cobre os tipos de pedido da issue com os scripts do playbook", () => {
     const required = [
       "swap-destaque-link.ts",       // trocar link
