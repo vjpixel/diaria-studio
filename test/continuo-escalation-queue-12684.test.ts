@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 // O bloco real usa `jq`, presente no 300 (onde o script roda) e no CI, mas não
 // no Git Bash do Neo (#13738): sem jq o teste mede o ambiente, não o bloco.
 const hasJq = spawnSync("bash", ["-c", "command -v jq"], { encoding: "utf8" }).status === 0;
-it("actual bash attention block preserves reason on first and recurring escalation", { skip: hasJq ? false : "jq ausente neste bash (Git Bash no Windows)" }, () => {
+it("actual bash attention block preserves reason on first and recurring escalation", { skip: process.platform === "win32" && !hasJq ? "jq ausente no Git Bash do Windows" : false }, () => {
   const script = readFileSync(new URL("../hermes/scripts/continuo-pr-review.sh", import.meta.url), "utf8");
   const start = script.indexOf('      GATE_REASON=', script.indexOf('ESCALATE_STDERR_TMP="$(mktemp)"'));
   const block = script.slice(start, script.indexOf('      ;;', start));
