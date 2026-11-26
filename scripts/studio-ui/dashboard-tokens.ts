@@ -9,7 +9,7 @@
  * `buildSessionTokensSummary`/`formatSessionTokensSummary` e serve o
  * resultado como HTML, igual ao que `resolveReportHtml` já faz para
  * relatórios `.md` registrados em `/relatorios` (mesmo wrap de estilo,
- * `renderMarkdownToHtml` de `studio-reports.ts` — zero fork de template).
+ * `renderMarkdownToHtml` de `reports-registry.ts` — zero fork de template).
  *
  * **Por que rota LIVE (`GET /painel/tokens`) em vez de relatório
  * pré-gerado+registrado em `data/reports/index.jsonl`:** as outras 3 fontes
@@ -43,7 +43,7 @@ import {
   formatSessionTokensSummary,
   defaultSinceAammdd,
 } from "../aggregate-session-tokens.ts";
-import { renderMarkdownToHtml } from "./studio-reports.ts";
+import { renderMarkdownToHtml } from "../lib/reports-registry.ts";
 import { escHtml } from "../lib/html-escape.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");

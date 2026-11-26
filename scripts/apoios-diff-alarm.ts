@@ -58,7 +58,7 @@ import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
 import { loadApoioOverrides } from "./lib/apoio-overrides.ts";
-import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
+import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./lib/apoios-data.ts";
 import {
   resolveDesiredApoioLevels,
   computeAlarmDiffInput,

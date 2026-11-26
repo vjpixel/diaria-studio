@@ -24,7 +24,7 @@ import {
   renderTeaserWithPaywall,
 } from "../workers/retrospectiva/src/render-mensal.ts";
 import { RETROSPECTIVA_DO_MES_NIVEIS } from "../scripts/build-apoiador-allowlist.ts";
-import { computeRewardGroup } from "../scripts/studio-ui/studio-apoios.ts";
+import { computeRewardGroup } from "../scripts/lib/apoios-data.ts";
 
 /**
  * Pisos em R$ de cada nível, SONDADOS de `computeRewardGroup` — a mesma

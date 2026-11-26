@@ -11,7 +11,7 @@ import type { ApoioNivel } from "./apoio-nivel-types.ts";
 
 /**
  * Alias de `ApoioNivel` (#11205): a união dos 4 ids vive só em
- * `apoio-nivel-types.ts`; `RewardGroup` (`studio-apoios.ts`) é o mesmo alias.
+ * `apoio-nivel-types.ts`; `RewardGroup` (`apoios-data.ts`) é o mesmo alias.
  */
 export type ApoioNivelId = ApoioNivel;
 

@@ -33,7 +33,7 @@ import { loadContacts } from "./lib/apoio-contacts-store.ts";
 import { expectedKitSegmentsFor } from "./lib/apoio-segments-canonical-kit.ts";
 import type { ApoioSubscriberSnapshot } from "./lib/apoio-nivel-sync.ts";
 import { fetchCurrentKitState } from "./sync-apoio-nivel-kit.ts";
-import { segmentsCachePath, vinculoCachePath, type SegmentsCache, type VinculoCache } from "./studio-ui/studio-apoios.ts";
+import { segmentsCachePath, vinculoCachePath, type SegmentsCache, type VinculoCache } from "./lib/apoios-data.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[sync-apoio-segments-kit]";

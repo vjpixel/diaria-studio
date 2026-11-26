@@ -69,7 +69,7 @@ const ALLOWLIST: string[] = [
   //   uma 2ª vez pro mesmo achado) — `legacyResendIntent` decidido lendo o
   //   gate de e-mail antigo de CADA script, nunca por padrão de nome.
 
-  // `scripts/studio-ui/studio-reports.ts` MIGROU (#7960, item 5 da #7957,
+  // `scripts/lib/reports-registry.ts` MIGROU (#7960, item 5 da #7957,
   // decisão do editor 19/09/2026): `registerReport` delega a `notifyEditor`
   // (severidade "info") em vez de manter canal de Gmail próprio — a última
   // entry desta allowlist, zerando-a. Ver o próprio arquivo pro mecanismo

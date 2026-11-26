@@ -4,7 +4,7 @@
  * Camada de leitura/escrita da página `/utms` — a superfície que responde
  * "esse UTM ainda existe?" e "quanto ele converteu?" sem rodar script na mão.
  * Arquivo próprio desta fatia (mesma convenção de `studio-integrations.ts`
- * (#3848), `studio-review.ts`, `studio-apoios.ts`) — `server.ts` só roteia.
+ * (#3848), `studio-review.ts`, `apoios-data.ts`) — `server.ts` só roteia.
  *
  * **Três camadas cruzadas:**
  *
@@ -45,7 +45,7 @@
  * campos fora da allowlist são ignorados silenciosamente na leitura e
  * REJEITADOS na escrita (`saveUtmMetadata` devolve `{ok:false}`).
  *
- * **Fail-soft total** (mesmo padrão de `studio-apoios.ts`/`studio-integrations.ts`):
+ * **Fail-soft total** (mesmo padrão de `apoios-data.ts`/`studio-integrations.ts`):
  * nenhuma falha de rede/credencial derruba a página — Beehiiv e Brevo viram
  * campos `error` próprios e o inventário continua renderizando. Num clone
  * `cloud` sem credenciais, a página mostra só o inventário, que é o esperado.

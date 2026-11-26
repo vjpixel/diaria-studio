@@ -1,7 +1,7 @@
 /**
  * test/report-kind-exhaustiveness-8409.test.ts (#8409)
  *
- * Regressão do "guard que não guardava": `scripts/studio-ui/studio-reports.ts`
+ * Regressão do "guard que não guardava": `scripts/lib/reports-registry.ts`
  * tinha um comentário prometendo que um membro novo de `ReportKind` ausente
  * de `VALID_KINDS` quebrava o build, e o mecanismo era
  * `Object.fromEntries(...) as Record<ReportKind, true>` — uma ASSERÇÃO de
@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
-const SOURCE = join(REPO_ROOT, "scripts/studio-ui/studio-reports.ts");
+const SOURCE = join(REPO_ROOT, "scripts/lib/reports-registry.ts");
 
 /**
  * Compila um único arquivo com `tsc --strict` isolado num tmpdir. Devolve

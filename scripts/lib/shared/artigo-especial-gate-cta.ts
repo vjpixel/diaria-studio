@@ -29,7 +29,7 @@
  *
  * O limiar citado no texto ("a partir de R$X/mês") é DERIVADO de
  * `REWARD_TIER_APOIADOR_MIN` (`../reward-tier-thresholds.ts`) — mesma fonte
- * que `computeRewardGroup` (`studio-apoios.ts`) e a antiga página `/apoiar`
+ * que `computeRewardGroup` (`apoios-data.ts`) e a antiga página `/apoiar`
  * (`site-apoiar-page.ts`, #7915, removida no #8498) — pra não repetir o drift que motivou a
  * extração daquela constante (achado do fleet review da #8155,
  * `type-design-analyzer`): esta CTA e `workers/artigos/src/gate-page.ts`

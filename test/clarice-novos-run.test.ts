@@ -735,7 +735,7 @@ describe("clarice-novos-run (#4941)", () => {
     const indexPath = resolve(root, "data", "reports", "index.jsonl");
     assert.ok(existsSync(indexPath));
     const lines = readFileSync(indexPath, "utf8").trim().split("\n");
-    // entry.id = `${kind}-${sessionId}` (reportId() em studio-reports.ts) — reportId aqui É o sessionId passado.
+    // entry.id = `${kind}-${sessionId}` (reportId() em reports-registry.ts) — reportId aqui É o sessionId passado.
     assert.ok(lines.some((l) => JSON.parse(l).id === `clarice-novos-${result.reportId}`));
     rmSync(root, { recursive: true, force: true });
   });

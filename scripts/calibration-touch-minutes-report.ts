@@ -30,7 +30,7 @@ import {
   type CalibrationPhase,
   type TouchSample,
 } from "./lib/calibration-audit.ts";
-import { registerReport } from "./studio-ui/studio-reports.ts";
+import { registerReport } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

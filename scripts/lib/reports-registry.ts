@@ -1,5 +1,10 @@
 /**
- * studio-reports.ts (#3714, fatia da EPIC "Studio UI" #3554)
+ * reports-registry.ts (#3714, fatia da EPIC "Studio UI" #3554)
+ *
+ * Morava em `scripts/studio-ui/studio-reports.ts` até o #14000: os CLIs que
+ * registram relatório (`register-report.ts`, `send-edition-report.ts`, ...)
+ * importavam do servidor do Studio. Aqui em `scripts/lib/` o Studio vira folha;
+ * a rota `/api/reports` de `server.ts` importa daqui.
  *
  * Superfície de "Relatórios" do Studio — decisão do editor (comentário de
  * 2026-07-20 na issue #3714): **substituir** o draft de e-mail dos fechos de
@@ -93,9 +98,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { escHtml } from "../lib/html-escape.ts";
-import { notifyEditor } from "../lib/editor-notify.ts"; // #7960 (item 5 da #7957) — substitui o canal de Gmail bespoke
-import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — lock + write atômico do registry
+import { escHtml } from "./html-escape.ts";
+import { notifyEditor } from "./editor-notify.ts"; // #7960 (item 5 da #7957) — substitui o canal de Gmail bespoke
+import { acquireLock, releaseLock } from "./file-lock.ts"; // #4677 — lock + write atômico do registry
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).

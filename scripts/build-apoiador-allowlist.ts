@@ -8,7 +8,7 @@
  * abaixo; era R$10+ até o #7658, que alinhou o gate à recompensa anunciada).
  *
  * NÃO reimplementa a checagem de apoio: reusa a MESMA maquinaria já testada
- * do painel Apoios (`scripts/studio-ui/studio-apoios.ts`) —
+ * do painel Apoios (`scripts/lib/apoios-data.ts`) —
  * `buildApoiosData` (loadContacts + fetchCurrentStatuses/checkBacker +
  * deriveContactStatus, tudo já fail-soft em 3 camadas) e `computeRewardGroup`
  * (fonte única da correspondência valor→nível). A ÚNICA lógica nova aqui é
@@ -71,7 +71,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { buildApoiosData, computeRewardGroup, type ContactWithStatus, type RewardGroup } from "./studio-ui/studio-apoios.ts";
+import { buildApoiosData, computeRewardGroup, type ContactWithStatus, type RewardGroup } from "./lib/apoios-data.ts";
 import { uploadTextToWorkerKV, getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
 import {
