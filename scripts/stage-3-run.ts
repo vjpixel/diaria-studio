@@ -39,11 +39,15 @@
  *     lint-image-prompt.ts (em série) e depois image-generate.ts (2x1) e
  *     image-generate.ts --ratio 4x5 (nativo) de TODOS os destaques em
  *     paralelo (#14036; teto `--concurrency N`, default 6; `--serial` volta à
- *     ordem antiga). Falha de lint pausa SÓ aquele destaque (report, não
- *     hard-abort); falha de `image-generate.ts` (qualquer ratio) é repetida
- *     uma vez em série e, se persistir, é BLOQUEANTE — para o Stage 3
+ *     ordem e ao abort na 1ª falha de antes). Falha de lint pausa SÓ aquele
+ *     destaque (report, não hard-abort). Falha de `image-generate.ts`
+ *     (qualquer ratio) no paralelo é repetida uma vez em série, com `--force`,
+ *     se outra imagem passou ou se o stderr indica limite de concorrência
+ *     (`shouldRetrySerially`); se persistir, é BLOQUEANTE — para o Stage 3
  *     inteiro, igual ao playbook (#4090), com o destaque/ratio que falhou em
- *     `destaques[].error` e `imageJobs`.
+ *     `destaques[].error` e `imageJobs`. Cada filho tem teto de 15 min e, se o
+ *     runner receber SIGINT/SIGTERM, a árvore de cada filho vivo é morta por
+ *     PID antes de sair.
  *   gen-social-card-4x5.ts (compõe os cards de todos os destaques prontos) —
  *     BLOQUEANTE (#4090) se falhar.
  *   gen-carousel-cards.ts (#6005 Parte B — 3 slides de parágrafo + CTA do
@@ -124,19 +128,100 @@ export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
  * que roda em paralelo. Mesmo contrato de retorno. */
 export type AsyncExecFn = (scriptRelPath: string, args: string[]) => Promise<StepResult>;
 
-export function realExecAsync(rootDir: string): AsyncExecFn {
+/** #14036: teto por `image-generate.ts`. O Codex tem 300 s próprios
+ * (`codex.timeout_seconds`), o fallback outro tanto, mais a compressão. */
+export const IMAGE_JOB_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Mata a ÁRVORE do filho por PID (#5432: nunca por nome de imagem). Windows:
+ * `taskkill /T /F /PID`. POSIX: o filho nasce líder de grupo (`detached`) e o
+ * grupo inteiro recebe SIGKILL. Mesmo desenho de `killProcessTree` em
+ * `scripts/codex-image.js` (#9097), sem importá-lo (ele carrega sharp). */
+export function killChildTree(
+  pid: number | undefined,
+  {
+    platform = process.platform,
+    killFn = process.kill.bind(process) as (pid: number, sig: NodeJS.Signals) => void,
+    execTaskkill = (p: number) => {
+      spawnSync("taskkill", ["/T", "/F", "/PID", String(p)], { stdio: "ignore" });
+    },
+  }: {
+    platform?: NodeJS.Platform;
+    killFn?: (pid: number, sig: NodeJS.Signals) => void;
+    execTaskkill?: (pid: number) => void;
+  } = {},
+): void {
+  if (!pid) return;
+  if (platform === "win32") {
+    execTaskkill(pid);
+    return;
+  }
+  try {
+    killFn(-pid, "SIGKILL");
+  } catch {
+    /* grupo já morreu */
+  }
+  try {
+    killFn(pid, "SIGKILL");
+  } catch {
+    /* já morreu */
+  }
+}
+
+/** Filhos vivos de `realExecAsync`, pra o repasse de SIGINT/SIGTERM. */
+const liveChildPids = new Set<number>();
+let signalForwardingInstalled = false;
+function installSignalForwarding(): void {
+  if (signalForwardingInstalled) return;
+  signalForwardingInstalled = true;
+  // Se o runner morrer (Ctrl+C, task parada), nenhum image-generate.ts fica
+  // órfão gerando imagem: mata a árvore de cada filho vivo e sai com o código
+  // convencional do sinal.
+  for (const [sig, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+    process.once(sig, () => {
+      for (const pid of liveChildPids) killChildTree(pid);
+      liveChildPids.clear();
+      process.exit(exitCode);
+    });
+  }
+}
+
+export interface RealExecAsyncOptions {
+  timeoutMs?: number;
+  killTree?: (pid: number | undefined) => void;
+  /** false só em teste: não instala handlers de sinal no processo do runner de testes. */
+  forwardSignals?: boolean;
+}
+
+export function realExecAsync(rootDir: string, opts: RealExecAsyncOptions = {}): AsyncExecFn {
+  const timeoutMs = opts.timeoutMs ?? IMAGE_JOB_TIMEOUT_MS;
+  const killTree = opts.killTree ?? ((pid: number | undefined) => killChildTree(pid));
+  if (opts.forwardSignals !== false) installSignalForwarding();
   return (scriptRelPath, args) =>
     new Promise((resolvePromise) => {
       const abs = resolve(rootDir, ...scriptRelPath.split("/"));
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      let pid: number | undefined;
       const finish = (r: StepResult) => {
         if (settled) return;
         settled = true;
+        if (timer) clearTimeout(timer);
+        if (pid !== undefined) liveChildPids.delete(pid);
         resolvePromise(r);
       };
-      const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], { cwd: rootDir });
+      const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], {
+        cwd: rootDir,
+        detached: process.platform !== "win32", // POSIX: grupo próprio → kill(-pid)
+        windowsHide: true,
+      });
+      pid = child.pid;
+      if (pid !== undefined) liveChildPids.add(pid);
+      timer = setTimeout(() => {
+        killTree(pid);
+        finish({ code: 1, stdout, stderr: stderr + `\nERRO: o passo passou de ${Math.round(timeoutMs / 1000)}s e foi morto (árvore, por PID)\n` });
+      }, timeoutMs);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (c: string) => (stdout += c));
@@ -152,6 +237,33 @@ export function realExecAsync(rootDir: string): AsyncExecFn {
         ),
       );
     });
+}
+
+/** #14036: stderr que sugere limite de concorrência/taxa do backend — o único
+ * caso em que repetir em série tem chance de mudar o resultado quando TODAS as
+ * imagens falharam. */
+export const CONCURRENCY_ERROR_RE = /\b429\b|too many requests|rate[ _-]?limit|concurren|simult[aâ]ne/i;
+
+/**
+ * Decide se as falhas do passo paralelo merecem a repetição em série (#14036).
+ * Pura. Repete se pelo menos um job passou (o backend funciona, a falha pode
+ * ter sido da concorrência) ou se o stderr de alguma falha indica limite de
+ * concorrência. Todos falharam sem esse sinal (login expirado, backend fora)
+ * = abort direto, sem gastar outra rodada.
+ */
+export function shouldRetrySerially(outcomes: Array<{ ok: boolean; stderr: string }>): boolean {
+  const failed = outcomes.filter((o) => !o.ok);
+  if (failed.length === 0) return false;
+  if (failed.length < outcomes.length) return true;
+  return failed.some((o) => CONCURRENCY_ERROR_RE.test(o.stderr));
+}
+
+/** Args da repetição em série (#14036): `--force`, pra nunca pular por "já
+ * existe" um arquivo parcial deixado pela tentativa que falhou (ex.: a
+ * compressão falhou depois de o gerador gravar). `--keep-4x5-nativo` do 2x1
+ * fica como estava. */
+export function retryArgs(args: string[]): string[] {
+  return args.includes("--force") ? [...args] : [...args, "--force"];
 }
 
 /**
@@ -619,28 +731,49 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
     if (specs.length > 0) {
       report.note(`▶ image-generate.ts: ${specs.length} imagem(ns), até ${Math.min(imageConcurrency, specs.length)} em paralelo.`);
     }
-    const runs = await runWithConcurrency(
-      specs.map((spec) => () => runJob(spec)),
-      imageConcurrency,
-    );
-    imageJobsOut = runs.map((r) => r.outcome);
+    type JobRun = { outcome: ImageJobOutcome; result: StepResult };
+    // `undefined` = job que não chegou a rodar (só em `--serial`, depois da 1ª falha).
+    let runs: Array<JobRun | undefined>;
+    if (imageConcurrency === 1) {
+      // `--serial`: a ordem e o abort de antes do #14036 — para na 1ª falha,
+      // sem rodar o resto nem repetir.
+      runs = new Array<JobRun | undefined>(specs.length);
+      for (let i = 0; i < specs.length; i++) {
+        runs[i] = await runJob(specs[i]);
+        if (!runs[i]!.outcome.ok) break;
+      }
+    } else {
+      runs = await runWithConcurrency(
+        specs.map((spec) => () => runJob(spec)),
+        imageConcurrency,
+      );
+    }
+    const collectOutcomes = () => runs.filter((r): r is JobRun => r !== undefined).map((r) => r.outcome);
+    imageJobsOut = collectOutcomes();
 
-    // Fallback em série (#14036): se a concorrência der erro (limite de
-    // requisições simultâneas do backend, não medido), repetir os jobs que
-    // falharam, um por vez, na ordem original. Em `--serial` não há
-    // repetição: a falha é a de sempre.
-    const failedIdx = runs.map((r, i) => (r.outcome.ok ? -1 : i)).filter((i) => i >= 0);
-    if (failedIdx.length > 0 && imageConcurrency > 1) {
+    // Fallback em série (#14036): repetir as que falharam, uma por vez, na
+    // ordem original, com `--force` (`retryArgs`), só quando a repetição tem
+    // chance de mudar o resultado (`shouldRetrySerially`): pelo menos uma
+    // imagem passou, ou o stderr indica limite de concorrência/taxa. Todas
+    // falharam sem esse sinal = abort direto. Em `--serial` não há repetição.
+    const failedIdx = runs.map((r, i) => (r && !r.outcome.ok ? i : -1)).filter((i) => i >= 0);
+    if (
+      failedIdx.length > 0 &&
+      imageConcurrency > 1 &&
+      shouldRetrySerially(runs.map((r) => ({ ok: r!.outcome.ok, stderr: r!.result.stderr })))
+    ) {
       const labels = failedIdx.map((i) => `${specs[i].destaque}:${specs[i].ratio}`);
-      report.note(`⚠️  image-generate.ts: ${labels.join(", ")} falhou(aram) em paralelo — repetindo em série.`);
+      report.note(`⚠️  image-generate.ts: ${labels.join(", ")} falhou(aram) em paralelo — repetindo em série, com --force.`);
       logEvent(deps, opts.edition, "warn", "stage3_image_parallel_fallback", {
-        details: { failed: failedIdx.map((i) => runs[i].outcome) },
+        details: { failed: failedIdx.map((i) => runs[i]!.outcome) },
       });
       for (const i of failedIdx) {
-        const retry = await runJob(specs[i]);
+        const retry = await runJob({ ...specs[i], args: retryArgs(specs[i].args) });
         runs[i] = { result: retry.result, outcome: { ...retry.outcome, retriedSerially: true } };
       }
-      imageJobsOut = runs.map((r) => r.outcome);
+      imageJobsOut = collectOutcomes();
+    } else if (failedIdx.length > 0 && imageConcurrency > 1) {
+      report.note("↷ todas as imagens falharam sem sinal de limite de concorrência — sem repetição em série.");
     }
 
     // Resultado por destaque. Falha de qualquer ratio segue BLOQUEANTE (#4090),
@@ -649,13 +782,14 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
     const failures: string[] = [];
     const secs = (ms: number) => `${Math.round(ms / 1000)}s`;
     for (const d of readyForImages) {
-      const r2 = runs.find((r) => r.outcome.destaque === d && r.outcome.ratio === "2x1")!;
-      const r45 = runs.find((r) => r.outcome.destaque === d && r.outcome.ratio === "4x5")!;
+      const r2 = runs.find((r) => r?.outcome.destaque === d && r.outcome.ratio === "2x1");
+      const r45 = runs.find((r) => r?.outcome.destaque === d && r.outcome.ratio === "4x5");
+      if (!r2 && !r45) continue; // `--serial` abortou antes deste destaque
       const errs: string[] = [];
-      if (!r2.outcome.ok) {
+      if (r2 && !r2.outcome.ok) {
         errs.push(`❌ image-generate.ts ${d} (2x1) falhou (exit ${r2.outcome.exitCode}): ${tailStderr(r2.result.stderr)}`);
       }
-      if (!r45.outcome.ok) {
+      if (r45 && !r45.outcome.ok) {
         errs.push(
           `❌ image-generate.ts ${d} (4x5 nativo) falhou (exit ${r45.outcome.exitCode}) — BLOQUEANTE (#4090): ${tailStderr(r45.result.stderr)}`,
         );
@@ -663,14 +797,14 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       destaques.push({
         destaque: d,
         lintOk: true,
-        imageGenerated: r2.outcome.ok,
-        nativeArt4x5Generated: r45.outcome.ok,
+        imageGenerated: r2?.outcome.ok ?? false,
+        nativeArt4x5Generated: r45?.outcome.ok ?? false,
         ...(errs.length > 0 ? { error: errs.join(" ; ") } : {}),
       });
       if (errs.length > 0) {
         for (const e of errs) report.note(e);
         failures.push(...errs);
-      } else {
+      } else if (r2 && r45) {
         report.note(
           `✅ ${d}: lint ok, imagens 2x1 (${secs(r2.outcome.durationMs)}) / 4x5-nativo (${secs(r45.outcome.durationMs)}) geradas.`,
         );

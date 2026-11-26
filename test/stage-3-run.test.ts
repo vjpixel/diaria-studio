@@ -11,6 +11,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, sep } from "node:path";
 import {
   runStage3,
   parseStage3RunArgs,
@@ -19,6 +22,9 @@ import {
   Stage3Abort,
   runWithConcurrency,
   realExecAsync,
+  killChildTree,
+  shouldRetrySerially,
+  retryArgs,
   DEFAULT_IMAGE_CONCURRENCY,
   type Stage3RunDeps,
   type ExecFn,
@@ -615,9 +621,69 @@ describe("runWithConcurrency (#14036)", () => {
 describe("realExecAsync (#14036) — spawn de verdade, sem gerar imagem", () => {
   it("captura exit code e stderr (image-generate.ts sem args sai 1 no uso, antes de qualquer geração)", async () => {
     const root = new URL("..", import.meta.url);
-    const r = await realExecAsync(fileURLToPath(root))("scripts/image-generate.ts", []);
+    const r = await realExecAsync(fileURLToPath(root), { forwardSignals: false })("scripts/image-generate.ts", []);
     assert.equal(r.code, 1);
     assert.match(r.stderr, /Uso: image-generate\.ts/);
+  });
+
+  it("filho que passa do teto é morto pela árvore (por PID) e vira code 1", async () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const dir = mkdtempSync(join(tmpdir(), "stage3-timeout-14036-"));
+    const sleeper = join(dir, "sleeper.mjs");
+    writeFileSync(sleeper, "setTimeout(() => {}, 60_000);\n");
+    const killed: Array<number | undefined> = [];
+    try {
+      const exec = realExecAsync(root, {
+        timeoutMs: 1500,
+        forwardSignals: false,
+        killTree: (pid) => {
+          killed.push(pid);
+          killChildTree(pid);
+        },
+      });
+      const r = await exec(relative(root, sleeper).split(sep).join("/"), []);
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /foi morto/);
+      assert.equal(killed.length, 1);
+      assert.equal(typeof killed[0], "number");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("killChildTree (#14036)", () => {
+  it("Windows: taskkill /T /F pelo PID", () => {
+    const pids: number[] = [];
+    killChildTree(4242, { platform: "win32", execTaskkill: (p) => pids.push(p), killFn: () => assert.fail("sem kill POSIX no Windows") });
+    assert.deepEqual(pids, [4242]);
+  });
+  it("POSIX: SIGKILL no grupo (-pid) e no pid", () => {
+    const sent: Array<[number, string]> = [];
+    killChildTree(4242, { platform: "linux", killFn: (p, s) => sent.push([p, s]), execTaskkill: () => assert.fail("sem taskkill no POSIX") });
+    assert.deepEqual(sent, [[-4242, "SIGKILL"], [4242, "SIGKILL"]]);
+  });
+  it("sem pid: não faz nada", () => {
+    killChildTree(undefined, { platform: "win32", execTaskkill: () => assert.fail("não deveria matar") });
+  });
+});
+
+describe("shouldRetrySerially / retryArgs (#14036)", () => {
+  it("repete se alguma passou", () => {
+    assert.equal(shouldRetrySerially([{ ok: true, stderr: "" }, { ok: false, stderr: "boom" }]), true);
+  });
+  it("todas falharam: só repete com sinal de concorrência/taxa", () => {
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "login expirado" }, { ok: false, stderr: "x" }]), false);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "HTTP 429" }, { ok: false, stderr: "x" }]), true);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "rate limit exceeded" }]), true);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "too many concurrent requests" }]), true);
+  });
+  it("nenhuma falha: não repete", () => {
+    assert.equal(shouldRetrySerially([{ ok: true, stderr: "" }]), false);
+  });
+  it("retryArgs acrescenta --force uma vez só", () => {
+    assert.deepEqual(retryArgs(["--destaque", "d1"]), ["--destaque", "d1", "--force"]);
+    assert.deepEqual(retryArgs(["--destaque", "d1", "--force"]), ["--destaque", "d1", "--force"]);
   });
 });
 
@@ -708,13 +774,54 @@ describe("runStage3 — imagens em paralelo (#14036)", () => {
     assert.ok(result.notes.some((n) => n.includes("2 imagens falharam") && n.includes("d1 (2x1)") && n.includes("d3 (2x1)")));
   });
 
-  it("--serial não repete a falha (a falha é a de sempre)", async () => {
-    const gen = makeFakeImageGen((args) => (args.includes("d1") && !args.includes("--ratio") ? fail(1, "x") : ok("{}")));
-    const { exec } = makeFakeExec(happyHandlers());
+  it("--serial aborta na 1ª falha, como antes: não roda o resto nem repete", async () => {
+    const gen = makeFakeImageGen((args) => (args.includes("d1") && !args.includes("--ratio") ? fail(1, "Gemini API error") : ok("{}")));
+    const { exec, calls } = makeFakeExec(happyHandlers());
     const result = await runStage3(["--edition", "260423", "--serial"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 1);
+    assert.deepEqual(gen.started, ["d1:2x1"]);
+    assert.equal(result.imageJobs?.length, 1);
+    assert.ok(result.imageJobs?.every((j) => !j.retriedSerially));
+    assert.deepEqual(result.destaques.map((d) => d.destaque), ["d1"]);
+    assert.ok(result.notes.some((n) => n.includes("image-generate.ts d1 (2x1) falhou (exit 1): Gemini API error")));
+    assert.ok(!result.notes.some((n) => n.includes("imagens falharam")), "mensagem única, como na ordem antiga");
+    assert.equal(calls.some((c) => c.args.includes("stage3_image_parallel_fallback")), false);
+  });
+
+  it("paralelo: TODAS falham sem sinal de concorrência -> abort direto, sem repetição", async () => {
+    const gen = makeFakeImageGen(() => fail(1, "codex: login expirado"));
+    const { exec, calls } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
     assert.equal(result.code, 1);
     assert.equal(gen.calls.length, 6);
     assert.ok(result.imageJobs?.every((j) => !j.retriedSerially));
+    assert.equal(calls.some((c) => c.args.includes("stage3_image_parallel_fallback")), false);
+    assert.ok(result.notes.some((n) => n.includes("sem repetição em série")));
+  });
+
+  it("paralelo: TODAS falham com 429 -> repete em série (a concorrência pode ser a causa)", async () => {
+    const gen = makeFakeImageGen((_args, attempt) => (attempt === 1 ? fail(1, "HTTP 429 Too Many Requests") : ok("{}")));
+    const { exec } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 0);
+    assert.equal(gen.calls.length, 12);
+    assert.ok(result.imageJobs?.every((j) => j.ok && j.retriedSerially));
+  });
+
+  it("a repetição leva --force (nunca pula por 'já existe' um arquivo parcial) e o 2x1 mantém --keep-4x5-nativo", async () => {
+    const gen = makeFakeImageGen((args, attempt) => (args.includes("d1") && attempt === 1 ? fail(1, "compress-jpeg falhou") : ok("{}")));
+    const { exec } = makeFakeExec(happyHandlers());
+    // 2x1 do d1 ausente: o 1º 2x1 leva --keep-4x5-nativo e não leva --force.
+    const deps = baseDeps({ exec, execAsync: gen.execAsync, existsSync: (p) => !p.replace(/\\/g, "/").endsWith("04-d1-2x1.jpg") });
+    const result = await runStage3(["--edition", "260423"], deps);
+    assert.equal(result.code, 0);
+    const d1Calls = gen.calls.filter((a) => a.includes("d1"));
+    assert.equal(d1Calls.length, 4);
+    const [first2x1, retry2x1] = d1Calls.filter((a) => gen.label(a) === "d1:2x1");
+    assert.ok(!first2x1.includes("--force"));
+    assert.ok(retry2x1.includes("--force") && retry2x1.includes("--keep-4x5-nativo"));
+    const retry4x5 = d1Calls.filter((a) => gen.label(a) === "d1:4x5")[1];
+    assert.equal(retry4x5.filter((x) => x === "--force").length, 1, "--force sem duplicar");
   });
 
   it("lint com violação num destaque: os outros geram em paralelo, o pausado não gera nada", async () => {
