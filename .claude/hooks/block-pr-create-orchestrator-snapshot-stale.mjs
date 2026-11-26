@@ -153,6 +153,16 @@ export function logSnapshotGuardEvent(message, details, { repoRoot, appendFn = a
 // #2019: CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por
 // test/block-pr-create-orchestrator-snapshot-stale.test.ts).
+/**
+ * Primeiro filtro do hook: só Bash com `gh pr create`. Exportado para o
+ * despachante único (#14045), que só spawna este hook quando ele se aplica;
+ * o CLI abaixo usa a mesma função, então o filtro dos dois é um só.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  return isGhPrCreateCommand(payload.tool_input?.command);
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
@@ -166,9 +176,8 @@ if (
   process.stdin.on("end", () => {
     try {
       const payload = JSON.parse(data || "{}");
-      if (payload.tool_name && payload.tool_name !== "Bash") return;
+      if (!appliesTo(payload)) return;
       const command = payload.tool_input?.command;
-      if (!isGhPrCreateCommand(command)) return;
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));

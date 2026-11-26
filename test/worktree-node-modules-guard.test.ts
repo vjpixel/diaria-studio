@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkNodeModulesSymlink, guardBeforeNpmInstall } from "../scripts/lib/worktree-node-modules-guard.ts";
+import { armedBashPreToolUseGuards } from "./_helpers/bash-pretooluse-guards.ts";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOOK_BASENAME = "block-npm-install-node-modules-symlink.mjs";
@@ -103,13 +104,9 @@ test("erro de inspeção não-ENOENT bloqueia em vez de mascarar", { skip: proce
 // preinstall roda, `node_modules` já é ENOENT e o guard legitimamente libera.
 // O enforcement real é o PreToolUse hook, que roda antes do npm ser invocado.
 test("o hook PreToolUse do guard está registrado em .claude/settings.json", () => {
-  const settings = JSON.parse(readFileSync(join(repoRoot, ".claude/settings.json"), "utf8")) as {
-    hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ args?: string[] }> }> };
-  };
-  const bashGroups = (settings.hooks?.PreToolUse ?? []).filter((g) => g.matcher === "Bash");
-  const args = bashGroups.flatMap((g) => (g.hooks ?? []).flatMap((h) => h.args ?? []));
+  // #14045: o grupo Bash registra o despachante único, que roda este guard.
   assert.ok(
-    args.some((a) => a.includes(HOOK_BASENAME)),
+    armedBashPreToolUseGuards().includes(HOOK_BASENAME),
     `o hook ${HOOK_BASENAME} precisa estar no grupo PreToolUse/Bash — sem isso o guard não intercepta npm ci nenhum`,
   );
   assert.ok(existsSync(join(repoRoot, ".claude/hooks", HOOK_BASENAME)));

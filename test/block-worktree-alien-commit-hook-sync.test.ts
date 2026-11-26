@@ -26,7 +26,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,7 @@ import {
   isLinkedWorktree,
 } from "../.claude/hooks/block-worktree-alien-commit.mjs";
 import { claimWorktree } from "../scripts/lib/session-registry.ts";
+import { armedBashPreToolUseGuards } from "./_helpers/bash-pretooluse-guards.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK_PATH = join(ROOT, ".claude", "hooks", "block-worktree-alien-commit.mjs");
@@ -67,15 +68,9 @@ describe(".claude/hooks/block-worktree-alien-commit.mjs existe e é registrado (
     // lugar do arquivo não pegaria uma futura regressão de posicionamento
     // (ex: hook movido pra PostToolUse, ou pro matcher errado) — navega o
     // JSON estruturado até o array de args da entrada certa.
-    const settings = JSON.parse(readFileSync(join(ROOT, ".claude", "settings.json"), "utf8"));
-    const preToolUse = settings?.hooks?.PreToolUse;
-    assert.ok(Array.isArray(preToolUse), "settings.json deve ter hooks.PreToolUse como array");
-    const bashGroup = preToolUse.find((g: { matcher?: string }) => g.matcher === "Bash");
-    assert.ok(bashGroup, "deve existir um grupo PreToolUse com matcher \"Bash\"");
-    const entries: Array<{ args?: string[] }> = bashGroup.hooks ?? [];
-    const registered = entries.some((h) =>
-      (h.args ?? []).some((a) => a.includes("block-worktree-alien-commit.mjs")),
-    );
+    // #14045: o grupo Bash registra o despachante único, que roda a lista
+    // GUARDS dele; o helper navega as duas fontes.
+    const registered = armedBashPreToolUseGuards().includes("block-worktree-alien-commit.mjs");
     assert.ok(
       registered,
       "block-worktree-alien-commit.mjs precisa estar em hooks.PreToolUse[matcher=Bash][].args — #7895 (era código morto, entregue no #7810 sem wiring)",
