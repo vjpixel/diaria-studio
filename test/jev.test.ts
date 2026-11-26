@@ -222,6 +222,55 @@ describe("askJev — transporte", () => {
     assert.equal((answers[0] as JevChoiceAnswer).choice, "x");
   });
 
+  it("#14127 preserva erro de rede original e não repete POST", async () => {
+    const failure = new TypeError("connection lost");
+    let calls = 0;
+    const fetchImpl = (async () => { calls++; throw failure; }) as typeof fetch;
+    await assert.rejects(askJev({}, [CHOICE_Q], { apiKey: "k", fetchImpl }), (e) => e === failure);
+    assert.equal(calls, 1);
+  });
+
+  it("#14127 não retenta 4xx/5xx nem JSON inválido", async () => {
+    for (const status of [400, 500, 200]) {
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls++;
+        return new Response("not JSON", { status });
+      }) as typeof fetch;
+      await assert.rejects(askJev({}, [CHOICE_Q], { apiKey: "k", fetchImpl, retryBaseMs: 1 }));
+      assert.equal(calls, 1, `HTTP ${status}`);
+    }
+  });
+
+  it("#14127 preserva corpo e status do último 429", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => new Response(`limited-${++calls}`, {
+      status: 429, headers: { "Retry-After": "3600" },
+    })) as typeof fetch;
+    await assert.rejects(askJev({}, [CHOICE_Q], {
+      apiKey: "k", fetchImpl, maxRetries: 1, retryBaseMs: 1,
+    }), (e) => e instanceof JevHttpError && e.status === 429 && e.message.includes("limited-2"));
+    assert.equal(calls, 2);
+  });
+
+  it("#14127 timeout continua cobrindo a leitura do corpo sem retry", async () => {
+    let calls = 0;
+    const failure = new Error("body aborted");
+    const fetchImpl = (async (_url, init) => {
+      calls++;
+      return {
+        ok: true, status: 200,
+        json: () => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(failure), { once: true });
+        }),
+      } as Response;
+    }) as typeof fetch;
+    await assert.rejects(askJev({}, [CHOICE_Q], {
+      apiKey: "k", fetchImpl, timeoutMs: 5,
+    }), (e) => e === failure);
+    assert.equal(calls, 1);
+  });
+
   it("devolve [] pra lista de perguntas vazia, sem chamar fetch", async () => {
     let calls = 0;
     const fetchImpl = (async () => {
