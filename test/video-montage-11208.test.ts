@@ -667,8 +667,14 @@ describe("skill e fluxo do dia (#11208)", () => {
   it("SKILL.md da /diaria-video-montagem: frontmatter, 2 gates, CLI e passagem para a /diaria-publica-video", () => {
     const skill = read(".claude/skills/diaria-video-montagem/SKILL.md");
     assert.match(skill, /^---\nname: diaria-video-montagem\ndescription: /);
-    for (const sub of ["transcribe", "decupagem", "roteiro", "build", "srt", "preview", "review"]) {
+    for (const sub of ["transcribe", "decupagem", "roteiro", "srt"]) {
       assert.ok(skill.includes(`scripts/video-montagem.ts ${sub}`), `cita o subcomando ${sub}`);
+    }
+    // #14118: os subcomandos longos (passam do teto de 600 s do Bash) rodam pelo
+    // wrapper em background; a skill cita o wrapper, nunca a chamada direta.
+    for (const sub of ["build", "preview", "review", "face"]) {
+      assert.ok(skill.includes(`scripts/video-montagem-job.ts run ${sub} `), `cita o subcomando ${sub} pelo wrapper`);
+      assert.ok(!skill.includes(`scripts/video-montagem.ts ${sub} `), `não cita ${sub} em primeiro plano`);
     }
     assert.match(skill, /Gate 1/);
     assert.match(skill, /Gate 2/);
