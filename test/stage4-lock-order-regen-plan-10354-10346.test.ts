@@ -22,9 +22,10 @@ import {
   planEstiloRegenerationForEdition,
 } from "../scripts/run-image-crop-reviewer.ts";
 import { checkStarryNightDetected } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const STAGE4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+const STAGE4 = readStage4Playbook();
 
 describe("#10354: trava da edição antes da 1ª escrita do Stage 4", () => {
   it("acquire aparece antes do update-stage-status --status running", () => {

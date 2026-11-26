@@ -21,8 +21,8 @@
  *   `family: "estado"`, P1) — é o caso concreto das 6.
  * - Timer `diaria-*` armado SEM task correspondente no registro → alarme
  *   mais fraco (`orphanTimers`, P3) — sinal de unit órfã (task renomeada
- *   ou removida do registro sem desarmar o timer). Duas exceções
- *   conhecidas e documentadas ficam de fora via `KNOWN_SCHEMA_EXCEPTIONS`
+ *   ou removida do registro sem desarmar o timer). As exceções
+ *   conhecidas e documentadas ficam de fora via `KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES`
  *   abaixo — nunca alarmam como órfãs.
  *
  * I/O (`systemctl --user list-timers --all`, SÓ LEITURA — nunca
@@ -64,6 +64,13 @@ import { unitBaseName } from "./systemd-units.ts";
  * depois do fim da rodada anterior — mesma razão. Estado de instalação: ver
  * `docs/scheduled-tasks-registry.md`; sem timer armado a entrada aqui não
  * muda nada.
+ *
+ * `diaria-infra-300-heartbeat` (#12981, #13974): heartbeat externo do 300 a
+ * cada 5 min (`OnUnitActiveSec=5min`), que `ScheduledTaskSchedule` não
+ * expressa. Fica fora do registro também por decisão: o auto-arme do
+ * `SCHEDULED_TASKS` o ligaria numa máquina sem as credenciais do KV. Os
+ * templates ficam em `infra/infra-300-heartbeat/` e foram instalados à mão no
+ * 300 (`docs/infra-300-watchdog.md`).
  */
 export const KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES: readonly string[] = [
   "diaria-edicao-diaria",
@@ -71,6 +78,7 @@ export const KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES: readonly string[] = [
   "diaria-node-modules-health-check",
   "diaria-gdrive-bisync",
   "diaria-gdrive-data-bisync",
+  "diaria-infra-300-heartbeat",
 ];
 
 /** Pure — extrai os nomes-base de unit (sem `.timer`) da saída de

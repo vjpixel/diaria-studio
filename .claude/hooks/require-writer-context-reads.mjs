@@ -4,7 +4,7 @@
 // Problema (edição 261029): `writer-destaque` D1 leu 2 de 4 arquivos de
 // contexto e devolveu `written: true`; o `social-writer` não leu
 // `context/templates/social-instagram.md` nem `context/editorial-rules.md`.
-// O playbook (orchestrator-stage-4 §4d.1b, #9871) mandava re-disparar quando o
+// O playbook (orchestrator-stage-4-gate §4d.1b, #9871) mandava re-disparar quando o
 // agente ADMITISSE não ter lido — o guard dependia da confissão. Este hook
 // troca a confissão por registro mecânico:
 //

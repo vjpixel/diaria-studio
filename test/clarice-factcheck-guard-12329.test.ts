@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { filterClariceSuggestions } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const conditional = { from: "seria", to: "é" };
 const real = { from: "as empresa", to: "as empresas" };
@@ -46,7 +47,7 @@ test("CLI integra proteção, ignora log dry-run e recusa log inválido", () => 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test("os dois fluxos do Stage 4 habilitam a proteção factual", () => {
-  const text = readFileSync(".claude/agents/orchestrator-stage-4.md", "utf8");
+  const text = readStage4Playbook();
   const commands = text.match(/scripts\/clarice-filter\.ts[^`]*`/g) ?? [];
   assert.equal(commands.length, 2);
   for (const command of commands) assert.match(command, /--edition-dir \{EDITION_DIR\}/);

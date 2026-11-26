@@ -1,9 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { readStage1Playbook } from "../scripts/lib/stage01-playbook.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
-const md = readFileSync(".claude/agents/orchestrator-stage-4.md", "utf8");
+const md = readStage4Playbook();
 // Parágrafos = blocos separados por linha em branco.
 const paragraphs = md.split(/\n\s*\n/);
 const hits = paragraphs.filter((p) => p.includes("same_fact_warnings"));

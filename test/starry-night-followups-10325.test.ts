@@ -31,6 +31,7 @@ import {
 import { checkCropReviewWarnings, checkStarryNightDetected } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
 import { estiloFalsePositivesPath } from "../scripts/lib/estilo-false-positives.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 let dir: string;
@@ -295,7 +296,7 @@ describe("#10328: falso positivo guardado fora do veredito, chaveado pelo md5", 
 });
 
 describe("#10326: playbook do Stage 4 libera a trava nos ramos terminais", () => {
-  const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
   const line = (prefix: string) => stage4.split("\n").find((l) => l.startsWith(prefix)) ?? "";
 
   it("`editar` e `abortar` chamam edition-lock.ts release", () => {

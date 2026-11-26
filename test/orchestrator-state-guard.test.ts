@@ -56,6 +56,7 @@ const STAGE_FILES = [
   "orchestrator-stage-2.md",
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
+  "orchestrator-stage-4-gate.md",
   "orchestrator-stage-5.md",
   "orchestrator-stage-6.md",
 ];

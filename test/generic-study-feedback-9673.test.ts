@@ -24,6 +24,7 @@ import { feedbackPath, recordGenericStudyFeedback } from "../scripts/generic-stu
 import { collectShadowFeedback } from "../scripts/generic-study-shadow-report.ts";
 import { buildGenericStudyQuestions, recordGenericStudyAnswerFromPanel } from "../scripts/studio-ui/studio-gate.ts";
 import { startStudioServer } from "../scripts/studio-ui/server.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -243,7 +244,7 @@ describe("agregador (decisão da #9673)", () => {
 });
 
 describe("playbook do Stage 4 (guard textual)", () => {
-  const md = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+  const md = readStage4Playbook();
 
   it("resumo do gate tem o bloco de perguntas logo abaixo do cabeçalho", () => {
     const header = md.indexOf("📋 REVISÃO EDITORIAL — Edição {AAMMDD}");

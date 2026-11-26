@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { writeSentinel, checkSentinel } from "../scripts/check-humanizer-social.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 function mkSocialMd(d1Body: string, postPixelBody = "Comentário pessoal limpo, sem tique."): string {
   return [
@@ -193,7 +194,7 @@ describe("#4505 item 2 — wiring de prosa (cross-check com orchestrator-prompt.
     // mais detalhada (ordem, linguagem GATE-BLOCKING, referência #4505) vive
     // em test/orchestrator-prompt.test.ts — describe "#4505 item 2".
     const projectRoot = join(import.meta.dirname, "..");
-    const stage4 = readFileSync(join(projectRoot, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const stage4 = readStage4Playbook();
     const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
     assert.ok(section4d1.includes("--check no-antithesis-reveal --md {EDITION_DIR}/03-social.md"));
     assert.ok(section4d1.includes("--check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md"));

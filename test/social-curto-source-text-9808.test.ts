@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const root = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
@@ -30,7 +31,7 @@ describe("#9808 — social-curto recebe source_text_paths", () => {
   });
 
   it("orchestrator-stage-4.md §e espelha source_text_paths no re-dispatch do curto", () => {
-    const md = read(".claude/agents/orchestrator-stage-4.md");
+    const md = readStage4Playbook();
     const e = md.split("\n").find((l) => l.startsWith("**e. Dispatchar `social-writer`"));
     assert.ok(e, "§e não encontrado");
     assert.match(e!, /social-curto[^\n]*source_text_paths/);
