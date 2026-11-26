@@ -1710,7 +1710,7 @@ function main(): void {
   writeFileSync(resolve(args.out), JSON.stringify(kept, null, 2), "utf8");
 
   // #4695: sidecar de stats junto do --out (mesmo padrão de
-  // `topic-cluster-stats.json`, ver orchestrator-stage-1-research.md 1n) —
+  // `topic-cluster-stats.json`, ver orchestrator-stage-1-fallback.md 1n) —
   // `--out` sobrescreve `01-categorized.json` in-place com só `kept`, então
   // `removed`/`editorSubmittedSpared` precisam de um arquivo próprio pro
   // gate (item 4c) conseguir ler sem depender do stderr desta invocação.

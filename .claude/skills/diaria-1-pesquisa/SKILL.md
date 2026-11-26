@@ -56,13 +56,15 @@ Antes de criar qualquer task nova, varrer `TaskList()` e marcar como `completed`
 1. Verificar pré-requisitos: `context/sources.md` e `context/audience-profile.md` (ambos não-placeholder). `past-editions.md` é regenerado automaticamente — não precisa estar atualizado.
 2. **Executar o playbook diretamente no top-level (#207).** Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa em sequência **§ 0 Setup** (que inclui refresh de `past-editions.md` via `scripts/refresh-past-editions.ts` e inbox drain via `scripts/inbox-drain.ts`) + **§ 1 Stage 1 — Research**. **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer` em paralelo conforme o playbook prescreve.
 
+   **Só os playbooks principais por padrão (#14030):** `orchestrator-stage-0-preflight.md` e `orchestrator-stage-1-research.md` trazem o caminho dos runners (`stage-0-run.ts`, `stage-1-run.ts`) e os passos fora deles. `orchestrator-stage-0-fallback.md`, `orchestrator-stage-1-fallback.md` e `orchestrator-stage-0-replies.md` só são lidos no ponto em que o playbook principal manda (runner falhando fora dos codes previstos, seção citada, §0-replies com `pre_gate`).
+
    Variáveis pra alimentar o playbook:
    - `edition_date = $1` (AAMMDD)
    - `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
    - `window_days = {valor confirmado no Passo 1}`
    - `stop_after_stage = 1` (parar após o gate do Stage 1)
    - `auto_approve = true` **se e somente se `--no-gates` foi passado** (#5738); ausente a flag, `false` — que é o default de `orchestrator-stage-0-preflight` e mantém o gate do Stage 1 exatamente como sempre foi em invocação manual. É esta linha que faz a flag valer alguma coisa: sem ela, `--no-gates` seria aceito e ignorado.
-   - `pre_gate = true` **se e somente se `--session-supervised` foi passado** (#6719) — independente do valor de `--no-gates`/`auto_approve` acima. Ausente a flag, `pre_gate` fica `undefined` (skip de § 0-replies, comportamento pré-existente). É esta linha que faz `orchestrator-stage-0-preflight.md` § 0-replies rodar quando `/diaria-edicao` spawna este Stage 1 com o editor presente na sessão-mãe.
+   - `pre_gate = true` **se e somente se `--session-supervised` foi passado** (#6719) — independente do valor de `--no-gates`/`auto_approve` acima. Ausente a flag, `pre_gate` fica `undefined` (skip de § 0-replies, comportamento pré-existente). É esta linha que faz § 0-replies (`orchestrator-stage-0-replies.md`, #14030) rodar quando `/diaria-edicao` spawna este Stage 1 com o editor presente na sessão-mãe.
 
    O playbook executa: refresh de `past-editions.md` → inbox drain → paralelismo (source-researcher × N + discovery-searcher × M + eia-composer background) → `scripts/verify-accessibility.ts` → `scripts/enrich-inbox-articles.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `scripts/topic-cluster.ts` → `scripts/filter-date-window.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` → drive push → **pre-gate validator** → GATE.
 

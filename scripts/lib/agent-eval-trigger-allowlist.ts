@@ -103,7 +103,7 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
     "revisor somente leitura do roteiro de fala do vídeo (#13131): devolve crítica por vídeo para o coordenador filtrar antes do editor, não produz texto de destaque/social que os graders mecânicos da #8143 avaliem.",
   ),
   ...excludedGroup(
-    ["orchestrator", "orchestrator-stage-0-preflight", "orchestrator-stage-1-research", "orchestrator-stage-2", "orchestrator-stage-3", "orchestrator-stage-4", "orchestrator-stage-5", "orchestrator-stage-6"],
+    ["orchestrator", "orchestrator-stage-0-preflight", "orchestrator-stage-0-fallback", "orchestrator-stage-0-replies", "orchestrator-stage-1-research", "orchestrator-stage-1-fallback", "orchestrator-stage-2", "orchestrator-stage-3", "orchestrator-stage-4", "orchestrator-stage-5", "orchestrator-stage-6"],
     "playbook lido pelo top-level Claude Code, não subagente dispatchado via Agent (#3710/#207) — não produz output de destaque/social sobre o qual os graders mecânicos da #8143 façam sentido.",
   ),
   ...excludedGroup(

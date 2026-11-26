@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
+import { readStage1Playbook } from "../scripts/lib/stage01-playbook.ts";
 
 // #8682: o pedido da issue é um teste que valide que scripts citados no
 // playbook existem. O primeiro rascunho varria TODO o `.claude/agents/*.md`
@@ -10,13 +11,14 @@ import { join } from "path";
 // o refactor em vez de apontar o que #8682 de fato tocou. O escopo aqui é
 // restrito à seção alterada por #8682 (§1t/1u/1u-bis/1u-ter), cobrindo
 // exatamente as referências efetivamente removidas/substituídas.
-const PLAYBOOK = ".claude/agents/orchestrator-stage-1-research.md";
+// #14030: a seção 1t mora no fallback; o conjunto é lido pelo helper.
+const PLAYBOOK = ".claude/agents/orchestrator-stage-1-{research,fallback}.md";
 const SECTION_START = "### 1t / 1u / 1u-bis / 1u-ter";
 
 /** Extrai o trecho do playbook coberto por #8682: da seção 1t até o próximo
  * cabeçalho `### `, que não foi alterado. */
 function section8682(): string {
-  const t = readFileSync(PLAYBOOK, "utf-8");
+  const t = readStage1Playbook();
   const start = t.indexOf(SECTION_START);
   assert.ok(start >= 0, `seção #8682 não encontrada em ${PLAYBOOK}`);
   const after = t.slice(start + SECTION_START.length);

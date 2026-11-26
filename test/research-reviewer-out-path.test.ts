@@ -13,8 +13,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { readStage1Playbook } from "../scripts/lib/stage01-playbook.ts";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,7 +23,8 @@ const ROOT = resolve(__dirname, "..");
 
 describe("research-reviewer removal (#1553 P3)", () => {
   it("orchestrator-stage-1-research.md NÃO invoca research-reviewer agent", () => {
-    const md = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-1-research.md"), "utf8");
+    // #14030: lê principal + fallback do Stage 1.
+    const md = readStage1Playbook(ROOT);
     // Buscar invocação ativa (Agent dispatch ou comando shell)
     // Excluir menções históricas/comentários que apenas referenciam o removal
     const activeInvocation = /Disparar `research-reviewer`/.test(md);
@@ -35,7 +36,7 @@ describe("research-reviewer removal (#1553 P3)", () => {
   });
 
   it("seção 1p2 documenta a remoção com rationale", () => {
-    const md = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-1-research.md"), "utf8");
+    const md = readStage1Playbook(ROOT);
     const f2section = md.match(/### 1p2\.[\s\S]{0,1500}/);
     assert.ok(f2section, "seção 1p2 deve existir (mesmo que apenas pra documentar remoção)");
     assert.match(f2section![0], /REMOVIDO/i, "seção deve marcar explicitamente como removida");

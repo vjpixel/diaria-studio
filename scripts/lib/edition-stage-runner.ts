@@ -103,7 +103,7 @@ export const HEADLESS_FLAGS = "--no-gates";
  * que o #5744 conflou com outra bem diferente ("o editor está presente nesta
  * sessão, ou isto é uma rodada desassistida?"). Antes do #5744, `/diaria-edicao`
  * sem `--no-gates` rodava o Stage 1 INLINE no processo top-level e setava
- * `pre_gate = true` ali mesmo — `orchestrator-stage-0-preflight.md` § 0-replies
+ * `pre_gate = true` ali mesmo — `orchestrator-stage-0-replies.md` § 0-replies (#14030)
  * (o rascunho de resposta pro concurso "ache o erro") lia esse `pre_gate` e
  * rodava normalmente. Ao trocar o Stage 1 por um `claude --print` num
  * PROCESSO NOVO, `pre_gate` nunca mais chega lá — a skill `/diaria-1-pesquisa`
