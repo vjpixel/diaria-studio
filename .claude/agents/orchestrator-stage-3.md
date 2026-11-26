@@ -35,11 +35,11 @@ Exit code handling:
 
 Cobre só o miolo determinístico de §3b: lint pre-flight → `image-generate.ts` (2x1 + 4x5 nativo) por destaque → card 4:5 → leaderboard top1 → box de campeões → pre-gate invariants → descoberta dos pares do crop-reviewer. **Não cobre** §3a (polling do É IA? em background), §3a-bis (`Skill("humanizador")` + `mcp__clarice__correct_text`), o dispatch `Agent("image-crop-reviewer", ...)` de §3b, nem o gate humano final + sentinel — nenhum desses é alcançável de um `spawnSync` (script Node puro, sem MCP/Skill/Agent/espera de resposta). Rodar §3a e §3a-bis normalmente primeiro (abaixo); com `01-eia.md` disponível (ou skip decidido), invocar:
 ```bash
-npx tsx scripts/stage-3-run.ts --edition {AAMMDD} [--only d1,d2] [--force]
+npx tsx scripts/stage-3-run.ts --edition {AAMMDD} [--only d1,d2] [--force] [--concurrency N | --serial]
 ```
 Interpretar o JSON de saída:
 
-> **#9088 — gerador `codex`:** cada imagem leva ~1-2 min e o runner gera 2 por destaque em sequência (2x1 + 4x5) — pode passar do teto de 10 min do Bash. Rodar `stage-3-run.ts` em **background** (`run_in_background`) e aguardar o término; é idempotente, então reexecutar sem `--force` só completa o que falta.
+> **#9088 — gerador `codex`:** cada imagem leva ~1-2 min. Desde o #14036 o runner gera o 2x1 e o 4x5 de todos os destaques em paralelo (até 6 de uma vez; `--concurrency N` reduz, `--serial` volta à ordem antiga e ao abort na 1ª falha). A imagem que falhar no paralelo é repetida em série, uma vez e com `--force`, quando outra passou ou o stderr indica limite de concorrência (429); se todas falharem sem esse sinal, o abort é direto. Mesmo assim pode passar do teto de 10 min do Bash: rodar `stage-3-run.ts` em **background** (`run_in_background`) e aguardar o término; é idempotente, então reexecutar sem `--force` só completa o que falta. `imageJobs[]` traz cada imagem (destaque, ratio, `ok`, duração, `retriedSerially`) e `destaques[].error` diz qual ratio falhou.
 - `code: 0` → miolo concluído. Usar `destaques[]` (por destaque: `lintOk`/`imageGenerated`/`nativeArt4x5Generated`), `cardsGenerated`, `championsInjected`, `invariantsPassed`/`invariantsViolations` e `cropReviewPairs` no lugar de rodar os comandos individuais de §3b abaixo.
 - `code: 1` → erro duro/BLOQUEANTE (ex: geração de imagem ou composição do card com exit ≠ 0) — parar e reportar `notes[]` ao editor, mesma severidade do #4090.
 - `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo script — ComfyUI indisponível, ou #4583 raffle stale) — parar mesmo com `auto_approve`.

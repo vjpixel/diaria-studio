@@ -647,6 +647,13 @@ export const INSTAGRAM_EDITION_UTM = {
   campaign: EDICAO_DIARIA_UTM_CAMPAIGN,
 } as const;
 
+/** `utm_content` próprio do 4º post (`## um`, USE MELHOR) — mede separado dos
+ * destaques. Mora aqui desde o #13998: antes vivia em `use-melhor-post.ts`
+ * (que segue reexportando), e `social-cta-lines.ts` importar de lá puxava
+ * `newsletter-parse.ts` e 10 módulos de `lib/diaria/` para dentro do fecho de
+ * imports da retrospectiva mensal (`lib/mensal/retrospectiva-*.ts`). */
+export const USE_MELHOR_UTM_CONTENT = "usemelhor";
+
 /** LinkedIn — CTA de `{edition_url}` no `## post_pixel` (post pessoal do
  * Pixel, #1690) — distinto do post principal do LinkedIn, que não leva
  * link/UTM no corpo por decisão preservada em #595/#3627 (ver

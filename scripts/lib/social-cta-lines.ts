@@ -51,8 +51,12 @@
  * LinkedIn (`utm_source=linkedin&utm_medium=organic_social&utm_campaign=company_page_cta`).
  */
 
-import { FACEBOOK_CTA_UTM, FACEBOOK_EDITION_UTM, INSTAGRAM_EDITION_UTM } from "./shared/utm-registry.ts";
-import { USE_MELHOR_UTM_CONTENT } from "./use-melhor-post.ts";
+import {
+  FACEBOOK_CTA_UTM,
+  FACEBOOK_EDITION_UTM,
+  INSTAGRAM_EDITION_UTM,
+  USE_MELHOR_UTM_CONTENT,
+} from "./shared/utm-registry.ts";
 
 export type SocialChannel = "linkedin" | "facebook" | "instagram";
 

@@ -35,8 +35,11 @@ página não confirmava algo, está escrito "não confirmado".
   Shorts, Reels, Instagram, Threads, LinkedIn, X e TikTok (TikTok via Buffer).
 - Em curso, fora desta issue: A/B cego do DeepFilterNet contra o `afftdn`
   (#13234, `scripts/video-audio-denoise-ab.ts`).
-- Repo irmão privado `vjpixel/edicao-video` (fork evoluído da montagem), de onde
-  já vieram `verify-xml`, multi-bruto e o `face` (#12559, #12560, #12561).
+- Repo irmão privado `vjpixel/edicao-video`, consumidor do motor de montagem,
+  de onde já vieram `verify-xml`, multi-bruto e o `face` (#12559, #12560,
+  #12561). Desde 25/11/2026 o diaria-studio é a fonte canônica do motor e os
+  portes vão daqui para o edicao-video, nunca o contrário: decisão, divergências
+  conhecidas e como portar em `docs/video-motor-canonico-13999.md` (#13999).
 
 ## 1. Levantamento
 

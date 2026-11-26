@@ -11,7 +11,12 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { MonthlyPublicImage } from "../../monthly-preview-cloudflare.ts";
+/** Imagem pública de um ciclo mensal (antes definida em `monthly-preview-cloudflare.ts`, que reexporta daqui). */
+export interface MonthlyPublicImage {
+  url: string;
+  filename: string;
+  mime_type: string;
+}
 
 interface PublicImagesManifest {
   images?: Record<string, MonthlyPublicImage>;

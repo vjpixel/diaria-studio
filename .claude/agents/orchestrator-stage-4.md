@@ -778,7 +778,7 @@ Acionada pelos passos 3 e 4 acima sempre que título, imagem ou social de um des
 
 **d. Disparar a regeneração de imagem/carrossel em background** — scripts puros, genuinamente não-bloqueantes via `Bash(..., run_in_background: true)` (sintaxe atual — #8898, achado ao vivo na edição 260928: a sintaxe antiga `--edition {AAMMDD} --highlight d{N}` é recusada pelo script atual, custou uma rodada perdida ao trocar os 3 destaques no gate):
    ```bash
-   npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N}   # run_in_background: true
+   npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N} --keep-4x5-nativo   # run_in_background: true — #14036: roda junto com o 4x5 abaixo; sem a flag, o 2x1 regerado apaga o nativo que o 4x5 está gravando
    npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N} --ratio 4x5 --force   # run_in_background: true — arte nativa 4:5 da capa (sem isso, gen-social-card-4x5.ts cai no fallback 2:1)
    npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/ --destaque d{N}   # run_in_background: true — card 4:5 (capa do carrossel do Instagram)
    npx tsx scripts/gen-carousel-cards.ts --edition-dir {EDITION_DIR}/       # run_in_background: true, só se "carousel" está na cascata
