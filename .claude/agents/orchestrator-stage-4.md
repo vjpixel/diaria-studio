@@ -370,7 +370,7 @@ npx tsx scripts/stage4-factcheck-post.ts --edition-dir {EDITION_DIR}/ [--merge-p
 - `2` → **GATE-BLOCKING (#4361):** ao menos 1 claim `NOT_FOUND_IN_SOURCE` não-superlativo (`getBlockingClaims`) — a fonte primária foi verificada com sucesso e o claim simplesmente não está lá (caso real: `docs/orchestrator-stage-narrative-history.md#stage-4-fact-check-caso-real`). **NÃO montar o gate ainda.** Ação: ler os claims no stderr (D{N} + texto + note), reescrever/remover o claim de `02-reviewed.md`/`03-social.md` (ou achar suporte adicional na fonte — se o fato vem de OUTRA fonte da mesma história, indicada pelo editor ou achada por você, registrá-la com `npx tsx scripts/add-destaque-source.ts --edition-dir {EDITION_DIR}/ --destaque N --url {URL}` e redespachar o fact-checker, nunca editar `d{N}.txt` à mão, #11531), re-rodar o fact-checker até o composto sair `0` ou `1`, antes de §4c.6b. Escopo estreito de propósito (não over-broaden, #4361): exclui `claim_type: "superlative"` (mais subjetivo, continua informativo) e `DIVERGENT`/`SUSTAINED`/`INFERRED`/`SOURCE_UNREACHABLE` (DIVERGENT já é auto-corrigido em §4c.6b; os demais não confirmam ausência).
 - `4` → `--merge-partial` recusado (#14035): passo 1 com `--full` e refazer completo.
 - `5` → o autofix quebrou uma re-checagem de §4c.6c (`checks[]` com `code ≠ 0`): ver "Exit code handling" de §4c.6c.
-- `7` → JSON do autofix ausente/ilegível (`autofix.unreadable`): bloqueia; re-rodar o autofix, conferir o diff.
+- `7` → JSON do autofix ausente/ilegível (`autofix.unreadable`), ou autofix ≠ 0 depois de gravar o texto (`autofix.wrote_before_failure`, #14174): bloqueia; re-rodar o autofix, conferir o diff.
 
 **Fact-check defasado (#11671):** `--input-json` carimba `fact-check.json` com o hash de `02-reviewed.md`/`03-social.md` na 1ª passada e preserva o carimbo nas seguintes. Se o texto mudou depois da checagem, o stdout traz `Fact-check DEFASADO` (aviso, nunca bloqueio por si só): claim bloqueante cujo trecho sumiu do texto atual sai do exit 2; o que ainda aparece segue bloqueando. Se sobrar só claim sumido (nenhum ainda presente), o `--check-blocking` sai com exit 1 + `FACT-CHECK DEFASADO (#11685)`, nunca exit 0 — "sumiu" também é o claim reescrito sem re-checagem; tratar como no exit 3 acima. Re-despachar o fact-checker antes de aprovar o gate.
 
@@ -378,7 +378,7 @@ npx tsx scripts/stage4-factcheck-post.ts --edition-dir {EDITION_DIR}/ [--merge-p
 
 **4c.6b — Auto-fix de DIVERGENT determinístico (#2598, estendido a social em #3224):**
 
-O composto do passo 2 (§4c.6) já aplicou as correções automáticas de claims `DIVERGENT` com `suggested_fix` (`apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/`, mesmo script, só que rodado por ele): o desfecho está em `autofix` do JSON e em `_internal/fact-check-autofix.json`. `autofix.code` = `1` → logar warn; seguir sem auto-fix (não bloqueia o gate).
+O composto do passo 2 (§4c.6) já aplicou as correções automáticas de claims `DIVERGENT` com `suggested_fix` (`apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/`, mesmo script, só que rodado por ele): o desfecho está em `autofix` do JSON e em `_internal/fact-check-autofix.json`. `autofix.code` = `1` com o composto em exit 0 → logar warn; seguir sem auto-fix (não bloqueia o gate).
 
 **⚠️ Re-render obrigatório quando `applied > 0` (`rerender.newsletter`, #2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Nesse caso, re-rodar render + substitute para garantir que o HTML reflita o texto corrigido, e republicar o preview:
 

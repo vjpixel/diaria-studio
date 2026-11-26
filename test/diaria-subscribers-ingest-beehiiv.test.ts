@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   main,
   ingestOnePost,
@@ -20,6 +21,8 @@ import {
   invalidateSiblingManifests,
   runEngagementIngestionLoop,
   MANIFEST_FLUSH_EVERY,
+  DEFAULT_ROSTER_ROOT,
+  DEFAULT_EXIT_HISTORY_ROOT,
 } from "../scripts/diaria-subscribers-ingest-beehiiv.ts";
 import {
   ensureSubscriber,
@@ -30,6 +33,24 @@ import {
 } from "../scripts/lib/diaria-subscribers-db.ts";
 import { buildInitialManifest, type IngestManifest, type IngestManifestEntry } from "../scripts/lib/diaria-subscribers-ingest-manifest.ts";
 import type { EngagementManifest } from "../scripts/lib/beehiiv-engagement-manifest.ts";
+
+/**
+ * `main()` isolado do `data/` real do checkout (#14075). Os defaults de
+ * `--roster-root`/`--exit-history-root` apontam pro `data/beehiiv-backup`
+ * do repo; num checkout com dados locais o passo do roster ingeria os
+ * milhares de assinantes reais no `.db` do teste. Todo teste chama `main`
+ * por aqui, com as duas raízes num tmpdir vazio (sem snapshot, sem
+ * `subscribers.jsonl`) salvo quando o próprio teste passa outra.
+ */
+function runMain(argv: string[]): Promise<void> {
+  const isolated = [...argv];
+  const emptyRoot = mkdtempSync(join(tmpdir(), "beehiiv-ingest-isolated-"));
+  if (!argv.includes("--roster-root")) isolated.push("--roster-root", resolve(emptyRoot, "roster"));
+  if (!argv.includes("--exit-history-root")) {
+    isolated.push("--exit-history-root", resolve(emptyRoot, "exit-history"));
+  }
+  return main(isolated);
+}
 
 /** Monta um diretório de backup fixture: manifest.json + N .jsonl. */
 function makeSourceDir(
@@ -189,7 +210,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       post_2: [{ subscriber_id: "s3", email: "c@x.com", status: "delivered" }], // não deve ser lido (source ainda partial)
     });
 
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     // post_2 nunca entra no manifest desta ingestão — a fatia 1 ainda não confirmou.
@@ -219,12 +240,12 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered" }],
     });
 
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
     const db1 = openDiariaSubscribersDb(dbPath);
     const before = getStoreCounts(db1).events;
     db1.close();
 
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
     const db2 = openDiariaSubscribersDb(dbPath);
     assert.equal(getStoreCounts(db2).events, before, "manifest já ok — nada re-processado, nada duplicado");
     db2.close();
@@ -246,11 +267,11 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     );
 
     writeSourceManifest({ generated_at: "t1", posts: [{ post_id: "post_1", status: "partial", count: 5 }] });
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
     assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).entries.length, 0, "post partial na fatia 1 não entra ainda");
 
     writeSourceManifest({ generated_at: "t2", posts: [{ post_id: "post_1", status: "ok", count: 1 }] });
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     assert.equal(manifest.entries.length, 1);
     assert.equal(manifest.entries[0].status, "ok");
@@ -289,7 +310,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
         console.log = originalLog;
         resolvePromise(JSON.parse(msg));
       };
-      void main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--post", "post_1"]);
+      void runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--post", "post_1"]);
     });
 
     assert.equal(result.processed_this_run, 1, "só post_1 foi processado, não os 2 pendentes");
@@ -309,7 +330,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-nodata-"));
     const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
     const originalExit = process.exitCode;
-    await main(["--db", dbPath]);
+    await runMain(["--db", dbPath]);
     assert.equal(process.exitCode, 1);
     process.exitCode = originalExit;
   });
@@ -320,7 +341,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
     const sourceDir = resolve(tmp, "no-such-dir");
     const originalExit = process.exitCode;
-    await main(["--db", dbPath, "--source-dir", sourceDir]);
+    await runMain(["--db", dbPath, "--source-dir", sourceDir]);
     assert.equal(process.exitCode, 1);
     process.exitCode = originalExit;
   });
@@ -357,7 +378,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered", timestamp: "2026-01-01T00:00:00Z" }],
     });
 
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--reset"]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--reset"]);
 
     const db = openDiariaSubscribersDb(dbPath);
     assert.deepEqual(findSubscriberIdsByEmail(db, "fantasma@x.com"), [], "dado VELHO substituído, não mesclado");
@@ -421,7 +442,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered", timestamp: "2026-01-02T00:00:00Z" }],
     });
 
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--reset"]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--reset"]);
 
     assert.equal(existsSync(kitManifestPath), false, "manifest do Kit foi invalidado pelo reset");
     assert.equal(existsSync(brevoManifestPath), false, "manifest do Brevo foi invalidado pelo reset (defensivo)");
@@ -465,7 +486,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     // antes de qualquer invalidação de manifest irmão.
     const missingSourceDir = resolve(tmp, "no-such-source-dir");
     const originalExit = process.exitCode;
-    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", missingSourceDir, "--reset"]);
+    await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", missingSourceDir, "--reset"]);
     assert.equal(process.exitCode, 1, "aborta cedo — fonte da fatia 1 ausente");
     process.exitCode = originalExit;
 
@@ -517,7 +538,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       errLines.push(String(msg));
     };
     try {
-      await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+      await runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
     } finally {
       console.error = originalError;
     }
@@ -586,7 +607,7 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
         console.log = originalLog;
         resolvePromise(JSON.parse(msg));
       };
-      void main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--limit", String(limit)]);
+      void runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--limit", String(limit)]);
     });
 
     assert.equal(result.processed_this_run, limit, "só os posts dentro do --limit foram processados");
@@ -682,5 +703,40 @@ describe("runEngagementIngestionLoop — finally sob exceção mid-lote (#7170 r
         "só post_0..post_4 — post_5/6/7 nunca chegaram a ser processados",
       );
     }
+  });
+});
+
+describe("isolamento do data/ real do checkout (#14075)", () => {
+  it("nenhum teste chama main() direto: todos passam por runMain, com roster/exit-history em tmpdir", () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const bare = src.split("\n").filter((line) => /(^|[^\w.])main\(\[/.test(line));
+    assert.deepEqual(bare, [], "chamada direta de main sem runMain lê data/beehiiv-backup real pelos defaults");
+  });
+
+  it("runMain com roster/exit-history vazios não ingere nada além das fixtures", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-isolated-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/beehiiv-ingest-manifest.json");
+    const sourceDir = makeSourceDir(
+      tmp,
+      { generated_at: "t", posts: [{ post_id: "post_1", status: "ok", count: 1 }] },
+      { post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered" }] },
+    );
+    const result: { roster: { root: string; snapshot_date: string | null }; exit_history: { root: string } } =
+      await new Promise((resolvePromise) => {
+        const originalLog = console.log;
+        console.log = (msg: string) => {
+          console.log = originalLog;
+          resolvePromise(JSON.parse(msg));
+        };
+        void runMain(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+      });
+    assert.notEqual(result.roster.root, DEFAULT_ROSTER_ROOT);
+    assert.notEqual(result.exit_history.root, DEFAULT_EXIT_HISTORY_ROOT);
+    assert.equal(result.roster.snapshot_date, null, "roster isolado não acha snapshot");
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).subscribers, 1, "só o assinante da fixture");
+    db.close();
   });
 });
