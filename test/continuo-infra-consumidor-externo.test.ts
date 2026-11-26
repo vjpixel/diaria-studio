@@ -29,7 +29,8 @@
  *     diário consolidado é o job `645d5debb7f0` (28/08/2026).
  *
  * Por que um teste e não só a linha no `CLAUDE.md` (que também existe, seção
- * "Princípios operacionais invariáveis"): o `knip` é estruturalmente cego a
+ * "Princípios operacionais invariáveis", com o detalhe em
+ * `docs/continuo-consumidor-externo.md` desde o #14002): o `knip` é estruturalmente cego a
  * este caso — o #6059 deletou a infra E os testes dela na mesma PR, de forma
  * simétrica, então nunca sobrou export órfão pra ele apontar. Um teste que
  * falha alto em CI é o único guard que dispara independente de quem está
