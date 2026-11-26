@@ -57,7 +57,7 @@
  * identificado em jogo — esse caminho agora exige confirmação de posse.
  */
 import type { Env } from "./index";
-import { json } from "./index";
+import { corsHeaders, json } from "./index";
 import {
   AAMMDD_RE,
   editionToMonthSlug,
@@ -79,6 +79,8 @@ import {
   sendMagicLinkEmail,
   buildConfirmMergeUrl,
   markIdentifyLinked,
+  generateMagicLinkToken, // #14138: nonce do navegador que pede o link
+  buildPossessionNonceCookieHeader,
 } from "./magic-link";
 
 /** Shape de `score:{email}` (brand web) — ver `updateScore` em vote.ts. */
@@ -425,7 +427,13 @@ async function handleOrphanIdentify(
   const rl = await checkMagicLinkSendRateLimit(bEnv.POLL, anonEmail, email);
   if (!rl.allowed) return json({ ok: true, pending: true }, 200, bEnv);
 
-  const token = await createPendingMerge(bEnv, input);
+  // #14138: o navegador que PEDE o link ganha um nonce (cookie HttpOnly) que
+  // viaja no registro do pending merge. O clique no link prova posse SÓ
+  // deste nonce — é o que permite `/jogar/gate/verify` promover este
+  // aparelho a `confirmed` depois, sem promover qualquer outro que digite o
+  // mesmo e-mail (ver docstring de `markDevicePossessionProven`, magic-link.ts).
+  const deviceNonce = generateMagicLinkToken();
+  const token = await createPendingMerge(bEnv, { ...input, deviceNonce });
   const confirmUrl = buildConfirmMergeUrl(request.url, token);
   const result = await sendMagicLinkEmail(bEnv, { name, email, confirmUrl }, fetchImpl);
   if (!result.ok) {
@@ -435,7 +443,14 @@ async function handleOrphanIdentify(
     console.error(JSON.stringify({ event: "magiclink_send_failed", reason: result.reason, status: result.status }));
   }
 
-  return json({ ok: true, pending: true }, 200, bEnv);
+  return new Response(JSON.stringify({ ok: true, pending: true }), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders(bEnv),
+      "Set-Cookie": buildPossessionNonceCookieHeader(deviceNonce),
+    },
+  });
 }
 
 /**

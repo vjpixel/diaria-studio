@@ -51,7 +51,7 @@
  * normal em vez de uma chamada de API forjada.
  */
 import type { Env } from "./index";
-import { corsHeaders, json } from "./index";
+import { brandedNamespace, corsHeaders, json } from "./index";
 import {
   verifySubscriberViaBeehiivByEmail,
   verifySubscriberViaKitByEmail,
@@ -65,9 +65,9 @@ import {
   signSessionCookie,
   verifySessionCookie,
 } from "./session-cookie";
-import { isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
+import { brandKvPrefix, isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeViaConfiguredBackend, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
-import { hasProvenEmailPossession } from "./magic-link"; // #6293: só quem provou posse (magic link) vira "confirmed"
+import { hasDevicePossessionProof, POSSESSION_NONCE_COOKIE } from "./magic-link"; // #6293/#14138: só o navegador que pediu o link E teve o clique confirmado vira "confirmed"
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
 // puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
@@ -98,8 +98,10 @@ export const WEB_SESSION_TTL_SEC = 30 * 24 * 60 * 60;
  * separado — decisão do editor, "pra não multiplicar superfície"). `pending`
  * = existe cadastro pra este e-mail (Beehiiv/KV), mas ninguém provou posse
  * dele; `confirmed` = posse PROVADA — único critério, desde o #6293, é o
- * marcador de `hasProvenEmailPossession` (magic-link.ts), gravado quando a
- * pessoa clica no link mágico enviado àquele endereço (`handleConfirmMerge`).
+ * clique no link mágico enviado àquele endereço (`handleConfirmMerge`), e
+ * desde o #14138 a prova vale só para o navegador que clicou e para o que
+ * pediu o link (`hasDevicePossessionProof`, magic-link.ts), nunca para
+ * qualquer navegador que digite o mesmo e-mail.
  *
  * #6293 (correção de vulnerabilidade): até aqui, `handleJogarGateVerify`
  * promovia a `confirmed` qualquer e-mail que `checkWebSubscriber` visse como
@@ -144,12 +146,24 @@ export async function issueWebSessionCookie(
   return buildSetCookieHeader(WEB_SESSION_COOKIE, value, WEB_SESSION_TTL_SEC);
 }
 
+/**
+ * #14138: sessão `confirmed` emitida no navegador que CLICOU no link mágico
+ * (`handleConfirmMerge`, magic-link.ts). Mora aqui, e não lá, pra manter o
+ * invariante do #6293: `issueWebSessionCookie` só é chamado neste arquivo.
+ * O único chamador é `handleConfirmMerge`, depois de consumir o token
+ * one-time-use — o clique em si é a prova de posse.
+ */
+export function issueConfirmedSessionAfterMagicLink(secret: string, email: string): Promise<string> {
+  return issueWebSessionCookie(secret, email, "confirmed");
+}
+
 export interface WebSession {
   email: string;
   /** true = e-mail sem posse provada — a identidade NÃO deve sobrepor o
    * token anônimo em `handleVote` (vote.ts), mas AINDA libera o jogo no gate
    * (`handleJogarPage`, jogar.ts). Vira `false` (`confirmed`) só quando
-   * `hasProvenEmailPossession` (magic-link.ts, #6293) achar o marcador —
+   * houver prova de posse deste navegador (`hasDevicePossessionProof`,
+   * magic-link.ts, #6293/#14138) —
    * NUNCA por a Beehiiv/KV/Kit reportarem "active" (nenhuma dessas fontes
    * prova posse, ver docstring de `WebSessionState` acima). */
   pending: boolean;
@@ -332,9 +346,10 @@ export const isValidEmailFormat = isValidVoteEmailFormat;
  * #6293: `checkWebSubscriber` retornando "active" só prova que o e-mail EXISTE
  * como contato ativo (Beehiiv/KV) — desde o #5095 (`double_opt_override: "off"`
  * em `subscribeToBeehiiv`), isso não exige nenhuma confirmação de posse, então
- * não é mais base pra `confirmed`. `confirmed` agora exige o marcador de
- * `hasProvenEmailPossession` (magic-link.ts), gravado só quando a pessoa
- * clicou num link mágico enviado àquele endereço. Sem o marcador, o gate
+ * não é mais base pra `confirmed`. `confirmed` agora exige prova de posse
+ * DESTE navegador (`hasDevicePossessionProof`, magic-link.ts, #14138): o
+ * cookie de nonce recebido ao pedir o link precisa ter sido confirmado por um
+ * clique no link, para o mesmo e-mail. Sem a prova, o gate
  * ainda libera o jogo normalmente (`pending` já libera — `handleJogarPage`),
  * só não sobrepõe a identidade de voto em `vote.ts`.
  */
@@ -366,12 +381,20 @@ export async function handleJogarGateVerify(request: Request, env: Env): Promise
 
   if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
   // #6293: "active" na Beehiiv/KV deixou de provar posse (#5095) — só a
-  // sessão CONFIRMED quando o marcador de posse (magic link, #3996) já
-  // existe pra este e-mail; caso contrário `pending`, que já libera o gate
-  // (handleJogarPage) mas nunca sobrepõe identidade em vote.ts.
+  // sessão CONFIRMED quando há prova de posse (magic link, #3996); caso
+  // contrário `pending`, que já libera o gate (handleJogarPage) mas nunca
+  // sobrepõe identidade em vote.ts.
+  //
+  // #14138: a prova é do DISPOSITIVO, não do e-mail. Antes, um marcador por
+  // e-mail (sem TTL) fazia qualquer navegador que digitasse um e-mail que já
+  // provou posse uma vez receber `confirmed` — tomada de identidade. Agora
+  // só promove quando o cookie de nonce DESTE navegador (recebido ao pedir o
+  // link, `handleOrphanIdentify`) foi provado, pelo clique, para ESTE e-mail.
+  // Leitura pelo prefixo do brand `web`: `/confirm-merge?brand=web` grava a
+  // prova com `bEnv`, e esta rota recebe o `env` cru.
   //
   // Achado do review: `checkWebSubscriber` (acima) é documentado como
-  // "nunca lança" — `hasProvenEmailPossession` não tinha essa garantia, e um
+  // "nunca lança" — a leitura da prova de posse não tinha essa garantia, e um
   // KV.get que lançasse derrubava o endpoint inteiro com 500, inclusive o
   // caminho que só emitiria `pending` (que é o que deixa a pessoa continuar
   // jogando). Falha aqui sempre degrada pro lado seguro: nunca emite
@@ -379,7 +402,8 @@ export async function handleJogarGateVerify(request: Request, env: Env): Promise
   // visita ao gate tenta de novo).
   let possessionProven = false;
   try {
-    possessionProven = await hasProvenEmailPossession(env, email);
+    const nonce = parseCookieHeader(request.headers.get("Cookie"), POSSESSION_NONCE_COOKIE);
+    possessionProven = await hasDevicePossessionProof(brandedNamespace(env.POLL, brandKvPrefix("web")), nonce, email);
   } catch (e) {
     console.error(JSON.stringify({ event: "gate_possession_check_failed", error: String(e) }));
   }
@@ -416,7 +440,7 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
  * `confirmed` é o marcador que `handleVote`/vote.ts usa pra SOBREPOR a
  * identidade do voto pelo e-mail da sessão, sem exigir o token anônimo de
  * novo — reservado, desde o #6293, pra quando o e-mail PROVOU posse de
- * verdade via magic link (`hasProvenEmailPossession`, magic-link.ts).
+ * verdade via magic link (`hasDevicePossessionProof`, magic-link.ts, #14138).
  * `checkWebSubscriber` achando "active"/a Beehiiv aceitar o cadastro NÃO
  * conta mais — desde o #5095 (`double_opt_override: "off"`) isso só prova
  * que existe um contato com aquele endereço, nunca que quem cadastrou é o
@@ -519,8 +543,9 @@ export async function handleJogarGateSubscribe(
   // "existe sessão"), mas nunca sobrepõe a identidade em `/vote` (vote.ts)
   // sozinho. A única promoção pending→confirmed é via magic link (#3996):
   // a pessoa clica no link de `/jogar/identify` (`handleConfirmMerge`,
-  // magic-link.ts) e, numa revisita a `/jogar/gate/verify`, o marcador de
-  // posse (`hasProvenEmailPossession`) já existe pra este e-mail.
+  // magic-link.ts): o navegador que clicou já sai `confirmed`, e o que
+  // pediu o link é promovido numa revisita a `/jogar/gate/verify` pelo
+  // cookie de nonce (`hasDevicePossessionProof`, #14138).
   const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, "pending");
   return jsonWithCookie({ ok: true }, 200, env, setCookie);
 }

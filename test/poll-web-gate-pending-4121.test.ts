@@ -23,8 +23,8 @@
  * `handleJogarGateVerify` promovia a "confirmed" qualquer e-mail que
  * `checkWebSubscriber` visse como "active" — o que deixou de provar posse
  * desde o #5095 (`double_opt_override: "off"`). Hoje `handleJogarGateVerify`
- * só emite "confirmed" quando o e-mail já provou posse via magic link
- * (`hasProvenEmailPossession`, magic-link.ts); sem o marcador, emite
+ * só emite "confirmed" quando ESTE navegador provou posse via magic link
+ * (`hasDevicePossessionProof`, magic-link.ts, #14138); sem a prova, emite
  * "pending" — o teste correspondente aqui foi atualizado (era o que
  * documentava, com "comportamento inalterado", o comportamento que o #6293
  * corrigiu).
