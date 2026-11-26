@@ -74,6 +74,7 @@ import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import platformConfig from "../platform.config.json" with { type: "json" };
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 import type { NotifyEditorResult } from "../scripts/lib/editor-notify.ts";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 
 const SCHEDULE = { rotation_times: ["06:30", "08:00", "12:00"], rotation_start: "2026-10-26", rotation_end: "2026-11-13", default_time: "12:00" };
 const SHORTS = { facebook_pages: [], instagram: true, instagram_collaborators: ["vjpixel"], linkedin_profile: false, linkedin_page_repost: false, x: false, threads_profile: false, schedule: SCHEDULE };
@@ -650,7 +651,8 @@ describe("#11265 tasks do 300 cobrem os horários do vertical", () => {
 });
 
 describe("#11265/#10978 roteiro da skill", () => {
-  const skill = readFileSync(new URL("../.claude/skills/diaria-publica/SKILL.md", import.meta.url), "utf8");
+  // #14040: o Passo B3b vive em reference/; o helper junta SKILL.md + reference/*.md.
+  const skill = readSkillWithReferences("diaria-publica");
   it("INSTAGRAM_TIMER_DETAIL e o SKILL.md mandam rodar com --only instagram --instagram-timer --publish", () => {
     assert.match(INSTAGRAM_TIMER_DETAIL, /--only instagram --instagram-timer --publish/);
     assert.match(skill, /--only instagram --publish --instagram-timer/);

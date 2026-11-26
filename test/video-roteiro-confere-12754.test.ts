@@ -6,9 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 import {
   conferirGravacao,
   numerosDaFala,
@@ -17,8 +15,6 @@ import {
   validarRoteiroFalas,
   type RoteiroFalas,
 } from "../scripts/lib/diaria/roteiro-gravacao.ts";
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const ROTEIRO: RoteiroFalas = {
   edicao: "261112",
@@ -199,7 +195,8 @@ describe("numerosDaFala / validarRoteiroFalas (#12754)", () => {
 });
 
 describe("SKILL.md do /diaria-video-roteiro cita o passo de conferência (#12754)", () => {
-  const skill = readFileSync(join(ROOT, ".claude/skills/diaria-video-roteiro/SKILL.md"), "utf8");
+  // #14040: o Passo 8 vive em reference/; o helper junta SKILL.md + reference/*.md.
+  const skill = readSkillWithReferences("diaria-video-roteiro");
   it("tem o Passo 8 com o script e os quatro vereditos", () => {
     assert.match(skill, /## Passo 8 — Conferir a gravação/);
     assert.match(skill, /scripts\/video-roteiro-confere\.ts/);
