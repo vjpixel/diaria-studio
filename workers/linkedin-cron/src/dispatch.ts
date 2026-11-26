@@ -74,6 +74,9 @@ export interface FireConfig {
   /** #10856 — teto total do poll do Reels (ms). Só os testes passam;
    * produção usa `REELS_POLL_DEADLINE_MS`. */
   reelsPollDeadlineMs?: number;
+  /** #14219 — teto da fase pré-publish do carrossel (IG e Threads, ms). Só os
+   * testes passam; produção usa `CAROUSEL_PREPUBLISH_DEADLINE_MS`. */
+  carouselDeadlineMs?: number;
 }
 
 export type DispatchMetadata = { postId?: string; containerId?: string; httpStatus?: number };
@@ -886,6 +889,7 @@ async function fireInstagram(
   creds: InstagramCreds,
   reelsPollIntervalMs?: number,
   reelsPollDeadlineMs?: number,
+  carouselDeadlineMs?: number,
 ): Promise<FireOutcome> {
   if (entry.media_type === "REELS") {
     return fireInstagramReels(
@@ -902,7 +906,7 @@ async function fireInstagram(
   if (images.length === 1) {
     return fireInstagramSingle(images[0], entry.text, creds, entry.first_comment);
   }
-  return fireInstagramCarousel(images, entry.text, creds, entry.first_comment);
+  return fireInstagramCarousel(images, entry.text, creds, entry.first_comment, carouselDeadlineMs);
 }
 
 /**
@@ -1093,47 +1097,123 @@ async function fireInstagramSingle(
     await new Promise((r) => setTimeout(r, 1500));
   }
 
-  // Passo 2: publicar o container
+  // Passo 2: publicar o container (#14217: resposta ambígua vira send_unknown,
+  // nunca `failed` — o retry criaria outro container e duplicaria o post).
+  return publishInstagramContainer(base, creds, containerId, {
+    label: "Instagram /media_publish",
+    idSuffix: `(container_id=${containerId})`,
+    definiteFailure: "failed",
+    firstComment,
+  });
+}
+
+/**
+ * #14217/#14218 — passo `media_publish` do Instagram de imagem única e do
+ * carrossel. Mesma classificação de `publishThreadsCreation` (#11106), mais a
+ * consulta do container que o Reels já faz (`containerWasPublished`, #10877):
+ *
+ * - **Publicado** → `fired`: 2xx com `id`, ou resposta ambígua com o container
+ *   `PUBLISHED` (a Meta publicou e a resposta se perdeu). Sem o `id` da mídia
+ *   nesse 2º caso, o 1º comentário (#11724) não sai — fica no log.
+ * - **Ambíguo → `send_unknown`** (a Meta pode ter publicado; refazer duplica o
+ *   post público): fetch lançou (timeout/rede), HTTP 5xx, 2xx sem `id`, 2xx ou
+ *   5xx com corpo ilegível, e o container não confirmou `PUBLISHED`.
+ * - **Falha definitiva → `definiteFailure`**: HTTP 4xx (ou `error` no corpo de
+ *   um 2xx), resposta 4xx ilegível. Nada saiu: a imagem única segue retriable
+ *   (`failed`), o carrossel segue `dlq`.
+ */
+async function publishInstagramContainer(
+  base: string,
+  creds: InstagramCreds,
+  containerId: string,
+  opts: { label: string; idSuffix: string; definiteFailure: "failed" | "dlq"; firstComment?: string },
+): Promise<FireOutcome> {
+  const { label, idSuffix, definiteFailure, firstComment } = opts;
+  const ambiguous = async (reason: string, httpStatus?: number): Promise<FireOutcome> => {
+    if (await containerWasPublished(base, containerId, creds.accessToken)) {
+      console.warn(
+        `[instagram] ${label} falhou na resposta (${reason}) mas o container ${containerId} está PUBLISHED — ` +
+          `tratado como disparado, sem republicar (#14217).` +
+          (firstComment ? " O 1º comentário (#11724) não sai: falta o id da mídia." : ""),
+      );
+      return { status: "fired", containerId, ...(httpStatus !== undefined && { httpStatus }) };
+    }
+    return {
+      status: "send_unknown",
+      containerId,
+      ...(httpStatus !== undefined && { httpStatus }),
+      reason: `${SEND_UNKNOWN_PREFIX} ${reason}`,
+    };
+  };
+  let res: Response;
+  let text: string;
   try {
-    const params = new URLSearchParams({
-      creation_id: containerId,
-      access_token: creds.accessToken,
-    });
-    const res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
+    const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
+    res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
       method: "POST",
       body: params,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    const text = await res.text();
-    let data: { id?: string; error?: { message?: string } };
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return {
-        status: "failed", containerId, httpStatus: res.status,
-        reason: `Instagram /media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!res.ok || data.error) {
-      return {
-        status: "failed", containerId, httpStatus: res.status,
-        reason: `Instagram /media_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!data.id) {
-      return { status: "failed", containerId, httpStatus: res.status, reason: `Instagram /media_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
-    }
-    // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
-    if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
-    return { status: "fired", postId: data.id, containerId, httpStatus: res.status };
+    text = await res.text();
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "failed",
-      reason: `Instagram /media_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
-    };
+    return ambiguous(`${label} fetch ${timeout ? "timeout" : "failed"}: ${err.message} ${idSuffix}`);
   }
+  const serverError = res.status >= 500;
+  let data: { id?: string; error?: { message?: string } } | null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = null;
+  }
+  if (!data || typeof data !== "object") {
+    const reason = `${label} resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} ${idSuffix}`;
+    return res.ok || serverError
+      ? ambiguous(reason, res.status)
+      : { status: definiteFailure, containerId, httpStatus: res.status, reason };
+  }
+  if (!res.ok || data.error) {
+    const reason = `${label} HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} ${idSuffix}`;
+    return serverError
+      ? ambiguous(reason, res.status)
+      : { status: definiteFailure, containerId, httpStatus: res.status, reason };
+  }
+  if (!data.id) return ambiguous(`${label} sem id: ${text.slice(0, 200)} ${idSuffix}`, res.status);
+  // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
+  if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
+  return { status: "fired", postId: data.id, containerId, httpStatus: res.status };
+}
+
+/**
+ * #14219 — teto de tempo de parede da fase do carrossel (Instagram e Threads)
+ * ANTES do publish: os POSTs dos containers filhos e do pai e os polls de
+ * status. Sem ele, o pior caso (até 11 polls de 10 tentativas × (30 s de fetch
+ * + 2 s), mais os POSTs de até 30 s cada) passava de 30 min, e o `CLAIM_TTL_MS`
+ * (5 min) da fila vencia com o disparo em andamento: outra volta tomava o
+ * claim e publicava o mesmo carrossel. Somado ao publish (`FETCH_TIMEOUT_MS`),
+ * à consulta do container depois de uma resposta ambígua
+ * (`REELS_VERIFY_FETCH_TIMEOUT_MS`) ou ao 1º comentário (`FETCH_TIMEOUT_MS`),
+ * o disparo inteiro fica em ≤ 260 s, abaixo do TTL. Estourar o teto acontece
+ * sempre antes do publish (nada saiu): o desfecho é `dlq`, que nunca volta a
+ * disparar (#14218).
+ */
+export const CAROUSEL_PREPUBLISH_DEADLINE_MS = 200_000;
+
+/** #14219 — orçamento de tempo da fase pré-publish de um carrossel. */
+function carouselBudget(deadlineMs: number) {
+  const deadlineAt = Date.now() + deadlineMs;
+  const left = () => Math.max(0, deadlineAt - Date.now());
+  return {
+    /** ms restantes (0 = estourou). */
+    left,
+    exceeded: () => left() <= 0,
+    /** Timeout do POST: nunca passa do que resta do teto. */
+    fetchSignal: () => AbortSignal.timeout(Math.max(1, Math.min(FETCH_TIMEOUT_MS, left()))),
+    reason: (step: string, created: number) =>
+      `${step}: teto de ${Math.round(deadlineMs / 1000)}s antes do publish estourado (#14219) — ` +
+      `não publica (containers já criados: ${created}).`,
+  };
 }
 
 /** Nº máximo de tentativas de poll do status de um container Instagram
@@ -1180,8 +1260,9 @@ async function pollInstagramContainerStatus(
   // tentativas não basta: cada fetch pode levar até FETCH_TIMEOUT_MS, e o pior
   // caso do Reels (36 × (30 s + 5 s)) passaria de 20 min, muito acima do
   // CLAIM_TTL_MS da fila — com o claim expirado, outra volta re-dispararia a
-  // mesma entry e o Reels sairia em dobro. Undefined = sem teto (carrossel,
-  // cujo pior caso já cabe no TTL).
+  // mesma entry e o Reels sairia em dobro. O carrossel (IG e Threads) passa o
+  // que resta de `CAROUSEL_PREPUBLISH_DEADLINE_MS` (#14219: sem teto, o pior
+  // caso dele passava de 30 min). Undefined = sem teto.
   deadlineMs?: number,
   // #10954 self-review — container RETOMADO de uma volta anterior: a Graph
   // recusando a consulta com 4xx não transitório N vezes seguidas significa
@@ -1202,7 +1283,7 @@ async function pollInstagramContainerStatus(
     reason:
       `Instagram container não ficou FINISHED dentro do teto total de ` +
       `${Math.round((deadlineMs ?? 0) / 1000)}s do poll — container_id=${containerId}, ` +
-      `fail-closed (não publica, retry normal).`,
+      `fail-closed (não publica).`,
   });
   const waitBeforeNext = async (attempt: number) => {
     if (attempt < maxAttempts) {
@@ -1694,6 +1775,7 @@ async function fireInstagramCarousel(
   caption: string,
   creds: InstagramCreds,
   firstComment?: string,
+  deadlineMs: number = CAROUSEL_PREPUBLISH_DEADLINE_MS,
 ): Promise<FireOutcome> {
   // Defesa em profundidade: handleEnqueue já barra >CAROUSEL_MAX_ITEMS no
   // enqueue (#4153) — isto cobre entries legacy/inseridas fora do caminho
@@ -1707,12 +1789,17 @@ async function fireInstagramCarousel(
 
   const base = `https://graph.facebook.com/${creds.apiVersion}`;
   const childIds: string[] = [];
+  // #14219 — teto da fase antes do publish (POSTs dos containers + polls).
+  const budget = carouselBudget(deadlineMs);
 
   // Passo 1: N containers filhos — 1 POST por imagem, na ordem da lista.
   // `is_carousel_item=true` e SEM caption (a Graph API só aceita caption no
   // container pai — colocar caption num filho é rejeitado pela API).
   for (let i = 0; i < imageUrls.length; i++) {
     const imageUrl = imageUrls[i];
+    if (budget.exceeded()) {
+      return { status: "dlq", reason: budget.reason(`Instagram carrossel: child container ${i + 1}/${imageUrls.length}`, childIds.length) };
+    }
     try {
       const params = new URLSearchParams({
         image_url: imageUrl,
@@ -1722,7 +1809,7 @@ async function fireInstagramCarousel(
       const res = await fetch(`${base}/${creds.igUserId}/media`, {
         method: "POST",
         body: params,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: budget.fetchSignal(),
       });
       const text = await res.text();
       let data: { id?: string; error?: { message?: string } };
@@ -1761,7 +1848,9 @@ async function fireInstagramCarousel(
     // pai no passo seguinte causa o erro 9007 "Media ID is not available"
     // capturado ao vivo na investigação da #7626 — uma race condition
     // transitória que o `dlq` instantâneo tratava como permanente.
-    const childPoll = await pollInstagramContainerStatus(base, childIds[childIds.length - 1], creds.accessToken);
+    const childPoll = await pollInstagramContainerStatus(
+      base, childIds[childIds.length - 1], creds.accessToken, undefined, undefined, budget.left(),
+    );
     if (!childPoll.ok) {
       return {
         status: "dlq",
@@ -1773,6 +1862,9 @@ async function fireInstagramCarousel(
   // Passo 2: container pai — media_type=CAROUSEL + children (ordem
   // preservada, mesma ordem dos POSTs do passo 1) + caption.
   let parentId: string;
+  if (budget.exceeded()) {
+    return { status: "dlq", reason: budget.reason("Instagram carrossel: container pai", childIds.length) };
+  }
   try {
     const params = new URLSearchParams({
       media_type: "CAROUSEL",
@@ -1783,7 +1875,7 @@ async function fireInstagramCarousel(
     const res = await fetch(`${base}/${creds.igUserId}/media`, {
       method: "POST",
       body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: budget.fetchSignal(),
     });
     const text = await res.text();
     let data: { id?: string; error?: { message?: string } };
@@ -1819,56 +1911,23 @@ async function fireInstagramCarousel(
 
   // Poll OBRIGATÓRIO do container pai (#7630) — mesmo racional dos filhos:
   // o container CAROUSEL também processa antes de ficar publicável.
-  const parentPoll = await pollInstagramContainerStatus(base, parentId, creds.accessToken);
+  const parentPoll = await pollInstagramContainerStatus(
+    base, parentId, creds.accessToken, undefined, undefined, budget.left(),
+  );
   if (!parentPoll.ok) {
     return { status: "dlq", reason: `Instagram carrossel: container pai (id=${parentId}) — ${parentPoll.reason}` };
   }
 
   // Passo 3: publicar o container pai — NENHUMA chamada aqui acontece se
-  // qualquer passo acima retornou cedo.
-  try {
-    const params = new URLSearchParams({
-      creation_id: parentId,
-      access_token: creds.accessToken,
-    });
-    const res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
-      method: "POST",
-      body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let data: { id?: string; error?: { message?: string } };
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return {
-        status: "dlq", containerId: parentId, httpStatus: res.status,
-        reason: `Instagram carrossel: media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (parent_id=${parentId})`,
-      };
-    }
-    if (!res.ok || data.error) {
-      return {
-        status: "dlq", containerId: parentId, httpStatus: res.status,
-        reason: `Instagram carrossel: media_publish falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (parent_id=${parentId})`,
-      };
-    }
-    if (!data.id) {
-      return {
-        status: "dlq", containerId: parentId, httpStatus: res.status,
-        reason: `Instagram carrossel: media_publish sem id: ${text.slice(0, 200)} (parent_id=${parentId})`,
-      };
-    }
-    // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
-    if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
-    return { status: "fired", postId: data.id, containerId: parentId, httpStatus: res.status };
-  } catch (e) {
-    const err = e as Error;
-    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "dlq",
-      reason: `Instagram carrossel: media_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (parent_id=${parentId})`,
-    };
-  }
+  // qualquer passo acima retornou cedo. #14218: resposta ambígua (timeout,
+  // 5xx, 2xx sem id, corpo ilegível) vira `send_unknown`, nunca `dlq` — o
+  // `dlq` deixava o cron redisparar o carrossel inteiro e duplicar o post.
+  return publishInstagramContainer(base, creds, parentId, {
+    label: "Instagram carrossel: media_publish",
+    idSuffix: `(parent_id=${parentId})`,
+    definiteFailure: "dlq",
+    firstComment,
+  });
 }
 
 /**
@@ -1887,7 +1946,7 @@ async function fireInstagramCarousel(
  * este guard aqui é defesa em profundidade pra items legacy/inseridos fora
  * do enqueue normal.
  */
-async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<FireOutcome> {
+async function fireThreads(entry: QueueEntry, creds: ThreadsCreds, carouselDeadlineMs?: number): Promise<FireOutcome> {
   if (entry.text.length > 500) {
     return {
       status: "dlq",
@@ -1897,7 +1956,7 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<Fire
   const images = resolveImageUrls(entry);
   if (images.length === 0) return fireThreadsText(entry.text, creds);
   if (images.length === 1) return fireThreadsSingleImage(images[0], entry.text, creds);
-  return fireThreadsCarousel(images, entry.text, creds);
+  return fireThreadsCarousel(images, entry.text, creds, carouselDeadlineMs);
 }
 
 /**
@@ -2106,6 +2165,7 @@ async function createThreadsCarouselParent(
   creds: ThreadsCreds,
   childIds: string[],
   caption: string,
+  budget?: ReturnType<typeof carouselBudget>,
 ): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
   // #13193 — `errors` guarda o detalhe completo (vai pro console a cada
   // tentativa); `summaries` só `HTTP status + code/subcode`, para o `reason`
@@ -2113,6 +2173,11 @@ async function createThreadsCarouselParent(
   const errors: string[] = [];
   const summaries: string[] = [];
   for (let attempt = 1; attempt <= THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS; attempt++) {
+    // #14219 — sem tempo para outra tentativa: para com o que já falhou.
+    if (budget?.exceeded()) {
+      if (errors.length === 0) return { ok: false, reason: budget.reason("Threads carrossel: container pai", childIds.length) };
+      break;
+    }
     let failure: string;
     let summary: string;
     let retryable = true;
@@ -2126,7 +2191,7 @@ async function createThreadsCarouselParent(
       const res = await fetch(`${base}/${creds.userId}/threads`, {
         method: "POST",
         body: params,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: budget ? budget.fetchSignal() : AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       const text = await res.text();
       let data: { id?: string; error?: ThreadsGraphError } | null = null;
@@ -2167,7 +2232,8 @@ async function createThreadsCarouselParent(
     );
     if (!retryable) break;
     if (attempt < THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS) {
-      await new Promise((r) => setTimeout(r, THREADS_CAROUSEL_PARENT_RETRY_MS));
+      const wait = budget ? Math.min(THREADS_CAROUSEL_PARENT_RETRY_MS, budget.left()) : THREADS_CAROUSEL_PARENT_RETRY_MS;
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
   const n = errors.length;
@@ -2229,13 +2295,30 @@ async function pollThreadsContainerStatus(
   base: string,
   containerId: string,
   accessToken: string,
+  // #14219 — teto total de tempo de parede (ms), passado pelo carrossel com o
+  // que resta de `CAROUSEL_PREPUBLISH_DEADLINE_MS`. Undefined = sem teto
+  // (imagem única, comportamento de antes).
+  deadlineMs?: number,
 ): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
+  const deadline = deadlineMs === undefined ? Infinity : Date.now() + deadlineMs;
+  const remaining = () => deadline - Date.now();
+  const sleep = () => new Promise((r) => setTimeout(r, Math.max(0, Math.min(THREADS_POLL_INTERVAL_MS, remaining()))));
   for (let attempt = 1; attempt <= THREADS_POLL_MAX_ATTEMPTS; attempt++) {
+    if (remaining() <= 0) {
+      return {
+        ok: false,
+        permanent: false,
+        reason:
+          `Threads container não ficou FINISHED dentro do teto total de ` +
+          `${Math.round((deadlineMs ?? 0) / 1000)}s do poll — container_id=${containerId}, fail-closed (não publica).`,
+      };
+    }
     try {
       // Token vai no header Authorization, nunca na query string (#7779).
       const res = await fetch(`${base}/${containerId}?fields=status,error_message`, {
         headers: { Authorization: `Bearer ${accessToken}` },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        // O timeout do fetch nunca passa do que resta do teto total.
+        signal: AbortSignal.timeout(Math.max(1, Math.min(FETCH_TIMEOUT_MS, remaining()))),
       });
       const text = await res.text();
       let data: { status?: string; error_message?: string; error?: { message?: string } };
@@ -2245,14 +2328,14 @@ async function pollThreadsContainerStatus(
         console.warn(
           `[threads-poll] resposta não-JSON na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): HTTP ${res.status}: ${text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
         );
-        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await sleep();
         continue;
       }
       if (!res.ok || data.error) {
         console.warn(
           `[threads-poll] HTTP ${res.status} na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
         );
-        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await sleep();
         continue;
       }
       if (data.status === "FINISHED") return { ok: true };
@@ -2272,7 +2355,7 @@ async function pollThreadsContainerStatus(
       );
     }
     if (attempt < THREADS_POLL_MAX_ATTEMPTS) {
-      await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+      await sleep();
     }
   }
   return {
@@ -2375,7 +2458,12 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
  * promete N itens), e re-tentar do zero recriaria N containers a cada ciclo
  * do cron sem garantia de sucesso.
  */
-async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: ThreadsCreds): Promise<FireOutcome> {
+async function fireThreadsCarousel(
+  imageUrls: string[],
+  caption: string,
+  creds: ThreadsCreds,
+  deadlineMs: number = CAROUSEL_PREPUBLISH_DEADLINE_MS,
+): Promise<FireOutcome> {
   // Defesa em profundidade — mesmo padrão de fireInstagramCarousel: o enqueue
   // (index.ts::handleEnqueue) já barra >CAROUSEL_MAX_ITEMS, isto cobre
   // entries legacy/inseridas fora do caminho normal.
@@ -2388,10 +2476,15 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
 
   const base = `https://graph.threads.net/${creds.apiVersion}`;
   const childIds: string[] = [];
+  // #14219 — teto da fase antes do publish (POSTs dos containers + polls).
+  const budget = carouselBudget(deadlineMs);
 
   for (let i = 0; i < imageUrls.length; i++) {
     const imageUrl = imageUrls[i];
     let childId: string;
+    if (budget.exceeded()) {
+      return { status: "dlq", reason: budget.reason(`Threads carrossel: child container ${i + 1}/${imageUrls.length}`, childIds.length) };
+    }
     try {
       const params = new URLSearchParams({
         media_type: "IMAGE",
@@ -2402,7 +2495,7 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
       const res = await fetch(`${base}/${creds.userId}/threads`, {
         method: "POST",
         body: params,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: budget.fetchSignal(),
       });
       const text = await res.text();
       let data: { id?: string; error?: ThreadsGraphError };
@@ -2438,7 +2531,7 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
 
     // Poll OBRIGATÓRIO — o próximo passo (container pai) referencia este
     // filho por id; usá-lo antes de FINISHED falha na API.
-    const childPoll = await pollThreadsContainerStatus(base, childId, creds.accessToken);
+    const childPoll = await pollThreadsContainerStatus(base, childId, creds.accessToken, budget.left());
     if (!childPoll.ok) {
       return {
         status: "dlq",
@@ -2452,12 +2545,12 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
   // preservada) + text (caption só entra no pai, mesmo padrão do Instagram).
   // #13100: até THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS tentativas com os mesmos
   // filhos, e o erro completo da Meta (code/subcode/user_msg/fbtrace_id).
-  const parent = await createThreadsCarouselParent(base, creds, childIds, caption);
+  const parent = await createThreadsCarouselParent(base, creds, childIds, caption, budget);
   if (!parent.ok) return { status: "dlq", reason: parent.reason };
   const parentId = parent.id;
 
   // Poll OBRIGATÓRIO do container pai — mesmo racional dos filhos.
-  const parentPoll = await pollThreadsContainerStatus(base, parentId, creds.accessToken);
+  const parentPoll = await pollThreadsContainerStatus(base, parentId, creds.accessToken, budget.left());
   if (!parentPoll.ok) {
     return { status: "dlq", reason: `Threads carrossel: container pai (id=${parentId}) — ${parentPoll.reason}` };
   }
@@ -2488,7 +2581,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
             "channel=instagram, ig_account=vjpixel mas credenciais (INSTAGRAM_VJPIXEL_ACCOUNT_ID/INSTAGRAM_VJPIXEL_ACCESS_TOKEN) não configuradas",
         };
       }
-      return fireInstagram(entry, config.instagramVjpixel, config.reelsPollIntervalMs, config.reelsPollDeadlineMs);
+      return fireInstagram(entry, config.instagramVjpixel, config.reelsPollIntervalMs, config.reelsPollDeadlineMs, config.carouselDeadlineMs);
     }
     if (!config.instagram) {
       return {
@@ -2497,7 +2590,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
           "channel=instagram mas credenciais Instagram (INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN) não configuradas",
       };
     }
-    return fireInstagram(entry, config.instagram, config.reelsPollIntervalMs, config.reelsPollDeadlineMs);
+    return fireInstagram(entry, config.instagram, config.reelsPollIntervalMs, config.reelsPollDeadlineMs, config.carouselDeadlineMs);
   }
 
   if (channel === "threads") {
@@ -2507,7 +2600,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
         reason: "channel=threads mas credenciais Threads (THREADS_ACCESS_TOKEN/THREADS_USER_ID) não configuradas",
       };
     }
-    return fireThreads(entry, config.threads);
+    return fireThreads(entry, config.threads, config.carouselDeadlineMs);
   }
 
   // channel === "linkedin" (ou ausente — default de backward-compat)

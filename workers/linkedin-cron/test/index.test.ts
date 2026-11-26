@@ -2450,10 +2450,13 @@ describe("#2219 Bug 3: two-phase state — item não perdido em crash mid-flight
   it("POST /release-claim: cron libera claim após falha (próximo retry pode tentar)", async () => {
     const state = new MockDOState();
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
-    await state.storage.put("claiming", true);
+    // #14219 — o cron ganha o claim pelo /claim e libera com o token dele.
+    const claimRes = await scheduler.fetch(new Request("https://do/claim", { method: "POST" }));
+    const { claim_token } = await claimRes.json() as { claim_token?: string };
+    assert.equal(await state.storage.get<boolean>("claiming"), true);
 
     const res = await scheduler.fetch(
-      new Request("https://do/release-claim", { method: "POST" }),
+      new Request("https://do/release-claim", { method: "POST", body: JSON.stringify({ claim_token }) }),
     );
     assert.equal(res.status, 200);
 
@@ -2597,8 +2600,11 @@ describe("#2219 Bug 2 fix: claim TTL — claim expirado pode ser re-claimado", (
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
     await state.storage.put("claiming", true);
     await state.storage.put("claimed_at", Date.now());
+    await state.storage.put("claim_token", "tok-dono"); // #14219 — claim do chamador
 
-    await scheduler.fetch(new Request("https://do/release-claim", { method: "POST" }));
+    await scheduler.fetch(new Request("https://do/release-claim", {
+      method: "POST", body: JSON.stringify({ claim_token: "tok-dono" }),
+    }));
 
     assert.equal(await state.storage.get("claiming"), undefined, "claiming deve ser undefined após release");
     assert.equal(await state.storage.get("claimed_at"), undefined, "claimed_at deve ser undefined após release");
@@ -3121,10 +3127,11 @@ describe("#2230 Bug 3: alarm() usa tryClaim() diretamente — sem nested blockCo
     const state = new MockDOState();
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
 
-    // Interceptar tryClaim para verificar que é chamado
+    // Interceptar o claim direto para verificar que é chamado. #14219: o
+    // alarm usa `tryClaimWithToken()` (o `tryClaim()` booleano a embrulha).
     let tryClaimCalls = 0;
-    const origTryClaim = scheduler.tryClaim.bind(scheduler);
-    scheduler.tryClaim = async () => {
+    const origTryClaim = scheduler.tryClaimWithToken.bind(scheduler);
+    scheduler.tryClaimWithToken = async () => {
       tryClaimCalls++;
       return origTryClaim();
     };
