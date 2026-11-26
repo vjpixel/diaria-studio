@@ -1,8 +1,8 @@
 #!/usr/bin/env -S npx tsx
 /**
  * check-node-modules-integrity.ts (#14070) — diz se o `node_modules` deste
- * checkout tem pacote instalado pela metade (arquivo de um pacote importando
- * outro arquivo do mesmo pacote que não existe no disco).
+ * checkout tem pacote instalado pela metade: arquivo interno faltando, entrada
+ * declarada (`main`/`exports`) faltando ou binário nativo que não carrega.
  *
  * Caso real: no Neo, `npx knip` saía com `ERR_MODULE_NOT_FOUND
  * node_modules/formatly/lib/types.js`. Os 9 arquivos de 0 byte do
@@ -10,13 +10,15 @@
  * `npm install` não repõe arquivo de pacote já instalado. Diagnóstico e
  * reparo: `scripts/lib/node-modules-integrity.ts` e `docs/setup.md`.
  *
- * Só lê: importa cada dependência direta (`dependencies` + `devDependencies`
- * do `package.json`) num processo filho, com cwd na raiz, e classifica a
- * falha. Não instala nem apaga nada; imprime o comando de reparo.
+ * Importa cada dependência direta (`dependencies` + `devDependencies` do
+ * `package.json`) num processo filho PRÓPRIO, com cwd na raiz: um import que
+ * derrube o processo (crash, `process.exit`, timeout) aparece com o nome do
+ * pacote, sem levar os outros junto. Não instala nem apaga nada (importar
+ * carrega binário nativo, mas não escreve no disco); imprime o reparo.
  *
  * Uso: npx tsx scripts/check-node-modules-integrity.ts [--root DIR] [--json]
- * Exit: 0 = íntegro; 1 = pacote pela metade; 2 = sem node_modules/package.json
- *       ou probe que não rodou.
+ * Exit: 0 = íntegro; 1 = pacote pela metade ou import que derrubou o processo;
+ *       2 = sem node_modules/package.json.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -25,23 +27,25 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import {
   classifyImportProbe,
   formatIntegrityReport,
+  hasFailure,
+  manifestDeclaresEntry,
   type ImportProbe,
   type ImportVerdict,
 } from "./lib/node-modules-integrity.ts";
 
-/** Probe que roda no filho: importa cada pacote e devolve JSON por linha. */
+const MARKER = "__NM_INTEGRITY__";
+
+/** Probe que roda no filho: importa UM pacote e grava o resultado numa linha. */
 const PROBE_SOURCE = `
-const pkgs = JSON.parse(process.env.NM_INTEGRITY_PKGS || "[]");
-const out = [];
-for (const pkg of pkgs) {
-  try {
-    await import(pkg);
-    out.push({ pkg, ok: true });
-  } catch (e) {
-    out.push({ pkg, ok: false, code: e && e.code, message: String(e && e.message || e), requireStack: e && e.requireStack });
-  }
+const pkg = process.env.NM_INTEGRITY_PKG;
+let out;
+try {
+  await import(pkg);
+  out = { pkg, ok: true };
+} catch (e) {
+  out = { pkg, ok: false, code: e && e.code, message: String((e && e.message) || e), requireStack: e && e.requireStack };
 }
-process.stdout.write("\\n__NM_INTEGRITY__" + JSON.stringify(out) + "\\n");
+process.stdout.write("\\n${MARKER}" + JSON.stringify(out) + "\\n");
 process.exit(0);
 `;
 
@@ -53,27 +57,38 @@ function directDependencies(root: string): string[] {
   return [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})];
 }
 
-function probeImports(root: string, pkgs: string[], timeoutMs = 120_000): ImportProbe[] {
+function readManifest(root: string, pkg: string): { main?: unknown; exports?: unknown } | null {
+  try {
+    return JSON.parse(readFileSync(join(root, "node_modules", pkg, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function probeImport(root: string, pkg: string, timeoutMs: number): ImportProbe {
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", PROBE_SOURCE], {
     cwd: root,
-    env: { ...process.env, NM_INTEGRITY_PKGS: JSON.stringify(pkgs) },
+    env: { ...process.env, NM_INTEGRITY_PKG: pkg },
     encoding: "utf8",
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
   });
-  const marker = (r.stdout ?? "").split(/\r?\n/).find((l) => l.startsWith("__NM_INTEGRITY__"));
-  if (!marker) {
-    throw new Error(
-      `probe de importação não devolveu resultado (status ${r.status}, sinal ${r.signal ?? "-"}): ${(r.stderr ?? "").slice(0, 500)}`,
-    );
+  const declaresEntry = manifestDeclaresEntry(readManifest(root, pkg));
+  const line = (r.stdout ?? "").split(/\r?\n/).find((l) => l.startsWith(MARKER));
+  if (!line) {
+    return {
+      pkg,
+      ok: false,
+      declaresEntry,
+      crashed: { status: r.status, signal: r.signal ?? (r.error ? String(r.error.message) : null), stderr: r.stderr ?? "" },
+    };
   }
-  return JSON.parse(marker.slice("__NM_INTEGRITY__".length)) as ImportProbe[];
+  return { ...(JSON.parse(line.slice(MARKER.length)) as ImportProbe), declaresEntry };
 }
 
-export function checkNodeModulesIntegrity(root: string): ImportVerdict[] {
+export function checkNodeModulesIntegrity(root: string, timeoutMs = 60_000): ImportVerdict[] {
   const nodeModulesDir = join(root, "node_modules");
-  const probes = probeImports(root, directDependencies(root));
-  return probes.map((p) => classifyImportProbe(p, nodeModulesDir));
+  return directDependencies(root).map((pkg) => classifyImportProbe(probeImport(root, pkg, timeoutMs), nodeModulesDir));
 }
 
 function main(): number {
@@ -83,16 +98,10 @@ function main(): number {
     console.error(`[check-node-modules-integrity] ${root} sem package.json ou node_modules (rodar npm ci).`);
     return 2;
   }
-  let verdicts: ImportVerdict[];
-  try {
-    verdicts = checkNodeModulesIntegrity(root);
-  } catch (e) {
-    console.error(`[check-node-modules-integrity] ${(e as Error).message}`);
-    return 2;
-  }
+  const verdicts = checkNodeModulesIntegrity(root);
   if (args.flags.has("json")) console.log(JSON.stringify(verdicts, null, 2));
   else console.log(formatIntegrityReport(verdicts));
-  return verdicts.some((v) => v.kind === "broken") ? 1 : 0;
+  return hasFailure(verdicts) ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {
