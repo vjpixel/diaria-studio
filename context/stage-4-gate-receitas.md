@@ -85,8 +85,7 @@ npx tsx scripts/stage4-cascade-status.ts --edition-dir {EDITION_DIR}/ --start --
 npx tsx scripts/stage4-cascade-status.ts --edition-dir {EDITION_DIR}/ --apply-badge --html {EDITION_DIR}/_internal/newsletter-final-embedded.html
 # background (run_in_background: true):
 npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N} --keep-4x5-nativo
-npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N} --ratio 4x5 --force
-npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/ --destaque d{N}
+npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N} --ratio 4x5 --force && npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/ --destaque d{N}   # um comando: card só depois do nativo (#14081)
 npx tsx scripts/gen-carousel-cards.ts --edition-dir {EDITION_DIR}/          # só com "carousel" na cascata
 # ao terminar cada peça:
 npx tsx scripts/stage4-cascade-status.ts --edition-dir {EDITION_DIR}/ --mark --highlight d{N} --piece image --state done
