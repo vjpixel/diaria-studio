@@ -48,6 +48,7 @@ import {
   type CliRunMeta,
 } from "./cli-usage-json.ts";
 import { loadDoc, saveDoc, applyUpdate, type CliRunLogEntry, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
+import { checkStage4Pregate } from "./stage4-pregate.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -122,6 +123,54 @@ export const HEADLESS_FLAGS = "--no-gates";
  * nenhum, e `pre_gate` deve permanecer `false`/undefined.
  */
 export const SESSION_SUPERVISED_FLAG = "--session-supervised";
+
+/**
+ * Flag do pré-gate da Etapa 4 headless (#14034): `/diaria-4-revisao AAMMDD
+ * --pre-gate-only` roda §4a–§4c (pré-render, lints, fact-check, resumo) e
+ * para ANTES do gate, gravando o resumo e o marcador de
+ * `scripts/lib/stage4-pregate.ts`. A sessão do editor abre já no gate.
+ *
+ * **Substitui `HEADLESS_FLAGS` no prompt do Stage 4, nunca se soma a ele.**
+ * `--no-gates` no Stage 4 auto-aprova o gate de revisão, que é um dos dois
+ * gates humanos de projeto; com `--pre-gate-only` o spawn nem chega ao gate.
+ * A pós-condição deste modo também recusa um spawn que tenha escrito o
+ * sentinel do Stage 4 (gate aprovado sem o editor).
+ */
+export const STAGE4_PREGATE_FLAG = "--pre-gate-only";
+
+/**
+ * Prompt do spawn de um stage. Exportado para o teste travar a regra de
+ * flags do #14034: Stage 4 em pré-gate leva `STAGE4_PREGATE_FLAG` e NÃO leva
+ * `HEADLESS_FLAGS`; todo o resto leva `HEADLESS_FLAGS`, como antes.
+ */
+export function buildStagePrompt(opts: {
+  stage: number;
+  skill: string;
+  aammdd: string;
+  sessionSupervised: boolean;
+  stage4PreGate: boolean;
+  editionDirNote: string;
+}): string {
+  const { stage, skill, aammdd, sessionSupervised, stage4PreGate, editionDirNote } = opts;
+  const modeFlag = stage4PreGate && stage === 4 ? STAGE4_PREGATE_FLAG : HEADLESS_FLAGS;
+  const supervisedFlagPart = sessionSupervised && stage === 1 ? ` ${SESSION_SUPERVISED_FLAG}` : "";
+  return `/${skill} ${aammdd} ${modeFlag}${supervisedFlagPart} ${NO_BACKGROUND_DIRECTIVE} ${editionDirNote}`;
+}
+
+/**
+ * Pós-condição/skip do Stage 4 em pré-gate (#14034). `skip` = não spawnar
+ * (gate já aprovado numa sessão anterior, ou pré-gate já concluído para o
+ * conteúdo atual); `ok` = o spawn deixou o marcador para o conteúdo atual.
+ */
+export function stage4PregateState(
+  editionDir: string,
+  assertSentinelFn: typeof assertSentinelImpl,
+  checkPregateFn: typeof checkStage4Pregate,
+): { gateDone: boolean; pregateDone: boolean; reason: string } {
+  const gateDone = assertSentinelFn(editionDir, 4).ok;
+  const c = checkPregateFn(editionDir);
+  return { gateDone, pregateDone: c.completed, reason: c.reason };
+}
 
 /** Teto de turnos POR STAGE (era o teto da edição inteira antes do #5738). */
 export const MAX_TURNS = "120";
@@ -658,6 +707,15 @@ export interface RunEditionStagesOptions {
    * agendado (desassistido, sem editor).
    */
   sessionSupervised?: boolean;
+  /**
+   * #14034: `true` = o Stage 4 do plano roda só o pré-gate
+   * (`STAGE4_PREGATE_FLAG`, sem `--no-gates`) e a pós-condição é o marcador
+   * de `stage4-pregate.ts`, não o sentinel do Stage 4. Default `false`
+   * preserva o runner agendado (Stage 4 inteiro com `--no-gates`).
+   */
+  stage4PreGate?: boolean;
+  /** #14034: injetável para teste. */
+  checkPregateFn?: typeof checkStage4Pregate;
   execFn?: typeof execFileSync;
   /**
    * `assertSentinel`, NÃO `sentinelExists` (achados P0/P1 do review da PR #5753).
@@ -751,6 +809,8 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     env,
     plan = STAGE_PLAN,
     sessionSupervised = false,
+    stage4PreGate = false,
+    checkPregateFn = checkStage4Pregate,
     execFn = execFileSync,
     assertSentinelFn = assertSentinelImpl,
     onProgress = () => {},
@@ -775,11 +835,26 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     // Resumabilidade no nível do DRIVER: stage concluído nem chega a
     // spawnar, em vez de gastar uma sessão inteira só para o orquestrador
     // constatar que não há o que fazer.
-    const before = assertSentinelFn(editionDir, stage);
-    if (before.ok) {
-      onProgress(`SKIP stage ${stage} (/${skill}) — sentinela e outputs já em disco`);
-      outcomes.push({ stage, skill, status: "skipped", exitCode: 0, durationMs: 0 });
-      continue;
+    const preGate = stage4PreGate && stage === 4;
+    if (preGate) {
+      // #14034: gate já aprovado (sentinel do Stage 4) ou pré-gate já
+      // concluído para o conteúdo atual — nada a spawnar. Marcador defasado
+      // (conteúdo mudou depois) re-spawna o pré-gate.
+      const st = stage4PregateState(editionDir, assertSentinelFn, checkPregateFn);
+      if (st.gateDone || st.pregateDone) {
+        onProgress(
+          `SKIP stage 4 pré-gate (/${skill}) — ${st.gateDone ? "gate já aprovado (sentinela em disco)" : "pré-gate já concluído para o conteúdo atual"}`,
+        );
+        outcomes.push({ stage, skill, status: "skipped", exitCode: 0, durationMs: 0 });
+        continue;
+      }
+    } else {
+      const before = assertSentinelFn(editionDir, stage);
+      if (before.ok) {
+        onProgress(`SKIP stage ${stage} (/${skill}) — sentinela e outputs já em disco`);
+        outcomes.push({ stage, skill, status: "skipped", exitCode: 0, durationMs: 0 });
+        continue;
+      }
     }
 
     // #6045: a diretiva anti-background vai NO PROMPT — é o único canal
@@ -789,10 +864,10 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     // #6719: só o Stage 1 lê `pre_gate` (§ 0-replies) — anexar a flag aos
     // demais stages não teria efeito, mas manteria o escopo do achado restrito
     // ao que de fato precisa dela.
-    const supervisedFlagPart = sessionSupervised && stage === 1 ? ` ${SESSION_SUPERVISED_FLAG}` : "";
     // #9223 item 2: diretório real da edição no prompt (descoberta; o
-    // `--add-dir` do #9086 cobre o acesso).
-    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}${supervisedFlagPart} ${NO_BACKGROUND_DIRECTIVE} ${editionDirNote}`;
+    // `--add-dir` do #9086 cobre o acesso). #14034: Stage 4 em pré-gate troca
+    // `--no-gates` por `--pre-gate-only` (ver `buildStagePrompt`).
+    const prompt = buildStagePrompt({ stage, skill, aammdd, sessionSupervised, stage4PreGate, editionDirNote });
     onProgress(`Stage ${stage}: claude -p '${prompt.slice(0, 80)}…'`);
 
     let stageOutcome: StageOutcome | null = null;
@@ -869,12 +944,27 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // o editor chegaria ao gate de revisão sobre uma edição incompleta —
       // exatamente o pior desfecho possível deste mecanismo. A verificação é
       // barata e não depende de adivinhar a semântica de exit code do harness.
-      const after = assertSentinelFn(editionDir, stage);
-      if (!after.ok) {
-        const detail =
-          after.reason === "outputs_missing"
-            ? `outputs declarados ausentes: ${after.missingOutputs.join(", ")}`
-            : "sentinela não foi escrita";
+      let postDetail: string | null = null;
+      if (preGate) {
+        // #14034: o pré-gate tem de deixar o marcador e NUNCA o sentinel do
+        // Stage 4 (que só o `sim` do editor escreve, §4e).
+        const st = stage4PregateState(editionDir, assertSentinelFn, checkPregateFn);
+        if (st.gateDone) {
+          postDetail = "o pré-gate escreveu o sentinel do Stage 4 (gate aprovado sem o editor) — conferir a edição antes da Etapa 5";
+        } else if (!st.pregateDone) {
+          postDetail = `marcador do pré-gate não foi escrito para o conteúdo atual (${st.reason})`;
+        }
+      } else {
+        const after = assertSentinelFn(editionDir, stage);
+        if (!after.ok) {
+          postDetail =
+            after.reason === "outputs_missing"
+              ? `outputs declarados ausentes: ${after.missingOutputs.join(", ")}`
+              : "sentinela não foi escrita";
+        }
+      }
+      if (postDetail !== null) {
+        const detail = postDetail;
         // #5791/#6045: instrumentação de observabilidade + detecção do
         // sintoma background-wait. Com o sintoma presente e retry restante,
         // NÃO declara falha ainda — repete o stage.

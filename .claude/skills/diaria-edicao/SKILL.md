@@ -142,11 +142,21 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 
 (Bash tool: `run_in_background: true`, `timeout: 7200000`)
 
+Editor presente (`--no-gates` NÃO foi passado à invocação ORIGINAL de /diaria-edicao):
+
 ```bash
-npx tsx scripts/run-edition-stages.ts --edition $1 --through 3{ --session-supervised se --no-gates NÃO foi passado à invocação ORIGINAL de /diaria-edicao}
+npx tsx scripts/run-edition-stages.ts --edition $1 --stage4-pre-gate --session-supervised
 ```
 
-Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).
+Com `--no-gates` (como antes):
+
+```bash
+npx tsx scripts/run-edition-stages.ts --edition $1 --through 3
+```
+
+Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**.
+
+**`--stage4-pre-gate` (#14034) — o pré-gate da Etapa 4 também sai desta sessão.** Com o editor presente, o comando roda ainda um 4º processo, `/diaria-4-revisao {AAMMDD} --pre-gate-only`: §4a–§4c (pré-render, lints, fact-check, resumo consolidado) sem o gate, que grava `_internal/04-pregate-summary.md` e o marcador `_internal/.step-4-pregate.json` e para. Esse spawn nunca recebe `--no-gates` e nunca escreve o sentinel do Stage 4 (o runner recusa o que escrever). Na 261126 o pré-gate levou esta sessão de 181k para ~340k de contexto antes do gate, e o loop do gate relia esse histórico a cada turno. **Se o Stage 4 falhar no resumo** (Stages 1-3 OK), não é erro a reportar e parar: seguir o Passo 2b normalmente; o `stage4-pregate.ts check` do topo de `orchestrator-stage-4.md` sai 1 e a Etapa 4 roda inteira aqui, como antes. Falha nos Stages 1-3 segue a regra abaixo. Com `--no-gates` o pré-gate não sai daqui, e a Etapa 4 roda inline auto-aprovada como antes. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).
 
 **`--session-supervised` (#6719) — sempre que o EDITOR está presente nesta sessão.** Todo spawn deste comando passa `--no-gates` a cada stage (é o que permite o subprocesso terminar sem ninguém ali para responder ao gate INTERNO dele) — mas isso não significa que a sessão é desassistida. Quando a invocação original de `/diaria-edicao` (esta conversa) **não** trazia `--no-gates`, o editor está presente e supervisionando, mesmo que os Stages 1-3 rodem headless por isolamento de contexto (#5744). **`--session-supervised` NÃO controla mais `orchestrator-stage-0-preflight.md` § 0-replies (#7166)** — essa seção já rodou no Passo 1b acima, no top-level, antes de qualquer spawn; o Stage 1 spawnado NUNCA tenta § 0-replies, independente desta flag (MCP não existe ali) — `pre_gate` fica sem consumidor dentro do Stage 1 spawnado a partir daqui (§ 0-replies era o único ponto que o lia). Continuar passando a flag é inofensivo (nenhum outro trecho do Stage 1 lê `pre_gate`) e preserva o sinal pra um futuro segundo consumidor; não vale a pena remover a plumbing por um campo vestigial. Omitir esta flag quando `--no-gates` FOI passado a `/diaria-edicao` — aí a sessão é de fato desassistida (comportamento inalterado).
 
@@ -162,9 +172,9 @@ Enquanto roda, **não ficar consultando o progresso** — cada consulta traz sa�
 
 **Se um stage falhar**, o script para ali (não roda os seguintes), devolve exit code != 0 e nomeia o stage no resumo. Reportar ao editor qual stage falhou e o tail da falha; não tentar consertar spawnando de novo às cegas. Reinvocar o mesmo comando é seguro e retoma de onde parou — stage com sentinela em disco não re-spawna.
 
-**Depois que o comando voltar com exit 0**, seguir a partir da **§ 4 Etapa 4 — Revisão** do playbook, no top-level, como descrito abaixo. Os Stages 1-3 já estão feitos e seus sentinelas estão em disco; **não re-executar § 1, § 2 nem § 3.**
+**Depois que o comando voltar com exit 0**, seguir a partir da **§ 4 Etapa 4 — Revisão** do playbook, no top-level, como descrito abaixo. Os Stages 1-3 já estão feitos e seus sentinelas estão em disco; **não re-executar § 1, § 2 nem § 3.** Com `--stage4-pre-gate`, a § 4 começa pela "Abertura no gate (#14034)" do topo de `orchestrator-stage-4.md`, que lê o resumo do disco e vai direto ao gate.
 
-Os Stages 4, 5 e 6 continuam no top-level porque é onde ficam os dois gates humanos de projeto (revisão e agendamento) e o `javascript_tool` do `publish-newsletter`, que é restrito ao top-level.
+O gate da Etapa 4 e as Etapas 5 e 6 continuam no top-level (a 5 e a 6 numa sessão nova, #6171) porque é onde ficam os dois gates humanos de projeto (revisão e agendamento) e o `javascript_tool` do `publish-newsletter`, que é restrito ao top-level.
 
 ## Passo 2b — Executar o restante do playbook no top-level (#207)
 

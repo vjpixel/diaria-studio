@@ -18,6 +18,8 @@ Parsear `{usable, reason?, decision}` do stdout. `usable: true` (na checagem atu
 
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
 
+**Sessão aberta no gate pelo pré-gate headless (#14034):** os blocos que o §4c produz (`{violations_block}`, `{fact_check_block}`, `{social_critic_block}`, `{box_click_report_block}`, `{late_refresh_block}`, `{newsletter_consensus_block}`, veredictos e títulos dos destaques, hooks sociais) vêm das seções de `{EDITION_DIR}/_internal/04-pregate-summary.md` na 1ª apresentação. Os blocos marcados abaixo como "rodado a cada apresentação" seguem sendo rodados aqui. Remetentes novos (`pending_senders`) listados no resumo: fazer aqui a pergunta em lote de `context/newsletter-intake-gate.md`.
+
 **Ler `{whatsapp_url}`/`{meta_description_suggestion}` do disco antes de montar o resumo (#5414)** — não confiar em variável de sessão, um corte de contexto entre §4c e aqui não pode fazer esses dois valores desaparecerem do gate:
 ```bash
 npx tsx scripts/lib/stage4-capture-state.ts --edition-dir {EDITION_DIR} --read
