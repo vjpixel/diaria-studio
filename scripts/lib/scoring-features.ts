@@ -67,7 +67,7 @@ export interface ScoringFeatureRow {
 
   // --- explicitamente NÃO implementadas na Fase 1 (#7975, já fechada) —
   // sempre null, nunca fabricadas. Precisam da infraestrutura listada no
-  // comentário de cada uma; não há issue aberta para elas (#14123). ---
+  // comentário de cada uma; o épico aberto #7972 as lista (#14123). ---
   /** Não implementada: precisa de dedup histórico contra `data/past-editions.md`/cache de URLs publicadas. */
   novelty_vs_past_editions: null;
   /** Não implementada: precisa de CTR por domínio agregado de `data/link-ctr-table.csv`, janela de 30 dias. */
