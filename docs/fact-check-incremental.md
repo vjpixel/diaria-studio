@@ -39,6 +39,9 @@ O `--check-blocking`, o DEFASADO e o exit 2 valem iguais nos três casos,
 sempre sobre o conteúdo final. Na dúvida sobre um claim que cruza destaques,
 `--full`.
 
-Limitação conhecida: o bloco do destaque também fecha num `---` dentro do
-corpo do destaque; o texto depois dele cai no `pool`. Mudança ali recheca o
-`pool`, não o destaque.
+`---` dentro do corpo de um destaque (#14197): o bloco ainda fecha nele, mas
+uma linha de destaque ("Por que isso importa", "Aprofunde") depois do `---` e
+antes do próximo header deixa a partição ambígua, e o plano sai completo. O
+box de divulgação entre destaques não traz essas linhas e continua no `pool`.
+Texto de destaque depois do `---` sem esses rótulos ainda cai no `pool`; na
+dúvida, `--full`.
