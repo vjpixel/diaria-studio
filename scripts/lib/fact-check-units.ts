@@ -33,6 +33,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hashContent } from "./fact-check-staleness.ts";
 import { readExtrasManifest } from "./fact-check-extra-sources.ts";
+import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./section-naming.ts";
+import { canonicalize } from "./url-utils.ts";
+import { POOL_SOURCES_DIR, readPoolSourcesManifest } from "./diaria/pool-sources.ts";
 
 export const POOL_UNIT = "pool";
 
@@ -41,6 +44,12 @@ export interface FactCheckUnitHashes {
   units: Record<string, string>;
   /** Social fora de `d{N}`/`um`. Mudou = re-check completo. */
   global: string;
+  /**
+   * Partição ambígua do conteúdo ATUAL (bloco de destaque sem fim claro,
+   * header de destaque repetido). Presente = o plano sai completo. Só o
+   * conteúdo atual decide; nunca comparado entre carimbos.
+   */
+  ambiguous?: string;
 }
 
 /** Fonte de um destaque, só o que muda o veredito (sem `fetched_at`). */
@@ -52,15 +61,36 @@ export interface UnitSourceEntry {
   k?: number;
 }
 
+/** Fonte já lida de um item do pool (`_internal/pool-sources/`, #13884). */
+export interface PoolSourceFingerprint {
+  url: string;
+  status?: string;
+  completeness?: string;
+  /** Hash do texto que o fact-checker leria (null sem arquivo legível). */
+  textHash: string | null;
+}
+
 export interface UnitSourceInputs {
   /** URL de cada destaque no `01-approved.json`, por posição. */
   approvedUrls: Array<string | undefined>;
   manifest: UnitSourceEntry[];
   extras: UnitSourceEntry[];
+  /** Fontes lidas dos itens do pool; entram no hash do `pool` pelas URLs citadas nele. */
+  poolSources?: PoolSourceFingerprint[];
 }
 
 const DESTAQUE_HEADER_RE = /^(?:\*\*)?DESTAQUE (\d+)\s*\|/;
 const SEPARATOR_RE = /^-{3,}$/;
+/**
+ * Header de seção que fecha um bloco de destaque mesmo sem `---`: as seções do
+ * pool pelo registro canônico (`SECTIONS` de `section-naming.ts`, o mesmo do
+ * stitch/render) mais as seções fixas depois dos destaques (É IA?, ERRO
+ * INTENCIONAL).
+ */
+const SECTION_HEADER_RE = sectionHeaderRegex(
+  String.raw`${ALL_SECTION_NAMES_PATTERN}|[ÉE]\s+IA\?|ERRO\s+INTENCIONAL`,
+  { capture: "none", flags: "u" },
+);
 
 /** Unidade de um claim: `d{N}` para destaque numérico, `pool` para `"secondary"`. */
 export function claimUnit(destaque: number | "secondary"): string {
@@ -78,22 +108,66 @@ export function sortUnits(units: Iterable<string>): string[] {
 }
 
 /**
- * Parte a newsletter em `d{N}` (header `DESTAQUE N |` até o próximo `---` ou
- * o próximo header) e `pool` (todo o resto). Concatenar as partes devolve
- * todas as linhas: nenhuma mudança escapa de alguma unidade.
+ * Parte a newsletter em `d{N}` e `pool` (todo o resto). Concatenar as partes
+ * devolve todas as linhas: nenhuma mudança escapa de alguma unidade.
  */
 export function splitNewsletterUnits(md: string): Record<string, string> {
+  return partitionNewsletter(md).units;
+}
+
+/**
+ * Partição com diagnóstico. O bloco de destaque fecha no `---`, no header de
+ * outro destaque ou num header de seção conhecido (LANÇAMENTOS, RADAR, USE
+ * MELHOR, VÍDEOS, É IA?, ERRO INTENCIONAL). `ambiguous` quando o fim não é
+ * claro (bloco que vai até o fim do arquivo, ou o mesmo `DESTAQUE N` duas
+ * vezes): aí o plano sai completo.
+ */
+export function partitionNewsletter(md: string): { units: Record<string, string>; ambiguous?: string } {
   const out: Record<string, string[]> = { [POOL_UNIT]: [] };
+  const seen = new Set<string>();
+  const problems: string[] = [];
   let current: string | null = null;
   for (const line of md.replace(/\r\n/g, "\n").split("\n")) {
     const t = line.trim();
     const header = DESTAQUE_HEADER_RE.exec(t);
-    if (header) current = `d${Number(header[1])}`;
-    else if (current && SEPARATOR_RE.test(t)) current = null;
+    if (header) {
+      current = `d${Number(header[1])}`;
+      if (seen.has(current)) problems.push(`header DESTAQUE ${header[1]} repetido`);
+      seen.add(current);
+    } else if (current && (SEPARATOR_RE.test(t) || SECTION_HEADER_RE.test(t))) {
+      current = null;
+    }
     const key = current ?? POOL_UNIT;
     (out[key] ??= []).push(line);
   }
-  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.join("\n")]));
+  if (current) problems.push(`bloco ${current} sem fim (nem --- nem header de seção até o fim do arquivo)`);
+  return {
+    units: Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.join("\n")])),
+    ...(problems.length > 0 ? { ambiguous: problems.join("; ") } : {}),
+  };
+}
+
+const URL_IN_MD_RE = /https?:\/\/[^\s\]<>"()]+/g;
+
+function urlKeyOf(url: string): string {
+  try {
+    return canonicalize(url);
+  } catch {
+    return url;
+  }
+}
+
+/** Fingerprint das fontes lidas dos itens cujas URLs aparecem no texto do pool. */
+function poolSourceFingerprint(poolText: string, src: UnitSourceInputs): string[] {
+  const byKey = new Map<string, PoolSourceFingerprint>();
+  for (const e of src.poolSources ?? []) byKey.set(urlKeyOf(e.url), e);
+  const keys = [
+    ...new Set([...poolText.matchAll(URL_IN_MD_RE)].map((m) => urlKeyOf(m[0].replace(/[*.,;:]+$/, "")))),
+  ].sort();
+  return keys.map((k) => {
+    const e = byKey.get(k);
+    return e ? `${k}|${e.status ?? ""}|${e.completeness ?? ""}|${e.textHash ?? ""}` : `${k}|sem-fonte`;
+  });
 }
 
 /**
@@ -141,7 +215,8 @@ export function computeUnitHashes(
   socialMd: string | null | undefined,
   src: UnitSourceInputs,
 ): FactCheckUnitHashes {
-  const nl = splitNewsletterUnits(newsletterMd ?? "");
+  const part = partitionNewsletter(newsletterMd ?? "");
+  const nl = part.units;
   const so = splitSocialUnits(socialMd ?? "");
   const destaques = new Set<number>();
   for (const k of [...Object.keys(nl), ...Object.keys(so.units)]) {
@@ -159,9 +234,13 @@ export function computeUnitHashes(
     );
   }
   units[POOL_UNIT] = hashContent(
-    JSON.stringify({ newsletter: nl[POOL_UNIT] ?? "", social: so.units[POOL_UNIT] ?? null }),
+    JSON.stringify({
+      newsletter: nl[POOL_UNIT] ?? "",
+      social: so.units[POOL_UNIT] ?? null,
+      sources: poolSourceFingerprint(`${nl[POOL_UNIT] ?? ""}\n${so.units[POOL_UNIT] ?? ""}`, src),
+    }),
   );
-  return { units, global: hashContent(so.global) };
+  return { units, global: hashContent(so.global), ...(part.ambiguous ? { ambiguous: part.ambiguous } : {}) };
 }
 
 /** Valida o shape vindo do JSON (unknown → carimbo ou undefined). */
@@ -210,6 +289,7 @@ export function planFactCheckScope(
   const full = (reason: string): FactCheckScope => ({ mode: "full", units: [], reused: [], reason });
   if (opts.forceFull) return full("--full pedido");
   if (!opts.hasPreviousResult) return full("sem fact-check.json anterior legível");
+  if (current.ambiguous) return full(`partição ambígua: ${current.ambiguous}`);
   if (!stamp) return full("fact-check.json sem carimbo por unidade (anterior ao #14035)");
   if (stamp.global !== current.global) return full("03-social.md mudou fora das seções d{N}/um");
   const before = sortUnits(Object.keys(stamp.units));
@@ -272,10 +352,23 @@ export function readUnitSourceInputs(internalDir: string): UnitSourceInputs {
     approvedUrls = [];
   }
   const sourcesDir = join(internalDir, "fact-check-sources");
+  const poolDir = join(internalDir, POOL_SOURCES_DIR);
+  const poolSources: PoolSourceFingerprint[] = readPoolSourcesManifest(internalDir).map((e) => {
+    let textHash: string | null = null;
+    if (e.file) {
+      try {
+        textHash = hashContent(readFileSync(join(poolDir, e.file), "utf8"));
+      } catch {
+        textHash = null;
+      }
+    }
+    return { url: e.url, status: e.status, completeness: e.completeness, textHash };
+  });
   return {
     approvedUrls,
     manifest: readJsonArray(join(sourcesDir, "manifest.json")),
     extras: readExtrasManifest(sourcesDir),
+    poolSources,
   };
 }
 

@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import {
   computeUnitHashes,
   mergePartialClaims,
+  partitionNewsletter,
   planFactCheckScope,
   splitNewsletterUnits,
   splitSocialUnits,
@@ -151,6 +152,26 @@ describe("#14035: partição em unidades", () => {
     assert.equal(total, md.split("\n").length, "toda linha cai em exatamente uma unidade");
   });
 
+  it("bloco do destaque fecha no header de seção conhecido mesmo sem `---` (RADAR, É IA?)", () => {
+    const md = newsletter().replace("Corpo do D3 com 4 níveis.\n\n---\n", "Corpo do D3 com 4 níveis.\n");
+    const p = partitionNewsletter(md);
+    assert.equal(p.ambiguous, undefined);
+    assert.doesNotMatch(p.units.d3, /RADAR|Item do radar/);
+    assert.match(p.units.pool, /Item do radar/);
+    const eia = partitionNewsletter(md.replace("RADAR", "**🛠️ USE MELHOR**").replace("**[Item", "**É IA?**\n\n**[Item"));
+    assert.doesNotMatch(eia.units.d3, /USE MELHOR|É IA/);
+  });
+
+  it("partição ambígua (destaque até o fim do arquivo, header repetido) sai COMPLETO", () => {
+    const eof = newsletter().replace(/\n---\n\nRADAR[\s\S]*$/, "\n");
+    const pEof = partitionNewsletter(eof);
+    assert.match(pEof.ambiguous ?? "", /d3 sem fim/);
+    const base = computeUnitHashes(eof, social(), SOURCES);
+    assert.equal(planFactCheckScope(base, base, { hasPreviousResult: true }).mode, "full");
+    const dup = newsletter().replace("**DESTAQUE 3 |", "**DESTAQUE 2 |");
+    assert.match(partitionNewsletter(dup).ambiguous ?? "", /repetido/);
+  });
+
   it("social: d{N}, d{N}-cards e o d{N} do # Curto vão para d{N}; `um` para o pool; preâmbulo para global", () => {
     const s = splitSocialUnits(social());
     assert.match(s.units.d1, /Legenda do D1/);
@@ -184,6 +205,42 @@ describe("#14035: hash por unidade", () => {
   it("ajuste só no RADAR (ou no `## um`) marca só o pool", () => {
     assert.deepEqual(changedUnits(base, computeUnitHashes(newsletter({ radar: "grátis por 7 dias" }), social(), SOURCES)), ["pool"]);
     assert.deepEqual(changedUnits(base, computeUnitHashes(newsletter(), social({ um: "Outro post." }), SOURCES)), ["pool"]);
+  });
+
+  it("D3 sem `---` antes do RADAR: mudança no RADAR recheca o pool, não o d3", () => {
+    const noSep = (radar?: string) =>
+      newsletter({ radar }).replace("Corpo do D3 com 4 níveis.\n\n---\n", "Corpo do D3 com 4 níveis.\n");
+    const before = computeUnitHashes(noSep(), social(), SOURCES);
+    const after = computeUnitHashes(noSep("**[Item do radar](https://example.com/r1)** grátis por 7 dias."), social(), SOURCES);
+    const scope = planFactCheckScope(before, after, { hasPreviousResult: true });
+    assert.equal(scope.mode, "partial");
+    assert.deepEqual(scope.units, ["pool"]);
+  });
+
+  it("troca de URL de um item do RADAR recheca o pool", () => {
+    const after = computeUnitHashes(
+      newsletter({ radar: "**[Item do radar](https://example.com/r2)** grátis por 30 dias." }),
+      social(),
+      SOURCES,
+    );
+    assert.deepEqual(changedUnits(base, after), ["pool"]);
+  });
+
+  it("fonte lida de um item do pool (pool-sources) que muda sem o texto mudar recheca o pool", () => {
+    const withPool = (textHash: string | null, status = "ok"): UnitSourceInputs => ({
+      ...SOURCES,
+      poolSources: [{ url: "https://example.com/r1", status, textHash }],
+    });
+    const a = computeUnitHashes(newsletter(), social(), withPool("aaa"));
+    assert.deepEqual(changedUnits(a, computeUnitHashes(newsletter(), social(), withPool("bbb"))), ["pool"]);
+    assert.deepEqual(changedUnits(a, computeUnitHashes(newsletter(), social(), withPool("aaa", "error"))), ["pool"]);
+    assert.deepEqual(changedUnits(base, a), ["pool"], "item que ganha fonte lida também muda o pool");
+    // Fonte de URL que não aparece no pool não mexe em nada.
+    const unrelated: UnitSourceInputs = {
+      ...SOURCES,
+      poolSources: [{ url: "https://example.com/fora-da-edicao", status: "ok", textHash: "zzz" }],
+    };
+    assert.deepEqual(changedUnits(base, computeUnitHashes(newsletter(), social(), unrelated)), []);
   });
 
   it("fonte adicional registrada para o D3 (add-destaque-source) marca o d3 sem mudar texto", () => {
@@ -375,6 +432,28 @@ describe("#14035: ponta a ponta pela CLI", () => {
       const so = readFileSync(join(dir, "03-social.md"), "utf8");
       assert.deepEqual(fc.content_hash, computeContentHash(md, so));
       assert.equal(planScopeForEdition(dir).mode, "none", "depois do merge, nada a rechecar");
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("texto lido de um item do RADAR (pool-sources em disco) muda: plano PARCIAL pool", () => {
+    const dir = setupEdition();
+    try {
+      const poolDir = join(dir, "_internal", "pool-sources");
+      mkdirSync(poolDir, { recursive: true });
+      writeFileSync(
+        join(poolDir, "manifest.json"),
+        JSON.stringify([{ url: "https://example.com/r1", bucket: "radar", title: "Item", file: "r1.txt", status: "ok", erro: null, bytes: 10, fetched_at: "x" }]),
+        "utf8",
+      );
+      writeFileSync(join(poolDir, "r1.txt"), "Grátis por 30 dias.", "utf8");
+      firstFullCheck(dir);
+      assert.equal(planScopeForEdition(dir).mode, "none");
+      writeFileSync(join(poolDir, "r1.txt"), "Grátis por 7 dias.", "utf8");
+      const scope = planScopeForEdition(dir);
+      assert.equal(scope.mode, "partial");
+      assert.deepEqual(scope.units, ["pool"]);
     } finally {
       cleanup(dir);
     }
