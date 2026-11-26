@@ -16,7 +16,7 @@
  * www podem ser semânticos; URLs são opacas).
  */
 
-import { parseDestaques } from "../../extract-destaques.ts";
+import { parseDestaques } from "../destaques-parse.ts";
 
 export interface DestaqueUrlApprovedHighlight {
   url?: string;

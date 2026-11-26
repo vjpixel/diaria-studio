@@ -8,7 +8,7 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
+import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./destaques-parse.js";
 import { readImageGeneratorSidecar } from "./shared/image-generator-sidecar.ts"; // #9095
 import { buildD1VideoLink, D1_PLAY_HERO_FILE, editionFromDir } from "./diaria/d1-video-hero.ts"; // #10784
 import { isNoVideoEdition } from "./diaria/d1-no-video.ts"; // #11125

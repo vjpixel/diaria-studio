@@ -19,7 +19,7 @@ import { resolve, extname, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { classifyRefreshError } from "../google-auth.ts";
+import { classifyRefreshError } from "./google-auth.ts";
 import {
   DRIVE_API,
   DRIVE_UPLOAD,
