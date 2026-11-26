@@ -168,6 +168,36 @@ describe("studio-server (#3555)", () => {
     assert.equal(missingRes.status, 404);
   });
 
+  it("#14069: relatório avulso registrado aparece em /api/reports e é servido em /relatorios/:id", async () => {
+    const { registerReport } = await import("../scripts/lib/reports-registry.ts");
+    mkdirSync(join(root, "data", "reports", "avulso"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "reports", "avulso", "261125-revisao-13984.html"),
+      "<!doctype html><h1>Revisão do repo</h1><p>achados</p>",
+    );
+    const reg = registerReport(root, {
+      kind: "avulso",
+      sessionId: "261125-revisao-13984",
+      title: "Revisão do repo (#13984)",
+      htmlPath: "data/reports/avulso/261125-revisao-13984.html",
+    });
+    assert.equal(reg.ok, true);
+
+    const listBody = await (await fetch(new URL("/api/reports", server.url))).json();
+    const avulso = listBody.reports.find((r: { id: string }) => r.id === "avulso-261125-revisao-13984");
+    assert.ok(avulso, "o avulso precisa aparecer na listagem do Studio");
+    assert.equal(avulso.kind, "avulso");
+
+    const page = await fetch(new URL("/relatorios/avulso-261125-revisao-13984", server.url));
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Revisão do repo/);
+
+    const shell = await (await fetch(new URL("/relatorios", server.url))).text();
+    assert.ok(shell.includes('<option value="avulso">Avulso</option>'), "filtro por tipo precisa oferecer o avulso");
+    const js = await (await fetch(new URL("/relatorios.js", server.url))).text();
+    assert.match(js, /avulso: "Avulso"/, "rótulo em português do badge");
+  });
+
   it("GET /relatorios serve o cockpit (rewrite pra relatorios.html)", async () => {
     const res = await fetch(new URL("/relatorios", server.url));
     assert.equal(res.status, 200);

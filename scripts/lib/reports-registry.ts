@@ -184,9 +184,28 @@ const VALID_KINDS = [
   // (`scripts/video-xml-vs-final.ts`). `sessionId` = AAMMDD do dia da rodada.
   // Somente leitura, sem e-mail.
   "video-xml-final",
+  // #14069: relatório AVULSO — auditoria, revisão de repo, investigação, sem
+  // pipeline dono. `sessionId` = `AAMMDD-slug` (a data do relatório + um
+  // nome curto, validado em `isAvulsoSessionId`); arquivo `.html` ou `.md`,
+  // de preferência em `data/reports/avulso/`. Fora do `COUNT_CHECKED_KINDS`
+  // de `register-report.ts`: não tem tabela de unidades a conferir.
+  "avulso",
 ] as const;
 
 export type ReportKind = (typeof VALID_KINDS)[number];
+
+/** Os kinds aceitos, na ordem canônica — para mensagens de uso (#14069). */
+export const REPORT_KINDS: readonly ReportKind[] = VALID_KINDS;
+
+/**
+ * `sessionId` de um relatório `avulso` (#14069): `AAMMDD-slug`, com o slug em
+ * minúsculas, dígitos e hífens (ex.: `261125-revisao-13984`). A data entra no
+ * id porque um avulso não tem rodada nem edição que a carregue, e o slug
+ * distingue dois relatórios do mesmo dia.
+ */
+export function isAvulsoSessionId(sessionId: string): boolean {
+  return /^\d{6}-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(sessionId);
+}
 
 export function isReportKind(value: string): value is ReportKind {
   return (VALID_KINDS as readonly string[]).includes(value);
