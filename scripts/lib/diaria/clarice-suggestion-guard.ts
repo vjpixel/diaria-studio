@@ -30,7 +30,7 @@
  *      quebra de linha nova reestrutura o markdown.
  *
  * Função pura, sem I/O — consumida por `scripts/clarice-apply.ts` (caminho do
- * MCP) e por `scripts/lib/clarice-chunk.ts` (fallback REST chunked), pra que
+ * MCP) e por `scripts/lib/diaria/clarice-chunk.ts` (fallback REST chunked), pra que
  * os dois caminhos recusem o mesmo ruído.
  */
 

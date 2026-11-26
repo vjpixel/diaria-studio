@@ -1450,7 +1450,7 @@ export function untrackedCollidesWithUpstream(untracked: string[], upstreamPaths
  * `REPO_ROOT` é derivado da localização FÍSICA de `scripts/lib/git-sync.ts`
  * (ver comentário de `REPO_ROOT` acima) — para um `git worktree` criado sob
  * `.claude/worktrees/<nome>` (convenção usada por overnight/develop/continuo,
- * ver `context/overnight-dispatch-rules.md` item 22 e
+ * ver `context/overnight-coordinator-rules.md` item 22 e
  * `docs/claude-md-historical-incidents.md`), esse arquivo é uma cópia física
  * separada dentro do worktree — então `REPO_ROOT` resolve pro próprio
  * worktree, não pro checkout principal. Isso é justamente o sinal que
@@ -1463,7 +1463,7 @@ export function untrackedCollidesWithUpstream(untracked: string[], upstreamPaths
  * posição do path (não só como sufixo), cobrindo tanto
  * `.claude/worktrees/agent-<id>` (dispatch via `isolation: "worktree"`)
  * quanto `.claude/worktrees/<nome>` (worktree criado manualmente, ver item 22
- * de `context/overnight-dispatch-rules.md`).
+ * de `context/overnight-coordinator-rules.md`).
  */
 export function isAgentWorktreeCheckout(repoRoot: string = REPO_ROOT): boolean {
   return /[\\/]\.claude[\\/]worktrees[\\/]/.test(repoRoot);

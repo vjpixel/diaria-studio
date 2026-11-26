@@ -19,7 +19,7 @@
  *
  * Tudo aqui é função pura e testável sem depender de Gmail/LLM ao vivo — a
  * orquestração (ler thread, decidir qual edição a reply referencia, chamar
- * `create_draft`) fica no playbook `orchestrator-stage-0-preflight.md`
+ * `create_draft`) fica no playbook `orchestrator-stage-0-replies.md`
  * (§0-replies), análogo ao padrão de `filter-subscriber-replies.ts`.
  */
 
@@ -111,7 +111,7 @@ export interface RaffleRegistrySave {
  * retorna um array NOVO quando `isNew=true` — com essa assinatura, o erro de
  * passar o array antigo vira erro de compilação (arrays não têm `.entries`),
  * em vez de bug silencioso descoberto só em produção. Ver §0-replies em
- * `.claude/agents/orchestrator-stage-0-preflight.md`.
+ * `.claude/agents/orchestrator-stage-0-replies.md`.
  */
 export function saveRaffleRegistry(path: string, result: RaffleRegistrySave): void {
   writeFileAtomic(path, `${JSON.stringify(result.entries, null, 2)}\n`);

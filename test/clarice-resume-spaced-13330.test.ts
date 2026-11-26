@@ -20,7 +20,7 @@ import {
   RESUME_SPACED_BUDGET_MS,
   RESUME_SPACING_MS,
   RESUME_FIRST_ROUND_DEADLINE_MS,
-} from "../scripts/lib/clarice-pending.ts";
+} from "../scripts/lib/diaria/clarice-pending.ts";
 
 function makePendingEdition(): string {
   const dir = mkdtempSync(join(tmpdir(), "clarice-spaced-13330-"));

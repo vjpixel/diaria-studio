@@ -31,9 +31,27 @@
  * Se o texto inteiro for ≤ threshold, retorna um único chunk (sem split).
  */
 
-import { countOccurrences } from "../clarice-apply.ts";
 import { classifyClariceNoise } from "./clarice-suggestion-guard.ts";
-import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
+import type { ClariceSuggestion } from "../schemas/clarice-suggestions.ts";
+
+/**
+ * Conta ocorrências exatas (substring match, case-sensitive) de `needle` em
+ * `haystack`. Pulando ocorrências sobrepostas avançando por `needle.length`.
+ *
+ * Mora aqui (e não em `scripts/clarice-apply.ts`, que a reexporta) para que
+ * lib não importe CLI de topo (#14001, regra 5 de test/lib-boundary.test.ts;
+ * movida no #13997).
+ */
+export function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let pos = 0;
+  while ((pos = haystack.indexOf(needle, pos)) !== -1) {
+    count++;
+    pos += needle.length;
+  }
+  return count;
+}
 
 export interface TextChunk {
   /** Conteúdo do chunk, pronto para enviar ao Clarice. */

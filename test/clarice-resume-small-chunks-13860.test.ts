@@ -16,9 +16,9 @@ import {
   resumeClarice,
   resumeClariceSpaced,
   RESUME_SMALL_CHUNK_CHARS,
-} from "../scripts/lib/clarice-pending.ts";
+} from "../scripts/lib/diaria/clarice-pending.ts";
 import { parseCliArgs } from "../scripts/clarice-correct.ts";
-import { splitIntoChunks } from "../scripts/lib/clarice-chunk.ts";
+import { splitIntoChunks } from "../scripts/lib/diaria/clarice-chunk.ts";
 
 const TIMEOUT_STDOUT = '{"failure":{"kind":"timeout","message":"não respondeu em 60s"}}\n';
 

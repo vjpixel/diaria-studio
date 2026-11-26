@@ -288,4 +288,5 @@ PR de outro repo (ex: vjpixel/diaria-design): o lock é POR REPO (#10618) — `-
 - **#7169 / #7170** — merge lock cego entre máquinas
 - **#7212** — `--session-id` em comando encadeado
 - `context/overnight-dispatch-rules.md` — regras de dispatch compartilhadas
+- `context/overnight-coordinator-rules.md` — regras do coordenador (#14043)
 - `.claude/skills/diaria-overnight/SKILL.md` — a maquinaria de implementação que esta skill reusa

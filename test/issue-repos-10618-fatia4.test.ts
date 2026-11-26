@@ -70,6 +70,7 @@ import { assessOpenPrCoverage } from "../scripts/lib/issue-open-pr-check.ts";
 import { resolveSafeEditRepo, SAFE_EDIT_CONFIG_ROOT } from "../scripts/lib/gh-pr-safe-edit.ts";
 import { main as syncLabelsMain, type GhRunner } from "../scripts/sync-issue-labels.ts";
 import { ROUTABLE_LABELS } from "../scripts/lib/issue-route.ts";
+import { dispatchRulesSection, readDispatchRules } from "./_helpers/dispatch-rules-text.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DESIGN = "vjpixel/diaria-design";
@@ -1276,8 +1277,9 @@ describe("#10618 fatia 4 (review C/K/L) — prosa das skills", () => {
   });
 
   it("dispatch rules item 32 e dev-implementador cobrem worktree, PR, merge -R e a salvaguarda", () => {
-    const rules = read("context/overnight-dispatch-rules.md");
-    const item32 = rules.slice(rules.indexOf("## 32."));
+    // #14043: item 32 dividido entre as regras do subagente e as do coordenador.
+    const rules = readDispatchRules();
+    const item32 = dispatchRulesSection(32);
     assert.ok(item32.length > 0);
     for (const re of [
       /worktree add -b \{branch\} \.claude\/worktrees\/\{nome\}\s+origin\/main/,

@@ -153,12 +153,12 @@ orçamento.
 
 - **Caminhos:**
   - `data/sessions/{kind}-{host}-{id}.json`, `sessionsDir()` em
-    `scripts/lib/session-registry.ts:918`; gravado a cada chamada de
+    `scripts/lib/sessions/store.ts`; gravado a cada chamada de
     ferramenta pelo hook `.claude/hooks/session-beacon.mjs` (throttle de 5 s,
     `MIN_WRITE_INTERVAL_MS`, linha 136).
   - `data/sessions/.merge-lock.json` e `.merge-lock--{owner}--{repo}.json`,
-    `mergeLockPath()` em `scripts/lib/session-registry.ts:935`, TTL de 2 min
-    (`MERGE_LOCK_TTL_MS`, linha 781).
+    `mergeLockPath()` em `scripts/lib/sessions/store.ts`, TTL de 2 min
+    (`MERGE_LOCK_TTL_MS` em `scripts/lib/sessions/types.ts`).
   - `.merge-grant-consumed-*.json`, `.worktree-claims/<hash>.json`,
     `.registry.jsonl` no mesmo diretório.
   - `{EDITION_DIR}/_internal/edition-lock.json`
@@ -199,7 +199,7 @@ orçamento.
      em cada `Bash`), e um espelho empurra o estado para o D1 de tempos em
      tempos. Os leitores entre máquinas (guard de merge, liveness do
      coordenador, GC) passam a ler do D1.
-- **Esforço:** alto. `session-registry.ts` tem ~8 mil linhas e vários
+- **Esforço:** alto. O registro (`session-registry.ts`, fachada de `scripts/lib/sessions/*` desde o #14004) tem ~8 mil linhas e vários
   consumidores, inclusive o kind `continuo`, usado pelo Hermes
   (CLAUDE.md). A tabela de locks sozinha é médio.
 - **Risco:** hook sem rede (Neo offline, Cloudflare fora) precisa de
@@ -366,7 +366,7 @@ orçamento.
 ### G9. Logs append-only escritos por mais de uma máquina
 
 - **Caminhos:** `data/session-lifecycle.jsonl`
-  (`scripts/lib/session-registry.ts:2105`), `data/reports/index.jsonl`
+  (`logSessionLifecycleEvent()` em `scripts/lib/sessions/registry.ts`), `data/reports/index.jsonl`
   (`scripts/register-report.ts`; lido pela superfície de Relatórios do Studio
   e por `scripts/calibration-allowlist-growth-report.ts:77`),
   `data/brave-credits.jsonl` (`scripts/lib/brave-credits.ts:71`),

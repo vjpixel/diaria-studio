@@ -59,7 +59,7 @@ import "dotenv/config";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { applyClariceSuggestions, type ClariceSuggestion } from "./clarice-apply.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { withClariceRetry, type RetryPolicy, DEFAULT_RETRY_POLICY } from "./lib/clarice-correct-engine.ts";
+import { withClariceRetry, type RetryPolicy, DEFAULT_RETRY_POLICY } from "./lib/diaria/clarice-correct-engine.ts";
 import { validateWeeklySummary, type WeeklySummariesFile } from "./lib/weekly-summaries.ts";
 
 export function loadSummariesFile(path: string): WeeklySummariesFile {

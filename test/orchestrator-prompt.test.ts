@@ -20,6 +20,7 @@ import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ORCHESTRATOR_FILES } from "../scripts/lib/orchestrator-files.ts";
+import { readStage0Playbook, readStage1Playbook } from "../scripts/lib/stage01-playbook.ts";
 import {
   buildSnapshot,
   diffSnapshot,
@@ -153,7 +154,13 @@ describe("orchestrator-prompt (#634)", () => {
       // Arquivo foi a 610 linhas (contagem de `content.split("\n").length`,
       // igual à usada por este teste). Teto bumped de 535→625 com headroom
       // pequeno.
-      "orchestrator-stage-0-preflight.md": 625,
+      // #14030: a prosa de fallback saiu para orchestrator-stage-0-fallback.md
+      // e o §0-replies para orchestrator-stage-0-replies.md. Principal 239,
+      // fallback 349, replies 47 linhas; tetos com headroom pequeno. O teto
+      // de bytes é o de test/stage01-playbook-split-14030.test.ts.
+      "orchestrator-stage-0-preflight.md": 255,
+      "orchestrator-stage-0-fallback.md": 365,
+      "orchestrator-stage-0-replies.md": 60,
       // #4846: +9 linhas (novo passo 1y-bis — dispatch opcional/desligado
       // por padrão de scripts/experiment-d3-radar.ts logo após os invariants
       // pós-gate-apply, antes do sentinel do Stage 1). Teto bumped de
@@ -163,7 +170,10 @@ describe("orchestrator-prompt (#634)", () => {
       // de integridade de `summary`, 1m-bis e 1q.3-bis — detalhe completo
       // movido pro histórico pra caber no budget). Teto bumped de 825→835
       // com headroom (era 826 medido pós-#4988/#4985/#4986).
-      "orchestrator-stage-1-research.md": 835,
+      // #14030: os passos cobertos pelo runner saíram para
+      // orchestrator-stage-1-fallback.md. Principal 299, fallback 508 linhas.
+      "orchestrator-stage-1-research.md": 315,
+      "orchestrator-stage-1-fallback.md": 525,
       // #3929: +11 linhas (snapshot pós-humanizador/pré-Clarice + diff legível
       // do social em §2c, 4º arg opcional de pré-Humanizador no clarice-diff.ts
       // da newsletter em §2b, e menção ao novo diff no gate §2d — decorrelaciona
@@ -445,7 +455,7 @@ describe("orchestrator-prompt (#634)", () => {
     // Pós-#158 os published.json moram em _internal/. Se o §0b checar a raiz, o
     // resume não detecta Stage 4 completo → re-publica (rascunho Beehiiv duplicado
     // + re-agenda 6 posts). Toda menção deve ser _internal/-prefixada.
-    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    const stage0 = readStage0Playbook();
     // Remove TODAS as refs _internal/-prefixadas; qualquer ocorrência remanescente
     // do filename é, por definição, BARE (raiz) — pega tanto " 05-published.json"
     // (prosa) quanto ".../06-social-published.json" (path no glob inline JS, a
@@ -476,7 +486,7 @@ describe("orchestrator-prompt (#634)", () => {
   });
 
   it("#2288: §0-replies condicionado a pre_gate (não auto_approve) — roda no /diaria-edicao pre-gate, pula em --no-gates", () => {
-    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    const stage0 = readStage0Playbook();
     // Condição correta: pre_gate === true (editor presente, gate no Stage 4)
     assert.ok(
       stage0.includes("pre_gate === true"),
@@ -590,7 +600,8 @@ describe("#3530: Stages 0-3 usam {EDITION_DIR} resolvido — sem split-brain com
     /data\/editions\/\{edição\}/,
   ];
 
-  for (const file of STAGE_0_3_FILES) {
+  // #14030: os arquivos de fallback e o §0-replies também entram na varredura.
+  for (const file of [...STAGE_0_3_FILES, "orchestrator-stage-0-fallback.md", "orchestrator-stage-0-replies.md", "orchestrator-stage-1-fallback.md"]) {
     it(`${file} não monta mais data/editions/{AAMMDD} (ou variantes) à mão para a edição corrente`, () => {
       const content = readFileSync(resolve(AGENTS_DIR, file), "utf8");
       for (const pattern of FORBIDDEN_PATTERNS) {
@@ -603,7 +614,7 @@ describe("#3530: Stages 0-3 usam {EDITION_DIR} resolvido — sem split-brain com
   }
 
   it("orchestrator-stage-0-preflight.md resolve {EDITION_DIR} ANTES do mkdir de criação da edição", () => {
-    const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-0-preflight.md"), "utf8");
+    const content = readStage0Playbook();
     const resolveIdx = content.indexOf("find-current-edition.ts --resolve");
     const mkdirIdx = content.indexOf("mkdir -p {EDITION_DIR}");
     assert.ok(resolveIdx !== -1, "stage-0 não resolve EDITION_DIR via find-current-edition.ts --resolve");
@@ -699,7 +710,7 @@ describe("#3842: Stage 1 loga qual websearch path (A/B) foi escolhido e por quê
   // explicitamente um log-event.ts para os 3 desfechos possíveis, com o nível
   // de severidade correto (info só quando Path A de fato rodou; warn nos dois
   // motivos de cair pro Path B).
-  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-1-research.md"), "utf8");
+  const content = readStage1Playbook();
   const section1f = content.slice(
     content.indexOf("### 1f. Dispatch de researchers e discovery"),
     content.indexOf("### 1g. Registrar saúde"),
@@ -1141,7 +1152,7 @@ describe("#4942: §1x (GATE HUMANO) guarda contra auto_approve", () => {
   // skip da seção inteira quando auto_approve=true, no mesmo padrão já
   // usado em §6c (orchestrator-stage-6.md) e no gate de fact-check de
   // orchestrator-stage-4.md.
-  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-1-research.md"), "utf8");
+  const content = readStage1Playbook();
   const section1x = content.slice(
     content.indexOf("### 1x. GATE HUMANO"),
     content.indexOf("### 1y. Pós-gate"),

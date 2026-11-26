@@ -66,7 +66,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
 import { PUBLIC_IMAGES_R2_INERT_LOG_PREFIX } from "./lib/public-images-r2.ts"; // #12194
 import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
-import { CLARICE_PENDING_REL, readClaricePending } from "./lib/clarice-pending.ts"; // #12257
+import { CLARICE_PENDING_REL, readClaricePending } from "./lib/diaria/clarice-pending.ts"; // #12257
 import {
   WRITER_INPUTS_CUTOVER_EDITION,
   checkWriterInputSnapshots,

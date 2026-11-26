@@ -43,7 +43,7 @@
  *   0 — todas `livre`: dispatch normal.
  *   1 — alguma `ocupada` (e nenhuma `cannot-verify`): pular a unidade da issue
  *       ocupada (`claimed-por-outra-sessao`; com só `pr-aberta`, seguir o
- *       `orphanAction` do item 28 de context/overnight-dispatch-rules.md).
+ *       `orphanAction` do item 28 de context/overnight-coordinator-rules.md).
  *   2 — alguma `cannot-verify`, ou uso incorreto. NUNCA tratar como livre.
  * Falha ao GRAVAR o marcador (`--announce`/`--release`) não muda o exit code:
  * sai como `announce.error` no JSON e em stderr (o registro local segue
@@ -51,7 +51,7 @@
  *
  * @see scripts/lib/github-claim-marker.ts
  * @see scripts/check-issue-open-pr.ts
- * @see context/overnight-dispatch-rules.md item 18 e item 28
+ * @see context/overnight-coordinator-rules.md item 18 e item 28
  */
 import { spawnSync } from "node:child_process";
 import { hostname } from "node:os";
