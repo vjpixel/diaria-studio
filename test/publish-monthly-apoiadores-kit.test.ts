@@ -1169,6 +1169,11 @@ function makeFakeKit(
     patchThrows?: boolean;
     /** Toda releitura DEPOIS do 1º PATCH lança. */
     rereadThrowsAfterPatch?: boolean;
+    /**
+     * #14212: depois de cada PATCH, o Kit devolve este `status` (ou nenhum,
+     * com `null`) em vez de derivar scheduled/draft do send_at.
+     */
+    statusAfterPatch?: string | null;
   } = {},
 ) {
   const live: RereadBroadcast = { ...initial };
@@ -1195,6 +1200,10 @@ function makeFakeKit(
         else if (isContentPatch && opts.zeroSendAtOnContentPatch) live.send_at = null;
         else live.send_at = input.send_at ?? null;
         live.status = live.send_at ? "scheduled" : "draft";
+      }
+      if (opts.statusAfterPatch !== undefined) {
+        if (opts.statusAfterPatch === null) delete live.status;
+        else live.status = opts.statusAfterPatch;
       }
       return { id };
     },
@@ -1394,6 +1403,40 @@ describe("#11813 — main() --update", () => {
     assert.equal(kit.patches[0].input.send_at, "2030-03-01T06:00:00-03:00");
     assert.equal(spy.written[0].state.status, "sent");
     assert.equal(spy.written[0].state.sentAt, "2030-03-01T06:00:00-03:00");
+  });
+
+  // #14212: o --update gravava `sent` conferindo só audiência e horário; o
+  // caminho de criação já exigia o status relido desde o #12739.
+  it("regressão #14212: releitura 'draft' com send_at certo NÃO grava 'sent' e falha", async () => {
+    const kit = makeFakeKit(
+      { ...LIVE_SCHEDULED, status: "draft", send_at: null },
+      { statusAfterPatch: "draft" },
+    );
+    const { spy, error } = await runUpdate(["--schedule", "2030-03-01T06:00:00-03:00"], SCHEDULED_STATE, kit);
+    assert.match(String(error), /NÃO confere/);
+    assert.match(String(error), /status "draft"/, "o erro nomeia o status observado");
+    assert.equal(kit.live.send_at, "2030-03-01T06:00:00-03:00", "horário relido igual ao pedido");
+    assert.equal(spy.created.length, 0);
+    assert.equal(spy.written.length, 1);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+    assert.equal(spy.written[0].state.kitBroadcastId, 555);
+  });
+
+  it("regressão #14212: releitura SEM o campo status também não grava 'sent'", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { statusAfterPatch: null });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /status desconhecido/);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+  });
+
+  it("#14212: a conferência usa a releitura FINAL, depois do resgate do send_at", async () => {
+    // 1º PATCH zera o send_at e deixa 'draft'; o resgate reagenda e o Kit
+    // passa a devolver 'scheduled' — a releitura final confirma.
+    const kit = makeFakeKit(LIVE_SCHEDULED, { zeroSendAtOnContentPatch: true });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.equal(error, null);
+    assert.equal(kit.patches.length, 2);
+    assert.equal(spy.written[0].state.status, "sent");
   });
 
   it("--update --dry-run: não lê state nem toca o Kit", async () => {
