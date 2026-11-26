@@ -15,6 +15,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { checkListCapacity } from "../scripts/clarice-check-list-capacity.ts";
 import { readNovosCutoff } from "../scripts/lib/clarice-novos-cutoff.ts";
 import { readNovosRunStatus } from "../scripts/lib/clarice-novos-run-status.ts";
 import { decisionDriftReportLines } from "../scripts/lib/decision-state-drift.ts";
@@ -130,18 +131,24 @@ describe("clarice-novos-run (#4941)", () => {
     }
   });
 
-  it("#13966: capacidade esgotando aborta antes da seleção e preserva ação no relatório", async () => {
+  for (const count of [270, 300]) it(`#13966: ${count} listas aborta antes da seleção e preserva ação no relatório`, async () => {
     const root = mkdtempSync(join(tmpdir(), "clarice-list-cap-"));
     try {
+      // Usa o guard real com resposta Brevo simulada: não basta um exit 1 inventado.
+      let failure: unknown;
+      await checkListCapacity(async () => ({ status: 200, body: { count } }))
+        .catch((error) => { failure = error; });
+      assert.ok(failure instanceof Error);
       const { exec, calls } = makeFakeExec({
         "scripts/clarice-check-list-capacity.ts": {
-          code: 1, stdout: "", stderr: "270/300 listas — rode clarice-consolidate-lists.ts",
+          code: 1, stdout: "", stderr: failure.message,
         },
       });
       const result = await runNovos([], baseDeps(root, { exec }));
       assert.equal(result.code, 1);
       assert.deepEqual(calls.map((c) => c.script), ["scripts/clarice-check-list-capacity.ts"]);
-      assert.match(result.reportMarkdown, /270\/300.*clarice-consolidate-lists/);
+      assert.ok(result.reportMarkdown.includes(`${count}/300`));
+      assert.match(result.reportMarkdown, /clarice-consolidate-lists\.ts.*--apply/);
       assert.doesNotMatch(result.reportMarkdown, /seleção desta rodada já está/);
     } finally {
       rmSync(root, { recursive: true, force: true });
