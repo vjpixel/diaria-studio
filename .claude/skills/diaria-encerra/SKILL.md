@@ -41,8 +41,11 @@ e stashes desde o início. É somente leitura exceto pelo fetch de refs remotas.
 Worktrees usados nesta sessão que não constem no registry devem ser conferidos
 também: repita com `--worktree '<caminho>'` para cada um, inclusive o checkout
 atual se foi usado. Não use `known_worktrees` como prova de autoria: é mapa global.
-Erro, upstream ausente, identidade ausente ou resultado incompleto impedem atestar
-encerramento; não trate falha do GitHub como “nenhuma PR”.
+Erro, identidade ausente ou resultado incompleto impedem atestar encerramento;
+não trate falha do GitHub como “nenhuma PR”. Branch sem upstream (ou com o
+upstream apagado do remoto) entra em `pending` quando tem commits que não estão
+em nenhum remoto (#13991): commitada e nunca enviada, ela também não tem PR.
+Branch atrás do upstream sai em `warnings`, sem bloquear `canClose`; cite no resumo.
 Arquivo modificado só no fim de linha (CRLF/LF, sem diferença de conteúdo com
 `--ignore-space-at-eol`) e snapshots de audiência rotineiros
 (`context/audience-profile.md`, `docs/audience-history/*.md`) saem em `ignored`,

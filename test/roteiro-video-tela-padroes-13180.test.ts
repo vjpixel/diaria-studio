@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { validarRoteiroFalas, type RoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
 import { avisosTela, readRoteiroTelas, ROTEIRO_FALAS_FILE } from "../scripts/lib/diaria/roteiro-videos.ts";
 import { renderRoteiroPagina, telaHtml } from "../scripts/lib/diaria/roteiro-pagina.ts";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 
 const FIXTURE = join(import.meta.dirname, "fixtures", "roteiro-video", "roteiro-falas-261116.json");
 const base = (): RoteiroFalas => JSON.parse(readFileSync(FIXTURE, "utf8"));
@@ -104,7 +105,8 @@ describe("#13180: o XML da montagem recebe a tela sem **", () => {
 });
 
 describe("#13180/#13178: a skill registra as regras", () => {
-  const skill = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-video-roteiro", "SKILL.md"), "utf8");
+  // #14040: o Passo 8 vive em reference/; o helper junta SKILL.md + reference/*.md.
+  const skill = readSkillWithReferences("diaria-video-roteiro");
   it("Passo 5: padrões do texto de tela", () => {
     for (const trecho of ["Só no horizontal.", "Um item por linha", "Sem empresa entre parênteses", "Um box pode cobrir duas falas vizinhas", "Nada que não valha para todo o público da fala"]) {
       assert.ok(skill.includes(trecho), trecho);

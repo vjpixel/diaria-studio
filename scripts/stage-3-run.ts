@@ -36,10 +36,19 @@
  *   Checagem de saúde do ComfyUI, quando `platform.config.json.image_generator
  *     === "comfyui"` (HALT se indisponível — mesma severidade do playbook).
  *   Por destaque presente (d1, d2, e d3 só se destaque_count === 3):
- *     lint-image-prompt.ts → image-generate.ts (2x1) → image-generate.ts
- *     --ratio 4x5 (nativo). Falha de lint pausa SÓ aquele destaque (report,
- *     não hard-abort); falha de `image-generate.ts` (qualquer ratio) é
- *     BLOQUEANTE — para o Stage 3 inteiro, igual ao playbook (#4090).
+ *     lint-image-prompt.ts (em série) e depois image-generate.ts (2x1) e
+ *     image-generate.ts --ratio 4x5 (nativo) de TODOS os destaques em
+ *     paralelo (#14036; teto `--concurrency N`, default 6; `--serial` volta à
+ *     ordem e ao abort na 1ª falha de antes). Falha de lint pausa SÓ aquele
+ *     destaque (report, não hard-abort). Falha de `image-generate.ts`
+ *     (qualquer ratio) no paralelo é repetida uma vez em série, com `--force`,
+ *     se outra imagem passou ou se o stderr indica limite de concorrência
+ *     (`shouldRetrySerially`); se persistir, é BLOQUEANTE — para o Stage 3
+ *     inteiro, igual ao playbook (#4090), com o destaque/ratio que falhou em
+ *     `destaques[].error` e `imageJobs`. Cada filho tem teto de 15 min (o job
+ *     só termina no `close` do filho; morte não confirmada = falha não
+ *     repetível) e, se o runner receber SIGINT/SIGTERM/SIGHUP, a árvore de
+ *     cada filho vivo é morta pelo PID antes de sair.
  *   gen-social-card-4x5.ts (compõe os cards de todos os destaques prontos) —
  *     BLOQUEANTE (#4090) se falhar.
  *   gen-carousel-cards.ts (#6005 Parte B — 3 slides de parágrafo + CTA do
@@ -84,7 +93,7 @@
  *       já renderizado, incluído em `haltRequired` no JSON de saída)
  *
  * Uso:
- *   npx tsx scripts/stage-3-run.ts --edition AAMMDD [--only d1,d2] [--force]
+ *   npx tsx scripts/stage-3-run.ts --edition AAMMDD [--only d1,d2] [--force] [--concurrency N | --serial]
  *
  * @see .claude/agents/orchestrator-stage-3.md (playbook em prosa — este
  *      script cobre só o miolo de §3b; NÃO editado nesta unidade — cutover
@@ -92,7 +101,7 @@
  * @see scripts/stage-0-run.ts (padrão de referência mais próximo, #5415 1/3)
  * @see scripts/clarice-novos-run.ts (padrão original, #4941)
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
@@ -112,9 +121,249 @@ export interface StepResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** #14036: `false` = falha que NÃO pode ser repetida (o filho pode estar
+   * vivo: a morte por timeout não foi confirmada). Ausente = repetível. */
+  retryable?: false;
 }
 
 export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
+
+/** Versão assíncrona do `ExecFn` (#14036) — usada só na geração de imagens,
+ * que roda em paralelo. Mesmo contrato de retorno. */
+export type AsyncExecFn = (scriptRelPath: string, args: string[]) => Promise<StepResult>;
+
+/** #14036: teto por `image-generate.ts`. O Codex tem 300 s próprios
+ * (`codex.timeout_seconds`), o fallback outro tanto, mais a compressão. */
+export const IMAGE_JOB_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Resultado de `killChildTree`: `ok` = o PID do filho foi morto (ou já
+ * tinha saído); `detail` vai pro stderr do job, pra auditoria. */
+export interface KillReport {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Mata a ÁRVORE do filho pelo PID guardado (#5432: nunca por nome de imagem).
+ * O filho NÃO nasce `detached`: continua no grupo do runner, então um SIGKILL
+ * ou SIGHUP no grupo do runner o alcança também (com `detached` ele escapava
+ * e ficava órfão). Windows: `taskkill /T /F /PID`. POSIX: descendentes via
+ * `pgrep -P` (recursivo, folhas primeiro), depois o próprio PID, com SIGKILL.
+ * Mesmo objetivo de `killProcessTree` em `scripts/codex-image.js` (#9097), sem
+ * importá-lo (ele carrega sharp).
+ */
+export function killChildTree(
+  pid: number | undefined,
+  {
+    platform = process.platform,
+    killFn = process.kill.bind(process) as (pid: number, sig: NodeJS.Signals) => void,
+    execTaskkill = (p: number) => {
+      const r = spawnSync("taskkill", ["/T", "/F", "/PID", String(p)], { encoding: "utf8", windowsHide: true });
+      return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? r.error.message : ""}`.trim() };
+    },
+    listChildren = (p: number) => {
+      const r = spawnSync("pgrep", ["-P", String(p)], { encoding: "utf8" });
+      return (r.stdout ?? "").split(/\s+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    },
+  }: {
+    platform?: NodeJS.Platform;
+    killFn?: (pid: number, sig: NodeJS.Signals) => void;
+    execTaskkill?: (pid: number) => { status: number | null; output: string };
+    listChildren?: (pid: number) => number[];
+  } = {},
+): KillReport {
+  if (!pid) return { ok: false, detail: "sem PID do filho" };
+  if (platform === "win32") {
+    const r = execTaskkill(pid);
+    // 128 = processo não encontrado (já saiu): a morte está garantida.
+    const ok = r.status === 0 || r.status === 128;
+    return { ok, detail: `taskkill /T /F /PID ${pid}: status ${r.status}${r.output ? ` (${r.output})` : ""}` };
+  }
+  const descendants: number[] = [];
+  const walk = (p: number, depth: number) => {
+    if (depth > 16) return;
+    for (const c of listChildren(p)) {
+      walk(c, depth + 1);
+      descendants.push(c); // folhas primeiro
+    }
+  };
+  walk(pid, 0);
+  for (const c of descendants) {
+    try {
+      killFn(c, "SIGKILL");
+    } catch {
+      /* neto já saiu */
+    }
+  }
+  try {
+    killFn(pid, "SIGKILL");
+    return { ok: true, detail: `SIGKILL em ${pid} e ${descendants.length} descendente(s)` };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { ok: true, detail: `${pid} já tinha saído (ESRCH); ${descendants.length} descendente(s) com SIGKILL` };
+    return { ok: false, detail: `SIGKILL em ${pid} falhou: ${code ?? (e as Error).message}` };
+  }
+}
+
+/** Filhos vivos de `realExecAsync`, pra o repasse de sinal. */
+const liveChildPids = new Set<number>();
+let signalForwardingInstalled = false;
+function installSignalForwarding(): void {
+  if (signalForwardingInstalled) return;
+  signalForwardingInstalled = true;
+  // Se o runner receber SIGINT (Ctrl+C), SIGTERM (task parada) ou SIGHUP
+  // (terminal/sessão fechada), nenhum image-generate.ts fica órfão gerando
+  // imagem: mata a árvore de cada filho vivo, loga o resultado de cada kill e
+  // sai com o código convencional do sinal. SIGKILL no runner não tem handler
+  // possível; aí vale o filho estar no grupo do runner (sem `detached`).
+  // Limite: o handler só roda quando o event loop está livre. Durante um passo
+  // SÍNCRONO longo (`spawnSync` de card, carrossel, invariantes...), o sinal
+  // só é atendido ao fim desse passo — os filhos assíncronos de imagem já
+  // terminaram nessa altura, porque a geração vem antes dos passos síncronos.
+  for (const [sig, exitCode] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+    process.once(sig, () => {
+      for (const pid of liveChildPids) {
+        const r = killChildTree(pid);
+        console.error(`stage-3-run: ${sig} recebido — ${r.ok ? "morto" : "FALHA ao matar"} filho ${pid}: ${r.detail}`);
+      }
+      liveChildPids.clear();
+      process.exit(exitCode);
+    });
+  }
+}
+
+/** #14036: depois do kill por timeout, quanto esperar o `close` do filho
+ * antes de dar a morte como não confirmada. */
+export const KILL_CONFIRM_GRACE_MS = 10_000;
+
+export interface RealExecAsyncOptions {
+  timeoutMs?: number;
+  killTree?: (pid: number | undefined) => KillReport;
+  killConfirmGraceMs?: number;
+  /** false só em teste: não instala handlers de sinal no processo do runner de testes. */
+  forwardSignals?: boolean;
+}
+
+export function realExecAsync(rootDir: string, opts: RealExecAsyncOptions = {}): AsyncExecFn {
+  const timeoutMs = opts.timeoutMs ?? IMAGE_JOB_TIMEOUT_MS;
+  const killTree = opts.killTree ?? ((pid: number | undefined) => killChildTree(pid));
+  const graceMs = opts.killConfirmGraceMs ?? KILL_CONFIRM_GRACE_MS;
+  if (opts.forwardSignals !== false) installSignalForwarding();
+  return (scriptRelPath, args) =>
+    new Promise((resolvePromise) => {
+      const abs = resolve(rootDir, ...scriptRelPath.split("/"));
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      let graceTimer: NodeJS.Timeout | undefined;
+      let pid: number | undefined;
+      // Preenchido quando o timeout mata o filho: o job só termina no `close`
+      // (morte confirmada), nunca no momento do kill.
+      let timedOutNote: string | undefined;
+      const finish = (r: StepResult, { stillAlive = false }: { stillAlive?: boolean } = {}) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (graceTimer) clearTimeout(graceTimer);
+        // Filho possivelmente vivo continua na lista: o repasse de sinal ainda
+        // tenta matá-lo se o runner for interrompido.
+        if (pid !== undefined && !stillAlive) liveChildPids.delete(pid);
+        resolvePromise(r);
+      };
+      // Sem `detached`: o filho fica no grupo do runner (ver killChildTree).
+      const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], { cwd: rootDir, windowsHide: true });
+      pid = child.pid;
+      if (pid !== undefined) liveChildPids.add(pid);
+      timer = setTimeout(() => {
+        const report = killTree(pid);
+        timedOutNote = `\nERRO: o passo passou de ${Math.round(timeoutMs / 1000)}s; kill da árvore: ${report.ok ? "ok" : "FALHOU"} — ${report.detail}\n`;
+        if (!report.ok) {
+          // Kill falhou: o filho pode seguir vivo gravando o arquivo. Falha
+          // NÃO repetível (nada de retry com --force por cima dele).
+          finish({ code: 1, stdout, stderr: stderr + timedOutNote + "ERRO: morte do filho não confirmada — falha não repetível.\n", retryable: false }, { stillAlive: true });
+          return;
+        }
+        graceTimer = setTimeout(() => {
+          finish(
+            { code: 1, stdout, stderr: stderr + timedOutNote + `ERRO: sem close do filho ${graceMs / 1000}s depois do kill — morte não confirmada, falha não repetível.\n`, retryable: false },
+            { stillAlive: true },
+          );
+        }, graceMs);
+      }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (c: string) => (stdout += c));
+      child.stderr.on("data", (c: string) => (stderr += c));
+      child.on("error", (err) =>
+        finish({ code: 1, stdout, stderr: stderr + `\nERRO: o passo nao executou (falha de spawn): ${err.message}\n` }),
+      );
+      child.on("close", (code, signal) => {
+        if (timedOutNote !== undefined) {
+          // Morte confirmada pelo `close`: falha comum, repetível.
+          finish({ code: 1, stdout, stderr: stderr + timedOutNote + `filho encerrado (sinal ${signal ?? "-"}, exit ${code ?? "-"}).\n` });
+          return;
+        }
+        finish(
+          code === null
+            ? { code: 1, stdout, stderr: stderr + `\nERRO: o passo terminou sem exit code (sinal ${signal ?? "desconhecido"})\n` }
+            : { code, stdout, stderr },
+        );
+      });
+    });
+}
+
+/** #14036: stderr que indica limite de taxa/concorrência do backend — o único
+ * caso em que repetir em série tem chance de mudar o resultado quando TODAS as
+ * imagens falharam. Ancorado em formas específicas ("HTTP 429", "status 429",
+ * "Too Many Requests", "rate limit exceeded"...), nunca em `429` ou
+ * `concurren` soltos: um log com "concurrency: 6" não é sinal de limite. */
+export const CONCURRENCY_ERROR_RE =
+  /\bHTTP(?:\/[\d.]+)?\s+429\b|\bstatus(?:[ _]?code)?\s*[:=]?\s*429\b|\btoo many (?:concurrent )?requests\b|\brate[ _-]?limit(?:ed\b|[ _-]exceeded\b|[ _-]reached\b)/i;
+
+/**
+ * Decide se as falhas do passo paralelo merecem a repetição em série (#14036).
+ * Pura. Repete se pelo menos um job passou (o backend funciona, a falha pode
+ * ter sido da concorrência) ou se o stderr de alguma falha indica limite de
+ * concorrência. Todos falharam sem esse sinal (login expirado, backend fora)
+ * = abort direto, sem gastar outra rodada. Falha `retryable: false` (morte do
+ * filho não confirmada) nunca conta como candidata.
+ */
+export function shouldRetrySerially(outcomes: Array<{ ok: boolean; stderr: string; retryable?: boolean }>): boolean {
+  const failed = outcomes.filter((o) => !o.ok);
+  const candidates = failed.filter((o) => o.retryable !== false);
+  if (candidates.length === 0) return false;
+  if (failed.length < outcomes.length) return true;
+  return candidates.some((o) => CONCURRENCY_ERROR_RE.test(o.stderr));
+}
+
+/** Args da repetição em série (#14036): `--force`, pra nunca pular por "já
+ * existe" um arquivo parcial deixado pela tentativa que falhou (ex.: a
+ * compressão falhou depois de o gerador gravar). `--keep-4x5-nativo` do 2x1
+ * fica como estava. */
+export function retryArgs(args: string[]): string[] {
+  return args.includes("--force") ? [...args] : [...args, "--force"];
+}
+
+/**
+ * Roda `jobs` com no máximo `limit` em voo ao mesmo tempo (#14036). Ordem de
+ * início = ordem da lista; o resultado volta na MESMA ordem da lista, nunca na
+ * de término. Nenhum job derruba os outros: a função devolve todos os
+ * resultados e quem chama decide o que é falha.
+ */
+export async function runWithConcurrency<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+  const results = new Array<T>(jobs.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const i = next++;
+      results[i] = await jobs[i]();
+    }
+  };
+  const n = Math.max(1, Math.min(limit, jobs.length));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
+}
 
 export function realExec(rootDir: string): ExecFn {
   return (scriptRelPath, args) => {
@@ -171,7 +420,13 @@ export interface Stage3RunOptions {
   edition: string;
   only?: DestaqueId[];
   force: boolean;
+  /** #14036 — máximo de `image-generate.ts` em voo ao mesmo tempo. Default
+   * `DEFAULT_IMAGE_CONCURRENCY` (3 destaques × 2x1/4x5); `--serial` = 1. */
+  imageConcurrency: number;
 }
+
+/** #14036: 3 destaques × (2x1 + 4x5 nativo) = 6 imagens, todas de uma vez. */
+export const DEFAULT_IMAGE_CONCURRENCY = 6;
 
 export function parseStage3RunArgs(argv: string[]): Stage3RunOptions {
   const edition = getStringArg(argv, "edition", { example: "260423" });
@@ -191,7 +446,18 @@ export function parseStage3RunArgs(argv: string[]): Stage3RunOptions {
     only = parts as DestaqueId[];
   }
 
-  return { edition, only, force: hasFlag(argv, "force") };
+  const concurrencyRaw = getStringArg(argv, "concurrency", { example: "3" });
+  let imageConcurrency = DEFAULT_IMAGE_CONCURRENCY;
+  if (concurrencyRaw !== undefined) {
+    const n = Number(concurrencyRaw);
+    if (!Number.isInteger(n) || n < 1 || n > DEFAULT_IMAGE_CONCURRENCY) {
+      throw new Stage3Abort(`--concurrency inválido: "${concurrencyRaw}" — esperado inteiro de 1 a ${DEFAULT_IMAGE_CONCURRENCY}.`);
+    }
+    imageConcurrency = n;
+  }
+  if (hasFlag(argv, "serial")) imageConcurrency = 1;
+
+  return { edition, only, force: hasFlag(argv, "force"), imageConcurrency };
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +467,9 @@ export function parseStage3RunArgs(argv: string[]): Stage3RunOptions {
 export interface Stage3RunDeps {
   rootDir: string;
   exec: ExecFn;
+  /** #14036 — exec assíncrono pra geração de imagens em paralelo. Ausente
+   * (testes antigos), cai num wrapper do `exec` síncrono (roda em série). */
+  execAsync?: AsyncExecFn;
   existsSync: (p: string) => boolean;
   readFile: (p: string) => string;
   /** Checa se o ComfyUI local está no ar (`http://127.0.0.1:8188/system_stats`).
@@ -214,6 +483,7 @@ export function productionDeps(rootDir: string = ROOT): Stage3RunDeps {
   return {
     rootDir,
     exec: realExec(rootDir),
+    execAsync: realExecAsync(rootDir),
     existsSync: (p) => existsSync(p),
     readFile: (p) => readFileSync(p, "utf8"),
     checkComfyUi: () => {
@@ -311,6 +581,22 @@ export interface DestaqueOutcome {
   error?: string;
 }
 
+export type ImageJobRatio = "2x1" | "4x5";
+
+/** #14036 — resultado de uma chamada de `image-generate.ts`. */
+export interface ImageJobOutcome {
+  destaque: DestaqueId;
+  ratio: ImageJobRatio;
+  ok: boolean;
+  exitCode: number;
+  durationMs: number;
+  /** true quando o job só rodou de novo, em série, depois de falhar no paralelo. */
+  retriedSerially?: boolean;
+  /** false quando a falha não pode ser repetida (morte do filho não confirmada). */
+  retryable?: false;
+  stderrTail?: string;
+}
+
 export interface PendingAgentDispatch {
   step: string;
   agent: string;
@@ -331,6 +617,9 @@ export interface Stage3RunResult {
   editionDir?: string;
   destaqueCount?: 2 | 3;
   destaques: DestaqueOutcome[];
+  /** #14036 — cada chamada de `image-generate.ts` (destaque × ratio). */
+  imageJobs?: ImageJobOutcome[];
+  imageConcurrency?: number;
   cardsGenerated: boolean;
   /** #6005 Parte B — slides sem foto (3 parágrafos + CTA) do carrossel diário. */
   carouselCardsGenerated: boolean;
@@ -361,8 +650,14 @@ const DELEGATED_STEPS = [
 export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<Stage3RunResult> {
   const report = new ReportBuilder();
   const pendingAgentDispatch: PendingAgentDispatch[] = [];
+  // #14036: fora do try pra que um abort por falha de imagem ainda devolva o
+  // estado de cada destaque (qual ratio falhou), e não `[]`.
+  let destaquesOut: DestaqueOutcome[] = [];
+  let imageJobsOut: ImageJobOutcome[] | undefined;
+  let imageConcurrencyOut: number | undefined;
   try {
     const opts = parseStage3RunArgs(argv);
+    imageConcurrencyOut = opts.imageConcurrency;
 
     // --- resolver EDITION_DIR (idempotente, mesma chamada do Stage 0/playbook) ---
     const resolveResult = deps.exec("scripts/lib/find-current-edition.ts", ["--resolve", opts.edition]);
@@ -436,8 +731,12 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       };
     }
 
-    // --- por destaque: lint → image-generate 2x1 → image-generate 4x5 nativo ---
+    // --- por destaque: lint (em série, rápido) ---
+    // A geração vem depois, num passo só: erro de I/O no lint de qualquer
+    // destaque aborta antes de gastar qualquer chamada de imagem.
     const destaques: DestaqueOutcome[] = [];
+    destaquesOut = destaques;
+    const readyForImages: DestaqueId[] = [];
     for (const d of destaquesToRun) {
       const promptRel = `${editionDir}/_internal/02-${d}-prompt.md`;
       if (!deps.existsSync(resolve(deps.rootDir, promptRel))) {
@@ -455,21 +754,157 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
         destaques.push({ destaque: d, lintOk: false, lintViolations: lintResult.stderr.trim(), imageGenerated: false, nativeArt4x5Generated: false });
         continue; // pausa SÓ este destaque — próximo segue normalmente
       }
+      readyForImages.push(d);
+    }
 
+    // --- geração: 2x1 + 4x5 nativo de todos os destaques em paralelo (#14036) ---
+    // Os dois formatos usam o mesmo prompt e não dependem um do outro. Antes
+    // rodavam em série (até 6 chamadas de 1-3 min cada); agora o total é o
+    // tempo da mais lenta. Duas corridas ficam fechadas:
+    //   - prompt JSON: cada ratio grava o seu (`sdPromptPathFor` em
+    //     image-generate.ts), então o 2x1 e o 4x5 não se sobrescrevem;
+    //   - purga do nativo (#6010): quando o 2x1 vai ser REGERADO (ausente, ou
+    //     --force), a ordem antiga apagava o nativo e o 4x5 seguinte o recriava.
+    //     Em paralelo, o 4x5 recebe --force (regera do prompt atual, mesmo
+    //     resultado da ordem antiga) e o 2x1 recebe --keep-4x5-nativo (não
+    //     apaga o que o 4x5 está gravando). Com o 2x1 presente e sem --force,
+    //     nada muda: os dois seguem o skip-if-exists de sempre.
+    const execAsync: AsyncExecFn = deps.execAsync ?? (async (script, args) => deps.exec(script, args));
+    interface ImageJobSpec {
+      destaque: DestaqueId;
+      ratio: ImageJobRatio;
+      args: string[];
+    }
+    const specs: ImageJobSpec[] = [];
+    for (const d of readyForImages) {
+      const promptRel = `${editionDir}/_internal/02-${d}-prompt.md`;
       const genArgs = ["--editorial", promptRel, "--out-dir", `${editionDir}/`, "--destaque", d];
-      if (opts.force) genArgs.push("--force");
-      const genResult = deps.exec("scripts/image-generate.ts", genArgs);
-      if (genResult.code !== 0) {
-        throw new Stage3Abort(`❌ image-generate.ts ${d} (2x1) falhou (exit ${genResult.code}): ${tailStderr(genResult.stderr)}`);
-      }
+      const wide2x1Regenerates = opts.force || !deps.existsSync(resolve(deps.rootDir, editionDir, `04-${d}-2x1.jpg`));
+      specs.push({
+        destaque: d,
+        ratio: "2x1",
+        args: [...genArgs, ...(opts.force ? ["--force"] : []), ...(wide2x1Regenerates ? ["--keep-4x5-nativo"] : [])],
+      });
+      specs.push({
+        destaque: d,
+        ratio: "4x5",
+        args: [...genArgs, "--ratio", "4x5", ...(wide2x1Regenerates ? ["--force"] : [])],
+      });
+    }
 
-      const gen4x5Result = deps.exec("scripts/image-generate.ts", [...genArgs, "--ratio", "4x5"]);
-      if (gen4x5Result.code !== 0) {
-        throw new Stage3Abort(`❌ image-generate.ts ${d} (4x5 nativo) falhou (exit ${gen4x5Result.code}) — BLOQUEANTE (#4090): ${tailStderr(gen4x5Result.stderr)}`);
-      }
+    const runJob = async (spec: ImageJobSpec): Promise<{ outcome: ImageJobOutcome; result: StepResult }> => {
+      const t0 = Date.now();
+      const result = await execAsync("scripts/image-generate.ts", spec.args);
+      return {
+        result,
+        outcome: {
+          destaque: spec.destaque,
+          ratio: spec.ratio,
+          ok: result.code === 0,
+          exitCode: result.code,
+          durationMs: Date.now() - t0,
+          ...(result.code !== 0 ? { stderrTail: tailStderr(result.stderr) } : {}),
+          ...(result.retryable === false ? { retryable: false as const } : {}),
+        },
+      };
+    };
 
-      destaques.push({ destaque: d, lintOk: true, imageGenerated: true, nativeArt4x5Generated: true });
-      report.note(`✅ ${d}: lint ok, imagens 2x1/4x5-nativo geradas.`);
+    const imageConcurrency = opts.imageConcurrency;
+    if (specs.length > 0) {
+      report.note(`▶ image-generate.ts: ${specs.length} imagem(ns), até ${Math.min(imageConcurrency, specs.length)} em paralelo.`);
+    }
+    type JobRun = { outcome: ImageJobOutcome; result: StepResult };
+    // `undefined` = job que não chegou a rodar (só em `--serial`, depois da 1ª falha).
+    let runs: Array<JobRun | undefined>;
+    if (imageConcurrency === 1) {
+      // `--serial`: a ordem e o abort de antes do #14036 — para na 1ª falha,
+      // sem rodar o resto nem repetir.
+      runs = new Array<JobRun | undefined>(specs.length);
+      for (let i = 0; i < specs.length; i++) {
+        runs[i] = await runJob(specs[i]);
+        if (!runs[i]!.outcome.ok) break;
+      }
+    } else {
+      runs = await runWithConcurrency(
+        specs.map((spec) => () => runJob(spec)),
+        imageConcurrency,
+      );
+    }
+    const collectOutcomes = () => runs.filter((r): r is JobRun => r !== undefined).map((r) => r.outcome);
+    imageJobsOut = collectOutcomes();
+
+    // Fallback em série (#14036): repetir as que falharam, uma por vez, na
+    // ordem original, com `--force` (`retryArgs`), só quando a repetição tem
+    // chance de mudar o resultado (`shouldRetrySerially`): pelo menos uma
+    // imagem passou, ou o stderr indica limite de concorrência/taxa. Todas
+    // falharam sem esse sinal = abort direto. Em `--serial` não há repetição.
+    // Falha `retryable: false` (morte do filho por timeout não confirmada)
+    // nunca é repetida: um --force por cima de um filho talvez vivo gravaria
+    // o mesmo arquivo em dobro.
+    const nonRetryable = runs.filter((r) => r && r.result.retryable === false).map((r) => `${r!.outcome.destaque}:${r!.outcome.ratio}`);
+    if (nonRetryable.length > 0) {
+      report.note(`⚠️  image-generate.ts: ${nonRetryable.join(", ")} sem morte confirmada do filho — falha não repetível.`);
+    }
+    const failedIdx = runs.map((r, i) => (r && !r.outcome.ok && r.result.retryable !== false ? i : -1)).filter((i) => i >= 0);
+    if (
+      failedIdx.length > 0 &&
+      imageConcurrency > 1 &&
+      shouldRetrySerially(runs.map((r) => ({ ok: r!.outcome.ok, stderr: r!.result.stderr, retryable: r!.result.retryable })))
+    ) {
+      const labels = failedIdx.map((i) => `${specs[i].destaque}:${specs[i].ratio}`);
+      report.note(`⚠️  image-generate.ts: ${labels.join(", ")} falhou(aram) em paralelo — repetindo em série, com --force.`);
+      logEvent(deps, opts.edition, "warn", "stage3_image_parallel_fallback", {
+        details: { failed: failedIdx.map((i) => runs[i]!.outcome) },
+      });
+      for (const i of failedIdx) {
+        const retry = await runJob({ ...specs[i], args: retryArgs(specs[i].args) });
+        runs[i] = { result: retry.result, outcome: { ...retry.outcome, retriedSerially: true } };
+      }
+      imageJobsOut = collectOutcomes();
+    } else if (failedIdx.length > 0 && imageConcurrency > 1) {
+      report.note("↷ todas as imagens falharam sem sinal de limite de concorrência — sem repetição em série.");
+    }
+
+    // Resultado por destaque. Falha de qualquer ratio segue BLOQUEANTE (#4090),
+    // mas cada destaque/ratio que falhou aparece no resultado e na mensagem:
+    // em paralelo, mais de um pode falhar na mesma rodada.
+    const failures: string[] = [];
+    const secs = (ms: number) => `${Math.round(ms / 1000)}s`;
+    for (const d of readyForImages) {
+      const r2 = runs.find((r) => r?.outcome.destaque === d && r.outcome.ratio === "2x1");
+      const r45 = runs.find((r) => r?.outcome.destaque === d && r.outcome.ratio === "4x5");
+      if (!r2 && !r45) continue; // `--serial` abortou antes deste destaque
+      const errs: string[] = [];
+      if (r2 && !r2.outcome.ok) {
+        errs.push(`❌ image-generate.ts ${d} (2x1) falhou (exit ${r2.outcome.exitCode}): ${tailStderr(r2.result.stderr)}`);
+      }
+      if (r45 && !r45.outcome.ok) {
+        errs.push(
+          `❌ image-generate.ts ${d} (4x5 nativo) falhou (exit ${r45.outcome.exitCode}) — BLOQUEANTE (#4090): ${tailStderr(r45.result.stderr)}`,
+        );
+      }
+      destaques.push({
+        destaque: d,
+        lintOk: true,
+        imageGenerated: r2?.outcome.ok ?? false,
+        nativeArt4x5Generated: r45?.outcome.ok ?? false,
+        ...(errs.length > 0 ? { error: errs.join(" ; ") } : {}),
+      });
+      if (errs.length > 0) {
+        for (const e of errs) report.note(e);
+        failures.push(...errs);
+      } else if (r2 && r45) {
+        report.note(
+          `✅ ${d}: lint ok, imagens 2x1 (${secs(r2.outcome.durationMs)}) / 4x5-nativo (${secs(r45.outcome.durationMs)}) geradas.`,
+        );
+      }
+    }
+    // Ordem d1, d2, d3 no resultado (pausados/sem prompt entraram antes).
+    destaques.sort((a, b) => VALID_DESTAQUES.indexOf(a.destaque) - VALID_DESTAQUES.indexOf(b.destaque));
+    if (failures.length > 0) {
+      throw new Stage3Abort(
+        failures.length === 1 ? failures[0] : `${failures.length} imagens falharam — BLOQUEANTE (#4090): ${failures.join(" ; ")}`,
+      );
     }
 
     // --- card 4:5 do feed (compõe TODOS os destaques prontos de uma vez, #4114) ---
@@ -613,6 +1048,8 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       editionDir,
       destaqueCount,
       destaques,
+      ...(imageJobsOut ? { imageJobs: imageJobsOut } : {}),
+      imageConcurrency,
       cardsGenerated,
       carouselCardsGenerated,
       ...(carouselRefreshed.length > 0 ? { carouselRefreshed } : {}),
@@ -630,7 +1067,9 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
     report.note(`❌ ${abort.message}`);
     return {
       code: abort.code,
-      destaques: [],
+      destaques: destaquesOut,
+      ...(imageJobsOut ? { imageJobs: imageJobsOut } : {}),
+      ...(imageConcurrencyOut !== undefined ? { imageConcurrency: imageConcurrencyOut } : {}),
       cardsGenerated: false,
       carouselCardsGenerated: false,
       leaderboardFetched: false,

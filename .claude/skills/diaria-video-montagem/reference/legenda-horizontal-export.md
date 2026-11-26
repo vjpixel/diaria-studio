@@ -1,0 +1,18 @@
+# Legenda do horizontal a partir do export final (#12078, #13212)
+
+Referência de `/diaria-video-montagem`, lida sob demanda (#14040). Gatilho: o editor pede a legenda do horizontal com o export pronto em `{AAMMDD}/Final/`, ou backfill da legenda de edição já publicada. Citado no Passo 7 e no relato do SKILL.md.
+
+**Legenda do horizontal a partir do export final (#12078, #13212).** O único caminho da legenda do horizontal: quando o editor pedir, com o export do horizontal pronto em `{AAMMDD}/Final/`, ou no backfill de uma edição já publicada. Grava o `diaria-comentada-{AAMMDD}.srt` da pasta da edição, que o `publish-youtube.ts --upload` (e o `--captions-only`) envia:
+
+```bash
+npx tsx scripts/video-montagem.ts srt {AAMMDD} --seq youtube --from-final "{caminho do export do horizontal}" [--heard-text] [--force] [--retranscribe]
+npx tsx scripts/publish-youtube.ts {AAMMDD} --captions-only
+```
+
+O `--from-final` transcreve o export (o mesmo cache do `review-final`, `review-final-youtube.transcript.json`, refeito só se o arquivo, o modelo ou o prompt do Whisper mudarem, ou com `--retranscribe`) e alinha a ele o roteiro do horizontal gravado no `plan.json` (`forceAlignToScript`, sem os cortes da montagem, com a duração do export como fim). Sem o horizontal no `plan.json` (ou com o `plan.json` malformado), para com erro antes de baixar o export (rodar `build --seq youtube`); um `plan.json` defasado só avisa, porque o export saiu do XML daquele build. Grava `{sequência} - legendas do export.srt` no out dir (o `{sequência} - legendas.srt` da montagem fica, é o que a prévia queima) e a cópia `diaria-comentada-{AAMMDD}.srt` na pasta da edição; as notas do alinhamento substituem as do horizontal no `srt-notas.json`. No modo API, um caminho que não existe no disco é o nome do arquivo em `Final/` no Drive.
+
+No backfill:
+- **Export reeditado depois do build (legenda imprópria, #12198):** se o roteiro do `plan.json` não casa com a fala do export, o `--from-final` sai **exit 1** com `[erro]` e **não grava nada** (nem o out dir nem a cópia da pasta da edição). Recusa quando alguma legenda dura até 0,3 s (roteiro espremido num trecho sem fala; na 261030, 4 legendas de 0 a 0,22 s) ou quando as palavras do roteiro interpoladas mais as ouvidas descartadas passam de 10% do roteiro; o `[erro]` nomeia o trecho. Não seguir para o `--captions-only`. Saídas: rodar de novo com `--heard-text` (a legenda pela fala transcrita do export, com a grafia e a pontuação do roteiro onde casa; conferir grafia e números antes de subir, aí só legenda vazia recusa), ou atualizar o roteiro do horizontal ao que foi ao ar e refazer o `build --seq youtube`.
+- **Cópia editada à mão na pasta da edição:** o `--from-final` não a troca e sai **exit 1** com `[erro]` nomeando o arquivo do export no out dir. Não seguir para o `--captions-only` (enviaria a cópia antiga): rodar de novo com `--force` (sobrescreve a cópia), ou enviar o do out dir direto com `publish-youtube.ts {AAMMDD} --captions-only --captions "{out dir}/{sequência} - legendas do export.srt"`. O `--force` daqui só sobrescreve a cópia; a transcrição do export só se refaz com `--retranscribe`.
+- **Cópia da montagem que sobrou (anterior ao #13212):** o `publish-youtube.ts` reconhece pelo `youtube-srt.json` (mesmo sha, sem `fromExport`) e não a envia: o `--upload` sobe o vídeo sem legenda com `[aviso]`, e o `--captions-only` recusa. Os dois imprimem o comando do `--from-final`.
+- **Legenda já enviada:** o `--captions-only` não faz nada quando o registro já tem `captions.ok` (`[ok] legenda já enviada`), e `--captions-only --force` envia uma **2ª faixa**, sem apagar a anterior: antes do `--force`, apagar a faixa velha no Studio, ou conferir no `captions.list` qual fica.

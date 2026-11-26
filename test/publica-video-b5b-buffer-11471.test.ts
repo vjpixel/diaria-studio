@@ -11,12 +11,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts.ts";
 import { upsertShortEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 
-const SKILL = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-publica", "SKILL.md"), "utf8");
+// #14040: o Passo B5b vive em reference/; o helper junta SKILL.md + reference/*.md.
+const SKILL = readSkillWithReferences("diaria-publica");
 
 function section(start: string, end: string): string {
   const i = SKILL.indexOf(start);

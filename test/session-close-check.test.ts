@@ -17,7 +17,7 @@ const clean = (command: string, args: string[]): string => {
   if (command === "gh") return "[]";
   if (args[0] === "worktree") return "worktree /repo/peer\nbranch refs/heads/feature/peer\n\n";
   if (args[0] === "branch") return "feature/own\n";
-  if (args[0] === "rev-parse") return "origin/feature/own\n";
+  if (args[0] === "for-each-ref") return "origin/feature/own\t\n";
   if (args[0] === "config") return "origin\n";
   if (args[0] === "rev-list") return "0\n";
   return "";
@@ -50,7 +50,7 @@ describe("session closure evidence", () => {
   });
   it("never certifies missing identity, missing upstream or failed GitHub/fetch", () => {
     assert.equal(checkSessionClose("/repo", undefined).canClose, false);
-    for (const failing of ["gh", "rev-parse", "fetch"]) {
+    for (const failing of ["gh", "for-each-ref", "fetch"]) {
       const result = checkSessionClose("/repo", session, [], (cmd, args) => {
         if (cmd === failing || args[0] === failing) throw new Error("offline/missing");
         return clean(cmd, args);
@@ -189,6 +189,75 @@ describe("session closure evidence", () => {
     assert.ok(pending.includes("new.ts") && pending.includes("unknown.ts") && pending.includes("dir/"));
     assert.ok(!/\?\? old\.ts/.test(pending) && !pending.includes("mod-old.ts"));
     assert.equal(result.canClose, false);
+  });
+  describe("branch push state (#13991)", () => {
+    // A bare "origin" with master pushed; the session branch starts from it.
+    const setup = () => {
+      const base = mkdtempSync(join(tmpdir(), "session-close-push-"));
+      const origin = join(base, "origin.git");
+      const dir = join(base, "work");
+      execFileSync("git", ["init", "--bare", "-b", "master", origin]);
+      mkdirSync(dir);
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      git("init", "-b", "master");
+      git("config", "user.email", "test@example.test"); git("config", "user.name", "Test");
+      git("remote", "add", "origin", origin);
+      git("commit", "--allow-empty", "-m", "base");
+      git("push", "-u", "origin", "master");
+      git("checkout", "-b", "feature/own");
+      const run = (cmd: string, args: string[]) => cmd === "gh" ? "[]" : git(...args);
+      const check = () => checkSessionClose(dir, { ...session, worktrees: [{ path: dir }] }, [], run);
+      return { base, git, check };
+    };
+    it("branch without upstream with commits in no remote is pending, not a cryptic error", () => {
+      const { base, git, check } = setup();
+      try {
+        git("commit", "--allow-empty", "-m", "local only 1");
+        git("commit", "--allow-empty", "-m", "local only 2");
+        const result = check();
+        assert.deepEqual(result.errors, []);
+        assert.equal(result.canClose, false);
+        assert.ok(result.pending.some(p => p.includes("commits só locais") && p.includes("sem upstream") && p.includes("(2)")),
+          result.pending.join("\n"));
+      } finally { rmSync(base, { recursive: true, force: true }); }
+    });
+    it("branch without upstream and without local commits can close", () => {
+      const { base, check } = setup();
+      try {
+        const result = check();
+        assert.deepEqual(result.errors, []);
+        assert.deepEqual(result.pending, []);
+        assert.deepEqual(result.warnings, []);
+        assert.equal(result.canClose, true);
+      } finally { rmSync(base, { recursive: true, force: true }); }
+    });
+    it("branch behind its upstream warns without blocking", () => {
+      const { base, git, check } = setup();
+      try {
+        git("push", "-u", "origin", "feature/own");
+        git("commit", "--allow-empty", "-m", "pushed later");
+        git("push");
+        git("reset", "--hard", "HEAD~1");
+        const result = check();
+        assert.deepEqual(result.errors, []);
+        assert.deepEqual(result.pending, []);
+        assert.equal(result.canClose, true);
+        assert.equal(result.warnings.length, 1);
+        assert.match(result.warnings[0], /atrás do upstream origin\/feature\/own.*\(1\)/);
+      } finally { rmSync(base, { recursive: true, force: true }); }
+    });
+    it("upstream whose remote branch is gone counts the commits no remote has", () => {
+      const { base, git, check } = setup();
+      try {
+        git("commit", "--allow-empty", "-m", "pushed then deleted");
+        git("push", "-u", "origin", "feature/own");
+        git("push", "origin", "--delete", "feature/own");
+        const result = check();
+        assert.deepEqual(result.errors, []);
+        assert.equal(result.canClose, false);
+        assert.ok(result.pending.some(p => p.includes("sumiu do remoto") && p.includes("(1)")), result.pending.join("\n"));
+      } finally { rmSync(base, { recursive: true, force: true }); }
+    });
   });
   describe("start-of-session snapshot (#11785)", () => {
     const setup = () => {

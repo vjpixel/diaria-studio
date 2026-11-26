@@ -5,15 +5,20 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 
 const ler = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
-const SKILL = ler(".claude/skills/diaria-video-roteiro/SKILL.md");
+// #14040: o formato react vive em reference/; o helper junta SKILL.md + reference/*.md.
+const SKILL = readSkillWithReferences("diaria-video-roteiro");
 const REVISOR = ler(".claude/agents/revisor-roteiro-video.md");
 const FACT = ler(".claude/agents/fact-checker.md");
 
 it("#13433: Passo 2 registra o formato react, com os 7 pontos e a fixture da 261118", () => {
-  const react = SKILL.slice(SKILL.indexOf("### Formato react (#13433)"), SKILL.indexOf("## Passo 3"));
-  assert.ok(react.length > 0, "seção Formato react ausente ou fora do Passo 2");
+  // #14040: o Passo 2 mantém o gatilho; as 7 regras vivem em reference/formato-react.md.
+  const passo2 = SKILL.slice(SKILL.indexOf("### Formato react (#13433)"), SKILL.indexOf("## Passo 3"));
+  assert.ok(passo2.length > 0, "seção Formato react ausente ou fora do Passo 2");
+  assert.ok(passo2.includes(".claude/skills/diaria-video-roteiro/reference/formato-react.md"), "Passo 2 sem o gatilho da referência");
+  const react = ler(".claude/skills/diaria-video-roteiro/reference/formato-react.md");
   for (const ponto of ["Um item por vez", "entre aspas, com origem e tempo", "não repete a previsão em forma de pergunta", "sem tratar como surpresa", "O foco é o D1", "Placar na tela", "Os verticais não levam os trechos"]) {
     assert.ok(react.includes(ponto), ponto);
   }

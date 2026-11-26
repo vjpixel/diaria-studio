@@ -52,5 +52,5 @@
   // o knip resolve o caminho absoluto como arquivo; no Windows `/bin/sh` não
   // existe e vira "Unresolved import", e o knip-clean falhava só no Neo.
   "ignoreUnresolved": ["/bin/sh"],
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd", "ps", "ffmpeg", "ffprobe", "mkfifo"]
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd", "ps", "ffmpeg", "ffprobe", "mkfifo", "pgrep"]
 }
