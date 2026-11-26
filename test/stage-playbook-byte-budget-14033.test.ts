@@ -39,7 +39,10 @@ const PER_FILE_BYTE_BUDGET: Record<string, number> = {
   "orchestrator-stage-0-replies.md": 17_700,
   "orchestrator-stage-1-research.md": 44_000,
   "orchestrator-stage-1-fallback.md": 46_500,
-  "orchestrator-stage-2.md": 100_500,
+  // #14113: principal ~30,6 KB; prosa do runner em orchestrator-stage-2-fallback.md
+  // (~74,7 KB). Clarice só REST, sem o caminho MCP pelo LLM.
+  "orchestrator-stage-2.md": 32_500,
+  "orchestrator-stage-2-fallback.md": 78_500,
   "orchestrator-stage-3.md": 23_000,
   "orchestrator-stage-4.md": 113_000,
   "orchestrator-stage-4-gate.md": 116_000,

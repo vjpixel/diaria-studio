@@ -40,7 +40,7 @@ O detalhamento completo de cada stage está nos arquivos abaixo. **Leia o sub-ar
 
 - `@see .claude/agents/orchestrator-stage-0-preflight.md` — Stage 0 (setup, parâmetros, checks pré-edição, refreshes) (#634 split): runner `stage-0-run.ts` e os passos fora dele. A prosa de fallback (`orchestrator-stage-0-fallback.md`) e o §0-replies (`orchestrator-stage-0-replies.md`) ficam em arquivos próprios, lidos só no ponto em que este arquivo manda (#14030).
 - `@see .claude/agents/orchestrator-stage-1-research.md` — Stage 1 (pesquisa + É IA?) (#634 split): runner `stage-1-run.ts`, dispatches de Agent, gate. A prosa de fallback (`orchestrator-stage-1-fallback.md`) só é lida quando o runner falha fora dos codes previstos ou quando este arquivo cita uma seção dela (#14030).
-- `@see .claude/agents/orchestrator-stage-2.md` — Etapa 2 (escrita — newsletter + social em paralelo)
+- `@see .claude/agents/orchestrator-stage-2.md` — Etapa 2 (escrita — newsletter + social em paralelo): runner `stage-2-run.ts` e os passos fora dele. A prosa de fallback (`orchestrator-stage-2-fallback.md`) só é lida quando o runner falha fora dos codes previstos ou quando este arquivo cita uma seção dela (#14113).
 - `@see .claude/agents/orchestrator-stage-3.md` — Etapa 3 (imagens — É IA? coleta + destaques)
 - `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (revisão editorial assistida + gate humano pré-publicação) (#1694); pré-gate §4a–§4c
 - `@see .claude/agents/orchestrator-stage-4-gate.md` — Etapa 4, gate humano §4d–§4e + fronteira pós-gate (#14033); cartão de receitas do loop em `context/stage-4-gate-receitas.md`

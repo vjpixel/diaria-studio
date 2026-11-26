@@ -622,7 +622,7 @@ export function resumeClarice(
 
 /**
  * Passos que o Stage 2 roda depois de qualquer passada da Clarice
- * (`.claude/agents/orchestrator-stage-2.md` §2b), com o texto pré-resume como
+ * (`.claude/agents/orchestrator-stage-2-fallback.md` §2b), com o texto pré-resume como
  * base. Mesma ordem do Stage 2 para travessão, É IA?, URL e cupons; o diff,
  * que no Stage 2 vem antes do strip, aqui vai por último para mostrar o texto
  * final. Os dois primeiros consertam sozinhos; os dois `verify-*` só reportam

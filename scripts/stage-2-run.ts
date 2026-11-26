@@ -94,7 +94,8 @@
  *   npx tsx scripts/stage-2-run.ts --phase post-checks --edition AAMMDD [--no-gates]
  *   npx tsx scripts/stage-2-run.ts --phase post-gate --edition AAMMDD [--after-title-picker]
  *
- * @see .claude/agents/orchestrator-stage-2.md, .claude/skills/diaria-2-escrita/SKILL.md
+ * @see .claude/agents/orchestrator-stage-2.md (passos fora do runner), .claude/agents/orchestrator-stage-2-fallback.md
+ *   (prosa de cada passo, lida só no fallback, #14113), .claude/skills/diaria-2-escrita/SKILL.md
  * @see scripts/stage-3-run.ts (molde mais próximo)
  */
 import { spawnSync } from "node:child_process";

@@ -57,36 +57,27 @@ Cada task fica `pending` até o passo correspondente começar (`in_progress`) e 
 - Se `$2 = social`: apenas o pré-requisito acima é necessário.
 - Se `$2 = newsletter`: apenas o pré-requisito acima é necessário.
 
+
 ## Resume
 
-Se `{EDIR}/02-reviewed.md` já existir **e** `$2` não foi passado ou `$2 = newsletter`:
+O runner guarda o progresso em `{EDIR}/_internal/02-stage2-run-state.json`; retomar é re-rodar a fase seguinte à última que passou, nunca refazer o stage do zero por padrão:
 
-**Mid-Clarice resume (#874).** Se `_internal/02-pre-clarice.md` existir AND `_internal/02-clarice-suggestions.json` existir AND `02-reviewed.md` existir, é um sinal de que Clarice chegou a rodar pelo menos parcialmente. Re-aplicar Clarice em cima de `02-humanized.md` (que pode estar mid-state) ou em cima de `02-reviewed.md` (que pode já ter sugestões parcialmente aplicadas) corrompe o texto via double-application. Perguntar explicitamente:
+| Estado gravado | Retomar com |
+|---|---|
+| sem estado | `--phase pre-dispatch` |
+| `writersDispatchAt` sem a chave `poolDispatchAt` | `--phase post-writers` (re-despacha o que faltar) |
+| `poolDispatchAt` gravado (data ou `null`, sem item) sem `humanizeDispatchAt` | `--phase post-pool` |
+| `humanizeDispatchAt` sem `clariceDone` | `--phase post-humanize` |
+| `clariceDone` com `postChecksDone: false` | `--phase post-checks` |
+| `postChecksDone: true` | gate (Passo 6) e depois `--phase post-gate` |
 
-```
-Etapa 2 foi interrompida durante/depois da Clarice. Como continuar?
+**Mid-Clarice resume (#874).** Re-rodar `--phase post-humanize` não aplica a Clarice duas vezes: a entrada da Clarice da newsletter é sempre a saída do humanizador (`resolve-clarice-input.ts`: `02-humanized.md` → `02-normalized.md` → `02-draft.md`), copiada para o snapshot `_internal/02-pre-clarice.md` antes da chamada, e o `02-reviewed.md` é sobrescrito com o texto corrigido; o `02-reviewed.md` parcial de uma rodada interrompida nunca é a entrada. O mesmo vale para o social (entrada `03-social.md` humanizado, snapshot `_internal/03-social-post-humanizador.md`). Depois de um halt da Clarice do social, `--phase post-humanize --social-clarice-only` refaz só ela.
 
-(1) Usar `02-reviewed.md` atual sem re-Clarice
-(2) Re-aplicar Clarice em cima de `_internal/02-pre-clarice.md` (snapshot limpo)  [default]
-(3) Regenerar tudo do zero (writer → humanize → Clarice)
-```
-
-**Detecção de mid-state (review #889 P3):** o default é definido pelo estado dos arquivos:
-- Se `_internal/02-clarice-suggestions.json` existir → mid-Clarice provável → **default = (2)** (re-aplicar do snapshot limpo, evita double-apply).
-- Se `_internal/02-clarice-suggestions.json` NÃO existir mas `02-reviewed.md` sim → Clarice nem chegou a rodar OU já fechou em ciclo anterior → **default = (1)** (usar atual).
-
-Comportamentos por opção:
-- Opção (1): pular regeneração e ir direto ao gate.
-- Opção (2): copiar `_internal/02-pre-clarice.md` → `_internal/02-draft.md` (restaurar estado pré-Clarice limpo) e retomar do Passo 3b (Clarice). **Nunca** re-aplicar Clarice em cima do estado humanizado-pós-Clarice-parcial.
-- Opção (3): apagar outputs e rodar Passo 1 em diante.
-
-**Sem snapshot pré-Clarice** (resume "antigo" de antes do #874): preservar comportamento original. Sem `--no-gate`/`--no-gates`: perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`. Se "não", usar o arquivo existente e ir direto ao gate. Com `--no-gate`/`--no-gates`: assumir que está OK, pular regeneração.
-
-Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento) — sem o gancho mid-Clarice (social não tem snapshot pré-Clarice; double-apply em social é menos danoso porque seções são curtas).
+**Sem estado e com `02-reviewed.md` já existente** (edição de antes do runner): sem `--no-gate`/`--no-gates`, perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`; "não" vai direto ao gate. Com `--no-gate`/`--no-gates`: assumir que está OK e pular a regeneração.
 
 ## Fluxo padrão — runner `scripts/stage-2-run.ts` (#14031)
 
-Desde o #14031 a Etapa 2 roda pelo runner, em 6 fases. Cada fase roda todos os `npx tsx` determinísticos do trecho correspondente abaixo e devolve um JSON; você só despacha os agentes de `pendingAgentDispatch` e chama a fase seguinte (`nextPhase`). Os passos 1b-7d abaixo seguem como referência do que cada fase faz e como fallback se o runner falhar. Passe `--scope newsletter|social` no `pre-dispatch` quando `$2` vier (as fases seguintes herdam do estado `_internal/02-stage2-run-state.json`) e `--no-gates` quando a skill receber `--no-gates`/`--no-gate`.
+Desde o #14031 a Etapa 2 roda pelo runner, em 6 fases. Cada fase roda todos os `npx tsx` determinísticos do trecho correspondente da receita e devolve um JSON; você só despacha os agentes de `pendingAgentDispatch` e chama a fase seguinte (`nextPhase`). A prosa de cada passo vive em `.claude/agents/orchestrator-stage-2-fallback.md` (só no Fallback, abaixo). Passe `--scope newsletter|social` no `pre-dispatch` quando `$2` vier (as fases seguintes herdam do estado `_internal/02-stage2-run-state.json`) e `--no-gates` quando a skill receber `--no-gates`/`--no-gate`.
 
 ```bash
 npx tsx scripts/stage-2-run.ts --phase pre-dispatch --edition $1 [--scope newsletter|social]
@@ -99,458 +90,30 @@ npx tsx scripts/stage-2-run.ts --phase post-gate --edition $1 [--after-title-pic
 
 | Fase | Roda | Devolve em `pendingAgentDispatch` |
 |---|---|---|
-| `pre-dispatch` | sentinel do Stage 1, Passo 1b (caps + translate-summaries), Passo 0 (fontes), 4º post USE MELHOR, pesquisa de títulos do D1 | `writer-destaque` × N (ou `writer` único) + `social-writer` + `social-curto`, numa mensagem só (`dispatchTogether: true`) |
-| `post-writers` | verify-agent-outputs (#9962), stitch, validate-stage-2-outputs, 2b-soc (merge + header único) e `pool-descriptions --input` | `writer-pool` (só com item) |
-| `post-pool` | `pool-descriptions --apply`, lints do 3a, normalize, singularize, snapshot do social | os dois humanizadores (newsletter e social), na mesma mensagem |
+| `pre-dispatch` | sentinel do Stage 1, §2a (caps + translate-summaries), passo 0 (fontes, `refresh-destaque-sources.ts --record-writer-inputs`), 4º post USE MELHOR, pesquisa de títulos do D1 | `writer-destaque` × N (ou `writer` único) + `social-writer` + `social-curto`, numa mensagem só (`dispatchTogether: true`) |
+| `post-writers` | verify-agent-outputs (#9962), stitch, validate-stage-2-outputs, §2c (merge + header único) e `pool-descriptions --input` | `writer-pool` (só com item) |
+| `post-pool` | `pool-descriptions --apply`, lints do §2b, normalize, singularize, snapshot do social | os dois humanizadores (newsletter e social), na mesma mensagem |
 | `post-humanize` | confere os humanizadores, Clarice REST da newsletter e depois do social (em série, #4952) e a prova do humanizador social; termina aí (`nextPhase: post-checks`), para a chamada caber nos 600 s da Bash | nada |
-| `post-checks` | 3d (travessão, É IA?, URL, cupons, intro, lançamentos, cobertura, erro intencional), check-stage2-invariants, lints do social, check-invariants | nada |
-| `post-gate` | Passo 7 (title-picker), 7b, selo do humanizador social, 7c (sentinel) e 7d (limpeza) | `title-picker` quando algum destaque ainda tem 3 títulos; depois re-rodar com `--after-title-picker` |
+| `post-checks` | pós-Clarice do §2b (travessão, É IA?, URL, cupons, intro, lançamentos, cobertura, erro intencional), check-stage2-invariants, lints do social, check-invariants | nada |
+| `post-gate` | pós-gate do §2d: title-picker, TÍTULO/SUBTÍTULO, selo do humanizador social, sentinel e, depois dele, a limpeza dos snapshots | `title-picker` quando algum destaque ainda tem 3 títulos; depois re-rodar com `--after-title-picker` |
 
 Despache os agentes com os `params` do JSON (paths já resolvidos) e o `detail` de cada item; os dois humanizadores saem como `Agent` com `subagent_type: "adhoc-opus-low"` e o `params.prompt` dado. Códigos de saída: `0` segue para `nextPhase`; `1` erro duro (ler `notes`); `2` halt, com o banner já renderizado em `haltRequired`; `3` conserto antes de seguir: aplique o que `fixes[]` pede e re-rode `rerunPhase` com as flags de `rerunArgs` (lint bloqueante do `post-pool`: re-despachar só o writer do destaque e re-rodar `--phase post-pool --restitch`, que refaz o stitch e reaplica o pool sem novo `writer-pool`). Um `--scope` passado numa fase vence o escopo gravado no estado; o `--no-gates` do `pre-dispatch` fica gravado e vale nas fases seguintes. `# Curto` ausente: na 1ª vez o `post-writers` pede o re-dispatch do `social-curto` (exit 3); na 2ª segue com o aviso em `gateNotes`. **Clarice do social:** teto normal de 480 s inteiro sempre (o de 90 s é só da newsletter); se a Clarice da newsletter deixar menos que isso na chamada, o `post-humanize` sai com exit `3` (`clarice-social-own-call`, `rerunArgs: ["--social-clarice-only"]`) e a do social roda numa chamada própria, sem nada a corrigir (#14093); qualquer falha, inclusive exit 6, é halt (exit 2), porque o `resume` do Stage 4 cobre só a newsletter; depois do `retry`, re-rode `--phase post-humanize --social-clarice-only [--deadline-ms N]` (só a Clarice do social, com override opcional do teto). O gate do Passo 6 entra entre `post-checks` e `post-gate`, mostrando os `gateNotes` do `post-checks` (que repete os avisos da Clarice e do Curto gravados no estado); o `post-gate` recusa (exit 1) sem um `post-checks` que passou. `record-agent-costs.ts`, `update-stage-status`/`capture-stage-usage` e a proposta do erro intencional no modo interativo continuam com você (`delegatedSteps`).
 
-**Clarice (#14029):** o teto do `clarice-correct.ts` da newsletter vem do ping real do Stage 0 (`preflight-state.json`, campo `clariceRealProbe`; arquivo ilegível vira 480 s com aviso no gate). Ping falho: 90 s e, estourando, `clarice-pending.ts skip` (a correção fica para o `resume` do Stage 4, antes do gate); ping ok ou não sondado: 480 s. O runner usa só o REST e já aplica isso; no caminho manual, `npx tsx scripts/lib/clarice-stage2-deadline.ts --edition-dir {EDIR}` dá o `deadlineMs` a passar em `--deadline-ms`.
+**Clarice (#14029):** o teto do `clarice-correct.ts` da newsletter vem do ping real do Stage 0 (`preflight-state.json`, campo `clariceRealProbe`; arquivo ilegível vira 480 s com aviso no gate). Ping falho: 90 s e, estourando, `clarice-pending.ts skip` (a correção fica para o `resume` do Stage 4, antes do gate); ping ok ou não sondado: 480 s. A Clarice é só REST (`clarice-correct.ts --corrected-out`, #14113) e o runner já aplica o teto; no Fallback, `npx tsx scripts/lib/clarice-stage2-deadline.ts --edition-dir {EDIR}` dá o `deadlineMs` a passar em `--deadline-ms`.
 
-## Passo 1b — Aplicar caps editoriais Stage 2 (#358, #907)
+O `category_label` de cada `writer-destaque`, a ação de cada id de lint que volta em `fixes[]`, a proposta do erro intencional, as exceções do `check-invariants --stage 2` e o texto do gate estão em `.claude/agents/orchestrator-stage-2.md` ("Passos fora do runner"). Ler esse arquivo só nesses pontos.
 
-Antes de passar o approved.json ao writer, truncar buckets aos limites de #358:
+## Fallback — runner ausente ou falha fora dos codes
 
-- Destaques: sem corte (sempre 3 após gate Stage 1)
-- Lançamentos: ≤ 5
-- Pesquisas: ≤ 3
-- Outras Notícias: `max(2, 12 − destaques − lançamentos − pesquisas)`
-
-```bash
-npx tsx scripts/apply-stage2-caps.ts \
-  --in {EDIR}/_internal/01-approved.json \
-  --out {EDIR}/_internal/01-approved-capped.json
-```
-
-Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do script (input ausente, etc.) = parar — sem caps o writer pode publicar 9 notícias quando cap esperado era 4 (caso real em 260507).
-
-**Passo 1b-bis — translate-summaries (#1572 + #1601 review fix):** depois dos caps, limpar/truncar summaries em inglês pra evitar `[TRADUZIR]` + summary cru vazando pra newsletter HTML (caso 260529):
-
-```bash
-npx tsx scripts/translate-summaries.ts \
-  --in {EDIR}/_internal/01-approved-capped.json \
-  --out {EDIR}/_internal/01-approved-capped.json
-```
-
-Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de prefixo arXiv + 1ª frase + truncate 150 chars. Stitch adiciona prefix `[TRADUZIR]` em items `summary_lang === "en"`; humanizer (ou editor no gate) remove o prefix downstream.
-
-## Passo 2 — Dispatch paralelo (writer-destaque × N + social, #1451/#1463/#2343)
-
-**INVARIANTE (#1451):** writer paralelo é default em todas as situações. Dispatch `writer-destaque` × N (N = highlights.length ∈ {2,3}) + social em paralelo, depois `scripts/stitch-newsletter.ts` une os outputs.
-
-**Nunca fazer polling (#9223).** As chamadas `Agent` abaixo são SÍNCRONAS — a mensagem só volta com os subagentes já terminados. Nunca usar `sleep`/`while … sleep`/`tasklist`/`ls` em loop/script de poll para "esperar" por eles: em sessão headless (`claude --print`) esses comandos são negados e cada tentativa queima um turno do teto `--max-turns` (edição 261001 esgotou 120 turnos assim). Output ausente depois da resposta do `Agent` = subagente falhou, não "ainda rodando".
-
-**Pré-dispatch — ler highlights inline (sem extract-destaques.ts — esse parsea MD, não JSON):**
-
-```bash
-node -e "
-  const fs=require('fs');
-  const j=JSON.parse(fs.readFileSync('{EDIR}/_internal/01-approved-capped.json','utf8'));
-  const n=j.highlights?.length||0;
-  if(!j.highlights||n<2||n>3){
-    console.error('FALLBACK: highlights.length='+n+' — fora do range {2,3}, usar writer legacy');
-    process.exit(1);
-  }
-  console.log(JSON.stringify(j.highlights.map((h,i)=>({n:i+1,article:h.article,bucket:h.bucket})),null,2));
-"
-```
-
-Se `highlights.length < 2 || highlights.length > 3`: cair em writer único legacy (ver bloco "Fallback" abaixo). **#2343:** para 2 destaques, dispatch `writer-destaque` × 2 (D1 + D2 apenas — pular o D3 writer abaixo); para 3, × 3 (D1 + D2 + D3). O `stitch-newsletter.ts` detecta o `destaque_count` do `01-approved-capped.json` e omite o bloco D3 automaticamente quando são 2 destaques.
-
-**Passo 0 — baixar as fontes dos destaques ANTES do dispatch (#9252, #9648)** — do MESMO `01-approved-capped.json` que o writer usa; mesmo passo 0 de `orchestrator-stage-2.md`. Roda em TODOS os modos de `$2` (`all`, `newsletter`, `social`), antes de qualquer branch:
-
-```bash
-npx tsx scripts/refresh-destaque-sources.ts --edition-dir {EDIR}/ --approved {EDIR}/_internal/01-approved-capped.json --record-writer-inputs
-```
-
-Stdout JSON: `sources[]` com `{destaque, url, path}` (ou `error`). Grava `_internal/fact-check-sources/d{N}.txt` e, com `--record-writer-inputs` (só aqui — nunca no Stage 4), `_internal/02-writer-inputs.json`: o registro do texto que cada writer recebeu, que a troca de destaque no Stage 4 não sobrescreve. Esta skill é a executora real do Stage 2 (inclusive headless) e não tinha este passo — as edições 261007–261009 saíram sem registro. Fail-soft: erro do script ou download falho nunca aborta a Etapa 2. Passar a cada `writer-destaque` `source_url` = `highlights[N-1].article.url` literal e `source_text_path` = `path` da entrada com `destaque === N` (omitir se veio com `error`).
-
-### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
-
-**Seleção do 4º post — item USE MELHOR (#9568), ANTES do dispatch abaixo:** `npx tsx scripts/select-use-melhor-post.ts --edition-dir {EDIR}/` (mesmo passo 0b de `orchestrator-stage-2.md`). Stdout JSON: `enabled: true` + `item` não-nulo → passar `use_melhor_post_path` ao `social-writer` e ao `social-curto` (eles escrevem `## um`); qualquer outro caso → omitir (4º post pulado, motivo no gate do Stage 4). Fail-soft: erro do script nunca aborta a Etapa 2.
-
-```
-Agent({
-  subagent_type: "writer-destaque",
-  description: "Etapa 2 — D1 writer",
-  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, source_url={highlights[0].article.url}, source_text_path={path do passo 0, se houver}, out_path={EDIR}/_internal/02-d1-draft.md, image_prompt_out_path={EDIR}/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
-})
-
-Agent({
-  subagent_type: "writer-destaque",
-  description: "Etapa 2 — D2 writer",
-  prompt: "Escreve DESTAQUE 2... [análogo, com highlights[1].article + peer_titles dos outros 2 + source_url={highlights[1].article.url} + source_text_path={path do passo 0 para destaque 2, se houver}]"
-})
-
-Agent({
-  subagent_type: "writer-destaque",
-  description: "Etapa 2 — D3 writer",
-  prompt: "Escreve DESTAQUE 3... [análogo, com highlights[2].article + peer_titles dos outros 2 + source_url={highlights[2].article.url} + source_text_path={path do passo 0 para destaque 3, se houver}]"
-})
-// #2343: dispatchar este D3 writer SOMENTE quando highlights.length === 3.
-// Em edições de 2 destaques, pular este Agent (stitch omite o bloco D3).
-
-Agent({
-  subagent_type: "social-writer",
-  description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
-})
-
-Agent({
-  subagent_type: "social-curto",
-  description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
-})
-```
-
-**Após os 3 writer-destaques retornarem, rodar stitch:**
-
-```bash
-npx tsx scripts/stitch-newsletter.ts --edition-dir {EDIR}/
-```
-
-Output: `{EDIR}/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA? + seções secundárias + ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR).
-
-**Descrição do pool a partir do texto lido (#13884, #13952) — logo depois do stitch (ou do writer único, no Fallback e no modo `newsletter`), antes do `cp` do 2b-news e dos lints.** Mesmo passo de `orchestrator-stage-2.md`. O stitch monta a descrição de LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS do `summary`; este passo a reescreve da página baixada no passo 0 (`_internal/pool-sources/`, implícito em `--record-writer-inputs`). Sem ele `descriptions-applied.json` nunca é gravado e o `source-not-read` (ERRO para item de pool) trava o gate 4. Antes de despachar o `writer-pool`, guardar o instante do dispatch (#13956): `npx tsx scripts/verify-agent-outputs.ts --now` → `{DISPATCH_AT}` (usado no `--since` do passo (2); sem ele o `--since {DISPATCH_AT}` literal é recusado e o `--apply` nunca roda). (1) `npx tsx scripts/pool-descriptions.ts --input --edition-dir {EDIR}/` — stdout `{ input_path, items, skipped[] }`; `items: 0` → pular (2)-(3); item de `skipped[]` (403, prévia de paywall, página quase vazia, YouTube) fica com a descrição do `summary` e o `source-not-read` do gate 4 o julga. (2) `Agent` → `writer-pool` com `input_path` e `out_path = {EDIR}/_internal/02-pool-descriptions.json` (síncrono, sem polling #9223); conferir com `verify-agent-outputs.ts --agent writer-pool --since {DISPATCH_AT} --paths {out_path}` (#9962), ausente = log warn e pular (3). (3) `npx tsx scripts/pool-descriptions.ts --apply --edition-dir {EDIR}/` — troca a descrição no `02-draft.md`, preserva o tempo do USE MELHOR e grava as URLs aplicadas em `pool-sources/descriptions-applied.json` (é o que faz o `source-not-read` contar a página como lida); descrição rejeitada pela forma (fora de 60-280 chars, markdown, seta, URL) vai ao stderr e o item fica como estava; exit ≠ 0 = log warn e seguir. (4) Custo: `<usage>` do `writer-pool` em `record-agent-costs.ts --stage 2 --costs {EDIR}/_internal/tmp-agent-costs-stage2-pool.json` (o `cost.json` acumula).
-
-### Fallback (writer único legacy)
-
-Quando `highlights.length < 2 || highlights.length > 3` ou falha de dispatch parallel:
-
-```
-Agent({
-  subagent_type: "writer",
-  description: "Etapa 2 — newsletter writer (fallback legacy)",
-  prompt: "Escreve a newsletter completa da edição $1 a partir de {EDIR}/_internal/01-approved-capped.json (já com caps de #358 aplicados em Passo 1b). Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: {EDIR}/_internal/02-draft.md"
-})
-// #13952: quando o writer único retornar, rodar o passo "Descrição do pool a
-// partir do texto lido" acima (pool-descriptions.ts --input → writer-pool →
-// --apply) sobre o 02-draft.md dele, antes do cp do 2b-news.
-
-Agent({
-  subagent_type: "social-writer",
-  description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
-})
-
-Agent({
-  subagent_type: "social-curto",
-  description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
-})
-```
-
-### Se `$2 = newsletter`:
-
-Dispatchar só `writer`. Pular steps de social abaixo. Depois do `writer`, rodar o passo "Descrição do pool a partir do texto lido" acima antes do `cp` do 2b-news (#13952).
-
-### Se `$2 = social`:
-
-Dispatchar `social-writer` (#3991) + `social-curto` (#3992) em paralelo. Pular steps de newsletter abaixo.
-
-## Passo 2b — Merge dos outputs
-
-### 2b-news — assim que `writer` retornar
-
-Pré-requisito: o passo "Descrição do pool a partir do texto lido" (#13884, #13952) já rodou sobre o `02-draft.md` — depois do stitch, do writer único do Fallback ou do `writer` do modo `newsletter`.
-
-```bash
-cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
-```
-
-### 2b-soc — assim que `social-writer` E `social-curto` retornarem
-
-**#3991/#3992:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida o tmp obrigatório (`social-writer`), faz strip de comentários HTML e dedupe de header (#3424/#3388), e grava a seção única `# Social`; mescla `# Curto` quando `_internal/03-curto.tmp.md` existir (tmp OPCIONAL — ausência não falha o merge; Curto omitido faz tanto `publish-threads.ts` (#4294) quanto o dispatch do X via Buffer MCP (#3994) fazerem skip por destaque — sem fallback pra `# Social`/`# Facebook`):
-
-```bash
-npx tsx scripts/merge-social-md.ts --edition-dir {EDIR}/
-```
-
-Se `$2 = newsletter`, só roda 2b-news (pula 2b-soc).
-Se `$2 = social`, só roda 2b-soc (pula 2b-news).
-
-Após ambos terminarem, prosseguir para Passo 3 (lint + Clarice/humanize na newsletter).
-
-## Passo 3 — Processar newsletter (pular se `$2 = social`)
-
-### 3a. Lint + normalize
-
-```bash
-npx tsx scripts/lint-newsletter-md.ts \
-  --md {EDIR}/_internal/02-draft.md \
-  --approved {EDIR}/_internal/01-approved-capped.json
-npx tsx scripts/lint-newsletter-md.ts \
-  --check title-length \
-  --md {EDIR}/_internal/02-draft.md
-npx tsx scripts/lint-newsletter-md.ts \
-  --check why-matters-format \
-  --md {EDIR}/_internal/02-draft.md
-npx tsx scripts/lint-newsletter-md.ts \
-  --check section-counts \
-  --md {EDIR}/_internal/02-draft.md \
-  --approved {EDIR}/_internal/01-approved-capped.json
-npx tsx scripts/lint-newsletter-md.ts \
-  --check destaque-min-chars \
-  --md {EDIR}/_internal/02-draft.md
-npx tsx scripts/validate-domains.ts {EDIR}/_internal/02-draft.md
-npx tsx scripts/normalize-newsletter.ts \
-  --in {EDIR}/_internal/02-draft.md \
-  --out {EDIR}/_internal/02-draft.md
-npx tsx scripts/lint-newsletter-md.ts \
-  --check section-item-format \
-  --md {EDIR}/_internal/02-draft.md
-```
-
-`--check section-item-format` (#909) roda **depois** de normalize — se ainda houver item com título+descrição na mesma linha (caso heurístico do normalize não resolveu), exit 1 = re-disparar writer com instrução explícita de quebrar.
-
-`--check section-counts` (#907) valida que LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS no MD respeitam os caps de #358. Exit 1 = re-disparar writer com erro explicitado.
-
-`--check destaque-min-chars` (#914) valida que cada destaque atinge o mínimo de chars (D1/D2/D3≥900 — janela única desde #6061). Exit 1 = re-disparar writer pra expandir.
-
-### 3b. Clarice (inline)
-
-**⚠️ Fallback REST automático (#1329, substitui fail-fast de #738; chunking #2626):** Se `<system-reminder>` indicar que o MCP Clarice ficou offline OU a chamada `mcp__clarice__correct_text` falhar com disconnect/unavailable, **não fazer halt** — cair direto no fallback REST. **Sempre passar `--corrected-out` e `--retry`** (#2626): o script chunka textos > 9k e aplica as sugestões chunk-localmente via `mergeChunkSuggestions`, gravando o texto corrigido nesse arquivo:
-```bash
-npx tsx scripts/clarice-correct.ts \
-  --in {EDIR}/_internal/02-draft.md \
-  --out {EDIR}/_internal/02-clarice-suggestions.json \
-  --corrected-out {EDIR}/_internal/02-clarice-corrected.md \
-  --retry \
-  --deadline-ms {deadlineMs}
-```
-`{deadlineMs}` = `deadlineMs` de `npx tsx scripts/lib/clarice-stage2-deadline.ts --edition-dir {EDIR}` (#14029: 90000 quando o ping real do Stage 0 falhou, 480000 no resto). (Substitua `02-draft.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.) **Chamar a Bash tool com `timeout: 600000` (#12257):** o default de 2 min corta o comando antes do teto de 8 min do script, e o exit 6 abaixo nunca chega.
-Exit 0 = sucesso. **Em sucesso, NÃO rodar o passo 4 (`clarice-apply.ts`)** — o texto corrigido já está pronto em `02-clarice-corrected.md` (chunk-applied). **Re-aplicar `02-clarice-suggestions.json` ao texto inteiro via `clarice-apply.ts` sub-corrige textos multi-chunk** (âncora única dentro de um chunk pode aparecer 2+× no texto inteiro → pulada como ambígua). Copiar o corrigido diretamente para o working draft:
-```bash
-cp {EDIR}/_internal/02-clarice-corrected.md {EDIR}/_internal/02-draft.md
-```
-Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt. **Exit 5 (#5755) = guard de staleness do `--corrected-out`** — o script detectou que o arquivo escrito tem mtime anterior ao início da própria chamada (sinal de no-op silencioso: nenhuma requisição HTTP nova foi de fato disparada, e `02-clarice-corrected.md` ficou com conteúdo de uma execução ANTERIOR, potencialmente já obsoleto) — **halt**, nunca copiar esse arquivo pro working draft; re-rodar o comando acima em **foreground** (não background) antes de seguir.
-**Exit 6 (#12257) = `clarice_unavailable`**: a API não respondeu dentro do teto TOTAL da chamada (`--deadline-ms`, default 8 min). Nada foi gravado em `--out`/`--corrected-out`. **Não fazer halt nem reexecutar o stage**: rodar `npx tsx scripts/clarice-pending.ts skip --edition-dir {EDIR}/ --reason clarice_unavailable --edition $1` (grava primeiro o marcador `_internal/02-clarice-pending.json`, depois `02-reviewed.md` do snapshot `_internal/02-pre-clarice.md` e `[]` em `_internal/02-clarice-suggestions.json`), NÃO copiar `02-clarice-corrected.md` (nada foi gravado nele; o texto que segue é o do snapshot pré-Clarice, o mesmo `--in` desta chamada), pular os passos 4-5 do caminho MCP abaixo e seguir. No resumo do gate, a linha `clarice não rodou (clarice_unavailable): retomar com npx tsx scripts/clarice-pending.ts resume --edition-dir {EDIR}/ --edition $1`. O `resume` roda no início do Stage 4 (antes do fact-check; Bash com `timeout: 600000`), aplica a Clarice ao `02-reviewed.md` atual só se a correção vier completa (exit 10 = parcial, nada aplicado), recusa sobrescrever edição feita enquanto ele roda (exit 7) ou corrigir o erro intencional declarado (exit 8; `--accept-intentional-error-change` aplica mesmo assim), e reroda os guards pós-Clarice (travessão, É IA?, URL, cupons, diff; exit 9 se um que conserta sozinho falhar). Skip consciente (#2320, editor aprova seguir sem a Clarice depois do halt): o mesmo `skip` com `--reason mcp_down_rest_exit3_editor_approved`, nunca `cp` + `echo '[]'` à mão. Rerun em que a Clarice rodou: `clarice-pending.ts clear --edition-dir {EDIR}/` apaga o marcador antigo.
-Sempre logar warn no run-log quando cair no fallback (não silenciar — o editor precisa saber que o caminho normal falhou, mesmo que o fallback tenha funcionado).
-
-Snapshot pré-Clarice (path canonical único — review #889 P3). `02-pre-clarice.md` serve simultaneamente como (a) sinal pra resume mid-Clarice (#874), (b) input do `clarice-diff.ts` (3d), (c) input do `verify-clarice-url-stability.ts` (#873). `clarice-diff.ts` aceita qualquer path posicional, então não precisa de alias.
-
-```bash
-cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-pre-clarice.md
-```
-
-**Assertion obrigatória (review #889 P2).** Antes de chamar `mcp__clarice__correct_text`, verificar que o snapshot foi gravado. Se `_internal/02-pre-clarice.md` não existir nesse momento, **abortar** e logar erro:
-
-```bash
-test -f {EDIR}/_internal/02-pre-clarice.md || {
-  npx tsx scripts/log-event.ts --edition $1 --stage 2 --agent orchestrator --level error --message "pre-clarice snapshot missing — aborting before MCP Clarice call"
-  echo "ERRO: snapshot pré-Clarice ausente — abortar antes de chamar MCP Clarice. Re-rodar /diaria-2-escrita $1 do zero." >&2
-  exit 1
-}
-```
-
-1. Ler `{EDIR}/_internal/02-draft.md`.
-2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `{EDIR}/_internal/02-clarice-suggestions.json`.
-4. Aplicar via helper:
-   ```bash
-   npx tsx scripts/clarice-apply.ts \
-     --text-file {EDIR}/_internal/02-draft.md \
-     --suggestions {EDIR}/_internal/02-clarice-suggestions.json \
-     --out {EDIR}/_internal/02-draft.md \
-     --report {EDIR}/_internal/02-clarice-report.json
-   ```
-5. Ler `_internal/02-clarice-report.json` para extrair contagens (`applied`, `skipped`).
-6. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar.
-
-### 3c. Humanize
-
-Snapshot pré-Humanize antes de dispatchar o agent — usado para rollback se o agent falhar OU se o draft pós-humanize ficar corrompido (perda de seção, perda de URL, etc.):
-
-```bash
-cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-draft.pre-humanize.md
-cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-normalized.md
-```
-
-`02-normalized.md` é o par que `check-stage2-invariants.ts` (`newsletter-humanizador-diff-ran`, #6337) compara com `02-humanized.md` (#9581) — nunca apagado antes do sentinel (Passo 7c).
-
-```
-Agent({
-  description: "Humanizar newsletter $1",
-  prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
-
-Arquivo: {EDIR}/_internal/02-draft.md
-
-OBRIGATÓRIO — execute em ordem:
-
-ETAPA 0 — TRADUÇÃO (#1525, #1697):
-- Itens de seções secundárias (LANÇAMENTOS/RADAR/USE MELHOR) com a DESCRIÇÃO marcada [TRADUZIR] estão com a descrição em inglês. Traduza APENAS a descrição (2ª linha) para PT-BR natural e remova o prefixo [TRADUZIR].
-- O TÍTULO/link do item NUNCA é traduzido (#1634) — preserve o nome original do recurso (PT ou EN). Mesmo que o título esteja em inglês, mantenha-o no idioma original; só a descrição vai pra PT.
-- Se um item não tiver [TRADUZIR] mas a descrição estiver em inglês, traduza a descrição também (mantendo o título original).
-- Em LANÇAMENTOS, se nem o título nem a descrição dizem de quem é o produto (título genérico de changelog), a descrição passa a citar o fabricante, indicado pelo domínio da URL (#12595): 'Voice Chat with Agents' de cursor.com vira 'O Cursor passou a permitir...'.
-
-ETAPA 1 — RASCUNHO:
-- Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
-- Reescreva os trechos problemáticos
-- Salve com Write
-- Escreva: '### Rascunho salvo. O que ainda soa de IA?'
-- Liste os resquícios (bullets curtos, seja crítico)
-
-ETAPA 2 — VERSÃO FINAL:
-- Reescreva os resquícios listados
-- Salve a versão final com Write
-- Escreva: '### Versão final salva.'
-
-ETAPA 3 — RESUMO:
-- Liste as principais mudanças (incluindo traduções feitas na Etapa 0)
-
-Regras de preservação: sem markdown (nada de **, #, - ), preservar template da newsletter (seções, estrutura, links, listas de notícias), não alterar URLs."
-})
-```
-
-Se o Agent retornar erro OU se uma checagem rápida pós-humanize indicar corrupção (`02-draft.md` vazio, sem seção É IA?, sem alguma das URLs originais), restaurar o snapshot:
-
-```bash
-cp {EDIR}/_internal/02-draft.pre-humanize.md {EDIR}/_internal/02-draft.md
-```
-
-Falha não bloqueia o Passo 3c — fallback restaura o snapshot pré-humanize —, mas **sem `02-humanized.md` os invariantes `humanizer-ran`/`newsletter-humanizador-diff-ran` bloqueiam o sentinel (Passo 7c)**. Nesse caso, re-rodar o humanizador e, se persistir, render halt banner (`render-halt-banner.ts`) em vez de forçar o sentinel.
-
-Após o humanize bem-sucedido (sem rollback), gravar a saída como `02-humanized.md` (#9581; `assert-humanized.ts`/`humanizer-ran` esperam esse nome). Se houve rollback, **não** gravar — o guard deve acusar o pulo:
-
-```bash
-cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-humanized.md
-```
-
-### 3d. Validações finais
-
-Copiar o draft final para a versão que o editor revisa **antes** de rodar verify/diff — assim a verificação de URLs e o diff são feitos contra o mesmo path que o orchestrator usa (review #889 P1 — consistência de paths):
-
-```bash
-cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
-```
-
-`clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice (snapshot canonical `02-pre-clarice.md`) e `02-reviewed.md`, mostrando o efeito líquido das passagens editoriais sobre o draft cru do writer:
-
-```bash
-npx tsx scripts/validate-lancamentos.ts {EDIR}/02-reviewed.md
-npx tsx scripts/clarice-diff.ts \
-  {EDIR}/_internal/02-pre-clarice.md \
-  {EDIR}/02-reviewed.md \
-  {EDIR}/_internal/02-clarice-diff.md
-```
-
-**Sync intro count (#743, #876, #906) — corrigir 'Selecionamos os N mais relevantes':**
-
-```bash
-npx tsx scripts/sync-intro-count.ts \
-  --md {EDIR}/02-reviewed.md \
-  --lancamentos-removed {EDIR}/_internal/02-lancamentos-removed.json
-```
-
-Após caps (#358) + lançamentos rejeitados, o número declarado na intro pode divergir do número real de artigos no body (writer copia `coverage.line` do approved.json bruto, que não reflete os caps). Script conta URLs editoriais reais e corrige cirurgicamente — só o número, sem mexer no resto. `--lancamentos-removed` é opcional; quando ausente, sync-intro-count ignora silenciosamente o ajuste de "X lançamentos".
-
-**Render seção ERRO INTENCIONAL (#911) — revelar gabarito da edição anterior:**
-
-```bash
-npx tsx scripts/render-erro-intencional.ts \
-  --edition $1 \
-  --md {EDIR}/02-reviewed.md
-```
-
-Lê `data/intentional-errors.jsonl` (fallback pra `_internal/intentional-error.json` da edição anterior, #3222), encontra o erro intencional declarado da edição anterior mais recente (`is_feature: true` + `edition < $1`), compõe parágrafo de revelação com `reveal`/`detail` + `gabarito`, e insere/atualiza a seção `**ERRO INTENCIONAL**` no MD antes de ASSINE/encerramento. Idempotente: re-executar não duplica a seção. Sem erro anterior declarado, emite placeholder neutro ("não trazia erro intencional declarado") + convite à participação atual. Também garante que `_internal/intentional-error.json` da edição CORRENTE existe (placeholder `{PREENCHER}` se ausente) — arquivo local-only, nunca sincroniza com o Drive (#3222).
-
-**Estabilidade de URLs em LANÇAMENTOS pós-Clarice (#873).** Clarice/humanizador podem "limpar" URLs (remover utm, normalizar path, trailing slash), o que quebra a regra "LANÇAMENTOS só com link oficial" (#160). Comparar pré-Clarice vs `02-reviewed.md` final (mesmo path usado pelo orchestrator — review #889 P1):
-
-```bash
-npx tsx scripts/verify-clarice-url-stability.ts \
-  --pre {EDIR}/_internal/02-pre-clarice.md \
-  --post {EDIR}/02-reviewed.md
-```
-
-Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
-
-## Passo 4 — Processar social (pular se `$2 = newsletter`)
-
-### 4a. Cleanup dos tmp files (merge já feito no Passo 2b)
-
-```bash
-node -e "
-  const fs=require('fs');
-  const dir='{EDIR}/';
-  if (fs.existsSync(dir+'_internal/03-social.tmp.md')) fs.unlinkSync(dir+'_internal/03-social.tmp.md');
-  if (fs.existsSync(dir+'_internal/03-curto.tmp.md')) fs.unlinkSync(dir+'_internal/03-curto.tmp.md');
-"
-```
-
-### 4b. Clarice
-
-1. Ler `{EDIR}/03-social.md`.
-2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `{EDIR}/_internal/03-clarice-suggestions.json`.
-4. Aplicar via helper:
-   ```bash
-   npx tsx scripts/clarice-apply.ts \
-     --text-file {EDIR}/03-social.md \
-     --suggestions {EDIR}/_internal/03-clarice-suggestions.json \
-     --out {EDIR}/03-social.md \
-     --report {EDIR}/_internal/03-clarice-report.json
-   ```
-5. **Verificar integridade dos cabeçalhos**: a seção `# Social` (#3991) e os headers `## d1`, `## d2`, `## d3` ainda devem existir. Se algum sumiu, restaurar via `Edit` antes de continuar.
-6. Se `mcp__clarice__correct_text` falhar, **propagar o erro**.
-
-### 4c. Humanize
-
-Snapshot pré-Humanize antes de dispatchar — usado para rollback se o agent falhar OU se a seção `# Social` / `## d1`-`d3` desaparecerem:
-
-```bash
-cp {EDIR}/03-social.md {EDIR}/_internal/03-social-pre-humanizador.md
-```
-
-```
-Agent({
-  description: "Humanizar social $1",
-  prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
-
-Arquivo: {EDIR}/03-social.md
-
-OBRIGATÓRIO — execute em ordem:
-
-ETAPA 1 — RASCUNHO:
-- Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
-- Reescreva os trechos problemáticos
-- Salve com Write
-- Escreva: '### Rascunho salvo. O que ainda soa de IA?'
-- Liste os resquícios (bullets curtos, seja crítico)
-
-ETAPA 2 — VERSÃO FINAL:
-- Reescreva os resquícios listados
-- Salve a versão final com Write
-- Escreva: '### Versão final salva.'
-
-ETAPA 3 — RESUMO:
-- Liste as principais mudanças
-
-Regras de preservação: preservar hashtags, emojis, estrutura de seções (# Social, ## d1, ## d2, ## d3, ## um — e ## post_pixel só em edição antiga), não alterar URLs."
-})
-```
-
-Se o Agent retornar erro OU se a integridade dos cabeçalhos quebrar, restaurar o snapshot:
-
-```bash
-cp {EDIR}/_internal/03-social-pre-humanizador.md {EDIR}/03-social.md
-```
-
-Falha **não bloqueia**.
-
-## Passo 5 — Cleanup dos snapshots intermediários
-
-**Não limpar nada aqui (#9581).** Os snapshots `02-pre-clarice.md`, `02-normalized.md`, `02-humanized.md`, `02-draft.pre-humanize.md` e `03-social-pre-humanizador.md` são lidos por `pipeline-sentinel.ts write --step 2` (invariantes `clarice-ran`, `humanizer-ran`, `newsletter-humanizador-diff-ran`, #2148); a limpeza acontece no Passo 7d, DEPOIS do sentinel.
+Se `scripts/stage-2-run.ts` não existir, ou falhar de um jeito não coberto pelos `code`s acima (erro de spawn, exceção fora do `try/catch` do script), ler `.claude/agents/orchestrator-stage-2-fallback.md` e seguir §2a-§2d de lá turno a turno, junto com os passos fora do runner de `orchestrator-stage-2.md`. Essa é a única receita manual da Etapa 2 (#14113): esta skill não repete os passos. Com `$2 = newsletter` ou `social`, pular os passos do outro lado (o `--scope` do runner faz o mesmo). `{EDITION_DIR}` dos playbooks é o `{EDIR}` desta skill.
 
 ## Passo 6 — Gate humano unificado
 
-**Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Sonnet, #2772) escolhe automaticamente como fallback no Passo 7.
+Entra entre `--phase post-checks` e `--phase post-gate`. **Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, o `post-gate` devolve o `title-picker` (Sonnet, #2772) em `pendingAgentDispatch` para escolher.
 
-**Se `--no-gate`/`--no-gates`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário), 7b e 7c (sentinel, #5792), e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
+**Se `--no-gate`/`--no-gates`:** pular este passo. Ir direto pro `--phase post-gate` (title-picker se necessário, TÍTULO/SUBTÍTULO e o sentinel do Stage 2, #5792) e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
 
-**Caso contrário:** apresentar ao usuário (omitir seções não geradas se `$2` limitou o escopo):
+**Caso contrário:** apresentar ao usuário (omitir seções não geradas se `$2` limitou o escopo), com os `gateNotes` do `post-checks` e o texto do gate de `orchestrator-stage-2.md` §2d:
 
 ```
 Etapa 2 — Escrita pronta.
@@ -561,8 +124,7 @@ Etapa 2 — Escrita pronta.
 
 📁 Social: {EDIR}/03-social.md
 
-Newsletter — Clarice: A aplicadas, B skipadas
-Social — Clarice: C aplicadas, D skipadas
+Clarice — newsletter: {clarice.newsletter}, social: {clarice.social} (diffs em _internal/02-clarice-diff.md e _internal/03-social-clarice-diff.md)
 
 Posts gerados:
 - Social (texto único LinkedIn/Facebook/Instagram, #3991) d1 / d2 / d3 + um (4º post USE MELHOR, #9568 — também vai no LinkedIn pessoal)
@@ -573,85 +135,21 @@ Posts gerados:
 Aprovar (sim) / pedir retry / editar manualmente?
 ```
 
-Aguardar resposta. Se "sim", **continuar para Passo 7 (title-picker fallback), 7b e 7c (sentinel)**. Se "retry", re-rodar Passo 2 em diante. Se "editar", instruir o usuário a editar o arquivo e retornar `sim`.
-
-## Passo 7 — Title-picker fallback pós-aprovação (newsletter, se não pulado)
-
-**Roda APÓS aprovação do gate** — só se o editor não podou os títulos manualmente. Per `.claude/agents/title-picker.md` #159: este agent é fallback pra quando o editor confia na decisão automática.
-
-Se editor já editou diretamente no arquivo antes de aprovar, este passo é no-op (lint passa).
-
-```bash
-npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md {EDIR}/02-reviewed.md
-```
-
-Se lint retornar erro (>1 título por destaque), disparar title-picker:
-
-```
-Agent({
-  subagent_type: "title-picker",
-  description: "Escolher título final por destaque (fallback pós-gate)",
-  prompt: "Editor aprovou Etapa 2 sem podar manualmente os 3 títulos por destaque. Leia {EDIR}/02-reviewed.md e escolha 1 dos títulos por destaque, reescrevendo o arquivo. Preservar todo o resto. Justificar escolhas em {EDIR}/_internal/02-title-picks.json."
-})
-```
-
-Após title-picker, re-rodar lint:
-```bash
-npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md {EDIR}/02-reviewed.md
-```
-
-## Passo 7b — Inserir TÍTULO/SUBTÍTULO no topo (#916)
-
-Roda **depois** que cada destaque tem 1 só título (pós-poda manual do gate ou pós title-picker). Insere bloco `TÍTULO`/`SUBTÍTULO` no topo do `02-reviewed.md` que Stage 4 (publicação Beehiiv) usa pra preencher subject line + preview text. Sem isso, é trabalho manual do editor todo dia. Idempotente — re-rodar não duplica.
-
-```bash
-npx tsx scripts/insert-titulo-subtitulo.ts \
-  --in {EDIR}/02-reviewed.md
-```
-
-Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs quebrar, editor preenche manualmente como antes.
-
-Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicional.
-
-## Passo 7c — Escrever sentinel de conclusão (#5792)
-
-Ponto de convergência dos dois caminhos de finalização da Etapa 2 — gate humano aprovado no Passo 6 ("sim") **e** `--no-gate`/`--no-gates` (que pula o Passo 6 direto pro Passo 7) chegam ambos aqui, depois do title-picker fallback (Passo 7) e do insert de TÍTULO/SUBTÍTULO (Passo 7b) já terem rodado. Escrever o sentinel **só neste ponto** — nunca antes do title-picker, para não gerar sentinel prematuro:
-
-```bash
-npx tsx scripts/pipeline-sentinel.ts write \
-  --edition $1 --step 2 \
-  --outputs "02-reviewed.md,03-social.md"
-```
-
-## Passo 7d — Cleanup dos snapshots (#874, #9581)
-
-Só **depois** do sentinel gravado (os invariantes o exigem presente no write). Sem mais resume mid-Clarice possível:
-
-```bash
-for f in \
-  {EDIR}/_internal/02-pre-clarice.md \
-  {EDIR}/_internal/02-normalized.md \
-  {EDIR}/_internal/02-humanized.md \
-  {EDIR}/_internal/02-draft.pre-humanize.md \
-  {EDIR}/_internal/03-social-pre-humanizador.md; do
-  [ -f "$f" ] && rm "$f"
-done
-```
+`{clarice.*}` vem do JSON do `post-humanize` (`applied`, `no-suggestions`, `unavailable-skipped`, `headers-lost-kept-humanized`). Aguardar resposta. Se "sim", rodar `--phase post-gate`: ele roda o title-picker fallback, a validação de estrutura, TÍTULO/SUBTÍTULO (#916), o selo do humanizador social com o aceite do que o editor editou no gate, o sentinel do Stage 2 (`pipeline-sentinel.ts write --step 2 --outputs "02-reviewed.md,03-social.md"`, #5792) e só depois a limpeza dos snapshots (#9581). Se "retry", re-rodar desde o `--phase pre-dispatch`. Se "editar", instruir o usuário a editar o arquivo e retornar `sim`. Em seguida, `update-stage-status`/`capture-stage-usage` (`delegatedSteps`).
 
 ## Outputs
 
 - `{EDIR}/02-reviewed.md` — newsletter final
 - `{EDIR}/03-social.md` — texto único LinkedIn/Facebook/Instagram (#3991) + Curto (opcional, #3992) (seções `# Social` com `## d1`/`## d2`/`## d3`/`## um`, e `# Curto` com `## d1`/`## d2`/`## d3`/`## um` — `## um` só quando o 4º post está ligado e há item, #9568)
-- `{EDIR}/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
-- `{EDIR}/_internal/02-clarice-report.json` — relatório de sugestões newsletter
-- `{EDIR}/_internal/03-clarice-report.json` — relatório de sugestões social
+- `{EDIR}/_internal/02-clarice-diff.md` e `{EDIR}/_internal/03-social-clarice-diff.md` — diffs da Clarice na newsletter e no social
+- `{EDIR}/_internal/02-clarice-suggestions.json` e `{EDIR}/_internal/03-clarice-suggestions.json` — sugestões cruas da Clarice (REST)
 
-**Outputs intermediários (mid-stage, removidos no fim):**
-- `{EDIR}/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido no Passo 7d, após o sentinel.
-- `{EDIR}/_internal/02-normalized.md` e `{EDIR}/_internal/02-humanized.md` — par pré/pós-humanizador lido por `newsletter-humanizador-diff-ran` (#9581). Removidos no Passo 7d.
+**Outputs intermediários (mid-stage, removidos no fim do `post-gate`, depois do sentinel):**
+- `{EDIR}/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — base do resume mid-Clarice; #873 — input pro check de estabilidade de URLs).
+- `{EDIR}/_internal/02-normalized.md` e `{EDIR}/_internal/02-humanized.md` — par pré/pós-humanizador lido por `newsletter-humanizador-diff-ran` (#9581).
 
 ## Notas
 
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.
 - Os agentes social leem diretamente de `_internal/01-approved-capped.json` — não dependem de `02-reviewed.md`.
-- Se o orchestrator subagent ainda existir em `.claude/agents/orchestrator.md`, ignorar — este skill não delega.
+- A Clarice da Etapa 2 é só REST (`clarice-correct.ts --corrected-out`, #14113): nenhum passo desta skill nem dos playbooks chama `mcp__clarice__correct_text`.

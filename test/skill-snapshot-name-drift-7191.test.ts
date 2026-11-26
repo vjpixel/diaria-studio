@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SNAPSHOT_PAIRS } from "../scripts/lib/assert-humanized.ts";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 
 const ROOT = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
 const SKILL_MD = join(ROOT, ".claude", "skills", "diaria-2-escrita", "SKILL.md");
@@ -56,7 +57,11 @@ function extractSocialSnapshotCandidates(md: string): string[] {
   // Casam `cp ... _internal/03-social.pre-humanize.md` e
   // `{EDIR}/_internal/03-social-pre-humanizador.md` — o prefixo {EDIR}/ é
   // variável, então o regex âncora em `_internal/` e captura o restante.
-  const re = /_internal\/(03-social[A-Za-z0-9_.-]*humaniz[A-Za-z0-9_.-]*\.md)/g;
+  // #14113: o conjunto lido agora inclui o fallback do playbook, que cita
+  // também o snapshot PÓS-humanizador (`03-social-post-humanizador.md`,
+  // baseline da Clarice, #3929) — fora do escopo deste guard, que é o
+  // snapshot PRÉ-humanizador.
+  const re = /_internal\/(03-social[A-Za-z0-9_-]*\.?pre[-.]humaniz[A-Za-z0-9_.-]*\.md)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(md)) !== null) {
     found.add(m[1]);
@@ -65,7 +70,9 @@ function extractSocialSnapshotCandidates(md: string): string[] {
 }
 
 describe("#7191 — SKILL.md snapshot names devem bater com assert-humanized.ts (drift-guard)", () => {
-  const md = readFileSync(SKILL_MD, "utf8");
+  // #14113: a receita da Etapa 2 saiu da skill para o fallback do playbook;
+  // o guard lê os dois (é ali que o `cp` do snapshot vive agora).
+  const md = readFileSync(SKILL_MD, "utf8") + "\n" + readStage2Playbook();
 
   it("SKILL.md existe e cita o snapshot do social", () => {
     assert.ok(md.length > 0, "SKILL.md vazio");

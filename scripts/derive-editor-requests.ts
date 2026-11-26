@@ -1514,7 +1514,7 @@ export function dedupeDestaqueSwaps<T extends { request_type: RequestType; targe
  * foi capturado (ver `hasSnapshot`), este comando é um NO-OP — nunca
  * sobrescreve. Causa raiz do #7964: o playbook chama `snapshot-stage2` uma
  * única vez, logo após o gate unificado do Stage 2
- * (`orchestrator-stage-2.md` §2d) — esse é o baseline correto contra o
+ * (`orchestrator-stage-2-fallback.md` §2d) — esse é o baseline correto contra o
  * qual `deriveStage4`/`deriveStage6` diffam pra capturar TUDO que o editor
  * pedir depois (bucket-move, destaque-swap/cut, reescrita de título/lead —
  * inclusive durante o Stage 4, via "ajustar" ou painel do Studio). Uma 2ª

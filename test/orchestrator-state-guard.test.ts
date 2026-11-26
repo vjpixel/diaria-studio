@@ -54,6 +54,8 @@ const STAGE_FILES = [
   "orchestrator-stage-1-research.md",
   "orchestrator-stage-1-fallback.md",
   "orchestrator-stage-2.md",
+  // #14113: fallback do runner da Etapa 2.
+  "orchestrator-stage-2-fallback.md",
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
   "orchestrator-stage-4-gate.md",
