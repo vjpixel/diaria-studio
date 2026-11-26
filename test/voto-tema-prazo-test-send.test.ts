@@ -35,6 +35,7 @@ import {
 } from "../scripts/publish-voto-tema-kit.ts";
 import { assertLembreteDentroDoPrazo } from "../scripts/voto-tema-lembrete.ts";
 import { KIT_TEST_SEND_TAG_NAME, buildTestSendFilter } from "../scripts/lib/kit-broadcasts.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const OPCOES = [
   { n: 1, titulo: "Tema A", descricao: "Descrição A" },
@@ -42,25 +43,6 @@ const OPCOES = [
 ];
 const PASSADO = "2020-01-01T09:00:00-03:00";
 const FUTURO = "2099-01-01T09:00:00-03:00";
-
-function fakeKv(initial: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(initial));
-  return {
-    store,
-    async get(key: string) {
-      return store.has(key) ? store.get(key)! : null;
-    },
-    async put(key: string, value: string) {
-      store.set(key, value);
-    },
-    async list({ prefix }: { prefix?: string } = {}) {
-      return {
-        keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
-        list_complete: true,
-      };
-    },
-  } as unknown as VotoTemaEnv["POLL"] & { store: Map<string, string> };
-}
 
 async function envCom(prazo: string | undefined) {
   const ballot: BallotTema = {
@@ -70,7 +52,7 @@ async function envCom(prazo: string | undefined) {
     aberta_em: "2026-09-20T12:00:00Z",
     ...(prazo ? { prazo } : {}),
   };
-  const POLL = fakeKv({ [ballotKey("2610")]: JSON.stringify(ballot), [pollTokenKvKeyMirror("a".repeat(24))]: "m@example.com" });
+  const POLL = makeTrackedKvNamespace({ [ballotKey("2610")]: JSON.stringify(ballot), [pollTokenKvKeyMirror("a".repeat(24))]: "m@example.com" });
   return { env: { POLL } as VotoTemaEnv, POLL, ballot };
 }
 
@@ -109,7 +91,7 @@ describe("worker recusa voto depois do prazo (#9260)", () => {
     const { env, POLL } = await envCom(PASSADO);
     const res = await handleVotoPost(new Request(`https://x/votacao/2610/1?t=${"a".repeat(24)}`, { method: "POST" }), env, "2610", 1);
     assert.equal(res.status, 409);
-    assert.equal(POLL.store.has(voteKey("2610", "m@example.com")), false);
+    assert.equal(POLL._map.has(voteKey("2610", "m@example.com")), false);
   });
   it("GET da opção após o prazo → 409", async () => {
     const { env } = await envCom(PASSADO);
@@ -120,7 +102,7 @@ describe("worker recusa voto depois do prazo (#9260)", () => {
     const { env, POLL } = await envCom(FUTURO);
     const res = await handleVotoPost(new Request(`https://x/votacao/2610/1?t=${"a".repeat(24)}`, { method: "POST" }), env, "2610", 1);
     assert.equal(res.status, 200);
-    assert.equal(POLL.store.has(voteKey("2610", "m@example.com")), true);
+    assert.equal(POLL._map.has(voteKey("2610", "m@example.com")), true);
   });
   it("placar mostra o prazo e se apresenta encerrado depois dele", async () => {
     const aberto = await (await handleVotacaoPlacar(new Request("https://x/votacao/2610"), (await envCom(FUTURO)).env, "2610")).text();

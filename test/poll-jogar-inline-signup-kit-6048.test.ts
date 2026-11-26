@@ -24,22 +24,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { handleJogarSubscribe, subscribeViaConfiguredBackend } from "../workers/poll/src/subscribe.ts";
 import type { Env } from "../workers/poll/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 type FetchMock = typeof fetch & { calls: Array<{ url: string; init: RequestInit | undefined }> };
 function makeFetchMock(status = 201): FetchMock {
@@ -52,16 +37,16 @@ function makeFetchMock(status = 201): FetchMock {
   return fn;
 }
 
-const baseEnv = (over: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } =>
+const baseEnv = (over: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } =>
   ({
-    POLL: makeMapKV(),
+    POLL: makeTrackedKv(),
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",
     ...over,
-  }) as Env & { POLL: ReturnType<typeof makeMapKV> };
+  }) as Env & { POLL: ReturnType<typeof makeTrackedKv> };
 
-const kitEnv = (poll = makeMapKV()): Env & { POLL: ReturnType<typeof makeMapKV> } =>
+const kitEnv = (poll = makeTrackedKv()): Env & { POLL: ReturnType<typeof makeTrackedKv> } =>
   ({
     POLL: poll,
     POLL_SECRET: "poll-secret",
@@ -70,7 +55,7 @@ const kitEnv = (poll = makeMapKV()): Env & { POLL: ReturnType<typeof makeMapKV> 
     SUBSCRIBE_BACKEND: "kit",
     KIT_API_KEY: "test-kit-key",
     KIT_API_URL: "https://kit.test/v4",
-  }) as Env & { POLL: ReturnType<typeof makeMapKV> };
+  }) as Env & { POLL: ReturnType<typeof makeTrackedKv> };
 
 function subReq(body: unknown, opts: { ip?: string } = {}): Request {
   const headers: Record<string, string> = { "Content-Type": "application/json" };

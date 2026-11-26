@@ -20,6 +20,7 @@ import { rankEntries, type LeaderboardEntry } from "../workers/poll/src/leaderbo
 import { computePodium, handleLeaderboardByMonthJson } from "../workers/poll/src/leaderboard-routes.ts";
 import { hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
 import type { Env } from "../workers/poll/src/index.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 function entry(email: string, correct: number, total: number, nickname: string | null = null): LeaderboardEntry {
   return { email, nickname, correct, total, pct: total > 0 ? Math.round((correct / total) * 100) : 0, streak: 0 };
@@ -106,23 +107,8 @@ describe("computePodium — exclui candidatos com 0 acertos do pódio (#3113 ite
 
 // ── handleLeaderboardByMonthJson — mesmo gate no endpoint .json ────────────
 
-function makeKv(seed: Record<string, string> = {}): KVNamespace {
-  const data: Record<string, string> = { ...seed };
-  return {
-    get: async (key: string) => data[key] ?? null,
-    put: async (key: string, value: string) => { data[key] = value; },
-    delete: async (key: string) => { delete data[key]; },
-    getWithMetadata: async () => ({ value: null, metadata: null }),
-    list: async (opts?: { prefix?: string }) => {
-      const prefix = opts?.prefix ?? "";
-      const keys = Object.keys(data).filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true };
-    },
-  } as unknown as KVNamespace;
-}
-
 function makeEnv(seed: Record<string, string> = {}): Env {
-  return { POLL: makeKv(seed), POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin", ALLOWED_ORIGINS: "*" };
+  return { POLL: makeTrackedKvNamespace(seed), POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin", ALLOWED_ORIGINS: "*" };
 }
 
 describe("handleLeaderboardByMonthJson — mesmo gate de medalha (#3113 item 12)", () => {

@@ -15,6 +15,7 @@ import { CURSOS_SESSION_COOKIE, issueSessionCookie, readSession } from "../worke
 import { CURSOS_FULL_HTML } from "../workers/cursos/src/courses-full.generated.ts";
 import { emailVerifyCooldownKey } from "../workers/cursos/src/gate.ts";
 import { CURSOS_ALARM_COUNTER_KEYS } from "../scripts/lib/shared/cursos-alarm-counters.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 /** Decodifica o valor cru do cookie a partir do header `Set-Cookie` completo
  * (como devolvido pelo handler) — usado pelos testes do #4323 pra inspecionar
@@ -23,22 +24,6 @@ function rawCookieValue(setCookieHeader: string): string {
   const pair = setCookieHeader.split(";")[0];
   const eq = pair.indexOf("=");
   return decodeURIComponent(pair.slice(eq + 1));
-}
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-  } as unknown as KVNamespace;
 }
 
 const TEASER_HTML = "<html><body>teaser fallback</body></html>";
@@ -51,7 +36,7 @@ function makeAssets(): Fetcher {
 function baseEnv(overrides: Partial<Env> = {}): Env {
   return {
     ASSETS: makeAssets(),
-    CURSOS_SUBSCRIBERS: makeMapKV(),
+    CURSOS_SUBSCRIBERS: makeTrackedKvNamespace(),
     COOKIE_HMAC_SECRET: "cookie-secret",
     ...overrides,
   };
@@ -97,7 +82,7 @@ describe("workers/cursos GET / (#4052)", () => {
   it("?email= de assinante ativo → serve o HTML completo E seta cookie", async () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
     const res = await worker.fetch(
       new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`),
       env,
@@ -114,7 +99,7 @@ describe("workers/cursos GET / (#4052)", () => {
   it("?email= de assinante ativo → loga a confirmação (console.log), SEM vazar o e-mail (#4320)", async () => {
     const email = "assinante-log@example.com";
     const key = await subscriberKvKey(email);
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
 
     const originalLog = console.log;
     const lines: string[] = [];
@@ -182,7 +167,7 @@ describe("workers/cursos POST /gate/verify (#4052)", () => {
   it("assinante ativo → ok:true + cookie", async () => {
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
     const res = await worker.fetch(
       new Request("https://cursos.diar.ia.br/gate/verify", {
         method: "POST",
@@ -228,7 +213,7 @@ describe("workers/cursos POST /gate/verify (#4052)", () => {
   it("honeypot preenchido → resposta fake-fail 200, sem revelar ao bot", async () => {
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
     const res = await worker.fetch(
       new Request("https://cursos.diar.ia.br/gate/verify", {
         method: "POST",
@@ -417,7 +402,7 @@ describe("workers/cursos POST /gate/subscribe (#4052)", () => {
     const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
     const cookiePair = cookieValue.split(";")[0];
     // KV já populado (sync rodou depois do cadastro) — a próxima visita deve promover.
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
     const res = await worker.fetch(
       new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } }),
       env,
@@ -511,7 +496,7 @@ describe("workers/cursos: gate no follow-up #4305", () => {
   it("/index.html?email= de assinante ativo também desbloqueia e seta cookie", async () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
     const res = await worker.fetch(
       new Request(`https://cursos.diar.ia.br/index.html?email=${encodeURIComponent(email)}`),
       env,
@@ -677,7 +662,7 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
     const env = baseEnv({
-      CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }),
+      CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }),
       COOKIE_HMAC_SECRET: undefined as unknown as string,
     });
     const res = await worker.fetch(
@@ -692,7 +677,7 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
     const env = baseEnv({
-      CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }),
+      CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }),
       COOKIE_HMAC_SECRET: undefined as unknown as string,
     });
     const res = await worker.fetch(
@@ -1049,7 +1034,7 @@ describe("workers/cursos: cooldown do branch ?email= (#4390)", () => {
   it("?email= de assinante ativo continua desbloqueando na 1ª visita (sem regressão de comportamento)", async () => {
     const email = "email-param-ok@example.com";
     const key = await subscriberKvKey(email);
-    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeTrackedKvNamespace({ [key]: "1" }) });
     const res = await worker.fetch(
       new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`),
       env,
@@ -1072,14 +1057,14 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   it("sem COOKIE_HMAC_SECRET, GET / incrementa o contador fatal", async () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
-    const kv = makeMapKV({ [key]: "1" });
+    const kv = makeTrackedKvNamespace({ [key]: "1" });
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, COOKIE_HMAC_SECRET: undefined as unknown as string });
     await worker.fetch(new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`), env);
     assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente), "1");
   });
 
   it("sem COOKIE_HMAC_SECRET, POST /gate/verify incrementa o MESMO contador fatal (3 call sites somam no mesmo contador)", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, COOKIE_HMAC_SECRET: undefined as unknown as string });
     await worker.fetch(
       new Request("https://cursos.diar.ia.br/gate/verify", {
@@ -1093,7 +1078,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("sem COOKIE_HMAC_SECRET, POST /gate/subscribe incrementa o MESMO contador fatal", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({
       CURSOS_SUBSCRIBERS: kv,
       COOKIE_HMAC_SECRET: undefined as unknown as string,
@@ -1113,7 +1098,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("3 requests sem o secret, em 3 rotas diferentes, somam 3 no MESMO contador (não 3 contadores separados)", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, COOKIE_HMAC_SECRET: undefined as unknown as string });
     await worker.fetch(new Request("https://cursos.diar.ia.br/"), env);
     await worker.fetch(
@@ -1129,7 +1114,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("falha do cadastro na Beehiiv (HTTP não-ok) incrementa o contador fatal específico", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" });
     const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
     await handleGateSubscribe(
@@ -1145,7 +1130,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("Beehiiv não configurada (secrets ausentes) NÃO incrementa o contador de 'cadastro falhou' — condição distinta", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv }); // sem BEEHIIV_API_KEY/PUBLICATION_ID
     const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
     const res = await handleGateSubscribe(
@@ -1163,7 +1148,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   it("?email= confirmado ativo incrementa o contador emailGateConfirmed (denominador da taxa)", async () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
-    const kv = makeMapKV({ [key]: "1" });
+    const kv = makeTrackedKvNamespace({ [key]: "1" });
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
     await worker.fetch(new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`), env);
     assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed), "1");
@@ -1171,7 +1156,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("?email= NÃO confirmado ativo (negativo confirmado) incrementa emailGateNotConfirmed", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
     await worker.fetch(new Request("https://cursos.diar.ia.br/?email=ninguem@example.com"), env);
     assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed), "1");
@@ -1179,7 +1164,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("?email= com verification_failed (Beehiiv fora do ar) NÃO incrementa nenhum dos dois contadores da taxa (#4321)", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, BEEHIIV_API_KEY: "test-key", BEEHIIV_PUBLICATION_ID: "pub_test" });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response("err", { status: 500 })) as typeof fetch;
@@ -1193,7 +1178,7 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   });
 
   it("?email= malformado (provável merge tag não resolvida) NÃO incrementa nenhum contador da taxa", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
     await worker.fetch(new Request("https://cursos.diar.ia.br/?email=%7B%7Bemail%7D%7D"), env);
     assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed), null);

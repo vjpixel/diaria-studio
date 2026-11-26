@@ -32,35 +32,11 @@ import {
 } from "../workers/poll/src/jogar.ts";
 import { issueWebSessionCookie } from "../workers/poll/src/web-gate.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const COOKIE_SECRET = "cookie-secret";
 const makeEnv = (seed: Record<string, string> = {}): Env => ({
-  POLL: makeMapKV(seed),
+  POLL: makeTrackedKv(seed),
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",
@@ -179,7 +155,7 @@ describe("orçamento de subrequests do seq-state (#4115, achado do self-review)"
   // (free-plan-safe, #4443) — daí o teto abaixo cair de 62 pra 45.
   function countingEnv(seed: Record<string, string> = {}) {
     let gets = 0;
-    const kv = makeMapKV(seed);
+    const kv = makeTrackedKv(seed);
     const origGet = kv.get.bind(kv);
     kv.get = async (key: string) => {
       gets += 1;

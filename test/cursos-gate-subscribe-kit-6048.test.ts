@@ -12,22 +12,7 @@ import assert from "node:assert/strict";
 import { handleGateSubscribe, subscribeViaConfiguredBackend } from "../workers/cursos/src/subscribe.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../scripts/lib/shared/utm-registry.ts";
 import type { Env } from "../workers/cursos/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-  } as unknown as KVNamespace;
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 type FetchMock = typeof fetch & { calls: Array<{ url: string; init: RequestInit | undefined }> };
 function makeFetchMock(status = 201): FetchMock {
@@ -43,7 +28,7 @@ function makeFetchMock(status = 201): FetchMock {
 function baseEnv(overrides: Partial<Env> = {}): Env {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as Fetcher,
-    CURSOS_SUBSCRIBERS: makeMapKV(),
+    CURSOS_SUBSCRIBERS: makeTrackedKvNamespace(),
     COOKIE_HMAC_SECRET: "cookie-secret",
     ...overrides,
   };

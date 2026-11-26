@@ -13,23 +13,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { REATIVAR_ALARM_COUNTER_KEYS, incrementReativarAlarmCounter } from "../scripts/lib/shared/reativar-alarm-counters.ts";
 import { checkNativeUnsubscribePending, type Env } from "../workers/reativar/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    _map: m,
-  } as unknown as KVNamespace & { _map: Map<string, string> };
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -50,25 +34,25 @@ describe("incrementReativarAlarmCounter — mecânica de incremento (espelha inc
   });
 
   test("chave ausente → cria com valor '1'", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     await incrementReativarAlarmCounter(kv, REATIVAR_ALARM_COUNTER_KEYS.noApiKey);
     assert.equal(await kv.get(REATIVAR_ALARM_COUNTER_KEYS.noApiKey), "1");
   });
 
   test("chave existente → soma 1 ao valor atual", async () => {
-    const kv = makeMapKV({ [REATIVAR_ALARM_COUNTER_KEYS.httpError]: "7" });
+    const kv = makeTrackedKvNamespace({ [REATIVAR_ALARM_COUNTER_KEYS.httpError]: "7" });
     await incrementReativarAlarmCounter(kv, REATIVAR_ALARM_COUNTER_KEYS.httpError);
     assert.equal(await kv.get(REATIVAR_ALARM_COUNTER_KEYS.httpError), "8");
   });
 
   test("valor corrompido no KV (não-numérico) → trata como 0, não lança", async () => {
-    const kv = makeMapKV({ [REATIVAR_ALARM_COUNTER_KEYS.networkError]: "lixo" });
+    const kv = makeTrackedKvNamespace({ [REATIVAR_ALARM_COUNTER_KEYS.networkError]: "lixo" });
     await incrementReativarAlarmCounter(kv, REATIVAR_ALARM_COUNTER_KEYS.networkError);
     assert.equal(await kv.get(REATIVAR_ALARM_COUNTER_KEYS.networkError), "1");
   });
 
   test("contadores independentes não se cruzam", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     await incrementReativarAlarmCounter(kv, REATIVAR_ALARM_COUNTER_KEYS.noApiKey);
     await incrementReativarAlarmCounter(kv, REATIVAR_ALARM_COUNTER_KEYS.httpError);
     await incrementReativarAlarmCounter(kv, REATIVAR_ALARM_COUNTER_KEYS.httpError);
@@ -102,7 +86,7 @@ describe("incrementReativarAlarmCounter — mecânica de incremento (espelha inc
 
 describe("checkNativeUnsubscribePending — cada fail-open incrementa o contador certo (#4551)", () => {
   test("BREVO_DIARIA_API_KEY ausente → incrementa noApiKey, nenhum outro contador", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env: Env = { REATIVAR_ALARM: kv };
     const fetchImpl = (async () => jsonRes(200, { emailBlacklisted: true })) as typeof fetch;
     const result = await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl);
@@ -113,7 +97,7 @@ describe("checkNativeUnsubscribePending — cada fail-open incrementa o contador
   });
 
   test("erro HTTP 5xx → incrementa httpError, NÃO incrementa httpErrorAuthDenied", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", REATIVAR_ALARM: kv };
     const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
     const result = await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl);
@@ -123,7 +107,7 @@ describe("checkNativeUnsubscribePending — cada fail-open incrementa o contador
   });
 
   test("401 → incrementa httpError E httpErrorAuthDenied (sub-contagem aditiva)", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key_revogada", REATIVAR_ALARM: kv };
     const fetchImpl = (async () => new Response("unauthorized", { status: 401 })) as typeof fetch;
     const result = await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl);
@@ -133,7 +117,7 @@ describe("checkNativeUnsubscribePending — cada fail-open incrementa o contador
   });
 
   test("403 → incrementa httpError E httpErrorAuthDenied", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", REATIVAR_ALARM: kv };
     const fetchImpl = (async () => new Response("forbidden", { status: 403 })) as typeof fetch;
     const result = await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl);
@@ -143,7 +127,7 @@ describe("checkNativeUnsubscribePending — cada fail-open incrementa o contador
   });
 
   test("exceção de rede → incrementa networkError", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", REATIVAR_ALARM: kv };
     const fetchImpl = (async () => {
       throw new Error("network down");
@@ -154,7 +138,7 @@ describe("checkNativeUnsubscribePending — cada fail-open incrementa o contador
   });
 
   test("caminho de sucesso (emailBlacklisted:false) → nenhum contador incrementado", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", REATIVAR_ALARM: kv };
     const fetchImpl = (async () => jsonRes(200, { emailBlacklisted: false })) as typeof fetch;
     const result = await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl);

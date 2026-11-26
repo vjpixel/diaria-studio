@@ -35,33 +35,9 @@ import {
   renderJogarQuizPageHtml,
 } from "../workers/poll/src/jogar.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 // ── fixtures ────────────────────────────────────────────────────────────────
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
 
 type FetchMock = typeof fetch & { calls: Array<{ url: string; init: RequestInit | undefined }> };
 function makeFetchMock(status = 201): FetchMock {
@@ -74,15 +50,15 @@ function makeFetchMock(status = 201): FetchMock {
   return fn;
 }
 
-const baseEnv = (over: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-  POLL: makeMapKV(),
+const baseEnv = (over: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+  POLL: makeTrackedKv(),
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",
   ...over,
-}) as Env & { POLL: ReturnType<typeof makeMapKV> };
+}) as Env & { POLL: ReturnType<typeof makeTrackedKv> };
 
-const beehiivEnv = (poll = makeMapKV()): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
+const beehiivEnv = (poll = makeTrackedKv()): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
   POLL: poll,
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
@@ -90,7 +66,7 @@ const beehiivEnv = (poll = makeMapKV()): Env & { POLL: ReturnType<typeof makeMap
   BEEHIIV_API_KEY: "test-key",
   BEEHIIV_PUBLICATION_ID: "pub_test",
   BEEHIIV_API_URL: "https://beehiiv.test/v2",
-}) as Env & { POLL: ReturnType<typeof makeMapKV> };
+}) as Env & { POLL: ReturnType<typeof makeTrackedKv> };
 
 function subReq(body: unknown, opts: { contentType?: string; ip?: string } = {}): Request {
   const headers: Record<string, string> = { "Content-Type": opts.contentType ?? "application/json" };
@@ -194,7 +170,7 @@ describe("validateSubscribeInput (#3580)", () => {
 
 describe("checkSubscribeRateLimit (#3580)", () => {
   it("permite abaixo do limite e incrementa o contador", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKv();
     const r1 = await checkSubscribeRateLimit(kv as unknown as KVNamespace, "1.2.3.4", 3, 3600);
     assert.deepEqual(r1, { allowed: true, count: 1 });
     const r2 = await checkSubscribeRateLimit(kv as unknown as KVNamespace, "1.2.3.4", 3, 3600);
@@ -202,14 +178,14 @@ describe("checkSubscribeRateLimit (#3580)", () => {
   });
 
   it("bloqueia ao atingir o limite", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKv();
     for (let i = 0; i < 3; i++) await checkSubscribeRateLimit(kv as unknown as KVNamespace, "1.2.3.4", 3, 3600);
     const blocked = await checkSubscribeRateLimit(kv as unknown as KVNamespace, "1.2.3.4", 3, 3600);
     assert.equal(blocked.allowed, false);
   });
 
   it("sem IP → permite (as outras barreiras continuam valendo)", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKv();
     const r = await checkSubscribeRateLimit(kv as unknown as KVNamespace, "", 3, 3600);
     assert.deepEqual(r, { allowed: true, count: 0 });
   });

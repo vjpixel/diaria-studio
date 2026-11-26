@@ -26,37 +26,11 @@ import assert from "node:assert/strict";
 import { handleEditions } from "../workers/poll/src/vote.ts";
 import { brandedNamespace, type Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
-
-// ── Mock KV backed por Map (mesmo padrão de worker-poll-brand.test.ts) ──────
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  const kv = {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-  return kv;
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
-    POLL: makeMapKV() as unknown as Env["POLL"],
+    POLL: makeTrackedKv() as unknown as Env["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",
@@ -67,7 +41,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
 describe("handleEditions (#3257) — unit", () => {
   it("lista edições AAMMDD válidas a partir de chaves stats:*, ordenadas desc", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:260601": "{}",
         "stats:260615": "{}",
         "stats:260603": "{}",
@@ -82,7 +56,7 @@ describe("handleEditions (#3257) — unit", () => {
 
   it("aceita ciclo mensal YYMM-MM (formato clarice)", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:2606-07": "{}",
         "stats:2605-06": "{}",
       }) as unknown as Env["POLL"],
@@ -94,7 +68,7 @@ describe("handleEditions (#3257) — unit", () => {
 
   it("ignora keys stats: com edition malformado/vazio (defesa contra KV corrompido)", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:260601": "{}",
         "stats:": "{}", // edition vazio
         "stats:evil:injected": "{}", // formato lixo
@@ -117,7 +91,7 @@ describe("handleEditions (#3257) — unit", () => {
   it("respeita o namespace já embrulhado por brand — não precisa filtrar aqui (isolamento vem de brandedNamespace)", async () => {
     // env.POLL já vem embrulhado (como brandedEnv faria em index.ts) —
     // handleEditions não sabe/precisa saber do prefixo.
-    const rawKv = makeMapKV({
+    const rawKv = makeTrackedKv({
       "clarice:stats:2606-07": "{}",
       "stats:260601": "{}", // diaria (legado, sem prefixo)
     });
@@ -129,8 +103,8 @@ describe("handleEditions (#3257) — unit", () => {
 });
 
 describe("GET /editions — integração via router (#3257)", () => {
-  const makeRouterEnv = (): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-    POLL: makeMapKV({
+  const makeRouterEnv = (): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+    POLL: makeTrackedKv({
       "stats:260601": "{}",
       "stats:260615": "{}",
       "clarice:stats:2606-07": "{}",
@@ -160,7 +134,7 @@ describe("GET /editions — integração via router (#3257)", () => {
 
   it("rota pública — não exige nenhum secret (mesmo padrão de /stats)", async () => {
     const env: Env = {
-      POLL: makeMapKV({ "stats:260601": "{}" }) as unknown as Env["POLL"],
+      POLL: makeTrackedKv({ "stats:260601": "{}" }) as unknown as Env["POLL"],
       POLL_SECRET: undefined as unknown as string,
       ADMIN_SECRET: undefined as unknown as string,
       ALLOWED_ORIGINS: "*",

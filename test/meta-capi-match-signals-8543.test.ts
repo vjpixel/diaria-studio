@@ -41,6 +41,7 @@ import type { Env as PollEnv } from "../workers/poll/src/index.ts";
 import { handleGateSubscribe } from "../workers/cursos/src/subscribe.ts";
 import type { Env as CursosEnv } from "../workers/cursos/src/index.ts";
 import { handleConfirm, type Env as ReativarEnv } from "../workers/reativar/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const FBP = "fb.1.1700000000000.1234567890";
 const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)";
@@ -187,27 +188,6 @@ describe("#8543 — lote SubscriptionConfirmed relê e manda os sinais", () => {
 
 // ---- workers: o cadastro grava os campos ----
 
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      return m.get(key) ?? null;
-    },
-    async getWithMetadata(key: string) {
-      return { value: m.get(key) ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cursor: undefined };
-    },
-  };
-}
-
 type Calls = Array<{ url: string; body: any }>;
 function kitFetch(): { fn: typeof fetch; calls: Calls } {
   const calls: Calls = [];
@@ -226,7 +206,7 @@ const SIGNAL_ENV = {
 
 function pollEnv(over: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "s",
     ADMIN_SECRET: "a",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -285,7 +265,7 @@ describe("#8543 — worker cursos grava IP/UA/fbp no Kit", () => {
     const { fn, calls } = kitFetch();
     const env = {
       ASSETS: { fetch: async () => new Response("") },
-      CURSOS_SUBSCRIBERS: makeMapKV(),
+      CURSOS_SUBSCRIBERS: makeTrackedKv(),
       COOKIE_HMAC_SECRET: "cookie-secret",
       SUBSCRIBE_BACKEND: "kit",
       KIT_API_KEY: "k",
