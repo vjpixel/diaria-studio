@@ -39,12 +39,18 @@ it("coordenador inicia a espera de CI ao receber o anúncio, sem esperar o retor
 });
 
 it("prompt de dispatch pede o anúncio de PR ao implementador, com destino e SHA completo (#13271)", () => {
+  // #14044: o texto da regra mora no item 2 das regras de dispatch, que o
+  // prompt cita; o prompt só aponta para ele.
   const i = skill.indexOf("O prompt do subagente inclui, obrigatoriamente:");
   assert.ok(i >= 0);
-  const p = bulletFrom(skill.slice(i), "**anúncio de PR (#13271)**");
-  assert.match(p, /logo após o `gh pr create`, `SendMessage`/);
-  assert.match(p, /destino `main`/);
-  assert.match(p, /SHA completo \(40 hex\)/);
+  const list = skill.slice(i, skill.indexOf("O subagente implementa,", i));
+  assert.match(list, /`context\/overnight-dispatch-rules\.md` no início da própria sessão/);
+  assert.match(list, /anúncio de PR por `SendMessage` ao coordenador logo após o `gh pr create` \(item 2, #3321\/#13271\)/);
+  const item2 = rules.slice(rules.indexOf("## 2. "), rules.indexOf("## 3. "));
+  assert.match(item2, /imediatamente após `gh pr create`,\s+enviar ao coordenador via `SendMessage`/);
+  assert.match(item2, /destino `main`/);
+  assert.match(item2, /SHA completo \(40 hex\)/);
+  assert.match(item2, /Falha no envio não bloqueia/);
 });
 
 /** Só o parágrafo (linha) que começa no marcador, sem o bloco bash nem o trem que vêm depois. */

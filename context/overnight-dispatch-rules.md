@@ -40,12 +40,16 @@ recém-colado, cat. A.)
 
 O prefixo é o sinal que `.claude/hooks/pr-create-review.mjs` (`resolveEffort`)
 usa pra dar `low` effort no `/code-review` pós-`gh pr create`, e é o que o
-cleanup de fim de rodada usa pra deletar a branch remota corretamente.
+cleanup de fim de rodada usa pra deletar a branch remota corretamente. Não é
+o único guard (#3322: o hook também detecta a sessão overnight ativa via
+marker), mas seguir a convenção evita o `[aviso: ...]` que o hook anexa quando
+o nome diverge.
 
 **Anúncio de PR (overnight, develop e continuo; #13271):** imediatamente após `gh pr create`,
 enviar ao coordenador via `SendMessage` (destino `main`, a conversa principal) o número/URL, o SHA completo (40 hex) do HEAD e as issues da
 unidade, antes de iniciar o self-review. O coordenador começa a espera de CI em
 paralelo; o implementador segue o self-review e retorna o total de findings
+normalmente. Falha no envio não bloqueia: o self-review e o retorno seguem
 normalmente.
 
 ## 3. Bootstrap do worktree
@@ -72,9 +76,10 @@ worktree é redundante e é justamente o comando que dispara o auto-background d
 harness (subagente entra em Monitor-loop e não retorna → stall).
 
 `npx tsc --noEmit` e os testes afetados rodam **SEMPRE em FOREGROUND**,
-aguardando o resultado antes de retornar — nunca em background. Se um full-run
-local for genuinamente necessário (raro), pipe por `| tail -40` pra forçar o
-resultado a voltar na própria chamada.
+aguardando o resultado antes de retornar — nunca em background (#2896). Se um
+full-run local for genuinamente necessário (raro — mudança ampla em
+`scripts/lib/` com risco cross-file que os testes afetados não cobririam), pipe
+por `| tail -40` pra forçar o resultado a voltar na própria chamada.
 
 **Subagente que tocar QUALQUER arquivo listado em `ORCHESTRATOR_FILES` no topo
 de `test/orchestrator-prompt.test.ts` roda `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts`
@@ -132,10 +137,15 @@ esperar o hook `check-pr-bugfix.ts` reclamar.
 
 Após o `gh pr create`, o subagente faz UMA passada adversarial no próprio
 `git diff` contra a(s) issue(s) + briefing: o diff cobre TODOS os pontos (não só
-os fáceis)? Sobrou referência órfã de refactor? O arquivo carrega? O cenário
-REAL da issue tem teste? **O output esperado são os findings listados como
-comentários inline no PR** (não fixes imediatos). Retornar: o número do PR **+ a
-linha "self-review: N findings"**.
+os fáceis)? Sobrou referência órfã de refactor (grep pelos símbolos
+renomeados)? O arquivo carrega (`npx tsc --noEmit` se coberto pelo tsconfig,
+senão import smoke via tsx)? O cenário REAL da issue tem teste (não só a
+aritmética adjacente)? **O output esperado são os findings listados como
+comentários inline no PR** (não fixes imediatos). Finding grande demais para o
+coordenador aplicar direto → comentário inline detalhando a mudança
+necessária. **Nunca `AskUserQuestion` durante o self-review** (Regra 1 do
+overnight: nenhuma pergunta ao editor depois do briefing). Retornar: o número
+do PR **+ a linha "self-review: N findings"**.
 
 Cada finding abre com confiança e severidade, ex.: `Confiança média, P3: ...`
 (#11461). É essa tag que `resolve-review-threads.ts --low-severity-only` lê
@@ -254,8 +264,10 @@ scratchpad (histórico: `docs/rodadas-autonomas-historico.md#dr-10698`). O nome 
 números das issues da unidade e um sufixo aleatório (ex.:
 `/tmp/pr-body-10698-10699-$RANDOM.md`), nunca um nome genérico como
 `pr-body.md`. Logo após o `gh pr create`, rodar `npx tsx
-scripts/lib/gh-pr-safe-edit.ts --pr N --verify-body --issues A,B` (em PR solo
-`--issues` é opcional: o número sai da branch `*/fix-N-*`). PR de outro repo
+scripts/lib/gh-pr-safe-edit.ts --pr N --verify-body --issues A,B --worktree
+{worktree da unidade}` (em PR solo `--issues` é opcional: o número sai da
+branch `*/fix-N-*`; `--worktree` é obrigatório quando o helper roda de outro
+checkout, como na PR do design, #11587). PR de outro repo
 (issue do `vjpixel/diaria-design`, item 32) leva `--repo owner/name` em toda
 chamada do helper — sem ele, o helper lê e escreve o PR #N do diaria-studio. `exit 1` = o corpo
 não cita alguma issue com `Closes`/`REFS`: reescrever o arquivo e corrigir via
