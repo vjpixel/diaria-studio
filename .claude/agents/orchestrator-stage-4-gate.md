@@ -301,6 +301,12 @@ Tratar cada substituição D{N} ↔ item do pool como as 2 operações independe
 
 6. **Re-humanizar SCOPED e gravar sentinel se `03-social.md` foi tocado (#2279/#2290/#2373, re-humanização scoped #3446):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) dispara re-humanização — mas **só das seções de fato alteradas**, não do arquivo inteiro. Re-humanizar tudo a cada ajuste era o 2º maior ofensor de tokens do pipeline (~600 linhas de prompt do humanizador por invocação completa × 2-4 ajustes/edição, #3379).
 
+   **6.0 — Atalho da edição pequena: `--reseal-surgical` (#13929, #14095).** Quando a mudança em `03-social.md` é uma correção pequena com autor conhecido (o editor digitou ou pediu a redação exata: verbo, número, nome, link; ou um ajuste mecânico do pipeline, como encurtar um `# Curto` para o `curto-x-weight`), refazer o selo sem rodar o humanizador:
+      ```bash
+      npx tsx scripts/check-humanizer-social.ts --reseal-surgical --edition-dir {EDITION_DIR}/ --reason "editor trocou X por Y em main_d2"
+      ```
+      Exit 0 (`{ ok, changed_sections }`) já gravou prova, selo, snapshot pós-humanizador e hash: pular para os lints do passo 6.7 e o `--check` final (exit 0). Exit 1 (`RECUSADO: ...`) não grava nada: seguir 6.1. O script recusa sozinho seção adicionada/removida/reordenada, mais de 3 seções, trecho contínuo acima de 25% da seção ou de 400 caracteres, selo sem cards e seção já revisada pela Clarice sem pendência (a prova da Clarice nunca é fabricada para texto novo; a pendência de `--record-clarice-pending` é preservada). **O reseal registra a nova redação como provada pelo humanizador sem ele ter rodado** (o `--provenance` mostra `humanizador sim`; o motivo fica só em `_internal/.humanizer-run.json` e no selo); por isso **não usar** para texto escrito por LLM no gate (redispatch do `social-writer`, cascata §4d.1a, troca de destaque §4d.1b, reescrita de lead/ângulo, frase nova do agente), nem para remover tique de IA apontado pelos lints: esses vão pelo fluxo SCOPED/FULL-FILE abaixo, mesmo quando pequenos.
+
    **6.1 — Detectar seções alteradas** — o check abaixo sai exit 2 (esperado, `03-social.md` já mudou); ler a linha JSON do stdout `{ legacy, changed_sections }`:
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/

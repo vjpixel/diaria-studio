@@ -198,6 +198,11 @@ Linha em branco entre 2 itens do MESMO card do `## um`: linha só com
 
 ## K. Re-humanização scoped depois de mexer em `03-social.md` (§4d.1 passo 6)
 
+Correção pequena do editor ou do pipeline (nunca texto de LLM): tentar antes
+`check-humanizer-social.ts --reseal-surgical --edition-dir {EDITION_DIR}/
+--reason "{motivo}"` (§4d.1 passo 6.0). Exit 0 = lints do 6.7 e `--check`;
+exit 1 = receita abaixo.
+
 ```bash
 npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/   # exit 2 esperado; ler { legacy, changed_sections }
 cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md
