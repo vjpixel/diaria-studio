@@ -8,7 +8,7 @@ cada receita, e o playbook vence o cartão quando os dois divergirem. Ler o
 playbook do gate inteiro uma vez ao chegar no §4d; depois, voltar a ele só
 na seção que a receita cita.
 
-Placeholders: `{EDITION_DIR}` (de `find-current-edition.ts --resolve`),
+Placeholders: `{EDITION_DIR}` (de `scripts/lib/find-current-edition.ts --resolve`),
 `{AAMMDD}`, `d{N}` (destaque afetado). Todo `npx tsx` abaixo roda com cwd na
 raiz do repo.
 

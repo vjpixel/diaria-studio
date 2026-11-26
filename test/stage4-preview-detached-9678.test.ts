@@ -17,7 +17,6 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 import { resolve } from "node:path";
 
