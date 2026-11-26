@@ -63,6 +63,14 @@ export interface PreflightState {
    * em vez de só no Stage 2. Consumido pelo Stage 2 §3b: `false` → ir direto
    * pro fallback REST. Warn, nunca bloqueia. */
   clariceMcp: boolean | null;
+  /** Ping REAL da Clarice (#14029): `clarice-healthcheck.ts --real-chunk`
+   * manda um chunk de ~1,8 KB (o tamanho que estoura nos dias degradados) com
+   * teto de 60 s. O ping mínimo de `clariceRest` passa mesmo quando o texto
+   * real estoura. Consumido pelo Stage 2 (`stage-2-run.ts`, via
+   * `resolveClariceStage2DeadlineMs`): `false` → teto da Clarice cai de 480 s
+   * para 90 s e, estourando, vai direto pro `clarice-pending.ts skip`.
+   * `null` = nunca sondado → teto normal. */
+  clariceRealProbe: boolean | null;
   /** Token Cloudflare/wrangler (`CLOUDFLARE_API_TOKEN`). Consumido dentro do
    * próprio Stage 0 (§0d.bis maintain-valid-editions). */
   cloudflareTokenOk: boolean | null;
@@ -76,6 +84,7 @@ const DEFAULT_STATE: PreflightState = {
   beehiivMcp: null,
   clariceRest: null,
   clariceMcp: null,
+  clariceRealProbe: null,
   cloudflareTokenOk: null,
   capturedAt: null,
 };
@@ -101,6 +110,7 @@ function normalizeState(raw: Partial<PreflightState>): PreflightState {
     beehiivMcp: boolOrNull(raw.beehiivMcp),
     clariceRest: boolOrNull(raw.clariceRest),
     clariceMcp: boolOrNull(raw.clariceMcp),
+    clariceRealProbe: boolOrNull(raw.clariceRealProbe),
     cloudflareTokenOk: boolOrNull(raw.cloudflareTokenOk),
     capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : null,
   };
@@ -189,6 +199,7 @@ const FIELD_BY_FLAG: Record<string, keyof Omit<PreflightState, "capturedAt">> = 
   "beehiiv-mcp": "beehiivMcp",
   "clarice-rest": "clariceRest",
   "clarice-mcp": "clariceMcp",
+  "clarice-real-probe": "clariceRealProbe",
   "cloudflare-token-ok": "cloudflareTokenOk",
 };
 
@@ -212,7 +223,7 @@ if (isMainModule(import.meta.url)) {
     console.error(
       "uso: preflight-state.ts --edition-dir <dir> [--read] [--chrome-mcp true|false] " +
         "[--gmail-mcp true|false] [--beehiiv-mcp true|false] [--clarice-rest true|false] " +
-        "[--clarice-mcp true|false] [--cloudflare-token-ok true|false]",
+        "[--clarice-mcp true|false] [--clarice-real-probe true|false] [--cloudflare-token-ok true|false]",
     );
     process.exit(1);
   }
@@ -241,7 +252,7 @@ if (isMainModule(import.meta.url)) {
     if (Object.keys(patch).length === 0) {
       console.error(
         "nada para escrever — passe ao menos 1 flag (--chrome-mcp, --gmail-mcp, --beehiiv-mcp, " +
-          "--clarice-rest, --clarice-mcp, --cloudflare-token-ok) ou --read",
+          "--clarice-rest, --clarice-mcp, --clarice-real-probe, --cloudflare-token-ok) ou --read",
       );
       process.exit(1);
     }

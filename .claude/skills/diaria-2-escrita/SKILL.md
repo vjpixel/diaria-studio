@@ -84,6 +84,32 @@ Comportamentos por opção:
 
 Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento) — sem o gancho mid-Clarice (social não tem snapshot pré-Clarice; double-apply em social é menos danoso porque seções são curtas).
 
+## Fluxo padrão — runner `scripts/stage-2-run.ts` (#14031)
+
+Desde o #14031 a Etapa 2 roda pelo runner, em 6 fases. Cada fase roda todos os `npx tsx` determinísticos do trecho correspondente abaixo e devolve um JSON; você só despacha os agentes de `pendingAgentDispatch` e chama a fase seguinte (`nextPhase`). Os passos 1b-7d abaixo seguem como referência do que cada fase faz e como fallback se o runner falhar. Passe `--scope newsletter|social` no `pre-dispatch` quando `$2` vier (as fases seguintes herdam do estado `_internal/02-stage2-run-state.json`) e `--no-gates` quando a skill receber `--no-gates`/`--no-gate`.
+
+```bash
+npx tsx scripts/stage-2-run.ts --phase pre-dispatch --edition $1 [--scope newsletter|social]
+npx tsx scripts/stage-2-run.ts --phase post-writers --edition $1
+npx tsx scripts/stage-2-run.ts --phase post-pool --edition $1
+npx tsx scripts/stage-2-run.ts --phase post-humanize --edition $1 [--no-gates]   # Bash com timeout: 600000
+npx tsx scripts/stage-2-run.ts --phase post-checks --edition $1 [--no-gates]     # só para re-rodar depois de um conserto
+npx tsx scripts/stage-2-run.ts --phase post-gate --edition $1 [--after-title-picker]
+```
+
+| Fase | Roda | Devolve em `pendingAgentDispatch` |
+|---|---|---|
+| `pre-dispatch` | sentinel do Stage 1, Passo 1b (caps + translate-summaries), Passo 0 (fontes), 4º post USE MELHOR, pesquisa de títulos do D1 | `writer-destaque` × N (ou `writer` único) + `social-writer` + `social-curto`, numa mensagem só (`dispatchTogether: true`) |
+| `post-writers` | verify-agent-outputs (#9962), stitch, validate-stage-2-outputs, 2b-soc (merge + header único) e `pool-descriptions --input` | `writer-pool` (só com item) |
+| `post-pool` | `pool-descriptions --apply`, lints do 3a, normalize, singularize, snapshot do social | os dois humanizadores (newsletter e social), na mesma mensagem |
+| `post-humanize` | confere os humanizadores, Clarice REST da newsletter e depois do social (em série, #4952), prova do humanizador social, e as checagens do `post-checks` | nada |
+| `post-checks` | 3d (travessão, É IA?, URL, cupons, intro, lançamentos, cobertura, erro intencional), check-stage2-invariants, lints do social, check-invariants | nada |
+| `post-gate` | Passo 7 (title-picker), 7b, selo do humanizador social, 7c (sentinel) e 7d (limpeza) | `title-picker` quando algum destaque ainda tem 3 títulos; depois re-rodar com `--after-title-picker` |
+
+Despache os agentes com os `params` do JSON (paths já resolvidos) e o `detail` de cada item; os dois humanizadores saem como `Agent` com `subagent_type: "adhoc-opus-low"` e o `params.prompt` dado. Códigos de saída: `0` segue para `nextPhase`; `1` erro duro (ler `notes`); `2` halt, com o banner já renderizado em `haltRequired`; `3` conserto antes de seguir: aplique o que `fixes[]` pede e re-rode `rerunPhase`. O gate do Passo 6 entra entre `post-humanize` (ou `post-checks`) e `post-gate`, mostrando `gateNotes`. `record-agent-costs.ts`, `update-stage-status`/`capture-stage-usage` e a proposta do erro intencional no modo interativo continuam com você (`delegatedSteps`).
+
+**Clarice (#14029):** o teto do `clarice-correct.ts` vem do ping real do Stage 0 (`preflight-state.json`, campo `clariceRealProbe`). Ping falho: 90 s e, estourando, `clarice-pending.ts skip` (a correção fica para o `resume` do Stage 4, antes do gate); ping ok ou não sondado: 480 s. O runner usa só o REST e já aplica isso; no caminho manual, `npx tsx scripts/lib/clarice-stage2-deadline.ts --edition-dir {EDIR}` dá o `deadlineMs` a passar em `--deadline-ms`.
+
 ## Passo 1b — Aplicar caps editoriais Stage 2 (#358, #907)
 
 Antes de passar o approved.json ao writer, truncar buckets aos limites de #358:
@@ -292,9 +318,10 @@ npx tsx scripts/clarice-correct.ts \
   --in {EDIR}/_internal/02-draft.md \
   --out {EDIR}/_internal/02-clarice-suggestions.json \
   --corrected-out {EDIR}/_internal/02-clarice-corrected.md \
-  --retry
+  --retry \
+  --deadline-ms {deadlineMs}
 ```
-(Substitua `02-draft.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.) **Chamar a Bash tool com `timeout: 600000` (#12257):** o default de 2 min corta o comando antes do teto de 8 min do script, e o exit 6 abaixo nunca chega.
+`{deadlineMs}` = `deadlineMs` de `npx tsx scripts/lib/clarice-stage2-deadline.ts --edition-dir {EDIR}` (#14029: 90000 quando o ping real do Stage 0 falhou, 480000 no resto). (Substitua `02-draft.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.) **Chamar a Bash tool com `timeout: 600000` (#12257):** o default de 2 min corta o comando antes do teto de 8 min do script, e o exit 6 abaixo nunca chega.
 Exit 0 = sucesso. **Em sucesso, NÃO rodar o passo 4 (`clarice-apply.ts`)** — o texto corrigido já está pronto em `02-clarice-corrected.md` (chunk-applied). **Re-aplicar `02-clarice-suggestions.json` ao texto inteiro via `clarice-apply.ts` sub-corrige textos multi-chunk** (âncora única dentro de um chunk pode aparecer 2+× no texto inteiro → pulada como ambígua). Copiar o corrigido diretamente para o working draft:
 ```bash
 cp {EDIR}/_internal/02-clarice-corrected.md {EDIR}/_internal/02-draft.md

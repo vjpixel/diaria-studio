@@ -8,7 +8,7 @@
  * pra cair no fallback (`clarice-correct.ts`) sem halt.
  *
  * Uso (CLI):
- *   npx tsx scripts/clarice-healthcheck.ts [--timeout-ms N] [--mcp] [--via-headers-helper]
+ *   npx tsx scripts/clarice-healthcheck.ts [--timeout-ms N] [--mcp] [--via-headers-helper] [--real-chunk]
  *
  * --mcp: em vez do REST cortex, sonda o MCP `clarice` de verdade
  * (`checkClariceMcpHealth` abaixo, #5114) — ver docstring da função pro
@@ -18,6 +18,14 @@
  * `headersHelper` do `.mcp.json` (`scripts/mcp/clarice-headers.mjs`), como o
  * Claude Code faz, em vez de `CLARICE_API_KEY` lida por este script. O Stage 0
  * roda nesse modo (`stage-0-run.ts`, sinal `clariceMcp` do preflight-state).
+ *
+ * --real-chunk (#14029): em vez do probe de 3 chars, manda um chunk REAL de
+ * ~1,8 KB (`REAL_PROBE_TEXT`, o tamanho que estoura nos dias degradados) com
+ * teto default de 60 s (`REAL_PROBE_TIMEOUT_MS`). O probe mínimo passa mesmo
+ * nos dias em que o texto real estoura (1.299 dos 1.308 sucessos de
+ * 20/10-25/11/2026 vieram do fallback por parágrafo); o Stage 0 grava este
+ * resultado em `preflight-state.json` (`clariceRealProbe`) e o Stage 2 usa o
+ * teto curto de 90 s quando ele falha.
  *
  * Stdout: JSON { ok: boolean, latency_ms?: number, error?: string }
  *   (com --via-headers-helper, também `key_source` e, às vezes, `note`)
@@ -53,6 +61,27 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 /** Latência real observada no probe de 3 chars (2026-07-15). O default precisa folgar sobre isso. */
 export const OBSERVED_PROBE_LATENCY_MS = 16_300;
 
+/**
+ * Chunk real do ping do Stage 0 (#14029). Texto em PT-BR no registro da
+ * newsletter, com cerca de 1,8 KB em UTF-8: é a faixa de payload em que o
+ * cortex passou a estourar o tempo nos dias degradados (falhas
+ * `retryable_failure` só em payload acima de 400 B). Teste trava o tamanho.
+ */
+export const REAL_PROBE_TEXT = [
+  "A empresa anunciou nesta semana um novo modelo de linguagem voltado para tarefas de programação, com janela de contexto maior e preço menor por token do que a versão anterior.",
+  "Segundo o comunicado, o modelo resolve mais problemas de um conjunto público de testes de engenharia de software e consegue editar vários arquivos de um repositório na mesma tarefa, sem precisar de instruções passo a passo.",
+  "A novidade chega num momento em que as ferramentas de assistência ao desenvolvedor disputam espaço nas empresas, e a promessa de reduzir o custo de cada consulta pesa na decisão de quem paga a conta no fim do mês.",
+  "Pesquisadores ouvidos pela reportagem lembram que os resultados em testes padronizados nem sempre se repetem no trabalho real, onde o código tem histórico, dependências antigas e regras que não estão escritas em lugar nenhum.",
+  "Por que isso importa: quem trabalha com software tende a delegar mais tarefas repetitivas a esses assistentes, mas a revisão humana continua sendo a etapa que evita que um erro pequeno chegue ao usuário final.",
+  "A empresa diz que o acesso começa pelos clientes pagos e que a versão gratuita recebe o modelo nas próximas semanas, sem data definida.",
+  "Outras companhias do setor devem responder com lançamentos parecidos até o fim do trimestre, segundo analistas que acompanham o mercado de inteligência artificial no Brasil e nos Estados Unidos.",
+  "No mesmo anúncio, a empresa publicou um relatório técnico de quarenta páginas com os detalhes do treinamento e das avaliações de segurança, inclusive os casos em que o modelo recusou pedidos considerados arriscados.",
+  "Especialistas em segurança pediram que a empresa abra os dados de avaliação para auditoria independente antes de ampliar o acesso.",
+].join("\n\n");
+
+/** Teto do ping real (#14029): 60 s, abaixo do que o Stage 2 gastaria no texto inteiro. */
+export const REAL_PROBE_TIMEOUT_MS = 60_000;
+
 export interface HealthResult {
   ok: boolean;
   latency_ms?: number;
@@ -63,6 +92,8 @@ export interface HealthOptions {
   apiKey: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** #14029: texto do probe REST (default: `PROBE_TEXT`, 3 chars). */
+  probeText?: string;
 }
 
 export async function checkClariceHealth(
@@ -81,7 +112,7 @@ export async function checkClariceHealth(
         "Content-Type": "application/json; charset=utf-8",
         "X-API-Key": opts.apiKey,
       },
-      body: JSON.stringify({ paragraphs: [{ description: PROBE_TEXT, offset: 0 }] }),
+      body: JSON.stringify({ paragraphs: [{ description: opts.probeText ?? PROBE_TEXT, offset: 0 }] }),
       signal: controller.signal,
     });
     const latency_ms = Date.now() - t0;
@@ -361,6 +392,8 @@ export interface HealthcheckArgs {
   mcp?: boolean;
   /** #11312: probe MCP com a key resolvida pelo `headersHelper` (implica `--mcp`). */
   viaHeadersHelper?: boolean;
+  /** #14029: probe REST com o chunk real de ~1,8 KB (timeout default 60 s). */
+  realChunk?: boolean;
 }
 
 export function parseHealthcheckArgs(argv: string[]): HealthcheckArgs {
@@ -384,6 +417,12 @@ export function parseHealthcheckArgs(argv: string[]): HealthcheckArgs {
       out.viaHeadersHelper = true;
       out.mcp = true;
     }
+    if (argv[i] === "--real-chunk") {
+      out.realChunk = true;
+    }
+  }
+  if (out.realChunk && out.mcp) {
+    throw new Error("--real-chunk sonda o REST; não combina com --mcp/--via-headers-helper");
   }
   return out;
 }
@@ -416,7 +455,13 @@ async function main(): Promise<number> {
   }
   const result = args.mcp
     ? await checkClariceMcpHealth({ apiKey, timeoutMs: args.timeoutMs })
-    : await checkClariceHealth({ apiKey, timeoutMs: args.timeoutMs });
+    : args.realChunk
+      ? await checkClariceHealth({
+          apiKey,
+          timeoutMs: args.timeoutMs ?? REAL_PROBE_TIMEOUT_MS,
+          probeText: REAL_PROBE_TEXT,
+        })
+      : await checkClariceHealth({ apiKey, timeoutMs: args.timeoutMs });
   console.log(JSON.stringify(result));
   return result.ok ? 0 : 2;
 }

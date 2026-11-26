@@ -33,6 +33,7 @@ const DEFAULT: PreflightState = {
   beehiivMcp: null,
   clariceRest: null,
   clariceMcp: null,
+  clariceRealProbe: null,
   cloudflareTokenOk: null,
   capturedAt: null,
 };
@@ -254,6 +255,16 @@ describe("preflight-state.ts CLI (#5414)", () => {
       execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], { encoding: "utf8", cwd: ROOT, shell: true }).trim(),
     );
     assert.equal(state.clariceMcp, false);
+    assert.equal(state.clariceRest, true);
+  });
+
+  it("--clarice-real-probe grava o ping real sem apagar o ping mínimo (#14029)", () => {
+    execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--clarice-rest", "true"], { cwd: ROOT, shell: true });
+    execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--clarice-real-probe", "false"], { cwd: ROOT, shell: true });
+    const state = JSON.parse(
+      execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], { encoding: "utf8", cwd: ROOT, shell: true }).trim(),
+    );
+    assert.equal(state.clariceRealProbe, false);
     assert.equal(state.clariceRest, true);
   });
 
