@@ -581,12 +581,17 @@ describe("Kill-switch publishing.social.instagram.enabled (#3635)", () => {
 // ─── Retry com backoff exponencial ───────────────────────────────────────────
 
 describe("Retry com backoff exponencial", () => {
+  // #14132: o laço da publicação imediata mora em lib/instagram-immediate-publish.ts
+  // (fases separadas; comportamento travado em test/fb-ig-publish-idempotency-14131-14132.test.ts).
+  const IMMEDIATE_SRC = readFileSync(resolve(__ROOT, "scripts/lib/instagram-immediate-publish.ts"), "utf8");
+
   it("script tenta até 3 vezes em caso de falha", () => {
-    assert.match(SRC, /attempt <= 3/, "deve tentar até 3 vezes");
+    assert.match(SRC, /publishInstagramImmediate\(/, "publicação imediata via helper de fases (#14132)");
+    assert.match(IMMEDIATE_SRC, /maxAttempts \?\? 3/, "deve tentar até 3 vezes");
   });
 
   it("script usa backoff exponencial entre tentativas", () => {
-    assert.match(SRC, /Math\.pow\(2, attempt - 1\)/, "deve usar backoff 2^(attempt-1)");
+    assert.match(IMMEDIATE_SRC, /Math\.pow\(2, attempt - 1\)/, "deve usar backoff 2^(attempt-1)");
   });
 
   it("em test-mode, pula o sleep entre tentativas", () => {
