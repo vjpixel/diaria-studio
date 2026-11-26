@@ -242,7 +242,49 @@ describe("--phase post-pool", () => {
     });
     const r = await runStage2(["--phase", "post-pool", "--edition", E], deps);
     assert.equal(r.code, 3);
-    assert.equal(r.rerunPhase, "post-writers");
+    assert.equal(r.rerunPhase, "post-pool");
+    assert.deepEqual(r.rerunArgs, ["--restitch"]);
+  });
+
+  it("--restitch refaz stitch e reaplica o pool sem novo writer-pool nem post-writers", async () => {
+    await preDispatch();
+    const pw = makeDeps({
+      "pool-descriptions.ts": (args) => (args.includes("--input") ? ok(JSON.stringify({ input_path: "in.json", items: 2 })) : ok()),
+    });
+    assert.equal((await runStage2(["--phase", "post-writers", "--edition", E], pw.deps)).code, 0);
+    seedWriterOutputs();
+    write("_internal/02-pool-descriptions.json", "{}");
+    const lintFail = makeDeps({ "lint-newsletter-md.ts": () => fail(1, JSON.stringify({ passed: false, checks: [{ id: "x", ok: false }] })) });
+    assert.equal((await runStage2(["--phase", "post-pool", "--edition", E], lintFail.deps)).code, 3);
+
+    const { deps, calls } = makeDeps({
+      "lint-newsletter-md.ts": () => ok(JSON.stringify({ passed: true, checks: [] })),
+      "normalize-newsletter.ts": () => {
+        write("_internal/02-normalized.md", "normalized\n");
+        return ok();
+      },
+    });
+    const r = await runStage2(["--phase", "post-pool", "--edition", E, "--restitch"], deps);
+    assert.equal(r.code, 0);
+    assert.ok(calls.some((c) => c.script.includes("stitch-newsletter")));
+    assert.ok(calls.some((c) => c.script.includes("pool-descriptions") && c.args.includes("--apply")));
+    assert.ok(!calls.some((c) => c.script.includes("verify-agent-outputs")));
+    assert.ok(!calls.some((c) => c.script.includes("merge-social-md")), "post-writers não roda de novo");
+    assert.ok(!r.pendingAgentDispatch.some((d) => d.agent === "writer-pool"));
+  });
+
+  it("--scope explícito vence o escopo gravado; sem --scope herda", async () => {
+    const pre = makeDeps();
+    await runStage2(["--phase", "pre-dispatch", "--edition", E, "--scope", "newsletter"], pre.deps);
+    const inherit = makeDeps();
+    const a = await runStage2(["--phase", "post-writers", "--edition", E], inherit.deps);
+    assert.equal(a.scope, "newsletter");
+    assert.ok(!inherit.calls.some((c) => c.script.includes("merge-social-md")));
+    write("_internal/03-social.tmp.md", "x");
+    const explicit = makeDeps();
+    const b = await runStage2(["--phase", "post-writers", "--edition", E, "--scope", "all"], explicit.deps);
+    assert.equal(b.scope, "all");
+    assert.ok(explicit.calls.some((c) => c.script.includes("merge-social-md")));
   });
 
   it("happy → os dois humanizadores na mesma mensagem + snapshot do social", async () => {
@@ -301,13 +343,20 @@ describe("--phase post-humanize", () => {
     assert.ok(!calls.some((c) => c.script.includes("clarice-correct")));
   });
 
-  it("ping real falho + exit 6 → --deadline-ms 90000 e clarice-pending skip (#14029)", async () => {
+  const writeCorrected: Handler = (args) => {
+    const out = argOf({ script: "", args }, "--corrected-out")!;
+    writeFileSync(out, out.includes("02-") ? "corrigido\n" : "# Social\n\n## d1\n\nA3\n\n## d2\n\nB3\n\n## d3\n\nC3\n", "utf8");
+    return ok();
+  };
+  const isSocial = (args: string[]): boolean => (argOf({ script: "", args }, "--in") ?? "").endsWith("03-social.md");
+
+  it("ping real falho + exit 6 na newsletter → --deadline-ms 90000 e clarice-pending skip (#14029)", async () => {
     await upToHumanize();
     humanizeDone();
     write("_internal/preflight-state.json", JSON.stringify({ clariceRest: true, clariceRealProbe: false }));
     const { deps, calls } = makeDeps({
       ...happyChecks,
-      "clarice-correct.ts": () => fail(6, JSON.stringify({ failure: { kind: "deadline", message: "90s" } })),
+      "clarice-correct.ts": (args) => (isSocial(args) ? writeCorrected(args) : fail(6, JSON.stringify({ failure: { kind: "deadline", message: "90s" } }))),
       "clarice-pending.ts": (args) => {
         if (args[0] === "skip") write("02-reviewed.md", "humanized\n");
         return ok();
@@ -321,9 +370,31 @@ describe("--phase post-humanize", () => {
     const skip = calls.find((c) => c.script.includes("clarice-pending") && c.args[0] === "skip");
     assert.equal(argOf(skip, "--reason"), "clarice_unavailable");
     assert.equal(r.clarice?.newsletter, "unavailable-skipped");
-    assert.equal(r.clarice?.social, "unavailable-skipped");
+    assert.equal(r.clarice?.social, "applied");
     assert.ok(r.gateNotes.some((n) => /clarice-pending\.ts resume/.test(n)));
     assert.equal(r.code, 0);
+  });
+
+  it("Clarice do social com exit 6 → halt (code 2), nunca skip silencioso; retomada só do social", async () => {
+    await upToHumanize();
+    humanizeDone();
+    const first = makeDeps({
+      ...happyChecks,
+      "clarice-correct.ts": (args) => (isSocial(args) ? fail(6) : writeCorrected(args)),
+    });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], first.deps);
+    assert.equal(r.code, 2);
+    assert.match(r.haltRequired!.reason, /social.*clarice_unavailable/);
+    assert.match(r.haltRequired!.action, /--social-clarice-only/);
+    assert.ok(!first.calls.some((c) => c.script.includes("check-humanizer-social")), "sem prova de Clarice gravada");
+
+    const retry = makeDeps({ ...happyChecks, "clarice-correct.ts": writeCorrected });
+    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only"], retry.deps);
+    assert.equal(r2.code, 0);
+    const clariceCalls = retry.calls.filter((c) => c.script.includes("clarice-correct"));
+    assert.equal(clariceCalls.length, 1, "a newsletter não roda de novo");
+    assert.ok(isSocial(clariceCalls[0].args));
+    assert.equal(r2.clarice?.social, "applied");
   });
 
   it("ping real ok → teto normal de 480 s", async () => {

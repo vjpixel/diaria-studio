@@ -46,12 +46,21 @@
  * Clarice (#14029): o teto de `clarice-correct.ts --deadline-ms` vem de
  * `resolveClariceStage2DeadlineMs` (`preflight-state.json` →
  * `clariceRealProbe`): 90 s quando o ping real do Stage 0 falhou, 480 s no
- * resto. Exit 6 (`clarice_unavailable`) segue pelo `clarice-pending.ts skip`,
- * como antes. Como as duas Clarices rodam na mesma chamada do runner e a Bash
+ * resto. Exit 6 (`clarice_unavailable`) da NEWSLETTER segue pelo
+ * `clarice-pending.ts skip`, como antes (no social é halt, ver abaixo). Como as duas Clarices rodam na mesma chamada do runner e a Bash
  * tool corta em 10 min, o social recebe o que sobra de um orçamento de 540 s
  * (mínimo 60 s). O runner usa só o caminho REST: script Node não chama o MCP
  * `mcp__clarice__correct_text` (1.491 das 1.510 tentativas de 20/10-25/11 já
  * eram REST).
+ *
+ * Clarice do social: qualquer falha, inclusive o exit 6, é HALT (code 2) — o
+ * `clarice-pending resume` do Stage 4 só cobre a newsletter, então o social
+ * nunca segue sem Clarice em silêncio. Retomada: `--phase post-humanize
+ * --social-clarice-only` (refaz só a Clarice do social e os post-checks).
+ *
+ * Lint gate-blocking no `post-pool`: re-despachar só o writer do destaque e
+ * re-rodar `--phase post-pool --restitch` (stitch + reaplica o pool já escrito,
+ * sem novo writer-pool). `--scope` explícito numa fase vence o escopo gravado.
  *
  * NÃO COBERTO (delegado ao top-level, ver `DELEGATED_STEPS`): os dispatches
  * de Agent, o gate humano, `record-agent-costs.ts` (precisa dos `<usage>` dos
@@ -74,8 +83,8 @@
  * Uso:
  *   npx tsx scripts/stage-2-run.ts --phase pre-dispatch --edition AAMMDD [--scope all|newsletter|social]
  *   npx tsx scripts/stage-2-run.ts --phase post-writers --edition AAMMDD
- *   npx tsx scripts/stage-2-run.ts --phase post-pool --edition AAMMDD
- *   npx tsx scripts/stage-2-run.ts --phase post-humanize --edition AAMMDD [--no-gates]   # Bash timeout 600000
+ *   npx tsx scripts/stage-2-run.ts --phase post-pool --edition AAMMDD [--restitch]
+ *   npx tsx scripts/stage-2-run.ts --phase post-humanize --edition AAMMDD [--no-gates] [--social-clarice-only]   # Bash timeout 600000
  *   npx tsx scripts/stage-2-run.ts --phase post-checks --edition AAMMDD [--no-gates]
  *   npx tsx scripts/stage-2-run.ts --phase post-gate --edition AAMMDD [--after-title-picker]
  *
@@ -181,6 +190,8 @@ export interface Stage2RunResult {
   haltRequired?: HaltRequired;
   fixes: Fix[];
   rerunPhase?: Phase;
+  /** Flags extras para a re-execução de `rerunPhase` (ex.: `--restitch`). */
+  rerunArgs?: string[];
   /** Linhas a levar ao resumo do gate (avisos warn-only, Clarice pendente, etc.). */
   gateNotes: string[];
   clarice?: {
@@ -220,8 +231,14 @@ export interface Stage2RunOptions {
   phase: Phase;
   edition: string;
   scope: Scope;
+  /** `--scope` veio na linha de comando: vence o escopo gravado no estado. */
+  scopeExplicit: boolean;
   noGates: boolean;
   afterTitlePicker: boolean;
+  /** post-pool: refaz stitch + `pool-descriptions --apply` (sem novo writer-pool) antes dos lints. */
+  restitch: boolean;
+  /** post-humanize: só a Clarice do social (a da newsletter já rodou), depois os post-checks. */
+  socialClariceOnly: boolean;
 }
 
 export function parseStage2RunArgs(argv: string[]): Stage2RunOptions {
@@ -233,7 +250,8 @@ export function parseStage2RunArgs(argv: string[]): Stage2RunOptions {
   if (!edition || !/^\d{6}$/.test(edition)) {
     throw new Stage2Abort('--edition AAMMDD é obrigatório (6 dígitos, ex: "260423").');
   }
-  const scopeRaw = getStringArg(argv, "scope", { example: "all" }) ?? "all";
+  const scopeArg = getStringArg(argv, "scope", { example: "all" });
+  const scopeRaw = scopeArg ?? "all";
   if (!["all", "newsletter", "social"].includes(scopeRaw)) {
     throw new Stage2Abort(`--scope precisa ser all, newsletter ou social — recebido: "${scopeRaw}"`);
   }
@@ -241,9 +259,12 @@ export function parseStage2RunArgs(argv: string[]): Stage2RunOptions {
     phase: phase as Phase,
     edition,
     scope: scopeRaw as Scope,
+    scopeExplicit: scopeArg !== undefined,
     // `--no-gate` (singular) é a grafia legada do #874, aceita como sinônimo.
     noGates: hasFlag(argv, "no-gates") || hasFlag(argv, "no-gate"),
     afterTitlePicker: hasFlag(argv, "after-title-picker"),
+    restitch: hasFlag(argv, "restitch"),
+    socialClariceOnly: hasFlag(argv, "social-clarice-only"),
   };
 }
 
@@ -273,6 +294,8 @@ export interface RunState {
   /** Paths que os writers/social precisam ter gravado (verify-agent-outputs). */
   writerOutputs?: string[];
   poolDispatchAt?: string | null;
+  /** O `--apply` já rodou sobre um 02-pool-descriptions.json verificado (o `--restitch` reaplica). */
+  poolApplied?: boolean;
   humanizeDispatchAt?: string;
   youtubeResearchOk?: boolean;
 }
@@ -583,9 +606,11 @@ function phasePreDispatch(ctx: Ctx): Stage2RunResult {
 function loadState(ctx: Ctx): RunState {
   const st = readRunState(ctx.editionDir);
   if (!st) throw new Stage2Abort(`estado ${RUN_STATE_FILE} ausente — rodar --phase pre-dispatch antes.`);
-  if (st.scope !== ctx.opts.scope && ctx.opts.scope === "all") {
+  if (!ctx.opts.scopeExplicit) {
     // fase chamada sem --scope: herda o do pre-dispatch.
     (ctx.opts as { scope: Scope }).scope = st.scope;
+  } else if (st.scope !== ctx.opts.scope) {
+    ctx.note(`--scope ${ctx.opts.scope} na linha de comando vence o escopo gravado (${st.scope}).`);
   }
   return st;
 }
@@ -652,7 +677,7 @@ function phasePostWriters(ctx: Ctx): Stage2RunResult {
       ctx.note("pool-descriptions: nenhum item para o writer-pool — passo pulado.");
     }
   }
-  writeRunState(ctx.editionDir, { ...st, poolDispatchAt });
+  writeRunState(ctx.editionDir, { ...st, poolDispatchAt, poolApplied: false });
   return result(ctx, 0, { mode: st.mode, nextPhase: "post-pool", pendingAgentDispatch: pending });
 }
 
@@ -668,7 +693,15 @@ const SOCIAL_HUMANIZER_PROMPT = (edir: string): string =>
 
 function phasePostPool(ctx: Ctx): Stage2RunResult {
   const st = loadState(ctx);
-  if (ctx.newsletter && st.poolDispatchAt) {
+  if (ctx.newsletter && ctx.opts.restitch) {
+    // Conserto de lint (#14084 review): o writer re-despachado regravou o
+    // draft do destaque; refaz só o stitch e reaplica as descrições do pool já
+    // escritas pelo writer-pool, sem novo dispatch dele nem refazer post-writers.
+    if (st.mode === "parallel") ctx.must("stitch-newsletter (restitch)", "scripts/stitch-newsletter.ts", ["--edition-dir", ctx.dirArg]);
+    if (st.poolApplied && existsSync(ctx.p("_internal/02-pool-descriptions.json"))) {
+      ctx.soft("pool-descriptions --apply (restitch)", "scripts/pool-descriptions.ts", ["--apply", "--edition-dir", ctx.dirArg]);
+    }
+  } else if (ctx.newsletter && st.poolDispatchAt) {
     const out = ctx.e("_internal/02-pool-descriptions.json");
     const v = ctx.run("verify-agent-outputs (writer-pool)", "scripts/verify-agent-outputs.ts", [
       "--agent",
@@ -680,6 +713,8 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
     ]);
     if (v.code === 0) {
       ctx.soft("pool-descriptions --apply", "scripts/pool-descriptions.ts", ["--apply", "--edition-dir", ctx.dirArg]);
+      st.poolApplied = true;
+      writeRunState(ctx.editionDir, st);
     } else {
       ctx.note("⚠️  writer-pool não gravou 02-pool-descriptions.json — descrições do summary mantidas.");
       ctx.log("warn", "writer-pool output ausente — pool-descriptions --apply pulado");
@@ -695,10 +730,10 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
       ctx.fixes.push({
         check: "lint-newsletter-md --stage 2",
         action:
-          "re-disparar o writer-destaque/writer de cada check falho com a instrução do playbook (§2b, por id) e re-rodar --phase post-writers (o stitch refaz o 02-draft.md)",
+          "re-disparar só o writer-destaque/writer de cada check falho com a instrução do playbook (§2b, por id) e re-rodar --phase post-pool --restitch (refaz o stitch e reaplica o pool, sem novo writer-pool)",
         detail: failed.length ? failed : (lint.stderr || lint.stdout).trim().slice(0, 600),
       });
-      return fixNeeded(ctx, "post-writers", { mode: st.mode });
+      return fixNeeded(ctx, "post-pool", { mode: st.mode, rerunArgs: ["--restitch"] });
     }
 
     const draft = ctx.e("_internal/02-draft.md");
@@ -773,8 +808,13 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
   const clarice: NonNullable<Stage2RunResult["clarice"]> = { ...deadline };
   if (deadline.degraded) ctx.gateNotes.push(`Clarice: ${deadline.reason}`);
 
+  // `--social-clarice-only`: retomada depois de um halt da Clarice do social —
+  // humanizadores e Clarice da newsletter já passaram nesta edição.
+  const socialOnly = ctx.opts.socialClariceOnly;
+  if (socialOnly && !ctx.social) throw new Stage2Abort("--social-clarice-only exige escopo com social.");
+
   // 1. Os humanizadores gravaram de verdade?
-  if (ctx.newsletter) {
+  if (ctx.newsletter && !socialOnly) {
     const humanized = ctx.p("_internal/02-humanized.md");
     if (!freshNonEmpty(humanized, st.humanizeDispatchAt) || sameContent(humanized, ctx.p("_internal/02-normalized.md"))) {
       ctx.fixes.push({
@@ -784,7 +824,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
       });
     }
   }
-  if (ctx.social) {
+  if (ctx.social && !socialOnly) {
     const pre = ctx.e("_internal/03-social-pre-humanizador.md");
     const cov = ctx.run("lint-social-md humanizer-section-coverage", "scripts/lint-social-md.ts", [
       "--check",
@@ -806,7 +846,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
 
   // 2. Clarice da newsletter (antes do social, em série — #4952).
   let newsletterElapsed = 0;
-  if (ctx.newsletter) {
+  if (ctx.newsletter && !socialOnly) {
     ctx.must("resolve-clarice-input", "scripts/resolve-clarice-input.ts", ["--edition-dir", ctx.dirArg]);
     const inputName = readFileSync(ctx.p("_internal/02-clarice-input.txt"), "utf8").trim();
     copyFileSync(ctx.p(`_internal/${inputName}`), ctx.p("_internal/02-pre-clarice.md"));
@@ -866,7 +906,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
   // 3. Clarice do social.
   if (ctx.social) {
     copyFileSync(ctx.p("03-social.md"), ctx.p("_internal/03-social-post-humanizador.md"));
-    const socialDeadline = ctx.newsletter ? socialClariceDeadlineMs(deadline.deadlineMs, newsletterElapsed) : deadline.deadlineMs;
+    const socialDeadline = ctx.newsletter && !socialOnly ? socialClariceDeadlineMs(deadline.deadlineMs, newsletterElapsed) : deadline.deadlineMs;
     const r = ctx.run(`clarice-correct (social, teto ${Math.round(socialDeadline / 1000)}s)`, "scripts/clarice-correct.ts", [
       "--in",
       ctx.e("03-social.md"),
@@ -898,14 +938,22 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
         ctx.e("_internal/03-social-clarice-diff.md"),
         ctx.e("_internal/03-social-pre-humanizador.md"),
       ]);
-    } else if (r.code === 6) {
-      clarice.social = "unavailable-skipped";
-      clariceNote = "Clarice indisponível (clarice_unavailable) no social";
-      ctx.gateNotes.push("Clarice não rodou no social (clarice_unavailable): texto humanizado mantido.");
-      ctx.log("warn", "clarice_unavailable no social — texto humanizado mantido", { deadlineMs: socialDeadline });
     } else {
-      const why = CLARICE_HALT_REASON[r.code] ?? `clarice-correct exit ${r.code}`;
-      return halt(ctx, `social: ${why}`, "corrigir e responder 'retry' (re-rodar --phase post-humanize) ou 'abort'");
+      // Social sem Clarice nunca vira skip silencioso (review da #14084): o
+      // `clarice-pending resume` do Stage 4 cobre só a newsletter, então
+      // qualquer falha aqui — inclusive o exit 6 — é halt, como no playbook
+      // (retry 3x + abort). A newsletter já ficou resolvida acima; a retomada
+      // refaz só esta Clarice.
+      const why =
+        r.code === 6
+          ? `Clarice indisponível no social (clarice_unavailable, teto ${Math.round(socialDeadline / 1000)}s)`
+          : (CLARICE_HALT_REASON[r.code] ?? `clarice-correct exit ${r.code}`);
+      const detail = failureLine(r.stdout);
+      return halt(
+        ctx,
+        `social: ${why}${detail ? ` — ${detail}` : ""}`,
+        `responder 'retry' (re-rodar npx tsx scripts/stage-2-run.ts --phase post-humanize --edition ${ctx.opts.edition} --social-clarice-only) ou 'abort'`,
+      );
     }
     ctx.soft("check-humanizer-social --record-run humanizador", "scripts/check-humanizer-social.ts", [
       "--record-run",
