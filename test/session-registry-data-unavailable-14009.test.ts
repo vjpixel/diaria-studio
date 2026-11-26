@@ -21,7 +21,10 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   REGISTRY_UNVERIFIABLE_EXIT_CODE,
+  SESSIONS_DIR_READ_ATTEMPTS,
+  SESSIONS_DIR_RETRY_DELAYS_MS,
   sessionsRegistryUnverifiableReason,
+  TRANSIENT_SESSIONS_DIR_ERRNOS,
 } from "../scripts/lib/session-registry.ts";
 import { main as preDispatchMain } from "../scripts/check-pre-dispatch-claim.ts";
 
@@ -114,6 +117,97 @@ describe("sessionsRegistryUnverifiableReason (#14009)", () => {
       assert.ok(reason);
       assert.match(reason, /EACCES/);
       assert.ok(reason.includes(dir));
+    } finally {
+      cleanup(root);
+    }
+  });
+});
+
+describe("erro transitório do sync no readdir de data/sessions/ ganha retry (#14009, review PR #14153)", () => {
+  function errno(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: simulado`), { code });
+  }
+
+  /** readdir que falha `failures` vezes com `code` e depois lê. */
+  function flakyIo(code: string, failures: number) {
+    const sleeps: number[] = [];
+    let calls = 0;
+    return {
+      sleeps,
+      calls: () => calls,
+      io: {
+        readdir: () => {
+          calls++;
+          if (calls <= failures) throw errno(code);
+          return [];
+        },
+        sleep: (ms: number) => {
+          sleeps.push(ms);
+        },
+      },
+    };
+  }
+
+  function rootWithSessionsDir(): string {
+    const root = freshRoot();
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    return root;
+  }
+
+  it("EBUSY 2x e depois lê → verificável, sem exit 3, com backoff 100/300", () => {
+    const root = rootWithSessionsDir();
+    try {
+      const f = flakyIo("EBUSY", 2);
+      assert.equal(sessionsRegistryUnverifiableReason(root, { io: f.io }), null);
+      assert.equal(f.calls(), 3);
+      assert.deepEqual(f.sleeps, [...SESSIONS_DIR_RETRY_DELAYS_MS]);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  for (const code of TRANSIENT_SESSIONS_DIR_ERRNOS) {
+    it(`${code} em todas as tentativas → não verificável, citando as tentativas`, () => {
+      const root = rootWithSessionsDir();
+      try {
+        const f = flakyIo(code, 99);
+        const reason = sessionsRegistryUnverifiableReason(root, { io: f.io });
+        assert.ok(reason, "esgotar os retries tem de recusar (exit 3 no CLI)");
+        assert.match(reason, /NÃO VERIFICÁVEL/);
+        assert.ok(reason.includes(`${code} em ${SESSIONS_DIR_READ_ATTEMPTS} tentativas`), reason);
+        assert.equal(f.calls(), SESSIONS_DIR_READ_ATTEMPTS);
+      } finally {
+        cleanup(root);
+      }
+    });
+  }
+
+  for (const code of ["ENOENT", "ENOTDIR"]) {
+    it(`${code} no readdir → não verificável de imediato, sem retry`, () => {
+      const root = rootWithSessionsDir();
+      try {
+        const f = flakyIo(code, 99);
+        const reason = sessionsRegistryUnverifiableReason(root, { io: f.io });
+        assert.ok(reason);
+        assert.match(reason, new RegExp(code));
+        assert.doesNotMatch(reason, /tentativas/);
+        assert.equal(f.calls(), 1);
+        assert.deepEqual(f.sleeps, []);
+      } finally {
+        cleanup(root);
+      }
+    });
+  }
+
+  it("data/ como link pendente (ENOENT) → não verificável de imediato, readdir nem chamado", () => {
+    const root = rootWithDanglingData();
+    try {
+      const f = flakyIo("EBUSY", 99);
+      const reason = sessionsRegistryUnverifiableReason(root, { io: f.io });
+      assert.ok(reason);
+      assert.match(reason, /data\/ aponta para um alvo indisponível/);
+      assert.equal(f.calls(), 0);
+      assert.deepEqual(f.sleeps, []);
     } finally {
       cleanup(root);
     }

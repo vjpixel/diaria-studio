@@ -904,7 +904,10 @@ export interface SessionsScanHealth {
  * JSON para o chamador poder fail-CLOSED: com `uncertain: true`, tratar como
  * "pode haver overnight rodando" em vez de confiar no `active: false`.
  */
-export function checkSessionsScanHealth(repoRoot: string, opts: { quiet?: boolean } = {}): SessionsScanHealth {
+export function checkSessionsScanHealth(
+  repoRoot: string,
+  opts: { quiet?: boolean; io?: Partial<SessionsDirReadIo> } = {},
+): SessionsScanHealth {
   const dir = sessionsDir(repoRoot);
   if (!existsSync(dir)) {
     // #12547: ausente só é `ok` quando nunca existiu. Junction de `data/`
@@ -915,14 +918,65 @@ export function checkSessionsScanHealth(repoRoot: string, opts: { quiet?: boolea
     const probe = opts.quiet ? probeSessionsDir(repoRoot) : probeSessionsDirWithWarning(repoRoot);
     return probe.degraded ? { ok: false, error: probe.message } : { ok: true };
   }
-  try {
-    readdirSync(dir);
-    return { ok: true };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
-    return { ok: false, error: String(code) };
+  const io: SessionsDirReadIo = { ...DEFAULT_SESSIONS_DIR_READ_IO, ...opts.io };
+  let attempt = 0;
+  for (;;) {
+    attempt++;
+    try {
+      io.readdir(dir);
+      return { ok: true };
+    } catch (e) {
+      const errno = (e as NodeJS.ErrnoException)?.code;
+      const code = errno ?? (e as Error)?.message ?? String(e);
+      // #14009 (review da PR #14153): EBUSY/EPERM/… do sync do Drive/OneDrive
+      // gravando no momento é transitório — sem retry, um único lock do sync
+      // pararia uma rodada saudável com halt banner. ENOENT/ENOTDIR (e o que
+      // não for errno de lock) não são, e recusam de imediato.
+      const transient = errno !== undefined && TRANSIENT_SESSIONS_DIR_ERRNOS.has(errno);
+      if (!transient) return { ok: false, error: String(code) };
+      if (attempt >= SESSIONS_DIR_READ_ATTEMPTS) {
+        return { ok: false, error: `${code} em ${attempt} tentativas de leitura` };
+      }
+      io.sleep(SESSIONS_DIR_RETRY_DELAYS_MS[attempt - 1] ?? 0);
+    }
   }
 }
+
+/**
+ * #14009 — códigos de `readdir` que o sync do Drive/OneDrive produz de forma
+ * transitória (arquivo/diretório preso pelo cliente de sync). Só esses ganham
+ * retry em `checkSessionsScanHealth`; o resto recusa na 1ª falha.
+ */
+export const TRANSIENT_SESSIONS_DIR_ERRNOS: ReadonlySet<string> = new Set([
+  "EBUSY",
+  "EPERM",
+  "EAGAIN",
+  "EMFILE",
+  "EACCES",
+]);
+
+/** #14009 — total de leituras (a 1ª + 2 retries) antes de "não verificável". */
+export const SESSIONS_DIR_READ_ATTEMPTS = 3;
+
+/** #14009 — espera antes do 2º e do 3º `readdir` (backoff curto, síncrono). */
+export const SESSIONS_DIR_RETRY_DELAYS_MS: readonly number[] = [100, 300];
+
+/** I/O de `checkSessionsScanHealth`, injetável para o teste não esperar de verdade. */
+export interface SessionsDirReadIo {
+  readdir: (dir: string) => unknown;
+  sleep: (ms: number) => void;
+}
+
+/** Espera síncrona sem timer async: `Atomics.wait` num buffer que ninguém notifica. */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+const DEFAULT_SESSIONS_DIR_READ_IO: SessionsDirReadIo = {
+  readdir: (dir) => readdirSync(dir),
+  sleep: sleepSync,
+};
 
 /**
  * #14009 — código de saída dos subcomandos que DECIDEM exclusão mútua
@@ -939,10 +993,13 @@ export const REGISTRY_UNVERIFIABLE_EXIT_CODE = 3;
  * mensagem acionável que explica por que não dá para verificar claim nem
  * merge lock. Leitura ilegível não é ausência. Nunca lança.
  */
-export function sessionsRegistryUnverifiableReason(repoRoot: string): string | null {
+export function sessionsRegistryUnverifiableReason(
+  repoRoot: string,
+  opts: { io?: Partial<SessionsDirReadIo> } = {},
+): string | null {
   let health: SessionsScanHealth;
   try {
-    health = checkSessionsScanHealth(repoRoot, { quiet: true });
+    health = checkSessionsScanHealth(repoRoot, { quiet: true, io: opts.io });
   } catch (e) {
     health = { ok: false, error: String((e as Error)?.message ?? e) };
   }

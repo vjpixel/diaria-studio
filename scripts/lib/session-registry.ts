@@ -343,6 +343,9 @@ export {
   checkSessionsScanHealth,
   REGISTRY_UNVERIFIABLE_EXIT_CODE,
   sessionsRegistryUnverifiableReason,
+  SESSIONS_DIR_READ_ATTEMPTS,
+  SESSIONS_DIR_RETRY_DELAYS_MS,
+  TRANSIENT_SESSIONS_DIR_ERRNOS,
   listActiveSessions,
 } from "./sessions/registry.ts";
 export type {
@@ -352,6 +355,7 @@ export type {
   RepoTreeCleanResult,
   EndGuardResult,
   SessionsScanHealth,
+  SessionsDirReadIo,
 } from "./sessions/registry.ts";
 export {
   claimTargetLabel,
