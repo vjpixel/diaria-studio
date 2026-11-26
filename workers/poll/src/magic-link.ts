@@ -144,9 +144,9 @@ export async function markIdentifyLinked(bEnv: Env, email: string, anonEmail: st
  * #14138: prova de posse AMARRADA AO DISPOSITIVO que pediu o link.
  *
  * Até o #14138 a prova era um marcador POR E-MAIL (`gate-email-verified:{email}`,
- * #6293, sem TTL): depois que o dono de `v@x.com` clicasse uma vez num link
+ * #6293, sem TTL): depois que a dona de um e-mail V clicasse uma vez num link
  * mágico, QUALQUER navegador que fizesse `POST /jogar/gate/verify` com
- * `{"email":"v@x.com"}` recebia sessão `confirmed` — e `vote.ts` passava a
+ * o e-mail V no corpo recebia sessão `confirmed` — e `vote.ts` passava a
  * gravar voto, score e nickname sob a identidade de V. O marcador não
  * distinguia o desktop de V do de um terceiro.
  *
