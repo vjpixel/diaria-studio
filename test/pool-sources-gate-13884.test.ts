@@ -25,6 +25,7 @@ import { refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
 import { buildSwapDestaqueSteps } from "../scripts/swap-destaque.ts";
 import { buildSwapNextSteps } from "../scripts/swap-destaques.ts";
 import type { Article } from "../scripts/lib/types/article.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const LONG = "Um resumo de verdade, com o fato, quem fez, quanto e por que importa para o leitor.";
 const MS = "https://microsoft.ai/news/seven-new-world-class-models-at-scalable-price-performance/";
@@ -143,7 +144,7 @@ describe("gate 4: item que entra no pool ganha texto (#13884 resíduo item 4)", 
   });
 
   it("playbook do Stage 4 roda --pool-sources no §4d (item que entra no pool e §4d.1b)", () => {
-    const pb = readFileSync(resolve(import.meta.dirname, "..", ".claude", "agents", "orchestrator-stage-4.md"), "utf8");
+    const pb = readStage4Playbook();
     const i4d = pb.indexOf("### 4d.1 — Edição inline");
     assert.ok(i4d > 0);
     const after = pb.slice(i4d);

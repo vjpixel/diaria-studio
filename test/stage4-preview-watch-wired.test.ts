@@ -35,6 +35,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -45,6 +46,8 @@ const ROOT = resolve(import.meta.dirname, "..");
  *  preview local próprio. */
 const PLAYBOOKS: { label: string; path: string; minInvocations: number }[] = [
   { label: "diário (Stage 4)", path: ".claude/agents/orchestrator-stage-4.md", minInvocations: 4 },
+  // #14033: o `--ensure` de §4d (2 invocações) mora no arquivo do gate.
+  { label: "diário (Stage 4, gate)", path: ".claude/agents/orchestrator-stage-4-gate.md", minInvocations: 2 },
   { label: "mensal", path: ".claude/skills/diaria-mensal/SKILL.md", minInvocations: 2 },
   { label: "anual", path: ".claude/skills/diaria-anual/SKILL.md", minInvocations: 1 },
 ];
@@ -111,7 +114,7 @@ describe("#8123/#8314 — todo playbook que sobe preview local LIGA o live-reloa
   }
 
   it("o playbook diário aponta o relatório que fecha o critério de aceite da issue", () => {
-    const text = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const text = readStage4Playbook();
     assert.match(
       text,
       /report-stage4-timing\.ts/,
@@ -123,7 +126,7 @@ describe("#8123/#8314 — todo playbook que sobe preview local LIGA o live-reloa
     // Antes: "'Antes/depois numa edição real' fica fora do alcance desta
     // unidade". Depois do residual, a perna automática existe — a prosa não
     // pode seguir dizendo que não há medição possível.
-    const text = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const text = readStage4Playbook();
     assert.doesNotMatch(
       text,
       /Antes\/depois numa edição real" fica fora do alcance/,

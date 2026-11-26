@@ -42,7 +42,8 @@ O detalhamento completo de cada stage está nos arquivos abaixo. **Leia o sub-ar
 - `@see .claude/agents/orchestrator-stage-1-research.md` — Stage 1 (pesquisa + É IA?) (#634 split)
 - `@see .claude/agents/orchestrator-stage-2.md` — Etapa 2 (escrita — newsletter + social em paralelo)
 - `@see .claude/agents/orchestrator-stage-3.md` — Etapa 3 (imagens — É IA? coleta + destaques)
-- `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (revisão editorial assistida + gate humano pré-publicação) (#1694)
+- `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (revisão editorial assistida + gate humano pré-publicação) (#1694); pré-gate §4a–§4c
+- `@see .claude/agents/orchestrator-stage-4-gate.md` — Etapa 4, gate humano §4d–§4e + fronteira pós-gate (#14033); cartão de receitas do loop em `context/stage-4-gate-receitas.md`
 - `@see .claude/agents/orchestrator-stage-5.md` — Etapa 5 (publicação paralela + auto-reporter)
 - `@see .claude/agents/orchestrator-stage-6.md` — Etapa 6 (agendamento + gate humano + auto-reporter) (#1694)
 

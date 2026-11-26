@@ -27,7 +27,7 @@
  *       ainda vazio → imprime WARNING explícito (motivo do #4990) e
  *       **exit 1** — não fatal para o caller (o orchestrator trata como
  *       warning, nunca bloqueia — ver orchestrator-stage-5.md §5a e
- *       orchestrator-stage-4.md §4d.1), mas o exit não-zero garante que
+ *       orchestrator-stage-4-gate.md §4d.1), mas o exit não-zero garante que
  *       nenhum caller trata isso como "tudo certo" por acidente.
  *
  * Uso:

@@ -211,7 +211,7 @@ export function resolveContentFileMtimeMs(
 // CLI:
 //   Leitura crua (imprime o JSON da decisão, ou `null` se ausente):
 //     npx tsx scripts/lib/stage4-decision.ts --edition-dir <dir> --read
-//   Leitura com freshness check (uso real em orchestrator-stage-4.md §4d) —
+//   Leitura com freshness check (uso real em orchestrator-stage-4-gate.md §4d) —
 //   imprime {usable, reason?, decision} via resolveStage4DecisionForConsumption,
 //   comparando decided_at contra a mtime de cada arquivo em --content-files
 //   (lista separada por vírgula, caminhos relativos a --edition-dir; arquivo

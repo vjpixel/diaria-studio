@@ -46,6 +46,7 @@ const COPY = [
   "test/__snapshots__/orchestrator-prompt.snap.json",
   "scripts/lib/orchestrator-files.ts",
   "scripts/lib/orchestrator-snapshot.ts",
+  "scripts/lib/stage4-playbook.ts",
   "package.json",
   "tsconfig.json",
 ];

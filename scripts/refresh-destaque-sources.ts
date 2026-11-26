@@ -4,7 +4,7 @@
  *
  * Re-sincroniza `_internal/fact-check-sources/` (manifest.json + d{N}.txt)
  * com os destaques ATUAIS de `_internal/01-approved.json`, depois de uma
- * troca/promoção de destaque no gate 4 (§4d.1b do orchestrator-stage-4,
+ * troca/promoção de destaque no gate 4 (§4d.1b do orchestrator-stage-4-gate,
  * `promote-to-destaque.ts`).
  *
  * Problema que resolve (edição 260930): ao promover itens do pool a destaque

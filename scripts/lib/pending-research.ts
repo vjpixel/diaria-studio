@@ -2,7 +2,7 @@
  * pending-research.ts (#4990)
  *
  * Rastreamento determinístico de "pesquisa pendente" — quando o editor pede,
- * no gate humano do Stage 4 (`orchestrator-stage-4.md` §4d.1 "ajustar"), que
+ * no gate humano do Stage 4 (`orchestrator-stage-4-gate.md` §4d.1 "ajustar"), que
  * o orchestrator busque conteúdo NOVO para um bucket (tipicamente USE MELHOR)
  * em vez de só editar texto já escrito.
  *
