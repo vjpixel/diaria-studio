@@ -43,6 +43,7 @@
  * reprova (`ok: false`): o Gate B precisa provar que o Kit ecoa o campo antes
  * de ligar.
  */
+import { FetchNetworkError } from "./fetch-retry.ts";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -95,7 +96,7 @@ export function parseDiariaExclusionSegment(cfg: unknown): DiariaExclusionSegmen
 export type DiariaAudienceResolution =
   | { ok: true; mode: "all"; filter: AllSubscribersFilter }
   | { ok: true; mode: "segment"; segmentId: number; filter: KitSubscriberFilter }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; reason_kind?: "network" };
 
 /**
  * Resolve a audiência do broadcast principal da diária. Flag desligada ⇒ base
@@ -144,6 +145,7 @@ export async function resolveDiariaAudience(
   } catch (e) {
     return {
       ok: false,
+      ...(e instanceof FetchNetworkError ? { reason_kind: "network" as const } : {}),
       reason:
         `não foi possível listar os segmentos do Kit pra confirmar o segmento ${segmentId} ` +
         `(${(e as Error).message}) — abortando em vez de mandar pra base inteira (#10437, #6126).`,

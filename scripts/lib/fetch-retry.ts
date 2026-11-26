@@ -19,6 +19,9 @@
  * sem gastar retry").
  */
 
+/** Falha de transporte após esgotar retries, distinta de resposta HTTP. */
+export class FetchNetworkError extends Error {}
+
 export interface FetchRetryOptions {
   /** Tentativas totais (incluindo a 1ª). Default 3. */
   attempts?: number;
@@ -111,7 +114,7 @@ export async function fetchWithRetry(
       await res.body?.cancel().catch(() => {});
     } catch (e) {
       if (attempt === attempts || opts.retryOnError === false) {
-        throw new Error(
+        throw new FetchNetworkError(
           `fetchWithRetry: falhou após ${attempt} tentativa(s) (timeoutMs=${timeoutMs}): ${(e as Error).message}`,
           { cause: e },
         );

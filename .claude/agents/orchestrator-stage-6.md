@@ -270,11 +270,12 @@ Exit codes:
 | `4` | PATCH falhou (erro de API). | Logar erro com o `reason` do JSON de stdout; **bloqueia** o Stage 6 (diferente do Brevo em §6d-brevo — aqui é o ÚNICO canal de newsletter, não um secundário) — investigar antes de retry manual. |
 | `5` | GET pós-PATCH não confirma o agendamento. | Mesmo tratamento do exit 4 — bloqueia, investigar antes de retry. |
 | `6` | `--scheduled-at` recusado: (a) diverge da data da edição (#8207), ou (b) horário já passou / a <2 min de agora (#11689, defesa final; o gate usa 15 min). | Bloqueia. Motivo (b): NÃO é bug — voltar ao gate de §6c e escolher horário futuro (nunca retry cego). Motivo (a): investigar como `{scheduled_at_iso}` divergiu. Retry manual intencional (editor pediu explicitamente outro dia) usa `--allow-other-date`, nunca por padrão. |
+| `8` | Rede indisponível ao listar segmentos (`reason_kind: network`, #13982), após 6 tentativas com timeout de 30 s e backoff de 5/15/30/60/60 s. Nenhum agendamento foi feito nesta chamada; audiência segue não verificada. | **Bloqueia o Stage 6**. Logar o JSON; halt banner orientando aguardar alguns minutos e responder `retry` para repetir o mesmo comando. Se o horário ficar no passado/próximo demais, voltar ao gate §6c. Nunca desligar a flag nem enviar para audiência não verificada. Não investigar configuração como se fosse divergência de audiência. |
 | `7` | Audiência não confirmada (#10437): com `kit.diaria_exclusion_segment` ligado, segmento não resolvido ou o broadcast relido (antes ou depois do PATCH) sem o filtro do segmento; com ele desligado, contatos `kit-sem-abertura:` já movidos pra Brevo. Nada é agendado pra base inteira no lugar. Se o broadcast JÁ estava agendado, o script tenta desagendar (`send_at: null` + releitura). | **Bloqueia sempre** — nunca apresentar o Stage 6 como concluído. **Se o `reason` contiver `DESAGENDE` (o desfazer falhou ou não foi confirmado — o broadcast pode continuar agendado pra audiência errada):** halt banner (`render-halt-banner.ts --stage "6 — Agendamento" --reason "broadcast Kit {id} segue agendado com audiência divergente e o desagendamento automático falhou" --action "DESAGENDAR À MÃO no Kit AGORA (app.kit.com/campaigns/{id}) e responder 'retry' ou 'abort'"`) e aguardar o editor. Sem `DESAGENDE`: halt banner com o `reason` do JSON — conferir o segmento/config antes de qualquer retry, nunca desligar a flag pra destravar. |
 
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-  --level {info se exit 0, error se 3/4/5/6/7} \
+  --level {info se exit 0, error se 3/4/5/6/7/8} \
   --message "newsletter kit stage6 schedule: exit {code}" \
   --details '{json de saída do script}'
 ```

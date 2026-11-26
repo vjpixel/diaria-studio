@@ -39,6 +39,7 @@
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
  *       OU (#11689) `--scheduled-at` já passou / a <2 min de agora (sem
  *       override; roda depois do atalho idempotente) — voltar ao gate do Stage 6
+ *   8 — rede indisponível ao confirmar segmentos; aguardar e repetir, sem agendar.
  *   7 — (#10437) audiência não confirmada. Com `kit.diaria_exclusion_segment`
  *       ligado: segmento não resolvido, ou o broadcast relido ANTES do PATCH
  *       não mostra o filtro do segmento (nada agendado; se ele JÁ estava
@@ -329,8 +330,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
     { movedToBrevoCount: moved.count, brevoCampaignPublished: hasBrevoDiariaCampaign(editionDir) },
   );
   if (!audience.ok) {
-    console.log(JSON.stringify({ ok: false, code: 7, reason: audience.reason }));
-    process.exitCode = 7;
+    const code = audience.reason_kind === "network" ? 8 : 7;
+    console.log(JSON.stringify({ ok: false, code, reason: audience.reason, ...(audience.reason_kind ? { reason_kind: audience.reason_kind } : {}) }));
+    process.exitCode = code;
     return;
   }
   const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps(), {
