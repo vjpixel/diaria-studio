@@ -46,6 +46,7 @@ on:
       - 'scripts/lib/dashboard-kv-types.ts'
       - 'scripts/lib/editor-copy.ts'
       - 'scripts/lib/next-edition-date.ts'
+      - 'scripts/lib/shared/brt.ts'
       - 'scripts/lib/stripe-coupons.ts'
   workflow_dispatch:
 

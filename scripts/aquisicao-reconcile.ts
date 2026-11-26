@@ -37,7 +37,8 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { BRT_UTC_OFFSET_HOURS, brtDateOf } from "./lib/ads-rolling-window.ts";
+import { brtDateOf } from "./lib/ads-rolling-window.ts";
+import { BRT_MINUS_UTC_HOURS } from "./lib/shared/brt.ts";
 import {
   fetchAllSubscribers,
   resolveGroupKey,
@@ -55,7 +56,7 @@ import {
 
 /**
  * "AAAA-MM-DD" (dia BRT) → epoch segundos do início desse dia em BRT
- * (00:00 BRT = 03:00 UTC, já que BRT = UTC{@link BRT_UTC_OFFSET_HOURS}).
+ * (00:00 BRT = 03:00 UTC, já que BRT = UTC{@link BRT_MINUS_UTC_HOURS}).
  * Idempotente ao parser do cohort-engagement (#4556: valida ida-e-volta
  * contra rolagem de mês/dia).
  *
@@ -80,7 +81,7 @@ export function dayToEpochSeconds(day: string, flag: string): number {
   }
   // Meia-noite BRT do dia civil = `utcMidnight` menos o offset (offset é
   // negativo, então isto SOMA 3h em UTC).
-  const brtMidnight = utcMidnight - BRT_UTC_OFFSET_HOURS * 3600_000;
+  const brtMidnight = utcMidnight - BRT_MINUS_UTC_HOURS * 3600_000;
   return Math.floor(brtMidnight / 1000);
 }
 

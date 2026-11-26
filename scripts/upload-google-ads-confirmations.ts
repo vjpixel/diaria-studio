@@ -75,6 +75,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { brtDayKey } from "./lib/shared/brt.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadKitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
@@ -107,10 +108,6 @@ export function actionIdOf(raw: string): string | null {
   const v = raw.trim();
   if (/^\d+$/.test(v)) return v;
   return /^customers\/\d+\/conversionActions\/(\d+)$/.exec(v)?.[1] ?? null;
-}
-
-function todayBrtDayKey(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
 
 async function defaultListRoster(): Promise<ConfirmationRosterEntry[]> {
@@ -181,7 +178,7 @@ export async function main(
     return 1;
   }
 
-  const todayKey = todayBrtDayKey();
+  const todayKey = brtDayKey();
   const baseDate = pickBaseSnapshotDate(listSubscriberStateSnapshotDates(snapshotRoot), todayKey, lookbackDays);
   if (!baseDate) {
     console.error(
