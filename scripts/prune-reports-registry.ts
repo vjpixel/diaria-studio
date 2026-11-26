@@ -1,8 +1,8 @@
 /**
  * prune-reports-registry.ts (#4666)
  *
- * Ação de manutenção ONE-OFF, manual — reescreve `data/reports/index.jsonl`
- * removendo duplicatas por id (mantém só a última linha física por id) e
+ * Ação de manutenção ONE-OFF, manual — reescreve cada arquivo do registro
+ * (`data/reports/index.jsonl` legado e `index.{host}.jsonl`, #14135) removendo duplicatas por id (mantém só a última linha física por id) e
  * linhas corrompidas. Ver `pruneReportsRegistry` em
  * `scripts/lib/reports-registry.ts` pra semântica exata e por que isto
  * NÃO precisa rodar em uso normal — a partir de #4666 `registerReport` já faz

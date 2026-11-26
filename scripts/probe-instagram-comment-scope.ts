@@ -38,9 +38,10 @@ import {
   type InstagramCommentScopeSource,
 } from "./lib/instagram-comment-scope.ts";
 import { resolveSocialWorkerToken } from "./lib/worker-queue-client.ts"; // #14062
+import { META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 
 const ROOT = resolve(import.meta.dirname, "..");
-const INSTAGRAM_API_VERSION_DEFAULT = "v25.0";
+const INSTAGRAM_API_VERSION_DEFAULT = META_GRAPH_VERSION;
 
 /** Roda a sonda da origem pedida. Pure quanto a I/O de disco; rede injetável. */
 export async function probeCommentScope(

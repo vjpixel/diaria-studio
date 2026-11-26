@@ -52,6 +52,7 @@ import {
   socialEntryKey,
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts";
+import { META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 import {
   cancelWorkerQueueEntryConditional,
   resolveSocialWorkerToken,
@@ -260,7 +261,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
   const workerUrl = resolveSocialWorkerUrl(config);
   const workerToken = resolveSocialWorkerToken();
-  let fb: { pages: ResolvedFacebookPage[]; apiVersion: string } = { pages: [], apiVersion: "v25.0" };
+  let fb: { pages: ResolvedFacebookPage[]; apiVersion: string } = { pages: [], apiVersion: META_GRAPH_VERSION };
   try {
     fb = loadResolvedFacebookPages(ROOT, config);
   } catch (e) {

@@ -68,7 +68,9 @@
  * de segunda (#11226 — nada criado; `--fora-da-segunda` força); 9 semanal
  * dividida segunda/terça (#11286) sem lista de terça confiável (reconcile
  * falhou, ou ficou alguém fora da principal) ou rascunho registrado com outra
- * divisão (`--force` recria) — nenhuma campanha criada. A cota da CONTA (#6146) NÃO tem exit
+ * divisão (`--force` recria) — nenhuma campanha criada; também `--force` com
+ * campanha já agendada (estado local `scheduled` ou releitura fora de
+ * `draft`/`suspended`) ou com a releitura falhando (#14140). A cota da CONTA (#6146) NÃO tem exit
  * code aqui de propósito — vira aviso, porque rascunho não consome cota e o
  * dia do envio ainda não é conhecido; o gate duro é a Etapa 6.
  *
@@ -140,7 +142,7 @@ import {
 import { decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
 import { buildMainCampaignRecipients, decideSemanalSplit, reconcileTercaList } from "./lib/brevo-semanal-split.ts"; // #11286
 import { isKitSemAberturaEnabled, readKitSemAberturaInBrevoCount, type KitSemAberturaConfig } from "./lib/kit-sem-abertura.ts"; // #10437
-import { brevoPost, brevoPut, brevoGetList, brevoListContacts } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetList, brevoListContacts, brevoGetCampaign } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { runInjectReativarToken as injectReativarToken } from "./inject-reativar-token-brevo.ts"; // #8194
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
@@ -364,6 +366,77 @@ export function checkReuseSplitConsistency(
       `de agora é ${tercaListId === null ? "sem divisão" : `dividir com a lista ${tercaListId}`} — nada alterado. ` +
       "Rode com --force pra recriar as campanhas (#11286).",
   };
+}
+
+/**
+ * Status de campanha Brevo em que `--force` pode recriar por cima (#14140).
+ * `draft` é o rascunho normal; `suspended` é a campanha que o editor
+ * suspendeu pela UI (não envia sem reagendar). Qualquer outro status —
+ * `queued` (agendada: imutável, destinatários congelados, a API não apaga),
+ * `in_process`, `sent`, `archive` ou um valor desconhecido — barra.
+ */
+const FORCE_RECREATE_ALLOWED_STATUSES = new Set(["draft", "suspended"]);
+
+/**
+ * Guard (#14140) — `--force` nunca cria uma 2ª campanha por cima de uma já
+ * AGENDADA, com ou sem semanal dividida. Antes, o único bloqueio vinha de
+ * `checkReuseSplitConsistency`, que só falha com `tercaListId !== null`: numa
+ * semana sem divisão, `--force` depois da Etapa 6 criava a 2ª campanha,
+ * `writeBrevoDiariaPublished` perdia o id da agendada e a lista recebia a
+ * edição duas vezes.
+ *
+ * Barra quando (a) o estado local diz `scheduled`, ou (b) a releitura ao vivo
+ * de cada campanha registrada (principal e, se houver, a de terça, que o
+ * `--force` também recriaria) mostra status fora de
+ * `FORCE_RECREATE_ALLOWED_STATUSES`. Falha da releitura é fail-closed: sem
+ * saber o status, não cria. Sem `--force` ou sem campanha registrada, passa
+ * sem consultar a Brevo (o caminho de reaproveitamento não cria nada).
+ *
+ * `getCampaignStatus` é injetado pra o teste rodar sem rede.
+ */
+export async function checkForceOverScheduled(params: {
+  existing: Pick<BrevoDiariaPublished, "campaign_id" | "status" | "terca_campaign_id"> | null;
+  force: boolean;
+  getCampaignStatus: (campaignId: number) => Promise<string>;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { existing, force, getCampaignStatus } = params;
+  if (!force || !existing) return { ok: true };
+  const safePath =
+    "Caminho seguro: suspender a campanha pela UI da Brevo e reagendar a mesma (ou, se ela não existe mais, " +
+    "apagar _internal/brevo-diaria-published.json à mão depois de conferir na Brevo).";
+  if (existing.status === "scheduled") {
+    return {
+      ok: false,
+      reason:
+        `--force recusado: a campanha ${existing.campaign_id} desta edição já está AGENDADA (estado local "scheduled") — ` +
+        "campanha agendada é imutável na Brevo e criar outra faria a lista receber a edição duas vezes. " +
+        `Nada criado (#14140). ${safePath}`,
+    };
+  }
+  const ids = [existing.campaign_id, ...(typeof existing.terca_campaign_id === "number" ? [existing.terca_campaign_id] : [])];
+  for (const id of ids) {
+    let status: string;
+    try {
+      status = await getCampaignStatus(id);
+    } catch (e) {
+      return {
+        ok: false,
+        reason:
+          `--force recusado: não foi possível reler o status da campanha ${id} na Brevo (${(e as Error).message}) — ` +
+          `sem saber se ela já está agendada, nada é criado (fail-closed, #14140). ${safePath}`,
+      };
+    }
+    if (!FORCE_RECREATE_ALLOWED_STATUSES.has(status)) {
+      return {
+        ok: false,
+        reason:
+          `--force recusado: a campanha ${id} desta edição está com status "${status}" na Brevo — ` +
+          "criar outra faria a lista receber a edição duas vezes. " +
+          `Nada criado (#14140). ${safePath}`,
+      };
+    }
+  }
+  return { ok: true };
 }
 
 /**
@@ -1075,6 +1148,18 @@ export async function main(rootDirOverride?: string): Promise<void> {
     process.exitCode = 9;
     return;
   }
+  // #14140 — `--force` nunca cria por cima de campanha agendada, divida ou não
+  // a semanal (o guard acima só barra com divisão). Antes de qualquer escrita.
+  const forceCheck = await checkForceOverScheduled({
+    existing: existingForSplit,
+    force,
+    getCampaignStatus: async (id) => (await brevoGetCampaign(apiKey!, id)).status,
+  });
+  if (!forceCheck.ok) {
+    log(`ERRO: ${forceCheck.reason}`);
+    process.exitCode = 9;
+    return;
+  }
 
   // #6146: cota da CONTA, distinta do cap da LISTA acima. `daily_send_cap`
   // pergunta "a fila cresceu demais?"; isto pergunta "a conta ainda pode
@@ -1249,7 +1334,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
     const previousState = existingPublished!;
     log(
       `reaproveitando campanha Brevo já criada pra esta edição: id=${campaignId} (status "${previousState.status}", ` +
-        `registrada em ${previousState.created_at}) — nenhuma campanha nova criada. Use --force pra criar outra de propósito.`,
+        `registrada em ${previousState.created_at}) — nenhuma campanha nova criada.` +
+        // #14140 — campanha agendada não se recria com --force (o guard recusa).
+        (previousState.status === "scheduled" ? "" : " Use --force pra criar outra de propósito."),
     );
 
     // #5689: reaproveitar o campaign_id NÃO significa que o conteúdo na

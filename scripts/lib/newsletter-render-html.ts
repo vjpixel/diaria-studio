@@ -14,7 +14,7 @@ import { applyBrandWordmark, breakBrandDomainAutolink } from "./shared/brand-wor
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { applyDarkModeClasses, darkModeMediaRules } from "./shared/email-dark-mode.ts"; // #13525 — modo escuro do conteúdo (fullDocument-only)
 import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
-import { isUnpairedBoldMarker, scanBalancedParenClose } from "./shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, extraído daqui
+import { decideBoldLinkFusion, scanBalancedParenClose } from "./shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, extraído daqui; decisão de bold-link desde o #14056
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -3282,20 +3282,6 @@ function isLabelFullyBold(label: string): boolean {
 }
 
 /**
- * Posição do próximo `[label](url)` VÁLIDO a partir de `from` — reusa
- * `findMarkdownLinks` (parênteses balanceados + URL não-vazia, o mesmo
- * parser do loop principal de `tokenizeInline`/`findMarkdownLinks`), não uma
- * regex crua: um `[x](` malformado (sem fechamento, ou destino vazio) não
- * deve ser confundido com um boundary real (#3280 code-review — Reuse/
- * wrapper-correctness). Retorna `str.length` se não houver mais links válidos.
- */
-function nextLinkStartIndex(str: string, from: number): number {
-  const rest = str.slice(from);
-  const link = findMarkdownLinks(rest).find((l) => l.url.length > 0);
-  return link ? from + link.start : str.length;
-}
-
-/**
  * Tokenizador inline compartilhado: varre `[label](url)` (destino com parênteses
  * balanceados), chamando `onText` nos segmentos de TEXTO e `onLink` em cada link.
  * Base de `processInlineLinks` (texto via esc+wordmark+bold) e de `renderBodyInline`
@@ -3332,67 +3318,14 @@ function tokenizeInline(
       linkStart.lastIndex = j + 1;
       continue;
     }
-    // #3220: `**` colado no link (`**[label](url)**`) — sem isso, o `**`
-    // antes do link e o `**` depois ficam em segmentos de texto separados, cada
-    // um sem par, e vazam literal no HTML. Só aplica quando os DOIS lados têm
-    // o marcador colado ao link (não mexe em bold legítimo mais afastado) —
-    // nesse caso o `<a>` do link sai envolto em `<strong>`.
-    // #3280: `endsWith`/`startsWith` sozinhos não bastam — em
-    // `**Atenção:**[link](url)**hoje** foi importante.` os dois lados também
-    // "encostam" `**` no link, mas são 2 bolds INDEPENDENTES que só ficam
-    // colados ao link, não um bold-wrap do link. Antes de aceitar, confere se
-    // o `**` candidato já está AUTO-PAREADO no texto adjacente (contagem
-    // par/ímpar de `**`, #2532-style heurístico): se o resto de `textBefore`
-    // (sem o `**` final) tem contagem PAR, esse `**` final está de fato
-    // desemparelhado — sobra pro link (abertura legítima). Se ÍMPAR, o `**`
-    // final já fecha um bold anterior dentro do próprio `textBefore` (ex:
-    // "Atenção:") — não é abertura pro link.
-    let textBefore = input.substring(lastIdx, m.index);
-    const hasOpenBold =
-      textBefore.endsWith("**") &&
-      isUnpairedBoldMarker(textBefore.slice(0, -2));
-    // Lado de depois do link — mesma ideia espelhada, bounded pelo próximo
-    // link (pra não contaminar a contagem com `**` dentro do label de um link
-    // seguinte). #3280 code-review (achado #A/#B/#E/Altitude, confirmado
-    // empiricamente): quando HÁ um próximo link `**[label2](url2)**` colado
-    // ao fim do texto entre os dois links, o `**` final desse texto PODE ser
-    // a ABERTURA do wrap do link seguinte (resolvida pelo `hasOpenBold` dele,
-    // na iteração seguinte) — mas só quando o texto conector, tomado como um
-    // todo (SEM strip nenhum), já não é auto-suficiente. Sem isso, 2+ links
-    // bold-wrapped consecutivos no mesmo parágrafo quebravam: nenhum fundia,
-    // `**` vazava literal, e o texto conector entre eles virava `<strong>`
-    // por engano.
-    // #3316: a versão original stripava o `**` final incondicionalmente
-    // sempre que colado ao próximo link — mas se o conector JÁ contém uma
-    // frase bold auto-contida e pareada (ex: `**word**`, contagem PAR de
-    // `**`), esse `**` final é na verdade o FECHAMENTO dessa frase, não uma
-    // abertura emprestada pro link seguinte. Stripar incondicionalmente
-    // desmanchava esse par (sobrando um `**` órfão) e derrubava a paridade
-    // deste link. Só stripa quando o conector CRU (antes de qualquer strip)
-    // tem contagem ÍMPAR — sinal de que sobra de fato um marcador solto pra
-    // resolver "emprestando" a abertura pro link seguinte; contagem PAR
-    // significa que o conector já fecha sozinho, e o `**` candidato deste
-    // link está livre (fundiu com nada) — usa o conector como está.
-    // `closeBoundary` só é computado quando o `**` candidato existe (lazy —
-    // evita o scan de `nextLinkStartIndex` na maioria dos links, que não têm
-    // `**` colado).
-    let hasCloseBold = false;
-    if (input.startsWith("**", j + 1)) {
-      const closeBoundary = nextLinkStartIndex(input, j + 3);
-      let closeAdjacent = input.substring(j + 3, closeBoundary);
-      if (
-        closeBoundary < input.length &&
-        closeAdjacent.endsWith("**") &&
-        !isUnpairedBoldMarker(closeAdjacent)
-      ) {
-        closeAdjacent = closeAdjacent.slice(0, -2);
-      }
-      hasCloseBold = isUnpairedBoldMarker(closeAdjacent);
-    }
-    const boldLink = hasOpenBold && hasCloseBold;
-    if (boldLink) {
-      textBefore = textBefore.slice(0, -2);
-    }
+    // #3220/#3280/#3284/#3316: `**` colado nos dois lados do link vira o
+    // bold-wrap dele (`<strong><a>`), em vez de vazar `**` literal. A decisão
+    // é pura e compartilhada com a mensal desde o #14056 (`decideBoldLinkFusion`,
+    // `./shared/markdown-primitives.ts`); `trimUrl=true` mantém a semântica
+    // da antiga `nextLinkStartIndex` daqui (reusava `findMarkdownLinks`).
+    const fusion = decideBoldLinkFusion(input, lastIdx, m.index, j, true);
+    const boldLink = fusion.fuse;
+    const textBefore = fusion.textBefore;
     if (textBefore.length > 0) parts.push(onText(textBefore));
     const linkHtml = onLink(m[1], url);
     // #3302: quando o LABEL do link já é inteiramente bold (`**[**Título**](url)**`),
@@ -3405,7 +3338,7 @@ function tokenizeInline(
     // continuam sendo estruturalmente reconhecidos como bold-wrap do link).
     const wrapBold = boldLink && !isLabelFullyBold(m[1]);
     parts.push(wrapBold ? `<strong>${linkHtml}</strong>` : linkHtml);
-    lastIdx = boldLink ? j + 3 : j + 1;
+    lastIdx = fusion.resumeAt;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
   }
   if (lastIdx < input.length) parts.push(onText(input.substring(lastIdx)));

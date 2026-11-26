@@ -611,15 +611,27 @@ import {
 
 // ── /og/{token} + /share/{token} (#3517) ─────────────────────────────────────
 
+/** `decodeURIComponent` do token do path; `null` em `%` malformado (`%`,
+ * `%zz`, UTF-8 truncado), que antes lançava `URIError` e virava 500 (#14137).
+ * Os callers tratam `null` como token inválido (404 na imagem, 302 na página). */
+function safeDecodeToken(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch (err) {
+    if (err instanceof URIError) return null;
+    throw err;
+  }
+}
+
 /** `GET /og/{token}` — imagem SVG determinística do card de resultado (ver
  * rationale sobre SVG-vs-PNG no header de share.ts). Token inválido/
  * adulterado → 404 (diferente de `/share`, que faz 302: aqui é um `<img src>`
  * embutido, um 404 de imagem é o comportamento HTTP correto). */
 export async function handleOgImage(path: string, env: Env): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
-  const token = decodeURIComponent(path.slice("/og/".length));
-  const payload = await decodeShareToken(env.POLL_SECRET, token);
-  if (!payload) return new Response("not found", { status: 404, headers: corsHeaders });
+  const token = safeDecodeToken(path.slice("/og/".length));
+  const payload = token === null ? null : await decodeShareToken(env.POLL_SECRET, token);
+  if (token === null || !payload) return new Response("not found", { status: 404, headers: corsHeaders });
   return new Response(renderShareCardSvg(payload), {
     headers: {
       ...corsHeaders,
@@ -636,9 +648,9 @@ export async function handleOgImage(path: string, env: Env): Promise<Response> {
  * populado — ver #3106 em lib.ts). Token inválido/adulterado → 302 pra
  * `/jogar` (nunca dead-end, ver rationale no header de share.ts). */
 export async function handleSharePage(url: URL, path: string, env: Env): Promise<Response> {
-  const token = decodeURIComponent(path.slice("/share/".length));
-  const payload = await decodeShareToken(env.POLL_SECRET, token);
-  if (!payload) {
+  const token = safeDecodeToken(path.slice("/share/".length));
+  const payload = token === null ? null : await decodeShareToken(env.POLL_SECRET, token);
+  if (token === null || !payload) {
     return new Response(null, { status: 302, headers: { Location: "/jogar", "Cache-Control": "no-store" } });
   }
   const utmMedium = url.searchParams.get("utm_medium") ?? "link";
@@ -656,9 +668,9 @@ export async function handleSharePage(url: URL, path: string, env: Env): Promise
  * quiz. Token inválido/adulterado → 404 (mesmo racional do `/og/{token}`). */
 export async function handleQuizOgImage(path: string, env: Env): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
-  const token = decodeURIComponent(path.slice("/quiz-og/".length));
-  const payload = await decodeQuizShareToken(env.POLL_SECRET, token);
-  if (!payload) return new Response("not found", { status: 404, headers: corsHeaders });
+  const token = safeDecodeToken(path.slice("/quiz-og/".length));
+  const payload = token === null ? null : await decodeQuizShareToken(env.POLL_SECRET, token);
+  if (token === null || !payload) return new Response("not found", { status: 404, headers: corsHeaders });
   return new Response(renderQuizShareCardSvg(payload), {
     headers: {
       ...corsHeaders,
@@ -672,9 +684,9 @@ export async function handleQuizOgImage(path: string, env: Env): Promise<Respons
  * do quiz. Token inválido/adulterado → 302 pra `/jogar/quiz` (nunca
  * dead-end, mesmo racional do `/share/{token}`). */
 export async function handleQuizSharePage(url: URL, path: string, env: Env): Promise<Response> {
-  const token = decodeURIComponent(path.slice("/quiz-share/".length));
-  const payload = await decodeQuizShareToken(env.POLL_SECRET, token);
-  if (!payload) {
+  const token = safeDecodeToken(path.slice("/quiz-share/".length));
+  const payload = token === null ? null : await decodeQuizShareToken(env.POLL_SECRET, token);
+  if (token === null || !payload) {
     return new Response(null, { status: 302, headers: { Location: "/jogar/quiz", "Cache-Control": "no-store" } });
   }
   const utmMedium = url.searchParams.get("utm_medium") ?? "link";

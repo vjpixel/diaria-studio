@@ -21,7 +21,7 @@ import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { closeSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";

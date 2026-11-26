@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { extractRawCurrentNarrative, narrativeIsSelfConcatenated, narrativeIsGenericPlaceholder, narrativeIsCatalogShaped } from "../../../render-erro-intencional.ts";
 
 // Modo --check erro-intencional-placeholder (#2078, estendido #3489) —
@@ -28,18 +27,7 @@ import { extractRawCurrentNarrative, narrativeIsSelfConcatenated, narrativeIsGen
 // divergência de rigor entre extração e lint em vez de criar uma terceira
 // regra paralela.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error(
-      "Uso: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>",
-    );
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "erro-intencional-placeholder");
   const hasPlaceholder = /\{PREENCHER_NARRATIVA_DO_ERRO\}/.test(md);
   let label: string | undefined;
   if (hasPlaceholder) {

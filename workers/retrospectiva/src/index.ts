@@ -203,7 +203,16 @@ export async function loadArticleTeaser(env: Env, path: string): Promise<string 
  * @pure
  */
 export function legacyRedirectPath(host: string, pathname: string, search: string): string | null {
-  const slug = decodeURIComponent(pathname.replace(/^\/+/, "").replace(/\/+$/, ""));
+  const rawSlug = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
+  let slug: string;
+  try {
+    slug = decodeURIComponent(rawSlug);
+  } catch (err) {
+    // `%` malformado no link antigo (#14137): antes lançava URIError e o
+    // redirect virava 500. Tratado como intraduzível — raiz, com a query.
+    if (!(err instanceof URIError)) throw err;
+    return search ? `/${search}` : null;
+  }
   if (!slug) return `/${search}`;
   let novo: string | null = null;
   if (host === LEGACY_ANUAL_HOST) novo = anualPathFromSlug(slug);

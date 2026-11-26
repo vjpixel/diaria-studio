@@ -368,7 +368,9 @@ orçamento.
 - **Caminhos:** `data/session-lifecycle.jsonl`
   (`logSessionLifecycleEvent()` em `scripts/lib/sessions/registry.ts`), `data/reports/index.jsonl`
   (`scripts/register-report.ts`; lido pela superfície de Relatórios do Studio
-  e por `scripts/calibration-allowlist-growth-report.ts:77`),
+  e por `scripts/calibration-allowlist-growth-report.ts`; **resolvido no
+  #14135:** cada máquina grava `data/reports/index.{host}.jsonl` e
+  `listReports` faz a união com o `index.jsonl` legado, que segue só lido),
   `data/brave-credits.jsonl` (`scripts/lib/brave-credits.ts:71`),
   `data/social-schedule-rotation.jsonl`
   (`scripts/lib/social-schedule-rotation-record.ts:32`),

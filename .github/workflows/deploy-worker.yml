@@ -6,7 +6,10 @@ name: Deploy Worker (reusable)
 # -> npm ci na raiz -> `wrangler deploy` via `npm run deploy`). Este
 # workflow reutilizável extrai esse bloco; os callers em
 # deploy-{draft,poll,linkedin-cron,artigo-mensal,diaria-dashboard,
-# reativar,brevo-dashboard}.yml (+ regen-home.yml, que deploya `site` depois
+# reativar,brevo-dashboard}.yml (lista do #7118; `deploy-artigo-mensal.yml`
+# virou `deploy-retrospectiva.yml` no #7658, e callers novos entraram
+# depois: `grep -l deploy-worker.yml .github/workflows/` é a lista viva)
+# (+ regen-home.yml, que deploya `site` depois
 # de regenerar a home — #8103) passam a chamar via `workflow_call`,
 # parametrizando só o que de fato varia (nome do worker — trigger `paths:`,
 # `concurrency.group` e `working-directory` continuam declarados em cada

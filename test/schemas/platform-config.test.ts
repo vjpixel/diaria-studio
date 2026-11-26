@@ -1,6 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parsePlatformConfig } from "../../scripts/lib/schemas/platform-config.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 describe("platform-config schema (#632)", () => {
   it("parse config mínimo (só campos obrigatórios)", () => {
@@ -10,7 +15,6 @@ describe("platform-config schema (#632)", () => {
 
   it("parse config completo sem erro", () => {
     const result = parsePlatformConfig({
-      newsletter: "beehiiv",
       publication_id: "pub_abc123",
       drive_sync: true,
       image_generator: "gemini",
@@ -23,7 +27,7 @@ describe("platform-config schema (#632)", () => {
         },
       },
     });
-    assert.equal(result.newsletter, "beehiiv");
+    assert.equal(result.publication_id, "pub_abc123");
     assert.equal(result.image_generator, "gemini");
   });
 
@@ -44,5 +48,16 @@ describe("platform-config schema (#632)", () => {
   it("aceita campos extras (passthrough)", () => {
     const result = parsePlatformConfig({ custom_prop: "custom" });
     assert.equal((result as Record<string, unknown>).custom_prop, "custom");
+  });
+
+  it("#14123: config antiga com a chave de topo `newsletter` ainda parseia", () => {
+    const result = parsePlatformConfig({ newsletter: "beehiiv" });
+    assert.equal((result as Record<string, unknown>).newsletter, "beehiiv");
+  });
+
+  it("#14123: o platform.config.json real não tem mais a chave de topo `newsletter` e parseia", () => {
+    const raw = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as Record<string, unknown>;
+    assert.equal("newsletter" in raw, false, "a chave legada `newsletter` (\"beehiiv\") voltou ao topo do config");
+    assert.doesNotThrow(() => parsePlatformConfig(raw));
   });
 });

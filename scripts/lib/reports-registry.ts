@@ -17,7 +17,8 @@
  * (`data/editions/{AAMMDD}/_internal/edition-report.html`,
  * `data/overnight/{AAMMDD}/report.md`, `data/develop/{AAMMDD}/report.md`) —
  * este arquivo NÃO reinventa onde o conteúdo mora. O único artefato novo é um
- * índice (`data/reports/index.jsonl`) que aponta pra esses arquivos, porque
+ * índice (`data/reports/index.{host}.jsonl` por máquina desde o #14135, mais o
+ * `index.jsonl` legado) que aponta pra esses arquivos, porque
  * não existe hoje um jeito barato de descobrir "todos os relatórios de todas
  * as sessões" sem esse índice (teria que varrer `data/editions/*`,
  * `data/overnight/*`, `data/develop/*` a cada request).
@@ -36,6 +37,23 @@
  * *conteúdo* servido a cada `id` sempre foi "a versão mais recente", então o
  * comportamento observável de `listReports`/`getReportById` não muda; só o
  * arquivo físico não acumula lixo.
+ *
+ * **#14135: um arquivo por máquina, leitura faz a união.** `data/` sincroniza
+ * pelo Google Drive entre o `300` e o Neo, e o lock de `registerReport` é um
+ * arquivo local (`O_CREAT|O_EXCL`), que não serializa as duas máquinas. Com um
+ * arquivo único reescrito por inteiro, as duas registrando na mesma janela de
+ * sync produziam duas versões do mesmo arquivo e o Drive ficava com a mais
+ * recente: a linha da outra máquina sumia do `/relatorios`. Agora cada máquina
+ * grava SÓ o próprio `data/reports/index.{host}.jsonl` (`host` = hostname
+ * sanitizado, `registryHostTag`), então nenhuma reescreve linha da outra. O
+ * upsert por id (#4666) e o lock (#4677) seguem valendo dentro do arquivo da
+ * máquina. `listReports` lê o `index.jsonl` legado mais todos os
+ * `index.*.jsonl` e deduplica por id; entre arquivos vence o registro mais
+ * recente (`registeredAt`, gravado a cada `registerReport`; `createdAt` nas
+ * linhas antigas que não o têm), e no empate vence o arquivo de máquina sobre
+ * o legado. O `index.jsonl` legado continua sendo LIDO e nunca é apagado nem
+ * reescrito por `registerReport` (só `pruneReportsRegistry`, manual, o
+ * deduplica no lugar).
  *
  * **Registro é 100% file-based, nunca uma chamada HTTP ao Studio** — o
  * servidor pode estar parado no momento em que um relatório é gerado (é um
@@ -95,10 +113,11 @@
  * e nenhum caller de produção passava `notify: true` explícito.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "./html-escape.ts";
+import { getMachineId } from "./machine-id.ts"; // #14135 — arquivo do registro por máquina
 import { notifyEditor } from "./editor-notify.ts"; // #7960 (item 5 da #7957) — substitui o canal de Gmail bespoke
 import { acquireLock, releaseLock } from "./file-lock.ts"; // #4677 — lock + write atômico do registry
 
@@ -174,10 +193,51 @@ export function isReportKind(value: string): value is ReportKind {
 }
 
 const REPORTS_DIR = "data/reports";
-const REGISTRY_FILE = "index.jsonl";
+/** Arquivo único de antes do #14135 — só lido (e deduplicado por `pruneReportsRegistry`), nunca apagado. */
+const LEGACY_REGISTRY_FILE = "index.jsonl";
+/** `index.{host}.jsonl` — `.tmp`/`.lock` ficam de fora porque não terminam em `.jsonl`. */
+const HOST_REGISTRY_FILE_RE = /^index\.([a-z0-9_-]+)\.jsonl$/;
 
-function registryPath(rootDir: string): string {
-  return resolve(rootDir, REPORTS_DIR, REGISTRY_FILE);
+/**
+ * Tag da máquina no nome do arquivo do registro (#14135): hostname em
+ * minúsculas (o Drive e o NTFS não distinguem caixa, e `Neo`/`neo` não podem
+ * virar dois arquivos), com tudo fora de `[a-z0-9_-]` trocado por `_`.
+ * Hostname ilegível ou vazio vira `unknown`, nunca lança.
+ */
+export function registryHostTag(host: string = getMachineId()): string {
+  const tag = host.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+  return tag || "unknown";
+}
+
+/** `data/reports/index.jsonl` — o registro legado de arquivo único (#14135). */
+export function legacyRegistryPath(rootDir: string): string {
+  return resolve(rootDir, REPORTS_DIR, LEGACY_REGISTRY_FILE);
+}
+
+/** `data/reports/index.{host}.jsonl` — o único arquivo que esta máquina escreve (#14135). */
+export function hostRegistryPath(rootDir: string, host?: string): string {
+  return resolve(rootDir, REPORTS_DIR, `index.${registryHostTag(host)}.jsonl`);
+}
+
+/**
+ * Arquivos do registro que existem em disco, na ordem de precedência de
+ * empate da união (#14135): o legado primeiro, depois os de máquina em ordem
+ * alfabética. Fail-soft: diretório ausente ou ilegível → `[]`.
+ */
+export function listRegistryFiles(rootDir: string): string[] {
+  const dir = resolve(rootDir, REPORTS_DIR);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  if (names.includes(LEGACY_REGISTRY_FILE)) out.push(resolve(dir, LEGACY_REGISTRY_FILE));
+  for (const name of names.filter((n) => HOST_REGISTRY_FILE_RE.test(n)).sort()) {
+    out.push(resolve(dir, name));
+  }
+  return out;
 }
 
 /** Id estável do relatório — `{kind}-{sessionId}` (ex: `overnight-260720`).
@@ -217,6 +277,15 @@ export interface ReportEntry extends ReportRegistryInput {
   createdAt: string;
   /** Path servido pelo Studio — `GET {url}` (ver `server.ts`). */
   url: string;
+  /**
+   * #14135 — ISO do momento em que `registerReport` gravou esta linha (sempre
+   * "agora", diferente de `createdAt`, que o caller pode fixar: o
+   * `record-calibration-pr-decisions.ts` re-registra com o `createdAt` antigo).
+   * É o critério de "registro mais recente vence" entre os arquivos de máquina
+   * na união de `listReports`. Ausente nas linhas de antes do #14135, que caem
+   * no `createdAt`.
+   */
+  registeredAt?: string;
   /**
    * `true` quando ALGUM registro deste `id` já disparou (ou tentou disparar) a
    * notificação via `notifyEditor` (`severity: "info"`, #7960 — antes do
@@ -393,7 +462,8 @@ export async function dispatchReportNotify(
 }
 
 /**
- * Registra um relatório — upsert de 1 linha JSON em `data/reports/index.jsonl`,
+ * Registra um relatório — upsert de 1 linha JSON no arquivo desta máquina,
+ * `data/reports/index.{host}.jsonl` (#14135; antes, `data/reports/index.jsonl`),
  * indexado por `reportId(kind, sessionId)` (#4666). Antes de escrever, remove
  * qualquer linha existente com o MESMO id — registrar de novo o mesmo
  * `(kind, sessionId)` (relatório regenerado, ou uma correção como o caso que
@@ -471,30 +541,42 @@ export async function dispatchReportNotify(
  * isso mudar, migrar pra uma chave própria em `notifications` é a
  * correção natural.
  */
+export interface RegisterReportOptions {
+  /** #14135 — máquina dona do arquivo gravado (`index.{host}.jsonl`). Default
+   * o hostname local; testes fixam pra simular duas máquinas no mesmo `data/`. */
+  host?: string;
+}
+
 export function registerReport(
   rootDir: string,
   input: ReportRegistryInput,
   notifyDeps: ReportNotifyDeps = defaultNotifyDeps,
   notify = false,
+  options: RegisterReportOptions = {},
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
-  const createdAt = input.createdAt ?? new Date().toISOString();
+  const registeredAt = new Date().toISOString();
+  const createdAt = input.createdAt ?? registeredAt;
   let alreadyNotified = false;
   const entry: ReportEntry = {
     ...input,
     id,
     createdAt,
     url: `/relatorios/${id}`,
+    registeredAt,
   };
   try {
     mkdirSync(resolve(rootDir, REPORTS_DIR), { recursive: true });
-    const path = registryPath(rootDir);
+    // #14135: só o arquivo desta máquina é reescrito; o legado e os das outras
+    // máquinas ficam intactos.
+    const path = hostRegistryPath(rootDir, options.host);
     const lockPath = path + ".lock";
     acquireLock(lockPath);
     try {
       // #5521: dedup de e-mail por "já NOTIFICOU", nunca por "já existe
-      // entrada" — ver `ReportEntry.notified`.
-      alreadyNotified = readPreviousEntry(path, id)?.notified === true;
+      // entrada" — ver `ReportEntry.notified`. #14135: olha a união (o id pode
+      // ter sido notificado por outra máquina ou estar só no legado).
+      alreadyNotified = listReports(rootDir).find((r) => r.id === id)?.notified === true;
       const willNotify = notify && !alreadyNotified;
       entry.notified = alreadyNotified || willNotify;
 
@@ -522,7 +604,7 @@ export function registerReport(
             // se perde em silêncio: um retry veria `already-notified` e não
             // tentaria de novo. Fail-soft como todo este caminho.
             dispatchReportNotify(rootDir, entry, notifyDeps).then((result) => {
-              if (!result.notified) clearNotifiedFlag(rootDir, id);
+              if (!result.notified) clearNotifiedFlag(hostRegistryPath(rootDir, options.host), id);
               return result;
             }),
     };
@@ -542,9 +624,8 @@ export function registerReport(
  * engolido, porque isto roda depois do registro já ter sucedido e nunca deve
  * transformar "notificação falhou" em "registro falhou".
  */
-function clearNotifiedFlag(rootDir: string, id: string): void {
+function clearNotifiedFlag(path: string, id: string): void {
   try {
-    const path = registryPath(rootDir);
     const lockPath = path + ".lock";
     acquireLock(lockPath);
     try {
@@ -619,10 +700,60 @@ function readLinesExcludingId(path: string, excludeId: string): string[] {
   return kept;
 }
 
+/** Linha válida de entry, ou `null` (JSON inválido ou campo obrigatório ausente). */
+function parseEntryLine(line: string): ReportEntry | null {
+  try {
+    const entry = JSON.parse(line) as Partial<ReportEntry>;
+    if (
+      entry &&
+      typeof entry.id === "string" &&
+      typeof entry.kind === "string" &&
+      typeof entry.sessionId === "string" &&
+      typeof entry.title === "string" &&
+      typeof entry.htmlPath === "string" &&
+      typeof entry.createdAt === "string" &&
+      typeof entry.url === "string"
+    ) {
+      return entry as ReportEntry;
+    }
+  } catch {
+    // linha corrompida (escrita concorrente truncada, etc.) — ignora.
+  }
+  return null;
+}
+
+/** Entries de UM arquivo do registro, dedup por id com a última linha física vencendo (#4666). */
+function readRegistryFile(path: string): Map<string, ReportEntry> {
+  const byId = new Map<string, ReportEntry>();
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return byId;
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const entry = parseEntryLine(line);
+    if (entry) byId.set(entry.id, entry);
+  }
+  return byId;
+}
+
+/** Momento do registro usado na união entre arquivos (#14135). */
+function registrationTime(entry: ReportEntry): string {
+  return typeof entry.registeredAt === "string" ? entry.registeredAt : entry.createdAt;
+}
+
 /**
- * Lê o registry inteiro, dedupa por id (última linha física vence) e ordena
- * por `createdAt` desc (mais recente no topo — #3714 pede "mais recentes no
- * topo").
+ * Lê o registry inteiro, dedupa por id e ordena por `createdAt` desc (mais
+ * recente no topo — #3714 pede "mais recentes no topo").
+ *
+ * **#14135: união de todos os arquivos.** Lê o `index.jsonl` legado e cada
+ * `index.{host}.jsonl` (`listRegistryFiles`). Dentro de um arquivo, a última
+ * linha física vence (como antes). Entre arquivos, vence o registro mais
+ * recente (`registeredAt`, ou `createdAt` em linha sem ele); no empate, o
+ * arquivo que vem depois em `listRegistryFiles`, então o de máquina vence o
+ * legado.
  *
  * **O dedup aqui é defensivo, não a linha de defesa principal (#4666).** Desde
  * #4666 `registerReport` já garante por construção que o arquivo nunca tem 2
@@ -636,35 +767,11 @@ function readLinesExcludingId(path: string, excludeId: string): string[] {
  * `tailJsonl`/outros leitores de jsonl do repo.
  */
 export function listReports(rootDir: string): ReportEntry[] {
-  const path = registryPath(rootDir);
-  if (!existsSync(path)) return [];
-
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch {
-    return [];
-  }
-
   const byId = new Map<string, ReportEntry>();
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line) as Partial<ReportEntry>;
-      if (
-        entry &&
-        typeof entry.id === "string" &&
-        typeof entry.kind === "string" &&
-        typeof entry.sessionId === "string" &&
-        typeof entry.title === "string" &&
-        typeof entry.htmlPath === "string" &&
-        typeof entry.createdAt === "string" &&
-        typeof entry.url === "string"
-      ) {
-        byId.set(entry.id, entry as ReportEntry);
-      }
-    } catch {
-      // linha corrompida (escrita concorrente truncada, etc.) — ignora.
+  for (const path of listRegistryFiles(rootDir)) {
+    for (const [id, entry] of readRegistryFile(path)) {
+      const current = byId.get(id);
+      if (!current || registrationTime(entry) >= registrationTime(current)) byId.set(id, entry);
     }
   }
 
@@ -691,9 +798,10 @@ export interface PruneReportsRegistryResult {
 }
 
 /**
- * Ação de manutenção ONE-OFF (#4666) — reescreve `data/reports/index.jsonl`
- * mantendo só 1 linha por id (a última fisicamente escrita, mesmo critério de
- * `listReports`) e descartando linhas corrompidas. Nunca precisa rodar em uso
+ * Ação de manutenção ONE-OFF (#4666) — reescreve cada arquivo do registro
+ * (`index.jsonl` legado e `index.{host}.jsonl`, #14135) mantendo só 1 linha
+ * por id (a última fisicamente escrita, mesmo critério de `listReports`
+ * dentro de um arquivo) e descartando linhas corrompidas. Nunca precisa rodar em uso
  * normal: a partir de #4666 `registerReport` já faz upsert na escrita, então
  * o arquivo nunca mais acumula uma duplicata NOVA. Este helper existe só pra
  * limpar o histórico de duplicatas que se acumulou ANTES do fix (ex:
@@ -711,7 +819,30 @@ export interface PruneReportsRegistryResult {
  * lança.
  */
 export function pruneReportsRegistry(rootDir: string): PruneReportsRegistryResult {
-  const path = registryPath(rootDir);
+  // #14135: cada arquivo (legado e os de máquina) é limpo por conta própria,
+  // sob o próprio lock; os contadores somam os arquivos. Duplicata ENTRE
+  // arquivos não é removida: a união de `listReports` já a resolve, e apagar
+  // a linha de outra máquina é justo o que o #14135 evita.
+  const total: PruneReportsRegistryResult = {
+    ok: true,
+    linesBefore: 0,
+    linesAfter: 0,
+    removedDuplicates: 0,
+    removedCorrupted: 0,
+    error: null,
+  };
+  for (const path of listRegistryFiles(rootDir)) {
+    const r = pruneRegistryFile(path);
+    if (!r.ok) return r;
+    total.linesBefore += r.linesBefore;
+    total.linesAfter += r.linesAfter;
+    total.removedDuplicates += r.removedDuplicates;
+    total.removedCorrupted += r.removedCorrupted;
+  }
+  return total;
+}
+
+function pruneRegistryFile(path: string): PruneReportsRegistryResult {
   if (!existsSync(path)) {
     return { ok: true, linesBefore: 0, linesAfter: 0, removedDuplicates: 0, removedCorrupted: 0, error: null };
   }

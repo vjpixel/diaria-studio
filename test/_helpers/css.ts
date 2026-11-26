@@ -1,5 +1,5 @@
 /**
- * test/helpers/css.ts (#5480)
+ * test/_helpers/css.ts (#5480)
  *
  * Utilitário compartilhado pelas duas invariantes de CSS do Studio
  * (`studio-css-no-raw-hex`, #4674, e `studio-css-var-defined`, #5480).

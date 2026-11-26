@@ -39,7 +39,7 @@ import {
   sessionFilePath,
 } from "../scripts/lib/session-registry.ts";
 import * as ledgerLib from "../.claude/hooks/lib/merge-grant-ledger.mjs";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 
 const HOOKS_DIR = join(import.meta.dirname, "..", ".claude", "hooks");
 const CONSUME_HOOK_PATH = join(HOOKS_DIR, "consume-merge-grant-on-merge.mjs");

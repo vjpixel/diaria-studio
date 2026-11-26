@@ -13,7 +13,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CORTE_TIMER_CHILD_TIMEOUT_MS, runCorteTimerFor, type CorteTimerAlarmKey } from "../scripts/shorts-corte-timer.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";
 import { CORTE_SPEC_FILE, corteR2Key, parseCorteSpec, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
@@ -47,8 +47,8 @@ const VIDEO = "mp4-aprovado";
 const COVER = "jpg-aprovado";
 
 /** Corte com vídeo e capa, autorizado no Neo; depois o "OneDrive" não traz o mp4 (apagado aqui). */
-function corteSemVideo(opts: { cover?: boolean } = {}): string {
-  const root = mkdtempSync(join(tmpdir(), "corte-12473-"));
+function corteSemVideo(opts: { cover?: boolean; rootPrefix?: string } = {}): string {
+  const root = mkdtempSync(join(tmpdir(), opts.rootPrefix ?? "corte-12473-"));
   const dir = join(root, BASE.slug);
   mkdirSync(join(dir, "_internal"), { recursive: true });
   writeFileSync(join(dir, BASE.video), VIDEO);
@@ -210,11 +210,21 @@ describe("#12473: o timer do corte recupera do R2 o vídeo que o OneDrive não t
     assert.equal(corteHasMissingApprovedFiles(dir, readSpec(dir)), false);
   });
 
-  it("sem deps.r2 (os testes antigos e quem não passa acesso): comportamento de antes, sem rede", async () => {
-    const dir = corteSemVideo();
-    const alarms: Alarm[] = [];
-    await runCorteTimerFor(dir, false, runDeps(null, [], alarms));
-    assert.deepEqual(alarms.map((a) => a.key), ["missing-video", "missing-video"]);
-    assert.doesNotMatch(alarms[0].reason, /R2/);
-  });
+  /**
+   * #14154: o motivo do alarme embute o caminho do corte, e o sufixo aleatório
+   * do `mkdtemp` (6 chars [A-Za-z0-9]) às vezes contém "R2" — a asserção pegava
+   * o nome do diretório, não uma menção ao R2. Tira a raiz temporária antes.
+   */
+  const reasonWithoutTmpRoot = (reason: string, dir: string) => reason.split(dirname(dir)).join("<tmp>");
+
+  for (const rootPrefix of [undefined, "corte-12473-R2R2R2-"]) {
+    it(`sem deps.r2 (os testes antigos e quem não passa acesso): comportamento de antes, sem rede${rootPrefix ? " (#14154: tmp com R2 no nome)" : ""}`, async () => {
+      const dir = corteSemVideo({ rootPrefix });
+      if (rootPrefix) assert.match(dir, /R2/, "pré-condição: o caminho do corte contém R2");
+      const alarms: Alarm[] = [];
+      await runCorteTimerFor(dir, false, runDeps(null, [], alarms));
+      assert.deepEqual(alarms.map((a) => a.key), ["missing-video", "missing-video"]);
+      assert.doesNotMatch(reasonWithoutTmpRoot(alarms[0].reason, dir), /R2/);
+    });
+  }
 });

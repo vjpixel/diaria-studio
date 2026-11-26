@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolveMdArg } from "./_shared.ts";
 import { runSnippetStalenessCheck } from "../snippet-staleness.ts";
 
 // Modo --check snippet-staleness (#4076) — snippet de data/snippets/
@@ -17,15 +16,7 @@ import { runSnippetStalenessCheck } from "../snippet-staleness.ts";
 // o gate): reaplicar automaticamente arriscaria clobberar uma edição que
 // o editor tenha feito direto no MD.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check snippet-staleness --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
+  const mdPath = resolveMdArg(args, root, "snippet-staleness");
   const result = runSnippetStalenessCheck(mdPath, root);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

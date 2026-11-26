@@ -70,6 +70,7 @@
 // `kit-signup-origin.ts`/`client-utm-allowlist.ts` — zero `node:*` nos dois
 // lados, seguro pro bundle do Worker).
 import { resolveVisitorId } from "./visitor-id.ts";
+import { META_ADS_GRAPH_VERSION } from "./meta-graph.ts"; // #14124
 
 /** Dataset (pixel) ID confirmado ao vivo na issue #5504 — não é secret (é
  * público em qualquer página que carregue o pixel via `fbq('init', ...)`),
@@ -82,7 +83,7 @@ export const META_CAPI_DEFAULT_DATASET_ID = "1285191740325112";
  * família de constante que `FACEBOOK_API_VERSION` (`.env.example`) usa pro
  * Graph API de publicação — CAPI é um endpoint distinto do mesmo produto,
  * override tem o mesmo nome de padrão (`apiVersion` no options bag). */
-export const META_CAPI_DEFAULT_API_VERSION = "v21.0";
+export const META_CAPI_DEFAULT_API_VERSION = META_ADS_GRAPH_VERSION; // #14124
 
 /** Timeout do fetch pra CAPI — mesmo racional de `SUBSCRIBE_FETCH_TIMEOUT_MS`
  * (`workers/poll/src/subscribe.ts`): um hang aqui nunca pode travar o

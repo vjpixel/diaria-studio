@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import * as ts from "../scripts/lib/d1-locks.ts";
 import * as hook from "../.claude/hooks/lib/d1-locks.mjs";
 import { machineTag, sessionsDir } from "../scripts/lib/session-registry.ts";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 import { createFakeD1, type FakeD1 } from "./_helpers/fake-d1.ts";
 
 const HOOK_PATH = fileURLToPath(new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url));

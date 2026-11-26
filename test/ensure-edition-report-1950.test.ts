@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureEditionReport } from "../scripts/refresh-dedup.ts";
-import { getReportById } from "../scripts/lib/reports-registry.ts";
+import { getReportById, listRegistryFiles } from "../scripts/lib/reports-registry.ts";
 
 // ROOT do repo real — `ensureEditionReport`/`writeEditionReport` sempre
 // registram via `registerReport(ROOT, ...)` usando o ROOT REAL do script
@@ -101,8 +101,8 @@ describe("ensureEditionReport (#1950)", () => {
       // Limpa a entrada real de data/reports/index.jsonl — mesmo padrão de
       // afterEach de test/overnight-report-counts.test.ts (registro real,
       // sincronizado por OneDrive, não pode sobrar lixo de teste).
-      const registryPath = join(REPO_ROOT, "data", "reports", "index.jsonl");
-      if (existsSync(registryPath)) {
+      // #14135: o registro é um arquivo por máquina (index.{host}.jsonl).
+      for (const registryPath of listRegistryFiles(REPO_ROOT)) {
         const kept = readFileSync(registryPath, "utf-8")
           .split("\n")
           .filter((l) => !l.includes(reportId));

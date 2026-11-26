@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkNoTrailingEllipsis } from "../no-trailing-ellipsis.ts";
 
 // Modo --check no-trailing-ellipsis (#2881) — item de seção secundária cuja
@@ -17,16 +16,7 @@ import { checkNoTrailingEllipsis } from "../no-trailing-ellipsis.ts";
 // de title-publisher-suffix/title-trailing-period acima (#2715): heurística
 // ampla, sem allowlist, não bloqueia o gate.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "no-trailing-ellipsis");
   const result = checkNoTrailingEllipsis(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

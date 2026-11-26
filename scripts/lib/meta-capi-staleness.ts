@@ -35,6 +35,8 @@
  * @module
  */
 
+import { META_ADS_GRAPH_VERSION } from "./shared/meta-graph.ts"; // #14124
+
 /** Dias sem `server_last_fired_time` avançar antes de considerar "parado".
  * O uso normal (dezenas de cadastros/dia, confirmado ao vivo na issue via
  * `last_fired_time` do pixel client-side) faz este threshold generoso —
@@ -101,16 +103,17 @@ export interface FetchDatasetStalenessOptions {
 }
 
 /** Mesmo dataset padrão de `META_CAPI_DEFAULT_DATASET_ID`
- * (`scripts/lib/shared/meta-capi.ts`) — duplicado aqui de propósito
- * (import cruzado `scripts/lib/` ↔ `scripts/lib/shared/` violaria a
- * fronteira do #2747, ver `test/lib-boundary.test.ts`; este módulo é
- * `scripts/lib/` puro, não `shared/`, porque só roda em Node — usa
- * `process.env` via o script CLI, nunca no runtime Workers). Não é secret
+ * (`scripts/lib/shared/meta-capi.ts`) — duplicado aqui de propósito (a
+ * raiz de `scripts/lib/` PODE importar de `shared/`, como faz acima com
+ * `shared/meta-graph.ts` desde o #14124; a cópia vale só porque este módulo
+ * é `scripts/lib/` puro e só roda em Node — usa `process.env` via o script
+ * CLI, nunca no runtime Workers, e o dataset daqui não precisa seguir o
+ * `shared/` do Worker). Não é secret
  * (é público em qualquer página que carregue o pixel via `fbq('init', ...)`)
  * — mesmo racional documentado em `meta-capi.ts`. */
 export const META_CAPI_STALENESS_DEFAULT_DATASET_ID = "1285191740325112";
 
-const DEFAULT_API_VERSION = "v21.0";
+const DEFAULT_API_VERSION = META_ADS_GRAPH_VERSION;
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 
 /**

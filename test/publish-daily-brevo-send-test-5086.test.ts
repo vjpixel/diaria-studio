@@ -208,6 +208,11 @@ function installRouter(opts: { totalSubscribers: number; contactsPages: Array<Ar
       if (method === "PUT" && url.pathname === "/v3/emailCampaigns/999") {
         return noContentRes(204);
       }
+      // #14140 — `--force` relê o status da campanha registrada antes de
+      // recriar; rascunho (`draft`) libera a recriação.
+      if (method === "GET" && url.pathname === "/v3/emailCampaigns/999") {
+        return jsonRes(200, { id: 999, name: "diária", status: "draft" });
+      }
       if (method === "POST" && url.pathname === "/v3/emailCampaigns/999/sendTest") {
         return jsonRes(204, {});
       }

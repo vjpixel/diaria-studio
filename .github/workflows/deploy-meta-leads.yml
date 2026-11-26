@@ -36,6 +36,7 @@ on:
       # compartilhado não redeploya o Worker. Trava:
       # test/workers-deploy-workflow-coverage.test.ts.
       - 'scripts/lib/shared/kit-signup-origin.ts'
+      - 'scripts/lib/shared/meta-graph.ts' # #14124
   workflow_dispatch:
 
 concurrency:

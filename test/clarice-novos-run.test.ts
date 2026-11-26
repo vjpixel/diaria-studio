@@ -20,6 +20,7 @@ import { readNovosCutoff } from "../scripts/lib/clarice-novos-cutoff.ts";
 import { readNovosRunStatus } from "../scripts/lib/clarice-novos-run-status.ts";
 import { decisionDriftReportLines } from "../scripts/lib/decision-state-drift.ts";
 import { formatDecisionMarker } from "../scripts/lib/issue-decisions.ts";
+import { listReports } from "../scripts/lib/reports-registry.ts";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -732,11 +733,9 @@ describe("clarice-novos-run (#4941)", () => {
     assert.equal(result.code, 0);
     const reportPath = resolve(root, "data", "clarice-subscribers", "novos-reports", `${result.reportId}.md`);
     assert.ok(existsSync(reportPath));
-    const indexPath = resolve(root, "data", "reports", "index.jsonl");
-    assert.ok(existsSync(indexPath));
-    const lines = readFileSync(indexPath, "utf8").trim().split("\n");
+    // #14135: o registro vive em data/reports/index.{host}.jsonl; lê pela união.
     // entry.id = `${kind}-${sessionId}` (reportId() em reports-registry.ts) — reportId aqui É o sessionId passado.
-    assert.ok(lines.some((l) => JSON.parse(l).id === `clarice-novos-${result.reportId}`));
+    assert.ok(listReports(root).some((l) => l.id === `clarice-novos-${result.reportId}`));
     rmSync(root, { recursive: true, force: true });
   });
 

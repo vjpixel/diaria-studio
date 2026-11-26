@@ -36,7 +36,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 import { FAKE_GH_PROBE_ARG, FAKE_GH_PROBE_REPLY, assertFakeGhResolves, withoutGhCredentials } from "./_helpers/fake-gh.ts";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
