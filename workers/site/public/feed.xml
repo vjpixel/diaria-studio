@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 25 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 26 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Anthropic: empresas não demitem, mas contratam menos</title>
+      <link>https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos</guid>
+      <pubDate>Thu, 26 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Só 7% deixariam um agente pagar sem aprovação | Os 4 níveis de agente, do supervisionado ao representante</description>
+    </item>
     <item>
       <title>Hackers chineses usam agentes que acham zero-day</title>
       <link>https://diar.ia.br/p/hackers-chineses-usam-agentes-que-acham-zero-day</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/ia-cruza-mais-de-3000-paginas-do-caso-master</guid>
       <pubDate>Mon, 14 Sep 2026 09:00:00 GMT</pubDate>
       <description>CEO da Anthropic propõe desacelerar a IA | NYT flagra Grok criando fotos de abuso infantil</description>
-    </item>
-    <item>
-      <title>10 mil agentes da OpenAI resolvem enigma de 90 anos</title>
-      <link>https://diar.ia.br/p/10-mil-agentes-da-openai-resolvem-enigma-de-90-anos</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/10-mil-agentes-da-openai-resolvem-enigma-de-90-anos</guid>
-      <pubDate>Fri, 11 Sep 2026 09:00:00 GMT</pubDate>
-      <description>Claude ajudou espião russo a escapar de antivírus | Claude tentou infectar código mesmo sabendo do risco</description>
     </item>
   </channel>
 </rss>
