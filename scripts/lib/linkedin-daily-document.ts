@@ -201,10 +201,13 @@ export interface LinkedInDailyQueueBase {
 export function linkedInDailyIdempotencyKey(
   edition: string,
   destaque: string,
-  opts: { isTest?: boolean; namespace?: string } = {},
+  opts: { isTest?: boolean; namespace?: string; slot?: "main" | "comment_diaria" | "comment_pixel" } = {},
 ): string {
   const ns = opts.namespace ?? "linkedin-daily";
-  const key = `${opts.isTest ? `${ns}-test` : ns}:${edition}:${destaque}:main`;
+  // #14011 — `slot` separa o post principal (`main`) dos comentários do mesmo
+  // destaque: cada um é uma entry própria na fila e não pode cair na chave do
+  // post (o comentário substituiria o post na mesma entry, #10917).
+  const key = `${opts.isTest ? `${ns}-test` : ns}:${edition}:${destaque}:${opts.slot ?? "main"}`;
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
   return key;
 }

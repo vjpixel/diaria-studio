@@ -115,6 +115,7 @@ import {
   postToWorkerQueue as sharedPostToWorkerQueue,
   type WorkerQueuePayload,
 } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
+import { dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1050,7 +1051,11 @@ async function main(): Promise<number | void> {
       }
 
       try {
-        const response = await postToWorkerQueue(workerUrl, workerToken, {
+        // #14010 — chave fixa por edição/canal/destaque: o retry do POST e o
+        // re-run da Etapa 5 caem na mesma entry, e a falha ambígua consulta a
+        // fila antes de gravar `failed` (sem isso, dois posts públicos).
+        const response = await enqueueDailyWorkerPost(workerUrl, workerToken, {
+          idempotency_key: dailyWorkerQueueIdempotencyKey("instagram", editionDate, d, { isTest, editionDir }),
           text: caption,
           image_url: imageUrl,
           // #6005 Parte B — omitido (undefined) quando não há carrossel,
@@ -1062,7 +1067,7 @@ async function main(): Promise<number | void> {
           channel: "instagram",
           // #11724: o Worker comenta o permalink logo depois do media_publish (fail-soft lá).
           ...(umReady?.firstComment && { first_comment: umReady.firstComment }),
-        });
+        }, { logPrefix: "publish-instagram" });
         const entry: PostEntry = {
           platform: "instagram",
           destaque: d,
