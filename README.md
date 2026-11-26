@@ -1,6 +1,6 @@
 # diar.ia.br Studio
 
-Pipeline Claude Code fim-a-fim para produção da newsletter **[diar.ia.br](https://diar.ia.br)** — cobertura diária de inteligência artificial em português. 7 stages, gates humanos, zero custo recorrente de LLM (roda via OAuth da assinatura Claude).
+Pipeline Claude Code fim-a-fim para produção da newsletter **[diar.ia.br](https://diar.ia.br)** — cobertura diária de inteligência artificial em português. 6 etapas, com gate humano em duas delas (revisão e agendamento), zero custo recorrente de LLM (roda via OAuth da assinatura Claude).
 
 ## Stack
 
@@ -47,7 +47,7 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 ## Arquitetura
 
-Pipeline em 5 etapas, cada uma com gate humano:
+Pipeline em 6 etapas, com gate humano em duas delas: Etapa 4 (revisão) e Etapa 6 (agendamento). No modo interativo, as Etapas 1 a 3 também param para o editor aprovar o resultado (`[gate]` no diagrama); `--no-gates` dispensa essas paradas.
 
 ```
 Etapa 1  Pesquisa  →  source-researcher ×N || discovery-searcher ×M || eai-composer
@@ -64,10 +64,13 @@ Etapa 3  Imagens   →  É IA? (Wikimedia POTD) + image-generate ×3 (Gemini/Com
 Etapa 4  Revisão   →  pré-render técnico (HTML + imagens + upload Worker + close-poll)
                       → resumo consolidado → gate humano pré-publicação [gate]
 
-Etapa 5  Publicação→  publish-newsletter (Chrome → Beehiiv rascunho + email teste)
-                      || publish-facebook (Graph API ×3)
-                      || publish-social (Chrome → LinkedIn ×3)
-                      → review-test-email (loop) → auto-reporter
+Etapa 5  Publicação:  rascunho do e-mail no Kit
+                      || LinkedIn, Facebook, Instagram, Threads e X agendados
+                      || Brevo diária
+                      + review-test-email (loop)
+
+Etapa 6  Agendamento: e-mail de teste + Schedule do Kit [gate]
+                      + auto-reporter
 ```
 
 Outputs em `data/editions/{AAMMDD}/`. Detalhes em [`CLAUDE.md`](./CLAUDE.md).
@@ -125,7 +128,7 @@ CLAUDE.md                    # instruções do projeto (lidas pelo Claude)
 
 ## Status
 
-Pipeline fim-a-fim funcional (5 etapas, #1694). Editor revisa cada gate e dispara publicação final manualmente do dashboard de cada plataforma. Roadmap ativo via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
+Pipeline fim-a-fim funcional (6 etapas, #1694). O editor aprova a revisão (Etapa 4) e o agendamento (Etapa 6); a publicação nas plataformas sai automática. Roadmap ativo via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
 
 ## Documentação
 
