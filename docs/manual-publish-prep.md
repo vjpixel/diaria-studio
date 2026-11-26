@@ -59,7 +59,7 @@ npx tsx scripts/close-poll.ts --edition AAMMDD
 **`close-poll.ts` sincroniza `intentional-errors.jsonl` automaticamente
 (#3210)** — chama `sync-intentional-error.ts` internamente (idempotente,
 fail-soft) então o gabarito do "ache o erro" fica registrado mesmo sem
-passar pelo playbook automático (`beehiiv-playbook.md` §0.1, que só roda no
-fluxo `/diaria-5-publicacao`). Antes do #3210, publicação manual nunca
+passar pelo pré-render automático (`context/publishers/newsletter-prerender.md`
+§0.1, até o #14048 no playbook da Beehiiv). Antes do #3210, publicação manual nunca
 sincronizava a entry — o jsonl ficava com buraco e §0-replies (Stage 0) não
 conseguia creditar leitor que acertasse o erro dessa edição.

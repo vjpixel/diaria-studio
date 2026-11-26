@@ -48,6 +48,12 @@
  * `diaria-gdrive-data-bisync`: ver o registro). O alarme dos dois é a task
  * `Diaria-GDrive-Sync-Alarm` abaixo.
  *
+ * **`diaria-infra-300-heartbeat` (#12981, #13974) também fica de fora:**
+ * cadência de 5 min que `ScheduledTaskSchedule` não expressa e, de propósito,
+ * sem auto-arme (precisa das credenciais do KV `diaria-ops-state`). Templates
+ * em `infra/infra-300-heartbeat/`, instalados à mão no 300; está na
+ * allowlist `KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES` pelo mesmo motivo das demais.
+ *
  * **Este arquivo NÃO executa nada** — é dado puro. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
  * systemd é `scripts/lib/systemd-units.ts` + `scripts/setup-systemd-timers.ts`.

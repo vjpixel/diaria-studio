@@ -238,6 +238,8 @@ describe("02-writer-inputs.json (#9648)", () => {
     );
     for (const p of [
       ".claude/agents/orchestrator-stage-4.md",
+      ".claude/agents/orchestrator-stage-4-gate.md",
+      "context/stage-4-gate-receitas.md",
       "scripts/swap-destaque.ts",
       "scripts/swap-destaques.ts",
       "scripts/promote-to-destaque.ts",

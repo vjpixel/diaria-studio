@@ -23,7 +23,7 @@ import {
   deriveApoiadoresKitSubject,
   APOIADORES_KIT_UTM_PROFILE,
 } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
-import { APOIADORES_BREVO_UTM_PROFILE } from "../scripts/lib/mensal/monthly-apoiadores-brevo-render.ts";
+import { APOIADORES_BREVO_UTM_PROFILE } from "../scripts/lib/shared/utm-registry.ts"; // #14049
 import { CLARICE_UTM_PROFILE, draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
 import {
   MENSAL_APOIADORES_KIT_UTM_SOURCE,

@@ -15,9 +15,10 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const PLAYBOOK = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+const PLAYBOOK = readStage4Playbook();
 const SYNC_CMD = "npx tsx scripts/sync-intro-count.ts --md {EDITION_DIR}/02-reviewed.md";
 
 function section(start: string, end: string): string {

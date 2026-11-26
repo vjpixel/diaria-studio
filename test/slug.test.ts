@@ -9,7 +9,7 @@
  * no #11775), sem cobrir o cálculo de `seoSlug` a partir de título acentuado.
  *
  * Achado da investigação #7280: `slugify`/`seoSlug`, o caminho ATIVO hoje
- * (`context/publishers/beehiiv-playbook.md` §4a seta manualmente antes do
+ * (`docs/archive/beehiiv-playbook.md` §4a seta manualmente antes do
  * Schedule; §9/#4570 era o guard pós-Schedule, removido no #11775),
  * já produz o comportamento correto —
  * NFD-normaliza, remove os diacríticos combinantes, e NUNCA insere hífen no
@@ -18,7 +18,7 @@
  * vez de ser removido; "descarte": `amea-as`, `educa-o` — o caractere
  * acentuado inteiro some) nunca vieram de `slugify`/`seoSlug` — vinham do
  * wizard de Schedule da própria Beehiiv re-derivando o slug do título
- * (`context/publishers/beehiiv-playbook.md` §9, "bug confirmado 260610"),
+ * (`docs/archive/beehiiv-playbook.md` §9, "bug confirmado 260610"),
  * fora deste repositório. Este teste apenas TRAVA que o caminho ativo segue
  * correto — não corrige um bug que já não existe no código.
  */

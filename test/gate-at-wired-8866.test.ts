@@ -20,7 +20,8 @@ const CASES: Array<{ stage: number; playbook: string; presentMarker: string }> =
   },
   {
     stage: 4,
-    playbook: ".claude/agents/orchestrator-stage-4.md",
+    // §4d mora no arquivo do gate desde o #14033.
+    playbook: ".claude/agents/orchestrator-stage-4-gate.md",
     presentMarker: "Apresentar ao editor numa visualização limpa:",
   },
   {

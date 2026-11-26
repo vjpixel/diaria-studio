@@ -103,8 +103,8 @@ describe("#9095 crédito reflete o gerador efetivo", () => {
     }
   });
 
-  it("os 4 renders mensais leem o sidecar (wiring)", () => {
-    for (const f of ["scripts/publish-monthly.ts", "scripts/render-monthly-apoiadores-brevo.ts", "scripts/render-monthly-apoiadores-kit.ts", "scripts/monthly-preview-cloudflare.ts"]) {
+  it("os 3 renders mensais leem o sidecar (wiring; o render Brevo apoiadores saiu no #14049)", () => {
+    for (const f of ["scripts/publish-monthly.ts", "scripts/render-monthly-apoiadores-kit.ts", "scripts/monthly-preview-cloudflare.ts"]) {
       assert.match(src(f), /captionForGenerator\(resolveEditionImageGenerator\(monthlyDir,/, f);
     }
   });

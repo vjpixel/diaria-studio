@@ -25,7 +25,7 @@
  * Fail-soft na leitura — arquivo ausente/corrompido/shape inesperado -> os
  * dois campos `null`.
  *
- * @see .claude/agents/orchestrator-stage-4.md §4c.1b, §4c.1c, §4d
+ * @see .claude/agents/orchestrator-stage-4.md §4c.1b, §4c.1c; .claude/agents/orchestrator-stage-4-gate.md §4d
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";

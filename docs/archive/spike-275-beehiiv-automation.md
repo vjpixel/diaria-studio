@@ -1,6 +1,6 @@
 # Spike #275 — Beehiiv automation: investigação Phase 1
 
-> **Status: arquivado — issue #275 fechada.** Os selectors/achados desta Phase 1 alimentaram a Phase 2 (implementação de `publish-newsletter`), que por sua vez foi retrabalhada em `docs/archive/spike-1046-clipboard-paste.md` e no fluxo Worker-hosted atual (`context/publishers/beehiiv-playbook.md`, #2550). Mantido como registro histórico do mapeamento inicial da DOM do editor Beehiiv.
+> **Status: arquivado — issue #275 fechada.** Os selectors/achados desta Phase 1 alimentaram a Phase 2 (implementação de `publish-newsletter`), que por sua vez foi retrabalhada em `docs/archive/spike-1046-clipboard-paste.md` e no fluxo Worker-hosted atual (`docs/archive/beehiiv-playbook.md`, #2550). Mantido como registro histórico do mapeamento inicial da DOM do editor Beehiiv.
 
 **Status:** investigação completa, plano pronto pra Phase 2 (implementação).
 **Issue:** [#275](https://github.com/vjpixel/diaria-studio/issues/275)
@@ -188,5 +188,5 @@ Conclusão: está dentro da faixa de uso aceitável definida em `CLAUDE.md` — 
 
 - Issue #275 (root).
 - Issue #194 (LinkedIn JS injection — pattern similar usado pra contenteditable).
-- `context/publishers/beehiiv-playbook.md` — playbook editorial atual (#1846: `beehiiv.md` legacy removido, ver #1114).
+- `docs/archive/beehiiv-playbook.md` — playbook editorial atual (#1846: `beehiiv.md` legacy removido, ver #1114).
 - TipTap docs: https://tiptap.dev/docs/editor/api/commands (referência só — não usaremos API direto, paste event é mais robusto).

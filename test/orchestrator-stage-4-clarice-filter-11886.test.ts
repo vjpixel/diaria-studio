@@ -10,8 +10,9 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
-const PLAYBOOK = readFileSync(".claude/agents/orchestrator-stage-4.md", "utf8");
+const PLAYBOOK = readStage4Playbook();
 
 /** Trecho do playbook entre dois marcadores (o 1º inclusive, o 2º exclusive). */
 function between(start: string, end: string): string {

@@ -17,12 +17,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PLAYBOOK = resolve(ROOT, ".claude/agents/orchestrator-stage-4.md");
-const text = readFileSync(PLAYBOOK, "utf8");
+const text = readStage4Playbook(); // pré-gate + gate (#14033)
 
 /** Invocações (continuações de linha juntadas) que sobem servidor — têm `--file` E `--port`. */
 function serveInvocations(src: string): string[] {

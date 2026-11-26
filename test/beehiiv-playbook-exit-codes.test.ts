@@ -2,8 +2,13 @@
  * test/beehiiv-playbook-exit-codes.test.ts (#2335, #2341)
  *
  * Regression guard: verifica que todos os exit codes emitidos por
- * substitute-image-urls.ts estão documentados em beehiiv-playbook.md
+ * substitute-image-urls.ts estão documentados em newsletter-prerender.md
  * (evita drift doc↔código).
+ *
+ * #14048: a tabela de exit codes (§1.3) saiu do playbook da Beehiiv para
+ * `context/publishers/newsletter-prerender.md`; o playbook foi arquivado em
+ * `docs/archive/beehiiv-playbook.md`, onde os testes do #2341/#2340 abaixo
+ * seguem lendo o registro histórico do §4b.
  *
  * #2341: a invariante "tentar #1500 antes de declarar falha de cover" é
  * enforced pelo playbook §4b (regras que o orchestrator segue), não por um
@@ -16,12 +21,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ── #2335: exit-code coverage ────────────────────────────────────────────────
 
-describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-playbook.md", () => {
+describe("#2335: substitute-image-urls.ts exit codes documentados em newsletter-prerender.md", () => {
   it("extrai todos os process.exit(N) do script e verifica que cada um está no playbook", () => {
     // 1. Ler substitute-image-urls.ts e extrair todos os exit codes
     const scriptSrc = readFileSync(
@@ -39,9 +45,9 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-pla
     assert.ok(exitCodes.includes(2), "exit(2) deve existir (placeholders não resolvidas)");
     assert.ok(exitCodes.includes(3), "exit(3) deve existir (HTML stale — #2316)");
 
-    // 2. Ler beehiiv-playbook.md e verificar que cada exit code é mencionado
+    // 2. Ler newsletter-prerender.md e verificar que cada exit code é mencionado
     const playbookSrc = readFileSync(
-      resolve(ROOT, "context/publishers/beehiiv-playbook.md"),
+      resolve(ROOT, "context/publishers/newsletter-prerender.md"),
       "utf8",
     );
 
@@ -55,15 +61,15 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-pla
       const mentioned = patterns.some((p) => p.test(playbookSrc));
       assert.ok(
         mentioned,
-        `Exit code ${code} (de substitute-image-urls.ts) NÃO está documentado em beehiiv-playbook.md. ` +
+        `Exit code ${code} (de substitute-image-urls.ts) NÃO está documentado em newsletter-prerender.md. ` +
           `Adicionar entrada na tabela de exit codes do §1.3 (#2335).`,
       );
     }
   });
 
-  it("beehiiv-playbook.md documenta exit 3 com ação de re-render (não como fatal)", () => {
+  it("newsletter-prerender.md documenta exit 3 com ação de re-render (não como fatal)", () => {
     const playbookSrc = readFileSync(
-      resolve(ROOT, "context/publishers/beehiiv-playbook.md"),
+      resolve(ROOT, "context/publishers/newsletter-prerender.md"),
       "utf8",
     );
     // Deve mencionar exit 3 e render-newsletter-html (ação de re-render)
@@ -81,10 +87,7 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-pla
   });
 
   it("orchestrator-stage-4.md também documenta exit 3 de substitute-image-urls", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
     // Deve mencionar exit 3 e que não é fatal
     assert.match(
       stage4Src,
@@ -107,7 +110,7 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-pla
 describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como fallback", () => {
   it("beehiiv-playbook.md documenta o guard (#2341): #1500 primeiro, 2-step só como fallback", () => {
     const playbookSrc = readFileSync(
-      resolve(ROOT, "context/publishers/beehiiv-playbook.md"),
+      resolve(ROOT, "docs/archive/beehiiv-playbook.md"),
       "utf8",
     );
     // Deve mencionar a invariante: #1500 primeiro, inclusive em replace
@@ -126,7 +129,7 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
 
   it("beehiiv-playbook.md documenta verificação via thumbnail_url da API (#2341)", () => {
     const playbookSrc = readFileSync(
-      resolve(ROOT, "context/publishers/beehiiv-playbook.md"),
+      resolve(ROOT, "docs/archive/beehiiv-playbook.md"),
       "utf8",
     );
     assert.match(
@@ -137,10 +140,7 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
   });
 
   it("orchestrator-stage-4.md §4c.6b: re-render pós-autofix usa flags que batem com o argv real (#2598 follow-up)", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
 
     // Isolar o bloco de re-render do §4c.6b (entre o marcador #2617 e o
     // início do §4c.6c que o segue). Garante que o assert mira nesse bloco,
@@ -248,7 +248,7 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
 
   it("beehiiv-playbook.md nota #1705: campo existe mas plan-gated — não diz mais 'não há via de API' (#2340)", () => {
     const playbookSrc = readFileSync(
-      resolve(ROOT, "context/publishers/beehiiv-playbook.md"),
+      resolve(ROOT, "docs/archive/beehiiv-playbook.md"),
       "utf8",
     );
     // A nota antiga dizia "não há via de API/MCP pra setar/confirmar a capa (thumbnail é UI-only)"
@@ -292,10 +292,7 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
 
 describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.ts) E publicado como Artifact (aditivo)", () => {
   it("orchestrator-stage-4.md §4b (steps 2b/3): serve o preview via serve-preview.ts + embed-images-base64.ts (nunca via upload-html-public.ts), e publica a mesma variante embedded como Artifact aditivo (#6003)", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
 
     // Isolar o bloco do §4b (entre o step "2b." e o começo do §4c) — cobre a
     // publicação inicial do preview de newsletter e social, o site real do
@@ -351,10 +348,7 @@ describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.t
   });
 
   it("orchestrator-stage-4.md: loop 'ajustar' (edição inline, reordenação, humanização scoped) nunca deixa de re-servir o preview LOCAL — Artifact, quando mencionado no mesmo passo, é sempre aditivo e marcado #6003", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
     // A garantia original (pré-#6003) era "nenhuma instrução de
     // republicação menciona Artifact". Reaberta pelo editor: o passo de
     // cascata de título do loop "ajustar" (§4d.1, passo 3) agora TAMBÉM
@@ -384,10 +378,7 @@ describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.t
   });
 
   it("orchestrator-stage-4.md: teardown dos preview servers locais está presente e cobre newsletter + social (#3546 critério de aceite)", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
     // Precisa encerrar ambos os PIDs persistidos (newsletter e social) em
     // algum ponto do fluxo pós-gate — senão os servidores locais ficam
     // pendurados indefinidamente após o editor decidir sim/abortar/editar.

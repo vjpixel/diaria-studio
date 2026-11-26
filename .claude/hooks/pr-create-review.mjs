@@ -47,6 +47,9 @@
 //      an INCORRECT one (a genuine PR misclassified by an edge case) produced
 //      the exact same nothing. Fail-soft, same contract as
 //      `logEffortDecision` below — a logging failure never blocks anything.
+//      Since #14046, `no_pr_url` is logged only when the command is (or may
+//      be) a `gh pr create` — see `shouldLogSuppressedReviewInstruction`;
+//      every other Bash call ends in `no_pr_url` and was 57% of the log.
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
 // the effort-aware /code-review on the new PR.
@@ -1347,10 +1350,11 @@ export function shouldEmitReviewInstruction(toolResponseText, command) {
  * message `review_instruction_suppressed`) — sem isto, os 3 motivos de
  * `shouldEmitReviewInstruction` devolver `null` continuavam indistinguíveis
  * do lado de fora, mesmo com `resolveEmitDecision` já os separando
- * internamente. Chamado pelo entrypoint CLI pra TODO `reason !== "ok"`, não
- * só pro caminho (c) `not_gh_pr_create` — que é o mecanismo NOVO desta PR e o
- * mais provável de ter edge case não coberto, mas os outros dois custam
- * quase nada a mais pra logar e fecham a mesma lacuna de observabilidade.
+ * internamente. Chamado pelo entrypoint CLI quando
+ * `shouldLogSuppressedReviewInstruction` (abaixo) aprova: `not_gh_pr_create` e
+ * `comment_or_review_url` sempre, `no_pr_url` só quando o comando é (ou pode
+ * ser) um `gh pr create` — desde o #14046; antes era todo `reason !== "ok"`,
+ * e o `no_pr_url` de cada Bash comum virou 57% do run-log.
  *
  * Fail-soft, mesmo contrato de `logEffortDecision`: uma falha ao logar nunca
  * pode propagar nem bloquear o hook. `command` é truncado (500 chars) antes
@@ -1379,6 +1383,27 @@ export function logSuppressedReviewInstruction(
   } catch {
     // Swallow everything, same contract as logEffortDecision above.
   }
+}
+
+/**
+ * #14046 — decide se uma supressão vale uma linha no run-log. O hook roda em
+ * TODO Bash de toda sessão, e `no_pr_url` é o desfecho de quase todos (`ls`,
+ * `git status`, `npx tsx …`): medido em 25/11/2026, 1.693 de 3.000 linhas do
+ * `data/run-log.jsonl` eram esse ruído, e só 1 delas vinha de um `gh pr
+ * create`. O caso que o #6298 quer diagnosticar é o `gh pr create` que não
+ * devolveu URL reconhecível, então `no_pr_url` só loga quando o comando é (ou
+ * pode ser) um create: `"create"`, ou `"unknown"` (campo `command` ausente do
+ * payload, a mesma lacuna de observabilidade do #6298). `not_gh_pr_create` e
+ * `comment_or_review_url` seguem sempre logados: só acontecem quando a saída
+ * traz uma URL de PR, o que é raro e é justo o sinal de diagnóstico.
+ *
+ * Risco aceito na issue: `gh pr create` disparado por subprocesso (#8158) que
+ * não devolve URL nenhuma deixa de deixar rastro.
+ */
+export function shouldLogSuppressedReviewInstruction(reason, command) {
+  if (reason === "ok") return false;
+  if (reason !== "no_pr_url") return true;
+  return isGhPrCreateCommand(command) !== "not-create";
 }
 
 // #2019: CLI guard — só roda o corpo do hook quando este arquivo é o entrypoint
@@ -1444,8 +1469,11 @@ if (
         );
       } else {
         // Fleet review pós-#6298 (finding #2): torna a supressão observável —
-        // ver docstring de logSuppressedReviewInstruction acima.
-        logSuppressedReviewInstruction({ reason: emitReason, command });
+        // ver docstring de logSuppressedReviewInstruction acima. #14046: o
+        // `no_pr_url` de um Bash qualquer não vai pro log.
+        if (shouldLogSuppressedReviewInstruction(emitReason, command)) {
+          logSuppressedReviewInstruction({ reason: emitReason, command });
+        }
       }
     } catch {
       // Swallow everything: a hook that errors must not block the PR creation.

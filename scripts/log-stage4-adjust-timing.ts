@@ -5,7 +5,7 @@
  * CLI fino sobre `scripts/lib/stage4-adjust-timing.ts` (cálculo puro) +
  * `scripts/lib/run-log.ts#logEvent` (persistência). Chamado pelo
  * orchestrator no loop "ajustar" do Stage 4 (§4d.1 de
- * `.claude/agents/orchestrator-stage-4.md`) uma vez por ajuste concluído —
+ * `.claude/agents/orchestrator-stage-4-gate.md`) uma vez por ajuste concluído —
  * seja pelo fast path (Fatia 2) ou pelo fluxo completo — logo depois que o
  * preview foi re-servido, pra medir pedido→edição-em-disco,
  * edição→preview-servido e o nº de chamadas de ferramenta até lá.

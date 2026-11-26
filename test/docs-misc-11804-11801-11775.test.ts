@@ -103,7 +103,7 @@ describe("#11775 — sobras Beehiiv removidas não voltam", () => {
   });
 
   it("o playbook da Beehiiv abre declarando que é arquivo histórico", () => {
-    const head = read("context/publishers/beehiiv-playbook.md").slice(0, 600);
+    const head = read("docs/archive/beehiiv-playbook.md").slice(0, 600);
     assert.match(head, /ARQUIVO HISTÓRICO/);
   });
 });
