@@ -1,0 +1,160 @@
+/**
+ * test/docs-index.test.ts (#14061)
+ *
+ * Cobre o gerador do índice `docs/README.md` (título + primeira linha de cada
+ * doc), o `--check` que reprova doc novo fora do índice, e o arquivo commitado.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  collectDocs,
+  extractDocSummary,
+  generateDocsIndex,
+  indexMatches,
+} from "../scripts/docs-index.ts";
+
+const ROOT = resolve(import.meta.dirname, "..");
+
+function runCli(args: string[]): { status: number | null; stderr: string; stdout: string } {
+  const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "docs-index.ts"), ...args], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  return { status: r.status, stderr: r.stderr || "", stdout: r.stdout || "" };
+}
+
+function fixtureDocs(): string {
+  const dir = mkdtempSync(join(tmpdir(), "docs-index-"));
+  writeFileSync(join(dir, "alpha.md"), "# Alpha\n\nPrimeira linha do alpha.\n");
+  mkdirSync(join(dir, "archive"));
+  writeFileSync(join(dir, "archive", "velho.md"), "# Velho\n\n> **Status: arquivado.**\n");
+  mkdirSync(join(dir, "audience-history"));
+  writeFileSync(join(dir, "audience-history", "snap.md"), "# Snapshot\n");
+  writeFileSync(join(dir, "dados.json"), "{}\n");
+  return dir;
+}
+
+describe("extractDocSummary (#14061)", () => {
+  it("título ATX e o 1º parágrafo inteiro, juntando linhas quebradas", () => {
+    const r = extractDocSummary("# Título X\n\nUma frase quebrada\nem duas linhas.\n\nOutro parágrafo.\n");
+    assert.equal(r.title, "Título X");
+    assert.equal(r.summary, "Uma frase quebrada em duas linhas.");
+  });
+
+  it("pula linha de Issue:, tabela, bloco de código e cabeçalho", () => {
+    const md = [
+      "# T",
+      "",
+      "Issue: [#1](https://x/1).",
+      "",
+      "## Seção",
+      "```",
+      "codigo",
+      "```",
+      "| a | b |",
+      "",
+      "Texto real.",
+    ].join("\n");
+    assert.equal(extractDocSummary(md).summary, "Texto real.");
+  });
+
+  it("negrito que atravessa a quebra de linha sai sem `**` sobrando", () => {
+    const r = extractDocSummary("# T\n\nResultado: **não foi\nlocalizado** nada.\n");
+    assert.equal(r.summary, "Resultado: não foi localizado nada.");
+  });
+
+  it("citação de Status vira o resumo, sem o `>`", () => {
+    const r = extractDocSummary("# T\n\n> **Status: superado por X.**\n> Detalhe.\n");
+    assert.equal(r.summary, "Status: superado por X. Detalhe.");
+  });
+
+  it("front matter YAML: name/description", () => {
+    const r = extractDocSummary("---\nname: eia-composer\ndescription: Faz a coisa.\nmodel: haiku\n---\n\nCorpo.\n");
+    assert.equal(r.title, "eia-composer");
+    assert.equal(r.summary, "Faz a coisa.");
+  });
+
+  it("título setext (`===`) e CRLF", () => {
+    const r = extractDocSummary("Troca de box\r\n=====\r\n\r\nUso supervisionado.\r\n");
+    assert.equal(r.title, "Troca de box");
+    assert.equal(r.summary, "Uso supervisionado.");
+  });
+
+  it("sem título devolve null; resumo longo é cortado com reticências", () => {
+    const r = extractDocSummary(`${"palavra ".repeat(60)}\n`);
+    assert.equal(r.title, null);
+    assert.ok(r.summary!.endsWith("…"));
+    assert.ok(r.summary!.length <= 161);
+  });
+});
+
+describe("collectDocs / generateDocsIndex (#14061)", () => {
+  it("lista todo arquivo, inclusive subpasta e não-markdown, e exclui audience-history e o próprio README", () => {
+    const dir = fixtureDocs();
+    try {
+      writeFileSync(join(dir, "README.md"), "velho\n");
+      const paths = collectDocs(dir).map((e) => e.path);
+      assert.deepEqual(paths, ["alpha.md", "archive/velho.md", "dados.json"]);
+      const md = generateDocsIndex(dir);
+      assert.match(md, /\[`alpha\.md`\]\(\.\/alpha\.md\) \| Alpha \| Primeira linha do alpha\. \|/);
+      assert.match(md, /### `docs\/archive\/` \(1\)/);
+      assert.match(md, /\[`dados\.json`\]/);
+      assert.doesNotMatch(md, /snap\.md/);
+      assert.match(md, /## Índice \(3 arquivos\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("escapa `|` do título para não quebrar a tabela", () => {
+    const dir = mkdtempSync(join(tmpdir(), "docs-index-pipe-"));
+    try {
+      writeFileSync(join(dir, "a.md"), "# A | B\n\nx\n");
+      assert.match(generateDocsIndex(dir), /\| A \\\| B \|/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("indexMatches ignora CRLF do checkout no Windows", () => {
+    assert.ok(indexMatches("a\r\nb\n", "a\nb\n"));
+    assert.ok(!indexMatches("a\nb\n", "a\nc\n"));
+  });
+});
+
+describe("CLI --check (#14061)", () => {
+  it("exit 0 depois do --write; exit 1 com doc novo fora do índice; exit 1 sem README", () => {
+    const dir = fixtureDocs();
+    try {
+      assert.equal(runCli(["--docs-dir", dir, "--check"]).status, 1, "sem README deve reprovar");
+      assert.equal(runCli(["--docs-dir", dir, "--write"]).status, 0);
+      assert.equal(runCli(["--docs-dir", dir, "--check"]).status, 0);
+      writeFileSync(join(dir, "novo.md"), "# Novo\n\nDoc criado sem regenerar.\n");
+      const r = runCli(["--docs-dir", dir, "--check"]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /docs-index\.ts --write/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("docs/README.md commitado (#14061)", () => {
+  it("bate com o que o gerador produz a partir de docs/", () => {
+    const committed = readFileSync(join(ROOT, "docs", "README.md"), "utf8");
+    assert.ok(
+      indexMatches(committed, generateDocsIndex(join(ROOT, "docs"))),
+      "docs/README.md divergiu. Rodar: npx tsx scripts/docs-index.ts --write",
+    );
+  });
+
+  it("o --check está armado no pr-checks.yml (roda também em PR só de docs)", () => {
+    const wf = readFileSync(join(ROOT, ".github", "workflows", "pr-checks.yml"), "utf8");
+    assert.match(wf, /npx tsx scripts\/docs-index\.ts --check/);
+  });
+});

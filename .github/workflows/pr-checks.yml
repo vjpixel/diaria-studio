@@ -85,6 +85,11 @@ jobs:
         run: npx tsx scripts/check-invariants.ts --static
       - name: No arrow glyph in reader-facing copy (#9721)
         run: npx tsx scripts/check-no-arrow-glyph.ts
+      # #14061: docs/README.md é gerado; doc novo/renomeado/apagado sem
+      # regenerar reprova aqui. Fica no pr-checks (e não só no npm test)
+      # porque o ci.yml ignora PR só de docs, que é o PR que cria doc novo.
+      - name: docs/README.md index in sync (#14061)
+        run: npx tsx scripts/docs-index.ts --check
 
   regression-test-gate:
     name: Regression test gate (PR de bugfix exige teste novo)
