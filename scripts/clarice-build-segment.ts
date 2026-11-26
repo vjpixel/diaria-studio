@@ -303,6 +303,7 @@ import { allRows } from "./lib/sqlite-rows.ts";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { openClariceDb, DEFAULT_DB_PATH, isDerivedStale } from "./lib/clarice-db.ts";
 import {
@@ -628,25 +629,88 @@ export function sentOrQueuedFilePath(segmentsDir: string): string {
 }
 
 /**
+ * #14139: `sent-or-queued.json` PRESENTE mas ilegível, com JSON inválido ou
+ * shape inesperado. Fail-closed: o guard anti-duplo-envio nunca vira "nada
+ * rastreado" por causa de um arquivo estragado (truncado por gravação
+ * interrompida, cópia em conflito do Drive) — tratar como vazio reselecionaria
+ * quem já foi escolhido no ciclo, e reescrever a partir de `[]` apagaria o
+ * histórico de vez.
+ */
+export class SentOrQueuedCorruptError extends Error {
+  readonly file: string;
+  constructor(file: string, detail: string) {
+    super(
+      `❌ sent-or-queued.json ilegível (#14139): ${file} — ${detail}. ` +
+        "Abortando sem selecionar ninguém e sem reescrever o arquivo: tratá-lo como vazio reselecionaria " +
+        "contatos já escolhidos neste ciclo (envio duplo). O que fazer: restaure o arquivo a partir de uma " +
+        "versão anterior (histórico de versões do Google Drive, ou cópia de conflito íntegra no mesmo diretório) " +
+        "e rode de novo. Não apague o arquivo — ausência significa 'nada rastreado' e libera a reseleção.",
+    );
+    this.name = "SentOrQueuedCorruptError";
+    this.file = file;
+  }
+}
+
+/**
+ * Lê e valida `sent-or-queued.json` de `segmentsDir`. Arquivo AUSENTE → `null`
+ * (1ª invocação do ciclo, legítimo). Arquivo PRESENTE mas ilegível, JSON
+ * inválido, ou shape inesperado (não-objeto, `emails` não é array de strings,
+ * `history` presente e não-array de objetos) → lança `SentOrQueuedCorruptError`
+ * (#14139, fail-closed). `history` ausente vira `[]`. Só LEITURA.
+ */
+export function readSentOrQueuedFile(segmentsDir: string): SentOrQueuedFile | null {
+  const file = sentOrQueuedFilePath(segmentsDir);
+  if (!existsSync(file)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    throw new SentOrQueuedCorruptError(file, `leitura falhou (${(e as Error).message})`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new SentOrQueuedCorruptError(file, `JSON inválido (${(e as Error).message})`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SentOrQueuedCorruptError(file, "conteúdo não é um objeto JSON");
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!Array.isArray(obj.emails) || !obj.emails.every((e) => typeof e === "string")) {
+    throw new SentOrQueuedCorruptError(file, "campo 'emails' ausente ou não é uma lista de strings");
+  }
+  let history: SentOrQueuedHistoryEntry[] = [];
+  if (obj.history !== undefined) {
+    if (
+      !Array.isArray(obj.history) ||
+      !obj.history.every((h) => h !== null && typeof h === "object" && !Array.isArray(h))
+    ) {
+      throw new SentOrQueuedCorruptError(file, "campo 'history' não é uma lista de objetos");
+    }
+    history = obj.history as SentOrQueuedHistoryEntry[];
+  }
+  return {
+    cycle: typeof obj.cycle === "string" ? obj.cycle : "",
+    emails: obj.emails as string[],
+    history,
+  };
+}
+
+/**
  * Lê `sent-or-queued.json` de `segmentsDir` e devolve o Set de emails já
  * rastreados (normalizados trim+lowercase, mesmo padrão de
  * `collectPriorCycleEmails`/`excludeAlreadySentEmails` em
- * `clarice-build-edition-sends.ts`). Tolerante: arquivo ausente, JSON
- * corrompido, ou shape inesperado (`emails` não é array) → Set vazio (nunca
- * lança) — dado ruim aqui vira "nada rastreado ainda", não derruba o build.
- * Só LEITURA — seguro chamar mesmo em `--dry-run` (não cria o diretório nem
- * o arquivo).
+ * `clarice-build-edition-sends.ts`). Arquivo ausente → Set vazio (nada
+ * rastreado ainda). Arquivo presente e corrompido → LANÇA
+ * `SentOrQueuedCorruptError` (#14139: antes caía num Set vazio em silêncio e o
+ * build reselecionava quem já tinha sido escolhido). Só LEITURA — seguro
+ * chamar mesmo em `--dry-run` (não cria o diretório nem o arquivo).
  */
 export function loadSentOrQueuedEmails(segmentsDir: string): Set<string> {
-  const file = sentOrQueuedFilePath(segmentsDir);
-  if (!existsSync(file)) return new Set();
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SentOrQueuedFile>;
-    if (!Array.isArray(parsed.emails)) return new Set();
-    return new Set(parsed.emails.map((e) => String(e).trim().toLowerCase()));
-  } catch {
-    return new Set();
-  }
+  const data = readSentOrQueuedFile(segmentsDir);
+  if (!data) return new Set();
+  return new Set(data.emails.map((e) => e.trim().toLowerCase()));
 }
 
 /**
@@ -678,18 +742,11 @@ export function appendSentOrQueuedEmails(
 ): void {
   ensureDir(segmentsDir);
   const file = sentOrQueuedFilePath(segmentsDir);
-  let existingEmails: string[] = [];
-  let history: SentOrQueuedHistoryEntry[] = [];
-  if (existsSync(file)) {
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SentOrQueuedFile>;
-      if (Array.isArray(parsed.emails)) existingEmails = parsed.emails.map((e) => String(e));
-      if (Array.isArray(parsed.history)) history = parsed.history;
-    } catch {
-      // JSON corrompido — recomeça do zero em vez de travar o build (mesma
-      // postura tolerante de loadSentOrQueuedEmails).
-    }
-  }
+  // #14139: arquivo corrompido LANÇA antes de qualquer escrita — recomeçar de
+  // `[]` apagava o histórico do ciclo e cegava o guard pelo resto do ciclo.
+  const existing = readSentOrQueuedFile(segmentsDir);
+  const existingEmails = existing?.emails ?? [];
+  const history = existing?.history ?? [];
   const emailSet = new Set(existingEmails.map((e) => e.trim().toLowerCase()));
   const normalizedNew = newEmails.map((e) => e.trim().toLowerCase());
   for (const e of normalizedNew) emailSet.add(e);
@@ -699,7 +756,8 @@ export function appendSentOrQueuedEmails(
     emails: [...emailSet].sort(),
     history: [...history, { group, count: normalizedNew.length, at: new Date().toISOString() }],
   };
-  writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
+  // #14139: tmp + rename — gravação interrompida não deixa JSON truncado.
+  writeFileAtomic(file, JSON.stringify(merged, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -744,8 +802,9 @@ export function findOrphanedSentOrQueuedEmails(
  * `appendSentOrQueuedEmails`) — devolve a contagem REALMENTE removida
  * (`orphanEmails` que não estavam no arquivo não contam). Registra uma
  * entrada de `history` com `group: "unblock-orphans"` pra manter rastreável
- * quando/por que o desbloqueio aconteceu. Não-atômico (mesmo padrão —
- * e mesmo risco de lost-update do #4765 — de `appendSentOrQueuedEmails`);
+ * quando/por que o desbloqueio aconteceu. Read-modify-write sem lock (mesmo
+ * padrão — e mesmo risco de lost-update do #4765 — de
+ * `appendSentOrQueuedEmails`; a gravação em si é atômica desde o #14139);
  * chamar fora de uma janela em que outro build do mesmo ciclo possa estar
  * rodando concorrentemente.
  */
@@ -757,16 +816,12 @@ export function unblockOrphanedSentOrQueuedEmails(
   label = "unblock-orphans",
 ): number {
   const file = sentOrQueuedFilePath(segmentsDir);
-  if (!existsSync(file)) return 0;
-  let existingEmails: string[] = [];
-  let history: SentOrQueuedHistoryEntry[] = [];
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SentOrQueuedFile>;
-    if (Array.isArray(parsed.emails)) existingEmails = parsed.emails.map((e) => String(e));
-    if (Array.isArray(parsed.history)) history = parsed.history;
-  } catch {
-    return 0; // JSON corrompido — nada seguro a fazer aqui, sai sem escrever.
-  }
+  // #14139: ausente → 0; corrompido LANÇA (antes devolvia 0 em silêncio, e o
+  // chamador reportava "nada a liberar" sobre um guard estragado).
+  const existing = readSentOrQueuedFile(segmentsDir);
+  if (!existing) return 0;
+  const existingEmails = existing.emails;
+  const history = existing.history;
   const toRemove = new Set(orphanEmails.map((e) => e.trim().toLowerCase()));
   const kept = existingEmails.filter((e) => !toRemove.has(e.trim().toLowerCase()));
   const removedCount = existingEmails.length - kept.length;
@@ -777,7 +832,7 @@ export function unblockOrphanedSentOrQueuedEmails(
     emails: kept.sort(),
     history: [...history, { group: label, count: -removedCount, at: new Date().toISOString() }],
   };
-  writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
+  writeFileAtomic(file, JSON.stringify(merged, null, 2)); // #14139
   return removedCount;
 }
 
