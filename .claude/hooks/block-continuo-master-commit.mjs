@@ -211,16 +211,41 @@ export function decide(payload, env = process.env, headBranch = getHeadBranch) {
   return null;
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando o `decide` acima
+ * chamaria git (sessão continuo com commit/push guardado no comando). Roda o
+ * mesmo `decide` com uma leitura de branch que só anota, sem git; o
+ * despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload, env = process.env) {
+  let wouldRunGit = false;
+  decide(payload, env, () => {
+    wouldRunGit = true;
+    return null;
+  });
+  return wouldRunGit;
+}
+
 const _argv1 = process.argv[1];
 if (_argv1 && import.meta.url === pathToFileURL(_argv1).href) {
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (c) => (data += c));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       const reason = decide(JSON.parse(data || "{}"));
       if (reason) {
-        process.stdout.write(
+        write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -233,5 +258,4 @@ if (_argv1 && import.meta.url === pathToFileURL(_argv1).href) {
     } catch {
       // fail-open
     }
-  });
 }

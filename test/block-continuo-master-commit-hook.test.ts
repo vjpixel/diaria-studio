@@ -10,6 +10,7 @@ import {
   commandHasGitCommit,
   BLOCK_REASON,
 } from "../.claude/hooks/block-continuo-master-commit.mjs";
+import { armedBashPreToolUseGuards } from "./_helpers/bash-pretooluse-guards.ts";
 
 const CONT = { DIARIA_SESSION_KIND: "continuo" };
 const p = (command: string, cwd = "/x") => ({ tool_name: "Bash", cwd, tool_input: { command } });
@@ -78,7 +79,8 @@ describe("block-continuo-master-commit (#8588)", () => {
     assert.equal(run({ DIARIA_SESSION_KIND: "continuo" }), "");
   });
   it("registrado em settings.json e exportado pelo claude-delegate.sh", () => {
-    assert.match(readFileSync(".claude/settings.json", "utf8"), /block-continuo-master-commit\.mjs/);
+    // #14045: armado via despachante único do PreToolUse/Bash.
+    assert.ok(armedBashPreToolUseGuards().includes("block-continuo-master-commit.mjs"));
     assert.match(readFileSync("hermes/scripts/claude-delegate.sh", "utf8"), /^export DIARIA_SESSION_KIND=continuo\r?$/m);
   });
 });

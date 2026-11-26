@@ -228,6 +228,17 @@ export const BLOCK_REASON_BRANCH_DIVERGE =
   "`branch`) — sinal de que a branch foi trocada por baixo deste worktree entre o claim e agora. " +
   "Confirme com `git status`/`git branch` antes de commitar.";
 
+/**
+ * Filtro do despachante único (#14045): o mesmo primeiro filtro do `runHook`
+ * abaixo (tool Bash + `git commit` no comando), antes de qualquer git ou
+ * leitura de `data/sessions/`. Puro; o despachante só roda o hook, em
+ * processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  return commandHasGitCommit(payload.tool_input?.command);
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
@@ -238,7 +249,17 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
@@ -304,7 +325,7 @@ if (
       const claimRecord = readWorktreeClaimRecord(repoRoot, checkoutRoot);
       const conflictingSessionId = findConflictingClaimSessionIdFromRecord(claimRecord, callerSessionId);
       if (conflictingSessionId) {
-        process.stdout.write(
+        write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -324,7 +345,7 @@ if (
       if (claimedBranch) {
         const branchNow = getHeadBranch(checkoutRoot);
         if (branchNow && branchNow !== claimedBranch) {
-          process.stdout.write(
+          write(
             JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: "PreToolUse",
@@ -338,5 +359,4 @@ if (
     } catch {
       // Fail-open, sempre: um hook quebrado não pode travar `git commit` legítimo.
     }
-  });
 }

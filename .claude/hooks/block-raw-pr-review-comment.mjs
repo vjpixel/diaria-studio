@@ -195,10 +195,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       if (!shouldBlockRawPrReviewComment(JSON.parse(data || "{}"))) return;
-      process.stdout.write(
+      write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
@@ -210,5 +220,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     } catch {
       // Fail-open, sempre: um hook quebrado não pode travar Bash legítimo.
     }
-  });
 }

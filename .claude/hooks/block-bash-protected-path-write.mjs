@@ -39,11 +39,40 @@ export function readScript(path) {
   }
 }
 
+/**
+ * Filtro do despachante único (#14045): roda a mesma análise do `runHook`
+ * abaixo com uma leitura de arquivo que só anota, sem disco. `true` quando
+ * ela já acha escrita em caminho protegido ou quando precisaria ler um
+ * script/patch para decidir; o despachante só roda o hook, em processo
+ * próprio, nesse caso.
+ */
+export function appliesTo(payload) {
+  let wantsRead = false;
+  const finding = shouldBlockProtectedPathWrite(payload, {
+    projectDirs: [process.env.CLAUDE_PROJECT_DIR ?? ""],
+    readFile: () => {
+      wantsRead = true;
+      return null;
+    },
+  });
+  return Boolean(finding) || wantsRead;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", () => runHook(data));
+}
+
+/**
+ * Corpo do hook (#14045): recebe o stdin cru do PreToolUse e escreve a saída
+ * JSON por `write`. O despachante único dos guards de Bash
+ * (`pretooluse-bash-dispatch.mjs`) chama esta função no próprio processo; o
+ * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
+ * indentação de antes do #14045 para o diff ficar só nas bordas.
+ */
+export function runHook(data, write = (s) => process.stdout.write(s)) {
     try {
       const payload = JSON.parse(data || "{}");
       const finding = shouldBlockProtectedPathWrite(payload, {
@@ -51,7 +80,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         readFile: readScript,
       });
       if (!finding) return;
-      process.stdout.write(
+      write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
@@ -66,5 +95,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       // por comando e bloqueia o que crashou citando caminho protegido.
       process.stderr.write(`block-bash-protected-path-write (#12009): erro, comando liberado: ${err?.stack ?? err}\n`);
     }
-  });
 }
