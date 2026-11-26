@@ -13,6 +13,7 @@
  *   npx tsx scripts/fetch-open-issues-for-triage.ts
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --bugs
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --priority P0,P1
+ *   npx tsx scripts/fetch-open-issues-for-triage.ts --repos all --claude-dir-candidates
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --since 2026-08-29T10:00:00Z
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --repos all
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --repos vjpixel/diaria-studio,vjpixel/diaria-design
@@ -37,6 +38,12 @@
  * vale idêntica nos dois modos — `--since` reduz quantas issues voltam,
  * nunca quais campos cada uma carrega.
  *
+ * `--claude-dir-candidates` (#14071): filtra a saída para as issues com
+ * `claudeDirCandidate` não-nulo — corpo cita `.claude/` como alvo da mudança
+ * e a label `claude-dir` ainda falta. Só lista: quem decide roteia com
+ * `route-issue.ts --track develop --motivo claude-dir`. Compõe com os outros
+ * filtros e com `--repos`.
+ *
  * Saída (stdout, sucesso): array JSON de `TriageIssue` (ver
  * `scripts/lib/issue-triage-fetch.ts`).
  * Exit codes: 0 = ok; 1 = falha de fetch/classificação ou `--repos` inválido
@@ -57,8 +64,14 @@ import {
  * (nada utilizável) e de 0 (lista completa). */
 export const EXIT_PARTIAL = 3;
 
-function filterByFlags(issues: TriageIssue[], bugsOnly: boolean, priorityFilter: string[] | null): TriageIssue[] {
+function filterByFlags(
+  issues: TriageIssue[],
+  bugsOnly: boolean,
+  priorityFilter: string[] | null,
+  claudeDirOnly: boolean,
+): TriageIssue[] {
   return issues.filter((issue) => {
+    if (claudeDirOnly && !issue.claudeDirCandidate) return false;
     if (bugsOnly && !issue.labels.includes("bug")) return false;
     if (priorityFilter && !issue.labels.some((l) => priorityFilter.includes(l))) return false;
     return true;
@@ -104,7 +117,7 @@ export function main(argv: string[], cwd: string): number {
   for (const { repo, error } of repoErrors) {
     console.error(`[fetch-open-issues-for-triage] AVISO — issues de ${repo} NÃO entraram na lista: ${error}`);
   }
-  const issues = filterByFlags(result.issues, bugsOnly, priorityFilter);
+  const issues = filterByFlags(result.issues, bugsOnly, priorityFilter, flags.has("claude-dir-candidates"));
   console.log(JSON.stringify(issues, null, 2));
   if (repoErrors.length > 0) {
     console.error(

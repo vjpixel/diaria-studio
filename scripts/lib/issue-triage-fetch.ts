@@ -51,7 +51,15 @@
  * um repo extra é `repoErrors` — o CLI sai com exit 3 (resultado PARCIAL,
  * nunca 0), imprime a lista do que veio e avisa no stderr.
  *
+ * **Candidata a `claude-dir` (#14071).** Cada item traz
+ * `claudeDirCandidate`: o sinal de `scripts/lib/claude-dir-candidate.ts`
+ * quando o corpo cita `.claude/` (skill, agent, hook, settings) como alvo da
+ * mudança e a issue ainda não tem a label `claude-dir`; `null` caso
+ * contrário. É aviso para o briefing, nunca roteamento: não muda
+ * `execTrack` e nada aplica a label sozinho.
+ *
  * @see scripts/lib/issue-exec-track.ts (classifyExecTrackFromListItem)
+ * @see scripts/lib/claude-dir-candidate.ts (claudeDirCandidateForIssue)
  * @see scripts/lib/state-changed-tracker.ts (fetchOpenIssuesForConvergence — mesmo padrão, escopo de campos menor)
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 3
  * @see .claude/skills/diaria-develop/SKILL.md § Fase 0 passo 3
@@ -59,6 +67,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ISSUE_REPO, formatIssueRef, isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug } from "./issue-repos.ts";
@@ -68,6 +77,7 @@ import {
   type GhIssueListRawItem,
   type ExecTrack,
 } from "./issue-exec-track.ts";
+import { claudeDirCandidateForIssue, type ClaudeDirCandidate } from "./claude-dir-candidate.ts";
 
 /** Issue já normalizada + classificada — pronta pro coordenador consumir
  * sem precisar rechamar `classifyExecTrack` por conta própria. */
@@ -86,6 +96,9 @@ export interface TriageIssue {
   updatedAt: string | null;
   state: string | null;
   execTrack: ExecTrack;
+  /** #14071 — sinal de que a correção escreve em `.claude/` sem a label
+   * `claude-dir`; `null` sem sinal ou com a label. Só aviso. */
+  claudeDirCandidate: ClaudeDirCandidate | null;
 }
 
 export interface FetchOpenIssuesForTriageResult {
@@ -110,6 +123,20 @@ const MODULE_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", 
 const TRIAGE_JSON_FIELDS = "number,title,labels,body,url,updatedAt,state";
 
 const TRIAGE_ISSUE_LIMIT = 200;
+
+/** #14071 — nomes dos agents (arquivos `.md` da pasta de agents do Claude
+ * Code, sem extensão) para o detector de `claude-dir` reconhecer
+ * `fact-checker.md` como alvo. Só leitura; falha (checkout sem a pasta) cai
+ * no fallback do detector. */
+function loadAgentNames(): string[] | undefined {
+  try {
+    return readdirSync(resolve(MODULE_REPO_ROOT, ".claude", "agents"))
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => f.slice(0, -3));
+  } catch {
+    return undefined;
+  }
+}
 
 export interface FetchOpenIssuesForTriageOptions {
   /** Injetável pra teste; default `new Date()`. */
@@ -269,6 +296,7 @@ function fetchOneRepo(
     return { issues: [], error: "gh issue list retornou payload que não é um array" };
   }
   const raw = parsed as GhIssueListRawItem[];
+  const agentNames = loadAgentNames();
   // Mesmo achado do #5713/fila-convergence-gate: `--limit N` bate exatamente
   // em N sem sinalizar truncamento — tratado como fetch incompleto, nunca
   // como sucesso parcial silencioso.
@@ -280,19 +308,23 @@ function fetchOneRepo(
   }
   const issues: TriageIssue[] = raw.map((item) => {
     const number = typeof item.number === "number" ? item.number : Number(item.number);
+    const title = typeof item.title === "string" ? item.title : "";
+    const labels = normalizeGhIssueListLabels(item.labels);
+    const body = (item.body ?? null) as string | null;
     return {
     repo,
     ref: formatIssueRef({ repo, number }),
     number,
-    title: typeof item.title === "string" ? item.title : "",
-    labels: normalizeGhIssueListLabels(item.labels),
-    body: (item.body ?? null) as string | null,
+    title,
+    labels,
+    body,
     url: typeof item.url === "string" ? item.url : "",
     updatedAt: (item.updatedAt ?? null) as string | null,
     state: (item.state ?? null) as string | null,
     // Lança (fail-closed, #7018) se `body` estiver ausente — não capturado
     // aqui de propósito, propaga pro caller do fetch inteiro.
     execTrack: classifyExecTrackFromListItem(item, { now: opts?.now }),
+    claudeDirCandidate: claudeDirCandidateForIssue({ title, labels, body }, { agentNames }),
     };
   });
   return { issues };
