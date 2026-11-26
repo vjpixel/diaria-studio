@@ -1570,11 +1570,21 @@ export function queueUploadIfMissing(regPath: string, path: string, key = basena
  * antes (`files`) ou `force` (a cópia existia no out dir). Devolve se marcou.
  */
 export function queueRetire(regPath: string, name: string, force = false): boolean {
+  if (!isRetirableName(name)) return false;
   const reg = readRegistry(regPath);
   if (!force && !reg.files[name]) return false;
   if (reg.retire?.includes(name)) return true;
   writeJson(regPath, { ...reg, retire: [...(reg.retire ?? []), name] });
   return true;
+}
+
+/**
+ * #13229: o único tipo de nome que o `retire` tira do Drive: um `…-local.xml`
+ * solto na raiz (sem `/` nem `\`). Um `drive-uploads.json` editado à mão ou
+ * corrompido nunca arquiva o XML normal, o bruto ou uma subpasta.
+ */
+export function isRetirableName(name: unknown): name is string {
+  return typeof name === "string" && /-local\.xml$/i.test(name) && !/[\\/]/.test(name) && name !== "-local.xml";
 }
 
 /** #13229: o `name` voltou a ser gravado: desmarca, para o upload não tirar o arquivo novo do Drive. */
@@ -7643,7 +7653,7 @@ function readRegistry(path: string): DriveUploadRegistry {
       files: r.files ?? {},
       pending: Array.isArray(r.pending) ? r.pending : [],
       previewNamesNoticeShown: r.previewNamesNoticeShown === true,
-      ...(Array.isArray(r.retire) && r.retire.length ? { retire: r.retire.filter((x): x is string => typeof x === "string") } : {}),
+      ...(Array.isArray(r.retire) && r.retire.length ? { retire: r.retire.filter(isRetirableName) } : {}),
     };
   } catch (e) {
     log(`[aviso] ${path} ilegível (${(e as Error).message}): recomeçando o registro de uploads`);
@@ -7738,6 +7748,10 @@ async function retireNames(reg: DriveUploadRegistry, folderId: string, uploadedN
   const keep: string[] = [];
   for (const name of reg.retire) {
     if (uploadedNames.has(name)) continue;
+    if (!isRetirableName(name)) {
+      log(`[aviso] ${JSON.stringify(name)} no retire do drive-uploads.json não é um -local.xml da raiz: ignorado, nada sai do Drive (#13229)`);
+      continue;
+    }
     try {
       const ids = await ops.list(folderId, name);
       if (ids.length) await ops.archive(folderId, name, ids);

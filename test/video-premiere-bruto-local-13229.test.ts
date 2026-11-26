@@ -31,7 +31,7 @@ import {
 } from "../scripts/lib/diaria/video-montage.ts";
 import { xmlFamilyOf } from "../scripts/lib/diaria/video-version-archive.ts";
 import { parsePremiereBrutoRoot } from "../scripts/lib/diaria/premiere-bruto-root.ts";
-import { DRIVE_UPLOADS_FILE, uploadAll, writeLocalBrutoXml, type DriveSession } from "../scripts/video-montagem.ts";
+import { DRIVE_UPLOADS_FILE, isRetirableName, uploadAll, writeLocalBrutoXml, type DriveSession } from "../scripts/video-montagem.ts";
 import {
   brutoFilePaths,
   fileUrlToPath,
@@ -272,6 +272,75 @@ describe("#13229: -local.xml velho sai também do Drive no modo API (retire do d
     writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath);
     writeFileSync(xmlPath, normalXml());
     assert.ok(writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath));
+    assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, []);
+  });
+  it("retire só aceita -local.xml da raiz: XML normal, bruto e subpasta num drive-uploads.json editado à mão são ignorados", async () => {
+    const state = tmp();
+    const reg = join(state, DRIVE_UPLOADS_FILE);
+    writeFileSync(reg, JSON.stringify({ files: {}, pending: [], retire: ["Diaria comentada_Vertical_V2.xml", "20261125_101010.mp4", "trechos/x-local.xml", "a\\b-local.xml", 7, "S_V1-local.xml"] }));
+    const listed: string[] = [];
+    await uploadAll({ stateDir: state, edition: ED }, fakeSession(), [], { retireOps: { list: async (_f, name) => (listed.push(name), []), archive: async () => 0 } });
+    assert.deepEqual(listed, ["S_V1-local.xml"]);
+    assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, []);
+    assert.equal(isRetirableName("S_V1-LOCAL.XML"), true);
+    assert.equal(isRetirableName("-local.xml"), false);
+  });
+  it("nome do retire que sobe no mesmo upload não é arquivado (é o arquivo novo)", async () => {
+    const state = tmp();
+    const out = tmp();
+    const reg = join(state, DRIVE_UPLOADS_FILE);
+    writeFileSync(reg, JSON.stringify({ files: {}, pending: [], retire: ["S_V1-local.xml"] }));
+    const file = join(out, "S_V1-local.xml");
+    writeFileSync(file, "<xml/>");
+    const responses: Array<() => Response> = [
+      () => new Response(JSON.stringify({ files: [] }), { status: 200, headers: { "content-type": "application/json" } }),
+      () => new Response("", { status: 200, headers: { location: "https://u/s" } }),
+    ];
+    const session: DriveSession = {
+      ...fakeSession(),
+      deps: {
+        driveFetch: async () => {
+          const next = responses.shift();
+          if (!next) throw new Error("chamada inesperada");
+          return next();
+        },
+        uploadFetch: async () => new Response(JSON.stringify({ id: "NEW", name: "S_V1-local.xml" }), { status: 200, headers: { "content-type": "application/json" } }),
+      } as DriveSession["deps"],
+    };
+    const touched: string[] = [];
+    const r = await uploadAll({ stateDir: state, edition: ED, outDir: out }, session, [file], { retireOps: { list: async (_f, n) => (touched.push(n), ["NEW"]), archive: async (_f, n) => (touched.push(`archive ${n}`), 1) } });
+    assert.equal(r.error, null);
+    assert.deepEqual(r.uploaded, [file]);
+    assert.deepEqual(touched, []);
+    const after = JSON.parse(readFileSync(reg, "utf8"));
+    assert.deepEqual(after.retire, []);
+    assert.equal(after.files["S_V1-local.xml"].id, "NEW");
+  });
+  it("arquivamento parcial (1 de 2 ids): o nome fica marcado e o retry move só o que sobrou", async () => {
+    const state = tmp();
+    const reg = join(state, DRIVE_UPLOADS_FILE);
+    writeFileSync(reg, JSON.stringify({ files: {}, pending: [], retire: ["S_V1-local.xml"] }));
+    const root = ["A", "B"];
+    const moved: string[] = [];
+    let failOn: string | null = "B";
+    const ops = {
+      list: async () => [...root],
+      archive: async (_f: string, _n: string, ids: readonly string[]) => {
+        for (const id of ids) {
+          if (id === failOn) throw new Error("quota");
+          root.splice(root.indexOf(id), 1);
+          moved.push(id);
+        }
+        return ids.length;
+      },
+    };
+    await uploadAll({ stateDir: state, edition: ED }, fakeSession(), [], { retireOps: ops });
+    assert.deepEqual(moved, ["A"]);
+    assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, ["S_V1-local.xml"]);
+    failOn = null;
+    const r = await uploadAll({ stateDir: state, edition: ED }, fakeSession(), [], { retireOps: ops });
+    assert.deepEqual(moved, ["A", "B"]);
+    assert.deepEqual(r.retired, ["S_V1-local.xml"]);
     assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, []);
   });
   it("nunca subiu e não existe no out dir: nada a marcar", () => {
