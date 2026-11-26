@@ -12,7 +12,8 @@
  *   - `d{N}`: o bloco `DESTAQUE N` da newsletter (do header até o próximo
  *     `---`) + as seções `## d{N}` e `## d{N}-cards` do social (inclusive as do
  *     `# Curto`) + as fontes do destaque (URL do approved, entrada do
- *     `manifest.json`, entradas do `extras.json`). Mudança no social do D{N}
+ *     `manifest.json`, entradas do `extras.json`, cada uma com o hash do texto
+ *     baixado: `d{N}.txt`, `d{N}-extra-{k}.txt`). Mudança no social do D{N}
  *     recheca o D{N} inteiro; fonte nova registrada pelo editor
  *     (`add-destaque-source.ts`) também.
  *   - `pool`: o resto da newsletter (cabeçalho, boxes, LANÇAMENTOS, RADAR, USE
@@ -32,7 +33,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hashContent } from "./fact-check-staleness.ts";
-import { readExtrasManifest } from "./fact-check-extra-sources.ts";
+import { extraSourceFileName, readExtrasManifest } from "./fact-check-extra-sources.ts";
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./section-naming.ts";
 import { canonicalize } from "./url-utils.ts";
 import { POOL_SOURCES_DIR, readPoolSourcesManifest } from "./diaria/pool-sources.ts";
@@ -59,6 +60,12 @@ export interface UnitSourceEntry {
   status?: string;
   completeness?: string;
   k?: number;
+  /**
+   * Hash do texto baixado que o fact-checker leria (`d{N}.txt` da fonte
+   * principal, `d{N}-extra-{k}.txt` da extra). `null` sem arquivo legível;
+   * ausente = não lido (testes puros).
+   */
+  textHash?: string | null;
 }
 
 /** Fonte já lida de um item do pool (`_internal/pool-sources/`, #13884). */
@@ -198,7 +205,7 @@ export function splitSocialUnits(md: string): { units: Record<string, string>; g
 }
 
 function sourceFingerprint(n: number, src: UnitSourceInputs): string[] {
-  const fp = (e: UnitSourceEntry) => `${e.url}|${e.status ?? ""}|${e.completeness ?? ""}`;
+  const fp = (e: UnitSourceEntry) => `${e.url}|${e.status ?? ""}|${e.completeness ?? ""}|${e.textHash ?? ""}`;
   return [
     `approved:${src.approvedUrls[n - 1] ?? ""}`,
     ...src.manifest.filter((e) => e.destaque === n).map((e) => `manifest:${fp(e)}`),
@@ -324,6 +331,47 @@ export function mergePartialClaims<T extends { destaque: number | "secondary" }>
   return { claims: indexed.map((x) => x.c), outOfScope };
 }
 
+/**
+ * Confere que o parcial cobre o plano antes do merge (#14035). Devolve os
+ * problemas (vazio = ok). Recusa quando:
+ *   - o agente não ecoou `units` ou ecoou outra lista (dispatch com lista velha);
+ *   - um `d{N}` do plano não tem o claim `headline` (obrigatório por destaque,
+ *     #9383) — sinal de saída truncada ou de unidade não checada;
+ *   - há claim fora do escopo (o agente checou o que não devia; o veredito
+ *     dele não entra, e o anterior daquela unidade pode estar velho).
+ * O merge sem essa checagem apagaria os claims antigos da unidade e a
+ * carimbaria como checada sem checagem nenhuma.
+ */
+export function partialCoverageProblems(
+  planUnits: string[],
+  echoedUnits: unknown,
+  partialClaims: Array<{ destaque: number | "secondary"; claim_type?: string }>,
+): string[] {
+  const problems: string[] = [];
+  const plan = sortUnits(planUnits);
+  if (!Array.isArray(echoedUnits) || !echoedUnits.every((u) => typeof u === "string")) {
+    problems.push(`parcial sem \`units\` ecoado (plano: ${plan.join(", ")})`);
+  } else {
+    const echoed = sortUnits(echoedUnits as string[]);
+    if (echoed.join(",") !== plan.join(",")) {
+      problems.push(`\`units\` do parcial (${echoed.join(", ") || "vazio"}) não bate com o plano (${plan.join(", ")})`);
+    }
+  }
+  const missingHeadline = plan.filter(
+    (u) => /^d\d+$/.test(u) && !partialClaims.some((c) => claimUnit(c.destaque) === u && c.claim_type === "headline"),
+  );
+  if (missingHeadline.length > 0) {
+    problems.push(`sem claim \`headline\` (obrigatório por destaque, #9383) em ${missingHeadline.join(", ")}`);
+  }
+  const scope = new Set(plan);
+  const outOfScope = sortUnits(partialClaims.map((c) => claimUnit(c.destaque)).filter((u) => !scope.has(u)));
+  if (outOfScope.length > 0) {
+    const n = partialClaims.filter((c) => !scope.has(claimUnit(c.destaque))).length;
+    problems.push(`${n} claim(s) fora do escopo (${outOfScope.join(", ")})`);
+  }
+  return problems;
+}
+
 function readJsonArray(path: string): UnitSourceEntry[] {
   if (!existsSync(path)) return [];
   try {
@@ -334,9 +382,20 @@ function readJsonArray(path: string): UnitSourceEntry[] {
   }
 }
 
+/** Hash do texto de um arquivo de fonte; `null` se ausente/ilegível. */
+function fileTextHash(path: string): string | null {
+  try {
+    return hashContent(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Lê do disco as fontes que entram no hash de cada destaque: URLs do
- * `01-approved.json`, `fact-check-sources/manifest.json` e `extras.json`.
+ * `01-approved.json`, `fact-check-sources/manifest.json` e `extras.json`, com o
+ * hash do texto baixado de cada uma (`d{N}.txt`, `d{N}-extra-{k}.txt`) — texto
+ * que muda sem o status mudar também recheca o destaque.
  * Fail-soft: arquivo ausente/ilegível vira lista vazia (o hash muda, o que só
  * pode levar a rechecar mais, nunca menos).
  */
@@ -353,23 +412,21 @@ export function readUnitSourceInputs(internalDir: string): UnitSourceInputs {
   }
   const sourcesDir = join(internalDir, "fact-check-sources");
   const poolDir = join(internalDir, POOL_SOURCES_DIR);
-  const poolSources: PoolSourceFingerprint[] = readPoolSourcesManifest(internalDir).map((e) => {
-    let textHash: string | null = null;
-    if (e.file) {
-      try {
-        textHash = hashContent(readFileSync(join(poolDir, e.file), "utf8"));
-      } catch {
-        textHash = null;
-      }
-    }
-    return { url: e.url, status: e.status, completeness: e.completeness, textHash };
-  });
-  return {
-    approvedUrls,
-    manifest: readJsonArray(join(sourcesDir, "manifest.json")),
-    extras: readExtrasManifest(sourcesDir),
-    poolSources,
-  };
+  const poolSources: PoolSourceFingerprint[] = readPoolSourcesManifest(internalDir).map((e) => ({
+    url: e.url,
+    status: e.status,
+    completeness: e.completeness,
+    textHash: e.file ? fileTextHash(join(poolDir, e.file)) : null,
+  }));
+  const manifest = readJsonArray(join(sourcesDir, "manifest.json")).map((e) => ({
+    ...e,
+    textHash: fileTextHash(join(sourcesDir, `d${e.destaque}.txt`)),
+  }));
+  const extras = readExtrasManifest(sourcesDir).map((e) => ({
+    ...e,
+    textHash: typeof e.k === "number" ? fileTextHash(join(sourcesDir, extraSourceFileName(e.destaque, e.k))) : null,
+  }));
+  return { approvedUrls, manifest, extras, poolSources };
 }
 
 export const SCOPE_FILE = "fact-check-scope.json";

@@ -52,6 +52,7 @@ import {
   computeUnitHashes,
   mergePartialClaims,
   parseUnitHashes,
+  partialCoverageProblems,
   PARTIAL_FILE,
   planFactCheckScope,
   readUnitSourceInputs,
@@ -167,7 +168,7 @@ export interface FactCheckResult {
    */
   unit_hashes?: FactCheckUnitHashes;
   /** (#14035) Presente quando o resultado veio de um merge parcial. */
-  incremental?: { units: string[]; reused: string[]; merged_at: string; out_of_scope_dropped: number };
+  incremental?: { units: string[]; reused: string[]; merged_at: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1045,29 @@ export function planScopeForEdition(editionDir: string, opts: { forceFull?: bool
   return file;
 }
 
+/**
+ * (#14035) Carimbos do plano COMPLETO em `fact-check-scope.json`, para o passo 2
+ * sem `--merge-partial`. `null` (cai no carimbo do conteúdo atual, o
+ * comportamento anterior) quando não há plano legível, o plano não é `full`, ou
+ * a saída do agente é anterior ao plano (não é a resposta a ele).
+ */
+export function fullPlanStamps(
+  internalDir: string,
+  inputPath: string,
+): { content_hash: FactCheckContentHash; unit_hashes: FactCheckUnitHashes } | null {
+  const scopePath = join(internalDir, SCOPE_FILE);
+  try {
+    const scope = JSON.parse(readFileSync(scopePath, "utf8")) as Partial<FactCheckScopeFile>;
+    if (scope.mode !== "full") return null;
+    if (statSync(inputPath).mtimeMs < statSync(scopePath).mtimeMs) return null;
+    const contentHash = parseContentHash(scope.content_hash);
+    const unitHashes = parseUnitHashes(scope.unit_hashes);
+    return contentHash && unitHashes ? { content_hash: contentHash, unit_hashes: unitHashes } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function formatScopeInstructions(scope: FactCheckScopeFile, editionDir: string): string[] {
   const internal = `${editionDir.replace(/[/\\]+$/, "")}/_internal`;
   if (scope.mode === "none") {
@@ -1069,7 +1093,9 @@ export function formatScopeInstructions(scope: FactCheckScopeFile, editionDir: s
  * plano) com o `fact-check.json` anterior e carimba com os hashes DO PLANO —
  * se o texto mudou entre o plano e o merge, o resultado sai defasado e o
  * `--check-blocking` acusa, nunca o contrário. Lança em qualquer estado que
- * não garanta o recorte (o caller cai no exit 1: re-despachar completo).
+ * não garanta o recorte (o caller cai no exit 1: re-despachar completo),
+ * inclusive parcial que não cobre o plano (`partialCoverageProblems`: `units`
+ * ecoado diferente, `d{N}` sem claim `headline`, claim fora do escopo).
  */
 export function mergePartialIntoResult(
   editionDir: string,
@@ -1093,8 +1119,15 @@ export function mergePartialIntoResult(
   }
   if (!existsSync(prevPath)) throw new Error("fact-check.json anterior ausente — re-check completo");
   const previous = normalizeFactCheckResult(JSON.parse(readFileSync(prevPath, "utf8")) as unknown, edition, { manifest });
-  const partial = normalizeFactCheckResult(JSON.parse(readFileSync(partialPath, "utf8")) as unknown, edition, { manifest });
-  const { claims, outOfScope } = mergePartialClaims(previous.claims, partial.claims, scope.units);
+  const rawPartial = JSON.parse(readFileSync(partialPath, "utf8")) as unknown;
+  const partial = normalizeFactCheckResult(rawPartial, edition, { manifest });
+  const problems = partialCoverageProblems(
+    scope.units,
+    (rawPartial as { units?: unknown } | null)?.units,
+    partial.claims,
+  );
+  if (problems.length > 0) throw new Error(`parcial não cobre o plano: ${problems.join("; ")}`);
+  const { claims } = mergePartialClaims(previous.claims, partial.claims, scope.units);
   const merged = normalizeFactCheckResult(
     { claims, checked_at: partial.checked_at, content_hash: contentHash, unit_hashes: unitHashes },
     edition,
@@ -1104,7 +1137,6 @@ export function mergePartialIntoResult(
     units: scope.units,
     reused: scope.reused,
     merged_at: new Date().toISOString(),
-    out_of_scope_dropped: outOfScope.length,
   };
   return merged;
 }
@@ -1409,9 +1441,7 @@ async function main(): Promise<number | void> {
       }
       const inc = result.incremental!;
       console.log(
-        `  Fact-check incremental (#14035): rechecado ${inc.units.join(", ")}; reaproveitado ${inc.reused.join(", ") || "(nada)"}` +
-          (inc.out_of_scope_dropped > 0 ? `; ${inc.out_of_scope_dropped} claim(s) fora do escopo descartado(s)` : "") +
-          ".",
+        `  Fact-check incremental (#14035): rechecado ${inc.units.join(", ")}; reaproveitado ${inc.reused.join(", ") || "(nada)"}.`,
       );
     } else {
       const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
@@ -1425,13 +1455,18 @@ async function main(): Promise<number | void> {
     const socialMd = readFileSync(socialPath, "utf8");
     const stamps = currentStamps(editionDir, newsletterMd, socialMd);
     const currentHash = stamps.content_hash;
+    // #14035: no COMPLETO, carimba com os hashes do PLANO (passo 1, antes do
+    // agente), como o merge parcial já faz: edição do Studio durante os ~90 s
+    // do agente sai DEFASADA e entra no próximo re-run, nunca marcada como
+    // checada.
+    const planStamps = !flags.has("merge-partial") ? fullPlanStamps(internalDir, inputPath) : null;
     // Só carimba por unidade junto com o carimbo inteiro (saída fresca do
     // agente): num fact-check.json anterior ao #14035, carimbar agora marcaria
     // como checado um texto que talvez já tenha mudado — o próximo re-run
     // sai completo.
     if (!result.content_hash) {
-      result.content_hash = currentHash;
-      if (!result.unit_hashes) result.unit_hashes = stamps.unit_hashes;
+      result.content_hash = planStamps?.content_hash ?? currentHash;
+      if (!result.unit_hashes) result.unit_hashes = planStamps?.unit_hashes ?? stamps.unit_hashes;
     }
     const staleness = factCheckStaleness(result.content_hash, currentHash);
 

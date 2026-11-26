@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import {
   computeUnitHashes,
   mergePartialClaims,
+  partialCoverageProblems,
   partitionNewsletter,
   planFactCheckScope,
   splitNewsletterUnits,
@@ -30,6 +31,7 @@ import {
 } from "../scripts/lib/fact-check-units.ts";
 import { computeContentHash } from "../scripts/lib/fact-check-staleness.ts";
 import { planScopeForEdition } from "../scripts/run-fact-checker.ts";
+import { hashContent } from "../scripts/lib/fact-check-staleness.ts";
 
 const D1_URL = "https://example.com/d1";
 const D2_URL = "https://example.com/d2";
@@ -264,6 +266,18 @@ describe("#14035: hash por unidade", () => {
     assert.deepEqual(changedUnits(base, computeUnitHashes(newsletter(), social(), refetched)), []);
   });
 
+  it("texto baixado da fonte principal (d{N}.txt) ou da extra que muda sem o status mudar marca o destaque", () => {
+    const withText = (d2Text: string, extraText: string): UnitSourceInputs => ({
+      ...SOURCES,
+      manifest: SOURCES.manifest.map((e) => (e.destaque === 2 ? { ...e, textHash: hashContent(d2Text) } : e)),
+      extras: [{ destaque: 3, k: 1, url: "https://outra.com/x", status: "ok", textHash: hashContent(extraText) }],
+    });
+    const a = computeUnitHashes(newsletter(), social(), withText("fonte A", "extra A"));
+    assert.deepEqual(changedUnits(a, computeUnitHashes(newsletter(), social(), withText("fonte B", "extra A"))), ["d2"]);
+    assert.deepEqual(changedUnits(a, computeUnitHashes(newsletter(), social(), withText("fonte A", "extra B"))), ["d3"]);
+    assert.deepEqual(changedUnits(a, computeUnitHashes(newsletter(), social(), withText("fonte A", "extra A"))), []);
+  });
+
   it("preâmbulo do social muda o global (re-check completo)", () => {
     const after = computeUnitHashes(newsletter(), social({ preamble: "> outro aviso" }), SOURCES);
     assert.notEqual(after.global, base.global);
@@ -322,6 +336,31 @@ describe("#14035: merge parcial", () => {
   it("unidade rechecada sem claim no parcial fica sem claim (o veredito velho não volta)", () => {
     const { claims } = mergePartialClaims(prev, [], ["d2", "pool"]);
     assert.deepEqual(claims.map((c) => c.destaque), [1]);
+  });
+});
+
+describe("#14035: cobertura do parcial antes do merge", () => {
+  const h = (destaque: number | "secondary") => ({ destaque, claim_type: "headline" });
+  const n = (destaque: number | "secondary") => ({ destaque, claim_type: "number" });
+
+  it("parcial que ecoa o plano e tem o headline de cada d{N}: ok (pool sem claim é ok)", () => {
+    assert.deepEqual(partialCoverageProblems(["d2", "pool"], ["pool", "d2"], [h(2), n(2)]), []);
+    assert.deepEqual(partialCoverageProblems(["pool"], ["pool"], []), []);
+  });
+
+  it("sem `units` ecoado ou com lista diferente do plano: recusa", () => {
+    assert.match(partialCoverageProblems(["d2"], undefined, [h(2)]).join(";"), /sem `units` ecoado/);
+    assert.match(partialCoverageProblems(["d2"], ["d1"], [h(2)]).join(";"), /não bate com o plano/);
+    assert.match(partialCoverageProblems(["d2"], "d2", [h(2)]).join(";"), /sem `units` ecoado/);
+  });
+
+  it("d{N} do plano sem claim headline (saída truncada, dispatch com lista velha): recusa", () => {
+    assert.match(partialCoverageProblems(["d2"], ["d2"], []).join(";"), /headline.*d2/);
+    assert.match(partialCoverageProblems(["d1", "d2"], ["d1", "d2"], [h(1), n(2)]).join(";"), /headline.*em d2$/);
+  });
+
+  it("claim fora do escopo: recusa em vez de descartar com log", () => {
+    assert.match(partialCoverageProblems(["d2"], ["d2"], [h(2), n(1)]).join(";"), /1 claim\(s\) fora do escopo \(d1\)/);
   });
 });
 
@@ -385,9 +424,16 @@ function firstFullCheck(dir: string) {
   return fcPath;
 }
 
-function writePartial(dir: string, claims: unknown[]): string {
+const headline = (destaque: number, text: string) => ({ ...claim(destaque, text, "SUSTAINED", text), claim_type: "headline" });
+
+/** Parcial como o agente grava: `units` ecoado (omitido com `units: null`). */
+function writePartial(dir: string, claims: unknown[], units: string[] | null = ["d2"]): string {
   const p = join(dir, "_internal", "fact-check.partial.json");
-  writeFileSync(p, JSON.stringify({ edition: "261126", checked_at: "2026-11-26T11:00:00Z", claims }), "utf8");
+  writeFileSync(
+    p,
+    JSON.stringify({ edition: "261126", checked_at: "2026-11-26T11:00:00Z", ...(units ? { units } : {}), claims }),
+    "utf8",
+  );
   // mtime estritamente depois do plano (o merge recusa parcial anterior ao plano).
   const later = new Date(Date.now() + 2000);
   utimesSync(p, later, later);
@@ -416,7 +462,7 @@ describe("#14035: ponta a ponta pela CLI", () => {
       assert.equal(scope.mode, "partial");
       assert.deepEqual(scope.units, ["d2"]);
 
-      const partial = writePartial(dir, [claim(2, "9%", "SUSTAINED", "só 9% deixariam pagar")]);
+      const partial = writePartial(dir, [headline(2, "Título do D2"), claim(2, "9%", "SUSTAINED", "só 9% deixariam pagar")]);
       const r = runCli(dir, ["--input-json", partial, "--merge-partial", "--check-blocking"]);
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /rechecado d2; reaproveitado d1, d3, pool/);
@@ -425,7 +471,7 @@ describe("#14035: ponta a ponta pela CLI", () => {
       const fc = JSON.parse(readFileSync(fcPath, "utf8"));
       assert.deepEqual(
         fc.claims.map((c: { destaque: number; text: string }) => `${c.destaque}:${c.text}`),
-        ["1:58 empresas", "2:9%", "3:4 níveis"],
+        ["1:58 empresas", "2:Título do D2", "2:9%", "3:4 níveis"],
       );
       assert.deepEqual(fc.incremental.units, ["d2"]);
       const md = readFileSync(join(dir, "02-reviewed.md"), "utf8");
@@ -465,7 +511,10 @@ describe("#14035: ponta a ponta pela CLI", () => {
       firstFullCheck(dir);
       writeFileSync(join(dir, "02-reviewed.md"), newsletter({ d2: "Corpo do D2: só 9% deixariam pagar." }), "utf8");
       planScopeForEdition(dir);
-      const partial = writePartial(dir, [claim(2, "9%", "NOT_FOUND_IN_SOURCE", "só 9% deixariam pagar")]);
+      const partial = writePartial(dir, [
+        headline(2, "Título do D2"),
+        claim(2, "9%", "NOT_FOUND_IN_SOURCE", "só 9% deixariam pagar"),
+      ]);
       const r = runCli(dir, ["--input-json", partial, "--merge-partial", "--check-blocking"]);
       assert.equal(r.status, 2, r.stdout + r.stderr);
       assert.match(r.stderr, /GATE-BLOCKING/);
@@ -486,7 +535,7 @@ describe("#14035: ponta a ponta pela CLI", () => {
         newsletter({ d1: "Corpo do D1 com 60 empresas.", d2: "Corpo do D2: só 9% deixariam pagar." }),
         "utf8",
       );
-      const partial = writePartial(dir, [claim(2, "9%", "SUSTAINED", "só 9% deixariam pagar")]);
+      const partial = writePartial(dir, [headline(2, "Título do D2"), claim(2, "9%", "SUSTAINED", "só 9% deixariam pagar")]);
       const r = runCli(dir, ["--input-json", partial, "--merge-partial", "--check-blocking"]);
       assert.match(r.stdout, /DEFASADO/);
       const next = planScopeForEdition(dir);
@@ -527,6 +576,87 @@ describe("#14035: ponta a ponta pela CLI", () => {
       runCli(dir, ["--input-json", fcPath]);
       assert.equal(JSON.parse(readFileSync(fcPath, "utf8")).unit_hashes, undefined);
       assert.equal(planScopeForEdition(dir).mode, "full");
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("parcial que não cobre o plano (lista velha, sem eco, claim fora do escopo) é recusado e o fact-check.json fica intacto", () => {
+    const dir = setupEdition();
+    try {
+      const fcPath = firstFullCheck(dir);
+      const before = readFileSync(fcPath, "utf8");
+      writeFileSync(join(dir, "02-reviewed.md"), newsletter({ d2: "Corpo do D2: só 9% deixariam pagar." }), "utf8");
+      assert.deepEqual(planScopeForEdition(dir).units, ["d2"]);
+      const cases: Array<[unknown[], string[] | null, RegExp]> = [
+        // Dispatch com a lista velha: checou d1, nada de d2.
+        [[headline(1, "Título do D1"), claim(1, "58 empresas", "SUSTAINED", "x")], ["d1"], /não bate com o plano/],
+        // Saída truncada: ecoou d2, mas sem o headline do D2.
+        [[claim(2, "9%", "SUSTAINED", "só 9%")], ["d2"], /headline/],
+        // Sem eco de `units`.
+        [[headline(2, "Título do D2")], null, /sem `units` ecoado/],
+        // Claim fora do escopo.
+        [[headline(2, "Título do D2"), claim(1, "58 empresas", "DIVERGENT", "x")], ["d2"], /fora do escopo/],
+      ];
+      for (const [claims, units, re] of cases) {
+        const partial = writePartial(dir, claims, units);
+        const r = runCli(dir, ["--input-json", partial, "--merge-partial", "--check-blocking"]);
+        assert.equal(r.status, 1, r.stdout + r.stderr);
+        assert.match(r.stderr, re);
+        assert.match(r.stderr, /--full/);
+        assert.equal(readFileSync(fcPath, "utf8"), before, "o claim velho do D2 e o carimbo seguem como estavam");
+      }
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("COMPLETO carimba com os hashes do plano: edição durante a rodada do agente sai DEFASADA", () => {
+    const dir = setupEdition();
+    try {
+      const scope = planScopeForEdition(dir);
+      assert.equal(scope.mode, "full");
+      // Editor mexe no D1 pelo Studio enquanto o agente roda.
+      writeFileSync(join(dir, "02-reviewed.md"), newsletter({ d1: "Corpo do D1 com 60 empresas." }), "utf8");
+      const fcPath = join(dir, "_internal", "fact-check.json");
+      writeFileSync(
+        fcPath,
+        JSON.stringify({ edition: "261126", claims: [claim(1, "58 empresas", "SUSTAINED", "Corpo do D1 com 58 empresas.")] }),
+        "utf8",
+      );
+      const later = new Date(Date.now() + 2000);
+      utimesSync(fcPath, later, later);
+      const r = runCli(dir, ["--input-json", fcPath, "--check-blocking"]);
+      assert.match(r.stdout, /DEFASADO/);
+      const fc = JSON.parse(readFileSync(fcPath, "utf8"));
+      assert.deepEqual(fc.content_hash, scope.content_hash);
+      assert.deepEqual(fc.unit_hashes, scope.unit_hashes);
+      const next = planScopeForEdition(dir);
+      assert.equal(next.mode, "partial");
+      assert.deepEqual(next.units, ["d1"], "o D1 mexido durante a rodada entra no próximo re-run");
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("texto baixado da fonte do D2 (d2.txt em disco) muda sem o manifest mudar: plano PARCIAL d2", () => {
+    const dir = setupEdition();
+    try {
+      const sourcesDir = join(dir, "_internal", "fact-check-sources");
+      writeFileSync(
+        join(sourcesDir, "manifest.json"),
+        JSON.stringify(
+          [1, 2, 3].map((d) => ({ destaque: d, url: `https://example.com/d${d}`, status: "ok", erro: null, bytes: 10, fetched_at: "x" })),
+        ),
+        "utf8",
+      );
+      for (const d of [1, 2, 3]) writeFileSync(join(sourcesDir, `d${d}.txt`), `Fonte do D${d}.`, "utf8");
+      firstFullCheck(dir);
+      assert.equal(planScopeForEdition(dir).mode, "none");
+      writeFileSync(join(sourcesDir, "d2.txt"), "Fonte do D2, versão nova.", "utf8");
+      const scope = planScopeForEdition(dir);
+      assert.equal(scope.mode, "partial");
+      assert.deepEqual(scope.units, ["d2"]);
     } finally {
       cleanup(dir);
     }
