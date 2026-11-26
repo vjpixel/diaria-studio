@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 156 invariants.
+**Total**: 157 invariants.
 
 ## Static (estrutura do repo)
 
@@ -60,6 +60,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `reveal-temporal-prefix` | intentional-error.json.reveal (quando preenchido) começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6337, #6139) | #6337 |
 | `reviewed-duplicate-closing-block` | 02-reviewed.md com o bloco Para encerrar duplicado — mesma checagem do Stage 4, rodada logo após o stitch (#13252) | #13252 |
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105), resumos do pool completos/traduzidos (#9358) e itens de seção com URL resolvível pelo parser real (#3821/#10311) | #964 |
+| `reviewed-titles-per-highlight` | 02-reviewed.md tem 1 título por destaque depois do gate/title-picker (#159); fora do pré-gate (`--phase pre-gate`), onde 3 opções são o esperado (#14266) | #159 |
 | `reviewed-unknown-template-marker` | 02-reviewed.md com {{...}} que não é merge tag conhecida do ESP — mesma checagem do Stage 4, rodada logo após o stitch (#13252) | #13252 |
 | `social-humanizer-provenance-recorded` | Humanizador e Clarice registrados por conteúdo antes de concluir Stage 2 (#12331) | #12331 |
 | `social-humanizer-sentinel-written` | check-humanizer-social.ts --write rodou de fato no fim do Stage 2 — sentinel .humanizer-social-done.json existe e bate com 03-social.md atual (#6305) | #6305 |

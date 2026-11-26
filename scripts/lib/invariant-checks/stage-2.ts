@@ -80,7 +80,7 @@ function runCheck(
 
 /**
  * `02-reviewed.md` deve passar todos os checks granulares de
- * lint-newsletter-md (titles-per-highlight, why-matters-format,
+ * lint-newsletter-md (why-matters-format,
  * destaque-min-chars, destaque-max-chars, why-matters-length (#3993),
  * intro-count, coverage-line-format (#1207), eai-section,
  * destaque-category-noticias (#8200, cedo no Stage 2 desde #9105),
@@ -99,7 +99,9 @@ function runCheck(
 function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "02-reviewed.md");
   const checks: Array<{ name: string; issue: string; extraArgs?: string[] }> = [
-    { name: "titles-per-highlight", issue: "#159" },
+    // #14266: `titles-per-highlight` saiu daqui para a regra própria
+    // `reviewed-titles-per-highlight` (postGateOnly) — antes do gate o
+    // 02-reviewed.md tem 3 títulos por destaque por desenho (#159/#589).
     // #11254: o teto fixo de 52 chars saiu — os limites reais são o card 4x5
     // (3 linhas a 62px) e o assunto do e-mail (D1 ≤70). Bloqueiam aqui, na
     // saída do writer; ficam fora do gate 4 (decisão do editor, 261027d).
@@ -151,6 +153,29 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     );
   }
   return violations;
+}
+
+/**
+ * #14266: 1 título por destaque em `02-reviewed.md` (#159). Regra separada de
+ * `reviewed-passes-all-lints` e marcada `postGateOnly`: antes do gate o
+ * arquivo tem 3 opções de título por destaque POR DESENHO (o editor poda no
+ * gate; o title-picker é o fallback pós-gate, `stage-2-run.ts --phase
+ * post-gate`). O `post-checks` roda `--phase pre-gate` e a pula — antes ela
+ * barrava toda edição e o `post-gate` recusava sem um `post-checks` que
+ * passou (deadlock). O `pipeline-sentinel write --step 2` (pós-gate) segue
+ * rodando a regra, então o sentinel continua recusando 3 títulos.
+ * Arquivo ausente: `reviewed-passes-all-lints` já reporta o `file-exists`.
+ */
+function checkReviewedTitlesPerHighlight(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  return runCheck(
+    "lint-newsletter-md.ts",
+    ["--check", "titles-per-highlight", "--md", file],
+    "reviewed-titles-per-highlight",
+    "#159",
+    file,
+  );
 }
 
 /**
@@ -712,6 +737,14 @@ export const STAGE_2_RULES: InvariantRule[] = [
     source_issue: "#964",
     stage: 2,
     run: checkReviewedPassesAllLints,
+  },
+  {
+    id: "reviewed-titles-per-highlight",
+    description: "02-reviewed.md tem 1 título por destaque depois do gate/title-picker (#159); fora do pré-gate (`--phase pre-gate`), onde 3 opções são o esperado (#14266)",
+    source_issue: "#159",
+    stage: 2,
+    postGateOnly: true,
+    run: checkReviewedTitlesPerHighlight,
   },
   {
     id: "social-passes-lints",
