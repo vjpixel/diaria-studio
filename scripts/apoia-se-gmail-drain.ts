@@ -4,7 +4,7 @@
  * Wrapper CLI de `scripts/lib/apoia-se-gmail-drain.ts::drainApoiaSeNotifications`
  * — uso manual/debug, mesmo padrão de `scripts/inbox-drain.ts`. Em produção
  * o drain é chamado direto pela lib a partir de `refreshApoiosData`
- * (`scripts/studio-ui/studio-apoios.ts`), não por este CLI.
+ * (`scripts/lib/apoios-data.ts`), não por este CLI.
  *
  * Uso:
  *   npx tsx scripts/apoia-se-gmail-drain.ts

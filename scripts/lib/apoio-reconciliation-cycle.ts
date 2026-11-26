@@ -26,7 +26,7 @@
  * e pulava silenciosamente pra sempre. Um apoiador que PAGOU ficava invisível
  * pro CRM. Fix: `runApoioReconciliationCycle` processa `.notifications` via
  * `importNewApoiadoresFromGmail` ANTES de `.promessas` — MESMA ordem que
- * `refreshApoiosData` já estabelece (ver `studio-apoios.ts` em torno da linha
+ * `refreshApoiosData` já estabelece (ver `apoios-data.ts` em torno da linha
  * 1208-1220, dedup-ordering) — pra que uma promessa cujo e-mail já foi
  * importado como confirmado na MESMA leva seja corretamente deduplicada
  * contra o contato recém-criado.
@@ -38,7 +38,7 @@
  * silenciosamente pra sempre, sem NENHUM log, indistinguível de "ainda não
  * pagou". Fix: `ApoiaSeAuthError` é tratada separadamente — propaga (throw),
  * já que "falharia igual pra todo item restante" (mesmo raciocínio de
- * `fetchCurrentStatuses` em `studio-apoios.ts`); outros erros (rede, API
+ * `fetchCurrentStatuses` em `apoios-data.ts`); outros erros (rede, API
  * não-auth) mantêm o comportamento de manter a promessa pendente, mas agora
  * com um log de aviso (antes: nada). `runApoioReconciliationCycle` captura
  * esse throw especificamente em `authError` — NUNCA misturado com o
@@ -113,7 +113,7 @@ export interface ReconcilePromisesResult {
  * `ApoiaSeAuthError` (achado crítico 2, PR #4503) PROPAGA — throw, nunca
  * engolida — porque uma chave apoia.se inválida falha igual pra TODO item
  * restante do lote (mesmo raciocínio de `fetchCurrentStatuses` em
- * `studio-apoios.ts`); o caller (`runApoioReconciliationCycle`) trata esse
+ * `apoios-data.ts`); o caller (`runApoioReconciliationCycle`) trata esse
  * throw de forma loud. Qualquer OUTRO erro (rede, API não-auth) mantém a
  * promessa no store pra reprocessar na próxima rodada — nunca a descarta por
  * um erro transiente — mas agora loga um aviso (antes: `catch {}` vazio,

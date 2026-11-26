@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildApoiosDiffAlarmEmail } from "../scripts/lib/apoios-diff-alarm.ts";
 import { toAlarmFinding } from "../scripts/apoios-diff-alarm.ts";
-import { segmentsCachePath, vinculoCachePath } from "../scripts/studio-ui/studio-apoios.ts";
+import { segmentsCachePath, vinculoCachePath } from "../scripts/lib/apoios-data.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");

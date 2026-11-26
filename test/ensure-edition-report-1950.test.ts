@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureEditionReport } from "../scripts/refresh-dedup.ts";
-import { getReportById } from "../scripts/studio-ui/studio-reports.ts";
+import { getReportById } from "../scripts/lib/reports-registry.ts";
 
 // ROOT do repo real — `ensureEditionReport`/`writeEditionReport` sempre
 // registram via `registerReport(ROOT, ...)` usando o ROOT REAL do script
@@ -50,7 +50,7 @@ describe("ensureEditionReport (#1950)", () => {
     // via `registerReport(ROOT, ...)` usando o `ROOT` REAL do script (nunca o
     // `root` fake deste teste) — sem a flag, um `npm test` local numa máquina
     // com data/.credentials.json configurado bateria no Gmail real (o fix
-    // sistêmico em defaultHasCredentials/studio-reports.ts já cobre o caso
+    // sistêmico em defaultHasCredentials/reports-registry.ts já cobre o caso
     // geral, mas este caller específico também ganha a flag explícita).
     const gen = ensureEditionReport(root, post("2026-06-08T09:00:00Z"), false);
     assert.equal(gen, true);

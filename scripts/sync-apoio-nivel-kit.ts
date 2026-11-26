@@ -76,7 +76,7 @@ import {
   buildApoiosData,
   readPastMonthSnapshots,
   type MonthSnapshot,
-} from "./studio-ui/studio-apoios.ts";
+} from "./lib/apoios-data.ts";
 import {
   resolveDesiredApoioLevels,
   planPushMutations,

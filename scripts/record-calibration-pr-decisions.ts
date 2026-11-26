@@ -33,7 +33,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { computeCalibrationDecisionUpdates, type CalibrationPrState } from "./lib/calibration-audit.ts";
-import { listReports, registerReport, getReportById, reportId } from "./studio-ui/studio-reports.ts";
+import { listReports, registerReport, getReportById, reportId } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
