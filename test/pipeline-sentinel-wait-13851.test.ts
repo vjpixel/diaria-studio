@@ -14,7 +14,13 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseWaitArgs, waitForSentinel } from "../scripts/pipeline-sentinel.ts";
+import {
+  describeWaitReason,
+  formatWaitLine,
+  parseWaitArgs,
+  WAIT_USAGE_EXIT,
+  waitForSentinel,
+} from "../scripts/pipeline-sentinel.ts";
 import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -137,6 +143,22 @@ describe("parseWaitArgs (#13851)", () => {
     assert.throws(() => parseWaitArgs({ "wait-seconds": "abc" }));
     assert.throws(() => parseWaitArgs({ "wait-seconds": "10", "poll-seconds": "0" }));
   });
+  it("valor em branco (`--wait-seconds=`) lança em vez de virar 0 em silêncio", () => {
+    assert.throws(() => parseWaitArgs({ "wait-seconds": "" }), /--wait-seconds inválido/);
+    assert.throws(() => parseWaitArgs({ "wait-seconds": "  " }), /--wait-seconds inválido/);
+    assert.throws(() => parseWaitArgs({ "wait-seconds": "10", "poll-seconds": "" }), /--poll-seconds inválido/);
+  });
+});
+
+describe("linha [aguardando] (#13851)", () => {
+  it("outputs_missing lista os outputs que faltam", () => {
+    const r = { ok: false as const, reason: "outputs_missing" as const, missingOutputs: ["02-reviewed.md", "03-social.md"] };
+    assert.equal(describeWaitReason(r), "outputs_missing (02-reviewed.md, 03-social.md)");
+    assert.match(formatWaitLine(4, 2, 90_000, 30_000, r), /\[aguardando\] sentinel step 4 outputs_missing \(02-reviewed\.md, 03-social\.md\) \(leitura 2\)/);
+  });
+  it("sentinel_missing sai como o motivo cru", () => {
+    assert.equal(describeWaitReason({ ok: false, reason: "sentinel_missing" }), "sentinel_missing");
+  });
 });
 
 function runAssert(args: string[]) {
@@ -179,12 +201,24 @@ describe("pipeline-sentinel assert --wait-seconds (CLI, #13851)", () => {
     }
   });
 
-  it("--wait-seconds sem valor é erro, não espera zero em silêncio", () => {
+  it("--wait-seconds sem valor é erro de uso (exit 64, não o 1 de sentinel ausente)", () => {
     const { root, dir } = makeEdition();
     try {
       const { status, stderr } = runAssert(["--edition", "261123", "--step", "4", "--dir", dir, "--wait-seconds"]);
-      assert.equal(status, 1);
+      assert.equal(WAIT_USAGE_EXIT, 64);
+      assert.equal(status, WAIT_USAGE_EXIT, stderr);
       assert.match(stderr, /exigem um valor/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--wait-seconds= em branco é erro de uso (exit 64)", () => {
+    const { root, dir } = makeEdition();
+    try {
+      const { status, stderr } = runAssert(["--edition", "261123", "--step", "4", "--dir", dir, "--wait-seconds="]);
+      assert.equal(status, WAIT_USAGE_EXIT, stderr);
+      assert.match(stderr, /\[error\] --wait-seconds inválido/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -201,5 +235,16 @@ describe("orchestrator-stage-5.md usa a espera na pré-condição (#13851)", () 
     const fatal = pre.slice(pre.indexOf("Exit 0 → **FATAL:**"));
     assert.ok(fatal.indexOf("aguardar o sync") >= 0, fatal);
     assert.ok(fatal.indexOf("aguardar o sync") < fatal.indexOf("/diaria-4-revisao"), fatal);
+  });
+  it("comando sem exit code (background) = aguardar a conclusão, nunca prosseguir", () => {
+    assert.match(pre, /\*\*Sem exit code\*\*[^\n]*aguardar a conclusão[^\n]*nunca prosseguir/);
+  });
+  it("halt banners da pré-condição dizem Drive, não OneDrive", () => {
+    assert.doesNotMatch(pre, /OneDrive/);
+  });
+  it("documenta o exit 64 de uso e a espera da edição legada", () => {
+    const tail = playbook.slice(playbook.indexOf("### Pre-condicao: sentinel Stage 4"));
+    assert.match(tail.slice(0, 6000), /- `64` → erro de uso/);
+    assert.match(pre, /legada[^\n]*espera a janela inteira antes do exit `3`/);
   });
 });
