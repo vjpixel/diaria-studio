@@ -132,3 +132,42 @@ describe("resolveAnnualWindow", () => {
     assert.equal(a.year, b.year);
   });
 });
+
+describe("mês e ano vêm do calendário BRT, não do fuso da máquina (#14141)", () => {
+  // `process.env.TZ` muda o fuso de `Date#getMonth()`/`getFullYear()` em
+  // tempo de execução. Rodar cada instante sob UTC (o `300`) e sob um fuso a
+  // leste (Tóquio) prova que o resultado não depende do host: no código
+  // antigo, esses dois fusos já viam o mês seguinte.
+  const FUSOS = ["UTC", "Asia/Tokyo", "America/Sao_Paulo"];
+
+  function sobFuso<T>(tz: string, fn: () => T): T {
+    const prev = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      return fn();
+    } finally {
+      if (prev === undefined) delete process.env.TZ;
+      else process.env.TZ = prev;
+    }
+  }
+
+  for (const tz of FUSOS) {
+    it(`31/12 às 22:00 BRT (01/01 01:00 UTC) ainda é dezembro, com TZ=${tz}`, () => {
+      const w = sobFuso(tz, () => resolveAnnualWindow({ today: new Date("2027-01-01T01:00:00Z") }));
+      const meioDia = sobFuso(tz, () => resolveAnnualWindow({ today: new Date("2026-12-31T15:00:00Z") }));
+      assert.equal(w.tipo, "aniversario", "dezembro assume a rodada de agosto, não a de janeiro");
+      assert.ok(w.warnings.some((x) => x.includes("Tipo não informado")), "dezembro não é mês de rodada: avisa");
+      assert.deepEqual(
+        { desde: w.desde, ate: w.ate, year: w.year },
+        { desde: meioDia.desde, ate: meioDia.ate, year: meioDia.year },
+        "mesma janela e ano que no meio do dia 31/12 BRT",
+      );
+    });
+
+    it(`31/07 às 22:00 BRT (01/08 01:00 UTC) ainda é julho, com TZ=${tz}`, () => {
+      const w = sobFuso(tz, () => resolveAnnualWindow({ today: new Date("2026-08-01T01:00:00Z") }));
+      assert.equal(w.tipo, "janeiro", "julho assume a rodada de janeiro, não a de aniversário");
+      assert.ok(w.warnings.some((x) => x.includes("Tipo não informado")), "julho não é mês de rodada: avisa");
+    });
+  }
+});

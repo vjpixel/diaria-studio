@@ -24,6 +24,8 @@
  * mencione o período (draft, banner, gate) tem que derivar daqui.
  */
 
+import { brtDayKey } from "../shared/brt.ts";
+
 /** Rodada anual — define a janela default e se há bloco de aniversário. */
 export type AnnualTipo = "aniversario" | "janeiro";
 
@@ -163,6 +165,10 @@ export interface ResolveAnnualWindowArgs {
 export function resolveAnnualWindow(args: ResolveAnnualWindowArgs = {}): AnnualWindow {
   const warnings: string[] = [];
   const today = args.today ?? new Date();
+  // Mês e ano do calendário BRT, nunca do fuso da máquina (#14141): no `300`
+  // (UTC), 31/12 às 22:00 BRT já é janeiro em `getMonth()` e trocaria o tipo
+  // e o ano da rodada nas 3 h antes da virada de mês.
+  const [todayYear, todayMonth] = brtDayKey(today).split("-").map(Number);
 
   let tipo: AnnualTipo;
   if (args.tipo) {
@@ -171,7 +177,7 @@ export function resolveAnnualWindow(args: ResolveAnnualWindowArgs = {}): AnnualW
     }
     tipo = args.tipo;
   } else {
-    const d = defaultTipoFor(today.getMonth() + 1);
+    const d = defaultTipoFor(todayMonth);
     tipo = d.tipo;
     if (d.assumed) {
       warnings.push(
@@ -190,7 +196,7 @@ export function resolveAnnualWindow(args: ResolveAnnualWindowArgs = {}): AnnualW
   // a edição enviada em 2027. Sem ele, `defaultWindowFor("janeiro", 2026)`
   // devolveria 2501–2512 e um `--ate 2612` legítimo seria marcado como
   // exceção.
-  const refYear = args.ate ? 2000 + Number(args.ate.slice(0, 2)) + (tipo === "janeiro" ? 1 : 0) : today.getFullYear();
+  const refYear = args.ate ? 2000 + Number(args.ate.slice(0, 2)) + (tipo === "janeiro" ? 1 : 0) : todayYear;
   const dflt = defaultWindowFor(tipo, refYear);
 
   const desde = args.desde ?? dflt.desde;
