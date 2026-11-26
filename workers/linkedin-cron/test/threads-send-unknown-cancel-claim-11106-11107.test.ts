@@ -330,6 +330,7 @@ describe("#11133 reserva do enqueue entre cancel e KV put", () => {
     const { key } = await (await enqueue(ctx.env, post())).json() as { key: string };
     const originalPut = ctx.env.LINKEDIN_QUEUE.put.bind(ctx.env.LINKEDIN_QUEUE);
     let race = true;
+    let claimToken: string | undefined;
     ctx.env.LINKEDIN_QUEUE.put = (async (k: string, value: string) => {
       await originalPut(k, value);
       if (race && k === key) {
@@ -339,7 +340,9 @@ describe("#11133 reserva do enqueue entre cancel e KV put", () => {
         // não pode liberar este claim de publicação.
         const token = ctx.get(key).state.storage.store.get("replacement_token");
         const claim = await ctx.get(key).scheduler.fetch(new Request("https://do/claim", { method: "POST" }));
-        assert.equal((await claim.json() as { claimed: boolean }).claimed, true);
+        const claimBody = await claim.json() as { claimed: boolean; claim_token?: string };
+        assert.equal(claimBody.claimed, true);
+        claimToken = claimBody.claim_token; // #14219 — só o dono libera
         await ctx.get(key).scheduler.fetch(new Request("https://do/release-replacement", {
           method: "POST", body: JSON.stringify({ replacement_token: token }),
         }));
@@ -349,7 +352,9 @@ describe("#11133 reserva do enqueue entre cancel e KV put", () => {
     const res = await enqueue(ctx.env, post({ text: "Texto novo" }));
     assert.equal(res.status, 409);
     assert.equal((JSON.parse(ctx.store.get(key)!) as QueueEntry).text, "Texto novo");
-    await ctx.get(key).scheduler.fetch(new Request("https://do/release-claim", { method: "POST" }));
+    await ctx.get(key).scheduler.fetch(new Request("https://do/release-claim", {
+      method: "POST", body: JSON.stringify({ claim_token: claimToken }),
+    }));
     await __test__.fireDueItems(ctx.env);
     assert.deepEqual(g.containers, ["Texto novo"]);
   });
