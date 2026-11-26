@@ -157,7 +157,7 @@ export function resolveDataBisyncConfig(
   const envFileExplicit = !!(env.GDRIVE_DATA_ENV_FILE && env.GDRIVE_DATA_ENV_FILE.length > 0);
   const envFile = envFileExplicit
     ? (env.GDRIVE_DATA_ENV_FILE as string)
-    : join(home, ".config", "diaria", "gdrive-data-bisync.env");
+    : posix.join(home, ".config", "diaria", "gdrive-data-bisync.env"); // POSIX como o wrapper (#13738)
   let values: Partial<Record<DataBisyncEnvKey, string>> = {};
   if (!envFile.startsWith("/")) {
     errors.push(`GDRIVE_DATA_ENV_FILE precisa ser caminho absoluto (${envFile})`);
