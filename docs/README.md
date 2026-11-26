@@ -13,9 +13,9 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (180 arquivos)
+## Índice (181 arquivos)
 
-### `docs/` (165)
+### `docs/` (166)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
@@ -142,6 +142,7 @@
 | [`render-unification-analysis-3269.md`](./render-unification-analysis-3269.md) | Unificação do render HTML diário (Beehiiv) vs mensal (Brevo/Clarice) — análise (#3269) | Status: investigação concluída. Não implementa a unificação — produz o mapeamento e a recomendação para uma decisão de arquitetura informada. Um extra de… |
 | [`retro-semanal-staleness-alarm-setup.md`](./retro-semanal-staleness-alarm-setup.md) | Alarme de staleness da retro semanal | `scripts/retro-semanal-staleness-alarm.ts` + `scripts/lib/retro-semanal-staleness-alarm.ts` avisam quando a `/diaria-retro-semanal` ainda não agendou o… |
 | [`robots-txt-drift-check-setup.md`](./robots-txt-drift-check-setup.md) | Smoke-test do `robots.txt` SERVIDO pelos Workers de curadoria | `scripts/lib/shared/robots-txt.ts` produz um `robots.txt` PRÓPRIO por Worker de curadoria (`renderCuradoriaRobotsTxt`), e guards existentes… |
+| [`rodadas-autonomas-historico.md`](./rodadas-autonomas-historico.md) | Rodadas autônomas: histórico das regras | Arquivo de consulta, nunca carregado por padrão (#14043, #14044). Guarda os incidentes, medições, linhas do tempo e justificativas longas que motivaram as… |
 | [`run-tests-concurrency.md`](./run-tests-concurrency.md) | Concorrência e prioridade do `npm test` (#7875) | Por que `scripts/run-tests.ts` satura a máquina de propósito, por que reduzir a concorrência foi medido e reprovado, e o que de fato resolve. |
 | [`scheduled-edicao-setup.md`](./scheduled-edicao-setup.md) | Agendamento automático da edição diária | CANCELADO POR DECISÃO DO EDITOR (19/08/2026). Não há edição diária agendada em máquina nenhuma, e isso é intencional — a edição passou a ser rodada à mão. O… |
 | [`scheduled-tasks-registry.md`](./scheduled-tasks-registry.md) | Registro operacional de tasks agendadas | Extraído do `CLAUDE.md` (#5344 Parte B2, 15/08/2026) — `CLAUDE.md` é o único arquivo de prompt carregado incondicionalmente em toda sessão e em todo dispatch… |
