@@ -14,10 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   runStage2,
-  socialClariceDeadlineMs,
+  planSocialClarice,
   readRunState,
   CLARICE_PHASE_BUDGET_MS,
-  CLARICE_SOCIAL_MIN_MS,
   STAGE2_SNAPSHOTS,
   type StepResult,
   type Stage2RunDeps,
@@ -118,11 +117,12 @@ describe("teto da Clarice na Etapa 2 (#14029)", () => {
     assert.equal(CLARICE_NORMAL_DEADLINE_MS, CLARICE_TOTAL_DEADLINE_MS);
   });
 
-  it("o social recebe o que sobra do orçamento da fase, com piso de 60 s", () => {
-    assert.equal(socialClariceDeadlineMs(480_000, 10_000), 480_000);
-    assert.equal(socialClariceDeadlineMs(480_000, 480_000), CLARICE_PHASE_BUDGET_MS - 480_000);
-    assert.equal(socialClariceDeadlineMs(480_000, 530_000), CLARICE_SOCIAL_MIN_MS);
-    assert.equal(socialClariceDeadlineMs(90_000, 90_000), 90_000);
+  it("o social roda na mesma chamada só com o teto inteiro; senão, chamada própria (#14093)", () => {
+    assert.deepEqual(planSocialClarice(480_000, 10_000), { mode: "inline", deadlineMs: 480_000 });
+    assert.deepEqual(planSocialClarice(480_000, CLARICE_PHASE_BUDGET_MS - 480_000), { mode: "inline", deadlineMs: 480_000 });
+    assert.deepEqual(planSocialClarice(480_000, 90_000), { mode: "own-call", remainingMs: 450_000 });
+    assert.deepEqual(planSocialClarice(480_000, 450_000), { mode: "own-call", remainingMs: 90_000 });
+    assert.deepEqual(planSocialClarice(480_000, -5), { mode: "inline", deadlineMs: 480_000 }, "relógio que volta não dá teto maior");
   });
 });
 
@@ -526,6 +526,97 @@ function markClariceDone(): void {
   const st = readRunState(dir)!;
   writeFileSync(join(dir, "_internal", "02-stage2-run-state.json"), JSON.stringify({ ...st, clariceDone: { newsletter: "applied", social: "applied" } }));
 }
+
+describe("--phase post-humanize — orçamento da Clarice do social (#14093)", () => {
+  const writeCorrectedB: Handler = (args) => {
+    const out = argOf({ script: "", args }, "--corrected-out")!;
+    writeFileSync(out, out.includes("02-") ? "corrigido\n" : "# Social\n\n## d1\n\nA3\n\n## d2\n\nB3\n\n## d3\n\nC3\n", "utf8");
+    return ok();
+  };
+  const isSocialB = (args: string[]): boolean => (argOf({ script: "", args }, "--in") ?? "").endsWith("03-social.md");
+
+  /** Relógio injetado: a Clarice da newsletter "leva" `newsletterMs` sem esperar de verdade. */
+  function clockedDeps(newsletterMs: number, handlers: Record<string, Handler>): ReturnType<typeof makeDeps> {
+    let t = Date.UTC(2026, 10, 26, 3, 0, 0);
+    const clarice = handlers["clarice-correct.ts"];
+    const made = makeDeps({
+      ...handlers,
+      "clarice-correct.ts": (args) => {
+        if (!isSocialB(args)) t += newsletterMs;
+        return clarice(args);
+      },
+    });
+    made.deps.now = () => new Date(t);
+    return made;
+  }
+  const clariceCalls = (calls: Call[]): Call[] => calls.filter((c) => c.script.includes("clarice-correct"));
+
+  it("dia rápido (newsletter em 30 s): as duas Clarices na mesma chamada, social com 480 s", async () => {
+    await upToHumanize();
+    humanizeDone();
+    const { deps, calls } = clockedDeps(30_000, { ...happyChecks, "clarice-correct.ts": writeCorrectedB });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], deps);
+    assert.equal(r.code, 0);
+    assert.equal(r.nextPhase, "post-checks");
+    const cc = clariceCalls(calls);
+    assert.equal(cc.length, 2);
+    assert.equal(argOf(cc[1], "--deadline-ms"), "480000");
+    assert.equal(r.clarice?.social, "applied");
+  });
+
+  it("dia lento (newsletter em 450 s): social NÃO roda com a sobra de 90 s; vai para chamada própria com 480 s", async () => {
+    await upToHumanize();
+    humanizeDone();
+    const first = clockedDeps(450_000, { ...happyChecks, "clarice-correct.ts": writeCorrectedB });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], first.deps);
+    assert.equal(r.code, 3, "nem halt nem sucesso: re-rodar só o social");
+    assert.equal(r.rerunPhase, "post-humanize");
+    assert.deepEqual(r.rerunArgs, ["--social-clarice-only"]);
+    assert.ok(r.fixes.some((f) => f.check === "clarice-social-own-call"));
+    assert.equal(r.haltRequired, undefined);
+    assert.equal(clariceCalls(first.calls).length, 1, "só a newsletter nesta chamada");
+    assert.ok(!first.calls.some((c) => c.script.includes("check-humanizer-social")), "o social ainda não tem prova de Clarice");
+    assert.equal(readRunState(dir)?.clariceDone?.newsletter, "applied");
+    assert.equal(readRunState(dir)?.clariceDone?.social, undefined);
+
+    const second = clockedDeps(0, { ...happyChecks, "clarice-correct.ts": writeCorrectedB });
+    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, ...r.rerunArgs!], second.deps);
+    assert.equal(r2.code, 0);
+    assert.equal(r2.nextPhase, "post-checks");
+    const cc = clariceCalls(second.calls);
+    assert.equal(cc.length, 1);
+    assert.ok(isSocialB(cc[0].args));
+    assert.equal(argOf(cc[0], "--deadline-ms"), "480000", "teto inteiro, não a sobra");
+    assert.equal(readRunState(dir)?.clariceDone?.newsletter, "applied");
+    assert.equal(readRunState(dir)?.clariceDone?.social, "applied");
+  });
+
+  it("dia degradado: newsletter pulada em 90 s, social em chamada própria; se falhar, halt que cita o ping (nunca skip)", async () => {
+    await upToHumanize();
+    humanizeDone();
+    write("_internal/preflight-state.json", JSON.stringify({ clariceRealProbe: false }));
+    const pending: Handler = (args) => {
+      if (args[0] === "skip") write("02-reviewed.md", "humanized\n");
+      return ok();
+    };
+    const first = clockedDeps(90_000, {
+      ...happyChecks,
+      "clarice-correct.ts": (args) => (isSocialB(args) ? writeCorrectedB(args) : fail(6)),
+      "clarice-pending.ts": pending,
+    });
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E], first.deps);
+    assert.equal(r.code, 3);
+    assert.deepEqual(r.rerunArgs, ["--social-clarice-only"]);
+    assert.equal(r.clarice?.newsletter, "unavailable-skipped");
+    assert.ok((readRunState(dir)?.clariceWarns ?? []).some((n) => /clarice-pending\.ts resume/.test(n)), "o aviso do resume fica no estado");
+
+    const second = clockedDeps(0, { ...happyChecks, "clarice-correct.ts": () => fail(6), "clarice-pending.ts": pending });
+    const r2 = await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only"], second.deps);
+    assert.equal(r2.code, 2);
+    assert.match(r2.haltRequired!.reason, /clarice_unavailable.*ping real/);
+    assert.ok(!second.calls.some((c) => c.script.includes("clarice-pending") && c.args[0] === "skip"), "o social nunca vira skip");
+  });
+});
 
 describe("--phase post-checks", () => {
   it("sem as Clarices registradas pelo post-humanize → code 1", async () => {
