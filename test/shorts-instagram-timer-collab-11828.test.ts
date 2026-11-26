@@ -10,6 +10,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { instagramConfirmExpectedCollabs, instagramTimerAlreadyCollabWarnings, type GraphDeps } from "../scripts/publish-shorts.ts";
 import { interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -77,7 +78,7 @@ describe("#11828: collab do Reel feito à mão que o timer registra", () => {
   });
 
   it("o caminho `already` do timer em publish-shorts.ts chama a conferência e passa os avisos adiante", () => {
-    const src = readFileSync(resolve(ROOT, "scripts/publish-shorts.ts"), "utf8");
+    const src = publishShortsSource();
     // #11870: o bloco passou a cobrir também o achado da reconferência antes do publish.
     const i = src.indexOf("if (already) {");
     assert.ok(i > 0, "bloco already do timer não encontrado");

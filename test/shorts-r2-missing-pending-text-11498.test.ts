@@ -11,8 +11,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { publicVideoUnavailableReason } from "../scripts/publish-shorts.ts";
+import { publishShortsModuleFiles } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -26,6 +27,8 @@ test("#11498: aviso sem R2 diz pendente e cita --mark, nunca 'fica manual'", () 
 
 const FILES = [
   "scripts/publish-shorts.ts",
+  // #14054: o código da entrada mora nos módulos de scripts/publish-shorts/.
+  ...publishShortsModuleFiles().map((f) => relative(ROOT, f).replaceAll("\\", "/")),
   "scripts/shorts-instagram-timer.ts",
   "platform.config.json",
   ".claude/skills/diaria-publica/SKILL.md",

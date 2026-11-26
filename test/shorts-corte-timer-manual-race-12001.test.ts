@@ -34,6 +34,7 @@ import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-downl
 import { MAX_FIRE_LATENESS_MS } from "../scripts/lib/linkedin-personal.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const SLUG = "corte-12001";
 const DATE = "261103";
@@ -231,7 +232,7 @@ describe("#12001 quem toma o lock no publish-shorts", () => {
   it("main: o lock é o mesmo arquivo do timer, tomado antes do laço de envios e solto depois (fonte)", () => {
     assert.equal(TIMER_REEXPORT_LOCK_FILE, CORTE_TIMER_LOCK_FILE);
     assert.equal(linkedinTimerLock, acquireTimerLock);
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /corteManualTimerDestinations\(plan\.items, corte \? \{ timerRun: requireCorteAuth \} : null\)/);
     assert.match(src, /acquireTimerLock\(join\(dir, CORTE_TIMER_LOCK_FILE\)[,)][\s\S]*for \(const item of plan\.items\) \{\s*if \(corteLockBusy && corteLockDests\.includes\(item\.destination\)\)/);
     assert.match(src, /\n  releaseCorteLock\(\);\n  const finalItems = blockRepostOnProfileFailure/);

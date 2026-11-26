@@ -64,6 +64,7 @@ import {
   replaceScheduledArgsError,
   SHORTS_BOOLEAN_FLAGS,
 } from "../scripts/publish-shorts.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ED = "261115";
 const T0 = new Date("2026-11-15T10:00:00.000Z");
@@ -612,7 +613,7 @@ describe("#12279 review da PR #13107: grant sob o lock, folga do YouTube, histó
 });
 
 describe("#12279 fiação do main(): a troca não passa pelo consumo normal nem pelo KV/repost", () => {
-  const src = readFileSync(join(import.meta.dirname, "..", "scripts", "publish-shorts.ts"), "utf8");
+  const src = publishShortsSource();
   it("consumo normal, KV do /video e repost ficam fora da rodada de troca", () => {
     assert.match(src, /if \(planGated && !replaceRun\) \{/);
     assert.match(src, /shouldUpdateLatestVideoOnPublish\(\{ corte: !!corte, writer \}\) && !replaceRun &&/);
@@ -707,7 +708,7 @@ describe("#12279 re-review: P3 do delta", () => {
     const t = bufferReplaceNextSteps("x", "buffer:xOLD", FB_AT, V2);
     assert.match(t, /delete_post, logo em seguida --mark-replaced x=buffer:xOLD, create_post/);
     assert.match(t, new RegExp(`--mark x=buffer:NOVO --replaces buffer:xOLD --scheduled-at ${FB_AT} --video-sha256 ${V2}$`));
-    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "publish-shorts.ts"), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /next_steps: bufferReplaceNextSteps\(item\.destination, bufferReplace\.old_id, bufferReplace\.at, videoHash\)/);
   });
 

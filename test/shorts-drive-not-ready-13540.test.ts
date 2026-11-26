@@ -30,6 +30,7 @@ import {
 import { runThreadsTimer, type ThreadsTimerRunDeps } from "../scripts/shorts-threads-profile-timer.ts";
 import { runInstagramTimer, type InstagramCutLookup, type InstagramTimerRunDeps } from "../scripts/shorts-instagram-timer.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ID = "1URBiCeLtsdNZjX6ks56IsLdAOmOaa6Xp";
 const FAST = { metadataMs: 5_000, downloadMs: 15_000, idleMs: 5_000 };
@@ -96,7 +97,7 @@ describe("#13540 download do Drive com corpo vazio", () => {
   });
 
   it("publish-shorts --from-drive devolve o exit dedicado só para o download vazio", () => {
-    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "publish-shorts.ts"), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /return e instanceof DriveDownloadEmptyError \? PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT : 1;/);
     assert.equal(PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT, 75);
   });

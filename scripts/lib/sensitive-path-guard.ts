@@ -94,6 +94,12 @@ export const SENSITIVE_RULES: readonly SensitiveRule[] = [
       "dispatch real para Beehiiv/Brevo/LinkedIn/Facebook/Instagram — erro aqui vira post ou e-mail publicado errado, irreversível para terceiros",
   },
   {
+    id: "publicadores-shorts",
+    pattern: "scripts/publish-shorts/*.ts",
+    reason:
+      "módulos do publisher dos verticais (Facebook, Instagram, LinkedIn, YouTube, Buffer, corte), que saíram de scripts/publish-shorts.ts no #14054 — mesmo dispatch real da regra publicadores",
+  },
+  {
     id: "acervo-publico",
     pattern: "scripts/lib/site-archive*.ts",
     reason:

@@ -32,6 +32,7 @@ import {
   shouldUpdateLatestVideoOnPublish,
   type ShortsPlanItem,
 } from "../scripts/publish-shorts.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 describe("#12786 item 1: UTMs da bio no registry", () => {
   it("cada rede da bio tem entrada em UTM_EMITTERS com o triplo emitido pelo link", () => {
@@ -85,7 +86,7 @@ describe("#12786 item 2: KV do /video só na rodada principal", () => {
     assert.equal(shouldUpdateLatestVideoOnPublish({ corte: true, writer: "instagram-timer" }), false);
   });
   it("o --publish chama o helper antes de tocar o KV", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     const call = src.indexOf("if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer })");
     const kv = src.indexOf("pollKvFromEnv()", call);
     assert.ok(call > 0 && kv > call && kv - call < 600, "a gravação do KV não está guardada pelo helper");

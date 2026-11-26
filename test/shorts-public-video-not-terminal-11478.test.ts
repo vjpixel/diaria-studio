@@ -22,6 +22,7 @@ import {
 } from "../scripts/lib/diaria/published-video-cleanup.ts";
 import { loadShortsConfig } from "../scripts/lib/diaria/short-video.ts";
 import { credentialSkippedItems, planShortsPublish, publicVideoUnavailableReason } from "../scripts/publish-shorts.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const AAMMDD = "261022";
 const D1 = { title: "Você já viu IA mentir. Já viu roubar?", body: "Um modelo gastou o saldo de terceiros." };
@@ -68,7 +69,7 @@ test("#11478: timer-300 sem R2 na máquina — X/Threads pulados por URL públic
 // O bug morava no call site do main() (`publicVideoTerminal: timer-300 && !r2.ready`),
 // que não dá pra exercitar sem env/rede; o scan trava que nenhuma opção volte.
 test("#11478: o main() registra os pulos sem tornar o pulo por URL pública terminal", () => {
-  const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+  const src = publishShortsSource();
   assert.doesNotMatch(src, /publicVideoTerminal/);
   assert.match(src, /recordCredentialSkips\([\s\S]{0,200}?credentialSkippedItems\(plan\.items\),/);
 });
