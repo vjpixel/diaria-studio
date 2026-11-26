@@ -176,7 +176,10 @@ Caso real, edição 260727: 21 bytes de `</content>\n</invoke>`
 sobreviveram após o último parágrafo do PARA ENCERRAR e nenhum dos outros
 15 invariantes/10 lints existentes na época pegou — o gate ficou verde com
 a corrupção presente, só foi achado por acaso. Motivou o lint
-`no-xml-artifacts` (#4077).
+`no-xml-artifacts` (#4077). `saveReviewFile`
+(`scripts/studio-ui/studio-review.ts`) já tira esse padrão antes de gravar
+em disco (rede de segurança na origem); o lint é o backstop independente da
+causa (Studio, edição manual, merge malformado).
 
 ### stage-4-snippet-staleness-caso-real
 
@@ -310,6 +313,191 @@ não entra nesse laço porque o gate humano precisa da sessão do editor. A
 fronteira depois do gate nenhum laço automático cruza (Stage 5 nunca é
 spawnado headless: `STAGE_PLAN` exclui os Stages 5/6 de propósito). A saída
 foi a mesma do #5578 para as demais transições: sessão nova, contexto limpo.
+
+**Pré-gate da Etapa 4, narrativa movida no #14195.** As seções a seguir saíram de `orchestrator-stage-4.md` (§4a–§4c) no #14195,
+para abrir folga no teto de bytes de
+`test/stage-playbook-byte-budget-14033.test.ts`. A instrução operacional
+ficou no playbook; aqui fica só o porquê e o caso real.
+
+### stage-4-edition-lock-10309
+
+A trava da edição entre sessões (#10309) nasceu de um fork do gate na
+edição 261016: duas sessões no mesmo gate editaram `02-reviewed.md` e
+`03-social.md` e republicaram os Artifacts, uma por cima da outra. A
+liberação da trava em todo ramo terminal (#10326) existe porque, sem ela, um
+relançamento dentro dos 45 min do TTL recebe exit 3 e o halt
+`edition_lock_held_by_other` esconde a causa real do halt anterior (ex.:
+`image-starry-night-detected`).
+
+### stage-4-preview-local-3546
+
+O #3420 tinha revertido o preview da revisão para o Worker
+(`upload-html-public.ts`) porque o Artifact da época (#3214) quebrava por
+CSP: bloqueia imagem remota, só aceita `data:` URI. O #3546 resolveu sem
+depender nem do Worker (cota do Workers KV, rede) nem do Artifact (CSP):
+o HTML é servido em loopback com as imagens embutidas em `data:` URI por
+`embed-images-base64.ts`, e um servidor local próprio não tem CSP nem faz
+requisição de rede para imagem. O Artifact voltou depois (#6003) só como
+publicação aditiva da mesma variante embedded.
+
+### stage-4-watch-8123
+
+O `--watch` do `serve-preview.ts` liga o live-reload entregue na Fatia 1 do
+#8123. A flag ficou fora das invocações do playbook até o residual do
+#8123: a Fatia 1 entregou a flag, o playbook nunca a ligou, e por isso
+nenhum critério de aceite da issue foi observado em produção.
+
+### stage-4-preview-detach-9678
+
+Na edição 261006 os dois servidores de preview, rodando como background
+task do harness, morreram no teto de tempo com o editor ainda revisando, e
+os links `127.0.0.1` do gate pararam de abrir. Na mesma edição só a
+newsletter tinha Artifact publicado: o social ficou sem fallback nenhum.
+Daí o `--detach` em foreground e os dois Artifacts obrigatórios (#9678).
+
+### stage-4-docs-export-unico-10078
+
+O export do Claude Docs chega ao disco uma vez só, no `sim` do gate
+(decisão do editor de 13/10/2026), porque o conector só devolve o export
+inline (base64 no resultado da tool, sem caminho de arquivo): cada ida ao
+disco é retranscrever o doc inteiro, cerca de 15k tokens de saída.
+
+### stage-4-carousel-cards-missing-6740
+
+Achado ao vivo do #6740: um `/diaria-3-imagens --no-gates` headless
+reportou OK sem gerar os 12 slides do carrossel, e os três checks
+`carousel-cards-stale`, `carousel-upload-incomplete` e
+`carousel-upload-stale` passaram limpos porque cada um, isolado, sai cedo
+com "nada a comparar" quando o destaque não tem nenhum slide. O
+`carousel-cards-missing` cobre a ausência total.
+
+### stage-4-meta-description-5101
+
+O preview text da Beehiiv (teaser do e-mail, em geral sobre D2/D3) também
+alimentava `description`/`og:description`/`twitter:description` da página
+web publicada. Funciona como preheader, mas gera um snippet de busca e um
+card social que descrevem as outras matérias, não a do título da página
+(D1). Daí a sugestão de meta description derivada do D1 no §4c.1c.
+
+### stage-4-lint-agregador-5416
+
+O #5416 trocou as 15 invocações separadas de `lint-newsletter-md.ts` do
+§4c.2 (um processo Node por check) e as 4 de `lint-social-md.ts` do §4c.2b
+(`post_pixel-matches-d1`, `no-xml-artifacts`, `no-antithesis-reveal`,
+`no-trailing-editorial-hook`) por uma chamada agregadora cada (`--stage 4
+--json`): mesmas funções, mesmo veredito por check, menos overhead de
+processo.
+
+### stage-4-recorrencia-casos-11763-11897
+
+Casos reais dos avisos de recorrência do §4c.2: `study-source-recurrence`
+(#11763), cobertura da CNN ("seis vezes") de relatório da Anthropic que já
+tinha sido o D1 de 261020; `story-continuation` (#11897), edição 261103,
+pesos abertos do Mistral Large 4 depois do anúncio no D3 de 261007.
+
+### stage-4-domain-diversity-5813
+
+Antes da exclusão de hosts não editoriais (`isNonEditorialHost`) no
+`validate-domain-diversity.ts`, toda edição acusava violação em `ia.br` por
+causa dos 6-8 links de rodapé para subdomínios próprios. Tornar o check
+GATE-BLOCKING (#5813) sem a exclusão travaria o Stage 4 permanentemente.
+
+### stage-4-stacked-intro-callouts-severity
+
+Achado ao vivo do #5416: `stacked-intro-callouts` está documentado no
+playbook como WARN-ONLY, mas o modo `--check stacked-intro-callouts` sempre
+saiu com `process.exit(1)` quando o check falha, e o agregador preservou esse
+comportamento por design (a mudança não alterou veredito de nenhum check).
+A divergência doc × código é anterior e não foi corrigida ali. O motivo do
+lint (#2729): `extractIntroCallout` (#2727) é guloso e funde dois blocos
+`**(🎉|📣)…**` da intro num só, vazando `**` internos como texto literal e
+perdendo o separador "Divulgação" do bloco patrocinado.
+`inject-champions-callout.ts` (Stage 3) já pula a auto-injeção quando um
+callout preexiste, mas isso não cobre a colagem manual de dois blocos pelo
+editor.
+
+### stage-4-banned-lexicon-7260
+
+"Agentivo" reincidiu em 7 edições ao longo de 4 meses (#7260) apesar da
+forma correta já ser dominante no corpo publicado, o padrão que atenção
+humana não resolve sozinha. Por isso `banned-lexicon` é GATE-BLOCKING,
+enquanto `title-mentions-ia` (com exceções legítimas) é WARN-ONLY.
+
+### stage-4-snippet-staleness-para-encerrar-4274
+
+Reescopo do gate do `/diaria-develop` de 260729 (#4274): o slot A
+(apoio+ferramentas) e o slot B (convite social) do PARA ENCERRAR ganharam
+override editável em `platform.config.json` → `para_encerrar.{slot_a,slot_b}`
+(painel Caixas, texto direto, não um pool de snippets). O lint
+`snippet-staleness` ainda só compara `encerramento-social-apoio.md` (o
+default, usado quando um slot não tem override): o `02-reviewed.md` já foi
+escrito com o valor daquele momento, e se o editor trocar o texto no painel
+Caixas depois do stitch o guard não avisa. Limitação conhecida, mesma
+filosofia "prefira errar pro lado de avisar menos" das demais imprecisões
+documentadas em `scripts/lib/lint-checks/snippet-staleness.ts`.
+
+### stage-4-no-trailing-ellipsis-3196
+
+Diferente do irmão mais antigo `truncated-secondary-item-summary` (#2596,
+com exceções para idiomas de suspense ou fechamento intencional),
+`no-trailing-ellipsis` é deliberadamente estrito: qualquer descrição
+terminando em reticência é flagrada, sem exceção, e os dois podem disparar
+juntos na mesma linha. O #3196 passou a ignorar o sufixo `(N min)` do USE
+MELHOR: antes, "Então... (5 min)" terminava em "(5 min)", não em "…", e
+escapava.
+
+### stage-4-orphan-box-marcador-agnostico
+
+`newsletter-parse.ts` (`locateBoxInGap`/`locateBoxAfterLastDestaque`,
+chamado pelo `render-newsletter-html.ts` no pré-render) detecta o box de
+divulgação numa lacuna D1/D2, D2/D3 ou na região depois do último destaque
+(a do antigo slot 3, entre D3/D2 e USE MELHOR/É IA?) por POSIÇÃO, qualquer
+bloco isolado por `---` depois do destaque, e não por uma lista de
+marcadores emoji: um marcador novo (📖, 🎥, 🎁, 🔧…) não pede mudança de
+código. O slot 3 foi eliminado no #6748 (29/08/2026): `stitch-newsletter.ts`
+nunca mais escreve nessa região em edição nova, e o lint segue varrendo-a
+como rede de segurança para o box colado à mão ali.
+
+### stage-4-erro-intencional-propostas-5566-5742
+
+Edição 260818 (#5566): o Stage 4 propôs um candidato de erro intencional
+sem aplicar o filtro, comparando um número do corpo com a fonte externa
+(Exame/FT), o que violava as duas regras de `context/editorial-rules.md`
+§10 ao mesmo tempo. Edição 260820 (#5742): três propostas numéricas, de
+data ou de nome próprio externo (contagem só verificável na fonte, ano de
+evento real, coautor de livro) foram rejeitadas na mesma revisão; o erro
+ortográfico em entidade muito conhecida passou a ser o padrão de maior
+aceite.
+
+### stage-4-trailing-hook-2715
+
+Antes da chamada explícita no §4c.2b (#2715), `no-trailing-editorial-hook`
+só rodava como invariante do Stage 2, sem ponto de apresentação ao editor,
+e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era
+impresso no caminho raro de hash divergente depois do humanizador. Agora
+roda sempre, no caminho comum.
+
+### stage-4-tic-lint-informativo-4352
+
+O tic lint que `check-humanizer-social.ts --check` roda no exit 2 é
+informativo de propósito: o exit 2 já é GATE-BLOCKING por si (o hash
+divergiu). O bloqueio dos tiques vem das chamadas explícitas e
+incondicionais do §4c.2b (`no-antithesis-reveal` e
+`no-trailing-editorial-hook`), que rodam com ou sem hash divergente e pegam
+o cenário do #4352: tique que sobrevive com o sentinel batendo, porque foi
+introduzido antes do `--write` final.
+
+### stage-4-4c8-rampa-gmail-removida
+
+O antigo §4c.8 (achado de review do #7403) exibia
+`kit-gmail-ramp-proposal.json`, a proposta de onda do aquecimento Gmail
+(passo `0o.2` de `scripts/stage-0-run.ts`), que saiu em 04/09/2026 porque a
+coorte esgotou (#7402; histórico no cabeçalho de `scripts/stage-0-run.ts`).
+O Stage 0 não escreve mais esse arquivo e não há substituto: a medição que
+sobrou (`0o.1`, `kit-provider-split.ts`) grava
+`_internal/kit-delivery-split.json` da edição ANTERIOR com Kit, não da
+corrente. Sem arquivo para ler, a linha "Rampa Gmail" e a variável do
+resumo consolidado (§4d) saíram também.
 
 ## Stage 5 (publicação)
 
