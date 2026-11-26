@@ -165,15 +165,12 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 
 **Antes de tudo, o PR da página do site (§5b-site do playbook, #10160):** `publish-edition-site-page.ts --slug-from-d1 --sitemap ... --no-wait-merge` abre o PR e devolve na hora — nada no dispatch espera o merge; o merge trava o fim do Stage 6 (§6c-site + invariante `site-page-pr-merged`).
 
-**Newsletter primeiro (ordem obrigatória, #2454 — `{edition_url}` só existe depois do draft), depois todos os canais sociais + Brevo em uma única mensagem:**
+**Brevo em background, newsletter primeiro (ordem obrigatória, #2454 — `{edition_url}` só existe depois do draft), depois os 4 canais sociais concorrentes num só Bash (#14037 — chamadas Bash na mesma mensagem rodam em série, não em paralelo):**
 
+0. `brevo-diaria-stage5-dispatch.ts` com `run_in_background` (§5c-pre-brevo) — só se `consent.brevo === "auto"`; cria só o RASCUNHO. Resultado juntado por `brevo-diaria-stage5-join.ts` antes do sentinel (§5g-ter).
 1. **Newsletter** — `publish-newsletter-kit.ts` (§5c-1-kit). Grava `_internal/05-edition-url.txt`.
-2. `publish-facebook.ts --schedule` (Graph API, ~30s)
-3. `publish-linkedin.ts --schedule` (Worker queue + Make webhook × 3)
-4. `publish-instagram.ts --schedule` (Worker, `channel: "instagram"`; carrossel de 5 slides quando disponível)
-5. `publish-threads.ts --schedule` (Worker, `channel: "threads"`; só chunk único ≤500 chars)
-6. Twitter/X via Buffer MCP — `prep-twitter-posts.ts` + `mcp__claude_ai_Buffer__create_post` por post, conduzido pelo orchestrator diretamente (fora do dispatch paralelo de scripts Bash — só alcançável via sessão de agente)
-7. `brevo-diaria-stage5-dispatch.ts` — só se `consent.brevo === "auto"`; cria só o RASCUNHO
+2. `publish-social-concurrent.ts` roda ao mesmo tempo, conforme o consent: `publish-facebook.ts --schedule` (Graph API), `publish-linkedin.ts --schedule` (Worker queue + Make webhook × 3), `publish-instagram.ts --schedule` (Worker, `channel: "instagram"`; carrossel de 5 slides quando disponível) e `publish-threads.ts --schedule` (Worker, `channel: "threads"`; só chunk único ≤500 chars).
+3. Twitter/X via Buffer MCP — `prep-twitter-posts.ts` + `mcp__claude_ai_Buffer__create_post` por post, conduzido pelo orchestrator diretamente (fora do dispatch de scripts Bash — só alcançável via sessão de agente)
 
 Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Kit) — só via Gmail MCP, sem fallback via Chrome (#8205).
 
