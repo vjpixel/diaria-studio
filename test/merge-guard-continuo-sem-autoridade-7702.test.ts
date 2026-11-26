@@ -30,7 +30,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 import { fileURLToPath } from "node:url";
 import {
   classifyMergeBlockCause,
