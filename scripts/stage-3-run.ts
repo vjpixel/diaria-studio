@@ -45,9 +45,10 @@
  *     se outra imagem passou ou se o stderr indica limite de concorrência
  *     (`shouldRetrySerially`); se persistir, é BLOQUEANTE — para o Stage 3
  *     inteiro, igual ao playbook (#4090), com o destaque/ratio que falhou em
- *     `destaques[].error` e `imageJobs`. Cada filho tem teto de 15 min e, se o
- *     runner receber SIGINT/SIGTERM, a árvore de cada filho vivo é morta por
- *     PID antes de sair.
+ *     `destaques[].error` e `imageJobs`. Cada filho tem teto de 15 min (o job
+ *     só termina no `close` do filho; morte não confirmada = falha não
+ *     repetível) e, se o runner receber SIGINT/SIGTERM/SIGHUP, a árvore de
+ *     cada filho vivo é morta pelo PID antes de sair.
  *   gen-social-card-4x5.ts (compõe os cards de todos os destaques prontos) —
  *     BLOQUEANTE (#4090) se falhar.
  *   gen-carousel-cards.ts (#6005 Parte B — 3 slides de parágrafo + CTA do
@@ -120,6 +121,9 @@ export interface StepResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** #14036: `false` = falha que NÃO pode ser repetida (o filho pode estar
+   * vivo: a morte por timeout não foi confirmada). Ausente = repetível. */
+  retryable?: false;
 }
 
 export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
@@ -132,62 +136,110 @@ export type AsyncExecFn = (scriptRelPath: string, args: string[]) => Promise<Ste
  * (`codex.timeout_seconds`), o fallback outro tanto, mais a compressão. */
 export const IMAGE_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 
-/** Mata a ÁRVORE do filho por PID (#5432: nunca por nome de imagem). Windows:
- * `taskkill /T /F /PID`. POSIX: o filho nasce líder de grupo (`detached`) e o
- * grupo inteiro recebe SIGKILL. Mesmo desenho de `killProcessTree` em
- * `scripts/codex-image.js` (#9097), sem importá-lo (ele carrega sharp). */
+/** Resultado de `killChildTree`: `ok` = o PID do filho foi morto (ou já
+ * tinha saído); `detail` vai pro stderr do job, pra auditoria. */
+export interface KillReport {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Mata a ÁRVORE do filho pelo PID guardado (#5432: nunca por nome de imagem).
+ * O filho NÃO nasce `detached`: continua no grupo do runner, então um SIGKILL
+ * ou SIGHUP no grupo do runner o alcança também (com `detached` ele escapava
+ * e ficava órfão). Windows: `taskkill /T /F /PID`. POSIX: descendentes via
+ * `pgrep -P` (recursivo, folhas primeiro), depois o próprio PID, com SIGKILL.
+ * Mesmo objetivo de `killProcessTree` em `scripts/codex-image.js` (#9097), sem
+ * importá-lo (ele carrega sharp).
+ */
 export function killChildTree(
   pid: number | undefined,
   {
     platform = process.platform,
     killFn = process.kill.bind(process) as (pid: number, sig: NodeJS.Signals) => void,
     execTaskkill = (p: number) => {
-      spawnSync("taskkill", ["/T", "/F", "/PID", String(p)], { stdio: "ignore" });
+      const r = spawnSync("taskkill", ["/T", "/F", "/PID", String(p)], { encoding: "utf8", windowsHide: true });
+      return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? r.error.message : ""}`.trim() };
+    },
+    listChildren = (p: number) => {
+      const r = spawnSync("pgrep", ["-P", String(p)], { encoding: "utf8" });
+      return (r.stdout ?? "").split(/\s+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0);
     },
   }: {
     platform?: NodeJS.Platform;
     killFn?: (pid: number, sig: NodeJS.Signals) => void;
-    execTaskkill?: (pid: number) => void;
+    execTaskkill?: (pid: number) => { status: number | null; output: string };
+    listChildren?: (pid: number) => number[];
   } = {},
-): void {
-  if (!pid) return;
+): KillReport {
+  if (!pid) return { ok: false, detail: "sem PID do filho" };
   if (platform === "win32") {
-    execTaskkill(pid);
-    return;
+    const r = execTaskkill(pid);
+    // 128 = processo não encontrado (já saiu): a morte está garantida.
+    const ok = r.status === 0 || r.status === 128;
+    return { ok, detail: `taskkill /T /F /PID ${pid}: status ${r.status}${r.output ? ` (${r.output})` : ""}` };
   }
-  try {
-    killFn(-pid, "SIGKILL");
-  } catch {
-    /* grupo já morreu */
+  const descendants: number[] = [];
+  const walk = (p: number, depth: number) => {
+    if (depth > 16) return;
+    for (const c of listChildren(p)) {
+      walk(c, depth + 1);
+      descendants.push(c); // folhas primeiro
+    }
+  };
+  walk(pid, 0);
+  for (const c of descendants) {
+    try {
+      killFn(c, "SIGKILL");
+    } catch {
+      /* neto já saiu */
+    }
   }
   try {
     killFn(pid, "SIGKILL");
-  } catch {
-    /* já morreu */
+    return { ok: true, detail: `SIGKILL em ${pid} e ${descendants.length} descendente(s)` };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { ok: true, detail: `${pid} já tinha saído (ESRCH); ${descendants.length} descendente(s) com SIGKILL` };
+    return { ok: false, detail: `SIGKILL em ${pid} falhou: ${code ?? (e as Error).message}` };
   }
 }
 
-/** Filhos vivos de `realExecAsync`, pra o repasse de SIGINT/SIGTERM. */
+/** Filhos vivos de `realExecAsync`, pra o repasse de sinal. */
 const liveChildPids = new Set<number>();
 let signalForwardingInstalled = false;
 function installSignalForwarding(): void {
   if (signalForwardingInstalled) return;
   signalForwardingInstalled = true;
-  // Se o runner morrer (Ctrl+C, task parada), nenhum image-generate.ts fica
-  // órfão gerando imagem: mata a árvore de cada filho vivo e sai com o código
-  // convencional do sinal.
-  for (const [sig, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+  // Se o runner receber SIGINT (Ctrl+C), SIGTERM (task parada) ou SIGHUP
+  // (terminal/sessão fechada), nenhum image-generate.ts fica órfão gerando
+  // imagem: mata a árvore de cada filho vivo, loga o resultado de cada kill e
+  // sai com o código convencional do sinal. SIGKILL no runner não tem handler
+  // possível; aí vale o filho estar no grupo do runner (sem `detached`).
+  // Limite: o handler só roda quando o event loop está livre. Durante um passo
+  // SÍNCRONO longo (`spawnSync` de card, carrossel, invariantes...), o sinal
+  // só é atendido ao fim desse passo — os filhos assíncronos de imagem já
+  // terminaram nessa altura, porque a geração vem antes dos passos síncronos.
+  for (const [sig, exitCode] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
     process.once(sig, () => {
-      for (const pid of liveChildPids) killChildTree(pid);
+      for (const pid of liveChildPids) {
+        const r = killChildTree(pid);
+        console.error(`stage-3-run: ${sig} recebido — ${r.ok ? "morto" : "FALHA ao matar"} filho ${pid}: ${r.detail}`);
+      }
       liveChildPids.clear();
       process.exit(exitCode);
     });
   }
 }
 
+/** #14036: depois do kill por timeout, quanto esperar o `close` do filho
+ * antes de dar a morte como não confirmada. */
+export const KILL_CONFIRM_GRACE_MS = 10_000;
+
 export interface RealExecAsyncOptions {
   timeoutMs?: number;
-  killTree?: (pid: number | undefined) => void;
+  killTree?: (pid: number | undefined) => KillReport;
+  killConfirmGraceMs?: number;
   /** false só em teste: não instala handlers de sinal no processo do runner de testes. */
   forwardSignals?: boolean;
 }
@@ -195,6 +247,7 @@ export interface RealExecAsyncOptions {
 export function realExecAsync(rootDir: string, opts: RealExecAsyncOptions = {}): AsyncExecFn {
   const timeoutMs = opts.timeoutMs ?? IMAGE_JOB_TIMEOUT_MS;
   const killTree = opts.killTree ?? ((pid: number | undefined) => killChildTree(pid));
+  const graceMs = opts.killConfirmGraceMs ?? KILL_CONFIRM_GRACE_MS;
   if (opts.forwardSignals !== false) installSignalForwarding();
   return (scriptRelPath, args) =>
     new Promise((resolvePromise) => {
@@ -203,24 +256,40 @@ export function realExecAsync(rootDir: string, opts: RealExecAsyncOptions = {}):
       let stderr = "";
       let settled = false;
       let timer: NodeJS.Timeout | undefined;
+      let graceTimer: NodeJS.Timeout | undefined;
       let pid: number | undefined;
-      const finish = (r: StepResult) => {
+      // Preenchido quando o timeout mata o filho: o job só termina no `close`
+      // (morte confirmada), nunca no momento do kill.
+      let timedOutNote: string | undefined;
+      const finish = (r: StepResult, { stillAlive = false }: { stillAlive?: boolean } = {}) => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        if (pid !== undefined) liveChildPids.delete(pid);
+        if (graceTimer) clearTimeout(graceTimer);
+        // Filho possivelmente vivo continua na lista: o repasse de sinal ainda
+        // tenta matá-lo se o runner for interrompido.
+        if (pid !== undefined && !stillAlive) liveChildPids.delete(pid);
         resolvePromise(r);
       };
-      const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], {
-        cwd: rootDir,
-        detached: process.platform !== "win32", // POSIX: grupo próprio → kill(-pid)
-        windowsHide: true,
-      });
+      // Sem `detached`: o filho fica no grupo do runner (ver killChildTree).
+      const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], { cwd: rootDir, windowsHide: true });
       pid = child.pid;
       if (pid !== undefined) liveChildPids.add(pid);
       timer = setTimeout(() => {
-        killTree(pid);
-        finish({ code: 1, stdout, stderr: stderr + `\nERRO: o passo passou de ${Math.round(timeoutMs / 1000)}s e foi morto (árvore, por PID)\n` });
+        const report = killTree(pid);
+        timedOutNote = `\nERRO: o passo passou de ${Math.round(timeoutMs / 1000)}s; kill da árvore: ${report.ok ? "ok" : "FALHOU"} — ${report.detail}\n`;
+        if (!report.ok) {
+          // Kill falhou: o filho pode seguir vivo gravando o arquivo. Falha
+          // NÃO repetível (nada de retry com --force por cima dele).
+          finish({ code: 1, stdout, stderr: stderr + timedOutNote + "ERRO: morte do filho não confirmada — falha não repetível.\n", retryable: false }, { stillAlive: true });
+          return;
+        }
+        graceTimer = setTimeout(() => {
+          finish(
+            { code: 1, stdout, stderr: stderr + timedOutNote + `ERRO: sem close do filho ${graceMs / 1000}s depois do kill — morte não confirmada, falha não repetível.\n`, retryable: false },
+            { stillAlive: true },
+          );
+        }, graceMs);
       }, timeoutMs);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
@@ -229,33 +298,43 @@ export function realExecAsync(rootDir: string, opts: RealExecAsyncOptions = {}):
       child.on("error", (err) =>
         finish({ code: 1, stdout, stderr: stderr + `\nERRO: o passo nao executou (falha de spawn): ${err.message}\n` }),
       );
-      child.on("close", (code, signal) =>
+      child.on("close", (code, signal) => {
+        if (timedOutNote !== undefined) {
+          // Morte confirmada pelo `close`: falha comum, repetível.
+          finish({ code: 1, stdout, stderr: stderr + timedOutNote + `filho encerrado (sinal ${signal ?? "-"}, exit ${code ?? "-"}).\n` });
+          return;
+        }
         finish(
           code === null
             ? { code: 1, stdout, stderr: stderr + `\nERRO: o passo terminou sem exit code (sinal ${signal ?? "desconhecido"})\n` }
             : { code, stdout, stderr },
-        ),
-      );
+        );
+      });
     });
 }
 
-/** #14036: stderr que sugere limite de concorrência/taxa do backend — o único
+/** #14036: stderr que indica limite de taxa/concorrência do backend — o único
  * caso em que repetir em série tem chance de mudar o resultado quando TODAS as
- * imagens falharam. */
-export const CONCURRENCY_ERROR_RE = /\b429\b|too many requests|rate[ _-]?limit|concurren|simult[aâ]ne/i;
+ * imagens falharam. Ancorado em formas específicas ("HTTP 429", "status 429",
+ * "Too Many Requests", "rate limit exceeded"...), nunca em `429` ou
+ * `concurren` soltos: um log com "concurrency: 6" não é sinal de limite. */
+export const CONCURRENCY_ERROR_RE =
+  /\bHTTP(?:\/[\d.]+)?\s+429\b|\bstatus(?:[ _]?code)?\s*[:=]?\s*429\b|\btoo many (?:concurrent )?requests\b|\brate[ _-]?limit(?:ed\b|[ _-]exceeded\b|[ _-]reached\b)/i;
 
 /**
  * Decide se as falhas do passo paralelo merecem a repetição em série (#14036).
  * Pura. Repete se pelo menos um job passou (o backend funciona, a falha pode
  * ter sido da concorrência) ou se o stderr de alguma falha indica limite de
  * concorrência. Todos falharam sem esse sinal (login expirado, backend fora)
- * = abort direto, sem gastar outra rodada.
+ * = abort direto, sem gastar outra rodada. Falha `retryable: false` (morte do
+ * filho não confirmada) nunca conta como candidata.
  */
-export function shouldRetrySerially(outcomes: Array<{ ok: boolean; stderr: string }>): boolean {
+export function shouldRetrySerially(outcomes: Array<{ ok: boolean; stderr: string; retryable?: boolean }>): boolean {
   const failed = outcomes.filter((o) => !o.ok);
-  if (failed.length === 0) return false;
+  const candidates = failed.filter((o) => o.retryable !== false);
+  if (candidates.length === 0) return false;
   if (failed.length < outcomes.length) return true;
-  return failed.some((o) => CONCURRENCY_ERROR_RE.test(o.stderr));
+  return candidates.some((o) => CONCURRENCY_ERROR_RE.test(o.stderr));
 }
 
 /** Args da repetição em série (#14036): `--force`, pra nunca pular por "já
@@ -513,6 +592,8 @@ export interface ImageJobOutcome {
   durationMs: number;
   /** true quando o job só rodou de novo, em série, depois de falhar no paralelo. */
   retriedSerially?: boolean;
+  /** false quando a falha não pode ser repetida (morte do filho não confirmada). */
+  retryable?: false;
   stderrTail?: string;
 }
 
@@ -723,6 +804,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
           exitCode: result.code,
           durationMs: Date.now() - t0,
           ...(result.code !== 0 ? { stderrTail: tailStderr(result.stderr) } : {}),
+          ...(result.retryable === false ? { retryable: false as const } : {}),
         },
       };
     };
@@ -756,11 +838,18 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
     // chance de mudar o resultado (`shouldRetrySerially`): pelo menos uma
     // imagem passou, ou o stderr indica limite de concorrência/taxa. Todas
     // falharam sem esse sinal = abort direto. Em `--serial` não há repetição.
-    const failedIdx = runs.map((r, i) => (r && !r.outcome.ok ? i : -1)).filter((i) => i >= 0);
+    // Falha `retryable: false` (morte do filho por timeout não confirmada)
+    // nunca é repetida: um --force por cima de um filho talvez vivo gravaria
+    // o mesmo arquivo em dobro.
+    const nonRetryable = runs.filter((r) => r && r.result.retryable === false).map((r) => `${r!.outcome.destaque}:${r!.outcome.ratio}`);
+    if (nonRetryable.length > 0) {
+      report.note(`⚠️  image-generate.ts: ${nonRetryable.join(", ")} sem morte confirmada do filho — falha não repetível.`);
+    }
+    const failedIdx = runs.map((r, i) => (r && !r.outcome.ok && r.result.retryable !== false ? i : -1)).filter((i) => i >= 0);
     if (
       failedIdx.length > 0 &&
       imageConcurrency > 1 &&
-      shouldRetrySerially(runs.map((r) => ({ ok: r!.outcome.ok, stderr: r!.result.stderr })))
+      shouldRetrySerially(runs.map((r) => ({ ok: r!.outcome.ok, stderr: r!.result.stderr, retryable: r!.result.retryable })))
     ) {
       const labels = failedIdx.map((i) => `${specs[i].destaque}:${specs[i].ratio}`);
       report.note(`⚠️  image-generate.ts: ${labels.join(", ")} falhou(aram) em paralelo — repetindo em série, com --force.`);

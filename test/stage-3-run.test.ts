@@ -626,45 +626,133 @@ describe("realExecAsync (#14036) — spawn de verdade, sem gerar imagem", () => 
     assert.match(r.stderr, /Uso: image-generate\.ts/);
   });
 
-  it("filho que passa do teto é morto pela árvore (por PID) e vira code 1", async () => {
-    const root = fileURLToPath(new URL("..", import.meta.url));
-    const dir = mkdtempSync(join(tmpdir(), "stage3-timeout-14036-"));
-    const sleeper = join(dir, "sleeper.mjs");
-    writeFileSync(sleeper, "setTimeout(() => {}, 60_000);\n");
-    const killed: Array<number | undefined> = [];
-    try {
+  /** Filho real que não termina sozinho (60 s), num diretório temporário. */
+  function withSleeper(fn: (root: string, rel: string) => Promise<void>) {
+    return async () => {
+      const root = fileURLToPath(new URL("..", import.meta.url));
+      const dir = mkdtempSync(join(tmpdir(), "stage3-timeout-14036-"));
+      const sleeper = join(dir, "sleeper.mjs");
+      writeFileSync(sleeper, "setTimeout(() => {}, 60_000);\n");
+      try {
+        await fn(root, relative(root, sleeper).split(sep).join("/"));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+  }
+
+  it(
+    "timeout: kill da árvore pelo PID, job só termina no close (morte confirmada) e segue repetível",
+    withSleeper(async (root, rel) => {
+      const killed: Array<number | undefined> = [];
       const exec = realExecAsync(root, {
         timeoutMs: 1500,
         forwardSignals: false,
         killTree: (pid) => {
           killed.push(pid);
-          killChildTree(pid);
+          return killChildTree(pid);
         },
       });
-      const r = await exec(relative(root, sleeper).split(sep).join("/"), []);
+      const r = await exec(rel, []);
       assert.equal(r.code, 1);
-      assert.match(r.stderr, /foi morto/);
+      assert.match(r.stderr, /kill da árvore: ok/);
+      assert.match(r.stderr, /filho encerrado/, "terminou pelo close, não no momento do kill");
+      assert.equal(r.retryable, undefined);
       assert.equal(killed.length, 1);
       assert.equal(typeof killed[0], "number");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    }),
+  );
+
+  it(
+    "kill que FALHA: falha não repetível, status do kill no stderr",
+    withSleeper(async (root, rel) => {
+      let childPid: number | undefined;
+      const exec = realExecAsync(root, {
+        timeoutMs: 1000,
+        forwardSignals: false,
+        killTree: (pid) => {
+          childPid = pid;
+          return { ok: false, detail: "taskkill /T /F /PID x: status 1 (Acesso negado)" };
+        },
+      });
+      try {
+        const r = await exec(rel, []);
+        assert.equal(r.code, 1);
+        assert.equal(r.retryable, false);
+        assert.match(r.stderr, /kill da árvore: FALHOU — taskkill .*Acesso negado/);
+        assert.match(r.stderr, /não repetível/);
+      } finally {
+        killChildTree(childPid); // limpeza real do sleeper
+      }
+    }),
+  );
+
+  it(
+    "kill 'ok' mas sem close no prazo: morte não confirmada, falha não repetível",
+    withSleeper(async (root, rel) => {
+      let childPid: number | undefined;
+      const exec = realExecAsync(root, {
+        timeoutMs: 1000,
+        killConfirmGraceMs: 300,
+        forwardSignals: false,
+        killTree: (pid) => {
+          childPid = pid;
+          return { ok: true, detail: "relatou ok sem matar" };
+        },
+      });
+      try {
+        const r = await exec(rel, []);
+        assert.equal(r.code, 1);
+        assert.equal(r.retryable, false);
+        assert.match(r.stderr, /sem close do filho/);
+      } finally {
+        killChildTree(childPid);
+      }
+    }),
+  );
 });
 
 describe("killChildTree (#14036)", () => {
-  it("Windows: taskkill /T /F pelo PID", () => {
+  it("Windows: taskkill /T /F pelo PID, status no detail; 0 e 128 (já saiu) = ok, outro = falha", () => {
     const pids: number[] = [];
-    killChildTree(4242, { platform: "win32", execTaskkill: (p) => pids.push(p), killFn: () => assert.fail("sem kill POSIX no Windows") });
+    const r = killChildTree(4242, {
+      platform: "win32",
+      execTaskkill: (p) => (pids.push(p), { status: 0, output: "ÊXITO" }),
+      killFn: () => assert.fail("sem kill POSIX no Windows"),
+    });
     assert.deepEqual(pids, [4242]);
+    assert.equal(r.ok, true);
+    assert.match(r.detail, /taskkill \/T \/F \/PID 4242: status 0/);
+    assert.equal(killChildTree(1, { platform: "win32", execTaskkill: () => ({ status: 128, output: "" }) }).ok, true);
+    assert.equal(killChildTree(1, { platform: "win32", execTaskkill: () => ({ status: 1, output: "Acesso negado" }) }).ok, false);
   });
-  it("POSIX: SIGKILL no grupo (-pid) e no pid", () => {
+
+  it("POSIX: sem grupo (filho não é detached) — mata os descendentes (folhas primeiro) e depois o PID", () => {
     const sent: Array<[number, string]> = [];
-    killChildTree(4242, { platform: "linux", killFn: (p, s) => sent.push([p, s]), execTaskkill: () => assert.fail("sem taskkill no POSIX") });
-    assert.deepEqual(sent, [[-4242, "SIGKILL"], [4242, "SIGKILL"]]);
+    const tree: Record<number, number[]> = { 4242: [5000], 5000: [6000], 6000: [] };
+    const r = killChildTree(4242, {
+      platform: "linux",
+      listChildren: (p) => tree[p] ?? [],
+      killFn: (p, s) => sent.push([p, s]),
+      execTaskkill: () => assert.fail("sem taskkill no POSIX"),
+    });
+    assert.deepEqual(sent, [[6000, "SIGKILL"], [5000, "SIGKILL"], [4242, "SIGKILL"]]);
+    assert.ok(sent.every(([p]) => p > 0), "nunca kill(-pid): o filho está no grupo do runner");
+    assert.equal(r.ok, true);
   });
-  it("sem pid: não faz nada", () => {
-    killChildTree(undefined, { platform: "win32", execTaskkill: () => assert.fail("não deveria matar") });
+
+  it("POSIX: ESRCH no PID = já saiu (ok); EPERM = falha", () => {
+    const err = (code: string) => Object.assign(new Error(code), { code });
+    const esrch = killChildTree(7, { platform: "linux", listChildren: () => [], killFn: () => { throw err("ESRCH"); } });
+    assert.equal(esrch.ok, true);
+    const eperm = killChildTree(7, { platform: "linux", listChildren: () => [], killFn: () => { throw err("EPERM"); } });
+    assert.equal(eperm.ok, false);
+    assert.match(eperm.detail, /EPERM/);
+  });
+
+  it("sem pid: não mata nada e reporta falha", () => {
+    const r = killChildTree(undefined, { platform: "win32", execTaskkill: () => assert.fail("não deveria matar") });
+    assert.equal(r.ok, false);
   });
 });
 
@@ -677,6 +765,18 @@ describe("shouldRetrySerially / retryArgs (#14036)", () => {
     assert.equal(shouldRetrySerially([{ ok: false, stderr: "HTTP 429" }, { ok: false, stderr: "x" }]), true);
     assert.equal(shouldRetrySerially([{ ok: false, stderr: "rate limit exceeded" }]), true);
     assert.equal(shouldRetrySerially([{ ok: false, stderr: "too many concurrent requests" }]), true);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "OpenAI: status 429" }]), true);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "rate_limit_exceeded" }]), true);
+  });
+  it("regex ancorada: 'concurrency: 6' e um 429 solto NÃO disparam a repetição", () => {
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "image-generate: concurrency: 6, login expirado" }]), false);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "arquivo 04-d1-429.jpg ausente" }]), false);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "processamento simultâneo falhou" }]), false);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "ratelimit config ok" }]), false);
+  });
+  it("falha não repetível (morte não confirmada) nunca é candidata", () => {
+    assert.equal(shouldRetrySerially([{ ok: true, stderr: "" }, { ok: false, stderr: "x", retryable: false }]), false);
+    assert.equal(shouldRetrySerially([{ ok: false, stderr: "HTTP 429", retryable: false }]), false);
   });
   it("nenhuma falha: não repete", () => {
     assert.equal(shouldRetrySerially([{ ok: true, stderr: "" }]), false);
@@ -806,6 +906,22 @@ describe("runStage3 — imagens em paralelo (#14036)", () => {
     assert.equal(result.code, 0);
     assert.equal(gen.calls.length, 12);
     assert.ok(result.imageJobs?.every((j) => j.ok && j.retriedSerially));
+  });
+
+  it("job com morte do filho não confirmada (retryable:false) não é repetido, mesmo com outras imagens ok", async () => {
+    const gen = makeFakeImageGen((args) =>
+      args.includes("d1") && !args.includes("--ratio")
+        ? { code: 1, stdout: "", stderr: "kill da árvore: FALHOU", retryable: false as const }
+        : ok("{}"),
+    );
+    const { exec, calls } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 1);
+    assert.equal(gen.calls.length, 6, "nenhuma repetição: o filho pode estar vivo");
+    const job = result.imageJobs?.find((j) => j.destaque === "d1" && j.ratio === "2x1");
+    assert.equal(job?.retryable, false);
+    assert.ok(result.notes.some((n) => n.includes("d1:2x1 sem morte confirmada")));
+    assert.equal(calls.some((c) => c.args.includes("stage3_image_parallel_fallback")), false);
   });
 
   it("a repetição leva --force (nunca pula por 'já existe' um arquivo parcial) e o 2x1 mantém --keep-4x5-nativo", async () => {
