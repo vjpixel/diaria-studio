@@ -3,7 +3,8 @@
  * pipeline-sentinel.ts (#780, #1330) — CLI wrapper para pipeline-state.ts.
  *
  * Subcomandos (step-level — gate approvals):
- *   write  --edition AAMMDD --step N --outputs "file1,file2"
+ *   write  --edition AAMMDD --step N --outputs "file1,file2" [--session-id ID]
+ *          (grava `session_id` = `--session-id` ou `CLAUDE_CODE_SESSION_ID`, #14038)
  *   assert --edition AAMMDD --step N [--outputs "file1,file2"] [--sync-hint]
  *   exists --edition AAMMDD --step N
  *
@@ -70,6 +71,7 @@ import { captureStage2Baseline, type CaptureOutcome } from "./lib/editor-request
 import { captureStage1Records, type CaptureStage1Result } from "./lib/stage1-funnel.ts";
 import { ensureHandoffClosed } from "./lib/session-handoff.ts";
 import { describeSentinelAbsence } from "./lib/sentinel-absence-hint.ts";
+import { currentSessionId } from "./lib/session-transcript.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -546,7 +548,11 @@ function main(): void {
         }
       }
       try {
-        writeSentinel(editionDir, step, outputs);
+        // #14038: a sessão que gravou o sentinel (o gate 4, no caso que
+        // importa) fica registrada para o Passo 0 da Etapa 5 conferir que
+        // roda numa sessão nova. `--session-id` sobrepõe o ambiente (testes).
+        const sessionId = args["session-id"]?.trim() || currentSessionId();
+        writeSentinel(editionDir, step, outputs, { sessionId });
         console.log(`sentinel step ${step} escrito em ${editionDir}/_internal/.step-${step}-done.json`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
