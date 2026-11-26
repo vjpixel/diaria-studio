@@ -201,6 +201,8 @@ export interface Stage2RunResult {
     deadlineMs: number;
     degraded: boolean;
     reason: string;
+    /** `preflight-state.json` existe e não pôde ser lido (#14084); `null` no resto. */
+    stateError: string | null;
     newsletter?: ClariceOutcome;
     social?: ClariceOutcome;
   };
@@ -279,6 +281,9 @@ function parseDeadlineOverride(raw: string | undefined, socialOnly: boolean): nu
   if (!socialOnly) throw new Stage2Abort("--deadline-ms só vale com --social-clarice-only (override do teto da Clarice do social).");
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) throw new Stage2Abort(`--deadline-ms precisa ser um número positivo — recebido: "${raw}"`);
+  if (n > CLARICE_PHASE_BUDGET_MS) {
+    throw new Stage2Abort(`--deadline-ms ${n} passa do orçamento da fase (${CLARICE_PHASE_BUDGET_MS} ms, abaixo dos 600 s da Bash).`);
+  }
   return n;
 }
 
@@ -318,6 +323,12 @@ export interface RunState {
   curtoMissingCount?: number;
   /** Aviso warn-only do Curto (2ª ausência), repetido no gate pelo post-checks. */
   curtoWarn?: string | null;
+  /** Dispatch do social-curto gravado no pre-dispatch, devolvido no fix de re-dispatch. */
+  curtoDispatch?: PendingAgentDispatch | null;
+  /** Avisos da Clarice do post-humanize (skip/resume, cabeçalhos, degradado, stateError), repetidos no post-checks. */
+  clariceWarns?: string[];
+  /** post-checks terminou com code 0 (o post-gate exige). */
+  postChecksDone?: boolean;
   /** Clarices já rodaram no post-humanize (o post-checks exige). */
   clariceDone?: { newsletter?: ClariceOutcome; social?: ClariceOutcome };
 
@@ -602,6 +613,7 @@ function phasePreDispatch(ctx: Ctx): Stage2RunResult {
   }
 
   writeRunState(ctx.editionDir, {
+    curtoDispatch: pending.find((d) => d.agent === "social-curto") ?? null,
     edition,
     scope: ctx.opts.scope,
     mode,
@@ -697,7 +709,10 @@ function phasePostWriters(ctx: Ctx): Stage2RunResult {
           action: "re-disparar SÓ o social-curto (mesmo prompt do pre-dispatch) e re-rodar --phase post-writers; na 2ª ausência vira aviso (#3992)",
           detail: v.stderr.trim() || v.stdout.trim(),
         });
-        return fixNeeded(ctx, "post-writers", { mode: st.mode });
+        return fixNeeded(ctx, "post-writers", {
+          mode: st.mode,
+          pendingAgentDispatch: st.curtoDispatch ? [st.curtoDispatch] : [],
+        });
       }
       st.curtoWarn =
         "⚠️  # Curto ausente depois de 2 tentativas do social-curto: X (Buffer) e Threads vão pular os posts desta edição (#3992/#4294).";
@@ -834,7 +849,14 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
       detail: "In-place. Snapshot pré-humanizador já gravado em _internal/03-social-pre-humanizador.md.",
     });
   }
-  writeRunState(ctx.editionDir, { ...st, humanizeDispatchAt: ctx.deps.now().toISOString() });
+  // Humanizadores novos invalidam Clarice e checagens de uma rodada anterior.
+  writeRunState(ctx.editionDir, {
+    ...st,
+    humanizeDispatchAt: ctx.deps.now().toISOString(),
+    clariceDone: undefined,
+    clariceWarns: [],
+    postChecksDone: false,
+  });
   return result(ctx, 0, { mode: st.mode, nextPhase: "post-humanize", pendingAgentDispatch: pending, dispatchTogether: true });
 }
 
@@ -977,6 +999,7 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
   // (a retomada `--social-clarice-only` não a refaz).
   if (clarice.newsletter) {
     st.clariceDone = { ...(st.clariceDone ?? {}), newsletter: clarice.newsletter };
+    st.clariceWarns = [...new Set([...(st.clariceWarns ?? []), ...ctx.gateNotes])];
     writeRunState(ctx.editionDir, st);
   }
 
@@ -1074,6 +1097,10 @@ function phasePostHumanize(ctx: Ctx): Stage2RunResult {
       newsletter: ctx.newsletter ? (clarice.newsletter ?? prev.newsletter) : prev.newsletter,
       social: ctx.social ? (clarice.social ?? prev.social) : prev.social,
     },
+    // Os avisos desta fase são todos da Clarice; somados aos de uma rodada
+    // anterior (a retomada `--social-clarice-only` não refaz a newsletter).
+    clariceWarns: [...new Set([...(st.clariceWarns ?? []), ...ctx.gateNotes])],
+    postChecksDone: false,
   });
   return result(ctx, 0, { mode: st.mode, nextPhase: "post-checks", clarice });
 }
@@ -1159,7 +1186,11 @@ function runPostChecks(ctx: Ctx, st: RunState): Stage2RunResult {
     if (m.stderr.trim()) ctx.gateNotes.push(`tamanho dos destaques: ${m.stderr.trim().slice(0, 600)}`);
   }
 
-  if (ctx.fixes.length > 0) return fixNeeded(ctx, "post-checks", { mode: st.mode });
+  if (ctx.fixes.length > 0) {
+    writeRunState(ctx.editionDir, { ...st, postChecksDone: false });
+    return fixNeeded(ctx, "post-checks", { mode: st.mode });
+  }
+  writeRunState(ctx.editionDir, { ...st, postChecksDone: true });
   return result(ctx, 0, { mode: st.mode, nextPhase: "post-gate" });
 }
 
@@ -1170,6 +1201,8 @@ function phasePostChecks(ctx: Ctx): Stage2RunResult {
   if (missing.length > 0) {
     throw new Stage2Abort(`Clarice ainda não rodou (${missing.join(", ")}) — rodar --phase post-humanize antes do post-checks.`);
   }
+  // Avisos de fases anteriores voltam ao gate (#14084): o gate lê o post-checks.
+  for (const w of st.clariceWarns ?? []) ctx.gateNotes.push(w);
   if (st.curtoWarn) ctx.gateNotes.push(st.curtoWarn);
   return runPostChecks(ctx, st);
 }
@@ -1188,6 +1221,9 @@ export const STAGE2_SNAPSHOTS = [
 
 function phasePostGate(ctx: Ctx): Stage2RunResult {
   const st = loadState(ctx);
+  if (!st.postChecksDone) {
+    throw new Stage2Abort("post-checks ainda não passou nesta rodada — rodar --phase post-checks (e o gate) antes do post-gate.");
+  }
   const reviewed = ctx.e("02-reviewed.md");
   if (ctx.newsletter) {
     const snapshot = ctx.e("_internal/02-pre-title-picker.md");

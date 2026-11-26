@@ -241,6 +241,8 @@ describe("--phase post-writers", () => {
     const r1 = await runStage2(["--phase", "post-writers", "--edition", E], first.deps);
     assert.equal(r1.code, 3);
     assert.match(r1.fixes[0].action, /social-curto/);
+    assert.equal(r1.pendingAgentDispatch[0]?.agent, "social-curto", "o fix traz o dispatch gravado no pre-dispatch");
+    assert.ok(r1.pendingAgentDispatch[0]?.params.approved_json_path);
     const second = makeDeps({ "verify-agent-outputs.ts": curtoFails });
     const r2 = await runStage2(["--phase", "post-writers", "--edition", E], second.deps);
     assert.equal(r2.code, 0);
@@ -318,6 +320,11 @@ describe("--phase post-pool", () => {
   it("happy → os dois humanizadores na mesma mensagem + snapshot do social", async () => {
     await preDispatch();
     seedWriterOutputs();
+    const st0 = readRunState(dir)!;
+    writeFileSync(
+      join(dir, "_internal", "02-stage2-run-state.json"),
+      JSON.stringify({ ...st0, clariceDone: { newsletter: "applied" }, postChecksDone: true, clariceWarns: ["velho"] }),
+    );
     const { deps } = makeDeps({
       "lint-newsletter-md.ts": () => ok(JSON.stringify({ passed: true, checks: [] })),
       "normalize-newsletter.ts": () => {
@@ -330,6 +337,10 @@ describe("--phase post-pool", () => {
     assert.equal(r.dispatchTogether, true);
     assert.equal(r.pendingAgentDispatch.length, 2);
     assert.ok(existsSync(join(dir, "_internal/03-social-pre-humanizador.md")));
+    const st = readRunState(dir)!;
+    assert.equal(st.clariceDone, undefined, "post-pool limpa clariceDone");
+    assert.equal(st.postChecksDone, false);
+    assert.deepEqual(st.clariceWarns, []);
   });
 });
 
@@ -438,6 +449,12 @@ describe("--phase post-humanize", () => {
     assert.equal(argOf(calls.find((c) => c.script.includes("clarice-correct")), "--deadline-ms"), "480000");
   });
 
+  it("--deadline-ms acima de 540000 → code 1 (#14084)", async () => {
+    const { deps } = makeDeps();
+    const r = await runStage2(["--phase", "post-humanize", "--edition", E, "--social-clarice-only", "--deadline-ms", "600000"], deps);
+    assert.equal(r.code, 1);
+  });
+
   it("--deadline-ms sem --social-clarice-only → code 1", async () => {
     const { deps } = makeDeps();
     const r = await runStage2(["--phase", "post-humanize", "--edition", E, "--deadline-ms", "1000"], deps);
@@ -497,6 +514,14 @@ describe("--phase post-humanize", () => {
   });
 });
 
+function isSocialArg(args: string[]): boolean {
+  return (argOf({ script: "", args }, "--in") ?? "").endsWith("03-social.md");
+}
+function writeCorrectedSocial(args: string[]): StepResult {
+  writeFileSync(argOf({ script: "", args }, "--corrected-out")!, "# Social\n\n## d1\n\nA3\n\n## d2\n\nB3\n\n## d3\n\nC3\n", "utf8");
+  return ok();
+}
+
 function markClariceDone(): void {
   const st = readRunState(dir)!;
   writeFileSync(join(dir, "_internal", "02-stage2-run-state.json"), JSON.stringify({ ...st, clariceDone: { newsletter: "applied", social: "applied" } }));
@@ -530,6 +555,27 @@ describe("--phase post-checks", () => {
     assert.equal(r.rerunPhase, "post-checks");
   });
 
+  it("avisos da Clarice do post-humanize voltam no gate do post-checks; postChecksDone gravado (#14084)", async () => {
+    await upToHumanize();
+    humanizeDone();
+    write("_internal/preflight-state.json", JSON.stringify({ clariceRealProbe: false }));
+    const ph = makeDeps({
+      ...happyChecks,
+      "clarice-correct.ts": (args) => (isSocialArg(args) ? writeCorrectedSocial(args) : fail(6)),
+      "clarice-pending.ts": (args) => {
+        if (args[0] === "skip") write("02-reviewed.md", "humanized\n");
+        return ok();
+      },
+    });
+    assert.equal((await runStage2(["--phase", "post-humanize", "--edition", E], ph.deps)).code, 0);
+    const { deps } = makeDeps(happyChecks);
+    const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
+    assert.equal(r.code, 0);
+    assert.ok(r.gateNotes.some((n) => /clarice-pending\.ts resume/.test(n)), "linha de resume no gate");
+    assert.ok(r.gateNotes.some((n) => /90 s/.test(n)), "modo degradado no gate");
+    assert.equal(readRunState(dir)?.postChecksDone, true);
+  });
+
   it("plantio só com --no-gates", async () => {
     await preDispatch();
     markClariceDone();
@@ -543,9 +589,24 @@ describe("--phase post-checks", () => {
   });
 });
 
+function markChecksDone(): void {
+  const st = readRunState(dir)!;
+  writeFileSync(join(dir, "_internal", "02-stage2-run-state.json"), JSON.stringify({ ...st, postChecksDone: true }));
+}
+
 describe("--phase post-gate", () => {
+  it("sem post-checks que passou → code 1 (#14084)", async () => {
+    await preDispatch();
+    write("02-reviewed.md", "x\n");
+    const { deps, calls } = makeDeps();
+    const r = await runStage2(["--phase", "post-gate", "--edition", E], deps);
+    assert.equal(r.code, 1);
+    assert.ok(!calls.some((c) => c.script.includes("pipeline-sentinel")));
+  });
+
   it("destaque com 3 títulos → title-picker; depois sentinel e limpeza dos snapshots", async () => {
     await preDispatch();
+    markChecksDone();
     write("02-reviewed.md", "x\n");
     for (const rel of STAGE2_SNAPSHOTS) write(rel, "snap\n");
     const first = makeDeps({ "lint-newsletter-md.ts": () => fail(1) });
@@ -564,6 +625,7 @@ describe("--phase post-gate", () => {
 
   it("intentional-error.json incompleto: interativo para antes do sentinel; --no-gates segue (#14084)", async () => {
     await preDispatch();
+    markChecksDone();
     write("02-reviewed.md", "x\n");
     write("_internal/02-pre-title-picker.md", "x\n");
     const a = makeDeps({ "validate-frontmatter-yaml.ts": () => fail(1, "", "{PREENCHER}") });
@@ -579,6 +641,7 @@ describe("--phase post-gate", () => {
 
   it("sentinel recusado por invariante → code 3 e snapshots preservados", async () => {
     await preDispatch();
+    markChecksDone();
     write("02-reviewed.md", "x\n");
     write("_internal/02-pre-title-picker.md", "x\n");
     write("_internal/02-humanized.md", "h\n");
@@ -590,6 +653,7 @@ describe("--phase post-gate", () => {
 
   it("selo do social com hash divergente (editor editou no gate) → regrava com bypass", async () => {
     await preDispatch();
+    markChecksDone();
     write("02-reviewed.md", "x\n");
     write("_internal/02-pre-title-picker.md", "x\n");
     let n = 0;
