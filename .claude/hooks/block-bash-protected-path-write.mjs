@@ -39,6 +39,25 @@ export function readScript(path) {
   }
 }
 
+/**
+ * Filtro do despachante único (#14045): roda a mesma análise do `runHook`
+ * abaixo com uma leitura de arquivo que só anota, sem disco. `true` quando
+ * ela já acha escrita em caminho protegido ou quando precisaria ler um
+ * script/patch para decidir; o despachante só roda o hook, em processo
+ * próprio, nesse caso.
+ */
+export function appliesTo(payload) {
+  let wantsRead = false;
+  const finding = shouldBlockProtectedPathWrite(payload, {
+    projectDirs: [process.env.CLAUDE_PROJECT_DIR ?? ""],
+    readFile: () => {
+      wantsRead = true;
+      return null;
+    },
+  });
+  return Boolean(finding) || wantsRead;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let data = "";
   process.stdin.setEncoding("utf8");

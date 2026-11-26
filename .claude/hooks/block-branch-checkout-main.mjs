@@ -1096,14 +1096,16 @@ export function shouldBlockBranchCheckout(activeCoordinatorSessionIds, callerSes
  * trocar branch. Superconjunto do filtro do `runHook` abaixo
  * (`resolveBranchCreateTargets(...).length > 0`, que só devolve alvo para
  * `checkout`/`switch` literais): aqui basta a palavra aparecer no texto,
- * sem aspas nem barra invertida. Puro, sem disco; o despachante só roda o
+ * sem continuação de linha, aspas nem barra invertida. Puro, sem disco; o despachante só roda o
  * hook, em processo próprio, quando dá `true`, e o hook decide como antes.
  */
 export function appliesTo(payload) {
   if (payload.tool_name && payload.tool_name !== "Bash") return false;
   const command = payload.tool_input?.command;
   if (typeof command !== "string") return false; // o hook não acha alvo (lista vazia)
-  return /checkout|switch/i.test(command.replace(/[\\'"]/g, ""));
+  // Continuação de linha (`\` + newline) some antes, como no parser do hook:
+  // `git che\<newline>ckout -b x` é `git checkout -b x` para o shell.
+  return /checkout|switch/i.test(command.replace(/\\\r?\n/g, "").replace(/[\\'"]/g, ""));
 }
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o

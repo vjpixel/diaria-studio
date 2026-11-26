@@ -9,16 +9,14 @@
 //
 // Onde cada guard roda (`mode` em `GUARDS`):
 // - `worker`: numa Worker própria (`pretooluse-bash-dispatch-worker.mjs`),
-//   fora do event loop daqui. Um guard síncrono que trava não segura os
-//   timers do despachante: no teto dele, `terminate()` e ele fica sem saída.
-//   São os guards que não leem `data/` nem chamam git sem timeout.
-// - `spawn-if-applies`: em processo próprio, só quando o filtro dele
-//   (`appliesTo`, exportado pelo hook, puro, sem disco) diz que ele tem o
-//   que decidir. São os que leem `data/sessions/` (guard de merge, checkout,
-//   rm/git destrutivo, commit em worktree alheio) e os de `gh pr create`
-//   (git/tsc/teste por dezenas de segundos). Processo travado em disco ou em
-//   rede é morto no teto dele, como o harness fazia. No Bash comum, nenhum
-//   desses se aplica e não há spawn.
+//   fora do event loop daqui. Só guard puro (injeção de `--session-id`, laço
+//   de `gh pr checks`, review cru): travado num laço, `terminate()` no teto
+//   dele e ele fica sem saída.
+// - `spawn-if-applies`: todo guard que toca disco ou git, em processo
+//   próprio, só quando o filtro dele (`appliesTo`, exportado pelo hook, puro,
+//   sem disco) diz que ele tem o que decidir. Processo travado em disco, git
+//   ou rede é morto no teto dele com a árvore de filhos (`killProcessTree`),
+//   como o harness fazia. No Bash comum nenhum se aplica e não há spawn.
 //
 // O que é preservado, guard a guard:
 // - Mesma entrada: cada guard recebe o stdin CRU original (no harness os 16
@@ -41,12 +39,12 @@
 //   (`onFilterError: "run"`, fail-closed); os demais ficam sem decisão,
 //   com o aviso.
 //
-// Limite conhecido: Worker presa numa chamada nativa bloqueante (leitura de
-// arquivo citado no comando, num disco de rede travado) não termina com
-// `terminate()`, e o Node espera a thread antes de sair. O deny já calculado
-// sai no stdout na hora; o processo só termina quando a chamada volta ou o
-// harness o mata. Os guards que leem `data/` ficam fora disso (processo
-// próprio).
+// Por que nenhum guard de disco roda em Worker: uma Worker presa numa chamada
+// nativa bloqueante não termina com `terminate()`, e o Node espera a thread
+// antes de sair, com qualquer forma de saída que devolva código 0 (ver o
+// docblock de `GUARDS`). Teste: `test/pretooluse-bash-dispatch-14045.test.ts`
+// trava que os guards de `worker` não importam `node:fs` nem
+// `node:child_process`.
 //
 // Equivalência travada em `test/pretooluse-bash-dispatch-14045.test.ts`.
 
@@ -62,24 +60,35 @@ const WORKER_SCRIPT = join(HOOK_DIR, "pretooluse-bash-dispatch-worker.mjs");
  * Os guards, na ordem do settings.json antes do #14045. `timeoutMs` é o
  * `timeout` que o hook tinha lá. `onFilterError` (só `spawn-if-applies`):
  * `"run"` roda o guard quando o `appliesTo` lança; `"skip"` (padrão) não.
+ * `failureAsContext`: a falha do guard vai também no `additionalContext`
+ * (o `inject-session-id` que falha deixa o comando sem `--session-id`, e o
+ * modelo precisa saber disso para não ler o erro seguinte como outra coisa).
+ *
+ * Só guard PURO (sem disco, sem git, sem rede) roda em `worker`: travado num
+ * laço, `terminate()` o encerra. Uma Worker presa numa chamada nativa não
+ * encerraria, e o Node espera a thread antes de sair (medido em 26/11/2026:
+ * `process.exit`, `process.reallyExit` e `unref()` esperam; matar o próprio
+ * processo sai com código 1, e o harness descarta o JSON de saída com código
+ * diferente de 0). Por isso todo guard que toca disco ou git roda em
+ * processo próprio.
  */
 export const GUARDS = Object.freeze([
-  { file: "inject-session-id.mjs", mode: "worker", timeoutMs: 10_000 },
+  { file: "inject-session-id.mjs", mode: "worker", timeoutMs: 10_000, failureAsContext: true },
   { file: "block-gh-pr-merge-subagent.mjs", mode: "spawn-if-applies", timeoutMs: 10_000, onFilterError: "run" },
-  { file: "block-gh-comment-secrets.mjs", mode: "worker", timeoutMs: 10_000 },
+  { file: "block-gh-comment-secrets.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
   { file: "block-branch-checkout-main.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
   { file: "block-pr-create-pii-runtime-artifacts.mjs", mode: "spawn-if-applies", timeoutMs: 30_000, onFilterError: "run" },
   { file: "block-pr-create-tsc-failure.mjs", mode: "spawn-if-applies", timeoutMs: 90_000 },
   { file: "block-pr-create-orchestrator-snapshot-stale.mjs", mode: "spawn-if-applies", timeoutMs: 30_000 },
   { file: "block-pr-create-test-runner-import.mjs", mode: "spawn-if-applies", timeoutMs: 30_000 },
   { file: "block-unsafe-shared-checkout-ops.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
-  { file: "block-worktree-bare-push.mjs", mode: "worker", timeoutMs: 10_000 },
-  { file: "block-npm-install-node-modules-symlink.mjs", mode: "worker", timeoutMs: 10_000 },
+  { file: "block-worktree-bare-push.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
+  { file: "block-npm-install-node-modules-symlink.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
   { file: "block-worktree-alien-commit.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
-  { file: "block-continuo-master-commit.mjs", mode: "worker", timeoutMs: 10_000 },
+  { file: "block-continuo-master-commit.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
   { file: "block-handwritten-pr-checks-loop.mjs", mode: "worker", timeoutMs: 10_000 },
   { file: "block-raw-pr-review-comment.mjs", mode: "worker", timeoutMs: 10_000 },
-  { file: "block-bash-protected-path-write.mjs", mode: "worker", timeoutMs: 10_000 },
+  { file: "block-bash-protected-path-write.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
 ]);
 
 /** Folga sobre o maior teto: partida do node, das Workers e dos processos. */
@@ -116,12 +125,14 @@ function parseHookOutput(text) {
  *   deny (comando negado não roda, a reescrita não importa);
  * - `systemMessage` e `additionalContext`: todos, um por linha;
  * - outra chave de topo (`continue`, `stopReason`...): a primeira.
- * `notices` (falhas do próprio despachante) entram no fim do `systemMessage`.
+ * `notices` (falhas do próprio despachante) entram no fim do `systemMessage`;
+ * `contextNotices` (falha de guard cujo silêncio o modelo precisa saber, ex.
+ * `--session-id` não injetado) também no fim do `additionalContext`.
  * Uma saída única, sem aviso, volta igual. Nada a dizer: `null`.
  */
-export function combineHookOutputs(outputs, notices = []) {
+export function combineHookOutputs(outputs, notices = [], contextNotices = []) {
   const parsed = outputs.map(parseHookOutput).filter((o) => o !== null);
-  if (parsed.length === 0 && notices.length === 0) return null;
+  if (parsed.length === 0 && notices.length === 0 && contextNotices.length === 0) return null;
 
   let decided = null;
   for (const o of parsed) {
@@ -156,6 +167,7 @@ export function combineHookOutputs(outputs, notices = []) {
   const contexts = parsed
     .map((o) => o.hookSpecificOutput?.additionalContext)
     .filter((c) => typeof c === "string" && c !== "");
+  contexts.push(...contextNotices);
   if (contexts.length > 0) specific.additionalContext = contexts.join("\n");
   if (Object.keys(specific).length > 1) result.hookSpecificOutput = specific;
 
@@ -238,17 +250,41 @@ async function evaluateFilter(guard, payload, payloadError, hooksDir) {
   }
 }
 
+/**
+ * Mata o processo do guard E os filhos dele (tsc, node --test, git): no
+ * win32 `taskkill /T /F`, no POSIX o grupo de processos (o filho nasce
+ * `detached`, líder do próprio grupo). Sem isso, matar só o guard deixaria
+ * o tsc ou o teste órfão rodando.
+ */
+export function killProcessTree(child, { platform = process.platform, spawnFn = spawn, killFn = process.kill } = {}) {
+  if (!child || typeof child.pid !== "number" || child.exitCode !== null || child.signalCode !== null) return;
+  const fallback = () => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // já saiu
+    }
+  };
+  try {
+    if (platform === "win32") {
+      const k = spawnFn("taskkill", ["/T", "/F", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
+      k.on?.("error", fallback);
+      k.unref?.();
+    } else {
+      killFn(-child.pid, "SIGKILL");
+    }
+  } catch {
+    fallback();
+  }
+}
+
 /** Guard em processo próprio, só quando o filtro dele diz que se aplica. */
 function runSpawnIfApplies(guard, raw, payload, payloadError, hooksDir) {
   let child;
   let stopped = false;
   const stop = () => {
     stopped = true;
-    try {
-      child?.kill();
-    } catch {
-      // já saiu
-    }
+    killProcessTree(child);
   };
   const done = (async () => {
     const filter = await evaluateFilter(guard, payload, payloadError, hooksDir);
@@ -273,6 +309,8 @@ function runSpawnIfApplies(guard, raw, payload, payloadError, hooksDir) {
         child = spawn(process.execPath, [join(hooksDir, guard.file)], {
           stdio: ["pipe", "pipe", "inherit"],
           windowsHide: true,
+          // POSIX: líder do próprio grupo, para `killProcessTree` levar os netos.
+          detached: process.platform !== "win32",
         });
       } catch (err) {
         finish({ out: "", notice: notice(guard.file, `não spawnou (${err?.message ?? err})`) });
@@ -321,7 +359,8 @@ export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
       for (const [i, r] of runs.entries()) if (!settled[i]) r.stop();
       const notices = noticesByGuard.filter(Boolean);
       if (payloadError !== null) notices.unshift(notice("stdin", `não é JSON (${payloadError.message})`));
-      resolve({ outputs: [...outputs], notices, early });
+      const contextNotices = noticesByGuard.filter((n, i) => n && guards[i].failureAsContext === true);
+      resolve({ outputs: [...outputs], notices, contextNotices, early });
     };
     const check = () => {
       for (let i = 0; i < guards.length; i++) {
@@ -344,8 +383,8 @@ export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
 
 /** Saída final do despachante (texto JSON) ou `""` quando ninguém tem o que dizer. */
 export async function dispatch(raw, opts) {
-  const { outputs, notices } = await runGuards(raw, opts);
-  const combined = combineHookOutputs(outputs, notices);
+  const { outputs, notices, contextNotices } = await runGuards(raw, opts);
+  const combined = combineHookOutputs(outputs, notices, contextNotices);
   return combined === null ? "" : JSON.stringify(combined);
 }
 

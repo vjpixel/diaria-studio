@@ -26,6 +26,7 @@ import { pathToFileURL } from "node:url";
 import {
   GUARDS,
   STARTUP_MARGIN_MS,
+  killProcessTree,
   worstCaseMs,
   combineHookOutputs,
   dispatch,
@@ -451,5 +452,109 @@ describe("despachante (#14045): equivalência com os 16 scripts rodados um a um"
     const out = JSON.parse(runScript(DISPATCHER, root, "não é json"));
     assert.equal(out.hookSpecificOutput, undefined);
     assert.match(out.systemMessage, /stdin não é JSON/);
+  });
+});
+
+describe("despachante (#14045): re-review da PR #14107", () => {
+  function fixtureDir(files: Record<string, string>): string {
+    const dir = tmp("dispatch-rereview");
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body, "utf8");
+    return dir;
+  }
+  const denyGuard = (reason: string) => `export function runHook(data, write) { write(${JSON.stringify(deny(reason))}); }\n`;
+  const bash = (command: string, extra: Record<string, unknown> = {}) => ({ tool_name: "Bash", tool_input: { command }, ...extra });
+
+  it("1: Worker presa numa chamada nativa (execFileSync) + outro guard negando: o deny sai no teto da presa", async () => {
+    const stuck = `import { execFileSync } from "node:child_process";\nexport function runHook() { execFileSync(process.execPath, ["-e", "setTimeout(() => {}, 3000)"], { windowsHide: true }); }\n`;
+    const dir = fixtureDir({ "presa.mjs": stuck, "nega.mjs": denyGuard("nega") });
+    const guards: DispatchGuard[] = [
+      { file: "presa.mjs", mode: "worker", timeoutMs: 400 },
+      { file: "nega.mjs", mode: "worker", timeoutMs: 10_000 },
+    ];
+    const t = Date.now();
+    const out = JSON.parse(await dispatch("{}", { guards, hooksDir: dir }));
+    const elapsed = Date.now() - t;
+    assert.equal(out.hookSpecificOutput.permissionDecisionReason, "nega");
+    assert.match(out.systemMessage, /presa\.mjs passou de 400 ms/);
+    assert.ok(elapsed < 2500, `deny saiu em ${elapsed} ms (a chamada presa dura 3 s)`);
+  });
+
+  it("1: por isso só guard puro roda em Worker: os de worker não importam node:fs nem node:child_process", () => {
+    const workers = GUARDS.filter((g) => g.mode === "worker").map((g) => g.file);
+    assert.deepEqual(workers, ["inject-session-id.mjs", "block-handwritten-pr-checks-loop.mjs", "block-raw-pr-review-comment.mjs"]);
+    for (const f of workers) {
+      const src = readFileSync(join(HOOKS, f), "utf8");
+      assert.doesNotMatch(src, /from\s+["']node:(?:fs|child_process)["']/, `${f} toca disco/processo: precisa de spawn-if-applies`);
+    }
+  });
+
+  it("2: appliesTo do checkout tira a continuação de linha antes do regex (git che\\<newline>ckout -b x)", async () => {
+    const { appliesTo } = await import(pathToFileURL(join(HOOKS, "block-branch-checkout-main.mjs")).href);
+    assert.equal(appliesTo(bash("git che\\\nckout -b x")), true);
+    assert.equal(appliesTo(bash("git che\\\r\nckout -b x")), true);
+    assert.equal(appliesTo(bash("git sw'it'ch -c x")), true);
+    assert.equal(appliesTo(bash("git status --short")), false);
+  });
+
+  it("filtros novos: aplicam no que o guard olharia, não no Bash comum", async () => {
+    const load = async (f: string) => (await import(pathToFileURL(join(HOOKS, f)).href)).appliesTo as (p: unknown, e?: unknown) => boolean;
+    const secrets = await load("block-gh-comment-secrets.mjs");
+    assert.equal(secrets(bash("gh issue comment 1 --body-file body.md")), true);
+    assert.equal(secrets(bash("gh pr create --title t --body b")), true);
+    assert.equal(secrets(bash("git status")), false);
+    const npm = await load("block-npm-install-node-modules-symlink.mjs");
+    assert.equal(npm(bash("npm ci", { cwd: ROOT })), true);
+    assert.equal(npm(bash("git status", { cwd: ROOT })), false);
+    const bare = await load("block-worktree-bare-push.mjs");
+    assert.equal(bare(bash("git push")), true);
+    assert.equal(bare(bash("git status")), false);
+    const continuo = await load("block-continuo-master-commit.mjs");
+    assert.equal(continuo(bash("git commit -m x", { cwd: ROOT }), { DIARIA_SESSION_KIND: "continuo" }), true);
+    assert.equal(continuo(bash("git commit -m x", { cwd: ROOT }), {}), false);
+    const prot = await load("block-bash-protected-path-write.mjs");
+    assert.equal(prot(bash("echo x > .claude/settings.json")), true);
+    assert.equal(prot(bash("python /tmp/fix-14045.py")), true, "script que o guard leria: aplica");
+    assert.equal(prot(bash("ls -la")), false);
+  });
+
+  it("3: killProcessTree mata a árvore (taskkill /T /F no win32, grupo no POSIX)", () => {
+    const child = { pid: 4242, exitCode: null, signalCode: null, kill: () => true };
+    const calls: unknown[][] = [];
+    killProcessTree(child, { platform: "win32", spawnFn: (cmd, args) => (calls.push([cmd, ...args]), {}) });
+    assert.deepEqual(calls, [["taskkill", "/T", "/F", "/PID", "4242"]]);
+    const kills: unknown[][] = [];
+    killProcessTree(child, { platform: "linux", killFn: (pid, sig) => kills.push([pid, sig]) });
+    assert.deepEqual(kills, [[-4242, "SIGKILL"]]);
+    const done: unknown[][] = [];
+    killProcessTree({ ...child, exitCode: 0 }, { platform: "linux", killFn: (pid, sig) => done.push([pid, sig]) });
+    assert.deepEqual(done, [], "processo que já saiu não é morto de novo");
+  });
+
+  it("3: no teto, o neto do guard (tsc/teste) morre junto, sem órfão", async () => {
+    const marker = join(tmp("dispatch-tree"), "neto-vivo.txt");
+    const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "x"), 1500)`;
+    const script = [
+      `import { spawn } from "node:child_process";`,
+      `import { pathToFileURL } from "node:url";`,
+      `export function appliesTo() { return true; }`,
+      `if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {`,
+      `  spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore", windowsHide: true });`,
+      `  setTimeout(() => {}, 30000);`,
+      `}`,
+    ].join("\n");
+    const dir = fixtureDir({ "pai.mjs": script });
+    await runGuards("{}", { guards: [{ file: "pai.mjs", mode: "spawn-if-applies", timeoutMs: 600 }], hooksDir: dir });
+    await new Promise((r) => setTimeout(r, 2500));
+    assert.equal(existsSync(marker), false, "o neto sobreviveu ao teto do guard");
+  });
+
+  it("4: falha do inject-session-id vai também no additionalContext", async () => {
+    const dir = fixtureDir({ "inject.mjs": `export function runHook() { for (;;) {} }\n` });
+    const out = JSON.parse(
+      await dispatch("{}", { guards: [{ file: "inject.mjs", mode: "worker", timeoutMs: 300, failureAsContext: true }], hooksDir: dir }),
+    );
+    assert.match(out.systemMessage, /inject\.mjs passou de 300 ms/);
+    assert.match(out.hookSpecificOutput.additionalContext, /inject\.mjs passou de 300 ms/);
+    assert.equal(GUARDS.find((g) => g.file === "inject-session-id.mjs")?.failureAsContext, true);
   });
 });

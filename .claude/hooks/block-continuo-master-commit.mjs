@@ -211,6 +211,21 @@ export function decide(payload, env = process.env, headBranch = getHeadBranch) {
   return null;
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando o `decide` acima
+ * chamaria git (sessão continuo com commit/push guardado no comando). Roda o
+ * mesmo `decide` com uma leitura de branch que só anota, sem git; o
+ * despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload, env = process.env) {
+  let wouldRunGit = false;
+  decide(payload, env, () => {
+    wouldRunGit = true;
+    return null;
+  });
+  return wouldRunGit;
+}
+
 const _argv1 = process.argv[1];
 if (_argv1 && import.meta.url === pathToFileURL(_argv1).href) {
   let data = "";

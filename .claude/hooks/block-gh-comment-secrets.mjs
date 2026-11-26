@@ -237,6 +237,18 @@ export function evaluate(command, cwd, readFile = (p) => readFileSync(p, "utf8")
   );
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando uma das duas checagens
+ * do `runHook` abaixo tem o que olhar (comando que publica no GitHub, ou
+ * `--body-file` de `gh issue|pr`). As duas leem arquivo só nesses casos.
+ * Puro; o despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  return isGhPublishCommand(command) || ghBodyFileValues(command).length > 0;
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 const isMain =
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url

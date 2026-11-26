@@ -187,6 +187,17 @@ export const BARE_PUSH_IN_WORKTREE_BLOCK_REASON =
   "out) e passam normalmente. Ver context/overnight-dispatch-rules.md e a issue #7722 pro incidente " +
   "completo.";
 
+/**
+ * Filtro do despachante único (#14045): o mesmo primeiro filtro do `runHook`
+ * abaixo (tool Bash + `git push` nu), antes de olhar o disco. Puro; o
+ * despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  return typeof command === "string" && commandHasBareGitPush(command);
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url
