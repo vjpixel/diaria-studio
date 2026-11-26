@@ -10,14 +10,19 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import {
   runStage3,
   parseStage3RunArgs,
   readDestaqueCountFromDisk,
   parseStepJson,
   Stage3Abort,
+  runWithConcurrency,
+  realExecAsync,
+  DEFAULT_IMAGE_CONCURRENCY,
   type Stage3RunDeps,
   type ExecFn,
+  type AsyncExecFn,
   type StepResult,
 } from "../scripts/stage-3-run.ts";
 
@@ -540,5 +545,187 @@ describe("runStage3 — delegatedSteps", () => {
     assert.ok(result.delegatedSteps.some((s) => s.includes("humanizador")));
     assert.ok(result.delegatedSteps.some((s) => s.includes("crop-reviewer")));
     assert.ok(result.delegatedSteps.some((s) => s.includes("gate humano")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Geração de imagens em paralelo (#14036) — gerador FALSO, nenhuma imagem real
+// ---------------------------------------------------------------------------
+
+/** Gerador falso assíncrono: cada chamada de image-generate.ts espera um
+ * tick e devolve o que `decide` mandar. Mede quantas estavam em voo juntas. */
+function makeFakeImageGen(decide: (args: string[], attempt: number) => StepResult = () => ok("{}")) {
+  const calls: string[][] = [];
+  const started: string[] = [];
+  const attempts = new Map<string, number>();
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const label = (args: string[]) => `${args[args.indexOf("--destaque") + 1]}:${args.includes("--ratio") ? "4x5" : "2x1"}`;
+  const execAsync: AsyncExecFn = async (script, args) => {
+    assert.ok(script.endsWith("image-generate.ts"), `execAsync só deveria rodar image-generate.ts, rodou ${script}`);
+    calls.push(args);
+    const key = label(args);
+    const n = (attempts.get(key) ?? 0) + 1;
+    attempts.set(key, n);
+    started.push(key);
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return decide(args, n);
+  };
+  return { execAsync, calls, started, label, get maxInFlight() { return maxInFlight; } };
+}
+
+describe("parseStage3RunArgs — concorrência (#14036)", () => {
+  it("default = DEFAULT_IMAGE_CONCURRENCY (6)", () => {
+    assert.equal(parseStage3RunArgs(["--edition", "260423"]).imageConcurrency, DEFAULT_IMAGE_CONCURRENCY);
+    assert.equal(DEFAULT_IMAGE_CONCURRENCY, 6);
+  });
+  it("--concurrency 2 e --serial", () => {
+    assert.equal(parseStage3RunArgs(["--edition", "260423", "--concurrency", "2"]).imageConcurrency, 2);
+    assert.equal(parseStage3RunArgs(["--edition", "260423", "--serial"]).imageConcurrency, 1);
+  });
+  it("--concurrency fora de 1..6 -> Stage3Abort", () => {
+    assert.throws(() => parseStage3RunArgs(["--edition", "260423", "--concurrency", "0"]), Stage3Abort);
+    assert.throws(() => parseStage3RunArgs(["--edition", "260423", "--concurrency", "7"]), Stage3Abort);
+    assert.throws(() => parseStage3RunArgs(["--edition", "260423", "--concurrency", "x"]), Stage3Abort);
+  });
+});
+
+describe("runWithConcurrency (#14036)", () => {
+  it("respeita o teto e devolve na ordem da lista, não na de término", async () => {
+    let inFlight = 0;
+    let max = 0;
+    const jobs = [30, 5, 15, 1].map((ms, i) => async () => {
+      inFlight++;
+      max = Math.max(max, inFlight);
+      await new Promise((r) => setTimeout(r, ms));
+      inFlight--;
+      return i;
+    });
+    assert.deepEqual(await runWithConcurrency(jobs, 2), [0, 1, 2, 3]);
+    assert.equal(max, 2);
+  });
+  it("lista vazia não trava", async () => {
+    assert.deepEqual(await runWithConcurrency([], 6), []);
+  });
+});
+
+describe("realExecAsync (#14036) — spawn de verdade, sem gerar imagem", () => {
+  it("captura exit code e stderr (image-generate.ts sem args sai 1 no uso, antes de qualquer geração)", async () => {
+    const root = new URL("..", import.meta.url);
+    const r = await realExecAsync(fileURLToPath(root))("scripts/image-generate.ts", []);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /Uso: image-generate\.ts/);
+  });
+});
+
+describe("runStage3 — imagens em paralelo (#14036)", () => {
+  it("3 destaques: as 6 imagens (2x1 + 4x5 de cada) rodam juntas, card/carrossel só depois", async () => {
+    const gen = makeFakeImageGen();
+    const { exec, calls } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 0);
+    assert.equal(gen.calls.length, 6);
+    assert.equal(gen.maxInFlight, 6);
+    assert.equal(result.imageConcurrency, 6);
+    assert.equal(result.imageJobs?.length, 6);
+    assert.ok(result.imageJobs?.every((j) => j.ok && !j.retriedSerially));
+    // Nenhum image-generate.ts pelo exec síncrono quando há execAsync.
+    assert.equal(calls.filter((c) => c.script.endsWith("image-generate.ts")).length, 0);
+    assert.ok(calls.some((c) => c.script.endsWith("gen-social-card-4x5.ts")));
+    assert.deepEqual(result.destaques.map((d) => d.destaque), ["d1", "d2", "d3"]);
+  });
+
+  it("--serial: uma imagem por vez, na ordem antiga (d1 2x1, d1 4x5, d2 2x1...)", async () => {
+    const gen = makeFakeImageGen();
+    const { exec } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423", "--serial"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 0);
+    assert.equal(gen.maxInFlight, 1);
+    assert.deepEqual(gen.started, ["d1:2x1", "d1:4x5", "d2:2x1", "d2:4x5", "d3:2x1", "d3:4x5"]);
+  });
+
+  it("--concurrency 3 limita a 3 em voo", async () => {
+    const gen = makeFakeImageGen();
+    const { exec } = makeFakeExec(happyHandlers());
+    await runStage3(["--edition", "260423", "--concurrency", "3"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(gen.maxInFlight, 3);
+  });
+
+  it("2x1 ausente (vai ser regerado): 2x1 leva --keep-4x5-nativo e o 4x5 leva --force (mesmo resultado da ordem antiga, sem corrida)", async () => {
+    const gen = makeFakeImageGen();
+    const { exec } = makeFakeExec(happyHandlers());
+    const deps = baseDeps({ exec, execAsync: gen.execAsync, existsSync: (p) => !p.replace(/\\/g, "/").endsWith("04-d1-2x1.jpg") });
+    await runStage3(["--edition", "260423"], deps);
+    const d1_2x1 = gen.calls.find((a) => gen.label(a) === "d1:2x1")!;
+    const d1_4x5 = gen.calls.find((a) => gen.label(a) === "d1:4x5")!;
+    assert.ok(d1_2x1.includes("--keep-4x5-nativo"));
+    assert.ok(!d1_2x1.includes("--force"), "sem --force do editor, o 2x1 não é forçado");
+    assert.ok(d1_4x5.includes("--force"));
+    // d2/d3 com o 2x1 presente: skip-if-exists de sempre, nenhum dos dois forçado.
+    const d2_2x1 = gen.calls.find((a) => gen.label(a) === "d2:2x1")!;
+    const d2_4x5 = gen.calls.find((a) => gen.label(a) === "d2:4x5")!;
+    assert.ok(!d2_2x1.includes("--keep-4x5-nativo") && !d2_2x1.includes("--force"));
+    assert.ok(!d2_4x5.includes("--force"));
+  });
+
+  it("falha só no paralelo -> repetida em série, passa, Stage 3 segue (code 0) e o fallback fica no run-log", async () => {
+    const gen = makeFakeImageGen((args, attempt) => (args.includes("d2") && args.includes("--ratio") && attempt === 1 ? fail(1, "429 too many concurrent requests") : ok("{}")));
+    const { exec, calls } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 0);
+    assert.equal(gen.calls.length, 7);
+    const job = result.imageJobs?.find((j) => j.destaque === "d2" && j.ratio === "4x5");
+    assert.equal(job?.ok, true);
+    assert.equal(job?.retriedSerially, true);
+    assert.ok(result.notes.some((n) => n.includes("d2:4x5") && n.includes("repetindo em série")));
+    assert.ok(calls.some((c) => c.script.endsWith("log-event.ts") && c.args.includes("stage3_image_parallel_fallback")));
+  });
+
+  it("falha persistente de um destaque -> BLOQUEANTE, mas d1/d3 aparecem prontos e d2 mostra qual ratio falhou", async () => {
+    const gen = makeFakeImageGen((args) => (args.includes("d2") && args.includes("--ratio") ? fail(1, "codex: login expirado") : ok("{}")));
+    const { exec, calls } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 1);
+    const byId = Object.fromEntries(result.destaques.map((d) => [d.destaque, d]));
+    assert.equal(byId.d1.imageGenerated && byId.d1.nativeArt4x5Generated, true);
+    assert.equal(byId.d3.imageGenerated && byId.d3.nativeArt4x5Generated, true);
+    assert.equal(byId.d2.imageGenerated, true);
+    assert.equal(byId.d2.nativeArt4x5Generated, false);
+    assert.match(byId.d2.error ?? "", /d2 \(4x5 nativo\) falhou.*login expirado/);
+    assert.ok(result.notes.some((n) => n.includes("image-generate.ts d2 (4x5 nativo) falhou") && n.includes("BLOQUEANTE")));
+    // Abort antes do card: nada composto com imagem faltando.
+    assert.equal(calls.some((c) => c.script.endsWith("gen-social-card-4x5.ts")), false);
+  });
+
+  it("duas falhas na mesma rodada aparecem as duas na mensagem", async () => {
+    const gen = makeFakeImageGen((args) => (args.includes("d1") || args.includes("d3") ? (args.includes("--ratio") ? ok("{}") : fail(1, "boom")) : ok("{}")));
+    const { exec } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 1);
+    assert.ok(result.notes.some((n) => n.includes("2 imagens falharam") && n.includes("d1 (2x1)") && n.includes("d3 (2x1)")));
+  });
+
+  it("--serial não repete a falha (a falha é a de sempre)", async () => {
+    const gen = makeFakeImageGen((args) => (args.includes("d1") && !args.includes("--ratio") ? fail(1, "x") : ok("{}")));
+    const { exec } = makeFakeExec(happyHandlers());
+    const result = await runStage3(["--edition", "260423", "--serial"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 1);
+    assert.equal(gen.calls.length, 6);
+    assert.ok(result.imageJobs?.every((j) => !j.retriedSerially));
+  });
+
+  it("lint com violação num destaque: os outros geram em paralelo, o pausado não gera nada", async () => {
+    const gen = makeFakeImageGen();
+    const { exec } = makeFakeExec(
+      happyHandlers({ "lint-image-prompt.ts": (args) => (args[0].includes("d2") ? fail(1, "Noite Estrelada") : ok("{}")) }),
+    );
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec, execAsync: gen.execAsync }));
+    assert.equal(result.code, 0);
+    assert.equal(gen.calls.length, 4);
+    assert.equal(gen.calls.some((a) => a.includes("d2")), false);
+    assert.deepEqual(result.destaques.map((d) => [d.destaque, d.lintOk]), [["d1", true], ["d2", false], ["d3", true]]);
   });
 });

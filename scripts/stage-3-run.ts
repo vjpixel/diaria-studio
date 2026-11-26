@@ -36,10 +36,14 @@
  *   Checagem de saúde do ComfyUI, quando `platform.config.json.image_generator
  *     === "comfyui"` (HALT se indisponível — mesma severidade do playbook).
  *   Por destaque presente (d1, d2, e d3 só se destaque_count === 3):
- *     lint-image-prompt.ts → image-generate.ts (2x1) → image-generate.ts
- *     --ratio 4x5 (nativo). Falha de lint pausa SÓ aquele destaque (report,
- *     não hard-abort); falha de `image-generate.ts` (qualquer ratio) é
- *     BLOQUEANTE — para o Stage 3 inteiro, igual ao playbook (#4090).
+ *     lint-image-prompt.ts (em série) e depois image-generate.ts (2x1) e
+ *     image-generate.ts --ratio 4x5 (nativo) de TODOS os destaques em
+ *     paralelo (#14036; teto `--concurrency N`, default 6; `--serial` volta à
+ *     ordem antiga). Falha de lint pausa SÓ aquele destaque (report, não
+ *     hard-abort); falha de `image-generate.ts` (qualquer ratio) é repetida
+ *     uma vez em série e, se persistir, é BLOQUEANTE — para o Stage 3
+ *     inteiro, igual ao playbook (#4090), com o destaque/ratio que falhou em
+ *     `destaques[].error` e `imageJobs`.
  *   gen-social-card-4x5.ts (compõe os cards de todos os destaques prontos) —
  *     BLOQUEANTE (#4090) se falhar.
  *   gen-carousel-cards.ts (#6005 Parte B — 3 slides de parágrafo + CTA do
@@ -84,7 +88,7 @@
  *       já renderizado, incluído em `haltRequired` no JSON de saída)
  *
  * Uso:
- *   npx tsx scripts/stage-3-run.ts --edition AAMMDD [--only d1,d2] [--force]
+ *   npx tsx scripts/stage-3-run.ts --edition AAMMDD [--only d1,d2] [--force] [--concurrency N | --serial]
  *
  * @see .claude/agents/orchestrator-stage-3.md (playbook em prosa — este
  *      script cobre só o miolo de §3b; NÃO editado nesta unidade — cutover
@@ -92,7 +96,7 @@
  * @see scripts/stage-0-run.ts (padrão de referência mais próximo, #5415 1/3)
  * @see scripts/clarice-novos-run.ts (padrão original, #4941)
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
@@ -115,6 +119,60 @@ export interface StepResult {
 }
 
 export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
+
+/** Versão assíncrona do `ExecFn` (#14036) — usada só na geração de imagens,
+ * que roda em paralelo. Mesmo contrato de retorno. */
+export type AsyncExecFn = (scriptRelPath: string, args: string[]) => Promise<StepResult>;
+
+export function realExecAsync(rootDir: string): AsyncExecFn {
+  return (scriptRelPath, args) =>
+    new Promise((resolvePromise) => {
+      const abs = resolve(rootDir, ...scriptRelPath.split("/"));
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (r: StepResult) => {
+        if (settled) return;
+        settled = true;
+        resolvePromise(r);
+      };
+      const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], { cwd: rootDir });
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (c: string) => (stdout += c));
+      child.stderr.on("data", (c: string) => (stderr += c));
+      child.on("error", (err) =>
+        finish({ code: 1, stdout, stderr: stderr + `\nERRO: o passo nao executou (falha de spawn): ${err.message}\n` }),
+      );
+      child.on("close", (code, signal) =>
+        finish(
+          code === null
+            ? { code: 1, stdout, stderr: stderr + `\nERRO: o passo terminou sem exit code (sinal ${signal ?? "desconhecido"})\n` }
+            : { code, stdout, stderr },
+        ),
+      );
+    });
+}
+
+/**
+ * Roda `jobs` com no máximo `limit` em voo ao mesmo tempo (#14036). Ordem de
+ * início = ordem da lista; o resultado volta na MESMA ordem da lista, nunca na
+ * de término. Nenhum job derruba os outros: a função devolve todos os
+ * resultados e quem chama decide o que é falha.
+ */
+export async function runWithConcurrency<T>(jobs: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+  const results = new Array<T>(jobs.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const i = next++;
+      results[i] = await jobs[i]();
+    }
+  };
+  const n = Math.max(1, Math.min(limit, jobs.length));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
+}
 
 export function realExec(rootDir: string): ExecFn {
   return (scriptRelPath, args) => {
@@ -171,7 +229,13 @@ export interface Stage3RunOptions {
   edition: string;
   only?: DestaqueId[];
   force: boolean;
+  /** #14036 — máximo de `image-generate.ts` em voo ao mesmo tempo. Default
+   * `DEFAULT_IMAGE_CONCURRENCY` (3 destaques × 2x1/4x5); `--serial` = 1. */
+  imageConcurrency: number;
 }
+
+/** #14036: 3 destaques × (2x1 + 4x5 nativo) = 6 imagens, todas de uma vez. */
+export const DEFAULT_IMAGE_CONCURRENCY = 6;
 
 export function parseStage3RunArgs(argv: string[]): Stage3RunOptions {
   const edition = getStringArg(argv, "edition", { example: "260423" });
@@ -191,7 +255,18 @@ export function parseStage3RunArgs(argv: string[]): Stage3RunOptions {
     only = parts as DestaqueId[];
   }
 
-  return { edition, only, force: hasFlag(argv, "force") };
+  const concurrencyRaw = getStringArg(argv, "concurrency", { example: "3" });
+  let imageConcurrency = DEFAULT_IMAGE_CONCURRENCY;
+  if (concurrencyRaw !== undefined) {
+    const n = Number(concurrencyRaw);
+    if (!Number.isInteger(n) || n < 1 || n > DEFAULT_IMAGE_CONCURRENCY) {
+      throw new Stage3Abort(`--concurrency inválido: "${concurrencyRaw}" — esperado inteiro de 1 a ${DEFAULT_IMAGE_CONCURRENCY}.`);
+    }
+    imageConcurrency = n;
+  }
+  if (hasFlag(argv, "serial")) imageConcurrency = 1;
+
+  return { edition, only, force: hasFlag(argv, "force"), imageConcurrency };
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +276,9 @@ export function parseStage3RunArgs(argv: string[]): Stage3RunOptions {
 export interface Stage3RunDeps {
   rootDir: string;
   exec: ExecFn;
+  /** #14036 — exec assíncrono pra geração de imagens em paralelo. Ausente
+   * (testes antigos), cai num wrapper do `exec` síncrono (roda em série). */
+  execAsync?: AsyncExecFn;
   existsSync: (p: string) => boolean;
   readFile: (p: string) => string;
   /** Checa se o ComfyUI local está no ar (`http://127.0.0.1:8188/system_stats`).
@@ -214,6 +292,7 @@ export function productionDeps(rootDir: string = ROOT): Stage3RunDeps {
   return {
     rootDir,
     exec: realExec(rootDir),
+    execAsync: realExecAsync(rootDir),
     existsSync: (p) => existsSync(p),
     readFile: (p) => readFileSync(p, "utf8"),
     checkComfyUi: () => {
@@ -311,6 +390,20 @@ export interface DestaqueOutcome {
   error?: string;
 }
 
+export type ImageJobRatio = "2x1" | "4x5";
+
+/** #14036 — resultado de uma chamada de `image-generate.ts`. */
+export interface ImageJobOutcome {
+  destaque: DestaqueId;
+  ratio: ImageJobRatio;
+  ok: boolean;
+  exitCode: number;
+  durationMs: number;
+  /** true quando o job só rodou de novo, em série, depois de falhar no paralelo. */
+  retriedSerially?: boolean;
+  stderrTail?: string;
+}
+
 export interface PendingAgentDispatch {
   step: string;
   agent: string;
@@ -331,6 +424,9 @@ export interface Stage3RunResult {
   editionDir?: string;
   destaqueCount?: 2 | 3;
   destaques: DestaqueOutcome[];
+  /** #14036 — cada chamada de `image-generate.ts` (destaque × ratio). */
+  imageJobs?: ImageJobOutcome[];
+  imageConcurrency?: number;
   cardsGenerated: boolean;
   /** #6005 Parte B — slides sem foto (3 parágrafos + CTA) do carrossel diário. */
   carouselCardsGenerated: boolean;
@@ -361,8 +457,14 @@ const DELEGATED_STEPS = [
 export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<Stage3RunResult> {
   const report = new ReportBuilder();
   const pendingAgentDispatch: PendingAgentDispatch[] = [];
+  // #14036: fora do try pra que um abort por falha de imagem ainda devolva o
+  // estado de cada destaque (qual ratio falhou), e não `[]`.
+  let destaquesOut: DestaqueOutcome[] = [];
+  let imageJobsOut: ImageJobOutcome[] | undefined;
+  let imageConcurrencyOut: number | undefined;
   try {
     const opts = parseStage3RunArgs(argv);
+    imageConcurrencyOut = opts.imageConcurrency;
 
     // --- resolver EDITION_DIR (idempotente, mesma chamada do Stage 0/playbook) ---
     const resolveResult = deps.exec("scripts/lib/find-current-edition.ts", ["--resolve", opts.edition]);
@@ -436,8 +538,12 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       };
     }
 
-    // --- por destaque: lint → image-generate 2x1 → image-generate 4x5 nativo ---
+    // --- por destaque: lint (em série, rápido) ---
+    // A geração vem depois, num passo só: erro de I/O no lint de qualquer
+    // destaque aborta antes de gastar qualquer chamada de imagem.
     const destaques: DestaqueOutcome[] = [];
+    destaquesOut = destaques;
+    const readyForImages: DestaqueId[] = [];
     for (const d of destaquesToRun) {
       const promptRel = `${editionDir}/_internal/02-${d}-prompt.md`;
       if (!deps.existsSync(resolve(deps.rootDir, promptRel))) {
@@ -455,21 +561,127 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
         destaques.push({ destaque: d, lintOk: false, lintViolations: lintResult.stderr.trim(), imageGenerated: false, nativeArt4x5Generated: false });
         continue; // pausa SÓ este destaque — próximo segue normalmente
       }
+      readyForImages.push(d);
+    }
 
+    // --- geração: 2x1 + 4x5 nativo de todos os destaques em paralelo (#14036) ---
+    // Os dois formatos usam o mesmo prompt e não dependem um do outro. Antes
+    // rodavam em série (até 6 chamadas de 1-3 min cada); agora o total é o
+    // tempo da mais lenta. Duas corridas ficam fechadas:
+    //   - prompt JSON: cada ratio grava o seu (`sdPromptPathFor` em
+    //     image-generate.ts), então o 2x1 e o 4x5 não se sobrescrevem;
+    //   - purga do nativo (#6010): quando o 2x1 vai ser REGERADO (ausente, ou
+    //     --force), a ordem antiga apagava o nativo e o 4x5 seguinte o recriava.
+    //     Em paralelo, o 4x5 recebe --force (regera do prompt atual, mesmo
+    //     resultado da ordem antiga) e o 2x1 recebe --keep-4x5-nativo (não
+    //     apaga o que o 4x5 está gravando). Com o 2x1 presente e sem --force,
+    //     nada muda: os dois seguem o skip-if-exists de sempre.
+    const execAsync: AsyncExecFn = deps.execAsync ?? (async (script, args) => deps.exec(script, args));
+    interface ImageJobSpec {
+      destaque: DestaqueId;
+      ratio: ImageJobRatio;
+      args: string[];
+    }
+    const specs: ImageJobSpec[] = [];
+    for (const d of readyForImages) {
+      const promptRel = `${editionDir}/_internal/02-${d}-prompt.md`;
       const genArgs = ["--editorial", promptRel, "--out-dir", `${editionDir}/`, "--destaque", d];
-      if (opts.force) genArgs.push("--force");
-      const genResult = deps.exec("scripts/image-generate.ts", genArgs);
-      if (genResult.code !== 0) {
-        throw new Stage3Abort(`❌ image-generate.ts ${d} (2x1) falhou (exit ${genResult.code}): ${tailStderr(genResult.stderr)}`);
-      }
+      const wide2x1Regenerates = opts.force || !deps.existsSync(resolve(deps.rootDir, editionDir, `04-${d}-2x1.jpg`));
+      specs.push({
+        destaque: d,
+        ratio: "2x1",
+        args: [...genArgs, ...(opts.force ? ["--force"] : []), ...(wide2x1Regenerates ? ["--keep-4x5-nativo"] : [])],
+      });
+      specs.push({
+        destaque: d,
+        ratio: "4x5",
+        args: [...genArgs, "--ratio", "4x5", ...(wide2x1Regenerates ? ["--force"] : [])],
+      });
+    }
 
-      const gen4x5Result = deps.exec("scripts/image-generate.ts", [...genArgs, "--ratio", "4x5"]);
-      if (gen4x5Result.code !== 0) {
-        throw new Stage3Abort(`❌ image-generate.ts ${d} (4x5 nativo) falhou (exit ${gen4x5Result.code}) — BLOQUEANTE (#4090): ${tailStderr(gen4x5Result.stderr)}`);
-      }
+    const runJob = async (spec: ImageJobSpec): Promise<{ outcome: ImageJobOutcome; result: StepResult }> => {
+      const t0 = Date.now();
+      const result = await execAsync("scripts/image-generate.ts", spec.args);
+      return {
+        result,
+        outcome: {
+          destaque: spec.destaque,
+          ratio: spec.ratio,
+          ok: result.code === 0,
+          exitCode: result.code,
+          durationMs: Date.now() - t0,
+          ...(result.code !== 0 ? { stderrTail: tailStderr(result.stderr) } : {}),
+        },
+      };
+    };
 
-      destaques.push({ destaque: d, lintOk: true, imageGenerated: true, nativeArt4x5Generated: true });
-      report.note(`✅ ${d}: lint ok, imagens 2x1/4x5-nativo geradas.`);
+    const imageConcurrency = opts.imageConcurrency;
+    if (specs.length > 0) {
+      report.note(`▶ image-generate.ts: ${specs.length} imagem(ns), até ${Math.min(imageConcurrency, specs.length)} em paralelo.`);
+    }
+    const runs = await runWithConcurrency(
+      specs.map((spec) => () => runJob(spec)),
+      imageConcurrency,
+    );
+    imageJobsOut = runs.map((r) => r.outcome);
+
+    // Fallback em série (#14036): se a concorrência der erro (limite de
+    // requisições simultâneas do backend, não medido), repetir os jobs que
+    // falharam, um por vez, na ordem original. Em `--serial` não há
+    // repetição: a falha é a de sempre.
+    const failedIdx = runs.map((r, i) => (r.outcome.ok ? -1 : i)).filter((i) => i >= 0);
+    if (failedIdx.length > 0 && imageConcurrency > 1) {
+      const labels = failedIdx.map((i) => `${specs[i].destaque}:${specs[i].ratio}`);
+      report.note(`⚠️  image-generate.ts: ${labels.join(", ")} falhou(aram) em paralelo — repetindo em série.`);
+      logEvent(deps, opts.edition, "warn", "stage3_image_parallel_fallback", {
+        details: { failed: failedIdx.map((i) => runs[i].outcome) },
+      });
+      for (const i of failedIdx) {
+        const retry = await runJob(specs[i]);
+        runs[i] = { result: retry.result, outcome: { ...retry.outcome, retriedSerially: true } };
+      }
+      imageJobsOut = runs.map((r) => r.outcome);
+    }
+
+    // Resultado por destaque. Falha de qualquer ratio segue BLOQUEANTE (#4090),
+    // mas cada destaque/ratio que falhou aparece no resultado e na mensagem:
+    // em paralelo, mais de um pode falhar na mesma rodada.
+    const failures: string[] = [];
+    const secs = (ms: number) => `${Math.round(ms / 1000)}s`;
+    for (const d of readyForImages) {
+      const r2 = runs.find((r) => r.outcome.destaque === d && r.outcome.ratio === "2x1")!;
+      const r45 = runs.find((r) => r.outcome.destaque === d && r.outcome.ratio === "4x5")!;
+      const errs: string[] = [];
+      if (!r2.outcome.ok) {
+        errs.push(`❌ image-generate.ts ${d} (2x1) falhou (exit ${r2.outcome.exitCode}): ${tailStderr(r2.result.stderr)}`);
+      }
+      if (!r45.outcome.ok) {
+        errs.push(
+          `❌ image-generate.ts ${d} (4x5 nativo) falhou (exit ${r45.outcome.exitCode}) — BLOQUEANTE (#4090): ${tailStderr(r45.result.stderr)}`,
+        );
+      }
+      destaques.push({
+        destaque: d,
+        lintOk: true,
+        imageGenerated: r2.outcome.ok,
+        nativeArt4x5Generated: r45.outcome.ok,
+        ...(errs.length > 0 ? { error: errs.join(" ; ") } : {}),
+      });
+      if (errs.length > 0) {
+        for (const e of errs) report.note(e);
+        failures.push(...errs);
+      } else {
+        report.note(
+          `✅ ${d}: lint ok, imagens 2x1 (${secs(r2.outcome.durationMs)}) / 4x5-nativo (${secs(r45.outcome.durationMs)}) geradas.`,
+        );
+      }
+    }
+    // Ordem d1, d2, d3 no resultado (pausados/sem prompt entraram antes).
+    destaques.sort((a, b) => VALID_DESTAQUES.indexOf(a.destaque) - VALID_DESTAQUES.indexOf(b.destaque));
+    if (failures.length > 0) {
+      throw new Stage3Abort(
+        failures.length === 1 ? failures[0] : `${failures.length} imagens falharam — BLOQUEANTE (#4090): ${failures.join(" ; ")}`,
+      );
     }
 
     // --- card 4:5 do feed (compõe TODOS os destaques prontos de uma vez, #4114) ---
@@ -613,6 +825,8 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       editionDir,
       destaqueCount,
       destaques,
+      ...(imageJobsOut ? { imageJobs: imageJobsOut } : {}),
+      imageConcurrency,
       cardsGenerated,
       carouselCardsGenerated,
       ...(carouselRefreshed.length > 0 ? { carouselRefreshed } : {}),
@@ -630,7 +844,9 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
     report.note(`❌ ${abort.message}`);
     return {
       code: abort.code,
-      destaques: [],
+      destaques: destaquesOut,
+      ...(imageJobsOut ? { imageJobs: imageJobsOut } : {}),
+      ...(imageConcurrencyOut !== undefined ? { imageConcurrency: imageConcurrencyOut } : {}),
       cardsGenerated: false,
       carouselCardsGenerated: false,
       leaderboardFetched: false,
