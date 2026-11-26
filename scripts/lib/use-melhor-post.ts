@@ -61,8 +61,11 @@ import { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 import { formatCivilDate, publishDateForEdition, resolveDailyPostTime } from "./social-schedule-rotation.ts";
 import { clearedDailyPostTimes } from "./diaria/vertical-social-clearance.ts";
 
-/** `utm_content` próprio do 4º post — mede separado dos destaques. */
-export const USE_MELHOR_UTM_CONTENT = "usemelhor";
+/** `utm_content` próprio do 4º post — mede separado dos destaques. Definido em
+ * `shared/utm-registry.ts` desde o #13998; reexportado aqui para os
+ * importadores existentes. */
+export { USE_MELHOR_UTM_CONTENT } from "./shared/utm-registry.ts";
+import { USE_MELHOR_UTM_CONTENT } from "./shared/utm-registry.ts";
 
 /**
  * Os publicadores do Stage 5 (LinkedIn página/Facebook/Instagram/Threads/X)
