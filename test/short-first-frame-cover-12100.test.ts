@@ -43,6 +43,7 @@ import { loadShortsConfig, loadYouTubeFirstFrameCoverMs } from "../scripts/lib/d
 import { publishYouTubeShort, youtubeShortUploadFile, youtubeShortsPrepareBeforeMarker } from "../scripts/publish-shorts.ts";
 import { feedImageUrl, fetchFeedImage, main as checkShortFeedCoverMain, parseFeedImageKind } from "../scripts/check-short-feed-cover.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const PROBE_AUDIO = JSON.stringify({
   streams: [
@@ -445,7 +446,7 @@ describe("#12100 opção 2 — encode antes do marcador de envio (review da PR #
   });
 
   it("no CLI, o encode vem antes do markShortSending e o publishYouTubeShort usa o arquivo já preparado", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     const mainStart = src.indexOf("async function main(");
     assert.ok(mainStart > 0);
     const body = src.slice(mainStart);

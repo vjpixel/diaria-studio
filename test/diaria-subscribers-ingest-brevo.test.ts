@@ -30,6 +30,11 @@ import { openDiariaSubscribersDb, getStoreCounts, findSubscriberIdsByEmail } fro
  *  são chamados aqui com `listId` explícito, sem passar por `BREVO_ACCOUNTS`. */
 const TEST_LIST_ID = 7;
 
+/** Deps de `main` que nunca leem o `.env` real do checkout (#14075): sem
+ *  isso, `loadProjectEnv()` restaura do `.env` local a key que o teste
+ *  apagou de `process.env`, e o teste consulta a API de verdade. */
+const NO_PROJECT_ENV = { loadEnv: () => {} };
+
 function jsonResponse(body: unknown): Promise<Response> {
   return Promise.resolve({
     ok: true,
@@ -257,12 +262,29 @@ describe("main() — a única conta (brevo_diaria), fail-soft por key ausente", 
 
     const origDiaria = process.env.BREVO_DIARIA_API_KEY;
     delete process.env.BREVO_DIARIA_API_KEY;
+    // Qualquer chamada de rede aqui é o bug do #14075 (key restaurada do
+    // `.env` local): falha alto em vez de consultar a API real.
+    const origFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async (url: string) => {
+      fetchCalls++;
+      throw new Error(`fetch inesperado no teste (key deveria estar ausente): ${url}`);
+    }) as typeof fetch;
+    let loadEnvCalls = 0;
 
     try {
-      await main(["--db", dbPath, "--manifest", manifestPath, "--account", "brevo_diaria"]);
+      await main(["--db", dbPath, "--manifest", manifestPath, "--account", "brevo_diaria"], {
+        loadEnv: () => {
+          loadEnvCalls++;
+        },
+      });
     } finally {
+      globalThis.fetch = origFetch;
       if (origDiaria !== undefined) process.env.BREVO_DIARIA_API_KEY = origDiaria;
     }
+
+    assert.equal(loadEnvCalls, 1, "main usa o loadEnv injetado, não o loadProjectEnv do checkout (#14075)");
+    assert.equal(fetchCalls, 0, "sem key, nenhuma chamada de rede");
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     const entry = manifest.entries.find((e: { id: string }) => e.id === "brevo_diaria");
@@ -275,7 +297,7 @@ describe("main() — a única conta (brevo_diaria), fail-soft por key ausente", 
     mkdirSync(resolve(tmp, "data"), { recursive: true });
     const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
     const originalExit = process.exitCode;
-    await main(["--db", dbPath, "--account", "brevo_clarice"]);
+    await main(["--db", dbPath, "--account", "brevo_clarice"], NO_PROJECT_ENV);
     assert.equal(process.exitCode, 1);
     process.exitCode = originalExit;
   });
@@ -319,7 +341,7 @@ describe("main() — ponta a ponta com fixture da conta brevo_diaria (#6587 crit
     process.env.BREVO_DIARIA_API_KEY = "key-diaria";
 
     try {
-      await main(["--db", dbPath, "--manifest", manifestPath]);
+      await main(["--db", dbPath, "--manifest", manifestPath], NO_PROJECT_ENV);
     } finally {
       globalThis.fetch = orig;
       if (origDiaria !== undefined) process.env.BREVO_DIARIA_API_KEY = origDiaria;

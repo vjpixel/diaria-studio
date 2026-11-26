@@ -48,6 +48,10 @@ function listScripts(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     if (name === "lib") continue; // helpers, não scripts standalone
+    // Módulos do publish-shorts (#14054): carregados só pela entrada
+    // scripts/publish-shorts.ts, que chama loadProjectEnv() no topo (travado
+    // pelo teste "entrada do publish-shorts carrega o .env" abaixo).
+    if (name === "publish-shorts") continue;
     if (name === "node_modules") continue;
     const full = join(dir, name);
     const st = statSync(full);
@@ -93,5 +97,13 @@ describe("env loading invariant (#1219)", () => {
       ].join("\n");
       assert.fail(message);
     }
+  });
+
+  it("entrada do publish-shorts carrega o .env (os módulos de scripts/publish-shorts/ dependem disso, #14054)", () => {
+    const entry = readFileSync(resolve(SCRIPTS_DIR, "publish-shorts.ts"), "utf8");
+    assert.ok(
+      ENV_LOAD_PATTERNS.some((re) => re.test(entry)),
+      "scripts/publish-shorts.ts precisa chamar loadProjectEnv() no topo: os módulos de scripts/publish-shorts/ leem secrets e não carregam o .env sozinhos",
+    );
   });
 });

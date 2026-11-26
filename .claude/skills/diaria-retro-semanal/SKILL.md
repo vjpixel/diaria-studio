@@ -295,6 +295,7 @@ atual:
   inteiro em vez de publicar parcial" vale se a geração sob demanda falhar
   (ex: crédito de API esgotado, fonte de marca ausente na máquina).
 
+<!-- anchor: passo-0 -->
 ## Passo 0 — Checar se o slot de agendamento ainda está de pé (#10389)
 
 Antes de qualquer outro passo, para os modos que esta invocação vai rodar
@@ -402,6 +403,7 @@ semana) foi encontrado, o script já encerra aqui — nenhum publisher é
 chamado, nada é agendado, e a skill deve reportar isso ao editor sem tentar
 prosseguir.
 
+<!-- anchor: passo-2c -->
 ## Passo 2c — Resumo de cada item (#11062, obrigatório antes do Passo 2b)
 
 A linha embaixo de cada título na legenda (Instagram, Facebook, LinkedIn; o
@@ -481,6 +483,7 @@ manifest e o agente de novo: item sem resumo barra o agendamento. Os resumos
 entram no Artifact do Passo 2b e no gate do Passo 3, onde o editor pode
 pedir ajuste.
 
+<!-- anchor: passo-2b -->
 ## Passo 2b — Publicar a prévia visual do artefato (#8022, obrigatório antes do Passo 3)
 
 Pedido do editor (12/09/2026, sessão de agendamento do recap semanal
@@ -567,6 +570,7 @@ caption + horário) e peça confirmação explícita antes de agendar de
 verdade. Se o editor não responder ou pedir ajuste, não prossiga
 silenciosamente.
 
+<!-- anchor: passo-4 -->
 ## Passo 4 — Agendamento real
 
 Script cuida de tudo, inclusive persistência de estado

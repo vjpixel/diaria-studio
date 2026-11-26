@@ -36,6 +36,7 @@ import worker, {
   buildUpstreamErrorCampaignsJsonFallback,
   LASTGOOD_CAMPAIGNS_KEY,
 } from "../workers/brevo-dashboard/src/index.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // Cache API -- mesmo polyfill das outras suítes de brevo-dashboard: sempre
 // cache-miss, força o caminho de live-fetch em toda chamada.
@@ -57,24 +58,6 @@ const staleCampaign = {
   createdAt: "2026-07-27T09:00:00Z",
   recipients: { lists: [] as number[] },
 };
-
-function makeKv(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial));
-  return {
-    get: async (key: string, type?: string) => {
-      const val = store.get(key);
-      if (val == null) return null;
-      return type === "json" ? JSON.parse(val) : val;
-    },
-    put: async (key: string, value: string) => {
-      store.set(key, value);
-    },
-    delete: async (key: string) => {
-      store.delete(key);
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-}
 
 // ─── isNetworkOrTimeoutError (unidade, pura) ────────────────────────────────
 
@@ -144,7 +127,7 @@ describe("isNetworkOrTimeoutError (#4533)", () => {
 
 describe("buildUpstreamErrorCampaignsJsonFallback (#4533) — status literal network_error", () => {
   it("com stale em cache → array cru + X-Dashboard-Upstream-Status: network_error", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         generatedAt: "2026-08-03T10:00:00.000Z",
@@ -165,7 +148,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4533) — status literal net
   });
 
   it("sem stale em cache → null (caller degrada pro 502 genérico)", async () => {
-    const kv = makeKv({});
+    const kv = makeTrackedKvNamespace({});
     const resp = await buildUpstreamErrorCampaignsJsonFallback({ STATS_CACHE: kv }, 5, "network_error");
     assert.strictEqual(resp, null);
   });
@@ -175,7 +158,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4533) — status literal net
 
 describe("GET /api/campaigns — erro de rede cru do fetch (#4533)", () => {
   it("fetch() rejeita com TypeError + stale bom no KV → 200 com dado stale, NUNCA 502", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         generatedAt: "2026-08-03T10:00:00.000Z",
@@ -203,7 +186,7 @@ describe("GET /api/campaigns — erro de rede cru do fetch (#4533)", () => {
   });
 
   it("fetch() rejeita com TypeError + SEM stale no KV → 502 genérico continua (fail-honesto, sem dado bom pra servir)", async () => {
-    const kv = makeKv({}); // KV vazio -- nunca gravou dash:lastgood:campaigns
+    const kv = makeTrackedKvNamespace({}); // KV vazio -- nunca gravou dash:lastgood:campaigns
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
       throw new TypeError("fetch failed");
@@ -221,7 +204,7 @@ describe("GET /api/campaigns — erro de rede cru do fetch (#4533)", () => {
   });
 
   it("caminho 403/5xx estruturado (#4251) continua intacto -- não regressado por este fix", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         generatedAt: "2026-08-03T10:00:00.000Z",

@@ -9,9 +9,13 @@
  *     25/11/2026; acompanha `ARTIGO_ESPECIAL_PAGINA_TIME`, #10305)
  *   - **Perfil pessoal LinkedIn (manual): D+2 09:30 BRT**
  *
- * Os 15 posts por história (#9508, abaixo) saem em D+1 nos MESMOS slots da
- * diária (`18:00 d1 | 12:00 d2 | 21:00 d3` desde 25/11/2026, #10305, de
- * `fallback_schedule`; antes 09:45 | 12:15 | 17:15).
+ * Os 15 posts por história (#9508, abaixo) saem em D+1 nos MESMOS horários
+ * da diária (`fallback_schedule`: 18:00 | 12:00 | 21:00 desde 25/11/2026,
+ * #10305; antes 09:45 | 12:15 | 17:15), mas em ordem CRESCENTE por história
+ * desde o #14080: a história 1 fica com o horário mais cedo (12:00), a 2 com o
+ * do meio (18:00) e a 3 com o último (21:00). A numeração d1/d2/d3 da diária
+ * deixou de ser crescente com a grade do #10305, e a Retrospectiva é lida na
+ * ordem das histórias.
  *
  * **A diferença pro Artigo Especial é a âncora "D"**: aqui D é a data do
  * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou — explícita
@@ -87,12 +91,62 @@ export function resolveRetrospectivaScheduledAts(
 
 /**
  * Horário de cada história — decisão do editor no #9508 (02/10/2026): os
- * MESMOS slots dos dias de semana da diária
+ * MESMOS horários dos dias de semana da diária
  * (`publishing.social.fallback_schedule.d{1,2,3}_time`, a fonte de
  * `compute-social-schedule.ts`), com as 5 redes ao mesmo tempo, sem
- * escalonar. Default quando o config não traz o slot.
+ * escalonar. Este é o default da grade da diária (#10305) quando o config não
+ * traz um `d{N}_time`; desde o #14080 os 3 horários são redistribuídos em
+ * ordem crescente por história (`retrospectivaSlots`).
  */
-export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "18:00", d2: "12:00", d3: "21:00" };
+const DAILY_FALLBACK_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "18:00", d2: "12:00", d3: "21:00" };
+
+/** Pura: `HH:MM` (ou `H:MM`) em minutos do dia, pra ordenar sem depender do zero à esquerda. */
+function hhmmMinutes(hhmm: string): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
+  if (!m) throw new Error(`horário inválido no fallback_schedule: "${hhmm}" (esperado HH:MM)`);
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/**
+ * Pura (#14080): os horários da diária redistribuídos em ordem crescente por
+ * história. Pega os 3 `d{N}_time` do `fallback_schedule` (cada um ausente cai
+ * no slot da diária de mesmo número, `DAILY_FALLBACK_SLOTS`), ordena e dá o
+ * mais cedo à história 1. Com a grade do #10305 (d1 18:00, d2 12:00, d3 21:00)
+ * sai 12:00 | 18:00 | 21:00; uma grade já crescente fica como está.
+ */
+export function retrospectivaSlots(
+  fallback: Partial<Record<"d1_time" | "d2_time" | "d3_time", string>> | undefined,
+): Record<RetrospectivaHistoria, string> {
+  const times = RETROSPECTIVA_HISTORIAS.map((h) => fallback?.[`${h}_time`] ?? DAILY_FALLBACK_SLOTS[h]);
+  const sorted = [...times].sort((a, b) => hhmmMinutes(a) - hhmmMinutes(b));
+  return Object.fromEntries(RETROSPECTIVA_HISTORIAS.map((h, i) => [h, sorted[i]])) as Record<RetrospectivaHistoria, string>;
+}
+
+/**
+ * Pura (#14080): reordena, por rede, os horários que o planner do #10819
+ * escolheu para que a história 1 saia antes da 2 e a 2 antes da 3. O planner
+ * decide cada post sozinho e espalha os 3 da mesma conta pelo dia sem olhar a
+ * ordem (no domingo, com o carrossel semanal das 19:00 na grade, a história 3
+ * caía de manhã). Aqui o CONJUNTO de horários de cada rede fica o mesmo, então
+ * o espaçamento contra a grade e entre os 3 posts continua o que o planner
+ * garantiu; só muda qual história fica com qual horário. `keys` são as chaves
+ * planejadas (`{rede}:d{N}`): história fora delas (já publicada, ou pulada)
+ * mantém o horário e não entra na troca.
+ */
+export function orderRetrospectivaScheduleByHistoria(
+  schedule: RetrospectivaPostSchedule,
+  keys: readonly { channel: RetrospectivaPostChannel; historia: RetrospectivaHistoria }[],
+): RetrospectivaPostSchedule {
+  const out = Object.fromEntries(RETROSPECTIVA_HISTORIAS.map((h) => [h, { ...schedule[h] }])) as RetrospectivaPostSchedule;
+  for (const ch of RETROSPECTIVA_POST_CHANNELS) {
+    const hs = RETROSPECTIVA_HISTORIAS.filter((h) => keys.some((k) => k.channel === ch && k.historia === h));
+    const ats = hs.map((h) => schedule[h][ch]).sort((a, b) => Date.parse(a) - Date.parse(b));
+    hs.forEach((h, i) => {
+      out[h][ch] = ats[i];
+    });
+  }
+  return out;
+}
 
 export type RetrospectivaPostSchedule = Record<RetrospectivaHistoria, Record<RetrospectivaPostChannel, string>>;
 
@@ -182,9 +236,11 @@ export function retrospectivaPostDay(input: RetrospectivaScheduleInput, timeZone
 
 /**
  * Resolve o horário de cada post (rede × história) — decisão do editor no
- * #9508: o dia é D+1 do envio (`retrospectivaPostDay`); história N sai no slot
- * d{N} da diária (`fallback_schedule.d{N}_time`: 18:00 | 12:00 | 21:00) e as
- * 5 redes de uma história saem no MESMO horário. Não lança por horário no
+ * #9508: o dia é D+1 do envio (`retrospectivaPostDay`); os horários são os da
+ * diária (`fallback_schedule`) em ordem crescente por história (#14080,
+ * `retrospectivaSlots`: 12:00 | 18:00 | 21:00) e as 5 redes de uma história
+ * saem no MESMO horário (preferência; o planner do #10819 pode mover por rede,
+ * e `orderRetrospectivaScheduleByHistoria` refaz a ordem depois dele). Não lança por horário no
  * passado: quem decide é o pré-voo do publisher, por post (≥10 min), pra que
  * `--skip {rede}:d1` destrave as histórias 2/3 quando só a 1 já passou.
  *
@@ -200,10 +256,10 @@ export function resolveRetrospectivaPostScheduledAts(
     | undefined;
   const tz = social?.timezone ?? "America/Sao_Paulo";
   const day = retrospectivaPostDay(input, tz);
+  const slots = retrospectivaSlots(social?.fallback_schedule);
   return Object.fromEntries(
     RETROSPECTIVA_HISTORIAS.map((h) => {
-      const slot = social?.fallback_schedule?.[`${h}_time`] ?? RETROSPECTIVA_DEFAULT_SLOTS[h];
-      const at = localIsoAt(day, slot, tz);
+      const at = localIsoAt(day, slots[h], tz);
       return [h, Object.fromEntries(RETROSPECTIVA_POST_CHANNELS.map((ch) => [ch, at]))];
     }),
   ) as RetrospectivaPostSchedule;

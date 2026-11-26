@@ -39,18 +39,17 @@
 import { CI_FIX_ATTEMPTED_LABEL } from "./lib/continuo-ci-fixer-eligibility.ts";
 import { CONTINUO_CI_FIX_ATTEMPTED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 
-function parseArgs(argv: string[]): { pr: string } | null {
-  let pr: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--pr") pr = argv[++i] ?? null;
-  }
+export function parseCiFixAttemptedArgs(argv: string[]): { pr: string } | null {
+  // #14128: `cli-args.ts#parseArgs`; paridade em test/continuo-cli-args-parity-14128.test.ts.
+  const pr = parseArgs(argv).values.pr;
   if (!pr || !/^\d+$/.test(pr)) return null;
   return { pr };
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCiFixAttemptedArgs(process.argv.slice(2));
   if (!args) {
     process.stderr.write("uso: mark-continuo-ci-fix-attempted.ts --pr <N>\n");
     process.exitCode = 2;
@@ -95,4 +94,4 @@ function main(): void {
   console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: true }));
 }
 
-main();
+if (isMainModule(import.meta.url)) main();

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { downloadDriveFileById, type DriveDownloadDeps } from "../scripts/lib/drive-download.ts";
 import { downloadDriveFile as reexported } from "../scripts/fetch-drive-video.ts";
 import { downloadDriveFile } from "../scripts/lib/drive-download.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ID = "1AbCdEfGhIjKlMnOp";
 // Downloads bem-sucedidos precisam tolerar a disputa de I/O no CI paralelo.
@@ -122,7 +123,7 @@ test(
 );
 
 test("publish-shorts.ts --from-drive usa o helper (não volta a ter download próprio)", () => {
-  const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+  const src = publishShortsSource();
   assert.match(src, /downloadDriveFileById\(/);
   assert.doesNotMatch(src, /alt=media/);
   assert.doesNotMatch(src, /arrayBuffer\(\)/);

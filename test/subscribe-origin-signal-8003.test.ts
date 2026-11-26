@@ -37,6 +37,7 @@ import {
   SUBSCRIBE_CLIENT_ORIGIN_MAX as CURSOS_SUBSCRIBE_CLIENT_ORIGIN_MAX,
 } from "../workers/cursos/src/subscribe.ts";
 import type { Env as CursosEnv } from "../workers/cursos/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 describe("clientOriginSignalPayloadFieldsJs (#8003)", () => {
   it("gera o fragmento esperado — 2 campos, referrer + click_id", () => {
@@ -135,30 +136,9 @@ function makeFetchMock(status = 201, body: unknown = { subscriber: { id: 1 } }):
   return fn;
 }
 
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      return m.get(key) ?? null;
-    },
-    async getWithMetadata(key: string) {
-      return { value: m.get(key) ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cursor: undefined };
-    },
-  };
-}
-
 function pollKitEnv(overrides: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -225,7 +205,7 @@ describe("subscribeToKit (worker poll) — origem_referrer/origem_click_id só c
 function cursosKitEnv(overrides: Partial<CursosEnv> = {}): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as CursosEnv["ASSETS"],
-    CURSOS_SUBSCRIBERS: makeMapKV() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
+    CURSOS_SUBSCRIBERS: makeTrackedKv() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
     COOKIE_HMAC_SECRET: "cookie-secret",
     SUBSCRIBE_BACKEND: "kit",
     KIT_API_KEY: "test-kit-key",
@@ -286,7 +266,7 @@ describe("worker cursos — origem_referrer/origem_click_id sem tocar CURSOS_GAT
 
 function pollBeehiivEnv(overrides: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -305,7 +285,7 @@ function pollBeehiivEnv(overrides: Partial<PollEnv> = {}): PollEnv {
 function cursosBeehiivEnv(overrides: Partial<CursosEnv> = {}): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as CursosEnv["ASSETS"],
-    CURSOS_SUBSCRIBERS: makeMapKV() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
+    CURSOS_SUBSCRIBERS: makeTrackedKv() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
     COOKIE_HMAC_SECRET: "cookie-secret",
     // SUBSCRIBE_BACKEND ausente — mesmo default beehiiv de resolveBackend.
     BEEHIIV_API_KEY: "test-beehiiv-key",

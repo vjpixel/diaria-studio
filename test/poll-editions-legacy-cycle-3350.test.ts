@@ -36,36 +36,11 @@ import {
 import { handleEditions } from "../workers/poll/src/vote.ts";
 import { brandedNamespace, type Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
-
-// ── Mock KV backed por Map (mesmo padrão de poll-editions-endpoint-3257.test.ts) ──
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
-    POLL: makeMapKV() as unknown as Env["POLL"],
+    POLL: makeTrackedKv() as unknown as Env["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",
@@ -134,7 +109,7 @@ describe("cycleForLegacyMonthlyEdition (#3350)", () => {
 describe("handleEditions: normaliza chave AAMMDD legada pro slug de ciclo (#3350)", () => {
   it("REGRESSÃO EXATA: ciclo com votos só sob chave legada AAMMDD aparece como ciclo, não como AAMMDD cru", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:2606-07": "{}", // ciclo corrente, já no formato novo
         "stats:260531": "{}", // 2605-06 — votos só sob a chave legada (cenário real #3261)
       }) as unknown as Env["POLL"],
@@ -151,7 +126,7 @@ describe("handleEditions: normaliza chave AAMMDD legada pro slug de ciclo (#3350
 
   it("ambas as chaves (legada + nova) do MESMO ciclo → dedup, aparece só 1x", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:260531": "{}", // legado
         "stats:2605-06": "{}", // novo — mesmo ciclo lógico
       }) as unknown as Env["POLL"],
@@ -163,7 +138,7 @@ describe("handleEditions: normaliza chave AAMMDD legada pro slug de ciclo (#3350
 
   it("brand=diaria NÃO normaliza — AAMMDD é edição diária real, mesmo caindo no último dia do mês", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:260531": "{}", // edição diária publicada em 31/mai — NÃO é marcador de ciclo
       }) as unknown as Env["POLL"],
     });
@@ -174,7 +149,7 @@ describe("handleEditions: normaliza chave AAMMDD legada pro slug de ciclo (#3350
 
   it("chave legada que NÃO reconstrói (dia não é o último do mês) mantém o AAMMDD cru como fallback", async () => {
     const env = makeEnv({
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "stats:260615": "{}", // não é último dia de junho — cycleForLegacyMonthlyEdition retorna null
       }) as unknown as Env["POLL"],
     });
@@ -184,7 +159,7 @@ describe("handleEditions: normaliza chave AAMMDD legada pro slug de ciclo (#3350
   });
 
   it("isolamento por brand preservado — normalização não vaza chave diaria pra clarice nem vice-versa", async () => {
-    const rawKv = makeMapKV({
+    const rawKv = makeTrackedKv({
       "clarice:stats:260531": "{}", // clarice legado
       "stats:260615": "{}", // diaria, edição diária real
     });
@@ -200,7 +175,7 @@ describe("handleEditions: normaliza chave AAMMDD legada pro slug de ciclo (#3350
 
   it("integração via router: GET /editions?brand=clarice devolve o ciclo normalizado, sobrevive ao formato de saída consumido por fetchClariceEditions", async () => {
     const env: Env = {
-      POLL: makeMapKV({
+      POLL: makeTrackedKv({
         "clarice:stats:260531": "{}",
         "clarice:stats:2606-07": "{}",
       }) as unknown as Env["POLL"],

@@ -38,6 +38,7 @@ import type { Env as PollEnv } from "../workers/poll/src/index.ts";
 import { handleGateSubscribe, subscribeViaConfiguredBackend } from "../workers/cursos/src/subscribe.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../scripts/lib/shared/utm-registry.ts";
 import type { Env as CursosEnv } from "../workers/cursos/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 // Todo SubscribeSource != "apex" — o triplo fixo tem que sobreviver ao
 // clientUtm da allowlist em CADA um deles, não só num representante.
@@ -109,30 +110,9 @@ function makeFetchMock(status = 201, body: unknown = { subscriber: { id: 1 } }):
   return fn;
 }
 
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      return m.get(key) ?? null;
-    },
-    async getWithMetadata(key: string) {
-      return { value: m.get(key) ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cursor: undefined };
-    },
-  };
-}
-
 function pollKitEnv(overrides: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -202,7 +182,7 @@ describe("subscribeToKit (worker poll) — grava origem_paga só com env+valor p
 function cursosKitEnv(overrides: Partial<CursosEnv> = {}): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as CursosEnv["ASSETS"],
-    CURSOS_SUBSCRIBERS: makeMapKV() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
+    CURSOS_SUBSCRIBERS: makeTrackedKv() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
     COOKIE_HMAC_SECRET: "cookie-secret",
     SUBSCRIBE_BACKEND: "kit",
     KIT_API_KEY: "test-kit-key",

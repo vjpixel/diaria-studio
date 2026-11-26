@@ -56,38 +56,13 @@ import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 // ── Helpers compartilhados (mesmo padrão de test/poll-seqstate-postgate-identity-4115-4116.test.ts) ──
 
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
-
 const COOKIE_SECRET = "cookie-secret-4443";
 const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301@web.eia.diaria.local";
 const REAL_EMAIL = "leitor-4443@example.com";
 
 function makeEnv(seed: Record<string, string> = {}): Env {
   return {
-    POLL: makeMapKV(seed),
+    POLL: makeTrackedKv(seed),
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",
@@ -97,7 +72,7 @@ function makeEnv(seed: Record<string, string> = {}): Env {
 
 function countingEnv(seed: Record<string, string> = {}) {
   let gets = 0;
-  const kv = makeMapKV(seed);
+  const kv = makeTrackedKv(seed);
   const origGet = kv.get.bind(kv);
   kv.get = async (key: string) => {
     gets += 1;
@@ -138,7 +113,7 @@ describe("seqStateKvKey (#4443)", () => {
   });
 
   it("REGRESSÃO (#3600/#4035): usada através de um namespace branded, a chave crua no KV subjacente sai com o prefixo", async () => {
-    const raw = makeMapKV();
+    const raw = makeTrackedKv();
     const branded = brandedNamespace(raw as unknown as KVNamespace, "web:");
     await branded.put(seqStateKvKey("2026-06", REAL_EMAIL), JSON.stringify({ "260601": true }));
     assert.ok(raw._map.has(`web:seq:2026-06:${REAL_EMAIL}`), "a chave crua no KV subjacente deve ter o prefixo do brand");

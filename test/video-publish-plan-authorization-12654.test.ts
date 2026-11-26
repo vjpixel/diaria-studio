@@ -45,6 +45,7 @@ import { main as authorizeMain } from "../scripts/video-publish-authorize.ts";
 import { main as registryStatusMain } from "../scripts/video-publish-registry-status.ts";
 import { buildShortsPlanManifest, planShortsPublish, shortsMainPublishCommand, shortsRunDestinations } from "../scripts/publish-shorts.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ED = "261112";
 const T0 = new Date("2026-11-11T22:00:00.000Z");
@@ -847,7 +848,7 @@ describe("#12654 escopo: corte e timers do 300 ficam fora da trava", () => {
     assert.ok(!store.authorizations.some((a) => a.destination === "linkedin_profile"));
   });
   it("publish-shorts: a trava só vale no modo edição da rodada principal (nem corte, nem rodada de timer)", () => {
-    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "publish-shorts.ts"), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /const planGated = !corte && writer === "main";/);
   });
 });

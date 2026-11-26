@@ -158,6 +158,37 @@ describe("fetch-open-issues-for-triage CLI (#7018)", () => {
     assert.equal(r.stdout.trim(), "");
   });
 
+  it("#14071: claudeDirCandidate em cada item e --claude-dir-candidates filtra as candidatas sem a label", () => {
+    const item = (number: number, body: string, labels: string[] = []) => ({
+      number,
+      title: `issue ${number}`,
+      labels: labels.map((name) => ({ name })),
+      body,
+      url: `https://github.com/x/y/issues/${number}`,
+      updatedAt: "2026-11-26T00:00:00Z",
+      state: "OPEN",
+    });
+    const alvo = "## Mudança proposta\n\nAjustar `.claude/hooks/pr-create-review.mjs` para logar só em gh pr create.";
+    const { env } = setupFakeGh({
+      stdout: JSON.stringify([
+        item(1, alvo),
+        item(2, alvo, ["claude-dir"]),
+        item(3, "## Evidência\n\n- o hook `.claude/hooks/x.mjs` lê o caminho.\n\n## Proposta\n\nDividir `scripts/lib/a.ts`."),
+      ]),
+    });
+    const all = run([], env);
+    assert.equal(all.status, 0, all.stderr);
+    const parsed = JSON.parse(all.stdout);
+    assert.equal(parsed[0].claudeDirCandidate.strength, "forte");
+    assert.equal(parsed[1].claudeDirCandidate, null, "label claude-dir presente: nada a avisar");
+    assert.equal(parsed[2].claudeDirCandidate, null, "menção só na Evidência não sinaliza");
+    assert.equal(parsed[0].execTrack, "overnight", "o sinal não muda o execTrack");
+
+    const only = run(["--claude-dir-candidates"], env);
+    assert.equal(only.status, 0, only.stderr);
+    assert.deepEqual(JSON.parse(only.stdout).map((i: { number: number }) => i.number), [1]);
+  });
+
   it("gh (fake) sem issues → array vazio, exit 0", () => {
     const { env } = setupFakeGh({ stdout: "[]" });
     const r = run([], env);

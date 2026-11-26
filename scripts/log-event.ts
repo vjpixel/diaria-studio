@@ -29,6 +29,7 @@ import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { isTimelineEvent, recordUnitTimeline } from "./lib/overnight-unit-timeline.ts";
 import { readPlanJson } from "./lib/plan-safe-backup.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 type Level = "info" | "warn" | "error";
 
@@ -42,21 +43,18 @@ interface LogEvent {
   details: unknown;
 }
 
+/**
+ * `--key valor` → valor; `--key` no fim ou seguido de outra `--flag` → "true"
+ * (é assim que `--informational` chega). Desde o #14128 delega a
+ * `cli-args.ts#parseArgs`, com a mesma regra de consumo do parser próprio que
+ * existia aqui (valor que começa com um só `-` e valor vazio `""` são
+ * consumidos como valor). Aditivo: `--key=valor` passa a ser reconhecido.
+ * Caracterização: `test/log-event-cli-args-14128.test.ts`.
+ */
 function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1];
-      if (val === undefined || val.startsWith("--")) {
-        out[key] = "true";
-      } else {
-        out[key] = val;
-        i++;
-      }
-    }
-  }
+  const parsed = parseCliArgs(argv);
+  const out: Record<string, string> = { ...parsed.values };
+  for (const flag of parsed.flags) if (!(flag in out)) out[flag] = "true";
   return out;
 }
 

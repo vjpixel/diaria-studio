@@ -32,8 +32,11 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
  *   gerados localmente em `divulgacao/` e subidos pro KV (só fora do
  *   `--dry-run`, só depois do pré-voo).
  * - Agenda (`resolveRetrospectivaPostScheduledAts`, decisão do editor): dia
- *   D+1 do envio do e-mail, nos slots da diária — história 1 às 18:00, 2 às
- *   12:00, 3 às 21:00 BRT (`fallback_schedule` do config, #10305) — com as 5 redes NO MESMO horário. Por isso o dia
+ *   D+1 do envio do e-mail, nos horários da diária (`fallback_schedule` do
+ *   config, #10305) em ordem crescente por história (#14080) — história 1 às
+ *   12:00, 2 às 18:00, 3 às 21:00 BRT — com as 5 redes NO MESMO horário
+ *   (preferência; o planner do #10819 move por rede e
+ *   `planRetrospectivaPostSchedule` mantém a ordem 1 < 2 < 3). Por isso o dia
  *   não pode ter edição diária agendada: post vivo no store da diária desse
  *   dia (`editionDir(AAMMDD)/_internal/06-social-published.json`, ou seja `data/editions/{AAMM}/{AAMMDD}/`) barra o
  *   pré-voo; dia útil sem edição (ainda) vira aviso.
@@ -132,6 +135,7 @@ import { uploadMonthlyImage } from "./lib/mensal/monthly-image-upload.ts";
 import { extractDestaqueTitle } from "./lib/mensal/monthly-apoiadores-kit-render.ts";
 import { resolveMonthlySendSchedule, type MonthlySendScheduleConfig } from "./lib/mensal/monthly-send-schedule.ts";
 import {
+  orderRetrospectivaScheduleByHistoria,
   resolveRetrospectivaBaseDate,
   resolveRetrospectivaPostScheduledAts,
   resolveRetrospectivaScheduledAts,
@@ -1146,6 +1150,47 @@ export function parseSocialListArgs(argv: string[]): {
   return { skip, force, oldCancelled };
 }
 
+/**
+ * #10819 + #14080: passa os posts ativos pelo planner de colisão e devolve a
+ * agenda final. As 5 redes vão ao planner; no Facebook a conta é a 1ª página
+ * habilitada e as outras entram em `alsoAccounts` (o post lógico sai no mesmo
+ * horário em todas, então o espaçamento vale contra a grade de cada). Depois
+ * do planner, `orderRetrospectivaScheduleByHistoria` refaz a ordem por rede
+ * (história 1 antes da 2, a 2 antes da 3) sem mudar o conjunto de horários
+ * que ele escolheu. `preferred` não é alterado.
+ */
+export function planRetrospectivaPostSchedule(
+  preferred: RetrospectivaPostSchedule,
+  grid: Parameters<typeof planDivulgacao>[0],
+  active: readonly RetrospectivaPostKey[],
+  fbAccounts: readonly string[],
+  log: (m: string) => void = () => {},
+  now = Date.now(),
+): RetrospectivaPostSchedule {
+  const s = Object.fromEntries(RETROSPECTIVA_HISTORIAS.map((h) => [h, { ...preferred[h] }])) as RetrospectivaPostSchedule;
+  const requests = active.flatMap((key) => {
+    const { channel, historia } = splitPostKey(key);
+    const preferredAt = s[historia][channel];
+    if (channel === "facebook") {
+      return fbAccounts.length ? [{ key, account: fbAccounts[0], alsoAccounts: fbAccounts.slice(1), preferredAt }] : [];
+    }
+    const account = channel === "linkedin_pagina" ? "linkedin:diaria" : channel === "x" ? "twitter:diaria" : `${channel}:diaria`;
+    return [{ key, account, preferredAt }];
+  });
+  const decisions = planDivulgacao(grid, requests, now);
+  for (const d of decisions) {
+    const { channel, historia } = splitPostKey(d.key as RetrospectivaPostKey);
+    s[historia][channel] = d.at;
+  }
+  const ordered = orderRetrospectivaScheduleByHistoria(s, decisions.map((d) => splitPostKey(d.key as RetrospectivaPostKey)));
+  for (const d of decisions) {
+    const { channel, historia } = splitPostKey(d.key as RetrospectivaPostKey);
+    const final = ordered[historia][channel];
+    log(`[planner #10819] ${d.key} ${final}: ${d.premise}${final !== d.at ? ` (horário trocado com outra história da rede para manter a ordem 1 < 2 < 3, #14080)` : ""}`);
+  }
+  return ordered;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -1210,26 +1255,10 @@ async function main(): Promise<void> {
   let schedule: RetrospectivaPostSchedule | null = null;
   let perfilAt: string | null = null; // #11800: horário do post manual do perfil, pro preview
   const resolveScheduledAts = async (active: readonly RetrospectivaPostKey[] = []): Promise<RetrospectivaPostSchedule> => {
-    const s = resolveRetrospectivaPostScheduledAts(config, { at: values["at"], baseDate });
-    const grid = await loadDivulgacaoGrid(config, [s.d1.linkedin_pagina.slice(0, 10)]);
-    // #10819: as 5 redes passam pelo planner. Facebook: a conta é a 1ª página
-    // habilitada e as outras entram em `alsoAccounts` (o post lógico sai no
-    // mesmo horário em todas, então o espaçamento vale contra a grade de cada).
+    const preferred = resolveRetrospectivaPostScheduledAts(config, { at: values["at"], baseDate });
+    const grid = await loadDivulgacaoGrid(config, [preferred.d1.linkedin_pagina.slice(0, 10)]);
     const fbAccounts = facebookPages.map((p) => `facebook:${p.slug}`);
-    const requests = active.flatMap((key) => {
-      const { channel, historia } = splitPostKey(key);
-      const preferredAt = s[historia][channel];
-      if (channel === "facebook") {
-        return fbAccounts.length ? [{ key, account: fbAccounts[0], alsoAccounts: fbAccounts.slice(1), preferredAt }] : [];
-      }
-      const account = channel === "linkedin_pagina" ? "linkedin:diaria" : channel === "x" ? "twitter:diaria" : `${channel}:diaria`;
-      return [{ key, account, preferredAt }];
-    });
-    for (const d of planDivulgacao(grid, requests)) {
-      const { channel, historia } = splitPostKey(d.key as RetrospectivaPostKey);
-      s[historia][channel] = d.at;
-      console.error(`[planner #10819] ${d.key} ${d.at}: ${d.premise}`);
-    }
+    const s = planRetrospectivaPostSchedule(preferred, grid, active, fbAccounts, (m) => console.error(m));
     schedule = s;
     let perfil: string;
     try {

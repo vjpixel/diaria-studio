@@ -151,6 +151,62 @@ describe("#14116 stage4-factcheck-post", () => {
     assert.deepEqual(r.checks, []);
   });
 
+  /** Disco fake: o autofix fake grava `writes` e depois sai com `code` (#14174). */
+  function diskDeps(code: number, writes: Record<string, string>) {
+    const disk: Record<string, string> = {
+      [join(ED, "02-reviewed.md")]: "newsletter antes",
+      [join(ED, "03-social.md")]: "social antes",
+    };
+    const { exec, calls } = fakeExec((s) => {
+      if (!s.endsWith("apply-factcheck-autofix.ts")) return undefined;
+      for (const [rel, text] of Object.entries(writes)) disk[join(ED, rel)] = text;
+      return { code, stderr: "[apply-factcheck-autofix] ERRO: TypeError: boom" };
+    });
+    const deps: FactCheckPostDeps = { exec, readText: (p) => disk[p], copyFile: () => {} };
+    return { deps, calls };
+  }
+
+  for (const [label, writes, wrote] of [
+    ["newsletter", { "02-reviewed.md": "newsletter corrigida" }, ["newsletter"]],
+    ["social", { "03-social.md": "social corrigido" }, ["social"]],
+    ["os dois", { "02-reviewed.md": "n2", "03-social.md": "s2" }, ["newsletter", "social"]],
+  ] as const) {
+    it(`regressão #14174: autofix grava ${label} e depois lança (exit 1) → exit 7, re-checagens nos DOIS arquivos`, () => {
+      const { deps, calls } = diskDeps(1, writes);
+      const r = runFactCheckPost({ editionDir: ED }, deps);
+      assert.equal(r.outcome, "autofix-failed-after-write");
+      assert.equal(r.exit, 7);
+      assert.deepEqual(r.autofix?.wrote_before_failure, wrote);
+      assert.deepEqual(r.rerender, { newsletter: true, social: true });
+      assert.deepEqual(r.checks.map((c) => c.name), ["callout-placement", "humanizer-social-check", ...SOCIAL_POST_AUTOFIX_LINTS]);
+      assert.ok(calls.some((c) => c.script.endsWith("lint-newsletter-md.ts")));
+    });
+  }
+
+  it("regressão #14174: autofix exit 1 com os textos intactos segue exit 0 sem re-checagens", () => {
+    const { deps, calls } = diskDeps(1, {});
+    const r = runFactCheckPost({ editionDir: ED }, deps);
+    assert.equal(r.outcome, "ok");
+    assert.equal(r.exit, 0);
+    assert.equal(r.autofix?.wrote_before_failure, undefined);
+    assert.deepEqual(r.checks, []);
+    assert.equal(calls.length, 2);
+  });
+
+  it("regressão #14174: exit 7 de escrita parcial vence lint quebrado (nunca vira exit 5)", () => {
+    const { exec } = fakeExec((s, a) => {
+      if (s.endsWith("apply-factcheck-autofix.ts")) {
+        disk[join(ED, "03-social.md")] = "mudou";
+        return { code: 1 };
+      }
+      return s.endsWith("lint-social-md.ts") && a[1] === "linkedin-page-link" ? { code: 1 } : undefined;
+    });
+    const disk: Record<string, string> = { [join(ED, "03-social.md")]: "antes" };
+    const r = runFactCheckPost({ editionDir: ED }, { exec, readText: (p) => disk[p], copyFile: () => {} });
+    assert.equal(r.exit, 7);
+    assert.ok(r.checks.some((c) => c.name === "linkedin-page-link" && c.code === 1));
+  });
+
   for (const [label, json] of [
     ["ausente", undefined],
     ["ilegível", "{não é json"],

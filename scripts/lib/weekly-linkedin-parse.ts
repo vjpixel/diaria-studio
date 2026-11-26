@@ -15,7 +15,7 @@
  * `extractTemplateBlock`, não `parseSections` — nunca aparecem aqui).
  */
 
-import { parseDestaques } from "../extract-destaques.ts";
+import { parseDestaques } from "./destaques-parse.ts";
 import { parseSections } from "./newsletter-parse.ts";
 import { SECTIONS, sectionHeaderRegex, type SectionBucket } from "./section-naming.ts";
 

@@ -48,6 +48,7 @@ import { explainYouTubeUploadError, youtubeScopeInsufficientMessage } from "../s
 import { MAX_FIRE_LATENESS_MS } from "../scripts/lib/linkedin-personal.ts";
 import type { ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const SLUG = "tratar-ia-como-humano";
 const AT = "2026-11-02T11:00:00.000Z"; // 08:00 BRT de 261102
@@ -306,7 +307,7 @@ describe("#11944 resíduos do guard de pasta vigiada", () => {
   });
 
   it("item 1 (parte): o plano calcula os donos por ownersContextAfterPublish (fonte única)", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     const plan = src.slice(src.indexOf("export function planShortsPublish("), src.indexOf("export async function uploadCoverOrFallback("));
     assert.match(plan, /const owners = assignShortsDestinationOwners\(\s*items,\s*ownersContextAfterPublish\(/);
   });
