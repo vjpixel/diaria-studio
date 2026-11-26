@@ -110,7 +110,6 @@ function happyExecAsyncHandlers(overrides: Record<string, (args: string[]) => St
     "merge-local-pending.ts": () => ok(JSON.stringify({ pending_found: 0, editions: [] })),
     "sync-eia-used.ts": () => ok(JSON.stringify({ scanned: 3, added: 0, already_present: 3, skipped_no_meta: 0 })),
     "check-dedup-freshness.ts": () => ok(JSON.stringify({ ok: true, most_recent: "2026-04-22", age_hours: 12 })),
-    "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: [] })),
     ...overrides,
   };
 }
@@ -399,11 +398,11 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(maintainCall!.args.includes("--current"));
     assert.ok(maintainCall!.args.includes("260423"));
 
-    // batch paralelo rodou os 4.
+    // batch paralelo rodou os 4 (beehiiv-sync saiu no #14114).
     assert.ok(asyncCalls.some((c) => c.script.includes("merge-local-pending")));
     assert.ok(asyncCalls.some((c) => c.script.includes("sync-eia-used")));
     assert.ok(asyncCalls.some((c) => c.script.includes("check-dedup-freshness")));
-    assert.ok(asyncCalls.some((c) => c.script.includes("beehiiv-sync")));
+    assert.ok(asyncCalls.some((c) => c.script.includes("kit-sync")));
 
     // 0i, 0z rodaram.
     assert.ok(calls.some((c) => c.script.includes("update-audience")));
@@ -557,30 +556,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     // Stage 0 nunca foi marcado done.
   });
 
-  it("0h.2 aposentado (#11225) — posts_needing_clicks não-vazio NÃO gera dispatch do beehiiv-clicks-enricher nem grava manifest", async () => {
-    const manifest = [{ id: "post_1", title: "Título A" }];
-    const { exec, calls: execCalls } = makeFakeExec(
-      happyExecHandlers({
-        "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: manifest })),
-      }),
-    );
-    const { execAsync } = makeFakeExecAsync(
-      happyExecAsyncHandlers({
-        "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: manifest })),
-      }),
-    );
-    const written: string[] = [];
-    const deps = baseDeps({
-      exec,
-      execAsync,
-      writeFile: (p) => {
-        written.push(p);
-      },
-      readFile: (p) => {
-        if (p.endsWith("platform.config.json")) return JSON.stringify({ newsletter_auto_capture: { enabled: false } });
-        throw new Error(`unmocked readFile: ${p}`);
-      },
-    });
+  it("0h (#14114) — beehiiv-sync não roda mais no Stage 0 (Beehiiv é arquivo histórico desde o #11225)", async () => {
+    const { exec, calls: execCalls } = makeFakeExec(happyExecHandlers());
+    const { execAsync, calls: asyncCalls } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
 
     const result = await runStage0(
       ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
@@ -588,18 +567,15 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
 
     assert.equal(result.code, 0);
-    assert.ok(
-      !result.pendingAgentDispatch.some((d) => d.agent === "beehiiv-clicks-enricher"),
-      "o enricher foi aposentado — Stage 0 nunca mais pede o dispatch",
-    );
-    assert.ok(!written.some((p) => p.includes("posts-needing-clicks.json")), "manifest de clicks não é mais gravado");
-    assert.ok(
-      execCalls.some((c) => c.script.endsWith("log-event.ts") && c.args.includes("info") && c.args.some((a) => a.includes("posts_needing_clicks descartado"))),
-      "descarte do manifest fica registrado em log info",
-    );
+    assert.ok(!asyncCalls.some((c) => c.script.includes("beehiiv-sync")), "beehiiv-sync fora do lote paralelo do 0h");
+    assert.ok(!execCalls.some((c) => c.script.includes("beehiiv-sync")), "beehiiv-sync também não roda sequencial");
+    // O resto do 0h segue: kit-sync no lote e build-link-ctr depois.
+    assert.ok(asyncCalls.some((c) => c.script.includes("kit-sync")));
+    assert.ok(execCalls.some((c) => c.script.includes("build-link-ctr")));
+    assert.ok(!result.pendingAgentDispatch.some((d) => d.agent === "beehiiv-clicks-enricher"));
   });
 
-  it("0h.1-kit (#7570) — kit-sync roda no mesmo batch de beehiiv-sync e é fail-soft (falha não aborta Stage 0)", async () => {
+  it("0h.1-kit (#7570) — kit-sync roda no batch paralelo do 0h e é fail-soft (falha não aborta Stage 0)", async () => {
     const { exec } = makeFakeExec(happyExecHandlers());
     const { execAsync, calls: asyncCalls } = makeFakeExecAsync(
       happyExecAsyncHandlers({

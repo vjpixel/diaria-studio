@@ -402,8 +402,8 @@ export interface PostCacheLike {
  * #5153: `true` quando o post ainda não teve NENHUMA tentativa de buscar
  * cliques por link — normalmente porque a edição está fora da janela de
  * `MIN_AGE_DAYS_FOR_CLICKS` dias (7, `scripts/lib/shared/ctr-config.ts`) e o
- * gate diário de enrichment (`scripts/beehiiv-sync.ts`) ainda não rodou pra
- * ela. `stats.clicks` vem `[]` nesse caso — mas isso é dado AUSENTE, não
+ * enrichment ainda não rodou pra ela (desde o #11225 não há enrichment de
+ * clicks da Beehiiv, e o `beehiiv-sync.ts` saiu do Stage 0 no #14114). `stats.clicks` vem `[]` nesse caso — mas isso é dado AUSENTE, não
  * cliques confirmados como zero (ver `enriched_zero`, o estado que SIM
  * confirma zero). Callers que agregam `stats.clicks` por link precisam
  * checar isto ANTES de somar — nunca tratar `never_enriched` como 0
@@ -511,8 +511,8 @@ export interface BoxClickReport {
   unmatchedBoxes: UnmatchedBox[];
   /** #5153: aparições do box num post `never_enriched` (fora da janela de 7
    * dias, cliques ainda não medidos) — rastreado À PARTE de `unmatchedBoxes`
-   * porque a causa é temporária (resolve sozinha em alguns dias, quando o
-   * post completa 7 dias e o gate diário de `beehiiv-sync.ts` o enriquece),
+   * porque a causa era temporária (resolvia em alguns dias, quando o post
+   * completava 7 dias e era enriquecido; sem enrichment desde o #11225),
    * diferente de "nunca vai ter dado" (sem post cacheado, sem link
    * mensurável). NUNCA entra em `total_verified_clicks`/
    * `total_unique_verified_clicks` — dado ausente, não zero.

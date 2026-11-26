@@ -247,13 +247,13 @@ Retorna JSON `{ scanned, added, already_present, skipped_no_meta }`. Se `added >
 
 Roda em paralelo com 0e/0f/0g no nível do bloco, mas internamente é uma sequência de 2 sub-passos. (O 0h.2, enrichment de clicks via subagent `beehiiv-clicks-enricher`, foi aposentado no #11225: a Beehiiv é só arquivo histórico e não publica edição nova.)
 
-**0h.1 — Sync metadata + stats agregados (REST)**
+**0h.1 — Sync dos broadcasts do Kit (REST)**
 
 ```bash
-npx tsx scripts/beehiiv-sync.ts
+npx tsx scripts/kit-sync.ts
 ```
 
-`beehiiv-sync.ts` (#1357) sincroniza posts + content + aggregate stats + `publication.json` via REST. **Não busca per-link clicks** — o endpoint `/posts/{id}/clicks` foi removido da API pública do Beehiiv (confirmado via OpenAPI spec; 50 endpoints, zero menção a "click"). O campo `posts_needing_clicks` que ele ainda emite no JSON é ignorado desde o #11225 (o enricher que o consumia foi aposentado).
+`kit-sync.ts` (#7570) grava `data/kit-cache/broadcasts/` com metadata, stats e clicks, tudo REST no próprio processo. **O `beehiiv-sync.ts` saiu do Stage 0 no #14114**: a Beehiiv é arquivo histórico desde o #11225, não recebe edição nova, e o cache `data/beehiiv-cache/` não muda mais; os leitores (`build-link-ctr.ts`, seleção semanal, acervo do site, hubs) o leem como acervo congelado. Refresh manual, quando preciso: `npm run beehiiv-sync`.
 
 **0h.3 — Build CTR table**
 

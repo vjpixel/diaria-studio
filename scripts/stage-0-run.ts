@@ -35,11 +35,14 @@
  *     0f. sync-eia-used.ts
  *     0g. check-dedup-freshness.ts (staleness vira `pendingHumanDecision`,
  *         nunca aborta sozinho — a confirmação [c/a] é decisão do editor)
- *     0h.1 + 0h.3. beehiiv-sync.ts + kit-sync.ts (#7570, mesmo batch,
- *         escritor de `data/kit-cache/broadcasts/`) + build-link-ctr.ts
- *         (o 0h.2, enrichment via subagent `beehiiv-clicks-enricher`, foi
- *         aposentado no #11225; clicks/stats do Kit são REST comum buscados
- *         no próprio kit-sync)
+ *     0h.1 + 0h.3. kit-sync.ts (#7570, mesmo batch, escritor de
+ *         `data/kit-cache/broadcasts/`) + build-link-ctr.ts (o 0h.2,
+ *         enrichment via subagent `beehiiv-clicks-enricher`, foi aposentado
+ *         no #11225; clicks/stats do Kit são REST comum buscados no próprio
+ *         kit-sync). O beehiiv-sync.ts saiu do lote no #14114: a Beehiiv é
+ *         arquivo histórico desde o #11225, o cache `data/beehiiv-cache/` não
+ *         muda mais e os leitores o leem como acervo congelado. Refresh
+ *         manual, quando preciso: `npm run beehiiv-sync`.
  *   0i. update-audience.ts + snapshot-audience-profile.ts (sequencial, após
  *       o batch) + commit-audience-snapshot.ts (#11733: abre/atualiza a PR
  *       do snapshot a partir de um worktree temporário, fail-soft).
@@ -1074,7 +1077,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
 
   // --- 0e-0h: batch paralelo (fail-soft cada um, exceto onde indicado) ---
   report.note("▶ batch paralelo 0e/0f/0g/0h.1 (concorrente)");
-  const [mergeRes, syncEiaRes, freshnessRes, beehiivSyncRes, kitSyncRes] = await Promise.all([
+  const [mergeRes, syncEiaRes, freshnessRes, kitSyncRes] = await Promise.all([
     deps.execAsync("scripts/merge-local-pending.ts", [
       "--current",
       opts.edition,
@@ -1089,10 +1092,10 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     ]),
     deps.execAsync("scripts/sync-eia-used.ts", ["--editions-dir", "data/editions/"]),
     deps.execAsync("scripts/check-dedup-freshness.ts", []),
-    deps.execAsync("scripts/beehiiv-sync.ts", []),
-    // #7570 — escritor do lado Kit de data/kit-cache/broadcasts/, ao lado do
-    // beehiiv-sync.ts acima. Sem 2ª fase de enrichment (0h.2): clicks/stats
-    // do Kit são REST comum (kit-client.ts), buscados no próprio processo.
+    // #7570 — escritor do lado Kit de data/kit-cache/broadcasts/. Sem 2ª fase
+    // de enrichment (0h.2): clicks/stats do Kit são REST comum (kit-client.ts),
+    // buscados no próprio processo. O beehiiv-sync.ts que rodava ao lado saiu
+    // no #14114 (Beehiiv é arquivo histórico desde o #11225; o cache não muda).
     deps.execAsync("scripts/kit-sync.ts", []),
   ]);
 
@@ -1133,23 +1136,6 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     logEvent(deps, opts.edition, "warn", "check-dedup-freshness falhou inesperadamente", { details: { code: freshnessRes.code } });
   }
 
-  // 0h.1 — beehiiv-sync. O 0h.2 (enrichment de clicks via subagent
-  // `beehiiv-clicks-enricher`) foi aposentado no #11225: a Beehiiv é só
-  // arquivo histórico e não publica edição nova, então `posts_needing_clicks`
-  // não gera mais dispatch. O manifest ainda sai no stdout do beehiiv-sync e
-  // é ignorado aqui.
-  if (beehiivSyncRes.code !== 0) {
-    logEvent(deps, opts.edition, "warn", "beehiiv-sync falhou — CTR pode ficar desatualizado");
-  } else {
-    const discarded =
-      parseStepJson<{ posts_needing_clicks?: unknown[] }>(beehiivSyncRes.stdout)?.posts_needing_clicks?.length ?? 0;
-    if (discarded > 0) {
-      logEvent(deps, opts.edition, "info", "0h.2 aposentado (#11225) — posts_needing_clicks descartado", {
-        details: { posts_needing_clicks: discarded },
-      });
-    }
-  }
-
   // 0h.4 — exit-history da Beehiiv (#10710). O agent `beehiiv-exit-history-drain`
   // (#7248) existia, mas nenhum ponto do pipeline o despachava: em 21/10/2026
   // `data/beehiiv-backup/exit-history/` nunca tinha sido criado. Enquanto o
@@ -1159,7 +1145,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   const exitHistoryDispatch = planExitHistoryDispatch(deps);
   if (exitHistoryDispatch) pendingAgentDispatch.push(exitHistoryDispatch);
 
-  // 0h.1-kit — kit-sync (#7570). Fail-soft, mesmo tratamento do lado Beehiiv:
+  // 0h.1-kit — kit-sync (#7570). Fail-soft:
   // sem manifest/dispatch de agent, porque clicks/stats do Kit são REST
   // síncrono (buscados dentro do próprio script) — não há 2ª fase aqui.
   if (kitSyncRes.code === 0) {
