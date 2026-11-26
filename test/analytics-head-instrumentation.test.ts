@@ -46,6 +46,7 @@ import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
 import { renderEntityPage } from "../scripts/lib/shared/entity-page.ts";
 import { ENTITY_LOADERS } from "../scripts/build-entity-page.ts";
 import type { Env } from "../workers/poll/src/index.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -67,24 +68,9 @@ function assertGtmInHead(html: string, label: string) {
   assert.match(head, GTM_ID_RE, `${label}: container ID (${GTM_CONTAINER_ID}) ausente do <head>`);
 }
 
-function makeKv(seed: Record<string, string> = {}): KVNamespace {
-  const data: Record<string, string> = { ...seed };
-  return {
-    get: async (key: string) => data[key] ?? null,
-    put: async (key: string, value: string) => { data[key] = value; },
-    delete: async (key: string) => { delete data[key]; },
-    getWithMetadata: async () => ({ value: null, metadata: null }),
-    list: async (opts?: { prefix?: string }) => {
-      const prefix = opts?.prefix ?? "";
-      const keys = Object.keys(data).filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true };
-    },
-  } as unknown as KVNamespace;
-}
-
 function makeEnv(): Env {
   return {
-    POLL: makeKv(),
+    POLL: makeTrackedKvNamespace(),
     POLL_SECRET: "test-secret",
     ADMIN_SECRET: "test-admin",
     ALLOWED_ORIGINS: "*",

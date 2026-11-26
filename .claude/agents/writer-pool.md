@@ -25,6 +25,7 @@ Uma descrição por item, em português do Brasil, que diga o fato central da p�
 
 Regras:
 - **Fidelidade ao texto lido.** Só fatos que estão no texto da página. Nada de inferência, de opinião, nem de número que não está lá. Na dúvida, fique no que `current_description` já dizia e no que o texto confirma.
+- **Superlativo, atribuição e "mais novo" só com o texto lido afirmando (#9692, #13313).** "O maior", "um dos mais", "o principal", "X decidiu", "X quer" só se a página disser; "mais novo"/"mais recente"/"acaba de lançar" nunca quando a página trouxer aviso de versão posterior ("Update on…") ou data de mais de 30 dias. Regra completa: `context/editorial-rules.md` §11 (Fidelidade à fonte).
 - **Uma linha, entre 60 e 280 caracteres.** Uma ou duas frases curtas. Ponto final.
 - **Texto puro:** sem markdown (`**`, `#`, `- `, link `[..](..)`), sem URL, sem emoji, sem seta (`→`, `←`), sem `[TRADUZIR]`.
 - **Não repetir o título.** O título já aparece na linha de cima; a descrição acrescenta.

@@ -15,22 +15,7 @@ import { apoioLevelKvKey } from "../scripts/lib/shared/apoio-level-verify.ts";
 import { ARTIGOS_SESSION_COOKIE, issueSessionCookie } from "../workers/artigos/src/cookie.ts";
 import { ARTIGOS_ESPECIAIS_APOIO_THRESHOLD } from "../workers/artigos/src/apoio-gate-config.ts";
 import { ENGENHARIA_DE_ILUSAO_FULL_HTML } from "../workers/artigos/src/engenharia-de-ilusao-full.generated.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-  } as unknown as KVNamespace;
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const TEASER_HTML = "<html><body>teaser estático</body></html>";
 function makeAssets(): Fetcher {
@@ -42,11 +27,11 @@ function makeAssets(): Fetcher {
 function baseEnv(overrides: Partial<Env> = {}): Env {
   return {
     ASSETS: makeAssets(),
-    ARTIGOS_APOIO_NIVEL: makeMapKV(),
+    ARTIGOS_APOIO_NIVEL: makeTrackedKvNamespace(),
     COOKIE_HMAC_SECRET: "cookie-secret",
     // #8371: 2º binding KV (votação de tema) — não exercitado por este
     // teste, mas obrigatório na forma de `Env`.
-    POLL: makeMapKV(),
+    POLL: makeTrackedKvNamespace(),
     ...overrides,
   };
 }
@@ -66,7 +51,7 @@ describe("workers/artigos gate (#7030)", () => {
   });
 
   it("REGRESSÃO CENTRAL — visitante com apoio ABAIXO do limiar (amigo) recebe o teaser", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const key = await apoioLevelKvKey("amigo@example.com");
     await kv.put(key, "amigo");
     const secret = "s3cr3t";
@@ -81,7 +66,7 @@ describe("workers/artigos gate (#7030)", () => {
 
   it("REGRESSÃO CENTRAL — visitante com apoio NO limiar (piso do threshold configurado) recebe o conteúdo completo", async () => {
     const nivelNoLimiar = ARTIGOS_ESPECIAIS_APOIO_THRESHOLD[0]; // qualquer valor válido do limiar atual
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const key = await apoioLevelKvKey("apoiador@example.com");
     await kv.put(key, nivelNoLimiar);
     const secret = "s3cr3t";
@@ -111,7 +96,7 @@ describe("workers/artigos gate (#7030)", () => {
   describe("POST /gate/verify", () => {
     it("apoiador ≥ limiar → ok:true + Set-Cookie", async () => {
       const nivelNoLimiar = ARTIGOS_ESPECIAIS_APOIO_THRESHOLD[0];
-      const kv = makeMapKV();
+      const kv = makeTrackedKvNamespace();
       const key = await apoioLevelKvKey("verify-ok@example.com");
       await kv.put(key, nivelNoLimiar);
       const env = baseEnv({ ARTIGOS_APOIO_NIVEL: kv });

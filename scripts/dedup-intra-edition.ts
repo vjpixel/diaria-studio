@@ -1153,7 +1153,7 @@ export const INTRA_BUCKET_DEDUP_BUCKETS: readonly string[] = ["lancamento", "rad
  * bruto pré-categorização. Sem isso, um item removido do RADAR/LANÇAMENTOS
  * por duplicar um destaque simplesmente desaparece — não chega ao
  * `writer-destaque` (que só recebe `destaque.article` + `cluster_sources[]`,
- * ver `.claude/agents/orchestrator-stage-2.md` §2a), e os fatos que só
+ * ver `.claude/agents/orchestrator-stage-2-fallback.md` §2a), e os fatos que só
  * existem naquela cobertura secundária ficam inacessíveis — a raiz do
  * problema relatado na #4185 (contaminação cruzada de fonte ao tentar
  * enriquecer o destaque manualmente com um fato de uma URL não citada).

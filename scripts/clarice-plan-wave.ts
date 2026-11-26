@@ -109,7 +109,7 @@ import {
 } from "./clarice-schedule-ramp.ts";
 import { aggregateAbcByAudience } from "../workers/brevo-dashboard/src/sections-core.ts";
 import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts";
-import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
+import type { BrevoCampaign } from "./lib/shared/brevo-dashboard-types.ts";
 
 loadProjectEnv();
 

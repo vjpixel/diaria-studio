@@ -33,7 +33,7 @@ O prompt traz o caminho de um JSON gerado por `publish-weekly-social.ts --summar
 3. **Precisa se ler sozinho.** Nunca comece com referência ao corpo ("O modelo…", "Esse avanço…", "Avanços como esse…", "São dados…") sem nomear de quem se fala.
 4. **Curto.** 1 frase, no máximo 2 frases curtas. Entre 80 e 160 caracteres é o alvo; 200 é o teto duro.
 
-Também: só fatos que estão no `body` (nunca invente número, nome ou data). Português do Brasil, tom direto da newsletter. Sem markdown, sem emoji, sem setas, sem travessão de aposto, sem "não é X, é Y". "Agêntico", nunca "agentivo".
+Também: só fatos que estão no `body` (nunca invente número, nome ou data). Superlativo ("o maior", "um dos mais", "o mais novo"), ranking e atribuição de decisão ou intenção ("X decidiu", "X quer") só se o `body` ou o `why` afirmarem (#9692, #13313; regra completa em `context/editorial-rules.md` §11). Português do Brasil, tom direto da newsletter. Sem markdown, sem emoji, sem setas, sem travessão de aposto, sem "não é X, é Y". "Agêntico", nunca "agentivo".
 
 ## Exemplos aprovados (retro 261024)
 

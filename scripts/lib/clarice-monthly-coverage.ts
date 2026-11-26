@@ -23,7 +23,7 @@
  *
  * Sem I/O — o CLI fino é `scripts/verify-clarice-monthly-coverage.ts`.
  */
-import { monthKeyBRT } from "../../workers/brevo-dashboard/src/sections-core.ts";
+import { monthKeyBRT } from "./shared/brevo-campaign-stats.ts";
 
 export interface CoverageCampaign {
   id: number;

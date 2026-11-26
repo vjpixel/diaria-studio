@@ -36,35 +36,11 @@ import {
 import { anonEmailForToken } from "../workers/poll/src/jogar.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
 import { PUBLIC_GAME_DISPLAY_HOST } from "../workers/poll/src/lib.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
+function makeEnv(seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } {
   return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
-
-function makeEnv(seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } {
-  return {
-    POLL: makeMapKV(seed),
+    POLL: makeTrackedKv(seed),
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",

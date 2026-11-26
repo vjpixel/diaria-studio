@@ -46,7 +46,12 @@ on:
       - 'scripts/lib/dashboard-kv-types.ts'
       - 'scripts/lib/editor-copy.ts'
       - 'scripts/lib/next-edition-date.ts'
+      - 'scripts/lib/shared/brevo-campaign-stats.ts'
+      - 'scripts/lib/shared/brevo-dashboard-types.ts'
+      - 'scripts/lib/shared/brevo-health-thresholds.ts'
+      - 'scripts/lib/shared/brevo-link-content.ts'
       - 'scripts/lib/shared/brt.ts'
+      - 'scripts/lib/shared/clarice-weekly-plan.ts'
       - 'scripts/lib/stripe-coupons.ts'
   workflow_dispatch:
 

@@ -94,7 +94,8 @@
  *   npx tsx scripts/stage-2-run.ts --phase post-checks --edition AAMMDD [--no-gates]
  *   npx tsx scripts/stage-2-run.ts --phase post-gate --edition AAMMDD [--after-title-picker]
  *
- * @see .claude/agents/orchestrator-stage-2.md, .claude/skills/diaria-2-escrita/SKILL.md
+ * @see .claude/agents/orchestrator-stage-2.md (passos fora do runner), .claude/agents/orchestrator-stage-2-fallback.md
+ *   (prosa de cada passo, lida só no fallback, #14113), .claude/skills/diaria-2-escrita/SKILL.md
  * @see scripts/stage-3-run.ts (molde mais próximo)
  */
 import { spawnSync } from "node:child_process";
@@ -104,6 +105,7 @@ import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { CLARICE_NORMAL_DEADLINE_MS, resolveClariceStage2DeadlineForEdition, type ClariceStage2Deadline } from "./lib/clarice-stage2-deadline.ts";
+import { emitStepTimings, StepTimingRecorder } from "./lib/runner-step-timings.ts";
 
 loadProjectEnv();
 
@@ -119,7 +121,8 @@ export interface StepResult {
   stderr: string;
 }
 
-export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
+/** `label` (opcional) só serve à medição por passo (#14032); o spawn real ignora. */
+export type ExecFn = (scriptRelPath: string, args: string[], label?: string) => StepResult;
 
 export function realExec(rootDir: string): ExecFn {
   return (scriptRelPath, args) => {
@@ -296,6 +299,8 @@ function parseDeadlineOverride(raw: string | undefined, socialOnly: boolean): nu
 export interface Stage2RunDeps {
   exec: ExecFn;
   now: () => Date;
+  /** Relógio em ms da medição por passo (#14032). Ausente = `Date.now`. */
+  clockMs?: () => number;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage2RunDeps {
@@ -399,7 +404,7 @@ class Ctx {
   }
   run(label: string, script: string, args: string[]): StepResult {
     this.note(`▶ ${label}`);
-    const r = this.deps.exec(script, args);
+    const r = this.deps.exec(script, args, label);
     if (r.stderr.trim()) console.error(r.stderr.trim());
     return r;
   }
@@ -1423,6 +1428,20 @@ export async function runStage2(argv: string[], deps: Stage2RunDeps): Promise<St
       notes: [(err as Error).message],
     };
   }
+  // #14032: duração de cada sub-script (Clarice, lints, stitch...) num evento
+  // `step_timings` do run-log, nunca no stdout. O tempo dos agentes (writers,
+  // humanizadores) é o intervalo entre o fim de uma fase e o `started_at` da
+  // seguinte.
+  const timings = new StepTimingRecorder(deps.clockMs);
+  const timedDeps: Stage2RunDeps = { ...deps, exec: timings.wrapExec(deps.exec) };
+  try {
+    return runStage2Phase(opts, timedDeps);
+  } finally {
+    emitStepTimings(deps.exec, { edition: opts.edition, stage: "2", agent: "stage-2-run" }, timings.summary(opts.phase));
+  }
+}
+
+function runStage2Phase(opts: Stage2RunOptions, deps: Stage2RunDeps): Stage2RunResult {
   const resolved = deps.exec("scripts/lib/find-current-edition.ts", ["--resolve", opts.edition]);
   const editionDir = resolved.stdout.trim();
   const ctx = new Ctx(deps, opts, editionDir);

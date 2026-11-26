@@ -11,10 +11,11 @@ import { readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
-const stage2 = read(".claude/agents/orchestrator-stage-2.md");
+const stage2 = readStage2Playbook(); // #14113: principal + fallback
 const stage4 = readStage4Playbook();
 const factChecker = read("scripts/run-fact-checker.ts");
 

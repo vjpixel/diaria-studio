@@ -34,6 +34,7 @@ import { handleJogarSubscribe } from "../workers/poll/src/subscribe.ts";
 import type { Env as PollEnv } from "../workers/poll/src/index.ts";
 import { handleGateSubscribe } from "../workers/cursos/src/subscribe.ts";
 import type { Env as CursosEnv } from "../workers/cursos/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const FBP = "fb.1.1700000000000.1234567890";
 const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)";
@@ -324,27 +325,6 @@ describe("#10428 — retry escalonado: UA sai antes de IP e fbp", () => {
 
 // ---- workers ----
 
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      return m.get(key) ?? null;
-    },
-    async getWithMetadata(key: string) {
-      return { value: m.get(key) ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cursor: undefined };
-    },
-  };
-}
-
 type Call = { url: string; body: any; hasSignal: boolean };
 /** Kit mock: o POST de criação responde `createStatuses[i]` na i-ésima chamada
  * (o corpo do 422 ECOA o payload, como um erro de validação faria). */
@@ -372,7 +352,7 @@ const SIGNAL_ENV = {
 
 function pollEnv(): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "s",
     ADMIN_SECRET: "a",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -395,7 +375,7 @@ function pollReq(): Request {
 function cursosEnv(): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") },
-    CURSOS_SUBSCRIBERS: makeMapKV(),
+    CURSOS_SUBSCRIBERS: makeTrackedKv(),
     COOKIE_HMAC_SECRET: "cookie-secret",
     SUBSCRIBE_BACKEND: "kit",
     KIT_API_KEY: "k",

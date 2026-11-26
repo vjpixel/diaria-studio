@@ -17,22 +17,7 @@ import {
   verifySubscriberViaKv,
 } from "../scripts/lib/shared/subscriber-verify.ts";
 import { checkKvRateLimit, clientIpFromRequest } from "../scripts/lib/shared/rate-limit.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-  } as unknown as KVNamespace;
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 describe("subscriber-verify (#4052)", () => {
   it("sha256Hex é determinístico e normaliza case/whitespace", async () => {
@@ -51,23 +36,23 @@ describe("subscriber-verify (#4052)", () => {
     it("ATIVO: chave presente no KV", async () => {
       const email = "ativo@example.com";
       const key = await subscriberKvKey(email);
-      const kv = makeMapKV({ [key]: "1" });
+      const kv = makeTrackedKvNamespace({ [key]: "1" });
       assert.equal(await verifySubscriberViaKv(kv, email), "active");
     });
 
     it("INEXISTENTE: e-mail nunca sincronizado — chave ausente", async () => {
-      const kv = makeMapKV();
+      const kv = makeTrackedKvNamespace();
       assert.equal(await verifySubscriberViaKv(kv, "nunca-existiu@example.com"), "unknown");
     });
 
     it("KV-MISS geral (namespace vazio) — trata como unknown, nunca lança", async () => {
-      const kv = makeMapKV({});
+      const kv = makeTrackedKvNamespace({});
       assert.equal(await verifySubscriberViaKv(kv, "qualquer@example.com"), "unknown");
     });
 
     it("case/whitespace do e-mail não afeta o lookup (mesma normalização do sync)", async () => {
       const key = await subscriberKvKey("normalizado@example.com");
-      const kv = makeMapKV({ [key]: "1" });
+      const kv = makeTrackedKvNamespace({ [key]: "1" });
       assert.equal(await verifySubscriberViaKv(kv, "  Normalizado@Example.com  "), "active");
     });
   });
@@ -239,7 +224,7 @@ describe("subscriber-verify (#4052)", () => {
 
 describe("rate-limit (#4052)", () => {
   it("permite até o limite, bloqueia a partir daí", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     for (let i = 0; i < 3; i++) {
       const r = await checkKvRateLimit(kv, "rl:test:1.2.3.4", 3, 3600);
       assert.equal(r.allowed, true);
@@ -249,7 +234,7 @@ describe("rate-limit (#4052)", () => {
   });
 
   it("chave vazia (sem IP) sempre permite", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const r = await checkKvRateLimit(kv, "", 1, 3600);
     assert.equal(r.allowed, true);
   });

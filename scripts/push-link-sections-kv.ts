@@ -55,7 +55,7 @@ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { MONTHLY_BASE, isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts";
 import { loadLinkSectionMapForCycle } from "./lib/mensal/monthly-link-sections.ts";
-import { linkSectionsKvKey } from "../workers/brevo-dashboard/src/types.ts";
+import { linkSectionsKvKey } from "./lib/shared/brevo-dashboard-types.ts";
 import type { LinkSectionMap } from "./lib/dashboard-kv-types.ts";
 
 loadProjectEnv();

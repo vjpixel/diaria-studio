@@ -47,6 +47,7 @@ import {
   type CliJsonUsage,
   type CliRunMeta,
 } from "./cli-usage-json.ts";
+import { mergeModelUsage } from "./usage-breakdown.ts";
 import { loadDoc, saveDoc, applyUpdate, type CliRunLogEntry, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
 import { checkStage4Pregate } from "./stage4-pregate.ts";
 import { readEditionLock } from "./edition-lock.ts";
@@ -698,7 +699,10 @@ export function accumulateCliRun(
   row: StageRow,
   usage: CliJsonUsage | null,
   meta: CliRunMeta | null,
-): Pick<UpdateOpts, "cost_usd" | "tokens_in" | "tokens_out" | "models" | "session_filter" | "num_turns" | "cli_runs" | "cli_run_log"> {
+): Pick<
+  UpdateOpts,
+  "cost_usd" | "tokens_in" | "tokens_out" | "models" | "model_usage" | "session_filter" | "num_turns" | "cli_runs" | "cli_run_log"
+> {
   const prior = row.session_filter === "cli_json";
   const add = (prev: number | undefined, cur: number) => (prior && prev !== undefined ? prev + cur : cur);
   const out: ReturnType<typeof accumulateCliRun> = {};
@@ -712,6 +716,12 @@ export function accumulateCliRun(
     out.tokens_in = add(row.tokens_in, usage.tokensIn);
     out.tokens_out = add(row.tokens_out, usage.tokensOut);
     out.models = prior && row.models ? [...new Set([...row.models, ...usage.models])] : usage.models;
+    // #14115: por modelo, somado como o total. Linha com execução CLI anterior
+    // SEM `model_usage` (anterior ao #14115) não ganha o campo: o mapa
+    // cobriria só esta execução e não fecharia com o total somado.
+    if (usage.modelUsage && !(prior && row.model_usage === undefined)) {
+      out.model_usage = mergeModelUsage(prior ? row.model_usage : undefined, usage.modelUsage);
+    }
     out.session_filter = "cli_json";
   }
   if (meta?.numTurns !== undefined) {
@@ -725,6 +735,7 @@ export function accumulateCliRun(
     if (meta?.numTurns !== undefined) entry.num_turns = meta.numTurns;
     if (meta?.terminalReason !== undefined) entry.terminal_reason = meta.terminalReason;
     if (usage) entry.cost_usd = usage.costUsd;
+    if (usage?.modelUsage) entry.model_usage = usage.modelUsage; // #14115
     out.cli_run_log = [...(prior || row.num_turns !== undefined ? (row.cli_run_log ?? []) : []), entry];
   }
   return out;

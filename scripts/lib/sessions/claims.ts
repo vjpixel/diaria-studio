@@ -31,6 +31,7 @@ import {
   recoverAnchorFromOrphanBackups,
   sessionFilePath,
   sessionGroupBackupPaths,
+  sessionsDir,
   warnAnchorRecoveredFromOrphanBackups,
   writeJsonSafe,
   writeJsonSafeWithCas,
@@ -70,6 +71,8 @@ export interface ClaimIssueOptions {
    * jogo contra dono cujo claim ainda vale.
    */
   force?: boolean;
+  /** #14213 — espera máxima pelo lock de claims (default `CLAIMS_LOCK_TIMEOUT_MS`). */
+  lockTimeoutMs?: number;
 }
 
 /**
@@ -179,6 +182,57 @@ function withClaimRemoved(record: SessionRecord, t: ResolvedClaimTarget): Sessio
 }
 
 /**
+ * #14213 — quanto o claim espera pelo lock de claims antes de desistir com
+ * erro. A seção crítica é ler os registros das sessões e gravar uma âncora
+ * (milissegundos); 10s é o mesmo teto do `withFileLock` dos registros.
+ */
+export const CLAIMS_LOCK_TIMEOUT_MS = 10_000;
+
+/**
+ * #14213 — lock que serializa o par "checar se outra sessão segura + gravar a
+ * claim" entre TODAS as sessões desta máquina. Antes dele, a checagem lia os
+ * arquivos das outras sessões sem lock e a escrita travava só o arquivo da
+ * própria sessão: duas sessões têm locks diferentes, e num teste com 2
+ * processos e 40 issues as duas ganharam as 40.
+ *
+ * O nome leva o `machineTag()` LOCAL (não o `tag` da sessão): o lock é só
+ * intra-máquina, como sempre foi a garantia do claim (entre máquinas a 2ª
+ * barreira segue sendo a claim por comentário na issue, `diaria-claim`). Com
+ * um nome por máquina, um `.lock` de outra máquina que o sync do `data/`
+ * replicar aqui nunca disputa com os claims locais.
+ */
+export function claimsLockPath(repoRoot: string, host: string = machineTag()): string {
+  return join(sessionsDir(repoRoot), `.claims-${host}.lock`);
+}
+
+/**
+ * #14213 — roda `fn` (checagem + escrita do claim) sob `claimsLockPath`. Usa o
+ * mesmo primitivo dos registros (`withFileLock` + `breakStaleLock`, #6952/#9193):
+ * criação exclusiva com o dono `{pid, host, ts, token}` gravado, lock de PID
+ * morto desta máquina quebrado na hora, lock legado/vazio só depois de
+ * `STALE_LOCK_MS`. Liberado em `finally` mesmo se `fn` lançar. Não obter o
+ * lock no prazo LANÇA (nunca segue sem ele): o CLI sai com exit 1 e nenhuma
+ * claim é gravada.
+ */
+function withClaimsLock<T>(repoRoot: string, fn: () => T, timeoutMs: number = CLAIMS_LOCK_TIMEOUT_MS): T {
+  const lockPath = claimsLockPath(repoRoot);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  breakStaleLock(lockPath);
+  try {
+    return withFileLock(lockPath, fn, timeoutMs);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("[file-lock] lock timeout")) {
+      throw new Error(
+        `claim-issue: lock de claims ocupado há mais de ${timeoutMs}ms (${lockPath}); nenhuma claim gravada. ` +
+          "Outra sessão desta máquina está reivindicando agora: rode o claim de novo (#14213)",
+        { cause: e },
+      );
+    }
+    throw e;
+  }
+}
+
+/**
  * Faz check-and-set: adiciona `issueNumber` a `claimed_issues` da sessão
  * (ou, quando é `IssueRef` de outro repo, a `claimed_foreign_issues` como
  * `owner/repo#N` — #10618) SÓ DEPOIS de confirmar que nenhuma OUTRA sessão ativa já a segura (#6236 —
@@ -211,10 +265,11 @@ function withClaimRemoved(record: SessionRecord, t: ResolvedClaimTarget): Sessio
  * podem, na mesma janela de poucos milissegundos, cada uma ler "ninguém
  * segura" e escrever seu próprio claim, porque `O_CREAT|O_EXCL`/leitura+escrita
  * sobre cópias sincronizadas via OneDrive não é uma transação atômica cross-
- * inode. Dentro da MESMA máquina (onde múltiplos processos Node leem/escrevem
- * o mesmo arquivo local, sem lag de sync) a janela fecha de fato — foi
- * exatamente aí que a colisão real do #6236 aconteceu (duas sessões,
- * `overnight` e `continuo`, na mesma máquina).
+ * inode. Dentro da MESMA máquina a janela só fecha por causa do lock de claims
+ * (`withClaimsLock`, #14213), que envolve a checagem e a escrita: sem ele, cada
+ * sessão travava só o próprio arquivo e as duas da colisão do #6236
+ * (`overnight` e `continuo`, na mesma máquina) ainda ganhavam a mesma issue.
+ * Falha ao obter o lock lança, sem gravar nada.
  */
 export function claimIssueCheckAndSet(
   repoRoot: string,
@@ -227,6 +282,24 @@ export function claimIssueCheckAndSet(
 ): ClaimIssueResult {
   const target = resolveClaimTarget(issueNumber);
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  if (!readJsonSafe<SessionRecord>(path)) return { ok: false, reason: "no-op-session-missing" };
+  // #14213: checagem e escrita sob o mesmo lock de todas as sessões da máquina.
+  return withClaimsLock(
+    repoRoot,
+    () => claimIssueCheckAndSetLocked(repoRoot, path, sessionId, issueNumber, target, now, options),
+    options.lockTimeoutMs,
+  );
+}
+
+function claimIssueCheckAndSetLocked(
+  repoRoot: string,
+  path: string,
+  sessionId: string,
+  issueNumber: ClaimIssueTarget,
+  target: ResolvedClaimTarget,
+  now: string,
+  options: ClaimIssueOptions,
+): ClaimIssueResult {
   const current = readJsonSafe<SessionRecord>(path);
   if (!current) return { ok: false, reason: "no-op-session-missing" };
 
@@ -469,9 +542,10 @@ export interface BatchClaimIssuesResult {
  * sucesso, de outra sessão ativa é recusa, `force` toma). A recusa de uma
  * issue NÃO impede as outras do lote: é o mesmo resultado de N chamadas
  * independentes, só que numa escrita. Issues repetidas no pedido contam uma
- * vez. A checagem contra outras sessões, como no claim individual, é feita
- * fora do lock da âncora (o lock é do arquivo DESTA sessão; as outras sessões
- * escrevem arquivos próprios).
+ * vez. A checagem contra outras sessões e a escrita rodam sob o lock de claims
+ * da máquina (`withClaimsLock`, #14213), como no claim individual: o lock da
+ * âncora (`{path}.lock`) é só do arquivo DESTA sessão e não serializa nada
+ * com as outras.
  */
 export function claimIssuesCheckAndSet(
   repoRoot: string,
@@ -493,15 +567,29 @@ export function claimIssuesCheckAndSet(
   if (distinct.length === 0) throw new Error("claimIssuesCheckAndSet: lista de issues vazia (#12010)");
 
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const current = readJsonSafe<SessionRecord>(path);
-  if (!current) {
-    return {
-      ok: false,
-      writes: 0,
-      entries: distinct.map(({ issue, label }) => ({ issue, label, ok: false, reason: "no-op-session-missing" })),
-    };
-  }
+  const missing = (): BatchClaimIssuesResult => ({
+    ok: false,
+    writes: 0,
+    entries: distinct.map(({ issue, label }) => ({ issue, label, ok: false, reason: "no-op-session-missing" })),
+  });
+  if (!readJsonSafe<SessionRecord>(path)) return missing();
+  // #14213: checagem e escrita do lote inteiro sob o lock de claims da máquina.
+  return withClaimsLock(repoRoot, () => {
+    const current = readJsonSafe<SessionRecord>(path);
+    if (!current) return missing();
+    return claimIssuesCheckAndSetLocked(repoRoot, path, sessionId, current, distinct, now, options);
+  }, options.lockTimeoutMs);
+}
 
+function claimIssuesCheckAndSetLocked(
+  repoRoot: string,
+  path: string,
+  sessionId: string,
+  current: SessionRecord,
+  distinct: readonly { issue: ClaimIssueTarget; label: string; target: ResolvedClaimTarget }[],
+  now: string,
+  options: ClaimIssueOptions,
+): BatchClaimIssuesResult {
   const nowMs = Date.parse(now);
   const checkMs = Number.isFinite(nowMs) ? nowMs : Date.now();
   const entries: BatchClaimIssueEntry[] = [];
@@ -777,12 +865,11 @@ export function heartbeatAutoRegistering(
  * escrever N registros por sessão: o path já distingue os concorrentes, o
  * sessionId dentro do arquivo resolve o resto.
  *
- * `worktree_claim` continua sendo mirrorado no record da sessão (best-effort,
- * nunca bloqueia o claim principal) para não quebrar o consumidor existente
- * — `.claude/hooks/block-worktree-alien-commit.mjs`, que lê
- * `rec?.worktree_claim?.path` do arquivo de sessão. Esse mirror é cosmético
- * (último a escrever "vence" nele, igual antes), NUNCA a fonte de verdade da
- * colisão — a fonte de verdade é sempre o arquivo indexado por path.
+ * O `worktree_claim` era também mirrorado no record da sessão para o hook
+ * `.claude/hooks/block-worktree-alien-commit.mjs`; o mirror saiu no #14214
+ * (o hook deixou de lê-lo no #7903, abaixo, e a escrita criava um arquivo
+ * `continuo-*` que o GC nunca recolhia). A fonte de verdade é sempre o
+ * arquivo indexado por path.
  *
  * **CORREÇÃO (#7903, 10/09/2026)** — o hook consumidor lia SÓ o mirror
  * (`data/sessions/*.json`), nunca o arquivo indexado por path descrito
@@ -857,38 +944,15 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
     claimed = true;
   });
 
-  if (!claimed) return false;
-
-  // Mirror best-effort no record da sessão — só pro consumidor legado
-  // (block-worktree-alien-commit.mjs); nunca decide a colisão acima (#7900
-  // Finding 3: last-writer-wins entre subagentes-irmãos é uma limitação
-  // conhecida e aceita desse consumidor legado, não deste mecanismo). Sob
-  // lock próprio (#7900 Finding 2) pra não atropelar outros campos
-  // CAS-protegidos do mesmo record de sessão (merge_grant, claimed_issues,
-  // heartbeat) — timeout curto: é cosmético, nunca vale travar o claim real
-  // por ele.
-  try {
-    const sessionFile = sessionFilePath(root, "continuo", machineTag(), sessionId);
-    const sessionLockPath = `${sessionFile}.lock`;
-    breakStaleLock(sessionLockPath);
-    withFileLock(
-      sessionLockPath,
-      () => {
-        const currentSession = readJsonSafe<any>(sessionFile);
-        writeJsonSafe(sessionFile, {
-          ...currentSession,
-          session_id: sessionId,
-          worktree_claim: { path, sessionId, branch: resolvedBranch, claimed_at: claimedAt, expires_at: nowMs + ttl },
-        });
-      },
-      2_000,
-    );
-  } catch {
-    // Mirror é cosmético — nunca deixa uma falha (inclusive timeout de lock)
-    // aqui derrubar o claim real, já commitado acima.
-  }
-
-  return true;
+  // #14214: o mirror `worktree_claim` no record da sessão saiu. Ele gravava
+  // em `sessionFilePath(root, "continuo", machineTag(), sessionId)` — kind
+  // fixo e tag da máquina, não os da sessão —, criando um arquivo
+  // `continuo-*` sem `sessionId`/`kind` que o GC via como ilegível e nunca
+  // recolhia. Desde o #7903 o hook lê só o arquivo indexado por path
+  // (`.worktree-claims/`), então o mirror não tinha mais leitor. Espelhos
+  // antigos que já estão no disco são recolhidos por `planSessionGc`
+  // (`isWorktreeClaimMirror`).
+  return claimed;
 }
 
 export function claimIssue(

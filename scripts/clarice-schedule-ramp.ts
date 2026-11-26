@@ -141,9 +141,9 @@ import {
   computeWeekPlan,
   describeBreachedMetrics,
   type Semaphore,
-} from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import { resolveSpamSignal, describeSpamSignalOrigin, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063, #5059
-import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
+} from "./lib/shared/clarice-weekly-plan.ts";
+import { resolveSpamSignal, describeSpamSignalOrigin, type SpamSignal } from "./lib/shared/brevo-health-thresholds.ts"; // #4063, #5059
+import type { BrevoCampaign } from "./lib/shared/brevo-dashboard-types.ts";
 import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts"; // #4131 finding 4
 import { firstName } from "./lib/clarice-name.ts";
 

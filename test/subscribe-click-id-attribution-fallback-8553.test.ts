@@ -36,6 +36,7 @@ import { handleJogarSubscribe } from "../workers/poll/src/subscribe.ts";
 import type { Env as PollEnv } from "../workers/poll/src/index.ts";
 import { handleGateSubscribe } from "../workers/cursos/src/subscribe.ts";
 import type { Env as CursosEnv } from "../workers/cursos/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 describe("resolveOrigemPagaWithClickIdFallback (#8553)", () => {
   it("click_id fbclid + origemPaga vazia → deriva meta-ads", () => {
@@ -80,30 +81,9 @@ function makeFetchMock(status = 200, body: unknown = { data: { status: "active" 
   return fn;
 }
 
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      return m.get(key) ?? null;
-    },
-    async getWithMetadata(key: string) {
-      return { value: m.get(key) ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cursor: undefined };
-    },
-  };
-}
-
 function pollBeehiivEnv(overrides: Partial<PollEnv> = {}): PollEnv {
   return {
-    POLL: makeMapKV() as unknown as PollEnv["POLL"],
+    POLL: makeTrackedKv() as unknown as PollEnv["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "https://diar.ia.br",
@@ -165,7 +145,7 @@ describe("handleJogarSubscribe (worker poll) — click_id preenche origem_paga q
 function cursosBeehiivEnv(overrides: Partial<CursosEnv> = {}): CursosEnv {
   return {
     ASSETS: { fetch: async () => new Response("") } as unknown as CursosEnv["ASSETS"],
-    CURSOS_SUBSCRIBERS: makeMapKV() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
+    CURSOS_SUBSCRIBERS: makeTrackedKv() as unknown as CursosEnv["CURSOS_SUBSCRIBERS"],
     COOKIE_HMAC_SECRET: "cookie-secret",
     BEEHIIV_API_KEY: "test-beehiiv-key",
     BEEHIIV_PUBLICATION_ID: "pub_test",

@@ -24,7 +24,7 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { parseDestaques } from "../extract-destaques.ts";
+import { parseDestaques } from "./destaques-parse.ts";
 
 export const DEMOTED_LOG = "01-generic-study-demoted.json";
 export const FEEDBACK_FILE = "04-generic-study-feedback.json";

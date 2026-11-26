@@ -29,33 +29,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import worker, { type Env } from "../workers/poll/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const makeEnv = (overrides: Partial<Env> = {}): Env => ({
-  POLL: makeMapKV() as unknown as KVNamespace,
+  POLL: makeTrackedKv() as unknown as KVNamespace,
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",

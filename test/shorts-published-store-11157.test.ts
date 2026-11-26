@@ -28,6 +28,7 @@ import {
 import { SHORTS_PUBLISHED_FILE, isDestinationDone, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import { decideTimerRun } from "../scripts/shorts-linkedin-profile-timer.ts";
 import { registeredSinceRead } from "../scripts/publish-shorts.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const AAMMDD = "261027";
 const CFG = { publishing: { shorts: { facebook_pages: [], instagram: false, linkedin_profile: true, linkedin_page_repost: true, x: false, threads_profile: false, linkedin_profile_via_timer: true } } };
@@ -174,7 +175,7 @@ describe("#11157 dois escritores no registro do vertical", () => {
 });
 
 describe("#11157 publish-shorts usa o store (trava contra a gravação do arquivo inteiro)", () => {
-  const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+  const src = publishShortsSource();
   it("nenhuma gravação do registro a partir da cópia em memória", () => {
     assert.doesNotMatch(src, /function writePublished\(/);
     assert.doesNotMatch(src, /upsertShortEntry\(published/);

@@ -42,7 +42,7 @@ import { brevoGet, brevoPost, brevoPut, brevoListAllLists } from "./lib/brevo-cl
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { assertHtmlHasUnsubscribeLink, assertExperimentArmsInstrumented, pollUntilCount } from "./clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "./lib/editor-copy.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { MENSAL_UTM_SOURCE } from "./lib/shared/utm-registry.ts"; // #4041: registry único
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts"; // #8059
 
@@ -408,11 +408,23 @@ async function processEnvio(cfg: EnvioCfg, apply: boolean, outDir: string): Prom
   }
 }
 
+/**
+ * #14128: `--apply` e `--envio N`. Antes, `argv[argv.indexOf("--envio") + 1]`
+ * lia `undefined` com `--envio` no fim e a flag seguinte com `--envio --apply`
+ * (as duas viravam "--envio NaN não existe", e no 2º caso com `--apply` já
+ * ligado). `getIntArg` lança com mensagem que nomeia o problema.
+ * @pure
+ */
+export function parseCtaAbArgs(argv: string[]): { apply: boolean; envio: number | undefined } {
+  return {
+    apply: argv.includes("--apply"),
+    envio: getIntArg(argv, "envio"),
+  };
+}
+
 async function main(): Promise<void> {
   if (!API_KEY) { console.error("BREVO_CLARICE_API_KEY missing"); process.exit(2); }
-  const argv = process.argv.slice(2);
-  const apply = argv.includes("--apply");
-  const envioArg = argv.includes("--envio") ? Number(argv[argv.indexOf("--envio") + 1]) : undefined;
+  const { apply, envio: envioArg } = parseCtaAbArgs(process.argv.slice(2));
   const targets = ENVIOS.filter((e) => envioArg === undefined || e.envio === envioArg);
   if (targets.length === 0) throw new Error(`--envio ${envioArg} não existe (válidos: ${ENVIOS.map((e) => e.envio).join(", ")})`);
   const outDir = resolve(resolveMonthlyDir(CYCLE), "_internal", "cta-ab");

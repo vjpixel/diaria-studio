@@ -27,30 +27,7 @@ import {
   subscribeViaConfiguredBackend,
 } from "../workers/poll/src/subscribe.ts";
 import worker, { corsHeaders, type Env } from "../workers/poll/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 type FetchMock = typeof fetch & { calls: Array<{ url: string; init: RequestInit | undefined }> };
 function makeFetchMock(status = 201): FetchMock {
@@ -64,7 +41,7 @@ function makeFetchMock(status = 201): FetchMock {
 }
 
 const beehiivEnv = (): Env => ({
-  POLL: makeMapKV() as unknown as Env["POLL"],
+  POLL: makeTrackedKv() as unknown as Env["POLL"],
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.diar.ia.br",

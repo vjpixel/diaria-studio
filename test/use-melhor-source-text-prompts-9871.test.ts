@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 
 const root = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
@@ -30,7 +31,7 @@ describe("#9871 — source_text_paths.um no 4º post", () => {
   }
 
   it("orchestrator-stage-2.md passa a chave um a partir de item.source_text_path", () => {
-    const md = read(".claude/agents/orchestrator-stage-2.md");
+    const md = readStage2Playbook(); // #14113: principal + fallback
     assert.match(md, /\*\*Chave `um` \(#9871\):\*\*[^\n]*item\.source_text_path/);
   });
 

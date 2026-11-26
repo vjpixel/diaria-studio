@@ -270,7 +270,7 @@ const COVERAGE_LINE_RE =
  * Bug raiz (#3696): antes desta extensão, `COVERAGE_LINE_RE` só reconhecia o
  * formato legado — desde que o bloco de boas-vindas virou padrão (#3461,
  * 260715), este script saía com exit 1 ("MD não tem linha de cobertura") em
- * TODA edição, e como `orchestrator-stage-2.md` trata essa falha como
+ * TODA edição, e como `orchestrator-stage-2-fallback.md` trata essa falha como
  * fail-soft, o erro era engolido silenciosamente por ~2 meses (o mecanismo
  * de correção do X ficou desativado de fato).
  */

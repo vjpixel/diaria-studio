@@ -1,0 +1,288 @@
+/**
+ * scripts/lib/google-auth.ts
+ *
+ * Módulo compartilhado de autenticação OAuth 2.0 para as APIs do Google.
+ * Usa o refresh_token salvo em `data/.credentials.json` para obter um
+ * access_token válido. Renova automaticamente quando próximo de expirar.
+ *
+ * Sem dependências externas — usa fetch nativo do Node 18+.
+ *
+ * #14001: movido de `scripts/google-auth.ts`, que segue no mesmo caminho só
+ * reexportando este módulo (regra 5 de `test/lib-boundary.test.ts`: código de
+ * `scripts/lib/` não importa CLI de topo). Importar daqui a partir de lib.
+ */
+
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
+
+// Raiz do repo: este arquivo mora em scripts/lib/, dois níveis abaixo.
+const ROOT = resolve(import.meta.dirname, "..", "..");
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+
+/**
+ * #4344: nome do env var que testes usam para apontar `google-auth.ts` pra um
+ * path de credenciais FAKE (mkdtempSync), evitando escrita direta em
+ * `data/.credentials.json` REAL — o arquivo compartilhado via OneDrive entre
+ * máquinas que `test/drive-sync.test.ts` corrompeu por corrida entre workers
+ * paralelos (#4344). Resolvido dinamicamente a cada chamada (função, não um
+ * const capturado no import) para que testes possam setar/restaurar o env var
+ * em `beforeEach`/`afterEach` sem precisar re-importar o módulo. **Nunca**
+ * setar este env var fora de testes.
+ */
+export const CREDENTIALS_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_CREDENTIALS_PATH";
+
+function credentialsPath(): string {
+  return process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] || resolve(ROOT, "data", ".credentials.json");
+}
+
+/** Se as credenciais OAuth do projeto existem nesta máquina (sem ler nem renovar o token, #13334). */
+export function googleCredentialsPresent(): boolean {
+  return existsSync(credentialsPath());
+}
+
+export interface GoogleCredentials {
+  client_id: string;
+  client_secret: string;
+  access_token: string;
+  refresh_token: string;
+  expiry_ms: number; // epoch ms quando o access_token expira
+  /** #1973: epoch ms de quando o REFRESH token foi obtido (oauth-setup).
+   * Desde 22/10/2026 o app OAuth está publicado em produção (#10785) e o
+   * refresh token não vence mais em 7 dias: o stamp ficou só informativo
+   * (idade exibida no health-check). Ausente em creds legadas. */
+  refresh_obtained_ms?: number;
+}
+
+export class GoogleAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GoogleAuthError";
+  }
+}
+
+function loadCredentials(): GoogleCredentials {
+  const path = credentialsPath();
+  if (!existsSync(path)) {
+    throw new GoogleAuthError(
+      `Credenciais não encontradas em ${path}.\n` +
+        "Execute: npx tsx scripts/oauth-setup.ts"
+    );
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as GoogleCredentials;
+  } catch (e) {
+    throw new GoogleAuthError(`Erro ao ler ${path}: ${e}`);
+  }
+}
+
+/**
+ * #6799: escrita ATÔMICA (write-temp + fsync + rename, `writeFileAtomic`).
+ * `data/.credentials.json` é reescrito a cada refresh de access_token e é
+ * lido por múltiplos scripts (Drive sync, inbox-drain, upload de imagens,
+ * alarmes por Gmail) que podem rodar concorrentemente via Task Scheduler —
+ * um `writeFileSync` plano (comportamento anterior) trunca o arquivo antes
+ * de escrever; duas execuções concorrentes truncando/escrevendo o MESMO
+ * arquivo (2 file descriptors independentes, offsets independentes) podem
+ * intercalar bytes de dois processos e deixar um JSON sintaticamente
+ * inválido — exatamente a classe de corrupção investigada no #6799.
+ * `writeFileAtomic` elimina essa janela: escreve num arquivo temporário
+ * (nome único por processo) e troca por `rename`, atômico no NTFS/POSIX —
+ * o arquivo final é sempre OU a versão anterior completa OU a nova versão
+ * completa, nunca uma mistura parcial de duas escritas concorrentes.
+ */
+function saveCredentials(creds: GoogleCredentials): void {
+  writeFileAtomic(credentialsPath(), JSON.stringify(creds, null, 2) + "\n");
+}
+
+async function refreshAccessToken(
+  creds: GoogleCredentials,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<GoogleCredentials> {
+  const res = await fetchImpl(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: creds.client_id,
+      client_secret: creds.client_secret,
+      refresh_token: creds.refresh_token,
+      grant_type: "refresh_token",
+    }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new GoogleAuthError(`Token refresh falhou (${res.status}): ${body}`);
+  }
+
+  const data = (await res.json()) as { access_token: string; expires_in: number };
+  const updated: GoogleCredentials = {
+    ...creds,
+    access_token: data.access_token,
+    expiry_ms: Date.now() + data.expires_in * 1000,
+  };
+  saveCredentials(updated);
+  return updated;
+}
+
+/**
+ * Retorna um access_token válido, renovando automaticamente se necessário.
+ * Chame antes de cada requisição à API.
+ *
+ * #5980: `signal` opcional é repassado ao fetch de refresh do token OAuth —
+ * sem ele, um hang no endpoint do Google não é limitado pelo timeout que o
+ * caller (ex: `fetchWithRetry`) configurou para o fetch de dados em si.
+ */
+export async function getAccessToken(signal?: AbortSignal): Promise<string> {
+  let creds = loadCredentials();
+  // Renova se expira nos próximos 90 segundos
+  if (Date.now() > creds.expiry_ms - 90_000) {
+    creds = await refreshAccessToken(creds, fetch, signal);
+  }
+  return creds.access_token;
+}
+
+// ── #1973: health-check proativo do token OAuth ──────────────────────────────
+// O mesmo refresh token cobre Drive + Gmail (inbox-drain) + upload de imagens
+// sociais. Quando expira (silenciosamente), 3 sistemas caem juntos e submissões
+// do editor podem se perder. Checagem antecipada no Stage 0 + banner único.
+
+// #10785: o status `expiring_soon` (idade do refresh perto dos 7 dias do
+// modo Testing) saiu com a publicação do app em produção. O alarme que
+// continua valendo é o refresh falhando (`invalid_grant`: revogado/inválido).
+export type TokenHealthStatus =
+  | "valid"
+  | "invalid_grant" // refresh falhou: expirado ou revogado
+  | "no_credentials"
+  | "error";
+
+export interface TokenHealth {
+  ok: boolean; // true só em "valid"
+  status: TokenHealthStatus;
+  detail: string;
+  /** Idade do refresh token em dias (se `refresh_obtained_ms` presente). */
+  refreshAgeDays?: number;
+}
+
+/**
+ * Pure (#1973, #2318): classifica a mensagem de erro de um refresh falho.
+ * `invalid_grant` (expirado/revogado) é o caso que pede re-auth; o resto é
+ * erro transiente/outro.
+ *
+ * Cobre o legado (`invalid_grant`, `Invalid Credentials`) E o 401 moderno do
+ * Google (`UNAUTHENTICATED`, `token has been expired or revoked`, `unauthorized`,
+ * `invalid_token`) — alinhado com inbox-drain.ts::isAuthExpiredError (#1973).
+ * Sem esta amplitude, um token morto que surge como 401 UNAUTHENTICATED resultaria
+ * em warnings por arquivo em vez do alerta único consolidado.
+ */
+export function classifyRefreshError(msg: string): "invalid_grant" | "error" {
+  return /invalid_grant|token has been expired or revoked|invalid[_ ]?(authentication )?credentials|unauthenticated|unauthorized|invalid_token/i.test(msg)
+    ? "invalid_grant"
+    : "error";
+}
+
+/** Idade do refresh token em dias, só informativa (#10785). */
+export function refreshAgeDays(obtainedMs: number | undefined, now: number): number | undefined {
+  return obtainedMs ? (now - obtainedMs) / 86_400_000 : undefined;
+}
+
+/**
+ * Pure (#1973): banner consolidado pro Stage 0 — UM aviso claro em vez de 3
+ * falhas espalhadas (Drive + inbox-drain + imagens sociais).
+ */
+export function renderTokenHealthBanner(health: TokenHealth): string {
+  if (health.status === "valid") return "";
+  const head = `🔐 OAuth Google ${health.status === "no_credentials" ? "AUSENTE" : "EXPIRADO/INVÁLIDO"} — ${health.detail}.`;
+  return [
+    head,
+    "Afeta de uma vez: Drive sync · inbox-drain (submissões do editor) · upload de imagens sociais.",
+    "Ação: npx tsx scripts/oauth-setup.ts  (re-autentica em ~1min; rode /diaria-inbox depois pra recuperar submissões).",
+  ].join("\n");
+}
+
+/**
+ * #1973: checa proativamente a saúde do token OAuth. O refresh é o teste
+ * DEFINITIVO de validade (invalid_grant = expirado/revogado). A idade do
+ * refresh token vai no resultado só como informação (#10785). Side-effect
+ * benéfico: um refresh bem-sucedido renova o access_token salvo.
+ */
+export async function checkTokenHealth(fetchImpl: typeof fetch = fetch): Promise<TokenHealth> {
+  if (!existsSync(credentialsPath())) {
+    return { ok: false, status: "no_credentials", detail: `credenciais ausentes em ${credentialsPath()}` };
+  }
+  let creds: GoogleCredentials;
+  try {
+    creds = loadCredentials();
+  } catch (e) {
+    return { ok: false, status: "error", detail: String((e as Error).message) };
+  }
+  const ageDays = refreshAgeDays(creds.refresh_obtained_ms, Date.now());
+  try {
+    await refreshAccessToken(creds, fetchImpl);
+  } catch (e) {
+    const msg = String((e as Error).message);
+    const status = classifyRefreshError(msg);
+    return {
+      ok: false,
+      status,
+      detail: status === "invalid_grant" ? "token expirado ou revogado (invalid_grant)" : msg,
+      refreshAgeDays: ageDays,
+    };
+  }
+  return { ok: true, status: "valid", detail: "refresh ok", refreshAgeDays: ageDays };
+}
+
+// Força refresh bypassando o check de expiry — usado quando o Google
+// rejeita (401) um token que julgávamos válido (clock skew, revogação
+// server-side, edge case da lib).
+async function forceRefreshAccessToken(signal?: AbortSignal): Promise<string> {
+  const creds = await refreshAccessToken(loadCredentials(), fetch, signal);
+  return creds.access_token;
+}
+
+async function authedFetch(
+  url: string,
+  options: RequestInit,
+  token: string
+): Promise<Response> {
+  return fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.headers ?? {}),
+    },
+  });
+}
+
+/**
+ * Helper para requests autenticados às APIs do Google.
+ * Inclui o Authorization header automaticamente. Em caso de 401,
+ * força um refresh do token e retenta a request exatamente 1x.
+ *
+ * #5980: quando `options.signal` está presente (ex: caller usando
+ * `fetchWithRetry`), ele é repassado às chamadas de obtenção/refresh de
+ * token OAuth (`getAccessToken`/`forceRefreshAccessToken`) — sem isso, um
+ * hang no endpoint de token do Google não era coberto pelo timeout do
+ * caller, só o fetch de dados em si (já recebia `signal` via `...options`).
+ */
+export async function gFetch(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const signal = options.signal ?? undefined;
+  const token = await getAccessToken(signal);
+  const res = await authedFetch(url, options, token);
+  if (res.status !== 401) return res;
+
+  // Drena o body pra liberar a conexão antes de retentar.
+  try {
+    await res.arrayBuffer();
+  } catch {
+    // ignore
+  }
+
+  const refreshed = await forceRefreshAccessToken(signal);
+  return authedFetch(url, options, refreshed);
+}

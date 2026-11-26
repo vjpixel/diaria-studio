@@ -9,13 +9,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
+import { publishShortsModuleFiles } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ROOT = resolve(import.meta.dirname, "..");
 
 const FILES = [
   "scripts/shorts-instagram-timer.ts",
   "scripts/publish-shorts.ts",
+  // #14054: o código da entrada mora nos módulos de scripts/publish-shorts/.
+  ...publishShortsModuleFiles().map((f) => relative(ROOT, f).replaceAll("\\", "/")),
   "scripts/shorts-linkedin-profile-timer.ts",
   "scripts/shorts-threads-profile-timer.ts",
   "scripts/lib/diaria/short-cover.ts",

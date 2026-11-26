@@ -28,31 +28,7 @@ import {
   resolveJogarEdition,
 } from "../workers/poll/src/jogar.ts";
 import worker, { brandedNamespace, type Env } from "../workers/poll/src/index.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 describe("resolveJogarEdition (#3516)", () => {
   it("sem ?edition= → hoje em BRT", () => {
@@ -110,8 +86,8 @@ describe("BRAND_INFO.web (#3516)", () => {
 });
 
 describe("isolamento e2e do brand web via router (#3516, mesmo padrão de #1905)", () => {
-  const makeEnv = (): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-    POLL: makeMapKV(),
+  const makeEnv = (): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+    POLL: makeTrackedKv(),
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",
@@ -164,8 +140,8 @@ describe("isolamento e2e do brand web via router (#3516, mesmo padrão de #1905)
 });
 
 describe("GET /jogar (#3516)", () => {
-  const makeEnv = (seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-    POLL: makeMapKV(seed),
+  const makeEnv = (seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+    POLL: makeTrackedKv(seed),
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",

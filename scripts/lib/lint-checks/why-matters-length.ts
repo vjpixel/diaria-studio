@@ -22,7 +22,7 @@
  * na prática) são removidas — mesma normalização de `measure-highlights.ts`.
  */
 
-import { parseDestaques } from "../../extract-destaques.ts";
+import { parseDestaques } from "../destaques-parse.ts";
 
 export const WHY_MATTERS_MIN_CHARS = 180;
 export const WHY_MATTERS_MAX_CHARS = 300;

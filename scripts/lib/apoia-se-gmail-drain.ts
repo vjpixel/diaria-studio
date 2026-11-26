@@ -47,7 +47,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { gFetch } from "../google-auth.ts";
+import { gFetch } from "./google-auth.ts";
 import { parseGmailThread, parseGmailThreadsList } from "./schemas/gmail.ts";
 import { isAuthExpiredError } from "../inbox-drain.ts";
 

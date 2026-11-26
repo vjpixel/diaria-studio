@@ -38,7 +38,7 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { checkTokenHealth } from "../google-auth.ts";
+import { checkTokenHealth } from "./google-auth.ts";
 import { checkCloudflareToken } from "../check-cloudflare-token.ts";
 import { loadProjectEnv } from "./env-loader.ts";
 import { hasFlag, isMainModule } from "./cli-args.ts";

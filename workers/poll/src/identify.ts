@@ -331,6 +331,47 @@ export interface IdentifyMergeInput {
 }
 
 /**
+ * #14222: quanto do score anônimo de um par (email, anonEmail) já foi somado
+ * em `score:{email}` (ou no índice mensal). Chave aditiva, sem TTL; ausente =
+ * nada migrado ainda (1ª identificação, ou par anterior a este fix).
+ */
+export interface IdentifyMigrated {
+  total: number;
+  correct: number;
+}
+
+export function identifyMigratedKey(email: string, anonEmail: string, monthSlug?: string): string {
+  return monthSlug
+    ? `identify-migrated-month:${monthSlug}:${email}:${anonEmail}`
+    : `identify-migrated:${email}:${anonEmail}`;
+}
+
+/**
+ * Pure (#14222): a parte do score anônimo que ainda não entrou no e-mail.
+ * O re-sync silencioso roda a cada rodada com o MESMO token, e o anônimo é
+ * cumulativo (1, 2, 3, 4): somar o anônimo inteiro a cada sync dava 1, 3, 6,
+ * 10. Só a diferença desde a última migração entra. Anônimo menor que o já
+ * migrado (ex.: purge) dá delta zero, nunca negativo. Os campos que não são
+ * contadores (streak, last_edition, nickname, last_vote_ts) passam intactos.
+ */
+export function anonDeltaSinceMigrated<T extends { total: number; correct: number }>(
+  incoming: T | null,
+  migrated: IdentifyMigrated | null,
+): T | null {
+  if (!incoming) return null;
+  if (!migrated) return incoming;
+  return {
+    ...incoming,
+    total: Math.max(0, (incoming.total ?? 0) - (migrated.total ?? 0)),
+    correct: Math.max(0, (incoming.correct ?? 0) - (migrated.correct ?? 0)),
+  };
+}
+
+function migratedSnapshot(incoming: { total: number; correct: number }): string {
+  return JSON.stringify({ total: incoming.total ?? 0, correct: incoming.correct ?? 0 } satisfies IdentifyMigrated);
+}
+
+/**
  * #3996: merge de fato — score GLOBAL (`score:{email}`, merge com
  * `score:{anonEmail}`) + índice MENSAL quando `edition` foi informada +
  * invalidate do snapshot do mês + marca o par (email, anonEmail) como
@@ -347,14 +388,19 @@ export async function performIdentifyMerge(bEnv: Env, input: IdentifyMergeInput)
   const { email, anonEmail, name, edition } = input;
 
   // Migra o score GLOBAL (score:{email}) — merge com a sessão anônima atual.
-  const [existingRaw, incomingRaw] = await Promise.all([
+  // #14222: soma só o delta desde a última migração deste par.
+  const migratedKey = identifyMigratedKey(email, anonEmail);
+  const [existingRaw, incomingRaw, migratedRaw] = await Promise.all([
     bEnv.POLL.get(`score:${email}`),
     bEnv.POLL.get(`score:${anonEmail}`),
+    bEnv.POLL.get(migratedKey),
   ]);
   const existingScore = safeParseKv<WebScore>(existingRaw, "identify_score_parse_error", email);
   const incomingScore = safeParseKv<WebScore>(incomingRaw, "identify_score_parse_error", anonEmail);
-  const mergedScore = mergeWebScores(existingScore, incomingScore, name);
+  const migrated = safeParseKv<IdentifyMigrated>(migratedRaw, "identify_migrated_parse_error", email);
+  const mergedScore = mergeWebScores(existingScore, anonDeltaSinceMigrated(incomingScore, migrated), name);
   await bEnv.POLL.put(`score:${email}`, JSON.stringify(mergedScore));
+  if (incomingScore) await bEnv.POLL.put(migratedKey, migratedSnapshot(incomingScore));
 
   // Migra o índice MENSAL (score-by-month:{slug}:{email}) — só quando o
   // cliente informou uma edição representativa da sessão (sempre presente no
@@ -366,15 +412,19 @@ export async function performIdentifyMerge(bEnv: Env, input: IdentifyMergeInput)
     if (monthSlug) {
       const monthKeyExisting = `score-by-month:${monthSlug}:${email}`;
       const monthKeyIncoming = `score-by-month:${monthSlug}:${anonEmail}`;
-      const [monthExistingRaw, monthIncomingRaw] = await Promise.all([
+      const monthMigratedKey = identifyMigratedKey(email, anonEmail, monthSlug);
+      const [monthExistingRaw, monthIncomingRaw, monthMigratedRaw] = await Promise.all([
         bEnv.POLL.get(monthKeyExisting),
         bEnv.POLL.get(monthKeyIncoming),
+        bEnv.POLL.get(monthMigratedKey),
       ]);
       const monthExisting = safeParseKv<WebScoreByMonth>(monthExistingRaw, "identify_score_month_parse_error", email);
       const monthIncoming = safeParseKv<WebScoreByMonth>(monthIncomingRaw, "identify_score_month_parse_error", anonEmail);
+      const monthMigrated = safeParseKv<IdentifyMigrated>(monthMigratedRaw, "identify_migrated_parse_error", email);
       if (monthExisting || monthIncoming) {
-        const mergedMonth = mergeWebScoreByMonth(monthExisting, monthIncoming, name);
+        const mergedMonth = mergeWebScoreByMonth(monthExisting, anonDeltaSinceMigrated(monthIncoming, monthMigrated), name);
         await bEnv.POLL.put(monthKeyExisting, JSON.stringify(mergedMonth));
+        if (monthIncoming) await bEnv.POLL.put(monthMigratedKey, migratedSnapshot(monthIncoming));
         // Invalida (não upsert) — snapshot pode ainda não existir (skip-on-
         // missing, mesmo padrão de upsertOwnEntryInSnapshot); mais simples e
         // seguro deixar o próximo GET /leaderboard* recomputar do zero, já

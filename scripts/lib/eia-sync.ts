@@ -5,7 +5,7 @@
  * `01-eia.md` VERBATIM pro mirror em `02-draft.md`/`02-reviewed.md`. No
  * momento do stitch os dois batem — mas depois disso `02-reviewed.md` passa
  * por humanizador + Clarice (Stage 2, escopo full-document, sem exclusão de
- * seção — ver `orchestrator-stage-2.md` §2b/§2c), que podem reescrever o
+ * seção — ver `orchestrator-stage-2-fallback.md` §2b/§2c), que podem reescrever o
  * bloco É IA? dentro do corpo da newsletter. `01-eia.md`, por outro lado,
  * NUNCA é re-processado por nenhum dos dois — é gerado uma vez no Stage 1/3 e
  * nunca mais tocado.
