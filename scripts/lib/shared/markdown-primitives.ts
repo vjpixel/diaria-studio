@@ -79,3 +79,88 @@ export function scanBalancedParenClose(s: string, from: number): number {
   }
   return j;
 }
+
+/**
+ * Índice do próximo `[label](url)` VÁLIDO (parênteses balanceados, URL
+ * não-vazia) em `str` a partir de `from`, ou `str.length` se não houver mais
+ * nenhum (#14056 — antes duplicado como `nextLinkStartIndex` na diária e na
+ * mensal). Delimita o texto conector entre 2 links ao decidir a paridade de
+ * `**` (#3280/#3284/#3316).
+ *
+ * `trimUrl`: a cópia da diária reusava `findMarkdownLinks`, que faz `trim()`
+ * da URL, então um destino só de espaços (`[b]( )`) NÃO contava como
+ * boundary ali; a da mensal não fazia `trim()` e contava. Divergência
+ * acidental, preservada pelo parâmetro para a extração não mudar o HTML de
+ * nenhum dos lados (critério de aceite do #14056).
+ */
+export function nextValidLinkStart(str: string, from: number, trimUrl = false): number {
+  const rest = str.slice(from);
+  const linkStart = /\[([^\]]+)\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(rest)) !== null) {
+    const destStart = m.index + m[0].length;
+    const j = scanBalancedParenClose(rest, destStart);
+    if (j >= rest.length) continue; // sem `)` de fechamento — não é link válido
+    const url = rest.slice(destStart, j);
+    if ((trimUrl ? url.trim() : url).length > 0) return from + m.index;
+    linkStart.lastIndex = j + 1;
+  }
+  return str.length;
+}
+
+/** Resultado de {@link decideBoldLinkFusion}. */
+export interface BoldLinkFusion {
+  /** O `**` colado dos dois lados do link é o bold-wrap dele (sai `<strong>`). */
+  fuse: boolean;
+  /** Texto entre o fim do token anterior e o `[` do link, já sem o `**` de abertura quando `fuse`. */
+  textBefore: string;
+  /** Onde o tokenizador retoma: logo após o `)` do link, ou após o `**` de fechamento quando `fuse`. */
+  resumeAt: number;
+}
+
+/**
+ * Decide se `**[label](url)**` funde em negrito-do-link (#3220/#3280/#3284/
+ * #3316; porte na mensal, #3299). Antes duplicado dentro de `tokenizeInline`
+ * (`newsletter-render-html.ts`) e de `renderInline` (`mensal/monthly-render.ts`);
+ * unificado no #14056. Pura: cada renderer mantém o próprio HTML de saída.
+ *
+ * - `segmentStart`: fim do token anterior (início do texto ainda não emitido);
+ * - `linkStart`: índice do `[` do link;
+ * - `closeParen`: índice do `)` que fecha o destino do link.
+ *
+ * Só funde quando os DOIS lados têm um `**` colado ao link e genuinamente
+ * desemparelhado no texto adjacente (`isUnpairedBoldMarker`): um `**` que já
+ * fecha/abre um bold independente e só encosta no link não conta (#3280). Do
+ * lado de depois, o texto adjacente vai até o próximo link válido; se esse
+ * conector termina em `**` e tem contagem ÍMPAR, o `**` final é a abertura do
+ * wrap do link seguinte e sai da conta (#3284); contagem PAR significa que o
+ * conector já fecha sozinho e fica como está (#3316). `trimUrl` repassa a
+ * semântica de cada renderer para {@link nextValidLinkStart}.
+ */
+export function decideBoldLinkFusion(
+  input: string,
+  segmentStart: number,
+  linkStart: number,
+  closeParen: number,
+  trimUrl = false,
+): BoldLinkFusion {
+  const textBefore = input.substring(segmentStart, linkStart);
+  const hasOpenBold = textBefore.endsWith("**") && isUnpairedBoldMarker(textBefore.slice(0, -2));
+  let hasCloseBold = false;
+  // Lazy: o scan do próximo link só roda quando a abertura existe e há `**`
+  // colado ao `)` (a fusão exige os dois lados).
+  if (hasOpenBold && input.startsWith("**", closeParen + 1)) {
+    const closeBoundary = nextValidLinkStart(input, closeParen + 3, trimUrl);
+    let closeAdjacent = input.substring(closeParen + 3, closeBoundary);
+    if (closeBoundary < input.length && closeAdjacent.endsWith("**") && !isUnpairedBoldMarker(closeAdjacent)) {
+      closeAdjacent = closeAdjacent.slice(0, -2);
+    }
+    hasCloseBold = isUnpairedBoldMarker(closeAdjacent);
+  }
+  const fuse = hasOpenBold && hasCloseBold;
+  return {
+    fuse,
+    textBefore: fuse ? textBefore.slice(0, -2) : textBefore,
+    resumeAt: fuse ? closeParen + 3 : closeParen + 1,
+  };
+}
