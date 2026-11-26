@@ -52,7 +52,12 @@ import {
   socialEntryKey,
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts";
-import { cancelWorkerQueueEntryConditional, type ConditionalCancelResult } from "./lib/worker-queue-client.ts";
+import {
+  cancelWorkerQueueEntryConditional,
+  resolveSocialWorkerToken,
+  resolveSocialWorkerUrl,
+  type ConditionalCancelResult,
+} from "./lib/worker-queue-client.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -224,11 +229,6 @@ export function removeCancelledEntries(
   return { posts: kept, removed };
 }
 
-function resolveWorkerUrl(config: Record<string, unknown>): string {
-  const social = (config.publishing as { social?: Record<string, { cloudflare_worker_url?: string }> } | undefined)?.social;
-  return process.env.DIARIA_LINKEDIN_CRON_URL ?? social?.linkedin?.cloudflare_worker_url ?? "";
-}
-
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const { flags, values } = parseArgs(argv);
   const dirArg = values["edition-dir"];
@@ -258,8 +258,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   } catch {
     /* sem config: Worker só pelo env, Facebook pelo fallback de compat */
   }
-  const workerUrl = resolveWorkerUrl(config);
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl = resolveSocialWorkerUrl(config);
+  const workerToken = resolveSocialWorkerToken();
   let fb: { pages: ResolvedFacebookPage[]; apiVersion: string } = { pages: [], apiVersion: "v25.0" };
   try {
     fb = loadResolvedFacebookPages(ROOT, config);

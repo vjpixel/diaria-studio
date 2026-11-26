@@ -20,6 +20,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { resolveSocialWorkerUrl } from "./worker-queue-client.ts";
 
 const INSTAGRAM_API_BASE = "https://graph.facebook.com";
 
@@ -146,20 +147,13 @@ export async function probeWorkerInstagramCommentScope(
  * #11750: URL do Worker que agenda o Instagram — mesma precedência do
  * `--schedule` de `publish-instagram.ts` (env > config instagram > config
  * linkedin; é a mesma instância `diaria-linkedin-cron`). `""` = não configurado.
+ * Desde o #14062 delega ao helper único `resolveSocialWorkerUrl`.
  */
 export function resolveInstagramWorkerUrl(
   platformConfig: unknown,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const social = (platformConfig as {
-    publishing?: { social?: Record<string, { cloudflare_worker_url?: string } | undefined> };
-  } | null)?.publishing?.social;
-  return (
-    env.DIARIA_LINKEDIN_CRON_URL ??
-    social?.instagram?.cloudflare_worker_url ??
-    social?.linkedin?.cloudflare_worker_url ??
-    ""
-  );
+  return resolveSocialWorkerUrl(platformConfig, { env, preferSlot: "instagram" });
 }
 
 export type InstagramCommentScopeSource = "worker" | "local";

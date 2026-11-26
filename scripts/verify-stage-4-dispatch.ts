@@ -52,6 +52,7 @@ import {
 } from "./lib/facebook-pages.ts"; // #10458
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { resolveSocialWorkerToken, resolveSocialWorkerUrlFromRoot } from "./lib/worker-queue-client.ts"; // #14062
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -61,18 +62,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * Sem essa fallback, o verifier falhava quando o URL era só do config (#975).
  */
 function resolveLinkedinWorkerUrl(): string {
-  const fromEnv = process.env.DIARIA_LINKEDIN_CRON_URL;
-  if (fromEnv) return fromEnv;
-  try {
-    const config = JSON.parse(
-      readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
-    ) as {
-      publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
-    };
-    return config.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
-  } catch {
-    return "";
-  }
+  // #14062: env vazia cai pro config (forma `if (fromEnv)` de sempre).
+  return resolveSocialWorkerUrlFromRoot(ROOT, { emptyEnvFallsThrough: true });
 }
 
 // ---- Tipos ----
@@ -671,7 +662,7 @@ async function main(): Promise<number | void> {
   }
 
   const workerUrl = resolveLinkedinWorkerUrl();
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerToken = resolveSocialWorkerToken();
   if ((!workerUrl || !workerToken) && liEntries.length > 0) {
     warnings.push(
       "DIARIA_LINKEDIN_CRON_URL/TOKEN ausente -- pulando verificacao Worker KV. " +

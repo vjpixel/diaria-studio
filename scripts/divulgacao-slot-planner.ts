@@ -30,6 +30,7 @@ import {
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
 import { addMinutesIso, localDateInTz, localIsoAt } from "./lib/mensal/retrospectiva-schedule.ts";
+import { resolveSocialWorkerToken, resolveSocialWorkerUrl } from "./lib/worker-queue-client.ts"; // #14062
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** Mesmo teto do `GET /list` do Worker (#11001). */
@@ -187,7 +188,7 @@ export async function loadDivulgacaoGrid(rawConfig: unknown, dates: readonly str
   const config = rawConfig as GridConfig;
   const social = config.publishing?.social;
   const days = [...new Set(dates)].sort();
-  const queue = await (deps.loadQueue ?? loadWorkerQueueForGrid)(process.env.DIARIA_LINKEDIN_CRON_URL ?? social?.linkedin?.cloudflare_worker_url ?? "", process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "", fetch, warn);
+  const queue = await (deps.loadQueue ?? loadWorkerQueueForGrid)(resolveSocialWorkerUrl(config), resolveSocialWorkerToken(), fetch, warn);
   const loadFacebook = deps.loadFacebook ?? (async (w: (m: string) => void) => {
     let resolved: ReturnType<typeof loadResolvedFacebookPages>;
     try { resolved = loadResolvedFacebookPages(ROOT, rawConfig); }

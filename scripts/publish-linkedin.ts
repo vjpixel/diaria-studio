@@ -114,6 +114,8 @@ import {
   postToWorkerQueue as sharedPostToWorkerQueue,
   findWorkerQueueEntryByIdempotencyKey,
   idempotentConflictKey,
+  resolveSocialWorkerToken,
+  resolveSocialWorkerUrl,
   type IdempotencyLookupOptions,
 } from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
@@ -1237,11 +1239,8 @@ async function main(): Promise<number | void> {
   // Worker URL + token: opcionais. Sem eles, fallback é fire-now via Make webhook
   // (mas posts agendados pra futuro vão postar IMEDIATAMENTE — Make.com não respeita
   // scheduled_at do payload). Configurar pra agendamento real.
-  const workerUrl =
-    process.env.DIARIA_LINKEDIN_CRON_URL ??
-    config.publishing?.social?.linkedin?.cloudflare_worker_url ??
-    "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl = resolveSocialWorkerUrl(config);
+  const workerToken = resolveSocialWorkerToken();
   const useWorkerForScheduled = workerUrl !== "" && workerToken !== "";
 
   // #923 fail-fast: --schedule sem Worker = silent fire-now bug. Aborta.
