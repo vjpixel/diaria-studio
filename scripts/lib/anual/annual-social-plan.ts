@@ -140,16 +140,21 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /**
  * Um post por dia, todos no mesmo horário, a partir de `start` (inclusive) —
  * decisão do editor (12/09/2026): a série sai em dias seguidos, na ordem dos
- * temas, com as previsões no último dia, sempre às `time` (default 09:00,
- * escolhido quando a grade da diária era 09:45 / 12:15 / 17:15; desde
- * 25/11/2026, #10305, o Use Melhor da diária também sai às 09:00 em dia útil).
+ * temas, com as previsões no último dia, sempre às `time` (default
+ * `ANNUAL_SOCIAL_DEFAULT_TIME`, 09:30 desde 25/11/2026: o 09:00 de antes,
+ * escolhido quando a grade da diária era 09:45 / 12:15 / 17:15, passou a
+ * coincidir com o Use Melhor das 09:00 da grade fixa do #10305 na página do
+ * LinkedIn, e o planner #10819 não vê a grade do config em data sem store).
  *
  * Os publicadores da diária só aceitam diretório com 2 ou 3 destaques
  * (`readDestaqueCount`), então os posts são agrupados em LOTES de 2–3
  * (equilibrados, os maiores primeiro: 7 → 3/2/2). O lote é só a unidade de
  * arquivo; a data de cada post vem de `slots`, um dia por post.
  */
-export function planAnnualSocialDays(keys: AnnualSocialKey[], start: Date, time = "09:00"): AnnualSocialDay[] {
+/** Horário default dos posts da série anual (#10305: 09:30, fora do minuto do Use Melhor das 09:00). */
+export const ANNUAL_SOCIAL_DEFAULT_TIME = "09:30";
+
+export function planAnnualSocialDays(keys: AnnualSocialKey[], start: Date, time = ANNUAL_SOCIAL_DEFAULT_TIME): AnnualSocialDay[] {
   if (keys.length < 2) throw new Error(`${keys.length} post(s) — cada lote precisa de 2 ou 3`);
   if (!HHMM.test(time)) throw new Error(`horário inválido "${time}" — use HH:MM`);
   const nLotes = Math.ceil(keys.length / 3);

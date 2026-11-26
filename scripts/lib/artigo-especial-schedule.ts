@@ -2,12 +2,13 @@
  * artigo-especial-schedule.ts (#5979)
  *
  * Resolve o `--at` (agendamento LinkedIn) da skill `/diaria-artigo-especial`.
- * Default = **página D+1 09:00 BRT + perfil D+2 09:30 BRT, a partir de HOJE**
+ * Default = **página D+1 09:30 BRT + perfil D+2 09:30 BRT, a partir de HOJE**
+ * (a página era D+1 09:00 até 25/11/2026; #10305, ver abaixo)
  * (#6014 item 1 — ver `resolveArtigoEspecialScheduledAts`). O default
  * original (decisão do editor, 23/08/2026) era D+1 no `d3_time` de
  * `publishing.social.fallback_schedule`, e foi trocado por colidir com o `d3`
  * da edição diária. O slot `d3` segue como veículo da ponte abaixo, mas com
- * `d3_time` sobrescrito (09:00/09:30) num config derivado — o `d3_time` real
+ * `d3_time` sobrescrito (09:30) num config derivado — o `d3_time` real
  * (21:00 desde 25/11/2026, #10305; era 17:15) não entra mais no cálculo.
  *
  * **Reusa `computeScheduledAt` (`scripts/compute-social-schedule.ts`), não
@@ -48,6 +49,11 @@ interface ScheduleConfig {
   };
 }
 
+/** Horário default da página (D+1) — 09:30 desde 25/11/2026 (#10305); era 09:00. */
+export const ARTIGO_ESPECIAL_PAGINA_TIME = "09:30";
+/** Horário default do perfil pessoal (D+2, #6014). */
+export const ARTIGO_ESPECIAL_PERFIL_TIME = "09:30";
+
 /** Fallback quando `config.publishing.social.timezone` está ausente —
  *  mesmo default de `next-edition-date.ts::BRT_TIMEZONE`. */
 const DEFAULT_TIMEZONE = "America/Sao_Paulo";
@@ -79,7 +85,7 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
 /**
  * Resolve o `scheduled_at` final:
  *   - `at` explícito (já validado por `validateExplicitAt`) → usa como está.
- *   - omitido → página D+1 09:00 / perfil D+2 09:30 BRT a partir de `now` (default `Date.now()`),
+ *   - omitido → página D+1 09:30 / perfil D+2 09:30 BRT a partir de `now` (default `Date.now()`),
  *     via `computeScheduledAt` (reuso, ver docstring do módulo). "Hoje" é
  *     derivado no fuso de `config.publishing.social.timezone` (fallback BRT
  *     se ausente) — mesmo fuso que `computeScheduledAt` usa pro resto do
@@ -92,9 +98,11 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  *   - **Perfil: D+2 09:30 BRT** (dia seguinte ao da página).
  * Agenda resultante na época: `09:00 weekly-pagina | 09:45 d1 | 12:15 d2 | 17:15 d3`.
  * Desde 25/11/2026 (#10305) a grade da diária é `09:00 um | 12:00 d2 |
- * 18:00 d1 | 21:00 d3`: o 09:00 da página coincide com o Use Melhor do dia
- * útil, e quem desvia é o planner de divulgação (#10819,
- * `publish-artigo-especial-linkedin.ts` → `planDivulgacao`), que lê a grade.
+ * 18:00 d1 | 21:00 d3`: o 09:00 da página caía no minuto do Use Melhor do dia
+ * útil, e o planner de divulgação (#10819) só enxerga o que já está agendado
+ * (fila do Worker, Facebook, Buffer, stores), não a grade do config para um
+ * dia ainda sem store. Por isso a página foi para **09:30**
+ * (`ARTIGO_ESPECIAL_PAGINA_TIME`), fora do minuto do Use Melhor.
  * `resolveArtigoEspecialScheduledAt` (singular) continua existindo por
  * compat e agora devolve o horário da PÁGINA; o par completo vem de
  * `resolveArtigoEspecialScheduledAts`.
@@ -135,7 +143,7 @@ export function resolveArtigoEspecialScheduledAts(
 
   return {
     pagina: computeScheduledAt({
-      config: withTime("09:00"),
+      config: withTime(ARTIGO_ESPECIAL_PAGINA_TIME),
       editionDate: today,
       destaque: "d3",
       platform: "linkedin",
@@ -146,7 +154,7 @@ export function resolveArtigoEspecialScheduledAts(
       applyRotation: false,
     }),
     perfil: computeScheduledAt({
-      config: withTime("09:30"),
+      config: withTime(ARTIGO_ESPECIAL_PERFIL_TIME),
       editionDate: today,
       destaque: "d3",
       platform: "linkedin",
@@ -182,7 +190,7 @@ export function normalizeBaseDate(baseDate: string): string {
   return `${yy}${mm}${dd}`;
 }
 
-/** Compat (#5979/#6014): devolve só o horário da PÁGINA (D+1 09:00 BRT). */
+/** Compat (#5979/#6014): devolve só o horário da PÁGINA (D+1 09:30 BRT desde #10305). */
 export function resolveArtigoEspecialScheduledAt(
   config: ScheduleConfig,
   input: { at?: string; now?: number } = {},

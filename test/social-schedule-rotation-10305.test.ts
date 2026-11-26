@@ -226,10 +226,10 @@ describe("computeScheduledAt com rotação (#10305)", () => {
     (cfg.publishing.social as Record<string, unknown>).use_melhor_time = null;
     assert.throws(() => computeScheduledAt({ config: cfg, editionDate: "261021", destaque: "um", platform: "linkedin", now: FAR_PAST_NOW }), /time inválido/);
   });
-  it("artigo especial NÃO gira com a diária (horário próprio 09:00/09:30)", () => {
+  it("artigo especial NÃO gira com a diária (horário próprio 09:30, #10305)", () => {
     const now = Date.parse("2026-10-20T12:00:00-03:00");
     const r = resolveArtigoEspecialScheduledAts(config() as never, { now, baseDate: "2026-10-20" });
-    assert.equal(r.pagina, "2026-10-21T09:00:00-03:00");
+    assert.equal(r.pagina, "2026-10-21T09:30:00-03:00");
     assert.equal(r.perfil, "2026-10-22T09:30:00-03:00");
   });
 });

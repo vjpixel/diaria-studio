@@ -5,7 +5,8 @@
  * (`/diaria-mensal-apoiadores`). Âncora com a mesma regra do Artigo Especial
  * (#6014), decidida pelo editor no #9474:
  *
- *   - **Post único da página (#9474, legado): D+1 09:00 BRT**
+ *   - **Post único da página (#9474, legado): D+1 09:30 BRT** (09:00 até
+ *     25/11/2026; acompanha `ARTIGO_ESPECIAL_PAGINA_TIME`, #10305)
  *   - **Perfil pessoal LinkedIn (manual): D+2 09:30 BRT**
  *
  * Os 15 posts por história (#9508, abaixo) saem em D+1 nos MESMOS slots da

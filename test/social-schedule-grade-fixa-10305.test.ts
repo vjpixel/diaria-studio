@@ -7,9 +7,10 @@
  *
  * Lê o `platform.config.json` real (a fonte que os publicadores leem) e passa
  * pelos mesmos helpers que eles usam (`computeScheduledAt`,
- * `resolveDailyPostTime`, `resolveWeeklyTime`/`computeWeeklyScheduledAt`). O
- * desvio do vertical (#12748) fica fora (`applyVerticalClearance: false`):
- * aqui se trava a grade, não a interação com o vídeo.
+ * `resolveDailyPostTime`, `resolveWeeklyTime`/`computeWeeklyScheduledAt`). A
+ * grade é travada com o desvio do vertical (#12748) desligado
+ * (`applyVerticalClearance: false`); um bloco à parte trava o resultado com o
+ * desvio ligado, que é o que de fato sai em dia com vertical.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -29,6 +30,8 @@ import {
 } from "../scripts/lib/social-schedule-rotation.ts";
 import { DEFAULT_WEEKLY_TIME, computeWeeklyScheduledAt, resolveWeeklyTime } from "../scripts/publish-weekly-social.ts";
 import { dailyRotationRowsForEdition } from "../scripts/lib/social-schedule-rotation-record.ts";
+import { ARTIGO_ESPECIAL_PAGINA_TIME, resolveArtigoEspecialScheduledAts } from "../scripts/lib/artigo-especial-schedule.ts";
+import { ANNUAL_SOCIAL_DEFAULT_TIME, planAnnualSocialDays } from "../scripts/lib/anual/annual-social-plan.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
@@ -106,6 +109,45 @@ describe("#10305 grade fixa — sem Use Melhor o dia fica com 3 posts", () => {
       rows.map((r) => (r.kind === "weekday" ? `${r.type} ${r.time}` : r.kind)),
       ["d1 18:00", "d2 12:00", "d3 21:00"],
     );
+  });
+});
+
+describe("#10305 grade fixa — desvio do vertical LIGADO (#12748)", () => {
+  // O vertical sai às 12:00 no Facebook, Instagram (collab) e X
+  // (`publishing.shorts.schedule.default_time`), então o D2 das 12:00 cede a
+  // ≥2 h dele e de todo outro post do dia. Trava o resultado real enquanto o
+  // editor não escolher entre aceitar o desvio, mover o vertical ou isentar o D2.
+  const withVertical = (editionDate: string, destaque: keyof typeof GRADE, config = CONFIG) =>
+    computeScheduledAt({ config, editionDate, destaque, platform: "instagram", now: NOW });
+
+  it("config real tem o vertical às 12:00 (premissa do desvio)", () => {
+    assert.equal(CONFIG.publishing.shorts.schedule.default_time, "12:00");
+  });
+
+  it("com Use Melhor (09:00 ocupado): D2 vai a 14:00; D1, D3 e o 4º post ficam", () => {
+    assert.equal(withVertical("261201", "d2"), "2026-12-01T14:00:00-03:00");
+    assert.equal(withVertical("261201", "um"), "2026-12-01T09:00:00-03:00");
+    assert.equal(withVertical("261201", "d1"), "2026-12-01T18:00:00-03:00");
+    assert.equal(withVertical("261201", "d3"), "2026-12-01T21:00:00-03:00");
+  });
+
+  it("com use_melhor_time null (09:00 livre): D2 vai a 10:00", () => {
+    const semUm = { ...CONFIG, publishing: { ...CONFIG.publishing, social: { ...SOCIAL, use_melhor_time: null } } };
+    assert.equal(withVertical("261201", "d2", semUm), "2026-12-01T10:00:00-03:00");
+  });
+});
+
+describe("#10305 defaults de divulgação fora do minuto do Use Melhor", () => {
+  it("página do Artigo Especial (D+1) e série anual saem às 09:30, não às 09:00 do Use Melhor", () => {
+    assert.equal(ARTIGO_ESPECIAL_PAGINA_TIME, "09:30");
+    assert.equal(ANNUAL_SOCIAL_DEFAULT_TIME, "09:30");
+    assert.notEqual(ARTIGO_ESPECIAL_PAGINA_TIME, SOCIAL.use_melhor_time);
+    assert.notEqual(ANNUAL_SOCIAL_DEFAULT_TIME, SOCIAL.use_melhor_time);
+    const r = resolveArtigoEspecialScheduledAts(CONFIG, { now: NOW, baseDate: "261130" });
+    assert.equal(r.pagina, "2026-12-01T09:30:00-03:00");
+    assert.equal(r.perfil, "2026-12-02T09:30:00-03:00");
+    const lotes = planAnnualSocialDays(["t1", "t2", "previsoes"], new Date(Date.UTC(2026, 11, 1)));
+    assert.equal(lotes[0].slots.d1, "2026-12-01T09:30");
   });
 });
 
