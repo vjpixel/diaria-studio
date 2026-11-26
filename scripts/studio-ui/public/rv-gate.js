@@ -29,6 +29,16 @@ const GATE_APPROVE_CONFLICT_CONFIRM_MESSAGE =
   "Este gate já foi aprovado pelo painel antes. Aprovar de novo grava um novo timestamp " +
   "por cima da decisão anterior — confirma?";
 
+// #14134: o servidor recusa (409 `contentChanged`) a aprovação quando
+// 02-reviewed.md/03-social.md mudaram em disco desde que este painel carregou.
+const GATE_APPROVE_CONTENT_CHANGED_MESSAGE =
+  "O conteúdo da revisão mudou em disco desde que o painel carregou. " +
+  "O painel foi recarregado: revise a versão atual e clique em Aprovar de novo.";
+
+// #14134: hashes do conteúdo que o último resumo carregado mostrou —
+// enviados no POST .../gate/approve para a aprovação valer só sobre eles.
+let lastContentHashes = null;
+
 function getAammddFromPath() {
   const m = location.pathname.match(/^\/revisao\/([^/]+)\/?$/);
   return m ? decodeURIComponent(m[1]) : null;
@@ -251,6 +261,7 @@ async function answerGenericStudy(url, resposta) {
 }
 
 function renderGate(summary) {
+  lastContentHashes = summary.contentHashes || null;
   el.body.hidden = false;
   renderGenericStudy(summary.genericStudy);
   renderChecklist(summary.checklist);
@@ -317,7 +328,7 @@ async function approveGate(force) {
     res = await fetch(`/api/editions/${encodeURIComponent(aammdd)}/gate/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: !!force }),
+      body: JSON.stringify({ force: !!force, content_hashes: lastContentHashes }),
     });
   } catch (err) {
     el.approveBtn.disabled = false;
@@ -326,6 +337,20 @@ async function approveGate(force) {
   }
   if (res.status === 409) {
     el.approveBtn.disabled = false;
+    let conflictBody = null;
+    try {
+      conflictBody = await res.json();
+    } catch {
+      conflictBody = null;
+    }
+    if (conflictBody && conflictBody.contentChanged) {
+      // Nunca oferece `force` aqui: a aprovação só vale sobre o que o painel
+      // mostrou, então o caminho é recarregar e o editor clicar de novo.
+      window.alert(GATE_APPROVE_CONTENT_CHANGED_MESSAGE);
+      await loadGate();
+      el.approveStatus.textContent = (conflictBody.error) || GATE_APPROVE_CONTENT_CHANGED_MESSAGE;
+      return;
+    }
     if (window.confirm(GATE_APPROVE_CONFLICT_CONFIRM_MESSAGE)) {
       await approveGate(true);
     } else {
