@@ -422,8 +422,9 @@ export function parseListItems(text: string): SectionItem[] {
     // pra `[**Title**](url) summary` (title + summary inline mesma linha).
     // parseInlineLink rejeita; tentar variante que captura trailing text.
     //
-    // TODO(#1582): este branch vira morto-código quando Drive normalize
-    // reverter o roundtrip pós-pull. Remover então.
+    // Nota (#14123): a #1582 fechou sem o pull do Drive desfazer essa
+    // reformatação, então este branch segue vivo. Só vira código morto se o
+    // pull passar a normalizar o round-trip; aí pode sair.
     //
     // Scan: cada linha que começa com `[link](url)` (com ou sem trailing)
     // abre um novo item. Linhas subsequentes até o próximo inline link

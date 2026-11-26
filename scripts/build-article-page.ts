@@ -6,7 +6,7 @@
  * mensal (`buildArticleHtml`, `scripts/lib/mensal/build-article-page.ts`) e
  * imprime em stdout (ou grava em `--out <path>`). Com `--push` (+
  * credenciais Cloudflare no env), grava no KV `ARTICLES` do worker
- * `artigo-mensal` sob a chave `article:{cycle}` — mesmo padrão de
+ * `retrospectiva` (antigo `artigo-mensal`, #7658) sob a chave `article:{cycle}` — mesmo padrão de
  * `scripts/clarice-db-summary.ts` (`uploadTextToWorkerKV`).
  *
  * HISTÓRICO (#3940 → #7580): por dois meses `--push` nunca foi executado, e o
@@ -46,7 +46,7 @@ const REPO_ROOT = resolve(__dir, "..");
 
 /**
  * Namespace KV do binding `ARTICLES`, lido de
- * `workers/artigo-mensal/wrangler.toml` — a MESMA fonte que o `wrangler deploy`
+ * `workers/retrospectiva/wrangler.toml` — a MESMA fonte que o `wrangler deploy`
  * consome.
  *
  * Função, e não `const` de módulo: a leitura acontece só no caminho que grava.
