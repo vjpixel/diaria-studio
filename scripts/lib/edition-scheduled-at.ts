@@ -26,6 +26,7 @@
 
 import { basename, resolve } from "node:path";
 import { parseEditionDate } from "../compute-social-schedule.ts";
+import { UTC_MINUS_BRT_HOURS } from "./shared/brt.ts";
 
 const HHMM_RE = /^(\d{1,2}):(\d{2})$/;
 const AAMMDD_RE = /^\d{6}$/;
@@ -35,7 +36,6 @@ const AAMMDD_RE = /^\d{6}$/;
  * `shared/brt.ts` (#14055). Até lá chamava-se `BRT_UTC_OFFSET_HOURS`, mesmo
  * nome de outra constante que valia -3 em `ads-rolling-window.ts`.
  */
-import { UTC_MINUS_BRT_HOURS } from "./shared/brt.ts";
 
 /** Horário default de agendamento da Etapa 6 (06:00 BRT) — mesmo default já documentado em `orchestrator-stage-6.md` §6c. */
 export const DEFAULT_EDITION_SCHEDULE_HHMM = "06:00";
