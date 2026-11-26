@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { isMainModule, parseArgs } from './lib/cli-args.ts';
 import { normalizeIssues } from './lib/plan-issues-normalize.ts';
 import { planEntryKey, planEntryRef } from './lib/plan-issue-ref.ts';
+import { PR_ACCOUNTED_STATUSES } from './lib/pr-terminal-state.ts';
 
 type Entry = { number?: number; ref?: string; repo?: string; status?: string; pr?: number; branch?: string; wave?: string; timeline?: { started?: string; merged?: string }; fleet_review?: string; [key: string]: unknown };
 type Plan = { issues: Entry[] | Record<string, Entry>; [key: string]: unknown };
@@ -39,8 +40,19 @@ export function recordDispatch(plan: Plan, refs: string[], branch: string, wave:
     row.timeline = { ...row.timeline, started: row.timeline?.started ?? at };
   }
 }
+/** Terminal unit statuses: the shared PR set (#10430) plus the two that close a unit without a PR. */
+export const TERMINAL_UNIT_STATUSES: ReadonlySet<string> = new Set([...PR_ACCOUNTED_STATUSES, 'pulada', 'entregue-fora-de-codigo']);
+export function isTerminalUnit(e: Entry): boolean {
+  return TERMINAL_UNIT_STATUSES.has(e.status ?? '');
+}
 export function mergeFindings(rows: Entry[], pull: Pull): string[] {
   if (!pull.mergedAt) return [];
+  // Develop branch names are fixed (`develop/fix-N`): a PR merged on the same
+  // branch before this unit's dispatch belongs to an earlier session, unless
+  // the plan explicitly recorded it (PR #14205 review, P1).
+  const starts = rows.map(e => Date.parse(e.timeline?.started ?? '')).filter(Number.isFinite);
+  const recorded = rows.some(e => e.pr === pull.number);
+  if (!recorded && starts.length === rows.length && Date.parse(pull.mergedAt) < Math.min(...starts)) return [];
   return rows.filter(e => e.status !== 'mergeada' || e.pr !== pull.number ||
     e.timeline?.merged !== pull.mergedAt || !e.timeline?.started || !e.fleet_review?.trim())
     .map(e => `${planEntryKey(e)}: PR #${pull.number} mergeada sem registro completo`);
@@ -100,7 +112,7 @@ function main(): void {
         const checkpoints = (plan.wave_checkpoints ?? {}) as Record<string, string>;
         for (const wave of new Set(rows.map(e => e.wave).filter((w): w is string => !!w))) {
           const unit = rows.filter(e => e.wave === wave);
-          if (unit.every(e => ['mergeada', 'pulada', 'draft-ci-vermelho', 'entregue-fora-de-codigo'].includes(e.status ?? '')) && !checkpoints[wave]) {
+          if (unit.every(isTerminalUnit) && !checkpoints[wave]) {
             throw new Error(`Onda ${wave} concluída sem estimativa: execute wave-end --wave ${wave}`);
           }
         }
@@ -108,7 +120,7 @@ function main(): void {
       if (action === 'wave-end') {
         if (!values.wave) throw new Error('Passe --wave id');
         const unit = rows.filter(e => e.wave === values.wave);
-        if (!unit.length || unit.some(e => !['mergeada', 'pulada', 'draft-ci-vermelho', 'entregue-fora-de-codigo'].includes(e.status ?? ''))) {
+        if (!unit.length || !unit.every(isTerminalUnit)) {
           throw new Error('Onda ainda tem unidade em voo ou não existe');
         }
         execFileSync(process.execPath, ['--import', 'tsx', resolve(import.meta.dirname, 'coordinator-usage-estimate.ts'),

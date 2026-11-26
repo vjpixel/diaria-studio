@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFakeGh, fakeGhEnv, FAKE_GH_SKIP_WIN32 } from './_helpers/fake-gh.ts';
-import { recordDispatch, recordMerge, mergeFindings, entries } from '../scripts/plan-record-merge.ts';
+import { recordDispatch, recordMerge, mergeFindings, entries, isTerminalUnit } from '../scripts/plan-record-merge.ts';
 
 const started = '2026-11-26T09:00:00Z';
 const pull = { number: 90, headRefName: 'develop/fix-1-2', mergedAt: '2026-11-26T10:00:00Z' };
@@ -74,4 +74,43 @@ it('develop calls lifecycle checkpoints at dispatch, merge, Gate 2 and wave end'
   for (const command of ['plan-record-merge.ts dispatch', 'plan-record-merge.ts --plan', 'plan-record-merge.ts check', 'plan-record-merge.ts wave-end']) {
     assert.ok(skill.includes(command), command);
   }
+});
+describe('PR #14205 review regressions', () => {
+  it('ignores a PR merged on the same fixed branch before this unit was dispatched (P1)', () => {
+    const old = { number: 40, headRefName: pull.headRefName, mergedAt: '2026-11-20T10:00:00Z' };
+    const unit = [{ number: 1, status: 'pendente', branch: pull.headRefName, timeline: { started } }];
+    assert.deepEqual(mergeFindings(unit, old), []);
+    assert.equal(mergeFindings(unit, pull).length, 1);
+    recordMerge(unit, pull, 'done');
+    assert.deepEqual([old, pull].flatMap(p => mergeFindings(unit, p)), []);
+    // An explicitly recorded PR is still checked even if older than the dispatch.
+    assert.equal(mergeFindings([{ ...unit[0], pr: 40 }], old).length, 1);
+    // Without timeline.started there is no cutoff: stay fail-closed.
+    assert.equal(mergeFindings([{ number: 1, status: 'pendente' }], old).length, 1);
+  });
+  it('treats retida-para-editor and fechada-sem-merge as terminal (P2)', () => {
+    for (const status of ['retida-para-editor', 'fechada-sem-merge', 'mergeada', 'pulada', 'draft-ci-vermelho', 'entregue-fora-de-codigo']) {
+      assert.ok(isTerminalUnit({ status }), status);
+    }
+    assert.equal(isTerminalUnit({ status: 'em-voo' }), false);
+    assert.equal(isTerminalUnit({}), false);
+  });
+  it('CLI: old merged PR on the branch does not block check; retida wave asks for wave-end', { skip: FAKE_GH_SKIP_WIN32 }, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plan-14205-'));
+    try {
+      const path = join(dir, 'plan.json');
+      const old = { number: 40, headRefName: pull.headRefName, mergedAt: '2026-11-20T10:00:00Z' };
+      writeFakeGh(dir, `#!/usr/bin/env node\nconst a = ${JSON.stringify([old, pull])};\nconst n = Number(process.argv[process.argv.indexOf('view') + 1]);\nconsole.log(JSON.stringify(process.argv.includes('list') ? a : a.find(p => p.number === n)));\n`);
+      const run = (...args: string[]) => spawnSync(process.execPath, ['--import', 'tsx', resolve('scripts/plan-record-merge.ts'), ...args, '--plan', path], {
+        encoding: 'utf8', env: fakeGhEnv(dir),
+      });
+      writeFileSync(path, JSON.stringify({ issues: { '1': { status: 'mergeada', pr: 90, branch: pull.headRefName, timeline: { started, merged: pull.mergedAt }, fleet_review: 'done' } } }));
+      const ok = run('check');
+      assert.equal(ok.status, 0, ok.stderr);
+      writeFileSync(path, JSON.stringify({ issues: { '3': { status: 'retida-para-editor', wave: '2' } } }));
+      const retained = run('check');
+      assert.equal(retained.status, 1);
+      assert.match(retained.stderr, /Onda 2 concluída sem estimativa/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
