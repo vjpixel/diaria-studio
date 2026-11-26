@@ -186,6 +186,121 @@ export interface LivenessContext {
   maxTotalMs: number;
 }
 
+/**
+ * Scripts cujo processo conta como "o dispatch Brevo desta edição" ao
+ * conferir um pid vivo depois do teto (#14096): o próprio dispatch e os dois
+ * sub-scripts que ele roda (os que gravam o `.worker.json`).
+ */
+export const BREVO_STAGE5_PROCESS_MARKERS = [
+  "brevo-diaria-stage5-dispatch",
+  "brevo-diaria-run",
+  "publish-daily-brevo",
+] as const;
+
+/**
+ * Linha de comando de um pid NESTE host, ou `undefined` quando não dá para
+ * ler (fora do Linux, `/proc` ausente, processo sumiu). Só Linux: é onde o
+ * `/proc/{pid}/cmdline` existe; no Windows `undefined` mantém o fail-closed
+ * do `findActiveLaunch` (#14096).
+ */
+export function readProcessCommand(pid: number): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const raw = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    return raw.replace(/\0/g, " ").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Pura: o comando do processo bate com o dispatch Brevo? `undefined` =
+ * comando ilegível (não dá para provar nem refutar).
+ */
+export function commandMatchesBrevoStage5(command: string | undefined): boolean | undefined {
+  if (command === undefined) return undefined;
+  return BREVO_STAGE5_PROCESS_MARKERS.some((m) => command.includes(m));
+}
+
+export interface ActiveLaunchContext extends LivenessContext {
+  /** Comando de um pid neste host (injetável; produção: `readProcessCommand`). */
+  processCommandOf?: (pid: number) => string | undefined;
+  /**
+   * `--force` do dispatch (#14096): o operador conferiu que o lançamento
+   * antigo morreu (ou o matou por PID). Só desarma registros ACIMA do teto
+   * que não deu para verificar; `running` dentro do teto com processo vivo
+   * continua barrando.
+   */
+  force?: boolean;
+}
+
+/** Lançamento que barra outro de iniciar, com o porquê (vai no JSON `busy`). */
+export interface ActiveLaunch {
+  record: BrevoStage5Record;
+  reason: string;
+}
+
+/**
+ * Pura (#14096): decide se UM registro `running` barra outro lançamento.
+ *
+ * Dentro do teto (`maxTotalMs` desde o `started_at`): igual ao #14037, barra
+ * se for de outro host (pid de outra máquina não se confere daqui) ou se o
+ * dispatch/worker estiver vivo neste host.
+ *
+ * Acima do teto, fail-closed: só deixa passar quando dá para PROVAR que o
+ * lançamento acabou. Neste host com dispatch e worker mortos → passa. Pid vivo
+ * cujo comando não é do dispatch Brevo → pid reciclado (o motivo do teto no
+ * Windows), passa. Pid vivo com o comando do dispatch → barra sempre, nem
+ * `--force` desarma (é o 2º rascunho que o #14096 descreve). Pid vivo com
+ * comando ilegível, ou registro de outro host → barra, salvo `--force`.
+ */
+export function activeLaunchReason(r: BrevoStage5Record, ctx: ActiveLaunchContext): string | null {
+  if (r.state !== "running") return null;
+  const startedMs = Date.parse(r.started_at);
+  const pastCap = !Number.isFinite(startedMs) || ctx.nowEpochMs - startedMs >= ctx.maxTotalMs;
+  if (!pastCap) {
+    if (r.host !== ctx.host) return `running em outro host (${r.host}) dentro do teto`;
+    return launchProcessAlive(r, ctx) ? "dispatch ou worker vivo neste host dentro do teto" : null;
+  }
+  const capMin = Math.round(ctx.maxTotalMs / 60_000);
+  if (r.host !== ctx.host) {
+    return ctx.force
+      ? null
+      : `running em outro host (${r.host}) acima do teto de ${capMin} min: daqui não dá para provar que terminou; ` +
+          `conferir naquela máquina e no painel Brevo, e só então re-rodar com --force`;
+  }
+  const worker = ctx.workerPidOf(r.launch_id);
+  const alive = [r.pid, ...(worker !== undefined ? [worker] : [])].filter((p) => ctx.isPidAlive(p));
+  if (alive.length === 0) return null;
+  const readCmd = ctx.processCommandOf ?? (() => undefined);
+  const matches = alive.map((p) => ({ pid: p, match: commandMatchesBrevoStage5(readCmd(p)) }));
+  const running = matches.find((m) => m.match === true);
+  if (running) {
+    return (
+      `pid ${running.pid} ainda roda o dispatch Brevo acima do teto de ${capMin} min (Brevo lento/429): ` +
+      `não iniciar outro (sairia um 2º rascunho); esperar ou matar esse pid (por PID, nunca por nome)`
+    );
+  }
+  const unknown = matches.filter((m) => m.match === undefined);
+  if (unknown.length === 0) return null; // todos os vivos são outro programa: pid reciclado
+  return ctx.force
+    ? null
+    : `pid ${unknown.map((m) => m.pid).join(", ")} vivo acima do teto de ${capMin} min e o comando não pôde ser lido ` +
+        `(pid reciclado ou o dispatch ainda rodando): conferir o processo e só então re-rodar com --force`;
+}
+
+/** Primeiro registro que barra outro lançamento, com o porquê (#14096). */
+export function findActiveLaunchWithReason(
+  records: readonly BrevoStage5Record[],
+  ctx: ActiveLaunchContext,
+): ActiveLaunch | null {
+  for (const r of records) {
+    const reason = activeLaunchReason(r, ctx);
+    if (reason !== null) return { record: r, reason };
+  }
+  return null;
+}
+
 /** Algum processo do lançamento (dispatch ou worker) está vivo neste host. */
 export function launchProcessAlive(record: BrevoStage5Record, ctx: Pick<LivenessContext, "isPidAlive" | "workerPidOf">): boolean {
   if (ctx.isPidAlive(record.pid)) return true;
@@ -194,20 +309,13 @@ export function launchProcessAlive(record: BrevoStage5Record, ctx: Pick<Liveness
 }
 
 /**
- * Pura: lançamento ATIVO que impede outro de iniciar (#14037): `running`
- * dentro do teto total desde o `started_at` E, no mesmo host, com dispatch ou
- * worker vivo (pid de outra máquina não se confere daqui). O teto vale nos
- * dois casos: no Windows um pid reciclado por outro processo pareceria vivo
- * para sempre.
+ * Pura: lançamento ATIVO que impede outro de iniciar (#14037, #14096). Regra
+ * completa em `activeLaunchReason`: dentro do teto, `running` de outro host ou
+ * com processo vivo neste host; acima do teto, fail-closed (só passa o que se
+ * prova terminado ou pid reciclado).
  */
-export function findActiveLaunch(records: readonly BrevoStage5Record[], ctx: LivenessContext): BrevoStage5Record | null {
-  for (const r of records) {
-    if (r.state !== "running") continue;
-    const startedMs = Date.parse(r.started_at);
-    if (Number.isFinite(startedMs) && ctx.nowEpochMs - startedMs >= ctx.maxTotalMs) continue;
-    if (r.host !== ctx.host || launchProcessAlive(r, ctx)) return r;
-  }
-  return null;
+export function findActiveLaunch(records: readonly BrevoStage5Record[], ctx: ActiveLaunchContext): BrevoStage5Record | null {
+  return findActiveLaunchWithReason(records, ctx)?.record ?? null;
 }
 
 export type JoinDecision =
