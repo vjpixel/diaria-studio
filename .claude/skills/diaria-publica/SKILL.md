@@ -433,7 +433,7 @@ Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai (o
 
 ### Passos B3a a B7: ler a referência ao chegar neles
 
-Os passos seguintes rodam **depois do `--publish` por API**: no fluxo inteiro, depois do Stage 6 ("Fluxo híbrido", item 7); com `--so vertical` ou `--sem-publicacao`, logo depois do Passo B3. Eles estão em `.claude/skills/diaria-publica/reference/vertical-depois-do-stage6.md`: **ler o arquivo inteiro ao chegar nesse ponto**, antes do 1º passo guiado, e seguir cada passo que o plano do Passo B2 pedir. Ler também quando o pedido for um corte avulso, fora de edição, e na rodada do vertical 2 do roteiro (D+7).
+Os passos seguintes rodam **depois do `--publish` por API**: no fluxo inteiro, depois do Stage 6 ("Fluxo híbrido", item 7); com `--so vertical` ou `--sem-publicacao`, logo depois do Passo B3. Eles estão em `.claude/skills/diaria-publica/reference/vertical-depois-do-stage6.md`: **ler o arquivo inteiro ao chegar nesse ponto**, antes do 1º passo guiado: seguir B3a e B7 sempre, e os demais quando o plano do B2 ou a montagem os pedirem. Ler também quando o pedido for um corte avulso, fora de edição, e na rodada do vertical 2 do roteiro (D+7).
 
 - **Passo B3a**: capa vertical do YouTube Shorts aplicada pelo agente no Studio web (Chrome) e confirmada com `short-vertical-cover.ts confirm`. Obrigatório (#13708): o `publica-phase.ts join` sai 1 enquanto o `youtube_shorts` não tiver `studio_web` nem dono.
 - **Passo B3b**: Instagram acima do teto ou fallback avisado por alarme do timer (Chrome, só na máquina Windows; `prepare-instagram-guided.ts`, nunca `--instagram-timer` para gerar o arquivo).

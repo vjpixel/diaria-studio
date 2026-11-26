@@ -23,6 +23,27 @@ export function skillReferenceFiles(skill: string, root = ROOT): string[] {
     .map((f) => join(dir, f));
 }
 
+/**
+ * Todos os arquivos de prompt das skills sob `skillsDir` (default
+ * `.claude/skills`): o `SKILL.md` de cada pasta e os `reference/*.md` dela,
+ * nessa ordem. É a lista que os guards de prosa das skills varrem (#14040):
+ * regra movida para `reference/` continua coberta.
+ */
+export function skillPromptFiles(skillsDir = join(ROOT, ".claude", "skills")): string[] {
+  const files: string[] = [];
+  if (!existsSync(skillsDir)) return files;
+  for (const entry of readdirSync(skillsDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const skillPath = join(skillsDir, entry.name, "SKILL.md");
+    if (existsSync(skillPath)) files.push(skillPath);
+    const refDir = join(skillsDir, entry.name, "reference");
+    if (existsSync(refDir)) {
+      for (const f of readdirSync(refDir).filter((n) => n.endsWith(".md")).sort()) files.push(join(refDir, f));
+    }
+  }
+  return files;
+}
+
 /** SKILL.md + `reference/*.md` da skill, concatenados. */
 export function readSkillWithReferences(skill: string, root = ROOT): string {
   const skillPath = join(root, ".claude", "skills", skill, "SKILL.md");

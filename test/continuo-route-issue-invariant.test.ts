@@ -1,5 +1,6 @@
 /**
- * Invariante #6196 — cada referência a `gh issue edit` em SKILL.md deve ter
+ * Invariante #6196 — cada referência a `gh issue edit` em SKILL.md (e, desde
+ * o #14040, nos `reference/*.md` das skills) deve ter
  * `route-issue` como substituto (ou ressaltar #6196 como fallback até merge).
  *
  * Mecanismo de exceção (#6196, self-review): nem toda linha que menciona
@@ -14,8 +15,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 /** Exige texto não-vazio (motivo) após o `:` — `<!-- route-issue-exempt: -->`
  * sem justificativa NÃO casa, de propósito (regressão abaixo cobre isso). */
@@ -27,13 +29,16 @@ const ROUTE_ISSUE_EXEMPT_RE = /<!--\s*route-issue-exempt:\s*[^\s>][^>]*-->/;
  * e a exigência de justificativa da regex acima nunca seria exercitada. */
 const ROUTE_ISSUE_MENTION_RE = /route-issue(?!-exempt)/;
 
-function findSkmdFiles(dir: string): string[] {
+/** Todo `SKILL.md` sob `dir` e, desde o #14040, todo `.md` de uma pasta
+ * `reference/` de skill (casos raros lidos sob demanda). */
+export function findSkmdFiles(dir: string): string[] {
   const result: string[] = [];
+  const inReference = basename(dir) === "reference";
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = resolve(dir, entry.name);
     if (entry.isDirectory()) {
       result.push(...findSkmdFiles(full));
-    } else if (entry.name.endsWith("SKILL.md")) {
+    } else if (entry.name.endsWith("SKILL.md") || (inReference && entry.name.endsWith(".md"))) {
       result.push(full);
     }
   }
@@ -163,6 +168,24 @@ describe("invariante #6196 — sanidade do fixture usado no scan real", () => {
     for (const f of skmdFiles) {
       assert.ok(statSync(f).size > 0, `${f} está vazio`);
     }
+  });
+
+  it("#14040: a varredura inclui os reference/*.md das skills, e `gh issue edit` sem route-issue neles reprova", () => {
+    const dir = mkdtempSync(join(tmpdir(), "skills-6196-14040-"));
+    try {
+      mkdirSync(join(dir, "fake-skill", "reference"), { recursive: true });
+      writeFileSync(join(dir, "fake-skill", "SKILL.md"), "# fake\n");
+      const ref = join(dir, "fake-skill", "reference", "raro.md");
+      writeFileSync(ref, "# raro\n\nrodar `gh issue edit N --add-label foo` sem mais nada\n");
+      writeFileSync(join(dir, "fake-skill", "notas.md"), "fora de reference/ não entra\n");
+      const files = findSkmdFiles(dir);
+      assert.deepStrictEqual(files.map((f) => basename(f)).sort(), ["SKILL.md", "raro.md"]);
+      assert.strictEqual(findRouteIssueViolations(readFileSync(ref, "utf8")).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const real = findSkmdFiles(resolve(import.meta.dirname, "../.claude/skills"));
+    assert.ok(real.some((f) => /[\\/]reference[\\/][^\\/]+\.md$/.test(f)), "varredura real sem reference/*.md");
   });
 });
 

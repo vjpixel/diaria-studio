@@ -85,6 +85,8 @@ describe("#14040 gatilhos no ponto do fluxo", () => {
     const item7 = t.slice(t.indexOf("7. **Depois do Stage 6:**"), t.indexOf("8. **Interrupção:**"));
     assert.match(item7, /reference\/vertical-depois-do-stage6\.md`: ler o arquivo inteiro aqui/);
     const stub = t.slice(t.indexOf("### Passos B3a a B7"), t.indexOf("## Relato único"));
+    // Review da #14083: B3a e B7 rodam sempre; os demais, quando o plano ou a montagem pedirem.
+    assert.match(stub, /seguir B3a e B7 sempre, e os demais quando o plano do B2 ou a montagem os pedirem/);
     for (const passo of ["Passo B3a", "Passo B3b", "Passo B4", "Passo B5", "Passo B5b", "Corte avulso", "Passo B6", "Passo B7"]) {
       assert.ok(stub.includes(passo), `stub da Parte B sem ${passo}`);
     }
@@ -103,6 +105,13 @@ describe("#14040 gatilhos no ponto do fluxo", () => {
     assert.match(t, /`audioOnly: true`[\s\S]{0,400}reference\/audio-only\.md/);
     assert.match(t, /mais de um vídeo solto na pasta, o `transcribe` para \(#12268\): ler `\.claude\/skills\/diaria-video-montagem\/reference\/multiarquivo\.md`/);
     assert.match(t, /Um `transcript\.json` existente nunca é retranscrito sem `--force`/);
+  });
+
+  it("montagem: os ponteiros de critério para build-detalhes.md dizem quando ler", () => {
+    const t = skillText("diaria-video-montagem");
+    for (const secao of ["Qual silêncio da pausa da vinheta", "Som a cada ponto", "Corte de pausas pelo detector de fala", "2º leitor do XML", "Abertura das bordas e vão entre clipes"]) {
+      assert.match(t, new RegExp(`build-detalhes\\.md\`, seção "${secao}" \\(ler ao interpretar um \`\\[aviso\\]\``), secao);
+    }
   });
 
   it("roteiro: Passo 8 e formato react apontam a referência", () => {

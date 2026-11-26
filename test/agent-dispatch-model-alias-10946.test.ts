@@ -8,8 +8,8 @@
  * /diaria-develop 261022b: os 5 dispatches do fleet da PR #10895 voltaram
  * `InputValidationError` e tiveram de ser refeitos com `model: "opus"`.
  *
- * Guard de prosa: no CORPO das skills (fora do frontmatter) e em
- * `context/*.md`, menção `model: claude-…` só passa quando descreve um
+ * Guard de prosa: no CORPO das skills (fora do frontmatter), nos
+ * `reference/*.md` delas (#14040) e em `context/*.md`, menção `model: claude-…` só passa quando descreve um
  * frontmatter (de agent ou da própria skill). É reprovada quando:
  *   (a) vem entre aspas (`model: "claude-…"`) — é a forma de parâmetro do
  *       Agent tool;
@@ -23,9 +23,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { skillPromptFiles } from "./_helpers/skill-text.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILLS_DIR = resolve(ROOT, ".claude/skills");
@@ -55,12 +57,9 @@ function findPinnedAgentDispatches(body: string): string[] {
   return bad;
 }
 
-function collectFiles(): string[] {
-  const files: string[] = [];
-  for (const id of readdirSync(SKILLS_DIR)) {
-    const f = join(SKILLS_DIR, id, "SKILL.md");
-    if (existsSync(f)) files.push(f);
-  }
+/** SKILL.md e, desde o #14040, os `reference/*.md` de cada skill, mais `context/*.md`. */
+export function collectFiles(skillsDir = SKILLS_DIR): string[] {
+  const files: string[] = skillPromptFiles(skillsDir);
   for (const f of readdirSync(CONTEXT_DIR)) {
     if (f.endsWith(".md")) files.push(join(CONTEXT_DIR, f));
   }
@@ -94,6 +93,23 @@ describe("#10946 — dispatch de Agent nas skills usa alias de modelo, nunca ID 
   it("o detector reprova ID pinado logo após `Agent`/`subagent_type` sem falar de frontmatter (regra c)", () => {
     const t = "dispatchar um `Agent` com `subagent_type: \"x\"` e `model: claude-sonnet-5-5`, escopo do diff";
     assert.equal(findPinnedAgentDispatches(t).length, 1);
+  });
+
+  it("#14040: a varredura inclui os reference/*.md das skills, e o detector reprova dispatch pinado neles", () => {
+    const dir = mkdtempSync(join(tmpdir(), "skills-10946-14040-"));
+    try {
+      mkdirSync(join(dir, "fake-skill", "reference"), { recursive: true });
+      writeFileSync(join(dir, "fake-skill", "SKILL.md"), "# fake\n");
+      const ref = join(dir, "fake-skill", "reference", "raro.md");
+      writeFileSync(ref, "Despachar um `Agent` com `model: \"claude-opus-5-5\"` explícito.\n");
+      const files = collectFiles(dir);
+      assert.ok(files.includes(ref), "reference/*.md fora da varredura");
+      assert.equal(findPinnedAgentDispatches(readFileSync(ref, "utf8")).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // E a varredura real chega nas referências das skills de vídeo.
+    assert.ok(collectFiles().some((f) => /[\\/]reference[\\/][^\\/]+\.md$/.test(f)));
   });
 
   for (const file of collectFiles()) {
