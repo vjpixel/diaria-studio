@@ -313,7 +313,7 @@ foi a mesma do #5578 para as demais transições: sessão nova, contexto limpo.
 
 ## Stage 5 (publicação)
 
-(Ver `context/publishers/beehiiv-playbook.md` §Fase 3 para o histórico
+(Ver `docs/archive/beehiiv-playbook.md` §Fase 3 para o histórico
 completo da recuperação do fetch in-page do Worker — #4816 não duplica
 esse relato aqui, ele já vive na fonte única #4196.)
 

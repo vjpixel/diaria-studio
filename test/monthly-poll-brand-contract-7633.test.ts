@@ -25,7 +25,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { CLARICE_UTM_PROFILE, type MonthlyUtmProfile } from "../scripts/lib/mensal/monthly-render.ts";
-import { APOIADORES_BREVO_UTM_PROFILE } from "../scripts/lib/mensal/monthly-apoiadores-brevo-render.ts";
+import { APOIADORES_BREVO_UTM_PROFILE } from "../scripts/lib/shared/utm-registry.ts"; // #14049
 import { APOIADORES_KIT_UTM_PROFILE } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 import { BRAND_INFO, parseBrandParam } from "../workers/poll/src/lib.ts";
 

@@ -12,7 +12,7 @@
  * #7121 (260902): `draftToEmailBeehiiv`/`BEEHIIV_UTM_PROFILE` foram removidos
  * do módulo fonte (sem consumidor de runtime — o canal Beehiiv nunca enviou
  * nada ao vivo). O describe que os testava foi removido daqui; a mesma
- * cobertura (dispatch + UTM) hoje vive em `test/monthly-apoiadores-brevo-render.test.ts`
+ * cobertura (dispatch + UTM) viveu em `test/monthly-apoiadores-brevo-render.test.ts` (apagado no #14049; hoje a do Kit vive em `test/monthly-apoiadores-kit-render.test.ts`)
  * contra `draftToEmailApoiadoresBrevo`/`APOIADORES_BREVO_UTM_PROFILE`, o
  * caminho REALMENTE usado (Brevo). `isClariceOnlySection`/`filterDraftForApoiadores`/
  * `stripRecomendacaoDiariaBlock` continuam testados abaixo — são

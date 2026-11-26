@@ -3,23 +3,20 @@
  * scripts/render-monthly-apoiadores-kit.ts (#7633)
  *
  * Renderiza a variante KIT do envio extra pra apoiadores Mantenedor/Patrono —
- * sucessor de `scripts/render-monthly-apoiadores-brevo.ts` (#4593), que por
+ * sucessor de `scripts/render-monthly-apoiadores-brevo.ts` (#4593, apagado no #14049), que por
  * sua vez sucedeu o render Beehiiv (#4482, removido em #7121). Reusa o MESMO
  * `draft.md` e as MESMAS imagens já publicadas pro envio Clarice: não faz
  * upload novo, lê os URLs de `_internal/public-images.json`.
  *
- * ## O que é importado do render Brevo, e por quê
+ * ## Imagens do ciclo
  *
  * `readPublicImages`/`EXPECTED_IMAGE_KEYS`/`missingImageKeys` são
- * canal-agnósticas (leem o manifest de imagens do ciclo, que é o mesmo pros
- * três canais) e já viveram em 2 arquivos diferentes conforme o canal mudava
- * — mover de novo só trocaria o nome do import por outro igualmente
- * transitório. Ficam onde estão até o canal Brevo ser aposentado de vez
- * (depois do 1º envio Kit real, #7633), quando as três descem pra um módulo
- * de ciclo sem nome de ESP. Mesma decisão do #7121: não renomear enquanto o
- * predecessor ainda existe no repo.
+ * canal-agnósticas (leem o manifest de imagens do ciclo, o mesmo pros três
+ * canais). Viveram no render Beehiiv e depois no render Brevo; com o canal
+ * Brevo apagado (#14049) desceram pra `lib/mensal/monthly-public-images.ts`,
+ * módulo de ciclo sem nome de ESP.
  *
- * O que NÃO é reusado é o perfil de UTM: `APOIADORES_KIT_UTM_PROFILE`
+ * O perfil de UTM é próprio do Kit: `APOIADORES_KIT_UTM_PROFILE`
  * (`lib/mensal/monthly-apoiadores-kit-render.ts`) troca merge tag do voto,
  * `utm_source` e `pollBrand` — ver a docstring de lá.
  *
@@ -61,7 +58,7 @@ import { parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render
 import { relinkMonthlyEditionHtml } from "./monthly-relink-to-diaria.ts"; // #4048 (mesmo relink dos demais canais)
 import { isMainModule } from "./lib/cli-args.ts";
 import { parseMonthlyCycleArg, cycleToYymm, monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
-import { readPublicImages, missingImageKeys } from "./render-monthly-apoiadores-brevo.ts";
+import { readPublicImages, missingImageKeys } from "./lib/mensal/monthly-public-images.ts"; // #14049
 import { monthlyDraftIntentionalErrors } from "./lint-monthly-draft.ts"; // #13105 item 3
 import { formatIntentionalErrorAdvisory, formatIntentionalErrorLeaks } from "./lib/intentional-error-scrub.ts";
 

@@ -158,7 +158,7 @@ do MCP. Com MCP Write isso nao muda.
 > a ser automatizado (`computer.left_click`, 3 cliques, com fallback manual) —
 > o reteste de 260825 funcionou onde o #1198 falhou em maio. Isto aqui e um
 > estudo de custo/beneficio DATADO; a fonte operacional e
-> `context/publishers/beehiiv-playbook.md`. A conclusao sobre o MCP Write nao
+> `docs/archive/beehiiv-playbook.md`. A conclusao sobre o MCP Write nao
 > muda por causa disso (o Schedule nunca dependeu dele), mas a premissa "esse
 > passo e manual de qualquer jeito" nao vale mais.
 
@@ -215,7 +215,7 @@ workarounds atuais, $516/ano e custo alto so para ganho operacional.
 
 ## 6. Correcao de documentacao pendente (nao aplicar agora)
 
-O `context/publishers/beehiiv-playbook.md` secao §4b, nota `#1705`, contem:
+O `docs/archive/beehiiv-playbook.md` secao §4b, nota `#1705`, contem:
 
 > "thumbnail e UI-only, nao ha via de API/MCP pra setar a capa"
 
