@@ -112,7 +112,7 @@ describe("#11550 linkedin_profile e repost da página", () => {
     const o = ownerOf(p, "linkedin_page_repost")!;
     assert.equal(o.by, "agent-scheduled-task");
     assert.equal(o.at, repost.at);
-    assert.equal(o.command, "/diaria-publica-video 261022 --so vertical");
+    assert.equal(o.command, "/diaria-publica 261022 --so vertical");
   });
 });
 

@@ -283,7 +283,7 @@ describe("#12892 dono guiado (comando que não é de publisher) não vira task",
         kind: "plan-changed",
         message: "o plano mudou",
         changed: [],
-        approved_owner: { by: "agent-scheduled-task", command: `/diaria-publica-video ${ED} --so vertical` },
+        approved_owner: { by: "agent-scheduled-task", command: `/diaria-publica ${ED} --so vertical` },
       },
     ];
     assert.equal(oneShotTaskRefusals(refusals, MAIN_CMD).length, 0);
