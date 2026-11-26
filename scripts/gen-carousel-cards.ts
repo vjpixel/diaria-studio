@@ -42,6 +42,11 @@
  * destaque, slide e quanto passou — renderizar transbordado seria degradar a
  * arte em silêncio, a mesma classe de falha que o #6064 consertou.
  *
+ * CONTAGEM DE PARÁGRAFOS também é bloqueante (#14019): `## d{N}-cards` com
+ * outra contagem que não 3 aborta antes do overflow, nomeando destaque e
+ * contagem. Redistribuir o texto entre os cards mudaria o que o leitor vê
+ * sem aprovação (e, com menos de 3, perdia frases em silêncio).
+ *
  * EXCEÇÃO DO EDITOR (#11210): destaque listado em
  * `_internal/carousel-keep-art.json` não entra na pré-passada de overflow nem
  * no render — a arte existente fica como está, sem carimbo novo, e o destaque
@@ -95,6 +100,8 @@ import {
   writeCarouselCardParagraphs, // #11211
   resolveCarouselCardText, // #11211
   carouselCardParagraphs, // #11211
+  carouselCardsParagraphCountProblem, // #14019
+  DAILY_CAROUSEL_CARD_PARAGRAPHS, // #14019
   DAILY_CAROUSEL_BODY_SIZE,
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET,
   type CarouselSourceHashes,
@@ -214,6 +221,31 @@ export async function genCarouselCards(
   // demais, e o editor descobria um por vez, em ciclos separados de
   // corrigir+re-rodar. Aqui ele recebe a lista inteira do que reescrever —
   // mesmo comportamento do invariante irmão `carousel-text-overflow` no Stage 4.
+  // #14019 — antes do overflow: o `## d{N}-cards` precisa de exatamente 3
+  // parágrafos. Com 2 ou 4, o código redistribuía o texto entre os cards
+  // (e, com menos de 3, perdia frases em silêncio). Agora aborta nomeando o
+  // destaque e a contagem, como o overflow: o texto é reescrito, nunca
+  // redistribuído sozinho. A legenda `## d{N}` como fallback (edição sem
+  // `-cards`) segue dividida pelo código, que não perde mais texto.
+  const contagemErrada: string[] = [];
+  for (const d of destaques) {
+    if (keepArt.has(d)) continue; // #11210: arte mantida — texto não vai ser rasterizado
+    const src = cardSourceOf(d);
+    if (src?.source !== "cards") continue;
+    const dText = cardTextOf(d);
+    if (!dText) continue;
+    const problema = carouselCardsParagraphCountProblem(d, src.sectionId, dText);
+    if (problema) contagemErrada.push(`  ${problema}`);
+  }
+  if (contagemErrada.length > 0) {
+    throw new Error(
+      `${contagemErrada.length} destaque(s) com o texto dos cards fora do formato do carrossel:\n` +
+        `${contagemErrada.join("\n")}\n\n` +
+        `Fix: reescrever a seção em 03-social.md com ${DAILY_CAROUSEL_CARD_PARAGRAPHS} parágrafos e rodar de novo. ` +
+        `Nenhum slide foi gerado nesta invocação.`,
+    );
+  }
+
   const transbordam: { destaque: string; sectionId: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
   for (const d of destaques) {
     if (keepArt.has(d)) continue; // #11210: arte mantida — reportado como `skipped` abaixo

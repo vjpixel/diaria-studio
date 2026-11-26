@@ -34,6 +34,22 @@ npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} --read
 ```
 Extrair `chromeMcp` do JSON retornado. **A newsletter nao depende do Chrome** — `chromeMcp === false` so troca o teste pela UI do Kit pelo fallback `--send-test` (§5c-1-kit).
 
+### Comandos de registro encadeados (#14039) — vale para as Etapas 5 e 6
+
+`log-event.ts` e `update-stage-status.ts` nao ganham turno proprio: vao no MESMO Bash do comando que reportam (ou do passo vizinho, quando abrem ou fecham o stage). Cada turno a mais rele o contexto inteiro (media de ~262k tokens de cache por turno na edicao 261123). O registro nunca engole o exit do comando principal: guardar o codigo logo depois dele e devolve-lo no fim com `(exit $rc)`, que e o exit que o Bash reporta e que a tabela de exits do passo le.
+
+```bash
+npx tsx scripts/{comando}.ts {args}; rc=$?
+case $rc in 0) lvl=info ;; *) lvl=warn ;; esac
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level "$lvl" --message "{comando}: exit $rc"
+(exit $rc)
+```
+
+- **Nivel por exit:** o `case` traduz a regra `{info se ..., warn se ...}` de cada passo (ex.: `0|2) lvl=info`).
+- **`--details` com o JSON do stdout:** `out=$(npx tsx scripts/{comando}.ts {args}); rc=$?; echo "$out"` e `--details "$out"` no log (o `log-event.ts` guarda como texto o que nao for JSON). O `echo` mantem a saida visivel para a decisao do passo.
+- **Sempre standalone, nunca encadeado:** `edition-lock.ts`, `session-registry.ts` e os demais alvos de `.claude/hooks/inject-session-id.mjs` (o hook so injeta `--session-id` em comando sem `&&`/`;`/`|`; encadeado sai exit 2). Por isso a trava fica fora dos blocos encadeados abaixo.
+- **Log que depende de interpretar a saida** (somar contagens, escolher o caso de uma tabela, ler `source` do JSON) fica no turno da decisao, junto do proximo comando desse turno quando houver um, nunca num turno so dele.
+
 ### Pre-condicao: sentinel Stage 4
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-4-gate.md §4e (sentinel de conclusao do Stage 4, #14033) -->
@@ -66,9 +82,11 @@ Exit code handling:
 
 ### 5a. Pre-requisitos + sync
 
-**Marcar Stage 5 `running` no inicio (#1783).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
+**Marcar Stage 5 `running` no inicio (#1783) e logar o inicio, num Bash so (#14039).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status running
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status running; rc=$?
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info --message 'etapa 5 publicacao started'
+(exit $rc)
 ```
 
 **⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome ou gmail MCP ficou offline, **parar imediatamente** (a Beehiiv nao entra, #11225: so arquivo historico — desconexao dela e warn, nunca halt), logar via:
@@ -93,10 +111,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator \
 Nunca aguardar passivamente. Este stage depende de gmail (review-test-email) e, so quando o teste do Kit vai pela UI, de claude-in-chrome. Disconnect de qualquer um exige acao explicita do editor. Os logs persistem em `data/run-log.jsonl` para auditoria pelo `collect-edition-signals.ts` (#759).
 **Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
 
-- Logar inicio:
-  ```bash
-  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info --message 'etapa 5 publicacao started'
-  ```
+- O log de inicio (`etapa 5 publicacao started`) ja saiu no mesmo Bash do `update-stage-status --status running` acima (#14039).
 - (Edicoes antigas pre-#192 usam `01-eia-real.jpg`/`01-eia-ia.jpg`.)
 - **Staleness check (#120):**
   ```bash
@@ -144,10 +159,11 @@ Casos:
 **Auto-approve path (`auto_approve = true`):**
 
 ```bash
-npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve; rc=$?
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
   --message "Etapa 5 auto-approved via --no-gates: canais dispatchados sem confirmacao por canal" \
   --details '{"channels":["newsletter","linkedin","facebook","instagram","threads","brevo"]}'
+(exit $rc)
 ```
 
 **Skip flag path (`--skip newsletter,facebook`, etc):**
@@ -159,10 +175,11 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista-de-ca
 **Default auto (sem flags, modo interativo):** Stage 5 e dispatch puro — sem gate.
 
 ```bash
-npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto; rc=$?
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info \
   --message "Stage 5 dispatch auto (sem gate — Stage 4 revisao aprovado)" \
   --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook","instagram","threads","brevo"]}'
+(exit $rc)
 ```
 
 
@@ -170,10 +187,13 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator -
 
 **Antes de qualquer publisher (newsletter, social, Brevo) e independente de `--skip`** — o site nao e canal de consent. Era §6b-site; subiu pra ca porque e o passo mais lento (abre o PR, CI de ~12min, merge) e no fim travava a sessao. Agora ele so ABRE o PR (worktree isolado, `site-publish/{slug}`, mecanismo em `docs/site-page-publish-mechanism.md`) e devolve na hora: com `--no-wait-merge` o script faz 1 poll e, CI pendente, entrega o merge ao waiter em background (#9593). O resto da Etapa 5 roda enquanto CI e review andam. O slug sai de `--slug-from-d1` (`seoSlug` do titulo do D1, o mesmo link de WhatsApp que o pre-render do Stage 4 ja cravou no e-mail). So depende de `_internal/newsletter-final.html` (Stage 4):
 ```bash
-npx tsx scripts/publish-edition-site-page.ts --edition-dir {EDITION_DIR} --slug-from-d1 --sitemap workers/site/public/sitemap.xml --no-wait-merge
+npx tsx scripts/publish-edition-site-page.ts --edition-dir {EDITION_DIR} --slug-from-d1 --sitemap workers/site/public/sitemap.xml --no-wait-merge; rc=$?
 npx tsx scripts/reconcile-site-sitemap.ts
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage5 PR: exit {code}"
+case $rc in 0|2) lvl=info ;; *) lvl=warn ;; esac  # {info se 0/2, warn se 3/4/5}
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level "$lvl" --message "site-page stage5 PR: exit $rc"
+(exit $rc)
 ```
+Um Bash so (#14039): o exit que volta e o do `publish-edition-site-page.ts`.
 O script grava em `_internal/site-page-published.json` o registro que o Stage 6 le: `prNumber`, `prUrl`, `status` (`open` | `merged` | `none`), `published`, `code`. **Nada aqui espera o merge e nenhum exit para a Etapa 5** (tabela de exits em `orchestrator-stage-6.md` §6b-site) — falha vira warn e segue; o Stage 6 re-roda a publicacao como fallback e TRAVA o fim da Etapa 6 no merge (§6c-site + invariante `site-page-pr-merged`).
 
 ### 5b-youtube. Link do video do D1: so leitura (#10659, #12588)
@@ -356,7 +376,7 @@ Antes do loop, renovar a trava (**Renovacao**, #11698): standalone `npx tsx scri
 
 > NOTA: este loop **nao bloqueia social** — `publish-facebook.ts` e `publish-linkedin.ts` ja completaram em 5c. O loop so toca o draft Kit (newsletter).
 
-**Passar `platform: "kit"` pro `review-test-email` (#464)** (Processo Kit da seção "Roteamento por plataforma" do agente). **Tratamento no passo 5 abaixo:** `publish-newsletter-kit.ts` não tem modo `fix` (não há automação de browser pra reaplicar issues via DOM — o conteúdo vem inteiramente de `02-reviewed.md`). Se `kept` não estiver vazio na tentativa 1, **não disparar re-fix automático** — logar warn `"review-test-email (kit) encontrou {N} problemas — sem fix automático neste backend (#464), seguindo pro Schedule"` e sair do loop direto com `review_status: "issues_unfixable"` (sem tentativa 2). O filtro de falso-positivos (4.5) roda igual. **`_internal/newsletter-kit-published.json` não tem os campos `review_completed`/`review_status`/`review_attempts`/`review_final_issues`** (schema `KitNewsletterPublished` não os inclui) — registrar o resultado da revisão via `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level {info se ok, warn se inconclusive/issues_unfixable} --message "review-test-email (kit): {review_status}" --details '{"attempts":N,"issues":[...]}'` em vez disso e, **OBRIGATORIAMENTE (#9594), gravar o resultado por edição:** `npx tsx scripts/record-kit-review.ts --edition-dir {EDITION_DIR}/ --status {ok|inconclusive|issues_unfixable} --attempts {N} [--reason {mcp_unavailable|not_found_timeout|truncated_fetch|ui_test_not_marked}] [--issues-json '[...]'] --email-file {EDITION_DIR}/_internal/.email-body.tmp` (#10243: confere em TS que o `wrong_value` do erro intencional está no e-mail entregue; `--status ok` com `missing` é recusado — o agente alucinou o texto correto na 261015; grava `_internal/05-review-kit.json`). Vale para TODA saída do loop, inclusive `inconclusive` sem despachar o agente (passo 0) — aí com `--attempts 0` (#9885; o script só aceita 0 com `--status inconclusive`). É desse arquivo que o invariante `stage-5-review-completed` (§5i) e o gate do Stage 6 (§6b) leem — sem ele os dois acusam "review automático NÃO rodou" (o run-log sozinho não bastava: na edição 261005 o loop foi pulado e o gate mostrou "review automático" sem dado).
+**Passar `platform: "kit"` pro `review-test-email` (#464)** (Processo Kit da seção "Roteamento por plataforma" do agente). **Tratamento no passo 5 abaixo:** `publish-newsletter-kit.ts` não tem modo `fix` (não há automação de browser pra reaplicar issues via DOM — o conteúdo vem inteiramente de `02-reviewed.md`). Se `kept` não estiver vazio na tentativa 1, **não disparar re-fix automático** — logar warn `"review-test-email (kit) encontrou {N} problemas — sem fix automático neste backend (#464), seguindo pro Schedule"` e sair do loop direto com `review_status: "issues_unfixable"` (sem tentativa 2). O filtro de falso-positivos (4.5) roda igual. **`_internal/newsletter-kit-published.json` não tem os campos `review_completed`/`review_status`/`review_attempts`/`review_final_issues`** (schema `KitNewsletterPublished` não os inclui) — registrar o resultado da revisão via `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level {info se ok, warn se inconclusive/issues_unfixable} --message "review-test-email (kit): {review_status}" --details '{"attempts":N,"issues":[...]}'` em vez disso e, **OBRIGATORIAMENTE (#9594), gravar o resultado por edição:** `npx tsx scripts/record-kit-review.ts --edition-dir {EDITION_DIR}/ --status {ok|inconclusive|issues_unfixable} --attempts {N} [--reason {mcp_unavailable|not_found_timeout|truncated_fetch|ui_test_not_marked}] [--issues-json '[...]'] --email-file {EDITION_DIR}/_internal/.email-body.tmp` (#10243: confere em TS que o `wrong_value` do erro intencional está no e-mail entregue; `--status ok` com `missing` é recusado — o agente alucinou o texto correto na 261015; grava `_internal/05-review-kit.json`). Vale para TODA saída do loop, inclusive `inconclusive` sem despachar o agente (passo 0) — aí com `--attempts 0` (#9885; o script só aceita 0 com `--status inconclusive`). É desse arquivo que o invariante `stage-5-review-completed` (§5i) e o gate do Stage 6 (§6b) leem — sem ele os dois acusam "review automático NÃO rodou" (o run-log sozinho não bastava: na edição 261005 o loop foi pulado e o gate mostrou "review automático" sem dado). **O `record-kit-review.ts` e o `log-event.ts` vão num Bash so (#14039), nessa ordem, com o exit do `record-kit-review.ts` devolvido no fim** (`record-kit-review.ts ...; rc=$?`, log, `(exit $rc)`): exit != 0 dele e recusa do registro, e nao pode sumir atras do exit 0 do log.
 
 - **Verificacao e correcao — NAO-BLOQUEANTE (#3839, decisao do editor 260721):**
   > O loop tenta **1 verificacao**, sem fix automatico. Se o test email nao confirmar, **loga warning e segue pro Schedule** (Stage 6) em vez de travar a Etapa 5.
@@ -478,14 +498,14 @@ npx tsx scripts/pipeline-sentinel.ts write \
 
 **Marcar Stage 5 `done` AQUI (#1783).** Este e o mark-done canônico do Stage 5 é o §5i — acontece **antes** do Stage 6. Auto-carimbo de `end` via #1789:
 
-```bash
-npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status done
-```
+**Capturar custo/tokens reais (#3441) no mesmo Bash (#14039):**
 
-**Capturar custo/tokens reais (#3441):**
 ```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status done; rc=$?
 npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 5
+(exit $rc)
 ```
+O exit que volta e o do `update-stage-status`; o JSON de stdout do `capture-stage-usage.ts` sai na mesma saida.
 
 - Falha do sentinel → logar warn. Nao bloquear.
 - Ler o JSON de stdout do `capture-stage-usage.ts` acima: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Nao bloquear. **Rodar o `capture-stage-usage.ts --stage 5` acima SEMPRE, inclusive no backend Kit (#9594)** — na edição 261005 ele não rodou e o `stage-usage-captured` acusou no §5i. Backstop: o §6b-7 do Stage 6 re-captura o Stage 5 quando ele ainda está sem custo (mesma sessão, `/diaria-5-publicacao` cobre 5+6).

@@ -28,7 +28,7 @@
  *     no header é by-design, não corruption.
  *
  * #2730: o formato REAL de `email:encoding_drop` produzido pelo review-test-email
- * (`.claude/agents/review-test-email.md` passo 3e, mapeado de
+ * (`.claude/agents/review-test-email.md` K13; era o passo 3e do Processo Beehiiv, arquivado no #14041; mapeado de
  * `lint-test-email-encoding.ts`) é `"{codepoint} '{char}' em '…{context}…'"` — 2
  * termos entre aspas simples (char + context), nunca 1. O checker de FP
  * by-design (`isEncodingDropSectionEmojiByDesign`) exigia exatamente 1 termo —
@@ -102,7 +102,7 @@ export function extractQuotedTerms(issue: string): string[] {
 export function extractEncodingDropCharAndContext(
   issue: string,
 ): { char: string; context: string } | null {
-  // Formato oficial (`.claude/agents/review-test-email.md` passo 3e):
+  // Formato oficial (`.claude/agents/review-test-email.md` K13):
   // "U+XXXX 'char' em 'context'" — codepoint primeiro (sem aspas), char entre
   // aspas simples, depois "em", depois o context entre aspas simples.
   const official = issue.match(/U\+[0-9A-Fa-f]{2,8}\s+'([^']+)'\s+em\s+'([^']*)'/i);

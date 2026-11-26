@@ -65,8 +65,11 @@ test("#9823: entre 95 KB e o corte acusa near_clip (warning com parte HTML, info
 
 test("#9311: review-test-email roteia TODOS os achados de tamanho como info:, nunca email: (blocker do fix loop)", () => {
   const md = readFileSync(join(import.meta.dirname, "..", ".claude", "agents", "review-test-email.md"), "utf8");
-  const sec = md.slice(md.indexOf("### 3f. Tamanho do e-mail ENTREGUE"), md.indexOf("### 3b. Image freshness"));
-  assert.ok(sec.length > 0, "seção 3f não encontrada");
+  // #14041: o Processo Beehiiv (seção 3f) foi arquivado; a regra vive no K14 do Processo Kit.
+  const start = md.indexOf("### K14. Tamanho do e-mail ENTREGUE");
+  assert.ok(start !== -1, "seção K14 não encontrada");
+  const sec = md.slice(start, md.indexOf("### K15.", start));
+  assert.ok(sec.length > 0, "seção K14 vazia");
   assert.doesNotMatch(sec, /"email:delivered_size/, "achado de tamanho com prefixo email: dispara o fix loop do Stage 5");
   for (const cat of ["delivered_size_over_clip", "delivered_size_may_clip", "delivered_size_near_clip", "delivered_size_unmeasured"]) {
     assert.ok(sec.includes(`"info:${cat}`), `${cat} deveria mapear para info:`);
