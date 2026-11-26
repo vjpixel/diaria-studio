@@ -90,7 +90,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { runCli } from "./lib/cli-exit.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
-import { dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010
+import { dailyWorkerEnqueueFailure, dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010, #14243
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
 import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
@@ -1042,14 +1042,16 @@ async function main(): Promise<number | void> {
         results.push(entry);
         console.log(`OK threads/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
       } catch (e: any) {
-        console.error(`FAILED threads/${d}: ${e.message}`);
+        // #14243: 409 `send_unknown` (disparo anterior ambíguo) é estado
+        // desconhecido, nunca `failed`: o post pode estar no ar.
+        const failure = dailyWorkerEnqueueFailure(e);
+        console.error(`${failure.status === "send_unknown" ? "SEND_UNKNOWN" : "FAILED"} threads/${d}: ${failure.reason}`);
         const entry: PostEntry = {
           platform: "threads",
           destaque: d,
           url: null,
-          status: "failed",
           scheduled_at: null,
-          reason: e.message,
+          ...failure,
         };
         tagAndAppend(entry);
         results.push(entry);
