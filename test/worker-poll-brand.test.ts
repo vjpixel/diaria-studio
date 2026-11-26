@@ -20,35 +20,7 @@ import {
 } from "../workers/poll/src/lib.ts";
 import { brandedNamespace, votePageHtml, type Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
-
-// ── Mock KV backed por Map ───────────────────────────────────────────
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  const kv = {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "", cursor }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-  return kv;
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 describe("brand helpers (#1905)", () => {
   it("parseBrandParam: só 'clarice' é não-default; resto → diaria", () => {
@@ -96,12 +68,12 @@ describe("brand helpers (#1905)", () => {
 
 describe("brandedNamespace (#1905)", () => {
   it("prefixo vazio retorna o MESMO kv (diaria = sem overhead)", () => {
-    const base = makeMapKV();
+    const base = makeTrackedKv();
     assert.strictEqual(brandedNamespace(base as never, ""), base as never);
   });
 
   it("prefixa get/put/delete; namespaces não se enxergam", async () => {
-    const base = makeMapKV();
+    const base = makeTrackedKv();
     const clarice = brandedNamespace(base as never, "clarice:");
     await clarice.put("score:a@x.com", "1");
     // chave física no KV vem prefixada
@@ -114,7 +86,7 @@ describe("brandedNamespace (#1905)", () => {
   });
 
   it("list injeta o prefixo e STRIPA dos names retornados", async () => {
-    const base = makeMapKV({
+    const base = makeTrackedKv({
       "score:a@x.com": "1",
       "clarice:score:b@x.com": "2",
       "clarice:score:c@x.com": "3",
@@ -131,8 +103,8 @@ describe("brandedNamespace (#1905)", () => {
 });
 
 describe("isolamento e2e via router (#1905)", () => {
-  const makeEnv = (): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-    POLL: makeMapKV(),
+  const makeEnv = (): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+    POLL: makeTrackedKv(),
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",

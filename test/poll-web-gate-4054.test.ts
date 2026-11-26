@@ -16,34 +16,10 @@ import {
   ROUNDS_PLAYED_COOKIE,
   renderJogarGatePage,
 } from "../workers/poll/src/web-gate.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
-
-const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-  POLL: makeMapKV(),
+const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+  POLL: makeTrackedKv(),
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",
@@ -72,7 +48,7 @@ describe("POST /jogar/gate/verify (#4054)", () => {
   it("assinante ativo (via KV) → ok:true + cookie de sessão", async () => {
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
-    const env = makeEnv({ SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace });
+    const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace });
     const res = await worker.fetch(req({ email }), env);
     const data = (await res.json()) as { ok: boolean };
     assert.equal(data.ok, true);
@@ -129,7 +105,7 @@ describe("POST /jogar/gate/verify (#4054)", () => {
   it("honeypot preenchido → fake-fail 200, sem revelar ao bot", async () => {
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
-    const env = makeEnv({ SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace });
+    const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace });
     const res = await worker.fetch(req({ email, website: "http://spam.example.com" }), env);
     assert.equal(res.status, 200);
     const data = (await res.json()) as { ok: boolean };
@@ -139,7 +115,7 @@ describe("POST /jogar/gate/verify (#4054)", () => {
   it("sem COOKIE_HMAC_SECRET → assinante confirmado mas gate_unavailable (nunca emite cookie sem segredo)", async () => {
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
-    const env = makeEnv({ SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace, COOKIE_HMAC_SECRET: undefined });
+    const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace, COOKIE_HMAC_SECRET: undefined });
     const res = await worker.fetch(req({ email }), env);
     assert.equal(res.status, 503);
     assert.equal(getCookieHeader(res), null);

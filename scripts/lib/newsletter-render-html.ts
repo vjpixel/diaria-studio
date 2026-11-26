@@ -39,7 +39,7 @@ import { normalizeNumericArrows, stripCtaArrows, stripUnambiguousCtaArrows } fro
 import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import { deriveEditionUrl, appendUtmToEditionUrl, BEEHIIV_BASE_URL } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home; BEEHIIV_BASE_URL (#5794): bloco "Convide um amigo" aponta pra HOME, não pra edição
-import type { AprofundeItem, HubLink } from "../extract-destaques.ts"; // #3920 / #4907
+import type { AprofundeItem, HubLink } from "./destaques-parse.ts"; // #3920 / #4907
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 

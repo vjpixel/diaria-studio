@@ -25,6 +25,7 @@ import {
   shortsSendingPath,
 } from "../scripts/lib/diaria/shorts-sending-marker.ts";
 import { isShortsRegistryFileName, readShortsRegistry } from "../scripts/lib/diaria/shorts-published-store.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ROOT = join(import.meta.dirname, "..");
 const AAMMDD = "261030";
@@ -152,7 +153,7 @@ describe("#11827 P2: arquivo de marcas", () => {
 });
 
 describe("#11827 P2: publish-shorts grava a marca antes de publicar", () => {
-  const src = readFileSync(join(ROOT, "scripts", "publish-shorts.ts"), "utf8");
+  const src = publishShortsSource();
   it("marca antes da 1ª chamada de publicação do loop e apaga na recusa", () => {
     const mark = src.indexOf("markShortSending(dir, aammdd, writer");
     const firstPublish = src.indexOf("outcome = await enqueueInstagramReel(");

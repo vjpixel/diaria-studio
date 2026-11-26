@@ -31,7 +31,7 @@ import {
   type ArmMetrics,
   type ArmGuardrailResult,
 } from "../../workers/brevo-dashboard/src/experiment-cta.ts";
-import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "../../workers/brevo-dashboard/src/thresholds.ts";
+import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "./shared/brevo-health-thresholds.ts";
 
 /** Janela de espera pós-envio antes de avaliar guardrails (decisão do editor,
  * 260727 — 6h originais, ajustada pra 10h em #4475 pra dar mais folga de

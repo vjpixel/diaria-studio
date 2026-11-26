@@ -20,6 +20,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { instagramTimerBeforePublish, publishFacebookReel, type GraphDeps } from "../scripts/publish-shorts.ts";
 import { isDestinationDone, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -143,7 +144,7 @@ describe("#11870: reconferência antes do media_publish leva o matchedBy ao cham
   });
 
   it("o timer em publish-shorts.ts passa o callback e confere os collabs do achado da reconferência", () => {
-    const src = readFileSync(resolve(ROOT, "scripts/publish-shorts.ts"), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /instagramTimerBeforePublish\(\{ local: localRecheck, gate: accountGate, onAlready: onRecheckAlready \}\)/);
     const i = src.indexOf("const recheck: { hit:");
     assert.ok(i > 0, "captura do achado da reconferência não encontrada");

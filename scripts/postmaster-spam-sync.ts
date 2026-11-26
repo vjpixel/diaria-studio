@@ -195,7 +195,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { POSTMASTER_SPAM_KV_KEY } from "./postmaster-spam-entry.ts";
-import { HEALTH_SAMPLE_DAYS } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import { HEALTH_SAMPLE_DAYS } from "./lib/shared/clarice-weekly-plan.ts";
 import { additionalPostmasterSpamKvKey } from "./lib/dashboard-kv-types.ts";
 import type { PostmasterSpamEntry, PostmasterCampaignSpamRecord } from "./lib/dashboard-kv-types.ts";
 import {

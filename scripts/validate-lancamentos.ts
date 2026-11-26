@@ -13,7 +13,7 @@
  *
  *   Output JSON: { lancamento_count, invalid_urls[], status }
  *
- * Modo approved-json (#876, usado em §2a do orchestrator-stage-2):
+ * Modo approved-json (#876, usado em §2a do orchestrator-stage-2-fallback):
  *   npx tsx scripts/validate-lancamentos.ts \
  *     --approved <01-approved.json> \
  *     [--write-removed <_internal/02-lancamentos-removed.json>]

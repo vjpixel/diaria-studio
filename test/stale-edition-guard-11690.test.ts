@@ -257,11 +257,13 @@ describe("#13851 sentinel do Stage 4 atrasado no sync", () => {
     assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--caller-stage", "05"], { host: "neo" }), 4);
     assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--caller-stage", "x"], { host: "neo" }), 2);
   });
-  it("trava deste host (viva ou tombstone) não emite prev_gate_in_transit; de outro host, sim", () => {
+  it("trava deste host (viva, ou tombstone solto depois do arquivo mais novo) não emite prev_gate_in_transit; de outro host, sim", () => {
     const recent = { ...base, sentinelSteps: [1, 2, 3], newestFileAgeMs: 60_000 };
     assert.equal(assessStaleEdition({ ...recent, lock: lock("neo", 4) }).ok, true);
+    // #14220: o tombstone só silencia o sinal quando é mais novo que o arquivo.
+    const now = Date.parse("2026-10-29T10:00:30Z");
     assert.equal(
-      assessStaleEdition({ ...recent, lock: { ...lock("neo", 4), released_at: "2026-10-29T10:00:00Z", interrupted_stage: 4 } }).ok,
+      assessStaleEdition({ ...recent, now, lock: { ...lock("neo", 4), released_at: "2026-10-29T10:00:00Z", interrupted_stage: 4 } }).ok,
       true,
     );
     const remote = assessStaleEdition({ ...recent, lock: lock("300", 2) });

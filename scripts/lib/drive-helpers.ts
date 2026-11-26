@@ -10,7 +10,7 @@
  * (removidos em #3713 — mecanismo de relatórios no Drive descontinuado).
  */
 
-import { gFetch } from "../google-auth.ts";
+import { gFetch } from "./google-auth.ts";
 import { DRIVE_API } from "./drive-constants.ts";
 
 // ---------------------------------------------------------------------------

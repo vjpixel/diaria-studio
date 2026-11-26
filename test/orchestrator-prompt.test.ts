@@ -188,7 +188,10 @@ describe("orchestrator-prompt (#634)", () => {
       // Teto bumped de 575→580 com headroom pequeno.
       // #11534: +2 linhas (`--record-run` do humanizador e da Clarice antes do
       // `--write` do selo social). Arquivo foi a 581 linhas. Teto 580→585.
-      "orchestrator-stage-2.md": 585,
+      // #14113: prosa de fallback do runner em orchestrator-stage-2-fallback.md.
+      // Principal 149, fallback 501 linhas.
+      "orchestrator-stage-2.md": 165,
+      "orchestrator-stage-2-fallback.md": 520,
       // #4258 item 3: +9 linhas (novo §3a-bis — passo de humanizador+Clarice
       // sobre a frase de descrição do É IA?, único texto da edição que não
       // passava por esse fluxo). Teto bumped de 135→150 com headroom (era
@@ -602,7 +605,7 @@ describe("#3530: Stages 0-3 usam {EDITION_DIR} resolvido — sem split-brain com
   ];
 
   // #14030: os arquivos de fallback e o §0-replies também entram na varredura.
-  for (const file of [...STAGE_0_3_FILES, "orchestrator-stage-0-fallback.md", "orchestrator-stage-0-replies.md", "orchestrator-stage-1-fallback.md"]) {
+  for (const file of [...STAGE_0_3_FILES, "orchestrator-stage-0-fallback.md", "orchestrator-stage-0-replies.md", "orchestrator-stage-1-fallback.md", "orchestrator-stage-2-fallback.md"]) {
     it(`${file} não monta mais data/editions/{AAMMDD} (ou variantes) à mão para a edição corrente`, () => {
       const content = readFileSync(resolve(AGENTS_DIR, file), "utf8");
       for (const pattern of FORBIDDEN_PATTERNS) {

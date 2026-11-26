@@ -14,23 +14,7 @@ import {
   aiFetchReferrerCounterKey,
   incrementAiFetchCounter,
 } from "../scripts/lib/shared/ai-fetch-counters.ts";
-
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    _map: m,
-  } as unknown as KVNamespace & { _map: Map<string, string> };
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 describe("AI_FETCH_BOTS", () => {
   test("tem exatamente os 8 UAs nomeados na issue #4902", () => {
@@ -124,7 +108,7 @@ describe("aiFetchBotCounterKey / aiFetchReferrerCounterKey", () => {
 
 describe("incrementAiFetchCounter", () => {
   test("chave ausente → cria com valor '1'", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const key = aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo");
     await incrementAiFetchCounter(kv, key);
     assert.equal(await kv.get(key), "1");
@@ -132,14 +116,14 @@ describe("incrementAiFetchCounter", () => {
 
   test("chave existente → soma 1 ao valor atual", async () => {
     const key = aiFetchBotCounterKey("bingbot", "2026-08-11", "arquivo");
-    const kv = makeMapKV({ [key]: "7" });
+    const kv = makeTrackedKvNamespace({ [key]: "7" });
     await incrementAiFetchCounter(kv, key);
     assert.equal(await kv.get(key), "8");
   });
 
   test("valor corrompido (não-numérico) no KV → trata como 0, não lança", async () => {
     const key = aiFetchBotCounterKey("OAI-SearchBot", "2026-08-11", "arquivo");
-    const kv = makeMapKV({ [key]: "lixo" });
+    const kv = makeTrackedKvNamespace({ [key]: "lixo" });
     await incrementAiFetchCounter(kv, key);
     assert.equal(await kv.get(key), "1");
   });
@@ -171,7 +155,7 @@ describe("incrementAiFetchCounter", () => {
   });
 
   test("contadores de bots distintos não se cruzam", async () => {
-    const kv = makeMapKV();
+    const kv = makeTrackedKvNamespace();
     const keyGoogle = aiFetchBotCounterKey("Googlebot", "2026-08-11", "arquivo");
     const keyBing = aiFetchBotCounterKey("bingbot", "2026-08-11", "arquivo");
     await incrementAiFetchCounter(kv, keyGoogle);

@@ -77,7 +77,7 @@ import {
   evaluateArmGuardrails,
   type ArmGuardrailResult,
 } from "../../workers/brevo-dashboard/src/experiment-cta.ts";
-import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "../../workers/brevo-dashboard/src/thresholds.ts";
+import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "./shared/brevo-health-thresholds.ts";
 import { describeBreaches, type CampaignGuardrailInput } from "./clarice-guardrail-alarm.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 

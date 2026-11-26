@@ -86,6 +86,8 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     let cronShouldFire = true; // default = fallback (DO indisponível)
     // #10922 — container de Reels que o alarm do DO deixou em processamento.
     let doReelsContainer: ReelsContainerRef | null = null;
+    // #14219 — token do claim deste cron; o `/release-claim` só libera com ele.
+    let claimToken: string | undefined;
     try {
       const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
       const doStub = env.LINKEDIN_SCHEDULER.get(doId);
@@ -98,13 +100,24 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
         // Fix #F3 (confirmed bug): include `claiming` in the type — previously the cast
         // `as { fired: boolean }` dropped `claiming` from the parsed object, making the
         // crash-detection logic (claiming=true + fired=false) permanently unreachable.
-        const status = await statusRes.json() as { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown?: string | null };
+        const status = await statusRes.json() as {
+          fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown?: string | null; dlq_reason?: string | null;
+        };
         if (typeof status.send_unknown === "string" && status.send_unknown !== "") {
           // #11106 — o alarm teve resposta ambígua no publish e não refez; só
           // ele sabe disso (o DO não escreve no KV). DLQ com o motivo, sem
           // re-disparar — o editor confere o perfil.
           await moveToDlq(env, k.name, entry, status.send_unknown);
           console.error(`[fire] ${k.name} envio ambíguo no alarm — dlq sem refazer: ${status.send_unknown}`);
+          dlq++;
+          continue;
+        }
+        if (typeof status.dlq_reason === "string" && status.dlq_reason !== "") {
+          // #14218 — o alarm terminou em `dlq` e não refez. Antes o cron via
+          // `fired=false`, ganhava o claim e redisparava (o carrossel inteiro,
+          // 2ª cópia quando a 1ª tinha saído). DLQ com o motivo do alarm.
+          await moveToDlq(env, k.name, entry, status.dlq_reason);
+          console.error(`[fire] ${k.name} dlq no alarm — movido pra DLQ sem refazer: ${status.dlq_reason}`);
           dlq++;
           continue;
         }
@@ -127,8 +140,11 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       // não disparamos — evita dup cron↔alarm.
       const claimRes = await doStub.fetch("https://do/claim", { method: "POST" });
       if (claimRes.ok) {
-        const claimData = await claimRes.json() as { claimed: boolean; reels_container?: ReelsContainerRef; entry?: QueueEntry };
+        const claimData = await claimRes.json() as {
+          claimed: boolean; claim_token?: string; reels_container?: ReelsContainerRef; entry?: QueueEntry;
+        };
         doReelsContainer = claimData.reels_container ?? null;
+        claimToken = claimData.claim_token;
         if (!claimData.claimed) {
           // Alarm (ou outro cron) ganhou o claim — não postar.
           // Item será limpo na próxima rodada do cron quando fired=true.
@@ -147,7 +163,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           const changedInDo = claimData.entry !== undefined && !sameQueueContent(claimData.entry, entry);
           const changedInKv = fresh === null || fresh.cancelled === true || !sameQueueContent(fresh, entry);
           if (changedInDo || changedInKv) {
-            try { await doStub.fetch("https://do/release-claim", { method: "POST" }); } catch { /* TTL do claim libera */ }
+            try { await releaseClaim(doStub, claimToken); } catch { /* TTL do claim libera */ }
             console.warn(
               `[fire] ${k.name} conteúdo mudou entre a leitura do KV e o claim (${changedInDo ? "payload do DO" : "KV"}) — não dispara a cópia velha; próxima volta usa o atual (#11107)`,
             );
@@ -172,8 +188,29 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       try {
         const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
         const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-        await doStub.fetch("https://do/release-claim", { method: "POST" });
+        await releaseClaim(doStub, claimToken);
       } catch { /* non-fatal — eviction limpará o DO */ }
+    };
+
+    // #14230 — o cron decidiu `dlq`: marca o DO como o alarm faz no mesmo
+    // desfecho (#14218, `dlq_reason` + payload apagado + claim liberado pelo
+    // token), via `/mark-dlq`. Antes só liberava o claim, e um alarm que
+    // disparasse depois refazia o post (o carrossel inteiro). Se a marcação
+    // falhar, ao menos libera o claim, como antes.
+    const markCronDlq = async (reason: string) => {
+      try {
+        const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+        const res = await env.LINKEDIN_SCHEDULER.get(doId).fetch("https://do/mark-dlq", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason, claim_token: claimToken ?? null }),
+        });
+        if (res.ok) return;
+        console.error(`[fire] ${k.name} /mark-dlq devolveu ${res.status} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
+      } catch (e) {
+        console.error(`[fire] ${k.name} /mark-dlq falhou: ${String(e)} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
+      }
+      await releaseCronClaim();
     };
 
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
@@ -220,7 +257,8 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     if (outcome.status === "dlq") {
       // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
       // fica com claiming=true permanente e o alarm fica travado até eviction.
-      await releaseCronClaim();
+      // #14230 — e marcar o DO (`dlq_reason`, sem payload): o alarm não refaz.
+      await markCronDlq(outcome.reason);
       const dlqKey = await moveToDlq(env, k.name, entry, outcome.reason);
       console.error(`[fire] ${k.name} dropped to dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
       dlq++;
@@ -295,6 +333,10 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
         });
         await env.LINKEDIN_QUEUE.delete(k.name);
+        // #14230 — mesma marcação do outcome `dlq`, DEPOIS das escritas no KV
+        // (o release do claim fica nesse ponto, #11045); `/mark-dlq` libera o claim.
+        releaseAfterWrites = false;
+        await markCronDlq(failureReason ?? `retries esgotados (${nextRetry})`);
         console.error(
           `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
         );
@@ -378,6 +420,22 @@ async function markDoFired(env: Env, key: string): Promise<void> {
     }
     void cancelledViaCancel; // loggado acima
   }
+}
+
+/**
+ * #14219 — libera no DO o claim que ESTE cron ganhou, apresentando o token
+ * devolvido pelo `/claim`. Sem token (DO indisponível no claim), não há claim
+ * deste cron a liberar: o DO recusa e o TTL resolve.
+ */
+async function releaseClaim(
+  doStub: { fetch: (url: string, init?: RequestInit) => Promise<Response> },
+  claimToken: string | undefined,
+): Promise<void> {
+  await doStub.fetch("https://do/release-claim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ claim_token: claimToken ?? null }),
+  });
 }
 
 /** Move a entry pra `dlq:` (PUT antes do delete, #894 P1-A) e devolve a key da DLQ. */

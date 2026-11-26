@@ -6,7 +6,7 @@
  * (`scripts/lib/eia-sync.ts`) — lê `01-eia.md` + `02-reviewed.md` do
  * edition dir, e regrava `01-eia.md` se o bloco mirror pós-humanizador+
  * Clarice divergir. Rodar no Stage 2, LOGO APÓS Clarice terminar de
- * corrigir `02-reviewed.md` (ver `orchestrator-stage-2.md`) — antes disso,
+ * corrigir `02-reviewed.md` (ver `orchestrator-stage-2-fallback.md`) — antes disso,
  * `01-eia.md` ainda não tem o que sincronizar; depois disso, quanto antes
  * melhor (o Stage 4 nunca deve ver a divergência).
  *

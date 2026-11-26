@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 import { DESTAQUE_MIN_CHARS, DESTAQUE_MAX_CHARS } from "../scripts/lib/lint-checks/destaque-chars.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,7 +49,7 @@ describe("writer.md invariants (#1208)", () => {
     assert.match(wd, /\*\*D1, D2 e D3\*\* entre \*\*900-1000 chars\*\*/);
     assert.match(wd, /D1\/D2\/D3 → todos 900-1000/);
     const rules = readFileSync(resolve(ROOT, "context/editorial-rules.md"), "utf8");
-    const stage2 = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-2.md"), "utf8");
+    const stage2 = readStage2Playbook(); // #14113: principal + fallback
     for (const [name, text] of [
       ["writer.md", content],
       ["writer-destaque.md", wd],

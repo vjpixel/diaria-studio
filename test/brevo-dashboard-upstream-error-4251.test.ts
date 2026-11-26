@@ -32,19 +32,7 @@ import {
   LASTGOOD_CAMPAIGNS_KEY,
 } from "../workers/brevo-dashboard/src/index.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
-
-function makeKv(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial));
-  return {
-    get: async (key: string, type?: string) => {
-      const val = store.get(key);
-      if (val == null) return null;
-      return type === "json" ? JSON.parse(val) : val;
-    },
-    put: async (key: string, value: string) => { store.set(key, value); },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const staleCampaign = {
   id: 900,
@@ -208,7 +196,7 @@ describe("upstreamErrorResponse (#4251) — erro explícito quando não há stal
 
 describe("buildUpstreamErrorFallback (#4251) — HTML: serve o último dado bom com aviso de defasagem", () => {
   it("403 com stale em cache → 200, banner com defasagem, abas KV frescas", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         scheduled: [],
@@ -231,7 +219,7 @@ describe("buildUpstreamErrorFallback (#4251) — HTML: serve o último dado bom 
   });
 
   it("5xx com stale em cache → mesmo caminho (200, banner)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         scheduled: [],
@@ -256,7 +244,7 @@ describe("buildUpstreamErrorFallback (#4251) — HTML: serve o último dado bom 
   });
 
   it("STATS_CACHE presente mas sem nenhum último dado bom gravado → 503 explícito, não dado inventado", async () => {
-    const kv = makeKv({}); // KV vazio — nunca gravou dash:lastgood:campaigns
+    const kv = makeTrackedKvNamespace({}); // KV vazio — nunca gravou dash:lastgood:campaigns
     const env = { COUPONS_TAB_ENABLED: "false", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const resp = await buildUpstreamErrorFallback(env as any, 500);
@@ -266,7 +254,7 @@ describe("buildUpstreamErrorFallback (#4251) — HTML: serve o último dado bom 
   });
 
   it("KV corrompido (campaigns não-array) → nunca lança, degrada graciosamente", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: "corrompido", scheduled: 0, generatedAt: "2026-07-28T10:00:00.000Z" }),
     });
     const env = { COUPONS_TAB_ENABLED: "false", STATS_CACHE: kv };
@@ -286,7 +274,7 @@ describe("buildUpstreamErrorFallback (#4251) — HTML: serve o último dado bom 
 
 describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", () => {
   it("403 com stale em cache → array cru de campanhas + headers de defasagem (shape preservado p/ automação)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         generatedAt: "2026-07-28T10:00:00.000Z",
@@ -303,7 +291,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", (
   });
 
   it("sem stale em cache → null (caller degrada pro 503 explícito)", async () => {
-    const kv = makeKv({});
+    const kv = makeTrackedKvNamespace({});
     const resp = await buildUpstreamErrorCampaignsJsonFallback({ STATS_CACHE: kv }, 5, 403);
     assert.strictEqual(resp, null);
   });
@@ -314,7 +302,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", (
   });
 
   it("limit respeitado (slice)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign, { ...staleCampaign, id: 901 }, { ...staleCampaign, id: 902 }],
       }),
@@ -327,7 +315,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", (
   // #4786: includeScheduled anexa `scheduled` (status=queued) do mesmo
   // payload stale -- default (ausente/false) preserva o shape de sempre.
   it("includeScheduled=false (default) NÃO anexa scheduled, mesmo presente no KV", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         scheduled: [{ ...staleCampaign, id: 999, status: "queued", sentDate: null, scheduledAt: "2026-08-12T09:00:00Z" }],
@@ -339,7 +327,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", (
   });
 
   it("includeScheduled=true anexa scheduled do mesmo payload stale", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         scheduled: [{ ...staleCampaign, id: 999, status: "queued", sentDate: null, scheduledAt: "2026-08-12T09:00:00Z" }],
@@ -352,7 +340,7 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", (
   });
 
   it("includeScheduled=true com scheduled ausente/não-array no KV → nunca lança, só não anexa nada", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: [staleCampaign] }), // sem `scheduled`
     });
     const resp = await buildUpstreamErrorCampaignsJsonFallback({ STATS_CACHE: kv }, 5, 403, true);

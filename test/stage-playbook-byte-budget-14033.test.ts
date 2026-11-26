@@ -39,7 +39,10 @@ const PER_FILE_BYTE_BUDGET: Record<string, number> = {
   "orchestrator-stage-0-replies.md": 17_700,
   "orchestrator-stage-1-research.md": 44_000,
   "orchestrator-stage-1-fallback.md": 46_500,
-  "orchestrator-stage-2.md": 100_500,
+  // #14113: principal ~30,6 KB; prosa do runner em orchestrator-stage-2-fallback.md
+  // (~74,7 KB). Clarice só REST, sem o caminho MCP pelo LLM.
+  "orchestrator-stage-2.md": 32_500,
+  "orchestrator-stage-2-fallback.md": 78_500,
   "orchestrator-stage-3.md": 23_000,
   "orchestrator-stage-4.md": 113_000,
   "orchestrator-stage-4-gate.md": 116_000,
@@ -109,6 +112,17 @@ describe("#14033: divisão do playbook da Etapa 4", () => {
     for (const anchor of ["stage-4-pesquisa-nova-sincrona", "stage-4-fronteira-pos-gate-6171"]) {
       assert.ok(history.includes(`### ${anchor}`), `docs/ sem a seção ${anchor}`);
       assert.ok(gate.includes(`#${anchor}`), `o gate não cita ${anchor}`);
+    }
+  });
+
+  it("toda âncora #stage-4-* citada pelo pré-gate existe em docs/ (#14195)", () => {
+    // #14195 moveu narrativa do pré-gate para o doc de histórico, deixando no
+    // playbook só a referência pela âncora: âncora sem seção é link morto.
+    const history = readFileSync(resolve(ROOT, "docs/orchestrator-stage-narrative-history.md"), "utf8");
+    const anchors = [...new Set(pre.match(/#stage-4-[a-z0-9-]+/g) ?? [])];
+    assert.ok(anchors.length >= 20, `pré-gate cita só ${anchors.length} âncoras #stage-4-*`);
+    for (const a of anchors) {
+      assert.ok(history.includes(`\n### ${a.slice(1)}\n`), `docs/ sem a seção ${a.slice(1)} citada pelo pré-gate`);
     }
   });
 

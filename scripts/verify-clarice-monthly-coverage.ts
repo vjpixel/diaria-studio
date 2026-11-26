@@ -42,7 +42,7 @@ import {
   CAMPAIGNS_ARCHIVE_INDEX_KV_KEY,
   CAMPAIGNS_FETCH_LIMIT,
 } from "../workers/brevo-dashboard/src/brevo-api.ts";
-import type { Env } from "../workers/brevo-dashboard/src/types.ts";
+import type { Env } from "./lib/shared/brevo-dashboard-types.ts";
 import { getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import {
   assertCampaignQuotaHeadroom,

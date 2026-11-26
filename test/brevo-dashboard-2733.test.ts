@@ -46,6 +46,7 @@ import {
 import type { CouponUsageReport } from "../scripts/lib/stripe-coupons.ts";
 import { COUPON_CLARICE_CLASS_KV_KEY, clariceClassKey } from "../scripts/lib/coupon-clarice-class.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const syntheticCoupons: CouponUsageReport = {
   NEWS50: {
@@ -83,23 +84,9 @@ const syntheticContacts: ContactsSummary = {
   engagement: { with_opens: 12, with_clicks: 3 },
 };
 
-// KV mock que honra `.get(key, "json")` → objeto parseado; `.get(key)` → string.
-function makeKv(initial: Record<string, string>) {
-  const store = new Map(Object.entries(initial));
-  return {
-    get: async (key: string, type?: string) => {
-      const val = store.get(key);
-      if (val == null) return null;
-      return type === "json" ? JSON.parse(val) : val;
-    },
-    put: async (key: string, value: string) => { store.set(key, value); },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-}
-
 describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
   it("readKvTabs lê as 5 seções KV (Cupons/Contatos/coortes/MV/É IA?) independente do Brevo", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
       // #3077: precisa do shape mínimo (universe/groups) — os normalizadores
@@ -124,7 +111,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
   });
 
   it("readKvTabs retorna null para seções ausentes no KV (sem crashar)", async () => {
-    const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
+    const kv = makeTrackedKvNamespace({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { cohorts, mvStatus, contactsSummary, eiaEngagement, hourTestState } = await readKvTabs(env as any, "cached");
@@ -136,7 +123,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
   });
 
   it("readKvTabs lê hourTestState do KV `clarice:hourtest:state` (#5189)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [HOUR_TEST_KV_KEY]: JSON.stringify({ status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-10T09:00:00.000Z" }),
     });
     const env = { STATS_CACHE: kv };
@@ -182,7 +169,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
         "assinantes-ativos": { received: 10, unsub_bounce: 3 }, // legado + campos ausentes
       },
     };
-    const kv = makeKv({ [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(malformed) });
+    const kv = makeTrackedKvNamespace({ [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(malformed) });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { contactsSummary } = await readKvTabs(env as any, "cached");
@@ -220,7 +207,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
   it("cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY) tem o shape { campaigns, scheduled }", async () => {
     // Documenta/verifica o contrato lido pelo catch: as campanhas stale vêm desse
     // envelope. Sem cache → catch usa [] (coberto pelo teste de render acima).
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: [{ id: 1 }], scheduled: [{ id: 2 }] }),
     });
     const raw = (await kv.get(LASTGOOD_CAMPAIGNS_KEY, "json")) as {
@@ -232,7 +219,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
   });
 
   it("COUPONS_TAB_ENABLED != true → readKvTabs não expõe cupons (PII gate mantido)", async () => {
-    const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
+    const kv = makeTrackedKvNamespace({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
     const env = { COUPONS_TAB_ENABLED: "false", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { couponUsage } = await readKvTabs(env as any, "cached");
@@ -250,7 +237,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
 describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV)", () => {
   it("serve Cupons FRESCOS do KV + banner de rate-limit (o fix do #2733)", async () => {
     // Cache de campanhas ausente → staleCampaigns=[]; cupons vêm do KV FRESCO.
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
     });
@@ -270,7 +257,7 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
     // KV SEM brevo:plan-credits (o bug: nunca era populado — o fetch que o populava
     // rodava DEPOIS das campanhas e o 429 o pulava). Agora o render principal busca
     // /v3/account ANTES das campanhas e passa o valor em memória aqui.
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
     });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
@@ -293,7 +280,7 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
     // STRIPE_API_KEY setada caía no fetchCouponUsage ao vivo (isFresh=false não
     // cobria o miss). Cenário real: 429 do Brevo + TTL de 300s dos cupons
     // expirado no mesmo instante (cold start / primeiro deploy).
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
       // sem COUPONS_KV_KEY → miss
     });
@@ -316,7 +303,7 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
   });
 
   it("KV corrompido (campaigns não-array) → guard Array.isArray, NUNCA 500/throw", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       // valor corrompido: campaigns como string em vez de array
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: "corrompido", scheduled: 0 }),
@@ -355,7 +342,7 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
         },
       },
     };
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleCampaign],
         scheduled: [],
@@ -735,17 +722,17 @@ describe("#9617 — coluna Clarice também nos fallbacks (readKvTabs)", () => {
   });
 
   it("readKvTabs devolve couponClariceClass normalizado (e null quando malformado)", async () => {
-    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: makeKv({ [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify(classPayload()) }) };
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: makeTrackedKvNamespace({ [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify(classPayload()) }) };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { couponClariceClass } = await readKvTabs(env as any, "kv-only");
     assert.equal(Object.values(couponClariceClass?.classes ?? {})[0], "antigo");
-    const bad = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: makeKv({ [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify({ classes: [] }) }) };
+    const bad = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: makeTrackedKvNamespace({ [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify({ classes: [] }) }) };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     assert.equal((await readKvTabs(bad as any, "kv-only")).couponClariceClass, null);
   });
 
   it("buildRateLimitFallback renderiza novo/antigo em vez de '—'", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify(classPayload()),
     });

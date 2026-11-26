@@ -31,6 +31,7 @@ import { decideThreadsProfileDuplicate, threadsProfilePreflight, type ThreadsPer
 import { buildCorteTimerAlarm, interpretCorteTimerOutput } from "../scripts/shorts-corte-timer.ts";
 import { resolveEditionScheduledAt } from "../scripts/lib/edition-scheduled-at.ts";
 import type { CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const SPEC: CorteSpec = { slug: "tratar-ia-como-humano", date: "261102", hhmm: "18:00", title: "Tratar IA como humano", hook: "Por que dar nome ao chatbot muda o jeito que você usa a ferramenta.", video: "corte.mp4" };
 const CORTE_AT = resolveEditionScheduledAt(SPEC.date, SPEC.hhmm);
@@ -124,7 +125,7 @@ describe("#11742 conferência do perfil do Threads fora do timer", () => {
   });
 
   it("wiring: a rodada que publica threads_profile confere o perfil em qualquer writer", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     const branch = src.slice(src.indexOf("} else if (item.destination === THREADS_PROFILE_DESTINATION) {"), src.indexOf('} else if (item.destination === "instagram") {'));
     assert.ok(branch.includes("threadsProfilePreflight({"), "o ramo do threads_profile confere o perfil");
     assert.ok(!/if \(writer === "threads-timer"\)/.test(branch), "a conferência não pode depender do writer do timer");

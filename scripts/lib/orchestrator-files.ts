@@ -33,6 +33,8 @@ export const ORCHESTRATOR_FILES = [
   "orchestrator-stage-1-research.md",
   "orchestrator-stage-1-fallback.md",
   "orchestrator-stage-2.md",
+  // #14113: prosa de fallback do runner da Etapa 2 fora do caminho padrão.
+  "orchestrator-stage-2-fallback.md",
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
   // #14033: §4d–§4e (gate humano + sentinel) separados do pré-gate.

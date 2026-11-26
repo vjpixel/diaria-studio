@@ -32,6 +32,7 @@ import {
   oneShotTaskRefusals,
 } from "../scripts/lib/diaria/video-publish-authorization-alarm.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ED = "261112";
 const T0 = new Date("2026-11-11T22:00:00.000Z");
@@ -170,7 +171,7 @@ describe("#12859 só a rodada da task one-shot alarma", () => {
 
 describe("#12859 publish-shorts liga o alarme na recusa", () => {
   it("o ramo de recusa da autorização chama o alarme antes do exit 2, com o comando efetivo e as recusas", () => {
-    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "publish-shorts.ts"), "utf8");
+    const src = publishShortsSource();
     const refusal = src.slice(src.indexOf('authorizationRefusalMessage("publish-shorts", "vertical"'));
     const branch = refusal.slice(0, refusal.indexOf("return 2;"));
     assert.match(branch, /await alarmTaskAuthorizationRefusal\(\{[^}]*command: authCommand[^}]*refusals: auth\.refusals/);

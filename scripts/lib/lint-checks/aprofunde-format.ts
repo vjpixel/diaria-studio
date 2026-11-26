@@ -20,7 +20,7 @@ import {
   APROFUNDE_HEADER_RE,
   APROFUNDE_ITEM_RE,
   HUB_LINK_HEADER_RE,
-} from "../../extract-destaques.ts";
+} from "../destaques-parse.ts";
 
 const DESTAQUE_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+([123])\s*\|/;
 const WHY_RE = /^Por que isso importa:/i;
