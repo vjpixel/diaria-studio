@@ -24,6 +24,7 @@ import {
 import { publishYouTubeShort } from "../scripts/publish-shorts.ts";
 import { audioCheckExitCode, runCheckYouTubeAudio } from "../scripts/check-youtube-audio.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const NOW = new Date("2026-11-17T12:00:00Z");
 const DONE = { processingStatus: "succeeded", fileDetailsAvailability: "available" };
@@ -353,7 +354,8 @@ describe("#13403 check-youtube-audio.ts", () => {
 // ── Guard estático: os dois publishers ligam o alarme no main ───────────────
 describe("#13403 ligação do alarme nos publishers", () => {
   const body = (file: string, fn: string): string => {
-    const src = readFileSync(join(import.meta.dirname, "..", "scripts", file), "utf8");
+    // #14054: o publish-shorts.ts virou entrada; o corpo mora em scripts/publish-shorts/.
+    const src = file === "publish-shorts.ts" ? publishShortsSource() : readFileSync(join(import.meta.dirname, "..", "scripts", file), "utf8");
     const start = src.indexOf(`async function ${fn}(): Promise<number> {`);
     assert.ok(start >= 0, `${fn} não achado em ${file}`);
     const next = src.indexOf("\nasync function ", start + 1);
