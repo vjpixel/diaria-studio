@@ -36,7 +36,7 @@
  *
  * Uso típico (todo I/O passa por `gFetch`, que já lida com refresh de token):
  *
- *   import { gFetch } from "../google-auth.ts";
+ *   import { gFetch } from "./google-auth.ts";
  *   import { queryDomainStatsV2, extractSpamRateReadingsV2 } from "./postmaster-v2-client.ts";
  *
  *   const response = await queryDomainStatsV2(
