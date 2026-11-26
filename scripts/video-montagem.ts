@@ -498,6 +498,10 @@ import {
   parseSilenceDetect,
   pickRawSource,
   premiereRootFrom,
+  premiereBrutoRootFrom,
+  localBrutoXml,
+  localXmlFileName,
+  duplicateBrutoNames,
   unmappedPremierePaths,
   previewClipArgs,
   previewClipAudioArgs,
@@ -785,6 +789,12 @@ interface Ctx {
   driveRoot?: string;
   /** #12707: a raiz do Neo trocada pela do Mac em todo `pathurl` (`--premiere-root`/`publishing.video.premiere_root`); ausente = caminho do Neo. */
   premierePaths?: PremierePathMap;
+  /**
+   * #13229: `{publishing.video.premiere_bruto_root}/{AAMMDD}`, a cópia local do
+   * bruto no Mac (fora do Drive). Presente = o build e o `srt` gravam ao lado de
+   * cada XML o `…-local.xml`, com só os vídeos do bruto apontando para ela.
+   */
+  premiereBrutoDir?: string;
   /**
    * #13334: sessão OAuth do modo local com raiz explícita fora do Drive for desktop
    * (`localDriveUploadFor`): sobe as saídas de build/srt/preview e busca a vinheta
@@ -5911,6 +5921,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
+  const localXmlPaths: string[] = [];
   const xmlIds: Record<string, string> = {};
   const prevXmlIds: Record<string, string> = {};
   for (const p of picked) {
@@ -5929,6 +5940,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     }
     writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechoMarkers, trechoClips, trechos }));
     xmlPaths.push(xmlPath);
+    const localXml = writeLocalBrutoXml(ctx, xmlPath);
+    if (localXml) localXmlPaths.push(localXml);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
   // #11969: com --seq, só as sequências reconstruídas (e conferidas acima) mudam no plan.json.
@@ -5956,7 +5969,46 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (flip.length) console.error(`[premissa] espelhados: ${flip.map((x) => x.id).join(", ")}: aplicar Horizontal Flip nos clipes DESSES arquivos no Premiere (o Premiere ignora o Flop do XML, #11358, #12559)`);
   } else if (source.mirrored) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o Premiere ignora o Flop do XML, #11358)");
   for (const x of xmlPaths) console.log(x);
+  for (const x of localXmlPaths) console.log(x);
   return 0;
+}
+
+/**
+ * #13229: grava `{xml}-local.xml` ao lado do XML (o do build ou o do `srt`, já
+ * com a legenda), com só os vídeos do bruto em `ctx.premiereBrutoDir`. Sem a
+ * chave no config, nada (o build de sempre). Devolve o caminho gravado, ou
+ * `null` (sem a chave, sem o premiere_root, nome de bruto repetido, XML leve
+ * sem bruto, ou falha de escrita, que é aviso: o XML normal já está gravado).
+ */
+function writeLocalBrutoXml(ctx: Ctx, xmlPath: string): string | null {
+  if (!ctx.premiereBrutoDir) return null;
+  const name = basename(xmlPath);
+  if (!ctx.premierePaths) {
+    console.error(`[aviso] ${name}: publishing.video.premiere_bruto_root sem premiere_root (ou --premiere-root off): XML local não gravado, ele é só para o Premiere do Mac (#13229)`);
+    return null;
+  }
+  try {
+    const local = localBrutoXml(readFileSync(xmlPath, "utf8"), ctx.premiereBrutoDir);
+    if (!local.rewritten.length) {
+      console.error(`[premissa] ${name}: nenhum vídeo do bruto no XML (XML leve, #13219): XML local não gravado, o normal já serve (#13229)`);
+      return null;
+    }
+    const dup = duplicateBrutoNames(local.rewritten);
+    if (dup.length) {
+      console.error(`[aviso] ${name}: bruto com nome repetido (${dup.join(", ")}) iria para o mesmo arquivo em ${ctx.premiereBrutoDir}: XML local não gravado; usar o XML normal (#13229)`);
+      return null;
+    }
+    const out = join(dirname(xmlPath), localXmlFileName(name));
+    writeFileAtomic(out, local.xml);
+    console.error(
+      `[video-montagem] XML local ${basename(out)}: ${local.rewritten.length} vídeo(s) do bruto em ${ctx.premiereBrutoDir}/ (${local.rewritten.join(", ")}); ` +
+        `áudio tratado, PNGs, card e vinheta seguem no premiere_root. No Mac, rodar antes scripts/video/prepara-bruto-mac.ts ${ctx.edition} (#13229)`,
+    );
+    return out;
+  } catch (e) {
+    console.error(`[aviso] ${name}: XML local falhou (${(e as Error).message.split("\n")[0]}): use o XML normal (#13229)`);
+    return null;
+  }
 }
 
 function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boolean): Word[] {
@@ -6610,7 +6662,12 @@ async function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): P
     // #13212: o horizontal não passa por aqui (srtPlans), então a cópia da pasta da edição só sai do --from-final.
     // #13332: a mesma legenda dentro do XML da vertical, para o Premiere abrir já legendado.
     const xml = await writeSubtitleXml(ctx, pf, plan, cueTimings(cues));
-    if (xml) console.log(xml);
+    if (xml) {
+      console.log(xml);
+      // #13229: o XML local acompanha a legenda (sem isso ficaria com o XML do build, sem a faixa).
+      const local = writeLocalBrutoXml(ctx, xml);
+      if (local) console.log(local);
+    }
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
@@ -7725,8 +7782,11 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   const driveRoot = explicitRoot ?? DEFAULT_DRIVE_ROOT;
   // #12707: a raiz do Premiere (Mac) no lugar da do Neo em todo pathurl do XML.
   let premiere: ReturnType<typeof premiereRootFrom>;
+  let premiereBrutoRoot: string | null;
   try {
-    premiere = premiereRootFrom(values["premiere-root"], readPlatformConfigSafe());
+    const platformConfig = readPlatformConfigSafe();
+    premiere = premiereRootFrom(values["premiere-root"], platformConfig);
+    premiereBrutoRoot = premiereBrutoRootFrom(platformConfig);
   } catch (e) {
     console.error(`video-montagem: ${(e as Error).message}`);
     return 2;
@@ -7771,6 +7831,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     noArchive: flags.has("no-archive"),
     // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
     ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
+    // #13229: o XML local só faz sentido no XML do Mac (com o premiere_root); sem ele, writeLocalBrutoXml avisa.
+    ...(premiereBrutoRoot ? { premiereBrutoDir: `${premiereBrutoRoot}/${edition}` } : {}),
     ...(seams.brutoStat ? { brutoStat: seams.brutoStat } : {}),
   };
   // #13404: só com o pedido do editor; sem a flag, a mensagem de "ausente" aponta a cópia e o comando.
