@@ -143,7 +143,7 @@ describe("studio-server (#3555)", () => {
   });
 
   it("GET /relatorios/:id serve o conteúdo registrado; id desconhecido é 404", async () => {
-    const { registerReport } = await import("../scripts/studio-ui/studio-reports.ts");
+    const { registerReport } = await import("../scripts/lib/reports-registry.ts");
     mkdirSync(join(root, "data", "overnight", "260720"), { recursive: true });
     writeFileSync(join(root, "data", "overnight", "260720", "report.md"), "# Diar.ia overnight 260720\n\n3 resolvidas.");
     registerReport(root, {

@@ -6,7 +6,7 @@
  * (`REWARD_GROUP_LABEL`, ex: "Patrono (R$50+)") porque é servido cru — sem
  * build step — e não pode `import` `scripts/lib/reward-tier-thresholds.ts`,
  * a fonte canônica extraída em #8155. Terceira cópia dos mesmos 4 valores
- * (as outras duas: `scripts/studio-ui/studio-apoios.ts::computeRewardGroup`
+ * (as outras duas: `scripts/lib/apoios-data.ts::computeRewardGroup`
  * e `scripts/lib/shared/artigo-especial-gate-cta.ts`, ambas já derivadas do módulo
  * canônico) — achada no self-review dessa mesma PR.
  *

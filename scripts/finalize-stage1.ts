@@ -29,8 +29,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
-import { canonicalize, extractPastUrlsWithinDays, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW, DEDUP_URL_WINDOW_DAYS } from "./dedup.ts";
-import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
+import { extractPastUrlsWithinDays, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW, DEDUP_URL_WINDOW_DAYS } from "./dedup.ts";
+import { dedupUrlKey, sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
@@ -387,15 +387,20 @@ export function applyPastSecondaryFilter(
 } {
   const kept: Article[] = [];
   const dropped: Array<{ url: string; title?: string; score: number | null }> = [];
+  // #14020/#14021: chave do dedup (`dedupUrlKey`: sem prefixo de idioma, sem
+  // `www.`, http→https), a mesma do Pass 1 de `dedup.ts` — com `canonicalize`
+  // a variante `/pt-BR/` ou `www.` do link passado passava como nova.
+  const pastKeys = new Set([...pastSecondaryUrls].map(dedupUrlKey));
+  const highlightKeys = new Set([...highlightUrls].map(dedupUrlKey));
 
   for (const article of articles) {
-    const canon = canonicalize(article.url);
+    const key = dedupUrlKey(article.url);
     // Promovido a highlight nesta edição: bypass (Phase 1 já permitiu)
-    if (highlightUrls.has(article.url) || highlightUrls.has(canon)) {
+    if (highlightUrls.has(article.url) || highlightKeys.has(key)) {
       kept.push(article);
       continue;
     }
-    if (pastSecondaryUrls.has(canon)) {
+    if (pastKeys.has(key)) {
       dropped.push({
         url: article.url,
         title: article.title,

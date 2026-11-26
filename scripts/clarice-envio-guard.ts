@@ -143,7 +143,7 @@ import type { CampaignEntry } from "./clarice-schedule-group.ts";
 import { clearScheduleAcceptance } from "./lib/clarice-quero-phrase.ts"; // #10211
 import { brtDayKey } from "./lib/clarice-envio-policy.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
-import { registerReport } from "./studio-ui/studio-reports.ts";
+import { registerReport } from "./lib/reports-registry.ts";
 import {
   realExec,
   parseStepJson,

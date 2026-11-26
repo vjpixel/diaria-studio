@@ -1,104 +1,68 @@
-# Browser Publish Setup — diar.ia.br Studio
+# Claude in Chrome — setup e onde a pipeline usa o navegador
 
-Setup do MCP **Claude in Chrome** para Stages 5 e 6 (publicação automatizada da newsletter no Beehiiv e dos 6 posts sociais no LinkedIn + Facebook).
-
----
-
-## Por que Claude in Chrome (e não Playwright)
-
-- Login do usuário no Chrome é reaproveitado automaticamente (sem persistência manual de sessão por plataforma).
-- Compreensão semântica da página → resiliente a mudanças de UI (LinkedIn/Facebook redesenham com frequência).
-- Volume baixo (7 publicações/dia) não justifica manutenção de seletores CSS.
-- Custo modesto (~600k tokens/dia, marginal).
+Setup da extensão **Claude in Chrome** e lista do que ainda passa pelo navegador logado do editor. Reescrito no #14061: a versão anterior descrevia a publicação da newsletter no Beehiiv e dos posts de LinkedIn e Facebook pelo Chrome, e nada disso roda mais assim.
 
 ---
 
-## 1. Instalar a extensão Claude in Chrome
+## O que NÃO passa pelo Chrome
 
-1. Instalar a extensão **Claude in Chrome** no Chrome (disponível na Chrome Web Store ou via [claude.ai/chrome](https://claude.ai/chrome)).
-2. Fazer login com a mesma conta Anthropic usada no Claude Code.
+- **Newsletter diária:** sai pelo Kit, por API (`scripts/publish-newsletter-kit.ts`, #7388). A Beehiiv é só arquivo histórico desde o #11225: a conta segue ativa, mas não envia e o pipeline não depende dela.
+- **Schedule da Etapa 6:** é um PATCH de `send_at` no broadcast do Kit, com GET de verificação (`.claude/skills/diaria-5-publicacao/SKILL.md`).
+- **Posts sociais da diária:** LinkedIn pelo Worker de agendamento, Facebook pela Graph API, Instagram e Threads pelo Worker, X pela Buffer, Brevo diária por API. São scripts sem navegador (`scripts/publish-social-concurrent.ts`, Etapa 5).
+
+O Chrome nunca é pré-requisito da Etapa 5/6: sem ele, a única coisa que muda é o caminho do e-mail de teste (abaixo).
+
+## Onde o Chrome ainda entra
+
+| Uso | Onde está descrito | Sem Chrome |
+|---|---|---|
+| E-mail de teste da diária pela UI do Kit ("Send test email" do próprio broadcast, ainda rascunho, #10395) | `.claude/agents/orchestrator-stage-5.md`, Passo 5c-1-kit | Fallback `publish-newsletter-kit.ts --send-test` (broadcast descartável com `[teste]` no assunto) |
+| Post restrito no apoia.se | `/diaria-artigo-especial` (Passo 3), `/diaria-mensal-apoiadores` (Passo 5) | `--skip apoiase` |
+| Paste assistido da newsletter semanal no editor do LinkedIn | `/diaria-linkedin-semanal` (Passo 8) | Paste manual pelo editor |
+| Preenchimento do formulário Tally do desafio Mandala | `/diaria-mandala-semana` (Passo 4) | Preenchimento manual |
+| Prévia local do digest mensal | `/diaria-mensal` | Abrir a prévia no navegador à mão |
+| Etapas de vídeo que só o YouTube Studio web aceita (comentário fixado, tela final, capa do Short) | `/diaria-publica` e `reference/vertical-depois-do-stage6.md` | Fazer no Studio à mão |
+
+**Regra do teste pela UI do Kit (#10410):** o `ui_test_url` é o broadcast REAL da edição, com a audiência de produção. Só três cliques são permitidos: Preview, Send test email, Send preview. Clicar em Send, Schedule, Continue ou Publish manda (ou agenda) a edição para a base inteira, sem volta. Tela inesperada = parar e usar o fallback `--send-test`.
+
+Automação de site de terceiro pelo Chrome segue a regra de ToS do `CLAUDE.md`: só em conta em que o editor está logado, com volume baixo e ação editorial; nunca scraping nem escala.
+
+---
+
+## 1. Instalar a extensão
+
+1. Instalar **Claude in Chrome** pela Chrome Web Store (ou [claude.ai/chrome](https://claude.ai/chrome)).
+2. Fazer login com a mesma conta claude.ai usada no Claude Code.
 3. Confirmar que a extensão está ativa (ícone na barra de ferramentas).
 
-## 2. Confirmar MCP no Claude Code
+Só a máquina do editor (Windows) tem Chrome logado. O servidor `300` não tem, e por isso as rodadas lá usam os fallbacks da tabela acima. Issue que exige o Chrome leva a label `windows` e vai para o Develop (`scripts/lib/issue-exec-track.ts`).
 
-No diretório `diaria-studio`, rodar:
+## 2. Confirmar o MCP no Claude Code
 
-```
-/mcp
-```
+No diretório `diaria-studio`, rodar `/mcp`: deve listar `claude-in-chrome` (conector nativo), com as ferramentas `mcp__claude-in-chrome__*`.
 
-Deve listar `claude-in-chrome` (conector nativo). As ferramentas `mcp__claude-in-chrome__*` ficam disponíveis automaticamente.
+O Stage 0 pinga o MCP (`mcp__claude-in-chrome__tabs_context_mcp`) e grava o resultado; a Etapa 5 lê esse sinal (`CHROME_MCP`, #5414) do disco para escolher entre o teste pela UI e o `--send-test`.
 
-## 3. Logar nas 3 plataformas no Chrome
+## 3. Logar nas contas
 
-Abrir o Chrome (mesma instância onde a extensão está instalada) e logar manualmente em:
+No mesmo Chrome da extensão, com "manter conectado" marcado:
 
-| Plataforma | URL | Conta esperada |
+| Conta | URL | Usada por |
 |---|---|---|
-| Beehiiv | https://app.beehiiv.com/ | Conta dona da publicação Diar.ia |
-| LinkedIn | https://www.linkedin.com/ | Perfil pessoal ou página Diar.ia |
-| Facebook (Business Suite) | https://business.facebook.com/ | Conta com acesso à página Diar.ia |
-
-Marcar "lembrar login" / "manter conectado" em cada plataforma para que a sessão persista.
+| Kit | https://app.kit.com/ | E-mail de teste pela UI (Etapa 5) |
+| apoia.se | https://apoia.se/ | Artigo especial, retrospectiva dos apoiadores |
+| LinkedIn (perfil pessoal) | https://www.linkedin.com/ | Newsletter semanal do LinkedIn |
+| YouTube Studio | https://studio.youtube.com/ | Etapas de vídeo só disponíveis na web |
 
 ## 4. Permissões em `.claude/settings.json`
 
-O arquivo `.claude/settings.json` já libera as ferramentas de leitura/escrita do Claude in Chrome em modo `allow`:
+O `allow` do projeto libera `navigate`, `read_page`, `get_page_text`, `find`, `form_input`, `upload_image`, `tabs_create_mcp`, `tabs_context_mcp` e `javascript_tool` do `mcp__claude-in-chrome__*`. Os cliques (`computer`) seguem pedindo confirmação, de propósito: é por eles que sai um envio.
 
-```
-mcp__claude-in-chrome__navigate
-mcp__claude-in-chrome__read_page
-mcp__claude-in-chrome__form_input
-mcp__claude-in-chrome__find
-mcp__claude-in-chrome__upload_image
-mcp__claude-in-chrome__tabs_create_mcp
-mcp__claude-in-chrome__tabs_context_mcp
-mcp__claude-in-chrome__javascript_tool
-```
+## 5. Problemas comuns
 
-`mcp__claude-in-chrome__javascript_tool` está em `allow` mas com escopo restrito: usado **apenas** pelo agent `publish-social` para preencher o composer contenteditable do LinkedIn (#177, ProseMirror não aceita `form_input`). Outros agents (`publish-newsletter`, etc.) não devem usar.
-
-## 5. Configuração em `platform.config.json`
-
-Bloco `publishing`:
-
-```json
-"publishing": {
-  "newsletter": {
-    "mode": "draft",
-    "template": "Default",
-    "test_email": "vjpixel@gmail.com"
-  },
-  "social": {
-    "mode": "draft_or_schedule",
-    "fallback_schedule": {
-      "linkedin": { "d1_time": "09:00", "d2_time": "12:30", "d3_time": "16:00", "day_offset": 1 },
-      "facebook": { "d1_time": "10:00", "d2_time": "13:30", "d3_time": "17:00", "day_offset": 1 }
-    },
-    "timezone": "America/Sao_Paulo"
-  }
-}
-```
-
-- `newsletter.template`: nome **exato** do template no Beehiiv (case-sensitive). Default = `"Default"`.
-- `newsletter.test_email`: para onde enviar o email de teste após salvar o rascunho.
-- `social.mode = draft_or_schedule`: tenta rascunho primeiro, agenda como fallback.
-- `social.fallback_schedule.{plataforma}.{d{N}_time}`: horário (HH:MM) na timezone configurada.
-- `social.fallback_schedule.{plataforma}.day_offset`: dias no futuro a partir de hoje (1 = amanhã).
-
-## 6. Verificar setup
-
-1. Abrir Chrome — extensão Claude in Chrome ativa, logado nas 3 plataformas.
-2. No Claude Code: `/mcp` → confirmar `claude-in-chrome` listado.
-3. Rodar `/diaria-publicar newsletter YYYY-MM-DD` numa edição com Stage 5 completo.
-4. O agente deve abrir o Beehiiv no Chrome, criar o rascunho, e enviar o teste.
-
-## Resolução de problemas
-
-| Erro | Causa | Solução |
+| Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| "Login expirado" | Sessão de uma das plataformas caducou | Re-logar no Chrome, re-rodar o stage |
-| "Template 'Default' não encontrado" | Nome do template em `platform.config.json` não bate com o Beehiiv | Verificar nome exato no dashboard Beehiiv → Templates |
-| Test email não chega | Filtros do Gmail / endereço errado | Verificar `test_email` em `platform.config.json` |
-| Composer LinkedIn não abre rascunho | UI mudou ou conta sem feature | Fallback automático para agendamento — checar `06-social-published.json` para confirmar |
-| Imagem não sobe | Arquivo > 10MB ou formato errado | Imagens do Stage 4 são .jpg ~1–2MB; verificar se `04-d{N}.jpg` existe e é válido |
+| Stage 0 registra `chromeMcp: false` | Extensão desligada ou Chrome fechado | Abrir o Chrome; a Etapa 5 já cai sozinha no `--send-test` |
+| MCP cai no meio da etapa | Extensão desconectou | Halt banner (#738): reconectar e responder `retry` |
+| UI do Kit mostra tela diferente do Preview | Kit mudou a interface | Não clicar; usar `--send-test` e abrir issue |
+| Login expirado numa conta | Sessão caducou | Logar de novo no Chrome e repetir só o passo |

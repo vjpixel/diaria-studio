@@ -123,7 +123,7 @@ import {
   type ResolveLatestMonthlyCycleResult,
 } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
-import { registerReport } from "./studio-ui/studio-reports.ts";
+import { registerReport } from "./lib/reports-registry.ts";
 import {
   brtHourToUtcHourSameDay,
   hourCellLabel,

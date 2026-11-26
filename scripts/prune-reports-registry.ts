@@ -4,7 +4,7 @@
  * Ação de manutenção ONE-OFF, manual — reescreve `data/reports/index.jsonl`
  * removendo duplicatas por id (mantém só a última linha física por id) e
  * linhas corrompidas. Ver `pruneReportsRegistry` em
- * `scripts/studio-ui/studio-reports.ts` pra semântica exata e por que isto
+ * `scripts/lib/reports-registry.ts` pra semântica exata e por que isto
  * NÃO precisa rodar em uso normal — a partir de #4666 `registerReport` já faz
  * upsert na escrita, então o arquivo nunca mais acumula uma duplicata nova.
  * Este script existe só pra limpar o histórico anterior ao fix (ex:
@@ -19,7 +19,7 @@
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
-import { pruneReportsRegistry } from "./studio-ui/studio-reports.ts";
+import { pruneReportsRegistry } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

@@ -16,24 +16,42 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dispatchRulesSection, readSubagentRules } from "./_helpers/dispatch-rules-text.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OVERNIGHT_SKILL_MD = resolve(ROOT, ".claude/skills/diaria-overnight/SKILL.md");
 const DEVELOP_SKILL_MD = resolve(ROOT, ".claude/skills/diaria-develop/SKILL.md");
 const overnightContent = readFileSync(OVERNIGHT_SKILL_MD, "utf8");
 const developContent = readFileSync(DEVELOP_SKILL_MD, "utf8");
+// #14044: a regra mora no item 4 de context/overnight-dispatch-rules.md, que o
+// prompt de dispatch cita; o SKILL.md do overnight só aponta para ele.
+const subagentRules = readSubagentRules();
+const item4 = dispatchRulesSection(4);
+const historico = readFileSync(resolve(ROOT, "docs/rodadas-autonomas-historico.md"), "utf8");
 
 describe("diaria-overnight — subagente NUNCA roda a suíte completa local (#2959)", () => {
   it("bootstrap do worktree instrui typecheck + testes afetados, não a suíte completa", () => {
     assert.match(
-      overnightContent,
-      /testes = \*\*`npx tsc --noEmit`\*\*.*s[óo] os arquivos de teste afetados\/novos/,
-      "deve instruir tsc --noEmit + testes afetados como o padrão de teste local",
+      item4,
+      /Testes locais = \*\*`npx tsc --noEmit`\*\*[\s\S]*s[óo] os arquivos de teste\s+afetados\/novos/,
+      "item 4 deve instruir tsc --noEmit + testes afetados como o padrão de teste local",
     );
     assert.match(
-      overnightContent,
-      /NUNCA a su[íi]te completa `npm test` local \(#2959\)/,
-      "deve proibir explicitamente a suíte completa local, citando #2959",
+      item4,
+      /NUNCA `npm test` completo local/,
+      "item 4 deve proibir explicitamente a suíte completa local",
+    );
+    assert.match(subagentRules, /^## 3\. Bootstrap do worktree[\s\S]*?Primeiro passo é \*\*`npm ci`\*\*/m);
+    // O prompt de dispatch do overnight cita o item 4 com o #2959.
+    const dispatchList = overnightContent.slice(
+      overnightContent.indexOf("O prompt do subagente inclui, obrigatoriamente:"),
+      overnightContent.indexOf("O subagente implementa,"),
+    );
+    assert.match(dispatchList, /`context\/overnight-dispatch-rules\.md` no início da própria sessão/);
+    assert.match(
+      dispatchList,
+      /nunca a su[íi]te completa `npm test` local \(item 4, #2959/,
+      "o prompt de dispatch deve citar o item 4 e o #2959",
     );
   });
 
@@ -65,13 +83,13 @@ describe("diaria-overnight — subagente NUNCA roda a suíte completa local (#29
 
   it("documenta o racional da causa raiz (auto-background dispara em 100% dos subagentes 260703+260704)", () => {
     assert.match(
-      overnightContent,
+      historico,
       /TODOS os ~11 subagentes das rodadas 260703\+260704/,
-      "deve citar a evidência empírica que motivou o fix",
+      "o histórico deve guardar a evidência empírica que motivou o fix",
     );
     assert.match(
-      overnightContent,
-      /Se um full-run local for genuinamente necess[áa]rio.*pipe por `\| tail -40`/s,
+      item4,
+      /Se um\s+full-run local for genuinamente necess[áa]rio.*pipe\s+por `\| tail -40`/s,
       "deve manter o belt secundário de full-run via tail -40 para o caso raro",
     );
   });

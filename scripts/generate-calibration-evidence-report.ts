@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { renderCalibrationEvidenceReport, type CalibrationEvidenceInput } from "./lib/calibration-evidence-report.ts";
-import { registerReport } from "./studio-ui/studio-reports.ts";
+import { registerReport } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 

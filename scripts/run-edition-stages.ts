@@ -46,8 +46,17 @@
  * desassistida" de "headless só porque o #5744 isola contexto, com o editor
  * do lado". Ver `scripts/lib/edition-stage-runner.ts`.
  *
+ * **`--stage4-pre-gate` (#14034).** Inclui o Stage 4 no plano, mas só o
+ * pré-gate (§4a–§4c): o spawn recebe `--pre-gate-only` no lugar de
+ * `--no-gates`, grava o resumo e o marcador de `scripts/lib/stage4-pregate.ts`
+ * e para antes do gate. A sessão do editor abre já no gate (§4d), lendo o
+ * resumo do disco. Sem `--through`, implica `--through 4`; com `--through`
+ * menor que 4 é erro (a flag não teria efeito e o editor acharia que o
+ * pré-gate rodou). `--through 4` SEM esta flag continua sendo o Stage 4
+ * inteiro com `--no-gates` (só o caminho agendado desassistido).
+ *
  * Uso:
- *   npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised]
+ *   npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--stage4-pre-gate] [--json] [--session-supervised]
  *
  * Exit codes: 0 = todos os stages do plano ok/pulados; != 0 = exit code do
  * stage que falhou (o laço para no primeiro erro).
@@ -229,11 +238,12 @@ export function main(
   const aammdd = values["edition"];
   if (!aammdd || !AAMMDD_RE.test(aammdd)) {
     stderr(
-      "Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised]",
+      "Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--stage4-pre-gate] [--json] [--session-supervised]",
     );
     return 2;
   }
 
+  const stage4PreGate = flags.has("stage4-pre-gate");
   let plan: EditionStage[];
   try {
     // Default 3, NÃO 4 (achado do review da PR #5753). Rodar este CLI sem
@@ -249,7 +259,13 @@ export function main(
       stderr("--through exige um número (1..4). Ex: --through 3");
       return 2;
     }
-    plan = planThrough(values["through"] ? parseInt(values["through"], 10) : DEFAULT_THROUGH);
+    // #14034: `--stage4-pre-gate` sem `--through` = até o Stage 4 (pré-gate).
+    const through = values["through"] ? parseInt(values["through"], 10) : stage4PreGate ? 4 : DEFAULT_THROUGH;
+    if (stage4PreGate && through !== 4) {
+      stderr(`--stage4-pre-gate exige --through 4 (recebido ${values["through"]}): é o pré-gate do Stage 4.`);
+      return 2;
+    }
+    plan = planThrough(through);
   } catch (e) {
     stderr((e as Error).message);
     return 2;
@@ -284,6 +300,7 @@ export function main(
     plan,
     execFn,
     sessionSupervised: flags.has("session-supervised"),
+    stage4PreGate,
     ...(assertSentinelFn ? { assertSentinelFn } : {}),
     // Progresso no stderr deixa o stdout parseável quando `--json` é usado.
     // NÃO é o que protege o contexto da sessão — o Bash tool entrega os dois

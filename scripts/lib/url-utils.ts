@@ -174,11 +174,23 @@ function isLocalePathDomain(hostname: string): boolean {
  * de idioma do 1º segmento do caminho. Só para COMPARAR URLs — nunca para
  * gravar o link: a variante com idioma (`/pt-BR/`) é a que o leitor recebe e
  * continua intacta no artigo. Idempotente; URL inválida volta como veio.
+ *
+ * #14021: a chave também unifica `www.` e o esquema — `http://x.com/a`,
+ * `https://www.x.com/a` e `https://x.com/a` são o mesmo artigo (o
+ * past-editions.md de 2026-10-22 lista a mesma URL da Anthropic nas duas
+ * formas). Só `www.` exato sai do host: subdomínio real (`blog.x.com`) segue
+ * distinto de `x.com`.
  */
 export function dedupUrlKey(url: string): string {
   const canon = canonicalize(url);
+  let base = canon;
   try {
     const u = new URL(canon);
+    if (u.protocol === "http:") u.protocol = "https:";
+    if (u.hostname.startsWith("www.") && u.hostname.slice(4).includes(".")) {
+      u.hostname = u.hostname.slice(4);
+    }
+    base = u.toString();
     const segments = u.pathname.split("/");
     // pathname começa com "/", então segments[0] === "" e o 1º segmento é [1].
     const first = segments[1] ?? "";
@@ -196,12 +208,12 @@ export function dedupUrlKey(url: string): string {
       return u.toString();
     }
     const isLocale = isLocaleWithRegion(first) || (LOCALE_BARE.test(first) && localeDomain);
-    if (!isLocale) return canon;
+    if (!isLocale) return base;
     segments.splice(1, 1);
     u.pathname = segments.join("/") || "/";
     return u.toString();
   } catch {
-    return canon;
+    return base;
   }
 }
 

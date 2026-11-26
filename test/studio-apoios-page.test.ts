@@ -1,7 +1,7 @@
 /**
  * test/studio-apoios-page.test.ts (#3602) — contrato HTTP do CRM de apoios:
  * `GET /apoios` faz rewrite pro shell estático (`public/apoios.html`),
- * `GET /api/apoios` serve o snapshot fail-soft de `studio-apoios.ts`, e
+ * `GET /api/apoios` serve o snapshot fail-soft de `apoios-data.ts`, e
  * `PUT /api/apoios/contacts/:id` (editar contato) faz CRUD real sobre um
  * `contacts.jsonl` de teste — nunca sobre `data/` real, sempre um tmpdir
  * isolado.
@@ -31,7 +31,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
-import { openRateCachePath, segmentsCachePath, createContact, saveContacts } from "../scripts/studio-ui/studio-apoios.ts";
+import { openRateCachePath, segmentsCachePath, createContact, saveContacts } from "../scripts/lib/apoios-data.ts";
 
 const ENV_KEYS = ["APOIA_SE_API_KEY", "APOIA_SE_API_SECRET", "APOIA_SE_CAMPAIGN"] as const;
 

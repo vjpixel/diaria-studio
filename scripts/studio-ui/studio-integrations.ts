@@ -5,7 +5,7 @@
  * integrações que o projeto usa (APIs via key/token em `.env` + MCPs) num só
  * lugar — configurada? alcançável? última checagem? Arquivo próprio desta
  * fatia (mesma convenção de `studio-review.ts`/`studio-issues.ts`/
- * `studio-apoios.ts`, #3555) — `server.ts` só roteia.
+ * `apoios-data.ts`, #3555) — `server.ts` só roteia.
  *
  * **Nunca expõe valor de secret** — só presença/ausência do NOME da env var
  * (`missingEnvVars: string[]`, nomes apenas). Nenhuma função aqui lê o valor
@@ -65,7 +65,7 @@
  *
  * **Fail-soft total**: nenhum probe pode derrubar a página — qualquer
  * exceção (rede, parse, o que for) vira o campo `error` da integração
- * específica, nunca propaga. Mesmo padrão de `studio-apoios.ts::buildApoiosData`.
+ * específica, nunca propaga. Mesmo padrão de `apoios-data.ts::buildApoiosData`.
  *
  * **Cache + TTL** (5 min default) — mesmo padrão de `studio-issues.ts`
  * (`fetchTriageData`): evita bater a cada carga de página nas ~6 APIs reais

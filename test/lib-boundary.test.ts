@@ -16,6 +16,9 @@
  *      `studio-ui/` importar de `lib/` é o fluxo normal; o INVERSO é sinal
  *      de que lógica de negócio vazou pro código de servidor HTTP, quando
  *      deveria estar em `lib/`, reusável por CLI e Studio.
+ *   4b. O resto de `scripts/` (CLIs de topo e subpastas fora de `studio-ui/`)
+ *      também NÃO importa `scripts/studio-ui/**` (#14000), salvo a allowlist
+ *      explícita do próprio teste, que só encolhe.
  *
  * Arquivos na RAIZ de `scripts/lib/` estão fora das regras 1-3: são o legado
  * não-classificado (implicitamente diária ou genérico-ainda-não-movido) e
@@ -172,6 +175,53 @@ describe("fronteira scripts/lib → scripts/studio-ui (#5899)", () => {
   it("sanity: o scan enxerga os dois lados da fronteira", () => {
     assert.ok(tsFilesUnder(STUDIO_UI).length >= 5, "studio-ui/ tem os módulos do servidor");
     assert.ok(tsFilesUnder(LIB).length >= 10, "lib/ tem arquivos pra varrer");
+  });
+
+  /**
+   * Regra 4b (#14000): nenhum `.ts` de `scripts/` FORA de `studio-ui/` (CLIs de
+   * topo, `overnight/`, ...) importa `scripts/studio-ui/**`. O Studio é folha:
+   * CLI agendado que registra relatório ou lê o painel Apoios não pode quebrar
+   * por mudança no servidor. `scripts/lib/**` já é coberto pela regra 4 acima.
+   * Os pares em `STUDIO_UI_IMPORT_ALLOWLIST` são a dívida conhecida no dia em
+   * que a regra entrou; a lista só encolhe (par sumido também reprova).
+   */
+  const STUDIO_UI_IMPORT_ALLOWLIST = [
+    "scripts/form-results-artifact.ts -> scripts/studio-ui/studio-onboarding-form.ts",
+    "scripts/studio-snapshot-push.ts -> scripts/studio-ui/studio-state.ts",
+  ];
+
+  function scriptsToStudioUiPairs(): string[] {
+    const found = new Set<string>();
+    for (const file of tsFilesUnder(join(ROOT, "scripts"))) {
+      if (file.startsWith(STUDIO_UI + sep) || file.startsWith(LIB + sep)) continue;
+      for (const spec of importSpecifiers(file)) {
+        if (!spec.startsWith(".")) continue;
+        const target = resolve(dirname(file), spec);
+        if (target.startsWith(STUDIO_UI + sep)) {
+          found.add(`${relative(ROOT, file).split(sep).join("/")} -> ${relative(ROOT, target).split(sep).join("/")}`);
+        }
+      }
+    }
+    return [...found].sort();
+  }
+
+  it("regra 4b: scripts/ fora de studio-ui/ não importa scripts/studio-ui/** fora da allowlist (#14000)", () => {
+    const current = scriptsToStudioUiPairs();
+    const added = current.filter((p) => !STUDIO_UI_IMPORT_ALLOWLIST.includes(p));
+    const stale = STUDIO_UI_IMPORT_ALLOWLIST.filter((p) => !current.includes(p));
+    assert.deepEqual(
+      added,
+      [],
+      `CLI importando o servidor do Studio (#14000). Mova o núcleo sem HTTP para scripts/lib/ ` +
+        `(como reports-registry.ts e apoios-data.ts) e importe de lá. Não acrescente o par à allowlist. ` +
+        `Pares novos:\n  ${added.join("\n  ")}`,
+    );
+    assert.deepEqual(
+      stale,
+      [],
+      `Pares da allowlist que não existem mais: remova-os de STUDIO_UI_IMPORT_ALLOWLIST ` +
+        `(a lista só encolhe):\n  ${stale.join("\n  ")}`,
+    );
   });
 });
 

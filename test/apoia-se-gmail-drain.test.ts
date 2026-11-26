@@ -587,7 +587,7 @@ describe("drainApoiaSeNotifications (#3859)", () => {
       assert.equal(result.promessas?.[0].email, "ivan.andrade81@gmail.com");
       assert.equal(result.promessas?.[0].value, 10);
       // Timestamp da mensagem (envelope Gmail) é anexado pra formatar a nota
-      // do contato pendente em studio-apoios.ts.
+      // do contato pendente em apoios-data.ts.
       assert.equal(result.promessas?.[0].receivedAtIso, new Date(1752652800000).toISOString());
     } finally {
       rmSync(root, { recursive: true, force: true });
