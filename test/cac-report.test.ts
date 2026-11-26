@@ -26,6 +26,7 @@ import {
 import { buildCacReport, computeMonthBudgetUsage } from "../scripts/lib/cac.ts";
 import { parseSinceToEpochSeconds, parseUntilToEpochSecondsExclusive } from "../scripts/cohort-engagement.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
+import { listRegistryFiles, listReports } from "../scripts/lib/reports-registry.ts";
 import type { UtmCountResult } from "../scripts/count-subscriptions-by-utm.ts";
 import type { StoreLeitorSummary } from "../scripts/lib/leitor-store.ts";
 
@@ -466,10 +467,9 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
       const md = readFileSync(reportPath, "utf8");
       assert.match(md, /Google Ads/);
 
-      const registryPath = join(root, "data", "reports", "index.jsonl");
-      assert.ok(existsSync(registryPath), "index.jsonl deveria ter sido escrito");
-      const lines = readFileSync(registryPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-      const entry = lines.find((l) => l.id === "cac-2026-08-14");
+      // #14135: o registro vive em data/reports/index.{host}.jsonl; lê pela união.
+      assert.equal(listRegistryFiles(root).length, 1, "o arquivo do registro desta máquina deveria ter sido escrito");
+      const entry = listReports(root).find((l) => l.id === "cac-2026-08-14");
       assert.ok(entry, "entrada cac-2026-08-14 deveria existir no registry");
       assert.equal(entry.kind, "cac");
       assert.equal(entry.url, "/relatorios/cac-2026-08-14");
@@ -524,7 +524,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
 
       await main(["--root", backupRoot, "--spend", spendPath, "--origem", join(root, "sem-origem.json"), "--no-register", "--no-kit", "--no-store-leitores"], root);
 
-      assert.equal(existsSync(join(root, "data", "reports", "index.jsonl")), false);
+      assert.deepEqual(listRegistryFiles(root), []);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -596,9 +596,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
       const md = readFileSync(reportPath, "utf8");
       assert.match(md, /Janela de cadastro aplicada.*2026-08-01 a 2026-08-16/);
 
-      const registryPath = join(root, "data", "reports", "index.jsonl");
-      const lines = readFileSync(registryPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-      assert.ok(lines.find((l) => l.id === "cac-2026-08-14--w2026-08-01_2026-08-16"));
+      assert.ok(listReports(root).find((l) => l.id === "cac-2026-08-14--w2026-08-01_2026-08-16"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
