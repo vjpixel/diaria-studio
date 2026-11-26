@@ -487,10 +487,15 @@ describe("#14037 Brevo em background: registro por lançamento", () => {
     assert.ok(findActiveLaunch([rec({})], { ...ctx, workerPidOf: () => 99 }), "worker vivo mantém ativo");
     assert.ok(findActiveLaunch([rec({ pid: 99 })], ctx));
     assert.ok(findActiveLaunch([rec({ host: "300" })], ctx), "outro host dentro do teto");
-    assert.equal(findActiveLaunch([rec({ host: "300", started_at: "2026-11-25T09:00:00Z" })], ctx), null, "outro host além do teto");
+    // #14096: além do teto, outro host só desarma com --force (fail-closed).
+    assert.ok(findActiveLaunch([rec({ host: "300", started_at: "2026-11-25T09:00:00Z" })], ctx), "outro host além do teto sem --force");
+    assert.equal(findActiveLaunch([rec({ host: "300", started_at: "2026-11-25T09:00:00Z" })], { ...ctx, force: true }), null, "outro host além do teto com --force");
     assert.equal(findActiveLaunch([{ ...rec({}), state: "done", finished_at: "t", exit_code: 0, result: { status: "ok" } }], ctx), null);
-    // Teto também no mesmo host: pid reciclado (vivo) não bloqueia para sempre.
-    assert.equal(findActiveLaunch([rec({ pid: 99, started_at: "2026-11-25T09:00:00Z" })], ctx), null);
+    // Teto também no mesmo host: pid reciclado (vivo, outro programa) não bloqueia para sempre (#14096: só com o comando provando).
+    assert.equal(
+      findActiveLaunch([rec({ pid: 99, started_at: "2026-11-25T09:00:00Z" })], { ...ctx, processCommandOf: () => "/usr/bin/sshd -D" }),
+      null,
+    );
   });
 
   it("o mesmo launch-id com o processo anterior vivo também recusa iniciar", () => {
