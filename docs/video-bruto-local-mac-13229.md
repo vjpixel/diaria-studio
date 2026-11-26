@@ -27,7 +27,13 @@ XMLs normais. O `srt` regrava o `-local.xml` depois de pôr a legenda no XML: **
 
 Quando não grava (sem a chave, sem `premiere_root`, XML leve #13219, nome de bruto repetido, ou falha
 de escrita), o build apaga o `-local.xml` de um build anterior com aviso, para nunca sobrar um XML
-local de outro plano.
+local de outro plano. No modo API (o 300, out dir no cache) o upload só sobe e nunca apaga: o nome
+entra no `retire` do `drive-uploads.json`, e o upload do mesmo comando move a cópia da pasta da
+edição no Drive para `arquivo/` (falha fica marcada para o próximo upload). Um build que volta a
+gravar o `-local.xml` desmarca o nome.
+
+No script do Mac, se o XML local e o XML normal ao lado forem de versões diferentes (outro nome no
+mesmo `file id`), a origem é a da pasta da edição pelo nome do XML local, e a divergência é impressa.
 
 ## No Mac, antes de abrir o XML
 

@@ -1565,6 +1565,33 @@ export function queueUploadIfMissing(regPath: string, path: string, key = basena
 }
 
 /**
+ * #13229: marca `name` (raiz da edição) para sair do Drive no próximo upload
+ * (`retire` do `drive-uploads.json`). Só quando há o que tirar: o nome subiu
+ * antes (`files`) ou `force` (a cópia existia no out dir). Devolve se marcou.
+ */
+export function queueRetire(regPath: string, name: string, force = false): boolean {
+  const reg = readRegistry(regPath);
+  if (!force && !reg.files[name]) return false;
+  if (reg.retire?.includes(name)) return true;
+  writeJson(regPath, { ...reg, retire: [...(reg.retire ?? []), name] });
+  return true;
+}
+
+/** #13229: o `name` voltou a ser gravado: desmarca, para o upload não tirar o arquivo novo do Drive. */
+export function clearRetire(regPath: string, name: string): void {
+  if (!existsSync(regPath)) return;
+  const reg = readRegistry(regPath);
+  if (!reg.retire?.includes(name)) return;
+  writeJson(regPath, { ...reg, retire: reg.retire.filter((n) => n !== name) });
+}
+
+/** #13229: como o upload tira um nome da raiz da edição: os ids com o nome e o move para `arquivo/` (seam dos testes). */
+export interface RetireOps {
+  list(folderId: string, name: string): Promise<string[]>;
+  archive(folderId: string, name: string, ids: readonly string[]): Promise<number>;
+}
+
+/**
  * Frame do bruto nas duas orientações, lado a lado (#11959): esquerda = o
  * bruto como gravado, direita = espelhado. A leitura da caneca e do pôster
  * decide o `mirrored` sem depender do palpite do `source.json` (na 261103 a
@@ -5982,11 +6009,15 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
  * não grava, o `-local.xml` irmão de um build anterior é apagado (com aviso),
  * para o editor nunca importar um XML local velho, de outro plano.
  */
-export function writeLocalBrutoXml(ctx: Pick<Ctx, "premiereBrutoDir" | "premierePaths" | "edition">, xmlPath: string): string | null {
+export function writeLocalBrutoXml(ctx: Pick<Ctx, "premiereBrutoDir" | "premierePaths" | "edition"> & Partial<Pick<Ctx, "stateDir">>, xmlPath: string): string | null {
   const name = basename(xmlPath);
   const out = join(dirname(xmlPath), localXmlFileName(name));
+  const regPath = ctx.stateDir ? join(ctx.stateDir, DRIVE_UPLOADS_FILE) : null;
   const dropStale = (why: string): null => {
-    if (!existsSync(out)) return null;
+    // #13229: no modo API o out dir é o cache e o upload nunca apaga: a cópia no Drive sai pelo `retire` do próximo upload.
+    const existed = existsSync(out);
+    if (regPath && queueRetire(regPath, basename(out), existed)) console.error(`[aviso] ${basename(out)}: sai também da pasta da edição no Drive (para arquivo/) no upload deste comando, quando há upload (#13229)`);
+    if (!existed) return null;
     try {
       unlinkSync(out);
       console.error(`[aviso] ${basename(out)} anterior apagado (${why}): ele era de outro build e apontaria um plano velho (#13229)`);
@@ -6012,6 +6043,7 @@ export function writeLocalBrutoXml(ctx: Pick<Ctx, "premiereBrutoDir" | "premiere
       return dropStale("nome de bruto repetido");
     }
     writeFileAtomic(out, local.xml);
+    if (regPath) clearRetire(regPath, basename(out));
     console.error(
       `[video-montagem] XML local ${basename(out)}: ${local.rewritten.length} vídeo(s) do bruto em ${ctx.premiereBrutoDir}/ (${local.rewritten.join(", ")}); ` +
         `áudio tratado, PNGs, card e vinheta seguem no premiere_root. No Mac, rodar antes scripts/video/prepara-bruto-mac.ts ${ctx.edition} (#13229)`,
@@ -7593,13 +7625,26 @@ export interface DriveUploadRegistry {
   files: Record<string, { id: string; link: string | null; at: string; from: string }>;
   pending: string[];
   previewNamesNoticeShown?: boolean;
+  /**
+   * #13229: nomes da RAIZ da edição no Drive que o próximo upload tira de lá
+   * (vão para `arquivo/`), porque a cópia do out dir foi apagada e o arquivo
+   * não deve mais existir (o `-local.xml` de um build anterior). O upload só
+   * sobe, nunca apaga: sem isto o XML local velho ficaria no Drive, e o
+   * script do Mac o usaria.
+   */
+  retire?: string[];
 }
 
 function readRegistry(path: string): DriveUploadRegistry {
   if (!existsSync(path)) return { files: {}, pending: [] };
   try {
     const r = JSON.parse(readFileSync(path, "utf8")) as Partial<DriveUploadRegistry>;
-    return { files: r.files ?? {}, pending: Array.isArray(r.pending) ? r.pending : [], previewNamesNoticeShown: r.previewNamesNoticeShown === true };
+    return {
+      files: r.files ?? {},
+      pending: Array.isArray(r.pending) ? r.pending : [],
+      previewNamesNoticeShown: r.previewNamesNoticeShown === true,
+      ...(Array.isArray(r.retire) && r.retire.length ? { retire: r.retire.filter((x): x is string => typeof x === "string") } : {}),
+    };
   } catch (e) {
     log(`[aviso] ${path} ilegível (${(e as Error).message}): recomeçando o registro de uploads`);
     return { files: {}, pending: [] };
@@ -7616,8 +7661,8 @@ export async function uploadAll(
   ctx: Pick<Ctx, "stateDir" | "edition"> & Partial<Pick<Ctx, "outDir">>,
   d: DriveSession,
   paths: string[],
-  opts: { archiveOverwritten?: boolean; now?: () => Date } = {},
-): Promise<{ uploaded: string[]; pending: string[]; error: string | null; fresh: ArchiveEntry[] }> {
+  opts: { archiveOverwritten?: boolean; now?: () => Date; retireOps?: RetireOps } = {},
+): Promise<{ uploaded: string[]; pending: string[]; error: string | null; fresh: ArchiveEntry[]; retired?: string[] }> {
   const regPath = f(ctx, DRIVE_UPLOADS_FILE);
   // #13334: um arquivo numa subpasta do out dir (`trechos/`) sobe para a subpasta de mesmo nome da edição.
   const subfolders = new Map<string, Promise<DriveEntry>>();
@@ -7633,7 +7678,7 @@ export async function uploadAll(
   const uploaded: string[] = [];
   // #13610: o que subiu para a RAIZ da edição, para o arquivamento não depender da busca do Drive (que atrasa).
   const fresh: ArchiveEntry[] = [];
-  if (queue.length === 0) return { uploaded, pending: [], error: null, fresh };
+  if (queue.length === 0 && !reg.retire?.length) return { uploaded, pending: [], error: null, fresh };
   const save = (pending: string[]) => writeJson(regPath, { ...reg, pending });
   try {
     const folder = await d.folder();
@@ -7668,12 +7713,44 @@ export async function uploadAll(
       save(queue.slice(i + 1));
       log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${target.prefix}${r.name}: ${r.webViewLink ?? r.id}`);
     }
-    return { uploaded, pending: [], error: null, fresh };
+    const retired = await retireNames(reg, folder.id, new Set(uploaded.map((p) => basename(p))), opts.retireOps ?? {
+      list: (folderId, name) => rootIdsNamed(d.deps, folderId, name),
+      archive: (folderId, name, ids) => archiveDriveIds(d.deps, folderId, name, ids, { now: (opts.now ?? (() => new Date()))(), log, warn: (m) => log(`[aviso] ${m} (#13229)`), archiveFolders: d.archiveFolders }),
+    });
+    if (retired.changed) save([]);
+    return { uploaded, pending: [], error: null, fresh, retired: retired.names };
   } catch (e) {
     const pending = queue.slice(uploaded.length);
     save(pending);
     return { uploaded, pending, error: (e as Error).message, fresh };
   }
+}
+
+/**
+ * #13229: tira da raiz da edição no Drive cada nome do `retire` (para
+ * `arquivo/`). Nome que subiu neste mesmo upload fica (é o arquivo novo) e sai
+ * da lista. Falha num nome é aviso e ele fica para o próximo upload; nunca
+ * muda o exit do comando (o XML normal já subiu).
+ */
+async function retireNames(reg: DriveUploadRegistry, folderId: string, uploadedNames: ReadonlySet<string>, ops: RetireOps): Promise<{ names: string[]; changed: boolean }> {
+  if (!reg.retire?.length) return { names: [], changed: false };
+  const names: string[] = [];
+  const keep: string[] = [];
+  for (const name of reg.retire) {
+    if (uploadedNames.has(name)) continue;
+    try {
+      const ids = await ops.list(folderId, name);
+      if (ids.length) await ops.archive(folderId, name, ids);
+      delete reg.files[name];
+      names.push(name);
+      log(`[drive] ${name} ${ids.length ? `tirado da pasta da edição (${ids.length} arquivo(s) para arquivo/)` : "já não estava na pasta da edição"} (#13229)`);
+    } catch (e) {
+      keep.push(name);
+      log(`[aviso] ${name} não saiu da pasta da edição no Drive (${(e as Error).message}): fica marcado e sai no próximo upload; não importar esse XML local, está defasado (#13229)`);
+    }
+  }
+  reg.retire = keep;
+  return { names, changed: true };
 }
 
 /** Os comandos que gravam uma versão nova na pasta da edição (#13610): depois deles, a anterior vai para `arquivo/`. */

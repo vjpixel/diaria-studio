@@ -154,20 +154,26 @@ export function isInsidePath(child: string, parent: string): boolean {
  * cada um no XML normal (mesmo `file id`). `<file>` do XML local fora de
  * `localDir` (XML de outra edição ou de outra raiz) sai em `discarded`.
  */
-export function xmlTargets(localXml: string, normalXml: string | null, localDir: string, driveEditionDir: string): { targets: CopyTarget[]; discarded: string[] } {
+export function xmlTargets(localXml: string, normalXml: string | null, localDir: string, driveEditionDir: string): { targets: CopyTarget[]; discarded: string[]; mismatched: string[] } {
   const dir = normalizeRootPath(localDir);
   const normal = normalXml ? brutoFilePaths(normalXml) : new Map<string, string>();
   const targets: CopyTarget[] = [];
   const discarded: string[] = [];
+  const mismatched: string[] = [];
   for (const [id, dest] of brutoFilePaths(localXml)) {
     if (!dest.startsWith(`${dir}/`) || dest.slice(dir.length + 1).includes("/")) {
       discarded.push(`${id}: ${dest}`);
       continue;
     }
     const name = dest.slice(dir.length + 1);
-    targets.push({ name, dest, src: normal.get(id) ?? `${normalizeRootPath(driveEditionDir)}/${name}` });
+    const fromNormal = normal.get(id);
+    const base = (p: string) => p.slice(p.lastIndexOf("/") + 1).normalize("NFC");
+    // XMLs de versões diferentes lado a lado: a origem com outro nome nunca é copiada com o nome do destino.
+    if (fromNormal && base(fromNormal) !== name.normalize("NFC")) mismatched.push(`${id}: ${name} no XML local, ${fromNormal} no XML normal`);
+    const src = fromNormal && base(fromNormal) === name.normalize("NFC") ? fromNormal : `${normalizeRootPath(driveEditionDir)}/${name}`;
+    targets.push({ name, dest, src });
   }
-  return { targets, discarded };
+  return { targets, discarded, mismatched };
 }
 
 /** Pura — junta alvos de vários XMLs locais (as sequências da edição) sem repetir destino. */
@@ -220,7 +226,7 @@ export function validOrigins(raw: unknown, driveRoot: string): { origins: Record
   const rejected: string[] = [];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { origins, rejected: raw === undefined ? [] : ["(não é objeto)"] };
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === "string" && isAbsoluteRootPath(v) && isInsidePath(v, driveRoot)) origins[k] = normalizeRootPath(v);
+    if (typeof v === "string" && isAbsoluteRootPath(v) && !v.replace(/\\/g, "/").split("/").includes("..") && isInsidePath(v, driveRoot)) origins[k] = normalizeRootPath(v);
     else rejected.push(k);
   }
   return { origins, rejected };
@@ -466,7 +472,9 @@ export function runCleanup(opt: { localRoot: string; driveRoot: string; today: s
     const dir = join(opt.localRoot, folder);
     try {
       if (!statSync(dir).isDirectory() || !newestEditionOf(folder)) continue;
-    } catch {
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "EUNKNOWN";
+      if (code !== "ENOENT") console.error(`[limpeza] ${folder}/: stat com erro ${code}, pasta fica`);
       continue;
     }
     const listing = listDir(dir);
@@ -579,11 +587,12 @@ interface XmlScan {
   xmls: string[];
   targets: CopyTarget[];
   discarded: string[];
+  mismatched: string[];
   errors: string[];
 }
 
 function scanLocalXmls(driveEditionDir: string, localDir: string): XmlScan {
-  const scan: XmlScan = { xmls: [], targets: [], discarded: [], errors: [] };
+  const scan: XmlScan = { xmls: [], targets: [], discarded: [], mismatched: [], errors: [] };
   let names: string[];
   try {
     names = readdirSync(driveEditionDir);
@@ -602,6 +611,7 @@ function scanLocalXmls(driveEditionDir: string, localDir: string): XmlScan {
       const r = xmlTargets(local, normal, localDir, driveEditionDir);
       lists.push(r.targets);
       scan.discarded.push(...r.discarded.map((d) => `${n} ${d}`));
+      scan.mismatched.push(...r.mismatched.map((d) => `${n} ${d}`));
     } catch (e) {
       scan.errors.push(`${n}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
     }
@@ -684,11 +694,12 @@ export async function main(argv: readonly string[], deps: { now?: () => Date } =
   let announced = "";
   for (;;) {
     const listing = listDir(driveDir);
-    const readErrors: string[] = [];
-    if (listing.dirError) readErrors.push(`${driveDir}: ${listing.dirError}`);
-    for (const p of listing.pending) readErrors.push(`${p.name}: ${p.code}`);
     const scan = scanLocalXmls(driveDir, localDir);
-    readErrors.push(...scan.errors);
+    // Com XML local, só contam os erros dos XMLs e dos arquivos que ele referencia; sem XML, os da pasta da edição.
+    const targetNames = new Set(scan.targets.filter((t) => t.src.startsWith(`${driveDir}/`)).map((t) => t.src.slice(driveDir.length + 1)));
+    const readErrors: string[] = [...scan.errors];
+    if (listing.dirError) readErrors.push(`${driveDir}: ${listing.dirError}`);
+    for (const p of listing.pending) if (!scan.xmls.length || targetNames.has(p.name)) readErrors.push(`${p.name}: ${p.code}`);
     if (scan.xmls.length && !scan.targets.length && !scan.errors.length) {
       console.error(
         `prepara-bruto-mac: ${scan.xmls.join(", ")} sem nenhum vídeo do bruto sob ${localDir}. O XML foi gerado com outro premiere_bruto_root; ` +
@@ -697,6 +708,7 @@ export async function main(argv: readonly string[], deps: { now?: () => Date } =
       return 2;
     }
     if (scan.discarded.length) console.error(`[xml] <file> fora de ${localDir}, ignorados: ${scan.discarded.join("; ")}`);
+    if (scan.mismatched.length) console.error(`[xml] XML local e XML normal de versões diferentes (a origem vem da pasta da edição, pelo nome do XML local): ${scan.mismatched.join("; ")}`);
     const key = scan.xmls.join("|");
     if (key !== announced) {
       announced = key;

@@ -31,7 +31,7 @@ import {
 } from "../scripts/lib/diaria/video-montage.ts";
 import { xmlFamilyOf } from "../scripts/lib/diaria/video-version-archive.ts";
 import { parsePremiereBrutoRoot } from "../scripts/lib/diaria/premiere-bruto-root.ts";
-import { writeLocalBrutoXml } from "../scripts/video-montagem.ts";
+import { DRIVE_UPLOADS_FILE, uploadAll, writeLocalBrutoXml, type DriveSession } from "../scripts/video-montagem.ts";
 import {
   brutoFilePaths,
   fileUrlToPath,
@@ -226,7 +226,76 @@ describe("#13229: writeLocalBrutoXml (build)", () => {
   });
 });
 
+describe("#13229: -local.xml velho sai também do Drive no modo API (retire do drive-uploads.json)", () => {
+  const ctxOk = { premiereBrutoDir: `${LOCAL}/${ED}`, premierePaths: MAP, edition: ED };
+  const LOCAL_XML = "Diaria comentada_Vertical_V2-local.xml";
+  function fakeSession(): DriveSession {
+    return { deps: {} as DriveSession["deps"], edition: ED, cacheDir: "/x", folder: async () => ({ id: "F", name: ED }) as Awaited<ReturnType<DriveSession["folder"]>> };
+  }
+  function setup(xml: string): { state: string; xmlPath: string; reg: string } {
+    const state = tmp();
+    const out = tmp();
+    const xmlPath = join(out, "Diaria comentada_Vertical_V2.xml");
+    writeFileSync(xmlPath, xml);
+    const reg = join(state, DRIVE_UPLOADS_FILE);
+    // o -local.xml subiu num build anterior; o out dir (cache do 300) já não o tem
+    writeFileSync(reg, JSON.stringify({ files: { [LOCAL_XML]: { id: "OLD", link: null, at: "t", from: "x" } }, pending: [] }));
+    return { state, xmlPath, reg };
+  }
+  const LEVE = `<file id="trecho-0-0"><name>t.mp4</name><pathurl>file://localhost/x/t.mp4</pathurl></file>`;
+  it("build que não grava o -local.xml marca o do Drive, e o upload (falso) o leva para arquivo/", async () => {
+    const { state, xmlPath, reg } = setup(LEVE);
+    assert.equal(writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath), null);
+    assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, [LOCAL_XML]);
+    const calls: string[] = [];
+    const r = await uploadAll({ stateDir: state, edition: ED }, fakeSession(), [], {
+      retireOps: {
+        list: async (folderId, name) => (calls.push(`list ${folderId} ${name}`), ["OLD"]),
+        archive: async (folderId, name, ids) => (calls.push(`archive ${folderId} ${name} ${ids.join(",")}`), ids.length),
+      },
+    });
+    assert.deepEqual(calls, [`list F ${LOCAL_XML}`, `archive F ${LOCAL_XML} OLD`]);
+    assert.deepEqual(r.retired, [LOCAL_XML]);
+    const after = JSON.parse(readFileSync(reg, "utf8"));
+    assert.deepEqual(after.retire, []);
+    assert.equal(after.files[LOCAL_XML], undefined);
+  });
+  it("falha ao tirar do Drive: fica marcado para o próximo upload e não vira erro do comando", async () => {
+    const { state, xmlPath, reg } = setup(LEVE);
+    writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath);
+    const r = await uploadAll({ stateDir: state, edition: ED }, fakeSession(), [], { retireOps: { list: async () => { throw new Error("403"); }, archive: async () => 0 } });
+    assert.equal(r.error, null);
+    assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, [LOCAL_XML]);
+  });
+  it("build que volta a gravar o -local.xml desmarca: o upload não tira o arquivo novo", async () => {
+    const { state, xmlPath, reg } = setup(LEVE);
+    writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath);
+    writeFileSync(xmlPath, normalXml());
+    assert.ok(writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath));
+    assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).retire, []);
+  });
+  it("nunca subiu e não existe no out dir: nada a marcar", () => {
+    const state = tmp();
+    const out = tmp();
+    const xmlPath = join(out, "S_V1.xml");
+    writeFileSync(xmlPath, LEVE);
+    writeLocalBrutoXml({ ...ctxOk, stateDir: state }, xmlPath);
+    assert.equal(existsSync(join(state, DRIVE_UPLOADS_FILE)), false);
+  });
+});
+
 describe("#13229: prepara-bruto-mac (decisões puras)", () => {
+  it("XML normal de outra versão (outro nome no mesmo file id): origem pelo nome do XML local, com a divergência reportada", () => {
+    const local = `<file id="file-1"><name>x.mp4</name><pathurl>${pathUrl(`${LOCAL}/${ED}/x.mp4`)}</pathurl></file>`;
+    const normal = `<file id="file-1"><name>y.mp4</name><pathurl>${pathUrl(`${MAC}/${ED}/y.mp4`)}</pathurl></file>`;
+    const r = xmlTargets(local, normal, `${LOCAL}/${ED}`, `${MAC}/${ED}`);
+    assert.deepEqual(r.targets, [{ name: "x.mp4", dest: `${LOCAL}/${ED}/x.mp4`, src: `${MAC}/${ED}/x.mp4` }]);
+    assert.equal(r.mismatched.length, 1);
+    assert.match(r.mismatched[0], /x\.mp4 no XML local, .*y\.mp4 no XML normal/);
+  });
+  it(".origem.json com segmento .. é rejeitada (mesmo começando no Drive)", () => {
+    assert.deepEqual(validOrigins({ a: `${MAC}/../../etc/a.mp4`, b: `${MAC}/261116-17/b.mp4` }, MAC), { origins: { b: `${MAC}/261116-17/b.mp4` }, rejected: ["a"] });
+  });
   it("candidato a bruto: vídeo solto; prévia, derivado com hash, .part e oculto não", () => {
     assert.ok(isBrutoCandidate("20261125_101010.mp4"));
     assert.ok(isBrutoCandidate("WIN_20261020_21_24_22_Pro.mp4"));
