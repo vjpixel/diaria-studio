@@ -55,6 +55,8 @@ import {
   linkedInDocumentFallbackFingerprint,
   main,
   weeklySendUnknownHint,
+  enqueueWeeklyWorkerCarousel,
+  weeklyWorkerQueueIdempotencyKey,
 } from "../scripts/publish-weekly-social.ts";
 import { WorkerQueueError } from "../scripts/lib/worker-queue-client.ts";
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
@@ -1745,6 +1747,129 @@ describe("main(): dispatch mockado", () => {
       assert.equal(attempts, 2);
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "failed");
+    });
+  });
+
+  // #14242 — Instagram/Threads do carrossel semanal iam pra fila sem
+  // `idempotency_key`: o Worker sorteia um uuid novo a cada POST, então o
+  // retry depois de um 503 com a entry já gravada virava 2 entries (2 posts
+  // públicos). O Worker falso guarda a entry pela chave (como o real, #10906)
+  // ou por um id novo a cada POST sem chave, e conta as entries por canal.
+  describe("#14242: idempotency_key do Instagram/Threads semanal", () => {
+    function keyedWorker(o: { failFirstPerKey: boolean; listStatus?: number }) {
+      const entries = new Map<string, any>();
+      const bodies: any[] = [];
+      let n = 0;
+      const pool = mockAgent.get("https://worker.test");
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((req) => {
+          const body = JSON.parse(req.body as string);
+          bodies.push(body);
+          n++;
+          const id = body.idempotency_key ?? `random-${n}`;
+          const key = `queue:${body.channel}:${id}`;
+          const duplicate = entries.has(key);
+          entries.set(key, body);
+          // Grava e devolve 503 nas tentativas deste run (resposta perdida).
+          if (o.failFirstPerKey && body.channel !== "linkedin") return { statusCode: 503, data: "upstream" };
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key, scheduled_at: body.scheduled_at, destaque: body.destaque, ...(duplicate && { duplicate: true }) }),
+          };
+        })
+        .persist();
+      pool
+        .intercept({ path: "/list", method: "GET" })
+        .reply(() =>
+          o.listStatus
+            ? { statusCode: o.listStatus, data: "kv down" }
+            : { statusCode: 200, data: JSON.stringify({ items: [...entries].map(([key, e]) => ({ key, ...e })) }) },
+        )
+        .persist();
+      const count = (channel: string) => [...entries.values()].filter((e) => e.channel === channel).length;
+      return { entries, bodies, count, setFail: (v: boolean) => (o.failFirstPerKey = v) };
+    }
+
+    it("503 nas 2 tentativas com a entry gravada: mesma chave, 1 entry por canal, store 'scheduled' pelo lookup da fila", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const w = keyedWorker({ failFirstPerKey: true });
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      const ig = w.bodies.filter((b) => b.channel === "instagram");
+      const th = w.bodies.filter((b) => b.channel === "threads");
+      assert.equal(ig.length, 2, "1ª tentativa + retry do cliente");
+      assert.ok(ig.every((b) => b.idempotency_key === `instagram-weekly:${saturdayStr}-clicked:main`), JSON.stringify(ig.map((b) => b.idempotency_key)));
+      assert.ok(th.every((b) => b.idempotency_key === `threads-weekly:${saturdayStr}-clicked:main`));
+      assert.equal(w.count("instagram"), 1, "sem a chave o retry criaria a 2ª entry (2 posts públicos)");
+      assert.equal(w.count("threads"), 1);
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const igEntry = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(igEntry.status, "scheduled", "a fila já tem a chave: agendado, não failed");
+      assert.equal(igEntry.worker_queue_key, `queue:instagram:instagram-weekly:${saturdayStr}-clicked:main`);
+      assert.equal(out.posts.find((p: any) => p.platform === "threads").status, "scheduled");
+    });
+
+    it("fila ilegível depois do 503 (failed) e re-run da mesma semana: cai na mesma entry, nunca 2", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const w = keyedWorker({ failFirstPerKey: true, listStatus: 500 });
+      const argv = ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"];
+
+      await main(argv, { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator });
+      const first = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const igFailed = first.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(igFailed.status, "failed");
+      assert.match(igFailed.reason, /pode estar na fila/);
+
+      w.setFail(false);
+      await main(argv, { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator });
+      assert.equal(w.count("instagram"), 1, "o re-run do failed reaproveita a chave: uma entry, um post");
+      assert.equal(w.count("threads"), 1);
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const igLast = out.posts.filter((p: any) => p.platform === "instagram").at(-1);
+      assert.equal(igLast.status, "scheduled");
+    });
+
+    it("chave diferente por modo e canal, no formato aceito pelo Worker", () => {
+      const keys = [
+        weeklyWorkerQueueIdempotencyKey("instagram", "271225-clicked"),
+        weeklyWorkerQueueIdempotencyKey("instagram", "271225-highlights"),
+        weeklyWorkerQueueIdempotencyKey("threads", "271225-clicked"),
+        weeklyWorkerQueueIdempotencyKey("threads", "271225-highlights"),
+        weeklyWorkerQueueIdempotencyKey("instagram", "280101-clicked"),
+      ];
+      assert.equal(new Set(keys).size, keys.length);
+      for (const k of keys) assert.match(k, /^[A-Za-z0-9._:-]{1,128}$/);
+      assert.equal(keys[0], "instagram-weekly:271225-clicked:main");
+      assert.throws(() => weeklyWorkerQueueIdempotencyKey("threads", "271225 clicked"), /idempotency_key inválida/);
+    });
+
+    it("409 already_fired da chave: sucesso com a key da entry, sem post novo nem lookup", async () => {
+      const res = await enqueueWeeklyWorkerCarousel(
+        "https://worker.test",
+        "tok",
+        { channel: "threads", carouselKey: "271225-clicked", text: "t", carouselImageUrls: ["a", "b"], scheduledAt: "2027-12-26T11:00:00-03:00", destaque: "weekly-clicked" },
+        {
+          log: () => {},
+          post: async (_u, _t, p) => {
+            assert.equal(p.idempotency_key, "threads-weekly:271225-clicked:main");
+            throw new WorkerQueueError(409, JSON.stringify({ error: "already_fired", key: "queue:fired" }));
+          },
+          lookup: async () => assert.fail("409 não consulta a fila"),
+        },
+      );
+      assert.deepEqual(res, { key: "queue:fired", recovered: "already_fired" });
     });
   });
 

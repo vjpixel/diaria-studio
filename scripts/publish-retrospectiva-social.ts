@@ -12,8 +12,8 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
  *   |-------------------|------------------------------------------|-----|
  *   | `linkedin_pagina` | documento PDF dos 5 slides + texto (#12584; fallback carrossel → capa 4:5) | `dispatchEntry` (`publish-linkedin.ts`), Worker, `allowImmediateFallback: false` e SEM URL do Make (o `make_now` falha em vez de publicar na hora) |
  *   | `facebook`        | imagem (capa 4:5) + texto                | `dispatchFacebookCarousel` (`publish-facebook.ts`, retry sem duplicar #14170), agendamento nativo da Graph API, 1 foto |
- *   | `instagram`       | carrossel de 5 (capa + 3 parágrafos + CTA) | `postToWorkerQueue` com `image_urls` (#6005 Parte B) |
- *   | `threads`         | carrossel de 5                           | `postToWorkerQueue` com `image_urls` (#6095) |
+ *   | `instagram`       | carrossel de 5 (capa + 3 parágrafos + CTA) | `postToWorkerQueue` com `image_urls` e `idempotency_key` (#6005 Parte B, #14242) |
+ *   | `threads`         | carrossel de 5                           | `postToWorkerQueue` com `image_urls` e `idempotency_key` (#6095, #14242) |
  *   | `x`               | até 4 imagens (capa + 3 parágrafos, sem o CTA — #8202) | **não despacha**: devolve o payload da mutation `createPost` do Buffer, que só o top-level alcança (MCP); o registro vem depois via `append-twitter-published.ts` + `mark-retrospectiva-channel.ts --channel x:dN` |
  *
  * Por que não rodar os CLIs da diária: eles exigem diretório de edição e
@@ -98,10 +98,10 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { appendSocialPosts, readSocialPublished, RESUME_SKIP_STATUSES, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
 import {
   deleteFromWorkerQueue,
-  postToWorkerQueue,
   resolveSocialWorkerToken,
   resolveSocialWorkerUrl,
 } from "./lib/worker-queue-client.ts";
+import { enqueueDailyWorkerPost, type DailyWorkerEnqueueOptions } from "./lib/daily-worker-enqueue.ts"; // #14242
 import { dispatchFacebookCarousel, facebookOutcomeEntry, validateScheduledTime } from "./publish-facebook.ts"; // #14170
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
@@ -429,6 +429,62 @@ export function findLegacyLinkedinSingle(published: SocialPublished): PostEntry 
         typeof p.worker_queue_key === "string",
     ) ?? null
   );
+}
+
+/**
+ * #14242 — chave idempotente do post da Retrospectiva no Instagram/Threads
+ * (uma por ciclo, história e rede): `{canal}-retrospectiva:{ciclo}:{história}:main`.
+ * As 3 histórias usam o mesmo `destaque` (`especial-retrospectiva`), então a
+ * história entra na chave (mesma regra de `retrospectivaLinkedInIdempotencyKey`).
+ */
+export function retrospectivaWorkerQueueIdempotencyKey(
+  channel: "instagram" | "threads",
+  cycle: string,
+  historia: RetrospectivaHistoria,
+): string {
+  const key = `${channel}-retrospectiva:${cycle}:${historia}:main`;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
+  return key;
+}
+
+/**
+ * #14242 — post da Retrospectiva no Instagram/Threads pela fila do Worker.
+ * Antes ia sem `idempotency_key`: o retry do `postToWorkerQueue` depois de uma
+ * resposta 5xx com a entry já gravada criava outra entry (uuid novo) e saíam
+ * dois posts públicos. Agora usa a chave fixa e o tratamento da diária
+ * (`enqueueDailyWorkerPost`, #14010): 409 `already_fired`/`fire_in_progress` =
+ * sucesso sem post novo; falha ambígua consulta a fila pela chave antes de
+ * lançar. `deps` só existe pra teste.
+ */
+export async function dispatchRetrospectivaWorkerPost(
+  channel: "instagram" | "threads",
+  i: SocialDispatchInput,
+  o: { cycle: string; workerUrl: string; workerToken: string },
+  deps: Pick<DailyWorkerEnqueueOptions, "post" | "lookup" | "lookupOptions" | "log"> = {},
+): Promise<PostEntry> {
+  const res = await enqueueDailyWorkerPost(
+    o.workerUrl,
+    o.workerToken,
+    {
+      idempotency_key: retrospectivaWorkerQueueIdempotencyKey(channel, o.cycle, i.historia),
+      text: i.text,
+      // Instagram exige `image_url` mesmo no carrossel (mesmo payload de `publish-instagram.ts`); Threads vai só com `image_urls`.
+      image_url: channel === "instagram" ? i.imageUrls[0] : null,
+      image_urls: i.imageUrls,
+      scheduled_at: i.scheduledAt,
+      destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
+      channel,
+    },
+    { logPrefix: "publish-retrospectiva-social", ...deps },
+  );
+  return {
+    platform: channel,
+    destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
+    url: null,
+    status: "scheduled",
+    scheduled_at: i.scheduledAt,
+    worker_queue_key: res.key,
+  };
 }
 
 /**
@@ -1388,31 +1444,7 @@ async function main(): Promise<void> {
         if (!pg || pg.missing.length > 0) throw new Error(`página Facebook ${slug} sem credencial (${pg?.missing.join("/") ?? "fora do config"})`);
         return dispatchRetrospectivaFacebookPage(i, pg, fbApiVersion); // #14170: retry sem duplicar
       },
-      worker: async (channel, i) => {
-        const res = await postToWorkerQueue(
-          workerUrl,
-          workerToken,
-          {
-            text: i.text,
-            // Instagram exige `image_url` mesmo no carrossel (mesmo payload de `publish-instagram.ts`); Threads vai só com `image_urls`.
-            image_url: channel === "instagram" ? i.imageUrls[0] : null,
-            image_urls: i.imageUrls,
-            scheduled_at: i.scheduledAt,
-            destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
-            channel,
-          },
-          2,
-          "publish-retrospectiva-social",
-        );
-        return {
-          platform: channel,
-          destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
-          url: null,
-          status: "scheduled",
-          scheduled_at: i.scheduledAt,
-          worker_queue_key: res.key,
-        };
-      },
+      worker: (channel, i) => dispatchRetrospectivaWorkerPost(channel, i, { cycle, workerUrl, workerToken }), // #14242
       cancelWorker: (key) => deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-retrospectiva-social"),
     },
     verifyWorker: (p) => verifyWorkerDispatch(p, workerUrl, workerToken),
