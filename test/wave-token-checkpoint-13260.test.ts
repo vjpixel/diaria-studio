@@ -27,7 +27,8 @@ const tmp = () => {
 describe("#13260 waveCheckpointTarget (puro)", () => {
   it("plano da rodada real: edição = pasta da rodada, run-log da raiz, fase da onda", () => {
     const t = waveCheckpointTarget("/r/data/overnight/261116b/plan.json", { session_id: "plan-sess" }, 3, {});
-    assert.deepEqual(t, { ok: true, rootDir: "/r", edition: "261116b", phase: "onda w3", sessionId: "plan-sess" });
+    // `resolve` porque a função resolve o caminho do plano: no Windows "/r" vira "C:\r" (#13738).
+    assert.deepEqual(t, { ok: true, rootDir: resolve("/r"), edition: "261116b", phase: "onda w3", sessionId: "plan-sess" });
   });
 
   it("sessão do ambiente vence a do plano (é a dona do transcript)", () => {

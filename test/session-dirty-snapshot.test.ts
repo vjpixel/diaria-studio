@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   captureDirtySnapshot, isUnchangedSinceSnapshot, normalizeCheckoutPath, parsePorcelainZ, readSnapshot,
   snapshotFilePath, writeSnapshotOnce, SNAPSHOT_VERSION, MAX_SNAPSHOT_ENTRIES,
@@ -16,6 +16,13 @@ import { runDirtySnapshotHook } from "../.claude/hooks/session-start-dirty-snaps
 
 const fakeSnapshot = (entries: Record<string, { code: string; hash: string | null }> = {}) =>
   ({ version: SNAPSHOT_VERSION, capturedAt: "2026-11-02T00:00:00.000Z", checkout: "/repo", entries });
+
+/** Forma que `normalizeCheckoutPath` dá a um caminho POSIX de teste: no
+ * Windows "/repo" resolve para "c:/repo" (drive em minúsculo, barra única) — #13738. */
+const expectedCheckout = (p: string) => {
+  const abs = resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[A-Za-z]:/.test(abs) ? abs[0].toLowerCase() + abs.slice(1) : abs;
+};
 
 describe("session dirty snapshot (#11785)", () => {
   it("parses -z porcelain, keeping the rename destination and spaces in paths", () => {
@@ -32,8 +39,8 @@ describe("session dirty snapshot (#11785)", () => {
       hash: abs => `h:${abs}`, now: () => new Date("2026-11-02T00:00:00Z"),
     });
     assert.ok(snap);
-    assert.equal(snap.checkout, "/repo");
-    assert.deepEqual(snap.entries, { "a.ts": { code: " M", hash: "h:/repo/a.ts" }, "b.ts": { code: "??", hash: "h:/repo/b.ts" } });
+    assert.equal(snap.checkout, expectedCheckout("/repo"));
+    assert.deepEqual(snap.entries, { "a.ts": { code: " M", hash: `h:${resolve("/repo", "a.ts")}` }, "b.ts": { code: "??", hash: `h:${resolve("/repo", "b.ts")}` } });
     assert.ok(calls[1].includes("--untracked-files=all") && calls[1].includes("-z"));
   });
   it("does not write a partial snapshot above the entry cap", () => {
@@ -45,7 +52,7 @@ describe("session dirty snapshot (#11785)", () => {
     assert.notEqual(snapshotFilePath("abc", "/repo", "/base"), snapshotFilePath("abc", "/other", "/base"));
     assert.equal(snapshotFilePath("../evil", "/repo", "/base"), null);
     assert.equal(snapshotFilePath("", "/repo", "/base"), null);
-    assert.equal(normalizeCheckoutPath("/repo/a/../b/"), "/repo/b");
+    assert.equal(normalizeCheckoutPath("/repo/a/../b/"), expectedCheckout("/repo/b"));
   });
   it("first snapshot wins; unreadable or foreign-version files read as null", () => {
     const dir = mkdtempSync(join(tmpdir(), "dirty-snap-"));
