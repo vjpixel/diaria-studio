@@ -15,7 +15,7 @@ Sempre roda, antes da pesquisa:
 ```bash
 npx tsx scripts/inbox-drain.ts
 ```
-Lê novos e-mails de `diariaeditor@gmail.com` via Gmail API e anexa entradas em `data/inbox.md`. Retorna JSON `{ new_entries, urls[], topics[], most_recent_iso, skipped, errors?, error_samples? }`.
+Lê novos e-mails do inbox editorial (`platform.config.json` → `inbox.address`) via Gmail API e anexa entradas em `data/inbox.md`. Retorna JSON `{ new_entries, urls[], topics[], most_recent_iso, skipped, errors?, error_samples? }`.
 - Se `skipped: true` com `reason: "local_error"` (#10026; o legado `gmail_mcp_error` é o mesmo caso — aceitar os dois): falha local (config, gravação de `data/inbox.md`/cursor), não MCP. Logar `warn` com o campo `error` e prosseguir sem inbox (não aborta a pipeline).
 - Se `skipped: true` com `reason: "inbox_disabled"`: prosseguir silenciosamente.
 - Se `skipped: true` com `reason: "search_failed"` (#665): Gmail falhou ao listar threads (timeout, schema change, 5xx). Tratar igual a `local_error` — logar `warn` e prosseguir sem inbox. Cursor não é avançado (drain não ocorreu).
