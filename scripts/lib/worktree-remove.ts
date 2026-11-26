@@ -308,7 +308,7 @@ export function resolveWorktreeRemoval(gitResult: GitRemovalResult, path: string
  * sai 0 se o diretório deixou de existir, 1 caso contrário — pra scripts
  * shell, que não têm runtime Node/TS pra chamar `removeWorktreeDirSafely`
  * diretamente. O único consumidor (`dispatch-glm-lane-unit.sh`) virou lápide
- * no #10431; o CLI fica como utilitário avulso.
+ * no #10431 e saiu no #14059; o CLI fica como utilitário avulso.
  */
 if (isMainModule(import.meta.url)) {
   const target = process.argv[2];
