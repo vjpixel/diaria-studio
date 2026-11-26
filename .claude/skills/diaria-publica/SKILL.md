@@ -147,9 +147,9 @@ npx tsx scripts/pipeline-sentinel.ts assert --edition {AAMMDD} --step 4 --sync-h
 npx tsx scripts/check-publish-session-boundary.ts --edition {AAMMDD}
 ```
 
-- exit 0 → seguir. Com `[aviso]` no stderr (sentinel anterior ao #14038, ou sessão corrente desconhecida), seguir e citar o aviso no relato final.
-- exit 3 → **parar antes de qualquer outro passo**: esta é a mesma sessão do `/diaria-edicao`, contra a fronteira pós-gate 4 do #6171 (o contexto da revisão custa cerca de 11M tokens a mais nas Etapas 5 e 6). `render-halt-banner.ts --stage "Publicação — Passo 0" --reason "mesma sessão que aprovou o gate 4" --action "rodar /clear (ou abrir sessão nova) e invocar /diaria-publica {AAMMDD} de novo"`. Só com o editor pedindo explicitamente para seguir nesta sessão: re-rodar com `--allow-same-session` (sai 0 com aviso) e citar no relato final.
-- exit 2 → erro de uso: corrigir o comando.
+- exit 0 → seguir. Com `[aviso]` no stderr (sentinel anterior ao #14038, sentinel ilegível, ou sessão corrente desconhecida), seguir e citar o aviso no relato final.
+- exit 3 → **parar antes de qualquer outro passo**: esta é a sessão que aprovou o gate 4, contra a fronteira pós-gate 4 do #6171 (o contexto da revisão custa cerca de 11M tokens a mais nas Etapas 5 e 6). Refazer a Etapa 4 dentro desta sessão também conta: o `write --step 4` regrava o sentinel com o id dela. `render-halt-banner.ts --stage "Publicação — Passo 0" --reason "mesma sessão que aprovou o gate 4" --action "abrir uma sessão nova do Claude Code (nova conversa ou janela) e invocar /diaria-publica {AAMMDD} de novo; /clear pode não bastar"`. O id vem do ambiente herdado pelo Bash, que o `/clear` pode não trocar. Saída explícita, só com o editor pedindo para seguir nesta sessão: re-rodar com `--allow-same-session` (sai 0 com aviso) e citar no relato final.
+- exit 2 → erro de uso, ou diretório da edição não resolvido (linha `[error]` no stderr): conferir `{AAMMDD}` e o `data/` desta máquina e re-rodar; nunca seguir sem o check.
 
 **`{EDITION_DIR}`:** resolver uma vez, logo depois do sentinel: `EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})` (layout flat ou nested, #2463).
 

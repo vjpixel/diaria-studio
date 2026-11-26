@@ -100,9 +100,9 @@ A fronteira pós-gate 4 (#6171) era só prosa: no transcript 760277da (261119) a
 npx tsx scripts/check-publish-session-boundary.ts --edition {AAMMDD}
 ```
 
-- exit 0 → seguir. Com `[aviso]` no stderr (sentinel do Stage 4 ausente ou anterior ao #14038, ou sessão corrente desconhecida), seguir e citar o aviso no resumo final; o sentinel ausente é tratado pelo pré-requisito do playbook do Stage 5.
-- exit 3 → **parar antes de qualquer dispatch**: mesma sessão que aprovou o gate 4. `render-halt-banner.ts --stage "5 — Publicacao" --reason "mesma sessão que aprovou o gate 4" --action "rodar /clear (ou abrir sessão nova) e invocar o mesmo comando de novo"`. Só com o editor pedindo explicitamente para seguir nesta sessão: re-rodar com `--allow-same-session` (sai 0 com aviso) e citar no resumo final.
-- exit 2 → erro de uso: corrigir o comando.
+- exit 0 → seguir. Com `[aviso]` no stderr (sentinel do Stage 4 ausente, ilegível ou anterior ao #14038, ou sessão corrente desconhecida), seguir e citar o aviso no resumo final; o sentinel ausente é tratado pelo pré-requisito do playbook do Stage 5.
+- exit 3 → **parar antes de qualquer dispatch**: esta é a sessão que aprovou o gate 4 (refazer a Etapa 4 dentro da sessão de publicação também conta: o `write --step 4` regrava o sentinel com o id dela). `render-halt-banner.ts --stage "5 — Publicacao" --reason "mesma sessão que aprovou o gate 4" --action "abrir uma sessão nova do Claude Code (nova conversa ou janela) e invocar o mesmo comando de novo; /clear pode não bastar"`. O id vem do ambiente herdado pelo Bash, que o `/clear` pode não trocar. Saída explícita, só com o editor pedindo para seguir nesta sessão: re-rodar com `--allow-same-session` (sai 0 com aviso) e citar no resumo final.
+- exit 2 → erro de uso, ou diretório da edição não resolvido (linha `[error]` no stderr): conferir `{AAMMDD}` e o `data/` desta máquina e re-rodar; nunca seguir sem o check.
 
 ## Passo -2 — Pre-flight CORS check (#1132 P2.4)
 

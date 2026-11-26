@@ -22,6 +22,7 @@ import {
   assessPublishSessionBoundary,
   describePublishSessionBoundary,
 } from "../scripts/lib/publish-session-boundary.ts";
+import { resolveEditionDirSafe } from "../scripts/check-publish-session-boundary.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sentinelCli = join(repoRoot, "scripts", "pipeline-sentinel.ts");
@@ -82,9 +83,23 @@ describe("assessPublishSessionBoundary (#14038)", () => {
     );
   });
 
-  it("descreve o halt com /clear e o aviso do unknown", () => {
+  it("sentinel presente mas ilegível: motivo próprio, ainda fail-open", () => {
+    assert.deepEqual(
+      assessPublishSessionBoundary({ sentinelPresent: true, sentinelUnreadable: true, stage4SessionId: undefined, currentSessionId: GATE }),
+      { verdict: "unknown", reason: "sentinel_unreadable" },
+    );
+    assert.match(
+      describePublishSessionBoundary({ verdict: "unknown", reason: "sentinel_unreadable" }, "261119") ?? "",
+      /ilegível/,
+    );
+  });
+
+  it("o halt pede sessão nova (não só /clear), cita a Etapa 4 refeita e o override", () => {
     const halt = describePublishSessionBoundary({ verdict: "same-session", sessionId: GATE }, "261119");
-    assert.match(halt ?? "", /\/clear/);
+    assert.match(halt ?? "", /abrir uma sessão nova do Claude Code/);
+    assert.match(halt ?? "", /\/clear pode não bastar/);
+    assert.match(halt ?? "", /refazer a Etapa 4 dentro da sessão de publicação/);
+    assert.match(halt ?? "", /--allow-same-session/);
     assert.match(halt ?? "", /#6171/);
     assert.match(
       describePublishSessionBoundary({ verdict: "unknown", reason: "sentinel_without_session" }, "261119") ?? "",
@@ -124,7 +139,7 @@ describe("sentinel do Stage 4 grava o session_id (#14038)", () => {
       const same = run(boundaryCli, ["--edition", "261119", "--dir", dir], envWithSession(GATE));
       assert.equal(same.status, 3, same.stderr);
       assert.equal(JSON.parse(same.stdout).verdict, "same-session");
-      assert.match(same.stderr, /\/clear/);
+      assert.match(same.stderr, /sessão nova do Claude Code/);
 
       const allowed = run(boundaryCli, ["--edition", "261119", "--dir", dir, "--allow-same-session"], envWithSession(GATE));
       assert.equal(allowed.status, 0, allowed.stderr);
@@ -152,11 +167,29 @@ describe("sentinel do Stage 4 grava o session_id (#14038)", () => {
       assert.equal(noEnv.status, 0, noEnv.stderr);
       assert.match(noEnv.stderr, /sessão corrente desconhecida/);
 
+      // Sentinel malformado: aviso "ilegível", exit 0 (fail-open).
+      writeFileSync(join(dir, "_internal", ".step-4-done.json"), "{não é json");
+      const bad = run(boundaryCli, ["--edition", "261119", "--dir", dir], envWithSession(GATE));
+      assert.equal(bad.status, 0, bad.stderr);
+      assert.equal(JSON.parse(bad.stdout).reason, "sentinel_unreadable");
+      assert.match(bad.stderr, /ilegível/);
+
       const usage = run(boundaryCli, [], envWithSession(GATE));
       assert.equal(usage.status, 2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("resolveEditionDirSafe (#14038)", () => {
+  it("exceção do resolvedor vira erro (exit 2 no CLI), nunca crash", () => {
+    const r = resolveEditionDirSafe({ edition: "261119" }, () => {
+      throw new Error("EACCES data/editions");
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.error, /^\[error\] diretório da edição 261119 não resolvido: EACCES data\/editions/);
+    assert.deepEqual(resolveEditionDirSafe({ edition: "261119" }, () => "/x/261119"), { ok: true, dir: "/x/261119" });
   });
 });
 
@@ -182,5 +215,17 @@ describe("skills de publicação (#14038, #14027)", () => {
     assert.ok(at > 0, "check de sessão no /diaria-5-publicacao");
     assert.ok(at < skill.indexOf("## Passo 0 — Confirmar modo de publicação"), "antes do Passo 0 (dispatch)");
     assert.match(skill, /exit 3[\s\S]{0,80}parar antes de qualquer dispatch/);
+  });
+
+  it("as duas skills pedem sessão nova (não só /clear), citam a Etapa 4 refeita, o override e o exit 2", () => {
+    for (const p of [".claude/skills/diaria-publica/SKILL.md", ".claude/skills/diaria-5-publicacao/SKILL.md"]) {
+      const skill = read(p);
+      assert.match(skill, /abrir uma sessão nova do Claude Code \(nova conversa ou janela\)/, p);
+      assert.match(skill, /\/clear pode não bastar/, p);
+      assert.doesNotMatch(skill, /rodar \/clear \(ou abrir sessão nova\)/, p);
+      assert.match(skill, /[Rr]efazer a Etapa 4 dentro d/, p);
+      assert.match(skill, /--allow-same-session/, p);
+      assert.match(skill, /diretório da edição não resolvido/, p);
+    }
   });
 });
