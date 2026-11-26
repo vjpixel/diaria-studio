@@ -12,7 +12,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import {
   registerReport,
   dispatchReportNotify,
@@ -23,6 +23,10 @@ import {
   reportId,
   isReportKind,
   pruneReportsRegistry,
+  hostRegistryPath,
+  legacyRegistryPath,
+  listRegistryFiles,
+  registryHostTag,
   type ReportEntry,
   type ReportNotifyDeps,
 } from "../scripts/lib/reports-registry.ts";
@@ -142,7 +146,7 @@ describe("registerReport / listReports (#3714)", () => {
     // SUBSTITUÍDA, não apenas superada na leitura. Antes do fix o arquivo
     // acumulava as 2 linhas pra sempre (PoC da issue: um registro FALSO
     // "0 contatos" convivendo indefinidamente ao lado do correto).
-    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const raw = readFileSync(hostRegistryPath(r), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim());
     assert.equal(lines.length, 1);
     assert.equal(JSON.parse(lines[0]).title, "diar.ia.br overnight 260720 — 5 resolvidas");
@@ -164,7 +168,7 @@ describe("registerReport / listReports (#3714)", () => {
     assert.equal(reports[0].title, "v3 (final)");
     assert.equal(reports[0].id, "clarice-novos-novos-260805");
 
-    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const raw = readFileSync(hostRegistryPath(r), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim());
     assert.equal(lines.length, 1);
   });
@@ -175,7 +179,7 @@ describe("registerReport / listReports (#3714)", () => {
     registerReport(r, { kind: "edicao", sessionId: "260806", title: "Edição B", htmlPath: "b.html" });
     registerReport(r, { kind: "overnight", sessionId: "260805", title: "Overnight", htmlPath: "c.md" });
 
-    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const raw = readFileSync(hostRegistryPath(r), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim());
     assert.equal(lines.length, 3);
 
@@ -209,7 +213,7 @@ describe("registerReport / listReports (#3714)", () => {
       htmlPath: "a.html",
     });
     // Injeta uma linha corrompida entre as válidas.
-    const path = join(r, "data", "reports", "index.jsonl");
+    const path = hostRegistryPath(r);
     writeFileSync(path, readFileSync(path, "utf8") + "{ not json\n");
     registerReport(r, {
       kind: "overnight",
@@ -263,7 +267,7 @@ describe("registerReport — lock + escrita atômica (#4677, fleet review do #46
     const reports = listReports(r);
     assert.equal(reports.length, 20, "nenhuma das 20 escritas deve ter sido perdida por cima de outra");
 
-    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const raw = readFileSync(hostRegistryPath(r), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim());
     assert.equal(lines.length, 20, "arquivo físico deve ter exatamente 1 linha por id, nenhuma perdida");
   });
@@ -276,9 +280,9 @@ describe("registerReport — lock + escrita atômica (#4677, fleet review do #46
     const entries = readdirSync(dir);
     // Só o arquivo final deve sobrar — nenhum .tmp órfão pós-sucesso (rename
     // consome o .tmp atomicamente).
-    assert.deepEqual(entries.sort(), ["index.jsonl"]);
+    assert.deepEqual(entries.sort(), [basename(hostRegistryPath(r))]);
 
-    const raw = readFileSync(join(dir, "index.jsonl"), "utf8");
+    const raw = readFileSync(hostRegistryPath(r), "utf8");
     assert.ok(raw.trim().length > 0, "arquivo real nunca deve ficar vazio/parcial após um registerReport bem-sucedido");
     assert.doesNotThrow(() => JSON.parse(raw.trim()), "conteúdo do arquivo real deve ser JSON válido, nunca truncado");
   });
@@ -375,7 +379,7 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
   it("linha corrompida é removida (contada em removedCorrupted), linhas válidas preservadas", () => {
     const r = makeRoot();
     registerReport(r, { kind: "edicao", sessionId: "260805", title: "A", htmlPath: "a.html" });
-    const path = join(r, "data", "reports", "index.jsonl");
+    const path = hostRegistryPath(r);
     writeFileSync(path, readFileSync(path, "utf8") + "{ not json\n");
 
     const result = pruneReportsRegistry(r);
@@ -412,6 +416,184 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
     assert.equal(second.linesAfter, 1);
     assert.equal(second.removedDuplicates, 0);
     assert.equal(second.removedCorrupted, 0);
+  });
+});
+
+describe("registro por máquina (#14135 — 300 e Neo registrando na mesma janela de sync)", () => {
+  const legacyLine = (o: Partial<ReportEntry> & { id: string }) =>
+    JSON.stringify({
+      kind: "overnight",
+      sessionId: o.id.replace(/^overnight-/, ""),
+      title: o.id,
+      htmlPath: "x.md",
+      createdAt: "2026-11-01T08:00:00.000Z",
+      url: `/relatorios/${o.id}`,
+      ...o,
+    });
+
+  it("registryHostTag: minúsculas, caracteres fora de [a-z0-9_-] viram _, vazio vira unknown", () => {
+    assert.equal(registryHostTag("Neo"), "neo");
+    assert.equal(registryHostTag("300"), "300");
+    assert.equal(registryHostTag("DESKTOP-AB.local"), "desktop-ab_local");
+    assert.equal(registryHostTag("../x"), "___x");
+    assert.equal(registryHostTag("  "), "unknown");
+  });
+
+  it("REGRESSÃO: dois escritores com hosts diferentes no mesmo data/ -> cada um grava o próprio arquivo e a união tem os dois", () => {
+    const r = makeRoot();
+    // O cenário da issue: o 300 registra o clarice-novos e o Neo registra o
+    // develop na mesma janela. Com o arquivo único, a versão de uma máquina
+    // sobrescrevia a da outra no sync do Drive.
+    registerReport(r, { kind: "clarice-novos", sessionId: "novos-261126", title: "Clarice novos", htmlPath: "a.md" }, undefined, false, { host: "300" });
+    registerReport(r, { kind: "develop", sessionId: "261126", title: "Develop", htmlPath: "b.md" }, undefined, false, { host: "neo" });
+
+    assert.equal(existsSync(legacyRegistryPath(r)), false, "nenhuma máquina escreve mais o index.jsonl legado");
+    const files = listRegistryFiles(r).map((p) => basename(p));
+    assert.deepEqual(files, ["index.300.jsonl", "index.neo.jsonl"]);
+    // Nenhum arquivo carrega a linha da outra máquina: um sync que troque um
+    // arquivo pela versão da outra máquina não tem como apagar a linha dela.
+    assert.doesNotMatch(readFileSync(hostRegistryPath(r, "300"), "utf8"), /develop-261126/);
+    assert.doesNotMatch(readFileSync(hostRegistryPath(r, "neo"), "utf8"), /clarice-novos-novos-261126/);
+
+    const ids = listReports(r).map((x) => x.id).sort();
+    assert.deepEqual(ids, ["clarice-novos-novos-261126", "develop-261126"]);
+  });
+
+  it("REGRESSÃO: index.jsonl legado + arquivo de máquina -> a união tem os dois e o legado fica intacto", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "reports"), { recursive: true });
+    const legacy = `${legacyLine({ id: "overnight-261101" })}\n`;
+    writeFileSync(legacyRegistryPath(r), legacy, "utf8");
+
+    registerReport(r, { kind: "develop", sessionId: "261126", title: "Develop", htmlPath: "b.md" }, undefined, false, { host: "neo" });
+
+    const ids = listReports(r).map((x) => x.id).sort();
+    assert.deepEqual(ids, ["develop-261126", "overnight-261101"]);
+    assert.equal(readFileSync(legacyRegistryPath(r), "utf8"), legacy, "o legado nunca é reescrito por registerReport");
+  });
+
+  it("REGRESSÃO: o mesmo id em dois arquivos -> 1 entrada, a do registro mais recente", () => {
+    const r = makeRoot();
+    registerReport(
+      r,
+      { kind: "overnight", sessionId: "261126", title: "versão do 300", htmlPath: "x.md", createdAt: "2026-11-26T05:00:00.000Z" },
+      undefined,
+      false,
+      { host: "300" },
+    );
+    registerReport(
+      r,
+      { kind: "overnight", sessionId: "261126", title: "versão do neo (depois)", htmlPath: "x.md", createdAt: "2026-11-26T05:00:00.000Z" },
+      undefined,
+      false,
+      { host: "neo" },
+    );
+    // Re-registro no 300 depois do neo: o arquivo "300" vem antes na ordem
+    // alfabética, então o vencedor tem que sair do registeredAt, não da ordem.
+    // Espera 2 ms pra garantir registeredAt estritamente maior.
+    const until = Date.now() + 2;
+    while (Date.now() < until) {
+      /* espera ativa curta */
+    }
+    registerReport(
+      r,
+      { kind: "overnight", sessionId: "261126", title: "versão final do 300", htmlPath: "x.md", createdAt: "2026-11-26T05:00:00.000Z" },
+      undefined,
+      false,
+      { host: "300" },
+    );
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].title, "versão final do 300");
+    assert.equal(getReportById(r, "overnight-261126")?.title, "versão final do 300");
+  });
+
+  it("mesmo id no legado e num arquivo de máquina com o mesmo createdAt (re-registro do record-calibration) -> vence o de máquina", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "reports"), { recursive: true });
+    writeFileSync(
+      legacyRegistryPath(r),
+      `${legacyLine({ id: "calibration-8010", kind: "calibration", sessionId: "8010", title: "sem decisão" })}\n`,
+      "utf8",
+    );
+    registerReport(
+      r,
+      {
+        kind: "calibration",
+        sessionId: "8010",
+        title: "sem decisão",
+        htmlPath: "x.md",
+        createdAt: "2026-11-01T08:00:00.000Z",
+        decisionAt: "2026-11-02T08:00:00.000Z",
+      },
+      undefined,
+      false,
+      { host: "300" },
+    );
+    const reports = listReports(r);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].decisionAt, "2026-11-02T08:00:00.000Z");
+  });
+
+  it("legado sem registeredAt e com createdAt MAIS NOVO que o registro de máquina -> o legado vence (critério é o tempo, não o arquivo)", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "reports"), { recursive: true });
+    writeFileSync(legacyRegistryPath(r), `${legacyLine({ id: "overnight-261126", title: "legado", createdAt: "2099-01-01T00:00:00.000Z" })}\n`, "utf8");
+    registerReport(r, { kind: "overnight", sessionId: "261126", title: "máquina", htmlPath: "x.md" }, undefined, false, { host: "neo" });
+    assert.equal(listReports(r)[0].title, "legado");
+  });
+
+  it("notified de outra máquina conta pro dedup da notificação (o id já foi notificado na união)", async () => {
+    const r = makeRoot();
+    const calls: unknown[] = [];
+    const deps: ReportNotifyDeps = {
+      notify: (async (n: unknown) => {
+        calls.push(n);
+        return {} as never;
+      }) as ReportNotifyDeps["notify"],
+    };
+    const first = registerReport(r, { kind: "overnight", sessionId: "261126", title: "a", htmlPath: "x.md" }, deps, true, { host: "300" });
+    await first.notifyDispatch;
+    const second = registerReport(r, { kind: "overnight", sessionId: "261126", title: "b", htmlPath: "x.md" }, deps, true, { host: "neo" });
+    assert.deepEqual(await second.notifyDispatch, { notified: false, skipped: "already-notified" });
+    assert.equal(calls.length, 1);
+  });
+
+  it("pruneReportsRegistry trata cada arquivo por conta própria e não apaga o legado", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "reports"), { recursive: true });
+    writeFileSync(
+      legacyRegistryPath(r),
+      `${legacyLine({ id: "overnight-261101", title: "velho" })}\n${legacyLine({ id: "overnight-261101", title: "novo" })}\n{ not json\n`,
+      "utf8",
+    );
+    registerReport(r, { kind: "develop", sessionId: "261126", title: "Develop", htmlPath: "b.md" }, undefined, false, { host: "neo" });
+    // Mesmo id do legado no arquivo de máquina: duplicata ENTRE arquivos fica
+    // (a união resolve), só a duplicata dentro de cada arquivo sai.
+    registerReport(r, { kind: "overnight", sessionId: "261101", title: "do neo", htmlPath: "x.md" }, undefined, false, { host: "neo" });
+
+    const result = pruneReportsRegistry(r);
+    assert.equal(result.ok, true);
+    assert.equal(result.linesBefore, 5);
+    assert.equal(result.linesAfter, 3);
+    assert.equal(result.removedDuplicates, 1);
+    assert.equal(result.removedCorrupted, 1);
+    assert.ok(existsSync(legacyRegistryPath(r)), "o legado nunca é apagado");
+    const legacyLines = readFileSync(legacyRegistryPath(r), "utf8").split("\n").filter((l) => l.trim());
+    assert.equal(legacyLines.length, 1);
+    assert.equal(readFileSync(hostRegistryPath(r, "neo"), "utf8").split("\n").filter((l) => l.trim()).length, 2);
+    assert.deepEqual(listReports(r).map((x) => x.id).sort(), ["develop-261126", "overnight-261101"]);
+  });
+
+  it("listRegistryFiles ignora .tmp, .lock e arquivos fora do padrão", () => {
+    const r = makeRoot();
+    const dir = join(r, "data", "reports");
+    mkdirSync(dir, { recursive: true });
+    for (const n of ["index.jsonl", "index.neo.jsonl", "index.neo.jsonl.tmp", "index.neo.jsonl.lock", "index (1).jsonl", "outro.jsonl"]) {
+      writeFileSync(join(dir, n), "", "utf8");
+    }
+    assert.deepEqual(listRegistryFiles(r).map((p) => basename(p)), ["index.jsonl", "index.neo.jsonl"]);
   });
 });
 

@@ -11,7 +11,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ import {
   compareTitleWithReport,
   isTitleOk,
 } from "../scripts/lib/overnight-report-counts.ts";
-import { registerReport, type ReportNotifyDeps } from "../scripts/lib/reports-registry.ts";
+import { listRegistryFiles, registerReport, type ReportNotifyDeps } from "../scripts/lib/reports-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -370,22 +370,20 @@ describe("register-report.ts: guard de contagem (#5521)", () => {
     reportPath = `data/tmp-test-5521-${suffix}/report.md`;
   });
 
-  const registryPath = join(ROOT, "data", "reports", "index.jsonl");
-
-  /** Linhas deste teste que porventura tenham sido registradas. */
-  const registeredLines = (): string[] => {
-    if (!existsSync(registryPath)) return [];
-    return readFileSync(registryPath, "utf-8")
-      .split("\n")
-      .filter((l) => l.includes("zz-test-5521"));
-  };
+  /** Linhas deste teste que porventura tenham sido registradas (#14135: em qualquer arquivo do registro). */
+  const registeredLines = (): string[] =>
+    listRegistryFiles(ROOT).flatMap((p) =>
+      readFileSync(p, "utf-8")
+        .split("\n")
+        .filter((l) => l.includes("zz-test-5521")),
+    );
 
   afterEach(() => {
     try { rmSync(reportDir, { recursive: true, force: true }); } catch { /* ignore */ }
     // `data/reports/index.jsonl` é o registro REAL (sincronizado por OneDrive,
     // alimenta o /relatorios do editor). O caminho "relatório ausente" abaixo
     // chega a `registerReport` de propósito — então limpar é obrigatório.
-    if (existsSync(registryPath)) {
+    for (const registryPath of listRegistryFiles(ROOT)) {
       const kept = readFileSync(registryPath, "utf-8")
         .split("\n")
         .filter((l) => !l.includes("zz-test-5521"));

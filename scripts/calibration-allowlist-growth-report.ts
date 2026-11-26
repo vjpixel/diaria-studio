@@ -16,7 +16,7 @@
  * Default: o trimestre civil anterior completo.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -29,7 +29,7 @@ import {
   summarizeCalibrationPrLatency,
   type CalibrationReportEntry,
 } from "./lib/calibration-audit.ts";
-import { registerReport } from "./lib/reports-registry.ts";
+import { listReports, registerReport } from "./lib/reports-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -73,19 +73,10 @@ function revBefore(date: string): string | null {
   return out || null;
 }
 
+/** #14135: lê pela união de `listReports` (legado + `index.{host}.jsonl`),
+ * nunca o `index.jsonl` cru — o registro de cada máquina vive no próprio arquivo. */
 function readCalibrationEntries(): CalibrationReportEntry[] {
-  const p = resolve(ROOT, "data/reports/index.jsonl");
-  if (!existsSync(p)) return [];
-  const out: CalibrationReportEntry[] = [];
-  for (const line of readFileSync(p, "utf-8").split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line) as CalibrationReportEntry);
-    } catch {
-      /* linha corrompida: ignora (leitura best-effort) */
-    }
-  }
-  return out;
+  return listReports(ROOT);
 }
 
 async function main(): Promise<void> {
