@@ -346,6 +346,11 @@ Com o "aprovar":
    colar).
 2. Só depois do item 1 ok, em paralelo:
    - retro: `publish-weekly-social.ts --saturday {S} --mode both --shared-selection {arquivo} --schedule`
+     (com `slotCurto` aplicado, #13822: duas chamadas em vez desta,
+     `--mode highlights --time {HH:MM alternativo} --schedule` e
+     `--mode clicked --shared-selection {arquivo} --schedule`, porque `--time`
+     com `--mode both` moveria também o clicked de `{D}`; o mesmo vale para
+     slot vencido resolvido com `--time`)
      (Passo 4 de `/diaria-retro-semanal`; recusa com exit 2 se o replay da
      seleção com o cache de agora der outra seleção, se as URLs não baterem
      com o hash da aprovação, se o empate do clicked ainda for só

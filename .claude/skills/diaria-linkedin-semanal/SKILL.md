@@ -723,8 +723,11 @@ LinkedIn para a home: a auditoria desconta essas
   não termina mais no domínio nu, então o split não deveria voltar. Se
   voltar: (1) conferir se o `ln-{cycle}.html` colado é do render atual (a
   âncora do vídeo é "YouTube"); se for de um render antigo, re-renderizar
-  (Passo 7), substituir o corpo inteiro pelo paste do 8b e repetir a
-  auditoria; (2) com o render atual e o split ainda lá, **não tentar a
+  (Passo 7), esvaziar o corpo já colado antes de colar de novo (foco no
+  `contenteditable` do corpo, selecionar tudo com `ctrl+a`/`cmd+a` e
+  apagar com `Delete`; conferir pelo snippet abaixo que
+  `textContent.length` ficou 0 e que não sobrou âncora, senão o paste
+  duplica o artigo), então colar pelo 8b e repetir a auditoria; (2) com o render atual e o split ainda lá, **não tentar a
   correção pela toolbar**: no 26w47, com o texto inteiro selecionado por
   `Range` via `javascript_tool` (seleção conferida), o botão de link da
   toolbar não abriu diálogo nenhum, e a seleção por arrasto também falhou

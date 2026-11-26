@@ -34,6 +34,12 @@ test('topo do gate (Passo 6) avisa quando o slot vence antes da aprovação (#13
   assert.match(item1, /vence antes da aprovação/);
 });
 
+test('Passo 7 do pacote agenda em duas chamadas quando há slotCurto (#13822)', () => {
+  const p7 = pacoteStep(7);
+  assert.match(p7, /slotCurto[\s\S]*--mode highlights --time \{HH:MM alternativo\} --schedule/);
+  assert.match(p7, /--mode clicked --shared-selection \{arquivo\} --schedule/);
+});
+
 test('Passo 3 do pacote documenta a troca do vídeo da semana por flag (#13820)', () => {
   const p3 = pacoteStep(3);
   assert.match(p3, /Trocar o vídeo da semana \(#13820\)/);
@@ -58,5 +64,8 @@ test('Passo 8c não manda mais corrigir a âncora do vídeo pela toolbar (#13821
   const c = p8.split('### 8c.')[1]?.split('### 8d.')[0] ?? '';
   assert.match(c, /não tentar a\s+correção pela toolbar/);
   assert.match(c, /Passo 9/);
+  // Recolar exige esvaziar o corpo antes, senão o artigo duplica.
+  assert.match(c, /esvaziar o corpo já colado antes de colar de novo/);
+  assert.match(c, /`textContent\.length` ficou 0/);
   assert.doesNotMatch(c, /Corrigir assim:\s+selecionar o texto inteiro da âncora por `Range`/);
 });
