@@ -43,6 +43,7 @@ import {
   socialEntryKey,
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts"; // #10458
+import { resolveSocialWorkerToken, resolveSocialWorkerUrlFromRoot } from "./lib/worker-queue-client.ts"; // #14062
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,16 +98,8 @@ export function markDeletedEntries(
 }
 
 function resolveLinkedinWorkerUrl(): string {
-  const fromEnv = process.env.DIARIA_LINKEDIN_CRON_URL;
-  if (fromEnv) return fromEnv;
-  try {
-    const config = JSON.parse(
-      readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
-    ) as { publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } } };
-    return config.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
-  } catch {
-    return "";
-  }
+  // #14062: env vazia cai pro config (forma `if (fromEnv)` de sempre).
+  return resolveSocialWorkerUrlFromRoot(ROOT, { emptyEnvFallsThrough: true });
 }
 
 export async function deleteFbPost(
@@ -209,7 +202,7 @@ async function main(): Promise<number | void> {
   const fb = loadFbPages();
   if (fb.error) console.error(`[delete-test-schedules] config de páginas do Facebook inválido: ${fb.error}`);
   const liWorkerUrl = resolveLinkedinWorkerUrl();
-  const liToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const liToken = resolveSocialWorkerToken();
 
   for (const post of targets) {
     const subtype = (post.subtype as string | undefined) ?? "main";

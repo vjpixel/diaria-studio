@@ -414,7 +414,14 @@ import {
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
 import { loadR2UploadConfig, r2ObjectHasBody, r2PublicUrl, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
-import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
+import {
+  buildReelsQueuePayload,
+  postToWorkerQueue,
+  resolveSocialWorkerToken,
+  resolveSocialWorkerUrl,
+  WorkerQueueError,
+  type WorkerQueuePayload,
+} from "./lib/worker-queue-client.ts";
 import { buildPageRepostPayload, enqueuePageAction, linkedInPostUrnFrom, type EnqueueFn, type PageActionResult } from "./lib/diaria/linkedin-page-actions.ts"; // #11121
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, updatePersonalPostCommentary, type PersonalCreds } from "./lib/linkedin-personal.ts";
@@ -6234,12 +6241,8 @@ async function mainUnlocked(): Promise<number> {
   }
   const editionUrlIn = resolveEditionUrlInput(dir, values["edition-url"]);
   // #10823: fila do Worker pro Reels com horário futuro (mesmas vars do publish-instagram.ts --schedule).
-  const workerUrl: string =
-    process.env.DIARIA_LINKEDIN_CRON_URL ??
-    config?.publishing?.social?.instagram?.cloudflare_worker_url ??
-    config?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-    "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl: string = resolveSocialWorkerUrl(config, { preferSlot: "instagram" });
+  const workerToken = resolveSocialWorkerToken();
   const r2 = loadR2UploadConfig(process.env);
   // #10772: LinkedIn pessoal (mesmo token do 4º post) e o vídeo completo do YouTube pro texto.
   const liCreds = readPersonalCreds(process.env, new Date());

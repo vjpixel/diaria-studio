@@ -267,7 +267,14 @@ import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry }
 import { decideResumeOrRetry, formatRetryOutsideDispatch, parseRetryIdList, retryIdsOutsideDispatch, type ResumeRetryDecision } from "./lib/social-retry.ts"; // #13076; #13089
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
-import { deleteFromWorkerQueue, idempotentConflictKey, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import {
+  deleteFromWorkerQueue,
+  idempotentConflictKey,
+  postToWorkerQueue,
+  resolveSocialWorkerToken,
+  resolveSocialWorkerUrl,
+  WorkerQueueError,
+} from "./lib/worker-queue-client.ts";
 import {
   cancelAndRecordReschedule,
   deleteFacebookScheduledPost,
@@ -2320,11 +2327,8 @@ async function runOneMode(
   // bem-intencionado agenda um SEGUNDO carrossel duplicado na conta real.
   if (!skipInstagram) {
     const workerUrl =
-      process.env.DIARIA_LINKEDIN_CRON_URL ??
-      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
-      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-      "";
-    const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+      resolveSocialWorkerUrl(platformConfig, { preferSlot: "instagram" });
+    const workerToken = resolveSocialWorkerToken();
     if (!workerUrl || !workerToken) {
       console.error(`ERRO instagram/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
@@ -2429,11 +2433,8 @@ async function runOneMode(
   // "failed" (o post já está na fila do Worker).
   if (!skipThreads) {
     const workerUrl =
-      process.env.DIARIA_LINKEDIN_CRON_URL ??
-      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
-      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-      "";
-    const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+      resolveSocialWorkerUrl(platformConfig, { preferSlot: "instagram" });
+    const workerToken = resolveSocialWorkerToken();
     if (!workerUrl || !workerToken) {
       console.error(`ERRO threads/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
@@ -2490,11 +2491,8 @@ async function runOneMode(
   // — nunca mascarada como "failed" (o post já está na fila do Worker).
   if (!skipLinkedIn) {
     const workerUrl =
-      process.env.DIARIA_LINKEDIN_CRON_URL ??
-      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
-      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-      "";
-    const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+      resolveSocialWorkerUrl(platformConfig, { preferSlot: "instagram" });
+    const workerToken = resolveSocialWorkerToken();
     if (!workerUrl || !workerToken) {
       console.error(`ERRO linkedin/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
@@ -2652,11 +2650,8 @@ async function cancelForReschedule(args: {
 }): Promise<boolean> {
   const { targets, destaqueKey, publishedPath } = args;
   const workerUrl =
-    process.env.DIARIA_LINKEDIN_CRON_URL ??
-    args.platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
-    args.platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-    "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    resolveSocialWorkerUrl(args.platformConfig, { preferSlot: "instagram" });
+  const workerToken = resolveSocialWorkerToken();
   const pages = resolveFacebookPages(loadFacebookPagesConfig(args.facebookPagesConfig ?? args.platformConfig), process.env);
   const missing: string[] = [];
   if (targets.some((t) => t.kind === "worker_queue") && (!workerUrl || !workerToken)) {

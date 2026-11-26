@@ -93,7 +93,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { appendSocialPosts, readSocialPublished, RESUME_SKIP_STATUSES, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
-import { deleteFromWorkerQueue, postToWorkerQueue } from "./lib/worker-queue-client.ts";
+import {
+  deleteFromWorkerQueue,
+  postToWorkerQueue,
+  resolveSocialWorkerToken,
+  resolveSocialWorkerUrl,
+} from "./lib/worker-queue-client.ts";
 import { publishFacebookCarouselByUrl, validateScheduledTime } from "./publish-facebook.ts";
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
@@ -1195,8 +1200,8 @@ async function main(): Promise<void> {
     return s;
   };
 
-  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? social.instagram?.cloudflare_worker_url ?? social.linkedin?.cloudflare_worker_url ?? "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const workerUrl = resolveSocialWorkerUrl({ publishing: { social } }, { preferSlot: "instagram" });
+  const workerToken = resolveSocialWorkerToken();
   // #10458: credencial via helper único (env > data/.fb-credentials.json, este
   // só pra `diaria`). A Retrospectiva publica em CADA página habilitada de
   // publishing.social.facebook.pages (decisão do editor, 19/10/2026 — igual
