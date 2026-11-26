@@ -59,7 +59,7 @@
  * @see scripts/lib/issue-depends-on.ts (parseDependsOn, o marcador que este módulo cobra a ausência de)
  * @see scripts/lib/decision-label-drift.ts (stripHtmlComments, mesmo padrão de catálogo regex + docstring)
  * @see scripts/check-dependency-prose-lint.ts (CLI)
- * @see context/overnight-dispatch-rules.md item 26 (onde o coordenador roda isto)
+ * @see context/overnight-coordinator-rules.md item 26 (onde o coordenador roda isto)
  */
 
 import { stripHtmlComments } from "./decision-label-drift.ts";
