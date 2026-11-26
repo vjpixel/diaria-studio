@@ -221,7 +221,8 @@ describe("stage-0-run: step_timings (#14032)", () => {
     assert.deepEqual(by("verify-twitter-posts (0k)"), { label: "verify-twitter-posts (0k)", ms: 10, code: 4 }); // softStep()
     assert.deepEqual(by("clarice-healthcheck --real-chunk"), { label: "clarice-healthcheck --real-chunk", ms: 10, code: 0 }); // deps.exec direto
     // Lote 0e-0h: os 4 começam antes de qualquer um terminar, então os ms se
-    // sobrepõem (4 leituras de início + a própria leitura de fim = 40 ms).
+    // sobrepõem: os 4 inícios leem o relógio em t0..t3 e os 4 fins em t4..t7,
+    // logo cada passo do lote mede 4 ticks (4 x 10 ms = 40 ms).
     assert.deepEqual(by("kit-sync"), { label: "kit-sync", ms: 40, code: 0, async: true });
     assert.equal(summary.steps.filter((s) => s.async).length, 4);
     // Todo exec da fase foi medido (o próprio step_timings fica de fora).
