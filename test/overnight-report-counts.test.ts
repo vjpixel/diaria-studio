@@ -11,7 +11,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
