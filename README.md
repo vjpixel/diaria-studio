@@ -6,7 +6,7 @@ Pipeline Claude Code fim-a-fim para produção da newsletter **[diar.ia.br](http
 
 - **Runtime**: [Claude Code](https://claude.com/claude-code) CLI como orquestrador.
 - **Linguagem**: TypeScript + Node 22.
-- **MCPs**: Clarice (local, revisão de PT-BR), Beehiiv (newsletter), Gmail (inbox editorial), Claude in Chrome (publicação web), GitHub (issues/PRs).
+- **MCPs**: Clarice (revisão de PT-BR), Kit (newsletter), Gmail (inbox editorial e e-mail de teste), Claude in Chrome (publicação web), Google Ads e Doppler (opcionais). A Beehiiv é só arquivo histórico desde o #11225: a conta segue com posts, site, estatísticas e assinantes arquivados, mas não envia e o pipeline não depende dela.
 - **APIs**: Google Gemini (imagens), Facebook Graph (posts), Google Drive OAuth (sync).
 - **CI**: GitHub Actions rodando typecheck + unit tests + smoke e2e em todo PR.
 
@@ -34,12 +34,11 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 | `/diaria-publica AAMMDD` | Entrada do dia normal: vídeo horizontal no YouTube, depois as Etapas 5 e 6 na mesma sessão, depois o vertical (#12591). Era `/diaria-publica-video`, que segue como alias (#12620). |
 | `/diaria-1-pesquisa AAMMDD` | Etapa 1 (pesquisa + dedup + categorize + score). |
 | `/diaria-2-escrita AAMMDD [newsletter\|social]` | Etapa 2 (newsletter + posts sociais em paralelo). |
-| `/diaria-3-imagens AAMMDD [eai\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
+| `/diaria-3-imagens AAMMDD [eia\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
 | `/diaria-4-revisao AAMMDD` | Etapa 4 (Revisão: pré-render + gate humano pré-publicação). |
 | `/diaria-5-publicacao [all\|newsletter\|social] AAMMDD` | Etapas 5 e 6 (rascunho Kit + redes agendadas + gate de agendamento). Exige o link do vídeo no D1 ou a edição marcada sem vídeo (#12588); É a Etapa 5 isolada (dia sem vídeo, retomada, retry de canal); no dia normal roda de dentro do `/diaria-publica`. |
 | `/diaria-mensal --cycle YYMM-MM [--no-gate]` | Digest mensal (coleta/análise → escrita → imagens → revisão consolidada → publicação Brevo, #2795). |
-| `/diaria-test [AAMMDD]` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
-| `/diaria-atualiza-audiencia` | Recarrega perfil de audiência via Beehiiv survey. |
+| `/diaria-atualiza-audiencia` | Regera o perfil de audiência a partir do CTR e das respostas do formulário do onboarding (formulario.diar.ia.br, #10605). |
 | `/diaria-refresh-dedup` | Regenera `data/past-editions.md` (usado pra evitar links repetidos). |
 | `/diaria-inbox` | Drena submissões editoriais de `diariaeditor@gmail.com`. |
 | `/diaria-log [edition] [level]` | Lê `data/run-log.jsonl` (debug). |
@@ -104,7 +103,7 @@ CI automática em push/PR — ver [`.github/workflows/ci.yml`](./.github/workflo
 .github/
   workflows/ci.yml           # CI automation
   pull_request_template.md
-.mcp.json                    # MCPs: clarice, beehiiv, gmail, chrome, github
+.mcp.json                    # MCPs: clarice, kit, google-ads, doppler (Gmail é conector do claude.ai; Claude in Chrome, extensão)
 context/                     # system prompt (cacheado)
   editorial-rules.md
   audience-profile.md        # gerado
