@@ -8,8 +8,13 @@ import { join } from "node:path";
 import { registerCorteLockCleanup, corteTimerLockBusyError } from "../scripts/publish-shorts.ts";
 import { acquireTimerLock } from "../scripts/lib/diaria/timer-lock.ts";
 
+// No Windows `child.kill(sinal)` encerra o processo à força (TerminateProcess):
+// nenhum handler de SIGINT/SIGTERM roda, então não há liberação a medir (#13738).
+// Os testes de sinal valem no 300 e no CI (Linux).
+const SIGNAL_SKIP = process.platform === "win32" ? "kill(sinal) no Windows não entrega o sinal ao handler" : false;
+
 for (const [signal, expected] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
-  it(`#12004 ${signal} libera imediatamente o lock para outra rodada`, { timeout: 15000 }, async () => {
+  it(`#12004 ${signal} libera imediatamente o lock para outra rodada`, { timeout: 15000, skip: SIGNAL_SKIP }, async () => {
     const dir = mkdtempSync(join(tmpdir(), "corte-signal-"));
     const path = join(dir, ".shorts-corte-timer.lock");
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
@@ -51,7 +56,7 @@ function spawnWithHeartbeat(path: string, body: string) {
   `], { stdio: ["ignore", "pipe", "pipe"] });
 }
 
-it("#12004 SIGTERM com renovação ativa libera o lock e nenhuma renovação o recria", { timeout: 15000 }, async () => {
+it("#12004 SIGTERM com renovação ativa libera o lock e nenhuma renovação o recria", { timeout: 15000, skip: SIGNAL_SKIP }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "corte-signal-beat-"));
   const path = join(dir, ".shorts-corte-timer.lock");
   const child = spawnWithHeartbeat(path, `
@@ -85,8 +90,10 @@ it("#12157 leitura concorrente nunca vê o lock vazio durante a renovação", { 
     const release = acquireTimerLock(${JSON.stringify(path)}, Date.now(), { heartbeatMs: 1 });
     setInterval(() => {}, 1000);
     setTimeout(() => console.log('ready'), 50);
-    process.on('SIGTERM', () => { release(); process.exit(0); });
-  `], { stdio: ["ignore", "pipe", "pipe"] });
+    // Liberação pedida pelo stdin, não por sinal: no Windows o SIGTERM mata sem rodar
+    // handler e deixava lock + temporário para trás (#13738). O teste mede a leitura.
+    process.stdin.on('data', () => { release(); process.exit(0); });
+  `], { stdio: ["pipe", "pipe", "pipe"] });
   try {
     await once(child.stdout, "data");
     let reads = 0;
@@ -107,7 +114,7 @@ it("#12157 leitura concorrente nunca vê o lock vazio durante a renovação", { 
     assert.deepEqual(bad.slice(0, 3), [], `${bad.length} de ${reads} leituras viram o lock vazio/truncado`);
     assert.ok(beats > 0, "a renovação rodou durante as leituras");
     const exited = once(child, "exit");
-    child.kill("SIGTERM");
+    child.stdin!.write("release\n");
     await exited;
     assert.deepEqual(readdirSync(dir), [], "release apagou o lock e nenhum temporário sobrou");
   } finally {
