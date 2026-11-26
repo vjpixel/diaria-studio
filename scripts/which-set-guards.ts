@@ -73,6 +73,18 @@ export interface SetGuardRule {
 }
 
 /**
+ * Todo `.ts` em qualquer profundidade de um diretório. Dois patterns porque
+ * `dir/**\/*.ts` no `matchesGlob` exige ao menos um subdiretório (vira
+ * `dir/.*\/[^/]*\.ts`): o arquivo solto na raiz (`scripts/foo.ts`) precisa do
+ * `dir/*.ts` (#14215 — `scripts/` ganhou subdiretórios como
+ * `scripts/publish-shorts/` e `scripts/lib/shared/`, e as varreduras abaixo
+ * descem em todos eles).
+ */
+function tsAnyDepth(dir: string): readonly string[] {
+  return [`${dir}/*.ts`, `${dir}/**/*.ts`];
+}
+
+/**
  * Levantamento inicial (#7056), não exaustivo — ver docstring do módulo.
  * Adicionar aqui quando um guard novo varrer um conjunto (workers, hubs,
  * seeds, tasks, etc.) em vez de cobrir 1 arquivo.
@@ -177,6 +189,96 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
       "isoladamente é 'o' arquivo de teste tocado, então a disciplina de #2959 não pegava. Já derrubou master " +
       "1x (PR #7271, #6767). Rodar com NODE_TEST_SNAPSHOTS=1 quando a mudança for intencional (ver docstring " +
       "de test/orchestrator-prompt.test.ts) — formatReport() não passa a env var, só nomeia o teste a rodar.",
+  },
+  // #14215: os 7 abaixo derrubaram ~10 ciclos de dev-fixer (medição da #14120)
+  // porque o implementador não os rodava antes do push. O gatilho de cada um
+  // tem a MESMA abrangência da varredura do teste (o diretório que ele percorre,
+  // em qualquer profundidade), nunca uma lista de arquivos conhecidos.
+  {
+    id: "process-exit-fetch-guard-9911",
+    description: "script em scripts/ que usa fetch não pode sair por process.exit() — usa runCli (#9911)",
+    testFiles: ["test/process-exit-fetch-guard-9911.test.ts"],
+    triggerPatterns: tsAnyDepth("scripts"),
+    reason:
+      "scanProcessExitAfterFetch percorre todo .ts de scripts/ (subdiretórios inclusos) e confere a ALLOWLIST " +
+      "contra o disco — um script novo com fetch + process.exit, ou um que deixou de violar (ALLOWLIST velha), " +
+      "muda o veredito sem tocar o teste",
+  },
+  {
+    id: "fetch-body-cancel-9991",
+    description:
+      "script que sai por runCli/process.exitCode não descarta corpo de fetch sem cancelar (#9991/#10022)",
+    testFiles: ["test/fetch-body-cancel-9991.test.ts"],
+    triggerPatterns: tsAnyDepth("scripts"),
+    reason:
+      "scanUnconsumedBodyInExitCodeScripts percorre todo .ts de scripts/ fora de scripts/lib/ (o scanner em si " +
+      "mora em scripts/lib/process-exit-fetch-scan.ts, por isso o gatilho cobre scripts/ inteiro) — um " +
+      "`if (!res.ok) return` novo em qualquer script reprova o guard",
+  },
+  {
+    id: "spawn-npx-windows-guard",
+    description: 'spawn/spawnSync de "npx" sem shell: quebra no Windows — usar test/_helpers/spawn-npx.ts',
+    testFiles: ["test/spawn-npx-windows-guard.test.ts"],
+    // workers/ não tem .ts solto na raiz (todo worker é um subdiretório), e o
+    // higiene do teste reprova pattern que não casa com nenhum arquivo real.
+    triggerPatterns: [...tsAnyDepth("test"), ...tsAnyDepth("scripts"), "workers/**/*.ts"],
+    reason:
+      "varre todo .ts de test/, scripts/ e workers/ (fora de node_modules) — qualquer chamada nova de " +
+      'spawn("npx", ...) em qualquer arquivo reprova, e o arquivo de teste nunca é tocado',
+  },
+  {
+    id: "getarg-nullish-fallback-11472",
+    description: 'getArg de cli-args.ts devolve "" quando a flag falta — `getArg(...) ?? default` nunca usa o default (#11472)',
+    testFiles: ["test/getarg-nullish-fallback-11472.test.ts"],
+    triggerPatterns: tsAnyDepth("scripts"),
+    reason:
+      "percorre recursivamente todo .ts de scripts/ que importa getArg de cli-args.ts — um script novo com " +
+      "`getArg(...) ?? x` (inline ou via variável) reprova sem tocar o teste",
+  },
+  {
+    id: "fake-gh-safety-guard-11487",
+    description:
+      "teste que monta gh falso na frente do PATH herdado precisa do helper test/_helpers/fake-gh.ts (#11487)",
+    testFiles: ["test/fake-gh-safety-guard-11487.test.ts"],
+    triggerPatterns: tsAnyDepth("test"),
+    reason:
+      "varre todo .ts de test/ (subdiretórios inclusos) atrás de gh falso sem o helper — um teste novo que " +
+      "prepende o PATH herdado reprova, e é justamente o arquivo novo, não o guard, que aparece no diff",
+  },
+  {
+    id: "worker-robots-txt-guard-4777",
+    description: "todo Worker com host público (custom_domain) serve /robots.txt próprio (#4777)",
+    testFiles: ["test/worker-robots-txt-guard-4777.test.ts"],
+    triggerPatterns: [
+      "workers/*/wrangler.toml",
+      "workers/*/public/robots.txt",
+      "workers/*/src/**",
+      "scripts/lib/worker-public-hosts.ts",
+      "scripts/lib/shared/robots-txt.ts",
+    ],
+    reason:
+      "discoverWorkerPublicHosts lê o wrangler.toml de TODO worker (EXPECTED_HOSTS trava o conjunto) e, por host, " +
+      "public/robots.txt ou o dispatch da rota em src/ — dar custom_domain a um worker, ou mexer no roteamento " +
+      "do src/, muda o veredito sem tocar o teste",
+  },
+  {
+    id: "workers-deploy-workflow-coverage",
+    description:
+      "todo worker tem deploy-{worker}.yml cujo on.push.paths cobre o próprio dir e todo módulo importado de fora " +
+      "(#5531/#7117/#7118/#10637)",
+    testFiles: ["test/workers-deploy-workflow-coverage.test.ts"],
+    triggerPatterns: [
+      "workers/*/wrangler.{toml,jsonc}",
+      "workers/*/package.json",
+      "package-lock.json",
+      ".github/workflows/*.{yml,yaml}",
+      "workers/**/*.ts",
+      ...tsAnyDepth("scripts"),
+    ],
+    reason:
+      "descobre os workers pelo wrangler, confere workflows e lockfile raiz, e calcula o fecho de imports a " +
+      "partir do main de cada worker — um import novo de scripts/** no fecho de um worker precisa entrar no " +
+      "paths: do deploy, e é o arquivo de scripts/, não o teste nem o workflow, que aparece no diff",
   },
 ];
 
