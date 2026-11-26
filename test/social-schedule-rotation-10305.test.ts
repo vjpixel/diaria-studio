@@ -262,11 +262,17 @@ describe("plano consultável e registro (#10305)", () => {
 describe("platform.config.json REAL (#10305)", () => {
   const real = JSON.parse(readFileSync(resolve(import.meta.dirname, "..", "platform.config.json"), "utf8"));
   const realSocial = real.publishing.social;
-  const realRot = readSocialRotation(realSocial);
+  // Teste encerrado em 25/11/2026 (grade fixa): o bloco fica no config com
+  // `enabled: false` como registro. As checagens abaixo religam o bloco numa
+  // cópia para conferir que ele ainda reconstrói o plano da janela medida.
+  const realRot = readSocialRotation({ rotation: { ...realSocial.rotation, enabled: true } });
 
-  it("teste ligado por config explícita", () => {
-    assert.equal(realSocial.rotation?.enabled, true);
+  it("teste encerrado: rotação desligada no config, bloco mantido como registro", () => {
+    assert.equal(realSocial.rotation?.enabled, false);
+    assert.equal(readSocialRotation(realSocial), null);
     assert.ok(realRot);
+    assert.equal(realSocial.rotation.start_date, "2026-10-20");
+    assert.equal(realSocial.rotation.end_date, "2026-11-20");
   });
   it("candidatos de dia útil dentro da janela 07:00–21:00 do método de 15/10", () => {
     for (const t of realRot!.weekday) assert.ok(t >= "07:00" && t <= "21:00", t);

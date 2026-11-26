@@ -199,7 +199,7 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 **Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
 
-- Agendar/postar no **MESMO horário do 4º post da página** (`publishing.social.use_melhor_time`, 07:45 BRT — durante o teste rotativo do #10305 o horário gira por dia; usar o `scheduled_at` da entry `linkedin`/`um` em `06-social-published.json`, que é o que a automação também lê) — os dois saem juntos. **Exceção conhecida do teste (self-review #10417 finding 6, só documentada, sem mudança na task):** nos dias em que a rotação põe o `um` às 07:00, a task `Diaria-LinkedIn-Personal` (07:46, minuto travado com `use_melhor_time` por teste) publica o pessoal ~46 min depois da página; nos demais candidatos a repescagem de hora em hora dispara em hora cheia, quase junto. `fireWindowCheck` (janela de 3h) aceita os dois casos — a diferença é aceita durante a janela do teste e some quando os horários definitivos forem gravados. Imagem: a capa tipográfica `04-um-carousel-cover-4x5.jpg` (`resolve-post-pixel.ts --image` imprime o arquivo certo; edição antiga com `## post_pixel` = `04-d1-2x1.jpg`, #12226).
+- Agendar/postar no **MESMO horário do 4º post da página** (`publishing.social.use_melhor_time`, 09:00 BRT desde 25/11/2026, grade fixa do #10305; era 07:45, e durante o teste rotativo o horário girava por dia; usar o `scheduled_at` da entry `linkedin`/`um` em `06-social-published.json`, que é o que a automação também lê) — os dois saem juntos. **Exceção conhecida do teste (self-review #10417 finding 6, só documentada, sem mudança na task):** nos dias em que a rotação põe o `um` às 07:00, a task `Diaria-LinkedIn-Personal` (07:46, minuto travado com `use_melhor_time` por teste) publica o pessoal ~46 min depois da página; nos demais candidatos a repescagem de hora em hora dispara em hora cheia, quase junto. `fireWindowCheck` (janela de 3h) aceita os dois casos — a diferença é aceita durante a janela do teste e some quando os horários definitivos forem gravados. Imagem: a capa tipográfica `04-um-carousel-cover-4x5.jpg` (`resolve-post-pixel.ts --image` imprime o arquivo certo; edição antiga com `## post_pixel` = `04-d1-2x1.jpg`, #12226).
 - **⚠️ GUARD INVERTIDO (espelho do Passo 3):** o post da página exige `has_company_name===true` e aborta se cair no perfil pessoal. O post pessoal exige o **inverso** — confirmar que o composer está no **perfil pessoal (vjpixel)**, e abortar se cair na página Diar.ia:
   ```javascript
   const authorText = (authorBtn?.textContent || authorBtn?.getAttribute('aria-label') || '').trim();
@@ -555,12 +555,14 @@ ao lado do botão Publish, e o artigo agendado aparece em
   inicial e fica com o alcance suprimido de forma permanente.
 - **Horário: vem do config, não da sessão (#10305).** Fonte:
   `publishing.social.linkedin_weekly_article_time` (09:30 BRT, o horário
-  escolhido no ciclo `26w42`). Enquanto o teste rotativo de
-  `publishing.social.rotation` estiver na janela, a segunda-feira recebe o
-  candidato da semana (`linkedin_weekly_article_candidates`, alternando
-  semana a semana) — o Passo 9 imprime o horário certo com
+  escolhido no ciclo `26w42`). Durante o teste rotativo de
+  `publishing.social.rotation` (20/10 a 20/11/2026, encerrado em 25/11 com
+  `enabled: false`) a segunda-feira recebia o candidato da semana
+  (`linkedin_weekly_article_candidates`); hoje vale sempre o fixo. O Passo 9
+  imprime o horário com
   `npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date {publish-monday}`
-  e grava o que foi usado com `--record --date {publish-monday} --kind linkedin_article`.
+  e grava o que foi usado com `--record --date {publish-monday} --kind linkedin_article`
+  (o `--record` segue sendo a trava da menção @diar.ia.br, #13286).
   O artigo é peça própria, fora da restrição de horário único dos 4 posts do
   dia útil; os candidatos ficam em `:30`, nunca no minuto de um post da
   página.

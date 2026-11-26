@@ -43,8 +43,10 @@ test('Passo 7 do pacote agenda em duas chamadas quando há slotCurto (#13822)', 
   assert.match(p7, /publish-weekly-social\.ts --saturday \{S\} --mode highlights --time \{HH:MM alternativo\} --schedule/);
   assert.match(p7, /publish-weekly-social\.ts --saturday \{S\} --mode clicked --shared-selection/);
   assert.match(p7, /--day-offset N/);
-  // O registro da rotação grava o horário real do highlights.
-  assert.match(p7, /social-schedule-rotation\.ts --record --date \{S\} --kind weekend --time \{HH:MM alternativo\}/);
+  // #10305: teste rotativo encerrado (25/11/2026) — sem registro de fim de
+  // semana a gravar; o horário fixo é 19:00.
+  assert.doesNotMatch(p7, /--kind weekend/);
+  assert.match(p7, /19:00/);
 });
 
 test('Passo 0 e gate descrevem o --check-slot com too-soon, não só vencido (#13822)', () => {

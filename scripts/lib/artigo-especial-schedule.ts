@@ -7,8 +7,8 @@
  * original (decisão do editor, 23/08/2026) era D+1 no `d3_time` de
  * `publishing.social.fallback_schedule`, e foi trocado por colidir com o `d3`
  * da edição diária. O slot `d3` segue como veículo da ponte abaixo, mas com
- * `d3_time` sobrescrito (09:00/09:30) num config derivado — o 17:15 real do
- * `d3_time` não entra mais no cálculo.
+ * `d3_time` sobrescrito (09:00/09:30) num config derivado — o `d3_time` real
+ * (21:00 desde 25/11/2026, #10305; era 17:15) não entra mais no cálculo.
  *
  * **Reusa `computeScheduledAt` (`scripts/compute-social-schedule.ts`), não
  * reimplementa** — mas essa função é parametrizada por `editionDate` (AAMMDD)
@@ -88,9 +88,13 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  * **#6014 item 1:** o default único D+1 17:30 foi SUBSTITUÍDO — nasceu
  * colidindo com o `d3` da edição diária (mesmo minuto, mesma página; visto
  * na fila do Worker em 23/08). Decisão do editor ao vivo:
- *   - **Página: D+1 09:00 BRT** (abre o dia, 45min antes do `d1` das 09:45);
+ *   - **Página: D+1 09:00 BRT** (abria o dia, 45min antes do `d1` das 09:45);
  *   - **Perfil: D+2 09:30 BRT** (dia seguinte ao da página).
- * Agenda resultante: `09:00 weekly-pagina | 09:45 d1 | 12:15 d2 | 17:15 d3`.
+ * Agenda resultante na época: `09:00 weekly-pagina | 09:45 d1 | 12:15 d2 | 17:15 d3`.
+ * Desde 25/11/2026 (#10305) a grade da diária é `09:00 um | 12:00 d2 |
+ * 18:00 d1 | 21:00 d3`: o 09:00 da página coincide com o Use Melhor do dia
+ * útil, e quem desvia é o planner de divulgação (#10819,
+ * `publish-artigo-especial-linkedin.ts` → `planDivulgacao`), que lê a grade.
  * `resolveArtigoEspecialScheduledAt` (singular) continua existindo por
  * compat e agora devolve o horário da PÁGINA; o par completo vem de
  * `resolveArtigoEspecialScheduledAts`.

@@ -46,14 +46,25 @@
  * fixos (`fallback_schedule`, `use_melhor_time`, `DEFAULT_WEEKLY_TIME`,
  * `linkedin_weekly_article_time`). Config ligado e malformado LANÇA — agendar
  * no horário fixo em silêncio estragaria a medição sem ninguém ver.
+ *
+ * ── Encerrado (25/11/2026) ─────────────────────────────────────────────────
+ * O teste rodou de 20/10 a 20/11/2026 e o editor fixou a grade em 25/11
+ * (decisão registrada na #10305): `rotation.enabled` é `false` e todo
+ * consumidor cai nos horários fixos — dia útil D1 18:00, D2 12:00, D3 21:00,
+ * Use Melhor 09:00 (quando sair), sábado e domingo 19:00. O módulo continua
+ * porque o bloco do config e `data/social-schedule-rotation.jsonl` são o
+ * registro do teste (o `--plan` da CLI reconstrói a janela com `enabled`
+ * ligado num config local), e um teste novo reaproveita a mesma mecânica.
  */
 
 /**
  * Horário fixo do carrossel semanal (sábado/domingo) fora da rotação — fonte
- * única, reexportada como `DEFAULT_WEEKLY_TIME` por `publish-weekly-social.ts`
- * (assunção herdada do #4101, nunca medida).
+ * única, reexportada como `DEFAULT_WEEKLY_TIME` por `publish-weekly-social.ts`.
+ * 19:00 desde 25/11/2026 (decisão do editor ao fim do teste rotativo, #10305:
+ * os carrosséis das 19:00 tiveram o maior alcance no Instagram e 19:00 é o
+ * horário que o Meta Business Suite sugere). Antes, 11:00 (assunção do #4101).
  */
-export const DEFAULT_WEEKLY_CAROUSEL_TIME = "11:00";
+export const DEFAULT_WEEKLY_CAROUSEL_TIME = "19:00";
 
 /**
  * Horário fixo do artigo semanal do LinkedIn fora da rotação quando o config

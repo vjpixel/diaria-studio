@@ -50,17 +50,18 @@
  * de idade no momento em que a skill roda — sem este passo explícito, a
  * seleção rodaria com clicks zerados pra semana inteira.
  *
- * Horário — `--time` (default "11:00", ver DEFAULT_WEEKLY_TIME abaixo) é uma
- * ASSUNÇÃO da implementação, não uma decisão do editor (herdada do #4101).
- * Desde o #10305, sem `--time` e dentro da janela de
- * `publishing.social.rotation`, sábado e domingo alternam candidatos semana a
- * semana (`resolveWeeklyTime`).
+ * Horário — `--time` (default "19:00", ver DEFAULT_WEEKLY_TIME abaixo), sábado
+ * e domingo: decisão do editor de 25/11/2026, ao fim do teste rotativo do
+ * #10305 (antes, 11:00, assunção herdada do #4101). Durante o teste, sem
+ * `--time` e dentro da janela de `publishing.social.rotation`, sábado e
+ * domingo alternavam candidatos semana a semana (`resolveWeeklyTime`); com a
+ * rotação desligada (`enabled: false`, 25/11/2026) vale sempre o default.
  * Timezone vem de `platform.config.json` (`publishing.social.timezone`,
  * leitura apenas — nunca escrito por este script).
  *
  * Uso:
  *   npx tsx scripts/publish-weekly-social.ts --saturday 260801 [--schedule]
- *     [--editions-root data/editions] [--time 11:00]
+ *     [--editions-root data/editions] [--time 19:00]
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
@@ -296,7 +297,7 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Assunção de implementação — ver nota no cabeçalho. Override via `--time`. */
+/** Horário fixo de sábado e domingo (#10305) — ver nota no cabeçalho. Override via `--time`. */
 export const DEFAULT_WEEKLY_TIME = DEFAULT_WEEKLY_CAROUSEL_TIME;
 
 /**
