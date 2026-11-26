@@ -15,7 +15,17 @@ interface Storage {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
 }
-interface State { downSince: string | null; notified: boolean }
+/**
+ * `recoveryPending` (#14136): a "voltou" e-mail that still has to go out, kept apart from
+ * `downSince`/`notified` so a failing send never leaves the episode marked as already alerted.
+ */
+interface State {
+  downSince: string | null;
+  notified: boolean;
+  recoveryPending?: {downSince: string; recoveredAt: string} | null;
+}
+const recoveryMail = (env: Env, pending: {downSince: string; recoveredAt: string}, mail: typeof sendMail) =>
+  mail(env, '[infra] 300 voltou', `Heartbeat retomado. Queda detectada em ${pending.downSince}. Retorno: ${pending.recoveredAt}.`);
 export interface Env {
   OPS_STATE: { get(key: string): Promise<string | null>; put(key: string, value: string): Promise<void>; delete(key: string): Promise<void> };
   WATCHDOG: { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response> } };
@@ -50,7 +60,9 @@ export async function check(env: Env, storage: Storage, now = Date.now(), mail =
   let state = await storage.get<State>('state') ?? {downSince: null, notified: false};
   if (status !== 'fresco') {
     if (!state.downSince) {
-      state = {downSince: new Date(now).toISOString(), notified: false};
+      // A new outage supersedes an unsent "voltou" of the previous one (#14136): the new
+      // outage alert is what the editor needs, and the stale recovery mail is dropped.
+      state = {downSince: new Date(now).toISOString(), notified: false, recoveryPending: null};
       await storage.put('state', state);
     }
     // Reconcile even after a previous KV write failed; publish before notifying.
@@ -61,8 +73,17 @@ export async function check(env: Env, storage: Storage, now = Date.now(), mail =
     }
   } else if (state.downSince) {
     await env.OPS_STATE.delete(DOWN_KEY);
-    if (state.notified) await mail(env, '[infra] 300 voltou', `Heartbeat retomado. Queda detectada em ${state.downSince}. Retorno: ${new Date(now).toISOString()}.`);
-    await storage.put('state', {downSince: null, notified: false});
+    // Close the episode BEFORE mailing (#14136): if the "voltou" send fails, the next outage
+    // still starts a fresh episode and alerts; only the recovery mail is retained for retry.
+    const recoveryPending = state.notified ? {downSince: state.downSince, recoveredAt: new Date(now).toISOString()} : null;
+    await storage.put('state', {downSince: null, notified: false, recoveryPending});
+    if (recoveryPending) {
+      await recoveryMail(env, recoveryPending, mail);
+      await storage.put('state', {downSince: null, notified: false, recoveryPending: null});
+    }
+  } else if (state.recoveryPending) {
+    await recoveryMail(env, state.recoveryPending, mail);
+    await storage.put('state', {...state, recoveryPending: null});
   }
 }
 export class InfraWatchdog {
