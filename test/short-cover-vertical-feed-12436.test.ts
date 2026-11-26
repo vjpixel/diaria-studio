@@ -1,7 +1,7 @@
 /**
  * test/short-cover-vertical-feed-12436.test.ts (#12436)
  *
- * O Passo B3a de `/diaria-publica-video` (#12254) manda o agente trocar
+ * O Passo B3a de `/diaria-publica` (#12254) manda o agente trocar
  * `cover.vertical_feed` para `"studio_web"` depois de aplicar a capa vertical
  * pelo Studio web, mas `ShortCoverRecord.vertical_feed` só aceitava `"manual"`:
  * o tipo não descrevia o registro real. Este teste trava os dois lados:
@@ -53,7 +53,7 @@ describe("#12436 vertical_feed aceita studio_web", () => {
     assert.deepEqual(out.cover, { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" });
   });
 
-  it("todo valor de vertical_feed citado no SKILL.md de /diaria-publica-video está no tipo", () => {
+  it("todo valor de vertical_feed citado no SKILL.md de /diaria-publica está no tipo", () => {
     const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     const cited = new Set<string>();
     for (const m of skill.matchAll(/vertical_feed[`"]?\s*(?::|para)\s*`?"([a-z_]+)"/g)) cited.add(m[1]);

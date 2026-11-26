@@ -3,7 +3,7 @@
  *
  * O vertical no Threads PESSOAL sai pelo timer do 300 no horário do vertical
  * (a Threads API não agenda): config, delegação no plano do
- * `/diaria-publica-video`, escopo do `--threads-timer`, registro próprio do
+ * `/diaria-publica`, escopo do `--threads-timer`, registro próprio do
  * timer, decisão "age agora?", leitura da saída do publish-shorts, conferência
  * do perfil antes de publicar, reaproveitamento do objeto no R2, alarme sem
  * repetir, execução de ponta a ponta com I/O falso e o par horário do teste ↔
@@ -115,7 +115,7 @@ describe("#11410 plano: o timer é o dono do threads_profile", () => {
   const th = (p: ReturnType<typeof planShortsPublish>) => p.items.find((i) => i.destination === "threads_profile")!;
   const after = new Date("2026-10-27T11:10:00Z");
 
-  it("rodada do /diaria-publica-video com o timer ligado: skip_delegated com o caminho do timer", () => {
+  it("rodada do /diaria-publica com o timer ligado: skip_delegated com o caminho do timer", () => {
     const item = th(planShortsPublish({ ...base, now: after }));
     assert.equal(item.action, "skip_delegated");
     assert.match((item as { detail: string }).detail, /Diaria-Shorts-Threads-Profile/);

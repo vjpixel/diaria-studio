@@ -66,7 +66,7 @@ import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarm
  * nunca publicam juntas.
  *
  * Fica de fora (premissa registrada na #11265): X (Buffer) e Threads pessoal
- * recebem o vídeo só por URL pública; saem pelo `/diaria-publica-video` com o
+ * recebem o vídeo só por URL pública; saem pelo `/diaria-publica` com o
  * vertical no R2 (habilitado em 27/10/2026, #10772), e só numa máquina sem os
  * secrets do R2 ficam pulados com aviso e PENDENTES (#11478/#11498): o
  * `-short.mp4` fica no disco e uma máquina com os secrets publica.
@@ -276,7 +276,7 @@ export function decideInstagramTimerRun(input: {
   now: Date;
   /**
    * O dia teve vertical? (corte ou genérico no disco, corte já baixado, ou o
-   * `/diaria-publica-video` já registrou outro destino; ou o Drive mostra o
+   * `/diaria-publica` já registrou outro destino; ou o Drive mostra o
    * vertical em `Final/`, `driveShowsVertical`). Sem isso, passar do horário
    * não alarma: a Etapa 5 pode seguir sem vídeo.
    */
@@ -364,7 +364,7 @@ export function interpretInstagramCutLookup(exitCode: number | null, stdout: str
       return {
         kind: "needs-editor",
         immediate: false,
-        reason: "o Drive ainda não mostra a proporção do vídeo final (metadado processando, orientation-unknown) — se continuar assim, confira o arquivo em Final/ (Passo B1 do /diaria-publica-video)",
+        reason: "o Drive ainda não mostra a proporção do vídeo final (metadado processando, orientation-unknown) — se continuar assim, confira o arquivo em Final/ (Passo B1 do /diaria-publica)",
       };
     }
     if (out.selection === "orientation-mismatch") {
@@ -373,13 +373,13 @@ export function interpretInstagramCutLookup(exitCode: number | null, stdout: str
         kind: "needs-editor",
         immediate: true,
         selection: "orientation-mismatch",
-        reason: `vertical no Drive com a proporção errada: ${out.reason ?? "sem motivo"} (Passo B1 do /diaria-publica-video)`,
+        reason: `vertical no Drive com a proporção errada: ${out.reason ?? "sem motivo"} (Passo B1 do /diaria-publica)`,
       };
     }
     return {
       kind: "needs-editor",
       immediate: true,
-      reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe`,
+      reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica); o timer não escolhe`,
     };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
@@ -691,7 +691,7 @@ export function buildInstagramTimerAlarm(input: {
     lines.push(
       "Lembrete, não é falha: o vertical desta edição passa do teto de duração da API do Instagram nesta conta, então o timer do 300 não publica o Reels. Ele sai pelo Chrome.",
       "O que fazer:",
-      `- Postar pelo instagram.com no Chrome (Passo B3b do \`/diaria-publica-video\`)${verticalHhmm ? ` às ${verticalHhmm} BRT` : " no horário do vertical"}, ${instagramChromeRouteText()}.`,
+      `- Postar pelo instagram.com no Chrome (Passo B3b do \`/diaria-publica\`)${verticalHhmm ? ` às ${verticalHhmm} BRT` : " no horário do vertical"}, ${instagramChromeRouteText()}.`,
       `- Registrar com ${confirm} (lê a conta da @${INSTAGRAM_CHROME_ROUTE.authorUsername}) ou com \`--confirm-instagram --url URL\`.`,
       "Este lembrete sai uma vez por edição, e o timer não manda o alarme de atraso (`late`) por esse motivo.",
     );
@@ -730,7 +730,7 @@ export function buildInstagramTimerAlarm(input: {
     lines.push(
       "O Reels PODE estar no ar: o `media_publish` falhou e a consulta do container também, então o timer não repete o envio e não volta a tentar.",
       `- Se está na conta: registre com ${confirm} ou \`--mark instagram=URL\`.`,
-      "- Se não está: poste pelo Chrome (Passo B3b do `/diaria-publica-video`) e registre do mesmo jeito.",
+      "- Se não está: poste pelo Chrome (Passo B3b do `/diaria-publica`) e registre do mesmo jeito.",
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir se saiu (${key})`;
   } else if (published) {
@@ -752,7 +752,7 @@ export function buildInstagramTimerAlarm(input: {
     lines.push(
       `O timer não publicou: a conta da API não tem o Reels da edição, mas o perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} (onde fica o Reels postado à mão) não pôde ser conferido por falta da credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300. Publicar sem conferir poderia duplicar o Reels em conta pública.`,
       "O que fazer (uma das duas):",
-      `- Postar pelo instagram.com no Chrome (Passo B3b do \`/diaria-publica-video\`), ${instagramChromeRouteText()}, e registrar com ${confirm} ou com \`--confirm-instagram --url URL\`. Se já postou, só registre.`,
+      `- Postar pelo instagram.com no Chrome (Passo B3b do \`/diaria-publica\`), ${instagramChromeRouteText()}, e registrar com ${confirm} ou com \`--confirm-instagram --url URL\`. Se já postou, só registre.`,
       `- Ou fornecer a credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300; a próxima execução (de hora em hora${deadlineHhmm ? `, até ${deadlineHhmm} BRT` : ""}) confere o perfil e publica se o Reels não estiver lá.`,
       "Este alarme sai uma vez por edição.",
     );
@@ -784,13 +784,13 @@ export function buildInstagramTimerAlarm(input: {
         `O timer volta a tentar sozinho de hora em hora${deadlineHhmm ? ` até ${deadlineHhmm} BRT (3 h depois do horário do vertical)` : " até 3 h depois do horário do vertical"}; resolvida a causa, não precisa fazer nada.`,
       );
     }
-    lines.push("O que fazer:", `- Postar no instagram.com (Passo B3b do \`/diaria-publica-video\`), ${instagramChromeRouteText()}, e registrar com ${confirm}.`);
+    lines.push("O que fazer:", `- Postar no instagram.com (Passo B3b do \`/diaria-publica\`), ${instagramChromeRouteText()}, e registrar com ${confirm}.`);
     if (key !== "late") {
       // #11794: a próxima rodada ainda pode publicar, e o Reel à mão leva 30 a 60 s para aparecer na conta.
       lines.push("  Cuidado: postar à mão perto da hora cheia pode duplicar o Reels. O timer tenta de novo de hora em hora e o Reel leva de 30 a 60 s para aparecer na conta. Afaste o post da hora cheia e registre logo depois.");
     }
     if (API_OPTION_KEYS.has(key) && !manual) {
-      lines.push("- Pela API, daqui não: não há vídeo do Instagram no disco do 300 nem o id do corte no Drive (baixe antes, Passo B1 do `/diaria-publica-video`).");
+      lines.push("- Pela API, daqui não: não há vídeo do Instagram no disco do 300 nem o id do corte no Drive (baixe antes, Passo B1 do `/diaria-publica`).");
     } else if (API_OPTION_KEYS.has(key)) {
       lines.push(
         `- Ou publicar pela API, conferindo antes que o Reels não está na conta: ${manual}. ` +

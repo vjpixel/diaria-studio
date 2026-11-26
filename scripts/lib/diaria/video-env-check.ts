@@ -1,6 +1,6 @@
 /**
  * video-env-check.ts (#11223) — o que esta máquina precisa para rodar o
- * `/diaria-publica-video` inteiro, capa incluída, sem o Neo.
+ * `/diaria-publica` inteiro, capa incluída, sem o Neo.
  *
  * Contexto: o editor viaja e o Neo fica ligado poucas horas por dia. A capa
  * horizontal era o único passo que só saía no Neo (rembg em `.venv-rembg/`,
@@ -137,7 +137,7 @@ export function formatVideoEnvReport(report: VideoEnvReport): string {
   lines.push(
     report.coverReady
       ? "A capa horizontal sai nesta máquina."
-      : `A capa horizontal NÃO sai nesta máquina (falta: ${report.missing.join(", ")}). O resto do /diaria-publica-video segue.`,
+      : `A capa horizontal NÃO sai nesta máquina (falta: ${report.missing.join(", ")}). O resto do /diaria-publica segue.`,
   );
   return lines.join("\n");
 }

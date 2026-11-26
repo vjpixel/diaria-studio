@@ -135,7 +135,7 @@ export function decideTimerRun(input: {
 }): TimerDecision {
   const cfg = loadShortsConfig(input.config);
   if (!cfg.linkedinProfile) return { kind: "skip", reason: "publishing.shorts.linkedin_profile = false" };
-  if (!cfg.linkedinProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.linkedin_profile_via_timer = false (o /diaria-publica-video publica)" };
+  if (!cfg.linkedinProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.linkedin_profile_via_timer = false (o /diaria-publica publica)" };
   if (!input.reviewedExists) return { kind: "skip", reason: `sem 02-reviewed.md da edição ${input.aammdd} (dia sem edição)` };
   const raws = [
     ...(input.publishedRaw !== null ? [{ path: SHORTS_PUBLISHED_FILE, raw: input.publishedRaw }] : []),
@@ -192,7 +192,7 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
       reason:
         out.selection === "orientation-mismatch"
           ? `vertical no Drive com a proporção errada (#13389): ${out.reason ?? "sem motivo"}`
-          : `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe`,
+          : `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica (Passo B1); o timer não escolhe`,
     };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
@@ -366,7 +366,7 @@ export function buildLinkedinTimerAlarm(input: {
   const deadline = hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS);
   const mark = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --mark linkedin_profile=URL\``;
   // #11651: com `linkedin_profile_via_timer` (o único caso em que o timer roda),
-  // só a rodada `--linkedin-timer` publica o destino; o `/diaria-publica-video`
+  // só a rodada `--linkedin-timer` publica o destino; o `/diaria-publica`
   // e o comando sem a flag caem em skip_delegated. `--now` passa do teto de 3 h.
   const publishNow = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only linkedin_profile --publish --linkedin-timer --now ${publishConfirmSuffix(aammdd)}\``;
   const lines = [
@@ -406,13 +406,13 @@ export function buildLinkedinTimerAlarm(input: {
     // #13389: o arquivo `_Vertical_` subiu na proporção horizontal.
     lines.push(`Reexporte o vertical na proporção vertical (1080x1920) em \`${aammdd}/Final/\` (ou \`Editados/\`) no Drive; a próxima execução publica até ${deadline} BRT.`);
   } else {
-    lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
+    lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica\`); a próxima execução publica até ${deadline} BRT.`);
   }
   lines.push(
     "",
     key === "late" ? "O que fazer:" : "Depois desse horário o timer não publica mais sozinho. O que fazer então:",
     `- Postar o vertical à mão no LinkedIn pessoal e registrar com ${mark}.`,
-    `- Ou, no 300 (onde o vertical está no disco), publicar fora da janela com ${publishNow}. O \`/diaria-publica-video\` não serve aqui: com o timer dono do LinkedIn pessoal ele devolve \`skip_delegated\` e não publica.`,
+    `- Ou, no 300 (onde o vertical está no disco), publicar fora da janela com ${publishNow}. O \`/diaria-publica\` não serve aqui: com o timer dono do LinkedIn pessoal ele devolve \`skip_delegated\` e não publica.`,
   );
   return { subject: `[diar.ia.br] Vertical no LinkedIn pessoal de ${aammdd} não saiu pelo timer do 300 (${key})`, body: lines.join("\n") };
 }
