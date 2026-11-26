@@ -2008,6 +2008,18 @@ export function strictAllReposResolution(allowed = loadAllowedForeignRepos()) {
   };
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando o hook tem algo a
+ * decidir. É o mesmo primeiro filtro do `runHook` abaixo (tool Bash +
+ * `detectMergeForGuard`, que já trata exceção na detecção como merge). Puro:
+ * não lê `data/` nem chama git; o despachante só roda o hook, em processo
+ * próprio, quando ele dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  return detectMergeForGuard(payload.tool_input?.command).isMerge;
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-gh-pr-merge-subagent-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

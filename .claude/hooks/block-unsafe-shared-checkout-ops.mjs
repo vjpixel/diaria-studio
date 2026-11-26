@@ -842,6 +842,19 @@ export const GIT_DESTRUCTIVE_BLOCK_REASON =
 // Entry point CLI
 // ---------------------------------------------------------------------------
 
+/**
+ * Filtro do despachante único (#14045): `true` quando um dos 3 guards deste
+ * hook casa (taskkill por imagem, rm, git destrutivo) — os mesmos testes que
+ * o `runHook` abaixo faz antes de ler `git status` ou `data/sessions/`.
+ * Puro; o despachante só roda o hook, em processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  if (typeof command !== "string") return false;
+  return isTaskkillByImageCommand(command) || isRmCommand(command) || detectDestructiveGitTarget(command) !== null;
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url

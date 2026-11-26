@@ -1091,6 +1091,21 @@ export function shouldBlockBranchCheckout(activeCoordinatorSessionIds, callerSes
   return !coordinators.has(callerSessionId);
 }
 
+/**
+ * Filtro do despachante único (#14045): `true` quando o comando PODE criar ou
+ * trocar branch. Superconjunto do filtro do `runHook` abaixo
+ * (`resolveBranchCreateTargets(...).length > 0`, que só devolve alvo para
+ * `checkout`/`switch` literais): aqui basta a palavra aparecer no texto,
+ * sem aspas nem barra invertida. Puro, sem disco; o despachante só roda o
+ * hook, em processo próprio, quando dá `true`, e o hook decide como antes.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  const command = payload.tool_input?.command;
+  if (typeof command !== "string") return false; // o hook não acha alvo (lista vazia)
+  return /checkout|switch/i.test(command.replace(/[\\'"]/g, ""));
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-branch-checkout-main-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

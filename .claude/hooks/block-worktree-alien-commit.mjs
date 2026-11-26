@@ -228,6 +228,17 @@ export const BLOCK_REASON_BRANCH_DIVERGE =
   "`branch`) — sinal de que a branch foi trocada por baixo deste worktree entre o claim e agora. " +
   "Confirme com `git status`/`git branch` antes de commitar.";
 
+/**
+ * Filtro do despachante único (#14045): o mesmo primeiro filtro do `runHook`
+ * abaixo (tool Bash + `git commit` no comando), antes de qualquer git ou
+ * leitura de `data/sessions/`. Puro; o despachante só roda o hook, em
+ * processo próprio, quando dá `true`.
+ */
+export function appliesTo(payload) {
+  if (payload.tool_name && payload.tool_name !== "Bash") return false;
+  return commandHasGitCommit(payload.tool_input?.command);
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
   // #9197: path com espaço/não-ASCII chega percent-encoded em import.meta.url

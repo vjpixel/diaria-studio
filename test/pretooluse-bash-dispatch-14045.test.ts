@@ -25,6 +25,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   GUARDS,
+  STARTUP_MARGIN_MS,
+  worstCaseMs,
   combineHookOutputs,
   dispatch,
   runGuards,
@@ -138,31 +140,148 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
       "nega.mjs": denyGuard("sobrevivente"),
     });
     const guards: DispatchGuard[] = [
-      { file: "lanca.mjs", mode: "in-process", timeoutMs: 1000 },
-      { file: "quebrado.mjs", mode: "in-process", timeoutMs: 1000 },
-      { file: "sem-contrato.mjs", mode: "in-process", timeoutMs: 1000 },
-      { file: "inexistente.mjs", mode: "in-process", timeoutMs: 1000 },
-      { file: "nega.mjs", mode: "in-process", timeoutMs: 1000 },
+      { file: "lanca.mjs", mode: "worker", timeoutMs: 1000 },
+      { file: "quebrado.mjs", mode: "worker", timeoutMs: 1000 },
+      { file: "sem-contrato.mjs", mode: "worker", timeoutMs: 1000 },
+      { file: "inexistente.mjs", mode: "worker", timeoutMs: 1000 },
+      { file: "nega.mjs", mode: "worker", timeoutMs: 1000 },
     ];
-    const outs = await runGuards("{}", { guards, hooksDir: dir });
-    assert.deepEqual(outs.slice(0, 4), ["", "", "", ""]);
-    assert.equal(JSON.parse(await dispatch("{}", { guards, hooksDir: dir })).hookSpecificOutput.permissionDecisionReason, "sobrevivente");
+    const run = await runGuards("{}", { guards, hooksDir: dir });
+    assert.deepEqual(run.outputs.slice(0, 4), ["", "", "", ""]);
+    const out = JSON.parse(await dispatch("{}", { guards, hooksDir: dir }));
+    assert.equal(out.hookSpecificOutput.permissionDecisionReason, "sobrevivente");
+    // P2 do review: a falha de cada um aparece no systemMessage, não só no stderr.
+    for (const f of ["lanca.mjs", "quebrado.mjs", "sem-contrato.mjs", "inexistente.mjs"]) {
+      assert.match(out.systemMessage, new RegExp(`${f.replace(".", "\\.")} .*guard sem decisão`));
+    }
+  });
+
+  it("falha de guard sem deny de ninguém: systemMessage visível, sem decisão", async () => {
+    const dir = fixtureDir({ "lanca.mjs": `export function runHook() { throw new Error("boom"); }\n` });
+    const out = JSON.parse(await dispatch("{}", { guards: [{ file: "lanca.mjs", mode: "worker", timeoutMs: 1000 }], hooksDir: dir }));
+    assert.match(out.systemMessage, /lanca\.mjs lançou: boom/);
+    assert.equal(out.hookSpecificOutput, undefined);
   });
 
   it("guard que passa do teto fica sem saída, mesmo escrevendo depois", async () => {
     const dir = fixtureDir({
       "lento.mjs": `export async function runHook(data, write) { await new Promise((r) => setTimeout(r, 300)); write(${JSON.stringify(deny("tarde"))}); }\n`,
     });
-    const guards: DispatchGuard[] = [{ file: "lento.mjs", mode: "in-process", timeoutMs: 50 }];
-    assert.deepEqual(await runGuards("{}", { guards, hooksDir: dir }), [""]);
+    const guards: DispatchGuard[] = [{ file: "lento.mjs", mode: "worker", timeoutMs: 50 }];
+    const run = await runGuards("{}", { guards, hooksDir: dir });
+    assert.deepEqual(run.outputs, [""]);
+    assert.match(run.notices.join("\n"), /lento\.mjs passou de 50 ms/);
     await new Promise((r) => setTimeout(r, 400));
+  });
+
+  // P1 do review da PR #14107: guard SÍNCRONO travado não pode zerar os outros.
+  const busyGuard = `export function runHook() { for (;;) {} }\n`;
+
+  it("P1: guard síncrono travado ANTES do que nega: o deny sai no teto do travado, não no do grupo", async () => {
+    const dir = fixtureDir({ "trava.mjs": busyGuard, "nega.mjs": denyGuard("nega") });
+    const guards: DispatchGuard[] = [
+      { file: "trava.mjs", mode: "worker", timeoutMs: 500 },
+      { file: "nega.mjs", mode: "worker", timeoutMs: 10_000 },
+    ];
+    const t = Date.now();
+    const out = JSON.parse(await dispatch("{}", { guards, hooksDir: dir }));
+    const elapsed = Date.now() - t;
+    assert.equal(out.hookSpecificOutput.permissionDecisionReason, "nega");
+    assert.match(out.systemMessage, /trava\.mjs passou de 500 ms/);
+    assert.ok(elapsed < 5000, `deny saiu em ${elapsed} ms`);
+  });
+
+  it("P1: deny ANTES do travado sai na hora, sem esperar o teto do travado", async () => {
+    const dir = fixtureDir({ "nega.mjs": denyGuard("nega"), "trava.mjs": busyGuard });
+    const guards: DispatchGuard[] = [
+      { file: "nega.mjs", mode: "worker", timeoutMs: 10_000 },
+      { file: "trava.mjs", mode: "worker", timeoutMs: 60_000 },
+    ];
+    const t = Date.now();
+    const run = await runGuards("{}", { guards, hooksDir: dir });
+    const elapsed = Date.now() - t;
+    assert.equal(run.early, true);
+    const combined = combineHookOutputs(run.outputs) as { hookSpecificOutput: { permissionDecisionReason: string } };
+    assert.equal(combined.hookSpecificOutput.permissionDecisionReason, "nega");
+    assert.ok(elapsed < 5000, `deny saiu em ${elapsed} ms (teto do travado: 60 s)`);
+  });
+
+  it("P1: deny antecipado respeita a ordem: com um anterior pendente, espera ele (que pode negar primeiro)", async () => {
+    const dir = fixtureDir({
+      "nega-tarde.mjs": `export async function runHook(d, write) { await new Promise((r) => setTimeout(r, 300)); write(${JSON.stringify(deny("primeiro"))}); }\n`,
+      "nega-cedo.mjs": denyGuard("segundo"),
+    });
+    const guards: DispatchGuard[] = [
+      { file: "nega-tarde.mjs", mode: "worker", timeoutMs: 5000 },
+      { file: "nega-cedo.mjs", mode: "worker", timeoutMs: 5000 },
+    ];
+    assert.equal(JSON.parse(await dispatch("{}", { guards, hooksDir: dir })).hookSpecificOutput.permissionDecisionReason, "primeiro");
+  });
+
+  it("P1: guard de processo próprio preso num execFileSync de sleep é morto no teto e o deny sai", async () => {
+    const script = [
+      `import { execFileSync } from "node:child_process";`,
+      `import { pathToFileURL } from "node:url";`,
+      `export function appliesTo() { return true; }`,
+      `if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {`,
+      `  execFileSync(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { windowsHide: true });`,
+      `}`,
+    ].join("\n");
+    const dir = fixtureDir({ "dorme.mjs": script, "nega.mjs": denyGuard("nega") });
+    const guards: DispatchGuard[] = [
+      { file: "dorme.mjs", mode: "spawn-if-applies", timeoutMs: 800 },
+      { file: "nega.mjs", mode: "worker", timeoutMs: 10_000 },
+    ];
+    const t = Date.now();
+    const out = JSON.parse(await dispatch("{}", { guards, hooksDir: dir }));
+    const elapsed = Date.now() - t;
+    assert.equal(out.hookSpecificOutput.permissionDecisionReason, "nega");
+    assert.match(out.systemMessage, /dorme\.mjs passou de 800 ms/);
+    assert.ok(elapsed < 6000, `deny saiu em ${elapsed} ms`);
+  });
+
+  it("P2: os guards correm em paralelo, então o tempo do grupo é o maior teto, não a soma", async () => {
+    const dir = fixtureDir({ "a.mjs": busyGuard, "b.mjs": busyGuard, "c.mjs": busyGuard });
+    const guards: DispatchGuard[] = ["a.mjs", "b.mjs", "c.mjs"].map((file) => ({ file, mode: "worker", timeoutMs: 700 }));
+    const sum = guards.reduce((s, g) => s + g.timeoutMs, 0);
+    const t = Date.now();
+    const run = await runGuards("{}", { guards, hooksDir: dir });
+    const elapsed = Date.now() - t;
+    assert.equal(run.notices.length, 3);
+    assert.ok(elapsed < sum, `${elapsed} ms precisa ficar abaixo da soma dos tetos (${sum} ms)`);
+  });
+
+  it("P3: filtro que lança é registrado; com onFilterError run o guard roda por precaução", async () => {
+    const marker = join(tmp("dispatch-filter"), "rodou.txt");
+    const runs = (name: string) =>
+      [
+        `import { writeFileSync } from "node:fs";`,
+        `import { pathToFileURL } from "node:url";`,
+        `export function appliesTo() { throw new Error("filtro quebrado"); }`,
+        `if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) writeFileSync(${JSON.stringify(marker)} + "${name}", "x");`,
+      ].join("\n");
+    const dir = fixtureDir({ "roda.mjs": runs("roda"), "pula.mjs": runs("pula") });
+    const guards: DispatchGuard[] = [
+      { file: "roda.mjs", mode: "spawn-if-applies", timeoutMs: 10_000, onFilterError: "run" },
+      { file: "pula.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
+    ];
+    const out = JSON.parse(await dispatch("{}", { guards, hooksDir: dir }));
+    assert.equal(existsSync(marker + "roda"), true, "onFilterError run: rodou");
+    assert.equal(existsSync(marker + "pula"), false, "padrão: não rodou");
+    assert.match(out.systemMessage, /roda\.mjs filtro lançou \(filtro quebrado\), guard rodado por precaução/);
+    assert.match(out.systemMessage, /pula\.mjs filtro lançou \(filtro quebrado\);/);
+  });
+
+  it("P3: o guard de PII e o de merge rodam por precaução quando o filtro lança", () => {
+    const failClosed = GUARDS.filter((g) => g.onFilterError === "run").map((g) => g.file);
+    assert.deepEqual(failClosed, ["block-gh-pr-merge-subagent.mjs", "block-pr-create-pii-runtime-artifacts.mjs"]);
   });
 
   it("primeiro deny na ordem de GUARDS vence, com o motivo dele", async () => {
     const dir = fixtureDir({ "a.mjs": denyGuard("A"), "b.mjs": denyGuard("B") });
     const guards: DispatchGuard[] = [
-      { file: "a.mjs", mode: "in-process", timeoutMs: 1000 },
-      { file: "b.mjs", mode: "in-process", timeoutMs: 1000 },
+      { file: "a.mjs", mode: "worker", timeoutMs: 1000 },
+      { file: "b.mjs", mode: "worker", timeoutMs: 1000 },
     ];
     assert.equal(JSON.parse(await dispatch("{}", { guards, hooksDir: dir })).hookSpecificOutput.permissionDecisionReason, "A");
   });
@@ -173,8 +292,8 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
       "eco.mjs": `export function runHook(data, write) { write(JSON.stringify({ systemMessage: JSON.parse(data).tool_input.command })); }\n`,
     });
     const guards: DispatchGuard[] = [
-      { file: "reescreve.mjs", mode: "in-process", timeoutMs: 1000 },
-      { file: "eco.mjs", mode: "in-process", timeoutMs: 1000 },
+      { file: "reescreve.mjs", mode: "worker", timeoutMs: 1000 },
+      { file: "eco.mjs", mode: "worker", timeoutMs: 1000 },
     ];
     const out = JSON.parse(await dispatch(JSON.stringify({ tool_input: { command: "original" } }), { guards, hooksDir: dir }));
     assert.equal(out.systemMessage, "original");
@@ -199,8 +318,10 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
       { file: "pesado.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
       { file: "lanca-filtro.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
     ];
-    assert.deepEqual(await runGuards(JSON.stringify({ tool_input: { command: "leve" } }), { guards, hooksDir: dir }), ["", ""]);
+    const leve = await runGuards(JSON.stringify({ tool_input: { command: "leve" } }), { guards, hooksDir: dir });
+    assert.deepEqual(leve.outputs, ["", ""]);
     assert.equal(existsSync(marker), false, "não se aplica: nenhum processo");
+    assert.match(leve.notices.join("\n"), /lanca-filtro\.mjs filtro lançou/, "filtro que lança é registrado");
     const out = await dispatch(JSON.stringify({ tool_input: { command: "pesado" } }), { guards, hooksDir: dir });
     assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, "pesado");
     assert.equal(JSON.parse(readFileSync(marker, "utf8")).tool_input.command, "pesado", "o processo recebe o stdin original");
@@ -214,8 +335,8 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
     ].join("\n");
     const dir = fixtureDir({ "trava.mjs": script });
     const t = Date.now();
-    const outs = await runGuards("{}", { guards: [{ file: "trava.mjs", mode: "spawn-if-applies", timeoutMs: 200 }], hooksDir: dir });
-    assert.deepEqual(outs, [""]);
+    const run = await runGuards("{}", { guards: [{ file: "trava.mjs", mode: "spawn-if-applies", timeoutMs: 200 }], hooksDir: dir });
+    assert.deepEqual(run.outputs, [""]);
     assert.ok(Date.now() - t < 4000, "não esperou o processo travado");
   });
 });
@@ -225,21 +346,39 @@ describe("despachante (#14045): registro e contrato dos 16 guards reais", () => 
     assert.deepEqual(GUARDS.map((g) => g.file), ORIGINAL_16);
   });
 
-  it("settings.json: o grupo Bash registra só o despachante, com teto acima do maior guard", () => {
+  it("settings.json: o grupo Bash registra só o despachante", () => {
     assert.deepEqual(directBashPreToolUseScripts(), [DISPATCHER_FILE]);
-    const settings = JSON.parse(readFileSync(join(ROOT, ".claude", "settings.json"), "utf8"));
-    const group = settings.hooks.PreToolUse.find((g: { matcher: string }) => g.matcher === "Bash");
-    const maxGuardS = Math.max(...GUARDS.map((g) => g.timeoutMs)) / 1000;
-    assert.ok(group.hooks[0].timeout > maxGuardS, `timeout ${group.hooks[0].timeout}s precisa passar de ${maxGuardS}s`);
     assert.deepEqual(armedBashPreToolUseGuards().slice(1), ORIGINAL_16);
+  });
+
+  it("P2: o teto do grupo no settings.json cobre o pior caso (cadeia em série = soma; aqui cada guard é um elo só)", () => {
+    const settings = JSON.parse(readFileSync(join(ROOT, ".claude", "settings.json"), "utf8"));
+    const groupMs = settings.hooks.PreToolUse.find((g: { matcher: string }) => g.matcher === "Bash").hooks[0].timeout * 1000;
+    // Nenhum guard espera outro: a cadeia em série mais longa tem um guard só,
+    // e a soma dela é o maior teto individual. Mais a folga de partida.
+    const longestSerialChainMs = Math.max(...GUARDS.map((g) => g.timeoutMs));
+    assert.equal(worstCaseMs(), longestSerialChainMs + STARTUP_MARGIN_MS);
+    assert.ok(groupMs >= worstCaseMs(), `teto do grupo ${groupMs} ms < pior caso ${worstCaseMs()} ms`);
+    // Referência: em série (o modelo antigo de dentro do despachante) seria a soma.
+    const sumMs = GUARDS.reduce((s, g) => s + g.timeoutMs, 0);
+    assert.ok(sumMs > groupMs, "se algum dia os guards voltarem a rodar em série, este teto não cobre: revisar");
+  });
+
+  it("P1: os guards que leem data/sessions rodam em processo próprio (morto no teto), nunca numa Worker", () => {
+    const dataReaders = [
+      "block-gh-pr-merge-subagent.mjs",
+      "block-branch-checkout-main.mjs",
+      "block-unsafe-shared-checkout-ops.mjs",
+      "block-worktree-alien-commit.mjs",
+    ];
+    for (const f of dataReaders) assert.equal(GUARDS.find((g) => g.file === f)?.mode, "spawn-if-applies", f);
   });
 
   it("cada guard exporta a função que o modo dele exige", async () => {
     for (const g of GUARDS) {
       const mod = await import(pathToFileURL(join(HOOKS, g.file)).href);
-      const fn = g.mode === "in-process" ? "runHook" : "appliesTo";
-      assert.equal(typeof mod[fn], "function", `${g.file} precisa exportar ${fn}`);
-    }
+      const fn = g.mode === "worker" ? "runHook" : "appliesTo";
+      assert.equal(typeof mod[fn], "function", `${g.file} precisa exportar ${fn}`);    }
   });
 });
 
@@ -307,8 +446,10 @@ describe("despachante (#14045): equivalência com os 16 scripts rodados um a um"
     });
   }
 
-  it("JSON inválido no stdin: sem saída e exit 0 (fail-open, como cada guard)", () => {
+  it("JSON inválido no stdin: sem decisão, exit 0, com aviso visível (P2 do review)", () => {
     const root = makeRoot(false);
-    assert.equal(runScript(DISPATCHER, root, "não é json"), "");
+    const out = JSON.parse(runScript(DISPATCHER, root, "não é json"));
+    assert.equal(out.hookSpecificOutput, undefined);
+    assert.match(out.systemMessage, /stdin não é JSON/);
   });
 });
