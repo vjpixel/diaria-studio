@@ -92,3 +92,56 @@ test('Gmail OAuth e MIME usam APIs oficiais, sem expor secrets em erros', async 
     await assert.rejects(sendMail(env, 'test', 'test'), {message: 'Gmail OAuth HTTP 401'});
   } finally { globalThis.fetch = original; }
 });
+function flakyMail(f: ReturnType<typeof fixture>) {
+  const ctl = {up: true};
+  const mail = async (env: Env, subject: string, _body: string) => {
+    if (!ctl.up) throw Error('refresh token revogado');
+    await f.mail(env, subject);
+  };
+  return {ctl, mail};
+}
+test('#14136: "voltou" falhando não deixa o watchdog mudo na queda seguinte', async () => {
+  const f = fixture();
+  const {ctl, mail} = flakyMail(f);
+  // 1ª queda: alerta.
+  await check(f.env, f.storage, now, mail);
+  assert.deepEqual(f.emails, ['[infra] 300 sem heartbeat']);
+  // 300 volta com o Gmail fora: o envio falha, mas o episódio fecha e o sinal sai.
+  ctl.up = false;
+  f.kv.set(HEARTBEAT_KEY, heartbeat(now + 60_000));
+  await assert.rejects(check(f.env, f.storage, now + 60_000, mail));
+  assert.equal(f.kv.has(DOWN_KEY), false);
+  // Nova queda com o Gmail ainda fora: o sinal público carrega a data NOVA.
+  const second = now + 60 * 60_000;
+  await assert.rejects(check(f.env, f.storage, second, mail));
+  assert.equal(f.kv.get(DOWN_KEY), new Date(second).toISOString());
+  // Token renovado com o 300 ainda fora: o alerta da queda nova sai (uma vez).
+  ctl.up = true;
+  await check(f.env, f.storage, second + 60_000, mail);
+  assert.deepEqual(f.emails, ['[infra] 300 sem heartbeat', '[infra] 300 sem heartbeat']);
+  await check(f.env, f.storage, second + 120_000, mail);
+  assert.equal(f.emails.length, 2);
+});
+test('#14136: "voltou" falhando é retentado e, ao sair, o estado fica limpo', async () => {
+  const f = fixture();
+  const {ctl, mail} = flakyMail(f);
+  await check(f.env, f.storage, now, mail);
+  f.kv.set(HEARTBEAT_KEY, heartbeat(now + 60_000));
+  ctl.up = false;
+  await assert.rejects(check(f.env, f.storage, now + 60_000, mail));
+  ctl.up = true;
+  await check(f.env, f.storage, now + 120_000, mail);
+  assert.deepEqual(f.emails, ['[infra] 300 sem heartbeat', '[infra] 300 voltou']);
+  assert.deepEqual(await f.storage.get('state'), {downSince: null, notified: false, recoveryPending: null});
+  await check(f.env, f.storage, now + 180_000, mail);
+  assert.equal(f.emails.length, 2);
+});
+test('#14136: "voltou" com envio ok deixa o estado limpo de primeira', async () => {
+  const f = fixture();
+  await check(f.env, f.storage, now, f.mail);
+  f.kv.set(HEARTBEAT_KEY, heartbeat(now + 60_000));
+  await check(f.env, f.storage, now + 60_000, f.mail);
+  assert.deepEqual(f.emails, ['[infra] 300 sem heartbeat', '[infra] 300 voltou']);
+  assert.deepEqual(await f.storage.get('state'), {downSince: null, notified: false, recoveryPending: null});
+  assert.equal(f.kv.has(DOWN_KEY), false);
+});
