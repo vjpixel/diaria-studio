@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
+import { loadDoc, saveDoc, applyUpdate } from "../scripts/update-stage-status.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,6 +25,7 @@ import {
   buildStagePrompt,
   runEditionStages,
   releaseOrphanPregateLock,
+  revertStage4StatusAfterRejectedPregate,
   PREGATE_SENTINEL_REJECTED_EXIT,
   PREGATE_REJECTED_SENTINEL_REL,
   STAGE_PLAN,
@@ -328,6 +330,27 @@ describe("stage4-pregate — o hash cobre imagens, 01-approved.json e 01-eia.md 
   }
 });
 
+describe("revertStage4StatusAfterRejectedPregate (#14034)", () => {
+  it("só mexe na linha do Stage 4 quando ela está done; running/pending ficam como estão", () => {
+    const dir = tmpEdition();
+    try {
+      saveDoc(dir, applyUpdate(loadDoc(dir, "261127"), { stage: 4, status: "running" }, "2026-11-27T09:00:00.000Z"));
+      assert.equal(revertStage4StatusAfterRejectedPregate(dir, "261127", () => {}), false);
+      assert.equal(loadDoc(dir, "261127").rows.find((r) => r.stage === 4)?.status, "running");
+      saveDoc(dir, applyUpdate(loadDoc(dir, "261127"), { stage: 3, status: "done" }, "2026-11-27T09:00:00.000Z"));
+      saveDoc(dir, applyUpdate(loadDoc(dir, "261127"), { stage: 4, status: "done" }, "2026-11-27T10:00:00.000Z"));
+      const msgs: string[] = [];
+      assert.equal(revertStage4StatusAfterRejectedPregate(dir, "261127", (m) => msgs.push(m)), true);
+      const rows = loadDoc(dir, "261127").rows;
+      assert.equal(rows.find((r) => r.stage === 4)?.status, "pending");
+      assert.equal(rows.find((r) => r.stage === 3)?.status, "done", "outros stages intactos");
+      assert.match(msgs.join(), /revertido para pending/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("edition-stage-runner — prompt do pré-gate (#14034)", () => {
   const base = { aammdd: "261127", sessionSupervised: false, editionDirNote: "DIR" };
 
@@ -423,6 +446,8 @@ describe("edition-stage-runner — pós-condição do pré-gate (#14034)", () =>
         prompts.push(args[args.length - 1]);
         if (spawnWritesSentinel) {
           writeSentinel(dir, 4, ["02-reviewed.md", "03-social.md"]);
+          // e marca o Stage 4 como concluído, como o §4e faria
+          saveDoc(dir, applyUpdate(loadDoc(dir, "261127"), { stage: 4, status: "done" }, "2026-11-27T10:00:00.000Z"));
           throw Object.assign(new Error("crash depois de aprovar"), { status: 1 });
         }
         writeSummary(dir);
@@ -445,6 +470,11 @@ describe("edition-stage-runner — pós-condição do pré-gate (#14034)", () =>
       assert.equal(r1.exitCode, PREGATE_SENTINEL_REJECTED_EXIT);
       assert.ok(!existsSync(join(dir, "_internal", ".step-4-done.json")), "sentinel não pode ficar no lugar");
       assert.ok(existsSync(join(dir, PREGATE_REJECTED_SENTINEL_REL)));
+      assert.equal(
+        loadDoc(dir, "261127").rows.find((r) => r.stage === 4)?.status,
+        "pending",
+        "stage-status.json não pode mostrar o gate como aprovado",
+      );
       spawnWritesSentinel = false;
       const r2 = runEditionStages(base);
       assert.equal(prompts.length, 2, "a reexecução tem de spawnar o pré-gate de novo, não pular como 'gate aprovado'");

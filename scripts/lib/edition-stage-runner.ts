@@ -170,6 +170,35 @@ export function quarantinePregateSentinel(editionDir: string): string | null {
 }
 
 /**
+ * #14034 (review da PR #14103): junto com a quarentena do sentinel, a linha
+ * do Stage 4 em `stage-status.json` volta a `pending` se o spawn a marcou
+ * `done`. Quem lê o stage-status (Studio, relatório, resume) não pode ver o
+ * gate como aprovado. Mesmo helper do pipeline (`applyUpdate`/`saveDoc` de
+ * `update-stage-status.ts`) e o mesmo estado que o `editar` do gate grava.
+ * Devolve `true` se reverteu. Fail-soft: erro vira aviso.
+ */
+export function revertStage4StatusAfterRejectedPregate(
+  editionDir: string,
+  aammdd: string,
+  onProgress: (m: string) => void,
+): boolean {
+  try {
+    const doc = loadDoc(editionDir, aammdd);
+    const row = doc.rows.find((r) => r.stage === 4);
+    if (!row || row.status !== "done") return false;
+    saveDoc(editionDir, applyUpdate(doc, { stage: 4, status: "pending" }, new Date().toISOString()));
+    onProgress("Stage 4 pré-gate: stage-status.json marcava o Stage 4 como done — revertido para pending");
+    return true;
+  } catch (e) {
+    onProgress(
+      `⚠ Stage 4 pré-gate: não consegui reverter o Stage 4 em stage-status.json (${(e as Error).message ?? e}) — ` +
+        `rodar \`update-stage-status.ts --edition-dir ... --stage 4 --status pending\``,
+    );
+    return false;
+  }
+}
+
+/**
  * #14034 (finding P2 do self-review da PR #14103): solta a trava da edição
  * que o spawn do pré-gate deixou para trás.
  *
@@ -1159,6 +1188,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // próprio: a sessão do editor para e reporta, nunca segue para o gate
       // como se ele já tivesse sido aprovado.
       const moved = (opts.quarantineSentinelFn ?? quarantinePregateSentinel)(editionDir);
+      revertStage4StatusAfterRejectedPregate(editionDir, aammdd, onProgress);
       if (stageOutcome === null && outcomes.length > 0 && outcomes[outcomes.length - 1].stage === stage) outcomes.pop();
       exitCode = PREGATE_SENTINEL_REJECTED_EXIT;
       failedStage = stage;
