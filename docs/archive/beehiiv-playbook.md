@@ -1,6 +1,6 @@
 # Playbook: Beehiiv (Etapa 5 — newsletter daily)
 
-> **ARQUIVO HISTÓRICO — nenhuma etapa roda este playbook desde o #11225 (27/10/2026).** O envio da diária é só Kit (`scripts/publish-newsletter-kit.ts`, `.claude/agents/orchestrator-stage-5.md`); a Beehiiv guarda posts, site e estatísticas antigos e não envia. O texto abaixo fica como registro do processo e das armadilhas da plataforma (algumas regras do `review-test-email` ainda o citam). Não seguir como instrução de produção (#11775).
+> **ARQUIVO HISTÓRICO — nenhuma etapa roda este playbook desde o #11225 (27/10/2026).** O envio da diária é só Kit (`scripts/publish-newsletter-kit.ts`, `.claude/agents/orchestrator-stage-5.md`); a Beehiiv guarda posts, site e estatísticas antigos e não envia. O texto abaixo fica como registro do processo e das armadilhas da plataforma (algumas regras do `review-test-email` ainda o citam). Não seguir como instrução de produção (#11775). Movido de `context/publishers/` para `docs/archive/` no #14048, junto com a remoção das 8 libs de Chrome que ele citava (`scripts/lib/beehiiv-*.ts`, que não existem mais); os passos de pré-render ainda vivos saíram para `context/publishers/newsletter-prerender.md`.
 
 Playbook semântico+operacional pra criar a newsletter diar.ia.br no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
 
@@ -171,134 +171,9 @@ isso — ação manual do editor, uma vez. Conferir no test email da próxima ed
 
 O fluxo foi migrado pra **Custom HTML block único**. Elimina block-by-block filling no editor (causa dos 5 bugs do #39: encoding, template items não removidos, truncamento, imagens inline faltando, É IA? não verificado).
 
-### 0. Lint pre-flight — intentional_error (#754, migrado pra JSON #3222)
+### 0 a 1.4. Lint pre-flight e pré-render — movidos (#14048)
 
-Antes de qualquer pré-render, validar que o editor forneceu o erro
-intencional do mês em `_internal/intentional-error.json` (sibling de
-`02-reviewed.md`). Convenção editorial: cada edição tem 1 erro proposital
-pros assinantes (concurso mensal). Sem declaração, lints downstream não
-distinguem erro intencional de erro real, e o concurso mensal precisa
-garimpo manual.
-
-**#3222 (260710):** os campos estruturados (description/location/category/
-correct_value/reveal) migraram do frontmatter YAML de `02-reviewed.md` pra
-`_internal/intentional-error.json` — esse arquivo nunca sincroniza com o
-Drive (convenção `_internal/*`, #959), eliminando a corrupção recorrente do
-round-trip via Google Docs (#3205). O editor agora fornece os campos via
-chat, não mais editando o Doc.
-
-```bash
-npx tsx scripts/lint-newsletter-md.ts --check intentional-error-flagged \
-  --md {edition_dir}/02-reviewed.md
-```
-
-(deriva `_internal/intentional-error.json` como sibling de `--md`.) **Edição rodou (ou está rodando) com `--no-gates` (#8897, 28/09/2026)?** Acrescentar `--headless true` — sem gate humano pra ler o warn de categoria de risco (numeric/factual/data, #2149), a checagem escala pra `exit 1` em vez de só logar, barrando a publicação de uma estatística plantada sem revisão.
-
-Exit codes:
-- `0`: declarado e válido — prosseguir.
-- `1`: declaração ausente ou incompleta — **abortar** com:
-    ```json
-    { "error": "intentional_error_missing", "details": "Editor não forneceu intentional_error em _internal/intentional-error.json. Peça os campos ao editor via chat e grave o arquivo conforme exemplo no stderr do lint." }
-    ```
-    Editor fornece os campos (via chat) e o orchestrator grava `_internal/intentional-error.json`; re-rodar `/diaria-5-publicacao`.
-- `2`: erro de uso (path inválido) — abortar com `{ "error": "lint_cli_failed" }`.
-
-Esse lint roda ANTES de criar o draft no Beehiiv pra garantir que erros
-intencionais ficam registrados — mantém a auditoria do concurso possível.
-
-#### 0.1 Sync intentional-error.json → intentional-errors.jsonl
-
-Após o lint passar, sincronizar os campos estruturados pra `data/intentional-errors.jsonl`
-(usado pelo `lint-test-email.ts` no `review-test-email`). Idempotente — só
-adiciona entry se a edição ainda não tem source `frontmatter_02_reviewed`
-(nome de source preservado por compat — a fonte real hoje é `_internal/intentional-error.json`, #3222).
-
-```bash
-npx tsx scripts/sync-intentional-error.ts \
-  --md {edition_dir}/02-reviewed.md \
-  --edition {AAMMDD} \
-  --jsonl data/intentional-errors.jsonl
-```
-
-Stdout: `{ "added": true|false, "edition": "{AAMMDD}" }`. Falha (`exit != 0`)
-não bloqueia — o lint do passo 0 já garantiu `_internal/intentional-error.json`;
-falha aqui é issue de I/O. Logar warning e prosseguir.
-
-### 1. Pré-render — rodar ANTES de abrir o browser
-
-**Este passo é crítico.** Gera HTML completo + sobe imagens pro Cloudflare Worker KV ANTES de qualquer interação com o browser.
-
-> **#1119 (2026-05-11)**: Imagens pra newsletter daily agora vão pro Cloudflare Worker KV (`/img/{key}`), não pro Drive. Razão: Drive `uc?id=...` retorna HTML wrapper na 1ª request + throttle agressivo + sem Cache-Control. Cloudflare entrega JPEG direto, com `Cache-Control: public, max-age=31536000, immutable`. Desde #2147 o modo `social` (LinkedIn/Facebook) também vai pro KV, e o ramo Drive foi removido do script no #11414.
-
-#### 1.1 Extrair metadata
-
-```bash
-# Título, subtítulo, destaques (JSON — ainda usado pro header do post)
-npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
-```
-
-Gravar output: `title`, `subtitle` (precisam ser preenchidos no form do Beehiiv separadamente do corpo).
-
-#### 1.2 Upload imagens pro Cloudflare Worker KV (mode newsletter)
-
-```bash
-npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir} --mode newsletter
-```
-
-Faz upload de 5 imagens pro Worker KV (default `--target cloudflare` quando `--mode newsletter`):
-- `04-d1-2x1.jpg` (cover, também usada inline no D1)
-- `04-d2-2x1.jpg` (inline D2); `04-d3-2x1.jpg` (inline D3, somente em edições 3-destaque — #2352). O 1:1 deixou de ser gerado no #12226.
-- `01-eia-A.jpg`, `01-eia-B.jpg` (É IA? — random A/B; mapping em `01-eia.md` frontmatter; edições antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`, detectadas em runtime)
-
-KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://eia.diar.ia.br/img/{key}` (#3904 — domínio de marca; `poll.diaria.workers.dev` segue ativo só por compat de links já enviados) com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.
-
-Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename, target: "cloudflare" } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
-
-Resume-aware: re-execução pula imagens já no cache, **respeitando target**. Entry legada `target=drive` (ou sem `target`) de edição antiga é re-uploadada pro KV.
-
-**Sem escape hatch pro Drive**: `--target drive` foi removido no #11414 (o script sai com erro); o único destino é `cloudflare`.
-
-**Credenciais Cloudflare**: `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` no `.env`. Namespace ID lido de `platform.config.json → poll.kv_namespace_id`.
-
-#### 1.3 Render HTML + substituir URLs
-
-**Modo single-file (atual — #1054 validation):** newsletter inteira (16KB) cabe num único `node-htmlSnippet` do template HTML do Beehiiv. Merge tags `{{poll_a_url}}/{{poll_b_url}}` são preservadas pelo htmlSnippet (raw HTML por design — não normaliza hrefs). Mesmo arquivo serve agent automation + paste manual via `prep-manual-publish.ts`:
-
-```bash
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out {edition_dir}/_internal/newsletter-draft.html
-npx tsx scripts/substitute-image-urls.ts \
-  --html {edition_dir}/_internal/newsletter-draft.html \
-  --images {edition_dir}/06-public-images.json \
-  --out {edition_dir}/_internal/newsletter-final.html \
-  --reviewed-md {edition_dir}/02-reviewed.md
-```
-
-**Exit codes de `substitute-image-urls.ts` (#2316):**
-
-| Exit | Significado | Ação |
-|------|-------------|------|
-| `0` | Sucesso — todas as placeholders substituídas | Continuar |
-| `1` | Erro de args (uso incorreto da CLI) | Verificar comando; abortar |
-| `2` | Placeholders não resolvidas — `unresolved[]` não vazio | Abortar — verificar `06-public-images.json` e fluxo de upload |
-| `3` | **HTML stale** — `newsletter-draft.html` mais antigo que `02-reviewed.md` | **Não é fatal.** Re-rodar `render-newsletter-html.ts` (passo acima) e então re-rodar `substitute-image-urls.ts` |
-
-> **Exit 3 (#2316, #2335):** o `render-newsletter-html.ts` não rodou (ou falhou silenciosamente) após a última edição de `02-reviewed.md`. O stderr já inclui o comando exato de re-render. Mensagem: `[substitute-image-urls] ERRO: HTML de input está desatualizado — mtime(...)`. Ação: re-renderizar e re-substituir. **Nunca tratar exit 3 como erro fatal irrecuperável** — é uma instrução de re-render, não uma falha de pipeline.
-
-Se substituição reportar `unresolved: []` não vazio (exit 2), abortar — uma imagem não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
-
-**Modo `--split` (legacy, NÃO usar pelo agent)**: o renderer ainda suporta `--split` que gera `newsletter-body.html` + `newsletter-eia.html` separados. Era pra resolver merge tags via insertContent que não funcionava. #1054 validou que paste-into-htmlSnippet preserva merge tags em arquivo único — `--split` fica obsoleto pro agent flow, mantido só pra eventual debug.
-
-#### 1.4 Setar gabarito É IA? no Worker (#1526)
-
-Garantir que o poll Worker já sabe a resposta correta **antes** do test email — editor testa o É IA? assim que o HTML vai pro Beehiiv. Sem isso, `correct:{edition}` fica vazio e o Worker não mostra resultado, ou pior, um valor stale de uma run anterior causa inversão.
-
-`close-poll.ts` é idempotente — re-rodar após publicação só atualiza scores de votos novos.
-
-```bash
-npx tsx scripts/close-poll.ts --edition {AAMMDD}
-```
-
-Falha (exit != 0) = **warning, não bloqueia** o paste no Beehiiv. Poll sem gabarito ainda aceita votos; scores são reconciliados quando `close-poll` rodar pós-publicação. Mas logar warn explícito pro editor saber que o teste do É IA? não vai mostrar resultado.
+Os passos §0 (lint `intentional-error-flagged`), §0.1 (sync do `intentional-errors.jsonl`) e §1.1 a §1.4 (extract-destaques, upload de imagens pro Worker KV, render + `substitute-image-urls.ts` com a tabela de exit codes, gabarito do É IA?) continuam vivos no Stage 4 e saíram deste arquivo no #14048. Texto atual: `context/publishers/newsletter-prerender.md`, com a mesma numeração.
 
 ### 2. Ler configuração
 

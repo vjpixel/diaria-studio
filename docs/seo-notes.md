@@ -312,7 +312,7 @@ página web da Beehiiv, código que não vive neste repo e não é editável via
 API/MCP — **não há workaround no nosso lado**. `edit_post`/`save_post`
 (onde um campo de idioma por post, se existisse, estaria) já é conhecido
 como gated pelo plano Launch/free (ver memory `beehiiv-plano-nao-sobe.md` e
-`context/publishers/beehiiv-playbook.md` #1705/#2501) — mesmo que o campo
+`docs/archive/beehiiv-playbook.md` #1705/#2501) — mesmo que o campo
 existisse, a mesma parede de plano provavelmente bloquearia a escrita.
 
 **Ação:** nenhuma correção de código possível a partir deste repo. Registrar

@@ -7,7 +7,7 @@ const cfg = JSON.parse(readFileSync("platform.config.json", "utf8"));
 const REPLY_TO = "pixel@diar.ia.br";
 
 describe("reply-to das contas Brevo (Clarice News + diar.ia.br)", () => {
-  for (const block of ["brevo_monthly", "brevo_diaria", "brevo_apoiadores", "onboarding"]) {
+  for (const block of ["brevo_monthly", "brevo_diaria", "onboarding"]) { // brevo_apoiadores removido no #14049
     it(`${block}.reply_to = ${REPLY_TO}`, () => {
       assert.equal(cfg[block].reply_to, REPLY_TO);
     });
@@ -20,7 +20,6 @@ describe("reply-to das contas Brevo (Clarice News + diar.ia.br)", () => {
       "scripts/clarice-schedule-sends.ts",
       "scripts/publish-daily-brevo.ts",
       "scripts/publish-monthly.ts",
-      "scripts/publish-monthly-apoiadores-brevo.ts",
       "scripts/onboarding-welcome-run.ts",
     ];
     for (const f of files) {

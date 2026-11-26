@@ -395,7 +395,7 @@ export function makeRealCampaignExportClient(apiKey: string): CampaignExportClie
       // Brevo — não passa pelo retry-on-429 de brevoGet/brevoPost) que
       // pendura a conexão travava o backfill inteiro sem sinal de erro.
       // Mesmo padrão de `AbortController` + `setTimeout` já usado em
-      // verify-dates.ts/beehiiv-insert-text.ts (#4196) neste repo.
+      // verify-dates.ts (e na antiga beehiiv-insert-text.ts, #4196, removida no #14048).
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), DOWNLOAD_CSV_TIMEOUT_MS);
       try {

@@ -21,8 +21,8 @@
  * As decisões abaixo estão preservadas como escritas em #4482 porque
  * documentam POR QUE o canal existe e o que ele corta do draft — isso não
  * mudou com a troca de plataforma. Só a decisão 4 ("Plataforma: Beehiiv")
- * está morta: o envio real é Brevo, via
- * `scripts/publish-monthly-apoiadores-brevo.ts` (#4593).
+ * está morta: o envio real foi Brevo (#4593, só o ciclo 2607-08) e hoje é
+ * Kit, via `scripts/publish-monthly-apoiadores-kit.ts` (#7633).
  *
  * ## As 5 decisões (issue #4482, sessão develop 260802b/260803) — 4 do
  * editor + 1 default sem objeção (#4510: a decisão 5 abaixo nunca foi
@@ -41,7 +41,7 @@
  *      "você se cadastrou na Clarice", falso pra quem já é assinante Beehiiv
  *      da diária — ver escopo técnico do #4482.)
  *   4. Plataforma: Beehiiv (mesma da diária) — publicação reusa
- *      `context/publishers/beehiiv-playbook.md` (Worker-hosted paste), NUNCA
+ *      `docs/archive/beehiiv-playbook.md` (Worker-hosted paste), NUNCA
  *      `publish-monthly.ts`/`clarice-schedule-sends` (específicos do Brevo).
  *   5. Ordem no ciclo (NÃO perguntado explicitamente — default sugerido pelo
  *      coordenador, sem objeção do editor): depois do conteúdo do mês estar
@@ -68,9 +68,10 @@
  * foram removidos por não terem consumidor de runtime. O que sobra aqui
  * (`filterDraftForApoiadores`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
  * é canal-AGNÓSTICO — filtra o markdown, não decide UTM/perfil — e é
- * IMPORTADO POR VALOR pelo caminho Brevo REAL
- * (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts` importa
- * `filterDraftForApoiadores` daqui sem modificação). O nome do arquivo/módulo
+ * IMPORTADO POR VALOR pelo caminho Kit atual
+ * (`scripts/lib/mensal/monthly-apoiadores-kit-render.ts` importa
+ * `filterDraftForApoiadores` daqui sem modificação; o render Brevo, que
+ * também importava, foi apagado no #14049). O nome do arquivo/módulo
  * ficou historicamente "beehiiv" — não renomeado nesta unidade pra manter o
  * diff pequeno e revisável (ver PR #7121); `filterDraftForApoiadores`/
  * `isClariceOnlySection` continuam corretos em comportamento, só
@@ -79,7 +80,8 @@
  * ## Segmentação — sem lógica de cruzamento nova
  *
  * Os segmentos "Apoio — Mantenedor" e "Apoio — Patrono" já existem na conta
- * Brevo dedicada (`platform.config.json` → `brevo_apoiadores`), convergidos
+ * Brevo dedicada (`platform.config.json` → `brevo_apoiadores`, chave e script
+ * removidos no #14049; hoje a audiência é a tag Kit `kit_apoiadores.audience_tag`), convergidos
  * por `scripts/sync-apoio-nivel-brevo.ts` (#4572, ver
  * `scripts/lib/apoio-segments-canonical-kit.ts`). Este módulo NÃO recalcula
  * "quem é apoiador" — o envio mira a lista já convergida.
