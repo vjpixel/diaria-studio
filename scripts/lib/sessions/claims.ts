@@ -865,12 +865,11 @@ export function heartbeatAutoRegistering(
  * escrever N registros por sessão: o path já distingue os concorrentes, o
  * sessionId dentro do arquivo resolve o resto.
  *
- * `worktree_claim` continua sendo mirrorado no record da sessão (best-effort,
- * nunca bloqueia o claim principal) para não quebrar o consumidor existente
- * — `.claude/hooks/block-worktree-alien-commit.mjs`, que lê
- * `rec?.worktree_claim?.path` do arquivo de sessão. Esse mirror é cosmético
- * (último a escrever "vence" nele, igual antes), NUNCA a fonte de verdade da
- * colisão — a fonte de verdade é sempre o arquivo indexado por path.
+ * O `worktree_claim` era também mirrorado no record da sessão para o hook
+ * `.claude/hooks/block-worktree-alien-commit.mjs`; o mirror saiu no #14214
+ * (o hook deixou de lê-lo no #7903, abaixo, e a escrita criava um arquivo
+ * `continuo-*` que o GC nunca recolhia). A fonte de verdade é sempre o
+ * arquivo indexado por path.
  *
  * **CORREÇÃO (#7903, 10/09/2026)** — o hook consumidor lia SÓ o mirror
  * (`data/sessions/*.json`), nunca o arquivo indexado por path descrito
@@ -945,38 +944,15 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
     claimed = true;
   });
 
-  if (!claimed) return false;
-
-  // Mirror best-effort no record da sessão — só pro consumidor legado
-  // (block-worktree-alien-commit.mjs); nunca decide a colisão acima (#7900
-  // Finding 3: last-writer-wins entre subagentes-irmãos é uma limitação
-  // conhecida e aceita desse consumidor legado, não deste mecanismo). Sob
-  // lock próprio (#7900 Finding 2) pra não atropelar outros campos
-  // CAS-protegidos do mesmo record de sessão (merge_grant, claimed_issues,
-  // heartbeat) — timeout curto: é cosmético, nunca vale travar o claim real
-  // por ele.
-  try {
-    const sessionFile = sessionFilePath(root, "continuo", machineTag(), sessionId);
-    const sessionLockPath = `${sessionFile}.lock`;
-    breakStaleLock(sessionLockPath);
-    withFileLock(
-      sessionLockPath,
-      () => {
-        const currentSession = readJsonSafe<any>(sessionFile);
-        writeJsonSafe(sessionFile, {
-          ...currentSession,
-          session_id: sessionId,
-          worktree_claim: { path, sessionId, branch: resolvedBranch, claimed_at: claimedAt, expires_at: nowMs + ttl },
-        });
-      },
-      2_000,
-    );
-  } catch {
-    // Mirror é cosmético — nunca deixa uma falha (inclusive timeout de lock)
-    // aqui derrubar o claim real, já commitado acima.
-  }
-
-  return true;
+  // #14214: o mirror `worktree_claim` no record da sessão saiu. Ele gravava
+  // em `sessionFilePath(root, "continuo", machineTag(), sessionId)` — kind
+  // fixo e tag da máquina, não os da sessão —, criando um arquivo
+  // `continuo-*` sem `sessionId`/`kind` que o GC via como ilegível e nunca
+  // recolhia. Desde o #7903 o hook lê só o arquivo indexado por path
+  // (`.worktree-claims/`), então o mirror não tinha mais leitor. Espelhos
+  // antigos que já estão no disco são recolhidos por `planSessionGc`
+  // (`isWorktreeClaimMirror`).
+  return claimed;
 }
 
 export function claimIssue(
