@@ -13,7 +13,7 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (182 arquivos)
+## Índice (183 arquivos)
 
 ### `docs/` (167)
 
