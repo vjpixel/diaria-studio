@@ -174,7 +174,8 @@ describe("#9978 — recorte de voz de past-editions.md", () => {
       ".claude/agents/writer-destaque.md",
       ".claude/agents/writer-monthly.md",
       ".claude/agents/research-reviewer.md",
-      ".claude/agents/orchestrator-stage-2.md",
+      // #14113: o humanizador (e o recorte que ele lê) foi para o fallback do runner.
+      ".claude/agents/orchestrator-stage-2-fallback.md",
       ".claude/agents/orchestrator-stage-3.md",
       ".claude/skills/diaria-mensal/SKILL.md",
     ];

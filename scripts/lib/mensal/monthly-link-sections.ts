@@ -64,7 +64,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { monthlyDir } from "./monthly-paths.ts";
-import { classifyLinkContent } from "../../../workers/brevo-dashboard/src/link-content.ts";
+import { classifyLinkContent } from "../shared/brevo-link-content.ts";
 // #4405: reusa a resolução de relink (não recalcula slug) pra mapear a URL
 // RELINKADA de cada Destaque — ver buildRelinkedContentAliases abaixo.
 import { buildUrlToEdition, makeEditionUrlResolver, normUrl } from "../../monthly-relink-to-diaria.ts";

@@ -71,14 +71,18 @@ export interface DoStoredPayload {
  *                 → body { if_not_claiming: true }: 409 { cancelled: false, fired: true, send_unknown? } se já disparou/ambíguo (#11215, #11238)
  *                 → com replacement_token + replacement_entry, reserva claiming até /arm do dono ou /release-replacement (#11133)
  *   POST /release-replacement body: { replacement_token } → libera apenas a reserva correspondente
- *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown: string | null } (consultado por fireDueItems; send_unknown #11106)
+ *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown: string | null; dlq_reason: string | null } (consultado por fireDueItems; send_unknown #11106, dlq_reason #14218)
  *   POST /claim   → check-and-set atômico de `claiming` dentro de
- *                   blockConcurrencyWhile. Retorna { claimed: boolean; entry?: QueueEntry }
- *                   (`entry` = payload armado, só com claimed=true, #11107).
+ *                   blockConcurrencyWhile. Retorna { claimed: boolean; claim_token?: string; entry?: QueueEntry }
+ *                   (`entry` = payload armado, só com claimed=true, #11107;
+ *                   `claim_token` = prova de posse do claim, #14219).
+ *   POST /release-claim body: { claim_token } → libera só o claim desse token (#14219)
  *                   `true` significa "este caller ganhou o claim e pode postar".
  *                   `false` significa "outro caller já está processando" — não postar.
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
  *                   (#2230 bug 3) alarm() usa tryClaim() DIRETAMENTE — não via self-fetch.
+ *   POST /mark-dlq body: { reason, claim_token } → `dlq` decidido pelo cron: grava
+ *                   `dlq_reason`, apaga payload, libera o claim do token (#14230)
  */
 
 /**
@@ -140,22 +144,67 @@ export class LinkedInScheduler {
    * O endpoint POST /claim ainda existe para o cron path (fetch externo ao DO).
    */
   async tryClaim(): Promise<boolean> {
+    return (await this.tryClaimWithToken()) !== null;
+  }
+
+  /**
+   * #14219 — mesmo claim de `tryClaim()`, devolvendo o token do dono (ou
+   * `null` se o claim foi recusado). O token é a prova de posse: só quem o
+   * tem libera o claim (`/release-claim`, `releaseOwnClaim`). Sem isso, o
+   * dono de um claim vencido pelo TTL apagava o claim de quem o retomou e
+   * uma 3ª volta disparava em paralelo.
+   */
+  async tryClaimWithToken(): Promise<string | null> {
     return this.state.blockConcurrencyWhile(async () => {
       const alreadyClaiming = await this.state.storage.get<boolean>("claiming");
-      if (await isFiredOrAmbiguous(this.state.storage)) return false; // #11238
+      if (await isFiredOrAmbiguous(this.state.storage)) return null; // #11238
+      if (await this.state.storage.get<string>("dlq_reason")) return null; // #14218
       if (alreadyClaiming) {
         // Verificar se o claim expirou (crash mid-flight sem release)
         const claimedAt = await this.state.storage.get<number>("claimed_at");
         const claimExpired = claimedAt !== undefined && (Date.now() - claimedAt) > CLAIM_TTL_MS;
-        if (!claimExpired) return false;
+        if (!claimExpired) return null;
         // Claim expirado — logar e re-clamar
         console.warn(`[DO tryClaim] claim expired after ${Date.now() - (claimedAt ?? 0)}ms — re-claiming (crash recovery)`);
       }
+      const token = crypto.randomUUID();
       await this.state.storage.delete("replacement_token");
       await this.state.storage.put("claiming", true);
       await this.state.storage.put("claimed_at", Date.now());
+      await this.state.storage.put("claim_token", token);
+      return token;
+    });
+  }
+
+  /**
+   * #14219 — libera o claim só se `token` ainda é o do dono atual. Devolve se
+   * liberou. Token ausente nunca libera: o claim vence sozinho pelo TTL.
+   * `beforeRelease` roda na mesma seção crítica, só se o token confere (o
+   * write-back do container de Reels antes do release, #10922/#11045).
+   */
+  private async releaseOwnClaim(token: string | undefined, beforeRelease?: () => Promise<void>): Promise<boolean> {
+    return this.state.blockConcurrencyWhile(async () => {
+      if (token === undefined || token !== await this.state.storage.get<string>("claim_token")) return false;
+      if (beforeRelease) await beforeRelease();
+      await this.state.storage.delete("claiming");
+      await this.state.storage.delete("claimed_at");
+      await this.state.storage.delete("claim_token");
       return true;
     });
+  }
+
+  /**
+   * #14218/#14230 — desfecho `dlq` (do alarm ou do cron): grava o motivo
+   * (`dlq_reason`, que `/claim` e `tryClaim` recusam), apaga o payload e o
+   * container de Reels, e libera o claim de quem apresentou o token. Um alarm
+   * que dispare depois não tem o que postar nem ganha o claim. Não marca
+   * `fired`: nada foi publicado, e um re-enqueue (`/cancel` + `/arm`) arma de novo.
+   */
+  private async markDlq(reason: string, token: string | undefined): Promise<boolean> {
+    await this.state.storage.put("dlq_reason", reason);
+    await this.state.storage.delete("payload");
+    await this.state.storage.delete("reels_container");
+    return this.releaseOwnClaim(token);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -304,7 +353,12 @@ export class LinkedInScheduler {
       // #11106 — motivo do envio ambíguo gravado pelo alarm (o DO não escreve
       // no KV): o cron move a entry pra DLQ com esse `last_error`.
       const sendUnknown = (await this.state.storage.get<string>("send_unknown")) ?? null;
-      return new Response(JSON.stringify({ fired, claiming, claimed_at: claimedAt ?? null, send_unknown: sendUnknown }), {
+      // #14218 — `dlq` do alarm (o DO não escreve no KV): o cron move a entry
+      // pra DLQ com esse motivo, sem redisparar.
+      const dlqReason = (await this.state.storage.get<string>("dlq_reason")) ?? null;
+      return new Response(JSON.stringify({
+        fired, claiming, claimed_at: claimedAt ?? null, send_unknown: sendUnknown, dlq_reason: dlqReason,
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -321,22 +375,10 @@ export class LinkedInScheduler {
     // Isso evita que um DO fique travado permanentemente se `/release-claim`
     // falhar transitoriamente (ex: CF retry de alarm sem release prévio).
     if (url.pathname === "/claim" && request.method === "POST") {
-      const claimed = await this.state.blockConcurrencyWhile(async () => {
-        const alreadyClaiming = await this.state.storage.get<boolean>("claiming");
-        if (await isFiredOrAmbiguous(this.state.storage)) return false; // #11238
-        if (alreadyClaiming) {
-          // Verificar se o claim expirou (crash mid-flight sem release)
-          const claimedAt = await this.state.storage.get<number>("claimed_at");
-          const claimExpired = claimedAt !== undefined && (Date.now() - claimedAt) > CLAIM_TTL_MS;
-          if (!claimExpired) return false;
-          // Claim expirado — logar e re-clamar
-          console.warn(`[DO claim] claim expired after ${Date.now() - (claimedAt ?? 0)}ms — re-claiming (crash recovery)`);
-        }
-        await this.state.storage.delete("replacement_token");
-        await this.state.storage.put("claiming", true);
-        await this.state.storage.put("claimed_at", Date.now());
-        return true;
-      });
+      // #14219 — mesmo critério do alarm (`tryClaimWithToken`); o token volta
+      // ao chamador, que o apresenta no `/release-claim`.
+      const claimToken = await this.tryClaimWithToken();
+      const claimed = claimToken !== null;
       // #10922 — quem ganhou o claim recebe o container de Reels que o alarm
       // deixou em processamento (o cron lê a entry do KV, que não o tem).
       const reelsContainer = claimed ? (await this.state.storage.get<ReelsContainerRef>("reels_container")) ?? null : null;
@@ -349,6 +391,7 @@ export class LinkedInScheduler {
         ?? (await this.state.storage.get<QueueEntry>("replacement_entry")) ?? null : null;
       return new Response(JSON.stringify({
         claimed,
+        ...(claimToken !== null && { claim_token: claimToken }),
         ...(reelsContainer && { reels_container: reelsContainer }),
         ...(armedEntry && { entry: armedEntry }),
       }), {
@@ -382,20 +425,56 @@ export class LinkedInScheduler {
       await this.state.storage.delete("payload");  // (#2230 bug 1 fix) payload limpo
       await this.state.storage.delete("replacement_entry"); // #11133
       await this.state.storage.delete("reels_container"); // #10922
+      // #14219 — sem conferir o token: `fired=true` já faz todo claim ser
+      // recusado, então apagar o claim de outra volta aqui não abre disparo.
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
+      await this.state.storage.delete("claim_token");
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    // POST /release-claim — cron ou alarm libera claiming após falha do webhook,
-    // permitindo que o próximo retry do cron tente novamente.
+    // POST /mark-dlq — #14230: o cron decidiu `dlq` (outcome `dlq` ou retries
+    // esgotados) e move a entry do KV pra DLQ. Antes ele só liberava o claim: o
+    // DO ficava com o payload e sem `dlq_reason`, e um alarm que disparasse
+    // depois refazia o post (o carrossel inteiro, 2ª cópia). Mesma marcação do
+    // `dlq` do alarm (`markDlq`). Body `{ reason, claim_token }`; o token só
+    // decide se o claim deste cron é liberado — a marcação vale sempre, como o
+    // `/status-set-fired`, porque a entry está indo pra DLQ de qualquer forma.
+    if (url.pathname === "/mark-dlq" && request.method === "POST") {
+      let reason = "";
+      let token: string | undefined;
+      try {
+        const body = (await request.json()) as { reason?: unknown; claim_token?: unknown } | null;
+        if (typeof body?.reason === "string") reason = body.reason;
+        if (typeof body?.claim_token === "string") token = body.claim_token;
+      } catch { /* body ilegível: cai no 400 abaixo */ }
+      if (reason === "") {
+        return new Response(JSON.stringify({ error: "reason required" }), { status: 400 });
+      }
+      const released = await this.markDlq(reason, token);
+      return new Response(JSON.stringify({ ok: true, released }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // POST /release-claim — o cron libera o PRÓPRIO claim após falha do disparo,
+    // permitindo que o próximo retry tente novamente. #14219: body
+    // `{ claim_token }` com o token devolvido pelo `/claim`; token ausente ou de
+    // um claim anterior (vencido pelo TTL e retomado por outra volta) não libera
+    // nada — responde `released: false` e o claim alheio fica intacto.
     if (url.pathname === "/release-claim" && request.method === "POST") {
-      await this.state.storage.delete("claiming");
-      await this.state.storage.delete("claimed_at");
-      return new Response(JSON.stringify({ ok: true }), {
+      let token: string | undefined;
+      try {
+        const body = (await request.json()) as { claim_token?: unknown } | null;
+        if (typeof body?.claim_token === "string") token = body.claim_token;
+      } catch { /* sem body = sem token: não libera */ }
+      const released = await this.releaseOwnClaim(token);
+      if (!released) console.warn("[DO release-claim] token ausente ou de outro claim — claim mantido (#14219)");
+      return new Response(JSON.stringify({ ok: true, released }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -437,8 +516,8 @@ export class LinkedInScheduler {
     //
     // (#2219 bug 2) Claim atômico garante exactly-once com cron fallback:
     // blockConcurrencyWhile serializa alarm() e cron — apenas 1 ganha o claim.
-    const claimed = await this.tryClaim();
-    if (!claimed) {
+    const claimToken = await this.tryClaimWithToken();
+    if (claimToken === null) {
       console.log("[DO alarm] claim lost — cron already claimed or fired, skipping to avoid dup");
       return;
     }
@@ -447,8 +526,7 @@ export class LinkedInScheduler {
     if (!payload) {
       // Alarm foi cancelado (DELETE /queue) mas alarm já estava enfileirado no CF.
       // Clearing do claim pra não bloquear nada; payload já foi deletado por /cancel.
-      await this.state.storage.delete("claiming");
-      await this.state.storage.delete("claimed_at");
+      await this.releaseOwnClaim(claimToken);
       console.error("[DO alarm] payload missing after claim — alarm was cancelled, aborting");
       return;
     }
@@ -467,11 +545,10 @@ export class LinkedInScheduler {
     // isUnsupportedCommentTarget, pixel sem URL configurada) agora moram em
     // dispatch.ts::fireQueueEntry.
     //
-    // Diferente de fire.ts, alarm() não tem acesso a env.LINKEDIN_QUEUE (só
-    // ao DO storage) — outcome "dlq" aqui só libera o claim sem postar,
-    // deixando a KV entry intocada: o próximo ciclo do cron (fireDueItems)
-    // processa essa mesma entry, aplica o MESMO guard puro, e aí sim escreve
-    // em dlq: via KV.
+    // Diferente de fire.ts, alarm() não escreve a fila no KV — outcome "dlq"
+    // aqui grava `dlq_reason` no DO e deixa a KV entry intocada: o próximo
+    // ciclo do cron (fireDueItems) lê o motivo no `/status` e escreve em dlq:
+    // via KV, sem redisparar (#14218).
     const outcome = await fireQueueEntry(entry, {
       webhookUrl,
       pixelWebhookUrl,
@@ -500,11 +577,16 @@ export class LinkedInScheduler {
     }
 
     if (outcome.status === "dlq") {
-      await this.state.storage.delete("claiming");
-      await this.state.storage.delete("claimed_at");
-      console.error(
-        `[DO alarm] ${key} dlq guard: ${outcome.reason} — releasing claim without firing, cron will DLQ`,
-      );
+      // #14218 — antes só liberava o claim, supondo que todo `dlq` vem de um
+      // guard determinístico que o cron reaplica sem efeito. Não vale para o
+      // carrossel (falha de rede num filho ou no pai também é `dlq`): o cron
+      // ganhava o claim e refazia o carrossel inteiro. Agora o motivo fica no
+      // DO (`dlq_reason`, que `/claim` e `tryClaim` recusam) e o payload sai;
+      // o cron lê o motivo no `/status` e move a entry pra DLQ sem redisparar.
+      // Não marca `fired`: nada foi publicado, e um re-enqueue (`/cancel` +
+      // `/arm`) segue podendo armar o item de novo.
+      await this.markDlq(outcome.reason, claimToken);
+      console.error(`[DO alarm] ${key} dlq: ${outcome.reason} — não refeito, cron move pra DLQ (#14218)`);
       return;
     }
 
@@ -574,10 +656,16 @@ export class LinkedInScheduler {
       // outcome.status === "failed" — libera o claim pra cron fallback tentar via retry normal.
       // #10922 — guarda (ou descarta) o container de Reels ANTES de liberar o
       // claim: o cron recebe ele no /claim e retoma em vez de criar outro.
-      if (outcome.reelsContainer) await this.state.storage.put("reels_container", outcome.reelsContainer);
-      else if (entry.reels_container) await this.state.storage.delete("reels_container");
-      await this.state.storage.delete("claiming");
-      await this.state.storage.delete("claimed_at");
+      // #14219 — só libera se o claim ainda é deste alarm: vencido pelo TTL e
+      // retomado pelo cron, apagá-lo deixaria uma 3ª volta disparar em paralelo.
+      // O container vai antes do release (#10922), sob a mesma condição.
+      const released = await this.releaseOwnClaim(claimToken, async () => {
+        if (outcome.reelsContainer) await this.state.storage.put("reels_container", outcome.reelsContainer);
+        else if (entry.reels_container) await this.state.storage.delete("reels_container");
+      });
+      if (!released) {
+        console.warn(`[DO alarm] ${key} claim deste alarm já vencido e retomado — não libera nem grava o container (#14219)`);
+      }
       console.error(`[DO alarm] fire failed key=${key} channel=${channel}: ${outcome.reason}`);
     }
   }

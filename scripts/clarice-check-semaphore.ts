@@ -49,8 +49,8 @@ import {
   deriveRampVolumes,
   extractDashboardStaleInfo,
 } from "./clarice-schedule-ramp.ts";
-import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
-import type { Semaphore } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import type { BrevoCampaign } from "./lib/shared/brevo-dashboard-types.ts";
+import type { Semaphore } from "./lib/shared/clarice-weekly-plan.ts";
 import type { DashboardStaleInfo } from "./clarice-schedule-ramp.ts";
 
 export interface SemaphoreCheckResult {

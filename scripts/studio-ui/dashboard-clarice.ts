@@ -96,7 +96,7 @@ import {
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "../../workers/brevo-dashboard/src/sections-core.ts"; // #6394: calcCumulativeSentInBillingWindow
 import { billingCycleWindow } from "../../workers/brevo-dashboard/src/billing-cycle.ts"; // #6394: pareia credits+cumulativeSent no caminho AO VIVO
 import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; // #4206: label do banner de fetchedAt
-import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
+import type { Env, ContactsSummary, LinkSectionMap } from "../lib/shared/brevo-dashboard-types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
 import { loadLinkSectionMapForCycle, loadLinkTitleMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184 / #4198
 import { createLocalFileCampaignCache } from "../lib/clarice-studio-campaign-cache.ts"; // #6720 Fatia A

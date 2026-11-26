@@ -77,7 +77,7 @@ import {
   recordCampaignQuotaRemaining,
   refreshCampaignQuotaStateFromKv, // #12841
 } from "./lib/brevo-rate-state.ts";
-import type { Env } from "../workers/brevo-dashboard/src/types.ts";
+import type { Env } from "./lib/shared/brevo-dashboard-types.ts";
 
 const LOG_PREFIX = "[clarice-backfill-campaigns]";
 

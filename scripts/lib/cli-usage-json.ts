@@ -50,12 +50,18 @@
  */
 
 import { shortModelName } from "./pricing.ts";
+import { parseCliModelUsage, type ModelUsageMap } from "./usage-breakdown.ts";
 
 export interface CliJsonUsage {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
   models: string[];
+  /**
+   * #14115: tokens/custo POR MODELO, do `modelUsage` do envelope. Ausente
+   * quando o envelope não traz `modelUsage` legível.
+   */
+  modelUsage?: ModelUsageMap;
 }
 
 /**
@@ -88,7 +94,8 @@ export function parseCliJsonUsage(raw: string): CliJsonUsage | null {
       ? [...new Set(Object.keys(modelUsage as Record<string, unknown>).map(shortModelName))].sort()
       : [];
 
-  return { costUsd: obj.total_cost_usd, tokensIn, tokensOut, models };
+  const perModel = parseCliModelUsage(modelUsage);
+  return { costUsd: obj.total_cost_usd, tokensIn, tokensOut, models, ...(perModel ? { modelUsage: perModel } : {}) };
 }
 
 /**

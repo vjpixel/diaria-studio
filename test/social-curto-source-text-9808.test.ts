@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 
 const root = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
@@ -24,7 +25,7 @@ describe("#9808 — social-curto recebe source_text_paths", () => {
   });
 
   it("orchestrator-stage-2.md passa source_text_paths ao social-curto (passo 3)", () => {
-    const md = read(".claude/agents/orchestrator-stage-2.md");
+    const md = readStage2Playbook(); // #14113: principal + fallback
     const passo3 = md.split("\n").find((l) => l.startsWith("3. `Agent` → `social-curto` (#3992, mesmo input que social-writer"));
     assert.ok(passo3, "passo 3 do dispatch paralelo não encontrado");
     assert.match(passo3!, /source_text_paths/);

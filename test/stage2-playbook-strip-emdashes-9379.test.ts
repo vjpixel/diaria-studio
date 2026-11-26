@@ -5,9 +5,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 
-const md = readFileSync(".claude/agents/orchestrator-stage-2.md", "utf8");
+const md = readStage2Playbook(); // #14113: principal + fallback
 
 describe("orchestrator-stage-2.md: strip de travessão (#9379)", () => {
   it("referencia o script e ele existe", () => {

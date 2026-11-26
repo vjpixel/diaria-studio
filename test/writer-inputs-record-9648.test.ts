@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { WRITER_INPUTS_LOG_PREFIX, refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 import {
   MIN_SOURCE_TEXT_BYTES,
   WRITER_INPUTS_CUTOVER_EDITION,
@@ -219,23 +220,24 @@ describe("02-writer-inputs.json (#9648)", () => {
   it("guard textual: flag só no passo 0 do Stage 2, nunca no Stage 4 nem nos next_steps das trocas", () => {
     const root = join(import.meta.dirname, "..");
     const read = (p: string) => readFileSync(join(root, p), "utf8");
-    const stage2 = read(".claude/agents/orchestrator-stage-2.md");
+    const stage2 = readStage2Playbook(); // #14113: principal + fallback
     const passo0 = stage2.slice(stage2.indexOf("**0. Baixar as fontes dos destaques"), stage2.indexOf("**0b."));
     assert.ok(passo0.length > 0, "passo 0 do Stage 2 localizado");
     assert.match(passo0, /refresh-destaque-sources\.ts [^\n]*--record-writer-inputs/);
-    // Causa das edições 261007–261009 sem registro: a skill /diaria-2-escrita é
-    // quem executa o Stage 2 (inclusive headless) e não tinha o passo 0.
+    // Causa das edições 261007–261009 sem registro: quem executa o Stage 2
+    // (inclusive headless) não tinha o passo 0. Desde o #14031 é o runner
+    // `stage-2-run.ts` (fase pre-dispatch), e a skill só o chama (#14113).
+    const runner = read("scripts/stage-2-run.ts");
+    const preDispatch = runner.slice(runner.indexOf("ctx.must(\"translate-summaries\""), runner.indexOf("const mode: Mode ="));
+    assert.ok(preDispatch.length > 0, "pre-dispatch do runner localizado");
+    assert.match(preDispatch, /"--record-writer-inputs"/, "runner precisa do passo 0 com a flag");
+    assert.ok(
+      preDispatch.indexOf("--record-writer-inputs") < preDispatch.indexOf("if (ctx.social)"),
+      "passo 0 vem antes do branch por escopo (newsletter/social também baixam)",
+    );
     const skill = read(".claude/skills/diaria-2-escrita/SKILL.md");
-    assert.match(skill, /refresh-destaque-sources\.ts [^\n]*--record-writer-inputs/, "SKILL.md de /diaria-2-escrita precisa do passo 0 com a flag");
-    assert.ok(
-      skill.indexOf("--record-writer-inputs") < skill.indexOf('subagent_type: "writer-destaque"'),
-      "passo 0 vem ANTES do dispatch dos writer-destaque",
-    );
-    assert.ok((skill.match(/source_text_path=\{path do passo 0/g) ?? []).length >= 3, "D1, D2 e D3 recebem source_text_path");
-    assert.ok(
-      skill.indexOf("--record-writer-inputs") < skill.indexOf("### Se `$2` está ausente"),
-      "passo 0 vem antes do branch por $2 (newsletter/social também baixam)",
-    );
+    assert.match(skill, /stage-2-run\.ts --phase pre-dispatch/, "a skill entra pelo pre-dispatch do runner");
+    assert.match(skill, /refresh-destaque-sources\.ts --record-writer-inputs/, "a skill cita que o pre-dispatch baixa as fontes com a flag");
     for (const p of [
       ".claude/agents/orchestrator-stage-4.md",
       ".claude/agents/orchestrator-stage-4-gate.md",
