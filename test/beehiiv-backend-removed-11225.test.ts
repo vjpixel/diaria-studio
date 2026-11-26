@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { resolveAudienceTagId } from "../scripts/lib/kit-diaria-audience.ts";
 import { describeInvalidSkip, parseSkipFlag } from "../scripts/lib/publish-consent.ts";
 import { mainCli } from "../scripts/build-publish-consent.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
@@ -91,7 +92,7 @@ describe("#11225 canal Kit diária e ramo Beehiiv aposentados", () => {
   });
 
   it("nada promete mais o bloqueio do guard de slug do WhatsApp depois do Stage 4", () => {
-    assert.doesNotMatch(read(".claude/agents/orchestrator-stage-4.md"), /o guard que de fato BLOQUEIA/);
+    assert.doesNotMatch(readStage4Playbook(), /o guard que de fato BLOQUEIA/);
     assert.doesNotMatch(read("context/publishers/beehiiv-playbook.md"), /GATE-BLOCKING/);
     assert.equal(existsSync(resolve(ROOT, "scripts/check-whatsapp-slug-guard.ts")), false, "removido no #11775");
     assert.doesNotMatch(read(".claude/skills/diaria-5-publicacao/SKILL.md"), /guard de slug do bloco WhatsApp/);

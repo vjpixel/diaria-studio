@@ -36,7 +36,7 @@ Extrair `chromeMcp` do JSON retornado. **A newsletter nao depende do Chrome** �
 
 ### Pre-condicao: sentinel Stage 4
 
-<!-- outputs must match the `write` call at the end of orchestrator-stage-4.md §Escrever sentinel de conclusao do Stage 4 -->
+<!-- outputs must match the `write` call at the end of orchestrator-stage-4-gate.md §4e (sentinel de conclusao do Stage 4, #14033) -->
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 4 \
@@ -110,7 +110,7 @@ Nunca aguardar passivamente. Este stage depende de gmail (review-test-email) e, 
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
-  **`pending-research-unresolved` (#4990) — WARNING explícito, nunca pausa.** Se a lista de violations incluir essa regra, é o sinal de que o editor pediu pesquisa nova (USE MELHOR ou outro bucket) no gate do Stage 4 e ela ainda não foi integrada — ver marker `_internal/pending-research.json` (`scripts/lib/pending-research.ts`, escrito por `orchestrator-stage-4.md` §4d.1 passo 0). Diferente das demais violations desta seção (que o editor corrige e re-roda), esta é sempre logada e sempre segue no dispatch — o objetivo é só garantir que a lacuna NUNCA fique silenciosa (histórico: `docs/orchestrator-stage-narrative-history.md#stage-5-pending-research-incident`). Ação obrigatória quando aparecer:
+  **`pending-research-unresolved` (#4990) — WARNING explícito, nunca pausa.** Se a lista de violations incluir essa regra, é o sinal de que o editor pediu pesquisa nova (USE MELHOR ou outro bucket) no gate do Stage 4 e ela ainda não foi integrada — ver marker `_internal/pending-research.json` (`scripts/lib/pending-research.ts`, escrito por `orchestrator-stage-4-gate.md` §4d.1 passo 0). Diferente das demais violations desta seção (que o editor corrige e re-roda), esta é sempre logada e sempre segue no dispatch — o objetivo é só garantir que a lacuna NUNCA fique silenciosa (histórico: `docs/orchestrator-stage-narrative-history.md#stage-5-pending-research-incident`). Ação obrigatória quando aparecer:
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
     --message "pending-research-unresolved: pesquisa pedida no gate Stage 4 ainda nao integrada" \
@@ -484,7 +484,7 @@ Proximo passo (MESMA sessao) → gate de agendamento
 
 **CONTINUE nesta mesma sessao: leia `orchestrator-stage-6.md` e execute o Stage 6 em seguida (#7983).** Esta e a unica transicao de stage do pipeline diario que encadeia sozinha — o Stage 5 e o Stage 6 foram fundidos numa invocacao so por decisao do editor (11/09/2026). Nao imprima "rode /diaria-6-agendamento" como se fosse o proximo passo do editor: o proximo passo e SEU, agora, e o unico ponto de parada e o gate humano de §6c.
 
-**O que NAO mudou:** o gate de §6c continua onde estava (e um dos dois gates de projeto do CLAUDE.md, criterio 1 — irreversivel pra terceiros); os dois sentinels (`.step-5-done.json` e `.step-6-done.json`) continuam separados, cada um escrito no fim do seu stage; os invariants de Stage 5 e de Stage 6 continuam rodando separados; e a fronteira de contexto pos-gate 4 (#6171, `orchestrator-stage-4.md` §"Fluxo pos-gate") continua intacta — este playbook segue sendo SEMPRE lido a partir de uma sessao nova, nunca como continuacao do Stage 4.
+**O que NAO mudou:** o gate de §6c continua onde estava (e um dos dois gates de projeto do CLAUDE.md, criterio 1 — irreversivel pra terceiros); os dois sentinels (`.step-5-done.json` e `.step-6-done.json`) continuam separados, cada um escrito no fim do seu stage; os invariants de Stage 5 e de Stage 6 continuam rodando separados; e a fronteira de contexto pos-gate 4 (#6171, `orchestrator-stage-4-gate.md` §"Fluxo pos-gate") continua intacta — este playbook segue sendo SEMPRE lido a partir de uma sessao nova, nunca como continuacao do Stage 4.
 
 **Se a sessao morrer entre o dispatch e o gate** (ou o editor sair e voltar horas depois — aconteceu em 5 das 18 edicoes medidas antes da fusao): `/diaria-6-agendamento {AAMMDD}` continua existindo exatamente pra isso, como porta de RETOMADA. O sentinel `.step-5-done.json` ja esta escrito, entao ela retoma direto no gate.
 

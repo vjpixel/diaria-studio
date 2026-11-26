@@ -15,10 +15,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 describe("#8592: orchestrator-stage-4.md chama o gerador determinístico antes do fallback manual", () => {
   const playbook = ".claude/agents/orchestrator-stage-4.md";
-  const text = readFileSync(playbook, "utf-8");
+  const text = readStage4Playbook(); // pré-gate + gate (#14033)
 
   it("#12330: fallback manual consulta grafia e entidade antes de propor", () => {
     const fallback = text.slice(text.indexOf("`candidate: null`"));

@@ -2500,7 +2500,7 @@ describe("orchestrator-stage-4.md / diaria-4-revisao SKILL.md citam reorder-dest
 
   it("§4d.1 passo 4 do playbook Stage 4 cita scripts/reorder-destaques.ts", () => {
     const playbookPath = join(projectRoot, ".claude/agents/orchestrator-stage-4.md");
-    const content = readFileSync(playbookPath, "utf8");
+    const content = readFileSync(playbookPath, "utf8") + readFileSync(join(projectRoot, ".claude/agents/orchestrator-stage-4-gate.md"), "utf8");
     assert.match(
       content,
       /reorder-destaques\.ts/,

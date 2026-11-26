@@ -3,7 +3,7 @@
  * multi-highlight #8783)
  *
  * A issue #8123 pede que uma troca/reordenação/título de destaque no gate
- * do Stage 4 (`.claude/agents/orchestrator-stage-4.md` §4d.1, passos 3/4)
+ * do Stage 4 (`.claude/agents/orchestrator-stage-4-gate.md` §4d.1, passos 3/4)
  * mostre o TEXTO atualizado no preview em ~10s, com a imagem e o social
  * ANTIGOS marcados como "regenerando" — sem bloquear o preview esperando
  * `image-generate.ts`/`gen-carousel-cards.ts`/`social-writer` terminarem em
