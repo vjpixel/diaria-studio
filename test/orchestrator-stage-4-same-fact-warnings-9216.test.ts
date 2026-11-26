@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readStage1Playbook } from "../scripts/lib/stage01-playbook.ts";
 import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const md = readStage4Playbook();
@@ -34,7 +34,8 @@ describe("orchestrator-stage-4 same_fact_warnings (#9216)", () => {
     assert.ok(!p.includes("radar-summary-matches-title"));
   });
   it("o artefato citado é o que o Stage 1 grava", () => {
-    const s1 = readFileSync(".claude/agents/orchestrator-stage-1-research.md", "utf8");
+    // #14030: o comando do §1w-quint-b mora no fallback do Stage 1.
+    const s1 = readStage1Playbook();
     assert.match(s1, /--out-json \{EDITION_DIR\}\/_internal\/01-highlight-theme-check\.json/);
   });
 });

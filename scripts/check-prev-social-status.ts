@@ -6,7 +6,7 @@
  * atenção do editor antes de começar a edição de hoje.
  *
  * Substitui o julgamento em prosa que vivia no playbook
- * (`orchestrator-stage-0-preflight.md` §0l). A regra antiga — "`scheduled` com
+ * (`orchestrator-stage-0-fallback.md` §0l). A regra antiga — "`scheduled` com
  * `scheduled_at < now` → alertar" — produzia um falso alarme de ~12 posts em
  * TODA edição, porque quatro dos cinco canais nunca saem de `scheduled` por
  * construção (ver `lib/prev-social-status.ts` para a medição). Isso é

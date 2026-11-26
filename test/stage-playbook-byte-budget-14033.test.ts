@@ -32,8 +32,13 @@ const AGENTS_DIR = resolve(ROOT, ".claude/agents");
 
 const PER_FILE_BYTE_BUDGET: Record<string, number> = {
   "orchestrator.md": 18_500,
-  "orchestrator-stage-0-preflight.md": 74_500,
-  "orchestrator-stage-1-research.md": 85_500,
+  // #14030: principal 20,1 KB / 41,7 KB; fallback e §0-replies em arquivos
+  // próprios (tetos finos em test/stage01-playbook-split-14030.test.ts).
+  "orchestrator-stage-0-preflight.md": 21_500,
+  "orchestrator-stage-0-fallback.md": 39_500,
+  "orchestrator-stage-0-replies.md": 17_700,
+  "orchestrator-stage-1-research.md": 44_000,
+  "orchestrator-stage-1-fallback.md": 46_500,
   "orchestrator-stage-2.md": 100_500,
   "orchestrator-stage-3.md": 23_000,
   "orchestrator-stage-4.md": 113_000,
