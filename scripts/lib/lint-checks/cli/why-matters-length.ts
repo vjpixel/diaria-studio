@@ -6,25 +6,13 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkWhyMattersLength, WHY_MATTERS_MIN_CHARS, WHY_MATTERS_MAX_CHARS } from "../why-matters-length.ts";
 
 // Modo --check why-matters-length (#3993) — valida janela 180-300 chars
 // do parágrafo "Por que isso importa" de cada destaque.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error(
-      "Uso: lint-newsletter-md.ts --check why-matters-length --md <md-path>",
-    );
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "why-matters-length");
   const result = checkWhyMattersLength(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

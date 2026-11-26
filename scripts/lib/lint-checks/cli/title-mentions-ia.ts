@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkTitleMentionsIA } from "../ia-in-title.ts";
 
 // Modo --check title-mentions-ia (#4825) — título de DESTAQUE contendo
@@ -17,16 +16,7 @@ import { checkTitleMentionsIA } from "../ia-in-title.ts";
 // seção 5), então o lint nunca bloqueia — só sinaliza pro editor decidir
 // no gate da Etapa 4.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check title-mentions-ia --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "title-mentions-ia");
   const result = checkTitleMentionsIA(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

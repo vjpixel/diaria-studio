@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkTitlePublisherSuffix } from "../title-normalization.ts";
 
 // Modo --check title-publisher-suffix (#2664) — título com sufixo de veículo
@@ -19,16 +18,7 @@ import { checkTitlePublisherSuffix } from "../title-normalization.ts";
 // indevidamente. Sempre exit 0 — matches são surfaçados como ⚠️ no gate via
 // `{violations_block}`, nunca bloqueiam.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check title-publisher-suffix --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "title-publisher-suffix");
   const result = checkTitlePublisherSuffix(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

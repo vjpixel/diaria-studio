@@ -5,21 +5,12 @@
  * WARN-ONLY: exit 0 mesmo com matches.
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkRadarSummaryMatchesTitle } from "../radar-summary-matches-title.ts";
 
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check radar-summary-matches-title --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const result = checkRadarSummaryMatchesTitle(readFileSync(mdPath, "utf8"));
+  const { md } = readMdArg(args, root, "radar-summary-matches-title");
+  const result = checkRadarSummaryMatchesTitle(md);
   console.log(JSON.stringify(result, null, 2));
   if (result.warning) console.error(`\n⚠️  ${result.warning}`);
   if (!result.ok) {
