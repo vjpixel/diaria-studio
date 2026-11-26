@@ -37,7 +37,7 @@
  *
  * @see scripts/lib/issue-depends-on.ts (lógica pura)
  * @see scripts/lib/issue-exec-track.ts (DEPENDS_ON_BLOCK_LABEL, BLOCKED_LABELS)
- * @see context/overnight-dispatch-rules.md item 24 (onde o coordenador roda isto)
+ * @see context/overnight-coordinator-rules.md item 24 (onde o coordenador roda isto)
  */
 
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";

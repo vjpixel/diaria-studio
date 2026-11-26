@@ -89,7 +89,7 @@ const NOOP_LOCK: SyncLock = {
  * resolve pra DENTRO de `.claude/worktrees/**` sempre que a suíte roda a
  * partir do worktree isolado de um agente (o caso comum: overnight/develop/
  * continuo despacham subagentes implementadores exatamente nesse layout —
- * ver `context/overnight-dispatch-rules.md` item 22). Sem este override
+ * ver `context/overnight-coordinator-rules.md` item 22). Sem este override
  * explícito, `isAgentWorktreeCheckout()` dispararia `worktree_refused` pra
  * TODA chamada de `syncCode()` da suíte quando rodada de um worktree,
  * mascarando os cenários que cada teste de fato quer exercitar.

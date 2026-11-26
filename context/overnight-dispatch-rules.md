@@ -517,11 +517,11 @@ sem ponto de invocação é, na prática, a mesma coisa que não ter sido escrit
 **Auto-enforcement:** `scripts/check-guard-never-invoked.ts` (lógica pura em
 `scripts/lib/guard-never-invoked.ts`) varre `scripts/` por
 `check-*.ts`/`*-alarm.ts`/`*-gate.ts`/`*-drift-check.ts` e reporta quem não
-tem ponto de invocação no mesmo corpus da medição manual acima — com exclusão
+tem ponto de invocação no mesmo corpus da medição manual (`docs/rodadas-autonomas-historico.md#dr-7137-armado`) — com exclusão
 curada (`KNOWN_INDIRECT_INVOCATIONS`) pra cadeias de 2+ saltos (hook → script
 A → script B) e decisões deliberadas já documentadas na própria docstring do
 script (ex: `ads-kill-switch-alarm.ts`, bloqueado por decisão do editor até
-uma data). **Não-bloqueante por enquanto** (mesmo espírito do item 26 acima)
+uma data). **Não-bloqueante por enquanto** (mesmo espírito do item 26 de `context/overnight-coordinator-rules.md`)
 — até acumular histórico de quantos achados reais este guard produz na
 prática; `--strict` inverte pra exit 1 pra quem quiser usá-lo como gate real.
 Registrado como `Diaria-Guard-Never-Invoked-Weekly-Check` em
