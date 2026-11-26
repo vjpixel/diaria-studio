@@ -380,6 +380,8 @@ export {
   CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS,
   assessCrossMachineSyncFreshness,
   acquireMergeLock,
+  createLockFileExclusive,
+  MERGE_LOCK_CREATE_GRACE_MS,
   mergeLockAcquireOutcome,
   renewMergeLock,
   releaseMergeLock,
