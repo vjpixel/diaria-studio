@@ -33,7 +33,7 @@ import {
   runGuards,
   type DispatchGuard,
 } from "../.claude/hooks/pretooluse-bash-dispatch.mjs";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 import { DISPATCHER_FILE, armedBashPreToolUseGuards, directBashPreToolUseScripts } from "./_helpers/bash-pretooluse-guards.ts";
 
 const ROOT = join(import.meta.dirname, "..");

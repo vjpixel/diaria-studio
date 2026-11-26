@@ -32,7 +32,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { stripCssComments as stripComments } from "./helpers/css.ts";
+import { stripCssComments as stripComments } from "./_helpers/css.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = join(ROOT, "scripts", "studio-ui", "public");

@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { withIsolatedGhConfig } from "./_helpers/isolated-gh-config.ts";
 import { resolveMergeTargets } from "../.claude/hooks/lib/gh-target-repo.mjs";
 import { isGhPrMergeCommand, isHeredocDataCommand } from "../.claude/hooks/lib/gh-pr-merge-command.mjs";
 import { machineTag } from "../scripts/lib/session-registry.ts";
