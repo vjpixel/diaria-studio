@@ -21,8 +21,6 @@ import { PERSONAL_INTENT_FILE } from "../lib/linkedin-personal.ts";
 import { SHORT_COVER_FILE, SHORT_COVER_SOURCE_FILE, bufferThumbnailOffsetMs, parseShortCoverSource, withCoverRecord } from "../lib/diaria/short-cover.ts";
 import { BUFFER_DESTINATIONS, MARKABLE_DESTINATIONS, type ShortsPlanItem } from "./_shared.ts";
 
-// ── CLI ──────────────────────────────────────────────────────────────────────
-
 /**
  * #11547: a capa do vertical na pasta da edição (`04-youtube-short-capa.jpg`)
  * e o offset da Buffer derivado do Still que a gerou (sidecar de
