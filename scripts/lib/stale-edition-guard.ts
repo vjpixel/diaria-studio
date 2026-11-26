@@ -57,6 +57,28 @@ export const INTERRUPTED_TOMBSTONE_WINDOW_MS = 6 * 3_600_000;
 export const PREV_GATE_RECENT_WINDOW_MS = 30 * 60_000;
 
 /**
+ * Folga (ms) entre o `released_at` de um tombstone deste host e o mtime do
+ * arquivo mais recente da edição (#14220). O próprio release regrava o
+ * `edition-lock.json` alguns ms depois de carimbar o `released_at`, então o
+ * arquivo mais novo pode ser o tombstone; sem folga, todo release local
+ * recente deixaria de contar como local.
+ */
+export const LOCAL_TOMBSTONE_SLACK_MS = 5_000;
+
+/**
+ * Pura (#14220): o tombstone deste host, solto em `releasedAt`, explica o
+ * arquivo mais recente da edição? Só quando foi solto depois dele (com
+ * `LOCAL_TOMBSTONE_SLACK_MS` de folga). `released_at` ilegível ou idade do
+ * arquivo desconhecida → `false` (não silencia `prev_gate_in_transit`).
+ */
+function localTombstoneCoversNewest(releasedAt: string, f: StaleEditionFacts): boolean {
+  const rel = Date.parse(releasedAt);
+  if (!Number.isFinite(rel) || typeof f.newestFileAgeMs !== "number") return false;
+  const newestMtime = (f.now ?? Date.now()) - f.newestFileAgeMs;
+  return rel >= newestMtime - LOCAL_TOMBSTONE_SLACK_MS;
+}
+
+/**
  * Arquivos que o próprio `/diaria-publica` grava na edição ANTES (Parte A, o
  * horizontal) ou em paralelo (Parte B, o vertical em background, #12655) ao
  * assert do sentinel 4 da Etapa 5 (#13867). Não provam que o gate 4 foi
@@ -137,7 +159,9 @@ export interface StaleEditionVerdict {
  *  - Etapa 5 (`step` 5 ou `callerStage` 5) sem sentinel do Stage 4 e com
  *    arquivo da edição de até `PREV_GATE_RECENT_WINDOW_MS` (#13851): gate
  *    provavelmente aprovado em outra máquina, sentinel em trânsito. Não emite
- *    quando a trava (viva ou tombstone) é deste host — a atividade é local.
+ *    quando a trava viva é deste host, ou o tombstone deste host foi solto
+ *    depois do arquivo mais recente (#14220) — a atividade é local. Tombstone
+ *    local antigo não silencia o sinal.
  * Mesma máquina com estado consistente nunca bloqueia. `stage` ilegível conta
  * como à frente (fail-closed).
  */
@@ -148,9 +172,12 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
   }
   const l = f.lock;
   const otherHost = !!l && (typeof l.host !== "string" || l.host === "" || l.host !== f.localHost);
-  // Trava (viva ou tombstone) deste host: a atividade recente é local, não um
-  // gate aprovado em outra máquina — não há sync em trânsito a esperar.
-  const lockIsLocal = !!l && !otherHost;
+  // Trava viva deste host: a atividade recente é local, não um gate aprovado
+  // em outra máquina — não há sync em trânsito a esperar.
+  // Tombstone deste host só conta como atividade local quando foi solto DEPOIS
+  // do arquivo mais recente da edição (#14220): um tombstone antigo (de ontem)
+  // não explica um arquivo que acabou de chegar pelo sync.
+  const lockIsLocal = !!l && !otherHost && (!l.released_at || localTombstoneCoversNewest(l.released_at, f));
   if (
     (f.step === 5 || f.callerStage === 5) &&
     !lockIsLocal &&
