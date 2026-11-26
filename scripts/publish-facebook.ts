@@ -41,7 +41,15 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
-import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished } from "./lib/social-published-store.ts";
+import {
+  FacebookPublishError,
+  fetchForFacebookPublish,
+  isAmbiguousHttpStatus,
+  lookupFacebookScheduledPost,
+  publishFacebookWithReconciliation,
+  type FacebookPublishOutcome,
+} from "./lib/facebook-publish-retry.ts"; // #14131 — retry sem post duplicado
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
   applyFacebookPageUtm,
@@ -423,18 +431,44 @@ async function publishPhoto(
     formData.append("scheduled_publish_time", String(unixTs));
   }
 
-  const res = await fetch(url, { method: "POST", body: formData });
+  // #14131: erro classificado — 5xx/timeout/resposta ilegível é ambíguo (o
+  // post pode ter sido criado) e o caller consulta a página antes de repetir.
+  const res = await fetchForFacebookPublish(fetch, url, { method: "POST", body: formData }, "Facebook POST /photos");
+  return readFacebookCreateResponse(res, "Facebook POST");
+}
+
+/**
+ * #14131: lê a resposta de um POST que cria o post visível (`/photos` com
+ * legenda, `/feed` do carrossel). 4xx e corpo com `error` provam a recusa
+ * (`ambiguous: false`); 5xx, JSON ilegível e 2xx sem `id` são ambíguos.
+ */
+async function readFacebookCreateResponse(res: Response, label: string): Promise<{ id: string; post_id?: string }> {
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Facebook POST HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
+    const body = await res.text().catch(() => "");
+    throw new FacebookPublishError(
+      `${label} HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`,
+      { ambiguous: isAmbiguousHttpStatus(res.status), httpStatus: res.status },
+    );
   }
-  const data = await res.json() as { id?: string; post_id?: string; error?: unknown };
-
+  let data: { id?: string; post_id?: string; error?: unknown };
+  try {
+    data = (await res.json()) as { id?: string; post_id?: string; error?: unknown };
+  } catch (e) {
+    throw new FacebookPublishError(`${label}: resposta ${res.status} ilegível (${e instanceof Error ? e.message : String(e)})`, {
+      ambiguous: true,
+      httpStatus: res.status,
+    });
+  }
   if (data.error) {
-    throw new Error(`Facebook API error: ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
+    throw new FacebookPublishError(`${label} API error: ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`, {
+      ambiguous: false,
+      httpStatus: res.status,
+    });
   }
-
-  return data as { id: string; post_id?: string };
+  if (!data.id && !data.post_id) {
+    throw new FacebookPublishError(`${label}: resposta ${res.status} sem id`, { ambiguous: true, httpStatus: res.status });
+  }
+  return { ...data, id: (data.id ?? data.post_id) as string };
 }
 
 /**
@@ -502,17 +536,24 @@ export async function publishFacebookCarouselByUrl(
     formData.append("url", imageUrl);
     formData.append("published", "false");
     formData.append("access_token", pageToken);
-    const res = await fetch(`${base}/${pageId}/photos`, { method: "POST", body: formData });
+    // #14131: foto `published=false` sem legenda não é post visível — falha
+    // aqui nunca é ambígua (uma foto órfã não publicada não chega ao leitor).
+    let res: Response;
+    try {
+      res = await fetch(`${base}/${pageId}/photos`, { method: "POST", body: formData });
+    } catch (e) {
+      throw new FacebookPublishError(`Facebook POST /photos (unpublished, url=${imageUrl}): ${e instanceof Error ? e.message : String(e)}`, { ambiguous: false });
+    }
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`Facebook POST /photos (unpublished, url=${imageUrl}) HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
+      throw new FacebookPublishError(`Facebook POST /photos (unpublished, url=${imageUrl}) HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`, { ambiguous: false, httpStatus: res.status });
     }
-    const data = (await res.json()) as { id?: string; error?: unknown };
+    const data = (await res.json().catch(() => ({}))) as { id?: string; error?: unknown };
     if (data.error) {
-      throw new Error(`Facebook /photos error (url=${imageUrl}): ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
+      throw new FacebookPublishError(`Facebook /photos error (url=${imageUrl}): ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`, { ambiguous: false });
     }
     if (!data.id) {
-      throw new Error(`Facebook /photos sem id (url=${imageUrl})`);
+      throw new FacebookPublishError(`Facebook /photos sem id (url=${imageUrl})`, { ambiguous: false });
     }
     photoIds.push(data.id);
   }
@@ -531,19 +572,9 @@ export async function publishFacebookCarouselByUrl(
     formData.append("scheduled_publish_time", String(isoToUnix(scheduledAt)));
   }
 
-  const res = await fetch(`${base}/${pageId}/feed`, { method: "POST", body: formData });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Facebook POST /feed (carrossel, ${photoIds.length} fotos) HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
-  }
-  const data = (await res.json()) as { id?: string; post_id?: string; error?: unknown };
-  if (data.error) {
-    throw new Error(`Facebook /feed error: ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
-  }
-  if (!data.id) {
-    throw new Error(`Facebook /feed sem id (carrossel, ${photoIds.length} fotos)`);
-  }
-  return data as { id: string; post_id?: string };
+  // #14131: este POST cria o post visível — erro classificado como em publishPhoto.
+  const res = await fetchForFacebookPublish(fetch, `${base}/${pageId}/feed`, { method: "POST", body: formData }, `Facebook POST /feed (carrossel, ${photoIds.length} fotos)`);
+  return readFacebookCreateResponse(res, `Facebook POST /feed (carrossel, ${photoIds.length} fotos)`);
 }
 
 /** #10458: rótulo de log — a página default mantém o formato de sempre (`facebook/d1`). */
@@ -552,9 +583,13 @@ export function facebookLogLabel(slug: string, destaque: string): string {
 }
 
 /**
- * Pure (#10458): entrada já draft/scheduled DESTA página pra este destaque —
- * a chave de idempotência é (platform, page, destaque). Entrada sem `page` é
- * da `diaria` (edições pré-#10458).
+ * Pure (#10458): entrada DESTA página pra este destaque que a retomada não
+ * refaz — a chave de idempotência é (platform, page, destaque). Entrada sem
+ * `page` é da `diaria` (edições pré-#10458).
+ *
+ * #14131: além de draft/scheduled, pula `published` e `send_unknown`
+ * (`RESUME_SKIP_STATUSES`, #13074) — o post existe ou pode existir na página,
+ * e refazer duplica. Só `failed` (nada criado, provado) é refeito.
  */
 export function findExistingFacebookPost(
   posts: PostEntry[],
@@ -566,8 +601,49 @@ export function findExistingFacebookPost(
       p.platform === "facebook" &&
       p.destaque === destaque &&
       resolvePostPage(p) === pageSlug &&
-      (p.status === "draft" || p.status === "scheduled"),
+      RESUME_SKIP_STATUSES.has(p.status),
   );
+}
+
+/** #14131 — instrução de recuperação de um `send_unknown` do Facebook. */
+export function sendUnknownFacebookHint(label: string): string {
+  return `AVISO ${label}: envio não confirmado (send_unknown). Conferir os posts agendados da página; se o post não existe, trocar o status desta entry para failed em 06-social-published.json e re-rodar (--no-skip-existing refaz TODOS os posts do Facebook e duplicaria os demais).`;
+}
+
+/**
+ * #14131: um post do Facebook (foto única ou carrossel) com o retry que não
+ * duplica — ver `scripts/lib/facebook-publish-retry.ts`. A consulta da página
+ * só existe para post agendado (`scheduled_publish_time`): sem agendamento,
+ * falha ambígua vira `send_unknown` direto. Nunca lança.
+ */
+export async function dispatchFacebookPost(input: {
+  pageId: string;
+  pageToken: string;
+  apiVersion: string;
+  caption: string;
+  scheduledAt: string | null;
+  imagePath: string;
+  carouselImageUrls: string[] | null;
+  label: string;
+  /** Injetáveis pra teste (default: espera real). */
+  sleep?: (ms: number) => Promise<void>;
+  lookupDelayMs?: number;
+}): Promise<FacebookPublishOutcome> {
+  const { pageId, pageToken, apiVersion, caption, scheduledAt } = input;
+  const scheduledUnix = scheduledAt ? isoToUnix(scheduledAt) : null;
+  return publishFacebookWithReconciliation({
+    label: input.label,
+    send: () =>
+      input.carouselImageUrls
+        ? publishFacebookCarouselByUrl(pageId, pageToken, apiVersion, input.carouselImageUrls, caption, scheduledAt)
+        : publishPhoto(pageId, pageToken, apiVersion, input.imagePath, caption, scheduledAt),
+    lookup:
+      scheduledUnix === null
+        ? null
+        : () => lookupFacebookScheduledPost({ pageId, pageToken, apiVersion, caption, scheduledUnix }),
+    sleep: input.sleep,
+    lookupDelayMs: input.lookupDelayMs,
+  });
 }
 
 export interface FacebookPagePlan {
@@ -1021,6 +1097,7 @@ async function main(): Promise<number | void> {
         const existing = findExistingFacebookPost(published.posts, page.slug, d);
         if (existing) {
           console.log(`SKIP ${facebookLogLabel(page.slug, d)} — already ${existing.status}`);
+          if (existing.status === "send_unknown") console.warn(sendUnknownFacebookHint(facebookLogLabel(page.slug, d))); // #14131
           results.push(existing);
           continue;
         }
@@ -1114,71 +1191,54 @@ async function main(): Promise<number | void> {
         }
       }
 
-      // Publish with retry + exponential backoff (#725 bug #10)
-      // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s
-      // entre tentativas (sem sleep após a última).
-      let lastError: string = "";
-      let success = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          console.log(
-            `Publishing ${facebookLogLabel(page.slug, d)} (attempt ${attempt}${carouselImageUrls ? `, carrossel ${carouselImageUrls.length} fotos` : ""})...`,
-          );
-          const result = carouselImageUrls
-            ? await publishFacebookCarouselByUrl(
-                page.pageId,
-                page.token,
-                api_version,
-                carouselImageUrls,
-                caption,
-                scheduledAt,
-              )
-            : await publishPhoto(
-                page.pageId,
-                page.token,
-                api_version,
-                imagePath,
-                caption,
-                scheduledAt
-              );
-
-          const postId = result.post_id || result.id;
-          const postUrl = `https://www.facebook.com/${page.pageId}/posts/${postId}`;
-          const entry: PostEntry = {
-            platform: "facebook",
-            page: page.slug, // #10458
-            destaque: d,
-            url: postUrl,
-            status: scheduledAt ? "scheduled" : "draft",
-            scheduled_at: scheduledAt,
-            fb_post_id: postId,
-          };
-
-          tagAndAppend(entry);
-          results.push(entry);
-          console.log(`OK ${facebookLogLabel(page.slug, d)} — ${entry.status} — ${postUrl}`);
-          success = true;
-          break;
-        } catch (e: any) {
-          lastError = e.message;
-          console.error(`Attempt ${attempt}/3 failed for ${facebookLogLabel(page.slug, d)}: ${lastError}`);
-          if (attempt < 3) {
-            const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
-            await new Promise((r) => setTimeout(r, delaySec * 1000));
-          }
-        }
-      }
-
-      if (!success) {
+      // Publish with retry + exponential backoff (#725 bug #10). #14131: o
+      // retry nunca repete cego — falha ambígua (5xx/timeout) consulta
+      // /scheduled_posts antes de um novo POST (dispatchFacebookPost).
+      console.log(
+        `Publishing ${facebookLogLabel(page.slug, d)}${carouselImageUrls ? ` (carrossel ${carouselImageUrls.length} fotos)` : ""}...`,
+      );
+      const outcome = await dispatchFacebookPost({
+        pageId: page.pageId,
+        pageToken: page.token,
+        apiVersion: api_version,
+        caption,
+        scheduledAt,
+        imagePath,
+        carouselImageUrls,
+        label: facebookLogLabel(page.slug, d),
+      });
+      if (outcome.kind === "created") {
+        const postId = outcome.result.post_id || outcome.result.id;
+        const postUrl = `https://www.facebook.com/${page.pageId}/posts/${postId}`;
+        const entry: PostEntry = {
+          platform: "facebook",
+          page: page.slug, // #10458
+          destaque: d,
+          url: postUrl,
+          status: scheduledAt ? "scheduled" : "draft",
+          scheduled_at: scheduledAt,
+          fb_post_id: postId,
+          ...(outcome.recovered && { recovered: outcome.recovered }), // #14131
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+        console.log(`OK ${facebookLogLabel(page.slug, d)} — ${entry.status} — ${postUrl}`);
+      } else {
+        // #14131: `failed` só quando nada foi criado (provado); `send_unknown`
+        // quando o post pode existir — a retomada pula este, refaz aquele.
         const entry: PostEntry = {
           platform: "facebook",
           page: page.slug, // #10458
           destaque: d,
           url: null,
-          status: "failed",
-          scheduled_at: null,
-          reason: lastError,
+          status: outcome.kind,
+          scheduled_at: outcome.kind === "send_unknown" ? scheduledAt : null,
+          reason: outcome.reason,
         };
+        if (outcome.kind === "send_unknown") {
+          console.error(`SEND_UNKNOWN ${facebookLogLabel(page.slug, d)}: ${outcome.reason}`);
+          console.warn(sendUnknownFacebookHint(facebookLogLabel(page.slug, d)));
+        }
         tagAndAppend(entry);
         results.push(entry);
       }
@@ -1191,6 +1251,7 @@ async function main(): Promise<number | void> {
     draft: results.filter((r) => r.status === "draft").length,
     scheduled: results.filter((r) => r.status === "scheduled").length,
     failed: results.filter((r) => r.status === "failed").length,
+    send_unknown: results.filter((r) => r.status === "send_unknown").length, // #14131
   };
 
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
