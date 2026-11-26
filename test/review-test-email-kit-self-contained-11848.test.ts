@@ -60,18 +60,31 @@ describe("review-test-email: Processo Kit autossuficiente (#11848)", () => {
     assert.match(kit, /email:encoding_drop: \{codepoint\} '\{char\}' em '…\{source_context\}…'/);
   });
 
-  it("o marcador do leaderboard no Kit é o mesmo do check 19 (renderer, #9247)", () => {
-    const line19 = agent.split("\n").find((l) => l.startsWith("**19."));
-    assert.ok(line19);
-    const markers = line19.match(/marcadores (.+?) aparece no body/)?.[1];
-    assert.ok(markers);
-    assert.ok(kit.includes(`marcadores ${markers} aparece no body`), "Kit e Beehiiv devem citar os mesmos marcadores");
+  it("o Kit cita os marcadores do leaderboard (renderer, #9247)", () => {
+    // O vínculo marcador × renderer fica em test/review-test-email-leaderboard-marker.test.ts.
+    assert.match(kit, /marcadores "[^"]+"( ou "[^"]+")* aparece no body/);
+  });
+});
+
+describe("review-test-email: Processo Beehiiv fora do prompt (#14041)", () => {
+  const archived = readFileSync(resolve(ROOT, "docs/archive/review-test-email-beehiiv.md"), "utf8");
+
+  it("o prompt do agent não carrega mais o bloco Beehiiv", () => {
+    assert.doesNotMatch(agent, /^## Processo Beehiiv/m);
+    assert.doesNotMatch(agent, /^## Regras \(Beehiiv\)/m);
+    assert.doesNotMatch(agent, /^### 3c-guard\./m);
+    assert.doesNotMatch(agent, /seção 3c-guard/, "Brevo e o aviso do topo remetem ao K11, não ao bloco arquivado");
   });
 
-  it("o bloco Beehiiv continua no arquivo (só a dependência do Kit saiu)", () => {
-    const beehiiv = section("## Processo Beehiiv");
-    assert.match(beehiiv, /### 1c\. Sanidade de tamanho do fetch/);
-    assert.match(beehiiv, /### 3c-guard\./);
-    assert.match(beehiiv, /autossuficiente desde o #11848/);
+  it("platform: beehiiv manda ler o arquivo arquivado", () => {
+    assert.match(agent, /`platform = "beehiiv"`[^\n]*docs\/archive\/review-test-email-beehiiv\.md/);
+  });
+
+  it("o arquivo arquivado guarda o processo inteiro", () => {
+    assert.match(archived, /^## Processo Beehiiv/m);
+    assert.match(archived, /### 1c\. Sanidade de tamanho do fetch/);
+    assert.match(archived, /### 3c-guard\./);
+    assert.match(archived, /^## Regras \(Beehiiv\)/m);
+    assert.match(archived, /autossuficiente desde o #11848/);
   });
 });

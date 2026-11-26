@@ -30,11 +30,15 @@ describe("review-test-email pre-fetch pelo top-level (#9000)", () => {
     assert.match(sec, /Nunca retornar `mcp_unavailable` neste modo/);
   });
 
-  it("busca Beehiiv (secao 1) e Kit (K1) mandam pular com email_file", () => {
-    const beehiiv = agent.slice(agent.indexOf("### 1. Buscar o email"), agent.indexOf("### 1c."));
+  it("busca Kit (K1) manda pular com email_file", () => {
     const kit = agent.slice(agent.indexOf("### K1."), agent.indexOf("### K2."));
-    assert.match(beehiiv, /Com `email_file` \(#9000\): pular/);
     assert.match(kit, /Com `email_file` \(#9000\): pular/);
+  });
+
+  it("busca Beehiiv arquivada (#14041, secao 1) segue mandando pular com email_file", () => {
+    const archived = readFileSync(resolve(ROOT, "docs/archive/review-test-email-beehiiv.md"), "utf8");
+    const beehiiv = archived.slice(archived.indexOf("### 1. Buscar o email"), archived.indexOf("### 1c."));
+    assert.match(beehiiv, /Com `email_file` \(#9000\): pular/);
   });
 
   it("orchestrator-stage-5 §5f pre-busca no top-level e repassa email_file", () => {

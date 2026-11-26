@@ -19,8 +19,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const prompt = readFileSync(resolve(ROOT, ".claude/agents/review-test-email.md"), "utf8");
 
 function check19Markers(): string[] {
-  const line = prompt.split("\n").find((l) => l.startsWith("**19."));
-  assert.ok(line, "check 19 não encontrado no prompt");
+  // #14041: o check 19 do Processo Beehiiv foi arquivado; o marcador vale no
+  // check equivalente do Processo Kit (K9), que é o que roda na Etapa 5.
+  const kitStart = prompt.indexOf("## Processo Kit");
+  assert.ok(kitStart !== -1, "seção '## Processo Kit' não encontrada no prompt");
+  const line = prompt.slice(kitStart).split("\n").find((l) => / aparece no body/.test(l) && /marcadores /.test(l));
+  assert.ok(line, "check do leaderboard não encontrado no Processo Kit");
   const m = line.match(/marcadores (.+?) aparece no body/);
   assert.ok(m, "check 19 deve listar os marcadores entre 'marcadores' e 'aparece no body'");
   const markers = [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);

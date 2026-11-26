@@ -246,7 +246,8 @@ export type LinkTrackingSendMode = "generic" | "simulate-as";
  * `{{email}}` literal é esperado; um HEAD na URL literal retornaria 4xx
  * (falso link_dead). Skip determinístico via reason `merge_tag`.
  * `stage: "delivered"` — conteúdo já FOI entregue (fetchado via Gmail MCP,
- * `mainCli()`/`review-test-email.md` passo 17); a Beehiiv JÁ deveria ter
+ * `mainCli()`/`review-test-email.md` K10, e o passo 17 do Processo Beehiiv
+ * arquivado em `docs/archive/review-test-email-beehiiv.md`, #14041); a Beehiiv JÁ deveria ter
  * substituído todo merge tag no envio real. Uma tag ainda literal aqui É o
  * defeito que este linter existe pra pegar (ex: custom field `poll_token`
  * não populado pro assinante de teste antes do 1º envio — ver
@@ -708,14 +709,15 @@ async function mainCli(): Promise<number> {
     return 2;
   }
   const content = readFileSync(emailFile, "utf8");
-  // #4512: único caller documentado (`review-test-email.md` passo 17) sempre
+  // #4512: os callers documentados (`review-test-email.md` K10 e o passo 17
+  // arquivado em `docs/archive/review-test-email-beehiiv.md`, #14041) sempre
   // aponta pro e-mail JÁ ENTREGUE (`_internal/test-email-{AAMMDD}.txt`,
   // fetchado via Gmail MCP) — nunca pro HTML de draft/pré-render. Default
   // "delivered" (override via --stage draft, se algum caller futuro precisar
   // checar HTML de pré-render onde merge tag não-expandida é esperada).
   const stage: LinkTrackingStage = values.stage === "draft" ? "draft" : "delivered";
   // #6608: default "simulate-as" preserva o comportamento pré-#6608 — o
-  // caller (`review-test-email.md` passo 17) passa `--send-mode generic`
+  // caller Beehiiv (passo 17 de `docs/archive/review-test-email-beehiiv.md`) passa `--send-mode generic`
   // explicitamente só quando confirmou que o test email saiu via "Send test
   // email" genérico (não "Simulate as"), ver header de `LinkTrackingSendMode`.
   const sendMode: LinkTrackingSendMode = values["send-mode"] === "generic" ? "generic" : "simulate-as";
