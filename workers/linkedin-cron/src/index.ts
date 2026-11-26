@@ -419,6 +419,12 @@ export interface DoFireState {
   inFlight: boolean;
   /** #11238 — motivo do envio ambíguo (#11106); `null` = não houve. */
   sendUnknown: string | null;
+  /**
+   * #14241 — motivo do `dlq` gravado no DO (#14218/#14230); `null` = não houve.
+   * Não é conflito (nada foi publicado): o enqueue idempotente o trata como
+   * pedido explícito de recuperação e limpa o DO antes de re-armar.
+   */
+  dlqReason: string | null;
 }
 
 /** #11107 — `/cancel` que o DO recusa (409) se um disparo estiver em andamento. */
@@ -480,11 +486,12 @@ async function readDoFireState(env: Env, queueKey: string): Promise<DoFireState 
   try {
     const res = await doStub(env, queueKey).fetch("https://do/status", { method: "GET" });
     if (!res.ok) return null;
-    const s = (await res.json()) as { fired?: unknown; claiming?: unknown; claimed_at?: unknown; send_unknown?: unknown };
+    const s = (await res.json()) as { fired?: unknown; claiming?: unknown; claimed_at?: unknown; send_unknown?: unknown; dlq_reason?: unknown };
     const claimedAt = typeof s.claimed_at === "number" ? s.claimed_at : null;
     const inFlight = s.claiming === true && (claimedAt === null || Date.now() - claimedAt <= CLAIM_TTL_MS);
     const sendUnknown = typeof s.send_unknown === "string" ? s.send_unknown : null;
-    return { fired: s.fired === true, inFlight, sendUnknown };
+    const dlqReason = typeof s.dlq_reason === "string" && s.dlq_reason !== "" ? s.dlq_reason : null; // #14241
+    return { fired: s.fired === true, inFlight, sendUnknown, dlqReason };
   } catch {
     return null;
   }
@@ -1123,9 +1130,24 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     const here = await readDoFireState(env, key);
     const existingRaw = await env.LINKEDIN_QUEUE.get(key);
     previousRaw = existingRaw;
+    // #14241 — o DO desta key terminou em `dlq` (#14218/#14230): `dlq_reason`
+    // fica no storage e faz `tryClaim`/`/claim` recusarem para sempre. A chave
+    // idempotente é fixa por edição e destaque (#14010), então o re-enqueue
+    // depois da DLQ (a recuperação normal: re-rodar a Etapa 5) cai neste mesmo
+    // DO. Antes, o `/arm` gravava o payload novo ao lado do `dlq_reason`
+    // antigo, o enqueue respondia 202 `alarm_armed` e o cron mandava a entry
+    // nova pra DLQ com o motivo velho, sem disparar. Aqui o enqueue é o pedido
+    // EXPLÍCITO de recuperação: o DO é limpo (`/cancel` condicional com
+    // reserva, o mesmo caminho do conteúdo mudado) antes do KV put e do `/arm`.
+    // O `/arm` em si continua sem apagar `dlq_reason`: o `/rearm` re-arma a
+    // partir do KV e, na janela entre o `dlq` do alarm e o cron mover a entry,
+    // refaria o carrossel antigo (#14218).
+    const dlqRecovery = here?.dlqReason != null;
     if (existingRaw !== null) {
       const verdict = classifyIdempotentExisting(existingRaw, entry);
-      if (verdict === "duplicate") {
+      // #14241 — mesma entry ainda no KV (o cron não a moveu pra DLQ ainda) mas
+      // o DO já decidiu `dlq`: não é retry de um pedido vivo, é recuperação.
+      if (verdict === "duplicate" && !dlqRecovery) {
         console.log(`[enqueue] idempotency_key=${body.idempotency_key} já enfileirada em ${key} — duplicata ignorada (#10906)`);
         return json(
           {
@@ -1143,10 +1165,14 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       }
       replaced = true;
       contentChanged = verdict === "changed";
-      console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: ${verdict === "cancelled" ? "entry cancelada (tombstone)" : "conteúdo mudou"} — regravando e re-armando (#10917)`);
+      const why = verdict === "cancelled" ? "entry cancelada (tombstone)" : verdict === "changed" ? "conteúdo mudou" : "DO em dlq (#14241)";
+      console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: ${why} — regravando e re-armando (#10917)`);
     }
     const hereConflict = doFireConflict(here);
     if (hereConflict !== null) return idempotentConflict(hereConflict, key);
+    if (dlqRecovery) {
+      console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: DO terminou em dlq (${here?.dlqReason}) — limpando o DO antes de re-armar (#14241)`);
+    }
 
     // #11026/#11029 — conteúdo mudou: o DO desta key ainda guarda o container
     // de Reels (#10922) E o payload/alarm da versão antiga. O `/arm` os
@@ -1157,7 +1183,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // alarm de uma vez (`fired`/`inFlight` já foram checados acima); se o
     // `/arm` falhar depois, o cron publica o conteúdo novo a partir do KV. Sem
     // conseguir cancelar, nada é gravado (503).
-    if (contentChanged) {
+    // #14241 — o mesmo cancel limpa o `dlq_reason` de um DO em dlq.
+    if (contentChanged || dlqRecovery) {
       let clearOk = false;
       try {
         // #11107 — o alarm/cron pode ganhar o /claim entre o /status acima e
@@ -1177,7 +1204,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
         return json(
           {
             error: "reels_container_clear_failed",
-            message: "não deu pra descartar o agendamento e o vídeo preparado da versão anterior deste pedido — nada foi alterado; tente de novo.",
+            message: contentChanged
+              ? "não deu pra descartar o agendamento e o vídeo preparado da versão anterior deste pedido — nada foi alterado; tente de novo."
+              : "não deu pra limpar o desfecho de DLQ da tentativa anterior deste pedido — nada foi alterado; tente de novo.",
             key,
           },
           503,

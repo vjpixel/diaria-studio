@@ -94,9 +94,68 @@ export interface DailyWorkerEnqueueOptions {
 }
 
 /**
+ * #14243 — 409 `send_unknown` do enqueue idempotente: o disparo anterior desta
+ * chave terminou ambíguo no Worker (o post pode estar no ar, a entry foi pra
+ * DLQ) e o Worker não re-enfileira por cima. Diferente do 4xx de validação,
+ * não prova que nada saiu: o publisher grava `send_unknown`, nunca `failed`.
+ */
+export class DailyWorkerSendUnknownError extends Error {
+  readonly idempotencyKey: string;
+  /** Key da entry no Worker, quando o 409 a trouxe. */
+  readonly key: string | null;
+  constructor(idempotencyKey: string, key: string | null) {
+    super(
+      `send_unknown: o Worker recusou o enfileiramento (409) porque o disparo anterior de ${idempotencyKey} ` +
+        `terminou ambíguo; o post pode estar no ar. Confira o perfil antes de repostar à mão: ` +
+        `o Worker não re-enfileira esta chave por cima (#14243).`,
+    );
+    this.name = "DailyWorkerSendUnknownError";
+    this.idempotencyKey = idempotencyKey;
+    this.key = key;
+  }
+}
+
+/** #14243 — o erro é o 409 `send_unknown` do enqueue idempotente? */
+export function isWorkerSendUnknownConflict(e: unknown): boolean {
+  if (!(e instanceof WorkerQueueError) || e.status !== 409) return false;
+  try {
+    return (JSON.parse(e.body) as { error?: unknown }).error === "send_unknown";
+  } catch {
+    return false;
+  }
+}
+
+function sendUnknownConflictKey(e: WorkerQueueError): string | null {
+  try {
+    const k = (JSON.parse(e.body) as { key?: unknown }).key;
+    return typeof k === "string" && k !== "" ? k : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #14243 — status e motivo que o publisher grava quando o enqueue falha:
+ * `send_unknown` para o disparo ambíguo (a retomada pula, `RESUME_SKIP_STATUSES`),
+ * `failed` para o resto. Fonte única para Instagram e Threads.
+ */
+export function dailyWorkerEnqueueFailure(e: unknown): {
+  status: "send_unknown" | "failed";
+  reason: string;
+  worker_queue_key?: string;
+} {
+  if (e instanceof DailyWorkerSendUnknownError) {
+    return { status: "send_unknown", reason: e.message, ...(e.key && { worker_queue_key: e.key }) };
+  }
+  return { status: "failed", reason: e instanceof Error ? e.message : String(e) };
+}
+
+/**
  * Enfileira `payload` (que precisa trazer `idempotency_key`) e trata a falha:
  *
  * - 409 `already_fired`/`fire_in_progress` da chave: sucesso, nada novo.
+ * - 409 `send_unknown`: lança `DailyWorkerSendUnknownError` (estado
+ *   desconhecido, o post pode estar no ar; #14243), sem consultar a fila.
  * - 4xx de validação: prova que nada foi gravado, PROPAGA (o publisher grava
  *   `failed`, como antes).
  * - 5xx, timeout, rede, resposta ilegível: a entry pode ter sido gravada.
@@ -126,6 +185,10 @@ export async function enqueueDailyWorkerPost(
     if (firedKey !== null) {
       log(`WARN [${opts.logPrefix}] a fila do Worker já tem este post disparado ou disparando (${ikey}); nada novo enfileirado (#14010).`);
       return { key: firedKey, recovered: "already_fired" };
+    }
+    if (e instanceof WorkerQueueError && isWorkerSendUnknownConflict(e)) {
+      log(`WARN [${opts.logPrefix}] o disparo anterior de ${ikey} terminou ambíguo no Worker (409 send_unknown); confira o perfil (#14243).`);
+      throw new DailyWorkerSendUnknownError(ikey, sendUnknownConflictKey(e));
     }
     if (e instanceof WorkerQueueError && e.status >= 400 && e.status < 500) throw e;
     const msg = e instanceof Error ? e.message : String(e);

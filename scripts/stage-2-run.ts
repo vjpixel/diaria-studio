@@ -33,7 +33,8 @@
  *                  social. Termina aí (`nextPhase: post-checks`): Clarices +
  *                  checagens numa chamada podiam passar dos 600 s da Bash.
  *   post-checks    strip de travessão, sync do É IA?, URL/cupons, intro,
- *                  lançamentos, cobertura, erro intencional (render + plantio
+ *                  lançamentos, paywall/agregador (validate-domains, aviso no
+ *                  gate, #14244), cobertura, erro intencional (render + plantio
  *                  em `--no-gates`), check-stage2-invariants, lints do social,
  *                  check-invariants --stage 2, measure-highlights. Re-rodável
  *                  sozinho depois de uma correção cirúrgica (não refaz Clarice).
@@ -1198,6 +1199,16 @@ function runPostChecks(ctx: Ctx, st: RunState): Stage2RunResult {
     ctx.soft("sync-intro-count", "scripts/sync-intro-count.ts", ["--md", reviewed, "--lancamentos-removed", ctx.e("_internal/02-lancamentos-removed.json")]);
     const lanc = ctx.run("validate-lancamentos (reviewed)", "scripts/validate-lancamentos.ts", [reviewed]);
     if (lanc.code !== 0) ctx.gateNotes.push(`⚠️  LANÇAMENTOS fora da regra oficial (#160/#1968): ${(lanc.stdout || lanc.stderr).trim().slice(0, 600)}`);
+    // #14244: a receita antiga rodava validate-domains no draft sem regra de
+    // re-dispatch (ao contrário dos lints vizinhos); aqui vira aviso no gate,
+    // como validate-lancamentos. Exit 1 = paywall/agregador; outro = não leu.
+    const doms = ctx.run("validate-domains (reviewed)", "scripts/validate-domains.ts", [reviewed]);
+    if (doms.code === 1) {
+      ctx.gateNotes.push(`⚠️  link de paywall/agregador no 02-reviewed.md (#701), trocar por fonte primária: ${(doms.stderr || doms.stdout).trim().slice(0, 600)}`);
+      ctx.log("warn", "validate-domains: paywall/agregador no 02-reviewed.md", { stdout: doms.stdout.trim().slice(0, 600) });
+    } else if (doms.code !== 0) {
+      ctx.gateNotes.push(`⚠️  validate-domains não rodou (exit ${doms.code}): paywall/agregador não conferidos.`);
+    }
     ctx.soft("sync-coverage-line", "scripts/sync-coverage-line.ts", ["--edition-dir", ctx.dirArg]);
     ctx.must("render-erro-intencional", "scripts/render-erro-intencional.ts", ["--edition", ctx.opts.edition, "--md", reviewed]);
     if (ctx.opts.noGates) {

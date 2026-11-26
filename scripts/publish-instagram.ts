@@ -116,7 +116,7 @@ import {
   resolveSocialWorkerToken,
   type WorkerQueuePayload,
 } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
-import { dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010
+import { dailyWorkerEnqueueFailure, dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010, #14243
 import {
   fetchInstagramContainerStatus,
   findRecentInstagramMediaByCaption,
@@ -1081,14 +1081,16 @@ async function main(): Promise<number | void> {
         results.push(entry);
         console.log(`OK instagram/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
       } catch (e: any) {
-        console.error(`FAILED instagram/${d}: ${e.message}`);
+        // #14243: 409 `send_unknown` (disparo anterior ambíguo) é estado
+        // desconhecido, nunca `failed`: o post pode estar no ar.
+        const failure = dailyWorkerEnqueueFailure(e);
+        console.error(`${failure.status === "send_unknown" ? "SEND_UNKNOWN" : "FAILED"} instagram/${d}: ${failure.reason}`);
         const entry: PostEntry = {
           platform: "instagram",
           destaque: d,
           url: null,
-          status: "failed",
           scheduled_at: null,
-          reason: e.message,
+          ...failure,
         };
         tagAndAppend(entry);
         results.push(entry);
