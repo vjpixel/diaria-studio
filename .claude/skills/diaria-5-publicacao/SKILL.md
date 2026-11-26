@@ -92,6 +92,18 @@ npx tsx scripts/sync-code.ts --edition-dir {EDITION_DIR}
 
 **Por que aqui e não só dentro de `publish-edition-site-page.ts`:** o `--worktree-dir` default do script (#8636) já isola o COMMIT/PUSH de um checkout divergente, e o script agora também tenta um `git fetch origin master` best-effort antes de criar esse worktree (#8684) — mas nenhum dos dois cobre o CÓDIGO do próprio script estar desatualizado no disco: `npx tsx` executa o que já está no checkout no momento da chamada, não o que está em `origin/master`. Só sincronizar a SESSÃO (este passo) antes de rodar qualquer script garante que toda a Etapa 5/6 — não só este script — rode com a versão mais recente do pipeline.
 
+## Passo -3b — Sessão nova, não a do gate 4 (#14038)
+
+A fronteira pós-gate 4 (#6171) era só prosa: no transcript 760277da (261119) a publicação rodou na mesma sessão do `/diaria-edicao`, com 591k de contexto no início da Etapa 5 contra ~173k de uma sessão nova. O `pipeline-sentinel.ts write --step 4` grava no `.step-4-done.json` o `session_id` da sessão que aprovou o gate; aqui ele é comparado com o desta sessão (vindo do `/diaria-publica`, o Passo 0 dela já conferiu, e aqui roda de novo, idempotente):
+
+```bash
+npx tsx scripts/check-publish-session-boundary.ts --edition {AAMMDD}
+```
+
+- exit 0 → seguir. Com `[aviso]` no stderr (sentinel do Stage 4 ausente ou anterior ao #14038, ou sessão corrente desconhecida), seguir e citar o aviso no resumo final; o sentinel ausente é tratado pelo pré-requisito do playbook do Stage 5.
+- exit 3 → **parar antes de qualquer dispatch**: mesma sessão que aprovou o gate 4. `render-halt-banner.ts --stage "5 — Publicacao" --reason "mesma sessão que aprovou o gate 4" --action "rodar /clear (ou abrir sessão nova) e invocar o mesmo comando de novo"`. Só com o editor pedindo explicitamente para seguir nesta sessão: re-rodar com `--allow-same-session` (sai 0 com aviso) e citar no resumo final.
+- exit 2 → erro de uso: corrigir o comando.
+
 ## Passo -2 — Pre-flight CORS check (#1132 P2.4)
 
 ```bash

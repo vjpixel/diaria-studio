@@ -232,7 +232,8 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
     assert.match(s5, /check-video-before-publish\.ts/);
     assert.match(s5, /exit 3[\s\S]{0,200}parar antes de qualquer dispatch/);
     assert.doesNotMatch(s5, /Aviso de vídeo do D1 \(#10943, aviso, não gate\)/);
-    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /pipeline-sentinel\.ts exists --edition \{AAMMDD\} --step 4/);
+    // #14027: o Passo 0 passou de `exists` para `assert` com a espera do sync.
+    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /pipeline-sentinel\.ts assert --edition \{AAMMDD\} --step 4/);
   });
 
   it("#12591: /diaria-publica-video roda horizontal, depois o /diaria-5-publicacao inteiro, depois o vertical", () => {
