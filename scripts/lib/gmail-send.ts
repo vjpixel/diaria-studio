@@ -13,7 +13,7 @@
  * alarme não precisa de HTML), então o RFC 2822 mínimo é construído à mão.
  */
 
-import { gFetch } from "../google-auth.ts";
+import { gFetch } from "./google-auth.ts";
 
 const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 

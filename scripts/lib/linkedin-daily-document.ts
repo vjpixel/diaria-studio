@@ -31,7 +31,7 @@ import { dirname, resolve } from "node:path";
 
 import { buildCarouselPdf } from "./shared/carousel-pdf.ts";
 import { idempotentConflictKey, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./worker-queue-client.ts";
-import { parseDestaques } from "../extract-destaques.ts";
+import { parseDestaques } from "./destaques-parse.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
 
 /** Formato que de fato foi enfileirado para o post (gravado em

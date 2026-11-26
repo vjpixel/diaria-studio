@@ -37,7 +37,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fetchSourceText } from "../fetch-source-text.ts";
-import { parseDestaques } from "../extract-destaques.ts";
+import { parseDestaques } from "./destaques-parse.ts";
 import type { SourceCompleteness } from "./diaria/paywall-preview.ts";
 
 export type ExtraSourceOrigin = "cluster" | "aprofunde" | "editor";

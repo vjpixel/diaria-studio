@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseDestaques } from "../extract-destaques.ts";
+import { parseDestaques } from "./destaques-parse.ts";
 import { parseSections } from "./newsletter-parse.ts";
 import { canonicalize } from "./url-utils.ts";
 
