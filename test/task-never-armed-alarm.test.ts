@@ -24,6 +24,10 @@ import {
   readArmedTimerUnitBaseNames,
 } from "../scripts/task-never-armed-alarm.ts";
 import type { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 
 describe("parseSystemctlListTimersOutput", () => {
   it("linha real de `systemctl --user list-timers --all --plain --no-legend`", () => {
@@ -99,6 +103,7 @@ describe("evaluateTaskNeverArmed", () => {
       "diaria-node-modules-health-check",
       "diaria-gdrive-bisync",
       "diaria-gdrive-data-bisync",
+      "diaria-infra-300-heartbeat",
     ]);
     const ev = evaluateTaskNeverArmed(
       [],
@@ -108,9 +113,31 @@ describe("evaluateTaskNeverArmed", () => {
         "diaria-node-modules-health-check",
         "diaria-gdrive-bisync",
         "diaria-gdrive-data-bisync",
+        "diaria-infra-300-heartbeat",
       ],
     );
     assert.equal(ev.verdict, "ok");
+  });
+
+  it("#13974: diaria-infra-300-heartbeat.timer armado, sem task no registro → não é órfão (cadência de 5 min, instalado à mão)", () => {
+    const ev = evaluateTaskNeverArmed(["Diaria-Foo-Bar"], ["diaria-foo-bar", "diaria-infra-300-heartbeat"]);
+    assert.equal(ev.verdict, "ok");
+    assert.deepEqual(ev.orphanTimers, []);
+  });
+
+  it("#13974: todo template diaria-*.timer versionado no repo tem task no registro ou está na allowlist", () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const timerUnits = [join(repoRoot, "scripts", "systemd"), join(repoRoot, "infra")]
+      .flatMap((dir) => readdirSync(dir, { recursive: true, encoding: "utf8" }))
+      .map((rel) => basename(rel))
+      .filter((name) => name.startsWith("diaria-") && name.endsWith(".timer"))
+      .map((name) => name.replace(/\.timer$/, ""));
+    assert.ok(timerUnits.includes("diaria-infra-300-heartbeat"), "varredura deveria achar o template do heartbeat");
+    const ev = evaluateTaskNeverArmed(
+      SCHEDULED_TASKS.map((t) => t.name),
+      timerUnits,
+    );
+    assert.deepEqual(ev.orphanTimers, [], "template de timer versionado sem task no registro nem entrada na allowlist");
   });
 
   it("#6774/#6658: diaria-node-modules-health-check.timer armado, sem task no registro → não é órfão (exceção de schema, shell puro)", () => {
