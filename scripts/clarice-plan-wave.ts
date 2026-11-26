@@ -52,6 +52,7 @@
  * backoff em vez de abortar a rodada, nunca tratar como erro de lógica.
  */
 
+import { allRows } from "./lib/sqlite-rows.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   excludeCommittedToQueuedCampaigns,
@@ -323,7 +324,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   const db = openClariceDb(opts.dbPath);
   let rows: StoreRow[];
   try {
-    rows = db
+    rows = allRows<StoreRow>(db
       .prepare(
         // `created` (#5179) — sem ele, `compareContactRecency`/
         // `compareCohortEntriesByRecency` (segmentRampWarm, summarizeMvBacklog,
@@ -333,8 +334,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
         `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason,
                 sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, brevo_modified_at, created
            FROM clarice_users`,
-      )
-      .all() as unknown as StoreRow[];
+      ));
   } finally {
     // Windows: handle SQLite aberto segura o lock e trava um sync concorrente.
     db.close();
