@@ -62,7 +62,15 @@ export function computeOutputHashes(editionDir: string, outputs: string[]): Reco
 export type AssertResult =
   | { ok: true }
   | { ok: false; reason: "sentinel_missing" }
-  | { ok: false; reason: "outputs_missing"; missingOutputs: string[] };
+  | { ok: false; reason: "outputs_missing"; missingOutputs: string[] }
+  /**
+   * #14133: o arquivo do sentinel existe, mas não tem o formato que o
+   * `writeSentinel` grava (JSON ilegível, não-objeto, ou `outputs` ausente /
+   * não-array / com item que não é string). Continua sendo rejeição, só que
+   * com a causa real: antes o `outputs` ausente estourava TypeError e o JSON
+   * ilegível virava `sentinel_missing`, os dois lidos como "stage não rodou".
+   */
+  | { ok: false; reason: "sentinel_malformed"; path: string; detail: string };
 
 function sentinelPath(editionDir: string, step: number): string {
   return resolve(editionDir, "_internal", `.step-${step}-done.json`);
@@ -130,11 +138,47 @@ export function resolveSentinelEndMs(
   return t;
 }
 
+/**
+ * #14133: confere o formato mínimo que `assertSentinel` usa. Devolve a causa
+ * em texto, ou `null` quando o sentinel serve.
+ */
+export function describeSentinelShapeProblem(parsed: unknown): string | null {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return `conteúdo não é um objeto JSON (${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed})`;
+  }
+  const outputs = (parsed as { outputs?: unknown }).outputs;
+  if (outputs === undefined) return "sem o campo outputs";
+  if (!Array.isArray(outputs)) {
+    return `outputs não é array (${outputs === null ? "null" : typeof outputs})`;
+  }
+  const bad = outputs.findIndex((o) => typeof o !== "string");
+  if (bad >= 0) return `outputs[${bad}] não é string (${outputs[bad] === null ? "null" : typeof outputs[bad]})`;
+  return null;
+}
+
 export function assertSentinel(editionDir: string, step: number): AssertResult {
-  const sentinel = readSentinel(editionDir, step);
-  if (sentinel === null) {
+  const p = sentinelPath(editionDir, step);
+  if (!existsSync(p)) {
     return { ok: false, reason: "sentinel_missing" };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(p, "utf8"));
+  } catch (e) {
+    // Sumiu entre o existsSync e a leitura (sync do Drive): é ausência.
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return { ok: false, reason: "sentinel_missing" };
+    return {
+      ok: false,
+      reason: "sentinel_malformed",
+      path: p,
+      detail: `JSON ilegível (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
+  const problem = describeSentinelShapeProblem(parsed);
+  if (problem !== null) {
+    return { ok: false, reason: "sentinel_malformed", path: p, detail: problem };
+  }
+  const sentinel = parsed as StepSentinel;
   const missing = sentinel.outputs.filter(
     (rel) => !existsSync(resolve(editionDir, rel)),
   );
