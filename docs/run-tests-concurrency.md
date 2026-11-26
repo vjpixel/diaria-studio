@@ -183,6 +183,18 @@ com o do batch.
 | `RUN_TESTS_MAX_PROCS=1000` | na prática volta ao regime antigo |
 | `--test-concurrency=N` nos args | quem chamou decide; o plano não sobrepõe |
 | `RUN_TESTS_BATCH_TIMEOUT_MS` | teto de batch explícito; não é escalado |
+| `RUN_TESTS_SHARD_INDEX=i` + `RUN_TESTS_SHARD_TOTAL=N` | roda só a fatia `i` de `N` (#14003); as duas juntas ou nenhuma |
+
+## #14003: shards entre runners do CI
+
+O teto de processos já satura um runner, então o `ci.yml` divide a suíte em 4
+jobs de matrix (`test-shard`), cada um com `RUN_TESTS_SHARD_INDEX`/`TOTAL`. A
+fatia de um arquivo sai do hash (sha1) do caminho relativo, não da posição na
+lista: cada arquivo roda em exatamente um shard, e um arquivo novo não desloca
+os outros. Typecheck e smoke rodam só no shard 1. O check `test` que o gate de
+merge lê é o job agregador, que reprova se qualquer shard não sair `success`.
+Localmente, sem as variáveis, nada muda: roda a suíte inteira. Trava:
+`test/ci-test-shards-14003.test.ts`.
 
 ## Antes de "otimizar" isto de novo
 

@@ -4,7 +4,7 @@
  * Miolo puro (sem I/O de CLI, sem lock, sem exit code) do agregador de
  * checagens determinísticas do Stage 4 — chamado pela CLI
  * `scripts/stage4-post-edit-checks.ts` (rodada em background pelo
- * orchestrator, `.claude/agents/orchestrator-stage-4.md` §4d.1) depois de
+ * orchestrator, `.claude/agents/orchestrator-stage-4-gate.md` §4d.1) depois de
  * CADA ajuste inline, substituindo a cadeia de ~6 invocações de processo
  * separadas que o playbook disparava sincronamente antes do gate.
  *

@@ -424,7 +424,7 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
  * #3825).** A issue original pedia GATE-BLOCKING "ou pelo menos warn-loud —
  * nunca silencioso", deixando a escolha em aberto. `warning` ainda aparece
  * no `{violations_block}` do gate humano do Stage 4 (nunca silencioso —
- * `orchestrator-stage-4.md` linha 471 lista ⚠️ junto com ❌), mas não falha
+ * `orchestrator-stage-4-gate.md` §4d, regra `{violations_block}`, lista ⚠️ junto com ❌), mas não falha
  * o exit code. Motivo: o mirror em `02-reviewed.md` é inserido verbatim de
  * `01-eia.md` no stitch (Stage 2, `stitch-newsletter.ts::readEiaBlock`), mas
  * DEPOIS passa pelo humanizador + Clarice — ambos operam sobre o
@@ -1452,7 +1452,7 @@ export function replantCommand(editionDir: string): string {
  * o RADAR no Stage 4" não tinha guarda nenhuma). O call site que fecha essa
  * janela de fato — reinvocar só esta regra imediatamente antes de escrever o
  * sentinel de Stage 4, cobrindo o fast-path do painel Studio (#6444) que pula
- * o loop `sim/ajustar` inteiro — vive em `orchestrator-stage-4.md` §4e, não
+ * o loop `sim/ajustar` inteiro — vive em `orchestrator-stage-4-gate.md` §4e, não
  * aqui (esta função é só o pure check; o card mecânico completo, incluindo
  * QUANDO ele roda, é responsabilidade do playbook).
  *
@@ -1684,7 +1684,7 @@ function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolat
 /**
  * #2693 item 3: registro dos 2 lints de título (#2664 sufixo de veículo,
  * #2672 ponto final) em `invariant-checks/`. Antes rodavam como invocação
- * CLI separada em `orchestrator-stage-4.md` (`lint-newsletter-md.ts --check
+ * CLI separada no pré-gate (`orchestrator-stage-4.md` §4c.2, #14033) (`lint-newsletter-md.ts --check
  * title-publisher-suffix`/`title-trailing-period`) — funcionais, mas fora do
  * registry, então invisíveis em `docs/editorial-invariants.md`. Severity
  * "warning" preserva o comportamento atual (backstop deliberadamente amplo,

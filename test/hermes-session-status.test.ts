@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,8 +119,17 @@ describe("CLI read-hermes-session-status.ts", { skip: SKIP_WIN32 }, () => {
     assert.match(r.stderr, /não existe/);
   });
 
+  // data/ é gitignored e não existe em clone fresco (CI): cria antes do
+  // mkdtemp em vez de depender de outro teste do mesmo shard (#14003).
+  // Quem chama remove só o tmp dir, nunca data/ inteira.
+  function mkTmpDataDir(): string {
+    const dataDir = join(repoRoot, "data");
+    mkdirSync(dataDir, { recursive: true });
+    return mkdtempSync(join(dataDir, "tmp-hermes-session-status-test-"));
+  }
+
   it("CAMINHO DE SUCESSO E2E: path permitido + sessions.json válido -> exit 0, stdout é o JSON redigido esperado", () => {
-    const dir = mkdtempSync(join(repoRoot, "data", "tmp-hermes-session-status-test-"));
+    const dir = mkTmpDataDir();
     try {
       const file = join(dir, "sessions.json");
       writeFileSync(file, JSON.stringify({
@@ -140,7 +149,7 @@ describe("CLI read-hermes-session-status.ts", { skip: SKIP_WIN32 }, () => {
   });
 
   it("JSON malformado -> exit 2, mensagem clara, nada no stdout", () => {
-    const dir = mkdtempSync(join(repoRoot, "data", "tmp-hermes-session-status-test-"));
+    const dir = mkTmpDataDir();
     try {
       const file = join(dir, "sessions.json");
       writeFileSync(file, "{ isto não é json válido ,,,");
@@ -154,7 +163,7 @@ describe("CLI read-hermes-session-status.ts", { skip: SKIP_WIN32 }, () => {
   });
 
   it("--fields customizado no CLI restringe/expande a saída conforme pedido, inclusive incluindo identidade explicitamente", () => {
-    const dir = mkdtempSync(join(repoRoot, "data", "tmp-hermes-session-status-test-"));
+    const dir = mkTmpDataDir();
     try {
       const file = join(dir, "sessions.json");
       writeFileSync(file, JSON.stringify({

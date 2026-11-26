@@ -60,8 +60,23 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  test:
+  # #14003: a suíte roda em 4 jobs de matrix, cada um com 1/4 dos arquivos
+  # (partição por hash do caminho em `scripts/run-tests.ts`, `selectShardFiles`).
+  # O job único levava 14 a 22 min com RUN_TESTS_MAX_PROCS já no teto do
+  # runner; o ganho seguinte exige mais runners. O check que o gate de merge
+  # lê continua se chamando `test`: é o job agregador no fim do arquivo, que
+  # só sai verde com TODOS os shards verdes. Mudar o número de shards exige
+  # mexer junto em `matrix.shard`, `RUN_TESTS_SHARD_TOTAL` e no `name:`
+  # (travado por `test/ci-test-shards-14003.test.ts`).
+  test-shard:
+    name: test (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      # Todos os shards rodam até o fim mesmo com 1 vermelho, pelo mesmo
+      # motivo de o run-tests rodar todos os batches: o quadro completo.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # #11447: teto do job. Sem ele o default do GitHub é 360 min, e um
     # travamento real que escapasse dos tetos internos do run-tests.ts (por
     # batch, por worker) seguraria o runner e a PR por 6 h. Conta do teto:
@@ -76,6 +91,9 @@ jobs:
       # Limita processos Node concorrentes; o default por CPU + 4 workers
       # causava spawn/OOM intermitente no npm test (#8702/#8703/#8705).
       RUN_TESTS_MAX_PROCS: 4
+      # #14003: fatia deste job. Sem as duas, o run-tests roda a suíte inteira.
+      RUN_TESTS_SHARD_INDEX: ${{ matrix.shard }}
+      RUN_TESTS_SHARD_TOTAL: 4
     steps:
       # fetch-depth: 0 (#6413) — worker-drift-check-script.test.ts precisa de
       # origin/master resolvível localmente (getLastCommitAt/resolveProductionRef
@@ -112,8 +130,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - run: npm ci
-      - run: npm run typecheck
+      # #14003: typecheck e smoke não dependem do shard; rodam só no 1º.
+      - name: Typecheck
+        if: matrix.shard == 1
+        run: npm run typecheck
       - name: Typecheck brevo-dashboard worker (#3164)
+        if: matrix.shard == 1
         working-directory: workers/brevo-dashboard
         run: npx tsc -p tsconfig.json --noEmit
       # #7736 — discriminante da anomalia "arquivo tocado pela PR some/volta à
@@ -138,4 +160,28 @@ jobs:
           git status --porcelain | head -50 || true
           git stash list | wc -l
           git reflog --date=iso -20
-      - run: npm run smoke
+      - name: Smoke
+        if: matrix.shard == 1
+        run: npm run smoke
+
+  # #14003: o check `test` que o gate de merge enxerga. `if: always()` para
+  # rodar também quando um shard falha ou é cancelado: sem isso o job sairia
+  # `skipped`, e skipped não é vermelho. `needs.<matrix>.result` só é
+  # `success` quando TODOS os jobs da matrix saíram `success`; qualquer shard
+  # em failure, cancelled ou skipped reprova (classe do #6991: gate verde sem
+  # a cobertura inteira).
+  test:
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Todos os shards do npm test verdes
+        env:
+          SHARDS_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          echo "resultado agregado dos shards: $SHARDS_RESULT"
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::npm test: algum shard não saiu success (resultado: $SHARDS_RESULT) (#14003)"
+            exit 1
+          fi

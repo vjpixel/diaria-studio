@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -86,10 +87,7 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em newsletter-
   });
 
   it("orchestrator-stage-4.md também documenta exit 3 de substitute-image-urls", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
     // Deve mencionar exit 3 e que não é fatal
     assert.match(
       stage4Src,
@@ -142,10 +140,7 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
   });
 
   it("orchestrator-stage-4.md §4c.6b: re-render pós-autofix usa flags que batem com o argv real (#2598 follow-up)", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
 
     // Isolar o bloco de re-render do §4c.6b (entre o marcador #2617 e o
     // início do §4c.6c que o segue). Garante que o assert mira nesse bloco,
@@ -297,10 +292,7 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
 
 describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.ts) E publicado como Artifact (aditivo)", () => {
   it("orchestrator-stage-4.md §4b (steps 2b/3): serve o preview via serve-preview.ts + embed-images-base64.ts (nunca via upload-html-public.ts), e publica a mesma variante embedded como Artifact aditivo (#6003)", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
 
     // Isolar o bloco do §4b (entre o step "2b." e o começo do §4c) — cobre a
     // publicação inicial do preview de newsletter e social, o site real do
@@ -356,10 +348,7 @@ describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.t
   });
 
   it("orchestrator-stage-4.md: loop 'ajustar' (edição inline, reordenação, humanização scoped) nunca deixa de re-servir o preview LOCAL — Artifact, quando mencionado no mesmo passo, é sempre aditivo e marcado #6003", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
     // A garantia original (pré-#6003) era "nenhuma instrução de
     // republicação menciona Artifact". Reaberta pelo editor: o passo de
     // cascata de título do loop "ajustar" (§4d.1, passo 3) agora TAMBÉM
@@ -389,10 +378,7 @@ describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.t
   });
 
   it("orchestrator-stage-4.md: teardown dos preview servers locais está presente e cobre newsletter + social (#3546 critério de aceite)", () => {
-    const stage4Src = readFileSync(
-      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
-      "utf8",
-    );
+    const stage4Src = readStage4Playbook();
     // Precisa encerrar ambos os PIDs persistidos (newsletter e social) em
     // algum ponto do fluxo pós-gate — senão os servidores locais ficam
     // pendurados indefinidamente após o editor decidir sim/abortar/editar.

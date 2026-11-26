@@ -25,7 +25,7 @@
  *   1 = escopo violado (untouchedTargets e/ou unexpectedChanges não-vazios)
  *       ou erro de args/leitura
  *
- * Integração (orchestrator-stage-4.md §4d.1):
+ * Integração (orchestrator-stage-4-gate.md §4d.1):
  *   1. Antes de invocar a skill humanizador em modo scoped, copiar
  *      `03-social.md` pra um snapshot (`cp 03-social.md _internal/.stage4-pre-scoped-humanize.md`).
  *   2. Invocar a skill humanizador pedindo EXPLICITAMENTE que só as seções-alvo

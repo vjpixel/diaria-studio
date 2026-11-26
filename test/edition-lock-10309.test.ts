@@ -21,6 +21,7 @@ import {
   readEditionLock,
   releaseEditionLock,
 } from "../scripts/lib/edition-lock.ts";
+import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const T0 = Date.parse("2026-10-15T12:00:00Z");
@@ -142,7 +143,7 @@ describe("CLI scripts/edition-lock.ts", () => {
 });
 
 describe("playbook Stage 4 arma a trava (#10309)", () => {
-  const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+  const stage4 = readStage4Playbook();
 
   it("§4a chama acquire standalone e trata exit 3", () => {
     assert.match(stage4, /npx tsx scripts\/edition-lock\.ts acquire --edition-dir \{EDITION_DIR\} --stage 4/);

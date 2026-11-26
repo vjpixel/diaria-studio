@@ -31,6 +31,8 @@ export const ORCHESTRATOR_FILES = [
   "orchestrator-stage-2.md",
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
+  // #14033: §4d–§4e (gate humano + sentinel) separados do pré-gate.
+  "orchestrator-stage-4-gate.md",
   "orchestrator-stage-5.md",
   "orchestrator-stage-6.md",
 ] as const;
