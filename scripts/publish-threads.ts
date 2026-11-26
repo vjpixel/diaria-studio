@@ -86,7 +86,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { runCli } from "./lib/cli-exit.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
-import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
+import { dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
 import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
@@ -1044,14 +1044,16 @@ async function main(): Promise<number | void> {
       const carouselImageUrls = umReady ? umReady.carouselUrls : resolveCarouselImageUrls(publicImages.images, d);
 
       try {
-        const response = await postToWorkerQueue(workerUrl, workerToken, {
+        // #14010 — chave fixa por edição/canal/destaque (ver publish-instagram.ts).
+        const response = await enqueueDailyWorkerPost(workerUrl, workerToken, {
+          idempotency_key: dailyWorkerQueueIdempotencyKey("threads", editionDate, d, { isTest, editionDir }),
           text: chunks[0],
           image_url: null,
           ...(carouselImageUrls && { image_urls: carouselImageUrls }),
           scheduled_at: scheduledIso,
           destaque: d,
           channel: "threads",
-        });
+        }, { logPrefix: "publish-threads" });
         const entry: PostEntry = {
           platform: "threads",
           destaque: d,
