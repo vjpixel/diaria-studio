@@ -108,7 +108,7 @@ import {
   type ClariceEnvioHaltRead,
   type ClariceEnvioBaseCollapseState,
 } from "./lib/clarice-envio-halt.ts";
-import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "./lib/shared/clarice-weekly-plan.ts";
 import {
   readClariceAbcState,
   lockedSubjectFromState,

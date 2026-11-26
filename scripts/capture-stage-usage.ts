@@ -24,6 +24,14 @@
  *   # comportamento pré-#5413 (soma TODAS as sessões da janela):
  *   npx tsx scripts/capture-stage-usage.ts --edition-dir ... --stage 1 --all-sessions
  *
+ * #14115 — além dos totais, grava `model_usage` (por modelo) e `turn_stats`
+ * (turnos do thread principal, contexto do 1º turno, mediana/máximo por
+ * turno, cache_read x cache_creation). Com `--stage 4` e a sessão
+ * identificada, deriva também o timing de cada ajuste do gate 4 (transcript
+ * + watcher do preview) e grava no run-log, ver
+ * `scripts/lib/stage4-adjust-derive.ts`. `--root-dir` (só teste) troca a
+ * raiz do run-log.
+ *
  * #5413 — por default conta só a sessão que invocou o script
  * (`CLAUDE_CODE_SESSION_ID`). Antes somava toda sessão Claude Code ativa no
  * mesmo repo dentro da janela do stage: medido na edição 260814, isso inflou
@@ -83,6 +91,14 @@ import {
 } from "./lib/session-transcript.ts";
 import { editionDateMs, estimateCallCostUsd, shortModelName } from "./lib/pricing.ts";
 import { PUBLICA_PHASES_FILE, parsePhaseEvents, videoPartMainThreadIntervals } from "./lib/diaria/publica-phases.ts";
+import { modelUsageFromEntries, summarizeTurnStats, type ModelUsageMap, type TurnStats } from "./lib/usage-breakdown.ts";
+import {
+  deriveAdjustTimings,
+  dropAlreadyLogged,
+  parseMainThreadTimeline,
+  watcherCyclesFromRunLog,
+} from "./lib/stage4-adjust-derive.ts";
+import { logEvent, resolveRunLogPath } from "./lib/run-log.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -129,6 +145,17 @@ export interface CaptureResult {
    * Ausente = nenhum intervalo de outra parte na janela.
    */
   excluded_other_parts?: { entries: number; tokens_in: number; tokens_out: number; labels: string[]; parse_problems?: string[] };
+  /** #14115: `tokens_*`/`cost_usd` por modelo (chave = `shortModelName`). */
+  model_usage?: ModelUsageMap;
+  /** #14115: turnos do thread principal, contexto por turno e separação de cache. */
+  turn_stats?: TurnStats;
+  /**
+   * #14115 item 3: ajustes do gate 4 derivados do transcript + watcher do
+   * preview (só `--stage 4`). `derived` = pedidos seguidos de edição no
+   * disco; `logged` = eventos novos gravados no run-log (re-rodar não
+   * duplica); `error` = a derivação falhou (nunca bloqueia a captura).
+   */
+  stage4_adjusts?: { derived: number; logged: number; error?: string };
 }
 
 /**
@@ -252,9 +279,7 @@ export function captureUsageForWindow(
   }
 
   const fallbackDateMs = editionDateMs(editionId);
-  let costUsd = 0;
-  let costPartial = false;
-  for (const entry of window.entries) {
+  const costOf = (entry: (typeof window.entries)[number]): number | null => {
     const entryDateMs = new Date(entry.timestamp).getTime();
     const dateMs = Number.isFinite(entryDateMs) ? entryDateMs : fallbackDateMs;
     const usage = {
@@ -263,7 +288,12 @@ export function captureUsageForWindow(
       cache_creation_input_tokens: entry.cacheCreationInputTokens,
       cache_read_input_tokens: entry.cacheReadInputTokens,
     };
-    const callCost = estimateCallCostUsd(usage, entry.model, dateMs);
+    return estimateCallCostUsd(usage, entry.model, dateMs);
+  };
+  let costUsd = 0;
+  let costPartial = false;
+  for (const entry of window.entries) {
+    const callCost = costOf(entry);
     if (callCost === null) {
       costPartial = true; // modelo não-Claude (ex: Gemini) — tokens contam, custo não
       continue;
@@ -283,6 +313,8 @@ export function captureUsageForWindow(
     sessions_scanned: window.sessionsScanned,
     entries_matched: window.entries.length,
     ...describeWindowFilter(window),
+    model_usage: modelUsageFromEntries(window.entries, costOf),
+    turn_stats: summarizeTurnStats(window.entries),
   };
 }
 
@@ -333,6 +365,74 @@ export function publicaVideoIntervals(
   };
 }
 
+/** Lê o run-log linha a linha; linha inválida é pulada (append-only, muitos produtores). */
+function readRunLogEntries(path: string): Array<Record<string, unknown>> {
+  if (!existsSync(path)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      // linha parcial — ignora
+    }
+  }
+  return out;
+}
+
+/**
+ * #14115 item 3: deriva do transcript da sessão + ciclos do watcher do
+ * preview a perna pedido→edição de cada ajuste do gate 4 e grava um evento
+ * por ajuste no run-log (formato do `log-stage4-adjust-timing.ts`, com
+ * `source: "derived-transcript"`). Janela: do `gate_at` (ou `start`, quando o
+ * `gate_at` não é uma data) ao `end` da Etapa 4. Só com a sessão
+ * identificada: o transcript precisa ser o da própria edição. Fail-soft:
+ * erro vira `error`, nunca lança.
+ */
+export function deriveStage4Adjusts(opts: {
+  transcriptsDir: string;
+  sessionId: string;
+  editionId: string;
+  row: Pick<StageRow, "start" | "gate_at" | "end">;
+  rootDir: string;
+  dryRun: boolean;
+}): { derived: number; logged: number; error?: string } {
+  try {
+    const sessionFile = resolve(opts.transcriptsDir, `${opts.sessionId}.jsonl`);
+    if (!existsSync(sessionFile)) return { derived: 0, logged: 0, error: "session_file_not_found" };
+    const gateMs = opts.row.gate_at ? Date.parse(opts.row.gate_at) : NaN;
+    const startMs = Number.isFinite(gateMs) ? gateMs : Date.parse(opts.row.start ?? "");
+    const endMs = Date.parse(opts.row.end ?? "");
+    const logPath = resolveRunLogPath(opts.rootDir);
+    const runLog = readRunLogEntries(logPath);
+    const derived = deriveAdjustTimings({
+      timeline: parseMainThreadTimeline(readFileSync(sessionFile, "utf8")),
+      cycles: watcherCyclesFromRunLog(runLog, opts.editionId),
+      windowStartMs: startMs,
+      windowEndMs: endMs,
+    });
+    const fresh = dropAlreadyLogged(derived, runLog, opts.editionId);
+    if (!opts.dryRun) {
+      for (const d of fresh) {
+        logEvent(
+          {
+            edition: opts.editionId,
+            stage: 4,
+            agent: "capture-stage-usage",
+            level: d.withinTarget10s ? "info" : "warn",
+            message: "gate revisao: timing do ajustar (derivado do transcript)",
+            details: { description: null, ...d },
+          },
+          opts.rootDir,
+        );
+      }
+    }
+    return { derived: derived.length, logged: opts.dryRun ? 0 : fresh.length };
+  } catch (e) {
+    return { derived: 0, logged: 0, error: (e as Error).message };
+  }
+}
+
 async function main(): Promise<void> {
   const { values, flags } = parseArgsLib(process.argv.slice(2));
   const editionDirRaw = values["edition-dir"];
@@ -341,7 +441,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: npx tsx scripts/capture-stage-usage.ts --edition-dir <path> --stage N " +
         "[--start ISO] [--end ISO] [--transcripts-dir <path>] [--dry-run] " +
-        "[--session-id <id>] [--all-sessions] [--if-missing]",
+        "[--session-id <id>] [--all-sessions] [--if-missing] [--root-dir <path>]",
     );
     process.exit(2);
   }
@@ -429,11 +529,27 @@ async function main(): Promise<void> {
         subagent_tokens_in: result.subagent_tokens_in,
         subagent_tokens_out: result.subagent_tokens_out,
         parse_errors: result.parse_errors,
+        model_usage: result.model_usage, // #14115
+        turn_stats: result.turn_stats, // #14115
       },
       new Date().toISOString(),
     );
     saveDoc(editionDir, newDoc);
     result.path = resolve(editionDir, "_internal", "stage-status.json");
+  }
+
+  // #14115 item 3: o playbook já roda este script ao fechar a Etapa 4; é
+  // daqui que a medição do loop "ajustar" sai, sem depender do orchestrator.
+  if (stage === 4 && sessionId && result.session_filter === "current_session") {
+    result.stage4_adjusts = deriveStage4Adjusts({
+      transcriptsDir,
+      sessionId,
+      editionId,
+      row: { start, gate_at: row.gate_at, end },
+      // `--root-dir` só para teste: aponta o run-log para um tmpdir.
+      rootDir: values["root-dir"] ?? ROOT,
+      dryRun: flags.has("dry-run"),
+    });
   }
 
   console.log(JSON.stringify(result));
