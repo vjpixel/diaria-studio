@@ -55,6 +55,7 @@ import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
+import { cloudflareKvKey } from "./lib/cloudflare-kv-key.ts"; // #13997 (era local)
 import { hero2x1KeyFor, isDestaqueImagePresent } from "./lib/shared/public-image-keys.ts"; // #7596 — extraído pra módulo puro
 import {
   staleUseMelhorImageKeys,
@@ -456,31 +457,9 @@ export function shouldUploadToR2(spec: Pick<ImageSpec, "noCacheBust">, kvKey: st
   return r2Active && !spec.noCacheBust && r2KeyForImageKey(kvKey) !== null;
 }
 
-/**
- * Constrói KV key única por edição + filename. Convenção #1119: `img-{AAMMDD}-{filename}`.
- * Extrai AAMMDD do path da edição (ex: `data/editions/260512/` → `260512`).
- *
- * #1584: quando `md5Hex` é passado, anexa sufixo `-{md5short}` antes da extensão
- * (`img-{AAMMDD}-{base}-{md5short}.{ext}`). Cache-busts re-uploads — Cloudflare
- * serve com `Cache-Control: max-age=1ano, immutable`, então sem suffix o browser
- * nunca pega imagem regenerada (caso 260529: D1 regen 3 vezes, sempre mesma URL
- * → editor via imagem antiga).
- */
-export function cloudflareKvKey(
-  editionDir: string,
-  filename: string,
-  md5Hex?: string,
-): string {
-  const match = editionDir.replace(/[\\/]+$/, "").match(/(\d{6})$/);
-  const aammdd = match?.[1] ?? "unknown";
-  if (!md5Hex) return `img-${aammdd}-${filename}`;
-  const md5short = md5Hex.slice(0, 8);
-  const dot = filename.lastIndexOf(".");
-  if (dot < 0) return `img-${aammdd}-${filename}-${md5short}`;
-  const base = filename.slice(0, dot);
-  const ext = filename.slice(dot);
-  return `img-${aammdd}-${base}-${md5short}${ext}`;
-}
+// #13997: `cloudflareKvKey` mora em lib/cloudflare-kv-key.ts (lib não importa
+// CLI de topo, #14001); reexportada aqui para os consumidores atuais.
+export { cloudflareKvKey };
 
 /**
  * (#10879) Aviso do carrossel do 4º post defasado que não pôde ser regerado

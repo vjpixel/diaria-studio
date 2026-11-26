@@ -19,7 +19,7 @@ import {
   CLARICE_CHUNK_THRESHOLD,
   type TextChunk,
   type ClariceChunkSuggestion,
-} from "../scripts/lib/clarice-chunk.ts";
+} from "../scripts/lib/diaria/clarice-chunk.ts";
 
 // ---------------------------------------------------------------------------
 // splitIntoChunks

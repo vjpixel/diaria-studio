@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterClariceSuggestions } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { filterClariceSuggestions } from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 
 // #12362: a proteção factual do Stage 4 (#12329) casava `from` como substring
 // de qualquer `suggested_fix` aplicado, sem fronteira de palavra nem token

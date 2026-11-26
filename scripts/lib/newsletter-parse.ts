@@ -24,8 +24,8 @@ import {
   editionWeekday,
   weekEditionsBefore,
 } from "./diaria/video-box0.ts"; // #12073
-import { isClaricePending } from "./clarice-pending-marker.ts"; // #13711
-import { omitClariceReviewCredit } from "./clarice-review-credit.ts"; // #13711
+import { isClaricePending } from "./diaria/clarice-pending-marker.ts"; // #13711
+import { omitClariceReviewCredit } from "./diaria/clarice-review-credit.ts"; // #13711
 import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581

@@ -14,8 +14,8 @@
  * Body:    { paragraphs: [{ description: <text>, offset: 0 }] }
  */
 
-import type { ClariceSuggestions } from "./schemas/clarice-suggestions.ts";
-import { parseClariceSuggestions } from "./schemas/clarice-suggestions.ts";
+import type { ClariceSuggestions } from "../schemas/clarice-suggestions.ts";
+import { parseClariceSuggestions } from "../schemas/clarice-suggestions.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 

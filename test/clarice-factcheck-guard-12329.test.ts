@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { filterClariceSuggestions } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { filterClariceSuggestions } from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 import { readStage4Playbook } from "../scripts/lib/stage4-playbook.ts";
 
 const conditional = { from: "seria", to: "é" };

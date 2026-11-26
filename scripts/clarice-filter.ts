@@ -19,7 +19,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
 import { readFactCheckProtection } from "./lib/fact-check-protection.ts";
-import { filterClariceSuggestions } from "./lib/clarice-suggestion-guard.ts";
+import { filterClariceSuggestions } from "./lib/diaria/clarice-suggestion-guard.ts";
 import { buildClariceSourceSidecar, clariceSourceSidecarPath } from "./lib/clarice-source-binding.ts";
 
 function arg(argv: string[], name: string): string | undefined {

@@ -49,7 +49,8 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
-import { classifyClariceNoise, type ClariceNoiseReason } from "./lib/clarice-suggestion-guard.ts";
+import { classifyClariceNoise, type ClariceNoiseReason } from "./lib/diaria/clarice-suggestion-guard.ts";
+import { countOccurrences } from "./lib/diaria/clarice-chunk.ts";
 
 export interface ClariceSuggestion {
   from: string;
@@ -69,20 +70,9 @@ export interface ApplyResult {
   skipped: SkippedSuggestion[];
 }
 
-/**
- * Conta ocorrências exatas (substring match, case-sensitive) de `needle` em
- * `haystack`. Pulando ocorrências sobrepostas avançando por `needle.length`.
- */
-export function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let pos = 0;
-  while ((pos = haystack.indexOf(needle, pos)) !== -1) {
-    count++;
-    pos += needle.length;
-  }
-  return count;
-}
+// #13997: `countOccurrences` mora em lib/diaria/clarice-chunk.ts (lib não
+// importa CLI de topo, #14001); reexportada aqui para os consumidores atuais.
+export { countOccurrences };
 
 /**
  * Aplica sugestões do Clarice ao texto, uma de cada vez, em ordem.
@@ -95,7 +85,7 @@ export function countOccurrences(haystack: string, needle: string): number {
  *   - not_found:  count === 0 (from não aparece no texto)
  *   - ambiguous:  count > 1 (from aparece múltiplas vezes)
  *   - whitespace_only / structural_injection: ruído do servidor MCP (#11798),
- *     ver scripts/lib/clarice-suggestion-guard.ts
+ *     ver scripts/lib/diaria/clarice-suggestion-guard.ts
  */
 export function applyClariceSuggestions(
   text: string,

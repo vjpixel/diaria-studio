@@ -72,12 +72,12 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
+import type { ClariceSuggestion } from "../schemas/clarice-suggestions.ts";
 import { applyChunkSuggestions } from "./clarice-chunk.ts";
 import { filterClariceSuggestions } from "./clarice-suggestion-guard.ts";
-import { readFactCheckProtection } from "./fact-check-protection.ts";
-import { isIntentionalErrorPlaceholder } from "./intentional-errors.ts";
-import { extractTemplateBlock, pickErroIntencionalReveal } from "./newsletter-parse.ts";
+import { readFactCheckProtection } from "../fact-check-protection.ts";
+import { isIntentionalErrorPlaceholder } from "../intentional-errors.ts";
+import { extractTemplateBlock, pickErroIntencionalReveal } from "../newsletter-parse.ts";
 
 import { claricePendingPath, isClaricePending } from "./clarice-pending-marker.ts";
 // #13711: caminho e existência do marcador moraram aqui até o parser precisar deles sem ciclo de import.

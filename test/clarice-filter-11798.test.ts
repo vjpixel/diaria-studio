@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { filterClariceSuggestions } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { filterClariceSuggestions } from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 
 const NOISE = [
   { from: "A OpenAI", to: "\n\nA OpenAI" },

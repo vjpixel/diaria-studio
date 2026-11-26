@@ -21,8 +21,8 @@ import { join } from "node:path";
 
 import { extractContent } from "../scripts/lib/newsletter-parse.ts";
 import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
-import { hasClariceReviewCredit, omitClariceReviewCredit } from "../scripts/lib/clarice-review-credit.ts";
-import { CLARICE_PENDING_REL } from "../scripts/lib/clarice-pending.ts";
+import { hasClariceReviewCredit, omitClariceReviewCredit } from "../scripts/lib/diaria/clarice-review-credit.ts";
+import { CLARICE_PENDING_REL } from "../scripts/lib/diaria/clarice-pending.ts";
 import { checkClaricePendingFooterCredit, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
 
 /** Parágrafo de ferramentas como saiu na 261119 (data/snippets/encerramento-social-apoio.md). */
