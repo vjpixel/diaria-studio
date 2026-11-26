@@ -4,24 +4,25 @@
  *
  * Junta o resultado do dispatch Brevo diária que a Etapa 5 lançou em
  * background (`brevo-diaria-stage5-dispatch.ts` com `run_in_background`, logo
- * depois do §5c-pre). Roda antes do sentinel do §5h: lê
- * `_internal/05-brevo-stage5-dispatch.json` até o registro virar `done`.
+ * depois do §5c-pre). Roda antes do sentinel do §5h e antes de QUALQUER halt
+ * posterior ao lançamento: lê `_internal/05-brevo-stage5/{launch_id}.json` até
+ * o registro deste lançamento virar `done`.
  *
  * Saída (stdout, 1 linha JSON): o mesmo JSON do dispatch
  * (`{status: "ok"|"already_done"|"skipped"|"failed", ...}`) acrescido de
- * `join` (`done`, `process_died`, `still_running`, `timeout`, `not_launched`, `invalid`)
- * e `exit_code` do dispatch quando houver. Nos casos sem resultado do
- * dispatch, `status: "failed"` com `step` e `reason`, nunca um sucesso
- * presumido.
+ * `join` (`done`, `process_died`, `still_running`, `timeout`, `not_launched`,
+ * `invalid`) e `exit_code` do dispatch quando houver. Nos casos sem resultado
+ * do dispatch, `status: "failed"` com `step` e `reason`, nunca um sucesso
+ * presumido. Registros de OUTROS lançamentos da edição só aparecem em
+ * `other_launches`, nunca como resultado.
  *
- * Só conta o registro com o `--launch-id` passado (o mesmo do dispatch): um
- * `done` de rodada anterior da mesma edição é tratado como ausente.
- *
- * Exit: 0 = `ok`/`already_done`/`skipped`; 1 = `failed`, processo morto,
- * registro ilegível ou teto total estourado (`join: "timeout"`, padrão 30 min
- * desde o `started_at` gravado, `--max-total-minutes`); 3 = registro deste
- * lançamento ausente; 4 = ainda rodando quando `--wait-seconds` acabou e
- * dentro do teto (re-rodar o join). Com o teto, re-rodar nunca vira loop.
+ * Exit: 0 = `ok`/`already_done`/`skipped`; 1 = `failed`, processo morto
+ * (dispatch E worker), registro ilegível ou teto total estourado
+ * (`join: "timeout"`, padrão 30 min desde o `started_at` gravado,
+ * `--max-total-minutes`); 3 = registro deste lançamento ausente; 4 = ainda
+ * rodando quando `--wait-seconds` acabou e dentro do teto (re-rodar o join).
+ * Com o teto, re-rodar nunca vira loop. Registro ausente sempre ganha a
+ * tolerância mínima de 30 s, mesmo com `--wait-seconds 0`.
  *
  * Uso:
  *   npx tsx scripts/brevo-diaria-stage5-join.ts --edition-dir <dir> --launch-id <id> [--wait-seconds 540] [--poll-seconds 5] [--max-total-minutes 30]
@@ -36,7 +37,10 @@ import {
   decideJoin,
   isPidAlive,
   joinExitCode,
+  listBrevoStage5Records,
   readBrevoStage5Record,
+  readWorkerPid,
+  type BrevoStage5Record,
   type JoinDecision,
   type ReadRecordOutcome,
 } from "./lib/brevo-stage5-background.ts";
@@ -50,13 +54,17 @@ export const MISSING_GRACE_MS = 30_000;
 export const INVALID_STREAK_LIMIT = 3;
 
 export interface JoinDeps {
+  /** Registro DESTE lançamento. */
   read: () => ReadRecordOutcome;
+  /** Todos os registros da edição (para relatar os outros lançamentos). */
+  listAll: () => BrevoStage5Record[];
+  workerPidOf: (launchId: string) => number | undefined;
   host: string;
   isPidAlive: (pid: number) => boolean;
   /** Relógio de parede (epoch ms): mede a espera e o teto total desde o `started_at`. */
   nowMs: () => number;
-  launchId: string;
   sleep: (ms: number) => Promise<void>;
+  launchId: string;
 }
 
 export type JoinOutput = { join: string; status: string; [k: string]: unknown };
@@ -71,7 +79,9 @@ export function buildJoinOutput(decision: JoinDecision | { kind: "still_running"
         join: "process_died",
         status: "failed",
         step: "background",
-        reason: `processo do dispatch (pid ${decision.record.pid}, iniciado ${decision.record.started_at}) morreu sem gravar o resultado — conferir no painel Brevo se o rascunho foi criado antes de re-rodar o dispatch.`,
+        reason:
+          `processo do dispatch (pid ${decision.record.pid}${decision.workerPid !== undefined ? `, worker pid ${decision.workerPid}` : ""}, ` +
+          `iniciado ${decision.record.started_at}) morreu sem gravar o resultado — conferir no painel Brevo se o rascunho foi criado antes de re-rodar o dispatch.`,
       };
     case "still_running":
       return {
@@ -84,10 +94,10 @@ export function buildJoinOutput(decision: JoinDecision | { kind: "still_running"
         join: "not_launched",
         status: "failed",
         step: "background",
-        reason: decision.stale
-          ? `registro _internal/05-brevo-stage5-dispatch.json é de outro lançamento (launch_id ${decision.stale.launch_id}, ${decision.stale.state}) — o dispatch deste lançamento não chegou a iniciar; o resultado antigo não conta.`
-          : "registro _internal/05-brevo-stage5-dispatch.json ausente — o dispatch Brevo não foi lançado ou não chegou a iniciar.",
-        ...(decision.stale ? { stale_launch_id: decision.stale.launch_id } : {}),
+        reason: decision.others
+          ? `registro deste lançamento ausente; a edição tem outros lançamentos (${decision.others.map((o) => `${o.launch_id}: ${o.state}`).join(", ")}), que não contam como resultado deste — o dispatch deste lançamento não iniciou (ver busy no stdout dele).`
+          : "registro deste lançamento ausente — o dispatch Brevo não foi lançado ou não chegou a iniciar.",
+        ...(decision.others ? { other_launches: decision.others } : {}),
       };
     case "timeout":
       return {
@@ -115,12 +125,15 @@ export async function runJoin(
     const elapsedMs = deps.nowMs() - start;
     const decision = decideJoin(outcome, {
       elapsedMs,
-      missingGraceMs: Math.min(MISSING_GRACE_MS, opts.waitMs),
+      // #14037: a tolerância de registro ausente nunca encolhe com --wait-seconds.
+      missingGraceMs: MISSING_GRACE_MS,
       host: deps.host,
       isPidAlive: deps.isPidAlive,
+      workerPidOf: deps.workerPidOf,
       launchId: deps.launchId,
       nowEpochMs: deps.nowMs(),
       maxTotalMs: opts.maxTotalMs ?? DEFAULT_MAX_TOTAL_MS,
+      others: outcome.kind === "ok" ? [] : deps.listAll(),
     });
     // Leitura ilegível pode ser transitória (no Windows o rename atômico do
     // gravador pode colidir com a leitura): só vira falha depois de
@@ -130,7 +143,9 @@ export async function runJoin(
     if (decision.kind !== "wait" && !transientInvalid) {
       return { output: buildJoinOutput(decision), exitCode: joinExitCode(decision) };
     }
-    if (elapsedMs >= opts.waitMs) {
+    // Registro ausente: espera pelo menos a tolerância, mesmo com wait menor.
+    const inMissingGrace = outcome.kind === "missing" && elapsedMs < MISSING_GRACE_MS;
+    if (elapsedMs >= opts.waitMs && !inMissingGrace) {
       const startedAt = outcome.kind === "ok" ? outcome.record.started_at : undefined;
       const final = { kind: "still_running" as const, startedAt };
       return { output: buildJoinOutput(final), exitCode: joinExitCode(final) };
@@ -158,7 +173,9 @@ if (isMainModule(import.meta.url)) {
     const maxTotalMinutes = getIntArg(argv, "max-total-minutes", { min: 1 }) ?? DEFAULT_MAX_TOTAL_MS / 60_000;
     const { output, exitCode } = await runJoin(
       {
-        read: () => readBrevoStage5Record(editionDir),
+        read: () => readBrevoStage5Record(editionDir, launchId),
+        listAll: () => listBrevoStage5Records(editionDir),
+        workerPidOf: (id) => readWorkerPid(editionDir, id),
         host: currentHost(),
         isPidAlive,
         nowMs: () => Date.now(),

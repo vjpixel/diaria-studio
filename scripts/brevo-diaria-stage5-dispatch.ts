@@ -41,11 +41,14 @@
  * `run_in_background` logo depois do §5c-pre e junta o resultado com
  * `scripts/brevo-diaria-stage5-join.ts` antes do sentinel do §5h. Para isso o
  * CLI grava `running` e depois `done` (com o mesmo JSON do stdout) em
- * `<edition-dir>/_internal/05-brevo-stage5-dispatch.json`
- * (`scripts/lib/brevo-stage5-background.ts`).
+ * `<edition-dir>/_internal/05-brevo-stage5/{launch_id}.json`, um arquivo por
+ * lançamento (`scripts/lib/brevo-stage5-background.ts`). Os sub-scripts gravam
+ * o próprio pid em `{launch_id}.worker.json` (preload
+ * `scripts/lib/record-worker-pid.mjs`).
  *
- * O `--launch-id` (o mesmo passado ao join) marca o registro: o join só aceita
- * o registro deste lançamento.
+ * O `--launch-id` (o mesmo passado ao join) nomeia o registro. Com outro
+ * lançamento da edição ainda ativo, o dispatch recusa iniciar: JSON
+ * `{status: "busy", active_launch_id, ...}`, exit 5.
  *
  * Uso:
  *   npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>]
@@ -61,10 +64,10 @@
  * @see .claude/agents/orchestrator-stage-5.md (dispatch paralelo)
  * @see .claude/agents/orchestrator-stage-6.md (Passo 8 — agendamento)
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, dirname, basename } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { resolveStage5MaxAdd } from "./lib/brevo-diaria-max-add.ts";
 import { readStore, DEFAULT_STORE_PATH, type BrevoDiariaContact } from "./lib/brevo-diaria-store.ts";
@@ -73,7 +76,20 @@ import { computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
 import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts";
 import { checkSemanalCapacity, countKitSemAberturaInBrevo, decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #11226
-import { currentHost, writeBrevoStage5Record, type BrevoStage5Record } from "./lib/brevo-stage5-background.ts"; // #14037
+import {
+  BUSY_EXIT_CODE,
+  DEFAULT_MAX_TOTAL_MS,
+  brevoStage5RecordDir,
+  brevoStage5WorkerPidPath,
+  currentHost,
+  findActiveLaunch,
+  isPidAlive,
+  listBrevoStage5Records,
+  readWorkerPid,
+  writeBrevoStage5Record,
+  type BrevoStage5Record,
+} from "./lib/brevo-stage5-background.ts"; // #14037
+import { withFileLock } from "./lib/file-lock.ts"; // #14037
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -89,13 +105,23 @@ export interface ExecResult {
 
 export type ExecFn = (scriptRelPath: string, args: string[]) => ExecResult;
 
+/** Preload que grava o pid do sub-script em execução (#14037). */
+export const WORKER_PID_PRELOAD = "scripts/lib/record-worker-pid.mjs";
+
+/** Pura: argumentos do `node` para um sub-script; com `workerPidFile`, inclui o preload do pid (#14037). */
+export function buildExecArgs(rootDir: string, scriptAbs: string, args: string[], workerPidFile?: string): string[] {
+  const preload = workerPidFile ? ["--import", pathToFileURL(resolve(rootDir, ...WORKER_PID_PRELOAD.split("/"))).href] : [];
+  return ["--import", "tsx", ...preload, scriptAbs, ...args];
+}
+
 /** Default de produção — `process.execPath` absoluto, nunca `npx`/PATH-resolved (guard #4343). */
-export function realExec(rootDir: string): ExecFn {
+export function realExec(rootDir: string, opts: { workerPidFile?: string } = {}): ExecFn {
   return (scriptRelPath, args) => {
     const abs = resolve(rootDir, ...scriptRelPath.split("/"));
-    const result = spawnSync(process.execPath, ["--import", "tsx", abs, ...args], {
+    const result = spawnSync(process.execPath, buildExecArgs(rootDir, abs, args, opts.workerPidFile), {
       cwd: rootDir,
       encoding: "utf8",
+      env: opts.workerPidFile ? { ...process.env, DIARIA_WORKER_PID_FILE: opts.workerPidFile } : process.env,
     });
     if (result.error || result.status === null) {
       return {
@@ -124,10 +150,10 @@ export interface Stage5BrevoDeps {
   readPublished: (editionDir: string) => { campaign_id: number } | null;
 }
 
-export function productionDeps(rootDir: string = ROOT): Stage5BrevoDeps {
+export function productionDeps(rootDir: string = ROOT, opts: { workerPidFile?: string } = {}): Stage5BrevoDeps {
   return {
     rootDir,
-    exec: realExec(rootDir),
+    exec: realExec(rootDir, opts),
     storeExists: () => existsSync(DEFAULT_STORE_PATH),
     readContacts: () => readStore(DEFAULT_STORE_PATH).contacts,
     readPlatformConfig: () =>
@@ -304,34 +330,73 @@ export interface RecordIo {
   host: string;
   /** `--launch-id` do orchestrator; o join só aceita o registro com o mesmo id. */
   launchId: string;
+  /** Lançamento ATIVO desta edição (outro processo rodando), ou `null`. */
+  findActive: () => BrevoStage5Record | null;
+  /** Serializa a checagem de lançamento ativo + gravação do `running`. Default: sem lock. */
+  withLaunchLock?: <T>(fn: () => T) => T;
+}
+
+/** Dispatch que recusou iniciar porque outro lançamento da edição está ativo. */
+export interface Stage5BrevoBusy {
+  status: "busy";
+  reason: string;
+  active_launch_id: string;
+  active_pid: number;
+  active_host: string;
 }
 
 /**
- * #14037 — roda o dispatch gravando `running` antes e `done` depois em
- * `_internal/05-brevo-stage5-dispatch.json`, para o orchestrator lançar este
- * script com `run_in_background` e juntar o resultado com
- * `brevo-diaria-stage5-join.ts` antes do sentinel do §5h. O `result` gravado é
- * o MESMO objeto impresso no stdout. Exceção do dispatch vira `failed`
- * (step `crash`) no registro e no stdout, nunca some. Falha ao GRAVAR o
- * registro só avisa no stderr: o resultado do canal sai no stdout igual.
+ * #14037 — roda o dispatch gravando `running` antes e `done` depois no
+ * registro DESTE lançamento (`_internal/05-brevo-stage5/{launch_id}.json`),
+ * para o orchestrator lançar este script com `run_in_background` e juntar o
+ * resultado com `brevo-diaria-stage5-join.ts` antes do sentinel do §5h.
+ *
+ * - Outro lançamento ativo (dispatch ou worker vivo no mesmo host, ou
+ *   `running` de outro host dentro do teto) → `busy`, exit 5, nada roda.
+ * - Falha ao gravar o `running` → `failed` (step `record`), exit 1, nada roda:
+ *   sem registro o join não teria como juntar o resultado.
+ * - Exceção do dispatch vira `failed` (step `crash`), nunca some.
+ * - Falha ao gravar o `done` só avisa no stderr: o trabalho já foi feito e o
+ *   resultado sai no stdout.
  */
 export function runStage5BrevoDispatchWithRecord(
   run: () => Stage5BrevoResult,
   io: RecordIo,
-): { result: Stage5BrevoResult; exitCode: number } {
+): { result: Stage5BrevoResult | Stage5BrevoBusy; exitCode: number } {
   const startedAt = io.now();
   const base = { launch_id: io.launchId, pid: io.pid, host: io.host, started_at: startedAt };
-  const safeWrite = (record: BrevoStage5Record) => {
-    try {
-      io.write(record);
-    } catch (e) {
-      io.warn(
-        `[brevo-diaria stage5] AVISO (#14037): registro ${record.state} não gravado (${(e as Error).message}) — ` +
-          `o join vai acusar o processo como morto/não lançado; o resultado real está no stdout deste comando.`,
-      );
+  const lock = io.withLaunchLock ?? (<T>(fn: () => T) => fn());
+  const gate = lock((): { result: Stage5BrevoResult | Stage5BrevoBusy; exitCode: number } | null => {
+    const active = io.findActive();
+    if (active && active.launch_id !== io.launchId) {
+      return {
+        result: {
+          status: "busy",
+          reason:
+            `outro lançamento do Brevo desta edição está ativo (launch_id ${active.launch_id}, pid ${active.pid}, host ${active.host}, ` +
+            `iniciado ${active.started_at}) — não iniciar outro; juntar aquele com o join.`,
+          active_launch_id: active.launch_id,
+          active_pid: active.pid,
+          active_host: active.host,
+        },
+        exitCode: BUSY_EXIT_CODE,
+      };
     }
-  };
-  safeWrite({ ...base, state: "running" });
+    try {
+      io.write({ ...base, state: "running" });
+    } catch (e) {
+      return {
+        result: {
+          status: "failed",
+          step: "record",
+          reason: `registro running não gravado (${(e as Error).message}) — dispatch não iniciado, sem registro o join não junta o resultado.`,
+        },
+        exitCode: 1,
+      };
+    }
+    return null;
+  });
+  if (gate) return gate;
   let result: Stage5BrevoResult;
   try {
     result = run();
@@ -339,13 +404,20 @@ export function runStage5BrevoDispatchWithRecord(
     result = { status: "failed", step: "crash", reason: (e as Error).message ?? String(e) };
   }
   const exitCode = result.status === "failed" ? 1 : 0;
-  safeWrite({
-    ...base,
-    state: "done",
-    finished_at: io.now(),
-    exit_code: exitCode,
-    result: result as unknown as { status: string; [k: string]: unknown },
-  });
+  try {
+    io.write({
+      ...base,
+      state: "done",
+      finished_at: io.now(),
+      exit_code: exitCode,
+      result: result as unknown as { status: string; [k: string]: unknown },
+    });
+  } catch (e) {
+    io.warn(
+      `[brevo-diaria stage5] AVISO (#14037): registro done não gravado (${(e as Error).message}) — ` +
+        `o join vai acusar o processo como morto; o resultado real está no stdout deste comando.`,
+    );
+  }
   return { result, exitCode };
 }
 
@@ -374,15 +446,28 @@ if (isMainModule(import.meta.url)) {
     // join do Stage 5 só aceita o id que o orchestrator passou aos dois.
     const launchId = getStringArg(argv, "launch-id") ?? `auto-${new Date().toISOString()}-${process.pid}`;
     process.stderr.write(`[brevo-diaria stage5] launch-id=${launchId}\n`);
+    const host = currentHost();
     const { result, exitCode } = runStage5BrevoDispatchWithRecord(
-      () => runStage5BrevoDispatch(editionDir, productionDeps(ROOT)),
+      () => runStage5BrevoDispatch(editionDir, productionDeps(ROOT, { workerPidFile: brevoStage5WorkerPidPath(editionDir, launchId) })),
       {
         write: (record) => writeBrevoStage5Record(editionDir, record),
         warn: (msg) => process.stderr.write(msg + "\n"),
         now: () => new Date().toISOString(),
         pid: process.pid,
-        host: currentHost(),
+        host,
         launchId,
+        findActive: () =>
+          findActiveLaunch(listBrevoStage5Records(editionDir), {
+            host,
+            isPidAlive,
+            workerPidOf: (id) => readWorkerPid(editionDir, id),
+            nowEpochMs: Date.now(),
+            maxTotalMs: DEFAULT_MAX_TOTAL_MS,
+          }),
+        withLaunchLock: <T>(fn: () => T) => {
+          mkdirSync(brevoStage5RecordDir(editionDir), { recursive: true });
+          return withFileLock(resolve(brevoStage5RecordDir(editionDir), ".launch.lock"), fn);
+        },
       },
     );
     console.log(JSON.stringify(result));
