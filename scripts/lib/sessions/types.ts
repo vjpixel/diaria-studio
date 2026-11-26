@@ -558,6 +558,9 @@ export function softStaleMsForKind(kind: string): number {
  * chamam `end` ao encerrar de propósito (ou ficam órfãs só por crash — o caso
  * que esta janela protege) — a assimetria de risco entre os dois grupos é
  * real, não um descuido.
+ *
+ * @alias de `MAX_SESSION_AGE_MS`, de propósito (tag lida pelo knip, que senão
+ * acusa "Duplicate exports" no `export const X = Y`, #14004).
  */
 export const CLAIM_RELEASE_MS = MAX_SESSION_AGE_MS;
 
