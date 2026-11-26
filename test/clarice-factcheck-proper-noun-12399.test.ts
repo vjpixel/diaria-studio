@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterClariceSuggestions } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { filterClariceSuggestions } from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 
 // #12399: depois do #12362 a maiúscula de início de frase deixou de contar como
 // nome próprio, e o `suggested_fix` do fact-check costuma começar justamente

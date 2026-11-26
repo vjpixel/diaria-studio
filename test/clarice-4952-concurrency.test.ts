@@ -34,7 +34,7 @@ import {
   type AttemptLogEntry,
   type RetryPolicy,
 } from "../scripts/clarice-correct.ts";
-import { splitIntoChunks } from "../scripts/lib/clarice-chunk.ts";
+import { splitIntoChunks } from "../scripts/lib/diaria/clarice-chunk.ts";
 
 const noSleep = async (_ms: number): Promise<void> => {};
 

@@ -5,7 +5,7 @@
  * fact-check do Stage 4 corrigiu (`suggested_fix` das entradas `applied`). É a
  * proteção que `filterClariceSuggestions` usa para a Clarice não desfazer a
  * revisão factual. Consumido por `scripts/clarice-filter.ts --edition-dir` e
- * pelo `resume` de `scripts/lib/clarice-pending.ts`.
+ * pelo `resume` de `scripts/lib/diaria/clarice-pending.ts`.
  *
  * - log ausente → `{ present: false, correctedTexts: [] }`;
  * - log com `dry_run` → presente, sem trechos;

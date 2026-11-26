@@ -10,7 +10,7 @@
  * forewarn antes de chegar no Stage 2.
  *
  * #2835: o núcleo REST + retry/backoff (ClariceHttpError, correctTextViaREST,
- * withClariceRetry, etc.) vive em `scripts/lib/clarice-correct-engine.ts` e é
+ * withClariceRetry, etc.) vive em `scripts/lib/diaria/clarice-correct-engine.ts` e é
  * reexportado aqui — este arquivo mantém só o chunking (#2626) e a CLI.
  *
  * Endpoint: POST https://cortex.clarice.ai/api-correction
@@ -109,12 +109,12 @@ import {
   CLARICE_CHUNK_THRESHOLD,
   type TextChunk,
   type ClariceChunkSuggestion,
-} from "./lib/clarice-chunk.ts";
+} from "./lib/diaria/clarice-chunk.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { mtimeMs } from "./lib/mtime.ts";
 
-// #2835 — núcleo REST + retry/backoff extraído pra scripts/lib/clarice-correct-engine.ts
+// #2835 — núcleo REST + retry/backoff extraído pra scripts/lib/diaria/clarice-correct-engine.ts
 // (movimentação pura). Reexportado abaixo pra preservar os call-sites/imports de teste
 // existentes, que importam tudo de "../scripts/clarice-correct.ts".
 import {
@@ -134,7 +134,7 @@ import {
   type AttemptLogEntry,
   type RetryPolicy,
   type RetryResult,
-} from "./lib/clarice-correct-engine.ts";
+} from "./lib/diaria/clarice-correct-engine.ts";
 
 /**
  * #12693 — linha JSON de falha no stdout (`{"failure": {...}}`). Mesmo canal
@@ -256,7 +256,7 @@ export function resolveChunkConcurrency(): number {
  * sempre falha. Isso refuta o diagnóstico do #2798 (tamanho de payload) — baixar o
  * threshold 9k→4.5k naquele fix não resolveu porque reduzir tamanho de chunk não
  * reduz CONCORRÊNCIA, só aumenta o número de chunks disparados em paralelo. Ver
- * comentário atualizado em `scripts/lib/clarice-chunk.ts` (CLARICE_CHUNK_THRESHOLD).
+ * comentário atualizado em `scripts/lib/diaria/clarice-chunk.ts` (CLARICE_CHUNK_THRESHOLD).
  *
  * Default agora é 1 (serial): o "melhor caso" da concorrência 3 nunca era
  * alcançado — era sempre timeout garantido + halt manual + retry, que já é mais

@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyClariceNoise } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { classifyClariceNoise } from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 import { applyClariceSuggestions } from "../scripts/clarice-apply.ts";
 
 const BARE_DOMAINS: Array<[string, string]> = [

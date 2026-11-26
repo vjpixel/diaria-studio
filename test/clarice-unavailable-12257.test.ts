@@ -48,7 +48,7 @@ import {
   PRE_RESUME_REL,
   RESUME_COOLDOWN_MS,
   RESUME_SUGGESTIONS_TMP_REL,
-} from "../scripts/lib/clarice-pending.ts";
+} from "../scripts/lib/diaria/clarice-pending.ts";
 import { resumeExitCode, resumedStderrLines, spawnResultToRun, RESUME_POST_STEP_FAILED_EXIT } from "../scripts/clarice-pending.ts";
 import { signalsFromClaricePendingAtPublish, signalsFromClariceSkips } from "../scripts/collect-edition-signals.ts";
 import { checkClaricePending, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";

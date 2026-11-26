@@ -34,14 +34,14 @@ import {
   correctTextChunked,
   withClariceRetryChunked,
 } from "../scripts/clarice-correct.ts";
-import { causeCode } from "../scripts/lib/clarice-correct-engine.ts";
+import { causeCode } from "../scripts/lib/diaria/clarice-correct-engine.ts";
 import {
   failureReasonFromRun,
   lastResumeAttemptNote,
   readClaricePending,
   resumeClarice,
   skipClarice,
-} from "../scripts/lib/clarice-pending.ts";
+} from "../scripts/lib/diaria/clarice-pending.ts";
 import { checkClaricePending } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { checkClaricePendingAtPublish } from "../scripts/lib/invariant-checks/stage-5.ts";
 

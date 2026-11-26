@@ -17,7 +17,7 @@ import {
   main,
   mergeChunkResponses,
 } from "../scripts/clarice-mcp-chunks.ts";
-import { CLARICE_MCP_CHUNK_MAX_CHARS } from "../scripts/lib/clarice-chunk.ts";
+import { CLARICE_MCP_CHUNK_MAX_CHARS } from "../scripts/lib/diaria/clarice-chunk.ts";
 
 function para(seed: string, n: number): string {
   return Array.from({ length: n }, (_, i) => `${seed} frase número ${i} sobre inteligência artificial no mês.`).join(" ");
