@@ -45,6 +45,12 @@
  *       ilegível ou sem `summary.applied` numérico (`autofix.unreadable`): não
  *       dá para saber o que mudou, então o composto roda as re-checagens nos DOIS
  *       arquivos e marca `rerender` dos dois. Nunca vira "nada aplicado".
+ *       Também 7 (`autofix-failed-after-write`, #14174): o autofix saiu ≠ 0
+ *       DEPOIS de gravar `02-reviewed.md`/`03-social.md` (o conteúdo mudou em
+ *       relação ao lido antes do spawn). Mesmo fail-closed: re-checagens e
+ *       `rerender` nos dois arquivos, `autofix.wrote_before_failure` diz quais
+ *       mudaram. Autofix ≠ 0 com os dois textos intactos segue não bloqueando
+ *       (exit 0, sem re-checagens).
  */
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -74,7 +80,8 @@ export type FactCheckPostOutcome =
   | "stale"
   | "partial-refused"
   | "post-autofix-broken"
-  | "autofix-unreadable";
+  | "autofix-unreadable"
+  | "autofix-failed-after-write";
 
 export const OUTCOME_EXIT: Record<FactCheckPostOutcome, number> = {
   ok: 0,
@@ -84,7 +91,14 @@ export const OUTCOME_EXIT: Record<FactCheckPostOutcome, number> = {
   "partial-refused": 4,
   "post-autofix-broken": 5,
   "autofix-unreadable": 7,
+  "autofix-failed-after-write": 7,
 };
+
+/** Textos que o autofix pode gravar; comparados antes/depois do spawn (#14174). */
+const AUTOFIX_TARGETS = [
+  { file: "newsletter", path: "02-reviewed.md" },
+  { file: "social", path: "03-social.md" },
+] as const;
 
 export interface CheckRun {
   name: string;
@@ -106,6 +120,8 @@ export interface FactCheckPostReport {
     social_residual_sections: string[];
     /** Motivo quando o JSON do autofix (exit 0) não pôde ser lido (exit 7). */
     unreadable?: string;
+    /** Arquivos que mudaram num autofix que saiu ≠ 0 (#14174, exit 7). */
+    wrote_before_failure?: Array<"newsletter" | "social">;
     stdout: string;
     stderr?: string;
   };
@@ -174,7 +190,18 @@ export function runFactCheckPost(opts: FactCheckPostOptions, deps: FactCheckPost
     return { ...report, outcome: fcOutcome, exit: OUTCOME_EXIT[fcOutcome], fact_check };
   }
 
+  // #14174: o exit 1 do autofix cobre tanto "não rodou" (pré-condição) quanto
+  // exceção no meio, possivelmente depois de gravar o texto. O script não diz
+  // qual; o conteúdo dos arquivos antes/depois diz.
+  const readTargets = () => AUTOFIX_TARGETS.map((t) => deps.readText(join(editionDir, t.path)));
+  const textsBefore = readTargets();
   const af = deps.exec("scripts/apply-factcheck-autofix.ts", ["--edition-dir", editionDir]);
+  let wroteBeforeFailure: Array<"newsletter" | "social"> | undefined;
+  if (af.code !== 0) {
+    const textsAfter = readTargets();
+    const changed = AUTOFIX_TARGETS.filter((_, i) => textsAfter[i] !== textsBefore[i]).map((t) => t.file);
+    if (changed.length > 0) wroteBeforeFailure = changed;
+  }
   let applied = 0;
   let socialModified = false;
   const residual = new Set<string>();
@@ -208,11 +235,13 @@ export function runFactCheckPost(opts: FactCheckPostOptions, deps: FactCheckPost
     social_modified: socialModified,
     social_residual_sections: [...residual],
     ...(unreadable !== undefined ? { unreadable } : {}),
+    ...(wroteBeforeFailure !== undefined ? { wrote_before_failure: wroteBeforeFailure } : {}),
     stdout: af.stdout.trim(),
     ...(af.code !== 0 ? { stderr: af.stderr.trim() } : {}),
   };
-  const checkNewsletter = applied > 0 || unreadable !== undefined;
-  const checkSocial = socialModified || unreadable !== undefined;
+  const failClosed = unreadable !== undefined || wroteBeforeFailure !== undefined;
+  const checkNewsletter = applied > 0 || failClosed;
+  const checkSocial = socialModified || failClosed;
   report.rerender = { newsletter: checkNewsletter, social: checkSocial };
 
   const runCheck = (name: string, script: string, args: string[]) => {
@@ -232,7 +261,11 @@ export function runFactCheckPost(opts: FactCheckPostOptions, deps: FactCheckPost
   }
   const broken = report.checks.some((c) => c.code !== 0);
   const outcome: FactCheckPostOutcome =
-    unreadable !== undefined ? "autofix-unreadable" : broken ? "post-autofix-broken" : "ok";
+    unreadable !== undefined
+      ? "autofix-unreadable"
+      : wroteBeforeFailure !== undefined
+        ? "autofix-failed-after-write"
+        : broken ? "post-autofix-broken" : "ok";
   return { ...report, outcome, exit: OUTCOME_EXIT[outcome], fact_check };
 }
 
@@ -269,6 +302,12 @@ function main(): number {
       console.error(
         `[stage4-factcheck-post] ERRO: autofix saiu 0, mas ${report.autofix?.unreadable}. Re-checagens rodadas ` +
           "nos dois arquivos; conferir 02-reviewed.md/03-social.md e re-rodar apply-factcheck-autofix.ts antes do gate.",
+      );
+    } else if (report.outcome === "autofix-failed-after-write") {
+      console.error(
+        `[stage4-factcheck-post] ERRO: autofix saiu ${report.autofix?.code} depois de gravar ` +
+          `${report.autofix?.wrote_before_failure?.join(", ")} (#14174). Re-checagens rodadas nos dois arquivos; ` +
+          "conferir o diff de 02-reviewed.md/03-social.md e re-renderizar os previews antes do gate.",
       );
     }
     return report.exit;
