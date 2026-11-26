@@ -127,6 +127,49 @@ describe("collectDocs / generateDocsIndex (#14061)", () => {
   });
 });
 
+describe("fonte da lista: git ls-files, disco só como fallback (#14061)", () => {
+  function git(cwd: string, ...args: string[]): void {
+    const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+  }
+
+  it("arquivo não rastreado fica fora do índice; o disco (fallback) o enxergaria", () => {
+    const repo = mkdtempSync(join(tmpdir(), "docs-index-git-"));
+    try {
+      git(repo, "init", "-q");
+      const docs = join(repo, "docs");
+      mkdirSync(join(docs, "sub"), { recursive: true });
+      mkdirSync(join(docs, "audience-history"));
+      writeFileSync(join(docs, "rastreado.md"), "# R\n\nx\n");
+      writeFileSync(join(docs, "sub", "fundo.md"), "# F\n\ny\n");
+      writeFileSync(join(docs, "audience-history", "snap.md"), "# S\n");
+      writeFileSync(join(docs, "README.md"), "velho\n");
+      git(repo, "add", "docs");
+      writeFileSync(join(docs, "solto.md"), "# Solto\n\nnão commitado\n");
+
+      const viaGit = collectDocs(docs).map((e) => e.path);
+      assert.deepEqual(viaGit, ["rastreado.md", "sub/fundo.md"]);
+      const viaFs = collectDocs(docs, { source: "fs" }).map((e) => e.path);
+      assert.deepEqual(viaFs, ["rastreado.md", "solto.md", "sub/fundo.md"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fora de repositório git cai no disco", () => {
+    const dir = fixtureDocs();
+    try {
+      // mkdtemp em tmpdir não é repo: git ls-files falha e o fallback lista o disco.
+      assert.deepEqual(
+        collectDocs(dir).map((e) => e.path),
+        ["alpha.md", "archive/velho.md", "dados.json"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("CLI --check (#14061)", () => {
   it("exit 0 depois do --write; exit 1 com doc novo fora do índice; exit 1 sem README", () => {
     const dir = fixtureDocs();

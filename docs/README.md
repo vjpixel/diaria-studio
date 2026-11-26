@@ -13,9 +13,9 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (181 arquivos)
+## Índice (180 arquivos)
 
-### `docs/` (166)
+### `docs/` (165)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
@@ -71,7 +71,6 @@
 | [`corpus-index-status-5125.md`](./corpus-index-status-5125.md) | Cobertura dos índices por mês e por tema (#5125) | Gerado em 2026-08-27 por `npx tsx scripts/corpus-index-coverage-report.ts`. Re-executar para reconfirmar antes de citar estes números (mesma disciplina do… |
 | [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons (#2750) | O tab Cupons do dashboard (`clarice-dashboard.diaria.workers.dev`) lê o KV `coupons:usage`, que carrega, por assinatura com cupom NEWS50/NEWS25: o valor pago… |
 | [`cursos-worker-alarm-setup.md`](./cursos-worker-alarm-setup.md) | Worker `cursos`: sync do KV de assinantes | O worker `cursos` (hosting da página "Cursos sobre IA", `cursos.diar.ia.br`) loga todo caminho de degradação e tem `[observability] enabled = true` no… |
-| [`dashboard-schedule.md`](./dashboard-schedule.md) | Agendamento do push do diaria-dashboard (#2471) | A seção Timeline overnight (e as demais seções) do clarice-dashboard é um snapshot pré-computado: o Worker só lê o KV; quem popula é… |
 | [`definicao-leitor.md`](./definicao-leitor.md) | Definição canônica de `leitor-v1` | Primeira metade da camada de dados de aquisição que destrava decisão de gasto em ads (#4466). A segunda é o mapa de origem recuperada… |
 | [`develop-token-analysis-3328.md`](./develop-token-analysis-3328.md) | `/diaria-develop` — análise de consumo de tokens (#3328) | Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`. Este doc é de 260711 e era declaradamente especulativo por falta de dados de rodada real… |
 | [`diaria-dashboard-access-setup.md`](./diaria-dashboard-access-setup.md) | diaria-dashboard — access setup (#5133) | Até 12/08/2026 o Worker `diaria-dashboard` era servido sem nenhuma autenticação — `X-Robots-Tag: noindex` + `Disallow: /` (#5097) impedem INDEXAÇÃO por… |

@@ -14,6 +14,9 @@
  * o `ci.yml` ignora PR só de docs (`paths-ignore: docs/**`), justamente o PR
  * que cria doc novo.
  *
+ * A lista vem de `git ls-files` (só arquivo rastreado), com fallback para o
+ * disco apenas quando o git não responde.
+ *
  * Uso:
  *   npx tsx scripts/docs-index.ts            # imprime no stdout
  *   npx tsx scripts/docs-index.ts --write    # grava docs/README.md
@@ -24,6 +27,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -157,6 +161,7 @@ export function extractDocSummary(content: string): { title: string | null; summ
   };
 }
 
+/** Fallback sem git: varre o disco com as mesmas exclusões de `isIndexed`. */
 function walk(dir: string, rel: string, out: string[]): void {
   for (const ent of readdirSync(dir, { withFileTypes: true })) {
     const relPath = rel ? `${rel}/${ent.name}` : ent.name;
@@ -175,9 +180,38 @@ function byCodePoint(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-export function collectDocs(docsDir: string): DocEntry[] {
-  const files: string[] = [];
-  walk(docsDir, "", files);
+/** Mesmo filtro do `walk`, aplicado à lista do git. */
+function isIndexed(relPath: string): boolean {
+  if (relPath === INDEX_FILE) return false;
+  const top = relPath.split("/")[0];
+  return !(relPath.includes("/") && top in EXCLUDED_DIRS);
+}
+
+/**
+ * Arquivos rastreados de `docs/` (relativos a ele), via `git ls-files`, ou
+ * `null` quando o git não responde (fora de repo, git ausente). Arquivo não
+ * rastreado no checkout local não entra: senão o `--write` local o listaria e
+ * o `--check` do CI (clone limpo) reprovaria o PR.
+ */
+export function gitTrackedDocs(docsDir: string): string[] | null {
+  const r = spawnSync("git", ["ls-files", "-z", "--", "."], { cwd: docsDir, encoding: "utf8" });
+  if (r.error || r.status !== 0) return null;
+  return r.stdout
+    .split("\0")
+    .filter(Boolean)
+    .map((p) => p.replace(/\\/g, "/"))
+    .filter((p) => existsSync(join(docsDir, p)));
+}
+
+/**
+ * `source: "git"` (padrão) lê `git ls-files` e cai no disco só se o git falhar;
+ * `source: "fs"` força o disco (usado nos testes com pasta temporária).
+ */
+export function collectDocs(docsDir: string, opts: { source?: "git" | "fs" } = {}): DocEntry[] {
+  let files: string[] = [];
+  const tracked = opts.source === "fs" ? null : gitTrackedDocs(docsDir);
+  if (tracked) files = tracked.filter(isIndexed);
+  else walk(docsDir, "", files);
   files.sort(byCodePoint);
   return files.map((path) => {
     if (!path.endsWith(".md")) return { path, title: null, summary: null };
@@ -231,8 +265,11 @@ export function renderDocsIndex(entries: DocEntry[]): string {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function generateDocsIndex(docsDir: string = DEFAULT_DOCS_DIR): string {
-  return renderDocsIndex(collectDocs(docsDir));
+export function generateDocsIndex(
+  docsDir: string = DEFAULT_DOCS_DIR,
+  opts: { source?: "git" | "fs" } = {},
+): string {
+  return renderDocsIndex(collectDocs(docsDir, opts));
 }
 
 /** `true` quando o conteúdo commitado bate com o gerado (ignora CRLF do checkout). */
