@@ -50,7 +50,7 @@ import {
 import { walkDestaqueTitles } from "./destaque-title-walk.ts";
 import { looksLikeTitleOption } from "../title-heuristic.ts";
 import { parseInlineLink, parseInlineLinkWithTrailing } from "../inline-link.ts";
-import { APROFUNDE_HEADER_RE, HUB_LINK_HEADER_RE } from "../../extract-destaques.ts";
+import { APROFUNDE_HEADER_RE, HUB_LINK_HEADER_RE } from "../destaques-parse.ts";
 
 // ── Tipos ────────────────────────────────────────────────────────────────
 

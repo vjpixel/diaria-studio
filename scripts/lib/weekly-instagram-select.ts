@@ -66,7 +66,7 @@
  * D1/D2/D3 já usam.
  */
 
-import { parseDestaques } from "../extract-destaques.ts";
+import { parseDestaques } from "./destaques-parse.ts";
 import { parseSections } from "./newsletter-parse.ts";
 import type { ClickWindowPostBase } from "./shared/click-window-resolution.ts";
 import {

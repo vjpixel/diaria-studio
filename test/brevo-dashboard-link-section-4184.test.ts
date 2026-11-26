@@ -60,6 +60,7 @@ import {
 } from "../scripts/lib/mensal/monthly-link-sections.ts";
 import { classifyLinkContent } from "../workers/brevo-dashboard/src/link-content.ts";
 import { discoverCyclesWithPrioritized } from "../scripts/push-link-sections-kv.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // ─── Fixture REAL: cópia de data/monthly/2606-07/prioritized.md (#4184) ────
 // Copiada verbatim (trecho Destaques/Use Melhor/Radar) — o parser NUNCA lê
@@ -730,20 +731,6 @@ describe("discoverCyclesWithPrioritized (#4184)", () => {
 // (#4184, revisão pós-#4191 — coordenador pediu reavaliar; ver docstring do
 // topo do arquivo). Mock de KV local — mesmo padrão de test/brevo-dashboard-2733.test.ts.
 
-function makeKv(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial));
-  return {
-    get: async (key: string, type?: string) => {
-      const val = store.get(key);
-      if (val == null) return null;
-      return type === "json" ? JSON.parse(val) : val;
-    },
-    put: async (key: string, value: string) => { store.set(key, value); },
-    delete: async (key: string) => { store.delete(key); },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-}
-
 const staleMonthlyCampaign = {
   id: 901,
   name: "Clarice News 2606-07 — A · dom",
@@ -758,7 +745,7 @@ const staleMonthlyCampaign = {
 
 describe("buildRateLimitFallback: coluna Seção via KV (#4184, revisão pós-#4191)", () => {
   test("com secao:{ciclo} presente no KV → coluna Seção populada no fallback de 429", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleMonthlyCampaign],
         scheduled: [],
@@ -775,7 +762,7 @@ describe("buildRateLimitFallback: coluna Seção via KV (#4184, revisão pós-#4
   });
 
   test("SEM secao:{ciclo} no KV → catch-all determinístico ('Outros', #4405), sem crash (regressão)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleMonthlyCampaign],
         scheduled: [],
@@ -793,7 +780,7 @@ describe("buildRateLimitFallback: coluna Seção via KV (#4184, revisão pós-#4
 
 describe("buildFatalErrorFallback: coluna Seção via KV (#4184, revisão pós-#4191)", () => {
   test("com secao:{ciclo} presente no KV → coluna Seção populada no catch de última instância", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleMonthlyCampaign],
         scheduled: [],
@@ -810,7 +797,7 @@ describe("buildFatalErrorFallback: coluna Seção via KV (#4184, revisão pós-#
   });
 
   test("SEM secao:{ciclo} no KV → catch-all determinístico ('Outros', #4405), nunca lança (regressão)", async () => {
-    const kv = makeKv({
+    const kv = makeTrackedKvNamespace({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleMonthlyCampaign],
         scheduled: [],

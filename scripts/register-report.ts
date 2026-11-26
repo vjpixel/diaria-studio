@@ -29,6 +29,18 @@
  *     --title "diar.ia.br overnight 260720 — 5 unidades, 7 issues, 2 puladas" \
  *     --html-path data/overnight/260720/report.md
  *
+ * Relatório AVULSO (#14069) — auditoria, revisão de repo, investigação, sem
+ * pipeline dono:
+ *   npx tsx scripts/register-report.ts --kind avulso --id 261125-revisao-13984 \
+ *     --title "Revisão do repo (#13984)" \
+ *     --html-path data/reports/avulso/261125-revisao-13984.html
+ * O `--id` do avulso é `AAMMDD-slug` (a data do relatório + nome curto) e o
+ * arquivo é `.html` ou `.md`; fora disso sai `exit 2` sem registrar.
+ *
+ * `--root <dir>` troca a raiz contra a qual `--html-path` e `data/reports/`
+ * são resolvidos (default: a raiz do repo). Existe para os testes rodarem o CLI
+ * real num tmpdir sem tocar o registro real (#14069).
+ *
  * `--no-email` continua aceita por compat de CLI, mas virou NO-OP desde o
  * #7960 (item 4 da #7957) — `registerReport` já nunca notifica por e-mail
  * por default (antes, omitir a flag mandava e-mail real a cada invocação,
@@ -44,16 +56,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { registerReport, isReportKind } from "./lib/reports-registry.ts";
+import { registerReport, isReportKind, isAvulsoSessionId, REPORT_KINDS } from "./lib/reports-registry.ts";
 import { compareTitleWithReport, UNITS_TABLE_MARKER } from "./lib/overnight-report-counts.ts";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_STUDIO_PORT = "4174";
 
 /**
  * Kinds cujo relatório traz a tabela "Unidades mergeadas" e, portanto, permitem
  * conferir as contagens do título (#5521). Os demais kinds (`edicao`, `mensal`,
- * `clarice-*`, `cac`) têm outro formato e não passam por esta checagem.
+ * `clarice-*`, `cac`, `avulso`) têm outro formato e não passam por esta checagem.
  */
 const COUNT_CHECKED_KINDS = new Set(["overnight", "develop"]);
 
@@ -80,7 +92,7 @@ const COUNT_CHECKED_KINDS = new Set(["overnight", "develop"]);
  * stderr: ali a conferência deixou de rodar por um motivo que pode ser erro do
  * coordenador, e silêncio faria parecer que rodou e aprovou.
  */
-function assertTitleMatchesReport(kind: string, title: string, htmlPath: string): void {
+function assertTitleMatchesReport(root: string, kind: string, title: string, htmlPath: string): void {
   const warnUnchecked = (motivo: string): void => {
     process.stderr.write(
       `[register-report] AVISO: título NÃO conferido — ${htmlPath} ${motivo} (#5521).\n`,
@@ -99,7 +111,7 @@ function assertTitleMatchesReport(kind: string, title: string, htmlPath: string)
   // BLOQUEAR (o registro é fail-soft por desenho e o relatório pode
   // legitimamente ainda não estar em disco), mas sumir em silêncio faria
   // parecer que a conferência rodou e aprovou.
-  const abs = resolve(ROOT, htmlPath);
+  const abs = resolve(root, htmlPath);
   if (!existsSync(abs)) {
     warnUnchecked("não existe");
     return;
@@ -152,19 +164,35 @@ async function main(): Promise<void> {
   // de 73 relatórios históricos disparou ~50 e-mails de uma vez em
   // 17/08/2026) — não há mais essa distinção de comportamento.
 
+  const root = values["root"] ? resolve(values["root"]) : REPO_ROOT;
+
   if (!kind || !isReportKind(kind) || !id || !title || !htmlPath) {
     console.error(
-      "Uso: register-report.ts --kind {edicao|overnight|develop|mensal} --id <sessionId> --title <title> --html-path <path relativo ao repo> [--no-email]",
+      `Uso: register-report.ts --kind {${REPORT_KINDS.join("|")}} --id <sessionId> --title <title> --html-path <path relativo ao repo> [--root <dir>] [--no-email]\n` +
+        "  avulso (#14069): --id AAMMDD-slug (ex.: 261125-revisao-13984), --html-path .html ou .md (de preferência em data/reports/avulso/)",
     );
     process.exit(2);
   }
 
-  assertTitleMatchesReport(kind, title, htmlPath);
+  if (kind === "avulso") {
+    // #14069: validação de USO (exit 2, como a de cima), não de registro —
+    // um avulso sem data no id ou com arquivo que o Studio não sabe servir
+    // entraria na lista sem data legível ou com link quebrado.
+    const problems: string[] = [];
+    if (!isAvulsoSessionId(id)) problems.push(`--id "${id}" não é AAMMDD-slug (ex.: 261125-revisao-13984)`);
+    if (!/\.(html|md)$/i.test(htmlPath)) problems.push(`--html-path "${htmlPath}" não termina em .html nem .md`);
+    if (problems.length > 0) {
+      console.error(`[register-report] kind avulso (#14069): ${problems.join("; ")}. Nada foi registrado.`);
+      process.exit(2);
+    }
+  }
+
+  assertTitleMatchesReport(root, kind, title, htmlPath);
 
   // #7960: `notify: false` fixo — ver nota acima sobre `--no-email` ter
   // virado no-op.
   const result = registerReport(
-    ROOT,
+    root,
     { kind, sessionId: id, title, htmlPath },
     undefined,
     false,

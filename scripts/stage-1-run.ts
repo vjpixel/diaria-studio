@@ -186,6 +186,7 @@ import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/s
 import { formatHighlightSameFactNotes } from "./lib/same-fact-check.ts"; // #9595
 import { formatStudySourceNotes } from "./lib/study-source-recurrence.ts"; // #11763
 import { formatSecondaryPossibleRepeatNotes } from "./lib/secondary-theme-repeat.ts"; // #13143
+import { emitStepTimings, StepTimingRecorder } from "./lib/runner-step-timings.ts"; // #14032
 
 // Mesma disciplina do #4983 — carregar .env ANTES de qualquer outro código.
 loadProjectEnv();
@@ -202,7 +203,8 @@ export interface StepResult {
   stderr: string;
 }
 
-export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
+/** `label` (opcional) só serve à medição por passo (#14032); o spawn real ignora. */
+export type ExecFn = (scriptRelPath: string, args: string[], label?: string) => StepResult;
 
 export function realExec(rootDir: string): ExecFn {
   return (scriptRelPath, args) => {
@@ -576,6 +578,8 @@ export interface Stage1RunDeps {
   writeFile: (path: string, content: string) => void;
   renameFile: (from: string, to: string) => void;
   hasEnv: (name: string) => string | undefined;
+  /** Relógio em ms da medição por passo (#14032). Ausente = `Date.now`. */
+  clockMs?: () => number;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage1RunDeps {
@@ -614,7 +618,7 @@ function step(
   okCodes: number[] = [0],
 ): { result: StepResult; json: unknown } {
   report.note(`▶ ${label}`);
-  const result = deps.exec(scriptRelPath, args);
+  const result = deps.exec(scriptRelPath, args, label);
   if (result.stderr.trim()) console.error(result.stderr.trim());
   if (!okCodes.includes(result.code)) {
     throw new Stage1Abort(`❌ ${label} falhou (exit ${result.code}): ${tailStderr(result.stderr)}`);
@@ -624,7 +628,7 @@ function step(
 
 function softStep(deps: Stage1RunDeps, report: ReportBuilder, label: string, scriptRelPath: string, args: string[]): { result: StepResult; json: unknown } {
   report.note(`▶ ${label} (fail-soft)`);
-  const result = deps.exec(scriptRelPath, args);
+  const result = deps.exec(scriptRelPath, args, label);
   if (result.stderr.trim()) console.error(result.stderr.trim());
   if (result.code !== 0) {
     report.note(`⚠️  ${label} falhou (exit ${result.code}) — fail-soft, não bloqueia Stage 1.`);
@@ -1790,19 +1794,27 @@ export async function runStage1(argv: string[], deps: Stage1RunDeps): Promise<St
   const report = new ReportBuilder();
   try {
     const opts = parseStage1RunArgs(argv);
-    switch (opts.phase) {
-      case "pre-research":
-        return await runPreResearch(deps, opts, report);
-      case "post-research-pre-score":
-        return await runPostResearchPreScore(deps, opts, report);
-      case "post-score":
-        return await runPostScore(deps, opts, report);
-      case "post-select-render":
-        return await runPostSelectRender(deps, opts, report);
-      case "post-gate":
-        return await runPostGate(deps, opts, report);
-      default:
-        throw new Stage1Abort(`fase desconhecida: ${opts.phase}`);
+    // #14032: duração de cada sub-script da fase num evento `step_timings` do
+    // run-log (nunca no stdout); antes só a duração do stage inteiro existia.
+    const timings = new StepTimingRecorder(deps.clockMs);
+    const timedDeps: Stage1RunDeps = { ...deps, exec: timings.wrapExec(deps.exec) };
+    try {
+      switch (opts.phase) {
+        case "pre-research":
+          return await runPreResearch(timedDeps, opts, report);
+        case "post-research-pre-score":
+          return await runPostResearchPreScore(timedDeps, opts, report);
+        case "post-score":
+          return await runPostScore(timedDeps, opts, report);
+        case "post-select-render":
+          return await runPostSelectRender(timedDeps, opts, report);
+        case "post-gate":
+          return await runPostGate(timedDeps, opts, report);
+        default:
+          throw new Stage1Abort(`fase desconhecida: ${opts.phase}`);
+      }
+    } finally {
+      emitStepTimings(deps.exec, { edition: opts.edition, stage: "1", agent: "orchestrator" }, timings.summary(opts.phase));
     }
   } catch (e) {
     const abort = e instanceof Stage1Abort ? e : new Stage1Abort(`erro inesperado: ${(e as Error).message}`);

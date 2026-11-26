@@ -28,6 +28,7 @@ import { threadsProfilePreflight, type ThreadsPersonalCreds } from "../scripts/l
 import { persistShortEntry } from "../scripts/lib/diaria/shorts-published-store.ts";
 import { resolveEditionScheduledAt } from "../scripts/lib/edition-scheduled-at.ts";
 import { CORTE_SPEC_FILE, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const DAY = "261102";
 const EXTRA: CorteSpec = { slug: "mentoria-agentes-261102", date: DAY, hhmm: "06:30", title: "Agentes no trabalho", hook: "O que muda quando o agente erra sozinho.", video: "corte.mp4" };
@@ -124,7 +125,7 @@ describe("#11913 cenário da issue: extra às 06:30, principal às 12:00", () =>
   });
 
   it("wiring: as duas conferências da rodada passam os ids do outro lado do dia, na edição também", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     const branch = src.slice(src.indexOf("} else if (item.destination === THREADS_PROFILE_DESTINATION) {"), src.indexOf('} else if (item.destination === "instagram") {'));
     assert.ok(branch.includes("sameDayOtherIds: sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION)"), "Threads");
     const ig = src.slice(src.indexOf('} else if (item.destination === "instagram") {'));

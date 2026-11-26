@@ -67,6 +67,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { getStringArg } from "./lib/cli-args.ts";
 import { addSitemapEntry, archiveUrlForSlug } from "./lib/site-archive-pages.ts";
 import { ARCHIVE_CARD_LIMIT, HOME_VIDEO_LIMIT, buildHomeFeed, buildIndexHtml, buildVideoFeed } from "./lib/site-home-page.ts";
 import {
@@ -81,37 +82,50 @@ import {
   slugsInSitemap,
 } from "./lib/site-sitemap-orphans.ts";
 
-function parseArgs(argv: string[]) {
-  const get = (flag: string, fallback: string) => {
-    const i = argv.indexOf(flag);
-    return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
-  };
+/**
+ * #14128: valores via `getStringArg` (`cli-args.ts`). Antes, o
+ * `argv[indexOf(flag) + 1]` lia a flag seguinte como valor: `--sitemap --check`
+ * virava sitemap `"--check"`, e `--home --check` mandava escrever a home num
+ * arquivo chamado `--check`. Flag de valor sem valor (fim do argv, seguida de
+ * outra flag, ou vazia) agora lança, e `main` sai 1 com a mensagem.
+ */
+export function parseReconcileArgs(argv: string[]) {
+  const get = (flag: string, fallback: string) => getStringArg(argv, flag) ?? fallback;
+  const sitemapPath = get("sitemap", DEFAULT_SITEMAP);
+  const publicDirArg = getStringArg(argv, "public-dir");
   return {
     check: argv.includes("--check"),
-    pagesDir: get("--pages-dir", DEFAULT_PAGES_DIR),
-    sitemapPath: get("--sitemap", DEFAULT_SITEMAP),
+    pagesDir: get("pages-dir", DEFAULT_PAGES_DIR),
+    sitemapPath,
     // A home DERIVA do sitemap — mora no mesmo diretório. Usar um caminho fixo
     // aqui fazia `--sitemap /tmp/x.xml` regenerar mesmo assim
     // `workers/site/public/index.html`, ou seja: apontar o script pra outro
     // lugar sobrescrevia a home de PRODUÇÃO. Foi o que os testes desta PR
     // fizeram (a home passou a listar os slugs de fixture "a" e "b"), e o guard
     // do #6375 pegou. Um `--home` explícito continua vencendo.
-    homePath: get("--home", join(dirname(get("--sitemap", DEFAULT_SITEMAP)), "index.html")),
+    homePath: get("home", join(dirname(sitemapPath), "index.html")),
     // #10509: raiz da varredura de landings fora de `/p/`. Só tem default
     // quando o sitemap também é o default — `--sitemap` apontado pra outro
     // lugar sem `--public-dir` desliga a varredura, em vez de comparar um
     // sitemap de fixture com as landings de PRODUÇÃO (mesma armadilha do
     // `--home` logo acima).
-    publicDir: argv.includes("--public-dir")
-      ? get("--public-dir", DEFAULT_PUBLIC_DIR)
-      : get("--sitemap", DEFAULT_SITEMAP) === DEFAULT_SITEMAP
+    publicDir: publicDirArg !== undefined
+      ? publicDirArg
+      : sitemapPath === DEFAULT_SITEMAP
         ? DEFAULT_PUBLIC_DIR
         : null,
   };
 }
 
 export function main(argv = process.argv.slice(2)): number {
-  const { check, pagesDir, sitemapPath, homePath, publicDir } = parseArgs(argv);
+  let parsed: ReturnType<typeof parseReconcileArgs>;
+  try {
+    parsed = parseReconcileArgs(argv);
+  } catch (e) {
+    console.error(`[reconcile-site-sitemap] ${e instanceof Error ? e.message : String(e)}`);
+    return 1;
+  }
+  const { check, pagesDir, sitemapPath, homePath, publicDir } = parsed;
 
   if (!existsSync(sitemapPath)) {
     console.error(`[reconcile-site-sitemap] sitemap ausente: ${sitemapPath}`);

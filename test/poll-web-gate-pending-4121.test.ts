@@ -48,34 +48,10 @@ import {
   ROUNDS_PLAYED_COOKIE,
 } from "../workers/poll/src/web-gate.ts";
 import { signSessionCookie } from "../workers/poll/src/session-cookie.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
-function makeMapKV(initial: Record<string, string> = {}) {
-  const m = new Map<string, string>(Object.entries(initial));
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-    _map: m,
-  };
-}
-
-const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
-  POLL: makeMapKV(),
+const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+  POLL: makeTrackedKv(),
   POLL_SECRET: "poll-secret",
   ADMIN_SECRET: "admin-secret",
   ALLOWED_ORIGINS: "*",
@@ -156,7 +132,7 @@ describe("#6293: handleJogarGateVerify — 'active' sozinho NÃO promove mais a 
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
-    const env = makeEnv({ SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace });
+    const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace });
     const res = await worker.fetch(
       new Request("https://poll.test/jogar/gate/verify", {
         method: "POST",
@@ -250,7 +226,7 @@ describe("#4121 (achado relacionado): domínio reservado da identidade anônima 
   it("handleJogarGateVerify rejeita e-mail sob @web.eia.diaria.local mesmo se 'ativo' no KV", async () => {
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
     const key = await subscriberKvKey(VALID_EMAIL);
-    const env = makeEnv({ SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace });
+    const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace });
     const res = await worker.fetch(
       new Request("https://poll.test/jogar/gate/verify", {
         method: "POST",

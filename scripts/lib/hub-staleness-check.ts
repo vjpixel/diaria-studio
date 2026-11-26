@@ -4,8 +4,9 @@
  * "Alternativa mais barata" da issue #4924 (item 5) — detecta quando o
  * dataset commitado de um hub (`scripts/lib/hubs/{slug}-sources.generated.json`,
  * gerado por `scripts/generate-hub-sources.ts`) ficou defasado em relação ao
- * cache Beehiiv sincronizado (`data/beehiiv-cache/posts/*.json`, atualizado
- * a cada edição no Stage 0, `beehiiv-sync.ts`): uma edição CONFIRMADA cujo
+ * cache Beehiiv sincronizado (`data/beehiiv-cache/posts/*.json`, escrito por
+ * `beehiiv-sync.ts`; fora do Stage 0 desde o #14114, a Beehiiv é arquivo
+ * histórico e o cache não muda mais): uma edição CONFIRMADA cujo
  * título/subtítulo casa `HUB_KEYWORD_PATTERNS` de algum hub, mas cujo
  * `editionSlug` não aparece no `.generated.json` daquele hub.
  *

@@ -57,6 +57,7 @@ Só quando `video` vem preenchido. 1 a 3 frases curtas, até `limits.videoDescri
 4. Evite as marcas de texto de IA que o humanizador corrige depois: gerúndio em cascata, "crucial"/"fundamental"/"revolucionário", abertura cenográfica ("No mundo atual"), negação paralela ("não é X, é Y"), regra de três, travessão em excesso.
 5. Sem chamada para assinar ou para comprar curso: o post já fecha com o convite da diar.ia.br.
 6. Sem conselho ao leitor ("deveria", "vale", "precisa", "você deve"), em nenhum dos textos.
+7. **Superlativo, atribuição e "mais novo" só com a fonte afirmando (#9692, #13313).** "O maior", "um dos mais", "o principal", "o mais novo", "X decidiu", "X quer" só se `title`, `body` ou `why` disserem. Regra completa: `context/editorial-rules.md` §11 (Fidelidade à fonte).
 
 ## Saída
 

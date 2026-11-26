@@ -55,6 +55,7 @@ import {
   syncCorteAuthorizationWithContent,
   type CorteRevocation,
 } from "../scripts/publish-shorts.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const BASE: CorteSpec = { slug: "corte-extra", date: "261103", hhmm: "08:00", title: "Título do corte", hook: "Gancho do corte.", video: "corte-corte-extra.mp4" };
 const AT = "2026-11-03T11:00:00.000Z"; // 08:00 BRT
@@ -118,7 +119,7 @@ const deps = (now: Date, calls: string[][], alarms: Alarm[], stdout = JSON.strin
     return true;
   },
 });
-const SRC = () => readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+const SRC = () => publishShortsSource();
 const MAIN = () => {
   const src = SRC();
   return src.slice(src.indexOf("async function main(): Promise<number>"));

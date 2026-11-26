@@ -45,6 +45,7 @@ import { buildCorteWatchAlarm, findCortesWithStaleTimer, findCortesWithoutOwner,
 import { acquireTimerLock, timerLockToken } from "../scripts/lib/diaria/timer-lock.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const SLUG = "corte-lote";
 const DATE = "261103";
@@ -297,7 +298,7 @@ describe("#11986 timer do corte parado na janela delegada", () => {
     const src = readFileSync(new URL("../scripts/shorts-corte-timer.ts", import.meta.url), "utf8");
     assert.match(src, /beat\("start"\);\s*try \{\s*return await runCortes\(dirs, cortesDir, dryRun\);\s*\} finally \{\s*beat\("end"\);/);
     assert.match(src, /if \(dryRun\) return;\s*try \{\s*writeCorteTimerHeartbeat\(cortesDir/);
-    const ps = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const ps = publishShortsSource();
     assert.match(ps, /corte && !requireCorteAuth \? \{ corteTimerHeartbeat: readCorteTimerHeartbeat\(join\(ROOT, CORTES_REL_DIR\)\) \}/);
   });
 });
@@ -355,7 +356,7 @@ describe("#12005 timer-lock: o release só apaga o lock do próprio dono", () =>
   });
 
   it("a rodada manual do corte toma o lock com heartbeat (fonte)", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /acquireTimerLock\(join\(dir, CORTE_TIMER_LOCK_FILE\), Date\.now\(\), \{ heartbeatMs: TIMER_LOCK_HEARTBEAT_MS \}\)/);
   });
 });

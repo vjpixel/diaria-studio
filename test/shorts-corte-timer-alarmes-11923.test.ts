@@ -28,6 +28,7 @@ import {
 import { CORTE_SPEC_FILE, corteAuthorizedDestinations, parseCorteSpec, type CorteContentFingerprint, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
 import { SHORT_COVER_FILE } from "../scripts/lib/diaria/short-cover.ts";
+import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const keys = (refused: string) =>
   interpretCorteTimerOutput(2, JSON.stringify({ authorization_refused: refused, reason: "m" }), ["instagram"]).map((o) => (o.kind === "alarm" ? o.key : o.kind));
@@ -43,7 +44,7 @@ describe("#11923", () => {
   });
 
   it("1: o filho recusa com spec-unreadable (e não revoked) quando reler o corte.json lança", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /refusal = \{ refused: "spec-unreadable"/);
     assert.match(src, /"content-changed" \| "missing-content" \| "spec-unreadable"/);
   });
@@ -132,7 +133,7 @@ describe("#11923 item 4: capa existente e ilegível não grava o 'pode publicar'
   });
 
   it("o main repassa o unreadable da capa à gravação da autorização (fonte)", () => {
-    const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
+    const src = publishShortsSource();
     assert.match(src, /recordCortePublishAuthorization\([^;]*shortCover\.unreadable\)/);
   });
 });
