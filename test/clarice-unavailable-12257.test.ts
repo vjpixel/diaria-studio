@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 
 import {
   main,
@@ -878,7 +879,7 @@ describe("#12257 — guard de prosa dos playbooks", () => {
   const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
   it("Stage 2: exit 6 e skip consciente vão pelo clarice-pending.ts skip, nunca cp + echo '[]'", () => {
-    const s2 = read(".claude/agents/orchestrator-stage-2.md");
+    const s2 = readStage2Playbook(); // #14113: principal + fallback
     assert.match(s2, /Exit 6 \(#12257\)[\s\S]{0,800}clarice-pending\.ts skip/);
     assert.match(s2, /Skip consciente \(#2320\)[^\n]*clarice-pending\.ts skip[^\n]*--reason mcp_down_rest_exit3_editor_approved/);
     assert.doesNotMatch(s2, /echo '\[\]' > \{EDITION_DIR\}\/_internal\/02-clarice-suggestions\.json/);

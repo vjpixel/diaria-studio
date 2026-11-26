@@ -16,6 +16,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { readStage2Playbook } from "../scripts/lib/stage2-playbook.ts";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -255,7 +256,7 @@ describe("#9795 — chaves de slides antigos saem de 06-public-images.json", () 
 
 describe("#9794 — social-writer recebe o texto da fonte", () => {
   it("dispatch do Stage 2 passa source_text_paths ao social-writer", () => {
-    const stage2 = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-2.md"), "utf8");
+    const stage2 = readStage2Playbook(); // #14113: principal + fallback
     assert.match(stage2, /`source_text_paths` \(#9794\)/);
   });
 

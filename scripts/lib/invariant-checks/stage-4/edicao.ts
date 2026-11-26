@@ -47,7 +47,7 @@ import { extractEiaMirrorBlock, parseEiaMirrorBlock, parseEIA, fallbackEIA } fro
  * `01-eia.md` no stitch (Stage 2, `stitch-newsletter.ts::readEiaBlock`), mas
  * DEPOIS passa pelo humanizador + Clarice — ambos operam sobre o
  * `02-normalized.md`/`02-humanized.md` INTEIRO, sem exclusão de seção (ver
- * `orchestrator-stage-2.md` §2b/§2c) — enquanto `01-eia.md` nunca é
+ * `orchestrator-stage-2-fallback.md` §2b/§2c) — enquanto `01-eia.md` nunca é
  * re-processado por nenhum dos dois. Já existe precedente no repo pra esse
  * risco: `verify-clarice-url-stability` (#873) trata "Clarice alterou texto"
  * como WARNING, não ERROR, porque é comportamento esperado do pipeline, não

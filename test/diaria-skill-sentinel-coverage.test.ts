@@ -29,44 +29,48 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL_2 = resolve(ROOT, ".claude/skills/diaria-2-escrita/SKILL.md");
 const SKILL_3 = resolve(ROOT, ".claude/skills/diaria-3-imagens/SKILL.md");
 
-describe("diaria-2-escrita/SKILL.md escreve o sentinel do Stage 2 (#5792)", () => {
+// #14113: a skill deixou de repetir a receita da Etapa 2; o sentinel é gravado
+// pelo `--phase post-gate` do runner e, no fallback, pelo §2d de
+// `orchestrator-stage-2-fallback.md`. O guard segue o mesmo: os DOIS caminhos
+// de finalização da skill (gate aprovado e --no-gates) levam ao post-gate, que
+// grava o sentinel depois do title-picker e do TÍTULO/SUBTÍTULO.
+describe("diaria-2-escrita/SKILL.md leva ao sentinel do Stage 2 (#5792)", () => {
   const skill = readFileSync(SKILL_2, "utf8");
+  const runner = readFileSync(resolve(ROOT, "scripts/stage-2-run.ts"), "utf8");
+  const fallback = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-2-fallback.md"), "utf8");
 
-  it("referencia pipeline-sentinel.ts write --step 2", () => {
+  it("referencia pipeline-sentinel.ts write --step 2 e a issue #5792", () => {
     assert.match(skill, /pipeline-sentinel\.ts write[\s\S]*?--step 2/);
-  });
-
-  it("referencia a issue #5792", () => {
     assert.match(skill, /#5792/);
   });
 
-  it("o caminho --no-gate/--no-gates (Passo 6) leva explicitamente ao sentinel (Passo 7c)", () => {
-    const marker = skill.indexOf("pular este passo. Ir direto pro Passo 7");
+  it("o caminho --no-gate/--no-gates (Passo 6) leva explicitamente ao post-gate (sentinel)", () => {
+    const marker = skill.indexOf("pular este passo. Ir direto pro `--phase post-gate`");
     assert.ok(marker !== -1, "Passo 6 deve descrever o caminho --no-gate/--no-gates");
-    const around = skill.slice(marker, marker + 300);
-    assert.match(around, /7c/, "Passo 6 deve apontar para o Passo 7c (sentinel) no caminho --no-gate/--no-gates");
+    assert.match(skill.slice(marker, marker + 300), /sentinel do Stage 2, #5792/);
   });
 
-  it("o caminho COM gate ('sim' do editor) leva explicitamente ao sentinel (Passo 7c)", () => {
+  it("o caminho COM gate ('sim' do editor) leva explicitamente ao post-gate (sentinel)", () => {
     const marker = skill.indexOf('Aguardar resposta. Se "sim"');
     assert.ok(marker !== -1, "Passo 6 deve descrever a resposta 'sim' do editor");
-    const around = skill.slice(marker, marker + 300);
-    assert.match(around, /7c/, "resposta 'sim' deve apontar para o Passo 7c (sentinel)");
+    const around = skill.slice(marker, marker + 600);
+    assert.match(around, /--phase post-gate/);
+    assert.match(around, /--outputs "02-reviewed\.md,03-social\.md"/);
   });
 
-  it("Passo 7c (sentinel) vem depois do Passo 7 (title-picker) e 7b (título/subtítulo) no arquivo", () => {
-    const idx7 = skill.indexOf("## Passo 7 —");
-    const idx7b = skill.indexOf("## Passo 7b —");
-    const idx7c = skill.indexOf("## Passo 7c —");
-    assert.ok(idx7 !== -1 && idx7b !== -1 && idx7c !== -1, "Passos 7, 7b e 7c devem existir");
-    assert.ok(idx7 < idx7b && idx7b < idx7c, "ordem correta: 7 < 7b < 7c — sentinel nunca antes do title-picker");
+  it("no runner, o sentinel vem depois do title-picker e do TÍTULO/SUBTÍTULO", () => {
+    const post = runner.slice(runner.indexOf("function phasePostGate"));
+    const picker = post.indexOf("titles-per-highlight");
+    const titulo = post.indexOf("insert-titulo-subtitulo");
+    const sentinel = post.indexOf("pipeline-sentinel");
+    assert.ok(picker !== -1 && titulo !== -1 && sentinel !== -1, "title-picker, TÍTULO/SUBTÍTULO e sentinel no post-gate");
+    assert.ok(picker < titulo && titulo < sentinel, "ordem: title-picker < TÍTULO/SUBTÍTULO < sentinel");
   });
 
-  it("a chamada do sentinel usa os outputs 02-reviewed.md e 03-social.md", () => {
-    const idx = skill.indexOf("## Passo 7c —");
-    assert.ok(idx !== -1);
-    const block = skill.slice(idx, idx + 900);
-    assert.match(block, /--outputs\s+"02-reviewed\.md,03-social\.md"/);
+  it("no fallback, a chamada do sentinel usa os outputs 02-reviewed.md e 03-social.md, depois do title-picker", () => {
+    const idx = fallback.indexOf("npx tsx scripts/pipeline-sentinel.ts write");
+    assert.ok(idx !== -1 && fallback.indexOf("dispatch `title-picker`") < idx);
+    assert.match(fallback.slice(idx, idx + 200), /--outputs "02-reviewed\.md,03-social\.md"/);
   });
 });
 
