@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { editionsRoot } from "./lib/edition-paths.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { findLatestEditionEntry } from "./lib/edition-utils.ts"; // #3054: filtra sentinels calendário-inválidos (ex: 260999)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,17 +42,13 @@ interface StageResult {
   files: string[];
 }
 
+/**
+ * `--date`/`--window` via `cli-args.ts#parseArgs` (#14128; mesma regra de
+ * consumo do parser próprio de antes). `--skip-images` segue por presença do
+ * token, como antes: nunca engole o token seguinte.
+ */
 function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--skip-images") {
-      args["skip-images"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
+  return { ...parseCliArgs(argv).values, "skip-images": argv.includes("--skip-images") };
 }
 
 function run(cmd: string, opts?: { timeout?: number }): string {

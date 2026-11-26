@@ -28,15 +28,14 @@
 
 import { execFileSync } from "node:child_process";
 import { lastTrustedCommentBodyFromPrViewJson, shouldSkipDuplicateRejectComment } from "./lib/continuo-reject-comment.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 
-function parseArgs(argv: string[]): { pr: string; candidate: string } | null {
-  let pr: string | null = null;
-  let candidate: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--pr") pr = argv[++i] ?? null;
-    else if (argv[i] === "--candidate") candidate = argv[++i] ?? null;
-  }
-  if (!pr || !/^\d+$/.test(pr) || candidate == null) return null;
+export function parseRejectDedupeArgs(argv: string[]): { pr: string; candidate: string } | null {
+  // #14128: `cli-args.ts#parseArgs`; paridade em test/continuo-cli-args-parity-14128.test.ts.
+  // `--candidate ""` segue aceito (valor vazio explícito); texto que começa
+  // com `--` deixaria de ser valor, e o corpo do Hermes começa com "Gate de merge".
+  const { pr, candidate } = parseArgs(argv).values;
+  if (!pr || !/^\d+$/.test(pr) || candidate === undefined) return null;
   return { pr, candidate };
 }
 
@@ -60,7 +59,7 @@ function fetchLastCommentBody(pr: string): { ok: boolean; body: string | null } 
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseRejectDedupeArgs(process.argv.slice(2));
   if (!args) {
     process.stderr.write("uso: check-continuo-reject-comment-dedupe.ts --pr <N> --candidate <texto>\n");
     process.exitCode = 2;
@@ -72,4 +71,4 @@ function main(): void {
   console.log(JSON.stringify({ skip, source: fetched.ok ? "compared" : "error" }));
 }
 
-main();
+if (isMainModule(import.meta.url)) main();
