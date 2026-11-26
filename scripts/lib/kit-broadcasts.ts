@@ -77,6 +77,7 @@
  */
 
 import { kitFetch, listSubscribers } from "./kit-client.ts";
+import type { FetchRetryOptions } from "./fetch-retry.ts";
 import type { KitConfig } from "./kit-config.ts";
 import type { KitBroadcastDetail, KitPagination } from "./kit-client.ts";
 
@@ -362,8 +363,15 @@ export interface KitSegment {
  * (array) é ERRO, nunca "lista vazia": o consumidor (`resolveDiariaAudience`)
  * decide se o broadcast da diária sai, e "não achei o segmento" precisa ser
  * distinguível de "a API respondeu algo inesperado".
+ *
+ * `retry` (#13982) sobrescreve o retry do `kitFetch` em cada página — o
+ * Stage 6 passa um backoff mais longo (`DIARIA_AUDIENCE_SEGMENTS_RETRY`);
+ * sem ele, valem os defaults do Kit.
  */
-export async function listSegments(config?: KitConfig): Promise<KitSegment[]> {
+export async function listSegments(
+  config?: KitConfig,
+  retry?: Omit<FetchRetryOptions, "isRetriableStatus">,
+): Promise<KitSegment[]> {
   const out: KitSegment[] = [];
   let after: string | undefined;
   for (let page = 0; page < 50; page++) {
@@ -371,7 +379,7 @@ export async function listSegments(config?: KitConfig): Promise<KitSegment[]> {
     if (after) params.set("after", after);
     const data = await kitFetch<{ segments?: unknown; pagination?: KitPagination } | undefined>(
       `/segments?${params.toString()}`,
-      { config },
+      { config, ...(retry ? { retry } : {}) },
     );
     if (!data || !Array.isArray(data.segments)) {
       throw new Error("[kit-broadcasts] listSegments: resposta 2xx sem o array \"segments\" esperado");

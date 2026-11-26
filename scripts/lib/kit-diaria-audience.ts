@@ -42,6 +42,16 @@
  * devolve não pode reprovar um filtro correto. Campo ausente na releitura
  * reprova (`ok: false`): o Gate B precisa provar que o Kit ecoa o campo antes
  * de ligar.
+ *
+ * ## Rede indisponível ≠ audiência divergente (#13982)
+ *
+ * A falha ao LISTAR os segmentos continua abortando (fail-closed acima), mas
+ * sai classificada com `reason_kind: "network"` quando é transitória: sem
+ * resposta HTTP depois de todas as tentativas (`FetchNetworkError`), ou 5xx/429
+ * que persistiu. O caller (`schedule-newsletter-kit.ts`) devolve exit 8 nesse
+ * caso, em vez do 7, e o playbook manda aguardar e repetir em vez de
+ * investigar o segmento. 401/403/404, envelope inválido e segmento ausente
+ * seguem sem `reason_kind` (exit 7, como antes).
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -52,6 +62,8 @@ import {
   type KitSegment,
   type KitSubscriberFilter,
 } from "./kit-broadcasts.ts";
+import { FetchNetworkError, type FetchRetryOptions } from "./fetch-retry.ts";
+import { KitApiError } from "./kit-client.ts";
 
 /** Tag de exclusão do envio do Kit — quem a tem recebe a diária pela Brevo. */
 export const KIT_ENVIO_BREVO_TAG_NAME = "envio-brevo";
@@ -95,7 +107,30 @@ export function parseDiariaExclusionSegment(cfg: unknown): DiariaExclusionSegmen
 export type DiariaAudienceResolution =
   | { ok: true; mode: "all"; filter: AllSubscribersFilter }
   | { ok: true; mode: "segment"; segmentId: number; filter: KitSubscriberFilter }
-  | { ok: false; reason: string };
+  /** `reason_kind: "network"` (#13982): falha transitória ao listar os
+   *  segmentos. Ausente = recusa de audiência/config (o caso antigo). */
+  | { ok: false; reason: string; reason_kind?: "network" };
+
+/**
+ * #13982 — retry da listagem de segmentos no Stage 6: os 4 × ~1/3/9 s do
+ * `kitFetch` não seguravam uma janela curta de indisponibilidade do Kit
+ * (edição 261126: duas saídas seguidas, a 3ª minutos depois agendou). Só GET;
+ * nada aqui muda o retry de criação/agendamento. Pior caso por página:
+ * 6 × 15 s de timeout + 170 s de espera ≈ 4,3 min, folgado frente ao gate de
+ * 15 min do §6c.
+ */
+export const DIARIA_AUDIENCE_SEGMENTS_RETRY = {
+  attempts: 6,
+  backoffMs: [5_000, 15_000, 30_000, 60_000, 60_000],
+  timeoutMs: 15_000,
+} satisfies Omit<FetchRetryOptions, "isRetriableStatus">;
+
+/** Pura — a falha de `listSegments` é transitória (rede/Kit fora do ar)? */
+export function isTransientSegmentsListError(e: unknown): boolean {
+  if (e instanceof FetchNetworkError) return true;
+  if (e instanceof KitApiError) return e.status >= 500 || e.status === 429;
+  return false;
+}
 
 /**
  * Resolve a audiência do broadcast principal da diária. Flag desligada ⇒ base
@@ -142,6 +177,16 @@ export async function resolveDiariaAudience(
   try {
     segments = await deps.listSegments();
   } catch (e) {
+    if (isTransientSegmentsListError(e)) {
+      return {
+        ok: false,
+        reason_kind: "network",
+        reason:
+          `rede indisponível: não foi possível listar os segmentos do Kit pra confirmar o segmento ${segmentId} ` +
+          `(${(e as Error).message}). Nada foi agendado. Falha transitória, não divergência de audiência: ` +
+          "aguarde alguns minutos e repita o mesmo comando (#13982, #10437, #6126).",
+      };
+    }
     return {
       ok: false,
       reason:
