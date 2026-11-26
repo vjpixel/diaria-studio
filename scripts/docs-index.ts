@@ -44,6 +44,20 @@ export const EXCLUDED_DIRS: Record<string, string> = {
     "snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência",
 };
 
+/**
+ * Docs regravados por script (relativos a `docs/`) → script que os gera. No
+ * índice entram só pelo título: a 1ª linha deles traz data/hora da geração,
+ * e repeti-la aqui faria o `--check` reprovar todo PR depois de cada regen
+ * (o `bug-heatmap.md` é regravado toda sexta por um PR de bot, #1014).
+ * Doc gerado novo entra nesta lista; o teste reprova resumo com timestamp.
+ */
+export const TITLE_ONLY_DOCS: Record<string, string> = {
+  "apex-cutover-status-5125.md": "scripts/apex-cutover-verify-5125.ts",
+  "bug-heatmap.md": "scripts/bug-heatmap.ts (weekly-bug-heatmap.yml)",
+  "corpus-index-status-5125.md": "scripts/corpus-index-coverage-report.ts",
+  "editorial-invariants.md": "scripts/list-invariants.ts",
+};
+
 const SUMMARY_MAX = 160;
 
 export interface DocEntry {
@@ -216,7 +230,7 @@ export function collectDocs(docsDir: string, opts: { source?: "git" | "fs" } = {
   return files.map((path) => {
     if (!path.endsWith(".md")) return { path, title: null, summary: null };
     const { title, summary } = extractDocSummary(readFileSync(join(docsDir, path), "utf8"));
-    return { path, title, summary };
+    return { path, title, summary: path in TITLE_ONLY_DOCS ? null : summary };
   });
 }
 
@@ -231,7 +245,7 @@ const HEADER = `# Índice — docs/
 - **Índice gerado.** A lista abaixo sai do próprio \`docs/\`: título (1º cabeçalho) e primeira linha de texto de cada doc. Doc novo, renomeado ou apagado exige rodar \`npx tsx scripts/docs-index.ts --write\` e commitar o \`docs/README.md\` junto. Resumo ruim se corrige na primeira linha do doc, não aqui.
 - **Status no topo.** Doc superado ou parcialmente defasado abre com uma linha \`Status:\` (ou um aviso em citação) dizendo o que vale hoje; é essa linha que aparece no índice.
 - **\`archive/\` e \`agents-archive/\`**: spikes, análises encerradas e specs de agentes substituídos. Ficam pelo racional histórico e não descrevem o código atual.
-- **Docs auto-gerados** (\`editorial-invariants.md\`, \`bug-heatmap.md\`, os \`*-status-*.md\`) dizem no topo qual script os gera; não editar à mão.
+- **Docs auto-gerados** (\`editorial-invariants.md\`, \`bug-heatmap.md\`, os \`*-status-*.md\`) dizem no topo qual script os gera; não editar à mão. No índice aparecem só pelo título (\`TITLE_ONLY_DOCS\` em \`scripts/docs-index.ts\`), porque a 1ª linha deles muda a cada geração.
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 `;
 
@@ -287,8 +301,8 @@ function main(): number {
     const existing = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
     if (!indexMatches(existing, md)) {
       console.error(
-        `[docs-index] ${indexPath} divergiu de docs/ (doc novo, renomeado ou apagado sem regenerar). ` +
-          "Rodar: npx tsx scripts/docs-index.ts --write e commitar docs/README.md.",
+        `[docs-index] ${indexPath} divergiu: conteúdo de docs/ mudou (título/1ª linha, doc novo, renomeado ou apagado); ` +
+          "rodar `npx tsx scripts/docs-index.ts --write` e commitar docs/README.md.",
       );
       return 1;
     }

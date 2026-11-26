@@ -7,7 +7,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,6 +16,7 @@ import {
   extractDocSummary,
   generateDocsIndex,
   indexMatches,
+  TITLE_ONLY_DOCS,
 } from "../scripts/docs-index.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -180,6 +181,7 @@ describe("CLI --check (#14061)", () => {
       writeFileSync(join(dir, "novo.md"), "# Novo\n\nDoc criado sem regenerar.\n");
       const r = runCli(["--docs-dir", dir, "--check"]);
       assert.equal(r.status, 1);
+      assert.match(r.stderr, /conteúdo de docs\/ mudou \(título\/1ª linha, doc novo, renomeado ou apagado\)/);
       assert.match(r.stderr, /docs-index\.ts --write/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -194,6 +196,47 @@ describe("docs/README.md commitado (#14061)", () => {
       indexMatches(committed, generateDocsIndex(join(ROOT, "docs"))),
       "docs/README.md divergiu. Rodar: npx tsx scripts/docs-index.ts --write",
     );
+  });
+
+  it("doc regravado por script entra só pelo título: regen do bug-heatmap não deixa o --check vermelho", () => {
+    const committed = readFileSync(join(ROOT, "docs", "README.md"), "utf8");
+    const docs = join(ROOT, "docs");
+    for (const path of Object.keys(TITLE_ONLY_DOCS)) {
+      assert.ok(existsSync(join(docs, path)), `TITLE_ONLY_DOCS cita ${path}, que não existe`);
+      const row = committed.split("\n").find((l) => l.startsWith(`| [\`${path}\`]`));
+      assert.ok(row, `${path} fora do índice`);
+      assert.match(row!, /\| {2}\|$/,`${path} não deveria ter 1ª linha no índice`);
+    }
+    // Simula o regen semanal: muda só o timestamp da 1ª linha do heatmap.
+    const tmp = mkdtempSync(join(tmpdir(), "docs-index-heatmap-"));
+    try {
+      writeFileSync(join(tmp, "bug-heatmap.md"), "# Bug Heatmap — diar.ia.br\n\n**Gerado em**: 2026-11-20T18:15:49.971Z\n");
+      const before = generateDocsIndex(tmp);
+      writeFileSync(join(tmp, "bug-heatmap.md"), "# Bug Heatmap — diar.ia.br\n\n**Gerado em**: 2026-11-27T18:15:49.971Z\n");
+      assert.equal(generateDocsIndex(tmp), before);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("nenhum resumo do índice traz data/hora de geração (doc gerado novo precisa entrar em TITLE_ONLY_DOCS)", () => {
+    const offenders = collectDocs(join(ROOT, "docs")).filter((e) =>
+      /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(e.summary ?? ""),
+    );
+    assert.deepEqual(
+      offenders.map((e) => e.path),
+      [],
+      "esses docs mostram timestamp no índice; incluir em TITLE_ONLY_DOCS (scripts/docs-index.ts)",
+    );
+  });
+
+  it("weekly-bug-heatmap.yml regenera o índice e o inclui na PR do bot", () => {
+    const wf = readFileSync(join(ROOT, ".github", "workflows", "weekly-bug-heatmap.yml"), "utf8");
+    assert.match(wf, /npx tsx scripts\/docs-index\.ts --write/);
+    const add = wf.match(/add-paths:\s*\|\n((?:\s+\S.*\n)+)/);
+    assert.ok(add, "add-paths em bloco");
+    assert.match(add![1], /docs\/README\.md/);
+    assert.match(add![1], /docs\/bug-heatmap\.md/);
   });
 
   it("o --check está armado no pr-checks.yml (roda também em PR só de docs)", () => {
