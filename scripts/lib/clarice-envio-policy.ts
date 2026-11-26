@@ -66,7 +66,7 @@
  * superfície com seu breaker.
  */
 
-import { DEFAULT_HEALTH_THRESHOLDS } from "../../workers/brevo-dashboard/src/thresholds.ts";
+import { DEFAULT_HEALTH_THRESHOLDS } from "./shared/brevo-health-thresholds.ts";
 
 // ---------------------------------------------------------------------------
 // 1. Janelas de observação

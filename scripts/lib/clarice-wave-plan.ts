@@ -43,17 +43,17 @@ import {
   type HealthAggregate,
   type RampBaseCollapse,
   type Semaphore,
-} from "../../workers/brevo-dashboard/src/weekly-plan.ts";
+} from "./shared/clarice-weekly-plan.ts";
 import {
   resolveSpamSignal,
   type SpamSignal,
-} from "../../workers/brevo-dashboard/src/thresholds.ts";
+} from "./shared/brevo-health-thresholds.ts";
 import {
   aggregateAbcByAudience,
   LOW_POWER_MDE_THRESHOLD,
   type AbcAudienceTable,
 } from "../../workers/brevo-dashboard/src/sections-core.ts";
-import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
+import type { BrevoCampaign } from "./shared/brevo-dashboard-types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
 import { hasMeasuredOpens } from "./clarice-segment.ts";
 import {

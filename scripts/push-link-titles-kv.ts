@@ -58,7 +58,7 @@ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts";
 import { loadLinkTitleMapForCycle } from "./lib/mensal/monthly-link-sections.ts";
-import { linkTitlesKvKey } from "../workers/brevo-dashboard/src/types.ts";
+import { linkTitlesKvKey } from "./lib/shared/brevo-dashboard-types.ts";
 import { discoverCyclesWithPrioritized } from "./push-link-sections-kv.ts"; // #4198: genérico sobre "tem prioritized.md", reusado tal qual
 
 loadProjectEnv();
