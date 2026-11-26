@@ -863,7 +863,7 @@ function phasePostPool(ctx: Ctx): Stage2RunResult {
     writeFileSync(ctx.p("_internal/02-normalize-report.json"), norm.stderr, "utf8");
     if (norm.code !== 0 || !existsSync(ctx.p("_internal/02-normalized.md"))) {
       // Vai ao gate e ao run-log (#14094): o humanizador roda sobre o draft cru.
-      st.normalizeWarn = `⚠️  normalize-newsletter falhou (exit ${norm.code}) — 02-normalized.md é cópia do draft; humanizador e Clarice rodaram sobre texto não normalizado.`;
+      st.normalizeWarn = `⚠️  normalize-newsletter falhou (exit ${norm.code}) — 02-normalized.md é cópia do draft; humanizador e Clarice rodam sobre texto não normalizado.`;
       ctx.note(st.normalizeWarn);
       ctx.gateNotes.push(st.normalizeWarn);
       ctx.log("warn", "normalize-newsletter falhou — 02-normalized.md = cópia do draft", {
