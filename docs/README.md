@@ -13,9 +13,9 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (184 arquivos)
+## Índice (185 arquivos)
 
-### `docs/` (168)
+### `docs/` (169)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
@@ -100,6 +100,7 @@
 | [`gtm-signup-container-import-proposal.json`](./gtm-signup-container-import-proposal.json) |  |  |
 | [`gtm-signup-tracking-setup.md`](./gtm-signup-tracking-setup.md) | GTM — material de importação: gatilho único de cadastro (#5546) | Preparado para a #5500 ("gatilho único de cadastro no GTM"), que carrega a label `windows` e exige interface logada — a importação, publicação e verificação em… |
 | [`home-meta-check-setup.md`](./home-meta-check-setup.md) | Smoke-test dos eixos de drift da home/edição pública | Nome herdado, escopo mudou (#6498, 28/08/2026). Até o cutover do apex (#467), a home `https://diar.ia.br/` era um tema Beehiiv — daí o nome original… |
+| [`http-retry-inventory.md`](./http-retry-inventory.md) | Inventário de retry HTTP — #14127 | Levantamento em 26/11/2026, antes da substituição. A estimativa de ~20 da issue não é um total confirmado: a busca abaixo encontra também polling, locks… |
 | [`hub-drift-check-setup.md`](./hub-drift-check-setup.md) | Smoke-test de drift entre HUB_META e o Worker `arquivo` publicado | `test/hub-registry-completeness.test.ts` cruza os 3 registries de hub temático (`HUB_LOADERS`, `HUB_REGISTRY`, `HUB_META`) entre si — 6 asserções, CI… |
 | [`infra-300-watchdog.md`](./infra-300-watchdog.md) | Vigia externo do 300 (#12981) | Deployado e armado em 25/11/2026 (Worker com secrets Gmail, cron `*/5`, timer de heartbeat no 300). Ensaio feito no mesmo dia (passo 6 abaixo): 1 e-mail… |
 | [`installation.md`](./installation.md) | Installation — diar.ia.br Studio | Passo-a-passo end-to-end, do zero ao primeiro `/diaria-edicao` funcional. Estimativa: 30–45 min na primeira vez. |
