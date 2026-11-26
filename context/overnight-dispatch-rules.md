@@ -50,7 +50,7 @@ enviar ao coordenador via `SendMessage` (destino `main`, a conversa principal) o
 unidade, antes de iniciar o self-review. O coordenador começa a espera de CI em
 paralelo; o implementador segue o self-review e retorna o total de findings
 normalmente. Falha no envio não bloqueia: o self-review e o retorno seguem
-normalmente.
+como sempre.
 
 ## 3. Bootstrap do worktree
 
@@ -143,8 +143,9 @@ senão import smoke via tsx)? O cenário REAL da issue tem teste (não só a
 aritmética adjacente)? **O output esperado são os findings listados como
 comentários inline no PR** (não fixes imediatos). Finding grande demais para o
 coordenador aplicar direto → comentário inline detalhando a mudança
-necessária. **Nunca `AskUserQuestion` durante o self-review** (Regra 1 do
-overnight: nenhuma pergunta ao editor depois do briefing). Retornar: o número
+necessária. **Nunca `AskUserQuestion` durante o self-review**, nas três
+skills: o subagente não tem o editor na sessão dele (no overnight vale também
+a Regra 1, nenhuma pergunta depois do briefing). Retornar: o número
 do PR **+ a linha "self-review: N findings"**.
 
 Cada finding abre com confiança e severidade, ex.: `Confiança média, P3: ...`
