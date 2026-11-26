@@ -217,7 +217,12 @@ describe("CLI write-hermes-config.ts", { skip: SKIP_WIN32 }, () => {
   }
 
   function withTmpDataDir<T>(fn: (dir: string) => T): T {
-    const dir = mkdtempSync(join(repoRoot, "data", "tmp-write-hermes-config-test-"));
+    // data/ é gitignored e não existe em clone fresco (CI): cria antes do
+    // mkdtemp em vez de depender de outro teste do mesmo shard tê-la criado
+    // (#14003). Só o tmp dir é removido no finally, nunca data/ inteira.
+    const dataDir = join(repoRoot, "data");
+    mkdirSync(dataDir, { recursive: true });
+    const dir = mkdtempSync(join(dataDir, "tmp-write-hermes-config-test-"));
     try {
       return fn(dir);
     } finally {
