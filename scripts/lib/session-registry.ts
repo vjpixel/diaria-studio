@@ -111,6 +111,14 @@
  *     liberada (`no-op-not-claimed` de uma não impede as outras). Ver
  *     `unclaimIssues`.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
+ *     (#14009: `is-claimed`, `claim-issue`, `unclaim-issue` e
+ *     `merge-lock-acquire` saem `exit 3` — "não verificável" — quando
+ *     `data/sessions/` está indisponível (junction de `data/` pendente, ou
+ *     diretório existente e ilegível), com a causa e a ação em stderr; o JSON
+ *     de `is-claimed` vira `{ claimed: true, by: null, unverifiable: true }`
+ *     (fail-closed). `exit 3` = parar a rodada (halt banner, #738), nunca
+ *     tratar como "nenhuma sessão". `data/sessions/` legível e vazio, ou
+ *     ausente num clone fresco, segue respondendo como sempre.)
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N
  *     (#6334: deixou de ser reentrante pra mesma sessão — uma 2ª chamada
@@ -213,6 +221,8 @@ import { machineTag, mergeLockPath, readJsonSafe, sessionFilePath } from "./sess
 import {
   annotatePreviousCoordinator,
   checkSessionsScanHealth,
+  REGISTRY_UNVERIFIABLE_EXIT_CODE,
+  sessionsRegistryUnverifiableReason,
   endSession,
   evaluateEndGuard,
   listActiveSessions,
@@ -331,6 +341,8 @@ export {
   extractPorcelainPath,
   evaluateEndGuard,
   checkSessionsScanHealth,
+  REGISTRY_UNVERIFIABLE_EXIT_CODE,
+  sessionsRegistryUnverifiableReason,
   listActiveSessions,
 } from "./sessions/registry.ts";
 export type {
@@ -498,6 +510,28 @@ export {
 } from "./sessions/cli-support.ts";
 
 
+/**
+ * #14009 — antes, com `data/` indisponível (Drive desmontado no meio da
+ * rodada), `is-claimed` respondia `claimed: false`, `unclaim-issue` dizia
+ * "sessão inexistente" e a rodada seguia despachando e mergeando como se
+ * estivesse sozinha. Nos subcomandos que decidem exclusão mútua, registro
+ * ilegível sai `exit 3` com a mensagem acionável em stderr. Registro vazio
+ * (`data/sessions/` legível sem arquivo, ou clone fresco) segue normal.
+ * Devolve `true` quando recusou (o chamador encerra o subcomando).
+ */
+function refuseIfRegistryUnverifiable(repoRoot: string, command: string): boolean {
+  const reason = sessionsRegistryUnverifiableReason(repoRoot);
+  if (reason === null) return false;
+  process.stderr.write(`session-registry: ${command} — ${reason} [exit ${REGISTRY_UNVERIFIABLE_EXIT_CODE}]\n`);
+  if (command === "is-claimed") {
+    // Fail-closed também para quem só lê o JSON: `claimed: true` faz a
+    // skill pular a unidade, nunca despachá-la por cima de outra sessão.
+    process.stdout.write(JSON.stringify({ claimed: true, by: null, unverifiable: true, error: reason }) + "\n");
+  }
+  process.exitCode = REGISTRY_UNVERIFIABLE_EXIT_CODE;
+  return true;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const { positional, values, flags } = parseArgs(argv);
@@ -639,6 +673,7 @@ async function main(): Promise<void> {
       case "claim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
+        if (refuseIfRegistryUnverifiable(repoRoot, "claim-issue")) break; // #14009
         if (values.issues !== undefined || flags.has("issues")) {
           // #12010: a onda inteira numa escrita só da âncora — ver `claimIssuesCheckAndSet`.
           const issues = requireClaimIssueList(values, flags, loadIssueRepos(repoRoot));
@@ -768,6 +803,7 @@ async function main(): Promise<void> {
       case "unclaim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
+        if (refuseIfRegistryUnverifiable(repoRoot, "unclaim-issue")) break; // #14009
         if (values.issues !== undefined || flags.has("issues")) {
           // #12166: a onda inteira numa escrita só da âncora — ver `unclaimIssues`.
           const issues = requireClaimIssueList(values, flags, loadIssueRepos(repoRoot));
@@ -831,6 +867,7 @@ async function main(): Promise<void> {
       }
       case "is-claimed": {
         const issue = requireClaimIssue(values, flags, loadIssueRepos(repoRoot)); // #10618
+        if (refuseIfRegistryUnverifiable(repoRoot, "is-claimed")) break; // #14009
         const excludeSessionId = values["session-id"] ?? "";
         const owner = isIssueClaimedByOther(repoRoot, issue, excludeSessionId);
         process.stdout.write(JSON.stringify({ claimed: owner !== null, by: owner }) + "\n");
@@ -876,6 +913,9 @@ async function main(): Promise<void> {
         const sessionId = requireSessionId(values);
         // #10618: lock POR REPO (`--repo owner/name`, default diaria-studio).
         const lockRepo = requireRepoFlag(values, flags);
+        // #14009: recusa antes de tocar o D1 — com o registro ilegível a
+        // rodada já perdeu claims e estado, e o merge espera data/ voltar.
+        if (refuseIfRegistryUnverifiable(repoRoot, "merge-lock-acquire")) break;
         // #12842: D1 na frente (exclusão entre máquinas), arquivo como espelho
         // e fallback — ver `acquireMergeLockShared`.
         const shared = await acquireMergeLockShared(repoRoot, sessionId, lockRepo);
