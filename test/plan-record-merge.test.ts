@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFakeGh, fakeGhEnv, FAKE_GH_SKIP_WIN32 } from './_helpers/fake-gh.ts';
 import { recordDispatch, recordMerge, mergeFindings, entries } from '../scripts/plan-record-merge.ts';
 
 const started = '2026-11-26T09:00:00Z';
@@ -43,14 +44,14 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-it('CLI detects an unrecorded merged PR, persists the cluster and fails closed on gh errors', () => {
+it('CLI detects an unrecorded merged PR, persists the cluster and fails closed on gh errors', { skip: FAKE_GH_SKIP_WIN32 }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'plan-14196-'));
   try {
     const path = join(dir, 'plan.json');
     writeFileSync(path, JSON.stringify({ issues: { '1': { status: 'pendente', branch: pull.headRefName, timeline: { started } }, '2': { status: 'pendente', branch: pull.headRefName, timeline: { started } } }, untouched: 'keep' }));
-    writeFileSync(join(dir, 'gh'), `#!/usr/bin/env node\nif (process.env.TEST_GH_FAIL) process.exit(1);\nconst p = ${JSON.stringify(pull)};\nconsole.log(JSON.stringify(process.argv.includes('list') ? [p] : p));\n`, { mode: 0o755 });
+    writeFakeGh(dir, `#!/usr/bin/env node\nif (process.env.TEST_GH_FAIL) process.exit(1);\nconst p = ${JSON.stringify(pull)};\nconsole.log(JSON.stringify(process.argv.includes('list') ? [p] : p));\n`);
     const run = (...args: string[]) => spawnSync(process.execPath, ['--import', 'tsx', resolve('scripts/plan-record-merge.ts'), ...args, '--plan', path], {
-      encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      encoding: 'utf8', env: fakeGhEnv(dir),
     });
     assert.equal(run('check').status, 1);
     assert.equal(run('--pr', '90', '--fleet-review', 'done').status, 0);
@@ -64,7 +65,7 @@ it('CLI detects an unrecorded merged PR, persists the cluster and fails closed o
     saved.wave_checkpoints = { '2': '2026-11-26T10:01:00Z' };
     writeFileSync(path, JSON.stringify(saved));
     assert.equal(run('check').status, 0);
-    writeFileSync(join(dir, 'gh'), '#!/usr/bin/env node\nprocess.exit(1);\n', { mode: 0o755 });
+    writeFakeGh(dir, '#!/usr/bin/env node\nprocess.exit(1);\n');
     assert.equal(run('check').status, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
