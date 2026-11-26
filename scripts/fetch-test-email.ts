@@ -36,6 +36,10 @@
  * `05-published.json` é gravado DEPOIS do clique em Send test e, como corte,
  * descartaria o próprio teste atual — o Stage 5 omite a flag nesse backend.
  *
+ * `--wait-seconds` (#14117): conta a partir do envio do teste (a mesma âncora
+ * do `--sent-after`), não da chamada — só dorme o que falta. Sem âncora (ou
+ * com âncora no futuro), dorme os segundos inteiros (20 s Kit, 15 s Beehiiv).
+ *
  * Grava (só em sucesso):
  *   {edition_dir}/_internal/.email-body.tmp           corpo HTML (ou text/plain se não houver HTML)
  *   {edition_dir}/_internal/lint-size-{AAMMDD}.json   resultado do lint de tamanho entregue
@@ -270,6 +274,24 @@ export interface FetchTestEmailOptions {
 export const SENT_AFTER_SKEW_MS = 5_000;
 
 /**
+ * (#14117) Espera inicial antes da 1ª busca: os `waitSeconds` contam a partir
+ * do ENVIO do teste (`sentAtMs`, o mesmo `--sent-after`/`test_sent_at` do
+ * corte), não da chamada. Teste enviado há 5 s com espera de 20 s → 15 s;
+ * enviado há 60 s → 0. Sem âncora, ou âncora no futuro (relógio torto entre
+ * a máquina que gravou o `test_sent_at` e esta), a espera é a cheia — nunca
+ * mais que `waitSeconds`.
+ *
+ * @pure
+ */
+export function initialWaitMs(waitSeconds: number, sentAtMs: number | undefined, nowMs: number): number {
+  const full = Math.max(0, waitSeconds * 1000);
+  if (sentAtMs === undefined || !Number.isFinite(sentAtMs)) return full;
+  const elapsed = nowMs - sentAtMs;
+  if (elapsed < 0) return full;
+  return Math.max(0, full - elapsed);
+}
+
+/**
  * Mensagem mais recente da thread com `internalDate >= cutoff` (`cutoff`
  * null = sem filtro).
  *
@@ -330,8 +352,9 @@ export async function fetchTestEmail(
     };
   }
 
-  const wait = opts.waitSeconds ?? PLATFORM_QUERY[opts.platform].waitSeconds;
-  if (wait > 0) await deps.sleep(wait * 1000);
+  // #14117: a espera conta do envio do teste (`sentAfterMs`), não desta chamada.
+  const wait = initialWaitMs(opts.waitSeconds ?? PLATFORM_QUERY[opts.platform].waitSeconds, sentAfterMs, deps.now());
+  if (wait > 0) await deps.sleep(wait);
 
   const deadline = deps.now() + (opts.timeoutSeconds ?? 30) * 1000;
   const poll = (opts.pollSeconds ?? 5) * 1000;
