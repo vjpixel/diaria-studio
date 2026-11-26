@@ -5,10 +5,11 @@
  * `#463` precisa pros 6 consumidores hoje acoplados à Beehiiv
  * (`refresh-dedup.ts`, `refresh-past-editions.ts`, `fetch-monthly-posts.ts`,
  * `collect-edition-signals.ts`, `beehiiv-sync.ts`/cache, agente
- * `beehiiv-clicks-enricher`). Este módulo NÃO migra nenhum desses
- * consumidores ainda — é a fundação que eles vão chamar quando migrarem
- * atrás da flag `platform.newsletter` (hoje `"beehiiv"`, ver
- * `platform.config.json`).
+ * `beehiiv-clicks-enricher`). Nasceu como fundação da migração; hoje o Kit
+ * é o backend principal (envio só Kit desde o #11225; leitura via
+ * `publishing.newsletter.read_backend` e assinantes via
+ * `publishing.newsletter.subscriber_backend`, ambos `"kit"` em
+ * `platform.config.json`). A antiga chave de topo `newsletter` saiu no #14123.
  *
  * ## Por que existe (achado do #6047/#463)
  *

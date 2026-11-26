@@ -67,7 +67,8 @@
  * tracking de janela de tempo que não existe ainda) — tratado como TODO
  * anotado aqui, não implementado nesta fatia (a própria issue trata isso
  * como o critério menos crítico).
- * TODO(#3564-ci-watch): quando `studio-issues.ts` ganhar histórico de CI por
+ * Pendência sem issue aberta (a #3564 fechou sem isso, #14123): quando
+ * `studio-issues.ts` ganhar histórico de CI por
  * PR, adicionar um 3º ramo de polling aqui (draft criado por subagente +
  * CI vermelho há mais de N minutos) reusando o mesmo `notifyOnceKey`+dedup.
  */

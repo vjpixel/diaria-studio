@@ -65,14 +65,14 @@ export interface ScoringFeatureRow {
   /** Domínio bate com `lancamentoDomains()`/`lancamentoPatterns()` (`scripts/lib/official-domains.ts`) — condição necessária de #160, não suficiente. */
   has_official_link: boolean;
 
-  // --- explicitamente NÃO implementadas nesta fase (#7975) — sempre null,
-  // nunca fabricadas. Precisam de infraestrutura adicional listada no
-  // comentário de cada uma; ver issue #7975 para o que falta. ---
-  /** TODO(#7975 follow-up): precisa de dedup histórico contra `data/past-editions.md`/cache de URLs publicadas. */
+  // --- explicitamente NÃO implementadas na Fase 1 (#7975, já fechada) —
+  // sempre null, nunca fabricadas. Precisam da infraestrutura listada no
+  // comentário de cada uma; não há issue aberta para elas (#14123). ---
+  /** Não implementada: precisa de dedup histórico contra `data/past-editions.md`/cache de URLs publicadas. */
   novelty_vs_past_editions: null;
-  /** TODO(#7975 follow-up): precisa de CTR por domínio agregado de `data/link-ctr-table.csv`, janela de 30 dias. */
+  /** Não implementada: precisa de CTR por domínio agregado de `data/link-ctr-table.csv`, janela de 30 dias. */
   source_reputation_ctr_30d: null;
-  /** TODO(#7975 follow-up): mesma fonte que a de 30d, janela de 90 dias. */
+  /** Não implementada: mesma fonte que a de 30d, janela de 90 dias. */
   source_reputation_ctr_90d: null;
 
   // --- proveniência (#7972 Camada 1, mitigações C-3/S-8) ---

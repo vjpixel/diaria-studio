@@ -16,7 +16,10 @@ const ScheduleSchema = z.object({
 }).optional();
 
 export const PlatformConfigSchema = z.object({
-  newsletter: z.string().optional(),
+  // A chave de topo `newsletter` ("beehiiv") saiu no #14123: nenhum script a
+  // lia (o envio é só Kit desde o #11225; leitura em
+  // `publishing.newsletter.read_backend`/`subscriber_backend`). Config antiga
+  // que ainda a traga passa pelo `.passthrough()` abaixo.
   publication_id: z.string().optional(),
   drive_sync: z.boolean().optional().default(true),
   drive_sync_conflict_tolerance_seconds: z.number().optional().default(10),
