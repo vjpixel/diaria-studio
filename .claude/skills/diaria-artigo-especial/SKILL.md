@@ -1,6 +1,6 @@
 ---
 name: diaria-artigo-especial
-description: Produz e divulga um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`). Produção (#9099, Etapas A-E, gate humano entre elas) — tema da votação dos apoiadores, briefing (fontes, estrutura, tese), rascunho em `data/artigo-especial/{ano}-{slug}/draft.md` iterado no chat com passada do humanizador, HTML no template dos artigos (`articles-src/{slug}.html` + registros), PR, deploy pelo `deploy-artigos.yml` e probe da URL. Divulgação (Passos 0-6) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Resumível pelo state file. A divulgação requer a máquina do editor (Claude in Chrome logado) — não roda no `300`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--ciclo AAMM | --tema "..."] [--so-divulgacao] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
+description: Produz e divulga um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`). Produção (#9099, Etapas A-E, gate humano entre elas) — tema da votação dos apoiadores, briefing (fontes, estrutura, tese), rascunho em `data/artigo-especial/{ano}-{slug}/draft.md` iterado no chat com passada do humanizador, HTML no template dos artigos (`articles-src/{slug}.html` + registros), PR, deploy pelo `deploy-artigos.yml` e probe da URL. Divulgação (Passos 0-6) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:30 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Resumível pelo state file. A divulgação requer a máquina do editor (Claude in Chrome logado) — não roda no `300`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--ciclo AAMM | --tema "..."] [--so-divulgacao] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
 ---
 
 ## Agenda de divulgação ciente da grade (#10819)
@@ -67,7 +67,7 @@ editoriais — rodam com o editor presente, em qualquer máquina com `data/`.
 | Conteúdo do post apoia.se | **CHAMADA, não recorte (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui a decisão original de reaproveitar os `leadParagraphs`).** Título + 2 parágrafos curtos que despertem curiosidade + URL. O texto levanta uma tensão e para; o mecanismo/a tese fica no artigo, que é o que a pessoa vai lá buscar. Nunca o texto integral nem o conteúdo do paywall (`retrospectiva.diar.ia.br/AAMM`, `workers/retrospectiva` — canal separado). |
 | Conteúdo dos posts LinkedIn | Mesma regra de chamada acima (editor, 23/08/2026): o post não entrega a tese completa no feed. Isca concreta (o caso real) + promessa do que o artigo responde, sem responder. |
 | **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` nos posts de LinkedIn** (editor, 23/08/2026; justificativa corrigida em #6014/#6013: o artigo é PÚBLICO e indexado de propósito — está no `sitemap.xml` com `robots.txt` liberando crawlers de IA. O que o tier R$10+ compra é antecedência, entrega por e-mail e arquivo, não exclusividade de leitura). O CTA fecha no apoia.se porque é lá que a conversão acontece, não porque o artigo seja inacessível. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
-| Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **D+1 09:00 BRT** e perfil pessoal (`webhook_target: "pixel"`) **D+2 09:30 BRT**, textos distintos (#6014 item 1 — o default único antigo D+1 17:30 colidia com o `d3` da edição diária no mesmo minuto). Agenda do dia: `09:00 especial-pagina | 09:45 d1 | 12:15 d2 | 17:15 d3`. |
+| Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **D+1 09:30 BRT** (09:00 até 25/11/2026, #10305) e perfil pessoal (`webhook_target: "pixel"`) **D+2 09:30 BRT**, textos distintos (#6014 item 1 — o default único antigo D+1 17:30 colidia com o `d3` da edição diária no mesmo minuto). Agenda do dia na época: `09:00 especial-pagina | 09:45 d1 | 12:15 d2 | 17:15 d3`. Desde 25/11/2026 (#10305) a grade da diária é `09:00 um | 12:00 d2 | 18:00 d1 | 21:00 d3`, e a página foi para 09:30 para sair do minuto do Use Melhor (o planner #10819 não vê a grade do config em dia ainda sem store). |
 | Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 2 (`boxes_divulgacao.slot2` + `boxes_divulgacao_auto.pinned_slots: [2]` em `platform.config.json` — era slot 3 até o #6748 eliminá-lo, ver seção "Decisões já tomadas" acima). |
 | **E-mail: íntegra ou chamada + link?** (#7659) | **Chamada + link**, e por impossibilidade técnica, não por gosto: o artigo é um documento web de 43–52 KB com `<style>`, CSS grid, infográficos e barra de progresso — não sobrevive a cliente de e-mail, e acima de ~102 KB o Gmail corta a mensagem (cortando o pixel de abertura junto). Mandar a íntegra entregaria um artigo quebrado E perderia a medição. |
 | **E-mail: envio extra ou substitui a diária?** (#7659) | **Extra** — a diária do dia sai normal, mesma escolha da anual (#7569). Audiências diferentes (R$10+ × base inteira) e o volume é de 1 e-mail a mais por mês pra algumas dezenas de pessoas que pagam justamente por ele. |
@@ -91,7 +91,7 @@ editoriais — rodam com o editor presente, em qualquer máquina com `data/`.
 - `--ano AAAA` — default: ano corrente.
 - `--at ISO` — horário do agendamento LinkedIn quando quiser os DOIS
   canais no mesmo instante. Default (#6014 item 1): cada canal tem o seu —
-  **página D+1 09:00 BRT, perfil D+2 09:30 BRT**, via
+  **página D+1 09:30 BRT, perfil D+2 09:30 BRT**, via
   `scripts/lib/artigo-especial-schedule.ts::resolveArtigoEspecialScheduledAts`
   (reusa `computeScheduledAt`, não reimplementa — ver docstring do módulo).
   Imprimir os horários assumidos em destaque quando `--at` for omitido
@@ -389,7 +389,7 @@ fluxo é o mesmo de antes do #9099.
 6. **Resolver o `--at`.** Se `--at` foi passado, validar com
    `validateExplicitAt` (ISO parseável, futuro) — vale pros dois canais.
    Se omitido, resolver via `resolveArtigoEspecialScheduledAts(config)`
-   (default #6014: página D+1 09:00 BRT, perfil D+2 09:30 BRT) e imprimir
+   (default #6014, revisto no #10305: página D+1 09:30 BRT, perfil D+2 09:30 BRT) e imprimir
    o banner dos defaults aplicados.
 
 ## Passo 1 — gerar os 4 textos (agente, 1 dispatch)
@@ -536,7 +536,7 @@ npx tsx scripts/publish-artigo-especial-linkedin.ts \
 ```
 
    `--at` omitido = horário planejado da página (#10819), usando D+1
-   09:00 BRT como preferência; mostrar o banner e as premissas no gate.
+   09:30 BRT como preferência; mostrar o banner e as premissas no gate.
 
 2. **Perfil (manual, composer do LinkedIn):** agendar o texto de
    `data/artigo-especial/{ano}-{slug}/linkedin-perfil.md` para **o horário do perfil calculado pelo planner

@@ -299,6 +299,7 @@
  * seleção.
  */
 
+import { allRows } from "./lib/sqlite-rows.ts";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
@@ -1057,13 +1058,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
-  const rows = db
+  const rows = allRows<SegmentRow>(db
     .prepare(
       `SELECT email, name, tier, cohort, priority_points, priority_optin, send_eligible, ineligible_reason,
               sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, created, brevo_modified_at
          FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
-    )
-    .all(...(cohort ? [cohort] : [])) as unknown as SegmentRow[];
+    ), ...(cohort ? [cohort] : []));
   db.close();
 
   if (cohort) {

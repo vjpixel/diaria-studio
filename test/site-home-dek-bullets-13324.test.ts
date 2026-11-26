@@ -124,7 +124,7 @@ describe("#13324 — backfillDekItems (páginas já publicadas)", () => {
     const written: string[] = [];
     const r = runDekItemsBackfill("/x", {
       listSlugs: () => Object.keys(pages),
-      readPage: (p) => pages[p.split("/").at(-2)!],
+      readPage: (p) => pages[p.split(/[\\/]/).at(-2)!], // o caminho vem de `join`: `\` no Windows (#13738)
       writePage: (p) => written.push(p),
     });
     assert.deepEqual(r, { scanned: 2, changed: 1 });

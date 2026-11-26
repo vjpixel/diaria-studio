@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   CORTE_FORBIDDEN_FLAGS,
   DIARIA_HOME_URL,
@@ -205,7 +205,8 @@ describe("#11795 corte.json (registro próprio)", () => {
       positionalDate: "",
       log: (l) => logs.push(l),
     });
-    assert.equal(spec.video, "/videos/x.mp4");
+    // `--video` é resolvido para absoluto: no Windows "/videos/x.mp4" vira "C:\videos\x.mp4" (#13738).
+    assert.equal(spec.video, resolve("/videos/x.mp4"));
     assert.ok(existsSync(join(dir, CORTE_SPEC_FILE)));
     assert.equal(readFileSync(join(dir, SHORT_COVER_FILE), "utf8"), "jpg");
     const again = prepareCorteRun({ slug: "abc", dir, values: {}, positionalDate: "", log: (l) => logs.push(l) });

@@ -98,7 +98,8 @@ not ok 2 - /r/test/b.test.ts
       "TAP version 13",
       "    not ok 1 - x",
       "      ---",
-      "      location: 'C:\\r\\it''s\\k.test.ts:1:1'",
+      // O reporter tap do Node dobra a barra invertida (forma real, #13738).
+      "      location: 'C:\\\\r\\\\it''s\\\\k.test.ts:1:1'",
       "      failureType: 'testCodeFailure'",
       "      exitCode: ~",
       "      signal: 'SIGKILL'",
@@ -106,6 +107,31 @@ not ok 2 - /r/test/b.test.ts
       "",
     ].join("\r\n");
     assert.deepEqual(parseTapFileExits(tap), [{ file: "C:\\r\\it's\\k.test.ts", exitCode: null, signal: "SIGKILL" }]);
+  });
+
+  it("#13738: caminho Windows escapado pelo reporter (location e nome do not ok) volta com barra única", () => {
+    // Saída real do Node 24 no Windows: `\` sai como `\\`, `#` como `\#`.
+    const tap = [
+      "TAP version 13",
+      "not ok 1 - C:\\\\Temp\\\\fx\\\\exit.test.mjs",
+      "  ---",
+      "  location: 'C:\\\\Temp\\\\fx\\\\exit.test.mjs:1:1'",
+      "  failureType: 'testCodeFailure'",
+      "  exitCode: 7",
+      "  signal: ~",
+      "  ...",
+      "not ok 2 - C:\\\\Temp\\\\a\\#b\\\\seg.test.mjs",
+      "  ---",
+      "  failureType: 'testCodeFailure'",
+      "  exitCode: ~",
+      "  signal: 'SIGKILL'",
+      "  ...",
+      "",
+    ].join("\n");
+    assert.deepEqual(parseTapFileExits(tap), [
+      { file: "C:\\Temp\\fx\\exit.test.mjs", exitCode: 7, signal: null },
+      { file: "C:\\Temp\\a#b\\seg.test.mjs", exitCode: null, signal: "SIGKILL" },
+    ]);
   });
 
   it("TAP truncado (batch morto no meio) devolve o que der para ler, sem lançar", () => {

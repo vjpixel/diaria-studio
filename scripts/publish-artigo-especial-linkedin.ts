@@ -376,7 +376,7 @@ export async function runArtigoEspecialLinkedinDispatch(
       text,
       imageUrl,
       // #6014 item 1: página e perfil têm horários default distintos
-      // (D+1 09:00 × D+2 09:30 BRT). Compat: sem `scheduledAtPerfil`,
+      // (D+1 09:30 × D+2 09:30 BRT, #10305). Compat: sem `scheduledAtPerfil`,
       // os dois usam `scheduledAt` (ex: --at explícito único).
       scheduledAt: target === "perfil" ? (scheduledAtPerfil ?? scheduledAt) : scheduledAt,
       webhookTarget: targetToWebhook[target],
@@ -574,7 +574,7 @@ async function main(): Promise<void> {
   }
 
   // #6014 item 1: `--at` explícito continua valendo pros DOIS canais (compat);
-  // omitido, cada canal recebe seu default próprio — página D+1 09:00 BRT,
+  // omitido, cada canal recebe seu default próprio — página D+1 09:30 BRT,
   // perfil D+2 09:30 BRT (resolveArtigoEspecialScheduledAts). Antes o default
   // único era D+1 17:30 — colidia com o d3 da edição diária no mesmo minuto.
   let scheduledAt: string;

@@ -36,6 +36,7 @@
 // avaliação começar em qualquer módulo). `openClariceDb` abaixo carrega o
 // valor real via `createRequire` (CJS, resolvido só quando a função roda),
 // depois de `assertSupportedNodeVersion()` já ter dado a mensagem clara.
+import { allRows } from "./sqlite-rows.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { statSync } from "node:fs";
@@ -1552,9 +1553,8 @@ export function recordForgetRequest(
 }
 
 export function listForgetRequests(db: DatabaseSync): ForgetRequest[] {
-  return db
-    .prepare("SELECT email, requested_at, source, note FROM forget_requests ORDER BY requested_at, email")
-    .all() as unknown as ForgetRequest[];
+  return allRows<ForgetRequest>(db
+    .prepare("SELECT email, requested_at, source, note FROM forget_requests ORDER BY requested_at, email"));
 }
 
 /**

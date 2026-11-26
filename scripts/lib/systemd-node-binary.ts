@@ -25,7 +25,11 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, posix } from "node:path";
+// O caminho vai pro `ExecStart=` de uma unit systemd (Linux): sempre POSIX,
+// mesmo quando o gerador roda no Windows (#13738 — no Neo o `join` nativo
+// montava `\home\u\.nvm\...` e o nvm do `.nvmrc` nunca era achado).
+const { join } = posix;
 
 export type SystemdNodeBinarySource = "override" | "nvm" | "process-execpath" | "process-execpath-sem-nvmrc";
 

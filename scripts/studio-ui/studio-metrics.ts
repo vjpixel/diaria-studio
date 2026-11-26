@@ -61,6 +61,7 @@
  * caminho honesto.
  */
 
+import { allRows } from "../lib/sqlite-rows.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -531,7 +532,7 @@ interface KitSubscriptionRow {
  */
 function queryKitRegistros(db: DatabaseSync, janela: Janela): AcquisitionRecordInput[] {
   const dias = new Set(enumerarDiasInclusive(janela.de, janela.ate));
-  const rows = db
+  const rows = allRows<KitSubscriptionRow>(db
     .prepare(
       `SELECT ia.email AS email, ia.external_id AS external_id, s.entered_at AS entered_at,
               s.utm_source AS utm_source, s.utm_medium AS utm_medium, s.utm_channel AS utm_channel,
@@ -539,8 +540,7 @@ function queryKitRegistros(db: DatabaseSync, janela: Janela): AcquisitionRecordI
        FROM subscription s
        LEFT JOIN identity_alias ia ON ia.subscriber_id = s.subscriber_id AND ia.platform = s.platform
        WHERE s.platform = 'kit' AND s.entered_at IS NOT NULL`,
-    )
-    .all() as unknown as KitSubscriptionRow[];
+    ));
   const out: AcquisitionRecordInput[] = [];
   for (const r of rows) {
     if (!r.entered_at) continue;

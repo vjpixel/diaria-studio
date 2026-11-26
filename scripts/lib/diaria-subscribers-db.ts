@@ -81,6 +81,7 @@
 // por tipo. A resolução real é lazy via createRequire dentro de
 // openDiariaSubscribersDb, depois de assertSupportedNodeVersion() já ter
 // dado a mensagem clara.
+import { allRows } from "./sqlite-rows.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -465,9 +466,9 @@ const SUBSCRIPTION_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string 
 export function migrateSubscriptionColumns(db: DatabaseSync): void {
   const existing = new Set(
     (
-      db.prepare("PRAGMA table_info(subscription)").all() as unknown as Array<{
+      allRows<{
         name: string;
-      }>
+      }>(db.prepare("PRAGMA table_info(subscription)"))
     ).map((c) => c.name),
   );
   for (const col of SUBSCRIPTION_MIGRATION_COLUMNS) {
@@ -525,9 +526,9 @@ const EVENT_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
 export function migrateEventColumns(db: DatabaseSync): void {
   const existing = new Set(
     (
-      db.prepare("PRAGMA table_info(event)").all() as unknown as Array<{
+      allRows<{
         name: string;
-      }>
+      }>(db.prepare("PRAGMA table_info(event)"))
     ).map((c) => c.name),
   );
   for (const col of EVENT_MIGRATION_COLUMNS) {
@@ -1214,12 +1215,11 @@ export function getSubscriberTimeline(
   db: DatabaseSync,
   subscriberId: number,
 ): TimelineEvent[] {
-  return db
+  return allRows<TimelineEvent>(db
     .prepare(
       `SELECT id, subscriber_id, platform, type, external_event_id, edicao, url, subtype, ts
        FROM event WHERE subscriber_id = ? ORDER BY ts ASC`,
-    )
-    .all(subscriberId) as unknown as TimelineEvent[];
+    ), subscriberId);
 }
 
 /**
@@ -1275,11 +1275,10 @@ export function findSubscriberIdsByEmail(
   email: string,
 ): number[] {
   const normalizedEmail = email.trim().toLowerCase();
-  const rows = db
+  const rows = allRows<{ subscriber_id: number }>(db
     .prepare(
       "SELECT DISTINCT subscriber_id FROM identity_alias WHERE email = ?",
-    )
-    .all(normalizedEmail) as unknown as Array<{ subscriber_id: number }>;
+    ), normalizedEmail);
   return rows.map((r) => r.subscriber_id);
 }
 
@@ -1293,26 +1292,24 @@ export function getCohortEventCounts(
   type?: EventType,
 ): Array<{ type: EventType; count: number }> {
   const rows = type
-    ? (db
+    ? (allRows<{
+        type: EventType;
+        count: number;
+      }>(db
         .prepare(
           `SELECT type, COUNT(*) AS count FROM event
            WHERE platform = ? AND type = ? AND ts >= ? AND ts <= ?
            GROUP BY type`,
-        )
-        .all(platform, type, fromTs, toTs) as unknown as Array<{
+        ), platform, type, fromTs, toTs))
+    : (allRows<{
         type: EventType;
         count: number;
-      }>)
-    : (db
+      }>(db
         .prepare(
           `SELECT type, COUNT(*) AS count FROM event
            WHERE platform = ? AND ts >= ? AND ts <= ?
            GROUP BY type`,
-        )
-        .all(platform, fromTs, toTs) as unknown as Array<{
-        type: EventType;
-        count: number;
-      }>);
+        ), platform, fromTs, toTs));
   return rows;
 }
 
@@ -1554,11 +1551,10 @@ export function getAliasesForSubscriber(
   db: DatabaseSync,
   subscriberId: number,
 ): SubscriberAlias[] {
-  return db
+  return allRows<SubscriberAlias>(db
     .prepare(
       "SELECT platform, external_id, email FROM identity_alias WHERE subscriber_id = ?",
-    )
-    .all(subscriberId) as unknown as SubscriberAlias[];
+    ), subscriberId);
 }
 
 export interface SubscriptionRecord {
@@ -1593,15 +1589,14 @@ export function getSubscriptionsForSubscriber(
   db: DatabaseSync,
   subscriberId: number,
 ): SubscriptionRecord[] {
-  return db
+  return allRows<SubscriptionRecord>(db
     .prepare(
       `SELECT platform, status, entered_at, exited_at, source,
               utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
               utm_source, utm_term, utm_content, atribuicao_fonte, reativado,
               origem_serie, updated_at
        FROM subscription WHERE subscriber_id = ?`,
-    )
-    .all(subscriberId) as unknown as SubscriptionRecord[];
+    ), subscriberId);
 }
 
 /**
@@ -1697,11 +1692,10 @@ export function getAttributesForSubscriber(
   db: DatabaseSync,
   subscriberId: number,
 ): SubscriberAttributeRecord[] {
-  return db
+  return allRows<SubscriberAttributeRecord>(db
     .prepare(
       "SELECT platform, key, value, updated_at FROM subscriber_attribute WHERE subscriber_id = ?",
-    )
-    .all(subscriberId) as unknown as SubscriberAttributeRecord[];
+    ), subscriberId);
 }
 
 /**
@@ -1750,11 +1744,10 @@ export function getAttributeKeyCoverage(
  * nenhum atributo gravado ainda) é resultado válido, não erro.
  */
 export function getAllAttributeKeyCoverage(db: DatabaseSync): AttributeKeyCoverage[] {
-  const pairs = db
+  const pairs = allRows<{ platform: Platform; key: string }>(db
     .prepare(
       "SELECT DISTINCT platform, key FROM subscriber_attribute ORDER BY platform, key",
-    )
-    .all() as unknown as Array<{ platform: Platform; key: string }>;
+    ));
   return pairs
     .map(({ platform, key }) => getAttributeKeyCoverage(db, platform, key))
     .sort((a, b) => b.withAttribute - a.withAttribute);
@@ -1769,9 +1762,8 @@ export function getAllAttributeKeyCoverage(db: DatabaseSync): AttributeKeyCovera
 export function getAllSubscriberPlatforms(
   db: DatabaseSync,
 ): Map<number, Set<Platform>> {
-  const rows = db
-    .prepare("SELECT DISTINCT subscriber_id, platform FROM identity_alias")
-    .all() as unknown as Array<{ subscriber_id: number; platform: Platform }>;
+  const rows = allRows<{ subscriber_id: number; platform: Platform }>(db
+    .prepare("SELECT DISTINCT subscriber_id, platform FROM identity_alias"));
   const map = new Map<number, Set<Platform>>();
   for (const r of rows) {
     let set = map.get(r.subscriber_id);
@@ -1797,15 +1789,14 @@ export function getAllSubscriberPlatforms(
 export function getAllSubscriptionsBySubscriber(
   db: DatabaseSync,
 ): Map<number, SubscriptionRecord[]> {
-  const rows = db
+  const rows = allRows<SubscriptionRecord & { subscriber_id: number }>(db
     .prepare(
       `SELECT subscriber_id, platform, status, entered_at, exited_at, source,
               utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
               utm_source, utm_term, utm_content, atribuicao_fonte, reativado,
               origem_serie, updated_at
        FROM subscription`,
-    )
-    .all() as unknown as Array<SubscriptionRecord & { subscriber_id: number }>;
+    ));
   const map = new Map<number, SubscriptionRecord[]>();
   for (const { subscriber_id, ...rest } of rows) {
     let list = map.get(subscriber_id);
@@ -1832,9 +1823,8 @@ export function getAllSubscriptionsBySubscriber(
 export function getAllAliasesBySubscriber(
   db: DatabaseSync,
 ): Map<number, SubscriberAlias[]> {
-  const rows = db
-    .prepare("SELECT subscriber_id, platform, external_id, email FROM identity_alias")
-    .all() as unknown as Array<SubscriberAlias & { subscriber_id: number }>;
+  const rows = allRows<SubscriberAlias & { subscriber_id: number }>(db
+    .prepare("SELECT subscriber_id, platform, external_id, email FROM identity_alias"));
   const map = new Map<number, SubscriberAlias[]>();
   for (const { subscriber_id, ...rest } of rows) {
     let list = map.get(subscriber_id);
@@ -1876,12 +1866,11 @@ export interface SubscriberEventRow {
 export function getAllEventsBySubscriber(
   db: DatabaseSync,
 ): Map<number, SubscriberEventRow[]> {
-  const rows = db
+  const rows = allRows<SubscriberEventRow & { subscriber_id: number }>(db
     .prepare(
       `SELECT subscriber_id, platform, type, edicao, external_event_id, ts
        FROM event WHERE subscriber_id IS NOT NULL`,
-    )
-    .all() as unknown as Array<SubscriberEventRow & { subscriber_id: number }>;
+    ));
   const map = new Map<number, SubscriberEventRow[]>();
   for (const { subscriber_id, ...rest } of rows) {
     let list = map.get(subscriber_id);
@@ -1997,7 +1986,9 @@ export function hasKitWebhookEventNear(
   if (Number.isNaN(t)) return false;
   const from = new Date(t - windowMs).toISOString();
   const to = new Date(t + windowMs).toISOString();
-  const matches = db
+  const matches = allRows<{
+    ts: string;
+  }>(db
     .prepare(
       `SELECT m.received_at AS ts FROM kit_webhook_event m
        WHERE m.received_at >= ? AND m.received_at <= ?
@@ -2007,10 +1998,7 @@ export function hasKitWebhookEventNear(
            WHERE o.kit_subscriber_id = m.kit_subscriber_id AND o.type <> m.type
              AND o.received_at > min(m.received_at, ?) AND o.received_at < max(m.received_at, ?)
          )`,
-    )
-    .all(from, to, ev.kit_subscriber_id, ev.type, ev.url, ev.key, ev.received_at, ev.received_at) as unknown as {
-    ts: string;
-  }[];
+    ), from, to, ev.kit_subscriber_id, ev.type, ev.url, ev.key, ev.received_at, ev.received_at);
   if (matches.length === 0) return false;
   const others = pending.filter((p) => p.kit_subscriber_id === ev.kit_subscriber_id && p.type !== ev.type);
   return matches.some(({ ts }) => {
@@ -2025,12 +2013,11 @@ export function getKitWebhookEventsForSubscriber(
   db: DatabaseSync,
   subscriberId: number,
 ): KitWebhookEventRow[] {
-  return db
+  return allRows<KitWebhookEventRow>(db
     .prepare(
       `SELECT subscriber_id, kit_subscriber_id, email, type, state, url, received_at, event_key
        FROM kit_webhook_event WHERE subscriber_id = ? ORDER BY received_at ASC, event_key ASC`,
-    )
-    .all(subscriberId) as unknown as KitWebhookEventRow[];
+    ), subscriberId);
 }
 
 /** `received_at` mais recente já ingerido (null com a tabela vazia) — ponto
