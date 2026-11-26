@@ -317,6 +317,15 @@ describe("#14037 join do Brevo", () => {
     assert.notEqual(output.status, "ok");
   });
 
+  it("leitura ilegível isolada é tratada como transitória; repetida vira falha", async () => {
+    const bad: ReadRecordOutcome = { kind: "invalid", error: "EBUSY" };
+    const ok = await runJoin(fakeDeps([bad, { kind: "ok", record: done("ok") }]), { waitMs: 540_000, pollMs: 5_000 });
+    assert.equal(ok.output.join, "done");
+    const ko = await runJoin(fakeDeps([bad]), { waitMs: 540_000, pollMs: 5_000 });
+    assert.equal(ko.exitCode, 1);
+    assert.equal(ko.output.join, "invalid");
+  });
+
   it("registro ausente além da tolerância sai 3 (não lançado)", async () => {
     const { output, exitCode } = await runJoin(fakeDeps([{ kind: "missing" }]), { waitMs: 540_000, pollMs: 5_000 });
     assert.equal(exitCode, 3);

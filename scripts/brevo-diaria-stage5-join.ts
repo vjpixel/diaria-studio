@@ -41,6 +41,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** Tolerância para o registro ainda não existir logo depois do lançamento. */
 export const MISSING_GRACE_MS = 30_000;
 
+/** Leituras ilegíveis seguidas antes de o join desistir (as anteriores podem ser transitórias). */
+export const INVALID_STREAK_LIMIT = 3;
+
 export interface JoinDeps {
   read: () => ReadRecordOutcome;
   host: string;
@@ -88,6 +91,7 @@ export async function runJoin(
   opts: { waitMs: number; pollMs: number },
 ): Promise<{ output: JoinOutput; exitCode: number }> {
   const start = deps.nowMs();
+  let invalidStreak = 0;
   for (;;) {
     const outcome = deps.read();
     const elapsedMs = deps.nowMs() - start;
@@ -97,7 +101,14 @@ export async function runJoin(
       host: deps.host,
       isPidAlive: deps.isPidAlive,
     });
-    if (decision.kind !== "wait") return { output: buildJoinOutput(decision), exitCode: joinExitCode(decision) };
+    // Leitura ilegível pode ser transitória (no Windows o rename atômico do
+    // gravador pode colidir com a leitura): só vira falha depois de
+    // INVALID_STREAK_LIMIT leituras seguidas.
+    invalidStreak = decision.kind === "invalid" ? invalidStreak + 1 : 0;
+    const transientInvalid = decision.kind === "invalid" && invalidStreak < INVALID_STREAK_LIMIT && elapsedMs < opts.waitMs;
+    if (decision.kind !== "wait" && !transientInvalid) {
+      return { output: buildJoinOutput(decision), exitCode: joinExitCode(decision) };
+    }
     if (elapsedMs >= opts.waitMs) {
       const startedAt = outcome.kind === "ok" ? outcome.record.started_at : undefined;
       const final = { kind: "still_running" as const, startedAt };
