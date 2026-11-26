@@ -78,6 +78,7 @@ prévia, envio).
   rede: só a sessão top-level tem a ferramenta, e rodada autônoma sem ela segue
   o fallback do Passo 5. O Artifact nunca envia nada à Stack.
 
+<!-- anchor: passo-1 -->
 ## Passo 1 — Seleção e prévia de partida (dry-run)
 
 ```bash
@@ -120,6 +121,7 @@ vídeo da semana (#13023; a seleção segue sendo o mais visto), escrita só com
 (o D1 da edição do vídeo, lido da seleção ou do `02-reviewed.md`). O `--apply`
 grava em `video.description`.
 
+<!-- anchor: passo-3 -->
 ## Passo 3 — Humanizador e Clarice
 
 Na ordem da diária. `{C}` = o `circle-stack-copy.json`.
@@ -134,6 +136,7 @@ Na ordem da diária. `{C}` = o `circle-stack-copy.json`.
    (aceitar as sugestões da Clarice é o padrão do projeto) e regravar `{C}`.
    Clarice indisponível = halt banner (#738), nunca seguir em silêncio.
 
+<!-- anchor: passo-4 -->
 ## Passo 4 — Validar e gravar na seleção
 
 ```bash
@@ -149,6 +152,7 @@ lista os problemas e não aplica nada: corrigir `{C}` (à mão para ajuste
 pontual, ou de volta ao Passo 2 com os problemas no prompt do agente) e
 rodar de novo. Nunca editar a seleção direto para contornar a validação.
 
+<!-- anchor: passo-5 -->
 ## Passo 5 — Prévia final em Artifact (#11769)
 
 ```bash
@@ -205,6 +209,7 @@ uma linha (título e estado do ciclo), nunca o post inteiro.
 4. Apresentar o link do artefato ao editor ANTES do Passo 6 e do Passo 7.
    Rodar a skill sem `--publish` termina, depois do Passo 6, com esse link.
 
+<!-- anchor: passo-6 -->
 ## Passo 6 — Aprovação para o envio de segunda 06:00 (#11778)
 
 A aprovação autoriza um envio irreversível para terceiros (critério 1 de

@@ -19,6 +19,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getIntArg, getStringArg } from "./cli-args.ts";
 
 /** Par-alvo do coordenador do /diaria-overnight (#9530, decisão do editor 03/10/2026). */
 export const EXPECTED_MODEL = "claude-sonnet-5-5";
@@ -95,7 +96,11 @@ export function newestTranscriptForCwd(cwd = process.cwd(), projectsDir = join(h
   return files[0] ?? null;
 }
 
-/** Resolve o transcript a ler. Sem `--transcript`/`--session-id`/`--newest` → null (nunca adivinha). */
+/**
+ * Resolve o transcript a ler. Sem `--transcript`/`--session-id`/`--newest` → null (nunca adivinha).
+ * `--transcript`/`--session-id` sem valor (fim do argv, ou seguidos de outra flag) lançam (#14128):
+ * antes, `argv[indexOf(k) + 1]` lia `undefined` ou a flag seguinte como caminho.
+ */
 export function resolveTranscriptPath(
   argv: string[],
   deps: { findTranscript: (sid: string) => string | null; newest: () => string | null } = {
@@ -103,10 +108,9 @@ export function resolveTranscriptPath(
     newest: () => newestTranscriptForCwd(),
   },
 ): string | null {
-  const get = (k: string) => (argv.indexOf(k) >= 0 ? argv[argv.indexOf(k) + 1] : undefined);
-  const explicit = get("--transcript");
+  const explicit = getStringArg(argv, "transcript", { example: "/caminho/sessao.jsonl" });
   if (explicit) return explicit;
-  const sid = get("--session-id");
+  const sid = getStringArg(argv, "session-id", { example: "<uuid>" });
   if (sid) return deps.findTranscript(sid);
   if (argv.includes("--newest")) return deps.newest();
   return null;
@@ -114,19 +118,27 @@ export function resolveTranscriptPath(
 
 function main(): void {
   const a = process.argv.slice(2);
-  const get = (k: string) => (a.indexOf(k) >= 0 ? a[a.indexOf(k) + 1] : undefined);
-  const path = resolveTranscriptPath(a);
+  let path: string | null;
+  let expect: { model: string; effort: string };
+  let sinceLine: number;
+  try {
+    path = resolveTranscriptPath(a);
+    expect = {
+      model: getStringArg(a, "expect-model", { example: EXPECTED_MODEL }) ?? EXPECTED_MODEL,
+      effort: getStringArg(a, "expect-effort", { example: EXPECTED_EFFORT }) ?? EXPECTED_EFFORT,
+    };
+    sinceLine = getIntArg(a, "since-line") ?? 0;
+  } catch (e) {
+    console.error(`[effective-model-probe] ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
   if (!path || !existsSync(path)) {
     console.error(
       "transcript não encontrado (--transcript <path> | --session-id <id>, injetado pelo hook em chamada standalone | --newest, opt-in)",
     );
     process.exit(1);
   }
-  const r = probe(
-    readFileSync(path, "utf8"),
-    { model: get("--expect-model") ?? EXPECTED_MODEL, effort: get("--expect-effort") ?? EXPECTED_EFFORT },
-    Number(get("--since-line") ?? 0),
-  );
+  const r = probe(readFileSync(path, "utf8"), expect, sinceLine);
   console.log(JSON.stringify(r));
   process.exit(r.effective ? (r.ok ? 0 : 2) : 1);
 }

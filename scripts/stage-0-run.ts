@@ -153,6 +153,7 @@ import { type CaptureFailureSentinel, captureFailedSentinelPath } from "./lib/ne
 import { approvedSenders, classifySender, resolveSenderRegistry, type SenderRegistry } from "./lib/newsletter-senders.ts";
 import { EXIT_HISTORY_MANIFEST_REL_PATH, exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 import { formatPrevSocialSummary, type PrevSocialReport } from "./lib/prev-social-status.ts";
+import { emitStepTimings, StepTimingRecorder } from "./lib/runner-step-timings.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
 // qualquer outro código, em module scope.
@@ -173,8 +174,9 @@ export interface StepResult {
   stderr: string;
 }
 
-export type ExecFn = (scriptRelPath: string, args: string[]) => StepResult;
-export type AsyncExecFn = (scriptRelPath: string, args: string[]) => Promise<StepResult>;
+/** `label` (opcional) só serve à medição por passo (#14032); o spawn real ignora. */
+export type ExecFn = (scriptRelPath: string, args: string[], label?: string) => StepResult;
+export type AsyncExecFn = (scriptRelPath: string, args: string[], label?: string) => Promise<StepResult>;
 
 export function realExec(rootDir: string): ExecFn {
   return (scriptRelPath, args) => {
@@ -399,6 +401,8 @@ export interface Stage0RunDeps {
   writeFile: (path: string, content: string) => void;
   /** Env pra resolver credencial por página do Facebook (0k, #10505). Ausente = `process.env`. */
   env?: Record<string, string | undefined>;
+  /** Relógio em ms da medição por passo (#14032). Ausente = `Date.now`. */
+  clockMs?: () => number;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
@@ -435,7 +439,7 @@ function step(
   okCodes: number[] = [0],
 ): { result: StepResult; json: unknown } {
   report.note(`▶ ${label}`);
-  const result = deps.exec(scriptRelPath, args);
+  const result = deps.exec(scriptRelPath, args, label);
   if (result.stderr.trim()) console.error(result.stderr.trim());
   if (!okCodes.includes(result.code)) {
     const detail = result.stderr.trim().split("\n").slice(-6).join(" | ") || "(sem stderr)";
@@ -455,7 +459,7 @@ function softStep(
   args: string[],
 ): { result: StepResult; json: unknown } {
   report.note(`▶ ${label} (fail-soft)`);
-  const result = deps.exec(scriptRelPath, args);
+  const result = deps.exec(scriptRelPath, args, label);
   if (result.stderr.trim()) console.error(result.stderr.trim());
   if (result.code !== 0) {
     report.note(`⚠️  ${label} falhou (exit ${result.code}) — fail-soft, não bloqueia Stage 0.`);
@@ -1405,7 +1409,16 @@ export async function runStage0(argv: string[], deps: Stage0RunDeps): Promise<St
       };
     }
 
-    return await runContinue(deps, opts, report);
+    // #14032: duração de cada sub-script da fase `continue` num evento
+    // `step_timings` do run-log (nunca no stdout). A `preflight` fica de fora:
+    // é reconhecimento sem escrita em disco, e a `continue` repete os passos dela.
+    const timings = new StepTimingRecorder(deps.clockMs);
+    const timedDeps: Stage0RunDeps = { ...deps, exec: timings.wrapExec(deps.exec), execAsync: timings.wrapExecAsync(deps.execAsync) };
+    try {
+      return await runContinue(timedDeps, opts, report);
+    } finally {
+      emitStepTimings(deps.exec, { edition: opts.edition, stage: "0", agent: "orchestrator" }, timings.summary("continue"));
+    }
   } catch (e) {
     const abort = e instanceof Stage0Abort ? e : new Stage0Abort(`erro inesperado: ${(e as Error).message}`);
     report.note(`❌ ${abort.message}`);

@@ -25,7 +25,34 @@ chama os MESMOS scripts, com os mesmos guards, e só muda três coisas:
 
 Quando um passo abaixo diz "como no Passo N da skill X", leia aquele passo na
 `SKILL.md` da skill X e siga-o: o detalhe (formatos, recuperação de erro,
-casos de borda) vive lá e não é repetido aqui.
+casos de borda) vive lá e não é repetido aqui. **Leia só a seção, nunca o
+arquivo inteiro (#14119):** as três skills somam ~134 KB e cada passo citado
+tem uma âncora estável (`<!-- anchor: nome -->` antes do título), lida com
+
+```bash
+npx tsx scripts/read-skill-section.ts --skill {skill} --section {âncora}[,{âncora}...]
+```
+
+Exit 1 = âncora inexistente (o script lista as que existem; nada sai no
+stdout), e aí sim leia o arquivo inteiro e registre a premissa. Se o passo
+lido apontar outra seção da mesma skill, `--list` mostra as âncoras.
+
+| Citado abaixo como | `--skill` | `--section` |
+|---|---|---|
+| Passo 0 de `/diaria-retro-semanal` | `diaria-retro-semanal` | `passo-0` |
+| Passos 2a/2b de `/diaria-retro-semanal` (o 2a vive dentro do 2b) | `diaria-retro-semanal` | `passo-2b` |
+| Passo 2c de `/diaria-retro-semanal` | `diaria-retro-semanal` | `passo-2c` |
+| Passo 4 de `/diaria-retro-semanal` | `diaria-retro-semanal` | `passo-4` |
+| Passo 4 da skill do LinkedIn | `diaria-linkedin-semanal` | `passo-4` |
+| Passo 7 da skill do LinkedIn (inclui "Frase do vídeo") | `diaria-linkedin-semanal` | `passo-7` |
+| Passo 7b da skill do LinkedIn | `diaria-linkedin-semanal` | `passo-7b` |
+| Passos 8a a 8c de `/diaria-linkedin-semanal` (com a abertura do Passo 8) | `diaria-linkedin-semanal` | `passo-8` |
+| Passo 8d de `/diaria-linkedin-semanal` | `diaria-linkedin-semanal` | `passo-8d` |
+| Passo 9 do LinkedIn | `diaria-linkedin-semanal` | `passo-9` |
+| Passo 1 de `/diaria-stack` | `diaria-stack` | `passo-1` |
+| Passos 3-4 de `/diaria-stack` | `diaria-stack` | `passo-3,passo-4` |
+| Passo 5 de `/diaria-stack` | `diaria-stack` | `passo-5` |
+| Passo 6 de `/diaria-stack` | `diaria-stack` | `passo-6` |
 
 ## Argumentos
 
@@ -420,7 +447,8 @@ reais do ciclo; não entregar placeholders. Ler o título literal de
 
 ```text
 Retome apenas o paste do artigo do LinkedIn do pacote semanal {cycle}.
-Leia CLAUDE.md e os Passos 8a-8c e 9 de /diaria-linkedin-semanal,
+Leia CLAUDE.md e os Passos 8a-8c e 9 de /diaria-linkedin-semanal (só as
+seções: npx tsx scripts/read-skill-section.ts --skill diaria-linkedin-semanal --section passo-8,passo-9),
 bem como context/publishers/linkedin.md. Não re-renderizar, não refazer
 seleção/escrita/passes e não agendar a retro nem aprovar a Stack de novo.
 HTML final: I:\Meu Drive\diaria-studio-data\weekly\{cycle}\ln-{cycle}.html

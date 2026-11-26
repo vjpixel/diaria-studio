@@ -319,6 +319,7 @@ sem o parágrafo de comentário, e `renderLinkedinWeeklyHtml` grava um
 warning sinalizando o default aplicado (avise o editor disso no resumo do
 Passo 8 — ele pode sempre colar um comentário depois, direto no artigo).
 
+<!-- anchor: passo-4 -->
 ## Passo 4 — Checar acessibilidade da fonte (informativo, #8818 — não decide mais resumir-vs-literal)
 
 **Desde o #8818 este passo é puramente informativo.** Até o #5108, o
@@ -460,6 +461,7 @@ O agente `.claude/agents/fact-checker.md` §"Modo LinkedIn semanal" (`mode:
 "efetivamente inatingível" desde o #8029) — não espere vê-lo invocado por
 esta skill.
 
+<!-- anchor: passo-7 -->
 ## Passo 7 — Renderizar o artefato final
 
 ```bash
@@ -541,6 +543,7 @@ da semana sobre o que o vídeo traz que o texto não traz. Quando
 
 Re-render sem a flag reusa o gravado; sem frase, a seção sai só com a fixa.
 
+<!-- anchor: passo-7b -->
 ## Passo 7b — Publicar a prévia visual do artefato (#8027, obrigatório antes do Passo 8)
 
 **Diferente de simplesmente colar `ln-{cycle}.html` cru num Artifact, esta
@@ -597,6 +600,7 @@ Publicada a prévia, apresente o link ao editor ANTES de prosseguir pro
 Passo 8 — é o ponto em que ele revisa o conteúdo final antes de qualquer
 interação com o browser começar.
 
+<!-- anchor: passo-8 -->
 ## Passo 8 — Executar o paste assistido via Claude in Chrome (#5988, escopo reduzido pelo #8031)
 
 **Diferente dos passos anteriores desta skill (leitura/escrita de
@@ -625,6 +629,7 @@ inspecionar") está documentado em `context/publishers/linkedin.md`
 1ª execução, leia aquela seção inteira (a mecânica de agendamento
 documentada lá agora é executada pelo EDITOR, não pela skill — ver Passo 9).
 
+<!-- anchor: passo-8a -->
 ### 8a. Abrir o editor e confirmar o destino
 
 1. Ir em `linkedin.com/newsletters/{urn}/` (a página DA newsletter, não
@@ -640,6 +645,7 @@ pelo editor. Se `coverImagePath` (Passo 7) veio populado, apenas confira
 que o arquivo existe em `data/weekly/{cycle}/04-d1-2x1.jpg` — é esse
 arquivo que o editor vai subir manualmente.
 
+<!-- anchor: passo-8b -->
 ### 8b. Colar o corpo via `ClipboardEvent`
 
 Com o foco no `<div contenteditable>` do corpo, executar via
@@ -653,6 +659,7 @@ aguardar alguns segundos) antes de inspecionar o resultado — ler cedo
 demais mostra estado transitório e engana (mesma seção, "Cuidado ao
 inspecionar").
 
+<!-- anchor: passo-8c -->
 ### 8c. Auditoria pós-paste (obrigatória antes de entregar ao editor)
 
 Via `javascript_tool`, extrair do DOM do editor:
@@ -765,6 +772,7 @@ LinkedIn para a home: a auditoria desconta essas
   já na 1ª falha (critério 2/4 do rubrico "Perguntar é exceção" — a resposta
   muda materialmente se o artigo pode ser deixado pro editor como está).
 
+<!-- anchor: passo-8d -->
 ### 8d. Título + texto do post de feed (preparado, não submetido)
 
 O diálogo de agendamento (agora ação do editor, Passo 9) traz um campo
@@ -877,6 +885,7 @@ pedir outra versão (mais longa, com hashtags, outro tom), a versão nova
 passa de novo pelas duas passadas antes de ser entregue: em `26w42` as
 duas primeiras versões saíram sem revisão e o editor teve de perguntar.
 
+<!-- anchor: passo-9 -->
 ## Passo 9 — Entregar ao editor: capa + agendamento manuais (#8031)
 
 **A skill PARA aqui.** O artigo está colado no editor do LinkedIn

@@ -49,23 +49,22 @@ import { TRUSTED_AUTHOR_JQ_SELECT } from "./lib/trusted-comment-author.ts";
 import { CONTINUO_ESCALATED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 import { ISSUE_REPOS_CONFIG_ROOT, resolveRepoFlag } from "./lib/issue-repos.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 
 const SHA_RE = /^[0-9a-f]{7,40}$/;
 
-function parseArgs(argv: string[]): { pr: string; head: string | null; repo: string | undefined } | { error: string } {
-  let pr: string | null = null;
-  let head: string | null = null;
-  let repoRaw: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--pr") pr = argv[++i] ?? null;
-    else if (argv[i] === "--head") head = argv[++i] ?? "";
-    else if (argv[i] === "--repo") repoRaw = argv[++i] ?? "";
-  }
+export function parseEscalateLabelArgs(argv: string[]): { pr: string; head: string | null; repo: string | undefined } | { error: string } {
+  // #14128: `cli-args.ts#parseArgs`; paridade em test/continuo-cli-args-parity-14128.test.ts.
+  const { values, flags } = parseArgs(argv);
+  const pr = values.pr;
+  // `--head` sem valor (fim do argv ou seguido de outra flag) vira "" e cai no
+  // `--head inválido` abaixo, como antes.
+  const head = values.head ?? (flags.has("head") ? "" : null);
   if (!pr || !/^\d+$/.test(pr)) return { error: "--pr ausente ou não-numérico" };
   if (head !== null && !SHA_RE.test(head)) return { error: `--head inválido: "${head}"` };
   // #10901: mesma validação dos gates de PR (allowlist pela raiz do checkout
   // deste script, nunca pelo cwd).
-  const repo = resolveRepoFlag(repoRaw === undefined ? {} : { repo: repoRaw }, new Set(), ISSUE_REPOS_CONFIG_ROOT);
+  const repo = resolveRepoFlag(values, flags, ISSUE_REPOS_CONFIG_ROOT);
   if ("error" in repo) return { error: repo.error };
   return { pr, head, repo: repo.repo };
 }
@@ -161,7 +160,7 @@ function markEscalatedHead(pr: string, head: string | null, repo: string | undef
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseEscalateLabelArgs(process.argv.slice(2));
   if ("error" in args) {
     process.stderr.write(`[check-continuo-escalate-label] ${args.error}\n`);
     process.stderr.write("uso: check-continuo-escalate-label.ts --pr <N> [--head <sha>] [--repo owner/name]\n");
@@ -189,4 +188,4 @@ function main(): void {
   console.log(JSON.stringify({ firstTime: !alreadyEscalated, labelApplied, source: "ok" }));
 }
 
-main();
+if (isMainModule(import.meta.url)) main();
