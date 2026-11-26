@@ -59,7 +59,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessOpenPrCoverage, type OpenPrCheckResult } from "./lib/issue-open-pr-check.ts";
 import { fetchOpenPrs, type FetchOpenPrsResult } from "./lib/gh-open-pr-fetch.ts";
 import { formatIssueRef, legacyIssueNumber, parseIssueRef, type IssueRef } from "./lib/issue-repos.ts";
-import { isIssueClaimedByOther, readSessionLifecycleEvents } from "./lib/session-registry.ts";
+import { isIssueClaimedByOther, readSessionLifecycleEvents, sessionsRegistryUnverifiableReason } from "./lib/session-registry.ts";
 import {
   assessGithubClaims,
   endedSessionsFromLifecycle,
@@ -98,6 +98,13 @@ export type RegistryLookup = (
 function defaultRegistryLookup(cwd: string): RegistryLookup {
   return (issue, excludeSessionId) => {
     try {
+      // #14009: registro ilegível (data/ desmontado) não é "livre" — o
+      // `isIssueClaimedByOther` abaixo devolveria `null` em fail-soft.
+      const unverifiable = sessionsRegistryUnverifiableReason(cwd);
+      if (unverifiable !== null) {
+        console.error(`[check-pre-dispatch-claim] ${unverifiable}`);
+        return undefined;
+      }
       const rec = isIssueClaimedByOther(cwd, issue, excludeSessionId);
       return rec === null ? null : { kind: rec.kind, sessionId: rec.sessionId };
     } catch {
