@@ -49,7 +49,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `box-divulgacao-expiry` | caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado, e caixa vencida presente no box da edição — mesma checagem do Stage 4, rodada logo após o stitch (#10174, #10214, warning-only) | #10174 |
-| `carousel-text-overflow` | parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo — mesma checagem do Stage 4, rodada cedo (#6439, #6078) | #6439 |
+| `carousel-text-overflow` | parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo, ou `## d{N}-cards` sem exatamente 3 parágrafos — mesma checagem do Stage 4, rodada cedo (#6439, #6078, #14019) | #6439 |
 | `clarice-ran` | Clarice rodou de fato sobre 02-reviewed.md (snapshot + suggestions.json presentes) (#6337, #1402) | #6337 |
 | `erro-intencional-rendered` | render-erro-intencional.ts rodou — sem placeholder literal remanescente em 02-reviewed.md (#6337, #1073) | #6337 |
 | `humanizer-ran` | humanizer rodou em 02-reviewed.md + 03-social.md (#1385) | #1385 |
@@ -90,7 +90,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `card-4x5-upload-missing` | card 4:5 existe no disco mas 06-public-images.json não tem a entry d{N}_4x5 (#4090, warning-only) | #4090 |
 | `carousel-cards-missing` | ausência TOTAL dos slides do carrossel diário (0 dos N×4) pra edição com texto de destaque — gen-carousel-cards.ts provavelmente nunca rodou (#6740) | #6740 |
 | `carousel-cards-stale` | slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064; warning com arte mantida pelo editor em carousel-keep-art.json, #11210) | #6064 |
-| `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210) | #6078 |
+| `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210); `## d{N}-cards` sem exatamente 3 parágrafos também (#14019) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
 | `clarice-pending` | revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only) | #12257 |

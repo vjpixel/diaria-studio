@@ -118,13 +118,23 @@ export function carouselCoverFilename(destaque: string): string {
  *     em sentenças, alternando o mais longo a cada iteração, até atingir
  *     `target` — quando não há mais sentenças pra dividir (texto de 1 frase
  *     só), para e retorna o que der, sempre menos que `target`, nunca vazio.
+ *
+ * (#14019) A divisão em sentenças corta a string ORIGINAL nos índices de fim
+ * de sentença (`sentenceCutPositions`), nunca rejunta matches de regex: a
+ * versão anterior remontava os cards só com os trechos que
+ * `/[^.!?]+[.!?]+(?:\s+|$)/` casava, e tudo que a regex não casava sumia em
+ * silêncio (resto sem ponto final, frase fechada por `."`/`.)`, trecho antes
+ * de "GPT-5.5" ou "1.500"). Depois da divisão, `assertCardsCoverBody` confere
+ * que os cards somam exatamente as palavras do corpo e lança se não somarem.
+ *
+ * Este caminho de redistribuição só vale para a legenda `## d{N}` usada como
+ * fallback (edição sem `-cards`) e para os outros carrosséis que reusam o
+ * módulo. O `## d{N}-cards` da diária precisa ter EXATAMENTE 3 parágrafos:
+ * `gen-carousel-cards.ts` e o invariante `carousel-text-overflow` recusam
+ * outra contagem antes de chegar aqui (`carouselCardsParagraphCountProblem`).
  */
 export function splitIntoParagraphCards(body: string, target = 3): string[] {
-  let paras = body
-    .replace(/\r\n/g, "\n")
-    .split(/\n\s*\n/)
-    .map((p) => p.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
+  let paras = splitCardParagraphs(body);
 
   if (paras.length === 0) return [];
   if (paras.length === target) return paras;
@@ -142,14 +152,99 @@ export function splitIntoParagraphCards(body: string, target = 3): string[] {
     for (let i = 1; i < paras.length; i++) {
       if (paras[i].length > paras[longestIdx].length) longestIdx = i;
     }
-    const sentences = paras[longestIdx].match(/[^.!?]+[.!?]+(?:\s+|$)/g);
-    if (!sentences || sentences.length < 2) break; // não dá pra dividir mais
-    const mid = Math.ceil(sentences.length / 2);
-    const first = sentences.slice(0, mid).join("").trim();
-    const second = sentences.slice(mid).join("").trim();
+    const para = paras[longestIdx];
+    const cuts = sentenceCutPositions(para);
+    if (cuts.length === 0) break; // 1 sentença só — não dá pra dividir mais
+    // Mesma regra de antes: com N sentenças, as ceil(N/2) primeiras ficam no 1º lado.
+    const cutAt = cuts[Math.ceil((cuts.length + 1) / 2) - 1];
+    const first = para.slice(0, cutAt).trim();
+    const second = para.slice(cutAt).trim();
+    if (!first || !second) break;
     paras.splice(longestIdx, 1, first, second);
   }
+  assertCardsCoverBody(body, paras);
   return paras;
+}
+
+/** Pure: parágrafos do corpo (separados por linha em branco), com espaços colapsados. */
+function splitCardParagraphs(body: string): string[] {
+  return body
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+/**
+ * (#14019) Pure: índices (no próprio `text`) logo depois de cada fim de
+ * sentença: `.`/`!`/`?`, com aspas ou parênteses de fechamento colados, seguido
+ * de espaço. Mesma fronteira de `splitParagraphIntoTwoBlocks`, inclusive os
+ * pontos que não fecham frase (abreviação, próxima palavra em minúscula,
+ * #9790). Ponto colado em dígito ("GPT-5.5", "1.500") não é fronteira porque
+ * não tem espaço depois. Nunca inclui o fim do texto.
+ */
+function sentenceCutPositions(text: string): number[] {
+  const re = /[.!?]+(?:["'”’)\]]*)\s+/g;
+  const cuts: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const pos = m.index + m[0].length;
+    if (pos >= text.length) break;
+    if (isNonTerminalPeriod(text, m.index, m[0], pos)) continue;
+    cuts.push(pos);
+  }
+  return cuts;
+}
+
+/**
+ * (#14019) Lança se os cards não somam exatamente as palavras do corpo. É a
+ * rede contra a classe de bug que perdeu frases em silêncio: qualquer divisão
+ * futura que descarte texto falha aqui, alto, em vez de rasterizar o card
+ * cortado (o overflow media o texto já cortado e não acusava nada).
+ */
+function assertCardsCoverBody(body: string, cards: string[]): void {
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const expected = norm(splitCardParagraphs(body).join(" "));
+  const actual = norm(cards.join(" "));
+  if (actual !== expected) {
+    throw new Error(
+      `splitIntoParagraphCards perderia texto ao dividir em cards (#14019): ` +
+        `${expected.length} caracteres no corpo, ${actual.length} nos cards. ` +
+        `Nenhum card foi montado; reparagrafar o texto em 03-social.md.`,
+    );
+  }
+}
+
+/** Quantos parágrafos o `## d{N}-cards` precisa ter: 1 por card (#12094, #14019). */
+export const DAILY_CAROUSEL_CARD_PARAGRAPHS = 3;
+
+/**
+ * (#14019) Pure: parágrafos (separados por linha em branco) do texto dos
+ * cards, sem o bloco de hashtags. É a contagem que
+ * `carouselCardsParagraphCountProblem` confere.
+ */
+export function countCarouselCardParagraphs(text: string): number {
+  return splitCardParagraphs(splitBodyAndTags(text).body).length;
+}
+
+/**
+ * (#14019) Pure: mensagem de erro quando o texto do `## d{N}-cards` não tem
+ * exatamente `DAILY_CAROUSEL_CARD_PARAGRAPHS` parágrafos; `null` quando tem.
+ * Mesma filosofia do overflow (#6078): o texto que não se encaixa no formato
+ * é REESCRITO pelo editor ou pelo `social-writer`, nunca redistribuído nem
+ * cortado pelo código, porque isso muda o que o leitor vê no card sem
+ * ninguém aprovar. Consumida por `gen-carousel-cards.ts` (aborta o Stage 3) e
+ * pelo invariante `carousel-text-overflow` (Stages 2 e 4, antes do gate).
+ */
+export function carouselCardsParagraphCountProblem(destaque: string, sectionId: string, text: string): string | null {
+  const n = countCarouselCardParagraphs(text);
+  if (n === DAILY_CAROUSEL_CARD_PARAGRAPHS) return null;
+  return (
+    `${destaque}: '## ${sectionId}' tem ${n} parágrafo(s), e o carrossel precisa de exatamente ` +
+    `${DAILY_CAROUSEL_CARD_PARAGRAPHS} (1 por card, separados por linha em branco). ` +
+    `${n < DAILY_CAROUSEL_CARD_PARAGRAPHS ? "Dividir o texto em" : "Juntar ou reescrever o texto em"} ` +
+    `${DAILY_CAROUSEL_CARD_PARAGRAPHS} parágrafos; o código não redistribui nem corta frases do card sozinho (#14019).`
+  );
 }
 
 /**
