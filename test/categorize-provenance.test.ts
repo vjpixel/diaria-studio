@@ -289,6 +289,11 @@ const RULE_TRIGGERS: Record<Exclude<CategorizationRule, "use-melhor-specificity"
     url: "https://blog.google/products/search/nova-feature-search-ai/",
     title: "Nova feature de IA no Google Search",
   },
+  "reader-action": {
+    url: "https://canaltech.com.br/inteligencia-artificial/veja-o-que-o-gemini-sabe-sobre-voce/",
+    title: "O que o Gemini sabe sobre você? Veja como acessar e apagar a memória da IA",
+    summary: "O Google lançou um painel que facilita a consulta e a edição desses dados.",
+  },
   "type-hint-pesquisa-secondary": {
     url: "https://randomsite.example.com/artigo/pesquisa-nova",
     title: "Artigo qualquer",
@@ -310,11 +315,12 @@ describe("categorizeWithRule() — 1 gatilho verificado por regra (cobertura com
     });
   }
 
-  // 41, não 42: "use-melhor-specificity" ficou sem gatilho orgânico via seed
+  // 42, não 43: "use-melhor-specificity" ficou sem gatilho orgânico via seed
   // real após #8631 remover a única fonte que criava o par host-only vs
-  // path-mais-específico — ver comentário acima de RULE_TRIGGERS.
-  it("cobre exatamente os 41 rule ids testáveis via seed real (nenhum a mais, nenhum a menos; #8631 exclui use-melhor-specificity)", () => {
-    assert.equal(Object.keys(RULE_TRIGGERS).length, 41);
+  // path-mais-específico — ver comentário acima de RULE_TRIGGERS. (#13845
+  // acrescentou "reader-action": 41 → 42.)
+  it("cobre exatamente os 42 rule ids testáveis via seed real (nenhum a mais, nenhum a menos; #8631 exclui use-melhor-specificity)", () => {
+    assert.equal(Object.keys(RULE_TRIGGERS).length, 42);
   });
 });
 

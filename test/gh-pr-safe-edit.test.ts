@@ -11,7 +11,7 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,7 +31,7 @@ import {
   bodyFileAddLabelConflictError,
   type GhRunFn,
 } from "../scripts/lib/gh-pr-safe-edit.ts";
-import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
+import { spawnGhSync, type GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 import { FAKE_GH_SKIP_WIN32, fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 function ok(stdout = ""): GhSpawnResult {
@@ -45,11 +45,10 @@ describe("setPrBodyRest (#6292)", () => {
   it("usa gh api PATCH (nunca `pr edit`) e confirma via releitura", () => {
     const calls: string[][] = [];
     let storedBody = "corpo antigo";
-    const run: GhRunFn = (args) => {
+    const run: GhRunFn = (args, _cwd, input) => {
       calls.push(args);
       if (args[0] === "api" && args[1] === "-X" && args[2] === "PATCH") {
-        const bodyArg = args.find((a) => a.startsWith("body="))!;
-        storedBody = bodyArg.slice("body=".length);
+        storedBody = JSON.parse(input!).body;
         return ok();
       }
       if (args[0] === "pr" && args[1] === "view") {
@@ -65,6 +64,43 @@ describe("setPrBodyRest (#6292)", () => {
       calls.every((c) => !(c[0] === "pr" && c[1] === "edit")),
       "nunca deve chamar `gh pr edit`",
     );
+  });
+
+  it("corpo acima de 32 KB atravessa stdin com argv limitado como no Windows (#14106)", () => {
+    const body = 'Closes #14106\n' + 'á "texto" \\ caminho\n'.repeat(3000);
+    assert.ok(body.length > 32 * 1024);
+    let stored = "";
+    const run: GhRunFn = (args, _cwd, input) => {
+      // Simula CreateProcess: o processo nem sobe se argv exceder o limite.
+      if (args.join(" ").length >= 32767) return { status: null, stdout: "", stderr: "" };
+      if (args[0] === "api") {
+        assert.deepEqual(args.slice(-2), ["--input", "-"]);
+        assert.ok(!args.some((arg) => arg.includes(body)));
+        stored = JSON.parse(input!).body;
+        return ok();
+      }
+      return ok(`${stored}\n`);
+    };
+    assert.deepEqual(setPrBodyRest(14104, body, "/repo", run), { ok: true });
+    assert.equal(stored, body);
+  });
+
+  it("falha sem saída informa tamanho do corpo (#14106)", () => {
+    const result = setPrBodyRest(14104, "á".repeat(36000), "/repo", () => ({
+      status: null, stdout: "", stderr: "",
+    }));
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /sem saída.*36000 chars.*72000 bytes UTF-8/);
+  });
+
+  it("wrapper entrega JSON pelo stdin ao processo filho (#14106)", () => {
+    const input = JSON.stringify({ body: "á".repeat(36000) });
+    const result = spawnGhSync(
+      ["-e", "process.stdin.setEncoding('utf8'); process.stdin.pipe(process.stdout)"],
+      process.cwd(), undefined, process.execPath, input,
+    );
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, input);
   });
 
   it("reproduz o bug #6292: PATCH sai 0 mas o corpo não mudou — falha alto, nunca reporta sucesso", () => {
@@ -245,10 +281,10 @@ describe("#10618 fatia 4 (review B) — PR de outro repo da allowlist", () => {
   it("setPrBodyRest com repo: PATCH em repos/{repo}/pulls/N e releitura com -R (nunca o PR do cwd)", () => {
     const calls: string[][] = [];
     let stored = "";
-    const run: GhRunFn = (args) => {
+    const run: GhRunFn = (args, _cwd, input) => {
       calls.push(args);
       if (args[0] === "api") {
-        stored = args.find((a) => a.startsWith("body="))!.slice("body=".length);
+        stored = JSON.parse(input!).body;
         return ok();
       }
       return ok(`${stored}\n`);
@@ -494,6 +530,31 @@ describe("--verify-body não grava (#11930)", () => {
     });
     return { ...r, ghCalled: existsSync(ghLog) };
   }
+
+  it("CLI --body-file envia corpo grande por stdin (#14106)", { skip: FAKE_GH_SKIP_WIN32 }, () => {
+    const largeBin = join(tmp, "large-bin");
+    mkdirSync(largeBin);
+    const largeBody = "Closes #14106\n" + "texto ".repeat(7000);
+    const largeFile = join(tmp, "large-body.md");
+    const payload = join(tmp, "payload.json");
+    writeFileSync(largeFile, largeBody);
+    writeFakeGh(largeBin, `#!/bin/sh
+if [ "$1" = "api" ]; then
+  [ "$5" = "--input" ] && [ "$6" = "-" ] || exit 2
+  cat > "${payload}"
+else
+  cat "${largeFile}"
+  printf '\\n'
+fi
+`);
+    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT,
+      "--pr", "14104", "--issues", "14106", "--body-file", largeFile], {
+      encoding: "utf8", env: fakeGhEnv(largeBin),
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true });
+    assert.equal(JSON.parse(readFileSync(payload, "utf8")).body, largeBody);
+  });
 
   it("helper puro: --verify-body + --body-file / --body é conflito; cada um sozinho não", () => {
     assert.match(verifyBodyConflictError({ "body-file": "x.md" }, new Set(["verify-body"]))!, /NÃO grava.*--body-file/);

@@ -74,6 +74,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { fetchWithRetry } from "./fetch-retry.ts";
 
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -352,45 +353,60 @@ export async function askJev(
 
   const questionsWire = Object.fromEntries(questions.map((q) => [q.id, questionToWire(q)]));
 
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetchFn(JEV_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          Authorization: `Bearer ${opts.apiKey}`,
-        },
-        body: JSON.stringify({ model: JEV_MODEL, state, questions: questionsWire }),
-        signal: controller.signal,
-      });
-
-      if (res.status === 429) {
-        lastError = new JevHttpError(429, await res.text().catch(() => "<unreadable>"));
-        if (attempt < maxRetries) {
-          await sleep(retryBaseMs * 2 ** attempt);
-          continue;
-        }
-        throw lastError;
-      }
-
-      if (!res.ok) {
-        const bodyText = await res.text().catch(() => "<unreadable>");
-        throw new JevHttpError(res.status, bodyText.slice(0, 500));
-      }
-
-      const raw = (await res.json()) as unknown;
-      const answers = parseJevAnswers(raw, questions);
-      saveCachedJevAnswers(opts.cacheDir, cacheKey, questions, answers);
-      return answers;
-    } finally {
+  // Keep the attempt timer alive through body parsing, as before. The generic
+  // helper only owns retry scheduling; Jev retries 429, never network/5xx.
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let transportError: unknown;
+  let transportFailed = false;
+  let attempt = 0;
+  try {
+    const res = await fetchWithRetry(async () => {
       clearTimeout(timeout);
+      const controller = new AbortController();
+      timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetchFn(JEV_ENDPOINT, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            Authorization: `Bearer ${opts.apiKey}`,
+          },
+          body: JSON.stringify({ model: JEV_MODEL, state, questions: questionsWire }),
+          signal: controller.signal,
+        });
+        // Preserve consumption of discarded 429 bodies (and its timeout).
+        if (response.status === 429 && attempt++ < maxRetries) {
+          await response.text().catch(() => "<unreadable>");
+        }
+        return response;
+      } catch (e) {
+        transportFailed = true;
+        transportError = e;
+        throw e;
+      }
+    }, {
+      attempts: maxRetries + 1,
+      backoffMs: Array.from({ length: Math.max(1, maxRetries) }, (_, i) => retryBaseMs * 2 ** i),
+      timeoutMs,
+      retryOnError: false,
+      isRetriableStatus: (status) => status === 429,
+      sleep,
+    });
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "<unreadable>");
+      throw new JevHttpError(res.status, res.status === 429 ? bodyText : bodyText.slice(0, 500));
     }
+    const raw = (await res.json()) as unknown;
+    const answers = parseJevAnswers(raw, questions);
+    saveCachedJevAnswers(opts.cacheDir, cacheKey, questions, answers);
+    return answers;
+  } catch (e) {
+    // fetchWithRetry wraps transport errors; callers retain Jev's original error.
+    if (transportFailed) throw transportError;
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-  // Inatingível (o loop sempre retorna ou lança antes) — TS não infere isso.
-  throw lastError instanceof Error ? lastError : new Error("[jev] falha desconhecida");
 }
 
 function sleep(ms: number): Promise<void> {

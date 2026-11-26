@@ -2,12 +2,20 @@
 
 Chamado por `scripts/video-montagem.ts` (subcomandos `transcribe`, `srt`, `review`), nunca
 direto pelo editor. Modelo faster-whisper `large-v3-turbo`. Device (#13477): `--device auto`
-(default, ou `DIARIA_WHISPER_DEVICE`) tenta a GPU (`cuda`, `int8_float16`) e cai na CPU em int8 com
+(default, ou `DIARIA_WHISPER_DEVICE`) tenta a GPU (`cuda`) e cai na CPU em int8 com
 `[aviso]` no stderr se a CUDA não carregar, inclusive no primeiro `encode` (é ali que falta
 `cublas64_12.dll`). No Windows a GPU precisa das DLLs do cuBLAS 12 e do cuDNN 9, que não vêm com o
 driver: `pip install --user nvidia-cublas-cu12 "nvidia-cudnn-cu12>=9,<10"`; o helper registra os
 diretórios `bin` desses pacotes com `os.add_dll_directory` antes de carregar o modelo.
 `--device cpu` força o comportamento anterior.
+
+Compute type na GPU (#13989): o primeiro de `int8_float16` > `int8_float32` > `int8` > `float32`
+que `ctranslate2.get_supported_compute_types("cuda")` listar. A GTX 1060 do 300 (Pascal, compute
+6.1) não tem `int8_float16` e fica com `int8_float32`; o Neo segue em `int8_float16`. Sem o
+CTranslate2 ou sem a lista (CUDA ausente), fica `int8_float16`, como antes: a sonda decide. A
+sonda (`--probe-cuda`) e o modelo usam a mesma escolha (`cuda_compute_type`).
+`DIARIA_WHISPER_COMPUTE_TYPE` força um tipo; se a GPU não o listar, sai um `[aviso]` no stderr e
+vale a escolha automática. A CPU fica sempre em `int8`.
 
 Cache da sonda (#13504): o veredito da sonda da GPU (ok ou falho, com o motivo) fica em
 `diaria-whisper-cuda-probe.json` (fora do Windows, `diaria-whisper-cuda-probe-{uid}.json`) no
@@ -75,6 +83,70 @@ LINUX_LIBCUDA_CANDIDATES = (
 )
 
 
+# #13989: ordem de preferência do compute type na GPU. A CPU não passa por aqui (sempre int8).
+CUDA_COMPUTE_PREFERENCE = ("int8_float16", "int8_float32", "int8", "float32")
+CPU_COMPUTE_TYPE = "int8"
+COMPUTE_TYPE_ENV = "DIARIA_WHISPER_COMPUTE_TYPE"
+
+
+class ComputeTypeError(ValueError):
+    """Override de compute type que o dispositivo não lista como suportado (#13989)."""
+
+
+def pick_compute_type(supported, preferred_order=CUDA_COMPUTE_PREFERENCE, override=None) -> str:
+    """Compute type da GPU (#13989), função pura.
+
+    `supported`: o que `ctranslate2.get_supported_compute_types("cuda")` devolveu, ou None/vazio
+    quando a lista não está disponível. Nesse caso vale o 1º da ordem (`int8_float16`, o
+    comportamento de antes) e a sonda decide se a GPU serve. `override` (`DIARIA_WHISPER_COMPUTE_TYPE`)
+    vale quando a lista o contém ou quando não há lista para conferir; fora da lista, ComputeTypeError.
+    """
+    order = tuple(preferred_order)
+    known = {str(t).strip().lower() for t in (supported or ()) if str(t).strip()}
+    want = (override or "").strip().lower()
+    if want and want != "auto":
+        if not known or want in known:
+            return want
+        raise ComputeTypeError(
+            f"{COMPUTE_TYPE_ENV}={want} não é suportado pela GPU (suportados: {', '.join(sorted(known))})"
+        )
+    for t in order:
+        if t in known:
+            return t
+    return order[0]
+
+
+def compute_type_override() -> str:
+    """`DIARIA_WHISPER_COMPUTE_TYPE` normalizado; "" sem override (vazio ou `auto`)."""
+    v = os.environ.get(COMPUTE_TYPE_ENV, "").strip().lower()
+    return "" if v == "auto" else v
+
+
+def supported_cuda_compute_types():
+    """Tipos que o CTranslate2 lista para a cuda, ou None (pacote ausente, sem CUDA). Nunca lança."""
+    try:
+        import ctranslate2
+
+        return set(ctranslate2.get_supported_compute_types("cuda"))
+    except Exception:  # noqa: BLE001 — ImportError, RuntimeError sem dispositivo CUDA
+        return None
+
+
+def cuda_compute_type():
+    """(compute type, aviso): a escolha única da sonda e do modelo na GPU (#13989).
+
+    Override inválido não é silencioso: volta o aviso (o chamador imprime no stderr) e vale a
+    escolha automática.
+    """
+    supported = supported_cuda_compute_types()
+    override = compute_type_override()
+    try:
+        return pick_compute_type(supported, override=override), ""
+    except ComputeTypeError as e:
+        auto = pick_compute_type(supported)
+        return auto, f"[aviso] transcribe_words: {e}; usando {auto} (#13989)"
+
+
 def probe_cuda(model_name: str) -> int:
     """Modo sonda (#13477): carrega o modelo na GPU e transcreve 1 s de silêncio.
 
@@ -92,7 +164,10 @@ def probe_cuda(model_name: str) -> int:
         silence = np.zeros(16000, dtype=np.float32)
     except ImportError:
         silence = [0.0] * 16000
-    model = WhisperModel(model_name, device="cuda", compute_type="int8_float16")
+    compute, aviso = cuda_compute_type()
+    if aviso:
+        print(aviso, file=sys.stderr)
+    model = WhisperModel(model_name, device="cuda", compute_type=compute)
     segs, _ = model.transcribe(silence, language="pt")
     list(segs)
     print(PROBE_OK)
@@ -182,7 +257,11 @@ PROBE_CACHE_KEY_DISTS = (
 
 def probe_cache_key(model_name: str) -> str:
     dists = "|".join(f"{d}={_dist_version(d)}" for d in PROBE_CACHE_KEY_DISTS)
-    return f"{sys.executable}|{dists}|driver={cuda_driver_fingerprint()}|{model_name}"
+    # #13989: trocar o override do compute type troca a chave (o veredito ok de um tipo não vale
+    # para outro). Sem override, a chave fica igual à de antes.
+    override = compute_type_override()
+    compute = f"|compute={override}" if override else ""
+    return f"{sys.executable}|{dists}|driver={cuda_driver_fingerprint()}|{model_name}{compute}"
 
 
 def _read_probe_cache(path) -> dict:
@@ -349,7 +428,12 @@ class Engine:
             self._load("cpu")
 
     def _load(self, device):
-        compute = "int8_float16" if device == "cuda" else "int8"
+        compute = CPU_COMPUTE_TYPE
+        if device == "cuda":
+            compute, aviso = cuda_compute_type()
+            if aviso:
+                print(aviso, file=sys.stderr)
+                self.avisos.append(aviso)
         self.model = self._WhisperModel(self.model_name, device=device, compute_type=compute)
         self.device = device
 
@@ -710,7 +794,13 @@ def serve_main(argv) -> int:
         return 2
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     path = server_state_path()
-    base = {"pid": os.getpid(), "model": a.model, "device_req": device_req, "helper": helper_fingerprint()}
+    base = {
+        "pid": os.getpid(),
+        "model": a.model,
+        "device_req": device_req,
+        "helper": helper_fingerprint(),
+        "compute_override": compute_type_override(),  # #13989: override diferente = outro residente
+    }
     started = time.time()
     if not claim_server_state(path, {**base, "ready": False, "at": started, "hb": started}):
         print("transcribe_words --serve: outro residente já está de pé (ou subindo); saindo", file=sys.stderr)
@@ -862,7 +952,12 @@ def try_resident(job, model_name: str, device_req: str):
         if st is None:
             print("[aviso] transcribe_words: o processo residente não ficou pronto; carga local do modelo (#13506)", file=sys.stderr)
             return None
-    if st.get("model") != model_name or st.get("device_req") != device_req or st.get("helper") != helper_fingerprint():
+    if (
+        st.get("model") != model_name
+        or st.get("device_req") != device_req
+        or st.get("helper") != helper_fingerprint()
+        or st.get("compute_override", "") != compute_type_override()
+    ):
         return None
     port, token = st.get("port"), st.get("token")
     if not isinstance(port, int) or not isinstance(token, str):

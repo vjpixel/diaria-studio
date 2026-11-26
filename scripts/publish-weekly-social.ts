@@ -276,6 +276,11 @@ import {
   WorkerQueueError,
 } from "./lib/worker-queue-client.ts";
 import {
+  enqueueDailyWorkerPost,
+  type DailyWorkerEnqueueOptions,
+  type DailyWorkerEnqueueResult,
+} from "./lib/daily-worker-enqueue.ts"; // #14242 — mesmo tratamento da diária (#14010)
+import {
   cancelAndRecordReschedule,
   deleteFacebookScheduledPost,
   dropWeekendRotationLines,
@@ -808,6 +813,57 @@ export function linkedInWeeklyIdempotencyKey(carouselKey: string): string {
   const key = `linkedin-weekly:${carouselKey}:main`;
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
   return key;
+}
+
+/**
+ * #14242 — chave idempotente do carrossel semanal de Instagram/Threads na fila
+ * do Worker: `{canal}-weekly:{AAMMDD do sábado}-{mode}:main`. Mesmo desenho do
+ * LinkedIn semanal (acima) e da diária (#14010): o retry do `postToWorkerQueue`
+ * depois de uma resposta perdida e o re-run do script caem na mesma entry, em
+ * vez de criar outra (uuid novo no Worker = segundo post público). O canal
+ * entra no namespace: o carrossel do Instagram e o do Threads são posts
+ * diferentes. Formato aceito: `[A-Za-z0-9._:-]{1,128}`.
+ */
+export function weeklyWorkerQueueIdempotencyKey(channel: "instagram" | "threads", carouselKey: string): string {
+  const key = `${channel}-weekly:${carouselKey}:main`;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
+  return key;
+}
+
+/**
+ * #14242 — enfileira o carrossel semanal de Instagram/Threads com a chave
+ * idempotente e o tratamento de falha da diária (`enqueueDailyWorkerPost`,
+ * #14010): 409 `already_fired`/`fire_in_progress` da chave = sucesso sem post
+ * novo; 4xx de validação propaga; 5xx/timeout/rede consulta a fila pela chave
+ * antes de o caller gravar `failed`. `deps` só existe pra teste.
+ */
+export async function enqueueWeeklyWorkerCarousel(
+  workerUrl: string,
+  workerToken: string,
+  o: {
+    channel: "instagram" | "threads";
+    carouselKey: string;
+    text: string;
+    carouselImageUrls: string[];
+    scheduledAt: string;
+    destaque: string;
+  },
+  deps: Pick<DailyWorkerEnqueueOptions, "post" | "lookup" | "lookupOptions" | "log"> = {},
+): Promise<DailyWorkerEnqueueResult> {
+  return enqueueDailyWorkerPost(
+    workerUrl,
+    workerToken,
+    {
+      idempotency_key: weeklyWorkerQueueIdempotencyKey(o.channel, o.carouselKey),
+      text: o.text,
+      image_url: null,
+      image_urls: o.carouselImageUrls,
+      scheduled_at: o.scheduledAt,
+      destaque: o.destaque,
+      channel: o.channel,
+    },
+    { logPrefix: `publish-weekly-social/${o.channel}`, ...deps },
+  );
 }
 
 /** #12394 — `check` do alarme de fallback do documento no lado do script. */
@@ -2378,13 +2434,14 @@ async function runOneMode(
     } else {
       let response: { key: string } | null = null;
       try {
-        response = await postToWorkerQueue(workerUrl, workerToken, {
-          text: caption,
-          image_url: null,
-          image_urls: carouselImageUrls,
-          scheduled_at: scheduledAt,
-          destaque: destaqueKey,
+        // #14242: chave idempotente — o retry e o re-run caem na mesma entry.
+        response = await enqueueWeeklyWorkerCarousel(workerUrl, workerToken, {
           channel: "instagram",
+          carouselKey,
+          text: caption,
+          carouselImageUrls,
+          scheduledAt,
+          destaque: destaqueKey,
         });
       } catch (e: any) {
         console.error(`FAILED instagram/${destaqueKey}: ${e.message}`);
@@ -2482,13 +2539,14 @@ async function runOneMode(
     } else {
       let response: { key: string } | null = null;
       try {
-        response = await postToWorkerQueue(workerUrl, workerToken, {
-          text: threadsCaption,
-          image_url: null,
-          image_urls: carouselImageUrls,
-          scheduled_at: scheduledAt,
-          destaque: destaqueKey,
+        // #14242: chave idempotente — o retry e o re-run caem na mesma entry.
+        response = await enqueueWeeklyWorkerCarousel(workerUrl, workerToken, {
           channel: "threads",
+          carouselKey,
+          text: threadsCaption,
+          carouselImageUrls,
+          scheduledAt,
+          destaque: destaqueKey,
         });
       } catch (e: any) {
         console.error(`FAILED threads/${destaqueKey}: ${e.message}`);
