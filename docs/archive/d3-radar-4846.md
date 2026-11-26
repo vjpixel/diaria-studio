@@ -1,6 +1,8 @@
 # Experimento D3 vs slot 1 do Radar (#4846)
 
-**Status:** PRÉ-REGISTRADO, mecanismo implementado e **DESLIGADO**. `platform.config.json` → `experiment_d3_radar.enabled` está em `false` — nenhuma edição foi randomizada até agora. Ativar em produção é uma decisão SEPARADA do editor, tomada depois deste pré-registro existir (ver `CLAUDE.md` — decisão do editor 260810 autoriza o desenho mas não a ativação). Este documento precede a 1ª edição randomizada, conforme exigido pela própria decisão de autorização.
+**Status:** arquivado — experimento ENCERRADO sem nunca ter sido ligado (decisão do editor, 25/11/2026, #14052). Nenhuma edição foi randomizada. O script `scripts/experiment-d3-radar.ts`, o teste, a chave `experiment_d3_radar` do `platform.config.json` e a chamada no Stage 1 foram apagados no #14052; este pré-registro fica só pelo racional histórico, e os caminhos citados abaixo não existem mais.
+
+**Status anterior (até 25/11/2026):** PRÉ-REGISTRADO, mecanismo implementado e **DESLIGADO**. `platform.config.json` → `experiment_d3_radar.enabled` está em `false` — nenhuma edição foi randomizada até agora. Ativar em produção é uma decisão SEPARADA do editor, tomada depois deste pré-registro existir (ver `CLAUDE.md` — decisão do editor 260810 autoriza o desenho mas não a ativação). Este documento precede a 1ª edição randomizada, conforme exigido pela própria decisão de autorização.
 
 **Pré-requisito:** #4841 (`_internal/link-layout.json` + `_internal/published-links.json`) — mergeado antes desta unidade. Sem eles a alocação não seria auditável.
 
@@ -69,6 +71,7 @@ Randomizar a ordem **dentro** do Radar identificaria o efeito de slot em geral �
 
 - 2026-08-10 — issue #4846 aberta a partir da auditoria retrospectiva de cliques (260810). Editor autoriza o desenho (randomização 1:1 por edição, seed determinístico, pré-registro obrigatório antes da 1ª edição randomizada) — alternativa de rodar o braço A pelo Beehiiv e o braço B pelo canal Brevo foi considerada e descartada por não medir o que a issue pede.
 - 2026-08-10 — mecanismo implementado (`scripts/experiment-d3-radar.ts`, wiring no `orchestrator-stage-1-research.md`, flag `experiment_d3_radar.enabled: false` em `platform.config.json`) e este pré-registro escrito. **Experimento permanece DESLIGADO** — ativação é decisão separada do editor, ainda não tomada.
+- 2026-11-25 — editor decide encerrar o experimento sem ligá-lo (#14052). Mecanismo apagado; doc movido de `docs/experiments/` para `docs/archive/`.
 
 ---
 

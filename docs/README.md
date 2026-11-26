@@ -13,9 +13,9 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (183 arquivos)
+## Índice (184 arquivos)
 
-### `docs/` (167)
+### `docs/` (168)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
@@ -72,6 +72,7 @@
 | [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons (#2750) | O tab Cupons do dashboard (`clarice-dashboard.diaria.workers.dev`) lê o KV `coupons:usage`, que carrega, por assinatura com cupom NEWS50/NEWS25: o valor pago… |
 | [`cursos-worker-alarm-setup.md`](./cursos-worker-alarm-setup.md) | Worker `cursos`: sync do KV de assinantes | O worker `cursos` (hosting da página "Cursos sobre IA", `cursos.diar.ia.br`) loga todo caminho de degradação e tem `[observability] enabled = true` no… |
 | [`definicao-leitor.md`](./definicao-leitor.md) | Definição canônica de `leitor-v1` | Primeira metade da camada de dados de aquisição que destrava decisão de gasto em ads (#4466). A segunda é o mapa de origem recuperada… |
+| [`design-v1-daily-6375.md`](./design-v1-daily-6375.md) | Design Reference — diar.ia.br Home Redesign (#6375) | Source: repo `vjpixel/diaria-design`, file `v1-daily.jsx` (Direção A · Edição diária). |
 | [`develop-token-analysis-3328.md`](./develop-token-analysis-3328.md) | `/diaria-develop` — análise de consumo de tokens (#3328) | Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`. Este doc é de 260711 e era declaradamente especulativo por falta de dados de rodada real… |
 | [`diaria-dashboard-access-setup.md`](./diaria-dashboard-access-setup.md) | diaria-dashboard — access setup (#5133) | Até 12/08/2026 o Worker `diaria-dashboard` era servido sem nenhuma autenticação — `X-Robots-Tag: noindex` + `Disallow: /` (#5097) impedem INDEXAÇÃO por… |
 | [`doppler-env-sync.md`](./doppler-env-sync.md) | Sync de `.env` entre máquinas via Doppler (#5149) | O projeto usa ~40 credenciais (`.env`, ver `.env.example`) espalhadas por Beehiiv, Brevo, Cloudflare, Clarice, Facebook/Instagram/Threads, Stripe, apoia.se… |
@@ -193,11 +194,12 @@
 |---|---|---|
 | [`agents-archive/eia-composer.md`](./agents-archive/eia-composer.md) | eia-composer | Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, sorteia A/B (#192), escreve `01-eia.md` (com frontmatter `eia_answer`) +… |
 
-### `docs/archive/` (9)
+### `docs/archive/` (10)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
 | [`archive/beehiiv-playbook.md`](./archive/beehiiv-playbook.md) | Playbook: Beehiiv (Etapa 5 — newsletter daily) | ARQUIVO HISTÓRICO — nenhuma etapa roda este playbook desde o #11225 (27/10/2026). O envio da diária é só Kit (`scripts/publish-newsletter-kit.ts`… |
+| [`archive/d3-radar-4846.md`](./archive/d3-radar-4846.md) | Experimento D3 vs slot 1 do Radar (#4846) | Status: arquivado — experimento ENCERRADO sem nunca ter sido ligado (decisão do editor, 25/11/2026, #14052). Nenhuma edição foi randomizada. O script… |
 | [`archive/eai-poll-api-test.md`](./archive/eai-poll-api-test.md) | Teste — Beehiiv Trivia Poll API exposure (#107) | Status: arquivado — issue #107 fechada via #201/PR #200, mas não pela via testada aqui. A solução real foi `scripts/fetch-beehiiv-poll-stats.ts` +… |
 | [`archive/llm-ts-migration-analysis.md`](./archive/llm-ts-migration-analysis.md) | Análise: Migração de Agentes LLM → Scripts TypeScript | Status: superado por `docs/agent-migration-triage.md` (a partir de 2026-05-11, esse é o source-of-truth da triagem agente-a-agente). Mantido como registro do… |
 | [`archive/review-test-email-beehiiv.md`](./archive/review-test-email-beehiiv.md) | review-test-email: Processo Beehiiv (arquivado, #14041) | Arquivado do prompt do agent `.claude/agents/review-test-email.md` em 26/11/2026 (#14041). A Beehiiv é só arquivo histórico desde o #11225 e não envia a… |
@@ -207,12 +209,11 @@
 | [`archive/spike-275-beehiiv-automation.md`](./archive/spike-275-beehiiv-automation.md) | Spike #275 — Beehiiv automation: investigação Phase 1 | Status: arquivado — issue #275 fechada. Os selectors/achados desta Phase 1 alimentaram a Phase 2 (implementação de `publish-newsletter`), que por sua vez foi… |
 | [`archive/tier2-orchestrator-scoping.md`](./archive/tier2-orchestrator-scoping.md) | Scoping Tier 2 — orquestradores determinísticos (#5192) | Continuação de #5191 (Tier 1). Trabalho de scoping puro — nenhum código implementado nesta unidade (2 das 4 candidatas já foram implementadas por outras… |
 
-### `docs/experiments/` (2)
+### `docs/experiments/` (1)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
 | [`experiments/cta-ab-mensal-2606-07.md`](./experiments/cta-ab-mensal-2606-07.md) | Experimento CTA-01 — copy do CTA do topo (digest mensal Clarice, ciclo 2606-07) | Status: ENCERRADO em 26/07/2026 sem vencedor; decisão final em 27/07/2026 — braço A permanece, não haverá novo round. O braço B teve entrega degradada… |
-| [`experiments/d3-radar-4846.md`](./experiments/d3-radar-4846.md) | Experimento D3 vs slot 1 do Radar (#4846) | Status: PRÉ-REGISTRADO, mecanismo implementado e DESLIGADO. `platform.config.json` → `experiment_d3_radar.enabled` está em `false` — nenhuma edição foi… |
 
 ### `docs/measurements/` (2)
 

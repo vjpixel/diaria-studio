@@ -340,11 +340,12 @@ it("#8667 UN panel calls for stronger safeguards as AI agents advance → on-top
   );
 });
 
-// Auditability: descarte de #2986 deve ser registrável (artefato _internal/)
-it("#8667 audit artifact _internal/dropped_non_ai.jsonl exists and references #8667 URL", () => {
+// Auditability: descarte de #2986 deve ser registrável (fixture movida de
+// `_internal/` na raiz para `test/fixtures/` no #14051)
+it("#8667 audit artifact test/fixtures/dropped_non_ai.jsonl exists and references #8667 URL", () => {
   // fs already imported at top
-  assert.ok(fs.existsSync("_internal/dropped_non_ai.jsonl"), "audit artifact missing");
-  const content = fs.readFileSync("_internal/dropped_non_ai.jsonl", "utf8");
+  assert.ok(fs.existsSync("test/fixtures/dropped_non_ai.jsonl"), "audit artifact missing");
+  const content = fs.readFileSync("test/fixtures/dropped_non_ai.jsonl", "utf8");
   assert.ok(content.includes("1168380"), "audit artifact must reference issue URL");
 
 });

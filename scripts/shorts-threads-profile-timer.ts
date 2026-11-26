@@ -162,7 +162,7 @@ export function decideThreadsTimerRun(input: {
 }): ThreadsTimerDecision {
   const cfg = loadShortsConfig(input.config);
   if (!cfg.threadsProfile) return { kind: "skip", reason: "publishing.shorts.threads_profile = false" };
-  if (!cfg.threadsProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.threads_profile_via_timer = false (o /diaria-publica-video publica)" };
+  if (!cfg.threadsProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.threads_profile_via_timer = false (o /diaria-publica publica)" };
   if (!input.reviewedExists) return { kind: "skip", reason: `sem 02-reviewed.md da edição ${input.aammdd} (dia sem edição)` };
   for (const { path, raw } of input.registryRaws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
@@ -224,7 +224,7 @@ export function interpretThreadsVerticalLookup(exitCode: number | null, stdout: 
     if (out.selection === "orientation-mismatch") {
       return { kind: "needs-editor", selection: "orientation-mismatch", reason: `vertical no Drive com a proporção errada (#13389): ${out.reason ?? "sem motivo"}` };
     }
-    return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe` };
+    return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica); o timer não escolhe` };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
 }

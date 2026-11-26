@@ -2,7 +2,7 @@
  * gen-home-page.ts (#6375)
  *
  * Gera `workers/site/public/index.html` (Direção A · Edição diária, ver
- * `references/design-v1-daily-6375.md` e o corpo da issue #6375) a partir do
+ * `docs/design-v1-daily-6375.md` e o corpo da issue #6375) a partir do
  * acervo já commitado: `workers/site/public/sitemap.xml` (ordem
  * mais-recente-primeiro) + `workers/site/public/p/{slug}/index.html`
  * (título/description já resolvidos por `buildArchivePageHtml`) — ver

@@ -119,7 +119,7 @@ describe("#11795 planShortsPublish com corte avulso", () => {
     assert.match(owner.note, /2026-11-02T22:30/);
     const [edition] = assignShortsDestinationOwners(items, { aammdd: "261102", now: BEFORE, instagramViaTimer: false });
     assert.equal(edition.by, "agent-scheduled-task", "na edição a skill segue dona da re-execução");
-    assert.equal(edition.command, "/diaria-publica-video 261102 --so vertical");
+    assert.equal(edition.command, "/diaria-publica 261102 --so vertical");
   });
 
   it("sem corte, a mesma config segue delegando (regressão do caminho da edição)", () => {
