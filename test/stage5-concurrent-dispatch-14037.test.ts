@@ -26,6 +26,8 @@ import {
   realRunChild,
   runConcurrent,
   splitTrailingJson,
+  forwardSignalToChildren,
+  type ConcurrentProgress,
   type ChildRun,
   type SocialChannel,
 } from "../scripts/publish-social-concurrent.ts";
@@ -138,6 +140,40 @@ describe("#14037 publish-social-concurrent: concorrência e isolamento de falha"
     assert.deepEqual((byCh.threads as { output: unknown }).output, { summary: { scheduled: 2 } });
   });
 
+  it("grava o progresso a cada canal que termina: o JSON do concluído já está lá enquanto o outro roda", async () => {
+    const snaps: ConcurrentProgress[] = [];
+    let releaseSlow!: (r: ChildRun) => void;
+    const p = runConcurrent(
+      planChannels(ALL_AUTO, ["facebook", "threads"]),
+      "ed/",
+      (ch) =>
+        ch === "facebook"
+          ? Promise.resolve({ code: 0, stdout: JSON.stringify({ summary: { scheduled: 3 } }) })
+          : new Promise<ChildRun>((r) => (releaseSlow = r)),
+      Date.now,
+      (s) => snaps.push(structuredClone(s)),
+    );
+    await new Promise((r) => setImmediate(r));
+    const mid = snaps.at(-1)!;
+    assert.equal(mid.state, "running");
+    assert.deepEqual(mid.pending, ["threads"]);
+    assert.deepEqual((mid.results[0] as { output: unknown }).output, { summary: { scheduled: 3 } });
+    releaseSlow({ code: 0, stdout: "{}" });
+    await p;
+    assert.equal(snaps.at(-1)!.state, "done");
+    assert.deepEqual(snaps.at(-1)!.pending, []);
+  });
+
+  it("SIGINT/SIGTERM é repassado a cada filho vivo pelo PID", () => {
+    const calls: Array<[number, string]> = [];
+    const killed = forwardSignalToChildren([{ pid: 11 }, { pid: undefined }, { pid: 12 }], "SIGTERM", (pid, s) => {
+      if (pid === 12) throw new Error("ESRCH");
+      calls.push([pid, s]);
+    });
+    assert.deepEqual(calls, [[11, "SIGTERM"]]);
+    assert.deepEqual(killed, [11]);
+  });
+
   it("runner que lança vira canal falho com spawn_error, sem perder os demais", async () => {
     const result = await runConcurrent(planChannels(ALL_AUTO, ["facebook", "threads"]), "ed/", async (ch) => {
       if (ch === "facebook") throw new Error("spawn EACCES");
@@ -194,9 +230,16 @@ describe("#14037 Brevo em background: registro running/done", () => {
         now: () => "2026-11-25T10:00:00.000Z",
         pid: 4242,
         host: "neo",
+        launchId: "L1",
       },
     };
   };
+
+  it("o registro leva o launch_id do lançamento", () => {
+    const writes: BrevoStage5Record[] = [];
+    runStage5BrevoDispatchWithRecord(() => ({ status: "already_done", campaignId: 1 }), io(writes).io);
+    assert.deepEqual(writes.map((w) => w.launch_id), ["L1", "L1"]);
+  });
 
   it("grava running antes e done depois com o mesmo JSON do stdout", () => {
     const writes: BrevoStage5Record[] = [];
@@ -237,11 +280,12 @@ describe("#14037 Brevo em background: registro running/done", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "brevo-rec-14037-"));
     try {
       assert.deepEqual(readBrevoStage5Record(dir), { kind: "missing" });
-      const rec: BrevoStage5Record = { state: "running", pid: 1, host: "h", started_at: "t" };
+      const rec: BrevoStage5Record = { state: "running", launch_id: "L1", pid: 1, host: "h", started_at: "t" };
       writeBrevoStage5Record(dir, rec);
       assert.ok(existsSync(resolve(dir, "_internal", "05-brevo-stage5-dispatch.json")));
       assert.deepEqual(readBrevoStage5Record(dir), { kind: "ok", record: rec });
-      assert.equal(parseBrevoStage5Record('{"state":"done","pid":1,"host":"h","started_at":"t"}').kind, "invalid");
+      assert.equal(parseBrevoStage5Record('{"state":"done","launch_id":"L1","pid":1,"host":"h","started_at":"t"}').kind, "invalid");
+      assert.equal(parseBrevoStage5Record('{"state":"running","pid":1,"host":"h","started_at":"t"}').kind, "invalid", "sem launch_id");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -249,7 +293,9 @@ describe("#14037 Brevo em background: registro running/done", () => {
 });
 
 describe("#14037 join do Brevo", () => {
-  const running: BrevoStage5Record = { state: "running", pid: 99, host: "neo", started_at: "2026-11-25T10:00:00Z" };
+  const STARTED = "2026-11-25T10:00:00Z";
+  const T0 = Date.parse(STARTED);
+  const running: BrevoStage5Record = { state: "running", launch_id: "L1", pid: 99, host: "neo", started_at: STARTED };
   const done = (status: string): BrevoStage5Record => ({
     ...running,
     state: "done",
@@ -257,7 +303,34 @@ describe("#14037 join do Brevo", () => {
     exit_code: status === "failed" ? 1 : 0,
     result: { status, campaignId: 5 },
   });
-  const ctx = { elapsedMs: 0, missingGraceMs: 30_000, host: "neo", isPidAlive: () => true };
+  const ctx = {
+    elapsedMs: 0,
+    missingGraceMs: 30_000,
+    host: "neo",
+    isPidAlive: () => true,
+    launchId: "L1",
+    nowEpochMs: T0 + 60_000,
+    maxTotalMs: 30 * 60_000,
+  };
+
+  it("done de OUTRO lançamento não é sucesso: conta como ausente e vira not_launched", () => {
+    const stale = { ...done("ok"), launch_id: "L0" } as BrevoStage5Record;
+    assert.equal(decideJoin({ kind: "ok", record: stale }, ctx).kind, "wait", "dentro da tolerância espera o registro novo");
+    const d = decideJoin({ kind: "ok", record: stale }, { ...ctx, elapsedMs: 30_000 });
+    assert.equal(d.kind, "not_launched");
+    assert.equal(joinExitCode(d), 3);
+    const out = buildJoinOutput(d);
+    assert.equal(out.status, "failed");
+    assert.equal(out.stale_launch_id, "L0");
+  });
+
+  it("running acima do teto total desde o started_at vira timeout/failed, mesmo com o processo vivo", () => {
+    const d = decideJoin({ kind: "ok", record: running }, { ...ctx, nowEpochMs: T0 + 30 * 60_000 });
+    assert.equal(d.kind, "timeout");
+    assert.equal(joinExitCode(d), 1);
+    assert.equal(buildJoinOutput(d).status, "failed");
+    assert.equal(decideJoin({ kind: "ok", record: running }, { ...ctx, nowEpochMs: T0 + 29 * 60_000 }).kind, "wait");
+  });
 
   it("decideJoin: done, espera, processo morto, outro host e ausente", () => {
     assert.equal(decideJoin({ kind: "ok", record: done("ok") }, ctx).kind, "done");
@@ -280,12 +353,13 @@ describe("#14037 join do Brevo", () => {
     assert.equal(joinExitCode({ kind: "still_running" }), 4);
   });
 
-  const fakeDeps = (seq: ReadRecordOutcome[], alive = true) => {
-    let t = 0;
+  const fakeDeps = (seq: ReadRecordOutcome[], alive = true, startAt = T0 + 60_000) => {
+    let t = startAt;
     let i = 0;
     return {
       read: () => seq[Math.min(i++, seq.length - 1)],
       host: "neo",
+      launchId: "L1",
       isPidAlive: () => alive,
       nowMs: () => t,
       sleep: async (ms: number) => {
@@ -315,6 +389,16 @@ describe("#14037 join do Brevo", () => {
     assert.equal(exitCode, 4);
     assert.equal(output.join, "still_running");
     assert.notEqual(output.status, "ok");
+  });
+
+  it("re-rodar o join não vira loop: perto do teto, a chamada seguinte sai timeout (exit 1)", async () => {
+    // 1ª chamada: 25 min desde o launch, espera 540 s e sai 4.
+    const first = await runJoin(fakeDeps([{ kind: "ok", record: running }], true, T0 + 25 * 60_000), { waitMs: 240_000, pollMs: 5_000 });
+    assert.equal(first.exitCode, 4);
+    // Re-execução já acima dos 30 min: falha do canal, nunca outro 4.
+    const second = await runJoin(fakeDeps([{ kind: "ok", record: running }], true, T0 + 29 * 60_000 + 30_000), { waitMs: 540_000, pollMs: 5_000 });
+    assert.equal(second.exitCode, 1);
+    assert.equal(second.output.join, "timeout");
   });
 
   it("leitura ilegível isolada é tratada como transitória; repetida vira falha", async () => {
@@ -383,6 +467,10 @@ describe("#14037 wiring do playbook do Stage 5", () => {
     assert.match(launchSection, /run_in_background: true/);
     assert.match(launchSection, /npx tsx scripts\/brevo-diaria-stage5-dispatch\.ts --edition-dir \{EDITION_DIR\}\//);
     assert.match(launchSection, /consent\.brevo === "auto"/);
-    assert.match(stage5.slice(join, sentinel), /npx tsx scripts\/brevo-diaria-stage5-join\.ts --edition-dir \{EDITION_DIR\}\//);
+    assert.match(launchSection, /--launch-id \{BREVO_LAUNCH_ID\}/);
+    const joinSection = stage5.slice(join, sentinel);
+    assert.match(joinSection, /npx tsx scripts\/brevo-diaria-stage5-join\.ts --edition-dir \{EDITION_DIR\}\/ --launch-id \{BREVO_LAUNCH_ID\}/);
+    assert.match(joinSection, /join: "timeout"[\s\S]*render-halt-banner\.ts/, "timeout do join é halt banner, nunca re-rodar para sempre");
+    assert.match(stage5, /_internal\/05-social-concurrent\.json/, "playbook documenta a recuperação pelo arquivo de progresso");
   });
 });

@@ -9,24 +9,29 @@
  *
  * Saída (stdout, 1 linha JSON): o mesmo JSON do dispatch
  * (`{status: "ok"|"already_done"|"skipped"|"failed", ...}`) acrescido de
- * `join` (`done`, `process_died`, `still_running`, `not_launched`, `invalid`)
+ * `join` (`done`, `process_died`, `still_running`, `timeout`, `not_launched`, `invalid`)
  * e `exit_code` do dispatch quando houver. Nos casos sem resultado do
  * dispatch, `status: "failed"` com `step` e `reason`, nunca um sucesso
  * presumido.
  *
- * Exit: 0 = `ok`/`already_done`/`skipped`; 1 = `failed`, processo morto ou
- * registro ilegível; 3 = registro ausente (dispatch não lançado);
- * 4 = ainda rodando quando `--wait-seconds` acabou (re-rodar o join: o
- * processo está vivo). Todos fail-soft para o Stage 5, como o dispatch.
+ * Só conta o registro com o `--launch-id` passado (o mesmo do dispatch): um
+ * `done` de rodada anterior da mesma edição é tratado como ausente.
+ *
+ * Exit: 0 = `ok`/`already_done`/`skipped`; 1 = `failed`, processo morto,
+ * registro ilegível ou teto total estourado (`join: "timeout"`, padrão 30 min
+ * desde o `started_at` gravado, `--max-total-minutes`); 3 = registro deste
+ * lançamento ausente; 4 = ainda rodando quando `--wait-seconds` acabou e
+ * dentro do teto (re-rodar o join). Com o teto, re-rodar nunca vira loop.
  *
  * Uso:
- *   npx tsx scripts/brevo-diaria-stage5-join.ts --edition-dir <dir> [--wait-seconds 540] [--poll-seconds 5]
+ *   npx tsx scripts/brevo-diaria-stage5-join.ts --edition-dir <dir> --launch-id <id> [--wait-seconds 540] [--poll-seconds 5] [--max-total-minutes 30]
  */
 import { getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DEFAULT_MAX_TOTAL_MS,
   currentHost,
   decideJoin,
   isPidAlive,
@@ -48,7 +53,9 @@ export interface JoinDeps {
   read: () => ReadRecordOutcome;
   host: string;
   isPidAlive: (pid: number) => boolean;
+  /** Relógio de parede (epoch ms): mede a espera e o teto total desde o `started_at`. */
   nowMs: () => number;
+  launchId: string;
   sleep: (ms: number) => Promise<void>;
 }
 
@@ -77,7 +84,18 @@ export function buildJoinOutput(decision: JoinDecision | { kind: "still_running"
         join: "not_launched",
         status: "failed",
         step: "background",
-        reason: "registro _internal/05-brevo-stage5-dispatch.json ausente — o dispatch Brevo não foi lançado ou não chegou a iniciar.",
+        reason: decision.stale
+          ? `registro _internal/05-brevo-stage5-dispatch.json é de outro lançamento (launch_id ${decision.stale.launch_id}, ${decision.stale.state}) — o dispatch deste lançamento não chegou a iniciar; o resultado antigo não conta.`
+          : "registro _internal/05-brevo-stage5-dispatch.json ausente — o dispatch Brevo não foi lançado ou não chegou a iniciar.",
+        ...(decision.stale ? { stale_launch_id: decision.stale.launch_id } : {}),
+      };
+    case "timeout":
+      return {
+        join: "timeout",
+        status: "failed",
+        step: "background",
+        pid: decision.record.pid,
+        reason: `dispatch Brevo rodando há ${Math.round(decision.totalMs / 60_000)} min (pid ${decision.record.pid}, iniciado ${decision.record.started_at}), acima do teto — falha do canal Brevo; conferir o processo (matar por PID) e o painel Brevo antes de re-rodar.`,
       };
     case "invalid":
       return { join: "invalid", status: "failed", step: "background", reason: `registro ilegível: ${decision.error}` };
@@ -88,7 +106,7 @@ export function buildJoinOutput(decision: JoinDecision | { kind: "still_running"
 
 export async function runJoin(
   deps: JoinDeps,
-  opts: { waitMs: number; pollMs: number },
+  opts: { waitMs: number; pollMs: number; maxTotalMs?: number },
 ): Promise<{ output: JoinOutput; exitCode: number }> {
   const start = deps.nowMs();
   let invalidStreak = 0;
@@ -100,6 +118,9 @@ export async function runJoin(
       missingGraceMs: Math.min(MISSING_GRACE_MS, opts.waitMs),
       host: deps.host,
       isPidAlive: deps.isPidAlive,
+      launchId: deps.launchId,
+      nowEpochMs: deps.nowMs(),
+      maxTotalMs: opts.maxTotalMs ?? DEFAULT_MAX_TOTAL_MS,
     });
     // Leitura ilegível pode ser transitória (no Windows o rename atômico do
     // gravador pode colidir com a leitura): só vira falha depois de
@@ -121,8 +142,9 @@ export async function runJoin(
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   const editionDirArg = getStringArg(argv, "edition-dir");
-  if (!editionDirArg) {
-    process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-join.ts --edition-dir <dir> [--wait-seconds 540] [--poll-seconds 5]\n");
+  const launchId = getStringArg(argv, "launch-id");
+  if (!editionDirArg || !launchId) {
+    process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-join.ts --edition-dir <dir> --launch-id <id> [--wait-seconds 540] [--poll-seconds 5] [--max-total-minutes 30]\n");
     process.exit(2);
   }
   const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: ROOT });
@@ -133,6 +155,7 @@ if (isMainModule(import.meta.url)) {
     const editionDir = resolvedArg.editionDir;
     const waitSeconds = getIntArg(argv, "wait-seconds", { min: 0 }) ?? 540;
     const pollSeconds = getIntArg(argv, "poll-seconds", { min: 1 }) ?? 5;
+    const maxTotalMinutes = getIntArg(argv, "max-total-minutes", { min: 1 }) ?? DEFAULT_MAX_TOTAL_MS / 60_000;
     const { output, exitCode } = await runJoin(
       {
         read: () => readBrevoStage5Record(editionDir),
@@ -140,8 +163,9 @@ if (isMainModule(import.meta.url)) {
         isPidAlive,
         nowMs: () => Date.now(),
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        launchId,
       },
-      { waitMs: waitSeconds * 1000, pollMs: pollSeconds * 1000 },
+      { waitMs: waitSeconds * 1000, pollMs: pollSeconds * 1000, maxTotalMs: maxTotalMinutes * 60_000 },
     );
     if (output.join === "still_running") process.stderr.write(`[brevo-diaria join] ${output.reason}\n`);
     console.log(JSON.stringify(output));

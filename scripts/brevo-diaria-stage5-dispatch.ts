@@ -44,8 +44,11 @@
  * `<edition-dir>/_internal/05-brevo-stage5-dispatch.json`
  * (`scripts/lib/brevo-stage5-background.ts`).
  *
+ * O `--launch-id` (o mesmo passado ao join) marca o registro: o join só aceita
+ * o registro deste lançamento.
+ *
  * Uso:
- *   npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir>
+ *   npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>]
  *
  * Exit codes: 0 = "ok" ou "already_done" ou "skipped" (fail-soft, nunca é
  * erro do orchestrator); 1 = "failed" (sub-script falhou) — ainda assim
@@ -299,6 +302,8 @@ export interface RecordIo {
   now: () => string;
   pid: number;
   host: string;
+  /** `--launch-id` do orchestrator; o join só aceita o registro com o mesmo id. */
+  launchId: string;
 }
 
 /**
@@ -315,7 +320,7 @@ export function runStage5BrevoDispatchWithRecord(
   io: RecordIo,
 ): { result: Stage5BrevoResult; exitCode: number } {
   const startedAt = io.now();
-  const base = { pid: io.pid, host: io.host, started_at: startedAt };
+  const base = { launch_id: io.launchId, pid: io.pid, host: io.host, started_at: startedAt };
   const safeWrite = (record: BrevoStage5Record) => {
     try {
       io.write(record);
@@ -352,7 +357,7 @@ if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   const editionDirArg = getStringArg(argv, "edition-dir");
   if (!editionDirArg) {
-    process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir>\n");
+    process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir> [--launch-id <id>]\n");
     process.exit(2);
   }
   // #9427: resolve contra a raiz do repo (antes era `process.cwd()`). Argumento
@@ -365,6 +370,10 @@ if (isMainModule(import.meta.url)) {
     process.exitCode = 1;
   } else {
     const editionDir = resolvedArg.editionDir;
+    // #14037: sem --launch-id (chamada manual/síncrona) o id é gerado aqui; o
+    // join do Stage 5 só aceita o id que o orchestrator passou aos dois.
+    const launchId = getStringArg(argv, "launch-id") ?? `auto-${new Date().toISOString()}-${process.pid}`;
+    process.stderr.write(`[brevo-diaria stage5] launch-id=${launchId}\n`);
     const { result, exitCode } = runStage5BrevoDispatchWithRecord(
       () => runStage5BrevoDispatch(editionDir, productionDeps(ROOT)),
       {
@@ -373,6 +382,7 @@ if (isMainModule(import.meta.url)) {
         now: () => new Date().toISOString(),
         pid: process.pid,
         host: currentHost(),
+        launchId,
       },
     );
     console.log(JSON.stringify(result));

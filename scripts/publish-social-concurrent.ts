@@ -37,6 +37,11 @@
  * O resumo do Stage 5 lê `results[i].output` exatamente como lia o stdout do
  * publisher (`summary`, `posts`, `use_melhor`, `pages`).
  *
+ * Progresso: a cada canal que termina, `_internal/05-social-concurrent.json`
+ * é regravado (`state`, `results` dos concluídos, `pending`), para o resumo
+ * sobreviver ao wrapper morto. SIGINT/SIGTERM são repassados aos filhos pelo
+ * PID; o wrapper grava `interrupted` e sai 130/143.
+ *
  * Exit: 0 = todos os canais despachados saíram 0; 1 = algum saiu ≠ 0 ou não
  * iniciou (ver `failed_channels` e o `exit_code` de cada um, que preserva o
  * significado do publisher: Instagram/Threads exit 2 = Worker não configurado);
@@ -45,8 +50,9 @@
  * Uso:
  *   npx tsx scripts/publish-social-concurrent.ts --edition-dir <dir> [--channels facebook,linkedin,instagram,threads]
  */
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
@@ -150,19 +156,58 @@ export interface ConcurrentResult {
   wall_ms: number;
 }
 
+/** Caminho do progresso gravado pelo wrapper, relativo à pasta da edição (#14037). */
+export const SOCIAL_CONCURRENT_PROGRESS_FILE = "_internal/05-social-concurrent.json";
+
+/**
+ * Progresso gravado a cada canal que termina: `running` enquanto algum filho
+ * roda, `done` no fim, `interrupted` se o wrapper recebeu SIGINT/SIGTERM. Se
+ * o wrapper morrer, este arquivo guarda o JSON de cada canal já concluído;
+ * os canais de `pending` têm o resultado só no `06-social-published.json`.
+ */
+export interface ConcurrentProgress {
+  state: "running" | "done" | "interrupted";
+  started_at: string;
+  updated_at: string;
+  results: ChannelResult[];
+  pending: SocialChannel[];
+  failed_channels: SocialChannel[];
+}
+
+function failedOf(results: readonly ChannelResult[]): SocialChannel[] {
+  return results
+    .filter((r): r is Extract<ChannelResult, { dispatched: true }> => r.dispatched && r.exit_code !== 0)
+    .map((r) => r.channel);
+}
+
 /** Roda os canais do plano em paralelo; cada um isolado do outro. */
 export async function runConcurrent(
   plan: readonly ChannelPlanEntry[],
   editionDir: string,
   runChild: RunChildFn,
   nowMs: () => number = Date.now,
+  onProgress?: (p: ConcurrentProgress) => void,
 ): Promise<ConcurrentResult> {
   const t0 = nowMs();
-  const settled = await Promise.allSettled(
-    plan.map(async (entry): Promise<ChannelResult> => {
-      if (!entry.dispatch) return { channel: entry.channel, dispatched: false, reason: entry.reason ?? "não despachado" };
-      const { script, args } = channelCommand(entry.channel, editionDir);
-      const start = nowMs();
+  const startedAt = new Date(t0).toISOString();
+  const completed = new Map<SocialChannel, ChannelResult>();
+  const emit = (state: ConcurrentProgress["state"]) => {
+    if (!onProgress) return;
+    const results = plan.map((p) => completed.get(p.channel)).filter((r): r is ChannelResult => r !== undefined);
+    onProgress({
+      state,
+      started_at: startedAt,
+      updated_at: new Date(nowMs()).toISOString(),
+      results,
+      pending: plan.filter((p) => !completed.has(p.channel)).map((p) => p.channel),
+      failed_channels: failedOf(results),
+    });
+  };
+  const runOne = async (entry: ChannelPlanEntry): Promise<ChannelResult> => {
+    if (!entry.dispatch) return { channel: entry.channel, dispatched: false, reason: entry.reason ?? "não despachado" };
+    const { script, args } = channelCommand(entry.channel, editionDir);
+    const start = nowMs();
+    try {
       const run = await runChild(entry.channel, script, args);
       const split = splitTrailingJson(run.stdout);
       return {
@@ -175,26 +220,53 @@ export async function runConcurrent(
         ...("error" in split ? { output_error: split.error } : {}),
         ...(run.spawnError ? { spawn_error: run.spawnError } : {}),
       };
+    } catch (e) {
+      return {
+        channel: entry.channel,
+        dispatched: true,
+        exit_code: null,
+        duration_ms: nowMs() - start,
+        output: null,
+        log: "",
+        output_error: "runner lançou exceção",
+        spawn_error: (e as Error)?.message ?? String(e),
+      };
+    }
+  };
+  emit("running");
+  const results = await Promise.all(
+    plan.map(async (entry) => {
+      const r = await runOne(entry);
+      completed.set(entry.channel, r);
+      emit("running");
+      return r;
     }),
   );
-  const results: ChannelResult[] = settled.map((s, i) =>
-    s.status === "fulfilled"
-      ? s.value
-      : {
-          channel: plan[i].channel,
-          dispatched: true,
-          exit_code: null,
-          duration_ms: 0,
-          output: null,
-          log: "",
-          output_error: "runner lançou exceção",
-          spawn_error: (s.reason as Error)?.message ?? String(s.reason),
-        },
-  );
-  const failed_channels = results
-    .filter((r): r is Extract<ChannelResult, { dispatched: true }> => r.dispatched && r.exit_code !== 0)
-    .map((r) => r.channel);
-  return { results, failed_channels, wall_ms: nowMs() - t0 };
+  emit("done");
+  return { results, failed_channels: failedOf(results), wall_ms: nowMs() - t0 };
+}
+
+/**
+ * Pura o bastante para teste: ao receber SIGINT/SIGTERM, mata cada filho vivo
+ * pelo PID (`process.kill(pid, sinal)`; no Windows isso é TerminateProcess do
+ * próprio PID, e o filho aqui é o `node` do publisher, sem árvore de netos).
+ */
+export function forwardSignalToChildren(
+  children: Iterable<{ pid?: number }>,
+  signal: NodeJS.Signals,
+  kill: (pid: number, signal: NodeJS.Signals) => void = (pid, s) => process.kill(pid, s),
+): number[] {
+  const killed: number[] = [];
+  for (const c of children) {
+    if (typeof c.pid !== "number") continue;
+    try {
+      kill(c.pid, signal);
+      killed.push(c.pid);
+    } catch {
+      // filho já saiu
+    }
+  }
+  return killed;
 }
 
 /** Exit do wrapper: 1 se algum canal despachado não saiu 0. */
@@ -203,7 +275,7 @@ export function concurrentExitCode(result: ConcurrentResult): number {
 }
 
 /** Produção: `process.execPath --import tsx`, nunca `npx` (guard #4343); stderr repassado com prefixo. */
-export function realRunChild(rootDir: string): RunChildFn {
+export function realRunChild(rootDir: string, live: Set<ChildProcess> = new Set()): RunChildFn {
   return (channel, script, args) =>
     new Promise((resolveRun) => {
       const abs = isAbsolute(script) ? script : resolve(rootDir, ...script.split("/"));
@@ -213,10 +285,12 @@ export function realRunChild(rootDir: string): RunChildFn {
       const done = (r: ChildRun) => {
         if (settled) return;
         settled = true;
+        live.delete(child);
         if (stderrBuf) process.stderr.write(`[${channel}] ${stderrBuf}\n`);
         resolveRun(r);
       };
       const child = spawn(process.execPath, ["--import", "tsx", abs, ...args], { cwd: rootDir, env: process.env });
+      live.add(child);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
@@ -271,7 +345,27 @@ if (isMainModule(import.meta.url)) {
   }
   // Cada publisher recebe o --edition-dir exatamente como veio (mesmo comando do
   // §5c-3); o path resolvido serve só para ler o consent.
-  const result = await runConcurrent(plan, editionDirArg, realRunChild(ROOT));
+  const progressPath = resolve(editionDir, ...SOCIAL_CONCURRENT_PROGRESS_FILE.split("/"));
+  let lastProgress: ConcurrentProgress | null = null;
+  const writeProgress = (p: ConcurrentProgress) => {
+    lastProgress = p;
+    try {
+      mkdirSync(dirname(progressPath), { recursive: true });
+      writeFileAtomic(progressPath, JSON.stringify(p, null, 2) + "\n");
+    } catch (e) {
+      process.stderr.write(`AVISO (#14037): progresso não gravado em ${progressPath} (${(e as Error).message}).\n`);
+    }
+  };
+  const live = new Set<ChildProcess>();
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      const killed = forwardSignalToChildren(live, sig);
+      process.stderr.write(`[publish-social-concurrent] ${sig} recebido — repassado aos filhos (pids ${killed.join(", ") || "nenhum"}).\n`);
+      if (lastProgress) writeProgress({ ...lastProgress, state: "interrupted", updated_at: new Date().toISOString() });
+      process.exit(sig === "SIGINT" ? 130 : 143);
+    });
+  }
+  const result = await runConcurrent(plan, editionDirArg, realRunChild(ROOT, live), Date.now, writeProgress);
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = concurrentExitCode(result);
 }

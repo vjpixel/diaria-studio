@@ -31,10 +31,19 @@ export function brevoStage5RecordPath(editionDir: string): string {
 }
 
 interface RecordBase {
+  /**
+   * Id do lançamento, passado pelo orchestrator (`--launch-id`) ao dispatch e
+   * ao join. O join só aceita o registro deste lançamento: um `done` de rodada
+   * anterior da mesma edição não conta como resultado.
+   */
+  launch_id: string;
   pid: number;
   host: string;
   started_at: string;
 }
+
+/** Teto total do Brevo em background, contado do `started_at` do registro (#14037). */
+export const DEFAULT_MAX_TOTAL_MS = 30 * 60_000;
 
 export type BrevoStage5Record =
   | (RecordBase & { state: "running" })
@@ -67,8 +76,8 @@ export function parseBrevoStage5Record(raw: string): ReadRecordOutcome {
   }
   if (!data || typeof data !== "object") return { kind: "invalid", error: "registro não é objeto" };
   const r = data as Record<string, unknown>;
-  if (typeof r.pid !== "number" || typeof r.host !== "string" || typeof r.started_at !== "string") {
-    return { kind: "invalid", error: "registro sem pid/host/started_at" };
+  if (typeof r.pid !== "number" || typeof r.host !== "string" || typeof r.started_at !== "string" || typeof r.launch_id !== "string") {
+    return { kind: "invalid", error: "registro sem pid/host/started_at/launch_id" };
   }
   if (r.state === "running") return { kind: "ok", record: r as unknown as BrevoStage5Record };
   if (r.state === "done") {
@@ -109,7 +118,8 @@ export type JoinDecision =
   | { kind: "done"; record: Extract<BrevoStage5Record, { state: "done" }> }
   | { kind: "wait" }
   | { kind: "process_died"; record: BrevoStage5Record }
-  | { kind: "not_launched" }
+  | { kind: "not_launched"; stale?: { launch_id: string; state: string } }
+  | { kind: "timeout"; record: BrevoStage5Record; totalMs: number }
   | { kind: "invalid"; error: string };
 
 export interface JoinContext {
@@ -119,31 +129,48 @@ export interface JoinContext {
   missingGraceMs: number;
   host: string;
   isPidAlive: (pid: number) => boolean;
+  /** Só o registro deste lançamento conta. */
+  launchId: string;
+  /** Relógio de parede (epoch ms), para o teto total desde o `started_at`. */
+  nowEpochMs: number;
+  /** Teto total do dispatch em background, somando todas as re-execuções do join. */
+  maxTotalMs: number;
 }
 
 /**
  * Pura: decide o próximo passo do join a partir do que está em disco.
+ * - registro de OUTRO lançamento (`launch_id` diferente) conta como ausente:
+ *   `done` de rodada anterior não é sucesso desta.
  * - `done` → acabou (o status do canal está em `record.result`).
  * - `running` do MESMO host com pid morto → `process_died` (falha explícita).
+ * - `running` há mais de `maxTotalMs` desde o `started_at` → `timeout`
+ *   (falha explícita, mesmo com o processo vivo: nunca loop infinito).
  * - `running` de outro host → `wait`: pid de outra máquina não se confere daqui.
  * - arquivo ausente → `wait` dentro da tolerância, depois `not_launched`.
  */
 export function decideJoin(outcome: ReadRecordOutcome, ctx: JoinContext): JoinDecision {
-  if (outcome.kind === "missing") {
-    return ctx.elapsedMs < ctx.missingGraceMs ? { kind: "wait" } : { kind: "not_launched" };
-  }
   if (outcome.kind === "invalid") return { kind: "invalid", error: outcome.error };
+  if (outcome.kind === "missing" || outcome.record.launch_id !== ctx.launchId) {
+    if (ctx.elapsedMs < ctx.missingGraceMs) return { kind: "wait" };
+    return outcome.kind === "ok"
+      ? { kind: "not_launched", stale: { launch_id: outcome.record.launch_id, state: outcome.record.state } }
+      : { kind: "not_launched" };
+  }
   const { record } = outcome;
   if (record.state === "done") return { kind: "done", record };
   if (record.host === ctx.host && !ctx.isPidAlive(record.pid)) return { kind: "process_died", record };
+  const startedMs = Date.parse(record.started_at);
+  const totalMs = Number.isFinite(startedMs) ? ctx.nowEpochMs - startedMs : ctx.elapsedMs;
+  if (totalMs >= ctx.maxTotalMs) return { kind: "timeout", record, totalMs };
   return { kind: "wait" };
 }
 
 /**
  * Exit code do join, alinhado ao do dispatch (#5772): 0 = `ok`/`already_done`/
- * `skipped`; 1 = `failed`, processo morto ou registro ilegível; 3 = não lançado;
- * 4 = ainda rodando quando o tempo de espera acabou (re-rodar o join).
- * Todos são fail-soft para o Stage 5: o orchestrator lê o JSON e loga warn.
+ * `skipped`; 1 = `failed`, processo morto, registro ilegível ou teto total
+ * estourado (`timeout`); 3 = não lançado (inclui registro de outro
+ * lançamento); 4 = ainda rodando quando a espera desta chamada acabou, dentro
+ * do teto total (re-rodar o join).
  */
 export function joinExitCode(decision: JoinDecision | { kind: "still_running" }): number {
   switch (decision.kind) {
@@ -151,6 +178,7 @@ export function joinExitCode(decision: JoinDecision | { kind: "still_running" })
       return decision.record.result.status === "failed" ? 1 : 0;
     case "process_died":
     case "invalid":
+    case "timeout":
       return 1;
     case "not_launched":
       return 3;
