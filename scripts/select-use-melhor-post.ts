@@ -29,6 +29,9 @@
  *   # texto da fonte. `--pick` é sinônimo. Exit 2 se a URL não está no USE MELHOR.
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --url <url>
  *
+ *   # #13977: estado com `editor_off: true` (refresh-use-melhor-post.ts --off)
+ *   # é preservado por toda seleção (inclusive --force); --url sai exit 2.
+ *
  *   # Stage 4: linha(s) do 4º post pro resumo do gate ({use_melhor_post_block}).
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --status [--json]
  *
@@ -111,6 +114,17 @@ export function runSelection(
   const previous = opts.useReviewed ? readUseMelhorPostState(editionDir) : null;
   let state = computeStage2UseMelhorPostState(editionDir, config, opts.now, { exclude });
   if (!state.enabled) return { state, written: null };
+  // #13977: o editor desligou o 4º post desta edição (`--off`). Nenhuma seleção
+  // o religa — nem a do Stage 2, nem `--force`; só `refresh-use-melhor-post.ts --on`.
+  const offState = previous ?? readUseMelhorPostState(editionDir);
+  if (offState?.editor_off === true) {
+    if (opts.pickUrl !== undefined) {
+      throw new PickError(
+        "4º post desligado pelo editor nesta edição (--off) — religar com refresh-use-melhor-post.ts --on antes de escolher o item",
+      );
+    }
+    return { state: offState, written: null, preserved: true };
+  }
   if (opts.pickUrl !== undefined) {
     const reviewed = readIfExists(resolve(editionDir, "02-reviewed.md"));
     if (reviewed === null) throw new PickError("02-reviewed.md ausente — --url só vale contra a edição revisada");

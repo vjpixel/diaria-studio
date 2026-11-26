@@ -329,6 +329,32 @@ function isTutorialRun(run: StepRun): boolean {
 }
 
 /**
+ * #13976: linha curta que abre uma subdivisão numerada do guia — "Exercise 5: Trace
+ * an Approval", "Exercício 2", "Módulo 3 — ...", "Part 1", "Lab 4". É o H2/H3 da
+ * página depois do strip de tags (`htmlToText` põe cada cabeçalho numa linha).
+ * "Passo/Etapa/Step N" fica de fora: é o próprio passo do tutorial (`STEP_LINE`).
+ */
+const SUB_EXERCISE_HEADING =
+  /^(?:exerc[ií]cios?|exercises?|m[oó]dulos?|modules?|li[cç][aã]o|lessons?|aulas?|labs?|laborat[oó]rio|desafios?|challenges?|partes?|parts?|cap[ií]tulos?|chapters?)\s*(\d{1,2})\b(?:\s*[:.)\-–—]|\s*$)/i;
+const SUB_EXERCISE_HEADING_MAX_CHARS = 80;
+
+/**
+ * Pure (#13976): quantos cabeçalhos de subdivisão numerada DISTINTOS (por número)
+ * o texto tem. Menção solta no corpo ("Import the Exercise 1 template") não conta:
+ * só linha curta que COMEÇA pelo rótulo + número e é seguida de separador ou fim.
+ */
+export function countSubExerciseHeadings(text: string): number {
+  const seen = new Set<number>();
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.length > SUB_EXERCISE_HEADING_MAX_CHARS) continue;
+    const m = line.match(SUB_EXERCISE_HEADING);
+    if (m) seen.add(Number(m[1]));
+  }
+  return seen.size;
+}
+
+/**
  * Pure (#9585): extrai os passos numerados do texto da fonte, na ordem.
  * Aceita "Passo 1: ...", "Etapa 2 ...", "Step 3 ..." e "1. ..."/"1) ...".
  * Só devolve uma sequência que comece em 1 e seja consecutiva (>=2 passos) —
@@ -337,8 +363,17 @@ function isTutorialRun(run: StepRun): boolean {
  * #10276: só conta lista que tenha sinal de TUTORIAL (`isTutorialRun`) — lista
  * numerada de requisitos, prazos ou sumário não vira `steps`, senão o
  * `## um` sai em formato lista com passos inventados (o que o #10246 evita).
+ *
+ * #13976: página com 2+ cabeçalhos "Exercise N"/"Módulo N"/"Parte N"
+ * (`countSubExerciseHeadings`) → `[]`. Cada lista ali é a mecânica de um
+ * sub-exercício (guia do n8n, edição 261126: 8 passos, todos do Exercício 5),
+ * e nenhuma cobre o guia inteiro.
  */
 export function extractUseMelhorSteps(text: string): string[] {
+  // #13976: guia dividido em exercícios/módulos/partes numerados — cada lista é a
+  // mecânica de UM sub-exercício, não o roteiro do guia. Na dúvida, sem `steps`
+  // (texto corrido é o fallback correto, §3c do social-writer).
+  if (countSubExerciseHeadings(text) >= 2) return [];
   // Várias listas numeradas (sumário, requisitos, passos): coleta cada run 1..N
   // consecutivo e fica com a mais longa entre as que são tutorial (empate → a
   // última). Linha não-passo entre dois passos não quebra o run (passos têm
@@ -791,6 +826,38 @@ export interface UseMelhorPostState {
   selected_from?: string;
   excluded?: UseMelhorSelection["excluded"];
   generated_at: string;
+  /**
+   * #13977: `true` quando o editor desligou o 4º post desta edição
+   * (`refresh-use-melhor-post.ts --off`). `item` fica `null` e nenhuma seleção
+   * (Stage 2, `--reviewed`, `--force`, `--url`) o religa; só `--on` limpa.
+   */
+  editor_off?: boolean;
+  /** #13977: URL do item que estava escolhido quando o editor desligou (`--off`), só informativo. */
+  off_item_url?: string;
+}
+
+/** #13977: `selected_from` gravado por `refresh-use-melhor-post.ts --off`. */
+export const USE_MELHOR_OFF_SELECTED_FROM = "editor-off";
+
+/**
+ * Pure (#13977): tira de `03-social.md` todo bloco `## um` (em `# Social` e em
+ * `# Curto`), do cabeçalho até o próximo `## `/`# ` ou o fim do arquivo. O texto
+ * das outras seções fica byte a byte igual (o selo do humanizador compara por
+ * seção). Sem `## um` → `removed: 0` e o mesmo texto.
+ */
+export function removeUseMelhorUmSections(md: string): { md: string; removed: number } {
+  const eol = md.includes("\r\n") ? "\r\n" : "\n";
+  const normalized = md.replace(/\r\n/g, "\n");
+  const re = new RegExp(`(^|\\n)## ${USE_MELHOR_POST_ID}[ \\t]*\\n[\\s\\S]*?(?=\\n## |\\n# |$)`, "g");
+  let removed = 0;
+  // O `\n` antes do cabeçalho sai junto: a linha em branco que separava a seção
+  // anterior fica (ela termina em `\n\n`), e o bloco leva o próprio `\n` final.
+  const out = normalized.replace(re, () => {
+    removed++;
+    return "";
+  });
+  if (removed === 0) return { md, removed: 0 };
+  return { md: eol === "\n" ? out : out.replace(/\n/g, "\r\n"), removed };
 }
 
 /** Lê o estado gravado pelo Stage 2. Ausente/ilegível → `null`. */
