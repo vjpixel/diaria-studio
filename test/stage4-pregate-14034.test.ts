@@ -22,6 +22,7 @@ import {
   STAGE4_PREGATE_FLAG,
   buildStagePrompt,
   runEditionStages,
+  releaseOrphanPregateLock,
   STAGE_PLAN,
 } from "../scripts/lib/edition-stage-runner.ts";
 import {
@@ -239,6 +240,100 @@ describe("edition-stage-runner — pós-condição do pré-gate (#14034)", () =>
       assert.equal(r.outcomes[0].status, "skipped");
       assert.equal(w.prompts.length, 0);
     }
+  });
+});
+
+describe("trava órfã do spawn do pré-gate (#14034, P2 do self-review da #14103)", () => {
+  const lock = (session_id: string, released = false) => ({
+    session_id,
+    host: "neo",
+    stage: 4,
+    acquired_at: "2026-11-26T10:00:00.000Z",
+    heartbeat_at: "2026-11-26T10:00:00.000Z",
+    ...(released ? { released_at: "2026-11-26T10:05:00.000Z" } : {}),
+  });
+
+  function run(opts: { lockOwner?: string; spawnThrows?: boolean; releaseThrows?: boolean; stage4PreGate?: boolean }) {
+    const released: string[] = [];
+    const progress: string[] = [];
+    const calls: string[][] = [];
+    const execFn = ((_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (opts.spawnThrows) {
+        const e = new Error("killed") as Error & { status?: number };
+        e.status = 137;
+        throw e;
+      }
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const r = runEditionStages({
+      aammdd: "261127",
+      editionDir: "/fake/data/editions/2611/261127",
+      repoRootAbs: "/fake/repo",
+      resolveClaudeBin: () => "/fake/bin/claude",
+      env: {} as NodeJS.ProcessEnv,
+      plan: [{ stage: 4, skill: "diaria-4-revisao" }],
+      stage4PreGate: opts.stage4PreGate ?? true,
+      execFn,
+      nowMs: () => 0,
+      onProgress: (m) => progress.push(m),
+      assertSentinelFn: () => ({ ok: false as const, reason: "sentinel_missing" as const }),
+      checkPregateFn: () => ({ usable: false, completed: false, reason: "absent" as const, blocking: [], summary_path: PREGATE_SUMMARY_REL }),
+      randomUuidFn: () => "uuid-pregate-1",
+      readEditionLockFn: () => (opts.lockOwner ? lock(opts.lockOwner) : null),
+      releaseEditionLockFn: (_d, id) => {
+        if (opts.releaseThrows) throw new Error("EBUSY");
+        released.push(id);
+      },
+    });
+    return { r, released, progress, calls };
+  }
+
+  it("spawn morto com a trava dele = runner solta a trava (sessão do editor não sai com exit 3)", () => {
+    const { r, released, calls } = run({ lockOwner: "uuid-pregate-1", spawnThrows: true });
+    assert.equal(r.failedStage, 4);
+    assert.deepEqual(released, ["uuid-pregate-1"]);
+    const args = calls[0];
+    assert.equal(args[args.indexOf("--session-id") + 1], "uuid-pregate-1", "o spawn tem de rodar com o id que o runner conhece");
+  });
+
+  it("trava de OUTRA sessão nunca é tocada", () => {
+    const { released } = run({ lockOwner: "sessao-do-editor", spawnThrows: true });
+    assert.deepEqual(released, []);
+  });
+
+  it("sem trava ou trava já solta pelo playbook = nada a fazer", () => {
+    assert.deepEqual(run({}).released, []);
+    const released: string[] = [];
+    const out = releaseOrphanPregateLock("/x", ["a"], {
+      readLockFn: () => lock("a", true),
+      releaseFn: (_d, id) => released.push(id),
+      onProgress: () => {},
+    });
+    assert.equal(out, null);
+    assert.deepEqual(released, []);
+  });
+
+  it("release que falha vira aviso com o comando, nunca exceção", () => {
+    const { progress, released } = run({ lockOwner: "uuid-pregate-1", spawnThrows: true, releaseThrows: true });
+    assert.deepEqual(released, []);
+    assert.ok(progress.some((m) => /não consegui soltar a trava.*--session-id uuid-pregate-1/.test(m)), progress.join(" | "));
+    assert.equal(
+      releaseOrphanPregateLock("/x", ["a"], {
+        readLockFn: () => {
+          throw new Error("EACCES");
+        },
+        releaseFn: () => {},
+        onProgress: () => {},
+      }),
+      null,
+    );
+  });
+
+  it("fora do pré-gate (Stage 4 agendado) o spawn não ganha --session-id nem release", () => {
+    const { calls, released } = run({ lockOwner: "uuid-pregate-1", stage4PreGate: false });
+    assert.ok(!calls[0].includes("--session-id"));
+    assert.deepEqual(released, []);
   });
 });
 

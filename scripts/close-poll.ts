@@ -644,7 +644,7 @@ async function main(): Promise<void> {
   );
 
   // #3210: close-poll.ts roda em AMBOS os fluxos de publicação — automático
-  // (Stage 4 pré-render, beehiiv-playbook.md) E manual (prep-manual-publish.ts
+  // (Stage 4 pré-render, context/publishers/newsletter-prerender.md) E manual (prep-manual-publish.ts
   // imprime "Após publicar: npx tsx scripts/close-poll.ts --edition {edição}"
   // como próximo passo). O fluxo automático já chama sync-intentional-error.ts
   // explicitamente (§0.1 do playbook) ANTES de close-poll — mas o fluxo manual
@@ -655,7 +655,7 @@ async function main(): Promise<void> {
   // fechando o gap "o passo inteiro nunca roda" em vez de só cobrir falha
   // transiente de I/O (que sync-intentional-error.ts já cobria). Idempotente
   // (no-op se o playbook automático já sincronizou) e fail-soft (mesma
-  // filosofia de beehiiv-playbook.md §0.1 — nunca bloqueia close-poll).
+  // filosofia de newsletter-prerender.md §0.1 — nunca bloqueia close-poll).
   //
   // Nota: `runSyncIntentionalError` documenta/garante "nunca lança" (captura
   // suas próprias exceções e retorna exitCode!=0) — o try/catch aqui é

@@ -14,6 +14,10 @@ bloco **Use Melhor** (comentário do editor opcional, #5970) e a seção
 edição, a data com link e, logo abaixo, um título por linha só dos
 destaques que não apareceram acima.
 
+**Formato do conteúdo do artigo** (estrutura, regras de UTM, armadilhas de
+formato): `context/templates/social-linkedin-weekly.md` (#14060). Como
+colar e publicar fica em `context/publishers/linkedin.md`.
+
 **A spec desta skill mudou várias vezes ao longo do dia 260802 — os
 comentários da issue #4456 têm precedência sobre o corpo original.** Se
 você (ou um agente futuro) for alterar este arquivo, releia a issue
@@ -975,7 +979,7 @@ reaproveite a auditoria do Passo 8c (já rodada) em vez de reabrir o DOM.
 
 `/diaria-6-agendamento` (`.claude/skills/diaria-6-agendamento/SKILL.md`)
 existe pra agendar o ENVIO da newsletter diária no **Beehiiv** — chama a
-API/UI do Beehiiv via Claude in Chrome (`context/publishers/beehiiv-playbook.md`
+API/UI do Beehiiv via Claude in Chrome (`docs/archive/beehiiv-playbook.md`
 §9-10) e verifica o estado agendado via `scripts/verify-scheduled-post.ts`.
 
 Isso não se aplica aqui, mas **não pelo motivo que esta seção dava antes**.

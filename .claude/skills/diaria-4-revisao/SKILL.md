@@ -45,7 +45,7 @@ Verificar sentinel Stage 3, marcar Stage 4 `running`, sync pull.
 
 - capture-livros-promo (screenshot, opcional)
 - upload-images-public (newsletter + social)
-- Pre-render newsletter HTML (beehiiv-playbook steps 1-5 sem dispatch)
+- Pre-render newsletter HTML (`context/publishers/newsletter-prerender.md` §1.1-1.4, #14048)
 - Pre-render social preview HTML
 - close-poll (set gabarito)
 - check-invariants --stage 4

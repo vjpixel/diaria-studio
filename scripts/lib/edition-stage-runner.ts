@@ -49,6 +49,8 @@ import {
 } from "./cli-usage-json.ts";
 import { loadDoc, saveDoc, applyUpdate, type CliRunLogEntry, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
 import { checkStage4Pregate } from "./stage4-pregate.ts";
+import { readEditionLock } from "./edition-lock.ts";
+import { randomUUID } from "node:crypto";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -137,6 +139,60 @@ export const SESSION_SUPERVISED_FLAG = "--session-supervised";
  * sentinel do Stage 4 (gate aprovado sem o editor).
  */
 export const STAGE4_PREGATE_FLAG = "--pre-gate-only";
+
+/**
+ * #14034 (finding P2 do self-review da PR #14103): solta a trava da edição
+ * que o spawn do pré-gate deixou para trás.
+ *
+ * O pré-gate pega a trava (`edition-lock.ts acquire`, §4a) e a solta no
+ * passo final. Se o spawn morre no meio (max-turns, crash, kill), a trava
+ * fica com a sessão morta até o TTL de 45 min, e a sessão do editor, que
+ * nesse caso roda a Etapa 4 inline, sai com exit 3 ("outra sessão viva").
+ *
+ * O runner dá ao spawn um `--session-id` próprio, então sabe exatamente qual
+ * sessão é dona da trava. Depois do spawn, se a trava local ainda está viva
+ * E é dessa sessão, chama `edition-lock.ts release` com esse id (sem
+ * `--force`: trava de qualquer outra sessão nunca é tocada). Fail-soft.
+ */
+export function releaseOrphanPregateLock(
+  editionDir: string,
+  sessionIds: ReadonlyArray<string>,
+  deps: {
+    readLockFn: typeof readEditionLock;
+    releaseFn: (editionDir: string, sessionId: string) => void;
+    onProgress: (m: string) => void;
+  },
+): string | null {
+  let rec: ReturnType<typeof readEditionLock>;
+  try {
+    rec = deps.readLockFn(editionDir);
+  } catch {
+    return null;
+  }
+  if (!rec || rec.released_at || !sessionIds.includes(rec.session_id)) return null;
+  try {
+    deps.releaseFn(editionDir, rec.session_id);
+    deps.onProgress(`Stage 4 pré-gate: trava da edição deixada pelo spawn (${rec.session_id}) solta pelo runner`);
+    return rec.session_id;
+  } catch (e) {
+    deps.onProgress(
+      `⚠ Stage 4 pré-gate: não consegui soltar a trava do spawn (${rec.session_id}): ${(e as Error).message ?? e} — ` +
+        `rodar \`edition-lock.ts release --edition-dir ... --session-id ${rec.session_id}\``,
+    );
+    return null;
+  }
+}
+
+/** Release real: o CLI cobre também a trava do D1 entre máquinas (#12842). */
+function defaultReleasePregateLock(repoRootAbs: string, env: NodeJS.ProcessEnv): (d: string, id: string) => void {
+  return (editionDir, sessionId) => {
+    execFileSync(
+      process.execPath,
+      ["--import", "tsx", join(repoRootAbs, "scripts", "edition-lock.ts"), "release", "--edition-dir", editionDir, "--session-id", sessionId],
+      { cwd: repoRootAbs, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 },
+    );
+  };
+}
 
 /**
  * Prompt do spawn de um stage. Exportado para o teste travar a regra de
@@ -716,6 +772,11 @@ export interface RunEditionStagesOptions {
   stage4PreGate?: boolean;
   /** #14034: injetável para teste. */
   checkPregateFn?: typeof checkStage4Pregate;
+  /** #14034: `--session-id` do spawn do pré-gate (injetável para teste). */
+  randomUuidFn?: () => string;
+  /** #14034: leitura/release da trava órfã do pré-gate (injetáveis para teste). */
+  readEditionLockFn?: typeof readEditionLock;
+  releaseEditionLockFn?: (editionDir: string, sessionId: string) => void;
   execFn?: typeof execFileSync;
   /**
    * `assertSentinel`, NÃO `sentinelExists` (achados P0/P1 do review da PR #5753).
@@ -811,6 +872,8 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     sessionSupervised = false,
     stage4PreGate = false,
     checkPregateFn = checkStage4Pregate,
+    randomUuidFn = randomUUID,
+    readEditionLockFn = readEditionLock,
     execFn = execFileSync,
     assertSentinelFn = assertSentinelImpl,
     onProgress = () => {},
@@ -871,6 +934,8 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     onProgress(`Stage ${stage}: claude -p '${prompt.slice(0, 80)}…'`);
 
     let stageOutcome: StageOutcome | null = null;
+    // #14034: ids de sessão dados aos spawns do pré-gate (1 por tentativa).
+    const pregateSessionIds: string[] = [];
     // Defesa em profundidade (#6045): se MESMO com a diretiva a sub-sessão
     // sair com a assinatura "despachei background e estou esperando", repete
     // o stage UMA vez antes de declarar falha. A resumabilidade por sentinela
@@ -883,6 +948,12 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         );
       }
       const startedAt = nowMs();
+      const sessionIdArgs: string[] = [];
+      if (preGate) {
+        const id = randomUuidFn();
+        pregateSessionIds.push(id);
+        sessionIdArgs.push("--session-id", id);
+      }
       try {
       // Capturado sempre (#5791), mesmo que o caminho feliz descarte a
       // variável logo abaixo sem nunca a incluir em `outcomes`. O ponto do
@@ -915,6 +986,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           // dado a capturar aqui, com ou sem `--session-id` explícito.
           "json",
           "--no-session-persistence",
+          ...sessionIdArgs,
           ...addDirArgs,
           // `--` antes do prompt posicional (#9579, mesma classe do #9577):
           // prompt começando com `-` não vira opção do CLI.
@@ -1049,6 +1121,13 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       };
       break;
     }
+    }
+    if (preGate) {
+      releaseOrphanPregateLock(editionDir, pregateSessionIds, {
+        readLockFn: readEditionLockFn,
+        releaseFn: opts.releaseEditionLockFn ?? defaultReleasePregateLock(repoRootAbs, env),
+        onProgress,
+      });
     }
     if (stageOutcome !== null) {
       outcomes.push(stageOutcome);

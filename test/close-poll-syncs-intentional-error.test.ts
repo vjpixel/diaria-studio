@@ -3,7 +3,7 @@
  *
  * Regressão: `prep-manual-publish.ts` (fluxo de publicação manual no Beehiiv)
  * nunca chamava `sync-intentional-error.ts` — só o playbook automático
- * (`context/publishers/beehiiv-playbook.md` §0.1, disparado por
+ * (`context/publishers/newsletter-prerender.md` §0.1, disparado por
  * `/diaria-5-publicacao`) fazia isso. Resultado real (edição 260709,
  * publicada manualmente): `data/intentional-errors.jsonl` nunca recebeu a
  * entry daquela edição — o log pulou direto de 260708 pra 260710 — e
