@@ -13,9 +13,9 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (181 arquivos)
+## Índice (182 arquivos)
 
-### `docs/` (166)
+### `docs/` (167)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
@@ -81,6 +81,7 @@
 | [`entity-pages-regen-setup.md`](./entity-pages-regen-setup.md) | Regeneração automática das páginas de entidade (`especial.diar.ia.br/entidades/`) | Atualização #7147 (02/09/2026): as 2 metades abaixo passaram a rodar em CADENCES diferentes — a task diária armada em 17/08 (ver "Setup" no fim deste doc) hoje… |
 | [`evaluate-brevo-diaria-setup.md`](./evaluate-brevo-diaria-setup.md) | Task diária: evaluate do canal `brevo_diaria` | O envio diário do canal `brevo_diaria` (`scripts/publish-daily-brevo.ts`) mira a lista inteira na Brevo — não consulta o store por contato. Isso significa que… |
 | [`facebook-setup.md`](./facebook-setup.md) | Facebook Graph API Setup (Stage 5) | Setup do publisher Facebook do Stage 5 (Publicação, #1694) (`scripts/publish-facebook.ts`) para agendar/publicar posts via Graph API. |
+| [`fact-check-incremental.md`](./fact-check-incremental.md) | Fact-check incremental por unidade (#14035) | Decisão do editor de 25/11/2026. O passo 1 do §4c.6 da Etapa 4 (`npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/`) imprime `Escopo do… |
 | [`failover-neo.md`](./failover-neo.md) | Contingência do 300 no Neo (#12982) | O `300` roda todas as tasks agendadas `Diaria-*` (systemd). Desde o #5074, nenhuma delas roda no Windows. Este runbook descreve a exceção temporária e… |
 | [`ga4-api-setup.md`](./ga4-api-setup.md) | Acesso programático ao GA4 (#5248) | Estado e passo-a-passo do acesso à Google Analytics Data API v1beta para a propriedade `Diaria`. Fecha a decisão registrada na issue #5248: "GA4 está coletando… |
 | [`ga4-data-api-setup.md`](./ga4-data-api-setup.md) | GA4 Data API — ingestão de comportamento pós-clique (#5248) | `diar.ia.br` (a home hospedada) é um custom hostname da Beehiiv — fora da nossa zona Cloudflare. `scripts/lib/shared/ai-referrer-log.ts` (log de `Referer` de… |
