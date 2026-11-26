@@ -291,7 +291,7 @@ import { archiveUploadedFileToR2 } from "./lib/public-images-archive.ts";
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { DEFAULT_WEEKLY_CAROUSEL_TIME, readSocialRotation, weekendRotationSlot } from "./lib/social-schedule-rotation.ts";
-import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
+import { validateScheduledTime, dispatchFacebookCarousel, facebookOutcomeEntry } from "./publish-facebook.ts"; // #14170
 import {
   applyFacebookPageUtm,
   enabledFacebookPages,
@@ -914,6 +914,48 @@ export function weeklySendUnknownHint(channel: string, label: string): string {
     return `AVISO ${label}: envio não confirmado (send_unknown). Conferir a página no LinkedIn; se o carrossel não saiu, postar à mão — --retry linkedin não reposta (a chave do Worker já disparou, #13088).`;
   }
   return `AVISO ${label}: envio não confirmado (send_unknown). Conferir o perfil; se o carrossel não saiu, rodar com --schedule --retry ${channel} (re-tenta só este canal, #13076).`;
+}
+
+/**
+ * #14170 — carrossel semanal numa página do Facebook, com o retry sem
+ * duplicar do publicador diário (`dispatchFacebookCarousel`, #14131): falha
+ * ambígua (5xx/timeout) consulta `/scheduled_posts` antes de repetir o POST;
+ * achou, adota o id; leitura falhou, `send_unknown` (a retomada pula). Devolve
+ * a entry do store (sem `mode`/tag, que o caller acrescenta). Nunca lança.
+ */
+export async function dispatchWeeklyFacebookPage(opts: {
+  page: Pick<ResolvedFacebookPage, "slug" | "pageId" | "token">;
+  apiVersion: string;
+  caption: string;
+  imageUrls: string[];
+  scheduledAt: string;
+  destaque: string;
+  sleep?: (ms: number) => Promise<void>;
+  lookupDelayMs?: number;
+}): Promise<PostEntry> {
+  const { page, scheduledAt, destaque } = opts;
+  const label = facebookPageLabel(page.slug, destaque);
+  const outcome = await dispatchFacebookCarousel({
+    pageId: page.pageId,
+    pageToken: page.token,
+    apiVersion: opts.apiVersion,
+    caption: opts.caption,
+    scheduledAt,
+    imageUrls: opts.imageUrls,
+    label,
+    sleep: opts.sleep,
+    lookupDelayMs: opts.lookupDelayMs,
+  });
+  const entry = facebookOutcomeEntry(outcome, { pageId: page.pageId, pageSlug: page.slug, destaque, scheduledAt });
+  if (outcome.kind === "created") {
+    console.log(`OK ${label} — scheduled at ${scheduledAt} — ${entry.url}`);
+  } else if (outcome.kind === "send_unknown") {
+    console.error(`SEND_UNKNOWN ${label}: ${outcome.reason}`);
+    console.warn(weeklySendUnknownHint("facebook", label));
+  } else {
+    console.error(`FAILED ${label}: ${outcome.reason}`);
+  }
+  return entry;
 }
 
 /** #13076 — `--retry instagram[,threads]`: `null` = flag ausente. */
@@ -2400,19 +2442,17 @@ async function runOneMode(
       continue;
     }
     try {
-      const result = await publishFacebookCarouselByUrl(pg.pageId, pg.token, fbApiVersion, carouselImageUrls, applyFacebookPageUtm(fbCaption, pg), scheduledAt);
-      const postId = result.post_id || result.id;
-      const postUrl = `https://www.facebook.com/${pg.pageId}/posts/${postId}`;
-      console.log(`OK ${label} — scheduled at ${scheduledAt} — ${postUrl}`);
-      tagAndAppend({
-        platform: "facebook",
-        page: pg.slug,
-        destaque: destaqueKey,
-        url: postUrl,
-        status: "scheduled",
-        scheduled_at: scheduledAt,
-        fb_post_id: postId,
-      });
+      // #14170: 5xx/timeout não repete o POST cego (ver dispatchWeeklyFacebookPage).
+      tagAndAppend(
+        await dispatchWeeklyFacebookPage({
+          page: pg,
+          apiVersion: fbApiVersion,
+          caption: applyFacebookPageUtm(fbCaption, pg),
+          imageUrls: carouselImageUrls,
+          scheduledAt,
+          destaque: destaqueKey,
+        }),
+      );
     } catch (e: any) {
       console.error(`FAILED ${label}: ${e.message}`);
       tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });

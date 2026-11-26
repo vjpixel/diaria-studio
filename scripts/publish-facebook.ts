@@ -48,6 +48,7 @@ import {
   isAmbiguousHttpStatus,
   lookupFacebookScheduledPost,
   publishFacebookWithReconciliation,
+  type FacebookPageLookupResult,
   type FacebookPublishOutcome,
 } from "./lib/facebook-publish-retry.ts"; // #14131 — retry sem post duplicado
 import {
@@ -630,20 +631,94 @@ export async function dispatchFacebookPost(input: {
   lookupDelayMs?: number;
 }): Promise<FacebookPublishOutcome> {
   const { pageId, pageToken, apiVersion, caption, scheduledAt } = input;
-  const scheduledUnix = scheduledAt ? isoToUnix(scheduledAt) : null;
   return publishFacebookWithReconciliation({
     label: input.label,
     send: () =>
       input.carouselImageUrls
         ? publishFacebookCarouselByUrl(pageId, pageToken, apiVersion, input.carouselImageUrls, caption, scheduledAt)
         : publishPhoto(pageId, pageToken, apiVersion, input.imagePath, caption, scheduledAt),
-    lookup:
-      scheduledUnix === null
-        ? null
-        : () => lookupFacebookScheduledPost({ pageId, pageToken, apiVersion, caption, scheduledUnix }),
+    lookup: facebookScheduledPostLookup(pageId, pageToken, apiVersion, caption, scheduledAt),
     sleep: input.sleep,
     lookupDelayMs: input.lookupDelayMs,
   });
+}
+
+/**
+ * #14131: consulta de `/scheduled_posts` para um post com agendamento; `null`
+ * sem agendamento (não há o que consultar — falha ambígua vira `send_unknown`).
+ */
+function facebookScheduledPostLookup(
+  pageId: string,
+  pageToken: string,
+  apiVersion: string,
+  caption: string,
+  scheduledAt: string | null,
+): (() => Promise<FacebookPageLookupResult>) | null {
+  if (!scheduledAt) return null;
+  const scheduledUnix = isoToUnix(scheduledAt);
+  return () => lookupFacebookScheduledPost({ pageId, pageToken, apiVersion, caption, scheduledUnix });
+}
+
+/**
+ * #14170: carrossel do Facebook por URL com o mesmo retry sem duplicar de
+ * `dispatchFacebookPost` (#14131) — para os publicadores que só postam
+ * carrossel (semanal, Retrospectiva). Nunca lança.
+ */
+export async function dispatchFacebookCarousel(input: {
+  pageId: string;
+  pageToken: string;
+  apiVersion: string;
+  caption: string;
+  scheduledAt: string | null;
+  imageUrls: string[];
+  label: string;
+  /** Injetáveis pra teste (default: espera real). */
+  sleep?: (ms: number) => Promise<void>;
+  lookupDelayMs?: number;
+}): Promise<FacebookPublishOutcome> {
+  const { pageId, pageToken, apiVersion, caption, scheduledAt, imageUrls } = input;
+  return publishFacebookWithReconciliation({
+    label: input.label,
+    send: () => publishFacebookCarouselByUrl(pageId, pageToken, apiVersion, imageUrls, caption, scheduledAt),
+    lookup: facebookScheduledPostLookup(pageId, pageToken, apiVersion, caption, scheduledAt),
+    sleep: input.sleep,
+    lookupDelayMs: input.lookupDelayMs,
+  });
+}
+
+/**
+ * Pure (#14131/#14170): entry do store para o resultado de um post do
+ * Facebook. `created` → `scheduled` (ou `draft` sem agendamento), com
+ * `recovered` quando o id veio da consulta da página; `failed` (nada criado,
+ * provado) e `send_unknown` (o post pode existir) levam o motivo. A retomada
+ * pula `send_unknown` e refaz `failed` (`RESUME_SKIP_STATUSES`, #13074).
+ */
+export function facebookOutcomeEntry(
+  outcome: FacebookPublishOutcome,
+  ctx: { pageId: string; pageSlug: string; destaque: string; scheduledAt: string | null },
+): PostEntry {
+  if (outcome.kind === "created") {
+    const postId = outcome.result.post_id || outcome.result.id;
+    return {
+      platform: "facebook",
+      page: ctx.pageSlug, // #10458
+      destaque: ctx.destaque,
+      url: `https://www.facebook.com/${ctx.pageId}/posts/${postId}`,
+      status: ctx.scheduledAt ? "scheduled" : "draft",
+      scheduled_at: ctx.scheduledAt,
+      fb_post_id: postId,
+      ...(outcome.recovered && { recovered: outcome.recovered }), // #14131
+    };
+  }
+  return {
+    platform: "facebook",
+    page: ctx.pageSlug, // #10458
+    destaque: ctx.destaque,
+    url: null,
+    status: outcome.kind,
+    scheduled_at: outcome.kind === "send_unknown" ? ctx.scheduledAt : null,
+    reason: outcome.reason,
+  };
 }
 
 export interface FacebookPagePlan {
@@ -1207,34 +1282,14 @@ async function main(): Promise<number | void> {
         carouselImageUrls,
         label: facebookLogLabel(page.slug, d),
       });
+      const entry = facebookOutcomeEntry(outcome, { pageId: page.pageId, pageSlug: page.slug, destaque: d, scheduledAt });
       if (outcome.kind === "created") {
-        const postId = outcome.result.post_id || outcome.result.id;
-        const postUrl = `https://www.facebook.com/${page.pageId}/posts/${postId}`;
-        const entry: PostEntry = {
-          platform: "facebook",
-          page: page.slug, // #10458
-          destaque: d,
-          url: postUrl,
-          status: scheduledAt ? "scheduled" : "draft",
-          scheduled_at: scheduledAt,
-          fb_post_id: postId,
-          ...(outcome.recovered && { recovered: outcome.recovered }), // #14131
-        };
         tagAndAppend(entry);
         results.push(entry);
-        console.log(`OK ${facebookLogLabel(page.slug, d)} — ${entry.status} — ${postUrl}`);
+        console.log(`OK ${facebookLogLabel(page.slug, d)} — ${entry.status} — ${entry.url}`);
       } else {
         // #14131: `failed` só quando nada foi criado (provado); `send_unknown`
         // quando o post pode existir — a retomada pula este, refaz aquele.
-        const entry: PostEntry = {
-          platform: "facebook",
-          page: page.slug, // #10458
-          destaque: d,
-          url: null,
-          status: outcome.kind,
-          scheduled_at: outcome.kind === "send_unknown" ? scheduledAt : null,
-          reason: outcome.reason,
-        };
         if (outcome.kind === "send_unknown") {
           console.error(`SEND_UNKNOWN ${facebookLogLabel(page.slug, d)}: ${outcome.reason}`);
           console.warn(sendUnknownFacebookHint(facebookLogLabel(page.slug, d)));
