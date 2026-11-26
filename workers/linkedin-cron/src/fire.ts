@@ -192,6 +192,27 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       } catch { /* non-fatal — eviction limpará o DO */ }
     };
 
+    // #14230 — o cron decidiu `dlq`: marca o DO como o alarm faz no mesmo
+    // desfecho (#14218, `dlq_reason` + payload apagado + claim liberado pelo
+    // token), via `/mark-dlq`. Antes só liberava o claim, e um alarm que
+    // disparasse depois refazia o post (o carrossel inteiro). Se a marcação
+    // falhar, ao menos libera o claim, como antes.
+    const markCronDlq = async (reason: string) => {
+      try {
+        const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+        const res = await env.LINKEDIN_SCHEDULER.get(doId).fetch("https://do/mark-dlq", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason, claim_token: claimToken ?? null }),
+        });
+        if (res.ok) return;
+        console.error(`[fire] ${k.name} /mark-dlq devolveu ${res.status} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
+      } catch (e) {
+        console.error(`[fire] ${k.name} /mark-dlq falhou: ${String(e)} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
+      }
+      await releaseCronClaim();
+    };
+
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
     // compartilhado com alarm() (durable-object.ts) — decide o branch
     // linkedin/instagram/threads a partir de `entry.channel` (default
@@ -236,7 +257,8 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     if (outcome.status === "dlq") {
       // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
       // fica com claiming=true permanente e o alarm fica travado até eviction.
-      await releaseCronClaim();
+      // #14230 — e marcar o DO (`dlq_reason`, sem payload): o alarm não refaz.
+      await markCronDlq(outcome.reason);
       const dlqKey = await moveToDlq(env, k.name, entry, outcome.reason);
       console.error(`[fire] ${k.name} dropped to dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
       dlq++;
@@ -311,6 +333,10 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
         });
         await env.LINKEDIN_QUEUE.delete(k.name);
+        // #14230 — mesma marcação do outcome `dlq`, DEPOIS das escritas no KV
+        // (o release do claim fica nesse ponto, #11045); `/mark-dlq` libera o claim.
+        releaseAfterWrites = false;
+        await markCronDlq(failureReason ?? `retries esgotados (${nextRetry})`);
         console.error(
           `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
         );

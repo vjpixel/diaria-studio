@@ -81,6 +81,8 @@ export interface DoStoredPayload {
  *                   `false` significa "outro caller já está processando" — não postar.
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
  *                   (#2230 bug 3) alarm() usa tryClaim() DIRETAMENTE — não via self-fetch.
+ *   POST /mark-dlq body: { reason, claim_token } → `dlq` decidido pelo cron: grava
+ *                   `dlq_reason`, apaga payload, libera o claim do token (#14230)
  */
 
 /**
@@ -189,6 +191,20 @@ export class LinkedInScheduler {
       await this.state.storage.delete("claim_token");
       return true;
     });
+  }
+
+  /**
+   * #14218/#14230 — desfecho `dlq` (do alarm ou do cron): grava o motivo
+   * (`dlq_reason`, que `/claim` e `tryClaim` recusam), apaga o payload e o
+   * container de Reels, e libera o claim de quem apresentou o token. Um alarm
+   * que dispare depois não tem o que postar nem ganha o claim. Não marca
+   * `fired`: nada foi publicado, e um re-enqueue (`/cancel` + `/arm`) arma de novo.
+   */
+  private async markDlq(reason: string, token: string | undefined): Promise<boolean> {
+    await this.state.storage.put("dlq_reason", reason);
+    await this.state.storage.delete("payload");
+    await this.state.storage.delete("reels_container");
+    return this.releaseOwnClaim(token);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -420,6 +436,31 @@ export class LinkedInScheduler {
       });
     }
 
+    // POST /mark-dlq — #14230: o cron decidiu `dlq` (outcome `dlq` ou retries
+    // esgotados) e move a entry do KV pra DLQ. Antes ele só liberava o claim: o
+    // DO ficava com o payload e sem `dlq_reason`, e um alarm que disparasse
+    // depois refazia o post (o carrossel inteiro, 2ª cópia). Mesma marcação do
+    // `dlq` do alarm (`markDlq`). Body `{ reason, claim_token }`; o token só
+    // decide se o claim deste cron é liberado — a marcação vale sempre, como o
+    // `/status-set-fired`, porque a entry está indo pra DLQ de qualquer forma.
+    if (url.pathname === "/mark-dlq" && request.method === "POST") {
+      let reason = "";
+      let token: string | undefined;
+      try {
+        const body = (await request.json()) as { reason?: unknown; claim_token?: unknown } | null;
+        if (typeof body?.reason === "string") reason = body.reason;
+        if (typeof body?.claim_token === "string") token = body.claim_token;
+      } catch { /* body ilegível: cai no 400 abaixo */ }
+      if (reason === "") {
+        return new Response(JSON.stringify({ error: "reason required" }), { status: 400 });
+      }
+      const released = await this.markDlq(reason, token);
+      return new Response(JSON.stringify({ ok: true, released }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // POST /release-claim — o cron libera o PRÓPRIO claim após falha do disparo,
     // permitindo que o próximo retry tente novamente. #14219: body
     // `{ claim_token }` com o token devolvido pelo `/claim`; token ausente ou de
@@ -544,10 +585,7 @@ export class LinkedInScheduler {
       // o cron lê o motivo no `/status` e move a entry pra DLQ sem redisparar.
       // Não marca `fired`: nada foi publicado, e um re-enqueue (`/cancel` +
       // `/arm`) segue podendo armar o item de novo.
-      await this.state.storage.put("dlq_reason", outcome.reason);
-      await this.state.storage.delete("payload");
-      await this.state.storage.delete("reels_container");
-      await this.releaseOwnClaim(claimToken);
+      await this.markDlq(outcome.reason, claimToken);
       console.error(`[DO alarm] ${key} dlq: ${outcome.reason} — não refeito, cron move pra DLQ (#14218)`);
       return;
     }
