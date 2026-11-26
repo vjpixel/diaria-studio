@@ -44,7 +44,7 @@ nome, porque a Clarice (empresa parceira) tem três papéis diferentes no
 projeto:
 
 1. **API de correção de texto** (`mcp__clarice__correct_text`,
-   `scripts/clarice-correct-engine.ts`) — usada no Stage 2 da **diária**
+   `scripts/lib/diaria/clarice-correct-engine.ts`) — usada no Stage 2 da **diária**
    para humanizar o texto da newsletter. `scripts/resolve-clarice-input.ts`
    (#871) pertence a este grupo — é invocado todo dia por
    `.claude/agents/orchestrator-stage-2.md`, nada a ver com envio de

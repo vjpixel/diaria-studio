@@ -57,7 +57,7 @@
  * (`postResumeSteps`): travessão, É IA?, estabilidade de URL, cupons e diff.
  * Os `verify-*` só reportam; exit 1 deles vira aviso para o gate, não falha.
  *
- * Lógica em `scripts/lib/clarice-pending.ts`.
+ * Lógica em `scripts/lib/diaria/clarice-pending.ts`.
  */
 
 import { spawnSync } from "node:child_process";
@@ -82,7 +82,7 @@ import {
   type ClariceRunner,
   type PostStepRun,
   type ResumeOutcome,
-} from "./lib/clarice-pending.ts";
+} from "./lib/diaria/clarice-pending.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

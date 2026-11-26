@@ -17,7 +17,7 @@ import {
   type ChunkedRetryResult,
   type AttemptLogEntry,
 } from "../scripts/clarice-correct.ts";
-import { CLARICE_CHUNK_THRESHOLD, splitIntoChunks, type TextChunk } from "../scripts/lib/clarice-chunk.ts";
+import { CLARICE_CHUNK_THRESHOLD, splitIntoChunks, type TextChunk } from "../scripts/lib/diaria/clarice-chunk.ts";
 import { applyClariceSuggestions, countOccurrences } from "../scripts/clarice-apply.ts";
 
 function mockFetch(response: {

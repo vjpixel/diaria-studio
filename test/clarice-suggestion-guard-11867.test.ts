@@ -9,9 +9,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyClariceNoise } from "../scripts/lib/clarice-suggestion-guard.ts";
+import { classifyClariceNoise } from "../scripts/lib/diaria/clarice-suggestion-guard.ts";
 import { applyClariceSuggestions } from "../scripts/clarice-apply.ts";
-import { applyChunkSuggestions } from "../scripts/lib/clarice-chunk.ts";
+import { applyChunkSuggestions } from "../scripts/lib/diaria/clarice-chunk.ts";
 
 // Os 5 pares da issue.
 const PAIRS: Array<[string, string]> = [

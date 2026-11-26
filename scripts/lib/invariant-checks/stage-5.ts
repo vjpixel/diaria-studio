@@ -17,7 +17,7 @@ import { checkPublicImagesMd5MatchesLocal } from "../public-images-md5-check.ts"
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
-import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending } from "../clarice-pending.ts"; // #12257, #12693
+import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending } from "../diaria/clarice-pending.ts"; // #12257, #12693
 import {
   loadFacebookPagesConfig,
   readFacebookCredentialsFile,
