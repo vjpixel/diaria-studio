@@ -14,7 +14,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
@@ -63,13 +63,56 @@ describe("studio-server — imagens + gate approve (#6447 Fatia 4)", () => {
     assert.match(body.error, /02-d1-prompt\.md/);
   });
 
-  it("POST /api/editions/{aammdd}/gate/approve — 1ª vez grava e devolve decision", async () => {
+  // #14134: o painel manda de volta os hashes que o GET .../gate devolveu.
+  async function shownHashes(): Promise<unknown> {
+    const res = await fetch(new URL("/api/editions/260828/gate", server.url));
+    return (await res.json()).contentHashes;
+  }
+  function approve(body: Record<string, unknown>): Promise<Response> {
+    return fetch(new URL("/api/editions/260828/gate/approve", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("#14134: POST .../gate/approve sem content_hashes (página antiga) -> 409 contentChanged, nenhuma decisão", async () => {
     const res = await fetch(new URL("/api/editions/260828/gate/approve", server.url), { method: "POST" });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.contentChanged, true);
+    const gate = await (await fetch(new URL("/api/editions/260828/gate", server.url))).json();
+    assert.equal(gate.decision, null);
+  });
+
+  it("#14134: conteúdo mudou depois do GET do painel -> 409 contentChanged, mesmo com force", async () => {
+    writeFileSync(join(root, "data", "editions", "260828", "02-reviewed.md"), "versão mostrada", "utf8");
+    const hashes = await shownHashes();
+    writeFileSync(join(root, "data", "editions", "260828", "02-reviewed.md"), "versão escrita depois", "utf8");
+    const res = await approve({ force: true, content_hashes: hashes });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.contentChanged, true);
+    assert.deepEqual(body.changedFiles, ["02-reviewed.md"]);
+  });
+
+  it("#14134: 03-social.md surgiu depois do GET do painel -> 409 contentChanged", async () => {
+    const hashes = await shownHashes();
+    writeFileSync(join(root, "data", "editions", "260828", "03-social.md"), "social novo", "utf8");
+    const res = await approve({ content_hashes: hashes });
+    assert.equal(res.status, 409);
+    assert.deepEqual((await res.json()).changedFiles, ["03-social.md"]);
+  });
+
+  it("POST /api/editions/{aammdd}/gate/approve — 1ª vez grava e devolve decision (com os hashes mostrados)", async () => {
+    const hashes = await shownHashes();
+    const res = await approve({ content_hashes: hashes });
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.decision.decision, "approved");
     assert.equal(body.decision.decided_via, "studio");
+    assert.deepEqual(body.decision.content_hashes, hashes);
   });
 
   it("GET .../gate reflete a decisão gravada no passo anterior", async () => {
@@ -79,7 +122,7 @@ describe("studio-server — imagens + gate approve (#6447 Fatia 4)", () => {
   });
 
   it("POST .../gate/approve de novo, sem force — 409 conflict", async () => {
-    const res = await fetch(new URL("/api/editions/260828/gate/approve", server.url), { method: "POST" });
+    const res = await approve({ content_hashes: await shownHashes() });
     assert.equal(res.status, 409);
     const body = await res.json();
     assert.equal(body.ok, false);
@@ -87,11 +130,7 @@ describe("studio-server — imagens + gate approve (#6447 Fatia 4)", () => {
   });
 
   it("POST .../gate/approve com force:true — sobrescreve com sucesso", async () => {
-    const res = await fetch(new URL("/api/editions/260828/gate/approve", server.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: true }),
-    });
+    const res = await approve({ force: true, content_hashes: await shownHashes() });
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
