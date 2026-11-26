@@ -2,6 +2,7 @@ import type { Env, QueueEntry, WebhookTarget, QueueAction, ReelsContainerRef } f
 import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS, LINKEDIN_DOCUMENT_MAX_BYTES } from "./index";
 import { isUnsupportedCommentTarget, isPageApiAction } from "./guards";
 import { defaultLinkedInApiVersion } from "./linkedin-api-version";
+import { META_GRAPH_VERSION } from "../../../scripts/lib/shared/meta-graph.ts"; // #14124
 
 // ── Dispatch compartilhado entre fire.ts (cron) e durable-object.ts (alarm) ──
 //
@@ -115,7 +116,7 @@ export function resolveInstagramCreds(env: Env): InstagramCreds | undefined {
   return {
     igUserId: env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
     accessToken: env.INSTAGRAM_ACCESS_TOKEN,
-    apiVersion: env.INSTAGRAM_API_VERSION || "v25.0",
+    apiVersion: env.INSTAGRAM_API_VERSION || META_GRAPH_VERSION,
   };
 }
 
@@ -130,7 +131,7 @@ export function resolveInstagramVjpixelCreds(env: Env): InstagramCreds | undefin
   return {
     igUserId: env.INSTAGRAM_VJPIXEL_ACCOUNT_ID,
     accessToken: env.INSTAGRAM_VJPIXEL_ACCESS_TOKEN,
-    apiVersion: env.INSTAGRAM_API_VERSION || "v25.0",
+    apiVersion: env.INSTAGRAM_API_VERSION || META_GRAPH_VERSION,
   };
 }
 

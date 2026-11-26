@@ -82,6 +82,7 @@ import { kitApiBase } from "../lib/kit-config.ts";
 import { checkCloudflareToken, type CloudflareTokenHealth } from "../check-cloudflare-token.ts";
 import { checkClariceHealth } from "../clarice-healthcheck.ts";
 import { DEFAULT_FACEBOOK_PAGE_SLUG, loadFacebookPagesConfig } from "../lib/facebook-pages.ts"; // #10458
+import { META_GRAPH_VERSION } from "../lib/shared/meta-graph.ts"; // #14124
 
 // Garante que `.env` está carregado mesmo quando
 // `studio-integrations.ts` é importado sem o processo ter passado por um
@@ -625,14 +626,14 @@ async function evaluateIntegration(
         return { ...base, configured, missingEnvVars: missing, reachable: probe.reachable, error: probe.error };
       }
       case "facebook-graph": {
-        const version = env.FACEBOOK_API_VERSION || "v25.0";
+        const version = env.FACEBOOK_API_VERSION || META_GRAPH_VERSION;
         const idEnv = def.graphNode?.idEnv ?? "FACEBOOK_PAGE_ID";
         const tokenEnv = def.graphNode?.tokenEnv ?? "FACEBOOK_PAGE_ACCESS_TOKEN";
         const probe = await probeGraphNode(env[idEnv] ?? "", env[tokenEnv] ?? "", version, fetchImpl);
         return { ...base, configured, missingEnvVars: missing, reachable: probe.reachable, error: probe.error };
       }
       case "instagram-graph": {
-        const version = env.INSTAGRAM_API_VERSION || "v25.0";
+        const version = env.INSTAGRAM_API_VERSION || META_GRAPH_VERSION;
         const probe = await probeGraphNode(
           env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
           env.INSTAGRAM_ACCESS_TOKEN ?? "",

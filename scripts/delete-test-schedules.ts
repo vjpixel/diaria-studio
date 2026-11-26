@@ -44,6 +44,7 @@ import {
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts"; // #10458
 import { resolveSocialWorkerToken, resolveSocialWorkerUrlFromRoot } from "./lib/worker-queue-client.ts"; // #14062
+import { META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -75,7 +76,7 @@ function loadFbPages(): { pages: ResolvedFacebookPage[]; apiVersion: string; err
   try {
     return loadResolvedFacebookPages(ROOT, config);
   } catch (e) {
-    return { pages: [], apiVersion: "v25.0", error: (e as Error).message };
+    return { pages: [], apiVersion: META_GRAPH_VERSION, error: (e as Error).message };
   }
 }
 

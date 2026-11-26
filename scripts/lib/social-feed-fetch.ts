@@ -22,6 +22,7 @@
 import type { FeedItem, FeedRead } from "./social-feed-reconcile.ts";
 import { parseFeedTime } from "./social-feed-reconcile.ts";
 import { defaultLinkedInApiVersion, restHeaders } from "./linkedin-personal.ts";
+import { META_GRAPH_VERSION, metaGraphBase } from "./shared/meta-graph.ts"; // #14124
 
 export type FeedFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -126,8 +127,8 @@ export async function fetchInstagramFeed(sinceIso: string, env: Env = process.en
   const id = env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
   const token = env.INSTAGRAM_ACCESS_TOKEN;
   if (!id || !token) return { items: [], coveredSince: null, error: "credencial ausente (INSTAGRAM_BUSINESS_ACCOUNT_ID, INSTAGRAM_ACCESS_TOKEN)" };
-  const v = env.INSTAGRAM_API_VERSION || "v25.0";
-  const first = `https://graph.facebook.com/${v}/${id}/media?fields=id,permalink,timestamp,caption,media_product_type&limit=50`;
+  const v = env.INSTAGRAM_API_VERSION || META_GRAPH_VERSION;
+  const first = `${metaGraphBase(v)}/${id}/media?fields=id,permalink,timestamp,caption,media_product_type&limit=50`;
   const headers = { Authorization: `Bearer ${token}` };
   return readFeedPages(first, async (url) => parseGraphPage(await getJson(fetchFn, url, headers), "caption"), sinceIso);
 }

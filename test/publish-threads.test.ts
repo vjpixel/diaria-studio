@@ -1375,7 +1375,10 @@ describe("carrossel diário no enqueue --schedule do Threads (#6095)", () => {
 
   it("main() lê 06-public-images.json best-effort (nunca lança se ausente — Threads daily nunca exigiu imagem)", () => {
     assert.match(src, /06-public-images\.json/);
-    assert.match(src, /existsSync\(publicImagesPath\)/);
+    // #14125: a leitura fail-soft mora em lib/public-images-file.ts.
+    assert.match(src, /loadPublicImagesFile\(publicImagesPath\)/);
+    const lib = readFileSync(resolve(__ROOT, "scripts/lib/public-images-file.ts"), "utf8");
+    assert.match(lib, /existsSync\(publicImagesPath\)/);
   });
 
   it("payload do enqueue inclui image_urls só quando carouselImageUrls está resolvido (spread condicional, image_url:null preservado)", () => {

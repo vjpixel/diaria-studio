@@ -35,6 +35,8 @@
  * @module
  */
 
+import { META_ADS_GRAPH_VERSION } from "./shared/meta-graph.ts"; // #14124
+
 /** Dias sem `server_last_fired_time` avançar antes de considerar "parado".
  * O uso normal (dezenas de cadastros/dia, confirmado ao vivo na issue via
  * `last_fired_time` do pixel client-side) faz este threshold generoso —
@@ -110,7 +112,7 @@ export interface FetchDatasetStalenessOptions {
  * — mesmo racional documentado em `meta-capi.ts`. */
 export const META_CAPI_STALENESS_DEFAULT_DATASET_ID = "1285191740325112";
 
-const DEFAULT_API_VERSION = "v21.0";
+const DEFAULT_API_VERSION = META_ADS_GRAPH_VERSION;
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 
 /**
