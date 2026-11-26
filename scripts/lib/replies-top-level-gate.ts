@@ -17,10 +17,10 @@
  * spawnar os Stages 1-3 em background), onde os MCPs de fato existem.
  * `--session-supervised` deixa de controlar a execução de §0-replies dentro
  * do Stage 1 spawnado — o Stage 1 NUNCA mais tenta essa seção, independente
- * de `pre_gate` (ver `orchestrator-stage-0-preflight.md` § 0-replies, nota
+ * de `pre_gate` (ver `orchestrator-stage-0-replies.md` § 0-replies, nota
  * de delegação). Uso direto/standalone de `/diaria-1-pesquisa` (sessão
  * interativa comum, sem spawn) continua tendo MCP de verdade e pode seguir
- * a prosa de `orchestrator-stage-0-preflight.md` normalmente — este gate só
+ * a prosa de `orchestrator-stage-0-replies.md` normalmente — este gate só
  * decide o caminho `/diaria-edicao`.
  */
 

@@ -99,7 +99,7 @@
  * inteira, sem aviso nenhum antes deste PR. A causa típica é o comando ter
  * sido chamado encadeado/pipado (`&&`/`;`/`|`/heredoc), o que faz
  * `inject-session-id.mjs` recusar a injeção de propósito (`context/
- * overnight-dispatch-rules.md` item 18) — a correção normal é chamar
+ * overnight-coordinator-rules.md` item 18) — a correção normal é chamar
  * standalone. Fora do harness (debug manual, script rodando sem sessão
  * Claude Code), passar `--allow-no-session-id` grava o marker no formato
  * antigo mesmo assim, mas sempre com aviso alto no stderr — nunca em
@@ -321,7 +321,7 @@ export function anonymousEndError(
   return (
     `--end sem --session-id não remove marker por-sessão, e há ${perSession.length} nesta máquina ` +
     `(${perSession.join(", ")}). Provável injeção de --session-id recusada (comando encadeado/pipado — ` +
-    "context/overnight-dispatch-rules.md item 18). Rode `npx tsx scripts/overnight-session-marker.ts --end` " +
+    "context/overnight-coordinator-rules.md item 18). Rode `npx tsx scripts/overnight-session-marker.ts --end` " +
     "STANDALONE, ou passe --session-id explicitamente (#9451)."
   );
 }
@@ -457,7 +457,7 @@ export function setPhase(repoRoot: string, phase: OvernightPhase, sessionId?: st
  *      resume/skill documentado: toda chamada de `--start`/`--phase` das
  *      skills overnight é standalone (nunca `&&`/`;`/pipe/heredoc — a skill
  *      já instrui isso pra `session-registry.ts`, ver `context/
- *      overnight-dispatch-rules.md` item 18) e roda dentro do harness, onde
+ *      overnight-coordinator-rules.md` item 18) e roda dentro do harness, onde
  *      `payload.session_id` está disponível pro hook injetar. Só quebra
  *      exatamente o padrão que já era o bug (chamada encadeada) — e quebrar
  *      ALTO nesse caso é o comportamento correto: melhor um `exit 1`
@@ -481,7 +481,7 @@ export function resolveSessionIdOrThrow(
   }
   throw new Error(
     "--session-id ausente. Normalmente injetado automaticamente por .claude/hooks/inject-session-id.mjs " +
-      "quando este comando roda STANDALONE (nunca em &&/;/pipe/heredoc — ver context/overnight-dispatch-rules.md " +
+      "quando este comando roda STANDALONE (nunca em &&/;/pipe/heredoc — ver context/overnight-coordinator-rules.md " +
       "item 18). Um marker sem session_id muda o escopo do bloqueio de AskUserQuestion de 1 sessão pra a " +
       "MÁQUINA INTEIRA, sem aviso nenhum antes deste PR (#6232) — por isso este script agora falha alto em vez " +
       "de degradar em silêncio. Corrija a chamada pra standalone (deixa a injeção automática funcionar), passe " +

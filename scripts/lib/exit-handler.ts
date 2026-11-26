@@ -22,7 +22,7 @@
  * do arquivo — nenhum consumidor depende do processo morrer no meio de
  * `fn()` ainda em voo (o caminho de SUCESSO já nunca chamava
  * `process.exit()`, só o de erro — ver docstring de `sendMailWithTimeout`
- * em `scripts/studio-ui/studio-reports.ts`, que já documentava essa
+ * em `scripts/lib/reports-registry.ts`, que já documentava essa
  * assimetria antes deste fix).
  */
 export async function runMain(fn: () => Promise<void>): Promise<void> {

@@ -129,7 +129,8 @@
  *   --phase post-gate [--md <path> | --auto]
  *     §1y — aplica as edições do gate (ou `--auto`), re-renderiza MD,
  *     re-valida lançamentos, invariantes pós-apply (warn, não bloqueia),
- *     experimento D3-radar (opt-in via config), escreve sentinel, arquiva
+ *     experimento D3-radar (opt-in via config), deriva os pedidos editoriais
+ *     do gate (`derive-editor-requests.ts derive-stage1`, #14030), escreve sentinel, arquiva
  *     inbox, fecha stage-status + captura de custo.
  *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
@@ -1743,6 +1744,12 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
   if (experiment.code === 1) {
     report.note("⚠️  experiment-d3-radar falhou — seguindo sem randomizar (experimento opcional, nunca bloqueia).");
   }
+
+  // --- pedidos editoriais derivados do gate 1 (#7964, #14030) ---
+  // Antes do sentinel, como no playbook: uma sessão headless que sai logo
+  // depois do `post-gate` não perde a derivação. Idempotente por hash de
+  // 01-categorized.json + 01-approved.json; no-op sob --auto. Fail-soft.
+  softStep(deps, report, "derive-editor-requests derive-stage1 (1y, #7964)", "scripts/derive-editor-requests.ts", ["derive-stage1", "--edition", opts.edition]);
 
   // --- sentinel de conclusão do Stage 1 ---
   const sentinel = deps.exec("scripts/pipeline-sentinel.ts", ["write", "--edition", opts.edition, "--step", "1", "--outputs", "01-categorized.md,_internal/01-approved.json"]);

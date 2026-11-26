@@ -32,7 +32,7 @@ import {
 } from "../scripts/lib/diaria/video-xml-vs-final.ts";
 import { BASELINE_11670 } from "../scripts/lib/diaria/video-xml-vs-final-baseline.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
-import { isReportKind } from "../scripts/studio-ui/studio-reports.ts";
+import { isReportKind } from "../scripts/lib/reports-registry.ts";
 import { alignEnvelopes } from "../scripts/lib/diaria/video-audio-align.ts";
 import { compareEdition, reportPatterns, type Finder, type PlanFileLite } from "../scripts/video-xml-vs-final.ts";
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { NIVEL_LABEL, type ApoioNivelId } from "../scripts/lib/shared/apoio-nivel-label.ts";
 import { isApoioNivel, type ApoioNivel } from "../scripts/lib/shared/apoio-nivel-types.ts";
-import type { RewardGroup } from "../scripts/studio-ui/studio-apoios.ts";
+import type { RewardGroup } from "../scripts/lib/apoios-data.ts";
 
 // #11205: os 3 nomes de tipo são a MESMA união (falha no typecheck de test/**
 // se alguma voltar a ser declarada à parte e divergir).

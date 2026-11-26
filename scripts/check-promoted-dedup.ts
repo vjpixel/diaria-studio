@@ -44,8 +44,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { dedupUrlKey } from "./lib/url-utils.ts";
 import {
-  canonicalize,
   extractPastUrlsWithinDays,
   readPastEditionsMd,
   deriveCurrentEdition,
@@ -124,7 +124,7 @@ function collectNativeEditionUrls(buckets: CategorizedFlat): Set<string> {
     for (const article of arr) {
       if (article?.primary_source_substituted?.to) continue; // promovido — checado à parte
       if (typeof article?.url !== "string" || article.url === "") continue;
-      urls.add(canonicalize(article.url));
+      urls.add(dedupUrlKey(article.url));
     }
   }
   return urls;
@@ -150,6 +150,12 @@ export function checkPromotedDedup(
   if (!Array.isArray(buckets.lancamento)) {
     return { demoted: [], checked: 0 };
   }
+
+  // #14020/#14021: compara pela chave do dedup (`dedupUrlKey`: sem prefixo de
+  // idioma, sem `www.`, http→https), a mesma do Pass 1 de `dedup.ts`. Com
+  // `canonicalize`, a troca por fonte oficial `/pt-BR/` passava como link novo.
+  // A URL gravada no artigo não muda.
+  const pastKeys = new Set([...pastUrls].map(dedupUrlKey));
 
   const demoted: DemotedEntry[] = [];
   let checked = 0;
@@ -178,11 +184,11 @@ export function checkPromotedDedup(
     // even when sub.to is a valid official URL that needs to be checked for repeats.)
 
     checked++;
-    const canonicalTo = canonicalize(sub.to);
+    const canonicalTo = dedupUrlKey(sub.to);
 
     // Verificar repetição histórica (past-editions), colisão com artigo NATIVO
     // já no pool desta edição (#4200), OU duplicata within-edition entre promoções.
-    const repeatsHistory = pastUrls.has(canonicalTo);
+    const repeatsHistory = pastKeys.has(canonicalTo);
     const collidesWithNative = !repeatsHistory && nativeEditionUrls.has(canonicalTo);
     // Duplicata within-edition: já alocamos esta URL oficial a outro item nesta edição
     const isWithinEditionPromotionDuplicate =
@@ -198,7 +204,7 @@ export function checkPromotedDedup(
     // Guarda: from === to (1m-ter anotou no-op) — avisar que ambas as URLs repetem.
     // Also check sub.from against pastUrls: when from===to, the restored URL is the
     // same repeated URL, so the editor must not re-promote thinking it's safe (#2338 fix 2).
-    const fromAlsoRepeats = sub.from === sub.to && pastUrls.has(canonicalize(sub.from));
+    const fromAlsoRepeats = sub.from === sub.to && pastKeys.has(dedupUrlKey(sub.from));
     if (sub.from === sub.to) {
       console.error(
         `[check-promoted-dedup] WARN: artigo "${article.title ?? sub.from}" tem from===to na substituição — ` +
@@ -212,7 +218,7 @@ export function checkPromotedDedup(
     // que o editor não re-promova pensando que apenas a URL oficial estava repetida
     // e que o item original (radar) está limpo (#2356 fix 1).
     const fromEmptyRadarAlsoRepeats =
-      sub.from === "" && pastUrls.has(canonicalize(article.url));
+      sub.from === "" && pastKeys.has(dedupUrlKey(article.url));
     if (fromEmptyRadarAlsoRepeats) {
       console.error(
         `[check-promoted-dedup] WARN: artigo "${article.title ?? sub.to}" tem from='' (sem URL de pesquisa original) ` +

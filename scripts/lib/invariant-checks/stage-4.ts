@@ -2624,6 +2624,17 @@ export function findDuplicateUrlsAgainstPastEditions(
   exemptCanonical: Set<string> = new Set(),
 ): DuplicateUrlMatch[] {
   if (pastOrigins.size === 0) return [];
+  // #14020/#14021: compara pela chave do dedup (`dedupUrlKey`: sem prefixo de
+  // idioma, sem `www.`, http→https), a mesma do Pass 1 de `dedup.ts`. Com
+  // `canonicalize`, a variante `/pt-BR/` ou `www.` do link passado passava
+  // calada. Na colisão de chaves fica a 1ª origem do mapa (a mais recente,
+  // ordem de `extractPastUrlsWithOriginWithinDays`).
+  const pastByKey = new Map<string, string>();
+  for (const [u, date] of pastOrigins) {
+    const k = dedupUrlKey(u);
+    if (!pastByKey.has(k)) pastByKey.set(k, date);
+  }
+  const exemptKeys = new Set([...exemptCanonical].map(dedupUrlKey));
   const matches: DuplicateUrlMatch[] = [];
   const seenCanonical = new Set<string>(); // 1 match por URL repetida, não por ocorrência
   for (const { url, line } of extractUrlsWithLines(reviewedMd)) {
@@ -2635,9 +2646,9 @@ export function findDuplicateUrlsAgainstPastEditions(
     }
     if (isNonEditorialHost(host)) continue;
 
-    const canonical = canonicalize(url);
-    const originDate = pastOrigins.get(canonical);
-    if (!originDate || seenCanonical.has(canonical) || exemptCanonical.has(canonical)) continue;
+    const canonical = dedupUrlKey(url);
+    const originDate = pastByKey.get(canonical);
+    if (!originDate || seenCanonical.has(canonical) || exemptKeys.has(canonical)) continue;
     seenCanonical.add(canonical);
     matches.push({ url, line, originDate });
   }
@@ -2657,7 +2668,7 @@ export function findDuplicateUrlsAgainstPastEditions(
  * Reusa `extractUrlsWithLines`/`isNonEditorialHost` (mesmo par que
  * `validate-domain-diversity.ts` usa pra extrair só links EDITORIAIS — exclui
  * rodapé/crédito de imagem/link de casa, ex: *.diar.ia.br, linkedin.com,
- * apoia.se) e `canonicalize`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
+ * apoia.se) e `dedupUrlKey`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
  * dedup de Stage 1, `scripts/dedup.ts`), pra ficar consistente com o que já
  * é considerado "mesmo link" em todo o resto do pipeline.
  *

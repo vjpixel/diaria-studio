@@ -43,7 +43,7 @@ diário serviria igualmente bem para o propósito de higiene contínua — ver
 
 ## Fuso horário
 
-`scheduleToOnCalendar` (`scripts/lib/systemd-units.ts`) já embute `America/Sao_Paulo` (BRT) explicitamente no `OnCalendar=` gerado — não depende do fuso do sistema. Isso é ainda mais crítico aqui do que em `docs/scheduled-edicao-setup.md`/`docs/dashboard-schedule.md` — o evaluate precisa disparar estritamente ANTES das 06:00 BRT do envio canônico (ver seção anterior).
+`scheduleToOnCalendar` (`scripts/lib/systemd-units.ts`) já embute `America/Sao_Paulo` (BRT) explicitamente no `OnCalendar=` gerado — não depende do fuso do sistema. Isso é ainda mais crítico aqui do que em `docs/scheduled-edicao-setup.md` — o evaluate precisa disparar estritamente ANTES das 06:00 BRT do envio canônico (ver seção anterior).
 
 ## Setup (ação local one-time do editor — NÃO feito nesta sessão)
 

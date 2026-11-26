@@ -191,7 +191,7 @@ import {
   resolveWindowGuardError,
   type CohortWindow,
 } from "./cohort-engagement.ts";
-import { registerReport, reportId } from "./studio-ui/studio-reports.ts";
+import { registerReport, reportId } from "./lib/reports-registry.ts";
 import { fetchAndAggregateKit, formatCountsTable, type UtmCountResult } from "./count-subscriptions-by-utm.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import type { DatabaseSync } from "node:sqlite";

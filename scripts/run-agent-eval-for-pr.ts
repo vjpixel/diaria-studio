@@ -125,7 +125,7 @@ import { extractFrontmatter } from "./validate-agent-frontmatter.ts";
 import { classifyAgentEvalEligibility, evaluateAgentEvalTrigger, AGENT_FILE_RE, type AgentEvalTriggerVerdict, type PromptEvalAgent } from "./lib/agent-eval-trigger-allowlist.ts";
 import { runPromptRegressionEval, DEFAULT_REPETITIONS, DEFAULT_BASELINE_REF, type PromptRegressionEvalReport } from "./eval-prompt-regression.ts";
 import { readCostArtifactFromDisk } from "./lib/edition-cost.ts";
-import { registerReport } from "./studio-ui/studio-reports.ts";
+import { registerReport } from "./lib/reports-registry.ts";
 import { AGENT_EVAL_LABEL } from "./check-agent-eval-required.ts";
 import { ClaudeCliError, preview } from "./lib/claude-cli-subprocess.ts";
 import { parseArms, type EvalArm } from "./lib/prompt-regression-eval.ts";

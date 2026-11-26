@@ -46,6 +46,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: npx tsx scripts/bug-heatmap.ts --out docs/bug-heatmap.md
 
+      # #14061: docs/README.md é gerado a partir de docs/ e travado pelo
+      # `docs-index.ts --check` do pr-checks.yml. O heatmap entra no índice
+      # só pelo título (TITLE_ONLY_DOCS), mas regenerar aqui mantém o índice
+      # em dia com qualquer mudança que o regen traga, e a PR do bot (aberta
+      # com GITHUB_TOKEN, que não dispara pr-checks) não deixa master divergir.
+      - name: Regenerate docs index
+        run: npx tsx scripts/docs-index.ts --write
+
       # #1465: branch protection bloqueia push direto pra master — abrimos PR.
       - name: Open PR if changed
         id: cpr
@@ -62,7 +70,9 @@ jobs:
             (ver #1465).
           branch: bot/heatmap-weekly-regen
           delete-branch: true
-          add-paths: docs/bug-heatmap.md
+          add-paths: |
+            docs/bug-heatmap.md
+            docs/README.md
           author: "diaria-bot <diaria-bot@noreply.github.com>"
           committer: "diaria-bot <diaria-bot@noreply.github.com>"
 

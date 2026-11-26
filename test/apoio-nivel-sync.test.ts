@@ -49,7 +49,7 @@ import {
   type ApoioTagDiffEntry,
 } from "../scripts/lib/apoio-nivel-sync.ts";
 import { reconcilePendingPromises } from "../scripts/lib/apoio-reconciliation-cycle.ts";
-import type { ContactWithStatus, MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
+import type { ContactWithStatus, MonthSnapshot } from "../scripts/lib/apoios-data.ts";
 import type { PendingPromise } from "../scripts/lib/apoio-promise-store.ts";
 import { RateLimiter, ApoiaSeAuthError } from "../scripts/lib/apoia-se.ts";
 

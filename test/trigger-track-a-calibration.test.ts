@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { featureFromCalibrationReportTitle, decideTrackATrigger } from "../scripts/trigger-track-a-calibration.ts";
-import { registerReport } from "../scripts/studio-ui/studio-reports.ts";
+import { registerReport } from "../scripts/lib/reports-registry.ts";
 
 function writeEdition(editionsRoot: string, edition: string, domainIndex: number, items: Array<{ slug: string; primary_source: boolean; approved: boolean; negative_impact?: boolean; score?: number }>): void {
   const dir = join(editionsRoot, edition, "_internal");

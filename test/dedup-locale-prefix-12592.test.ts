@@ -29,7 +29,7 @@ describe("dedupUrlKey (#12592)", () => {
   });
 
   it("prefixo de 2 letras só sai nos domínios com idioma no caminho", () => {
-    assert.equal(dedupUrlKey("https://www.anthropic.com/pt/news/x"), "https://www.anthropic.com/news/x");
+    assert.equal(dedupUrlKey("https://www.anthropic.com/pt/news/x"), "https://anthropic.com/news/x"); // #14021: `www.` sai da chave
     assert.equal(dedupUrlKey("https://blog.google/en/products/x"), "https://blog.google/products/x");
     // Fora da lista, `/it/` ou `/ai/` pode ser seção real: fica.
     assert.equal(dedupUrlKey("https://example.com/it/noticia"), "https://example.com/it/noticia");

@@ -778,7 +778,7 @@ async function finish(opts: { openIssues: boolean; dryRun: boolean; register: bo
   writeJson(out("state.json"), opts.state);
   if (opts.register) {
     try {
-      const { registerReport } = await import("./studio-ui/studio-reports.ts");
+      const { registerReport } = await import("./lib/reports-registry.ts");
       registerReport(ROOT, {
         kind: "video-xml-final",
         sessionId: opts.today,

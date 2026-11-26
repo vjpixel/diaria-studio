@@ -22,7 +22,7 @@
  * efeito que o Stage 3 já trata quando `01-eia.md` está ausente e não há
  * sinal de dispatch em sessão).
  *
- * @see .claude/agents/orchestrator-stage-1-research.md §1a-bis
+ * @see .claude/agents/orchestrator-stage-1-fallback.md §1c (#14030)
  * @see .claude/agents/orchestrator-stage-3.md §3a
  */
 

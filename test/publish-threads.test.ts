@@ -772,7 +772,11 @@ describe("#3944 Parte B --schedule: modo agendamento (verificação estática do
   });
 
   it("usa postToWorkerQueue do cliente compartilhado (worker-queue-client), não uma cópia local", () => {
-    assert.match(SRC, /from "\.\/lib\/worker-queue-client\.ts"/, "deve importar do módulo compartilhado com Instagram");
+    // #14010 — o enqueue passa pelo helper idempotente compartilhado com o
+    // Instagram, que por sua vez usa o `postToWorkerQueue` do cliente.
+    assert.match(SRC, /from "\.\/lib\/daily-worker-enqueue\.ts"/, "deve importar o helper compartilhado com Instagram");
+    const HELPER = readFileSync(resolve(__ROOT, "scripts/lib/daily-worker-enqueue.ts"), "utf8");
+    assert.match(HELPER, /from "\.\/worker-queue-client\.ts"/, "o helper deve usar o cliente compartilhado");
   });
 });
 
