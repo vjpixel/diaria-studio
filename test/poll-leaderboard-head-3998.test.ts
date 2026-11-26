@@ -19,27 +19,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import workerDefault from "../workers/poll/src/index.ts";
 import type { Env } from "../workers/poll/src/index.ts";
-
-function makeKv(seed: Record<string, string> = {}): KVNamespace {
-  const data: Record<string, string> = { ...seed };
-  return {
-    get: async (key: string) => data[key] ?? null,
-    put: async (key: string, value: string) => { data[key] = value; },
-    delete: async (key: string) => { delete data[key]; },
-    getWithMetadata: async () => ({ value: null, metadata: null }),
-    list: async (opts?: { prefix?: string }) => {
-      const prefix = opts?.prefix ?? "";
-      const keys = Object.keys(data)
-        .filter((k) => k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true };
-    },
-  } as unknown as KVNamespace;
-}
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 function makeEnv(seed: Record<string, string> = {}): Env {
   return {
-    POLL: makeKv(seed),
+    POLL: makeTrackedKvNamespace(seed),
     POLL_SECRET: "test-secret",
     ADMIN_SECRET: "test-admin",
     ALLOWED_ORIGINS: "*",

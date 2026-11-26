@@ -45,6 +45,7 @@ import {
 } from "../workers/artigos/src/voto-tema.ts";
 import { selectPendentesElegiveis } from "../scripts/voto-tema-lembrete.ts";
 import { ballotWriteFailureMessage } from "../scripts/voto-tema-open.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // ── fixtures ────────────────────────────────────────────────────────────
 
@@ -230,31 +231,9 @@ describe("chaves KV — prefixo tema:, sem colisão entre ciclos (#8371)", () =>
 
 // ── handlers do worker contra um KVNamespace fake ────────────────────────
 
-/** KV fake mínimo — só o subset de `KVNamespace` que os handlers usam
- *  (`get`, `put`, `list` com prefix/cursor). Suficiente pra exercitar o
- *  fluxo GET (não escreve) × POST (escreve) ponta-a-ponta sem infra real. */
-function fakeKv(initial: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(initial));
-  return {
-    store,
-    async get(key: string) {
-      return store.has(key) ? store.get(key)! : null;
-    },
-    async put(key: string, value: string) {
-      store.set(key, value);
-    },
-    async list({ prefix }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...store.keys()]
-        .filter((k) => !prefix || k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-  } as unknown as VotoTemaEnv["POLL"] & { store: Map<string, string> };
-}
-
 async function envWithBallot(eleitoresEmails: string[]) {
   const ballot = await buildBallot(eleitoresEmails);
-  const POLL = fakeKv({ [ballotKey("2610")]: JSON.stringify(ballot) });
+  const POLL = makeTrackedKvNamespace({ [ballotKey("2610")]: JSON.stringify(ballot) });
   return { env: { POLL } as VotoTemaEnv, POLL, ballot };
 }
 
@@ -269,7 +248,7 @@ describe("convite para apoiar fora do eleitorado (#11201)", () => {
       ballot.opcoes = ballot.opcoes.map((o) => ({ ...o }));
       ballot.opcoes[0].descricao = '<script>alert("tema")</script>';
       await POLL.put(ballotKey("2610"), JSON.stringify(ballot));
-      const before = [...POLL.store];
+      const before = [...POLL._map];
 
       const res = await handler(new Request(`https://x/votacao/2610/1?t=${token}`, { method }), env, "2610", 1);
       const body = await res.text();
@@ -286,12 +265,12 @@ describe("convite para apoiar fora do eleitorado (#11201)", () => {
       assert.match(body, /&lt;script&gt;/);
       assert.doesNotMatch(body, /<script|<form|recusando registrar|Não foi possível registrar|—|→|leitor@example|mantenedor@example/);
       assert.ok(!body.includes(token));
-      assert.deepEqual([...POLL.store], before);
+      assert.deepEqual([...POLL._map], before);
     });
 
     it(`${method}: tag não resolvida e token desconhecido continuam diagnósticos separados`, async () => {
       const { env, POLL } = await envWithBallot([]);
-      const before = [...POLL.store];
+      const before = [...POLL._map];
       for (const [token, status, message] of [
         ["{{ subscriber.voto_token }}", 400, /tag de e-mail não resolvida/],
         ["c".repeat(24), 403, /Link de voto inválido/],
@@ -302,7 +281,7 @@ describe("convite para apoiar fora do eleitorado (#11201)", () => {
         assert.match(body, message);
         assert.doesNotMatch(body, /utm_source=voto-tema|Placar parcial/);
       }
-      assert.deepEqual([...POLL.store], before);
+      assert.deepEqual([...POLL._map], before);
     });
   }
 });
@@ -315,7 +294,7 @@ describe("handlers — voto só é gravado por POST, nunca por GET (#8371)", () 
     const req = new Request(`https://especial.diar.ia.br/votacao/2610/1?t=${"a".repeat(24)}`);
     const res = await handleVotacaoOpcaoGet(req, env, "2610", 1);
     assert.equal(res.status, 200);
-    assert.equal(POLL.store.has(voteKey("2610", "mantenedor@example.com")), false);
+    assert.equal(POLL._map.has(voteKey("2610", "mantenedor@example.com")), false);
   });
 
   it("POST /votacao/{ciclo}/{n}?t=token grava o voto", async () => {
@@ -325,8 +304,8 @@ describe("handlers — voto só é gravado por POST, nunca por GET (#8371)", () 
     const req = new Request(`https://especial.diar.ia.br/votacao/2610/1?t=${"a".repeat(24)}`, { method: "POST" });
     const res = await handleVotoPost(req, env, "2610", 1);
     assert.equal(res.status, 200);
-    assert.equal(POLL.store.get(voteKey("2610", "mantenedor@example.com")) !== undefined, true);
-    const saved = JSON.parse(POLL.store.get(voteKey("2610", "mantenedor@example.com"))!);
+    assert.equal(POLL._map.get(voteKey("2610", "mantenedor@example.com")) !== undefined, true);
+    const saved = JSON.parse(POLL._map.get(voteKey("2610", "mantenedor@example.com"))!);
     assert.equal(saved.opcao, 1);
   });
 
@@ -337,7 +316,7 @@ describe("handlers — voto só é gravado por POST, nunca por GET (#8371)", () 
     const req = new Request(`https://especial.diar.ia.br/votacao/2610/1?t=${"b".repeat(24)}`, { method: "POST" });
     const res = await handleVotoPost(req, env, "2610", 1);
     assert.equal(res.status, 403);
-    assert.equal(POLL.store.has(voteKey("2610", "assinante-qualquer@example.com")), false);
+    assert.equal(POLL._map.has(voteKey("2610", "assinante-qualquer@example.com")), false);
   });
 
   it("POST sem token conhecido no KV é rejeitado (403)", async () => {
@@ -476,8 +455,8 @@ describe("ballotWriteFailureMessage — erro pós-patch diz o que já aconteceu 
 describe("handleVotoPost — placar pós-voto conta o voto recém-gravado mesmo com list() defasado (#8825)", () => {
   /** list() congelado no estado de antes do POST, como o KV real nos ~60s
    *  seguintes a um PUT (eventual consistency) — get() já vê o valor novo. */
-  function laggyList(POLL: ReturnType<typeof fakeKv>) {
-    const frozen = new Map(POLL.store);
+  function laggyList(POLL: ReturnType<typeof makeTrackedKvNamespace>) {
+    const frozen = new Map(POLL._map);
     (POLL as unknown as { list: unknown }).list = async ({ prefix }: { prefix?: string } = {}) => ({
       keys: [...frozen.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
       list_complete: true,

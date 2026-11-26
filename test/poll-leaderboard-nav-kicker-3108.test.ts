@@ -34,6 +34,7 @@ import assert from "node:assert/strict";
 import workerDefault from "../workers/poll/src/index.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 import { buildBrandSiteUrl } from "../workers/poll/src/lib.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // #3978: sub-copy do leaderboard passou a levar UTM (medium
 // "leaderboard-copy") nos 2 links — antes o link diar.ia.br→beehiiv não
@@ -44,26 +45,9 @@ function leaderboardCopyHrefEscaped(brand: "diaria" | "clarice"): string {
   return buildBrandSiteUrl(brand, "leaderboard-copy", "eia-leaderboard-copy").replace(/&/g, "&amp;");
 }
 
-function makeKv(seed: Record<string, string> = {}): KVNamespace {
-  const data: Record<string, string> = { ...seed };
-  return {
-    get: async (key: string) => data[key] ?? null,
-    put: async (key: string, value: string) => { data[key] = value; },
-    delete: async (key: string) => { delete data[key]; },
-    getWithMetadata: async () => ({ value: null, metadata: null }),
-    list: async (opts?: { prefix?: string }) => {
-      const prefix = opts?.prefix ?? "";
-      const keys = Object.keys(data)
-        .filter((k) => k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true };
-    },
-  } as unknown as KVNamespace;
-}
-
 function makeEnv(seed: Record<string, string> = {}): Env {
   return {
-    POLL: makeKv(seed),
+    POLL: makeTrackedKvNamespace(seed),
     POLL_SECRET: "test-secret",
     ADMIN_SECRET: "test-admin",
     ALLOWED_ORIGINS: "*",
