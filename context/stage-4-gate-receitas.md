@@ -226,10 +226,17 @@ pós-humanizador) estão no playbook.
 
 ```bash
 npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/
-# Agent("fact-checker", { newsletter_path, social_path, approved_json_path, out_path: {EDITION_DIR}/_internal/fact-check.json })
+# Escopo COMPLETO: Agent("fact-checker", { newsletter_path, social_path, approved_json_path, out_path: {EDITION_DIR}/_internal/fact-check.json })
 npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/fact-check.json --check-blocking
+# Escopo PARCIAL (#14035): Agent("fact-checker", { ..., units: [lista impressa], out_path: {EDITION_DIR}/_internal/fact-check.partial.json })
+npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/fact-check.partial.json --merge-partial --check-blocking
 npx tsx scripts/apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/
 ```
+
+O passo 1 diz o escopo (#14035): COMPLETO, PARCIAL (só as unidades `dN`/`pool`
+que mudaram) ou NENHUMA (não despachar, só o `--input-json fact-check.json`).
+`--merge-partial` recusado (exit 1) ou claim que cruza destaques: passo 1 com
+`--full` e refazer completo.
 
 Exit 2 = claim `NOT_FOUND_IN_SOURCE` bloqueia; fonte adicional da mesma
 história via `npx tsx scripts/add-destaque-source.ts --edition-dir
