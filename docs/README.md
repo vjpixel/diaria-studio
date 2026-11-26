@@ -13,9 +13,9 @@
 - **Arquivos que não são markdown** (JSON de medição, propostas de import) entram no índice só pelo nome.
 - **Fora do índice:** `docs/audience-history/` (snapshots datados do perfil de audiência, gerados por `/diaria-atualiza-audiencia`; não são docs de referência).
 
-## Índice (183 arquivos)
+## Índice (184 arquivos)
 
-### `docs/` (167)
+### `docs/` (168)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
@@ -72,6 +72,7 @@
 | [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons (#2750) | O tab Cupons do dashboard (`clarice-dashboard.diaria.workers.dev`) lê o KV `coupons:usage`, que carrega, por assinatura com cupom NEWS50/NEWS25: o valor pago… |
 | [`cursos-worker-alarm-setup.md`](./cursos-worker-alarm-setup.md) | Worker `cursos`: sync do KV de assinantes | O worker `cursos` (hosting da página "Cursos sobre IA", `cursos.diar.ia.br`) loga todo caminho de degradação e tem `[observability] enabled = true` no… |
 | [`definicao-leitor.md`](./definicao-leitor.md) | Definição canônica de `leitor-v1` | Primeira metade da camada de dados de aquisição que destrava decisão de gasto em ads (#4466). A segunda é o mapa de origem recuperada… |
+| [`design-v1-daily-6375.md`](./design-v1-daily-6375.md) | Design Reference — diar.ia.br Home Redesign (#6375) | Source: repo `vjpixel/diaria-design`, file `v1-daily.jsx` (Direção A · Edição diária). |
 | [`develop-token-analysis-3328.md`](./develop-token-analysis-3328.md) | `/diaria-develop` — análise de consumo de tokens (#3328) | Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`. Este doc é de 260711 e era declaradamente especulativo por falta de dados de rodada real… |
 | [`diaria-dashboard-access-setup.md`](./diaria-dashboard-access-setup.md) | diaria-dashboard — access setup (#5133) | Até 12/08/2026 o Worker `diaria-dashboard` era servido sem nenhuma autenticação — `X-Robots-Tag: noindex` + `Disallow: /` (#5097) impedem INDEXAÇÃO por… |
 | [`doppler-env-sync.md`](./doppler-env-sync.md) | Sync de `.env` entre máquinas via Doppler (#5149) | O projeto usa ~40 credenciais (`.env`, ver `.env.example`) espalhadas por Beehiiv, Brevo, Cloudflare, Clarice, Facebook/Instagram/Threads, Stripe, apoia.se… |
