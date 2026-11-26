@@ -329,7 +329,14 @@ import { buildGateSummary, recordGenericStudyAnswerFromPanel } from "./studio-ga
 // #6447 Fatia 4: galeria de imagens por destaque + regeneração assíncrona
 // (achados 6 + 9), e escrita da decisão "aprovado pelo painel" (achado 7).
 import { buildImagesGallery, startRegenerateJob } from "./studio-images.ts";
-import { decideGateApproveAction, readStage4Decision, writeStage4ApprovedDecision } from "../lib/stage4-decision.ts";
+import {
+  changedGateContentFiles,
+  computeGateContentHashes,
+  decideGateApproveAction,
+  parseGateContentHashes,
+  readStage4Decision,
+  writeStage4ApprovedDecision,
+} from "../lib/stage4-decision.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver apoios-data.ts.
@@ -729,7 +736,16 @@ function handleGateSummary(rootDir: string, aammdd: string, res: ServerResponse)
  * antes de montar o resumo completo. Corpo opcional `{force?: boolean}` —
  * sem `force`, um 2º clique sobre uma decisão já `approved` responde 409
  * (nunca sobrescreve em silêncio); com `force: true` (o editor já confirmou
- * um dialog no client), sobrescreve com novo timestamp. */
+ * um dialog no client), sobrescreve com novo timestamp.
+ *
+ * #14134: corpo também leva `content_hashes` — os hashes de `02-reviewed.md`/
+ * `03-social.md` que o `GET .../gate` devolveu quando o painel carregou. Se o
+ * conteúdo em disco não bate mais (outra sessão escreveu depois, arquivo
+ * novo, ou a página é anterior ao #14134 e não manda hashes), responde 409
+ * `contentChanged` pedindo recarregar, mesmo com `force` — mesmo padrão do
+ * warn-before-save (#3729). A decisão gravada carrega esses hashes, e o
+ * consumo no gate (`--content-files`) exige que eles batam na máquina da
+ * sessão, o que cobre o painel servindo versão anterior em outra máquina. */
 async function handleGateApprove(
   rootDir: string,
   req: IncomingMessage,
@@ -754,13 +770,27 @@ async function handleGateApprove(
     return;
   }
   const force = (body as { force?: unknown } | null)?.force === true;
+  const shownHashes = parseGateContentHashes((body as { content_hashes?: unknown } | null)?.content_hashes);
+  const currentHashes = computeGateContentHashes(editionDir);
+  const changedFiles = changedGateContentFiles(shownHashes, currentHashes);
   const existing = readStage4Decision(editionDir);
-  const action = decideGateApproveAction(existing, force);
+  const action = decideGateApproveAction(existing, force, changedFiles);
+  if (action.kind === "content_changed") {
+    sendJson(res, 409, {
+      ok: false,
+      contentChanged: true,
+      changedFiles: action.files,
+      error:
+        `O conteúdo mudou em disco desde que o painel carregou (${action.files.join(", ")}). ` +
+        "Recarregue o painel e revise a versão atual antes de aprovar.",
+    });
+    return;
+  }
   if (action.kind === "conflict") {
     sendJson(res, 409, { ok: false, conflict: true, decision: action.existing });
     return;
   }
-  const decision = writeStage4ApprovedDecision(editionDir);
+  const decision = writeStage4ApprovedDecision(editionDir, { contentHashes: currentHashes });
   sendJson(res, 200, { ok: true, decision });
 }
 

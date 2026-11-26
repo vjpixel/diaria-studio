@@ -44,3 +44,22 @@ escreve via `Edit`/`Write` do agente, sem esse ponto de interceptação) e
 continua risco aceito, mitigado pela mesma janela estreita de tempo-real do
 Studio (segundos, não as horas do Drive assíncrono antigo). Se o editor
 notar perda de edição no sentido inverso, reportar em issue nova.
+
+## "Aprovar gate" do painel vale só sobre o que o painel mostrou (#14134)
+
+Mesmo padrão aplicado à aprovação do gate da Etapa 4 pelo painel, com hash
+em vez de mtime (a mtime só protege quando escrita e clique acontecem no
+mesmo host, e `data/` sincroniza pelo Drive entre máquinas):
+
+- `GET /api/editions/:aammdd/gate` devolve `contentHashes`: sha256 de
+  `02-reviewed.md` e `03-social.md` como o resumo os leu (`null` = ausente).
+- O clique em "Aprovar gate" (`rv-gate.js`) reenvia esses hashes como
+  `content_hashes`. `POST .../gate/approve` recalcula em disco e responde
+  409 `contentChanged` se algum divergir (inclusive arquivo que passou a
+  existir, ou página antiga que não manda hashes), mesmo com `force`. O
+  painel avisa, recarrega o resumo e o editor aprova de novo.
+- A decisão (`_internal/.step-4-decision.json`) grava os hashes. No gate,
+  `stage4-decision.ts --read --content-files` exige que os hashes atuais da
+  máquina da sessão batam (`stale_cause: "content_hash"`); decisão sem
+  hashes, anterior ao #14134, é `stale` (`no_content_hashes`). A mtime
+  segue como sinal adicional (`stale_cause: "mtime"`).

@@ -58,7 +58,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { readStage4CaptureState, type Stage4CaptureState } from "../lib/stage4-capture-state.ts";
-import { readStage4Decision, type Stage4DecisionState } from "../lib/stage4-decision.ts";
+import {
+  computeGateContentHashes,
+  readStage4Decision,
+  type GateContentHashes,
+  type Stage4DecisionState,
+} from "../lib/stage4-decision.ts";
 import { countTitlesPerHighlight } from "../lint-newsletter-md.ts";
 import type { ApprovedJson } from "../lib/lint-checks/url-bucket.ts";
 import { getBlockingClaims, type FactCheckResult } from "../run-fact-checker.ts";
@@ -218,6 +223,11 @@ export interface GateSummary {
    * arquivo pelo orchestrator real está fora de escopo, ver docstring de
    * `stage4-decision.ts`). */
   decision: Stage4DecisionState | null;
+  /** #14134: sha256 de `02-reviewed.md`/`03-social.md` como este resumo os
+   * leu. O painel devolve estes hashes no clique em "Aprovar gate"; o
+   * servidor recusa (409) se o disco mudou desde então, e a decisão grava
+   * os hashes para o consumo no gate conferir na máquina da sessão. */
+  contentHashes: GateContentHashes;
   /** #9673: pergunta explícita sim/não por item 🔎 (modo sombra da penalidade
    * de estudo/case genérico, #9462). Vazio = nada a perguntar. */
   genericStudy: GateGenericStudyQuestion[];
@@ -577,11 +587,16 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
       lintSocial: { ok: true, checks: [], skipped: [] },
       checklist: [],
       decision: null,
+      contentHashes: {},
       genericStudy: [],
       multiCited: { available: false, note: "edição não encontrada", items: [] },
     };
   }
 
+  // #14134: hash ANTES das leituras do resumo — se um arquivo mudar no meio
+  // da montagem, o hash é o da versão mais antiga e o approve recusa (409),
+  // nunca o contrário (hash novo sobre resumo montado da versão velha).
+  const contentHashes = computeGateContentHashes(editionDir);
   const highlights = buildHighlightTitles(editionDir);
   const captureState: Stage4CaptureState = readStage4CaptureState(editionDir);
   const factCheck = buildFactCheck(editionDir);
@@ -607,6 +622,7 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
     lintSocial,
     checklist,
     decision: readStage4Decision(editionDir),
+    contentHashes,
     genericStudy: buildGenericStudyQuestions(editionDir),
     multiCited: buildMultiCited(editionDir),
   };
