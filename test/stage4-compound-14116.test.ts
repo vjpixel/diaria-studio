@@ -150,6 +150,40 @@ describe("#14116 stage4-factcheck-post", () => {
     assert.equal(r.autofix?.stderr, "boom");
     assert.deepEqual(r.checks, []);
   });
+
+  for (const [label, json] of [
+    ["ausente", undefined],
+    ["ilegível", "{não é json"],
+    ["sem summary.applied", { social_modified: false, entries: [] }],
+  ] as const) {
+    it(`regressão: autofix exit 0 com JSON ${label} → exit 7 e re-checagens nos DOIS arquivos (fail-closed)`, () => {
+      const { exec, calls } = fakeExec(() => undefined);
+      const deps: FactCheckPostDeps = {
+        exec,
+        readText: (p) =>
+          p.endsWith("fact-check-autofix.json") && json !== undefined
+            ? typeof json === "string" ? json : JSON.stringify(json)
+            : undefined,
+        copyFile: () => {},
+      };
+      const r = runFactCheckPost({ editionDir: ED }, deps);
+      assert.equal(r.outcome, "autofix-unreadable");
+      assert.equal(r.exit, 7);
+      assert.notEqual(r.exit, 0);
+      assert.ok(r.autofix?.unreadable, "motivo em autofix.unreadable");
+      assert.deepEqual(r.rerender, { newsletter: true, social: true });
+      assert.deepEqual(r.checks.map((c) => c.name), ["callout-placement", "humanizer-social-check", ...SOCIAL_POST_AUTOFIX_LINTS]);
+      assert.ok(calls.some((c) => c.script.endsWith("lint-newsletter-md.ts")));
+    });
+  }
+
+  it("JSON legível com applied 0 segue sendo o único 'nada aplicado' que pula re-render", () => {
+    const { deps } = fcDeps(() => undefined, { summary: { applied: 0 }, social_modified: false });
+    const r = runFactCheckPost({ editionDir: ED }, deps);
+    assert.equal(r.exit, 0);
+    assert.equal(r.autofix?.unreadable, undefined);
+    assert.deepEqual(r.checks, []);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -252,6 +286,18 @@ describe("#14116 stage4-social-reseal after-humanizer", () => {
     ).deps);
     assert.equal(extra.exit, 0);
     assert.deepEqual(extra.scope_warning, ["main_d3"]);
+  });
+
+  it("regressão: verify com erro de I/O (exit 1 sem veredito) → exit 7, nunca o exit 3 de 'rode o humanizador'", () => {
+    const r = runAfterHumanizer(ED, { sections: ["main_d2"] }, rsDeps((s) =>
+      s.endsWith("verify-scoped-humanization.ts")
+        ? { code: 1, stderr: "[verify-scoped-humanization] ERRO: arquivo ausente — pre=false post=true" }
+        : undefined,
+    ).deps);
+    assert.equal(r.exit, 7);
+    assert.notEqual(r.exit, 3);
+    assert.deepEqual(r.untouched_targets, []);
+    assert.match(r.verify_error ?? "", /arquivo ausente/);
   });
 });
 

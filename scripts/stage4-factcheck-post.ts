@@ -41,6 +41,10 @@
  *   5 = GATE-BLOCKING: o autofix quebrou um lint estrutural ou o selo do
  *       humanizador (§4c.6c) — ver `checks[]`
  *   6 = erro de uso ou de I/O deste script
+ *   7 = o autofix saiu 0, mas `_internal/fact-check-autofix.json` está ausente,
+ *       ilegível ou sem `summary.applied` numérico (`autofix.unreadable`): não
+ *       dá para saber o que mudou, então o composto roda as re-checagens nos DOIS
+ *       arquivos e marca `rerender` dos dois. Nunca vira "nada aplicado".
  */
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -69,7 +73,8 @@ export type FactCheckPostOutcome =
   | "blocking"
   | "stale"
   | "partial-refused"
-  | "post-autofix-broken";
+  | "post-autofix-broken"
+  | "autofix-unreadable";
 
 export const OUTCOME_EXIT: Record<FactCheckPostOutcome, number> = {
   ok: 0,
@@ -78,6 +83,7 @@ export const OUTCOME_EXIT: Record<FactCheckPostOutcome, number> = {
   stale: 3,
   "partial-refused": 4,
   "post-autofix-broken": 5,
+  "autofix-unreadable": 7,
 };
 
 export interface CheckRun {
@@ -98,6 +104,8 @@ export interface FactCheckPostReport {
     applied: number;
     social_modified: boolean;
     social_residual_sections: string[];
+    /** Motivo quando o JSON do autofix (exit 0) não pôde ser lido (exit 7). */
+    unreadable?: string;
     stdout: string;
     stderr?: string;
   };
@@ -170,16 +178,27 @@ export function runFactCheckPost(opts: FactCheckPostOptions, deps: FactCheckPost
   let applied = 0;
   let socialModified = false;
   const residual = new Set<string>();
+  // Fail-closed: autofix com exit 0 e JSON ausente/ilegível/sem `summary.applied`
+  // pode ter mudado o texto; nunca ler isso como "nada aplicado".
+  let unreadable: string | undefined;
   if (af.code === 0) {
-    const raw = deps.readText(join(editionDir, "_internal", "fact-check-autofix.json"));
-    if (raw !== undefined) {
+    const autofixPath = join(editionDir, "_internal", "fact-check-autofix.json");
+    const raw = deps.readText(autofixPath);
+    if (raw === undefined) {
+      unreadable = `${autofixPath} ausente`;
+    } else {
       try {
-        const parsed = JSON.parse(raw) as AutofixJson;
-        applied = parsed.summary?.applied ?? 0;
-        socialModified = parsed.social_modified === true;
-        for (const e of parsed.entries ?? []) for (const s of e.social_residual_sections ?? []) residual.add(s);
-      } catch {
-        // JSON ilegível: trata como nada aplicado; o stdout do autofix vai no relatório.
+        const parsed = JSON.parse(raw) as AutofixJson | null;
+        const n = parsed?.summary?.applied;
+        if (typeof n !== "number") {
+          unreadable = `${autofixPath} sem summary.applied numérico`;
+        } else {
+          applied = n;
+          socialModified = parsed?.social_modified === true;
+          for (const e of parsed?.entries ?? []) for (const s of e.social_residual_sections ?? []) residual.add(s);
+        }
+      } catch (e) {
+        unreadable = `${autofixPath} ilegível: ${(e as Error).message}`;
       }
     }
   }
@@ -188,28 +207,32 @@ export function runFactCheckPost(opts: FactCheckPostOptions, deps: FactCheckPost
     applied,
     social_modified: socialModified,
     social_residual_sections: [...residual],
+    ...(unreadable !== undefined ? { unreadable } : {}),
     stdout: af.stdout.trim(),
     ...(af.code !== 0 ? { stderr: af.stderr.trim() } : {}),
   };
-  report.rerender = { newsletter: applied > 0, social: socialModified };
+  const checkNewsletter = applied > 0 || unreadable !== undefined;
+  const checkSocial = socialModified || unreadable !== undefined;
+  report.rerender = { newsletter: checkNewsletter, social: checkSocial };
 
   const runCheck = (name: string, script: string, args: string[]) => {
     const r = deps.exec(script, args);
     report.checks.push(r.code === 0 ? { name, code: 0 } : { name, code: r.code, output: joinOutput(r) });
   };
-  if (applied > 0) {
+  if (checkNewsletter) {
     runCheck("callout-placement", "scripts/lint-newsletter-md.ts", [
       "--check", "callout-placement", "--md", join(editionDir, "02-reviewed.md"),
     ]);
   }
-  if (socialModified) {
+  if (checkSocial) {
     runCheck("humanizer-social-check", "scripts/check-humanizer-social.ts", ["--check", "--edition-dir", editionDir]);
     for (const lint of SOCIAL_POST_AUTOFIX_LINTS) {
       runCheck(lint, "scripts/lint-social-md.ts", ["--check", lint, "--md", join(editionDir, "03-social.md")]);
     }
   }
   const broken = report.checks.some((c) => c.code !== 0);
-  const outcome: FactCheckPostOutcome = broken ? "post-autofix-broken" : "ok";
+  const outcome: FactCheckPostOutcome =
+    unreadable !== undefined ? "autofix-unreadable" : broken ? "post-autofix-broken" : "ok";
   return { ...report, outcome, exit: OUTCOME_EXIT[outcome], fact_check };
 }
 
@@ -242,6 +265,12 @@ function main(): number {
       realDeps(),
     );
     console.log(JSON.stringify(report));
+    if (report.outcome === "autofix-unreadable") {
+      console.error(
+        `[stage4-factcheck-post] ERRO: autofix saiu 0, mas ${report.autofix?.unreadable}. Re-checagens rodadas ` +
+          "nos dois arquivos; conferir 02-reviewed.md/03-social.md e re-rodar apply-factcheck-autofix.ts antes do gate.",
+      );
+    }
     return report.exit;
   } catch (e) {
     console.error(`[stage4-factcheck-post] ERRO: ${(e as Error).message}`);

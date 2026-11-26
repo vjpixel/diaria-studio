@@ -42,7 +42,10 @@
  *                     `sentinel-missing` → fluxo full-file); 1 = erro do check
  *   after-humanizer:  0 = ok (com `scope_warning` se o humanizador mexeu fora
  *                     do escopo, #3446); 2 = `--record-run` recusou;
- *                     3 = verify acusou seção-alvo não tocada (`untouchedTargets`)
+ *                     3 = verify acusou seção-alvo não tocada (`untouchedTargets`);
+ *                     7 = o verify falhou sem veredito (erro de uso/I/O dele, sem
+ *                     `untouchedTargets` nem `unexpectedChanges`, texto em
+ *                     `verify_error`): NUNCA é "rode o humanizador de novo"
  *   seal:             0 = selado e limpo; 2 = registro da Clarice recusado;
  *                     3 = `--write` recusou (exit do filho em `steps`);
  *                     4 = lint GATE-BLOCKING do 6.7 falhou; 5 = `--check` final ≠ 0
@@ -142,6 +145,8 @@ export interface AfterHumanizerReport {
   steps: StepRun[];
   untouched_targets: string[];
   scope_warning?: string[];
+  /** Exit 7: o verify falhou sem veredito (erro de uso ou de I/O do verify). */
+  verify_error?: string;
   exit: number;
 }
 
@@ -175,7 +180,10 @@ export function runAfterHumanizer(
   const untouched = parsed.untouchedTargets ?? [];
   const unexpected = parsed.unexpectedChanges ?? [];
   if (v.code !== 0 && untouched.length > 0) return { steps, untouched_targets: untouched, exit: 3 };
-  if (v.code !== 0 && unexpected.length === 0) return { steps, untouched_targets: [], exit: 3 };
+  if (v.code !== 0 && unexpected.length === 0) {
+    // Sem veredito: erro de uso/I/O do verify, nunca "alvo não tocado" (exit 3).
+    return { steps, untouched_targets: [], verify_error: out(v) || `verify saiu ${v.code} sem saída`, exit: 7 };
+  }
   return { steps, untouched_targets: [], ...(unexpected.length ? { scope_warning: unexpected } : {}), exit: 0 };
 }
 

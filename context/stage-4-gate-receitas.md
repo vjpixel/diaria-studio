@@ -211,7 +211,8 @@ npx tsx scripts/stage4-social-reseal.ts seal --edition-dir {EDITION_DIR}/ --sect
 
 `flow: full-file` (selo legacy ou ausente): Skill no arquivo inteiro e
 `after-humanizer`/`seal` sem `--sections`. `after-humanizer` exit 3 = alvo não
-tocado: re-invocar a Skill nele. `seal` faz o registro da Clarice, o `--write`,
+tocado: re-invocar a Skill nele; exit 7 = erro de I/O do verify
+(`verify_error`), nunca re-humanizar. `seal` faz o registro da Clarice, o `--write`,
 os 7 lints do passo 6.7 e o `--check` final. Clarice sem sugestões:
 `--clarice-no-suggestions`; fora do ar: `--clarice-pending "{exit e motivo}"`,
 nunca `--unproven-ok`. `seal` exit 3 (`--write` recusou, exit 4/5 do filho em
@@ -232,7 +233,8 @@ O passo 1 diz o escopo (#14035): COMPLETO, PARCIAL (só as unidades `dN`/`pool`
 que mudaram) ou NENHUMA (não despachar, só o composto). `--merge-partial`
 recusado (exit 4) ou claim que cruza destaques: passo 1 com `--full` e refazer
 completo. Exit 3 = defasado (re-despachar 1 vez); 5 = o autofix quebrou um
-lint (`checks[]`); `rerender` diz quais previews refazer.
+lint (`checks[]`); 7 = JSON do autofix ilegível (bloqueia, re-rodar o
+autofix); `rerender` diz quais previews refazer.
 
 Exit 2 = claim `NOT_FOUND_IN_SOURCE` bloqueia; fonte adicional da mesma
 história via `npx tsx scripts/add-destaque-source.ts --edition-dir
