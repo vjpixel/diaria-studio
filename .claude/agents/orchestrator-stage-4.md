@@ -353,6 +353,8 @@ Agent("fact-checker", {
 })
 ```
 
+**Escopo (#14035): seguir o que o passo 1 imprime.** `COMPLETO`: dispatch acima. `PARCIAL`: dispatch com `units: [lista]` e `out_path` `_internal/fact-check.partial.json`; passo 2 `run-fact-checker.ts --input-json {partial} --merge-partial --check-blocking`; `recusado` (exit 1): passo 1 com `--full`, refazer completo. `NENHUMA`: só o passo 2. Contrato: `docs/fact-check-incremental.md`.
+
 **Fallback de ENOENT sob a junction OneDrive (#5083).** O subagente pode reportar que o Write direto em `_internal/fact-check.json` falhou com `ENOENT` (harness, ver `.claude/agents/fact-checker.md` §4) e gravou o JSON no scratchpad da própria sessão em vez disso. Se isso acontecer, copiar o arquivo do path reportado para `{EDITION_DIR}/_internal/fact-check.json` (`cp` ou `Write` do nível top — não sofre do mesmo bug) antes de prosseguir para o passo 2 abaixo. **Retry automático em erro de rede/API (#8996):** se o dispatch do Agent `fact-checker` EM SI (não `run-fact-checker.ts`) falhar com erro de API/rede (ex: `API Error: Can't reach the API server (ENOTFOUND)`, timeout, 5xx — achado ao vivo edição 260929), fazer 1 retry automático do mesmo dispatch antes de desistir; se o retry também falhar, montar a mensagem do gate com `npx tsx scripts/run-fact-checker.ts --unavailable-message --reason "{erro}" --network-error` em vez do texto genérico do exit 1 abaixo (não-bloqueante em ambos os casos — só a redação muda).
 
 Após o subagente concluir (gravar `_internal/fact-check.json`, direto ou via fallback acima), formatar o gate summary e checar bloqueio (#4361):
