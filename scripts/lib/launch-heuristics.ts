@@ -20,6 +20,7 @@ import { isMarketingCaseStudy } from "./use-melhor-curation.ts"; // #2276
 import { isDevReleaseNote } from "./release-note-detect.ts"; // #2469 (finding 4): shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { hasRoundupSignalInUrlOrTitle } from "./roundup-detect.ts"; // #2691 item 1: shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { isVideoUrl } from "./video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em verify-accessibility.ts
+import { decodeHtmlEntities } from "./clean-summary.ts"; // #13845
 import { VERSION_SIGNAL_RE } from "./version-signal-detect.ts"; // #4337: fonte única compartilhada com validate-lancamentos.ts
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export { isVideoUrl }; // #3288: re-exportado pra manter compat com importadores existentes (categorize.ts, testes)
@@ -1854,6 +1855,53 @@ function isTutorialByKeyword(article: Article): boolean {
   );
 }
 
+// #13845 (decisão do editor de 25/11/2026, /diaria-desbloqueia): conteúdo que
+// propõe uma AÇÃO CONCRETA ao leitor vai ao USE MELHOR mesmo sendo notícia de
+// lançamento — refina o "Tutorial de verdade, não cobertura" (#1798). Caso real
+// 261123: "O que o Gemini sabe sobre você? Veja como acessar e apagar a memória
+// da IA" (canaltech) caiu em noticias-default → tie-breaker radar, e o editor o
+// moveu para USE MELHOR no gate 4. Nenhum sinal existente casava: o "veja como"
+// não é terminal e acessar/apagar não estão em TUTORIAL_ACTION_VERBS_PT.
+//
+// O sinal exige as DUAS metades da decisão — "o que fazer" e "onde":
+//   1. o QUÊ, no título: chamada ao leitor + verbo de controle/ação
+//      ("veja|saiba|descubra|aprenda|confira|entenda|e como <verbo>", ou
+//      "como <verbo>" abrindo o título/frase). Lista fechada de verbos de
+//      ação do usuário sobre a própria conta/dado/configuração; verbos de
+//      mudança genérica ("mudar", "funcionar") ficam de fora — "Veja como a IA
+//      vai mudar X" não casa (o "a" quebra o "como <verbo>");
+//   2. o ONDE, no título ou no summary: painel, configuração, ajustes, menu,
+//      opção, botão, aba, conta, perfil, histórico, privacidade, aplicativo ou
+//      instrução explícita ("clique", "toque", "acesse", "selecione").
+// Título com "veja como/como usar" sem o ONDE no texto segue no RADAR
+// (contraexemplo pedido pelo editor). O objeto não pode ser falha/
+// vulnerabilidade (mesmo guard do #11116: quem age é o atacante, não o leitor).
+// Summary de feed chega com entidades cruas ("configura&ccedil;&atilde;o") —
+// decodificado só para o teste, nunca gravado.
+const READER_ACTION_VERBS_PT =
+  "acessar|apagar|excluir|deletar|desativar|ativar|desligar|limpar|consultar|editar|bloquear|desbloquear|impedir|" +
+  "gerenciar|ajustar|alterar|remover|ocultar|esconder|recuperar|exportar|baixar|revisar|verificar|habilitar|" +
+  "desabilitar|controlar|restringir|silenciar|pausar|cancelar|ver|encontrar|descobrir|trocar|liberar|proteger|evitar|" +
+  "adicionar|definir|cadastrar";
+const READER_ACTION_OBJECT_GUARD = "(?!\\s+(?:(?:as|os|essas|esses|suas|seus)\\s+)?(?:falhas?|vulnerabilidades?|brechas?|exploits?)\\b)";
+const READER_ACTION_TITLE_RE = new RegExp(
+  `(?:\\b(?:veja|saiba|descubra|aprenda|confira|entenda|e)\\s+|(?:^|[:?!.;—–|]\\s*))como\\s+(?:${READER_ACTION_VERBS_PT})\\b${READER_ACTION_OBJECT_GUARD}`,
+  "i",
+);
+const READER_ACTION_WHERE_RE =
+  /\b(?:pain[ée]is|painel|configura[çc](?:[ãa]o|[õo]es)|ajustes?|menus?|op[çc](?:[ãa]o|[õo]es)|bot[ãa]o|aba|conta|perfil|hist[óo]rico|privacidade|aplicativo|busca|prefer[êe]ncias|instru[çc][õo]es\s+personalizadas|clique|toque|acesse|selecione)\b/i;
+
+/**
+ * #13845: o texto do item diz ao leitor o que fazer (verbo de ação no título) e
+ * onde (painel/configuração/passo no título ou no summary). Puro.
+ */
+export function proposesReaderAction(article: Article): boolean {
+  const title = article.title ?? "";
+  if (!READER_ACTION_TITLE_RE.test(title)) return false;
+  const hay = decodeHtmlEntities(`${title}\n${article.summary ?? ""}`);
+  return READER_ACTION_WHERE_RE.test(hay);
+}
+
 /**
  * Check se uma URL bateria com a whitelist oficial de LANÇAMENTOS
  * (sem considerar título). Usado por `scripts/validate-lancamentos.ts`
@@ -2069,6 +2117,7 @@ const CATEGORIZATION_RULE_IDS = [
   "lancamento-type-hint-pesquisa",
   "lancamento-type-hint-noticia",
   "lancamento-default",
+  "reader-action",
   "type-hint-pesquisa-secondary",
   "noticias-default",
 ] as const;
@@ -2363,6 +2412,15 @@ export function categorizeWithRule(article: Article): CategorizationResult {
     // research-result, logistics-milestone, customer-slug) pra zerar os
     // falso-positivos da 260522 sem quebrar produtos nome-only.
     return { category: "lancamento", rule: "lancamento-default" };
+  }
+
+  // 2b. #13845: item que propõe AÇÃO CONCRETA ao leitor (o quê no título + onde
+  //     no texto) → USE MELHOR, mesmo sendo notícia. Roda DEPOIS do bloco de
+  //     LANÇAMENTO de propósito: domínio oficial nunca chega aqui, então
+  //     LANÇAMENTOS fica intocado; só o que cairia em RADAR muda. Roundup
+  //     (agregador de links) segue RADAR, mesma precedência do #2663.
+  if (proposesReaderAction(article) && !isRoundupSlug(article.url ?? "", article.title ?? "")) {
+    return { category: "tutorial", rule: "reader-action" };
   }
 
   // 3. type_hint "pesquisa" como sinal secundário — ignorado em veículos jornalísticos
