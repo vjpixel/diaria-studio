@@ -22,6 +22,7 @@ import {
   shouldEmitReviewInstruction,
   resolveEmitDecision,
   logSuppressedReviewInstruction,
+  shouldLogSuppressedReviewInstruction,
   extractPtCloseIssueNumbers,
   extractEnCloseIssueNumbers,
   computeCloseKeywordAddendum,
@@ -1491,6 +1492,40 @@ describe("logSuppressedReviewInstruction (#6298 finding #2)", () => {
   });
 });
 
+// #14046: no_pr_url é o desfecho de quase todo Bash; só loga quando o comando
+// é (ou pode ser) um gh pr create. Os outros dois motivos seguem sempre logados.
+describe("shouldLogSuppressedReviewInstruction (#14046)", () => {
+  it("no_pr_url de um Bash comum não loga", () => {
+    assert.equal(shouldLogSuppressedReviewInstruction("no_pr_url", "git status"), false);
+    assert.equal(shouldLogSuppressedReviewInstruction("no_pr_url", "npx tsx --test test/x.test.ts"), false);
+  });
+
+  it("no_pr_url de um gh pr create (inclusive com prefixo de env) loga", () => {
+    assert.equal(shouldLogSuppressedReviewInstruction("no_pr_url", "gh pr create --title x --body y"), true);
+    assert.equal(shouldLogSuppressedReviewInstruction("no_pr_url", "GH_TOKEN=x gh pr create --fill"), true);
+  });
+
+  it("no_pr_url com command ausente do payload loga (lacuna do #6298)", () => {
+    assert.equal(shouldLogSuppressedReviewInstruction("no_pr_url", undefined), true);
+  });
+
+  it("citação de gh pr create dentro de --body de outro comando não loga", () => {
+    assert.equal(
+      shouldLogSuppressedReviewInstruction("no_pr_url", 'gh issue comment 1 --body "rode gh pr create depois"'),
+      false,
+    );
+  });
+
+  it("not_gh_pr_create e comment_or_review_url seguem sempre logados", () => {
+    assert.equal(shouldLogSuppressedReviewInstruction("not_gh_pr_create", "gh pr view 1"), true);
+    assert.equal(shouldLogSuppressedReviewInstruction("comment_or_review_url", "gh pr comment 1 --body x"), true);
+  });
+
+  it("ok nunca loga supressão", () => {
+    assert.equal(shouldLogSuppressedReviewInstruction("ok", "gh pr create"), false);
+  });
+});
+
 // Finding #3 do fleet review pós-#6298 (confiança média, P2): a fiação
 // `payload.tool_input?.command` no entrypoint CLI é referência NOVA nesta PR
 // e nunca era exercitada fim-a-fim — toda a suíte acima chama as funções
@@ -1548,6 +1583,47 @@ describe("hook como processo real, fim-a-fim (#6298 fleet review, finding #3)", 
     const result = runHook(payload, root);
     assert.equal(result.status, 0);
     assert.equal((result.stdout ?? "").trim(), "");
+  });
+
+  function suppressedEvents(root: string) {
+    let text = "";
+    try {
+      text = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
+    } catch {
+      return [];
+    }
+    return text
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((e) => e.message === "review_instruction_suppressed");
+  }
+
+  it("(#14046) Bash comum sem URL de PR → nenhuma linha review_instruction_suppressed", () => {
+    const root = isolatedGitRoot();
+    const result = runHook(
+      { session_id: "sessao-teste-e2e", tool_input: { command: "git status" }, tool_response: "nothing to commit\n" },
+      root,
+    );
+    assert.equal(result.status, 0);
+    assert.deepEqual(suppressedEvents(root), []);
+  });
+
+  it("(#14046) gh pr create sem URL na saída → loga no_pr_url com o comando", () => {
+    const root = isolatedGitRoot();
+    const result = runHook(
+      {
+        session_id: "sessao-teste-e2e",
+        tool_input: { command: "gh pr create --title x --body y" },
+        tool_response: "pull request create failed: GraphQL: No commits between master and x\n",
+      },
+      root,
+    );
+    assert.equal(result.status, 0);
+    const events = suppressedEvents(root);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].details.reason, "no_pr_url");
+    assert.equal(events[0].details.command, "gh pr create --title x --body y");
   });
 
   it("(b) payload de gh pr create com URL limpa → stdout com additionalContext", () => {
