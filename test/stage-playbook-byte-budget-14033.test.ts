@@ -38,7 +38,7 @@ const PER_FILE_BYTE_BUDGET: Record<string, number> = {
   "orchestrator-stage-3.md": 23_000,
   "orchestrator-stage-4.md": 113_000,
   "orchestrator-stage-4-gate.md": 116_000,
-  "orchestrator-stage-5.md": 81_500,
+  "orchestrator-stage-5.md": 92_000, // #14037 (PR #14082): wrapper concorrente + Brevo em background, ~87,5 KB
   "orchestrator-stage-6.md": 66_500,
 };
 

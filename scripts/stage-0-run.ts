@@ -571,6 +571,13 @@ export interface PhaseAResult {
   clariceRest: boolean;
   /** #11312: MCP `clarice` sondado pelo mesmo caminho de header do Claude Code. */
   clariceMcp: boolean;
+  /**
+   * #14029: ping REAL (chunk de ~1,8 KB, teto 60 s). Só roda na fase
+   * `continue` (persist=true) — `null` na fase `preflight`, que não grava nada
+   * e não deve pagar 60 s a mais. Com o ping mínimo já falho, vale `false` sem
+   * nova chamada.
+   */
+  clariceRealProbe: boolean | null;
   cloudflareTokenOk: boolean;
 }
 
@@ -848,6 +855,44 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     logEvent(deps, opts.edition, "warn", "clarice-healthcheck: REST fallback degradado", { details: parseStepJson(clariceResult.stdout) });
   }
 
+  // #14029: o ping mínimo acima passa mesmo nos dias em que o texto real da
+  // edição estoura. Ping com um chunk real (~1,8 KB, teto 60 s): falhando, o
+  // Stage 2 roda a Clarice com teto de 90 s em vez de 480 s
+  // (`resolveClariceStage2DeadlineMs`). Só na fase que grava (persist).
+  let clariceRealProbe: boolean | null = null;
+  if (persist) {
+    if (!clariceRest) {
+      clariceRealProbe = false;
+    } else {
+      const realResult = deps.exec("scripts/clarice-healthcheck.ts", ["--real-chunk"]);
+      const realJson = parseStepJson(realResult.stdout) as { ok?: boolean } | undefined;
+      // #14084: só o "degraded" do healthcheck (exit 2 + ok:false) prova que a
+      // Clarice estourou. Exit 1 (arg/spawn/exceção) não mediu nada: null +
+      // aviso próprio, e o Stage 2 fica no teto normal.
+      if (realResult.code === 0) {
+        clariceRealProbe = true;
+      } else if (realResult.code === 2 && realJson?.ok === false) {
+        clariceRealProbe = false;
+      } else {
+        clariceRealProbe = null;
+        report.note(
+          `⚠️  0c: ping real da Clarice não executou (exit ${realResult.code}) — sinal fica null e o Stage 2 usa o teto normal.`,
+        );
+        logEvent(deps, opts.edition, "warn", "clarice-healthcheck --real-chunk: ping real não executou", {
+          details: { code: realResult.code, stdout: realResult.stdout.trim().slice(0, 300), stderr: realResult.stderr.trim().slice(0, 300) },
+        });
+      }
+      if (clariceRealProbe === false) {
+        report.note(
+          "⚠️  0c: ping real da Clarice (chunk de ~1,8 KB) falhou — o Stage 2 usa teto de 90 s e, estourando, deixa a Clarice para o resume da Etapa 4.",
+        );
+        logEvent(deps, opts.edition, "warn", "clarice-healthcheck --real-chunk: ping real degradado", {
+          details: parseStepJson(realResult.stdout) ?? realResult.stdout.trim(),
+        });
+      }
+    }
+  }
+
   // #11312: o 401 do MCP `clarice` (#11251) só aparecia no Stage 2, quando o
   // passe de Clarice falhava. Sonda o MCP aqui, com a key resolvida pelo
   // `headersHelper` do `.mcp.json` (mesmo caminho do Claude Code). Warn, nunca
@@ -882,6 +927,10 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       String(clariceRest),
       "--clarice-mcp",
       String(clariceMcp),
+      // #14084: grava também `null` (ping que não executou), para não deixar
+      // um `false` de rodada anterior valendo.
+      "--clarice-real-probe",
+      String(clariceRealProbe),
       "--cloudflare-token-ok",
       String(cloudflareTokenOk),
     ]);
@@ -899,7 +948,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     ]);
   }
 
-  return { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, clariceMcp, cloudflareTokenOk };
+  return { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, clariceMcp, clariceRealProbe, cloudflareTokenOk };
 }
 
 // ---------------------------------------------------------------------------

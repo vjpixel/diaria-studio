@@ -13,6 +13,8 @@ import {
   runClariceHeadersHelper,
   DEFAULT_TIMEOUT_MS,
   OBSERVED_PROBE_LATENCY_MS,
+  REAL_PROBE_TEXT,
+  REAL_PROBE_TIMEOUT_MS,
 } from "../scripts/clarice-healthcheck.ts";
 
 describe("checkClariceHealth", () => {
@@ -106,6 +108,25 @@ describe("checkClariceHealth", () => {
   });
 });
 
+describe("ping real do Stage 0 (#14029)", () => {
+  it("o chunk real tem ~1,8 KB em UTF-8 e o teto é 60 s", () => {
+    const bytes = Buffer.byteLength(REAL_PROBE_TEXT, "utf8");
+    assert.ok(bytes >= 1700 && bytes <= 2000, `REAL_PROBE_TEXT tem ${bytes} B, esperado ~1,8 KB`);
+    assert.equal(REAL_PROBE_TIMEOUT_MS, 60_000);
+  });
+
+  it("checkClariceHealth manda o probeText no corpo, não o probe mínimo", async () => {
+    let sent = "";
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      sent = String(init?.body ?? "");
+      return new Response("[]", { status: 200 });
+    };
+    await checkClariceHealth({ apiKey: "k", fetchImpl, timeoutMs: 1000, probeText: REAL_PROBE_TEXT });
+    const body = JSON.parse(sent) as { paragraphs: Array<{ description: string }> };
+    assert.equal(body.paragraphs[0].description, REAL_PROBE_TEXT);
+  });
+});
+
 describe("parseHealthcheckArgs", () => {
   it("sem flags → timeoutMs undefined (cai no default)", () => {
     assert.deepEqual(parseHealthcheckArgs([]), {});
@@ -132,6 +153,11 @@ describe("parseHealthcheckArgs", () => {
 
   it("--via-headers-helper implica --mcp (#11312)", () => {
     assert.deepEqual(parseHealthcheckArgs(["--via-headers-helper"]), { mcp: true, viaHeadersHelper: true });
+  });
+
+  it("--real-chunk → realChunk: true; não combina com --mcp (#14029)", () => {
+    assert.deepEqual(parseHealthcheckArgs(["--real-chunk"]), { realChunk: true });
+    assert.throws(() => parseHealthcheckArgs(["--real-chunk", "--mcp"]), /não combina/);
   });
 
   it("--mcp combinado com --timeout-ms → os dois presentes", () => {

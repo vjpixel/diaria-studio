@@ -33,7 +33,8 @@ const STAGE5_PATH = resolve(ROOT, ".claude/agents/orchestrator-stage-5.md");
  * "Aguardar todos retornarem", sem tamanho fixo (cresce com o texto real). */
 function readStage5DispatchBlock(): string {
   const src = readFileSync(STAGE5_PATH, "utf8");
-  const blockStart = src.indexOf("**Em uma unica mensagem, disparar simultaneamente**");
+  // #14037: o bloco passou a abrir com o wrapper concorrente (antes "Em uma unica mensagem, disparar simultaneamente").
+  const blockStart = src.indexOf("**Rodar os 4 publishers sociais concorrentes num so Bash**");
   assert.ok(blockStart >= 0, "bloco de dispatch paralelo (§5c-3) não encontrado em orchestrator-stage-5.md");
   const blockEnd = src.indexOf("Aguardar todos retornarem", blockStart);
   assert.ok(blockEnd > blockStart, "fim do bloco de dispatch (marcador 'Aguardar todos retornarem') não encontrado");
