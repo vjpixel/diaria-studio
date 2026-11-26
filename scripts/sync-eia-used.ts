@@ -24,6 +24,7 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 // crus) porque o call site abaixo é exatamente o padrão acquire→try→
 // finally-release que o helper existe pra encapsular.
 import { withFileLock } from "./lib/file-lock.ts";
+import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const EAI_USED_PATH = resolve(ROOT, "data", "eia-used.json");
@@ -41,17 +42,19 @@ interface EaiUsedEntry {
 // de parseEiaMeta. Schema central tem wikimedia required + image_url required;
 // cast removido pra evitar mascarar drift futuro.)
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--dry-run") {
-      out["dry-run"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
+/**
+ * `--editions-dir <dir>` e `--dry-run`, via `cli-args.ts` (#14128). O parser
+ * próprio de antes consumia o token seguinte sempre: `--editions-dir --dry-run`
+ * lia `--dry-run` como diretório e o modo real gravava `data/eia-used.json`
+ * (o dry-run se perdia). Agora `--editions-dir` sem valor lança, e `--dry-run`
+ * vale por presença do token, em qualquer posição.
+ * @pure
+ */
+export function parseSyncEiaArgs(argv: string[]): { editionsDir: string | undefined; dryRun: boolean } {
+  return {
+    editionsDir: getStringArg(argv, "editions-dir", { example: "data/editions/" }),
+    dryRun: argv.includes("--dry-run"),
+  };
 }
 
 function loadEaiUsed(): EaiUsedEntry[] {
@@ -79,9 +82,15 @@ function isTitlePresent(entries: EaiUsedEntry[], title: string): boolean {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const editionsDir = resolve(ROOT, (args["editions-dir"] as string) ?? "data/editions/");
-  const dryRun = args["dry-run"] === true;
+  let parsed: ReturnType<typeof parseSyncEiaArgs>;
+  try {
+    parsed = parseSyncEiaArgs(process.argv.slice(2));
+  } catch (e) {
+    console.error(`[sync-eia-used] ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+  const editionsDir = resolve(ROOT, parsed.editionsDir ?? "data/editions/");
+  const dryRun = parsed.dryRun;
 
   // #2463: enumera ambos os layouts (flat legado + nested novo) em vez de
   // um readdirSync raso que só enxerga o flat.
@@ -197,4 +206,4 @@ function runSync(
   console.log(JSON.stringify(result));
 }
 
-main();
+if (isMainModule(import.meta.url)) main();

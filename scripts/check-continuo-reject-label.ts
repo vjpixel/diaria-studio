@@ -34,12 +34,11 @@ import { execFileSync } from "node:child_process";
 import { isAlreadyRejectLabeled } from "./lib/continuo-reject-owner.ts";
 import { CONTINUO_REJECTED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 
-function parseArgs(argv: string[]): { pr: string } | null {
-  let pr: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--pr") pr = argv[++i] ?? null;
-  }
+export function parseRejectLabelArgs(argv: string[]): { pr: string } | null {
+  // #14128: `cli-args.ts#parseArgs`; paridade em test/continuo-cli-args-parity-14128.test.ts.
+  const pr = parseArgs(argv).values.pr;
   if (!pr || !/^\d+$/.test(pr)) return null;
   return { pr };
 }
@@ -90,7 +89,7 @@ function applyLabel(pr: string): boolean {
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseRejectLabelArgs(process.argv.slice(2));
   if (!args) {
     process.stderr.write("uso: check-continuo-reject-label.ts --pr <N>\n");
     process.exitCode = 2;
@@ -116,4 +115,4 @@ function main(): void {
   console.log(JSON.stringify({ firstTime: !alreadyRejected, labelApplied, source: "ok" }));
 }
 
-main();
+if (isMainModule(import.meta.url)) main();
