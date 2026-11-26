@@ -60,8 +60,8 @@ describe("planAnnualSocialDays", () => {
     const lotes = planAnnualSocialDays(keysFor(6), domingo);
     const slots = lotes.flatMap((l) => l.keys.map((_, i) => l.slots[`d${i + 1}`]));
     assert.deepEqual(slots, [
-      "2026-09-13T09:00", "2026-09-14T09:00", "2026-09-15T09:00", "2026-09-16T09:00",
-      "2026-09-17T09:00", "2026-09-18T09:00", "2026-09-19T09:00",
+      "2026-09-13T09:30", "2026-09-14T09:30", "2026-09-15T09:30", "2026-09-16T09:30",
+      "2026-09-17T09:30", "2026-09-18T09:30", "2026-09-19T09:30",
     ]);
     assert.deepEqual(lotes.map((l) => l.date), ["260913", "260916", "260918"]);
   });
@@ -152,8 +152,8 @@ describe("prepAnnualSocial — o diretório do dia satisfaz os scripts da diári
     try {
       const now = Date.parse("2026-09-01T00:00:00Z");
       const at = (d: "d1" | "d2") => computeScheduledAt({ config, editionDate: days[1].date, destaque: d, platform: "linkedin", now });
-      assert.equal(at("d1"), "2026-09-14T09:00:00-03:00");
-      assert.equal(at("d2"), "2026-09-15T09:00:00-03:00");
+      assert.equal(at("d1"), "2026-09-14T09:30:00-03:00");
+      assert.equal(at("d2"), "2026-09-15T09:30:00-03:00");
     } finally {
       if (prev === undefined) delete process.env.DIARIA_SOCIAL_SLOTS_FILE;
       else process.env.DIARIA_SOCIAL_SLOTS_FILE = prev;

@@ -17,10 +17,11 @@
  * Não publica nada. Imprime o plano em JSON e grava `social/plan.json`.
  *
  * Uso:
- *   npx tsx scripts/prep-annual-social.ts --slug 2026-aniversario [--start 260913] [--time 09:00]
+ *   npx tsx scripts/prep-annual-social.ts --slug 2026-aniversario [--start 260913] [--time 09:30]
  *
  * `--start` (AAMMDD): dia do 1º post; default = amanhã no horário de
- * Brasília. `--time` (HH:MM, Brasília): horário de todos os posts; default 09:00.
+ * Brasília. `--time` (HH:MM, Brasília): horário de todos os posts; default 09:30
+ * (`ANNUAL_SOCIAL_DEFAULT_TIME`, #10305).
  *
  * Imagem das previsões: a anual não gera imagem para elas na Etapa 3, então
  * este script exige `social/previsoes-2x1.jpg` (Etapa 6b da SKILL) — sem
@@ -44,6 +45,7 @@ import {
   parseAAMMDD,
   parseAnnualSocialMd,
   planAnnualSocialDays,
+  ANNUAL_SOCIAL_DEFAULT_TIME,
   socialCardCategory,
   buildDayCoverJson,
   themeImageFile,
@@ -55,7 +57,7 @@ const PREVISOES_TITLE = "Previsões para os próximos meses";
 export function prepAnnualSocial(
   dir: string,
   start: Date,
-  time = "09:00",
+  time = ANNUAL_SOCIAL_DEFAULT_TIME,
   grid?: readonly ScheduledSlot[],
 ): { days: { date: string; keys: string[]; slots: Record<string, string>; plannedSlots?: Record<string, Record<string, string>>; dir: string }[] } {
   const slug = basename(dir);
@@ -150,7 +152,7 @@ if (isMainModule(import.meta.url)) {
   }
   try {
     const start = args.start ? parseAAMMDD(String(args.start)) : tomorrowBrt();
-    const time = args.time ? String(args.time) : "09:00";
+    const time = args.time ? String(args.time) : ANNUAL_SOCIAL_DEFAULT_TIME;
     const config = JSON.parse(readFileSync(resolve("platform.config.json"), "utf8"));
     // Load the entire series before writing preparation artifacts.
     const texts = parseAnnualSocialMd(readFileSync(resolve("data/annual", slug, "social/03-social.md"), "utf8"));

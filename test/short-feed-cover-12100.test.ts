@@ -31,6 +31,7 @@ import { DHASH_SIZE, FEED_COVER_MATCH_MAX_DISTANCE, assessFeedCover, dHash, hash
 import { YOUTUBE_VIDEO_ID_RE, fetchFeedImage } from "../scripts/check-short-feed-cover.ts";
 import { publishYouTubeShort } from "../scripts/publish-shorts.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -181,7 +182,8 @@ describe("#12100 conferência do sardefault contra a capa (dHash)", () => {
 
 describe("#12254 skill: capa vertical do Short pelo Studio web", () => {
   it("documenta o sardefault e o passo do agente, sem devolver a tarefa ao editor", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
+    // #14040: o Passo B3a vive em reference/; o helper junta SKILL.md + reference/*.md.
+    const skill = readSkillWithReferences("diaria-publica");
     const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
     const b3a = skill.slice(skill.indexOf("### Passo B3a"), skill.indexOf("### Passo B3b"));
     assert.match(a2, /sardefault\.jpg/);

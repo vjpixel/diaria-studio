@@ -100,7 +100,7 @@
  */
 import { readFileSync, realpathSync, lstatSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { applyCliAction, type CliSpec, hasFlag, getArg, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
@@ -372,8 +372,10 @@ export function dataDirDependsOnDataBisync(dataDirReal: string | null, dataLocal
   } catch {
     // pasta local ausente: compara o caminho configurado
   }
-  const a = resolve(dataDirReal);
-  const b = resolve(local);
+  // Caminhos do 300 (Linux): POSIX mesmo quando o teste roda no Windows
+  // (#13738); no win32 de verdade os sinais de data/ nem são avaliados.
+  const a = posix.resolve(dataDirReal);
+  const b = posix.resolve(local);
   return a === b || a.startsWith(`${b}/`);
 }
 
@@ -401,7 +403,8 @@ export function resolveDataDirPath(
     } catch {
       target = null;
     }
-    return { path: target === null ? null : resolve(dirname(dataDir), target), resolved: false };
+    // Alvo literal do link no 300 (Linux): POSIX, como acima (#13738).
+    return { path: target === null ? null : posix.resolve(posix.dirname(dataDir), target), resolved: false };
   }
 }
 

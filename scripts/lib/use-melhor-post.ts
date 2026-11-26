@@ -9,7 +9,8 @@
  * ── Ligada/desligada pelo slot `use_melhor_time` ──────────────────────────
  * O horário (`publishing.social.use_melhor_time`) foi fixado em 08:00 BRT
  * pelo editor em 04/10/2026 (comentário `decisao-editor` na #9568) e movido
- * para 07:45 em 05/10/2026 (15min antes da hora cheia). Se a
+ * para 07:45 em 05/10/2026 (15min antes da hora cheia); desde 25/11/2026 é
+ * 09:00, na grade fixa que encerrou o teste rotativo do #10305. Se a
  * chave voltar a ficar ausente/`null` em
  * `platform.config.json`, TODA a feature fica desligada: o Stage 2 não pede
  * a seção `## um` aos writers, o Stage 3 não gera cards, o Stage 4 mostra só
@@ -61,8 +62,11 @@ import { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 import { formatCivilDate, publishDateForEdition, resolveDailyPostTime } from "./social-schedule-rotation.ts";
 import { clearedDailyPostTimes } from "./diaria/vertical-social-clearance.ts";
 
-/** `utm_content` próprio do 4º post — mede separado dos destaques. */
-export const USE_MELHOR_UTM_CONTENT = "usemelhor";
+/** `utm_content` próprio do 4º post — mede separado dos destaques. Definido em
+ * `shared/utm-registry.ts` desde o #13998; reexportado aqui para os
+ * importadores existentes. */
+export { USE_MELHOR_UTM_CONTENT } from "./shared/utm-registry.ts";
+import { USE_MELHOR_UTM_CONTENT } from "./shared/utm-registry.ts";
 
 /**
  * Os publicadores do Stage 5 (LinkedIn página/Facebook/Instagram/Threads/X)

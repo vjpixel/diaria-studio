@@ -25,6 +25,8 @@ export interface CloseReport {
   preExisting: string[];
   /** How preExisting was attributed per checked worktree (#11785): start-of-session snapshot, or mtime fallback. */
   attribution: string[];
+  /** Worth reporting, never affects canClose (#13991): e.g. a branch behind its upstream. */
+  warnings: string[];
 }
 
 /** Loads the start-of-session dirty snapshot (`.claude/hooks/session-start-dirty-snapshot.mjs`) of a checkout. */
@@ -59,6 +61,37 @@ const fileMtimeMs = (abs: string): number | undefined => {
   try { const st = statSync(abs); return st.isFile() ? Math.max(st.mtimeMs, st.ctimeMs) : undefined; } catch { return undefined; }
 };
 
+type Query = (command: string, args: string[], cwd?: string) => string | undefined;
+
+/**
+ * Commits that would vanish with the checkout (#13991). With an upstream: commits ahead of it (pending) and behind it
+ * (warning, never blocks). Without one, or with an upstream whose remote branch is gone: commits not in ANY remote
+ * (`HEAD --not --remotes`) are pending — a branch committed and never pushed has no PR either, so nothing else catches
+ * it. `for-each-ref` (not `rev-parse @{upstream}`) tells "no upstream" (empty output) apart from a git failure (error).
+ */
+function checkPushState(path: string, branch: string, report: CloseReport, query: Query): void {
+  const ref = query("git", ["for-each-ref", "--format=%(upstream:short)%09%(upstream:track)", `refs/heads/${branch}`], path);
+  if (ref === undefined) return;
+  const [upstream = "", track = ""] = ref.trim().split("\t");
+  if (upstream && !track.includes("gone")) {
+    // Refresh remote evidence; stale tracking refs must not certify a push.
+    const remote = query("git", ["config", "--get", `branch.${branch}.remote`], path)?.trim();
+    if (remote && remote !== ".") query("git", ["fetch", "--no-tags", remote], path);
+    const ahead = query("git", ["rev-list", "--count", "@{upstream}..HEAD"], path)?.trim();
+    if (ahead && ahead !== "0") report.pending.push(`commits não enviados: ${path} (${ahead})`);
+    const behind = query("git", ["rev-list", "--count", "HEAD..@{upstream}"], path)?.trim();
+    if (behind && behind !== "0") {
+      report.warnings.push(`branch atrás do upstream ${upstream}: ${path} (${behind}); conferir antes de seguir trabalhando`);
+    }
+    return;
+  }
+  // No usable upstream: refresh every remote, then count what no remote has. A failed fetch is an error (blocks).
+  query("git", ["fetch", "--no-tags", "--all"], path);
+  const local = query("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], path)?.trim();
+  const why = upstream ? `upstream ${upstream} sumiu do remoto` : "sem upstream";
+  if (local && local !== "0") report.pending.push(`commits só locais (${why}, em nenhum remoto): ${path} (${local})`);
+}
+
 /** Does not infer process liveness from registry.pid (an ephemeral beacon PID). */
 export function checkSessionClose(root: string, session: SessionRecord | undefined,
   extraWorktrees: string[] = [], run: Run = runCommand,
@@ -66,7 +99,7 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
   loadSnapshot: SnapshotLoader = loadSnapshotFromTmp,
   hash: (abs: string) => string | null = hashPath): CloseReport {
   const report: CloseReport = { canClose: false, pending: [], errors: [], checkedWorktrees: [], ignored: [],
-    preExisting: [], attribution: [], manualChecks: ["tasks/agents em segundo plano", "promessas e follow-ups no transcript"] };
+    preExisting: [], attribution: [], warnings: [], manualChecks: ["tasks/agents em segundo plano", "promessas e follow-ups no transcript"] };
   if (!session) {
     report.errors.push("Sessão não encontrada no registry; confirme a identidade antes de encerrar.");
     return report;
@@ -143,14 +176,7 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
     const branch = query("git", ["branch", "--show-current"], path)?.trim();
     if (branch) branches.add(branch);
     else if (branch === "") report.errors.push(`HEAD detached: ${path}; conferir commits da sessão.`);
-    const upstream = query("git", ["rev-parse", "--abbrev-ref", "@{upstream}"], path)?.trim();
-    if (upstream) {
-      // Refresh remote evidence; stale tracking refs must not certify a push.
-      const remote = query("git", ["config", "--get", `branch.${branch}.remote`], path)?.trim();
-      if (remote && remote !== ".") query("git", ["fetch", "--no-tags", remote], path);
-      const ahead = query("git", ["rev-list", "--count", "@{upstream}..HEAD"], path)?.trim();
-      if (ahead && ahead !== "0") report.pending.push(`commits não enviados: ${path} (${ahead})`);
-    }
+    if (branch) checkPushState(path, branch, report, query);
   }
   for (const branch of branches) {
     // #12307: REST, não `gh pr list` (GraphQL). Sessão cloud do Claude Code bloqueia GraphQL

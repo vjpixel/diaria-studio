@@ -11,6 +11,7 @@
  * Uso: npx tsx scripts/clarice-mailbox-dryrun.ts [--db <path>]
  */
 
+import { allRows } from "./lib/sqlite-rows.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import {
@@ -54,15 +55,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.error(`[clarice-mailbox-dryrun] lendo ${dbPath} (read-only, nenhuma escrita)`);
 
   const db = openClariceDb(dbPath);
-  const raw = db
+  const raw = allRows<RawRow>(db
     .prepare(
       `SELECT email, cohort, tier, created, opens_count, sends_count,
               soft_bounce_count, dispute_losses, mv_bucket, email_blacklisted,
               unsubscribed, hard_bounced, complained, priority_optin,
               brevo_modified_at
          FROM clarice_users`,
-    )
-    .all() as unknown as RawRow[];
+    ));
   db.close();
 
   // Mesmo preserve-then-backfill de `recomputeDerived` (sem `csvIndex` — o

@@ -702,6 +702,16 @@ function parseTapYamlScalar(raw: string): string | number | null {
   return v;
 }
 
+const TAP_ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v" };
+
+/** Desfaz o escape do reporter `tap` do Node (`\\` → `\`, `\#` → `#`,
+ *  `\n` → quebra de linha…), aplicado a nomes e a `location` (#13738): no
+ *  Windows o caminho saía com a barra dobrada (`C:\\Users\\…`) e nunca batia
+ *  com o arquivo do batch. */
+function unescapeTapText(s: string): string {
+  return s.replace(/\\(.)/g, (_, c: string) => TAP_ESCAPES[c] ?? c);
+}
+
 /** Pure (#12848): extrai do output do reporter `tap` os `not ok` cujo
  *  processo do arquivo morreu — `failureType: 'testCodeFailure'` com
  *  `exitCode` ou `signal` não-nulo. Falha comum de asserção também tem
@@ -736,8 +746,8 @@ export function parseTapFileExits(tap: string): FileExitDiagnostic[] {
     const location = fields.get("location");
     const file =
       typeof location === "string" && location
-        ? location.replace(/:\d+:\d+$/, "")
-        : (notOk[2] ?? "(arquivo não identificado)").trim();
+        ? unescapeTapText(location.replace(/:\d+:\d+$/, ""))
+        : unescapeTapText((notOk[2] ?? "(arquivo não identificado)").trim());
     out.push({ file, exitCode, signal });
   }
   return out;

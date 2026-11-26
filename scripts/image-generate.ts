@@ -241,9 +241,44 @@ export function computeStaleDerivedImages(
   action: WideImageIntegrityAction,
   outDir: string,
   destaque: string,
+  opts: { keep4x5Nativo?: boolean } = {},
 ): string[] {
   if (action.kind !== "regenerate") return [];
-  return staleDerivedImagePaths(outDir, destaque);
+  const paths = staleDerivedImagePaths(outDir, destaque);
+  // #14036: `--keep-4x5-nativo` = o chamador roda o `--ratio 4x5 --force` do
+  // MESMO destaque em paralelo. O nativo vai ser regravado por ele a partir do
+  // prompt atual; apagá-lo aqui seria uma corrida (o 4x5 checa o disco, o 2x1
+  // apaga depois, ou o 2x1 apaga o nativo já pronto). O master segue purgado.
+  return opts.keep4x5Nativo ? paths.filter((p) => !p.endsWith("-4x5-nativo.jpg")) : paths;
+}
+
+/**
+ * Arquivos a apagar antes de uma regeneração FORÇADA do 4x5 nativo (#14036).
+ * Pura, sem disco. Com o 2x1 e o 4x5 em paralelo, o 2x1 regerado não purga
+ * mais o nativo (`--keep-4x5-nativo`); quem regera o nativo é o `--ratio 4x5
+ * --force`. Se essa geração falhar com o nativo antigo ainda no disco, um
+ * re-run sem `--force` pula por "já existe" e o card sai com a arte do prompt
+ * anterior. Apagar antes reproduz a ordem antiga (o 2x1 apagava, o 4x5
+ * recriava): falhou, o card cai no fallback 2:1. Só o 4x5; master e 1x1 são
+ * manuais e mantêm o comportamento de sempre.
+ */
+export function forcedRegenPurgePaths(ratio: ImageRatio, force: boolean, outExists: boolean, outJpgPath: string): string[] {
+  return ratio === "4x5" && force && outExists ? [outJpgPath] : [];
+}
+
+/**
+ * Path do JSON de prompt que o gerador lê (#14036). O 2x1 (default) e o 1x1
+ * mantêm o nome histórico `04-{d}-sd-prompt.json` (é o que o invariante do
+ * Stage 3 e os scripts de swap/reorder procuram); 4x5 e master gravam um
+ * arquivo próprio, `04-{d}-{ratio}-sd-prompt.json`. Com um arquivo só, o 2x1 e
+ * o 4x5 do mesmo destaque rodando juntos sobrescreviam o prompt um do outro
+ * entre a escrita e a leitura do backend, e o 2x1 podia sair com as dimensões
+ * do 4x5.
+ */
+export function sdPromptPathFor(outDir: string, destaque: string, ratio: ImageRatio): string {
+  const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
+  if (ratio === "4x5" || ratio === "master") return `${normalizedOutDir}04-${destaque}-${ratio}-sd-prompt.json`;
+  return `${normalizedOutDir}04-${destaque}-sd-prompt.json`;
 }
 
 /** #9095: AAMMDD da edição a partir do `--out-dir` (`data/editions/260930/`,
@@ -277,10 +312,12 @@ function main() {
 
   // #924: aceitar `--force` em qualquer posição (último arg, no meio, etc).
   const force = parsed.flags.has("force") || !!args["force"];
+  // #14036: o 4x5 do mesmo destaque roda junto, com --force — não purgar o nativo.
+  const keep4x5Nativo = parsed.flags.has("keep-4x5-nativo") || !!args["keep-4x5-nativo"];
 
   if (!editorialPath || !outDir || !destaque) {
     console.error(
-      "Uso: image-generate.ts --editorial <prompt.md> --out-dir <dir/> --destaque <d1|d2|d3> [--ratio 2x1|1x1|4x5|master] [--force]"
+      "Uso: image-generate.ts --editorial <prompt.md> --out-dir <dir/> --destaque <d1|d2|d3> [--ratio 2x1|1x1|4x5|master] [--force] [--keep-4x5-nativo]"
     );
     process.exit(1);
   }
@@ -320,7 +357,7 @@ function main() {
 
   // Gravar JSON de prompt
   const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
-  const sdPromptPath = `${normalizedOutDir}04-${destaque}-sd-prompt.json`;
+  const sdPromptPath = sdPromptPathFor(normalizedOutDir, destaque, ratio);
   const outJpgPath = master
     ? `${normalizedOutDir}04-${destaque}-master.jpg`
     : portrait45
@@ -382,7 +419,7 @@ function main() {
     // (possivelmente de um artigo TROCADO) e fica STALE. Apagar agora, antes
     // da geração, pra `gen-social-card-4x5.ts` nunca escolher a arte errada
     // pela cadeia de prioridade (nativo > master > 2x1).
-    for (const staleP of computeStaleDerivedImages(action, normalizedOutDir, destaque)) {
+    for (const staleP of computeStaleDerivedImages(action, normalizedOutDir, destaque, { keep4x5Nativo })) {
       if (existsSync(staleP)) {
         console.error(
           `image-generate: apagando ${staleP} — formato derivado STALE (base 2x1 sendo regenerada, #6010).`,
@@ -399,6 +436,13 @@ function main() {
       console.error(`Imagem ${outJpgPath} já existe — use --force pra regenerar.`);
       process.stdout.write(outJpgPath + "\n");
       process.exit(0);
+    }
+    // #14036: regeneração forçada do nativo apaga o antigo ANTES do backend.
+    // Se a geração falhar, nenhuma arte velha fica no disco para um re-run sem
+    // --force reaproveitar em silêncio (o card cai no fallback 2:1).
+    for (const staleP of forcedRegenPurgePaths(ratio, force, outExists, outJpgPath)) {
+      console.error(`image-generate: apagando ${staleP} — regeneração forçada do 4x5 nativo (#14036).`);
+      unlinkSync(staleP);
     }
   }
 

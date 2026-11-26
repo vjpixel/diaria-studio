@@ -17,6 +17,13 @@
  * Apertar depois é mudar 1 constante AQUI; subir o teto exige decisão do
  * editor registrada.
  *
+ * Teto baixado para 64KB (65.536 B) no #14002 (decisão do editor, briefing
+ * overnight 25/11/2026): o arquivo voltava a ~97% de 75KB a cada rodada de
+ * corte. Os seis blocos de histórico (mensal-apoiadores, anual, infra
+ * `continuo`, Sonnet 5, Opus 5, #8941) foram para `docs/` com ponteiro. A
+ * regra segue a mesma: a falta de folga obriga a curadoria, nunca a subida
+ * do teto sem decisão registrada.
+ *
  * --- Alarme de proximidade (#6275, direção 3) ---
  *
  * O #6275 mediu master a 9 bytes do teto: o único sinal que existia era o
@@ -49,12 +56,12 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLAUDE_MD = join(ROOT, "CLAUDE.md");
 
-/** Teto em bytes. 75 * 1024 = 76_800. Ver docblock antes de alterar. */
-export const CLAUDE_MD_MAX_BYTES = 75 * 1024;
+/** Teto em bytes. 64 * 1024 = 65_536 (#14002; era 75 * 1024). Ver docblock antes de alterar. */
+export const CLAUDE_MD_MAX_BYTES = 64 * 1024;
 
 /**
  * Limiar de proximidade — fração do teto a partir da qual emitimos aviso
- * (#6275, direção 3). 95%: dá margem real (~3,8KB no teto atual) pra agir
+ * (#6275, direção 3). 95%: dá margem real (~3,2KB no teto atual) pra agir
  * antes do estouro, sem disparar cedo demais no dia a dia.
  */
 export const CLAUDE_MD_WARN_RATIO = 0.95;
@@ -159,8 +166,12 @@ describe("claude-md-size (#5904)", () => {
 });
 
 describe("evaluateClaudeMdSize — cenários sintéticos (#6275, direção 3)", () => {
-  const MAX = 76_800; // mesmo valor de CLAUDE_MD_MAX_BYTES, literal p/ deixar os cenários auto-contidos
-  const WARN_THRESHOLD = Math.floor(MAX * CLAUDE_MD_WARN_RATIO); // 72.960
+  const MAX = 65_536; // mesmo valor de CLAUDE_MD_MAX_BYTES, literal p/ deixar os cenários auto-contidos
+  const WARN_THRESHOLD = Math.floor(MAX * CLAUDE_MD_WARN_RATIO); // 62.259
+
+  it("o literal dos cenários acompanha o teto real (#14002)", () => {
+    assert.equal(MAX, CLAUDE_MD_MAX_BYTES);
+  });
 
   it("confortavelmente abaixo do limiar de proximidade → ok, sem mensagem", () => {
     const evaluation = evaluateClaudeMdSize(WARN_THRESHOLD - 5_000, MAX);
@@ -194,5 +205,75 @@ describe("evaluateClaudeMdSize — cenários sintéticos (#6275, direção 3)", 
   it("bytesRemaining é negativo quando estourado, positivo quando não", () => {
     assert.equal(evaluateClaudeMdSize(MAX + 100, MAX).bytesRemaining, -100);
     assert.equal(evaluateClaudeMdSize(MAX - 100, MAX).bytesRemaining, 100);
+  });
+});
+
+/**
+ * #14002 — o histórico saiu do CLAUDE.md para docs/ com ponteiro. Regra que
+ * vira ponteiro só serve se o ponteiro resolve e o conteúdo chegou ao destino;
+ * e o aviso do `continuo` (guard contra repetir o #6059) tem que continuar no
+ * arquivo carregado em toda sessão, não só no doc.
+ */
+describe("ponteiros do CLAUDE.md para docs/ (#14002)", () => {
+  const claudeMd = readFileSync(CLAUDE_MD, "utf8");
+  const readDoc = (p: string) => readFileSync(join(ROOT, p), "utf8");
+
+  it("todo docs/*.md citado no CLAUDE.md existe", () => {
+    const cited = [...new Set(claudeMd.match(/docs\/[A-Za-z0-9_./-]+\.md/g) ?? [])];
+    assert.ok(cited.length > 0);
+    const missing = cited.filter((p) => {
+      try {
+        return !statSync(join(ROOT, p)).isFile();
+      } catch {
+        return true;
+      }
+    });
+    assert.deepEqual(missing, [], `ponteiros quebrados no CLAUDE.md: ${missing.join(", ")}`);
+  });
+
+  it("o aviso do continuo segue no CLAUDE.md, em uma linha, com o ponteiro", () => {
+    const line = claudeMd.split("\n").find((l) => l.includes("infra do kind `continuo`"));
+    assert.ok(line, "a linha de aviso do continuo sumiu do CLAUDE.md");
+    assert.match(line, /não é código morto/);
+    assert.match(line, /hermes-diaria-continuo/);
+    assert.match(line, /não remover nada/);
+    assert.match(line, /`300`/);
+    assert.match(line, /docs\/continuo-consumidor-externo\.md/);
+  });
+
+  it("cada bloco movido tem a regra + ponteiro no CLAUDE.md e o detalhe no doc", () => {
+    const cases: Array<{ doc: string; ruleInClaudeMd: RegExp; detailInDoc: RegExp[] }> = [
+      {
+        doc: "docs/edicao-anual.md",
+        ruleInClaudeMd: /`\/diaria-anual` \(#7569\)[^\n]*editorialDate\(\)[^\n]*docs\/edicao-anual\.md/,
+        detailInDoc: [/legacy-edition-parse\.ts/, /27\/08\/2025/, /lint-annual-draft\.ts/, /#7587/],
+      },
+      {
+        doc: "docs/mensal-apoiadores-canal-kit.md",
+        ruleInClaudeMd: /`\/diaria-mensal-apoiadores`: canal Kit \(#7633\)[^\n]*TAG, nunca segmento[^\n]*docs\/mensal-apoiadores-canal-kit\.md/,
+        detailInDoc: [/segment_id=X/, /apoio-retrospectiva/, /#6582/, /`public: false`/, /25844671/],
+      },
+      {
+        doc: "docs/continuo-consumidor-externo.md",
+        ruleInClaudeMd: /docs\/continuo-consumidor-externo\.md/,
+        detailInDoc: [/hermes cron list --all/, /5d791ef6fc2c/, /#6168/, /#6446/, /test\/continuo-infra-consumidor-externo\.test\.ts/],
+      },
+      {
+        doc: "docs/model-mix-historico.md",
+        ruleInClaudeMd: /Sonnet 5 #2745, Opus 5 #4042, #8941[^\n]*docs\/model-mix-historico\.md/,
+        detailInDoc: [/\*\*\(Histórico #8941\)\*\*/, /\*\*Opus 5\*\* \(#4042/, /\*\*Sonnet 5\*\* \(#2745\)/, /#3710/, /#6496/],
+      },
+    ];
+    for (const c of cases) {
+      assert.match(claudeMd, c.ruleInClaudeMd, `${c.doc}: regra/ponteiro ausente no CLAUDE.md`);
+      const doc = readDoc(c.doc);
+      for (const re of c.detailInDoc) assert.match(doc, re, `${c.doc}: detalhe ${re} não chegou ao doc`);
+    }
+  });
+
+  it("o detalhe movido não voltou ao CLAUDE.md (senão o corte não vale)", () => {
+    for (const re of [/hermes cron list --all/, /segment_id=X/, /legacy-edition-parse\.ts/, /\*\*Opus 5\*\* \(#4042/]) {
+      assert.doesNotMatch(claudeMd, re);
+    }
   });
 });

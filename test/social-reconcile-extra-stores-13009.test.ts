@@ -12,7 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import {
   claimedFeedKeys,
@@ -112,17 +112,18 @@ describe("item do feed já atribuído não casa de novo (#13009)", () => {
   });
 });
 
+// Separador nativo: o código monta os caminhos com `join` (`\` no Windows, #13738).
 function fakeFs(files: Record<string, unknown>): StoreFs {
   const paths = Object.keys(files);
   const dirs = new Set<string>();
   for (const p of paths) {
-    const parts = p.split("/");
-    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+    const parts = p.split(sep);
+    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join(sep));
   }
   return {
     exists: (p) => p in files,
     isDir: (p) => dirs.has(p),
-    list: (dir) => [...new Set([...paths, ...dirs].filter((p) => p.startsWith(dir + "/")).map((p) => p.slice(dir.length + 1).split("/")[0]))],
+    list: (dir) => [...new Set([...paths, ...dirs].filter((p) => p.startsWith(dir + sep)).map((p) => p.slice(dir.length + 1).split(sep)[0]))],
     readJson: (p) => {
       const v = files[p];
       if (v === "BROKEN") throw new Error("json inválido");

@@ -501,10 +501,13 @@ em `ln-{cycle}.json`, sem travar o resto do render. `coverImagePath` no
 JSON é `null` quando isso acontece; confira antes do Passo 7b se veio
 populado — é a mesma imagem que o editor sobe manualmente no Passo 9.
 
-**Seção "Vídeo da semana" (#12777).** Quando `ln-selection.json` tem
-`video`, o render põe a seção logo depois da manchete que o vídeo comenta
-(o D1 da edição do vídeo; se nenhuma manchete for esse D1, depois da
-manchete 1, com warning para o editor revisar o "destaque acima"). O link
+**Seção do vídeo da semana (#12777, #13818).** Quando `ln-selection.json`
+tem `video`, a seção é o **1º item do artigo**: entra logo depois da
+abertura, antes da manchete 1, em qualquer caso (decisão do editor de
+21/11/2026, ciclo 26w47; até ali ela ia depois da manchete que o vídeo
+comentava). O cabeçalho é o **título do vídeo** (`<h2>` com `video.title`),
+não mais o fixo "Vídeo da semana"; título que termina em domínio nu sai
+com warning (risco de auto-link no paste). O link
 do vídeo (`utm_content=video`) fica no texto, sem `<img>` no HTML. O mesmo
 comando copia o `04-d1-2x1.jpg` (sem o overlay de play, que sugere um
 clique que o LinkedIn não oferece) da edição do vídeo para
@@ -512,9 +515,12 @@ clique que o LinkedIn não oferece) da edição do vídeo para
 `videoImagePath` no `ln-{cycle}.json`: é a imagem que o editor sobe à mão
 na seção (Passo 9).
 
-**Frase do vídeo (#13045).** A seção abre com a frase fixa "Eu comento o
-destaque acima no YouTube da diar.ia.br." (link em "YouTube da diar.ia.br";
-"principal vídeo da semana" fica só na seção da Stack) e fecha com uma frase
+**Frase do vídeo (#13045).** A seção abre com a frase fixa "Eu comento esta
+notícia no YouTube." (`LINKEDIN_WEEKLY_VIDEO_LEAD`, #13818: com o vídeo
+antes das manchetes, "o destaque acima" deixou de fazer sentido; link só em
+"YouTube", #13821, porque "YouTube da diar.ia.br" terminava no domínio nu e
+o LinkedIn partia a âncora; "principal vídeo da semana" fica só na seção da
+Stack) e fecha com uma frase
 da semana sobre o que o vídeo traz que o texto não traz. Quando
 `ln-selection.json` tem `video`, antes do render:
 
@@ -551,8 +557,9 @@ Publique via `Artifact`:
    colável do Passo 7) numa página visual — tipografia legível (Georgia ou
    equivalente, mesma família da newsletter), a imagem de capa
    (`coverImagePath`, se não for `null`) no topo, e o corpo tal como sai do
-   render (headlines sem numeração, "da edição de DD/MM" sob cada uma, a
-   seção "Vídeo da semana" quando houver, bloco Use Melhor, "Outros
+   render (a seção do vídeo da semana, quando houver, como 1º item e com o
+   título do vídeo no cabeçalho, #13818; headlines sem numeração, "da
+   edição de DD/MM" sob cada uma, bloco Use Melhor, "Outros
    destaques da semana", abertura e fecho). Não invente texto
    novo — é uma RENDERIZAÇÃO do que já existe em `ln-{cycle}.html`, nunca
    uma reescrita.
@@ -694,8 +701,9 @@ import direto). Âncora de "diar.ia.br" com href diferente do da fonte (UTM perd
 explicitamente, com ou sem continuação após o wordmark (#10385; o caso
 `26w42` é a âncora só com o wordmark tendo o href reescrito pra
 `http://diar.ia.br`, ver `context/publishers/linkedin.md` item (f)).
-Menção a "diar.ia.br" em texto puro (a frase da seção "Vídeo da semana",
-#12777) vira auto-link do LinkedIn para a home: a auditoria desconta essas
+Menção a "diar.ia.br" em texto puro (era o caso da frase da seção do
+vídeo, #12777, até o #13821 tirar o domínio dela) vira auto-link do
+LinkedIn para a home: a auditoria desconta essas
 âncoras a mais da contagem, até o número de menções em texto puro da fonte.
 
 - **`result.ok === true`:** prosseguir pro Passo 8d.
@@ -708,18 +716,34 @@ Menção a "diar.ia.br" em texto puro (a frase da seção "Vídeo da semana",
   item (f)), NÃO tentar corrigir: seguir pro 8d e entregar no Passo 9 com o
   pedido de ajuste manual (item 5). Qualquer outro issue, sozinho ou junto
   desse, cai nas regras abaixo.
-- **Âncora "YouTube da diar.ia.br" dividida (#13049 item 3):** issue com
-  `TRAILING_WORDMARK_SPLIT_HINT` é padrão conhecido (no 26w46 a âncora saiu
-  como "YouTube da" + "diar.ia.br" apontando para a home). Corrigir assim:
-  selecionar o texto inteiro da âncora por `Range` via `javascript_tool`
-  (sem clicar no link), aplicar o link pelo botão de link da toolbar com o
-  `href` da fonte e repetir a auditoria, com o mesmo teto de 2 tentativas
-  da regra abaixo.
+- **Âncora do vídeo dividida (#13049 item 3, revisto no #13821):** issue
+  com `TRAILING_WORDMARK_SPLIT_HINT` é padrão conhecido (no 26w46 e no
+  26w47 a âncora "YouTube da diar.ia.br" saiu como "YouTube da" + "diar.ia.br"
+  apontando para a home). Desde o #13821 a âncora do vídeo é só "YouTube" e
+  não termina mais no domínio nu, então o split não deveria voltar. Se
+  voltar: (1) conferir se o `ln-{cycle}.html` colado é do render atual (a
+  âncora do vídeo é "YouTube"); se for de um render antigo, re-renderizar
+  (Passo 7), esvaziar o corpo já colado antes de colar de novo (foco no
+  `contenteditable` do corpo, selecionar tudo com `ctrl+a`/`cmd+a` e
+  apagar com `Delete`; conferir pelo snippet acima que
+  `textContent.length` ficou 0 e que não sobrou âncora, senão o paste
+  duplica o artigo), então colar pelo 8b e repetir a auditoria; (2) com o render atual e o split ainda lá, **não tentar a
+  correção pela toolbar**: no 26w47, com o texto inteiro selecionado por
+  `Range` via `javascript_tool` (seleção conferida), o botão de link da
+  toolbar não abriu diálogo nenhum, e a seleção por arrasto também falhou
+  (seleção vazia). Seguir pro 8d e entregar no Passo 9 com o pedido de
+  ajuste manual dessa âncora (texto inteiro e `href` da fonte, como no item
+  5 do Passo 9), e registrar a recorrência na #13821. Esse caminho não gasta
+  as 2 tentativas da regra abaixo; qualquer outro issue junto desse cai
+  nela.
 - **`result.ok === false`:** PARAR — não escrever o texto do post de feed
   nem entregar ao editor. Apresentar `result.issues` ao editor. Se algum
   issue citar o padrão conhecido de split de âncora "diar.ia.br" (PR #5987,
   mesmo achado documentado em `context/publishers/linkedin.md` §"Newsletter
-  LinkedIn"), aplicar a correção de lá: selecionar a âncora completa via
+  LinkedIn"), aplicar a correção de lá, **exceto** quando o issue é o
+  `TRAILING_WORDMARK_SPLIT_HINT` da âncora do vídeo, que segue só o bullet
+  "Âncora do vídeo dividida" acima (sem toolbar, ajuste manual no Passo 9):
+  selecionar a âncora completa via
   teclado (nunca clicar direto sobre o link colado — risco de deslocar a
   seleção e apagar outro parágrafo em silêncio, mesmo achado) e
   sobrescrever via popup **Edit link** da toolbar. Nunca use `ctrl+k`
@@ -861,7 +885,7 @@ editor, nesta ordem:
 2. **O caminho do arquivo de capa** (`data/weekly/{cycle}/04-d1-2x1.jpg`),
    se `coverImagePath` veio populado — ou aviso explícito de que não há
    capa disponível (fail-soft do Passo 7), sem inventar substituto. Se o
-   artigo tiver a seção "Vídeo da semana" e `videoImagePath` veio
+   artigo tiver a seção do vídeo da semana (1º item, #13818) e `videoImagePath` veio
    populado, passe também esse caminho, para o editor subir a imagem à mão
    logo abaixo do parágrafo do vídeo (#12777: o LinkedIn não linka imagem,
    o link do vídeo fica no texto e o HTML colado não leva `<img>`).
@@ -919,14 +943,15 @@ editor, nesta ordem:
      mesma lógica do envio canônico das 06:00 BRT da diária. **O horário
      vem do config (#10305), não da sessão:** rode
      `npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date {publish-monday}`
-     e entregue ao editor o `HH:MM` impresso. Fora do teste rotativo é
-     `publishing.social.linkedin_weekly_article_time` (09:30 BRT); dentro
-     da janela de `publishing.social.rotation`, a segunda recebe o
-     candidato da semana (`linkedin_weekly_article_candidates`). Depois de
-     o editor agendar, registre o horário usado:
+     e entregue ao editor o `HH:MM` impresso:
+     `publishing.social.linkedin_weekly_article_time` (09:30 BRT). O teste
+     rotativo de `publishing.social.rotation`, que dava à segunda o
+     candidato da semana, foi encerrado em 25/11/2026 (`enabled: false`).
+     Depois de o editor agendar, registre o horário usado:
      `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article`
-     (grava em `data/social-schedule-rotation.jsonl`, idempotente — é o
-     registro que a medição da #10305 cruza com os cliques `ln-{ciclo}`).
+     (grava em `data/social-schedule-rotation.jsonl`, idempotente; é o
+     ponto em que a trava da menção @diar.ia.br do #13286 confere o post de
+     feed, e o registro cruza o horário com os cliques `ln-{ciclo}`).
      Se o editor agendou (ou publicou) em outro horário, grave o real com
      `--time` (#11180):
      `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article --time {HH:MM real}`
