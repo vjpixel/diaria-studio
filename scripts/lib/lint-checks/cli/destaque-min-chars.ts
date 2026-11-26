@@ -6,24 +6,12 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkDestaqueMinChars } from "../destaque-chars.ts";
 
 // Modo --check destaque-min-chars (#914) — valida mínimo de chars por destaque
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error(
-      "Uso: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>",
-    );
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "destaque-min-chars");
   const result = checkDestaqueMinChars(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

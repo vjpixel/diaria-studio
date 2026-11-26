@@ -6,8 +6,7 @@
  * chamada de check, mesma formatação de erro/exit code de antes).
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readMdArg } from "./_shared.ts";
 import { checkNoUntranslatedSummary } from "../no-untranslated-summary.ts";
 
 // Modo --check no-untranslated-summary (#3196) — item de seção secundária
@@ -15,16 +14,7 @@ import { checkNoUntranslatedSummary } from "../no-untranslated-summary.ts";
 // sobreviveu até o gate. GATE-BLOCKING (mirrors secondary-items-have-summary,
 // #2545): um item não-traduzido não é publicável.
 export function runCli(args: Record<string, string>, root: string): void {
-  if (!args.md) {
-    console.error("Uso: lint-newsletter-md.ts --check no-untranslated-summary --md <md-path>");
-    process.exit(2);
-  }
-  const mdPath = resolve(root, args.md);
-  if (!existsSync(mdPath)) {
-    console.error(`Arquivo não existe: ${mdPath}`);
-    process.exit(2);
-  }
-  const md = readFileSync(mdPath, "utf8");
+  const { md } = readMdArg(args, root, "no-untranslated-summary");
   const result = checkNoUntranslatedSummary(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
