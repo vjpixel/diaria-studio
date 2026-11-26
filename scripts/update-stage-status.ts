@@ -39,6 +39,7 @@ import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { getMachineId } from "./lib/machine-id.ts"; // #3119: tageia o doc com a máquina que iniciou a run
 import type { SessionFilterReason } from "./lib/session-transcript.ts"; // #6170
+import type { ModelUsageMap, TurnStats } from "./lib/usage-breakdown.ts"; // #14115
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -50,6 +51,8 @@ export interface CliRunLogEntry {
   /** `terminal_reason`/`subtype` da execução (ex: `success`, `error_max_turns`). */
   terminal_reason?: string;
   cost_usd?: number;
+  /** #14115: tokens/custo por modelo DESTA execução (do `modelUsage` do envelope). */
+  model_usage?: ModelUsageMap;
 }
 
 export interface StageRow {
@@ -141,6 +144,22 @@ export interface StageRow {
    * numa captura bem-sucedida posterior.
    */
   usage_capture_error?: string;
+  /**
+   * #14115: `tokens_in`/`tokens_out`/`cost_usd` quebrados POR MODELO (chave =
+   * `shortModelName`). Sob `cli_json` vem do `modelUsage` do envelope e soma
+   * entre execuções como o total (#9312); sob transcript é recalculado a cada
+   * captura. Ausente em linhas anteriores ao #14115: os totais acima seguem
+   * sendo a fonte, este campo só os detalha.
+   */
+  model_usage?: ModelUsageMap;
+  /**
+   * #14115: turnos e contexto do caminho do transcript (sessão interativa):
+   * `num_turns` do thread principal, contexto do 1º turno, mediana e máximo
+   * por turno, e a separação cache_read x cache_creation. Não confundir com
+   * `num_turns` do topo da linha, que é o do envelope CLI (#9222). Ausente sob
+   * `cli_json` (o envelope não traz contexto por turno).
+   */
+  turn_stats?: TurnStats;
 }
 
 export interface StageStatusDoc {
@@ -325,6 +344,8 @@ export interface UpdateOpts {
   terminal_reason?: string; // #9222
   cli_runs?: number; // #9312
   cli_run_log?: CliRunLogEntry[]; // #9597
+  model_usage?: ModelUsageMap; // #14115
+  turn_stats?: TurnStats; // #14115
   usage_capture_error?: string; // #9222 — presença da chave é o critério (undefined limpa)
   /**
    * #8899: opt-in explícito pro auto-bump de `end` numa 2ª chamada `done`/`failed`
@@ -465,6 +486,8 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       num_turns: opts.num_turns ?? r.num_turns,
       cli_runs: opts.cli_runs ?? r.cli_runs,
       cli_run_log: opts.cli_run_log ?? r.cli_run_log,
+      model_usage: opts.model_usage ?? r.model_usage, // #14115
+      turn_stats: opts.turn_stats ?? r.turn_stats, // #14115
       // #9222: presença da chave (não `??`) — uma execução posterior que
       // terminou em sucesso precisa poder LIMPAR o motivo de uma anterior.
       terminal_reason: "terminal_reason" in opts ? opts.terminal_reason : r.terminal_reason,
