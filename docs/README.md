@@ -194,11 +194,12 @@
 |---|---|---|
 | [`agents-archive/eia-composer.md`](./agents-archive/eia-composer.md) | eia-composer | Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, sorteia A/B (#192), escreve `01-eia.md` (com frontmatter `eia_answer`) +… |
 
-### `docs/archive/` (9)
+### `docs/archive/` (10)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
 | [`archive/beehiiv-playbook.md`](./archive/beehiiv-playbook.md) | Playbook: Beehiiv (Etapa 5 — newsletter daily) | ARQUIVO HISTÓRICO — nenhuma etapa roda este playbook desde o #11225 (27/10/2026). O envio da diária é só Kit (`scripts/publish-newsletter-kit.ts`… |
+| [`archive/d3-radar-4846.md`](./archive/d3-radar-4846.md) | Experimento D3 vs slot 1 do Radar (#4846) | Status: arquivado — experimento ENCERRADO sem nunca ter sido ligado (decisão do editor, 25/11/2026, #14052). Nenhuma edição foi randomizada. O script… |
 | [`archive/eai-poll-api-test.md`](./archive/eai-poll-api-test.md) | Teste — Beehiiv Trivia Poll API exposure (#107) | Status: arquivado — issue #107 fechada via #201/PR #200, mas não pela via testada aqui. A solução real foi `scripts/fetch-beehiiv-poll-stats.ts` +… |
 | [`archive/llm-ts-migration-analysis.md`](./archive/llm-ts-migration-analysis.md) | Análise: Migração de Agentes LLM → Scripts TypeScript | Status: superado por `docs/agent-migration-triage.md` (a partir de 2026-05-11, esse é o source-of-truth da triagem agente-a-agente). Mantido como registro do… |
 | [`archive/review-test-email-beehiiv.md`](./archive/review-test-email-beehiiv.md) | review-test-email: Processo Beehiiv (arquivado, #14041) | Arquivado do prompt do agent `.claude/agents/review-test-email.md` em 26/11/2026 (#14041). A Beehiiv é só arquivo histórico desde o #11225 e não envia a… |
@@ -208,12 +209,11 @@
 | [`archive/spike-275-beehiiv-automation.md`](./archive/spike-275-beehiiv-automation.md) | Spike #275 — Beehiiv automation: investigação Phase 1 | Status: arquivado — issue #275 fechada. Os selectors/achados desta Phase 1 alimentaram a Phase 2 (implementação de `publish-newsletter`), que por sua vez foi… |
 | [`archive/tier2-orchestrator-scoping.md`](./archive/tier2-orchestrator-scoping.md) | Scoping Tier 2 — orquestradores determinísticos (#5192) | Continuação de #5191 (Tier 1). Trabalho de scoping puro — nenhum código implementado nesta unidade (2 das 4 candidatas já foram implementadas por outras… |
 
-### `docs/experiments/` (2)
+### `docs/experiments/` (1)
 
 | Doc | Título | Primeira linha |
 |---|---|---|
 | [`experiments/cta-ab-mensal-2606-07.md`](./experiments/cta-ab-mensal-2606-07.md) | Experimento CTA-01 — copy do CTA do topo (digest mensal Clarice, ciclo 2606-07) | Status: ENCERRADO em 26/07/2026 sem vencedor; decisão final em 27/07/2026 — braço A permanece, não haverá novo round. O braço B teve entrega degradada… |
-| [`experiments/d3-radar-4846.md`](./experiments/d3-radar-4846.md) | Experimento D3 vs slot 1 do Radar (#4846) | Status: PRÉ-REGISTRADO, mecanismo implementado e DESLIGADO. `platform.config.json` → `experiment_d3_radar.enabled` está em `false` — nenhuma edição foi… |
 
 ### `docs/measurements/` (2)
 

@@ -1503,7 +1503,6 @@ describe("runStage1 --phase post-gate", () => {
       "render-categorized-md.ts": () => ok("{}"),
       "validate-lancamentos.ts": () => ok("{}"),
       "check-invariants.ts": () => ok(JSON.stringify({ passed: true })),
-      "experiment-d3-radar.ts": () => fail(2, "disabled"),
       "pipeline-sentinel.ts": (args) => (args[0] === "write" ? ok("sentinel escrito") : ok("{}")),
       "update-stage-status.ts": () => ok("{}"),
       "capture-stage-usage.ts": () => ok(JSON.stringify({ source: "transcript" })),

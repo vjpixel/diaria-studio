@@ -129,8 +129,7 @@
  *   --phase post-gate [--md <path> | --auto]
  *     §1y — aplica as edições do gate (ou `--auto`), re-renderiza MD,
  *     re-valida lançamentos, invariantes pós-apply (warn, não bloqueia),
- *     experimento D3-radar (opt-in via config), deriva os pedidos editoriais
- *     do gate (`derive-editor-requests.ts derive-stage1`, #14030), escreve sentinel, arquiva
+ *     deriva os pedidos editoriais do gate (`derive-editor-requests.ts derive-stage1`, #14030), escreve sentinel, arquiva
  *     inbox, fecha stage-status + captura de custo.
  *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
@@ -1737,12 +1736,6 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
     if (v.rule === "lancamento-has-product-signal") {
       report.note(`ℹ️  ${v.message ?? "lançamento sem sinal de produto"} (#11748)`);
     }
-  }
-
-  // --- experimento D3-radar (opt-in, off por padrão) ---
-  const experiment = deps.exec("scripts/experiment-d3-radar.ts", ["--edition", opts.edition, "--approved", approvedPath]);
-  if (experiment.code === 1) {
-    report.note("⚠️  experiment-d3-radar falhou — seguindo sem randomizar (experimento opcional, nunca bloqueia).");
   }
 
   // --- pedidos editoriais derivados do gate 1 (#7964, #14030) ---
