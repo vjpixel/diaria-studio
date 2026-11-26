@@ -28,6 +28,7 @@ import {
   CLARICE_NORMAL_DEADLINE_MS,
 } from "../scripts/lib/clarice-stage2-deadline.ts";
 import { CLARICE_TOTAL_DEADLINE_MS } from "../scripts/clarice-correct.ts";
+import { validateDomains } from "../scripts/validate-domains.ts";
 
 type Handler = (args: string[]) => StepResult;
 interface Call {
@@ -732,6 +733,56 @@ describe("--phase post-checks", () => {
     assert.ok(r.gateNotes.some((n) => /clarice-pending\.ts resume/.test(n)), "linha de resume no gate");
     assert.ok(r.gateNotes.some((n) => /90 s/.test(n)), "modo degradado no gate");
     assert.equal(readRunState(dir)?.postChecksDone, true);
+  });
+
+  describe("paywall/agregador no 02-reviewed.md (#14244)", () => {
+    // Handler que roda o validateDomains real sobre o arquivo recebido, com os
+    // mesmos exit codes da CLI (0 limpo, 1 violação, 2 sem arquivo).
+    const realValidateDomains: Handler = (args) => {
+      const p = args[0];
+      if (!p || !existsSync(p)) return fail(2, "", "Arquivo não existe");
+      const rep = validateDomains(readFileSync(p, "utf8"));
+      const urls = [...rep.paywall_violations, ...rep.aggregator_violations].map((v) => `linha ${v.line}: ${v.url}`).join("\n");
+      return rep.ok ? ok(JSON.stringify(rep)) : fail(1, JSON.stringify(rep), urls);
+    };
+    async function postChecks(reviewed: string) {
+      await preDispatch();
+      markClariceDone();
+      write("02-reviewed.md", reviewed);
+      const { deps, calls } = makeDeps({ ...happyChecks, "validate-domains.ts": realValidateDomains });
+      const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
+      return { r, calls };
+    }
+
+    it("URL de agregador e de paywall → aviso no gate com as duas URLs; passo roda sobre o 02-reviewed.md", async () => {
+      const { r, calls } = await postChecks(
+        "RADAR\n\n[Item](https://flipboard.com/@x/ai-123)\n\n[Outro](https://www.bloomberg.com/news/articles/2026-11-25/x)\n",
+      );
+      const call = calls.find((c) => c.script.endsWith("validate-domains.ts"));
+      assert.ok(call, "validate-domains roda no post-checks");
+      assert.ok(call!.args[0].endsWith("02-reviewed.md"));
+      const note = r.gateNotes.find((n) => /paywall\/agregador/.test(n));
+      assert.ok(note, "o gate recebe o aviso");
+      assert.match(note!, /flipboard\.com/);
+      assert.match(note!, /bloomberg\.com/);
+      assert.equal(r.code, 0, "aviso, não bloqueio: o editor decide no gate");
+      assert.ok(calls.some((c) => c.script.endsWith("log-event.ts") && c.args.includes("warn") && c.args.some((a) => a.startsWith("validate-domains"))), "vai ao run-log");
+    });
+
+    it("draft limpo → nenhum aviso de domínio", async () => {
+      const { r } = await postChecks("RADAR\n\n[Item](https://techcrunch.com/2026/11/25/x)\n");
+      assert.equal(r.code, 0);
+      assert.ok(!r.gateNotes.some((n) => /paywall\/agregador|validate-domains/.test(n)));
+    });
+
+    it("validate-domains sem ler o arquivo (exit 2) → aviso de que não conferiu", async () => {
+      await preDispatch();
+      markClariceDone();
+      write("02-reviewed.md", "x\n");
+      const { deps } = makeDeps({ ...happyChecks, "validate-domains.ts": () => fail(2) });
+      const r = await runStage2(["--phase", "post-checks", "--edition", E], deps);
+      assert.ok(r.gateNotes.some((n) => /validate-domains não rodou \(exit 2\)/.test(n)));
+    });
   });
 
   it("plantio só com --no-gates", async () => {

@@ -227,10 +227,12 @@ describe("#11238 cliente: motivo do conflito", () => {
 
   it("doFireConflict: send_unknown vence fired e inFlight", () => {
     assert.equal(doFireConflict(null), null);
-    assert.equal(doFireConflict({ fired: false, inFlight: false, sendUnknown: null }), null);
-    assert.equal(doFireConflict({ fired: false, inFlight: true, sendUnknown: null }), "fire_in_progress");
-    assert.equal(doFireConflict({ fired: true, inFlight: true, sendUnknown: null }), "already_fired");
-    assert.equal(doFireConflict({ fired: true, inFlight: false, sendUnknown: "send_unknown: x" }), "send_unknown");
+    assert.equal(doFireConflict({ fired: false, inFlight: false, sendUnknown: null, dlqReason: null }), null);
+    assert.equal(doFireConflict({ fired: false, inFlight: true, sendUnknown: null, dlqReason: null }), "fire_in_progress");
+    assert.equal(doFireConflict({ fired: true, inFlight: true, sendUnknown: null, dlqReason: null }), "already_fired");
+    assert.equal(doFireConflict({ fired: true, inFlight: false, sendUnknown: "send_unknown: x", dlqReason: null }), "send_unknown");
+    // #14241 — `dlq` não é conflito: o enqueue limpa o DO e re-arma.
+    assert.equal(doFireConflict({ fired: false, inFlight: false, sendUnknown: null, dlqReason: "x" }), null);
   });
 });
 
