@@ -62,7 +62,9 @@ export function gitCommonDir(dir, execFn = execFileSync) {
  */
 export function studioLogRoot(hookDir, execFn = execFileSync) {
   const common = gitCommonDir(hookDir, execFn);
-  if (common) return dirname(common);
+  // `gitCommonDir` normaliza para `/` (comparação); a raiz volta ao formato
+  // nativo, igual ao fallback `join` abaixo (#13738: no Windows saía `C:/…`).
+  if (common) return resolve(dirname(common));
   return join(hookDir, "..", "..");
 }
 

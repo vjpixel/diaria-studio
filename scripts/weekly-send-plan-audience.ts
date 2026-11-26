@@ -47,6 +47,7 @@
  * pra validar o crédito do plano — sem a chave, a validação de crédito é pulada
  * com warning (não bloqueia o dry-run; bloqueia o --write, fail-safe).
  */
+import { allRows } from "./lib/sqlite-rows.ts";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
@@ -217,13 +218,12 @@ async function run(
   const db = openClariceDb(opts.dbPath);
   let rows: AudienceRow[];
   try {
-    rows = db
+    rows = allRows<AudienceRow>(db
       .prepare(
         `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
                 opens_count, last_sent_at, mv_bucket, brevo_list_ids
            FROM clarice_users`,
-      )
-      .all() as unknown as AudienceRow[];
+      ));
   } finally {
     // fecha o handle mesmo se o .prepare/.all lançar — no Windows, um handle
     // SQLite aberto segura o lock do arquivo e trava um sync concorrente.

@@ -383,7 +383,7 @@ import { readShareCue, shareTimeInPlan, SHARE_FILE } from "./lib/diaria/video-sh
 
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -498,6 +498,10 @@ import {
   parseSilenceDetect,
   pickRawSource,
   premiereRootFrom,
+  premiereBrutoRootFrom,
+  localBrutoXml,
+  localXmlFileName,
+  duplicateBrutoNames,
   unmappedPremierePaths,
   previewClipArgs,
   previewClipAudioArgs,
@@ -785,6 +789,12 @@ interface Ctx {
   driveRoot?: string;
   /** #12707: a raiz do Neo trocada pela do Mac em todo `pathurl` (`--premiere-root`/`publishing.video.premiere_root`); ausente = caminho do Neo. */
   premierePaths?: PremierePathMap;
+  /**
+   * #13229: `{publishing.video.premiere_bruto_root}/{AAMMDD}`, a cópia local do
+   * bruto no Mac (fora do Drive). Presente = o build e o `srt` gravam ao lado de
+   * cada XML o `…-local.xml`, com só os vídeos do bruto apontando para ela.
+   */
+  premiereBrutoDir?: string;
   /**
    * #13334: sessão OAuth do modo local com raiz explícita fora do Drive for desktop
    * (`localDriveUploadFor`): sobe as saídas de build/srt/preview e busca a vinheta
@@ -1552,6 +1562,43 @@ export function queueUploadIfMissing(regPath: string, path: string, key = basena
   if (reg.files[key] || reg.pending.includes(path)) return false;
   writeJson(regPath, { ...reg, pending: [...reg.pending, path] });
   return true;
+}
+
+/**
+ * #13229: marca `name` (raiz da edição) para sair do Drive no próximo upload
+ * (`retire` do `drive-uploads.json`). Só quando há o que tirar: o nome subiu
+ * antes (`files`) ou `force` (a cópia existia no out dir). Devolve se marcou.
+ */
+export function queueRetire(regPath: string, name: string, force = false): boolean {
+  if (!isRetirableName(name)) return false;
+  const reg = readRegistry(regPath);
+  if (!force && !reg.files[name]) return false;
+  if (reg.retire?.includes(name)) return true;
+  writeJson(regPath, { ...reg, retire: [...(reg.retire ?? []), name] });
+  return true;
+}
+
+/**
+ * #13229: o único tipo de nome que o `retire` tira do Drive: um `…-local.xml`
+ * solto na raiz (sem `/` nem `\`). Um `drive-uploads.json` editado à mão ou
+ * corrompido nunca arquiva o XML normal, o bruto ou uma subpasta.
+ */
+export function isRetirableName(name: unknown): name is string {
+  return typeof name === "string" && /-local\.xml$/i.test(name) && !/[\\/]/.test(name) && name !== "-local.xml";
+}
+
+/** #13229: o `name` voltou a ser gravado: desmarca, para o upload não tirar o arquivo novo do Drive. */
+export function clearRetire(regPath: string, name: string): void {
+  if (!existsSync(regPath)) return;
+  const reg = readRegistry(regPath);
+  if (!reg.retire?.includes(name)) return;
+  writeJson(regPath, { ...reg, retire: reg.retire.filter((n) => n !== name) });
+}
+
+/** #13229: como o upload tira um nome da raiz da edição: os ids com o nome e o move para `arquivo/` (seam dos testes). */
+export interface RetireOps {
+  list(folderId: string, name: string): Promise<string[]>;
+  archive(folderId: string, name: string, ids: readonly string[]): Promise<number>;
 }
 
 /**
@@ -5911,6 +5958,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
+  const localXmlPaths: string[] = [];
   const xmlIds: Record<string, string> = {};
   const prevXmlIds: Record<string, string> = {};
   for (const p of picked) {
@@ -5929,6 +5977,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     }
     writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers, telaOverlays, trechoMarkers, trechoClips, trechos }));
     xmlPaths.push(xmlPath);
+    const localXml = writeLocalBrutoXml(ctx, xmlPath);
+    if (localXml) localXmlPaths.push(localXml);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
   // #11969: com --seq, só as sequências reconstruídas (e conferidas acima) mudam no plan.json.
@@ -5956,7 +6006,63 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (flip.length) console.error(`[premissa] espelhados: ${flip.map((x) => x.id).join(", ")}: aplicar Horizontal Flip nos clipes DESSES arquivos no Premiere (o Premiere ignora o Flop do XML, #11358, #12559)`);
   } else if (source.mirrored) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o Premiere ignora o Flop do XML, #11358)");
   for (const x of xmlPaths) console.log(x);
+  for (const x of localXmlPaths) console.log(x);
   return 0;
+}
+
+/**
+ * #13229: grava `{xml}-local.xml` ao lado do XML (o do build ou o do `srt`, já
+ * com a legenda), com só os vídeos do bruto em `ctx.premiereBrutoDir`. Devolve
+ * o caminho gravado, ou `null` quando não grava: sem a chave no config, sem o
+ * premiere_root, XML leve sem bruto, nome de bruto repetido, ou falha de
+ * leitura/escrita (aviso: o XML normal já está gravado). Em TODO caminho que
+ * não grava, o `-local.xml` irmão de um build anterior é apagado (com aviso),
+ * para o editor nunca importar um XML local velho, de outro plano.
+ */
+export function writeLocalBrutoXml(ctx: Pick<Ctx, "premiereBrutoDir" | "premierePaths" | "edition"> & Partial<Pick<Ctx, "stateDir">>, xmlPath: string): string | null {
+  const name = basename(xmlPath);
+  const out = join(dirname(xmlPath), localXmlFileName(name));
+  const regPath = ctx.stateDir ? join(ctx.stateDir, DRIVE_UPLOADS_FILE) : null;
+  const dropStale = (why: string): null => {
+    // #13229: no modo API o out dir é o cache e o upload nunca apaga: a cópia no Drive sai pelo `retire` do próximo upload.
+    const existed = existsSync(out);
+    if (regPath && queueRetire(regPath, basename(out), existed)) console.error(`[aviso] ${basename(out)}: sai também da pasta da edição no Drive (para arquivo/) no upload deste comando, quando há upload (#13229)`);
+    if (!existed) return null;
+    try {
+      unlinkSync(out);
+      console.error(`[aviso] ${basename(out)} anterior apagado (${why}): ele era de outro build e apontaria um plano velho (#13229)`);
+    } catch (e) {
+      console.error(`[aviso] ${basename(out)} anterior NÃO apagado (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}): está defasado, não importar no Premiere (#13229)`);
+    }
+    return null;
+  };
+  if (!ctx.premiereBrutoDir) return dropStale("sem publishing.video.premiere_bruto_root no config");
+  if (!ctx.premierePaths) {
+    console.error(`[aviso] ${name}: publishing.video.premiere_bruto_root sem premiere_root (ou --premiere-root off): XML local não gravado, ele é só para o Premiere do Mac (#13229)`);
+    return dropStale("sem premiere_root");
+  }
+  try {
+    const local = localBrutoXml(readFileSync(xmlPath, "utf8"), ctx.premiereBrutoDir);
+    if (!local.rewritten.length) {
+      console.error(`[premissa] ${name}: nenhum vídeo do bruto no XML (XML leve, #13219): XML local não gravado, o normal já serve (#13229)`);
+      return dropStale("XML leve, sem bruto");
+    }
+    const dup = duplicateBrutoNames(local.rewritten);
+    if (dup.length) {
+      console.error(`[aviso] ${name}: bruto com nome repetido (${dup.join(", ")}) iria para o mesmo arquivo em ${ctx.premiereBrutoDir}: XML local não gravado; usar o XML normal (#13229)`);
+      return dropStale("nome de bruto repetido");
+    }
+    writeFileAtomic(out, local.xml);
+    if (regPath) clearRetire(regPath, basename(out));
+    console.error(
+      `[video-montagem] XML local ${basename(out)}: ${local.rewritten.length} vídeo(s) do bruto em ${ctx.premiereBrutoDir}/ (${local.rewritten.join(", ")}); ` +
+        `áudio tratado, PNGs, card e vinheta seguem no premiere_root. No Mac, rodar antes scripts/video/prepara-bruto-mac.ts ${ctx.edition} (#13229)`,
+    );
+    return out;
+  } catch (e) {
+    console.error(`[aviso] ${name}: XML local falhou (${(e as Error).message.split("\n")[0]}): use o XML normal (#13229)`);
+    return dropStale("falha ao gravar o novo");
+  }
 }
 
 function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boolean): Word[] {
@@ -6610,7 +6716,12 @@ async function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): P
     // #13212: o horizontal não passa por aqui (srtPlans), então a cópia da pasta da edição só sai do --from-final.
     // #13332: a mesma legenda dentro do XML da vertical, para o Premiere abrir já legendado.
     const xml = await writeSubtitleXml(ctx, pf, plan, cueTimings(cues));
-    if (xml) console.log(xml);
+    if (xml) {
+      console.log(xml);
+      // #13229: o XML local acompanha a legenda (sem isso ficaria com o XML do build, sem a faixa).
+      const local = writeLocalBrutoXml(ctx, xml);
+      if (local) console.log(local);
+    }
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
@@ -7524,13 +7635,26 @@ export interface DriveUploadRegistry {
   files: Record<string, { id: string; link: string | null; at: string; from: string }>;
   pending: string[];
   previewNamesNoticeShown?: boolean;
+  /**
+   * #13229: nomes da RAIZ da edição no Drive que o próximo upload tira de lá
+   * (vão para `arquivo/`), porque a cópia do out dir foi apagada e o arquivo
+   * não deve mais existir (o `-local.xml` de um build anterior). O upload só
+   * sobe, nunca apaga: sem isto o XML local velho ficaria no Drive, e o
+   * script do Mac o usaria.
+   */
+  retire?: string[];
 }
 
 function readRegistry(path: string): DriveUploadRegistry {
   if (!existsSync(path)) return { files: {}, pending: [] };
   try {
     const r = JSON.parse(readFileSync(path, "utf8")) as Partial<DriveUploadRegistry>;
-    return { files: r.files ?? {}, pending: Array.isArray(r.pending) ? r.pending : [], previewNamesNoticeShown: r.previewNamesNoticeShown === true };
+    return {
+      files: r.files ?? {},
+      pending: Array.isArray(r.pending) ? r.pending : [],
+      previewNamesNoticeShown: r.previewNamesNoticeShown === true,
+      ...(Array.isArray(r.retire) && r.retire.length ? { retire: r.retire.filter(isRetirableName) } : {}),
+    };
   } catch (e) {
     log(`[aviso] ${path} ilegível (${(e as Error).message}): recomeçando o registro de uploads`);
     return { files: {}, pending: [] };
@@ -7547,8 +7671,8 @@ export async function uploadAll(
   ctx: Pick<Ctx, "stateDir" | "edition"> & Partial<Pick<Ctx, "outDir">>,
   d: DriveSession,
   paths: string[],
-  opts: { archiveOverwritten?: boolean; now?: () => Date } = {},
-): Promise<{ uploaded: string[]; pending: string[]; error: string | null; fresh: ArchiveEntry[] }> {
+  opts: { archiveOverwritten?: boolean; now?: () => Date; retireOps?: RetireOps } = {},
+): Promise<{ uploaded: string[]; pending: string[]; error: string | null; fresh: ArchiveEntry[]; retired?: string[] }> {
   const regPath = f(ctx, DRIVE_UPLOADS_FILE);
   // #13334: um arquivo numa subpasta do out dir (`trechos/`) sobe para a subpasta de mesmo nome da edição.
   const subfolders = new Map<string, Promise<DriveEntry>>();
@@ -7564,7 +7688,7 @@ export async function uploadAll(
   const uploaded: string[] = [];
   // #13610: o que subiu para a RAIZ da edição, para o arquivamento não depender da busca do Drive (que atrasa).
   const fresh: ArchiveEntry[] = [];
-  if (queue.length === 0) return { uploaded, pending: [], error: null, fresh };
+  if (queue.length === 0 && !reg.retire?.length) return { uploaded, pending: [], error: null, fresh };
   const save = (pending: string[]) => writeJson(regPath, { ...reg, pending });
   try {
     const folder = await d.folder();
@@ -7599,12 +7723,48 @@ export async function uploadAll(
       save(queue.slice(i + 1));
       log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${target.prefix}${r.name}: ${r.webViewLink ?? r.id}`);
     }
-    return { uploaded, pending: [], error: null, fresh };
+    const retired = await retireNames(reg, folder.id, new Set(uploaded.map((p) => basename(p))), opts.retireOps ?? {
+      list: (folderId, name) => rootIdsNamed(d.deps, folderId, name),
+      archive: (folderId, name, ids) => archiveDriveIds(d.deps, folderId, name, ids, { now: (opts.now ?? (() => new Date()))(), log, warn: (m) => log(`[aviso] ${m} (#13229)`), archiveFolders: d.archiveFolders }),
+    });
+    if (retired.changed) save([]);
+    return { uploaded, pending: [], error: null, fresh, retired: retired.names };
   } catch (e) {
     const pending = queue.slice(uploaded.length);
     save(pending);
     return { uploaded, pending, error: (e as Error).message, fresh };
   }
+}
+
+/**
+ * #13229: tira da raiz da edição no Drive cada nome do `retire` (para
+ * `arquivo/`). Nome que subiu neste mesmo upload fica (é o arquivo novo) e sai
+ * da lista. Falha num nome é aviso e ele fica para o próximo upload; nunca
+ * muda o exit do comando (o XML normal já subiu).
+ */
+async function retireNames(reg: DriveUploadRegistry, folderId: string, uploadedNames: ReadonlySet<string>, ops: RetireOps): Promise<{ names: string[]; changed: boolean }> {
+  if (!reg.retire?.length) return { names: [], changed: false };
+  const names: string[] = [];
+  const keep: string[] = [];
+  for (const name of reg.retire) {
+    if (uploadedNames.has(name)) continue;
+    if (!isRetirableName(name)) {
+      log(`[aviso] ${JSON.stringify(name)} no retire do drive-uploads.json não é um -local.xml da raiz: ignorado, nada sai do Drive (#13229)`);
+      continue;
+    }
+    try {
+      const ids = await ops.list(folderId, name);
+      if (ids.length) await ops.archive(folderId, name, ids);
+      delete reg.files[name];
+      names.push(name);
+      log(`[drive] ${name} ${ids.length ? `tirado da pasta da edição (${ids.length} arquivo(s) para arquivo/)` : "já não estava na pasta da edição"} (#13229)`);
+    } catch (e) {
+      keep.push(name);
+      log(`[aviso] ${name} não saiu da pasta da edição no Drive (${(e as Error).message}): fica marcado e sai no próximo upload; não importar esse XML local, está defasado (#13229)`);
+    }
+  }
+  reg.retire = keep;
+  return { names, changed: true };
 }
 
 /** Os comandos que gravam uma versão nova na pasta da edição (#13610): depois deles, a anterior vai para `arquivo/`. */
@@ -7725,8 +7885,11 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   const driveRoot = explicitRoot ?? DEFAULT_DRIVE_ROOT;
   // #12707: a raiz do Premiere (Mac) no lugar da do Neo em todo pathurl do XML.
   let premiere: ReturnType<typeof premiereRootFrom>;
+  let premiereBrutoRoot: string | null;
   try {
-    premiere = premiereRootFrom(values["premiere-root"], readPlatformConfigSafe());
+    const platformConfig = readPlatformConfigSafe();
+    premiere = premiereRootFrom(values["premiere-root"], platformConfig);
+    premiereBrutoRoot = premiereBrutoRootFrom(platformConfig);
   } catch (e) {
     console.error(`video-montagem: ${(e as Error).message}`);
     return 2;
@@ -7771,6 +7934,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     noArchive: flags.has("no-archive"),
     // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
     ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
+    // #13229: o XML local só faz sentido no XML do Mac (com o premiere_root); sem ele, writeLocalBrutoXml avisa.
+    ...(premiereBrutoRoot ? { premiereBrutoDir: `${premiereBrutoRoot}/${edition}` } : {}),
     ...(seams.brutoStat ? { brutoStat: seams.brutoStat } : {}),
   };
   // #13404: só com o pedido do editor; sem a flag, a mensagem de "ausente" aponta a cópia e o comando.

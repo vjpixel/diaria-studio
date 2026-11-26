@@ -1,0 +1,5 @@
+# Migração dos nomes das prévias (#13208)
+
+Referência de `/diaria-video-montagem`, lida sob demanda (#14040). Gatilho: prévia com nome antigo no Drive (`previa youtube.mp4`, `previa outras-redes.mp4`, `previa instagram.mp4`) ou o aviso do modo API sobre ela. Citado no Passo 5 do SKILL.md.
+
+**Migração dos nomes (#13208):** `preview` e `review` usam os novos nomes; `review-final --file` reconhece as prévias horizontal/vertical. Destinos de `--seq` e arquivos internos (`review-youtube.json`, `review-outras-redes.json`) não mudam. Cortes mantêm `previa {slug}`, para preservar seus nomes existentes. Premissa segura para a edição em curso: arquivos antigos no Drive podem conter revisão do editor, então não são apagados nem renomeados automaticamente. Após o primeiro upload de uma prévia com nome novo, o modo API avisa uma vez por edição (registro em `drive-uploads.json`) que os antigos `previa youtube.mp4`, `previa outras-redes.mp4` ou `previa instagram.mp4` podem continuar na pasta; usar o novo nome e remover o antigo manualmente só após conferir. Não é necessário alterar dados locais de edições.

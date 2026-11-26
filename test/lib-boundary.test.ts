@@ -24,12 +24,27 @@
  * A regra 4 é a exceção declarada: ela vale pra raiz também, porque "lib não
  * importa de studio-ui" independe de classificação de domínio.
  *
+ * Regras 5-7 têm dívida medida no dia em que entraram, então valem contra uma
+ * baseline CONGELADA (`test/fixtures/lib-boundary-baseline.json`) que só
+ * encolhe: par novo reprova, e par da baseline que deixou de existir também
+ * reprova até sair do arquivo (a lista acompanha o estado real).
+ *
+ *   5. `scripts/lib/**` NÃO importa CLI de topo `scripts/*.ts` (#14001).
+ *      Lógica que lib precisa de um CLI mora em lib; o CLI vira casca fina.
+ *   6. Fecho TRANSITIVO (#13998): os pares proibidos das regras 1-3 (mais
+ *      metrics/ e anual/) valem também passando pela raiz de lib, por CLIs de
+ *      topo ou por qualquer outro `.ts` do repo — `mensal/x.ts` que importa
+ *      `raiz.ts` que importa `diaria/y.ts` é o mesmo cruzamento da regra 3.
+ *   7. `scripts/**` NÃO importa `workers/{nome}/src/**` (#13994). A mão única
+ *      é Worker → `scripts/lib/shared/`. `test/` fica fora: os testes dos
+ *      Workers moram lá e importam o `src` legitimamente.
+ *
  * Scan estático de specifiers de import — sem executar os módulos.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join, resolve, dirname, sep } from "node:path";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { join, resolve, dirname, sep, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -157,5 +172,221 @@ describe("fronteira scripts/lib → scripts/studio-ui (#5899)", () => {
   it("sanity: o scan enxerga os dois lados da fronteira", () => {
     assert.ok(tsFilesUnder(STUDIO_UI).length >= 5, "studio-ui/ tem os módulos do servidor");
     assert.ok(tsFilesUnder(LIB).length >= 10, "lib/ tem arquivos pra varrer");
+  });
+});
+
+// ─── Regras 5-7: dívida medida, baseline congelada que só encolhe ──────────
+
+const SCRIPTS = join(ROOT, "scripts");
+const WORKERS = join(ROOT, "workers");
+const BASELINE_PATH = join(ROOT, "test", "fixtures", "lib-boundary-baseline.json");
+const BASELINE_REL = "test/fixtures/lib-boundary-baseline.json";
+
+type Baseline = {
+  libImportsTopLevelCli: string[];
+  crossDomainTransitive: string[];
+  scriptsImportWorkersSrc: string[];
+};
+
+function loadBaseline(): Baseline {
+  return JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as Baseline;
+}
+
+/** Path relativo à raiz do repo, sempre com `/` (a baseline é a mesma no Windows). */
+function repoRel(abs: string): string {
+  return relative(ROOT, abs).split(sep).join("/");
+}
+
+/** Resolve um specifier relativo para o `.ts` que existe no disco (`.js` →
+ * `.ts`, sem extensão → `.ts` ou `/index.ts`), ou null. */
+function resolveExistingTs(fromFile: string, spec: string): string | null {
+  if (!spec.startsWith(".")) return null;
+  const base = resolve(dirname(fromFile), spec);
+  const candidates = [base, base.replace(/\.m?js$/, ".ts"), `${base}.ts`, join(base, "index.ts")];
+  for (const c of candidates) {
+    if (c.endsWith(".ts") && existsSync(c) && statSync(c).isFile()) return c;
+  }
+  return null;
+}
+
+/**
+ * Compara o estado atual com a baseline congelada. `added` = par que não está
+ * na baseline (violação nova); `stale` = par da baseline que não existe mais
+ * (precisa sair do arquivo, para a baseline só encolher).
+ */
+function diffAgainstBaseline(current: string[], baseline: string[]): { added: string[]; stale: string[] } {
+  const cur = new Set(current);
+  const base = new Set(baseline);
+  return {
+    added: [...cur].filter((p) => !base.has(p)).sort(),
+    stale: [...base].filter((p) => !cur.has(p)).sort(),
+  };
+}
+
+function staleMessage(key: keyof Baseline, stale: string[]): string {
+  return (
+    `Pares da baseline que não existem mais. Remova-os de ${BASELINE_REL}, chave "${key}" ` +
+    `(a baseline só encolhe; isso é progresso, não regressão):\n  ${stale.join("\n  ")}`
+  );
+}
+
+/** Regra 5: pares `lib/arquivo.ts -> scripts/cli.ts` (CLI direto em `scripts/`). */
+function libToTopLevelCliPairs(): string[] {
+  const found = new Set<string>();
+  for (const file of tsFilesUnder(LIB)) {
+    for (const spec of importSpecifiers(file)) {
+      if (!spec.startsWith(".")) continue;
+      const target = resolve(dirname(file), spec).replace(/\.m?js$/, ".ts");
+      if (dirname(target) === SCRIPTS) found.add(`${repoRel(file)} -> ${repoRel(target)}`);
+    }
+  }
+  return [...found].sort();
+}
+
+/** Regra 7: pares `scripts/**.ts -> workers/{nome}/src/**`. */
+function scriptsToWorkersSrcPairs(): string[] {
+  const found = new Set<string>();
+  for (const file of tsFilesUnder(SCRIPTS)) {
+    for (const spec of importSpecifiers(file)) {
+      if (!spec.startsWith(".")) continue;
+      const target = resolve(dirname(file), spec);
+      const parts = relative(WORKERS, target).split(sep);
+      if (parts[0] !== ".." && parts.length >= 3 && parts[1] === "src") {
+        found.add(`${repoRel(file)} -> ${repoRel(target)}`);
+      }
+    }
+  }
+  return [...found].sort();
+}
+
+/** Pares proibidos das regras 1-3 (+ metrics/anual), reusados no fecho transitivo. */
+const FORBIDDEN: Record<Domain, Domain[]> = {
+  shared: ["diaria", "mensal", "anual"],
+  diaria: ["mensal"],
+  mensal: ["diaria"],
+  metrics: ["diaria", "mensal"],
+  anual: ["diaria", "mensal"],
+};
+
+/**
+ * Regra 6: para cada arquivo de um domínio, BFS pelos imports relativos de
+ * qualquer `.ts` do repo; o 1º arquivo de domínio proibido alcançado em cada
+ * ramo vira o par `origem ~> alvo` (a busca não atravessa o domínio proibido:
+ * o par marca a porta de entrada). `chains` guarda um caminho de exemplo por
+ * par, para a mensagem de erro dizer onde cortar.
+ */
+function crossDomainTransitive(): { pairs: string[]; chains: Map<string, string[]> } {
+  const specCache = new Map<string, string[]>();
+  const specsOf = (f: string): string[] => {
+    let s = specCache.get(f);
+    if (!s) {
+      s = importSpecifiers(f);
+      specCache.set(f, s);
+    }
+    return s;
+  };
+  const pairs = new Set<string>();
+  const chains = new Map<string, string[]>();
+  for (const fromDomain of DOMAINS) {
+    const forbidden = FORBIDDEN[fromDomain];
+    for (const src of tsFilesUnder(join(LIB, fromDomain))) {
+      const parent = new Map<string, string | null>([[src, null]]);
+      const queue = [src];
+      while (queue.length) {
+        const cur = queue.shift()!;
+        for (const spec of specsOf(cur)) {
+          const target = resolveExistingTs(cur, spec);
+          if (!target || parent.has(target)) continue;
+          parent.set(target, cur);
+          const d = domainOf(target);
+          if (d && forbidden.includes(d)) {
+            const key = `${repoRel(src)} ~> ${repoRel(target)}`;
+            pairs.add(key);
+            const chain: string[] = [];
+            for (let p: string | null = target; p; p = parent.get(p) ?? null) chain.unshift(repoRel(p));
+            chains.set(key, chain);
+            continue;
+          }
+          queue.push(target);
+        }
+      }
+    }
+  }
+  return { pairs: [...pairs].sort(), chains };
+}
+
+describe("fronteiras com baseline congelada (regras 5-7)", () => {
+  const baseline = loadBaseline();
+
+  it("diffAgainstBaseline: par novo é violação, par sumido é stale (lógica do ratchet)", () => {
+    const r = diffAgainstBaseline(["a -> x", "b -> y"], ["b -> y", "c -> z"]);
+    assert.deepEqual(r.added, ["a -> x"]);
+    assert.deepEqual(r.stale, ["c -> z"]);
+    assert.deepEqual(diffAgainstBaseline(["a"], ["a"]), { added: [], stale: [] });
+  });
+
+  it("baseline tem as 3 chaves, ordenadas e sem duplicata (diff legível em PR)", () => {
+    for (const key of ["libImportsTopLevelCli", "crossDomainTransitive", "scriptsImportWorkersSrc"] as const) {
+      const list = baseline[key];
+      assert.ok(Array.isArray(list), `${BASELINE_REL} sem a chave "${key}"`);
+      assert.deepEqual(list, [...new Set(list)].sort(), `"${key}" deve vir ordenada e sem duplicata`);
+    }
+  });
+
+  it("regra 5: scripts/lib/** não importa CLI de topo scripts/*.ts fora da baseline (#14001)", () => {
+    const current = libToTopLevelCliPairs();
+    const { added, stale } = diffAgainstBaseline(current, baseline.libImportsTopLevelCli);
+    assert.deepEqual(
+      added,
+      [],
+      `scripts/lib/** importando CLI de topo (#14001). Mova a função que você precisa para um módulo em ` +
+        `scripts/lib/ (o CLI passa a importar/reexportar de lá e fica só com parse de argumentos e main) ` +
+        `e importe o módulo de lib. Não acrescente o par à baseline. Pares novos:\n  ${added.join("\n  ")}`,
+    );
+    assert.deepEqual(stale, [], staleMessage("libImportsTopLevelCli", stale));
+  });
+
+  it("regra 6: domínio de lib não alcança domínio proibido por caminho transitivo fora da baseline (#13998)", () => {
+    const { pairs, chains } = crossDomainTransitive();
+    const { added, stale } = diffAgainstBaseline(pairs, baseline.crossDomainTransitive);
+    const explained = added.map((p) => `${p}\n      via ${(chains.get(p) ?? []).join(" -> ")}`);
+    assert.deepEqual(
+      added,
+      [],
+      `Cruzamento de domínio por caminho transitivo (#13998; mesmos pares proibidos das regras 1-3). ` +
+        `Corte a cadeia no elo que puxa o domínio proibido: mova o que a origem precisa para ` +
+        `scripts/lib/shared/ (ou para um módulo-folha sem esses imports). Não acrescente o par à baseline. ` +
+        `Pares novos:\n  ${explained.join("\n  ")}`,
+    );
+    assert.deepEqual(stale, [], staleMessage("crossDomainTransitive", stale));
+  });
+
+  it("regra 7: scripts/** não importa workers/*/src fora da baseline (#13994)", () => {
+    const current = scriptsToWorkersSrcPairs();
+    const { added, stale } = diffAgainstBaseline(current, baseline.scriptsImportWorkersSrc);
+    assert.deepEqual(
+      added,
+      [],
+      `scripts/ importando código de Worker (#13994). A mão única é Worker -> scripts/lib/shared/: mova o ` +
+        `núcleo compartilhado para scripts/lib/shared/, faça o Worker importar de lá (listando o arquivo no ` +
+        `paths do deploy, ver test/workers-deploy-workflow-coverage.test.ts) e importe de shared/. ` +
+        `Não acrescente o par à baseline. Pares novos:\n  ${added.join("\n  ")}`,
+    );
+    assert.deepEqual(stale, [], staleMessage("scriptsImportWorkersSrc", stale));
+  });
+
+  it("sanity: os scans das regras 5-7 enxergam a dívida medida (silêncio ≠ fronteira ok)", () => {
+    // Se o scan quebrar (regex, resolução de path) e devolver vazio, o
+    // stale acusaria tudo — mas este teste diz a causa provável primeiro.
+    // Quando a dívida de uma regra zerar (baseline vazia), o scan vazio é o
+    // estado certo e a checagem dela deixa de valer.
+    const scans = [
+      ["regra 5", libToTopLevelCliPairs(), baseline.libImportsTopLevelCli],
+      ["regra 6", crossDomainTransitive().pairs, baseline.crossDomainTransitive],
+      ["regra 7", scriptsToWorkersSrcPairs(), baseline.scriptsImportWorkersSrc],
+    ] as const;
+    for (const [name, current, base] of scans) {
+      if (base.length > 0) assert.ok(current.length > 0, `scan da ${name} vazio com baseline não vazia`);
+    }
   });
 });

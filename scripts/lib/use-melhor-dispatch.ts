@@ -23,7 +23,7 @@
  * texto/item — nem a capa é usada.
  *
  * Horário: `publishing.social.use_melhor_time` (decisão do editor de
- * 04/10/2026, slot único nas 5 redes; 07:45 BRT desde 05/10/2026), aplicado por
+ * 04/10/2026, slot único nas 5 redes; 09:00 BRT desde 25/11/2026, #10305; antes 07:45), aplicado por
  * `computeScheduledAt({ destaque: "um" })` em `compute-social-schedule.ts`.
  */
 
@@ -413,8 +413,9 @@ export function reportUseMelhorPlan(
 /**
  * Warn (stderr + run-log) quando o 4º post SAI, mas degradado: carrossel
  * defasado/ausente, ou incompleto em `06-public-images.json` e o canal caiu
- * pra capa única / só texto. `usesCarousel: false` (LinkedIn página, que só
- * usa a capa) só avisa do carimbo, nunca de slide faltando.
+ * pra capa única / só texto. `usesCarousel: false` (canal que só usa a capa)
+ * só avisa do carimbo, nunca de slide faltando. O LinkedIn página passa `true`
+ * desde o #13847: o 4º post sai como documento PDF/carrossel dos slides.
  */
 export function reportUseMelhorImageFallback(
   channel: string,

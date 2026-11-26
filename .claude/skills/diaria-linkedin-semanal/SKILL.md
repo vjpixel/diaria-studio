@@ -943,14 +943,15 @@ editor, nesta ordem:
      mesma lógica do envio canônico das 06:00 BRT da diária. **O horário
      vem do config (#10305), não da sessão:** rode
      `npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date {publish-monday}`
-     e entregue ao editor o `HH:MM` impresso. Fora do teste rotativo é
-     `publishing.social.linkedin_weekly_article_time` (09:30 BRT); dentro
-     da janela de `publishing.social.rotation`, a segunda recebe o
-     candidato da semana (`linkedin_weekly_article_candidates`). Depois de
-     o editor agendar, registre o horário usado:
+     e entregue ao editor o `HH:MM` impresso:
+     `publishing.social.linkedin_weekly_article_time` (09:30 BRT). O teste
+     rotativo de `publishing.social.rotation`, que dava à segunda o
+     candidato da semana, foi encerrado em 25/11/2026 (`enabled: false`).
+     Depois de o editor agendar, registre o horário usado:
      `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article`
-     (grava em `data/social-schedule-rotation.jsonl`, idempotente — é o
-     registro que a medição da #10305 cruza com os cliques `ln-{ciclo}`).
+     (grava em `data/social-schedule-rotation.jsonl`, idempotente; é o
+     ponto em que a trava da menção @diar.ia.br do #13286 confere o post de
+     feed, e o registro cruza o horário com os cliques `ln-{ciclo}`).
      Se o editor agendou (ou publicou) em outro horário, grave o real com
      `--time` (#11180):
      `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article --time {HH:MM real}`

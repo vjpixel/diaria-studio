@@ -1,0 +1,5 @@
+# Arquivo de trabalho sumido no sync (#13404)
+
+Referência de `/diaria-video-montagem`, lida sob demanda (#14040). Gatilho: erro de arquivo "ausente" em `_internal/video-montagem/` apontando uma cópia `{nome}.conflictN`. Citado em "Fluxo do dia, arquivos e retomada" do SKILL.md.
+
+**Arquivo de trabalho sumido no sync (#13404).** O sync de `data/` pode trocar `blocks.json` (ou `plan.json` e os demais de `_internal/video-montagem/`) por cópias `{nome}.conflictN`, sem deixar o original. O erro de "ausente" então aponta a cópia mais nova (por mtime, horário em BRT) e o comando `cp` de Git Bash que a restaura; mostrar ao editor qual é antes de restaurar. Com o ok dele, rodar o comando de novo com `--restore-conflict {nome}` (o que o erro cita, ex. `--restore-conflict blocks.json`), que copia de volta a mesma cópia com `[premissa]`, nunca sobrescreve um original presente e deixa as cópias no disco. Com as cópias mais novas empatadas no horário, o erro diz que a escolha é arbitrária e não sugere comando nem flag: o editor confere o conteúdo e copia à mão. Um `roteiro` que falha avisa com `[erro]` que o `roteiro.md` do disco é da rodada anterior: não usar no Gate 2.

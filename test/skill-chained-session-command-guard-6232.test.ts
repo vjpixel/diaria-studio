@@ -29,7 +29,8 @@
  * dois comandos com `&&`) sem ninguém perceber até a próxima rodada
  * reproduzir o incidente — este teste impede que isso aconteça calado.
  *
- * Escopo: só `.claude/skills/*\/SKILL.md` (onde o coordenador overnight/
+ * Escopo: `.claude/skills/*\/SKILL.md` e, desde o #14040, os
+ * `.claude/skills/*\/reference/*.md` lidos sob demanda (onde o coordenador overnight/
  * develop lê as instruções que reproduz como comando Bash) — não
  * `context/overnight-dispatch-rules.md` nem outra prosa, que já não contém
  * comando executável nesse formato (mesmo escopo de arquivo do #4573 restrito
@@ -37,9 +38,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { skillPromptFiles } from "./_helpers/skill-text.ts";
 import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "../scripts/lib/session-id-required-subcommands.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -177,16 +180,14 @@ export function extractCodeSpans(markdown: string): string[] {
  */
 export function findChainedSessionCommandsInSkills(dir: string): FlaggedSpan[] {
   const found: FlaggedSpan[] = [];
-  if (!existsSync(dir)) return found;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const skillPath = join(dir, entry.name, "SKILL.md");
-    if (!existsSync(skillPath)) continue;
+  // #14040: além do SKILL.md, os `reference/*.md` de cada skill (casos raros
+  // lidos sob demanda), que o coordenador também reproduz como comando.
+  for (const skillPath of skillPromptFiles(dir)) {
     const markdown = readFileSync(skillPath, "utf8");
     for (const span of extractCodeSpans(markdown)) {
       if (referencesInjectableCommand(span) && CHAIN_RE.test(span)) {
         found.push({
-          file: `.claude/skills/${entry.name}/SKILL.md`,
+          file: `.claude/skills/${relative(dir, skillPath).split(sep).join("/")}`,
           snippet: span.length > 200 ? `${span.slice(0, 200)}…` : span,
         });
       }
@@ -196,6 +197,20 @@ export function findChainedSessionCommandsInSkills(dir: string): FlaggedSpan[] {
 }
 
 describe("findChainedSessionCommandsInSkills — unidades isoladas", () => {
+  it("#14040: comando encadeado num reference/*.md da skill também é flagrado, com o caminho do arquivo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "skills-6232-14040-"));
+    try {
+      mkdirSync(join(dir, "fake-skill", "reference"), { recursive: true });
+      writeFileSync(join(dir, "fake-skill", "SKILL.md"), "# fake\n\n`npx tsx scripts/overnight-session-marker.ts --start`\n");
+      writeFileSync(join(dir, "fake-skill", "reference", "raro.md"), "# raro\n\n```bash\nnpx tsx scripts/overnight-session-marker.ts --start && echo ok\n```\n");
+      const flagged = findChainedSessionCommandsInSkills(dir);
+      assert.equal(flagged.length, 1);
+      assert.equal(flagged[0].file, ".claude/skills/fake-skill/reference/raro.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("span sem os scripts-alvo → nunca flagra, mesmo com &&/pipe", () => {
     assert.equal(referencesInjectableCommand("echo a && echo b"), false);
   });

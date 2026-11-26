@@ -28,6 +28,7 @@ import {
 import { buildInstagramTimerAlarm } from "../scripts/shorts-instagram-timer.ts";
 import { INSTAGRAM_CHROME_ROUTE, buildReelsCaption, instagramChromeRouteText, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 
 const AT = "2026-10-27T11:00:00.000Z";
 const D1 = { title: "Você já viu IA mentir. Já viu roubar?", body: "Um modelo da OpenAI gastou o saldo de uma carteira de terceiros." };
@@ -149,7 +150,8 @@ describe("#11794: autoria da rota manual", () => {
   });
 
   it("o Passo B3b manda postar logado na @diar.ia.br e convidar a @vjpixel", () => {
-    const skill = readFileSync(".claude/skills/diaria-publica/SKILL.md", "utf8");
+    // #14040: o Passo B3b vive em reference/; o helper junta SKILL.md + reference/*.md.
+    const skill = readSkillWithReferences("diaria-publica");
     assert.match(skill, /Conferir no avatar que a conta é @diar\.ia\.br/);
     assert.match(skill, /\*\*Add collaborators:\*\* digitar `vjpixel`/);
     assert.doesNotMatch(skill, /Conferir no avatar que a conta é @vjpixel/);
@@ -201,7 +203,7 @@ describe("#11794: conferência anti-duplicação com a autora na conta da API", 
     // A conta da API (@diar.ia.br) não tem o Reel, e nada lê o perfil da @vjpixel: `noGraph` e `neverRead` lançam.
     const deps = await chromeDeps();
     assert.deepEqual(await instagramTimerGate({ decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), ...deps }), persist: () => {} }), { kind: "publish" });
-    const skill = readFileSync(".claude/skills/diaria-publica/SKILL.md", "utf8");
+    const skill = readSkillWithReferences("diaria-publica");
     assert.match(skill, /Nunca postar logado como @vjpixel/);
     assert.match(skill, /--confirm-instagram --url URL` antes do horário/);
   });

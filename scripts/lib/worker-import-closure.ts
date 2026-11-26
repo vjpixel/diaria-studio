@@ -10,7 +10,9 @@
  *
  * Sem isso, mudar um módulo compartilhado em `scripts/lib/**` não dispara
  * o redeploy do Worker que o importa, e o código no ar defasa em silêncio
- * até o alarme `Diaria-Worker-Drift-Check` (que só olha `workers/{dir}/`).
+ * sem sinal. O alarme `Diaria-Worker-Drift-Check` também usa este fecho
+ * desde o #13993 (`getWorkerTrackedPaths` em `scripts/worker-drift-check.ts`),
+ * para acusar um deploy falho de mudança só em módulo compartilhado.
  *
  * Parser deliberadamente simples (regex, sem TypeScript compiler): erra
  * para MAIS (um import citado em comentário entra no fecho), nunca para
