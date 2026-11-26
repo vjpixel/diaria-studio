@@ -250,7 +250,7 @@ export interface NewsletterContent {
   boxDivulgacao3Categoria?: string | null;
 }
 
-// ── Section parsing (destaques come from extract-destaques.ts) ────────
+// ── Section parsing (destaques come from lib/destaques-parse.ts) ────────
 
 /**
  * Parse non-destaque sections from the reviewed newsletter.
@@ -2623,7 +2623,7 @@ export function extractContent(
   // de divulgação (extraído abaixo do texto original). De-dup determinístico.
   const destaquesText = stripBoxDivulgacao3(stripBoxDivulgacao2(stripBoxDivulgacao1(reviewedText)));
 
-  // Destaques: use shared parser from extract-destaques.ts (single source of truth)
+  // Destaques: use shared parser from lib/destaques-parse.ts (single source of truth)
   // #2316: aceita 2–3 destaques (o caso editorial legítimo é 2 quando o editor
   // demove um destaque para Radar sem ter um substituto). Menos de 2 → erro fatal
   // (newsletter sem destaque não faz sentido); mais de 3 → erro fatal (template
@@ -2650,7 +2650,7 @@ export function extractContent(
     ...(d.n === 1 ? d1VideoHeroFields(editionDir) : {}), // #10784
   }));
 
-  // Sections: parsed here (extract-destaques doesn't handle these)
+  // Sections: parsed here (destaques-parse does not handle these)
   const sections = parseSections(reviewedText);
 
   // #4991: posição real do mirror **É IA?** no reviewed.md (null = ausente,
