@@ -121,9 +121,9 @@ describe("config: use_melhor_time (#9568)", () => {
     assert.equal(useMelhorPostConfigState(null).enabled, false);
   });
 
-  it("platform.config.json do repo: feature LIGADA às 07:45 BRT (decisão do editor, 05/10/2026)", () => {
+  it("platform.config.json do repo: feature LIGADA às 09:00 BRT (grade fixa do #10305, 25/11/2026)", () => {
     const s = loadUseMelhorPostConfigState(ROOT);
-    assert.deepEqual(s, { enabled: true, time: "07:45" });
+    assert.deepEqual(s, { enabled: true, time: "09:00" });
   });
 
   it("formato inválido → desligado (fail-soft, nunca lança)", () => {

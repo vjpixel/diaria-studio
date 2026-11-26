@@ -366,16 +366,10 @@ Com o "aprovar":
      com o hash da aprovação, se o empate do clicked ainda for só
      sugestão, ou se o arquivo não tiver aprovação gravada (`--pick`/`--swap`
      depois do `--confirm-suggestions`, #13035); taxa que mudou sem mexer na seleção, como a sexta ainda
-     acumulando clique, é só aviso) e
-     o registro do horário de cada dia, como no cabeçalho "Horário durante o
-     teste rotativo" de `/diaria-retro-semanal`:
-     `social-schedule-rotation.ts --record --date {S} --kind weekend` e o
-     mesmo com `--date {D}`. Com a alternativa do highlights aplicada, o
-     registro dele leva o horário real:
-     `social-schedule-rotation.ts --record --date {S} --kind weekend --time {HH:MM alternativo}`
-     (com a alternativa `--day-offset N`, o registro leva o mesmo
-     `--day-offset N`, que move o dia gravado, e `--time` só se o horário
-     também mudou); sem isso a rotação (#10305) grava o slot planejado;
+     acumulando clique, é só aviso). Sábado e domingo saem às 19:00 (grade
+     fixa do #10305, cabeçalho "Horário fixo" de `/diaria-retro-semanal`);
+     com o teste rotativo encerrado em 25/11/2026 não há registro de fim de
+     semana a gravar em `data/social-schedule-rotation.jsonl`;
    - Stack: `npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {M}`
      (Passo 6 de `/diaria-stack`; com `scheduledRunPast: true`, não aprovar e
      dizer que o ciclo só sai com `/diaria-stack {M} --publish`).
