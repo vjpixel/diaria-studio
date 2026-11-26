@@ -33,14 +33,22 @@ export const ALL_INVARIANT_RULES: InvariantRule[] = [
  * #9822). Sem `opts`/`phase` omitido = comportamento de sempre (todas as
  * regras do stage, independente de fase) — usado por `§5i` (pós-publicação)
  * e pelos demais stages.
+ *
+ * #14266: `opts.phase === "pre-gate"` exclui regras `postGateOnly: true`
+ * (Stage 2 — `reviewed-titles-per-highlight`, que só passa depois da poda
+ * dos títulos no gate/title-picker). Usado pelo `post-checks` do
+ * `stage-2-run.ts`, que roda ANTES do gate.
  */
 export function getRulesForStage(
   stage: 0 | 1 | 2 | 3 | 4 | 5 | 6,
-  opts?: { phase?: "pre-dispatch" },
+  opts?: { phase?: "pre-dispatch" | "pre-gate" },
 ): InvariantRule[] {
   const rules = ALL_INVARIANT_RULES.filter((r) => r.stage === stage);
   if (opts?.phase === "pre-dispatch") {
     return rules.filter((r) => !r.postDispatchOnly);
+  }
+  if (opts?.phase === "pre-gate") {
+    return rules.filter((r) => !r.postGateOnly);
   }
   return rules;
 }

@@ -36,7 +36,8 @@
  *                  lançamentos, paywall/agregador (validate-domains, aviso no
  *                  gate, #14244), cobertura, erro intencional (render + plantio
  *                  em `--no-gates`), check-stage2-invariants, lints do social,
- *                  check-invariants --stage 2, measure-highlights. Re-rodável
+ *                  check-invariants --stage 2 --phase pre-gate (sem a regra
+ *                  de 1 título por destaque, #14266), measure-highlights. Re-rodável
  *                  sozinho depois de uma correção cirúrgica (não refaz Clarice).
  *   post-gate      title-picker (fallback pós-gate), validações de estrutura,
  *                  TÍTULO/SUBTÍTULO, selo do humanizador social, sentinel do
@@ -1258,7 +1259,7 @@ function runPostChecks(ctx: Ctx, st: RunState): Stage2RunResult {
   }
 
   if (ctx.opts.scope === "all") {
-    const ci = ctx.run("check-invariants --stage 2", "scripts/check-invariants.ts", ["--stage", "2", "--edition-dir", ctx.dirArg]);
+    const ci = ctx.run("check-invariants --stage 2", "scripts/check-invariants.ts", ["--stage", "2", "--phase", "pre-gate", "--edition-dir", ctx.dirArg]);
     if (ci.code !== 0) {
       ctx.fixes.push({
         check: "check-invariants --stage 2",
