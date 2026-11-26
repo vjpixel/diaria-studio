@@ -41,9 +41,14 @@
  * Progresso: `_internal/05-social-concurrent.json` é regravado quando cada
  * filho inicia (com o pid) e quando termina (`run_id`, `state`, `running`,
  * `results`, `pending`). Um retry com `--channels` faz MERGE: mantém o
- * resultado dos canais que não estão nesta rodada. Canal com pid vivo no
- * progresso (rodada anterior ainda rodando) não é re-rodado: exit 5, nada
- * despachado. SIGINT/SIGTERM são repassados aos filhos pelo PID; o wrapper
+ * resultado dos canais que não estão nesta rodada; canal que a rodada
+ * anterior deixou em `running`/`pending` sem resultado (wrapper morto,
+ * `interrupted`) fica como falha pendente; canal desta rodada que não rodou
+ * por consent não apaga a falha anterior. Canal com pid vivo no progresso
+ * gravado há menos de 15 min não é re-rodado: exit 5, nada despachado. A
+ * checagem e o início dos filhos (com o progresso já com os pids) rodam sob
+ * o lock `{progresso}.lock`; o host é `lockHostId()` (hostname + namespace
+ * de PID). SIGINT/SIGTERM são repassados aos filhos pelo PID; o wrapper
  * espera até 5 s os filhos saírem, grava `interrupted` e sai 130/143.
  *
  * Exit: 0 = todos os canais despachados saíram 0 com JSON; 1 = algum falhou,
@@ -58,10 +63,10 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { hostname } from "node:os";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { lockHostId, withFileLock } from "./lib/file-lock.ts";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts";
 
@@ -76,8 +81,12 @@ export const SOCIAL_CONCURRENT_PROGRESS_FILE = "_internal/05-social-concurrent.j
 /** Exit do wrapper quando um canal da rodada ainda roda de uma rodada anterior. */
 export const SOCIAL_BUSY_EXIT_CODE = 5;
 
-/** Progresso de outro host vale como "rodando" por este tempo desde a última gravação. */
-export const FOREIGN_RUNNING_FRESH_MS = 15 * 60_000;
+/**
+ * Progresso `running` vale como "rodando" por este tempo desde a última
+ * gravação: em outro host (pid não se confere daqui) e também no mesmo host
+ * (pid reciclado). Os publishers levam ~15 a 50 s.
+ */
+export const RUNNING_FRESH_MS = 15 * 60_000;
 
 /** Quanto o wrapper espera os filhos saírem depois de repassar um sinal. */
 export const SIGNAL_CHILD_WAIT_MS = 5_000;
@@ -222,9 +231,9 @@ export function readProgress(path: string): ConcurrentProgress | null {
 }
 
 /**
- * Pura: canais do plano que ainda estão rodando numa rodada anterior. Mesmo
- * host: pid vivo. Outro host: progresso `running` gravado há menos de
- * `FOREIGN_RUNNING_FRESH_MS` (pid de outra máquina não se confere daqui).
+ * Pura: canais do plano que ainda estão rodando numa rodada anterior, com o
+ * progresso gravado há menos de `RUNNING_FRESH_MS`. Mesmo host: pid vivo.
+ * Outro host: progresso `running` (pid de outra máquina não se confere daqui).
  */
 export function busyChannels(
   previous: ConcurrentProgress | null,
@@ -235,10 +244,71 @@ export function busyChannels(
   const planned = new Set(plan.filter((p) => p.dispatch).map((p) => p.channel));
   const sameHost = previous.host === ctx.host;
   const updated = Date.parse(previous.updated_at);
-  const foreignFresh = !sameHost && previous.state === "running" && Number.isFinite(updated) && ctx.nowEpochMs - updated < FOREIGN_RUNNING_FRESH_MS;
+  // Teto de frescor nos dois casos: no mesmo host, um pid reciclado por outro
+  // processo pareceria vivo para sempre.
+  const fresh = Number.isFinite(updated) && ctx.nowEpochMs - updated < RUNNING_FRESH_MS;
+  if (!fresh) return [];
+  if (!sameHost && previous.state !== "running") return [];
   return previous.running
-    .filter((r) => planned.has(r.channel) && (sameHost ? ctx.isPidAlive(r.pid) : foreignFresh))
+    .filter((r) => planned.has(r.channel) && (sameHost ? ctx.isPidAlive(r.pid) : true))
     .map((r) => ({ ...r, host: previous.host }));
+}
+
+/**
+ * Pura: o que a rodada anterior deixou por canal. Resultado gravado vale como
+ * está; canal que ela listava em `running`/`pending` sem resultado (wrapper
+ * morto ou `interrupted`) vira FALHA pendente, nunca some do progresso.
+ */
+export function carriedResults(previous: ConcurrentProgress | null): Map<SocialChannel, ChannelResult> {
+  const out = new Map<SocialChannel, ChannelResult>();
+  if (!previous) return out;
+  for (const r of previous.results) out.set(r.channel, r);
+  const unfinished = new Map<SocialChannel, number | undefined>();
+  for (const ch of previous.pending ?? []) unfinished.set(ch, undefined);
+  for (const r of previous.running) unfinished.set(r.channel, r.pid);
+  for (const [channel, pid] of unfinished) {
+    if (out.has(channel)) continue;
+    out.set(channel, {
+      channel,
+      dispatched: true,
+      run_id: previous.run_id,
+      ...(pid !== undefined ? { pid } : {}),
+      exit_code: null,
+      duration_ms: 0,
+      output: null,
+      log: "",
+      output_error:
+        previous.state === "interrupted"
+          ? `rodada ${previous.run_id} interrompida antes de o canal terminar — conferir 06-social-published.json`
+          : `rodada ${previous.run_id} terminou sem resultado deste canal (wrapper morto) — conferir 06-social-published.json`,
+    });
+  }
+  return out;
+}
+
+/**
+ * Pura: resultados do progresso com merge da rodada anterior. Canal fora desta
+ * rodada mantém o que ficou dela (inclusive falha pendente). Canal desta
+ * rodada usa o resultado novo, exceto quando o novo é `dispatched: false`
+ * (consent) e a rodada anterior deixou falha: a falha não é apagada por um
+ * canal que nem rodou.
+ */
+export function mergeProgressResults(
+  previous: ConcurrentProgress | null,
+  plan: readonly ChannelPlanEntry[],
+  current: ReadonlyMap<SocialChannel, ChannelResult>,
+): ChannelResult[] {
+  const carried = carriedResults(previous);
+  const inPlan = new Set(plan.map((p) => p.channel));
+  const out: ChannelResult[] = [];
+  for (const [channel, r] of carried) if (!inPlan.has(channel)) out.push(r);
+  for (const p of plan) {
+    const now = current.get(p.channel);
+    const before = carried.get(p.channel);
+    if (now && !now.dispatched && before && isFailedResult(before)) out.push(before);
+    else if (now) out.push(now);
+  }
+  return out;
 }
 
 export interface RunConcurrentOptions {
@@ -261,17 +331,14 @@ export async function runConcurrent(
   const t0 = nowMs();
   const runId = opts.runId ?? `social-${new Date(t0).toISOString()}-${process.pid}`;
   const startedAt = new Date(t0).toISOString();
-  const thisRun = new Set(plan.map((p) => p.channel));
-  const carried = (opts.previous?.results ?? []).filter((r) => !thisRun.has(r.channel));
   const completed = new Map<SocialChannel, ChannelResult>();
   const live = new Map<SocialChannel, number>();
   const emit = (state: ConcurrentProgress["state"]) => {
     if (!opts.onProgress) return;
-    const current = plan.map((p) => completed.get(p.channel)).filter((r): r is ChannelResult => r !== undefined);
-    const results = [...carried, ...current];
+    const results = mergeProgressResults(opts.previous ?? null, plan, completed);
     opts.onProgress({
       run_id: runId,
-      host: opts.host ?? hostname(),
+      host: opts.host ?? lockHostId(),
       state,
       started_at: startedAt,
       updated_at: new Date(nowMs()).toISOString(),
@@ -462,18 +529,9 @@ if (isMainModule(import.meta.url)) {
     process.stderr.write(`${(e as Error).message}\n`);
     process.exit(2);
   }
-  const host = hostname();
+  // Identidade do host para conferir pid: hostname + namespace de PID (file-lock.ts).
+  const host = lockHostId();
   const progressPath = resolve(editionDir, ...SOCIAL_CONCURRENT_PROGRESS_FILE.split("/"));
-  const previous = readProgress(progressPath);
-  const busy = busyChannels(previous, plan, { host, isPidAlive, nowEpochMs: Date.now() });
-  if (busy.length > 0) {
-    process.stderr.write(
-      `ERRO (#14037): canal ainda rodando de uma rodada anterior (${busy.map((b) => `${b.channel} pid ${b.pid} em ${b.host}`).join(", ")}) — ` +
-        `nenhum canal despachado; esperar o processo terminar e conferir ${progressPath}.\n`,
-    );
-    console.log(JSON.stringify({ status: "busy", busy }, null, 2));
-    process.exit(SOCIAL_BUSY_EXIT_CODE);
-  }
   let lastProgress: ConcurrentProgress | null = null;
   const writeProgress = (p: ConcurrentProgress) => {
     lastProgress = p;
@@ -500,9 +558,30 @@ if (isMainModule(import.meta.url)) {
       });
     });
   }
-  // Cada publisher recebe o --edition-dir exatamente como veio (mesmo comando do
-  // §5c-3); o path resolvido serve só para ler o consent e gravar o progresso.
-  const result = await runConcurrent(plan, editionDirArg, realRunChild(ROOT, live), { onProgress: writeProgress, host, previous });
+  // Checagem de canal ocupado + início dos filhos sob o lock do progresso: o
+  // `runConcurrent` dispara os spawns e grava o progresso com os pids de forma
+  // síncrona antes de devolver a promessa, então uma 2ª rodada concorrente lê
+  // os pids desta. Cada publisher recebe o --edition-dir exatamente como veio
+  // (mesmo comando do §5c-3); o path resolvido serve só para o consent e o progresso.
+  mkdirSync(dirname(progressPath), { recursive: true });
+  type Start =
+    | { busy: ReturnType<typeof busyChannels> }
+    | { run: Promise<ConcurrentResult> };
+  const start: Start = withFileLock(progressPath + ".lock", (): Start => {
+    const previous = readProgress(progressPath);
+    const busy = busyChannels(previous, plan, { host, isPidAlive, nowEpochMs: Date.now() });
+    if (busy.length > 0) return { busy };
+    return { run: runConcurrent(plan, editionDirArg, realRunChild(ROOT, live), { onProgress: writeProgress, host, previous }) };
+  });
+  if ("busy" in start) {
+    process.stderr.write(
+      `ERRO (#14037): canal ainda rodando de uma rodada anterior (${start.busy.map((b) => `${b.channel} pid ${b.pid} em ${b.host}`).join(", ")}) — ` +
+        `nenhum canal despachado; esperar o processo terminar e conferir ${progressPath}.\n`,
+    );
+    console.log(JSON.stringify({ status: "busy", busy: start.busy }, null, 2));
+    process.exit(SOCIAL_BUSY_EXIT_CODE);
+  }
+  const result = await start.run;
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = concurrentExitCode(result);
 }

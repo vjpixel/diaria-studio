@@ -23,6 +23,8 @@ import { fileURLToPath } from "node:url";
 import {
   SOCIAL_CHANNELS,
   busyChannels,
+  carriedResults,
+  mergeProgressResults,
   channelCommand,
   concurrentExitCode,
   forwardSignalToChildren,
@@ -41,6 +43,10 @@ import { buildExecArgs, runStage5BrevoDispatchWithRecord, type RecordIo } from "
 import { MISSING_GRACE_MS, buildJoinOutput, runJoin } from "../scripts/brevo-diaria-stage5-join.ts";
 import {
   BUSY_EXIT_CODE,
+  OTHER_ACTIVE_EXIT_CODE,
+  brevoStage5WorkerPidPath,
+  currentHost,
+  removeWorkerPidFile,
   brevoStage5RecordPath,
   decideJoin,
   findActiveLaunch,
@@ -53,7 +59,7 @@ import {
   type ReadRecordOutcome,
 } from "../scripts/lib/brevo-stage5-background.ts";
 import { recordRotationRows } from "../scripts/lib/social-schedule-rotation-record.ts";
-import { acquireLock, releaseLock } from "../scripts/lib/file-lock.ts";
+import { acquireLock, lockHostId, releaseLock } from "../scripts/lib/file-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -255,6 +261,69 @@ describe("#14037 publish-social-concurrent: concorrência, pid e isolamento de f
     );
   });
 
+  it("teto de frescor também no mesmo host: pid vivo em progresso velho não bloqueia", () => {
+    const previous = {
+      run_id: "R1",
+      host: "neo",
+      state: "running",
+      started_at: "t",
+      updated_at: new Date(0).toISOString(),
+      results: [],
+      running: [{ channel: "threads", pid: 11 }],
+      pending: ["threads"],
+      failed_channels: [],
+    } as ConcurrentProgress;
+    assert.deepEqual(
+      busyChannels(previous, planChannels(ALL_AUTO, ["threads"]), { host: "neo", isPidAlive: () => true, nowEpochMs: 16 * 60_000 }),
+      [],
+    );
+  });
+
+  it("merge: running/pending sem resultado e rodada interrupted viram falha pendente; consent não apaga falha", () => {
+    const previous: ConcurrentProgress = {
+      run_id: "R1",
+      host: "neo",
+      state: "interrupted",
+      started_at: "t",
+      updated_at: "t",
+      results: [{ channel: "facebook", dispatched: true, run_id: "R1", pid: 1, exit_code: 0, duration_ms: 1, output: { ok: 1 }, log: "" }],
+      running: [{ channel: "linkedin", pid: 2 }],
+      pending: ["linkedin", "threads"],
+      failed_channels: [],
+    };
+    const carried = carriedResults(previous);
+    assert.ok(isFailedResult(carried.get("linkedin")!), "linkedin estava rodando");
+    assert.ok(isFailedResult(carried.get("threads")!), "threads estava pendente");
+    assert.match((carried.get("threads") as { output_error: string }).output_error, /interrompida/);
+    assert.ok(!isFailedResult(carried.get("facebook")!));
+    // Retry só do threads, agora sem consent: não apaga a falha pendente dele.
+    const current = new Map([["threads", { channel: "threads", dispatched: false, reason: "consent", requested: true }]]) as Map<
+      SocialChannel,
+      import("../scripts/publish-social-concurrent.ts").ChannelResult
+    >;
+    const merged = mergeProgressResults(previous, planChannels({ ...ALL_AUTO, threads: "manual" }, ["threads"]), current);
+    const byCh = Object.fromEntries(merged.map((r) => [r.channel, r]));
+    assert.ok(isFailedResult(byCh.threads), "falha anterior preservada");
+    assert.ok(isFailedResult(byCh.linkedin), "linkedin fora da rodada segue como falha pendente");
+    assert.ok(!isFailedResult(byCh.facebook));
+  });
+
+  it("os spawns e o progresso com os pids acontecem de forma síncrona (dentro do lock do CLI)", () => {
+    const snaps: ConcurrentProgress[] = [];
+    let n = 100;
+    void runConcurrent(
+      planChannels(ALL_AUTO),
+      "ed/",
+      (_ch, _s, _a, onSpawn) => {
+        onSpawn?.(n++);
+        return new Promise<ChildRun>(() => {});
+      },
+      { onProgress: (s) => snaps.push(structuredClone(s)) },
+    );
+    // Sem nenhum await: o último progresso já lista os 4 pids.
+    assert.deepEqual(snaps.at(-1)!.running.map((r) => r.pid).sort(), [100, 101, 102, 103]);
+  });
+
   it("runner que lança vira canal falho com spawn_error, sem perder os demais", async () => {
     const result = await runConcurrent(planChannels(ALL_AUTO, ["facebook", "threads"]), "ed/", async (ch) => {
       if (ch === "facebook") throw new Error("spawn EACCES");
@@ -420,6 +489,40 @@ describe("#14037 Brevo em background: registro por lançamento", () => {
     assert.ok(findActiveLaunch([rec({ host: "300" })], ctx), "outro host dentro do teto");
     assert.equal(findActiveLaunch([rec({ host: "300", started_at: "2026-11-25T09:00:00Z" })], ctx), null, "outro host além do teto");
     assert.equal(findActiveLaunch([{ ...rec({}), state: "done", finished_at: "t", exit_code: 0, result: { status: "ok" } }], ctx), null);
+    // Teto também no mesmo host: pid reciclado (vivo) não bloqueia para sempre.
+    assert.equal(findActiveLaunch([rec({ pid: 99, started_at: "2026-11-25T09:00:00Z" })], ctx), null);
+  });
+
+  it("o mesmo launch-id com o processo anterior vivo também recusa iniciar", () => {
+    const writes: BrevoStage5Record[] = [];
+    const same: BrevoStage5Record = { state: "running", launch_id: "L1", pid: 8, host: "neo", started_at: "2026-11-25T09:58:00Z" };
+    const { result, exitCode } = runStage5BrevoDispatchWithRecord(() => ({ status: "already_done", campaignId: 1 }), io(writes, { active: same }).io);
+    assert.equal(exitCode, BUSY_EXIT_CODE);
+    assert.equal((result as { active_launch_id: string }).active_launch_id, "L1");
+    assert.equal(writes.length, 0);
+  });
+
+  it("o .worker.json é removido ao fim do lançamento", () => {
+    const writes: BrevoStage5Record[] = [];
+    let cleaned = 0;
+    const h = io(writes);
+    runStage5BrevoDispatchWithRecord(() => ({ status: "already_done", campaignId: 1 }), { ...h.io, cleanup: () => void cleaned++ });
+    assert.equal(cleaned, 1);
+    const dir = mkdtempSync(resolve(tmpdir(), "worker-rm-14037-"));
+    try {
+      const p = brevoStage5WorkerPidPath(dir, "L1");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, '{"pid":1}');
+      removeWorkerPidFile(dir, "L1");
+      assert.equal(existsSync(p), false);
+      assert.doesNotThrow(() => removeWorkerPidFile(dir, "L1"), "ausente não lança");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("host de liveness é o lockHostId (hostname + namespace de PID), igual nos dois scripts", () => {
+    assert.equal(currentHost(), lockHostId());
   });
 
   it("os sub-scripts recebem o preload que grava o pid do worker", () => {
@@ -491,16 +594,28 @@ describe("#14037 join do Brevo", () => {
     assert.match(buildJoinOutput(d).reason as string, /worker pid 555/);
   });
 
-  it("registro deste lançamento ausente com outros lançamentos: not_launched, os outros só no relato", () => {
+  it("registro deste lançamento ausente e exatamente um outro running: exit dedicado com active_launch_id", () => {
     const d = decideJoin({ kind: "missing" }, { ...ctx, elapsedMs: 30_000, others: [done("ok", "L0"), { ...running, launch_id: "L2" }] });
+    assert.equal(d.kind, "other_active");
+    assert.equal(joinExitCode(d), OTHER_ACTIVE_EXIT_CODE);
+    const out = buildJoinOutput(d);
+    assert.equal(out.active_launch_id, "L2");
+    assert.notEqual(out.status, "ok");
+    assert.notEqual(out.status, "failed", "não é falha para seguir: é juntar o outro");
+  });
+
+  it("registro deste lançamento ausente com outros lançamentos só done (ou 2+ running): not_launched, os outros só no relato", () => {
+    const d = decideJoin({ kind: "missing" }, { ...ctx, elapsedMs: 30_000, others: [done("ok", "L0"), done("failed", "L2")] });
     assert.equal(d.kind, "not_launched");
     assert.equal(joinExitCode(d), 3);
     const out = buildJoinOutput(d);
     assert.equal(out.status, "failed");
     assert.deepEqual(out.other_launches, [
       { launch_id: "L0", state: "done" },
-      { launch_id: "L2", state: "running" },
+      { launch_id: "L2", state: "done" },
     ]);
+    const two = decideJoin({ kind: "missing" }, { ...ctx, elapsedMs: 30_000, others: [{ ...running, launch_id: "L2" }, { ...running, launch_id: "L3" }] });
+    assert.equal(two.kind, "not_launched");
   });
 
   it("running acima do teto total desde o started_at vira timeout/failed, mesmo com o processo vivo", () => {

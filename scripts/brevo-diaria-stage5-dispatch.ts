@@ -86,6 +86,7 @@ import {
   isPidAlive,
   listBrevoStage5Records,
   readWorkerPid,
+  removeWorkerPidFile,
   writeBrevoStage5Record,
   type BrevoStage5Record,
 } from "./lib/brevo-stage5-background.ts"; // #14037
@@ -334,6 +335,8 @@ export interface RecordIo {
   findActive: () => BrevoStage5Record | null;
   /** Serializa a checagem de lançamento ativo + gravação do `running`. Default: sem lock. */
   withLaunchLock?: <T>(fn: () => T) => T;
+  /** Chamado depois do `done`: remove o `.worker.json` deste lançamento. */
+  cleanup?: () => void;
 }
 
 /** Dispatch que recusou iniciar porque outro lançamento da edição está ativo. */
@@ -367,8 +370,10 @@ export function runStage5BrevoDispatchWithRecord(
   const base = { launch_id: io.launchId, pid: io.pid, host: io.host, started_at: startedAt };
   const lock = io.withLaunchLock ?? (<T>(fn: () => T) => fn());
   const gate = lock((): { result: Stage5BrevoResult | Stage5BrevoBusy; exitCode: number } | null => {
+    // Inclui o MESMO launch-id: um processo anterior com este id ainda vivo
+    // também barra (a gravação deste sobrescreveria o registro dele).
     const active = io.findActive();
-    if (active && active.launch_id !== io.launchId) {
+    if (active) {
       return {
         result: {
           status: "busy",
@@ -417,6 +422,11 @@ export function runStage5BrevoDispatchWithRecord(
       `[brevo-diaria stage5] AVISO (#14037): registro done não gravado (${(e as Error).message}) — ` +
         `o join vai acusar o processo como morto; o resultado real está no stdout deste comando.`,
     );
+  }
+  try {
+    io.cleanup?.();
+  } catch (e) {
+    io.warn(`[brevo-diaria stage5] AVISO (#14037): pid do worker não removido (${(e as Error).message}).`);
   }
   return { result, exitCode };
 }
@@ -468,6 +478,7 @@ if (isMainModule(import.meta.url)) {
           mkdirSync(brevoStage5RecordDir(editionDir), { recursive: true });
           return withFileLock(resolve(brevoStage5RecordDir(editionDir), ".launch.lock"), fn);
         },
+        cleanup: () => removeWorkerPidFile(editionDir, launchId),
       },
     );
     console.log(JSON.stringify(result));

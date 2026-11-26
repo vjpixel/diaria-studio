@@ -20,7 +20,9 @@
  * (dispatch E worker), registro ilegível ou teto total estourado
  * (`join: "timeout"`, padrão 30 min desde o `started_at` gravado,
  * `--max-total-minutes`); 3 = registro deste lançamento ausente; 4 = ainda
- * rodando quando `--wait-seconds` acabou e dentro do teto (re-rodar o join).
+ * rodando quando `--wait-seconds` acabou e dentro do teto (re-rodar o join);
+ * 6 = registro deste lançamento ausente e exatamente um outro lançamento
+ * `running` (`join: "other_active"`, `active_launch_id`: juntar aquele).
  * Com o teto, re-rodar nunca vira loop. Registro ausente sempre ganha a
  * tolerância mínima de 30 s, mesmo com `--wait-seconds 0`.
  *
@@ -98,6 +100,17 @@ export function buildJoinOutput(decision: JoinDecision | { kind: "still_running"
           ? `registro deste lançamento ausente; a edição tem outros lançamentos (${decision.others.map((o) => `${o.launch_id}: ${o.state}`).join(", ")}), que não contam como resultado deste — o dispatch deste lançamento não iniciou (ver busy no stdout dele).`
           : "registro deste lançamento ausente — o dispatch Brevo não foi lançado ou não chegou a iniciar.",
         ...(decision.others ? { other_launches: decision.others } : {}),
+      };
+    case "other_active":
+      return {
+        join: "other_active",
+        status: "running",
+        active_launch_id: decision.active.launch_id,
+        active_pid: decision.active.pid,
+        active_host: decision.active.host,
+        reason:
+          `registro deste lançamento ausente e outro lançamento do Brevo desta edição está rodando (launch_id ${decision.active.launch_id}, ` +
+          `pid ${decision.active.pid}, iniciado ${decision.active.started_at}) — re-rodar o join com --launch-id ${decision.active.launch_id}; nunca seguir com o Brevo rodando.`,
       };
     case "timeout":
       return {

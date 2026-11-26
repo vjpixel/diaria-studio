@@ -20,10 +20,10 @@
  * a mesma do §5c-3 item 5 do playbook.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
-import { hostname } from "node:os";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { lockHostId } from "./file-lock.ts";
 
 /** Pasta dos registros, relativa à pasta da edição. */
 export const BREVO_STAGE5_RECORD_DIR = "_internal/05-brevo-stage5";
@@ -33,6 +33,12 @@ export const DEFAULT_MAX_TOTAL_MS = 30 * 60_000;
 
 /** Exit dedicado do dispatch que recusa iniciar porque outro lançamento está ativo. */
 export const BUSY_EXIT_CODE = 5;
+
+/**
+ * Exit do join quando o registro deste lançamento não existe e há exatamente
+ * um outro lançamento `running` na edição: juntar o `active_launch_id`.
+ */
+export const OTHER_ACTIVE_EXIT_CODE = 6;
 
 /** Nome de arquivo seguro (Windows recusa `:`) para um launch id. */
 export function launchFileStem(launchId: string): string {
@@ -146,8 +152,19 @@ export function readWorkerPid(editionDir: string, launchId: string): number | un
   }
 }
 
+/**
+ * Identidade do host para conferir pid: `lockHostId()` de `file-lock.ts`
+ * (hostname + namespace de PID no Linux). No `300` o sandbox tem outro
+ * namespace de PID com o mesmo hostname; comparar só o hostname faria um pid
+ * de outro namespace parecer morto (ou vivo) daqui.
+ */
 export function currentHost(): string {
-  return hostname();
+  return lockHostId();
+}
+
+/** Remove o pid do worker ao fim do lançamento (#14037): pid reciclado não pode manter o lançamento "vivo". */
+export function removeWorkerPidFile(editionDir: string, launchId: string): void {
+  rmSync(brevoStage5WorkerPidPath(editionDir, launchId), { force: true });
 }
 
 /** `process.kill(pid, 0)`: ESRCH = morto; EPERM = existe (outro usuário). */
@@ -177,19 +194,18 @@ export function launchProcessAlive(record: BrevoStage5Record, ctx: Pick<Liveness
 }
 
 /**
- * Pura: lançamento ATIVO que impede outro de iniciar (#14037). `running` do
- * mesmo host com dispatch ou worker vivo; `running` de outro host dentro do
- * teto total (pid de outra máquina não se confere daqui).
+ * Pura: lançamento ATIVO que impede outro de iniciar (#14037): `running`
+ * dentro do teto total desde o `started_at` E, no mesmo host, com dispatch ou
+ * worker vivo (pid de outra máquina não se confere daqui). O teto vale nos
+ * dois casos: no Windows um pid reciclado por outro processo pareceria vivo
+ * para sempre.
  */
 export function findActiveLaunch(records: readonly BrevoStage5Record[], ctx: LivenessContext): BrevoStage5Record | null {
   for (const r of records) {
     if (r.state !== "running") continue;
-    if (r.host === ctx.host) {
-      if (launchProcessAlive(r, ctx)) return r;
-      continue;
-    }
     const startedMs = Date.parse(r.started_at);
-    if (!Number.isFinite(startedMs) || ctx.nowEpochMs - startedMs < ctx.maxTotalMs) return r;
+    if (Number.isFinite(startedMs) && ctx.nowEpochMs - startedMs >= ctx.maxTotalMs) continue;
+    if (r.host !== ctx.host || launchProcessAlive(r, ctx)) return r;
   }
   return null;
 }
@@ -199,6 +215,7 @@ export type JoinDecision =
   | { kind: "wait" }
   | { kind: "process_died"; record: BrevoStage5Record; workerPid?: number }
   | { kind: "not_launched"; others?: Array<{ launch_id: string; state: string }> }
+  | { kind: "other_active"; active: BrevoStage5Record }
   | { kind: "timeout"; record: BrevoStage5Record; totalMs: number }
   | { kind: "invalid"; error: string };
 
@@ -227,9 +244,12 @@ export function decideJoin(outcome: ReadRecordOutcome, ctx: JoinContext): JoinDe
   if (outcome.kind === "invalid") return { kind: "invalid", error: outcome.error };
   if (outcome.kind === "missing" || outcome.record.launch_id !== ctx.launchId) {
     if (ctx.elapsedMs < ctx.missingGraceMs) return { kind: "wait" };
-    const others = ctx.others
-      .filter((r) => r.launch_id !== ctx.launchId)
-      .map((r) => ({ launch_id: r.launch_id, state: r.state }));
+    const otherRecords = ctx.others.filter((r) => r.launch_id !== ctx.launchId);
+    // Exatamente um outro lançamento rodando: é o Brevo desta edição (o deste
+    // lançamento saiu busy). Juntar aquele, nunca seguir com ele rodando.
+    const otherRunning = otherRecords.filter((r) => r.state === "running");
+    if (otherRunning.length === 1) return { kind: "other_active", active: otherRunning[0] };
+    const others = otherRecords.map((r) => ({ launch_id: r.launch_id, state: r.state }));
     return others.length > 0 ? { kind: "not_launched", others } : { kind: "not_launched" };
   }
   const { record } = outcome;
@@ -248,7 +268,9 @@ export function decideJoin(outcome: ReadRecordOutcome, ctx: JoinContext): JoinDe
  * Exit code do join, alinhado ao do dispatch (#5772): 0 = `ok`/`already_done`/
  * `skipped`; 1 = `failed`, processo morto, registro ilegível ou teto total
  * estourado (`timeout`); 3 = registro deste lançamento ausente; 4 = ainda
- * rodando quando a espera desta chamada acabou, dentro do teto total.
+ * rodando quando a espera desta chamada acabou, dentro do teto total;
+ * 6 = registro deste lançamento ausente e um outro lançamento rodando
+ * (`active_launch_id`: juntar aquele).
  */
 export function joinExitCode(decision: JoinDecision | { kind: "still_running" }): number {
   switch (decision.kind) {
@@ -260,6 +282,8 @@ export function joinExitCode(decision: JoinDecision | { kind: "still_running" })
       return 1;
     case "not_launched":
       return 3;
+    case "other_active":
+      return OTHER_ACTIVE_EXIT_CODE;
     case "still_running":
     case "wait":
       return 4;
