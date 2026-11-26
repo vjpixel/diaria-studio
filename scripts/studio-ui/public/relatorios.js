@@ -1,5 +1,5 @@
 // relatorios.js (#3714) — cockpit de Relatórios: lista os relatórios de fim
-// de trabalho (edição diária, overnight, develop, mensal) registrados via
+// de trabalho (edição diária, overnight, develop, mensal, avulso) registrados via
 // `GET /api/reports` (reports-registry.ts), mais recentes no topo. Vanilla JS,
 // sem build step (mesmo princípio de triagem.js/app.js — #3555/#3562).
 //
@@ -29,6 +29,8 @@ const KIND_LABEL = {
   overnight: "Overnight",
   develop: "Develop",
   mensal: "Mensal",
+  // #14069: relatório avulso (auditoria, revisão de repo, investigação).
+  avulso: "Avulso",
 };
 
 function setFetchStatus(status, label) {
