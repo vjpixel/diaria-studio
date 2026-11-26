@@ -90,6 +90,22 @@ O `{cycle}` sai impresso pelo Passo 1 (`weekly-shared-selection.ts`).
    `--day-offset` ou pular um modo; com `--no-gates`, aplica a sugestão e
    registra a premissa). Rodando no sábado depois do horário do highlights,
    é aqui que aparece.
+   **Slot curto (#13822):** o `--check-slot` só acusa slot vencido ou a
+   menos de 10 min (`expired`/`too-soon`, exit 2). Com
+   `status: ok`, ler o `minutesFromNow` do highlights no JSON: abaixo de
+   **120 min** (tempo típico de produção + passes + gate do pacote; no 26w47,
+   69 min de folga não bastaram e o slot das 11:00 venceu antes do pós-gate),
+   registrar o risco `slotCurto` com o horário, a folga em minutos e um
+   horário alternativo (`--time HH:MM` a pelo menos 120 min de agora,
+   arredondado ao quarto de hora; sem horário no mesmo dia, `--day-offset`),
+   num banner já no Passo 0. O alternativo vale só para o highlights: no
+   Passo 7 o agendamento sai em duas chamadas, `--saturday {S} --mode
+   highlights --time {HH:MM}` (ou `--day-offset N`) e `--saturday {S} --mode
+   clicked` (`--time` com `--mode both` moveria também o clicked de `{D}`, e
+   `--day-offset` com `--mode both` é recusado); receita completa no item 2
+   do Passo 7. Com `--no-gates`, aplicar o alternativo sozinho e
+   registrar a premissa. Sem `--no-gates`, levar o `slotCurto` ao topo do
+   gate (Passo 6, item 1).
 3. `npx tsx scripts/kit-sync.ts` (#7629), uma vez para os três.
 4. Conferir `data/editions/{AAMMDD}/02-reviewed.md` das 5 edições da semana;
    as que faltarem entram no bloco de avisos do gate.
@@ -165,6 +181,27 @@ vídeo"): lê a legenda `diaria-comentada-{video.editionDate}.srt` da edição
 do vídeo e escreve UMA frase (até 280 caracteres) com o que o vídeo explica
 e o artigo não traz, gravada em `{scratchpad}/ln-video-pitch-{cycle}.txt`.
 
+**Trocar o vídeo da semana (#13820).** Se o editor pedir outro vídeo (no
+gate ou antes), a troca é uma só e vale para LinkedIn e Stack: rodar
+`npx tsx scripts/select-linkedin-weekly.ts --publish-monday {M} --shared-selection {arquivo} --video-edition AAMMDD`
+(ou `--video-url URL`) e
+`npx tsx scripts/publish-circle-stack.ts --publish-monday {M} --video-edition AAMMDD`,
+com a mesma edição nas duas. A edição pode ser de fora da janela; título e
+URL vêm do `_internal/05-video-url.txt` e do `_internal/05-youtube-published.json`
+dela. A escolha fica gravada em `videoOverride` e a re-seleção do Passo 7
+(`--require-approved`, `--reselect`) a reaplica, então não editar `video` à
+mão nem salvar e restaurar o campo. Trocar o vídeo apaga a frase do vídeo
+(#13045) e a descrição do vídeo da Stack (#12549), que eram sobre o
+anterior: reescrever a frase a partir da legenda
+`diaria-comentada-{AAMMDD}.srt` da edição nova e re-disparar o
+`stack-writer` (com um novo `circle-stack-copy.ts --manifest`) antes do
+Passo 4; troca feita no gate repassa esses dois textos pelo
+humanizador/Clarice e refaz os renders do Passo 5. Para voltar ao mais
+visto, o par é `select-linkedin-weekly.ts ... --video-auto` e
+`publish-circle-stack.ts --publish-monday {M} --video-auto --reselect`: na
+seleção da Stack já gravada, `--video-auto` sozinho só apaga o vídeo e pede
+o `--reselect` para medir o mais visto de novo.
+
 ## Passo 4 — Humanizador + Clarice numa leva
 
 Todos os textos novos de uma vez, na ordem da diária. `{P}` = o arquivo de
@@ -236,7 +273,13 @@ MCP segue o halt #738. Sem Chrome ou com `--no-gates`, não colar.
 (imagens e HTMLs de apoio copiados para a mesma pasta e publicados em
 `files`; nada de `data/` direto, #12788). Título "Pacote semanal {cycle}".
 
-1. **Bloco de avisos no topo**, juntando os de todos os scripts: avisos do
+1. **Bloco de avisos no topo**, abrindo pelo `slotCurto` do Passo 0, quando
+   houver (#13822), refeito com o relógio da hora do gate: "O slot do
+   highlights às {HH:MM} vence antes da aprovação provável (folga de {N}
+   min); sugestão: `--time {HH:MM alternativo}`." Slot vencido ou a menos de
+   10 min na hora do gate (`--check-slot` de novo, `expired`/`too-soon`,
+   exit 2) entra no mesmo lugar, com as opções
+   do Passo 0. Depois, juntando os de todos os scripts: avisos do
    `shared-selection.json` (empates pendentes com a sugestão, trocas que não
    se aplicaram a um produto, edição sem dado de clique), a **tabela de
    idade do dado de clique por edição** com as edições de menos de 48 h
@@ -310,6 +353,14 @@ Com o "aprovar":
    colar).
 2. Só depois do item 1 ok, em paralelo:
    - retro: `publish-weekly-social.ts --saturday {S} --mode both --shared-selection {arquivo} --schedule`
+     (com `slotCurto` aplicado, #13822, ou slot vencido resolvido no Passo 0:
+     duas chamadas em vez desta,
+     `publish-weekly-social.ts --saturday {S} --mode highlights --time {HH:MM alternativo} --schedule`
+     (ou `--day-offset N` no lugar de `--time`, quando a alternativa foi
+     outro dia) e
+     `publish-weekly-social.ts --saturday {S} --mode clicked --shared-selection {arquivo} --schedule`,
+     porque `--time` com `--mode both` moveria também o clicked de `{D}` e
+     `--day-offset` com `--mode both` é recusado)
      (Passo 4 de `/diaria-retro-semanal`; recusa com exit 2 se o replay da
      seleção com o cache de agora der outra seleção, se as URLs não baterem
      com o hash da aprovação, se o empate do clicked ainda for só
@@ -319,7 +370,12 @@ Com o "aprovar":
      o registro do horário de cada dia, como no cabeçalho "Horário durante o
      teste rotativo" de `/diaria-retro-semanal`:
      `social-schedule-rotation.ts --record --date {S} --kind weekend` e o
-     mesmo com `--date {D}`;
+     mesmo com `--date {D}`. Com a alternativa do highlights aplicada, o
+     registro dele leva o horário real:
+     `social-schedule-rotation.ts --record --date {S} --kind weekend --time {HH:MM alternativo}`
+     (com a alternativa `--day-offset N`, o registro leva o mesmo
+     `--day-offset N`, que move o dia gravado, e `--time` só se o horário
+     também mudou); sem isso a rotação (#10305) grava o slot planejado;
    - Stack: `npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {M}`
      (Passo 6 de `/diaria-stack`; com `scheduledRunPast: true`, não aprovar e
      dizer que o ciclo só sai com `/diaria-stack {M} --publish`).
