@@ -25,7 +25,7 @@
  *
  * Uso:
  *   npx tsx scripts/prep-weekly-twitter.ts --saturday 260912 --mode highlights|clicked|both
- *     [--editions-root data/editions] [--time 11:00] [--day-offset N]
+ *     [--editions-root data/editions] [--time 19:00] [--day-offset N]
  *     [--no-skip-existing] [--force-incomplete-week] [--force-incomplete-click-data]
  *
  * `--force-incomplete-week`/`--force-incomplete-click-data`: mesmos gates de

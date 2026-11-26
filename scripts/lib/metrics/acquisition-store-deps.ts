@@ -18,6 +18,7 @@
  * `lib/metrics/registry`, fechando o gap descrito na #7295).
  */
 
+import { allRows } from "../sqlite-rows.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { getStoreCounts } from "../diaria-subscribers-db.ts";
 import type { AcquisitionMetricDeps, AcquisitionRecordInput, Janela } from "./registry.ts";
@@ -84,7 +85,7 @@ interface SubscriptionAttributionRow {
  * alimentar o placar de verdade, sem trabalho adicional.
  */
 export function registrosFromStore(db: DatabaseSync, janela: Janela): AcquisitionRecordInput[] {
-  const rows = db
+  const rows = allRows<SubscriptionAttributionRow>(db
     .prepare(
       // Subquery correlacionada em vez de LEFT JOIN solto (#7295 self-review
       // finding 1): `identity_alias` não tem UNIQUE(subscriber_id) — depois
@@ -102,8 +103,7 @@ export function registrosFromStore(db: DatabaseSync, janela: Janela): Acquisitio
          s.utm_medium AS utm_medium, s.utm_channel AS utm_channel, s.referring_site AS referring_site
        FROM subscription s
        WHERE s.entered_at IS NOT NULL`,
-    )
-    .all() as unknown as SubscriptionAttributionRow[];
+    ));
 
   const out: AcquisitionRecordInput[] = [];
   for (const row of rows) {
