@@ -20,7 +20,7 @@ import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
 import { applyBrandWordmark, breakBrandDomainAutolink } from "../shared/brand-wordmark.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — movido pra shared/ no #4797 (extraído de newsletter-render-html.ts, que agora só re-exporta por back-compat)
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
-import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
+import { decideBoldLinkFusion, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui; decisão de bold-link desde o #14056
 import { parseSocialInviteIcons, renderSocialInviteIconsHtml } from "../shared/encerramento-snippet.ts"; // #11483 — convite social com ícones, mesmo render da diária
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import { applyDarkModeClasses, darkModeMediaRules } from "../shared/email-dark-mode.ts"; // #13525 — modo escuro do conteúdo
@@ -411,29 +411,9 @@ export function capitalizeFirstLetter(text: string): string {
 // `../shared/markdown-primitives.ts` (item 6 do plano do
 // `docs/render-unification-analysis-3269.md` §6/§2.3) por serem cópia
 // byte-idêntica, junto de `scanBalancedParenClose` (o scanner de parênteses
-// balanceados usado por `nextLinkStartIndex`/`renderInline` abaixo).
-
-/**
- * Índice do próximo `[label](url)` VÁLIDO (URL não-vazia, parênteses
- * balanceados) a partir de `from`. Espelha `nextLinkStartIndex` de
- * `../newsletter-render-html.ts` (#3280 code-review) — usado só pra delimitar
- * o texto conector entre 2 links ao decidir a paridade de `**` (#3284/#3316:
- * sem isso, 2+ links bold-wrapped consecutivos no mesmo parágrafo paravam de
- * fundir). Retorna `str.length` se não houver mais links válidos.
- */
-function nextLinkStartIndex(str: string, from: number): number {
-  const rest = str.slice(from);
-  const linkStart = /\[([^\]]+)\]\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = linkStart.exec(rest)) !== null) {
-    const destStart = m.index + m[0].length;
-    const j = scanBalancedParenClose(rest, destStart);
-    if (j >= rest.length) continue; // sem `)` de fechamento — não é link válido
-    if (j > destStart) return from + m.index; // URL não-vazia
-    linkStart.lastIndex = j + 1;
-  }
-  return str.length;
-}
+// balanceados usado por `renderInline` abaixo). `nextLinkStartIndex` e o bloco
+// de fusão de negrito com link também moram lá desde o #14056
+// (`nextValidLinkStart`/`decideBoldLinkFusion`).
 
 /**
  * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
@@ -487,33 +467,16 @@ export function renderInline(text: string, posicao?: string): string {
     }
 
     // #3299: `**` colado ao link (dos 2 lados) só funde quando genuinamente
-    // desemparelhado no texto adjacente — ver docstring da função acima.
-    let textBefore = input.substring(lastIdx, m.index);
-    const hasOpenBold =
-      textBefore.endsWith("**") &&
-      isUnpairedBoldMarker(textBefore.slice(0, -2));
-    let hasCloseBold = false;
-    if (input.startsWith("**", j + 1)) {
-      const closeBoundary = nextLinkStartIndex(input, j + 3);
-      let closeAdjacent = input.substring(j + 3, closeBoundary);
-      if (
-        closeBoundary < input.length &&
-        closeAdjacent.endsWith("**") &&
-        !isUnpairedBoldMarker(closeAdjacent)
-      ) {
-        closeAdjacent = closeAdjacent.slice(0, -2);
-      }
-      hasCloseBold = isUnpairedBoldMarker(closeAdjacent);
-    }
-    const boldLink = hasOpenBold && hasCloseBold;
-    if (boldLink) {
-      textBefore = textBefore.slice(0, -2);
-    }
+    // desemparelhado no texto adjacente — ver docstring da função acima. A
+    // decisão é a mesma da diária desde o #14056 (`decideBoldLinkFusion`).
+    const fusion = decideBoldLinkFusion(input, lastIdx, m.index, j);
+    const boldLink = fusion.fuse;
+    const textBefore = fusion.textBefore;
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
     const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, pos))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
-    lastIdx = boldLink ? j + 3 : j + 1;
+    lastIdx = fusion.resumeAt;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
   }
   if (lastIdx < input.length) parts.push(renderTextInline(input.substring(lastIdx)));
