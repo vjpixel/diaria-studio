@@ -65,7 +65,10 @@ export function resolveSafeEditRepo(
   return resolveRepoFlag(values, flags, configRoot);
 }
 
-export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
+export type GhRunFn = (args: string[], cwd: string, input?: string) => GhSpawnResult;
+
+const defaultGhRun: GhRunFn = (args, cwd, input) =>
+  spawnGhSync(args, cwd, undefined, undefined, input);
 
 export interface SafeEditResult {
   ok: boolean;
@@ -90,15 +93,17 @@ export function setPrBodyRest(
   pr: number,
   body: string,
   cwd: string,
-  ghRun: GhRunFn = spawnGhSync,
+  ghRun: GhRunFn = defaultGhRun,
   repo?: string,
 ): SafeEditResult {
   const write = ghRun(
-    ["api", "-X", "PATCH", `${repoPath(repo)}/pulls/${pr}`, "-f", `body=${body}`],
+    // #14106: stdin evita o limite de ~32 KB da linha de comando no Windows.
+    ["api", "-X", "PATCH", `${repoPath(repo)}/pulls/${pr}`, "--input", "-"],
     cwd,
+    JSON.stringify({ body }),
   );
   if (write.status !== 0) {
-    return { ok: false, error: `gh api PATCH pulls/${pr} falhou: ${write.stderr.trim() || write.stdout.trim() || "sem saída"}` };
+    return { ok: false, error: `gh api PATCH pulls/${pr} falhou: ${write.stderr.trim() || write.stdout.trim() || `sem saída (corpo: ${body.length} chars, ${Buffer.byteLength(body, "utf8")} bytes UTF-8)`}` };
   }
 
   const verify = ghRun(["pr", "view", String(pr), ...repoArgs(repo), "--json", "body", "--jq", ".body"], cwd);
@@ -129,7 +134,7 @@ export function addPrLabelsRest(
   pr: number,
   labels: readonly string[],
   cwd: string,
-  ghRun: GhRunFn = spawnGhSync,
+  ghRun: GhRunFn = defaultGhRun,
   repo?: string,
 ): SafeEditResult {
   if (labels.length === 0) return { ok: true };
@@ -209,7 +214,7 @@ export function resolveExpectedIssues(
   pr: number,
   explicit: readonly number[] | null,
   cwd: string,
-  ghRun: GhRunFn = spawnGhSync,
+  ghRun: GhRunFn = defaultGhRun,
   repo?: string,
 ): { ok: true; issues: number[]; branch?: string } | { ok: false; error: string } {
   if (explicit && explicit.length > 0) return { ok: true, issues: [...explicit] };
@@ -329,7 +334,7 @@ export function checkPrHeadMatchesLocal(
   pr: number,
   cwd: string,
   localDir: string,
-  ghRun: GhRunFn = spawnGhSync,
+  ghRun: GhRunFn = defaultGhRun,
   gitRun: GitRunFn = defaultGitRun,
   repo?: string,
 ): { ok: true; check: HeadCheck } | { ok: false; error: string } {
@@ -480,7 +485,7 @@ async function main() {
 
   // Conferência do corpo contra as issues da PR (#10698). Devolve `null` se ok.
   const citesCheck = (body: string): SafeEditResult | null => {
-    const expected = resolveExpectedIssues(pr, explicitIssues, cwd, spawnGhSync, repo);
+    const expected = resolveExpectedIssues(pr, explicitIssues, cwd, defaultGhRun, repo);
     if (!expected.ok) return { ok: false, error: expected.error };
     if (expected.issues.length === 0) {
       console.error(
@@ -519,7 +524,7 @@ async function main() {
     // (push recusado em branch que sobrou de PR mergeada). Compara o HEAD da PR
     // com o do checkout que a abriu (`--worktree`, default cwd).
     const localDir = values.worktree ? resolve(values.worktree) : cwd;
-    const head = checkPrHeadMatchesLocal(pr, cwd, localDir, spawnGhSync, defaultGitRun, repo);
+    const head = checkPrHeadMatchesLocal(pr, cwd, localDir, defaultGhRun, defaultGitRun, repo);
     const errors: string[] = [];
     if (!bodyResult.ok && bodyResult.error) errors.push(bodyResult.error);
     if (!head.ok) {
@@ -559,7 +564,7 @@ async function main() {
         return;
       }
     }
-    const result = setPrBodyRest(pr, body, cwd, spawnGhSync, repo);
+    const result = setPrBodyRest(pr, body, cwd, defaultGhRun, repo);
     console.log(JSON.stringify(result));
     if (!result.ok) process.exitCode = 1;
     return;
@@ -570,7 +575,7 @@ async function main() {
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
-    const result = addPrLabelsRest(pr, labels, cwd, spawnGhSync, repo);
+    const result = addPrLabelsRest(pr, labels, cwd, defaultGhRun, repo);
     console.log(JSON.stringify(result));
     if (!result.ok) process.exitCode = 1;
     return;
