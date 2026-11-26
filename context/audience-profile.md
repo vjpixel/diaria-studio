@@ -1,42 +1,42 @@
 # Perfil de Audiência — diar.ia.br
 
-**updated_at:** 2026-11-25
+**updated_at:** 2026-11-26
 **subscribers ativos:** 1191
-**links analisados:** 4577 (298 edições, 7+ dias de idade)
-**filtros aplicados (#1564):** 336 rows com anchor "Aprofunde" excluídas (regime pré-mar/2026); **(#4839):** 2876 rows de hosts não-editoriais excluídas (rodapé LinkedIn, crédito de imagem Wikimedia/Wikidata, afiliado Amazon, links de casa, apoia.se); exponential decay com time constant 90d aplicado (half-life ~62d)
+**links analisados:** 4606 (299 edições, 7+ dias de idade)
+**filtros aplicados (#1564):** 336 rows com anchor "Aprofunde" excluídas (regime pré-mar/2026); **(#4839):** 2902 rows de hosts não-editoriais excluídas (rodapé LinkedIn, crédito de imagem Wikimedia/Wikidata, afiliado Amazon, links de casa, apoia.se); exponential decay com time constant 90d aplicado (half-life ~62d)
 
 ## 1. Engajamento real (CTR por categoria)
 
-Fonte primária: comportamento de 1191 subscribers em 298 edições.
+Fonte primária: comportamento de 1191 subscribers em 299 edições.
 CTR médio geral: 1.26%
 
 **Método (#4840):** cada categoria abaixo tem CTR encolhido empírico-Bayes rumo à média geral (k=850 "aberturas de prior" — quanto menor o n da categoria, mais a estimativa é puxada pra média). Categorias são agrupadas em 3 bandas em vez de ordenadas por posição — um ranking de posição não é sustentado pelo n típico destas categorias (validação: split cronológico com Spearman ≈0,06 fora da amostra, IC95 do posto cobrindo boa parte das 17 posições). O n (links + aberturas) de cada categoria é sempre publicado, mesmo quando ela cai em "sem sinal".
 
 **Acima da média (IC95 exclui a média — sinal):**
 
-- **Impacto** — CTR 1.5% (encolhida) | 179 links | 9308 aberturas
-- **Lançamento** — CTR 1.5% (encolhida) | 1178 links | 49193 aberturas
-- **Treinamento** — CTR 2.3% (encolhida) | 83 links | 2682 aberturas
+- **Impacto** — CTR 1.5% (encolhida) | 179 links | 9185 aberturas
+- **Lançamento** — CTR 1.5% (encolhida) | 1188 links | 50298 aberturas
+- **Treinamento** — CTR 2.3% (encolhida) | 83 links | 2647 aberturas
 
 **Sem sinal (não distinguível da média no IC95):**
 
-- **Aplicação** — CTR 1.3% (encolhida) | 78 links | 2455 aberturas
-- **Estratégia** — CTR 1.2% (encolhida) | 68 links | 2840 aberturas
-- **Ferramenta** — CTR 1.4% (encolhida) | 107 links | 3685 aberturas
-- **Geopolítica** — CTR 1.0% (encolhida) | 89 links | 1719 aberturas
-- **Infraestrutura** — CTR 1.2% (encolhida) | 158 links | 2757 aberturas
-- **Mercado** — CTR 1.2% (encolhida) | 219 links | 8177 aberturas
-- **Outro** — CTR 1.3% (encolhida) | 926 links | 46839 aberturas
-- **Pesquisa** — CTR 1.5% (encolhida) | 204 links | 4272 aberturas
-- **Regulação** — CTR 1.2% (encolhida) | 214 links | 5972 aberturas
-- **Segurança** — CTR 1.1% (encolhida) | 113 links | 3957 aberturas
+- **Aplicação** — CTR 1.3% (encolhida) | 78 links | 2422 aberturas
+- **Estratégia** — CTR 1.2% (encolhida) | 68 links | 2802 aberturas
+- **Ferramenta** — CTR 1.4% (encolhida) | 107 links | 3636 aberturas
+- **Geopolítica** — CTR 1.0% (encolhida) | 89 links | 1696 aberturas
+- **Infraestrutura** — CTR 1.2% (encolhida) | 158 links | 2720 aberturas
+- **Mercado** — CTR 1.2% (encolhida) | 219 links | 8069 aberturas
+- **Outro** — CTR 1.3% (encolhida) | 932 links | 47272 aberturas
+- **Pesquisa** — CTR 1.5% (encolhida) | 204 links | 4215 aberturas
+- **Regulação** — CTR 1.2% (encolhida) | 216 links | 6244 aberturas
+- **Segurança** — CTR 1.1% (encolhida) | 113 links | 3904 aberturas
 
 **Abaixo da média (IC95 exclui a média — sinal):**
 
-- **Bastidores** — CTR 0.9% (encolhida) | 169 links | 4423 aberturas
-- **Curiosidade** — CTR 0.6% (encolhida) | 109 links | 6484 aberturas
-- **Indústria** — CTR 1.0% (encolhida) | 549 links | 32640 aberturas
-- **Tendência** — CTR 0.9% (encolhida) | 134 links | 5403 aberturas
+- **Bastidores** — CTR 0.9% (encolhida) | 169 links | 4365 aberturas
+- **Curiosidade** — CTR 0.6% (encolhida) | 112 links | 6753 aberturas
+- **Indústria** — CTR 1.0% (encolhida) | 551 links | 32559 aberturas
+- **Tendência** — CTR 0.8% (encolhida) | 140 links | 6386 aberturas
 
 
 ### Destaques por categoria + origem
@@ -46,9 +46,9 @@ Top 10 combinações com maior CTR encolhido (mínimo 5 links, k=850):
 - **Treinamento BR** — CTR 2.54% (encolhida) | 37 links
 - **Outro BR** — CTR 2.07% (encolhida) | 308 links
 - **Indústria BR** — CTR 1.78% (encolhida) | 205 links
-- **Impacto BR** — CTR 1.69% (encolhida) | 98 links
+- **Impacto BR** — CTR 1.68% (encolhida) | 98 links
 - **Treinamento INT** — CTR 1.55% (encolhida) | 46 links
-- **Lançamento INT** — CTR 1.47% (encolhida) | 1050 links
+- **Lançamento INT** — CTR 1.50% (encolhida) | 1060 links
 - **Pesquisa BR** — CTR 1.47% (encolhida) | 27 links
 - **Ferramenta INT** — CTR 1.43% (encolhida) | 99 links
 - **Pesquisa INT** — CTR 1.42% (encolhida) | 177 links
@@ -56,31 +56,31 @@ Top 10 combinações com maior CTR encolhido (mínimo 5 links, k=850):
 
 ### Engajamento por origem
 
-- **BR** — CTR 1.61% (encolhida) | 1388 links (30.3% do total)
-- **INT** — CTR 1.05% (encolhida) | 3189 links (69.7% do total)
+- **BR** — CTR 1.59% (encolhida) | 1395 links (30.3% do total)
+- **INT** — CTR 1.06% (encolhida) | 3211 links (69.7% do total)
 
 > **Como usar:** só a banda "acima" deve receber bônus de score; "sem sinal" não deve mover pontuação em nenhuma direção; "abaixo" é candidata a leve penalidade. Nenhuma banda deve ser lida como ranking fino entre categorias vizinhas — o encolhimento existe justamente pra não afirmar diferença que o n não sustenta.
-> Conteúdo BR tem CTR 53% maior — priorizar quando disponível em qualidade equivalente.
+> Conteúdo BR tem CTR 50% maior — priorizar quando disponível em qualidade equivalente.
 
 ### CTR por fonte (mínimo 3 links, encolhido k=850)
 
 Top 15 fontes com maior engajamento (CTR encolhido rumo à média geral):
 
-- **techtudo.com.br** — CTR 3.0% (encolhida) | 34 links | 2232 aberturas
-- **cursoschatgpt.com.br** — CTR 2.8% (encolhida) | 11 links | 1333 aberturas
-- **infomoney.com.br** — CTR 2.4% (encolhida) | 8 links | 307 aberturas
-- **agente.vjpixel.chatgpt.site** — CTR 2.3% (encolhida) | 4 links | 398 aberturas
-- **tudosobreia.com.br** — CTR 2.1% (encolhida) | 5 links | 510 aberturas
-- **cibersistemas.pt** — CTR 2.1% (encolhida) | 3 links | 239 aberturas
-- **finsidersbrasil.com.br** — CTR 1.9% (encolhida) | 15 links | 1051 aberturas
-- **jettax.com.br** — CTR 1.9% (encolhida) | 3 links | 266 aberturas
-- **querobolsa.com.br** — CTR 1.9% (encolhida) | 3 links | 287 aberturas
-- **theregister.com** — CTR 1.8% (encolhida) | 6 links | 183 aberturas
-- **typesafe.ai** — CTR 1.8% (encolhida) | 3 links | 149 aberturas
-- **nexojornal.com.br** — CTR 1.8% (encolhida) | 8 links | 813 aberturas
-- **magazine.sebastianraschka.com** — CTR 1.8% (encolhida) | 7 links | 576 aberturas
-- **oglobo.globo.com** — CTR 1.8% (encolhida) | 8 links | 734 aberturas
-- **thenextweb.com** — CTR 1.8% (encolhida) | 4 links | 301 aberturas
+- **techtudo.com.br** — CTR 3.0% (encolhida) | 34 links | 2203 aberturas
+- **cursoschatgpt.com.br** — CTR 2.8% (encolhida) | 11 links | 1316 aberturas
+- **infomoney.com.br** — CTR 2.4% (encolhida) | 8 links | 303 aberturas
+- **agente.vjpixel.chatgpt.site** — CTR 2.3% (encolhida) | 4 links | 393 aberturas
+- **tudosobreia.com.br** — CTR 2.1% (encolhida) | 5 links | 503 aberturas
+- **cibersistemas.pt** — CTR 2.1% (encolhida) | 3 links | 235 aberturas
+- **finsidersbrasil.com.br** — CTR 1.9% (encolhida) | 15 links | 1037 aberturas
+- **jettax.com.br** — CTR 1.9% (encolhida) | 3 links | 262 aberturas
+- **querobolsa.com.br** — CTR 1.8% (encolhida) | 3 links | 284 aberturas
+- **theregister.com** — CTR 1.8% (encolhida) | 6 links | 181 aberturas
+- **typesafe.ai** — CTR 1.8% (encolhida) | 3 links | 147 aberturas
+- **nexojornal.com.br** — CTR 1.8% (encolhida) | 8 links | 802 aberturas
+- **magazine.sebastianraschka.com** — CTR 1.8% (encolhida) | 7 links | 568 aberturas
+- **oglobo.globo.com** — CTR 1.8% (encolhida) | 8 links | 725 aberturas
+- **thenextweb.com** — CTR 1.8% (encolhida) | 4 links | 297 aberturas
 
 > **Como usar:** fontes com CTR encolhido acima da média indicam conteúdo que a audiência valoriza.
 > Fontes com poucos links (perto do mínimo de 3) aparecem puxadas pra média — isso é esperado (encolhimento), não indica baixa qualidade por si só.
