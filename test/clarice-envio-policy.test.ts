@@ -856,8 +856,10 @@ describe("paridade com workers/brevo-dashboard/src/thresholds.ts", () => {
   });
 
   it("o arquivo-fonte declara exatamente esses números (guard contra reshuffle)", () => {
+    // #13994: os limiares moram em scripts/lib/shared/ (o thresholds.ts do
+    // Worker só reexporta).
     const src = readFileSync(
-      resolve(ROOT, "workers", "brevo-dashboard", "src", "thresholds.ts"),
+      resolve(ROOT, "scripts", "lib", "shared", "brevo-health-thresholds.ts"),
       "utf8",
     );
     const yellowOf = (metric: string): number | null => {
