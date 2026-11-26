@@ -2,300 +2,58 @@
 
 **Encerrada em 18/10/2026 (#10387).** Decisão do editor: "não estou mais
 usando modelos pagos no OpenRouter". A lane existia para medir um modelo PAGO
-de gateway, então deixou de ter objeto. O que mudou no repo:
-
-- `scripts/dispatch-glm-lane-unit.sh` aborta logo no início (exit 3), antes de
-  qualquer claim, worktree ou dispatch. No #10431 virou lápide: o corpo morto
-  saiu, junto com o harness que só ele consumia (`check-glm-lane-gate.ts`,
-  `lib/glm-lane-gate.ts`, `record-glm-lane-unit.ts`,
-  `lib/glm-lane-headref-guard.sh` e os testes deles). As seções "Harness" e
-  "Critérios de morte" abaixo descrevem esse código, que agora só existe no
-  histórico do git;
-- `hermes/scripts/claude-delegate.sh` recusa `--model` que não seja `:free`
-  nem o elo de assinatura (exit 2), e a cadeia default não tem mais elo pago;
-- `scripts/glm-lane-credits.ts` fica só como leitura avulsa do saldo da conta
-  OpenRouter, sem consumidor;
-- o alarme de preço de modelo pago (#6818/#10278/#10295) saiu do
-  `watch-continuo-health.sh`; quem vigia custo é o alarme de billing
-  (`scripts/openrouter-billing-leak-check.ts`, qualquer cobrança > 0 acusa).
-  O `--price-check` do `hermes-model-cost-report.py` saiu no #10431, e a
-  coluna "pago=%" da composição por tick passou a contar qualquer id pago (não
-  mais o slug fixo do deepseek);
-- luna (#10431): fica FORA de `EXPECTED_PAID_MODELS`. A rota real é
-  `openai-codex` (`~/.hermes/config.yaml` no `300`, conferido em 18/10/2026;
-  `session_model_usage` sem nenhuma linha de luna com
-  `billing_provider=openrouter`), coberta por `SUBSCRIPTION_ROUTE_MODELS` no
-  relatório Python. Luna faturado no OpenRouter seria config errada e acusa;
-- risco aceito (#10431): o portão do `claude-delegate.sh` confia no sufixo
-  `:free`. Um `:free` que passe a ser cobrado só aparece no alarme de billing
-  do dia seguinte.
-
-Com isso a exceção à regra do `CLAUDE.md` (#5608/#6714) descrita abaixo **não
-está mais aberta**. O resto deste arquivo é histórico do piloto: condições,
-critérios de morte e medições valem como registro, não como autorização.
+de gateway (`z-ai/glm-5.3-flash`, depois `deepseek/deepseek-v4-flash` desde o
+#10367), então deixou de ter objeto. Este arquivo é o registro do
+encerramento que o `CLAUDE.md` aponta (regra #5608/#6714); não autoriza nada.
 Reabrir exige nova decisão do editor revertendo o #10387.
 
-**Reapontada em 16/10/2026 (#10367):** o modelo da lane passou de
-`z-ai/glm-5.3-flash` para `deepseek/deepseek-v4-flash` (decisão do editor no
-briefing overnight 261016b, na sequência do #10278, que já tinha trocado o glm
-pelo deepseek como elo pago da cadeia do wrapper). O nome "glm" do arquivo, do
-script e do comando npm ficou por compatibilidade. As unidades do deepseek são
-registradas num log próprio (`data/glm-lane/units-deepseek-v4-flash.jsonl`):
-as 2 unidades em `units.jsonl` mediram o glm e não contam para o teto nem para
-os critérios de morte do modelo novo. Menções ao glm abaixo são históricas
-(medições e achados feitos quando ele era o modelo da lane).
+## O que era
 
-Detalhamento da exceção apontada em `CLAUDE.md`, seção **"NUNCA trocar a conta
-claude.ai pela API (#5608)"**. A regra ali continua valendo por padrão: nenhuma
-sessão de Claude Code deste projeto autentica por API pay-per-token nem por
-gateway de terceiro. Este arquivo descreve a **única** exceção aberta, e o que
-ela não autoriza.
+Um lane de piloto decidido em 01/09/2026 para drenar issues de aceite
+mecânico e medir o custo do modelo de gateway sob volume real. Despachava 1
+unidade por vez via `hermes/scripts/claude-delegate.sh` (`ANTHROPIC_BASE_URL`
++ `ANTHROPIC_AUTH_TOKEN` escopados ao subprocesso), como produtor apenas
+(`--tools` sem `gh pr merge`/`gh pr review`/`gh issue close|edit`), com teto
+de 10 unidades e critérios de morte mecânicos. Só 2 unidades reais rodaram,
+com o glm em 01/09/2026: #6928 (US$ 0,0108, acertou) e #6950 (US$ 0,2407,
+review com 3 findings).
 
-Mora fora do `CLAUDE.md` porque aquele arquivo é o único carregado
-incondicionalmente em toda sessão e em todo dispatch de subagente — e está a
-**1 byte** do teto de 76.800 (`test/claude-md-size.test.ts`, #5904). Ver #6935.
+## O que saiu
 
-## O que é
+- #10431: o harness inteiro (`check-glm-lane-gate.ts`, `lib/glm-lane-gate.ts`,
+  `record-glm-lane-unit.ts`, `lib/glm-lane-headref-guard.sh` e os testes), e o
+  corpo de `scripts/dispatch-glm-lane-unit.sh`, que virou lápide (exit 3);
+- #14059: a lápide `scripts/dispatch-glm-lane-unit.sh`, o npm script
+  `glm-lane-dispatch`, `scripts/glm-lane-credits.ts` (leitura de
+  `/api/v1/credits` do OpenRouter, sem consumidor) e o teste dele. O código
+  completo do piloto está no histórico do git.
 
-Um lane de execução de **piloto**, decidido pelo editor em 01/09/2026, cujo
-objetivo declarado é duplo: **drenar a fila técnica** (31 issues no track
-`overnight` no dia da decisão) e **medir o custo** do modelo da lane
-(`z-ai/glm-5.3-flash` até o #10367; `deepseek/deepseek-v4-flash` desde então)
-sob volume real.
+## O que ficou
 
-Ele invoca `hermes/scripts/claude-delegate.sh`, que seta `ANTHROPIC_BASE_URL`
-+ `ANTHROPIC_AUTH_TOKEN` apontando para o OpenRouter — exatamente o padrão que
-o #6714 proibiu. Daí precisar de exceção escrita.
+- `hermes/scripts/claude-delegate.sh` recusa `--model` que não seja `:free`
+  nem o elo de assinatura (exit 2), e a cadeia default não tem elo pago
+  (travado em `test/no-paid-openrouter-10387.test.ts`);
+- quem vigia custo é o alarme de billing
+  (`scripts/openrouter-billing-leak-check.ts`: qualquer cobrança > 0 no
+  OpenRouter acusa). Risco aceito (#10431): o portão confia no sufixo
+  `:free`, e um `:free` que passe a ser cobrado só aparece no alarme do dia
+  seguinte;
+- luna fica fora de `EXPECTED_PAID_MODELS`: a rota real é `openai-codex`
+  (`SUBSCRIPTION_ROUTE_MODELS` no relatório Python do Hermes).
 
-## Condições — todas verificáveis; a (b) é mecânica
+## Achado que continua valendo (#6947)
 
-### (a) Só issues de aceite mecânico
-
-Elegível é a issue cuja **correção seja decidida por teste/CI**, não por
-julgamento. **Não existe label nem script que classifique isso** — não finja
-que existe. É critério de seleção do coordenador no despacho, aplicado à mão e
-registrado por unidade. `classifyExecTrack` (`scripts/lib/issue-exec-track.ts`)
-responde outra pergunta: "qual sessão pega esta issue", não "o aceite dela é
-mecânico".
-
-### (b) Produtor apenas — imposto pelo `--tools`
-
-O lane **não mergeia, não revisa, não faz triagem**. Isso é imposto pela
-allowlist de ferramentas da invocação, que **omite** `gh pr merge`,
-`gh pr review` e `gh issue close|edit` — no molde de
-`hermes/scripts/continuo-pr-review.sh`.
-
-**Instrução de prompt não conta.** O #6864 já concluiu neste repo que "remover a
-capacidade é mais forte que confiar no texto", depois de o #6849 mostrar que
-nenhum discriminador textual separava review legítimo de review fabricado.
-`Bash` irrestrito reabre exatamente o que o #6864 fechou.
-
-O lane abre PR em branch `continuo/*`; quem julga é `continuo-pr-review.sh`
-(Sonnet, assinatura claude.ai) mais os portões determinísticos do #6926.
-
-**#6926 ainda estava ABERTA quando esta exceção foi escrita**, e ela é
-pré-requisito do piloto — não decoração. Enquanto não entrar, o único merger
-de PR `continuo/*` é o pickup manual do `/diaria-overnight`, que roda quando o
-editor o inicia. Sem merger automático, as PRs do lane empilham exatamente
-como a #6901 empilhou por 10h29, e o lane barato vira uma fila que só o editor
-drena. **O piloto não começa antes da #6926 mergear.**
-
-### (c) `--model` explícito, sempre
-
-A invocação passa **`--model deepseek/deepseek-v4-flash`** (constante
-`LANE_MODEL` do script; era `z-ai/glm-5.3-flash` até o #10367). Não é detalhe:
-sem `--model`, `claude-delegate.sh` roda a `MODELS_DEFAULT` inteira (os elos
-`:free` → `deepseek/deepseek-v4-flash` → elo de assinatura), e a exceção
-passaria a cobrir vários modelos, os `:free` nunca avaliados aqui.
-
-O `export` continua **escopado ao subprocesso** do wrapper, nunca persistente
-no shell — o padrão de erro do #6714 segue proibido.
-
-### (d) Custo medido, com o vazamento nomeado
-
-- **Por dia e por modelo:** `GET /api/v1/activity` do OpenRouter, com
-  `OPENROUTER_MANAGEMENT_KEY` (no Doppler). O endpoint **não cobre o dia
-  corrente** — não serve para janela móvel de 24h.
-- **Por unidade:** snapshot de `GET /api/v1/credits` antes e depois.
-
-O relatório **tem** que separar GLM de Sonnet, porque **o vazamento do #6716
-continua aberto**: nos dias medidos, o Sonnet auxiliar não-pedido custou mais
-que todo o GLM do dia (31/08: US$ 0,96 de Sonnet, 100% do gasto do dia). Esta
-exceção **não implica** que ele foi consertado.
-
-## Teto e reversão
-
-**Teto: 10 unidades.** Esgotadas, o piloto acaba — continuar exige decisão nova
-e escrita. **Reverter é apagar o ponteiro no `CLAUDE.md` e este arquivo.**
-
-**Critérios de morte adicionais (#6930/#6941, especificados durante a
-construção do harness — mecânicos, em `scripts/lib/glm-lane-gate.ts`,
-checados a cada despacho por `scripts/check-glm-lane-gate.ts`):**
-
-2. **Zero PRs MERGEADAS nos 3 primeiros despachos** (corrigido de "abertas"
-   pra "mergeadas" no #6954, achado ao vivo na unidade 2 — abrir PR que não
-   consegue mergear não é sucesso) — sinal medido em #6922 (10 ticks
-   consecutivos do primário mais barato: zero claims, zero PRs, relatório
-   coerente). O modo de falha do modelo barato em trabalho autônomo não é
-   "erra", é "para cedo e relata bem". `check-glm-lane-gate.ts` consulta o
-   `gh` ao vivo pro estado de merge das PRs das 3 primeiras unidades a cada
-   avaliação do gate — o merge pode acontecer bem depois do despacho que
-   abriu a PR, então não dá pra gravar isso em `units.jsonl` (append-only)
-   no momento do registro.
-3. **Média de rodadas de review > 2** (inerte até um reconciliador de
-   `reviewRounds` existir — ver `GlmLaneUnitRecord` em `glm-lane-gate.ts`).
-4. **`$/issue` do GLM acima do equivalente no lane Sonnet** (inerte até
-   `GLM_LANE_SONNET_COST_PER_ISSUE_USD` ser configurada — sem baseline, o
-   repo não tem hoje uma fonte pronta pra esse número; decisão explícita de
-   não inventar um).
-
-Unidade que falhou por infraestrutura (timeout, rede — `status:
-"infra-error"` em `units.jsonl`) ainda conta pro teto de 10, mas é excluída
-dos critérios 2-4, que julgam o MODELO, não a infra.
-
-## O que a exceção NÃO autoriza
-
-- Não se pronuncia sobre a **delegação do contínuo**, que já usa o mesmo
-  wrapper com a cadeia default e é anterior a esta decisão.
-- Não afrouxa nada para as sessões do **pipeline editorial**, para
-  `/diaria-edicao`, nem para qualquer sessão que **toque conector** claude.ai:
-  para essas, "sessão de Claude Code, nunca" segue literal. O lane, por
-  autenticar pelo gateway, **não tem** Beehiiv nem Gmail — nada que dependa
-  deles vai para ele.
-
-## Por que o harness invoca por unidade (`claude -p`), nunca uma sessão paralela — TESTADO, não escolha arbitrária (#6947)
-
-A forma "sessão paralela que o coordenador conversa com" (`--remote-control`,
-registrada como peer, alcançável por `SendMessage`/`ListAgents`) foi
-**tentada** pro piloto do #6930 e abandonada por medição, não por
-preferência de implementação. Não confundir com decisão de design não
-verificada — o teste aconteceu e os dois lados (sessões autenticadas por
-assinatura claude.ai vs. por gateway) foram comparados lado a lado.
-
-Reprodução (`300`, 01/09/2026): subiu 1 sessão `claude --model
-z-ai/glm-5.3-flash --remote-control` autenticada via `ANTHROPIC_BASE_URL` +
-`ANTHROPIC_AUTH_TOKEN` (OpenRouter) ao lado de 2 sessões autenticadas pela
-assinatura claude.ai. As 2 sessões claude.ai criaram socket em
-`/run/user/1000/cc-socks/` no MESMO instante em que subiram; a sessão GLM
-ficou viva (`ps` confirmou o processo rodando, prompt na tela) mas **nunca
-criou socket nenhum**, e `ListAgents` nunca a listou — não é lentidão de
-inicialização (40s+ de diferença contra as outras duas, que foram
-instantâneas).
-
-Causa: o registro de peer e `SendMessage`/`ListAgents` são infraestrutura
-ligada à conta claude.ai — a mesma que os conectores nativos (Beehiiv,
-Gmail) usam, e que o `CLAUDE.md` (#5608/#6714) já documenta como
-desabilitada por autenticação via gateway. O que esta medição acrescenta:
-**a mensageria entre sessões cai junto**, não só os conectores. Uma sessão
-autenticada por gateway não tem conta ali pra se registrar.
-
-Consequência de desenho, direta: **um lane em modelo de gateway só pode
-receber trabalho por invocação** (`claude -p`, como este harness faz via
-`hermes/scripts/claude-delegate.sh` UMA VEZ por unidade) — nunca como
-sessão de vida longa que o coordenador desperta com `SendMessage`. Não há
-conserto deste lado (a malha de peers é do produto, fora deste repo); o
-valor de registrar isto é impedir que uma sessão futura tente a mesma forma
-achando que é questão de flag. Achado completo, com os comandos e a saída
-de `ps`/`ListAgents`: #6947.
-
-## Custo de referência medido
-
-Medições do glm-5.3-flash, quando ele era o modelo da lane (pré-#10367). O
-custo do deepseek-v4-flash na lane ainda não tem medição própria.
-
-| dia | modelo | requests | USD | USD/request |
-|---|---|---:|---:|---:|
-| 29/08 | `z-ai/glm-5.3-flash` | 613 | 1,7160 | 0,0028 |
-| 28/08 | `z-ai/glm-5.3-flash` | 69 | 0,1016 | 0,0015 |
-
-## Harness (#6930, `--pr N` no #6954)
-
-`scripts/dispatch-glm-lane-unit.sh <ISSUE> [--pr N]` — despacha 1 unidade.
-Sem `--pr`, cria branch+worktree do zero a partir de `origin/master` (1ª
-rodada). **Com `--pr N`** (#6954, achado ao vivo na unidade 2 — a #6950
-recebeu 3 findings de review e não tinha como o harness endereçá-los sem
-duplicar PR): faz checkout da branch HEAD da PR N existente (`gh pr view N
---json headRefName`), injeta no prompt os comentários de review já
-postados nela (`gh pr view N --json comments`), e comita POR CIMA do que
-já existe — `gh pr create` fica FORA do `--tools` desse modo
-(mecanicamente impossível duplicar, mesma disciplina do resto do harness).
-`git push` continua escopado à branch EXATA (agora a da PR). O prompt de
-ambos os modos inclui um pedido explícito — **ADVISORY, não mecânico**
-(achado de review independente; #6864 já estabeleceu essa distinção neste
-repo) — pra não esperar CI dentro da unidade (`gh pr checks`/`gh run
-watch`/qualquer laço de poll): achado ao vivo, a unidade 2 ficou girando
-DEPOIS de abrir a PR (provavelmente esperando CI), custando 22× mais que
-a unidade que não esperou nada (US$0,2407 vs. US$0,0108). `Bash(gh pr
-view:*)` — o vetor mais plausível desse laço — continua no `--tools` sem
-sub-timeout; nada aqui IMPEDE mecanicamente um poll repetido, só pede pro
-modelo parar sozinho. Risco residual registrado, não fechado.
-
-**Retry via `--pr N` consome 1 slot do teto de 10 e entra normalmente no
-critério "3 primeiras" (achado de review, #6954, não resolvido — registrado
-de propósito):** cada invocação do script grava um registro NOVO em
-`units.jsonl`, `--pr` incluso. Uma issue que precisou de 2 rodadas (1ª +
-1 retry `--pr`) consome 2 dos 10 slots do piloto por 1 issue só, e se esse
-retry cair entre as 3 primeiras unidades despachadas, o critério de morte 2
-passa a julgar 2 registros da MESMA issue/PR em vez de 3 issues
-independentes — dilui exatamente o tipo de sinal estatístico que o #6922
-media (comportamento do modelo em trabalho autônomo através de issues
-distintas). Não corrigido nesta PR — decisão a tomar quando/se isso
-acontecer na prática (contar por issue única em vez de por registro?
-excluir retries do teto?).
-
-Impõe (b)
-e (c) mecanicamente: `--tools` explícito omite `gh pr merge`/`gh pr
-review`/`gh issue close|edit` E escopa `git`/`npm`/`npx` a subcomandos
-específicos (nunca `Bash(git:*)`/`Bash(npm:*)`/`Bash(npx:*)` genéricos —
-achado de review, #6941: esses genéricos permitiam `git push` direto pra
-`master` e `npm exec -- gh pr merge` driblando o allowlist inteiro);
-`--model "$LANE_MODEL"` (`deepseek/deepseek-v4-flash`) sempre passado. **NÃO reivindica a issue
-sozinho** — a reivindicação é responsabilidade do COORDENADOR, como comando
-standalone ANTES de chamar o script (`session-registry.ts claim-issue`;
-achado de review: `--session-id` só é injetado automaticamente numa
-chamada de TOPO da ferramenta Bash, nunca numa chamada enterrada dentro de
-um script — um `claim-issue` daqui dentro sempre falharia). O script só
-CONFERE que a claim existe (`is-claimed`) e recusa despachar se não achar.
-Roda num worktree isolado (removido ao final, sucesso ou falha), invoca
-`hermes/scripts/claude-delegate.sh` UMA VEZ (nunca sessão de vida longa),
-tira snapshot de `/api/v1/credits` (`scripts/glm-lane-credits.ts`) antes e
-depois, e registra a unidade append-only em
-`data/glm-lane/units-deepseek-v4-flash.jsonl` (era `units.jsonl` na fase glm)
-(`scripts/record-glm-lane-unit.ts`) — incluindo se a invocação terminou
-(`status: "completed"`) ou falhou por infra (`"infra-error"`, excluído dos
-critérios de morte 2-4 acima).
-
-Antes de CADA despacho, `scripts/check-glm-lane-gate.ts` (lógica pura em
-`scripts/lib/glm-lane-gate.ts`) avalia o teto de 10 unidades e os critérios
-de morte contra o histórico já registrado — recusa a 11ª unidade e
-qualquer unidade além de um critério disparado, por construção. A condição
-(a) — issue de aceite mecânico — continua seleção humana; o harness
-recebe o número da issue já escolhida, nunca decide isso sozinho.
-
-Testes: `test/glm-lane-gate.test.ts`, `test/glm-lane-credits.test.ts`,
-`test/check-glm-lane-gate.test.ts`, `test/record-glm-lane-unit.test.ts`,
-`test/dispatch-glm-lane-unit.test.ts`. **Duas unidades reais já
-despachadas com o glm (01/09/2026, em `units.jsonl`):** #6928 (US$0,0108, 123s, GLM acertou) e #6950
-(US$0,2407, review com 3 findings incluindo 1 P1 — insumo do teste do
-`--pr N` acima, não corrigido manualmente de propósito).
-
-**Risco residual, não fechado por este harness**: `--tools` restringe
-subcomandos específicos, mas não é uma sandbox — um modelo adversarial com
-`Write` ainda pode escrever um arquivo `.ts` que chama `gh pr merge` via
-`execSync` e rodá-lo com `Bash(npx tsx:*)`. Fechar isso por completo exige
-sandbox de processo/container, fora de escopo desta PR (mesmo risco que
-já existe, sem escopo NENHUM de `--tools`, na delegação padrão do
-contínuo — ver `hermes-diaria-continuo/SKILL.md` §4 passo 2).
+Sessão de Claude Code autenticada por gateway não registra peer: medido no
+`300` em 01/09/2026, ela nunca criou socket em `/run/user/1000/cc-socks/` nem
+apareceu em `ListAgents`, enquanto as sessões da assinatura claude.ai
+apareceram na hora. A mensageria entre sessões (`SendMessage`/`ListAgents`)
+cai junto com os conectores claude.ai. Um modelo de gateway só recebe
+trabalho por invocação (`claude -p`), nunca como sessão de vida longa
+despertada por `SendMessage`.
 
 ## Relacionadas
 
-#6930 (a proposta e o desenho), #6716 (o vazamento de Sonnet no wrapper),
-#6926 (o merger automático de que o lane depende), #6864 (por que a condição
-(b) é mecânica), #5608 e #6714 (a regra a que isto abre exceção), #6935 (o
-teto do `CLAUDE.md`), #6922 (o modo de falha "para cedo e relata bem" que
-motiva o critério de morte 2), #6941 (review do harness — achados que
-endureceram `--tools`, `status`/infra-error, e moveram claim-issue pra
-fora do script), #6954 (unidade 2 real expôs o gap "abriu PR" vs. "PR
-mergeou" e o CI-wait dentro da unidade; adiciona `--pr N`), #6947 (sessão
-paralela autenticada por gateway não registra peer — testada e descartada,
-motivo direto de o harness invocar por unidade).
+#6930 (proposta e desenho), #6941 e #6954 (reviews do harness), #6947 (sessão
+por gateway sem peer), #10367 (troca para o deepseek), #10387 (encerramento),
+#10431 (remoção do harness), #14059 (remoção da lápide e do leitor de
+crédito), #5608 e #6714 (a regra a que a lane abria exceção).
