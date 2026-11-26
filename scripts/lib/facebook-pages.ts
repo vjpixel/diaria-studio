@@ -36,10 +36,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { composeUtmContentOnProjectLinks } from "./use-melhor-dispatch.ts";
 import { DEFAULT_FACEBOOK_PAGE_SLUG, resolvePostPage } from "./social-published-store.ts";
+import { META_GRAPH_VERSION } from "./shared/meta-graph.ts";
 
 export { DEFAULT_FACEBOOK_PAGE_SLUG, resolvePostPage };
 
-export const DEFAULT_FACEBOOK_API_VERSION = "v25.0";
+/** Alias histórico de `META_GRAPH_VERSION` (#14124). */
+export const DEFAULT_FACEBOOK_API_VERSION = META_GRAPH_VERSION;
 
 /** Formato de uma página em `publishing.social.facebook.pages`. */
 export interface FacebookPageConfig {

@@ -41,7 +41,11 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
-import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, readSocialPublished } from "./lib/social-published-store.ts";
+// #6095/#6104 — leitura best-effort de 06-public-images.json; mora na lib
+// desde o #14125 e segue exportada daqui (testes e callers antigos).
+import { loadPublicImagesFile } from "./lib/public-images-file.ts";
+export { loadPublicImagesFile };
 import {
   FacebookPublishError,
   fetchForFacebookPublish,
@@ -139,13 +143,6 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     if (!(k in args)) args[k] = v;
   }
   return args;
-}
-
-function loadPublished(path: string): SocialPublished {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, "utf8"));
-  }
-  return { posts: [] };
 }
 
 /**
@@ -505,22 +502,6 @@ async function readFacebookCreateResponse(res: Response, label: string): Promise
  * CALLER decide o bookkeeping de falha (`status:"failed"` + `reason`), não
  * esta função — mesmo contrato de `publishPhoto` acima.
  */
-/**
- * #6095/#6104 — lê 06-public-images.json best-effort para resolver o
- * carrossel diário. Ausência do arquivo OU JSON corrompido nunca lança —
- * ambos degradam pra "sem carrossel" ({}), preservando o contrato
- * tudo-ou-nada de `resolveCarouselImageUrls` e nunca abortando o dispatch.
- */
-export function loadPublicImagesFile(publicImagesPath: string): { images?: Record<string, { url?: string }> } {
-  if (!existsSync(publicImagesPath)) return {};
-  try {
-    return JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> };
-  } catch (e: any) {
-    console.warn(`WARN: falha ao parsear ${publicImagesPath} (${e.message}) — seguindo sem carrossel.`);
-    return {};
-  }
-}
-
 export async function publishFacebookCarouselByUrl(
   pageId: string,
   pageToken: string,
@@ -788,7 +769,7 @@ async function rescheduleFacebookPosts(opts: {
    */
   now?: number;
 }): Promise<{ rescheduled: number; skipped: number; failed: number; posts: PostEntry[] }> {
-  const published = loadPublished(opts.publishedPath);
+  const published = readSocialPublished(opts.publishedPath);
   const slug = opts.page.slug;
   // #10458: só os posts DESTA página (sem `page` = diaria) — o token de uma
   // página não deleta post da outra.
@@ -1164,7 +1145,7 @@ async function main(): Promise<number | void> {
     for (const d of dispatchIds) {
       // Re-read published state from disk on each iteration (#758): LinkedIn agent
       // may be writing concurrently; always read the latest state under lock.
-      const published = loadPublished(publishedPath);
+      const published = readSocialPublished(publishedPath);
 
       // Check if already published (skip-existing: ignore failed entries, retry them)
       if (skipExisting) {

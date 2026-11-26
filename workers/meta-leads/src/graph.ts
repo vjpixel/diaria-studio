@@ -7,8 +7,9 @@
  */
 
 import { redactPii } from "./redact.ts";
+import { META_ADS_GRAPH_VERSION } from "../../../scripts/lib/shared/meta-graph.ts"; // #14124
 
-export const DEFAULT_GRAPH_API_VERSION = "v21.0";
+export const DEFAULT_GRAPH_API_VERSION = META_ADS_GRAPH_VERSION;
 
 export interface MetaFieldDatum {
   name: string;

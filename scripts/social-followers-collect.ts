@@ -72,9 +72,10 @@ import {
   type SocialFollowerSample,
   type SocialPlatform,
 } from "./lib/social-followers.ts";
+import { META_GRAPH_HOST, META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 
-const GRAPH_API_BASE = "https://graph.facebook.com";
-const GRAPH_API_VERSION = "v25.0"; // mesma versão de publish-instagram.ts/publish-facebook.ts
+const GRAPH_API_BASE = META_GRAPH_HOST;
+const GRAPH_API_VERSION = META_GRAPH_VERSION;
 
 export const DEFAULT_OUTPUT_PATH = "data/metrics/social-followers.jsonl";
 

@@ -50,6 +50,7 @@ import {
   resolveFacebookPageForEntry,
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts"; // #10458
+import { META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveSocialWorkerToken, resolveSocialWorkerUrlFromRoot } from "./lib/worker-queue-client.ts"; // #14062
@@ -641,7 +642,7 @@ async function main(): Promise<number | void> {
   // (sem `page` = diaria), e /scheduled_posts é consultado uma vez por página.
   if (fbEntries.length > 0) {
     let fbPages: ResolvedFacebookPage[] = [];
-    let fbApiVersion = process.env.FACEBOOK_API_VERSION ?? "v25.0";
+    let fbApiVersion = process.env.FACEBOOK_API_VERSION ?? META_GRAPH_VERSION;
     let config: unknown = {};
     try {
       config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));

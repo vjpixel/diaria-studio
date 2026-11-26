@@ -82,8 +82,9 @@ import {
   type YoutubeSubsSummary,
 } from "./lib/mandala-semana.ts";
 import { parseSocialFollowersJsonl } from "./lib/social-followers.ts";
+import { metaGraphBase } from "./lib/shared/meta-graph.ts"; // #14124
 
-const GRAPH_API = "https://graph.facebook.com/v25.0"; // mesma versão de social-followers-collect.ts
+const GRAPH_API = metaGraphBase();
 const GRAPH_MAX_PAGES = 20;
 const SOCIAL_FOLLOWERS_PATH = "data/metrics/social-followers.jsonl";
 const YOUTUBE_DAILY_PATH = "data/youtube-analytics/channel-daily.jsonl";

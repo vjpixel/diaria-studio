@@ -301,6 +301,7 @@ import {
   resolvePostPage,
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts"; // #10458 — carrossel semanal em cada página habilitada
+import { META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -2433,7 +2434,7 @@ async function runOneMode(
   // agendada). Página sem credencial falha SÓ ela (`facebook_not_configured`);
   // a tag `utm_content` da página entra nos links do projeto (a `diaria` vem
   // com `utm_content: null` no config — caption idêntica à de antes).
-  const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
+  const fbApiVersion = process.env.FACEBOOK_API_VERSION || META_GRAPH_VERSION;
   for (const pg of fbPendingPages) {
     const label = facebookPageLabel(pg.slug, destaqueKey);
     if (pg.missing.length > 0) {
@@ -2707,7 +2708,7 @@ async function cancelForReschedule(args: {
     return false;
   }
 
-  const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
+  const fbApiVersion = process.env.FACEBOOK_API_VERSION || META_GRAPH_VERSION;
   // #12417: intenção `cancelling` antes do 1º DELETE e regravações protegidas
   // (lock ocupado depois dos DELETEs não perde mais o post em silêncio).
   // #12397: na limpeza só sai o que o redespacho vai regravar —

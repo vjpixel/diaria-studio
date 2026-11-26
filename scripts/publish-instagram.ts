@@ -61,7 +61,7 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, readSocialPublished } from "./lib/social-published-store.ts";
 import { decideResumeOrRetry, formatRetryOutsideDispatch, parseRetryIdList, retryIdsOutsideDispatch } from "./lib/social-retry.ts"; // #13076 — `--retry dN`, mesma regra do Threads (#11105); #13089 id fora do envio
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
@@ -122,11 +122,12 @@ import {
   findRecentInstagramMediaByCaption,
   publishInstagramImmediate,
 } from "./lib/instagram-immediate-publish.ts"; // #14132 — publicação imediata sem republicar
+import { META_GRAPH_HOST, META_GRAPH_VERSION } from "./lib/shared/meta-graph.ts"; // #14124
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const INSTAGRAM_API_BASE = "https://graph.facebook.com"; // mesma base da Graph API
-const INSTAGRAM_API_VERSION = "v25.0";
+const INSTAGRAM_API_BASE = META_GRAPH_HOST; // mesma base da Graph API
+const INSTAGRAM_API_VERSION = META_GRAPH_VERSION;
 
 /** #13076 — ids aceitos por `--retry` (destaques + 4º post USE MELHOR). */
 export const INSTAGRAM_RETRY_IDS = ["d1", "d2", "d3", "um"] as const;
@@ -158,13 +159,6 @@ export function summarizeInstagramResults(results: PostEntry[], skippedCount: nu
     send_unknown: results.filter((r) => r.status === "send_unknown").length,
     skipped: skippedCount,
   };
-}
-
-function loadPublished(path: string): SocialPublished {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, "utf8"));
-  }
-  return { posts: [] };
 }
 
 /**
@@ -906,7 +900,7 @@ async function main(): Promise<number | void> {
   for (const d of dispatchIds) {
     const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568
     // Releitura a cada iteração para detectar entradas concorrentes
-    const published = loadPublished(publishedPath);
+    const published = readSocialPublished(publishedPath);
 
     // #13074: a retomada pula `send_unknown` (envio ambíguo ou ausente do
     // feed, #13009) — repostar sem conferir o perfil duplica o post.

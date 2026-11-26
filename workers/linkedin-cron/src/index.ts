@@ -88,7 +88,7 @@ import { verifyDispatchRecord, type DispatchRecord } from "./dispatch-record";
  *                                    recusa com `code: "linkedin_creds_missing"` e o caller
  *                                    segue no caminho guiado/manual de sempre.
  * Vars (via [vars] no wrangler.toml, não-secretas):
- *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
+ *   INSTAGRAM_API_VERSION          → (#3817) default META_GRAPH_VERSION (scripts/lib/shared/meta-graph.ts, #14124) se ausente (aplicado em dispatch.ts)
  *   THREADS_API_VERSION            → (#3944 Parte B) default "v1.0" se ausente (aplicado em dispatch.ts)
  *   LINKEDIN_API_VERSION           → (#8052) header LinkedIn-Version (YYYYMM). Opcional: ausente =
  *                                    default dinâmico de 2 meses atrás (#12171, dispatch.ts)
@@ -114,7 +114,7 @@ export interface Env {
   // MAKE_PIXEL_WEBHOOK_URL ausente, ver dispatch.ts::resolveInstagramCreds).
   INSTAGRAM_BUSINESS_ACCOUNT_ID?: string;
   INSTAGRAM_ACCESS_TOKEN?: string;
-  INSTAGRAM_API_VERSION?: string; // default "v25.0" aplicado em dispatch.ts
+  INSTAGRAM_API_VERSION?: string; // default META_GRAPH_VERSION (#14124) aplicado em dispatch.ts
   // #10823 — 2ª conta do Instagram (a vinculada à página VJ pixel), usada por
   // entries com `ig_account: "vjpixel"` (Reels do /diaria-shorts). Mesma
   // versão de API da conta da diar.ia.br. Opcionais: ausentes = o enqueue
