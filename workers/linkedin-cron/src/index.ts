@@ -351,6 +351,21 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+/**
+ * `decodeURIComponent` de um segmento de path que devolve `null` em `%`
+ * malformado (`%`, `%zz`, UTF-8 truncado) em vez de lançar `URIError` — sem
+ * isso as rotas `/dlq/:key`, `/queue/:key` e `/queue-cancel/:key` davam 500
+ * e exceção no log (#14137). O caller responde 400.
+ */
+function safeDecodePathSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch (err) {
+    if (err instanceof URIError) return null;
+    throw err;
+  }
+}
+
 // ── Key helpers (#883) ─────────────────────────────────────────────────────
 
 /**
@@ -1836,19 +1851,22 @@ export default {
     }
     // #894 P2-B — DELETE /dlq/:key pra cleanup via API
     if (path.startsWith("/dlq/") && request.method === "DELETE") {
-      const key = decodeURIComponent(path.slice("/dlq/".length));
+      const key = safeDecodePathSegment(path.slice("/dlq/".length));
+      if (key === null) return json({ error: "invalid key" }, 400);
       return handleDlqDelete(request, env, key);
     }
     // #1058 — DELETE /queue/:key pra cleanup pós-/diaria-test (simetria com /dlq/)
     if (path.startsWith("/queue/") && request.method === "DELETE") {
-      const key = decodeURIComponent(path.slice("/queue/".length));
+      const key = safeDecodePathSegment(path.slice("/queue/".length));
+      if (key === null) return json({ error: "invalid key" }, 400);
       return handleQueueDelete(request, env, key);
     }
     // #12961 — POST /queue-cancel/:key: cancelamento condicional. Rota própria
     // (não um parâmetro do DELETE): um Worker publicado antes dela devolve
     // "rota inexistente" em vez de executar o DELETE incondicional.
     if (path.startsWith("/queue-cancel/") && request.method === "POST") {
-      const key = decodeURIComponent(path.slice("/queue-cancel/".length));
+      const key = safeDecodePathSegment(path.slice("/queue-cancel/".length));
+      if (key === null) return json({ error: "invalid key" }, 400);
       return handleQueueCancel(request, env, key);
     }
     // #1140 — POST /fire-now força fireDueItems imediatamente (debug/recovery).
