@@ -34,8 +34,8 @@
  * fora do escopo desta unidade) rodar. Aqui o output é só uma lista pra o
  * playbook do Stage 6 imprimir no resumo do gate.
  */
-import { HUB_KEYWORD_PATTERNS, collectHubSources, type HubSourceEntry } from "../generate-hub-sources.ts";
-import type { RawCachedPost } from "../generate-arquivo-titles.ts";
+import { HUB_KEYWORD_PATTERNS, collectHubSources, type HubSourceEntry } from "./hub-sources.ts";
+import type { RawCachedPost } from "./raw-cached-post.ts";
 import type { PublishDateOverridesResult } from "./beehiiv-publish-date.ts";
 import type { AlarmFinding } from "./alarm-issues.ts";
 

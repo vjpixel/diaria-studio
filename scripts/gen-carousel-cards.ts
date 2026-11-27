@@ -76,7 +76,7 @@ import {
   useMelhorSlideFilename,
   writeUseMelhorCarouselStamp,
 } from "./lib/use-melhor-carousel.ts"; // #9568
-import { pruneStaleUseMelhorPublicImages } from "./lib/use-melhor-slide-files.ts"; // #9795
+import { pruneStaleUseMelhorPublicImages, type UseMelhorCarouselRefresh } from "./lib/use-melhor-slide-files.ts"; // #9795, #14001
 import { readUseMelhorBlock } from "./lib/use-melhor-status.ts"; // #10834
 import { parseArgs } from "node:util";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -409,25 +409,10 @@ export async function genUseMelhorCarousel(
   return { status: "generated", slots, files, ...(prunedKeys.length > 0 && { pruned_image_keys: prunedKeys }) };
 }
 
-export interface UseMelhorCarouselRefresh {
-  /**
-   * - `noop`: nada a conferir (feature desligada, sem carimbo, sem item, sem `## um`);
-   * - `fresh`: carimbo em dia com o `## um` atual;
-   * - `regenerated`: estava defasado e foi regerado agora;
-   * - `skipped`: estava defasado e o regerar foi pulado (ex.: `## um` novo não cabe no card);
-   * - `failed`: estava defasado e o regerar falhou (fonte de marca ausente, sharp).
-   */
-  status: "noop" | "fresh" | "regenerated" | "skipped" | "failed";
-  reason?: string;
-  slots?: string[];
-  /**
-   * (#10879) Só com `status: "failed"`: `"font_missing"` quando a falha foi a
-   * fonte de marca (Georgia) ausente nesta máquina — o caso do servidor 300.
-   * Separado dos demais `failed` porque o conserto é outro (regerar numa
-   * máquina com Georgia), e quem consome precisa dizer isso em voz alta.
-   */
-  cause?: "font_missing";
-}
+// #14001: `UseMelhorCarouselRefresh` mora em `lib/use-melhor-slide-files.ts`
+// (o upload em `lib/public-images-upload.ts` usa o tipo, e lib não importa CLI
+// de topo); reexportado aqui para os importadores de sempre.
+export type { UseMelhorCarouselRefresh };
 
 /**
  * (#10834) Regera SÓ o carrossel do 4º post quando o carimbo do Stage 3 está

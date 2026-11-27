@@ -31,7 +31,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { stripAccents } from "../generate-hub-sources.ts";
+import { stripAccents } from "./hub-sources.ts";
 import type { StaleEntityEdition } from "./entity-staleness-check.ts";
 
 export interface SiteEdition {

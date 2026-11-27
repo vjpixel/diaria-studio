@@ -103,7 +103,14 @@ describe("#14033: flags do cartão de receitas batem com o script e com o playbo
       const candidates = [resolve(ROOT, "scripts", inv.script), resolve(ROOT, "scripts/lib", inv.script)];
       const path = candidates.find((p) => existsSync(p));
       assert.ok(path, `scripts/${inv.script} (nem scripts/lib/) não existe`);
-      const source = readFileSync(path, "utf8");
+      // #14001: CLI que virou casca reexporta a lib (`export * from "./lib/X.ts"`);
+      // a flag pode estar citada só no texto movido para a lib, então lê os dois.
+      const cli = readFileSync(path, "utf8");
+      const reexported = [...cli.matchAll(/^export \* from "(\.\/lib\/[\w./-]+\.ts)";$/gm)]
+        .map((m) => resolve(dirname(path), m[1]))
+        .filter((p) => existsSync(p))
+        .map((p) => readFileSync(p, "utf8"));
+      const source = [cli, ...reexported].join("\n");
       const known = playbookFlags.get(inv.script);
       assert.ok(known, `scripts/${inv.script} citado no cartão, mas nenhuma invocação dele no playbook da Etapa 4`);
       for (const flag of inv.flags) {

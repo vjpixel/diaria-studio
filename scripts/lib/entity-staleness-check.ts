@@ -49,8 +49,8 @@
  * reescreve o asset se divergir, sem intervenção humana), que TAMBÉM roda
  * este staleness check e alarma sobre a parte que não pode ser mecânica.
  */
-import { collectHubSources } from "../generate-hub-sources.ts";
-import type { RawCachedPost } from "../generate-arquivo-titles.ts";
+import { collectHubSources } from "./hub-sources.ts";
+import type { RawCachedPost } from "./raw-cached-post.ts";
 import type { PublishDateOverridesResult } from "./beehiiv-publish-date.ts";
 import { ENTITY_KEYWORD_PATTERNS, ENTITY_EXCLUDED_EDITIONS, ENTITY_FULLTEXT_SCAN_SINCE } from "./entities/patterns.ts";
 
