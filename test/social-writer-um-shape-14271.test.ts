@@ -22,3 +22,19 @@ describe("#14271 — social-writer, formato do ## um", () => {
     assert.match(md, /não escreva "por pedido seu"/);
   });
 });
+
+describe("#14312 — Passo B7 do /diaria-publica dispensado", () => {
+  const ref = readFileSync(
+    resolve(import.meta.dirname, "..", ".claude/skills/diaria-publica/reference/vertical-depois-do-stage6.md"),
+    "utf8",
+  );
+  const skill = readFileSync(resolve(import.meta.dirname, "..", ".claude/skills/diaria-publica/SKILL.md"), "utf8");
+  it("a referência diz para não rodar o B7 e não descreve a task como vigente", () => {
+    assert.match(ref, /### Passo B7 — Dispensado desde 27\/11\/2026 \(#14312\)/);
+    assert.match(ref, /\*\*Não rodar\.\*\*/);
+  });
+  it("o resumo da skill não manda mais rodar mark-video-liberada", () => {
+    assert.match(skill, /\*\*Passo B7\*\*: dispensado desde 27\/11\/2026 \(#14312/);
+    assert.doesNotMatch(skill, /\*\*Passo B7\*\*: `mark-video-liberada\.ts \{AAMMDD\}`, o último passo/);
+  });
+});
