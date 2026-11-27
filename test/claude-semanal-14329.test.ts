@@ -529,6 +529,11 @@ describe("publish-claude-semanal-kit com Kit mockado (#14329)", () => {
     assert.equal(out.candidates.length, 2);
     assert.equal(out.candidates.find((c) => c.url.includes("releases"))?.summary, "texto completo");
     assert.ok(existsSync(p.candidatesPath));
+
+    // Recoleta sem --merge não apaga o que veio das páginas.
+    const again = await runClaudeSemanalCollect({ rootDir: dir, dataRoot: dir, week: WEEK, log, now: () => NOW, deps: feedDeps });
+    assert.deepEqual(again.candidates.map((c) => c.url).sort(), out.candidates.map((c) => c.url).sort());
+    assert.equal(again.candidates.find((c) => c.url.includes("releases"))?.summary, "texto completo");
   });
 
   it("semana já enviada responde ja-enviado sem criar outro broadcast", async () => {

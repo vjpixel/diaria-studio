@@ -125,6 +125,9 @@ export async function runClaudeSemanalCollect(options: CollectOptions): Promise<
     // release do Claude Code relido com o texto completo, que o feed trunca).
     raw.push(...readMergeFile(options.mergePath, deps), ...(previous?.candidates ?? []));
   } else {
+    // Recoleta da mesma semana soma ao que já havia (inclusive o que veio de
+    // um --merge anterior), em vez de apagar as páginas lidas pela skill.
+    raw.push(...(previous?.candidates ?? []));
     // Janela de 8 dias + folga: o filtro fino é o da janela.
     const days = Math.ceil((now().getTime() - Date.parse(week.windowStart)) / 86_400_000) + 1;
     for (const src of config.sources.filter((s) => s.kind === "rss")) {
