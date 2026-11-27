@@ -203,7 +203,9 @@ export class UnprovenSectionsError extends Error {
         "Rodar o humanizador e a Clarice nessas seções e registrar cada passo com " +
         "--record-run --step humanizador|clarice antes do --write (#11534). " +
         "Clarice fora do ar com o humanizador já registrado: --record-clarice-pending --reason clarice_unavailable (#13848). " +
-        '--unproven-ok "<motivo>" só quando o editor pediu para manter o texto dele sem humanizar.',
+        '--unproven-ok "<motivo>" só quando o editor pediu para manter o texto dele sem humanizar, ' +
+        "há aceite editorial explícito sem prova, ou o humanizador rodou duas vezes e manteve a seção " +
+        "(nomear só ela com --unproven-ok-section, #14286).",
     );
     this.name = "UnprovenSectionsError";
   }

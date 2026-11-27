@@ -15,17 +15,17 @@
 
   "orchestrator-stage-2.md": { "hash": "11d395c442a68020", "lines": 151 },
 
-  "orchestrator-stage-2-fallback.md": { "hash": "40ca0b645dde0bb9", "lines": 503 },
+  "orchestrator-stage-2-fallback.md": { "hash": "6861a63165cd64d3", "lines": 504 },
 
-  "orchestrator-stage-3.md": { "hash": "712799ac061b0b1e", "lines": 147 },
+  "orchestrator-stage-3.md": { "hash": "1de1758ce9cfc056", "lines": 148 },
 
-  "orchestrator-stage-4.md": { "hash": "80c1ddec928ff9cf", "lines": 540 },
+  "orchestrator-stage-4.md": { "hash": "4f8674cd6f928312", "lines": 540 },
 
-  "orchestrator-stage-4-gate.md": { "hash": "2cb4bfe7fd0a1703", "lines": 479 },
+  "orchestrator-stage-4-gate.md": { "hash": "13631f149b0f56bb", "lines": 479 },
 
-  "orchestrator-stage-5.md": { "hash": "8ce94cb1137175ef", "lines": 557 },
+  "orchestrator-stage-5.md": { "hash": "183aebcec91ac6fe", "lines": 557 },
 
-  "orchestrator-stage-6.md": { "hash": "f2a09c310732b9fa", "lines": 593 },
+  "orchestrator-stage-6.md": { "hash": "bf2e00a7005e1309", "lines": 594 },
 
   "_regenerar": "NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts"
 }
