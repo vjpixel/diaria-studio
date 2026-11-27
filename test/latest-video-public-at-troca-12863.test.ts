@@ -23,7 +23,8 @@ import {
   shouldReplaceLatestVideo,
   type LatestVideoRecord,
 } from "../scripts/lib/shared/latest-video-redirect.ts";
-import { describeLatestVideoOutcome, updateLatestVideoRedirect, type LatestVideoKv } from "../scripts/set-latest-video-redirect.ts";
+import { describeLatestVideoOutcome, updateLatestVideoRedirect } from "../scripts/set-latest-video-redirect.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const URL_OLD = "https://youtu.be/AAAAAAAAAAA";
 const URL_NEW = "https://youtu.be/BBBBBBBBBBB";
@@ -31,11 +32,6 @@ const EDITION_0600 = "2026-11-12T09:00:00.000Z"; // 06:00 BRT de 261112 (presumi
 const REAL_0700 = "2026-11-12T10:00:00.000Z"; // 07:00 BRT, o publishAt real
 const NIGHT_BEFORE = new Date("2026-11-12T01:30:00Z");
 const AT_0630 = new Date("2026-11-12T09:30:00Z");
-
-function fakeKv(initial: Record<string, string> = {}): LatestVideoKv & { store: Record<string, string> } {
-  const store = { ...initial };
-  return { store, get: async (k) => store[k] ?? null, put: async (k, v) => { store[k] = v; } };
-}
 
 function edition(url: string): string {
   const dir = mkdtempSync(join(tmpdir(), "latest-video-troca-12863-"));
@@ -62,16 +58,16 @@ describe("#12863: mesma edição e link, public_at novo troca o registro", () =>
     const dir = edition(URL_NEW);
     try {
       const old: LatestVideoRecord = { url: URL_OLD, aammdd: "261111", updated_at: "2026-11-11T01:00:00.000Z" };
-      const kv = fakeKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
+      const kv = makeTrackedKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
       writeUpload(dir, "{lixo de sync");
       const first = await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
       assert.equal(first.status, "written");
-      assert.equal(parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY])?.public_at, EDITION_0600);
+      assert.equal(parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY))?.public_at, EDITION_0600);
 
       writeUpload(dir, JSON.stringify({ videoId: "BBBBBBBBBBB", rereadStatus: { publishAt: REAL_0700 } }));
       const second = await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
       assert.equal(second.status, "written", "o publishAt real entra no KV, não sai como older");
-      const stored = parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]);
+      const stored = parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY));
       assert.equal(stored?.public_at, REAL_0700);
       assert.deepEqual(stored?.previous, old, "o anterior segue guardado para a janela até as 07:00");
       assert.equal(effectiveLatestVideoRecord(stored, AT_0630)?.url, URL_OLD, "às 06:30 o link da bio não vai para o vídeo ainda privado");
@@ -84,10 +80,10 @@ describe("#12863: mesma edição e link, public_at novo troca o registro", () =>
     const dir = edition(URL_NEW);
     try {
       const legacy: LatestVideoRecord = { url: URL_NEW, aammdd: "261112", updated_at: "2026-11-12T01:00:00.000Z" };
-      const kv = fakeKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(legacy) });
+      const kv = makeTrackedKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(legacy) });
       const out = await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
       assert.equal(out.status, "written");
-      assert.equal(parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY])?.public_at, EDITION_0600);
+      assert.equal(parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY))?.public_at, EDITION_0600);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

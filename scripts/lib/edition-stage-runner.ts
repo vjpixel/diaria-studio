@@ -48,7 +48,7 @@ import {
   type CliRunMeta,
 } from "./cli-usage-json.ts";
 import { mergeModelUsage } from "./usage-breakdown.ts";
-import { loadDoc, saveDoc, applyUpdate, type CliRunLogEntry, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
+import { loadDoc, saveDoc, applyUpdate, type CliRunLogEntry, type StageRow, type UpdateOpts } from "./stage-status.ts";
 import { checkStage4Pregate } from "./stage4-pregate.ts";
 import { readEditionLock } from "./edition-lock.ts";
 import { randomUUID } from "node:crypto";

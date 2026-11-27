@@ -20,33 +20,11 @@ import assert from "node:assert/strict";
 import { handleConfirmadoRedirect, CONFIRMADO_REDIRECT_URL } from "../workers/poll/src/confirmado.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
-
-function makeMapKV() {
-  const m = new Map<string, string>();
-  return {
-    async get(key: string) {
-      const v = m.get(key);
-      return v === undefined ? null : v;
-    },
-    async getWithMetadata(key: string) {
-      const v = m.get(key);
-      return { value: v ?? null, metadata: null };
-    },
-    async put(key: string, value: string) {
-      m.set(key, value);
-    },
-    async delete(key: string) {
-      m.delete(key);
-    },
-    async list() {
-      return { keys: [], list_complete: true, cursor: undefined };
-    },
-  };
-}
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 function makeEnv(): Env {
   return {
-    POLL: makeMapKV() as unknown as Env["POLL"],
+    POLL: makeTrackedKv() as unknown as Env["POLL"],
     POLL_SECRET: "poll-secret",
     ADMIN_SECRET: "admin-secret",
     ALLOWED_ORIGINS: "*",

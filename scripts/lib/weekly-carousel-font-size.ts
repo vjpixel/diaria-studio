@@ -16,7 +16,7 @@
  * forçado pro tamanho comum.
  */
 
-import { overlayFittingFontSize, type OverlayWrap } from "../gen-social-card-4x5.ts";
+import { overlayFittingFontSize, type OverlayWrap } from "./social-card-4x5.ts";
 
 const W = 1080;
 const PAD = 72; // Idêntico a gen-social-card-4x5.ts/weekly-flat-card.ts.

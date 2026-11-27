@@ -25,7 +25,9 @@
  * não pinga".
  */
 
-import { HUB_REGISTRY } from "../../workers/arquivo/src/hubs/registry.ts"; // #7347: lista autoritativa de slugs de HUB — separa hub real de artefato não-hub (ex: index-page.generated.ts) que mora no mesmo diretório
+import { HUB_META } from "./shared/hub-meta.ts"; // #7347: lista autoritativa de slugs de HUB — separa hub real de artefato não-hub (ex: index-page.generated.ts) que mora no mesmo diretório. #13994: era HUB_REGISTRY do Worker; HUB_META tem o mesmo conjunto de slugs (test/hub-registry-completeness.test.ts) e mora em shared/
+
+const HUB_SLUGS: ReadonlySet<string> = new Set(HUB_META.map((h) => h.slug));
 
 /** Host canônico do Worker `arquivo` — único host com hubs temáticos hoje. */
 export const ARQUIVO_HOST = "arquivo.diar.ia.br";
@@ -70,7 +72,10 @@ export function extractChangedHubSlugs(changedFiles: readonly string[]): string[
  * "mudou desde o último deploy" embutido: lista sem `.generated.ts` →
  * `[]`). `baseUrl` sem barra final (default `https://arquivo.diar.ia.br`).
  *
- * **Slug validado contra `HUB_REGISTRY` (#7347)** — nem todo
+ * **Slug validado contra os hubs publicados (#7347)** — os slugs de
+ * `HUB_META`, que são exatamente as chaves de `HUB_REGISTRY` (igualdade nos
+ * dois sentidos travada por `test/hub-registry-completeness.test.ts`; #13994
+ * trocou o import do registry do Worker por `HUB_META` de `shared/`). Nem todo
  * `workers/arquivo/src/hubs/*.generated.ts` é um hub: `index-page.generated.ts`
  * mora no mesmo diretório e é o HTML da página-índice `/temas/`, não de um
  * hub individual (`scripts/build-hub-page.ts` reescreve os dois juntos a
@@ -88,7 +93,7 @@ export function buildIndexNowUrls(
   baseUrl: string = `https://${ARQUIVO_HOST}`,
 ): string[] {
   const urls = extractChangedHubSlugs(changedFiles).map((slug) =>
-    Object.hasOwn(HUB_REGISTRY, slug) ? `${baseUrl}/temas/${slug}` : `${baseUrl}/temas/`,
+    HUB_SLUGS.has(slug) ? `${baseUrl}/temas/${slug}` : `${baseUrl}/temas/`,
   );
   return Array.from(new Set(urls));
 }

@@ -28,12 +28,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
+import { generateCard, WEEKLY_OVERLAY_WRAP } from "./social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { archiveUploadedFileToR2 } from "./public-images-archive.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
-import { cloudflareKvKey } from "../upload-images-public.ts";
+import { cloudflareKvKey } from "./cloudflare-kv-key.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 

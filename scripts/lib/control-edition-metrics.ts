@@ -43,8 +43,8 @@
  */
 
 import { collectUsageInWindow, type CollectUsageOptions } from "./session-transcript.ts";
-import type { StageRow, StageStatusDoc } from "../update-stage-status.ts";
-import { STAGE_LABELS } from "../update-stage-status.ts";
+import type { StageRow, StageStatusDoc } from "./stage-status.ts";
+import { STAGE_LABELS } from "./stage-status.ts";
 import type { ConcurrentNoiseVerdict } from "./control-edition-guard.ts";
 
 export interface StageControlMetrics {

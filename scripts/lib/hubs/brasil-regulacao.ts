@@ -77,7 +77,7 @@ import {
 } from "../shared/hub-page.ts";
 import { hubFooterNavUtm } from "../shared/utm-registry.ts";
 import sourcesRaw from "./brasil-regulacao-sources.generated.json" with { type: "json" };
-import type { HubSourceEntry } from "../../generate-hub-sources.ts";
+import type { HubSourceEntry } from "../hub-sources.ts";
 
 const SOURCES = sourcesRaw as HubSourceEntry[];
 

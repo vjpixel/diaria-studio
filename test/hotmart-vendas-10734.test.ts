@@ -36,6 +36,7 @@ import { HOTMART_WEBHOOK_PATH } from "../scripts/lib/shared/hotmart-abandono.ts"
 import { sha256Hex } from "../scripts/lib/shared/subscriber-verify.ts";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
+import { makeTrackedKv, type TrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const HOTTOK = "hottok-de-teste";
 const VENDAS_TOKEN = "token-de-vendas";
@@ -91,36 +92,10 @@ const NAO_GRAVAR = [
   "CUPOMSECRETO",
 ];
 
-type Stored = { value: string; metadata: unknown; ttl?: number };
+/** KV falso com metadata até 1024 bytes e listagem paginada de 1 em 1 (#14058: helper comum). */
+const fakeKv = () => makeTrackedKv({}, { listPageSize: 1 });
 
-function fakeKv() {
-  const store = new Map<string, Stored>();
-  const kv = {
-    store,
-    failPut: false,
-    async put(key: string, value: string, opts?: { metadata?: unknown; expirationTtl?: number }) {
-      if (kv.failPut) throw new Error("kv fora");
-      if (opts?.metadata !== undefined && new TextEncoder().encode(JSON.stringify(opts.metadata)).length > 1024) throw new Error("metadata too large");
-      store.set(key, { value, metadata: opts?.metadata, ttl: opts?.expirationTtl });
-    },
-    async get(key: string) {
-      return store.get(key)?.value ?? null;
-    },
-    async list(opts: { prefix?: string; cursor?: string }) {
-      const names = [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? "")).sort();
-      const start = opts.cursor ? Number(opts.cursor) : 0;
-      const done = start + 1 >= names.length;
-      return {
-        keys: names.slice(start, start + 1).map((name) => ({ name, metadata: store.get(name)?.metadata ?? null })),
-        list_complete: done,
-        cursor: done ? undefined : String(start + 1),
-      };
-    },
-  };
-  return kv;
-}
-
-function envWith(kv: ReturnType<typeof fakeKv> | undefined, overrides: Partial<Env> = {}): Env {
+function envWith(kv: TrackedKv | undefined, overrides: Partial<Env> = {}): Env {
   return {
     ASSETS: { fetch: async () => new Response("asset", { status: 404 }) } as unknown as Env["ASSETS"],
     POLL: { get: async () => null } as unknown as Env["POLL"],
@@ -394,7 +369,7 @@ describe("#10734 Worker site: webhook de venda", () => {
     assert.equal((await worker.fetch(webhook(vendaPayload(), null), envWith(kv))).status, 401);
     assert.equal((await worker.fetch(webhook(vendaPayload(), "errado"), envWith(kv))).status, 401);
     assert.equal((await worker.fetch(webhook(vendaPayload()), envWith(kv, { HOTMART_HOTTOK: undefined }))).status, 503);
-    assert.equal(kv.store.size, 0);
+    assert.equal(kv._map.size, 0);
   });
 
   it("compra aprovada → 200, gravada com metadata e TTL, sem dado pessoal no KV nem na resposta", async () => {
@@ -404,11 +379,12 @@ describe("#10734 Worker site: webhook de venda", () => {
     const body = await res.text();
     assert.deepEqual(JSON.parse(body), { ok: true });
     const key = `${VENDA_KV_PREFIX}2026-10-20:HP16015479281022:aprovada`;
-    const stored = kv.store.get(key);
+    const stored = kv._map.get(key);
     assert.ok(stored, `chave ${key} não gravada`);
-    assert.ok(stored.ttl && stored.ttl > 0);
-    assert.deepEqual(stored.metadata, JSON.parse(stored.value));
-    for (const p of NAO_GRAVAR) assert.ok(!stored.value.includes(p) && !body.includes(p), `vazou: ${p}`);
+    const ttl = kv.puts.find((p) => p.key === key)?.opts?.expirationTtl;
+    assert.ok(ttl && ttl > 0);
+    assert.deepEqual(kv._meta.get(key), JSON.parse(stored));
+    for (const p of NAO_GRAVAR) assert.ok(!stored.includes(p) && !body.includes(p), `vazou: ${p}`);
     assert.ok(logs.some((l) => l.includes(`venda gravada ${key}`)));
   });
 
@@ -416,9 +392,9 @@ describe("#10734 Worker site: webhook de venda", () => {
     const kv = fakeKv();
     await worker.fetch(webhook(vendaPayload()), envWith(kv));
     await worker.fetch(webhook(vendaPayload()), envWith(kv));
-    assert.equal(kv.store.size, 1);
+    assert.equal(kv._map.size, 1);
     await worker.fetch(webhook(vendaPayload("PURCHASE_REFUNDED", { root: { id: "outro-evento", creation_date: Date.UTC(2026, 9, 21, 12) } })), envWith(kv));
-    assert.equal(kv.store.size, 2);
+    assert.equal(kv._map.size, 2);
   });
 
   it("KV indisponível → 503; falha ao gravar → 500 (a Hotmart reenvia)", async () => {
@@ -432,7 +408,7 @@ describe("#10734 Worker site: webhook de venda", () => {
     const kv = fakeKv();
     const res = await worker.fetch(webhook({ id: "ab-1", creation_date: Date.UTC(2026, 9, 21, 12), event: "PURCHASE_OUT_OF_SHOPPING_CART", version: "2.0.0", data: {} }), envWith(kv));
     assert.equal(res.status, 200);
-    assert.deepEqual([...kv.store.keys()], ["hotmart:abandono:2026-10-21:ab-1"]);
+    assert.deepEqual([...kv._map.keys()], ["hotmart:abandono:2026-10-21:ab-1"]);
   });
 });
 

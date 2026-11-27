@@ -51,7 +51,7 @@
  *
  * **Limiar "R$10/mês ou mais" (usado por gates que restringem conteúdo a
  * quem apoia R$10+/mês — ex: `ARTIGOS_ESPECIAIS_APOIO_THRESHOLD` em
- * `workers/artigos/src/apoio-gate-config.ts`, #7030) = todos os níveis
+ * `scripts/lib/shared/apoio-gate-config.ts`, #7030) = todos os níveis
  * EXCETO `amigo`** — ou seja, `["apoiador", "mantenedor", "patrono"]`.
  * Decisão do editor, 02/09/2026 (issue #7030): `amigo` fica de fora porque
  * sua faixa (R$5–10) não atinge o piso de R$10. Qualquer gate futuro com o

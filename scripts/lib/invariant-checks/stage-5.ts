@@ -15,7 +15,7 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8690
 import { checkPublicImagesMd5MatchesLocal } from "../public-images-md5-check.ts"; // #11252
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
-import { loadDoc } from "../../update-stage-status.ts";
+import { loadDoc } from "../stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
 import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending } from "../diaria/clarice-pending.ts"; // #12257, #12693
 import {

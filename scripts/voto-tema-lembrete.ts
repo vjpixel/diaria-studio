@@ -21,7 +21,7 @@ import { resolveKitConfig } from "./lib/kit-config.ts";
 import { createTag, findTagIdByName, tagSubscriber } from "./lib/kit-broadcasts.ts";
 import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
 import { listWorkerKVKeys } from "./lib/cloudflare-kv-upload.ts";
-import { eleitorHash, formatPrazo, parseCicloVotacao, prazoEncerrado, voteKeyPrefix, type BallotTema } from "../workers/artigos/src/voto-tema-core.ts";
+import { eleitorHash, formatPrazo, parseCicloVotacao, prazoEncerrado, voteKeyPrefix, type BallotTema } from "./lib/shared/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,

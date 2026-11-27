@@ -31,7 +31,7 @@ import {
   type HubDivulgacaoBoxSource,
 } from "./lib/shared/hub-divulgacao-box.ts";
 import { HUB_LOADERS } from "./build-hub-page.ts";
-import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./lib/shared/hub-meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

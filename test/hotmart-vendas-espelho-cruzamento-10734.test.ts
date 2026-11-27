@@ -59,6 +59,7 @@ import { buildVendaRecord, HOTMART_VENDAS_PATH, type VendaRecord } from "../scri
 import { ABANDONOS_MAX_DIAS, HOTMART_WEBHOOK_PATH } from "../scripts/lib/shared/hotmart-abandono.ts";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const HOTTOK = "hottok-de-teste";
@@ -358,22 +359,8 @@ describe("#10734 4a cruzarVendas", () => {
 // um servidor HTTP local → CLI `sync-hotmart-vendas.ts` → arquivo.
 // ---------------------------------------------------------------------------
 
-function fakeKv() {
-  const store = new Map<string, { value: string; metadata: unknown }>();
-  return {
-    store,
-    async put(key: string, value: string, opts?: { metadata?: unknown }) {
-      store.set(key, { value, metadata: opts?.metadata });
-    },
-    async get(key: string) {
-      return store.get(key)?.value ?? null;
-    },
-    async list(opts: { prefix?: string }) {
-      const names = [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? "")).sort();
-      return { keys: names.map((name) => ({ name, metadata: store.get(name)?.metadata ?? null })), list_complete: true };
-    },
-  };
-}
+/** KV falso com metadata e listagem em ordem lexicográfica, como o real (#14058: helper comum). */
+const fakeKv = () => makeTrackedKv({}, { listPageSize: 1000 });
 
 function envWith(kv: ReturnType<typeof fakeKv>): Env {
   return {
