@@ -57,3 +57,50 @@ describe("checkCouponSurvival (#1982)", () => {
     assert.ok(SPONSORED_LITERALS.includes("clarice.ai/precos-planos?via=diaria"));
   });
 });
+
+describe("NEWS65 — box Black Friday da 261130 (#14358)", () => {
+  // Texto no formato do box Black Friday (#14334): cupom NEWS65 + link de afiliado.
+  const BF_BOX = [
+    "**📣 Black Friday da Clarice**",
+    "",
+    "Até 30/11, 65% de desconto no plano anual.",
+    "",
+    "[Use o cupom NEWS65](https://clarice.ai/precos-planos?via=diaria)",
+  ].join("\n");
+
+  it("SPONSORED_LITERALS inclui NEWS65", () => {
+    assert.ok((SPONSORED_LITERALS as readonly string[]).includes("NEWS65"));
+  });
+
+  it("NEWS65 preservado pós-Clarice → ok (não é acusado)", () => {
+    const r = checkCouponSurvival(BF_BOX, BF_BOX);
+    assert.equal(r.status, "ok");
+    assert.deepEqual(r.dropped, []);
+  });
+
+  for (const rewritten of ["NEWS 65", "News65", "NEWS-65", "NEW65"]) {
+    it(`NEWS65 reescrito como "${rewritten}" → drop (error)`, () => {
+      const post = BF_BOX.replace("NEWS65", rewritten);
+      const r = checkCouponSurvival(BF_BOX, post);
+      assert.equal(r.status, "error");
+      assert.deepEqual(r.dropped, [{ literal: "NEWS65", pre_count: 1, post_count: 0 }]);
+    });
+  }
+
+  it("box com NEWS65 + crédito com NEWS50: reescrever só o NEWS50 segue acusando o NEWS50", () => {
+    const pre = BF_BOX + "\n\n---\n\n" + SPONSOR_BLOCK;
+    const post = pre.replace("NEWS50", "NEWS 50");
+    const r = checkCouponSurvival(pre, post);
+    assert.equal(r.status, "error");
+    assert.deepEqual(
+      r.dropped.map((d) => d.literal),
+      ["NEWS50"],
+    );
+  });
+
+  it("edição sem NEWS65 no pré (depois da oferta) → NEWS65 não é checado", () => {
+    const r = checkCouponSurvival(SPONSOR_BLOCK, SPONSOR_BLOCK);
+    assert.equal(r.status, "ok");
+    assert.ok(!r.dropped.some((d) => d.literal === "NEWS65"));
+  });
+});
