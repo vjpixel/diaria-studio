@@ -18,13 +18,15 @@
 // (nada baixado da rede, e o teto mata o processo certo).
 //
 // Direção de falha:
-//   - nega só o que o CI reprovaria: documento do commit divergente, ausente
-//     ou regenerado sem commit; corpo LIDO sem `removal-declaration:` com mais
-//     de 500 adições;
-//   - corpo que só existe ao rodar (variável, substituição de comando que não é
-//     `cat` de heredoc com delimitador entre aspas, crase, `--fill`), diff não
-//     medido, registry sujo ou que não carrega, `--head` de outra branch:
-//     aviso no `systemMessage`, nunca recusa. A leitura do `$` é conservadora:
+//   - nega só o que o CI reprovaria: documento do commit divergente ou
+//     ausente; corpo LIDO sem `removal-declaration:` com mais de 500 adições;
+//   - documento regenerado e não commitado (a cadeia do próprio comando pode
+//     commitar antes do `gh pr create`), corpo que só existe ao rodar
+//     (variável, substituição de comando que não é `cat` de heredoc com
+//     delimitador entre aspas, crase, `--fill`), diff não medido, registry
+//     sujo ou que não carrega, `--head` de outra branch, `cd` para um alvo que
+//     não existe neste host: aviso no `systemMessage`, nunca recusa.
+//     Caminho do Git Bash (`/c/...`, `/tmp/...`) é normalizado no Windows. A leitura do `$` é conservadora:
 //     na dúvida, "não determinável" (aviso), nunca texto inventado;
 //   - checkout sem o script (branch antiga, outro repo): silencioso, nada a
 //     conferir;
@@ -41,13 +43,15 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { cdTargetFromCommand, resolveRepoRootCandidates, resolveGitRoot } from "./block-pr-create-pii-runtime-artifacts.mjs";
+import { cdTargetFromCommand, normalizeMsysPath, resolveRepoRootCandidates, resolveGitRoot } from "./block-pr-create-pii-runtime-artifacts.mjs";
 import { isTscGuardedPrCreate, liveCommandText } from "./block-pr-create-tsc-failure.mjs";
 import { isForeignRepoGhCommand as defaultIsForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
 import { isStudioCheckout as defaultIsStudioCheckout, studioLogRoot } from "./lib/studio-checkout.mjs";
 import { resolveCommandWords, tokenizeShell } from "../../scripts/lib/protected-path-bash-write.mjs";
 
-export const PREFLIGHT_PR_GUARD_BYPASS_ENV = "DIARIA_ALLOW_PR_WITHOUT_PREFLIGHT";
+export { normalizeMsysPath };
+
+export const PREFLIGHT_PR_GUARD_BYPASS_ENV ="DIARIA_ALLOW_PR_WITHOUT_PREFLIGHT";
 export const PREFLIGHT_SCRIPT = "scripts/check-pr-create-preflight.ts";
 /** Loader do tsx dentro do checkout (o `"."` do `exports` do pacote). */
 export const TSX_LOADER = "node_modules/tsx/dist/loader.mjs";
@@ -310,7 +314,8 @@ export function extractPrCreateBody(command) {
     let headRef = null;
     let found = null;
     for (let k = i + 2; k < words.length; k++) {
-      const name = text(k);
+      // `--body="$(cat <<'EOF' ...)"`: a palavra inteira é dinâmica, mas o nome da flag está no texto cru.
+      const name = /^--[a-z][a-z-]*=/.test(words[k].raw) ? words[k].raw : text(k);
       if (name === undefined) continue;
       if (name === "--") break;
       const eq = name.indexOf("=");
@@ -344,11 +349,15 @@ export function extractPrCreateBody(command) {
   return { kind: "unknown", reason: "gh pr create não encontrado no comando", base: null, head: null };
 }
 
-/** Lê o corpo (`text` volta igual; `file` é lido relativo a `dir`, o diretório do comando). */
-export function resolveBody(extracted, dir, readFile = (p) => readFileSync(p, "utf8")) {
+/**
+ * Lê o corpo (`text` volta igual; `file` é lido relativo a `dir`, o diretório
+ * do comando, com o caminho do Git Bash normalizado no Windows).
+ */
+export function resolveBody(extracted, dir, readFile = (p) => readFileSync(p, "utf8"), platform = process.platform) {
   if (extracted.kind === "text") return { body: extracted.body, reason: null };
   if (extracted.kind === "file") {
-    const path = isAbsolute(extracted.path) ? extracted.path : resolvePath(dir, extracted.path);
+    const p = normalizeMsysPath(extracted.path, platform);
+    const path = isAbsolute(p) ? p : resolvePath(dir, p);
     try {
       return { body: readFile(path), reason: null };
     } catch (e) {
@@ -359,8 +368,21 @@ export function resolveBody(extracted, dir, readFile = (p) => readFileSync(p, "u
 }
 
 /** Diretório onde o `gh pr create` roda: o alvo do `cd` do comando, senão o `cwd` do payload. */
-export function commandDir(command, payloadCwd, fallback) {
-  return cdTargetFromCommand(command, payloadCwd) ?? (typeof payloadCwd === "string" && payloadCwd !== "" ? payloadCwd : fallback);
+export function commandDir(command, payloadCwd, fallback, platform = process.platform) {
+  return cdTargetFromCommand(command, payloadCwd, platform) ?? (typeof payloadCwd === "string" && payloadCwd !== "" ? payloadCwd : fallback);
+}
+
+/** Branch atual do checkout (`null` se não der para ler). */
+function currentBranch(cwd) {
+  const r = spawnSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8", windowsHide: true, timeout: 5_000 });
+  return r.status === 0 ? String(r.stdout ?? "").trim() || null : null;
+}
+
+/** `--head` aponta para outra branch que não a do checkout? (`owner:branch` conta pela branch.) */
+export function headIsOtherBranch(head, branch) {
+  if (!head) return false;
+  const name = head.includes(":") ? head.slice(head.indexOf(":") + 1) : head;
+  return branch === null || name !== branch;
 }
 
 const SAFE_REF_RE = /^[A-Za-z0-9._/-]+$/;
@@ -454,6 +476,9 @@ export function handlePayload(payload, deps = {}) {
     readFile,
     runPreflightFn = runPreflight,
     logFn = logPreflightEvent,
+    exists = existsSync,
+    branchOf = currentBranch,
+    platform = process.platform,
   } = deps;
 
   if (!appliesTo(payload)) return;
@@ -471,9 +496,19 @@ export function handlePayload(payload, deps = {}) {
     return;
   }
 
+  // `cd` para um alvo que não existe neste host: o checkout conferido seria
+  // outro (o do payload), então não confere nada e só avisa.
+  const cdTarget = cdTargetFromCommand(command, payload?.cwd, platform);
+  if (cdTarget !== null && !exists(cdTarget)) {
+    logFn("pr_create_preflight_cd_unresolved", { cdTarget }, { repoRoot: logRoot, level: "warn" });
+    return warnOutput(buildInfraMessage(`o cd do comando aponta para ${cdTarget}, que não existe neste host; o checkout da PR não foi conferido`));
+  }
   const extracted = extractPrCreateBody(command);
-  const { body, reason } = resolveBody(extracted, commandDir(command, payload?.cwd, cwd), readFile);
-  const warnOnly = extracted.head ? `--head ${extracted.head}: o guard confere o checkout atual, não a branch da PR` : null;
+  const { body, reason } = resolveBody(extracted, cdTarget ?? commandDir(command, payload?.cwd, cwd, platform), readFile, platform);
+  const warnOnly =
+    extracted.head && headIsOtherBranch(extracted.head, branchOf(cwd))
+      ? `--head ${extracted.head}: o guard confere o checkout atual, não a branch da PR`
+      : null;
   const run = runPreflightFn(cwd, { body, bodyReason: reason, base: extracted.base ?? null, warnOnly });
   if (run.infra) {
     // Checkout sem o script (branch antiga, outro repo): nada a conferir.

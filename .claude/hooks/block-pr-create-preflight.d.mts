@@ -38,6 +38,9 @@ export interface HandlePayloadDeps {
   readFile?: (path: string) => string;
   runPreflightFn?: (cwd: string, input: PreflightRunInput) => PreflightRunResult;
   logFn?: (message: string, details: unknown, opts: { repoRoot?: string; level?: string }) => void;
+  exists?: (path: string) => boolean;
+  branchOf?: (cwd: string) => string | null;
+  platform?: string;
 }
 
 export type HookOutput =
@@ -48,8 +51,15 @@ export function bypassSource(command: unknown, env?: Record<string, string | und
 export function rawCommandWords(src: unknown): string[][];
 export function rawWordValue(raw: unknown): RawWordValue;
 export function extractPrCreateBody(command: unknown): ExtractedPrBody;
-export function resolveBody(extracted: ExtractedPrBody, dir: string, readFile?: (path: string) => string): { body: string | null; reason: string | null };
-export function commandDir(command: unknown, payloadCwd: unknown, fallback: string): string;
+export function resolveBody(
+  extracted: ExtractedPrBody,
+  dir: string,
+  readFile?: (path: string) => string,
+  platform?: string,
+): { body: string | null; reason: string | null };
+export function commandDir(command: unknown, payloadCwd: unknown, fallback: string, platform?: string): string;
+export function normalizeMsysPath(p: string, platform?: string, tmp?: () => string): string;
+export function headIsOtherBranch(head: string | null | undefined, branch: string | null): boolean;
 export function runPreflight(
   cwd: string,
   input: PreflightRunInput,

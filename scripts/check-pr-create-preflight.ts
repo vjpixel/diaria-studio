@@ -9,7 +9,8 @@
  * 1. `docs/editorial-invariants.md` DO COMMIT (`git show HEAD:...`) igual ao
  *    markdown gerado do registry (`generateInvariantsMarkdown`, o mesmo do
  *    `list-invariants.ts --check`). Documento certo na árvore e defasado no
- *    HEAD é "regenerado mas não commitado" (recusa); registry com mudança não
+ *    HEAD é "regenerado mas não commitado" (aviso: a cadeia do próprio comando
+ *    pode commitar antes do `gh pr create`); registry com mudança não
  *    commitada não deixa conferir o commit (aviso).
  * 2. diff `BASE...HEAD` (merge-base, como o gate do CI, #9403) acima de 500
  *    adições sem `removal-declaration:` no corpo (#7115).

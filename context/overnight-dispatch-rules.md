@@ -409,7 +409,8 @@ Guard mecânico desde o #14216: `.claude/hooks/block-pr-create-preflight.mjs`
 (PreToolUse/Bash, pelo despachante) roda `scripts/check-pr-create-preflight.ts`
 antes do `gh pr create` e recusa a PR com o documento DO COMMIT (HEAD, não o
 arquivo da árvore) divergente do registry, com o comando de regenerar na
-mensagem; regenerado e não commitado também é recusado.
+mensagem. Regenerado e não commitado vira aviso (a mesma cadeia de comando
+pode commitar antes do `gh pr create`; o CI pega o caso real).
 
 ## 14. Preflight de duplicidade — checklist obrigatório (#5327 item 3)
 

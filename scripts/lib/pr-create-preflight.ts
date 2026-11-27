@@ -44,7 +44,7 @@ export type InvariantsDocStatus =
   | { status: "ok" }
   | { status: "stale" }
   | { status: "missing" }
-  /** O documento na árvore está certo, mas o do HEAD (o que vai na PR) não: regenerado e não commitado. */
+  /** O documento na árvore está certo, mas o do HEAD não: regenerado e não commitado (aviso: o próprio comando pode commitar antes do `gh pr create`). */
   | { status: "uncommitted" }
   | { status: "unavailable"; detail: string };
 
@@ -116,9 +116,12 @@ export function decidePrCreatePreflight(input: PrCreatePreflightInput): PrCreate
         `(o CI reprova em test/list-invariants.test.ts). Regenere e commite antes de abrir a PR:\n  ${REGENERATE_INVARIANTS_COMMAND}`,
     );
   } else if (inv.status === "uncommitted") {
-    deny.push(
-      `[#4877] ${INVARIANTS_DOC_PATH} foi regenerado mas não commitado: o arquivo na árvore bate com o registry, o do HEAD (o que vai na PR) não. ` +
-        `Commite o documento antes de abrir a PR.`,
+    // Aviso, nunca recusa: o hook roda antes do comando inteiro, e uma cadeia
+    // `git add … && git commit … && git push && gh pr create` commitaria o
+    // documento certo antes de a PR existir. O CI pega o caso real.
+    warn.push(
+      `[#4877] ${INVARIANTS_DOC_PATH} foi regenerado mas não está no HEAD: o arquivo na árvore bate com o registry, o do commit não. ` +
+        "Se este comando não commita o documento antes do gh pr create, o CI reprova: commite e dê push antes.",
     );
   } else if (inv.status === "unavailable") {
     warn.push(`[#14216] ${INVARIANTS_DOC_PATH} não conferido (${inv.detail}): rode ${REGENERATE_INVARIANTS_COMMAND.replace("--out", "--check")} antes do push`);

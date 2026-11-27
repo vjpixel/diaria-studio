@@ -26,6 +26,7 @@ import {
   commandDir,
   extractPrCreateBody,
   handlePayload,
+  normalizeMsysPath,
   rawWordValue,
   resolveBody,
   runPreflight,
@@ -50,10 +51,11 @@ describe("decidePrCreatePreflight (#14216)", () => {
     assert.ok(r.deny[0].includes(REGENERATE_INVARIANTS_COMMAND));
   });
 
-  it("documento ausente e regenerado-sem-commit também negam", () => {
+  it("documento ausente nega; regenerado-sem-commit só avisa (a cadeia pode commitar antes do gh pr create)", () => {
     assert.equal(decidePrCreatePreflight({ invariants: { status: "missing" }, stats: SMALL, body: "x" }).deny.length, 1);
     const r = decidePrCreatePreflight({ invariants: { status: "uncommitted" }, stats: SMALL, body: "x" });
-    assert.match(r.deny[0], /regenerado mas não commitado/);
+    assert.deepEqual(r.deny, []);
+    assert.match(r.warn[0], /regenerado mas não está no HEAD/);
   });
 
   it("PR acima do limiar com corpo lido sem removal-declaration: nega (o cenário da #14120)", () => {
@@ -140,6 +142,12 @@ describe("leitura do corpo (#14216)", () => {
     assert.match((r as { body: string }).body, /removal-declaration: nada removido/);
     assert.match((r as { body: string }).body, /\$VAR/);
   });
+  it('--body="$(cat <<\'EOF\' ...)" com = também é texto', () => {
+    const r = extractPrCreateBody("gh pr create --title t --body=\"$(cat <<'EOF'\nremoval-declaration: com igual, teste\nEOF\n)\"");
+    assert.equal(r.kind, "text");
+    assert.match((r as { body: string }).body, /com igual/);
+    assert.equal((extractPrCreateBody('gh pr create --body="$X"') as { reason: string }).reason, "--body montado por expansão de shell");
+  });
   it("heredoc com delimitador sem aspas, variável e crase em aspas duplas: não determinável", () => {
     assert.equal(extractPrCreateBody('gh pr create --body "$(cat <<EOF\n$X\nEOF\n)"').kind, "unknown");
     assert.equal(extractPrCreateBody('gh pr create --body "$BODY"').kind, "unknown");
@@ -196,8 +204,48 @@ describe("leitura do corpo (#14216)", () => {
       },
       runPreflightFn: () => ({ infra: false, code: 0, result: { deny: [], warn: [] } }),
       logFn: () => {},
+      exists: () => true,
+      branchOf: () => null,
     });
     assert.equal(read, "/wt/b-14216.md");
+  });
+  it("cd para alvo que não existe: não confere e só avisa (nunca cai no payload.cwd)", () => {
+    let ran = false;
+    const logs: string[] = [];
+    const out = handlePayload({ tool_name: "Bash", cwd: "/main", tool_input: { command: "cd /nao/existe-14216 && gh pr create --body x" } }, {
+      env: {},
+      resolveRepoRoot: () => "/main",
+      isForeignRepo: () => false,
+      isStudio: () => true,
+      resolveLogRoot: () => "/main",
+      runPreflightFn: () => {
+        ran = true;
+        return { infra: false, code: 1, result: { deny: ["x"], warn: [] } };
+      },
+      logFn: (m) => logs.push(m),
+      exists: () => false,
+      branchOf: () => null,
+    }) as { systemMessage: string; hookSpecificOutput: { permissionDecision?: string } };
+    assert.equal(ran, false);
+    assert.equal(out.hookSpecificOutput.permissionDecision, undefined);
+    assert.match(out.systemMessage, /não existe neste host/);
+    assert.deepEqual(logs, ["pr_create_preflight_cd_unresolved"]);
+  });
+  it("caminho do Git Bash é normalizado no Windows (cd /c/... e /tmp/...); fora do Windows, igual", () => {
+    assert.equal(normalizeMsysPath("/c/Users/x", "win32"), "C:/Users/x");
+    assert.equal(normalizeMsysPath("/c", "win32"), "C:/");
+    assert.equal(normalizeMsysPath("/tmp/pr-body-14216.md", "win32", () => "T:\\tmp"), "T:/tmp/pr-body-14216.md");
+    assert.equal(normalizeMsysPath("/base/repo", "win32"), "/base/repo");
+    assert.equal(normalizeMsysPath("/c/Users/x", "linux"), "/c/Users/x");
+    if (process.platform === "win32") {
+      assert.equal(commandDir("cd /c/Users/x && gh pr create", "D:/main", "D:/f").replaceAll("\\", "/"), "C:/Users/x");
+      let read = "";
+      resolveBody({ kind: "file", path: "/c/tmp/b-14216.md" }, "D:/main", (p: string) => {
+        read = p.replaceAll("\\", "/");
+        return "";
+      });
+      assert.equal(read, "C:/tmp/b-14216.md");
+    }
   });
   it("resolveBody: arquivo ilegível é não determinável", () => {
     const bad = resolveBody({ kind: "file", path: "x-14216.md" }, "/wt", () => {
@@ -220,6 +268,30 @@ describe("hook block-pr-create-preflight (#14216)", () => {
     readFile: () => "corpo sem a linha",
     runPreflightFn: () => run,
     logFn: (m, _d, o) => logs.push([m, o.level]),
+    exists: () => true,
+    branchOf: () => "minha-branch",
+  });
+
+  it("--head igual à branch do checkout não reduz a aviso; outra branch reduz", () => {
+    const seen: unknown[] = [];
+    const deps = {
+      ...baseDeps({ infra: true, output: "" }),
+      runPreflightFn: (_cwd: string, arg: { warnOnly?: string | null }) => {
+        seen.push(arg.warnOnly ?? null);
+        return { infra: false as const, code: 0 as const, result: { deny: [], warn: [] } };
+      },
+    };
+    handlePayload(payload("gh pr create -H minha-branch --body x"), deps);
+    handlePayload(payload("gh pr create --head vjpixel:minha-branch --body x"), deps);
+    handlePayload(payload("gh pr create -H outra --body x"), deps);
+    assert.deepEqual(seen.slice(0, 2), [null, null]);
+    assert.match(String(seen[2]), /--head outra/);
+  });
+
+  it("cadeia git add && git commit && git push && gh pr create: aplica-se, e o corpo do arquivo é lido", () => {
+    const cmd = "git add docs/editorial-invariants.md && git commit -m x && git push && gh pr create --title t --body-file b-14216.md";
+    assert.equal(appliesTo(payload(cmd)), true);
+    assert.equal((extractPrCreateBody(cmd) as { path: string }).path, "b-14216.md");
   });
 
   it("aplica-se a gh pr create (inclusive com atribuição na frente), não a outro comando", () => {
@@ -387,11 +459,19 @@ describe("CLI check-pr-create-preflight em repo temporário (#14216)", () => {
     assert.match(unread.result.body_unknown_reason ?? "", /stdin ilegível/);
   });
 
-  it("certo no disco, defasado no HEAD: regenerado mas não commitado", async () => {
+  it("certo no disco, defasado no HEAD (a cadeia ainda vai commitar): aviso, nunca recusa", async () => {
     const root = repo("velho\n");
     writeFileSync(join(root, "docs", "editorial-invariants.md"), generateInvariantsMarkdown());
     const { code, result } = await runCli(["--base", "base", "--body-stdin"], root, io(""));
+    assert.equal(code, 0);
+    assert.deepEqual(result.deny, []);
+    assert.match(result.warn.join(), /não está no HEAD/);
+  });
+
+  it("defasado na árvore e no HEAD: recusa", async () => {
+    const root = repo("velho\n");
+    const { code, result } = await runCli(["--base", "base", "--body-stdin"], root, io(""));
     assert.equal(code, 1);
-    assert.match(result.deny.join(), /não commitado/);
+    assert.match(result.deny.join(), /divergiu/);
   });
 });
