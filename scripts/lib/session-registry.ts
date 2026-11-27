@@ -119,14 +119,21 @@
  *     (fail-closed). `exit 3` = parar a rodada (halt banner, #738), nunca
  *     tratar como "nenhuma sessão". `data/sessions/` legível e vazio, ou
  *     ausente num clone fresco, segue respondendo como sempre.)
- *   npx tsx scripts/lib/session-registry.ts claim-worktree [--path WT] [--branch B]
+ *   npx tsx scripts/lib/session-registry.ts claim-worktree [--path WT] [--branch B] [--renew|--rebind]
  *     (#14214: grava `data/sessions/.worktree-claims/<hash>.json`, que o hook
  *     `.claude/hooks/block-worktree-alien-commit.mjs` lê antes de cada `git
  *     commit` — até aqui nada em produção gravava esse arquivo. Default: o
  *     worktree do cwd e a branch do HEAD, então roda DEPOIS do checkout da
- *     branch de trabalho. Rodar de novo renova o TTL de 30 min e regrava a
- *     branch. `exit 1` = outra sessão segura o path, ou o path não é
- *     worktree vinculado — o checkout principal nunca é reivindicado.)
+ *     branch de trabalho. TTL de 3h, renovado pelo `heartbeat` da sessão.
+ *     `--renew` só estende o TTL e preserva a branch gravada; `--rebind`
+ *     regrava a branch do HEAD (o próprio agente trocou de branch). Sem flag,
+ *     com claim viva desta sessão em outra branch, recusa — a divergência é a
+ *     evidência do guard. `exit 1` = outra sessão segura o path, path não é
+ *     worktree vinculado (o checkout principal nunca é reivindicado), branch
+ *     divergente sem `--rebind`, ou `--renew` sem claim viva.)
+ *   npx tsx scripts/lib/session-registry.ts unclaim-worktree [--path WT]
+ *     (#14214: solta a claim do worktree, só a da própria sessão — fim da
+ *     unidade/cleanup. `gc` recolhe as claims vencidas há mais de 7 dias.)
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N
  *     (#6334: deixou de ser reentrante pra mesma sessão — uma 2ª chamada
@@ -243,6 +250,9 @@ import {
   claimIssuesAutoRegistering,
   claimTargetLabel,
   claimWorktreeChecked,
+  gcExpiredWorktreeClaims,
+  renewWorktreeClaimsForSession,
+  unclaimWorktree,
   downgradedClaimKindNotice,
   findActiveSessionsOfKind,
   findStaleSessionsOfKind,
@@ -379,6 +389,10 @@ export {
   heartbeatAutoRegistering,
   claimWorktree,
   claimWorktreeChecked,
+  gcExpiredWorktreeClaims,
+  renewWorktreeClaimsForSession,
+  unclaimWorktree,
+  WORKTREE_CLAIM_TTL_MS,
   claimIssue,
   unclaimIssue,
   unclaimIssues,
@@ -549,6 +563,19 @@ function refuseIfRegistryUnverifiable(repoRoot: string, command: string): boolea
   return true;
 }
 
+/**
+ * Raiz do worktree como o hook `block-worktree-alien-commit.mjs` a calcula:
+ * `git rev-parse --show-toplevel` (sobre `--path`, quando passado, ou o cwd).
+ * Rodar o git também sobre o `--path` manual dá a mesma grafia que o hook vê
+ * (caixa da letra do drive, barras), e portanto o mesmo hash da chave.
+ * `null` quando o git falha no cwd sem `--path`; com `--path` fora do git,
+ * devolve o próprio `--path` (o chamador recusa por não ser worktree).
+ */
+function resolveWorktreeToplevel(explicitPath: string | undefined): string | null {
+  if (explicitPath) return gitOutput(["rev-parse", "--show-toplevel"], explicitPath) ?? explicitPath;
+  return gitOutput(["rev-parse", "--show-toplevel"], process.cwd());
+}
+
 /** stdout aparado de um `git` no `cwd`, ou `null` em falha (#14214). */
 function gitOutput(args: string[], cwd: string): string | null {
   try {
@@ -641,8 +668,20 @@ async function main(): Promise<void> {
           );
           break;
         }
+        // #14214: sessão viva mantém vivas as claims de worktree que fez.
+        // Só `expires_at`; a branch gravada no claim nunca muda aqui. Falha de
+        // I/O nas claims não derruba o heartbeat (é proteção, não registro).
+        let renewedClaims = 0;
+        if (result.ok) {
+          try {
+            renewedClaims = renewWorktreeClaimsForSession(repoRoot, sessionId);
+          } catch (e) {
+            process.stderr.write(`session-registry: heartbeat — falha ao renovar claims de worktree: ${(e as Error).message}\n`);
+          }
+        }
+        const renewedSuffix = renewedClaims > 0 ? ` [${renewedClaims} claim(s) de worktree renovada(s)]` : "";
         process.stdout.write(
-          `session-registry: heartbeat ${result.ok ? "ok" : "no-op (sessão inexistente mesmo após tentativa de auto-registro)"}${autoRegisterSuffix}\n`,
+          `session-registry: heartbeat ${result.ok ? "ok" : "no-op (sessão inexistente mesmo após tentativa de auto-registro)"}${autoRegisterSuffix}${renewedSuffix}\n`,
         );
         if (!result.ok) process.exitCode = 1;
         break;
@@ -906,7 +945,13 @@ async function main(): Promise<void> {
         // `block-worktree-alien-commit.mjs` lê antes de cada `git commit`.
         const sessionId = requireSessionId(values);
         if (refuseIfRegistryUnverifiable(repoRoot, "claim-worktree")) break; // #14009
-        const path = values.path ?? gitOutput(["rev-parse", "--show-toplevel"], process.cwd());
+        if (flags.has("renew") && flags.has("rebind")) {
+          process.stderr.write("session-registry: claim-worktree — --renew e --rebind são excludentes\n");
+          process.exitCode = 1;
+          break;
+        }
+        const mode = flags.has("renew") ? "renew" : flags.has("rebind") ? "rebind" : "claim";
+        const path = resolveWorktreeToplevel(values.path);
         if (!path) {
           process.stderr.write(
             "session-registry: claim-worktree — não deu pra resolver o worktree (`git rev-parse --show-toplevel` " +
@@ -920,12 +965,28 @@ async function main(): Promise<void> {
         // provisória do worktree faria o hook barrar o commit na branch real.
         const headBranch = values.branch ?? gitOutput(["rev-parse", "--abbrev-ref", "HEAD"], path);
         const branch = headBranch && headBranch !== "HEAD" ? headBranch : undefined;
-        const result = claimWorktreeChecked(path, sessionId, repoRoot, branch);
+        const result = claimWorktreeChecked(path, sessionId, repoRoot, branch, mode);
         switch (result.outcome) {
           case "claimed":
             process.stdout.write(
-              `session-registry: claim-worktree ok (claimed) path=${result.path} branch=${result.branch ?? "(nenhuma)"}\n`,
+              `session-registry: claim-worktree ok (${mode === "claim" ? "claimed" : mode === "renew" ? "renewed" : "rebound"}) ` +
+                `path=${result.path} branch=${result.branch ?? "(nenhuma)"}\n`,
             );
+            break;
+          case "nothing-to-renew":
+            process.stdout.write(
+              `session-registry: claim-worktree --renew no-op — ${result.path} não tem claim viva desta sessão ` +
+                "(rodar sem --renew para reivindicar)\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "branch-mismatch":
+            process.stdout.write(
+              `session-registry: claim-worktree RECUSADO — a claim desta sessão gravou a branch ${result.claimedBranch} ` +
+                `e o HEAD está em ${result.headBranch}. Se foi você que trocou de branch, rode com --rebind; ` +
+                "senão a branch foi trocada por baixo do worktree, confira antes de commitar\n",
+            );
+            process.exitCode = 1;
             break;
           case "blocked-by-other":
             process.stdout.write(
@@ -941,6 +1002,28 @@ async function main(): Promise<void> {
             );
             process.exitCode = 1;
             break;
+        }
+        break;
+      }
+      case "unclaim-worktree": {
+        // #14214: solta a claim do worktree no fim da unidade — só a da
+        // própria sessão.
+        const sessionId = requireSessionId(values);
+        if (refuseIfRegistryUnverifiable(repoRoot, "unclaim-worktree")) break; // #14009
+        const path = resolveWorktreeToplevel(values.path);
+        if (!path) {
+          process.stderr.write("session-registry: unclaim-worktree — passe --path {worktree} ou rode de dentro dele\n");
+          process.exitCode = 1;
+          break;
+        }
+        const outcome = unclaimWorktree(path, sessionId, repoRoot);
+        if (outcome === "unclaimed") {
+          process.stdout.write(`session-registry: unclaim-worktree ok (liberado) path=${path}\n`);
+        } else if (outcome === "blocked-by-other") {
+          process.stdout.write(`session-registry: unclaim-worktree RECUSADO — ${path} é reivindicado por outra sessão\n`);
+          process.exitCode = 1;
+        } else {
+          process.stdout.write(`session-registry: unclaim-worktree no-op (${path} não tinha claim)\n`);
         }
         break;
       }
@@ -1498,16 +1581,23 @@ async function main(): Promise<void> {
         process.stdout.write(
           `session-registry: gc ${isDryRun ? "--dry-run: " : ""}${removedCount}/${plan.length} identidade(s) ${isDryRun ? "seriam removidas" : "removidas"}\n`,
         );
+        // #14214: claims de worktree vencidas há mais de 7 dias.
+        const staleClaims = gcExpiredWorktreeClaims(repoRoot, { dryRun: isDryRun });
+        for (const claimPath of staleClaims) {
+          process.stdout.write(`session-registry: gc ${isDryRun ? "would-remove" : "removed"} worktree-claim ${claimPath}\n`);
+        }
         break;
       }
       default:
         process.stderr.write(
           "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|" +
-            "claim-worktree|list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|self-authorize-merge|" +
+            "claim-worktree|unclaim-worktree|list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|self-authorize-merge|" +
             "merge-lock-acquire|merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive|continuo-review] [--session-id X] [--tag MAQUINA] ...\n" +
-            "  claim-worktree [--path WT] [--branch B]: reivindica o worktree (default: o do cwd, com a branch do HEAD) " +
-            "para o hook block-worktree-alien-commit.mjs (#14214). Rodar depois do checkout da branch de trabalho; " +
-            "exit 1 se outra sessão já o segura ou se o path não é worktree vinculado.\n" +
+            "  claim-worktree [--path WT] [--branch B] [--renew|--rebind]: reivindica o worktree (default: o do cwd, " +
+            "com a branch do HEAD) para o hook block-worktree-alien-commit.mjs (#14214). Rodar depois do checkout da " +
+            "branch de trabalho; --renew só estende o TTL, --rebind regrava a branch. exit 1 se outra sessão já o " +
+            "segura, se o path não é worktree vinculado ou se a branch diverge sem --rebind.\n" +
+            "  unclaim-worktree [--path WT]: solta a claim do worktree, só a da própria sessão (#14214).\n" +
             "  unclaim-issue --issue N: inverso de claim-issue (#6317) — remove a issue de claimed_issues da PRÓPRIA " +
             "sessão; nunca mexe na claim de outra. No-op honesto (exit 1) se a issue não estava reivindicada por ela.\n" +
             "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +

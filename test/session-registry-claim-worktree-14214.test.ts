@@ -11,11 +11,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { claimWorktreeChecked } from "../scripts/lib/session-registry.ts";
+import {
+  claimWorktreeChecked,
+  gcExpiredWorktreeClaims,
+  renewWorktreeClaimsForSession,
+  unclaimWorktree,
+  WORKTREE_CLAIM_TTL_MS,
+} from "../scripts/lib/session-registry.ts";
 import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "../scripts/lib/session-id-required-subcommands.ts";
 
 const REPO = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -26,8 +33,9 @@ const HOOK = join(REPO, ".claude", "hooks", "block-worktree-alien-commit.mjs");
 const hookModule: {
   BLOCK_REASON_BRANCH_DIVERGE: string;
   readWorktreeClaimRecord: (repoRoot: string, checkoutRoot: string) => { sessionId?: string; branch?: string } | null;
+  getHeadBranch: (checkoutRoot: string) => string | null;
 } = await import(pathToFileURL(HOOK).href);
-const { BLOCK_REASON_BRANCH_DIVERGE, readWorktreeClaimRecord } = hookModule;
+const { BLOCK_REASON_BRANCH_DIVERGE, readWorktreeClaimRecord, getHeadBranch } = hookModule;
 // `--import tsx` resolve a partir do cwd; o cwd destes testes é um repo
 // temporário sem node_modules, então o loader vai por URL absoluta.
 const TSX = import.meta.resolve("tsx");
@@ -129,8 +137,16 @@ describe("session-registry claim-worktree (#14214)", () => {
       });
       assert.ok(out);
       assert.equal(JSON.parse(out).hookSpecificOutput?.permissionDecisionReason, BLOCK_REASON_BRANCH_DIVERGE);
-      // Rodar de novo depois do checkout regrava a branch e libera o commit.
-      assert.equal(cli(wt, "--session-id", "sessao-dona").status, 0);
+      // Sem flag, rodar de novo recusa: regravar a branch em silêncio apagaria
+      // a evidência que BLOCK_REASON_BRANCH_DIVERGE mostra.
+      const plain = cli(wt, "--session-id", "sessao-dona");
+      assert.equal(plain.status, 1);
+      assert.match(plain.stdout, /gravou a branch develop\/fix-14214 e o HEAD está em develop\/outra/);
+      // --renew estende o prazo e preserva a branch gravada: o commit segue barrado.
+      assert.equal(cli(wt, "--session-id", "sessao-dona", "--renew").status, 0);
+      assert.ok(hook({ tool_name: "Bash", tool_input: { command: 'git commit -m "x"' }, session_id: "sessao-dona", cwd: wt }));
+      // --rebind (o próprio agente fez o checkout) regrava a branch e libera o commit.
+      assert.equal(cli(wt, "--session-id", "sessao-dona", "--rebind").status, 0);
       const again = hook({
         tool_name: "Bash",
         tool_input: { command: 'git commit -m "x"' },
@@ -193,7 +209,114 @@ describe("session-registry claim-worktree (#14214)", () => {
     }
   });
 
-  it("claim-worktree está na lista de subcomandos que recebem --session-id injetado", () => {
+  it("claim-worktree e unclaim-worktree estão na lista de subcomandos que recebem --session-id injetado", () => {
     assert.ok((SESSION_ID_REQUIRED_SUBCOMMANDS as readonly string[]).includes("claim-worktree"));
+    assert.ok((SESSION_ID_REQUIRED_SUBCOMMANDS as readonly string[]).includes("unclaim-worktree"));
+  });
+
+  it("TTL de 3h; heartbeat da sessão dona renova sem mexer na branch; claim vencida não ressuscita", () => {
+    const { tmp, mainRepo, wt } = setup();
+    try {
+      const before = Date.now();
+      assert.equal(cli(wt, "--session-id", "sessao-dona").status, 0);
+      const toplevel = git(["rev-parse", "--show-toplevel"], wt);
+      const file = claimFileFor(mainRepo, toplevel);
+      const first = JSON.parse(readFileSync(file, "utf8"));
+      assert.ok(first.expires_at >= before + WORKTREE_CLAIM_TTL_MS - 1000, "TTL menor que 3h");
+
+      // Faltando 1 min para vencer, o heartbeat empurra para agora + TTL.
+      writeFileSync(file, JSON.stringify({ ...first, expires_at: Date.now() + 60_000 }));
+      const hb = spawnSync(process.execPath, ["--import", TSX, CLI, "heartbeat", "--kind", "develop", "--session-id", "sessao-dona"], {
+        cwd: wt,
+        encoding: "utf8",
+        env: { ...process.env, DIARIA_INJECTED_SESSION_ID: "" },
+      });
+      assert.equal(hb.status, 0, (hb.stdout ?? "") + (hb.stderr ?? ""));
+      assert.match(hb.stdout ?? "", /1 claim\(s\) de worktree renovada/);
+      const renewed = JSON.parse(readFileSync(file, "utf8"));
+      assert.ok(renewed.expires_at > Date.now() + WORKTREE_CLAIM_TTL_MS - 60_000);
+      assert.equal(renewed.branch, "develop/fix-14214");
+
+      // Heartbeat de outra sessão não toca a claim; claim vencida não volta.
+      assert.equal(renewWorktreeClaimsForSession(mainRepo, "outra-sessao"), 0);
+      writeFileSync(file, JSON.stringify({ ...renewed, expires_at: Date.now() - 1000 }));
+      assert.equal(renewWorktreeClaimsForSession(mainRepo, "sessao-dona"), 0);
+      assert.equal(readWorktreeClaimRecord(mainRepo, toplevel), null, "vencida, o hook ignora");
+      // --renew sem claim viva não reivindica nada.
+      assert.equal(cli(wt, "--session-id", "sessao-dona", "--renew").status, 1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("unclaim-worktree solta só a claim da própria sessão", () => {
+    const { tmp, mainRepo, wt } = setup();
+    try {
+      assert.equal(cli(wt, "--session-id", "sessao-dona").status, 0);
+      const toplevel = git(["rev-parse", "--show-toplevel"], wt);
+      assert.equal(unclaimWorktree(toplevel, "outra-sessao", mainRepo), "blocked-by-other");
+      assert.ok(readWorktreeClaimRecord(mainRepo, toplevel));
+      const r = spawnSync(process.execPath, ["--import", TSX, CLI, "unclaim-worktree", "--session-id", "sessao-dona"], {
+        cwd: wt,
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 0, (r.stdout ?? "") + (r.stderr ?? ""));
+      assert.equal(readWorktreeClaimRecord(mainRepo, toplevel), null);
+      assert.equal(unclaimWorktree(toplevel, "sessao-dona", mainRepo), "no-op-not-claimed");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("gc recolhe claim vencida há mais de 7 dias e mantém a recente", () => {
+    const { tmp, mainRepo, wt } = setup();
+    try {
+      assert.equal(cli(wt, "--session-id", "sessao-dona").status, 0);
+      const file = claimFileFor(mainRepo, git(["rev-parse", "--show-toplevel"], wt));
+      const rec = JSON.parse(readFileSync(file, "utf8"));
+      writeFileSync(file, JSON.stringify({ ...rec, expires_at: Date.now() - 24 * 60 * 60 * 1000 }));
+      assert.deepEqual(gcExpiredWorktreeClaims(mainRepo), [], "vencida há 1 dia fica");
+      writeFileSync(file, JSON.stringify({ ...rec, expires_at: Date.now() - 8 * 24 * 60 * 60 * 1000 }));
+      assert.equal(gcExpiredWorktreeClaims(mainRepo, { dryRun: true }).length, 1);
+      assert.ok(existsSync(file), "dry-run não remove");
+      assert.equal(gcExpiredWorktreeClaims(mainRepo).length, 1);
+      assert.ok(!existsSync(file));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("HEAD destacado (rebase com conflito) não nega o commit da dona — fail-open", () => {
+    const { tmp, wt } = setup();
+    try {
+      assert.equal(cli(wt, "--session-id", "sessao-dona").status, 0);
+      git(["checkout", "-q", "--detach"], wt);
+      const out = hook({ tool_name: "Bash", tool_input: { command: 'git commit -m "x"' }, session_id: "sessao-dona", cwd: wt });
+      assert.equal(out, "");
+      assert.equal(getHeadBranch(wt), null);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--path manual com outra caixa na letra do drive cai na mesma chave do hook", { skip: process.platform !== "win32" }, () => {
+    const { tmp, mainRepo, wt } = setup();
+    try {
+      const toplevel = git(["rev-parse", "--show-toplevel"], wt);
+      const flipped = toplevel[0] === toplevel[0].toUpperCase()
+        ? toplevel[0].toLowerCase() + toplevel.slice(1)
+        : toplevel[0].toUpperCase() + toplevel.slice(1);
+      assert.equal(cli(mainRepo, "--session-id", "sessao-dona", "--path", flipped.replaceAll("/", "\\")).status, 0);
+      assert.equal(readWorktreeClaimRecord(mainRepo, toplevel)?.sessionId, "sessao-dona");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
+
+/** Caminho do arquivo de claim que o hook lê (mesma chave, cópia do teste). */
+function claimFileFor(mainRepo: string, toplevel: string): string {
+  const normalized = resolve(toplevel).replaceAll("\\", "/").replace(/\/+$/, "");
+  const key = createHash("sha256").update(normalized).digest("hex").slice(0, 20);
+  return join(mainRepo, "data", "sessions", ".worktree-claims", `${key}.json`);
+}

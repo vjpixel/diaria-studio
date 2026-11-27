@@ -68,6 +68,7 @@ export const SESSION_ID_REQUIRED_SUBCOMMANDS = [
   // #14214 — a claim de worktree grava o `session_id` de quem a pede, que o
   // hook `block-worktree-alien-commit.mjs` compara com o de quem commita.
   "claim-worktree",
+  "unclaim-worktree",
 ] as const;
 
 // Sem `export`: nada no repo importa este tipo hoje (knip acusa dead export).

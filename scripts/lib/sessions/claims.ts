@@ -12,7 +12,7 @@
  */
 
 import { dirname, join, resolve } from "node:path";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { withFileLock } from "../file-lock.ts";
 import { formatIssueRef, type IssueRef, legacyIssueNumber, normalizeRepoSlug } from "../issue-repos.ts";
@@ -899,8 +899,115 @@ function worktreeClaimKey(path: string): string {
   return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
 }
 
+function worktreeClaimsDir(root: string): string {
+  return join(root, "data", "sessions", ".worktree-claims");
+}
+
 function worktreeClaimFilePath(root: string, path: string): string {
-  return join(root, "data", "sessions", ".worktree-claims", `${worktreeClaimKey(path)}.json`);
+  return join(worktreeClaimsDir(root), `${worktreeClaimKey(path)}.json`);
+}
+
+/**
+ * Validade de uma claim de worktree (#14214). Era 30 min fixos e nada renovava,
+ * então o guard do hook vencia no meio da maioria das unidades. Agora são 3h,
+ * renovadas a cada `heartbeat` da sessão dona (`renewWorktreeClaimsForSession`)
+ * e por `claim-worktree --renew`. A claim de unidade terminada sai por
+ * `unclaim-worktree`; a esquecida vence e o `gc` a recolhe.
+ */
+export const WORKTREE_CLAIM_TTL_MS = 3 * 60 * 60 * 1000;
+
+/** Claim vencida há mais que isto sai no `gc` (`gcExpiredWorktreeClaims`). */
+const WORKTREE_CLAIM_GC_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface WorktreeClaimRecord {
+  path?: string;
+  sessionId?: string;
+  branch?: string;
+  claimed_at?: string;
+  expires_at?: number;
+}
+
+function listWorktreeClaimFiles(root: string): string[] {
+  const dir = worktreeClaimsDir(root);
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Renova (`expires_at` = agora + TTL) as claims de worktree VIVAS da sessão,
+ * sem tocar em `branch` (#14214). Chamada pelo `heartbeat` do CLI: a sessão
+ * que bate heartbeat segue viva, e os worktrees que ela reivindicou seguem
+ * protegidos enquanto isso. Claim já vencida não ressuscita — vencer é o sinal
+ * de abandono. Devolve quantas renovou.
+ */
+export function renewWorktreeClaimsForSession(repoRoot: string, sessionId: string, nowMs: number = Date.now()): number {
+  let renewed = 0;
+  for (const file of listWorktreeClaimFiles(repoRoot)) {
+    const peek = readJsonSafe<WorktreeClaimRecord>(file);
+    if (!peek || peek.sessionId !== sessionId || (peek.expires_at ?? 0) <= nowMs) continue;
+    const lockPath = `${file}.lock`;
+    breakStaleLock(lockPath);
+    withFileLock(lockPath, () => {
+      const current = readJsonSafe<WorktreeClaimRecord>(file);
+      if (!current || current.sessionId !== sessionId || (current.expires_at ?? 0) <= nowMs) return;
+      writeJsonSafe(file, { ...current, expires_at: nowMs + WORKTREE_CLAIM_TTL_MS });
+      renewed += 1;
+    });
+  }
+  return renewed;
+}
+
+/** Desfecho de `unclaimWorktree`. */
+type UnclaimWorktreeOutcome = "unclaimed" | "no-op-not-claimed" | "blocked-by-other";
+
+/**
+ * Solta a claim de worktree, só quando é da própria sessão (#14214): fim da
+ * unidade ou cleanup do worktree. Claim de outra sessão nunca sai daqui.
+ */
+export function unclaimWorktree(path: string, sessionId: string, repoRoot: string): UnclaimWorktreeOutcome {
+  const claimFile = worktreeClaimFilePath(repoRoot, resolve(path));
+  if (!existsSync(claimFile)) return "no-op-not-claimed";
+  const lockPath = `${claimFile}.lock`;
+  breakStaleLock(lockPath);
+  let outcome: UnclaimWorktreeOutcome = "no-op-not-claimed";
+  withFileLock(lockPath, () => {
+    const current = readJsonSafe<WorktreeClaimRecord>(claimFile);
+    if (!current) return;
+    if (current.sessionId !== sessionId) {
+      outcome = "blocked-by-other";
+      return;
+    }
+    rmSync(claimFile, { force: true });
+    outcome = "unclaimed";
+  });
+  return outcome;
+}
+
+/**
+ * Remove as claims de worktree vencidas há mais de `olderThanMs` (#14214).
+ * Chamada pelo `gc` do CLI. `dryRun` só lista. Claim ilegível fica (pode ser
+ * escrita em curso); vencida há pouco também (o hook já a ignora).
+ */
+export function gcExpiredWorktreeClaims(
+  repoRoot: string,
+  opts: { nowMs?: number; olderThanMs?: number; dryRun?: boolean } = {},
+): string[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoff = nowMs - (opts.olderThanMs ?? WORKTREE_CLAIM_GC_AFTER_MS);
+  const removed: string[] = [];
+  for (const file of listWorktreeClaimFiles(repoRoot)) {
+    const record = readJsonSafe<WorktreeClaimRecord>(file);
+    const expiresAt = record?.expires_at;
+    if (typeof expiresAt !== "number" || expiresAt > cutoff) continue;
+    if (!opts.dryRun) rmSync(file, { force: true });
+    removed.push(record?.path ?? file);
+  }
+  return removed;
 }
 
 export function claimWorktree(path: string, sessionId: string, repoRoot?: string, branch?: string): boolean {
@@ -917,7 +1024,7 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
   const claimFile = worktreeClaimFilePath(root, path);
   const lockPath = `${claimFile}.lock`;
   const nowMs = Date.now();
-  const ttl = 30 * 60 * 1000;
+  const ttl = WORKTREE_CLAIM_TTL_MS;
 
   mkdirSync(dirname(claimFile), { recursive: true });
   breakStaleLock(lockPath); // lock órfão (dono morreu) não pode travar o claim pra sempre
@@ -960,7 +1067,24 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
 type ClaimWorktreeOutcome =
   | { outcome: "claimed"; path: string; branch: string | undefined }
   | { outcome: "blocked-by-other"; path: string; ownerSessionId: string | null }
-  | { outcome: "not-a-linked-worktree"; path: string };
+  | { outcome: "not-a-linked-worktree"; path: string }
+  /** `--renew` sem claim viva da própria sessão: não há o que renovar. */
+  | { outcome: "nothing-to-renew"; path: string }
+  /** Claim viva da própria sessão com OUTRA branch, sem `--rebind`: a
+   * divergência é a evidência que `BLOCK_REASON_BRANCH_DIVERGE` existe para
+   * mostrar, e regravar a branch em silêncio a apagaria. */
+  | { outcome: "branch-mismatch"; path: string; claimedBranch: string; headBranch: string };
+
+/**
+ * Modo do `claim-worktree` (#14214, review da PR #14303):
+ * - `claim` (default): 1ª claim, grava a branch do HEAD. Recusa
+ *   (`branch-mismatch`) se a própria sessão já tem claim viva com outra branch.
+ * - `renew`: só estende o TTL da claim viva da própria sessão; a branch gravada
+ *   fica (chama `claimWorktree(..., undefined)`).
+ * - `rebind`: regrava a branch do HEAD, para quando o PRÓPRIO agente fez o
+ *   checkout de outra branch no worktree.
+ */
+type ClaimWorktreeMode = "claim" | "renew" | "rebind";
 
 /**
  * Entrada do subcomando `claim-worktree` (#14214): até aqui nada em produção
@@ -981,6 +1105,8 @@ export function claimWorktreeChecked(
   sessionId: string,
   repoRoot: string,
   branch?: string,
+  mode: ClaimWorktreeMode = "claim",
+  nowMs: number = Date.now(),
 ): ClaimWorktreeOutcome {
   const normalized = resolve(path);
   const gitPath = join(normalized, ".git");
@@ -991,7 +1117,13 @@ export function claimWorktreeChecked(
     linked = false;
   }
   if (!linked) return { outcome: "not-a-linked-worktree", path: normalized };
-  if (claimWorktree(normalized, sessionId, repoRoot, branch)) {
+  const existing = readJsonSafe<WorktreeClaimRecord>(worktreeClaimFilePath(repoRoot, normalized));
+  const ownLive = !!existing && existing.sessionId === sessionId && (existing.expires_at ?? 0) > nowMs;
+  if (mode === "renew" && !ownLive) return { outcome: "nothing-to-renew", path: normalized };
+  if (mode === "claim" && ownLive && existing?.branch && branch && existing.branch !== branch) {
+    return { outcome: "branch-mismatch", path: normalized, claimedBranch: existing.branch, headBranch: branch };
+  }
+  if (claimWorktree(normalized, sessionId, repoRoot, mode === "renew" ? undefined : branch)) {
     const record = readJsonSafe<any>(worktreeClaimFilePath(repoRoot, normalized));
     return { outcome: "claimed", path: normalized, branch: record?.branch ?? branch };
   }

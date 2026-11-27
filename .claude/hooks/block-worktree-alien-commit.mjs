@@ -196,7 +196,10 @@ export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSess
 }
 
 /** Branch do HEAD atual do worktree (`cwd: checkoutRoot`), `null` em erro
- * ou detached HEAD. */
+ * ou detached HEAD. `git rev-parse --abbrev-ref HEAD` devolve o literal
+ * `"HEAD"` com HEAD destacado (rebase com conflito, bisect): sem tratar,
+ * o check de branch lia isso como troca de branch e negava o commit do
+ * próprio rebase (#14214, review da PR #14303). */
 export function getHeadBranch(checkoutRoot) {
   try {
     // windowsHide (#7959): sem isso, este `execFileSync("git", ...)` aloca
@@ -207,7 +210,7 @@ export function getHeadBranch(checkoutRoot) {
       timeout: 1000,
       windowsHide: true,
     }).trim();
-    return out === "" ? null : out;
+    return out === "" || out === "HEAD" ? null : out;
   } catch {
     return null;
   }
