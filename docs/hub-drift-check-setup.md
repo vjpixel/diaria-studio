@@ -6,7 +6,7 @@ Issue: [#4750](https://github.com/vjpixel/diaria-studio/issues/4750) (follow-up 
 
 ## O que ele checa
 
-Para cada entrada de `HUB_META` (`workers/arquivo/src/hubs/meta.ts`, sem lista hardcoded — um hub novo entra na checagem sozinho na próxima execução):
+Para cada entrada de `HUB_META` (`scripts/lib/shared/hub-meta.ts`, sem lista hardcoded — um hub novo entra na checagem sozinho na próxima execução):
 
 1. **Descoberta automática** — lê `HUB_META` direto do módulo do repo (nenhuma lista de slugs mantida à mão neste script).
 2. **GET runtime** (`checkHub`, `scripts/hub-drift-check.ts`) — bate `GET {DIARIA_ARQUIVO_URL}/temas/{slug}` (`DIARIA_ARQUIVO_URL` = `https://arquivo.diar.ia.br`, `scripts/lib/canonical-urls.ts`) com timeout de 15s.

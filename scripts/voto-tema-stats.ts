@@ -14,7 +14,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, getStringArg } from "./lib/cli-args.ts";
-import { apurar, parseCicloVotacao } from "../workers/artigos/src/voto-tema-core.ts";
+import { apurar, parseCicloVotacao } from "./lib/shared/voto-tema-core.ts";
 import {
   VotoTemaGuardError,
   listVotosFromKv,

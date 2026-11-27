@@ -1923,6 +1923,15 @@ describe("Regressão #13559 — scripts/ reais deste repo", () => {
     for (const rel of closure.files) reached.add(rel);
     for (const u of closure.unresolved) unresolvedImports.add(u);
   }
+  // #14276: o waiter da página do site (`publish-edition-site-page.ts`) roda o
+  // `session-registry.ts` como CLI filho (`merge-lock-acquire`/`-release`) em
+  // vez de importá-lo. O filho herda a árvore destacada (sem console), então os
+  // processos que ELE lança também precisam de windowsHide: entra no fecho.
+  for (const child of ["scripts/lib/session-registry.ts"]) {
+    const closure = collectRelativeImportClosure(child, resolveSource);
+    for (const rel of closure.files) reached.add(rel);
+    for (const u of closure.unresolved) unresolvedImports.add(u);
+  }
 
   it("o fecho de imports alcança as libs que já abriram janela (gh-run, run-tsx, session-registry)", () => {
     for (const lib of ["scripts/lib/shared/gh-run.ts", "scripts/lib/run-tsx.ts", "scripts/lib/session-registry.ts"]) {

@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { hasFlag, isMainModule, getStringArg } from "./lib/cli-args.ts";
-import { parseCicloVotacao } from "../workers/artigos/src/voto-tema-core.ts";
+import { parseCicloVotacao } from "./lib/shared/voto-tema-core.ts";
 import { VotoTemaGuardError, resolveVotoTemaKvConfig, writeResultToKv, type ResultadoFinal } from "./lib/voto-tema-channel.ts";
 import { computeStats } from "./voto-tema-stats.ts";
 

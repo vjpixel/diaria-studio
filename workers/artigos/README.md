@@ -49,7 +49,7 @@ Mecanismo (reusa `scripts/lib/shared/*`, não reimplementa):
   (cookie assinado 30 dias, 8 tentativas/IP/hora em `/gate/verify`).
 - **Limiar "R$10/mês ↔ qual(is) nível(is)": DECIDIDO (02/09/2026, #7030)**
   — `["apoiador", "mantenedor", "patrono"]` (todos menos `amigo`), ver
-  `src/apoio-gate-config.ts`. Correspondência valor-em-R$ ↔ nível
+  `scripts/lib/shared/apoio-gate-config.ts` (reexportado em `src/apoio-gate-config.ts`, #13994). Correspondência valor-em-R$ ↔ nível
   documentada em `scripts/lib/apoio-segments-canonical-kit.ts`.
 
 Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):

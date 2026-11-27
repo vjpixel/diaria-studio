@@ -19,11 +19,11 @@
  * `handleJogarPage`), mas só passa a sobrepor identidade quando o e-mail já
  * PROVOU posse — via magic link (#3996): `handleConfirmMerge` (magic-link.ts)
  * é o único ponto do worker que sabe que uma pessoa de fato clicou num link
- * enviado àquele endereço, e grava um marcador server-side no KV
- * (`markEmailPossessionVerified`/`hasProvenEmailPossession`). O marcador é
- * POR E-MAIL, não por sessão/dispositivo — de propósito: o link é tipicamente
- * clicado num aparelho DIFERENTE do que está jogando (cross-device é a razão
- * do #3996 existir), então um cookie emitido ali sairia no aparelho errado.
+ * enviado àquele endereço. Até o #14138 a prova era um marcador POR E-MAIL,
+ * o que deixava qualquer navegador que digitasse um e-mail já provado
+ * receber `confirmed`; desde o #14138 ela é amarrada ao DISPOSITIVO
+ * (`markDevicePossessionProven`/`hasDevicePossessionProof`, cookie de nonce
+ * do navegador que pediu o link) — ver test/poll-web-gate-device-possession-14138.test.ts.
  *
  * `handleJogarGateVerify` passa a consultar esse marcador: com ele, emite
  * `confirmed`; sem ele, `pending` (nunca mais o default implícito da função).
@@ -32,7 +32,8 @@
  *   1. Invariante ESTRUTURAL: nenhuma porta fora de `web-gate.ts` chama
  *      `issueWebSessionCookie`, e dentro de `web-gate.ts` o único call site
  *      que pode resolver pra `"confirmed"` está condicionado a
- *      `hasProvenEmailPossession` — pega uma 4ª porta futura que emita
+ *      `hasDevicePossessionProof` (ou é a porta do clique no link,
+ *      `issueConfirmedSessionAfterMagicLink`, #14138) — pega uma 4ª porta futura que emita
  *      `confirmed` sem essa checagem, seja em `web-gate.ts` ou em qualquer
  *      arquivo novo.
  *   2. Comportamento: verify com e-mail ativo e SEM marcador → `pending`
@@ -44,6 +45,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeTrackedKv, makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // mesmo fix de #5095/beehiiv-double-opt-override — `new URL("..", import.meta.url).pathname`
 // dobra a drive letter no Windows.
@@ -78,7 +80,7 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
     assert.deepEqual(offenders, [], "uma 4ª porta emitindo o cookie de sessão fora de web-gate.ts precisa passar por ESTE guard antes de existir");
   });
 
-  it("o único call site de issueWebSessionCookie que pode virar 'confirmed' está condicionado a hasProvenEmailPossession", () => {
+  it("todo call site de issueWebSessionCookie que pode virar 'confirmed' está condicionado à prova de posse", () => {
     // #6293 (review): `issueWebSessionCookie` NÃO tem mais default pro 3º
     // argumento — um call site que o omitisse hoje é ERRO DE COMPILAÇÃO
     // (`npx tsc`), não algo que este teste em runtime precise checar. O que
@@ -87,7 +89,7 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
     //
     // HONESTIDADE SOBRE O QUE ESTA REGEX GARANTE (review, achado de
     // comment-analyzer): isto é casamento de padrão sobre NOMES DE VARIÁVEL
-    // (`hasProvenEmailPossession`/`possessionProven`), não uma prova
+    // (`possessionProven`), não uma prova
     // semântica de que o valor realmente veio do KV. Renomear a variável
     // (refactor correto) QUEBRA este teste — falso positivo. Um
     // `const possessionProven = true;` hardcoded PASSA este teste — falso
@@ -97,7 +99,14 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
     // #6293 existe pra corrigir; não empreste a este guard mais confiança
     // do que ele tem.
     const src = readFileSync(WEB_GATE_PATH, "utf8");
-    const callSites = [...src.matchAll(/issueWebSessionCookie\([^;]*?\);/gs)];
+    // #14138: a porta do clique no link mágico (`issueConfirmedSessionAfterMagicLink`)
+    // é o ÚNICO call site com `"confirmed"` literal permitido — o clique em
+    // si é a prova. Ela é tirada da varredura aqui e travada à parte abaixo
+    // (só `handleConfirmMerge` a chama, depois de consumir o token).
+    const magicLinkDoor = /export function issueConfirmedSessionAfterMagicLink\([^)]*\)[^{]*\{\s*return issueWebSessionCookie\(secret, email, "confirmed"\);\s*\}/;
+    assert.match(src, magicLinkDoor, "porta do magic link mudou de forma — revisar este guard");
+    const scanned = src.replace(magicLinkDoor, "");
+    const callSites = [...scanned.matchAll(/issueWebSessionCookie\([^;]*?\);/gs)];
     assert.ok(callSites.length >= 3, "esperado >=3 call sites conhecidos (verify, subscribe sem optin, subscribe com optin)");
 
     for (const match of callSites) {
@@ -107,45 +116,30 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
       if (resolvesToConfirmedLiteral || resolvesViaTernary) {
         assert.match(
           call,
-          /hasProvenEmailPossession|possessionProven/,
-          `call site que pode resolver pra "confirmed" sem checar hasProvenEmailPossession: ${call}`,
+          /possessionProven/,
+          `call site que pode resolver pra "confirmed" sem checar a prova de posse: ${call}`,
         );
       }
     }
   });
 
-  it("hasProvenEmailPossession é de fato chamado antes de qualquer call site condicionado a ele", () => {
+  it("hasDevicePossessionProof é de fato chamado antes de qualquer call site condicionado a ele", () => {
     const src = readFileSync(WEB_GATE_PATH, "utf8");
-    assert.match(src, /await hasProvenEmailPossession\(/, "o guard estrutural acima só vale se o valor for realmente consultado, não só citado em comentário");
+    assert.match(src, /await hasDevicePossessionProof\(/, "o guard estrutural acima só vale se o valor for realmente consultado, não só citado em comentário");
+  });
+
+  it("#14138: issueConfirmedSessionAfterMagicLink só é chamada por handleConfirmMerge, depois de consumir o token", () => {
+    const files = walk(join(REPO_ROOT, "workers/poll/src"));
+    const callers = files.filter((f) => f !== WEB_GATE_PATH && /issueConfirmedSessionAfterMagicLink\s*\(/.test(readFileSync(f, "utf8")));
+    assert.deepEqual(callers.map((f) => f.slice(REPO_ROOT.length + 1)), ["workers/poll/src/magic-link.ts"]);
+    const ml = readFileSync(join(REPO_ROOT, "workers/poll/src/magic-link.ts"), "utf8");
+    const consumeAt = ml.indexOf("await consumePendingMerge(bEnv, token)");
+    const issueAt = ml.indexOf("await issueConfirmedSessionAfterMagicLink(");
+    assert.ok(consumeAt > 0 && issueAt > consumeAt, "a sessão confirmed do clique só pode sair depois do token one-time-use consumido");
   });
 });
 
 describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
-  function makeMapKV(initial: Record<string, string> = {}) {
-    const m = new Map<string, string>(Object.entries(initial));
-    return {
-      async get(key: string) {
-        const v = m.get(key);
-        return v === undefined ? null : v;
-      },
-      async getWithMetadata(key: string) {
-        const v = m.get(key);
-        return { value: v ?? null, metadata: null };
-      },
-      async put(key: string, value: string) {
-        m.set(key, value);
-      },
-      async delete(key: string) {
-        m.delete(key);
-      },
-      async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-        const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-        return { keys, list_complete: true, cursor: undefined };
-      },
-      _map: m,
-    };
-  }
-
   it("e-mail ATIVO (Beehiiv/KV) sem marcador de posse → cookie PENDING, override de vote.ts NÃO dispara", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
@@ -154,12 +148,12 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
     const email = "so-existe@example.com";
     const key = await subscriberKvKey(email);
     const env = {
-      POLL: makeMapKV(),
+      POLL: makeTrackedKv(),
       POLL_SECRET: "poll-secret",
       ADMIN_SECRET: "admin-secret",
       ALLOWED_ORIGINS: "*",
       COOKIE_HMAC_SECRET: "cookie-secret",
-      SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace,
+      SUBSCRIBERS_KV: makeTrackedKvNamespace({ [key]: "1" }),
     };
 
     const res = await worker.fetch(
@@ -177,29 +171,33 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
     assert.deepEqual(session, { email, pending: true }, "'active' sozinho não é mais prova de posse (#5095 anulou essa garantia)");
   });
 
-  it("e-mail com marcador de posse provada (magic link já clicado) → cookie CONFIRMED", async () => {
+  it("navegador com prova de posse (nonce do magic link já clicado) → cookie CONFIRMED", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
+    const idx = await import("../workers/poll/src/index.ts");
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
     const { readWebSession, WEB_SESSION_COOKIE } = await import("../workers/poll/src/web-gate.ts");
-    const { markEmailPossessionVerified } = await import("../workers/poll/src/magic-link.ts");
+    const { markDevicePossessionProven, POSSESSION_NONCE_COOKIE } = await import("../workers/poll/src/magic-link.ts");
+    const nonce = "9b2f7c1e-4d3a-4f5b-8c6d-1a2b3c4d5e6f";
 
     const email = "provou-posse@example.com";
     const key = await subscriberKvKey(email);
-    const pollKv = makeMapKV({ [key]: "1" });
+    const pollKv = makeTrackedKv({ [key]: "1" });
     const env = {
       POLL: pollKv,
       POLL_SECRET: "poll-secret",
       ADMIN_SECRET: "admin-secret",
       ALLOWED_ORIGINS: "*",
       COOKIE_HMAC_SECRET: "cookie-secret",
-      SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace,
+      SUBSCRIBERS_KV: makeTrackedKvNamespace({ [key]: "1" }),
     };
-    await markEmailPossessionVerified(env as never, email);
+    // #14138: a prova é do nonce do navegador, gravada sob o prefixo `web:`
+    // (é o `bEnv` de `/confirm-merge?brand=web` que a grava).
+    await markDevicePossessionProven(idx.brandedNamespace(pollKv as unknown as KVNamespace, "web:"), nonce, email);
 
     const res = await worker.fetch(
       new Request("https://poll.test/jogar/gate/verify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: `${POSSESSION_NONCE_COOKIE}=${nonce}` },
         body: JSON.stringify({ email }),
       }),
       env as never,
@@ -214,25 +212,27 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
   it("cookie CONFIRMED só emitido pós-posse-provada sobrepõe identidade em GET /vote (brand=web)", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
-    const { markEmailPossessionVerified } = await import("../workers/poll/src/magic-link.ts");
+    const idx = await import("../workers/poll/src/index.ts");
+    const { markDevicePossessionProven, POSSESSION_NONCE_COOKIE } = await import("../workers/poll/src/magic-link.ts");
+    const nonce = "9b2f7c1e-4d3a-4f5b-8c6d-1a2b3c4d5e6f";
 
     const email = "dono-real@example.com";
     const key = await subscriberKvKey(email);
-    const pollKv = makeMapKV();
+    const pollKv = makeTrackedKv();
     const env = {
       POLL: pollKv,
       POLL_SECRET: "poll-secret",
       ADMIN_SECRET: "admin-secret",
       ALLOWED_ORIGINS: "*",
       COOKIE_HMAC_SECRET: "cookie-secret",
-      SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace,
+      SUBSCRIBERS_KV: makeTrackedKvNamespace({ [key]: "1" }),
     };
-    await markEmailPossessionVerified(env as never, email);
+    await markDevicePossessionProven(idx.brandedNamespace(pollKv as unknown as KVNamespace, "web:"), nonce, email);
 
     const verifyRes = await worker.fetch(
       new Request("https://poll.test/jogar/gate/verify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: `${POSSESSION_NONCE_COOKIE}=${nonce}` },
         body: JSON.stringify({ email }),
       }),
       env as never,

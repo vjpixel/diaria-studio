@@ -27,7 +27,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { generateCard, overlayWrapLines, computeCarouselTitleFontSize } from "../../gen-social-card-4x5.ts";
+import { generateCard, overlayWrapLines, computeCarouselTitleFontSize } from "../social-card-4x5.ts";
 import { CAROUSEL_SLIDE_SLOTS, carouselCoverFilename, carouselSlideFilename, renderCarouselSlides } from "../daily-carousel-card.ts";
 import { retrospectivaCarouselCta } from "./retrospectiva-social.ts";
 import type { RetrospectivaHistoria } from "./retrospectiva-divulgacao.ts";

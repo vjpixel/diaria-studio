@@ -25,28 +25,13 @@ import {
   type LeaseMemory,
 } from "../scripts/lib/failover/scheduler-lease.ts";
 import { fileLeaseMemory, parseLastKnown } from "../scripts/lib/failover/lease-memory.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const T0 = new Date("2026-11-13T12:00:00.000Z");
 const at = (ms: number) => new Date(T0.getTime() + ms);
 const H = 60 * 60 * 1000;
 
 /** KV em memória compartilhado entre os "hosts" do teste. */
-function fakeKv(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial));
-  const kv: LeaseKv & { store: Map<string, string>; puts: number } = {
-    store,
-    puts: 0,
-    async get(k) {
-      return store.has(k) ? store.get(k)! : null;
-    },
-    async put(k, v) {
-      kv.puts++;
-      store.set(k, v);
-    },
-  };
-  return kv;
-}
-
 function memMemory(initial: LastKnownLease | null = null): LeaseMemory & { value: LastKnownLease | null } {
   const m = {
     value: initial,
@@ -170,7 +155,7 @@ describe("decideLease (pura)", () => {
 
 describe("acquireSchedulerLease — concorrência com KV fingido", () => {
   it("dois donos com o Neo armado: só o Neo age", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(5 * H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(5 * H)) });
     const [p, s] = await Promise.all([
       acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0 }),
       acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0 }),
@@ -180,7 +165,7 @@ describe("acquireSchedulerLease — concorrência com KV fingido", () => {
   });
 
   it("dois donos com o 300 de pé e sinal defasado: só o 300 age", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(4 * H)), [DOWN_SIGNAL_KEY]: T0.toISOString() });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(4 * H)), [DOWN_SIGNAL_KEY]: T0.toISOString() });
     const [p, s] = await Promise.all([
       acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0 }),
       acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0 }),
@@ -190,31 +175,31 @@ describe("acquireSchedulerLease — concorrência com KV fingido", () => {
   });
 
   it("lease expirado do Neo é retomado pelo 300 e o Neo passa a ceder", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
     assert.equal((await acquireSchedulerLease(kv, { self: "300", by: "Diaria-Clarice-Novos", now: () => T0 })).outcome, "act");
-    const gravado = parseLease(kv.store.get(SCHEDULER_LEASE_KEY)!);
+    const gravado = parseLease(kv._map.get(SCHEDULER_LEASE_KEY)!);
     assert.equal(gravado.kind === "ok" && gravado.lease.host, "300");
     const s = await acquireSchedulerLease(kv, { self: "neo", by: "Diaria-Clarice-Novos", now: () => at(60_000) });
     assert.equal(s.outcome, "yield");
   });
 
   it("escrita por cima entre a gravação e a releitura: quem perdeu cede", async () => {
-    const kv = fakeKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
+    const kv = makeTrackedKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
     const realPut = kv.put.bind(kv);
     kv.put = async (k, v) => {
       await realPut(k, v);
-      if (JSON.parse(v).host === "neo") kv.store.set(SCHEDULER_LEASE_KEY, serializeLease(makeLease("300", T0, "concorrente")));
+      if (JSON.parse(v).host === "neo") kv._map.set(SCHEDULER_LEASE_KEY, serializeLease(makeLease("300", T0, "concorrente")));
     };
     const s = await acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0 });
     assert.equal(s.outcome, "yield");
   });
 
   it("releitura com o mesmo host e until diferente: posse confirmada", async () => {
-    const kv = fakeKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
+    const kv = makeTrackedKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
     const realPut = kv.put.bind(kv);
     kv.put = async (k, v) => {
       await realPut(k, v);
-      kv.store.set(SCHEDULER_LEASE_KEY, serializeLease(makeLease("neo", at(1000), "outra task do Neo")));
+      kv._map.set(SCHEDULER_LEASE_KEY, serializeLease(makeLease("neo", at(1000), "outra task do Neo")));
     };
     const s = await acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0 });
     assert.equal(s.outcome, "act");
@@ -223,10 +208,8 @@ describe("acquireSchedulerLease — concorrência com KV fingido", () => {
 
   it("lease sumiu depois da gravação: 300 age (fail-open), Neo fail-closed na aquisição", async () => {
     const mk = () => {
-      const kv = fakeKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
-      kv.put = async () => {
-        kv.puts++; // grava "nada": a releitura vê ausente
-      };
+      const kv = makeTrackedKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
+      kv.put = async () => {}; // grava "nada": a releitura vê ausente
       return kv;
     };
     const p = await acquireSchedulerLease(mk(), { self: "300", by: "x", now: () => T0 });
@@ -251,28 +234,26 @@ describe("acquireSchedulerLease — concorrência com KV fingido", () => {
 
   it("F3: a leitura bem-sucedida grava a memória local (e a releitura também)", async () => {
     const memory = memMemory();
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(5 * H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(5 * H)) });
     await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory });
     assert.equal(memory.value?.kind === "ok" && memory.value.lease.host, "neo");
-    const kv2 = fakeKv();
+    const kv2 = makeTrackedKv();
     await acquireSchedulerLease(kv2, { self: "300", by: "x", now: () => T0, memory });
     assert.equal(memory.value?.kind === "ok" && memory.value.lease.host, "300");
   });
 
   it("gravação falha na AQUISIÇÃO: 300 age, Neo fail-closed", async () => {
-    const kv = fakeKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
-    kv.put = async () => {
-      throw new Error("HTTP 403");
-    };
+    const kv = makeTrackedKv({ [DOWN_SIGNAL_KEY]: T0.toISOString() });
+    kv.failPut = true;
+    kv.failMessage = "HTTP 403";
     assert.equal((await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0 })).outcome, "act");
     assert.equal((await acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0 })).outcome, "fail-closed");
   });
 
   it("F7: falha na RENOVAÇÃO de lease próprio ativo é aviso e o Neo age", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(H)) });
-    kv.put = async () => {
-      throw new Error("HTTP 503");
-    };
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(H)) });
+    kv.failPut = true;
+    kv.failMessage = "HTTP 503";
     const s = await acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0 });
     assert.equal(s.outcome, "act");
     assert.equal(s.outcome === "act" && s.warning, true);
@@ -280,25 +261,25 @@ describe("acquireSchedulerLease — concorrência com KV fingido", () => {
 
   it("F2: o 300 de pé vê o lease do Neo renovado entre duas leituras: cause other-host-renewing", async () => {
     const memory = memMemory();
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(5 * H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(5 * H)) });
     const first = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory });
     assert.equal(first.outcome === "yield" && first.cause, "other-host-active", "primeira vez: só cede");
-    kv.store.set(SCHEDULER_LEASE_KEY, leaseOf("neo", at(8 * H)));
+    kv._map.set(SCHEDULER_LEASE_KEY, leaseOf("neo", at(8 * H)));
     const second = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => at(H), memory });
     assert.equal(second.outcome === "yield" && second.cause, "other-host-renewing");
     assert.match(second.reason, /neo-takeover\.ts --disarm/);
   });
 
   it("lease próprio no meio do TTL não gera escrita (KV não é gravado a cada hora)", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(5 * H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(5 * H)) });
     assert.equal((await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0 })).outcome, "act");
-    assert.equal(kv.puts, 0);
+    assert.equal(kv.puts.length, 0);
   });
 
   it("lease corrompido é sobrescrito pelo 300", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: "{lixo" });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: "{lixo" });
     assert.equal((await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0 })).outcome, "act");
-    const back = parseLease(kv.store.get(SCHEDULER_LEASE_KEY)!);
+    const back = parseLease(kv._map.get(SCHEDULER_LEASE_KEY)!);
     assert.equal(back.kind === "ok" && back.lease.host, "300");
   });
 });
@@ -349,7 +330,7 @@ describe("#12993: retomada do lease expirado do Neo com o 300 voltando no mesmo 
   });
 
   it("sem o 300: o Neo retoma depois da espera, gravando o lease a partir do relógio de depois", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
     let t = T0;
     const s = await acquireSchedulerLease(kv, {
       self: "neo",
@@ -361,27 +342,27 @@ describe("#12993: retomada do lease expirado do Neo com o 300 voltando no mesmo 
       },
     });
     assert.equal(s.outcome, "act", s.reason);
-    const back = parseLease(kv.store.get(SCHEDULER_LEASE_KEY)!);
+    const back = parseLease(kv._map.get(SCHEDULER_LEASE_KEY)!);
     assert.equal(back.kind === "ok" && back.lease.host, "neo");
     assert.equal(back.kind === "ok" && Date.parse(back.lease.until), T0.getTime() + RECLAIM_SETTLE_MS + LEASE_TTL_MS);
   });
 
   it("lease mudou durante a espera (sumiu): o Neo não age nesta run", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
     const s = await acquireSchedulerLease(kv, {
       self: "neo",
       by: "x",
       now: () => T0,
       sleep: async () => {
-        kv.store.delete(SCHEDULER_LEASE_KEY);
+        kv._map.delete(SCHEDULER_LEASE_KEY);
       },
     });
     assert.equal(s.outcome, "fail-closed");
-    assert.equal(kv.puts, 0);
+    assert.equal(kv.puts.length, 0);
   });
 
   it("renovação de lease próprio ATIVO não espera", async () => {
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(H)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(H)) });
     let slept = 0;
     const s = await acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0, sleep: async () => void slept++ });
     assert.equal(s.outcome, "act");
@@ -392,21 +373,21 @@ describe("#12993: retomada do lease expirado do Neo com o 300 voltando no mesmo 
 describe("#12993: alarme other-host-renewing não dispara com memória de outro episódio", () => {
   it("memória com lease do Neo já expirado + lease novo do --arm: só cede, sem anomalia", async () => {
     const memory = memMemory({ kind: "ok", lease: leaseObj("neo", at(-2 * H)), seenAt: at(-8 * H).toISOString() });
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, ARM_LEASE_BY)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, ARM_LEASE_BY)) });
     const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => at(60_000), memory });
     assert.equal(r.outcome === "yield" && r.cause, "other-host-active", r.reason);
   });
 
   it("memória com lease do Neo ainda ativo + lease atual gravado pelo --arm: armação nova, sem anomalia", async () => {
     const memory = memMemory({ kind: "ok", lease: leaseObj("neo", at(2 * H)), seenAt: at(-H).toISOString() });
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, ARM_LEASE_BY)) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, ARM_LEASE_BY)) });
     const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory });
     assert.equal(r.outcome === "yield" && r.cause, "other-host-active", r.reason);
   });
 
   it("renovação de verdade (lease lembrado ainda ativo, renovado por task) segue alarmando", async () => {
     const memory = memMemory({ kind: "ok", lease: leaseObj("neo", at(2 * H)), seenAt: at(-H).toISOString() });
-    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, "Diaria-Shorts-Instagram")) });
+    const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, "Diaria-Shorts-Instagram")) });
     const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory });
     assert.equal(r.outcome === "yield" && r.cause, "other-host-renewing", r.reason);
   });
@@ -419,7 +400,7 @@ describe("#12993: memória local do lease que falha avisa com caminho e erro", (
       writeFileSync(join(dir, "arquivo"), "x");
       const path = join(dir, "arquivo", "sub", "last.json");
       const warns: string[] = [];
-      const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(5 * H)) });
+      const kv = makeTrackedKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(5 * H)) });
       const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory: fileLeaseMemory(path), warn: (m) => void warns.push(m) });
       assert.equal(r.outcome, "act");
       assert.ok(warns.some((w) => w.includes(path) && /WARN/.test(w)), warns.join("\n"));

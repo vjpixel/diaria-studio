@@ -57,6 +57,9 @@ describe("#11329 — o critério do título não carrega o sharp", () => {
       assert.equal(bare.has("sharp"), false, `${entry} alcança o sharp`);
       const gerador = resolve(ROOT, "scripts/gen-social-card-4x5.ts");
       assert.equal(files.has(gerador), false, `${entry} importa o gerador do card`);
+      // #14001: a composição do card desceu para a lib; o CLI é casca.
+      const geradorLib = resolve(ROOT, "scripts/lib/social-card-4x5.ts");
+      assert.equal(files.has(geradorLib), false, `${entry} importa a lib do gerador do card`);
     });
   }
 

@@ -238,26 +238,33 @@ describe("verify-scoped-humanization.ts (#3953) — --post deve ser o snapshot p
   });
 });
 
-describe("#13889: passada scoped sem mudanças", () => {
-  for (const [label, pre, post, sections, note, status] of [
-    ["nota explícita aceita alvo mantido", SOCIAL_PRE, SOCIAL_PRE, "main_d2", "humanizador sem mudanças", 0],
-    ["nota vazia não prova passada", SOCIAL_PRE, SOCIAL_PRE, "main_d2", "   ", 1],
-    ["nota não aceita alvo ausente", SOCIAL_PRE, SOCIAL_PRE, "main_d3", "sem mudanças", 1],
-    ["nota não aceita mudança fora do escopo", SOCIAL_PRE, SOCIAL_POST_SCOPE_VIOLATED, "main_d2", "sem mudanças", 1],
-    ["run misto aceita somente alvo mantido", SOCIAL_PRE, SOCIAL_POST_SCOPED_OK, "main_d1,main_d2", "sem mudanças em D1", 0],
+describe("#13933: --note não prova alvo mantido (reverte o #13889, decisão a do #11609)", () => {
+  for (const [label, pre, post, sections, untouched] of [
+    ["passada sem mudança + nota: alvo segue não tocado", SOCIAL_PRE, SOCIAL_PRE, "main_d2", ["main_d2"]],
+    ["alvo ausente no texto pós: não tocado", SOCIAL_PRE, SOCIAL_PRE, "main_d3", ["main_d3"]],
+    ["run misto + nota: só o alvo mantido fica não tocado", SOCIAL_PRE, SOCIAL_POST_SCOPED_OK, "main_d1,main_d2", ["main_d1"]],
   ] as const) {
     it(label, () => {
       const f = mkFiles(pre, post);
       try {
-        const r = runScript(["--pre", f.prePath, "--post", f.postPath, "--sections", sections, "--note", note]);
-        assert.equal(r.status, status, r.stderr);
+        const r = runScript(["--pre", f.prePath, "--post", f.postPath, "--sections", sections, "--note", "humanizador sem mudanças"]);
+        assert.equal(r.status, 1, r.stderr);
         const result = JSON.parse(r.stdout);
-        if (status === 0) {
-          assert.ok(result.notedTargets.length > 0);
-          assert.equal(result.note, note);
-          assert.ok(result.notedTargets.every((s: string) => !result.touchedTargets.includes(s)));
-        }
+        assert.equal(result.ok, false);
+        assert.deepEqual(result.untouchedTargets, untouched);
+        assert.equal(result.notedTargets, undefined);
+        assert.match(r.stderr, /--note ignorado/);
       } finally { f.cleanup(); }
     });
   }
+
+  it("mudança só no alvo continua exit 0, com ou sem --note", () => {
+    const f = mkFiles(SOCIAL_PRE, SOCIAL_POST_SCOPED_OK);
+    try {
+      for (const extra of [[], ["--note", "x"]]) {
+        const r = runScript(["--pre", f.prePath, "--post", f.postPath, "--sections", "main_d2", ...extra]);
+        assert.equal(r.status, 0, r.stderr);
+      }
+    } finally { f.cleanup(); }
+  });
 });

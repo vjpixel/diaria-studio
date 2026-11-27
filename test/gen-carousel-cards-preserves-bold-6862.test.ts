@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("gen-carousel-cards.ts / daily-carousel-card.ts NUNCA importam strip-markdown-emphasis (#6862)", () => {
-  for (const file of ["scripts/gen-carousel-cards.ts", "scripts/lib/daily-carousel-card.ts"]) {
+  for (const file of ["scripts/gen-carousel-cards.ts", "scripts/lib/use-melhor-carousel-gen.ts", "scripts/lib/daily-carousel-card.ts"]) {
     it(`${file} não referencia strip-markdown-emphasis nem stripMarkdownEmphasis`, () => {
       const src = readFileSync(resolve(ROOT, file), "utf8");
       assert.ok(

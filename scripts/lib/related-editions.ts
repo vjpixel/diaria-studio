@@ -43,10 +43,10 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { HUB_KEYWORD_PATTERNS, stripAccents } from "../generate-hub-sources.ts";
+import { HUB_KEYWORD_PATTERNS, stripAccents } from "./hub-sources.ts";
 import { HUB_LOADERS } from "../build-hub-page.ts";
 import { buildHubContextualUrl } from "./hub-match.ts";
-import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./shared/hub-meta.ts";
 import { formatDateShort } from "./shared/hub-page.ts";
 import { enumerateEditionDirs } from "./find-current-edition.ts";
 

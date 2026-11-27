@@ -3,7 +3,7 @@
  * scripts/hub-drift-check.ts (#4750)
  *
  * Smoke-test de runtime: para cada entrada de `HUB_META`
- * (`workers/arquivo/src/hubs/meta.ts`), bate `GET {DIARIA_ARQUIVO_URL}/temas/{slug}`
+ * (`scripts/lib/shared/hub-meta.ts`), bate `GET {DIARIA_ARQUIVO_URL}/temas/{slug}`
  * no Worker `arquivo` publicado e verifica 200. Se algum hub responder algo
  * diferente de 200 (404, 5xx) ou a chamada de rede falhar, alarma o editor
  * por e-mail — nomeando o(s) hub(s), o slug e a URL exata.
@@ -52,7 +52,7 @@ import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./l
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { DIARIA_ARQUIVO_URL } from "./lib/canonical-urls.ts";
-import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./lib/shared/hub-meta.ts";
 import {
   evaluateAllHubDrift,
   hasPendingHubDrift,

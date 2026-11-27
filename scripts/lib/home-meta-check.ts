@@ -73,7 +73,7 @@
  * publicados nunca foram rastreados pelo Google — nenhuma página com
  * autoridade linkava pra eles. Este 6º eixo (`hub-link-missing`) é o GUARD
  * que já existe pros outros 5: cruza os slugs de `HUB_META` (fonte única de
- * verdade dos hubs publicados, ver `workers/arquivo/src/hubs/meta.ts`)
+ * verdade dos hubs publicados, ver `scripts/lib/shared/hub-meta.ts`)
  * contra os `href="…/temas/{slug}"` efetivamente presentes no HTML da home,
  * e alarma qualquer hub sem link.
  *
@@ -116,7 +116,7 @@
  * era em que a home era um tema Beehiiv, #6498).
  */
 
-import { HUB_META, type HubMeta } from "../../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META, type HubMeta } from "./shared/hub-meta.ts";
 import { LEGACY_BRAND_RE as SHARED_LEGACY_BRAND_RE } from "./shared/legacy-brand-guard.ts";
 
 // ─── Extração (pura) ────────────────────────────────────────────────────────

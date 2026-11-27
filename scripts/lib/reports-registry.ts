@@ -52,8 +52,7 @@
  * recente (`registeredAt`, gravado a cada `registerReport`; `createdAt` nas
  * linhas antigas que não o têm), e no empate vence o arquivo de máquina sobre
  * o legado. O `index.jsonl` legado continua sendo LIDO e nunca é apagado nem
- * reescrito por `registerReport` (só `pruneReportsRegistry`, manual, o
- * deduplica no lugar).
+ * reescrito: inclusive `pruneReportsRegistry` o preserva (#14308).
  *
  * **Registro é 100% file-based, nunca uma chamada HTTP ao Studio** — o
  * servidor pode estar parado no momento em que um relatório é gerado (é um
@@ -212,7 +211,7 @@ export function isReportKind(value: string): value is ReportKind {
 }
 
 const REPORTS_DIR = "data/reports";
-/** Arquivo único de antes do #14135 — só lido (e deduplicado por `pruneReportsRegistry`), nunca apagado. */
+/** Arquivo único de antes do #14135 — só lido, nunca reescrito nem apagado. */
 const LEGACY_REGISTRY_FILE = "index.jsonl";
 /** `index.{host}.jsonl` — `.tmp`/`.lock` ficam de fora porque não terminam em `.jsonl`. */
 const HOST_REGISTRY_FILE_RE = /^index\.([a-z0-9_-]+)\.jsonl$/;
@@ -805,7 +804,9 @@ export function getReportById(rootDir: string, id: string): ReportEntry | null {
 
 export interface PruneReportsRegistryResult {
   ok: boolean;
-  /** Linhas não-vazias no arquivo antes da limpeza (0 se o registry não existe). */
+  /** Duplicatas detectadas nos arquivos preservados (outros hosts e legado). */
+  remoteDuplicates: number;
+  /** Linhas não-vazias no arquivo LOCAL antes da limpeza (0 se ausente). */
   linesBefore: number;
   /** Linhas escritas de volta (1 por id único válido). */
   linesAfter: number;
@@ -817,11 +818,11 @@ export interface PruneReportsRegistryResult {
 }
 
 /**
- * Ação de manutenção ONE-OFF (#4666) — reescreve cada arquivo do registro
- * (`index.jsonl` legado e `index.{host}.jsonl`, #14135) mantendo só 1 linha
- * por id (a última fisicamente escrita, mesmo critério de `listReports`
- * dentro de um arquivo) e descartando linhas corrompidas. Nunca precisa rodar em uso
- * normal: a partir de #4666 `registerReport` já faz upsert na escrita, então
+ * Ação de manutenção ONE-OFF (#4666, #14308) — reescreve apenas o arquivo
+ * do host local, mantendo a última linha física por id e descartando linhas
+ * corrompidas. Outros hosts e o legado são somente lidos para contar
+ * duplicatas: locks locais não protegem escritas de outra máquina via Drive.
+ * Nunca precisa rodar em uso normal: a partir de #4666 `registerReport` já faz upsert na escrita, então
  * o arquivo nunca mais acumula uma duplicata NOVA. Este helper existe só pra
  * limpar o histórico de duplicatas que se acumulou ANTES do fix (ex:
  * `clarice-novos-novos-260805`, caso que abriu a issue) — CLI fina em
@@ -838,30 +839,31 @@ export interface PruneReportsRegistryResult {
  * lança.
  */
 export function pruneReportsRegistry(rootDir: string): PruneReportsRegistryResult {
-  // #14135: cada arquivo (legado e os de máquina) é limpo por conta própria,
-  // sob o próprio lock; os contadores somam os arquivos. Duplicata ENTRE
-  // arquivos não é removida: a união de `listReports` já a resolve, e apagar
-  // a linha de outra máquina é justo o que o #14135 evita.
-  const total: PruneReportsRegistryResult = {
-    ok: true,
-    linesBefore: 0,
-    linesAfter: 0,
-    removedDuplicates: 0,
-    removedCorrupted: 0,
-    error: null,
-  };
-  for (const path of listRegistryFiles(rootDir)) {
-    const r = pruneRegistryFile(path);
-    if (!r.ok) return r;
-    total.linesBefore += r.linesBefore;
-    total.linesAfter += r.linesAfter;
-    total.removedDuplicates += r.removedDuplicates;
-    total.removedCorrupted += r.removedCorrupted;
+  const localPath = hostRegistryPath(rootDir);
+  try {
+    let remoteDuplicates = 0;
+    for (const path of listRegistryFiles(rootDir)) {
+      if (path === localPath) continue;
+      const ids = new Set<string>();
+      for (const line of readFileSync(path, "utf8").split("\n")) {
+        try {
+          const parsed = JSON.parse(line) as Partial<ReportEntry>;
+          if (typeof parsed?.id !== "string") continue;
+          if (ids.has(parsed.id)) remoteDuplicates++;
+          ids.add(parsed.id);
+        } catch {
+          // Um sync em andamento pode deixar uma linha parcial: preserve-a.
+        }
+      }
+    }
+    return { ...pruneRegistryFile(localPath), remoteDuplicates };
+  } catch (e) {
+    return { ok: false, linesBefore: 0, linesAfter: 0, removedDuplicates: 0,
+      removedCorrupted: 0, remoteDuplicates: 0, error: (e as Error).message };
   }
-  return total;
 }
 
-function pruneRegistryFile(path: string): PruneReportsRegistryResult {
+function pruneRegistryFile(path: string): Omit<PruneReportsRegistryResult, "remoteDuplicates"> {
   if (!existsSync(path)) {
     return { ok: true, linesBefore: 0, linesAfter: 0, removedDuplicates: 0, removedCorrupted: 0, error: null };
   }

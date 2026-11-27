@@ -17,7 +17,7 @@
  * Texto do limiar ("a partir de R$10/mês") é deliberadamente vago sobre
  * QUAL(is) nível(is) do custom field `apoio_nivel` mapeiam pra isso — essa
  * correspondência é o item explicitamente deixado em aberto pela issue (ver
- * `workers/artigos/src/apoio-gate-config.ts`). O texto aqui não muda
+ * `scripts/lib/shared/apoio-gate-config.ts`). O texto aqui não muda
  * dependendo da resposta.
  *
  * `GATE_CTA_ID` é o id do bloco abaixo — âncora de destino de qualquer item

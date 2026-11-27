@@ -38,23 +38,13 @@ import {
 } from "../scripts/lib/diaria/youtube-short-related.ts";
 import type { ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 import { resolvePublishEdition } from "../scripts/short-related-kv-publish.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 // 261105 é quinta (a edição do #12315).
 const ED = "261105";
 const SHORT_AT = brtInstant(ED, "06:30");
 const AFTER_DEADLINE = brtInstant(ED, "13:30");
-
-function memKv(init: Record<string, string> = {}) {
-  const store = new Map(Object.entries(init));
-  return {
-    store,
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => {
-      store.set(k, v);
-    },
-  };
-}
 
 const linked: ShortRelatedRecord = buildShortRelatedRecord({
   aammdd: ED,
@@ -109,7 +99,7 @@ describe("#12541 KV: config", () => {
 
 describe("#12541 KV: leitura e publicação", () => {
   it("chave ausente → absent", async () => {
-    assert.deepEqual(await readShortRelatedKv(memKv(), ED), { kind: "absent" });
+    assert.deepEqual(await readShortRelatedKv(makeTrackedKv(), ED), { kind: "absent" });
   });
 
   it("erro de rede → error (nunca absent)", async () => {
@@ -119,12 +109,12 @@ describe("#12541 KV: leitura e publicação", () => {
 
   it("valor de outra edição ou corrompido → error", async () => {
     const other = { ...linked, aammdd: "261104" };
-    assert.equal((await readShortRelatedKv(memKv({ "short-related:261105": JSON.stringify(other) }), ED)).kind, "error");
-    assert.equal((await readShortRelatedKv(memKv({ "short-related:261105": "{" }), ED)).kind, "error");
+    assert.equal((await readShortRelatedKv(makeTrackedKv({ "short-related:261105": JSON.stringify(other) }), ED)).kind, "error");
+    assert.equal((await readShortRelatedKv(makeTrackedKv({ "short-related:261105": "{" }), ED)).kind, "error");
   });
 
   it("publica e relê o registro", async () => {
-    const kv = memKv();
+    const kv = makeTrackedKv();
     assert.equal(await publishShortRelatedKv(kv, linked), "short-related:261105");
     const back = await readShortRelatedKv(kv, ED);
     assert.deepEqual(back, { kind: "ok", value: linked });
@@ -132,7 +122,7 @@ describe("#12541 KV: leitura e publicação", () => {
 
   it("registro de alerta sem anterior (ordem de chaves diferente) publica e relê", async () => {
     const rec = markAlerted({ aammdd: ED, previous: null, horizontalId: null, shortId: null, note: "x", now: new Date("2026-11-05T10:00:00Z") });
-    const kv = memKv();
+    const kv = makeTrackedKv();
     assert.equal(await publishShortRelatedKv(kv, rec, noWait), "short-related:261105");
     assert.deepEqual(await readShortRelatedKv(kv, ED), { kind: "ok", value: rec });
   });

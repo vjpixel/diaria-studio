@@ -3,7 +3,8 @@
  *
  * #13925: o `--provenance` rotulava como "prova mais fraca" toda seção mantida
  * pelo humanizador. Isso só vale para o run sem mudança nenhuma aceito por
- * `--note` (#13889). A seção mantida com outra seção alterada no mesmo run
+ * `--note` (#13889; desde o #13933 a nota não prova mais o humanizador e o
+ * rótulo só aparece em registro legado dessa janela). A seção mantida com outra seção alterada no mesmo run
  * (#11604) é prova normal e sai só "texto mantido". O resultado do check não muda.
  */
 
@@ -21,6 +22,7 @@ import {
   readRunRecord,
   writeRunRecord,
 } from "../scripts/lib/humanizer-run-record.ts";
+import { computeSectionHashes } from "../scripts/lib/social-lint-rules.ts";
 
 const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/check-humanizer-social.ts");
 
@@ -76,12 +78,20 @@ describe("#13925: rótulo de seção mantida no --provenance", () => {
     });
   });
 
-  it("#13889 (run sem mudanças, --note): continua 'prova mais fraca'", () => {
+  it("registro legado da janela #13889–#13933 (run sem mudanças, --note): continua 'prova mais fraca'", () => {
     withEdition((dir) => {
       const md = SOCIAL("d1 igual", "d3 igual");
+      // #13933: planRunRecord não grava mais esse caso; o registro é montado à mão como o #13889 gravava.
       const h = planRunRecord(emptyRunRecord(), "humanizador", md, md, ["main_d1"], { note: "sem mudanças" });
-      assert.equal(h.record.humanizador_noted?.length, 1);
-      writeRunRecord(dir, h.record);
+      assert.deepEqual(h.recorded, []);
+      const hash = computeSectionHashes(md)["main_d1"];
+      const legacy = {
+        ...h.record,
+        humanizador: [hash],
+        humanizador_unchanged: [hash],
+        humanizador_noted: [hash],
+      };
+      writeRunRecord(dir, legacy);
       writeFileSync(join(dir, "03-social.md"), md, "utf8");
       const r = provenance(dir);
       assert.equal(r.status, 0, r.stderr);

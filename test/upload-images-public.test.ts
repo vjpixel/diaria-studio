@@ -242,7 +242,10 @@ describe("upload-images-public env auto-load (regression #1157)", () => {
 });
 
 describe("#11414: ramo Drive removido — KV é o único destino", () => {
-  const src = readFileSync(resolve(__ROOT, "scripts/upload-images-public.ts"), "utf8");
+  // #14001: a lógica dividiu-se entre o CLI e `lib/public-images-upload.ts` — o guard lê os dois.
+  const src = ["scripts/upload-images-public.ts", "scripts/lib/public-images-upload.ts"]
+    .map((p) => readFileSync(resolve(__ROOT, p), "utf8"))
+    .join("\n");
 
   it("o script não fala mais com a API do Drive (gFetch / drive.google.com)", () => {
     assert.doesNotMatch(src, /google-auth/, "não importa mais gFetch de google-auth.ts");

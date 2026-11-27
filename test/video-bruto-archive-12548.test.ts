@@ -642,14 +642,13 @@ describe("runArchive com montagem de outra edição em curso (#12602)", posixOnl
   });
 });
 
-describe("task agendada (#12548)", () => {
-  it("Diaria-Video-Bruto-Archive roda o script com --apply, todo dia de madrugada (#13631), habilitada", async () => {
-    const { getScheduledTaskByName } = await import("../scripts/lib/scheduled-tasks.ts");
-    const t = getScheduledTaskByName("Diaria-Video-Bruto-Archive");
-    assert.ok(t);
-    assert.deepEqual(t.steps.map((s) => [s.script, s.args]), [["scripts/archive-video-brutos.ts", ["--apply"]]]);
-    assert.deepEqual(t.schedule, { kind: "daily", hour: 3, minute: 0 });
-    assert.notEqual(t.enabled, false);
+describe("task agendada aposentada (#14292, era #12548/#13631)", () => {
+  it("Diaria-Video-Bruto-Archive saiu do registro e virou task retirada; o script segue no repo para uso manual", async () => {
+    const { getScheduledTaskByName, isRetiredTaskName, SCHEDULED_TASKS } = await import("../scripts/lib/scheduled-tasks.ts");
+    assert.equal(getScheduledTaskByName("Diaria-Video-Bruto-Archive"), undefined);
+    assert.ok(isRetiredTaskName("Diaria-Video-Bruto-Archive"));
+    assert.ok(!SCHEDULED_TASKS.some((t) => t.steps.some((s) => s.script === "scripts/archive-video-brutos.ts")));
+    assert.ok(existsSync(join(import.meta.dirname, "..", "scripts", "archive-video-brutos.ts")));
   });
 });
 

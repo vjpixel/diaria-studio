@@ -21,7 +21,7 @@
  * `--sections` (inclusive nos cards) sai em `unexpectedChanges`.
  *
  * Exit code:
- *   0 = ok — apenas as seções pedidas mudaram; alvos mantidos exigem --note (#13889)
+ *   0 = ok — apenas as seções pedidas mudaram, e todas elas mudaram
  *   1 = escopo violado (untouchedTargets e/ou unexpectedChanges não-vazios)
  *       ou erro de args/leitura
  *
@@ -42,8 +42,8 @@
  *   4. Exit 1 → não confiar no resultado: se `unexpectedChanges` não-vazio,
  *      considerar re-humanização completa (a skill não respeitou o escopo);
  *      se `untouchedTargets` não-vazio, re-invocar a skill apenas para essas
- *      seções antes de seguir. Se a passada manteve o texto, usar --note
- *      "humanizador sem mudanças" para os alvos mantidos (#13889), também no --record-run.
+ *      seções antes de seguir. `--note` não prova alvo mantido (#11609; o
+ *      #13889 tinha aceitado, o #13933 reverteu): é ignorado com aviso.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -83,22 +83,23 @@ function main(): void {
 
   const result = checkScopedHumanizerCoverage(preMd, postMd, targetSections);
 
-  // #13889: a nota atesta somente alvos existentes e mantidos, nunca mudanças
-  // fora do escopo. Não chamar uma seção mantida de "tocada".
-  const note = values["note"]?.trim();
+  // #13933: alvo mantido é sempre `untouchedTargets` — nenhuma nota (`--note`,
+  // aceita entre o #13889 e o #13933) transforma seção idêntica em "tocada".
+  if (values["note"] !== undefined) {
+    console.error("[verify-scoped-humanization] WARN: --note ignorado — não prova alvo mantido (#11609, #13933).");
+  }
+  // #13889 (mantido no #13933): alvo pedido que não existe no texto pós nunca
+  // foi tocado — `checkScopedHumanizerCoverage` o pularia (ausente nos dois lados).
   const hashes = computeSectionHashes(postMd);
-  const notedTargets = note ? result.untouchedTargets.filter((s) => s in hashes) : [];
-  result.untouchedTargets = result.untouchedTargets.filter((s) => !notedTargets.includes(s));
-  const missingTargets = targetSections.filter((s) => !(s in hashes));
-  for (const s of missingTargets) {
-    if (!result.untouchedTargets.includes(s)) result.untouchedTargets.push(s);
+  for (const s of targetSections) {
+    if (!(s in hashes) && !result.untouchedTargets.includes(s)) result.untouchedTargets.push(s);
   }
   result.ok = result.untouchedTargets.length === 0 && result.unexpectedChanges.length === 0;
-  console.log(JSON.stringify({ ...result, notedTargets, ...(notedTargets.length ? { note } : {}) }));
+  console.log(JSON.stringify(result));
 
   if (result.ok) {
     console.error(
-      `[verify-scoped-humanization] OK — escopo conferido (diff ou nota explícita): ${targetSections.join(", ")}`,
+      `[verify-scoped-humanization] OK — humanizador tocou exatamente as seções pedidas: ${targetSections.join(", ")}`,
     );
     process.exit(0);
   }

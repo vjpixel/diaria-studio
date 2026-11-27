@@ -1365,6 +1365,14 @@ describe("#11225 — Diaria-Kit-Subscriber-Sync aposentada (Beehiiv só arquivo 
   });
 });
 
+describe("#14292 — Diaria-Video-Bruto-Archive aposentada (plano novo do Google Drive)", () => {
+  it("saiu de SCHEDULED_TASKS e entrou em RETIRED_TASK_NAMES (disparo residual do timer na 300 vira no-op)", () => {
+    assert.equal(getScheduledTaskByName("Diaria-Video-Bruto-Archive"), undefined);
+    assert.ok(RETIRED_TASK_NAMES.has("Diaria-Video-Bruto-Archive"));
+    assert.ok(!SCHEDULED_TASKS.some((t) => t.steps.some((s) => s.script === "scripts/archive-video-brutos.ts")));
+  });
+});
+
 describe("#6130 — Diaria-Session-Registry-Gc registrada, diária, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script correto, diária às 09:55", () => {
     const t = getScheduledTaskByName("Diaria-Session-Registry-Gc");

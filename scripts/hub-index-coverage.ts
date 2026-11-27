@@ -14,7 +14,7 @@
  *
  *   --hub       slug de UM hub (`anthropic-claude`, `openai-chatgpt`,
  *               `google-gemini`, `meta-ai`). Default: todos os hubs de
- *               `HUB_META` (workers/arquivo/src/hubs/meta.ts).
+ *               `HUB_META` (scripts/lib/shared/hub-meta.ts).
  *   --seo-dir   diretório onde resolver o relatório mais recente (default
  *               `data/seo`) — precisa do junction `data/` (sessão local).
  *   --seo-file  path explícito de um `index-status-*.json`, pulando a
@@ -35,7 +35,7 @@ import {
   type HubSourceEntry,
   type HubIndexStatusRow,
 } from "./lib/hub-index-coverage.ts";
-import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./lib/shared/hub-meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
