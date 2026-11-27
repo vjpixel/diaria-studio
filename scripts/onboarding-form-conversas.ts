@@ -10,15 +10,19 @@
  * rascunho e não enviou entra também, com "(não enviou)".
  *
  * Mostra e-mail, data, `uso_ia`, `situacao`, `area`, `motivacao`,
- * `dificuldades`, `maior_gasto` e o relato de falha (`relato_falha`). Os
- * textos livres (relato e "Outro/Outra") só saem AQUI, no terminal de quem
- * roda; nunca vão para o perfil de audiência nem para arquivo versionado.
+ * `dificuldades`, `maior_gasto`, o relato de falha (`relato_falha`) e, desde
+ * a v4 (#14350), as duas perguntas de apoio: `apoio_independente` (já apoiou
+ * criador ou veículo independente) e `apoio_decisao` (o que pesa na decisão de
+ * apoiar a diar.ia.br, texto livre). Os textos livres (relato, `apoio_decisao`
+ * e "Outro/Outra") só saem AQUI, no terminal de quem roda; nunca vão para o perfil de audiência nem para arquivo versionado.
  * Não grava nada, não chama o Kit.
  *
  * Filtros (todos opcionais, combinam com E; o valor casa por trecho, sem
  * diferença de maiúscula/acento):
  *   --uso-ia <trecho> --situacao <trecho> --area <trecho> --motivacao <trecho>
- *   --dificuldade <trecho> --maior-gasto <trecho> --desde AAAA-MM-DD
+ *   --dificuldade <trecho> --maior-gasto <trecho> --apoio <trecho>
+ *   --desde AAAA-MM-DD
+ * (`--apoio` filtra por `apoio_independente`: "sim", "não", "não lembro".)
  * Saída: tabela em texto (padrão) ou `--json`.
  *
  * Uso:
@@ -50,6 +54,10 @@ export interface ConversaRow {
   dificuldades: string;
   maior_gasto: string;
   relato_falha: string;
+  /** #14350 (v4): "Sim" / "Não" / "Não lembro"; vazio em resposta de versão anterior. */
+  apoio_independente: string;
+  /** #14350 (v4): texto livre, o que pesa na decisão de apoiar a diar.ia.br. */
+  apoio_decisao: string;
 }
 
 /** Filtros por pergunta (trecho) e data mínima. */
@@ -60,6 +68,7 @@ export interface ConversaFilters {
   motivacao?: string;
   dificuldades?: string;
   maior_gasto?: string;
+  apoio_independente?: string;
   desde?: string;
 }
 
@@ -70,6 +79,7 @@ const FILTER_FLAGS: Record<string, keyof ConversaFilters> = {
   "--motivacao": "motivacao",
   "--dificuldade": "dificuldades",
   "--maior-gasto": "maior_gasto",
+  "--apoio": "apoio_independente",
   "--desde": "desde",
 };
 
@@ -111,6 +121,8 @@ export function conversaRows(responses: readonly FormResponse[], filters: Conver
       dificuldades: [splitMultiAnswer(a.dificuldades ?? "").join("; "), a.dificuldades_outro ? `(${a.dificuldades_outro})` : ""].filter(Boolean).join(" "),
       maior_gasto: a.maior_gasto ?? "",
       relato_falha: a.relato_falha ?? "",
+      apoio_independente: a.apoio_independente ?? "",
+      apoio_decisao: a.apoio_decisao ?? "",
     });
   }
   const keep = rows.filter((row) => {
@@ -140,6 +152,8 @@ export function renderConversaTable(rows: readonly ConversaRow[]): string {
     out.push(`  atrapalha:    ${r.dificuldades}`);
     out.push(`  maior gasto:  ${r.maior_gasto}`);
     if (r.relato_falha) out.push(`  relato:       ${r.relato_falha.replace(/\n+/g, " / ")}`);
+    if (r.apoio_independente) out.push(`  já apoiou:    ${r.apoio_independente}`);
+    if (r.apoio_decisao) out.push(`  o que pesa:   ${r.apoio_decisao.replace(/\n+/g, " / ")}`);
     out.push("");
   }
   return out.join("\n");

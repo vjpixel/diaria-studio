@@ -3,7 +3,7 @@
  *
  * O bloco de divulgação CLARICE (box de divulgação daily `**📣 …**` #1938 + PARA
  * ENCERRAR) passa por 2 passos LLM (humanizer + Clarice `correct_text`) antes do
- * render. Os cupons `NEWS25`/`NEWS50` e o link de afiliado
+ * render. Os cupons `NEWS25`/`NEWS50`/`NEWS65` e o link de afiliado
  * `clarice.ai/precos-planos?via=diaria` NÃO têm guard — `verify-clarice-url-
  * stability.ts` só checa URLs de list-items em LANÇAMENTOS. Um rewrite silencioso
  * quebraria o tracking de afiliado (`?via=diaria`) ou o cupom — sem ninguém
@@ -32,10 +32,20 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
-/** Literais patrocinados que NÃO podem ser reescritos pela Clarice/humanizer. */
+/**
+ * Literais patrocinados que NÃO podem ser reescritos pela Clarice/humanizer.
+ *
+ * `NEWS65` (#14358): cupom da Black Friday da Clarice, que entra no box da
+ * edição 261130 (#14334) e expira em 30/11/2026 às 23:59 BRT. Fica na lista
+ * depois da oferta: literal ausente no pré não é checado, então não custa
+ * nada e cobre um reaproveitamento do código. Lista mantida à mão, separada
+ * de `TARGET_CODES` (`scripts/lib/stripe-coupons.ts`); derivar uma da outra
+ * fica para depois (proposta de médio prazo da #14358).
+ */
 export const SPONSORED_LITERALS = [
   "NEWS25",
   "NEWS50",
+  "NEWS65",
   "clarice.ai/precos-planos?via=diaria",
 ] as const;
 
