@@ -133,7 +133,7 @@ describe("#11742 conferência do perfil do Threads fora do timer", () => {
     assert.ok(branch.includes("deps.preflight({"), "o ramo do threads_profile confere o perfil");
     assert.ok(src.includes("preflight: threadsProfilePreflight,"), "a conferência padrão é a do perfil");
     assert.ok(!/writer === "threads-timer"/.test(branch), "a conferência não pode depender do writer do timer");
-    assert.ok(src.includes("if (item.destination === THREADS_PROFILE_DESTINATION) return sendThreadsProfileItem(ctx, item, io);"), "o laço manda o threads_profile para a etapa em qualquer writer");
+    assert.ok(src.includes("if (item.destination === THREADS_PROFILE_DESTINATION) return sendThreadsProfileItem(ctx, item);"), "o laço manda o threads_profile para a etapa em qualquer writer");
     const ig = src.slice(src.indexOf("export async function sendInstagramReelItem("));
     assert.ok(ig.includes("if (!instagramAccountGateApplies(ctx.writer, corte !== null)) {"), "o Instagram do corte passa pela conferência da conta");
   });

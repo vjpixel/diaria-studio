@@ -454,7 +454,7 @@ describe("#12100 opção 2 — encode antes do marcador de envio (review da PR #
     const marker = body.indexOf("markShortSending(dir");
     const encode = body.indexOf("youtubeShortUploadFile(");
     // #14204: o envio de cada destino saiu do laço para uma etapa; o laço chama a etapa com o arquivo preparado.
-    const publish = body.indexOf("const step = await sendDestinationItem(sendCtx, item, { clearSending }, ytUpload);");
+    const publish = body.indexOf("const step = await sendDestinationItem(sendCtx, item, ytUpload);");
     assert.ok(prep > 0 && marker > 0 && encode > 0 && publish > 0);
     assert.ok(src.includes("return sendYouTubeShortItem(ctx, item, ytUpload);"), "a etapa do YouTube recebe o arquivo preparado antes do marcador");
     assert.ok(src.includes("const yt = prepared ?? { file: ctx.file, firstFrame: null };"), "a etapa do YouTube sobe o arquivo preparado");
