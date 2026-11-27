@@ -14,12 +14,12 @@ o rascunho no Kit enquanto a linha do marcador acima existir lá.
 O e-mail sai UMA vez, como rascunho no Kit, e quem agenda é o editor.
 Público (regra B): assinantes ativos, menos quem já recebeu o D+6 ou vai
 recebê-lo em até 7 dias, e quem já respondeu o formulário novo. O corpo
-precisa conter {{FORM_URL}}; "doze" acompanha as perguntas numeradas de
+precisa conter {{FORM_URL}}; "catorze" acompanha as perguntas numeradas de
 FORM_QUESTIONS (teste trava).
 -->
 <p>Olá! Tudo bem?</p>
 <p>Estou pensando no que muda na diar.ia.br nos próximos meses: o que entra na newsletter e se vale criar alguma coisa além dela, tipo cursos, aulas ou guias. Antes de criar qualquer coisa nova, quero ouvir quem lê, então montei uma pesquisa rapidinha.</p>
-<p>São até doze perguntas sobre o seu trabalho, como você usa IA e o que você quer aprender. Leva uns três minutos, e as obrigatórias são todas de marcar.</p>
+<p>São até catorze perguntas sobre o seu trabalho, como você usa IA e o que você quer aprender. Leva uns três minutos, e as obrigatórias são todas de marcar.</p>
 <p>Se você respondeu a pesquisa do ano passado, responde essa também? Mudei quase todas as perguntas.</p>
 <p>Depois eu conto o que descobri numa edição especial só pra quem respondeu.</p>
 <p><a target="_blank" rel="noopener noreferrer nofollow" class="link" href="{{FORM_URL}}">Responder a pesquisa</a></p>

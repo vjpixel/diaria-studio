@@ -71,6 +71,7 @@ function person(over: Partial<FollowupPerson> = {}): FollowupPerson {
 const FINGERPRINT_BY_VERSION: Record<number, string> = {
   2: "9e5db495e2032072",
   3: "9ec3f169aa47babe", // v3 (#10605, aprovada pelo editor em 09/11/2026)
+  4: "5203bace206a03d4", // v4 (#14330: as duas perguntas de apoio, aprovadas em 27/11/2026)
 };
 
 describe("#12490 versão das perguntas", () => {

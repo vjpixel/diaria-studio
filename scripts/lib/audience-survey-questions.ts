@@ -12,7 +12,7 @@
  * descartadas, e `update-audience.ts` ignora qualquer resposta que não venha
  * do formulário (`isOnboardingFormResponse`). Por isso o matcher `sectors`
  * (pergunta que só a survey da Beehiiv tinha) saiu. Na v3 (09/11/2026) os
- * matchers seguem as 15 perguntas novas; nível, seções, inglês, preço e o
+ * matchers seguem as 15 perguntas novas (17 desde a v4, #14330: as duas de apoio); nível, seções, inglês, preço e o
  * "mais alguma coisa" saíram (`LEGACY_FORM_ANSWER_IDS`, contados à parte).
  * Texto livre (relato de falha, "Outro/Outra") nunca sai daqui com o texto:
  * a pergunta aberta vira só a marca `OPEN_ANSWER_MARK`, para o perfil contar.
@@ -50,6 +50,8 @@ export const SURVEY_MATCHERS = {
   whoPays: /quem paga pelas ferramentas/i,
   monthlySpend: /quanto voc[êe] paga por m[êe]s/i,
   biggestSpend: /material de estudo mais caro/i,
+  supportsIndependent: /pagou para apoiar algum criador/i,
+  supportDecision: /decis[ãa]o de apoiar ou n[ãa]o/i,
   interview: /toparia uma conversa/i,
 } as const;
 

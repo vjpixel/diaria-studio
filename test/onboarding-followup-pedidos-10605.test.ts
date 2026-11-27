@@ -42,7 +42,7 @@ import { formStatusReport, loadPeopleForTagging, parseArgs, runFollowupRound, ru
 import { CliExit } from "../scripts/lib/cli-exit.ts";
 import { writeFileSync } from "node:fs";
 import { conversaRows, parseConversaArgs, renderConversaTable } from "../scripts/onboarding-form-conversas.ts";
-import { FORM_CONVERSA_SIM, type FormResponse } from "../scripts/lib/onboarding-form-contract.ts";
+import { FORM_CONVERSA_SIM, FORM_VERSION, type FormResponse } from "../scripts/lib/onboarding-form-contract.ts";
 import { emptyStore, readStore, writeStore, type OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
@@ -539,9 +539,10 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
     ["produto_formato", "Nada disso, a newsletter já me basta"],
     ["quem_paga", "Ninguém: só uso versões gratuitas"],
     ["maior_gasto", "Até R$ 100"],
+    ["apoio_independente", "Não"],
   ];
 
-  it("dois envios da mesma pessoa: resp: fica a mais recente, hist: guarda os dois e o legado; versão 3 e tempo gravados", async () => {
+  it("dois envios da mesma pessoa: resp: fica a mais recente, hist: guarda os dois e o legado; versão atual e tempo gravados", async () => {
     const { default: worker } = await import("../workers/onboarding-form/src/index.ts");
     const { signFormEmail } = await import("../scripts/lib/onboarding-form-link-sig.ts");
     const legacy = { email: "a@x.com", submitted_at: "2026-10-01T00:00:00Z", answers: { nivel_ia: "x" } };
@@ -560,7 +561,7 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
     const hist = [...kv._map.keys()].filter((k) => k.startsWith("hist:a@x.com:"));
     assert.equal(hist.length, 3, "legado copiado + os dois envios, nada sobrescrito");
     const latest = JSON.parse(kv._map.get("resp:a@x.com")!);
-    assert.equal(latest.form_version, 3);
+    assert.equal(latest.form_version, FORM_VERSION);
     assert.equal(typeof latest.duration_s, "number");
     assert.ok(latest.duration_s >= 0 && latest.duration_s < 60);
     // Token forjado: grava sem duration_s.

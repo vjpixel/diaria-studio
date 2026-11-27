@@ -42,9 +42,9 @@
  *    O `GET /` seguinte devolve o formulário preenchido com o rascunho.
  *    Ver a seção "Rascunho" abaixo.
  *
- * ## Perguntas (v3, aprovada pelo editor em 09/11/2026)
+ * ## Perguntas (v3 aprovada pelo editor em 09/11/2026; v4, com as duas de apoio, em 27/11/2026, #14330)
  *
- * Doze perguntas numeradas, mais três subperguntas sem número
+ * Catorze perguntas numeradas, mais três subperguntas sem número
  * (`subOf`): o relato de falha (texto livre, dentro das dificuldades), a
  * escolha de um formato só (aparece com 2 ou mais formatos marcados) e o
  * gasto mensal (aparece só para quem paga do próprio bolso). Toda pergunta de
@@ -420,6 +420,24 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
       "Prefiro não dizer",
     ],
   },
+  // v4 (#14330, aprovada pelo editor em 27/11/2026): o que falta para apoiar.
+  // Pergunta de comportamento passado (não "apoiaria", que infla a intenção)
+  // antes da aberta; a aberta não pressupõe vontade de apoiar e fica sem
+  // exemplo de resposta para não ancorar. "Sabe que dá para apoiar?" ficou
+  // de fora: toda edição já fala do apoio.
+  {
+    id: "apoio_independente",
+    label: "Nos últimos 12 meses, você pagou para apoiar algum criador ou veículo independente (newsletter, podcast, canal, jornalismo)?",
+    kind: "select",
+    required: true,
+    options: ["Sim", "Não", "Não lembro"],
+  },
+  {
+    id: "apoio_decisao",
+    label: "O que pesa na sua decisão de apoiar ou não a diar.ia.br no apoia.se?",
+    kind: "textarea",
+    help: "Vale qualquer motivo, a favor ou contra.",
+  },
   {
     id: "conversa",
     label: "Toparia uma conversa de 20 minutos comigo sobre o que você quer fazer com IA e o que falta para chegar lá?",
@@ -487,7 +505,7 @@ export function validateFormQuestions(qs: readonly FormQuestion[]): string[] {
   return errs;
 }
 
-/** Perguntas numeradas (sem `subOf`) — "São até 12 perguntas". */
+/** Perguntas numeradas (sem `subOf`) — "São até 14 perguntas". */
 export function numberedQuestions(questions: readonly FormQuestion[] = FORM_QUESTIONS): FormQuestion[] {
   return questions.filter((q) => !q.subOf);
 }
@@ -594,7 +612,7 @@ export interface FormResponsesPayload {
  * pergunta sem subir a versão quebra o teste. O Worker grava o número em
  * cada resposta (`FormResponse.form_version`).
  */
-export const FORM_VERSION = 3;
+export const FORM_VERSION = 4;
 
 /** Versão das respostas antigas, gravadas antes do campo `form_version`. */
 export const FORM_VERSION_LEGACY = 2;
@@ -757,7 +775,7 @@ export const FORM_DRAFT_PREFIX = "draft:";
 export const FORM_DRAFT_TTL_S = 90 * 86_400;
 
 /** Corpo máximo do `POST /rascunho` (bytes). As respostas cabem com folga:
- *  12 perguntas, textos de até `FORM_ANSWER_MAX_LEN`. */
+ *  14 perguntas, textos de até `FORM_ANSWER_MAX_LEN`. */
 export const FORM_DRAFT_MAX_BYTES = 32 * 1024;
 
 /** Rate limit por e-mail: no máximo uma gravação a cada N segundos (o cliente

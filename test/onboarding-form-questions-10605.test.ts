@@ -87,6 +87,8 @@ const EXPECTED_MATCHER: Record<string, SurveyMatcherKey> = {
   quem_paga: "whoPays",
   gasto_mensal: "monthlySpend",
   maior_gasto: "biggestSpend",
+  apoio_independente: "supportsIndependent",
+  apoio_decisao: "supportDecision",
   conversa: "interview",
 };
 
@@ -126,14 +128,15 @@ const BASE: Record<string, string | string[]> = {
   produto_formato: FORM_NADA_DISSO,
   quem_paga: "Ninguém: só uso versões gratuitas",
   maior_gasto: "Até R$ 100",
+  apoio_independente: "Não",
 };
 const parse = (extra: Record<string, string | string[] | undefined> = {}) => parseFormSubmission({ ...BASE, ...extra });
 
 describe("#10605 v3: perguntas do formulário (aprovadas em 09/11/2026)", () => {
-  it("12 numeradas na ordem aprovada, 3 subperguntas sem número, ids únicos", () => {
+  it("14 numeradas na ordem aprovada (as 2 de apoio entram antes da conversa, v4), 3 subperguntas sem número, ids únicos", () => {
     assert.deepEqual(numberedQuestions().map((q) => q.id), [
       "uso_ia", "situacao", "area", "uso_recente", "ferramentas", "motivacao", "dificuldades",
-      "produto_formato", "produto_tema", "quem_paga", "maior_gasto", "conversa",
+      "produto_formato", "produto_tema", "quem_paga", "maior_gasto", "apoio_independente", "apoio_decisao", "conversa",
     ]);
     assert.deepEqual(FORM_QUESTIONS.filter((q) => q.subOf).map((q) => [q.id, q.subOf]), [
       ["relato_falha", "dificuldades"], ["produto_escolha", "produto_formato"], ["gasto_mensal", "quem_paga"],
@@ -159,8 +162,8 @@ describe("#10605 v3: perguntas do formulário (aprovadas em 09/11/2026)", () => 
     }
   });
 
-  it("só relato e conversa são opcionais (gasto mensal virou obrigatório quando aparece, #12587)", () => {
-    assert.deepEqual(FORM_QUESTIONS.filter((q) => !q.required).map((q) => q.id), ["relato_falha", "conversa"]);
+  it("só relato, decisão de apoiar e conversa são opcionais (gasto mensal virou obrigatório quando aparece, #12587)", () => {
+    assert.deepEqual(FORM_QUESTIONS.filter((q) => !q.required).map((q) => q.id), ["relato_falha", "apoio_decisao", "conversa"]);
   });
 
   it("saíram nível, seções, inglês, preço e o 'mais alguma coisa' (lidos como legado)", () => {
@@ -195,6 +198,29 @@ describe("#10605 v3: perguntas do formulário (aprovadas em 09/11/2026)", () => 
     const relato = FORM_QUESTIONS.find((q) => q.id === "relato_falha")!;
     assert.equal(relato.kind, "textarea");
     assert.equal((relato as { placeholder?: string }).placeholder, "Ex.: pedi um resumo de um PDF e ele inventou números.");
+  });
+
+  it("#14330 v4: as duas perguntas de apoio, com o texto aprovado em 27/11/2026", () => {
+    const a = choice("apoio_independente");
+    assert.equal(a.kind, "select");
+    assert.equal(a.required, true);
+    assert.equal(a.label, "Nos últimos 12 meses, você pagou para apoiar algum criador ou veículo independente (newsletter, podcast, canal, jornalismo)?");
+    assert.deepEqual(a.options, ["Sim", "Não", "Não lembro"]);
+    const d = FORM_QUESTIONS.find((q) => q.id === "apoio_decisao")!;
+    assert.equal(d.kind, "textarea");
+    assert.ok(!d.required, "opcional: texto livre obrigatório gera 'nada' só para enviar");
+    assert.equal(d.label, "O que pesa na sua decisão de apoiar ou não a diar.ia.br no apoia.se?");
+    assert.equal(d.help, "Vale qualquer motivo, a favor ou contra.");
+    assert.equal((d as { placeholder?: string }).placeholder, undefined, "sem exemplo de resposta, para não ancorar");
+    const ids = FORM_QUESTIONS.map((q) => q.id);
+    assert.deepEqual(ids.slice(ids.indexOf("maior_gasto"), ids.indexOf("conversa") + 1), ["maior_gasto", "apoio_independente", "apoio_decisao", "conversa"]);
+  });
+
+  it("#14330 v4: sem apoio_independente o envio é recusado; a decisão em branco passa e o texto é aceito", () => {
+    const { apoio_independente: _omit, ...semA } = BASE;
+    assert.equal(parseFormSubmission(semA).ok, false);
+    assert.ok(parse().ok);
+    assert.ok(parse({ apoio_decisao: "Falta saber o que muda com o meu apoio." }).ok);
   });
 
   it("'Outro/Outra' com texto, exclusivas e 'até 3' onde a spec pede", () => {
@@ -372,7 +398,7 @@ describe("#10605 v3: HTML do formulário", () => {
     // #12504: o aviso do salvamento automático entra junto da linha de uso (só aparece com JavaScript).
     assert.ok(
       html.includes(
-        'As respostas ficam comigo e servem só para planejar a newsletter e o que oferecer além dela. <span class="js-only" hidden>O que você marcar já fica salvo, mesmo que você não termine. </span>São até 12 perguntas. Só as marcadas como opcionais podem ficar em branco.',
+        'As respostas ficam comigo e servem só para planejar a newsletter e o que oferecer além dela. <span class="js-only" hidden>O que você marcar já fica salvo, mesmo que você não termine. </span>São até 14 perguntas. Só as marcadas como opcionais podem ficar em branco.',
       ),
     );
     assert.ok(!/dois minutos|tr[êe]s minutos/.test(html), "sem promessa de tempo na página");
@@ -390,12 +416,12 @@ describe("#10605 v3: HTML do formulário", () => {
     assert.ok(html.includes('id="area-12" name="area" value="Outra"'));
   });
 
-  it("numeração 1..12 só nas perguntas principais; obrigatória sem marca, opcional com 'opcional'", () => {
+  it("numeração 1..14 só nas perguntas principais; obrigatória sem marca, opcional com 'opcional'", () => {
     const nums = [...html.matchAll(/<span class="n">(\d+)<\/span>/g)].map((m) => Number(m[1]));
-    assert.deepEqual(nums, Array.from({ length: 12 }, (_, i) => i + 1));
-    assert.equal((html.match(/<span class="req">opcional<\/span>/g) ?? []).length, 2, "relato e conversa (#12587: gasto mensal deixou de ser opcional)");
+    assert.deepEqual(nums, Array.from({ length: 14 }, (_, i) => i + 1));
+    assert.equal((html.match(/<span class="req">opcional<\/span>/g) ?? []).length, 3, "relato, decisão de apoiar (#14330) e conversa (#12587: gasto mensal deixou de ser opcional)");
     assert.ok(html.includes(`<legend>${escapeHtml(choice("gasto_mensal").label)}</legend>`), "gasto mensal sem 'opcional'");
-    assert.ok(html.includes(`<legend><span class="n">12</span>${escapeHtml(choice("conversa").label)} <span class="req">opcional</span></legend>`));
+    assert.ok(html.includes(`<legend><span class="n">14</span>${escapeHtml(choice("conversa").label)} <span class="req">opcional</span></legend>`));
     assert.ok(html.includes(`<legend>${escapeHtml(choice("produto_escolha").label)}</legend>`), "subpergunta sem número");
   });
 
@@ -511,15 +537,15 @@ describe("#10605 v3: rascunhos dos e-mails (semente do --init-snippets)", () => 
     const e1 = snipOf("pesquisa-base.md");
     assert.equal(e1.assunto, "Me ajuda a decidir o que vem por aí na diar.ia.br?");
     assert.equal(e1.previewText, "Uns três minutos, e as perguntas obrigatórias são todas de marcar.");
-    assert.ok(e1.body.includes(p("São até doze perguntas sobre o seu trabalho, como você usa IA e o que você quer aprender. Leva uns três minutos, e as obrigatórias são todas de marcar.")));
+    assert.ok(e1.body.includes(p("São até catorze perguntas sobre o seu trabalho, como você usa IA e o que você quer aprender. Leva uns três minutos, e as obrigatórias são todas de marcar.")));
     assert.ok(e1.body.includes(p("Se você respondeu a pesquisa do ano passado, responde essa também? Mudei quase todas as perguntas.")));
     assert.ok(e1.body.includes(">Responder a pesquisa</a>"));
     const e2 = snipOf("onboarding-formulario.md");
     assert.equal(e2.assunto, e1.assunto);
     assert.equal(e2.previewText, e1.previewText);
-    assert.ok(e2.body.includes(p("Montei um formulário com até doze perguntas sobre o seu trabalho, como você usa IA e o que você quer aprender. Leva uns três minutos, e as obrigatórias são todas de marcar. Com as respostas, eu ajusto o que entra nas edições.")));
+    assert.ok(e2.body.includes(p("Montei um formulário com até catorze perguntas sobre o seu trabalho, como você usa IA e o que você quer aprender. Leva uns três minutos, e as obrigatórias são todas de marcar. Com as respostas, eu ajusto o que entra nas edições.")));
     const l1 = snipOf("formulario-lembrete-1.md");
-    assert.deepEqual([l1.assunto, l1.previewText], ["Viu meu pedido?", "Até doze perguntas, uns três minutos."]);
+    assert.deepEqual([l1.assunto, l1.previewText], ["Viu meu pedido?", "Até catorze perguntas, uns três minutos."]);
     assert.ok(l1.body.includes(">Responder agora</a>"));
     const l2 = snipOf("formulario-lembrete-2.md");
     assert.deepEqual([l2.assunto, l2.previewText], ["Ainda queria te ouvir", "Três minutos pra me ajudar a decidir o que vem além da newsletter."]);
@@ -537,10 +563,10 @@ describe("#10605 v3: rascunhos dos e-mails (semente do --init-snippets)", () => 
     }
   });
 
-  it("'doze' acompanha as perguntas numeradas onde o e-mail cita o número", () => {
-    assert.equal(numberedQuestions().length, 12);
+  it("'catorze' acompanha (doze até a v3, #14330) as perguntas numeradas onde o e-mail cita o número", () => {
+    assert.equal(numberedQuestions().length, 14);
     for (const f of ["pesquisa-base.md", "onboarding-formulario.md", "formulario-lembrete-1.md"]) {
-      assert.match(snipOf(f).body, /até doze perguntas/i, f);
+      assert.match(snipOf(f).body, /até catorze perguntas/i, f);
     }
     for (const f of DRAFTS) assert.ok(!/oito|dois minutos/i.test(read(f)), `${f} sem o número antigo`);
   });
