@@ -362,9 +362,15 @@ export function isOfficialClaudeUrl(url: string): boolean {
 }
 
 /**
- * Pure: chave de dedup — host minúsculo sem `www.`, sem fragmento, sem
- * parâmetros `utm_*`/`ref`, sem barra final. URL inválida volta aparada (o
- * dedup ainda casa a string igual).
+ * Pure: chave de dedup — host minúsculo sem `www.`, sem parâmetros
+ * `utm_*`/`ref`, sem barra final. URL inválida volta aparada (o dedup ainda
+ * casa a string igual).
+ *
+ * O FRAGMENTO FICA na chave, de propósito: as páginas de release notes (apps,
+ * plataforma) têm uma URL só para todas as entradas, e cada entrada entra no
+ * e-mail como `{página}#{âncora ou AAAA-MM-DD}`. Sem o fragmento, a 1ª semana
+ * que mandasse uma entrada da página marcaria a página inteira como "já
+ * enviada", e nenhuma entrada nova dela passaria mais.
  *
  * @pure
  */
@@ -375,14 +381,14 @@ export function normalizeClaudeSemanalUrl(url: string): string {
   } catch {
     return url.trim();
   }
-  u.hash = "";
   for (const k of [...u.searchParams.keys()]) {
     if (/^utm_/i.test(k) || k === "ref") u.searchParams.delete(k);
   }
   const host = u.hostname.toLowerCase().replace(/^www\./, "");
   const path = u.pathname.replace(/\/+$/, "");
   const q = u.searchParams.toString();
-  return `${u.protocol}//${host}${path}${q ? `?${q}` : ""}`;
+  const hash = u.hash.length > 1 ? u.hash : "";
+  return `${u.protocol}//${host}${path}${q ? `?${q}` : ""}${hash}`;
 }
 
 // ── dedup entre semanas ───────────────────────────────────────────────────
@@ -675,16 +681,20 @@ export function claudeSemanalDraftProblems(draft: ClaudeSemanalDraft, opts: Clau
   }
   out.push(...claudeSemanalCopyProblems(draft.intro, "intro"));
 
-  const seen = new Map<string, string>();
+  const seen = new Map<string, { where: string; section: ClaudeSemanalSectionId }>();
   for (const it of draftItems(draft)) {
     const where = `${it.section} "${it.title.slice(0, 60)}"`;
     if (!isOfficialClaudeUrl(it.url)) out.push(`${where}: link não é fonte oficial (${it.url})`);
     const key = normalizeClaudeSemanalUrl(it.url);
     const prevWeek = opts.sent.get(key);
     if (prevWeek !== undefined) out.push(`${where}: já enviado na semana ${prevWeek} (${it.url})`);
+    // Exceção: no Claude Code, um release com várias mudanças relevantes vira
+    // um item por mudança (decisão da issue), todos com o link do release.
     const dup = seen.get(key);
-    if (dup !== undefined) out.push(`${where}: link repetido no e-mail (também em ${dup})`);
-    seen.set(key, where);
+    if (dup !== undefined && !(dup.section === "claude-code" && it.section === "claude-code")) {
+      out.push(`${where}: link repetido no e-mail (também em ${dup.where})`);
+    }
+    if (dup === undefined) seen.set(key, { where, section: it.section });
     if (it.title.length > CLAUDE_SEMANAL_TITLE_MAX_CHARS) out.push(`${where}: título com ${it.title.length} caracteres (teto ${CLAUDE_SEMANAL_TITLE_MAX_CHARS})`);
     if (it.resumo.length > CLAUDE_SEMANAL_RESUMO_MAX_CHARS) out.push(`${where}: resumo com ${it.resumo.length} caracteres (teto ${CLAUDE_SEMANAL_RESUMO_MAX_CHARS})`);
     if (/\n/.test(it.como_usar)) out.push(`${where}: "como usar" tem de ser uma linha só`);

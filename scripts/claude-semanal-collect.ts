@@ -121,7 +121,9 @@ export async function runClaudeSemanalCollect(options: CollectOptions): Promise<
   const raw: RawCandidate[] = [];
   const feedErrors: { source: string; error: string }[] = [];
   if (options.mergePath) {
-    raw.push(...(previous?.candidates ?? []), ...readMergeFile(options.mergePath, deps));
+    // Mesclados ANTES dos anteriores: na mesma URL vence o do merge (ex.: o
+    // release do Claude Code relido com o texto completo, que o feed trunca).
+    raw.push(...readMergeFile(options.mergePath, deps), ...(previous?.candidates ?? []));
   } else {
     // Janela de 8 dias + folga: o filtro fino é o da janela.
     const days = Math.ceil((now().getTime() - Date.parse(week.windowStart)) / 86_400_000) + 1;

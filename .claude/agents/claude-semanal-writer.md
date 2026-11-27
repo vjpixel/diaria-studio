@@ -53,7 +53,7 @@ Grave em `02-draft.json` exatamente esta forma:
 
 - `lancamentos`: produto, modelo, plano ou recurso grande anunciado pela Anthropic.
 - `dia-a-dia`: recurso dos apps (projetos, conectores, skills, artefatos, memória, voz, mobile, desktop) e mudança de limite ou de plano.
-- `claude-code`: mudança no Claude Code. **Um item por mudança relevante, nunca um item por versão**: um release com três novidades que importam pode virar até três itens; um release só de correção não entra.
+- `claude-code`: mudança no Claude Code. **Um item por mudança relevante, nunca um item por versão**: um release com três novidades que importam pode virar até três itens, todos com a `url` do release (só nesta seção o mesmo link pode se repetir); um release só de correção não entra.
 - `aprenda`: guia, curso da Anthropic Academy, página de boas práticas ou texto do Engineering blog que ajude o assinante a usar melhor.
 
 ### Volume: de 8 a 15 itens, toda semana

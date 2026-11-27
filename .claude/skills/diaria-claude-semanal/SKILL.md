@@ -66,11 +66,17 @@ de propósito; o dedup impede que um item saia duas vezes.
    `pages_to_fetch`: as fontes sem feed (e as de feed que falhou).
 2. Para cada página de `pages_to_fetch`, ler com WebFetch e extrair os itens
    **publicados ou atualizados dentro da janela** (`window` do JSON), com a URL
-   oficial de cada um (a do post, ou a da página com âncora quando o item é
-   uma entrada de release notes), título, data (`published_at` ISO) e um
-   resumo curto do que a página diz. Release notes de API e Agent SDK: só o que
-   chega ao assinante. Releases do Claude Code: um item por mudança relevante,
-   nunca um por versão. Gravar a lista num arquivo do scratchpad com o número
+   oficial de cada um, título, data (`published_at` ISO) e um resumo curto do
+   que a página diz. A URL é a do post; numa página de release notes (uma URL
+   para todas as entradas) é a da página **com fragmento por entrada**: a
+   âncora da entrada se a página tiver, senão `#AAAA-MM-DD` da data dela. O
+   fragmento é a chave do dedup entre semanas (`normalizeClaudeSemanalUrl`):
+   sem ele, a 1ª entrada enviada marcaria a página inteira como "já enviada".
+   Release notes de API e Agent SDK: só o que chega ao assinante. Releases do
+   Claude Code: o feed traz o resumo truncado; ler a página do release (ou
+   `https://code.claude.com/docs/en/changelog`) e passar o texto completo no
+   `summary` do candidato, para o writer fazer um item por mudança relevante
+   (nunca um por versão). Gravar a lista num arquivo do scratchpad com o número
    da issue e sufixo aleatório (ex.: `paginas-14329-{random}.json`) e mesclar:
    `npx tsx scripts/claude-semanal-collect.ts --week {AAMMDD} --merge {arquivo}`.
    O merge passa pelos mesmos filtros (item sem data, fora da janela, não

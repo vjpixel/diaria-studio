@@ -189,11 +189,41 @@ describe("fonte oficial e dedup entre semanas (#14329)", () => {
     }
   });
 
-  it("normalização casa www, barra final, fragmento e utm", () => {
+  it("normalização casa www, barra final e utm", () => {
     assert.equal(
-      normalizeClaudeSemanalUrl("https://WWW.anthropic.com/news/x/?utm_source=a#top"),
+      normalizeClaudeSemanalUrl("https://WWW.anthropic.com/news/x/?utm_source=a"),
       normalizeClaudeSemanalUrl("https://anthropic.com/news/x"),
     );
+  });
+
+  it("o fragmento separa as entradas de uma página de release notes (a página não vira 'já enviada' inteira)", () => {
+    const page = "https://support.claude.com/en/articles/12138966-release-notes";
+    const week = resolveClaudeSemanalWeek(WEEK, 0);
+    const { sent } = sentUrlsFromRecords(
+      [{ week: "261122", raw: { status: "sent", items: [{ url: `${page}#2026-11-20`, title: "A", section: "dia-a-dia" }] } }],
+      WEEK,
+    );
+    const sel = selectWeekCandidates(
+      [
+        { url: `${page}#2026-11-20`, title: "Velha", published_at: "2026-11-22T12:00:00Z" },
+        { url: `${page}#2026-11-25`, title: "Nova", published_at: "2026-11-25T12:00:00Z" },
+      ],
+      week,
+      sent,
+    );
+    assert.deepEqual(sel.candidates.map((c) => c.title), ["Nova"]);
+    assert.equal(sel.alreadySent.length, 1);
+  });
+
+  it("link repetido: permitido entre itens do Claude Code (um item por mudança do release), recusado nas outras seções", () => {
+    const rel = "https://github.com/anthropics/claude-code/releases/tag/v2.1.0";
+    const d = draft(10);
+    d.sections[2].items = [item(7, rel), item(8, rel)];
+    assert.deepEqual(claudeSemanalDraftProblems(d, { minItems: 8, maxItems: 15, sent: new Map() }), []);
+    const d2 = draft(10);
+    d2.sections[1].items[1] = item(99, d2.sections[1].items[0].url);
+    const p = claudeSemanalDraftProblems(d2, { minItems: 8, maxItems: 15, sent: new Map() });
+    assert.ok(p.some((x) => /link repetido/.test(x)), p.join("\n"));
   });
 
   it("registros sent de outras semanas viram o conjunto de dedup; pending e a própria semana não contam", () => {
@@ -473,6 +503,32 @@ describe("publish-claude-semanal-kit com Kit mockado (#14329)", () => {
     assert.deepEqual(out.candidates.map((c) => c.url), ["https://claude.com/blog/novo"]);
     assert.deepEqual(out.already_sent.map((c) => c.week), ["261129"]);
     assert.equal(out.volume.kind, "abaixo", "volume baixo pede ampliar a coleta, não pular");
+  });
+
+  it("--merge soma ao coletado e, na mesma URL, o texto do merge vence o do feed", async () => {
+    setup();
+    const p = claudeSemanalPaths(dir, WEEK);
+    const feedDeps = {
+      fetchFeed: async (o: { url: string; sourceName: string }) => ({
+        source: o.sourceName,
+        method: "rss" as const,
+        feed_url: o.url,
+        articles: [{ url: "https://github.com/anthropics/claude-code/releases/tag/v2.1.0", title: "v2.1.0", published_at: "2026-11-25T12:00:00Z", summary: "trunc…" }],
+      }),
+    };
+    await runClaudeSemanalCollect({ rootDir: dir, dataRoot: dir, week: WEEK, log, now: () => NOW, deps: feedDeps });
+    const mergePath = join(dir, "merge-14329.json");
+    writeFileSync(
+      mergePath,
+      JSON.stringify([
+        { url: "https://github.com/anthropics/claude-code/releases/tag/v2.1.0", title: "v2.1.0", published_at: "2026-11-25T12:00:00Z", summary: "texto completo" },
+        { url: "https://www.anthropic.com/news/x", title: "Notícia", published_at: "2026-11-26T12:00:00Z", summary: "" },
+      ]),
+    );
+    const out = await runClaudeSemanalCollect({ rootDir: dir, dataRoot: dir, week: WEEK, mergePath, log, now: () => NOW });
+    assert.equal(out.candidates.length, 2);
+    assert.equal(out.candidates.find((c) => c.url.includes("releases"))?.summary, "texto completo");
+    assert.ok(existsSync(p.candidatesPath));
   });
 
   it("semana já enviada responde ja-enviado sem criar outro broadcast", async () => {
