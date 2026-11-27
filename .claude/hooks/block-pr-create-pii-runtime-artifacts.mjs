@@ -76,10 +76,10 @@
 // bloquear; nenhuma saída para permitir (equivalente a "defer").
 
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { normalizeMsysPath } from "./lib/msys-path.mjs";
 import { ghPrSegments, repoFromCwdOrigin } from "./lib/gh-target-repo.mjs";
 import { runsGhPrCreate } from "./lib/gh-pr-create-command.mjs";
 
@@ -688,18 +688,8 @@ function runGit(args, cwd) {
  * relativo é resolvido contra `base`. Devolve `null` quando não há `cd`, o
  * que é o caso comum e não tem nada de errado.
  */
-/**
- * Caminho do Git Bash (MSYS) para o caminho que o Node entende no Windows
- * (#14216): `/c/Users/x` → `C:/Users/x`, `/tmp/x` → `{tmpdir}/x`. Sem isso o
- * `resolve` do Node lê `/c/Users` como `C:\c\Users`. Fora do Windows, igual.
- */
-export function normalizeMsysPath(p, platform = process.platform, tmp = tmpdir) {
-  if (platform !== "win32" || typeof p !== "string") return p;
-  const drive = /^\/([a-zA-Z])(?=\/|$)/.exec(p);
-  if (drive) return `${drive[1].toUpperCase()}:${p.slice(2) || "/"}`;
-  if (p === "/tmp" || p.startsWith("/tmp/")) return `${tmp().replaceAll("\\", "/")}${p.slice(4)}`;
-  return p;
-}
+/** `/c/...` do Git Bash para caminho do Node (#14216); vive em `./lib/msys-path.mjs` desde o #14321. */
+export { normalizeMsysPath };
 
 export function cdTargetFromCommand(command, base, platform = process.platform) {
   if (typeof command !== "string" || command === "") return null;
