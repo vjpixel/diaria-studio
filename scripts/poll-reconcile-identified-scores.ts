@@ -17,7 +17,8 @@
  *   npx tsx scripts/poll-reconcile-identified-scores.ts --apply --confirm-dry-run-hash <hash> \
  *     [--backup-dir data/poll-reconcile] [--out <arquivo.json>]
  *
- *   # Retomar só a purga do DO que falhou (arquivo gravado pelo --apply):
+ *   # Retomar só a purga do DO que falhou (arquivo gravado pelo --apply), ou
+ *   # a de um apply interrompido (o `...-progress.json`, campo pendingPurge):
  *   npx tsx scripts/poll-reconcile-identified-scores.ts --purge-do-from <backupDir>/...-pending-do-purge.json
  *
  * O `--apply`:
@@ -249,6 +250,12 @@ export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, op
     failed: null as null | { key: string; error: string },
     purged: [] as string[],
     purgeFailed: [] as Array<{ email: string; status: number; error?: string }>,
+    /**
+     * E-mails com purga do DO devida: entram ANTES do 1º put score/mensal e
+     * saem depois da purga ok. Crash no meio deixa o e-mail aqui, e
+     * `--purge-do-from` aceita este arquivo de progresso.
+     */
+    pendingPurge: [] as string[],
   };
   // Progresso que não grava não pode passar em silêncio: marca falha e segue para a limpeza.
   const saveProgress = () => {
@@ -260,7 +267,10 @@ export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, op
   };
   const purgeOne = async (email: string) => {
     const r = await purgeWithRetry(deps, email, secret!);
-    if (r.ok) progress.purged.push(email);
+    if (r.ok) {
+      progress.purged.push(email);
+      progress.pendingPurge = progress.pendingPurge.filter((e) => e !== email);
+    }
     else progress.purgeFailed.push({ email, status: r.status, error: r.error });
     saveProgress();
   };
@@ -278,6 +288,11 @@ export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, op
           for (const rest of g.writes.slice(i + 1)) progress.skipped.push({ key: rest.key, reason: "e-mail pulado (outra chave mudou)" });
           saveProgress();
           break;
+        }
+        if (isScoreKind(w) && doPurge.has(g.email) && !progress.pendingPurge.includes(g.email)) {
+          progress.pendingPurge.push(g.email);
+          saveProgress();
+          if (progress.failed) break;
         }
         await withRetry(deps, `put ${w.kind}`, () => deps.ops.put(BRAND_PREFIX + w.key, w.new));
         done.add(w.key);
@@ -300,7 +315,9 @@ export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, op
   // Quem já teve score/mensal gravado precisa do DO purgado (inclusive no caminho de falha/pulo).
   for (const email of report.doPurgeEmails) {
     const handled = progress.purged.includes(email) || progress.purgeFailed.some((f) => f.email === email);
-    if (!handled && wroteScoreFor(email)) await purgeOne(email);
+    // `pendingPurge` inclui o e-mail cujo put score/mensal FALHOU após os
+    // retries: o KV pode ter gravado mesmo assim, e a purga é idempotente.
+    if (!handled && (wroteScoreFor(email) || progress.pendingPurge.includes(email))) await purgeOne(email);
   }
 
   // Lista de purgas pendentes ANTES de invalidar snapshot (a invalidação pode falhar).
@@ -382,9 +399,20 @@ export async function purgeDoFrom(file: string, deps: ReconcileDeps, opts: Apply
   }
   let emails: string[];
   try {
-    const parsed = JSON.parse(deps.fs.readFile(file)) as { emails?: unknown };
-    if (!Array.isArray(parsed.emails) || !parsed.emails.every((e) => typeof e === "string")) throw new Error("campo emails ausente ou inválido");
-    emails = parsed.emails as string[];
+    // Aceita o `...-pending-do-purge.json` (`emails`) ou o `...-progress.json`
+    // de um apply interrompido (`pendingPurge` + `purgeFailed`).
+    const parsed = JSON.parse(deps.fs.readFile(file)) as { emails?: unknown; pendingPurge?: unknown; purgeFailed?: unknown };
+    const strs = (x: unknown): string[] | null => (Array.isArray(x) && x.every((e) => typeof e === "string") ? (x as string[]) : null);
+    if (parsed.emails !== undefined) {
+      const e = strs(parsed.emails);
+      if (!e) throw new Error("campo emails inválido");
+      emails = e;
+    } else {
+      const pend = strs(parsed.pendingPurge);
+      const failed = Array.isArray(parsed.purgeFailed) ? strs(parsed.purgeFailed.map((f: { email?: unknown }) => f?.email)) : [];
+      if (!pend || !failed) throw new Error("arquivo sem emails nem pendingPurge/purgeFailed válidos");
+      emails = [...new Set([...pend, ...failed])];
+    }
   } catch (e) {
     deps.log(`[reconcile] não li ${file}: ${(e as Error).message}`);
     return 1;

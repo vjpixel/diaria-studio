@@ -561,3 +561,32 @@ test("chave do e-mail que mudou: pula as escritas restantes daquele e-mail", asy
   const progress = JSON.parse([...h.files.entries()].find(([p]) => p.endsWith("-progress.json"))![1]);
   assert.equal(progress.skipped.length, r.writes.length);
 });
+
+test("put de score: que falha após os retries mas pode ter gravado: e-mail com voto direto é purgado mesmo assim", async () => {
+  const h = harness(DIRECT);
+  const origPut = h.deps.ops.put;
+  h.deps.ops.put = async (k, v) => {
+    await origPut(k, v); // o KV gravou...
+    if (k === `${BRAND_PREFIX}score:${E}`) throw new Error("HTTP 504 — timeout"); // ...mas a resposta falhou
+  };
+  assert.equal(await main(["--apply", "--confirm-dry-run-hash", hashOf(DIRECT), ...BK], h.deps), 1);
+  assert.ok(h.events.includes(`purge ${E}`), h.events.join("\n"));
+  const progress = JSON.parse([...h.files.entries()].find(([p]) => p.endsWith("-progress.json"))![1]);
+  assert.equal(progress.failed.key, `score:${E}`);
+  assert.deepEqual(progress.pendingPurge, [], "purga ok tira o e-mail da pendência");
+});
+
+test("crash entre o put e a purga: progress guarda a purga pendente e --purge-do-from retoma a partir dele", async () => {
+  const h = harness(DIRECT, {
+    purge: async () => {
+      throw new Error("processo morto");
+    },
+  });
+  await assert.rejects(main(["--apply", "--confirm-dry-run-hash", hashOf(DIRECT), ...BK], h.deps), /processo morto/);
+  assert.ok(h.events.includes(`put ${BRAND_PREFIX}score:${E}`));
+  const [path, body] = [...h.files.entries()].find(([p]) => p.endsWith("-progress.json"))!;
+  assert.deepEqual(JSON.parse(body).pendingPurge, [E]);
+  h.deps.purge = async (email) => (h.events.push(`purge ${email}`), { ok: true, status: 200 });
+  assert.equal(await main(["--purge-do-from", path], h.deps), 0);
+  assert.ok(h.events.includes(`purge ${E}`));
+});
