@@ -41,7 +41,7 @@ import {
   sendMagicLinkEmail,
   confirmMergeHtmlResponse,
   handleConfirmMerge,
-  hasProvenEmailPossession,
+  hasDevicePossessionProof,
   MAGIC_LINK_TTL_SEC,
   MAGIC_LINK_SEND_RATE_LIMIT,
   type PendingMerge,
@@ -351,15 +351,18 @@ describe("handleConfirmMerge (#3996)", () => {
     assert.equal(await isIdentifyLinked(env, "ana@x.com", ANON_B), true, "par marcado como confirmado pós-merge");
   });
 
-  it("#6293: clicar no link mágico grava o marcador de posse provada para o e-mail", async () => {
+  it("#6293/#14138: clicar no link mágico prova posse do NONCE do navegador que pediu o link, para aquele e-mail", async () => {
     const env = makeEnv();
-    assert.equal(await hasProvenEmailPossession(env, "ana@x.com"), false, "antes do clique, nenhuma posse provada");
+    const nonce = generateMagicLinkToken();
+    assert.equal(await hasDevicePossessionProof(env.POLL, nonce, "ana@x.com"), false, "antes do clique, nenhuma posse provada");
 
-    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "", optin: false });
+    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "", optin: false, deviceNonce: nonce });
     const res = await handleConfirmMerge(confirmUrl(token), env);
     assert.equal(res.status, 200);
 
-    assert.equal(await hasProvenEmailPossession(env, "ana@x.com"), true, "clique no magic link é a prova de posse — handleJogarGateVerify (web-gate.ts) lê exatamente este marcador");
+    assert.equal(await hasDevicePossessionProof(env.POLL, nonce, "ana@x.com"), true, "clique no magic link prova posse deste nonce — handleJogarGateVerify (web-gate.ts) lê exatamente esta prova");
+    assert.equal(await hasDevicePossessionProof(env.POLL, nonce, "outra@x.com"), false, "a prova é do par (nonce, e-mail), nunca vale para outro e-mail");
+    assert.equal(await hasDevicePossessionProof(env.POLL, generateMagicLinkToken(), "ana@x.com"), false, "outro nonce (outro navegador) não herda a prova");
   });
 
   it("replay do mesmo link (2º clique) → 400, NÃO re-mergeia (sem duplicar soma)", async () => {
