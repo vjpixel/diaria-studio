@@ -72,9 +72,11 @@ const RECURRING_MODIFIER_AFTER = new Set([
  * #13957: "rival"/"competitor"/"concorrente" NÃO entram aqui — em "OpenAI
  * rival Anthropic prices its IPO" quem vem DEPOIS do modificador é o sujeito.
  * A empresa coadjuvante ("OpenAI", antes do modificador) já sai pelo AFTER.
+ * #13963: "rivals" permanece aqui: como verbo, a empresa seguinte é
+ * coadjuvante ("Startup that rivals OpenAI files for IPO").
  */
 const RECURRING_MODIFIER_BEFORE = new Set([
-  "by", "pela", "pelo", "investida", "investido",
+  "by", "pela", "pelo", "investida", "investido", "rivals",
 ]);
 
 /** Empresas citadas como SUJEITO (não coadjuvante) nos tokens normalizados — #13951. */
