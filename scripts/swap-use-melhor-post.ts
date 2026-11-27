@@ -6,6 +6,7 @@ import { basename, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadUseMelhorPostConfigState } from "./lib/use-melhor-post.ts";
 import { runSelectionWithSteps } from "./select-use-melhor-post.ts";
+import { useMelhorUmShapeInstruction } from "./lib/use-melhor-isca.ts";
 import { refreshUseMelhorTempo } from "./lib/use-melhor-tempo-refresh.ts";
 import { fetchBodyForCache } from "./stitch-newsletter.ts";
 import { genUseMelhorCarousel } from "./gen-carousel-cards.ts";
@@ -18,7 +19,10 @@ export async function swapUseMelhorPost(editionDir: string, url: string) {
   const selected = await runSelectionWithSteps(editionDir, config, { useReviewed: true, pickUrl: url });
   // Persistir antes das etapas derivadas: falha no render não pode apagar a pendência editorial.
   writeFileSync(resolve(editionDir, "_internal/use-melhor-refresh-pending.json"), JSON.stringify({ url: selected.state.item!.url }));
-  console.log("Reescreva # Social ## um e # Curto ## um para a nova fonte; depois regenere carrossel e preview e rode refresh-use-melhor-post.ts --done.");
+  console.log(
+    "Reescreva # Social ## um e # Curto ## um para a nova fonte; depois regenere carrossel e preview e rode refresh-use-melhor-post.ts --done. " +
+      useMelhorUmShapeInstruction(selected.state.item, basename(resolve(editionDir))),
+  );
   const tempo = await refreshUseMelhorTempo(editionDir, fetchBodyForCache, { write: true });
   await assertBrandSerifAvailable("swap-use-melhor-post");
   const carousel = await genUseMelhorCarousel(editionDir, readFileSync(resolve(editionDir, "03-social.md"), "utf8"), {

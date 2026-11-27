@@ -47,6 +47,38 @@ export function useMelhorEditionCall(editionId: string): string | null {
   return date ? `O guia completo está na edição de ${date}.` : null;
 }
 
+/**
+ * #14271: instrução de FORMATO do `## um` para o dispatch do `social-writer`,
+ * derivada do item (`steps`) e da data da edição, nunca do `## um` anterior.
+ * Na 261127 o plano mandou "usar o `## um` atual como referência de formato";
+ * ele era uma lista e o item novo não tinha `steps`, e o agente copiou a lista.
+ * Por isso a instrução diz o formato por extenso e proíbe copiar o texto anterior.
+ */
+export function useMelhorUmShapeInstruction(
+  item: { steps?: string[] | null } | null | undefined,
+  editionId: string,
+): string {
+  const steps = Array.isArray(item?.steps) ? item.steps : [];
+  const call = useMelhorEditionCall(editionId) ?? "O guia completo está na edição de DD/MM. (DD/MM = data da edição)";
+  const noCopy = "Não copiar o formato do '## um' que já está em 03-social.md: o formato vem do item, não do texto anterior.";
+  // #14271 (review): a instrução vai ao social-writer E ao social-curto; o formato
+  // abaixo vale só para o `# Social`. O `# Curto` (≤280 chars) fecha com
+  // `Mais em {edition_url}` (editorial-rules, "Link da edição por rede").
+  const curto =
+    "O '## um' do # Curto (social-curto) mantém o formato próprio: não segue esta instrução e fecha com \"Mais em {edition_url}\".";
+  if (steps.length > 0) {
+    return (
+      `Formato do '## um' no # Social (social-writer): item COM steps (${steps.length}) → lista numerada no formato "1) ...", ` +
+      `um item por passo de item.steps, todos, sem cortar (#9585). ${noCopy} ${curto}`
+    );
+  }
+  return (
+    `Formato do '## um' no # Social (social-writer): item SEM steps → texto corrido em exatamente 3 parágrafos, sem lista numerada ` +
+    `(nenhuma linha começando com "1)" ou "1."); o 3º parágrafo tem uma única frase antes da chamada datada ` +
+    `e fecha com ela: "${call}" (#10246, #11667). ${noCopy} ${curto}`
+  );
+}
+
 /** Chamada datada: "na edição de 30/10" (dia/mês com 1 ou 2 dígitos). */
 const DATED_CALL_RE = /\bna\s+edi[çc][ãa]o\s+de\s+(\d{1,2})\/(\d{1,2})\b/i;
 
