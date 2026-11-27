@@ -72,7 +72,7 @@ import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
 import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
 import { buildOnboardingLotFilter, decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
-import { redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
+import { PilotTagAudienceRetryableError, redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
 import {
   fetchAllFormDrafts,
   fetchAllFormResponses,
@@ -1310,10 +1310,17 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       lotsOut.push({ kind, ...tagVariant, lot_id: lot.lot_id, created: true, broadcast_id: lot.broadcast_id, recipients: recipients.length, send_at: lot.send_at });
     } catch (e) {
       run.lots_failed++;
+      // #14338: tag ainda atrasada depois de todas as releituras do guard de
+      // audiência (`runProductionKitLot` já espera entre elas), nenhum
+      // broadcast criado. O lote segue `pending` e a próxima rodada o retoma
+      // (#13801); conta em `lots_failed_retryable`, que não vira exit 1.
+      const retryable = e instanceof PilotTagAudienceRetryableError && lot.broadcast_id == null && lot.status === "pending";
+      if (retryable) run.lots_failed_retryable = (run.lots_failed_retryable ?? 0) + 1;
       lot.last_error = lot.last_error ?? redactEmails((e as Error).message);
       persistFollowupLot(storePath, lot, cadastroById, nowMs);
       bump(kind, "falhou", recipients.length);
-      lotsOut.push({ kind, ...tagVariant, lot_id: lot.lot_id, created: false, status: lot.status, error: lot.last_error });
+      if (retryable) process.stderr.write(`${LOG} lote ${lot.lot_id} adiado: tag ainda sem os destinatários depois das releituras; fica pending para a próxima rodada.\n`);
+      lotsOut.push({ kind, ...tagVariant, lot_id: lot.lot_id, created: false, status: lot.status, error: lot.last_error, ...(retryable ? { retryable: true } : {}) });
     }
   }
   // #10774: quem entrou no store agora (1º envio) nasceu com o e-mail do

@@ -344,6 +344,14 @@ export interface FollowupRunRecord {
   form_results_blocked?: { motivo: FollowupBlockReason; detalhe: string } | null;
   lots_created: number;
   lots_failed: number;
+  /** #14338: SUBCONJUNTO de `lots_failed` — lotes que falharam só porque a
+   *  releitura da tag ainda não refletia os destinatários depois de todas as
+   *  tentativas do guard de audiência (`PilotTagAudienceRetryableError`,
+   *  atraso de consistência do Kit, nunca membro estranho). Nenhum broadcast
+   *  foi criado; o lote fica `pending` e a rodada seguinte o retoma. Conta no
+   *  alarme de continuidade (via `lots_failed`), mas não no exit code — mesma
+   *  regra da escada (#11340). Ausente = registro anterior ao campo (0). */
+  lots_failed_retryable?: number;
   /** Etapas que não saíram por passar do teto de lote (`max_recipients_per_lot`).
    *  Desde o #10631 o teto corta em lote parcial (o excedente aparece em
    *  `counts[etapa].adiado_teto`), então isto só sobe pela defesa em
@@ -2414,14 +2422,21 @@ export const FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE = 3;
 
 /**
  * @pure — #10661: exit code da rodada. Falha de entrega (lote falho, acima do
- * teto, lote não resolvido) é `1` e vence o excedente; só o excedente (ou o
+ * teto, lote não resolvido) é `1` e vence o excedente; lote que falhou só
+ * pela tag ainda atrasada na releitura (`lots_failed_retryable`, #14338) não
+ * conta; só o excedente (ou o
  * rascunho parado do e-mail da base, #12517) é
  * `FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE`; o resto é `0`.
  */
 export function resolveFollowupExitCode(
-  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow" | "base_invite_failed" | "base_invite_draft_stale">,
+  run: Pick<
+    FollowupRunRecord,
+    "lots_failed" | "lots_failed_retryable" | "over_cap" | "lots_unresolved" | "cap_window_overflow" | "base_invite_failed" | "base_invite_draft_stale"
+  >,
 ): 0 | 1 | typeof FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE {
-  if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0 || (run.base_invite_failed ?? 0) > 0) return 1;
+  // #14338: lote adiado só pela tag ainda atrasada no Kit não derruba a unit.
+  const retryable = Math.min(run.lots_failed, Math.max(0, run.lots_failed_retryable ?? 0));
+  if (run.lots_failed - retryable > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0 || (run.base_invite_failed ?? 0) > 0) return 1;
   // #12517: o rascunho parado do e-mail da base também é achado operacional
   // (pendência do editor), não quebra do executor: mesmo exit.
   if ((run.cap_window_overflow ?? 0) > 0 || (run.base_invite_draft_stale ?? 0) > 0) return FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE;
