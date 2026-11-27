@@ -72,8 +72,6 @@
   "scriptsImportWorkersSrc": [
     "scripts/backfill-score-by-month.ts -> workers/poll/src/lib.ts",
     "scripts/backfill-seq-state.ts -> workers/poll/src/lib.ts",
-    "scripts/build-diaria-dashboard-data.ts -> workers/diaria-dashboard/src/types.ts",
-    "scripts/build-poll-eia-data.ts -> workers/diaria-dashboard/src/types.ts",
     "scripts/clarice-backfill-campaigns.ts -> workers/brevo-dashboard/src/brevo-api.ts",
     "scripts/clarice-plan-wave.ts -> workers/brevo-dashboard/src/brevo-api.ts",
     "scripts/clarice-plan-wave.ts -> workers/brevo-dashboard/src/sections-core.ts",
@@ -88,7 +86,6 @@
     "scripts/migrate-nickname-index.ts -> workers/poll/src/lib.ts",
     "scripts/purge-leaderboard.ts -> workers/poll/src/lib.ts",
     "scripts/rebuild-stats.ts -> workers/poll/src/lib.ts",
-    "scripts/studio-snapshot-push.ts -> workers/diaria-dashboard/src/types.ts",
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/billing-cycle.ts",
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/brevo-api.ts",
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/render-links.ts",

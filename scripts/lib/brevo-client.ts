@@ -42,6 +42,9 @@ import {
 import { formatBrevoApiError } from "./brevo-error-classify.ts";
 // #9532: id da lista de histórico da Clarice somado ao Set `committed`.
 import { resolveClariceHistoryListIdForGuard } from "./clarice-list-history-config.ts";
+// #14357: a Brevo só valida a Template Language no disparo; o guard recusa a
+// escrita de campanha/template com filtro ou tag inválidos antes do fetch.
+import { assertBrevoCampaignPayloadTemplateValid } from "./brevo-template-lint.ts";
 
 // #5697: re-exportado pra quem já importa tudo de brevo-client.ts — a
 // implementação/estado vivem em brevo-rate-state.ts (módulo dedicado,
@@ -373,6 +376,7 @@ export async function brevoPost(
   body: unknown,
   _sleep = _defaultSleep,
 ): Promise<unknown> {
+  assertBrevoCampaignPayloadTemplateValid(path, body); // #14357
   return withBrevo429Retry(async () => {
     const res = await brevoRawFetch(`https://api.brevo.com/v3${path}`, {
       method: "POST",
@@ -577,6 +581,7 @@ export async function brevoPut(
   body: unknown,
   _sleep = _defaultSleep,
 ): Promise<unknown> {
+  assertBrevoCampaignPayloadTemplateValid(path, body); // #14357
   return withBrevo429Retry(async () => {
     const res = await brevoRawFetch(`https://api.brevo.com/v3${path}`, {
       method: "PUT",

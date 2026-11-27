@@ -26,7 +26,7 @@ import { youtubeShortsCoverRecord, youtubeShortsVerticalCoverWarning } from "../
 import { FIRST_FRAME_FFMPEG_TIMEOUT_MS, prepareYouTubeFirstFrameCover, type FirstFrameCoverDeps } from "../lib/diaria/short-first-frame-cover.ts";
 import { readShortReplacements } from "../lib/diaria/shorts-published-store.ts";
 import type { PublishOutcome } from "./facebook.ts";
-import type { ShortsPublishItem, ShortsSendContext, ShortsSendStep } from "./send-context.ts";
+import type { ShortsPublishItem, ShortsSendStep, ShortsYouTubeSendContext } from "./send-context.ts";
 
 /** #12100 opção 2: I/O real da capa no 1º frame (ffprobe/ffmpeg do PATH, diretório em `os.tmpdir()`). */
 export const defaultFirstFrameCoverDeps: FirstFrameCoverDeps = {
@@ -118,7 +118,7 @@ export function replacedYouTubeIds(dir: string): string[] {
  * `publishYouTubeShort` recusa. O `send_unknown` vai ao registro antes do PUT.
  */
 export async function sendYouTubeShortItem(
-  ctx: ShortsSendContext,
+  ctx: ShortsYouTubeSendContext,
   item: ShortsPublishItem,
   prepared: { file: Buffer; firstFrame: { ms: number } | null } | null,
   uploadDeps: YouTubeUploadDeps = defaultYouTubeUploadDeps,

@@ -655,6 +655,8 @@ export async function runFetchDriveVideo(
         editionFolderPresent: true,
         target,
         cortes: corteRefs,
+        // #14325: o .mp4 com sufixo solto em {AAMMDD}/ só vale depois de Editados/.
+        editionSuffixFallback: false,
       });
       // #11419: para o Instagram, "Final/ com .mp4 mas sem `_Instagram_`" é o
       // caso NORMAL (sem corte próprio, vale o genérico) — nunca um sinal de

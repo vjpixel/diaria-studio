@@ -368,15 +368,16 @@ describe("#10772 registro e estado", () => {
       calls++;
       return "https://pub.r2.dev/shorts/v.mp4";
     });
-    assert.deepEqual(ok, { destination: "x", ok: true, pending_buffer_create: true, buffer: { text: "Texto", dueAt: "2026-10-22T15:00:00.000Z", videoUrl: "https://pub.r2.dev/shorts/v.mp4" } });
+    assert.deepEqual(ok, { destination: "x", status: "handoff", ok: true, pending_buffer_create: true, buffer: { text: "Texto", dueAt: "2026-10-22T15:00:00.000Z", videoUrl: "https://pub.r2.dev/shorts/v.mp4" } });
     assert.equal(calls, 1);
     const sync = await prepareBufferItem(item, () => {
       throw new Error("R2 não configurado (SHORTS_R2_BUCKET)");
     });
-    assert.deepEqual(sync, { destination: "x", ok: false, error: "R2 não configurado (SHORTS_R2_BUCKET)" });
+    assert.deepEqual(sync, { destination: "x", status: "failed", ok: false, error: "R2 não configurado (SHORTS_R2_BUCKET)" });
     const async_ = await prepareBufferItem(item, async () => Promise.reject(new Error("PUT 403")));
     assert.equal(async_.ok, false);
-    assert.equal(async_.buffer, undefined);
+    assert.equal(async_.status, "failed");
+    assert.equal("buffer" in async_, false);
   });
 
   it("estado normalizado (#573): agendado no passado ou sem horário não é 'publicado'", () => {

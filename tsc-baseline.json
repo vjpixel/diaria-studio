@@ -66,7 +66,6 @@
   "test/clarice-derived-stale-guard-4205.test.ts::TS2339": 2,
   "test/clarice-derived-stale-guard-4205.test.ts::TS2578": 1,
   "test/clarice-envio-run.test.ts::TS2554": 1,
-  "test/clarice-import-sends.test.ts::TS2322": 1,
   "test/clarice-import-sends.test.ts::TS2353": 3,
   "test/clarice-novos-html-state-4347.test.ts::TS2578": 2,
   "test/clarice-novos-resolve-cycle-4347.test.ts::TS2578": 1,

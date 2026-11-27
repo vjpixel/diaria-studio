@@ -97,6 +97,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
@@ -787,16 +788,18 @@ export interface CorteTimerRunDeps {
 /**
  * #12473: tenta trazer do R2 o que o OneDrive não trouxe e devolve as notas
  * para o motivo do alarme (vazio = nada faltava, ou tudo recuperado).
+ *
+ * #14325: `misconfigured` = faltava arquivo aprovado e esta execução não tem
+ * os `R2_*` (rodada à mão sem o `.env`, ou unit sem `EnvironmentFile`). Aí a
+ * ausência não diz nada sobre o vídeo (em 21/11 uma execução assim alarmou
+ * `missing-video` nos 3 destinos e outra, segundos depois, recuperou do R2 e
+ * publicou): o chamador avisa que a execução está mal configurada e não alarma.
  */
-async function recoverMissingFromR2(dir: string, spec: CorteSpec, deps: CorteTimerRunDeps): Promise<string[]> {
+async function recoverMissingFromR2(dir: string, spec: CorteSpec, deps: CorteTimerRunDeps): Promise<{ notes: string[]; misconfigured?: string[] }> {
   const r2 = deps.r2;
-  if (!r2) return [];
-  if (!corteHasMissingApprovedFiles(dir, spec)) return [];
-  if ("missing" in r2) {
-    const note = `sem acesso ao R2 para recuperar (${r2.missing.join(", ")})`;
-    console.error(`${LOG_PREFIX} ${spec.slug}: ${note}`);
-    return [note];
-  }
+  if (!r2) return { notes: [] };
+  if (!corteHasMissingApprovedFiles(dir, spec)) return { notes: [] };
+  if ("missing" in r2) return { notes: [], misconfigured: r2.missing };
   const notes: string[] = [];
   for (const o of await recoverCorteFilesFromR2(dir, spec, r2)) {
     if (o.kind === "recovered") {
@@ -807,7 +810,15 @@ async function recoverMissingFromR2(dir: string, spec: CorteSpec, deps: CorteTim
       notes.push(note);
     }
   }
-  return notes;
+  return { notes };
+}
+
+/** #14325: aviso da execução sem os `R2_*` (nunca alarme ao editor: o vídeo pode estar no R2). */
+export function corteTimerMisconfiguredWarning(slug: string, missing: readonly string[]): string {
+  return (
+    `${LOG_PREFIX} ${slug}: EXECUÇÃO MAL CONFIGURADA — vídeo ou capa aprovados ausentes nesta máquina e sem acesso ao R2 para recuperar ` +
+    `(faltam ${missing.join(", ")} no ambiente). Nenhum alarme enviado: rode pelo timer (\`Diaria-Shorts-Cortes\`) ou com o \`.env\` do 300 carregado.`
+  );
 }
 
 /**
@@ -902,7 +913,12 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
     const video = resolveCorteVideo(dir, spec.video);
     // #12473: vídeo/capa aprovados que o OneDrive não trouxe saem do R2 (já subidos pelos destinos da API),
     // conferidos pelo sha256 aprovado antes de gravar; falha vira o motivo do `missing-video` abaixo.
-    const r2Notes = dryRun ? [] : await recoverMissingFromR2(dir, spec, deps);
+    const recovery = dryRun ? { notes: [] as string[] } : await recoverMissingFromR2(dir, spec, deps);
+    if (recovery.misconfigured) {
+      console.error(corteTimerMisconfiguredWarning(spec.slug, recovery.misconfigured));
+      return 1;
+    }
+    const r2Notes = recovery.notes;
     if (!existsSync(video)) {
       const reason = `vídeo do corte ausente nesta máquina: ${video}${r2Notes.length ? ` (${r2Notes.join("; ")})` : ""}`;
       console.error(`${LOG_PREFIX} ${spec.slug}: ${reason}`);
@@ -973,6 +989,10 @@ export function listCorteDirs(cortesDir: string): string[] {
 }
 
 async function main(): Promise<number> {
+  // #14325: toda forma de rodar (a unit do 300 com `EnvironmentFile`, ou à mão,
+  // como os alarmes mandam) lê o `.env`: sem ele faltavam os `R2_*` e a
+  // recuperação do vídeo (#12473) não rodava. O ambiente já setado vence.
+  loadProjectEnv();
   const { flags, values } = parseArgs(process.argv.slice(2));
   const dryRun = flags.has("dry-run");
   const cortesDir = join(ROOT, CORTES_REL_DIR);
@@ -1018,7 +1038,7 @@ async function runCortes(dirs: string[], cortesDir: string, dryRun: boolean): Pr
     now: new Date(),
     runScript: runTsx,
     notify: { cwd: ROOT },
-    // #12473: o unit do 300 carrega o `.env` (EnvironmentFile), com os mesmos `R2_*` do publish-shorts.
+    // #12473/#14325: os mesmos `R2_*` do publish-shorts, do `.env` (`loadProjectEnv` no `main`) ou da unit.
     r2: r2.ready ? { config: r2.config, fetch: (u, i) => fetch(u, i), now: () => new Date() } : { missing: r2.missing },
   };
   let exit = 0;

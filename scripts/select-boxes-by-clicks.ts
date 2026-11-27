@@ -411,12 +411,86 @@ export function selectBoxesForSlots(opts: SelectSlotsOpts): SlotPick[] {
 
 // ── Config (boxes_divulgacao_auto) ──────────────────────────────────────────
 
+/**
+ * #14334: pin com JANELA DE DATAS — `boxes_divulgacao_auto.scheduled_pins`.
+ * Ocupa o `slot` com `file` só nas edições cuja data (AAAA-MM-DD, da edição,
+ * nunca do relógio) cai em `[from, until]`, inclusive. Fora da janela a
+ * entrada não existe para o resolver: `boxes_divulgacao.slotN` e
+ * `pinned_slots` seguem valendo como estão, sem reverter nada no config
+ * depois (a armadilha do #10303/#11202: pin comum fica preso até alguém
+ * despinar à mão, e entra já nas edições produzidas ANTES do dia certo).
+ * `exclude_files`: caixas que não podem sair em NENHUM outro slot nas mesmas
+ * edições (oferta concorrente, ex.: `clarice-divulgacao.md` com NEWS25/NEWS50
+ * junto do Black Friday NEWS65).
+ */
+export interface ScheduledBoxPin {
+  slot: 1 | 2;
+  file: string;
+  from: string;
+  until: string;
+  excludeFiles: readonly string[];
+}
+
 export interface BoxesDivulgacaoAutoConfig {
   enabled: boolean;
   pinnedSlots: ReadonlySet<SlotNumber>;
   recentWindow: number;
   priorWindow: number;
   lastN: number;
+  /** #14334 — ausente = nenhum pin com janela. */
+  scheduledPins?: readonly ScheduledBoxPin[];
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * #14334: valida `scheduled_pins` cru do config. Entrada malformada (slot fora
+ * de 1/2, arquivo vazio, data fora de AAAA-MM-DD, `from` > `until`) é
+ * descartada com warn — nunca lança, nunca pina por engano.
+ */
+export function parseScheduledPins(raw: unknown): ScheduledBoxPin[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ScheduledBoxPin[] = [];
+  for (const e of raw) {
+    const o = (e ?? {}) as Record<string, unknown>;
+    const slot = o.slot;
+    const file = typeof o.file === "string" ? o.file.trim() : "";
+    const from = typeof o.from === "string" ? o.from : "";
+    const until = typeof o.until === "string" ? o.until : "";
+    if ((slot !== 1 && slot !== 2) || !file || !ISO_DATE_RE.test(from) || !ISO_DATE_RE.test(until) || from > until) {
+      process.stderr.write(`[select-boxes-by-clicks] warn — scheduled_pins: entrada inválida ignorada: ${JSON.stringify(e)} (#14334)\n`);
+      continue;
+    }
+    const excludeFiles = Array.isArray(o.exclude_files)
+      ? o.exclude_files.filter((f): f is string => typeof f === "string" && f.length > 0 && f !== file)
+      : [];
+    out.push({ slot, file, from, until, excludeFiles });
+  }
+  return out;
+}
+
+/**
+ * #14334: pins com janela que valem na edição `editionIsoDate`. Sem data de
+ * edição → nenhum (sem data não há como provar que está na janela). Dois pins
+ * no mesmo slot na mesma data → vence o primeiro da lista, com warn.
+ */
+export function activeScheduledPins(
+  pins: readonly ScheduledBoxPin[] | undefined,
+  editionIsoDate: string | null,
+): Map<1 | 2, ScheduledBoxPin> {
+  const active = new Map<1 | 2, ScheduledBoxPin>();
+  if (!pins || !editionIsoDate) return active;
+  for (const p of pins) {
+    if (editionIsoDate < p.from || editionIsoDate > p.until) continue;
+    if (active.has(p.slot)) {
+      process.stderr.write(
+        `[select-boxes-by-clicks] warn — scheduled_pins: slot ${p.slot} já tem pin ativo em ${editionIsoDate}; \`${p.file}\` ignorado (#14334)\n`,
+      );
+      continue;
+    }
+    active.set(p.slot, p);
+  }
+  return active;
 }
 
 const DEFAULT_AUTO_CONFIG: BoxesDivulgacaoAutoConfig = {
@@ -445,7 +519,8 @@ export function loadBoxesDivulgacaoAutoConfig(configPath: string = CONFIG_PATH):
     const recentWindow = Number.isFinite(cfg.recent_window) && cfg.recent_window > 0 ? cfg.recent_window : 3;
     const priorWindow = Number.isFinite(cfg.prior_window) && cfg.prior_window > 0 ? cfg.prior_window : 3;
     const lastN = Number.isFinite(cfg.last_n) && cfg.last_n > 0 ? cfg.last_n : DEFAULT_LAST_N;
-    return { enabled: cfg.enabled === true, pinnedSlots, recentWindow, priorWindow, lastN };
+    const scheduledPins = parseScheduledPins(cfg.scheduled_pins);
+    return { enabled: cfg.enabled === true, pinnedSlots, recentWindow, priorWindow, lastN, scheduledPins };
   } catch {
     return DEFAULT_AUTO_CONFIG;
   }
@@ -473,8 +548,11 @@ export interface ResolvedBoxes {
 
 export interface SlotSelectionRecord {
   slot: SlotNumber;
-  /** `manual`: trocado pós-stitch por `scripts/apply-box-slot.ts` (#8990). */
-  mode: "disabled" | "pinned" | "auto" | "fallback-no-candidates" | "fallback-ineligible" | "manual";
+  /** `manual`: trocado pós-stitch por `scripts/apply-box-slot.ts` (#8990).
+   * `scheduled-pin` (#14334): ocupado por um pin com janela de datas
+   * (`boxes_divulgacao_auto.scheduled_pins`) — o arquivo NÃO vem de
+   * `boxes_divulgacao.slotN`, então não é drift de config. */
+  mode: "disabled" | "pinned" | "auto" | "fallback-no-candidates" | "fallback-ineligible" | "manual" | "scheduled-pin";
   file: string | null;
   /** #9155: só em `mode: "fallback-ineligible"` — o arquivo de
    * `boxes_divulgacao.slotN` que seria usado como fallback e foi recusado
@@ -632,10 +710,50 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
       `[select-boxes-by-clicks] warn — ${where}: \`${file}\` expirou (expires: ${exp}, edição ${editionIsoDate}); ${then} (#10174)\n`,
     );
   };
+  // #14334: pins com janela de datas. Na janela, o slot recebe o arquivo do
+  // pin (só em memória, como todo o resolver) e passa a ser tratado como
+  // pinado; `exclude_files` some dos outros slots. Fora da janela, nada muda.
+  // Slot inativo (slot 2 sem D3, #9175) não tem onde pôr a caixa: só avisa.
+  const scheduledBySlot = activeScheduledPins(autoCfg.scheduledPins, editionIsoDate);
+  for (const [slot, pin] of [...scheduledBySlot]) {
+    if (!activeSlots.includes(slot)) {
+      process.stderr.write(
+        `[select-boxes-by-clicks] warn — scheduled_pins: slot ${slot} inativo nesta edição (sem D3); \`${pin.file}\` não sai (#14334)\n`,
+      );
+      scheduledBySlot.delete(slot);
+      continue;
+    }
+    if (isExpired(pin.file)) {
+      // Janela do config mais longa que o `expires:` da caixa: a caixa vencida
+      // nunca sai (#10174); o slot segue o caminho normal.
+      warnExpired(`slot ${slot} (scheduled_pins)`, pin.file, "pin com janela ignorado nesta edição");
+      scheduledBySlot.delete(slot);
+      continue;
+    }
+    effective[SLOT_KEY[slot]] = pin.file;
+  }
+  const scheduledExclude = new Set<string>();
+  for (const pin of scheduledBySlot.values()) for (const f of pin.excludeFiles) scheduledExclude.add(f);
+  const isScheduled = (s: 1 | 2): boolean => scheduledBySlot.has(s);
+  const scheduledRecord = (slot: 1 | 2): SlotSelectionRecord => ({
+    slot,
+    mode: "scheduled-pin",
+    file: effective[SLOT_KEY[slot]],
+    nome: null,
+    score: null,
+    trend: null,
+    editionsAppeared: null,
+    seasonal: snippetByFile.get(effective[SLOT_KEY[slot]] ?? "")?.seasonal ?? null,
+  });
+
   // Slot 0 fica fora da rotação (#4274), mas uma caixa vencida ali anunciaria
   // o mesmo evento passado — sai vazio.
   if (isExpired(effective.slot0)) {
     warnExpired("slot 0", effective.slot0!, "slot fica vazio nesta edição");
+    effective.slot0 = null;
+  }
+  if (effective.slot0 && scheduledExclude.has(effective.slot0)) {
+    process.stderr.write(`[select-boxes-by-clicks] warn — slot 0: \`${effective.slot0}\` excluído por scheduled_pins; slot fica vazio (#14334)\n`);
     effective.slot0 = null;
   }
 
@@ -665,7 +783,28 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
   if (!autoCfg.enabled) {
     const selection: SlotSelectionRecord[] = activeSlots.map((slot) => {
+      if (isScheduled(slot)) return scheduledRecord(slot);
       const configured = effective[SLOT_KEY[slot]];
+      if (configured && scheduledExclude.has(configured)) {
+        // #14334: oferta concorrente do pin com janela — slot vazio (sem
+        // automação não há candidato pra cobrir).
+        process.stderr.write(
+          `[select-boxes-by-clicks] warn — slot ${slot}: \`${configured}\` excluído por scheduled_pins; slot fica vazio (#14334)\n`,
+        );
+        effective[SLOT_KEY[slot]] = null;
+        return {
+          slot,
+          mode: "disabled" as const,
+          file: null,
+          rejectedFile: configured,
+          rejectReason: "evento" as const,
+          nome: null,
+          score: null,
+          trend: null,
+          editionsAppeared: null,
+          seasonal: null,
+        };
+      }
       if (isExpired(configured)) {
         // #10174: sem automação não há candidato pra cobrir — slot vazio.
         warnExpired(`slot ${slot}`, configured!, "slot fica vazio nesta edição (auto-seleção desligada)");
@@ -751,10 +890,13 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   // candidato, cai no fallback, que é o próprio arquivo vencido e por isso
   // recusado → slot vazio). Premissa conservadora registrada no PR: nunca
   // publicar a caixa vencida; não mexer no `platform.config.json`.
-  const isPinnedActive = (s: 1 | 2): boolean => autoCfg.pinnedSlots.has(s) && !isExpired(effective[SLOT_KEY[s]]);
+  // #14334: slot com pin de janela ativo conta como pinado (o arquivo já foi
+  // validado contra `expires:` acima).
+  const isPinnedActive = (s: 1 | 2): boolean =>
+    isScheduled(s) || (autoCfg.pinnedSlots.has(s) && !isExpired(effective[SLOT_KEY[s]]));
   const expiredPins = new Map<1 | 2, string>();
   for (const s of activeSlots) {
-    if (autoCfg.pinnedSlots.has(s) && isExpired(effective[SLOT_KEY[s]])) expiredPins.set(s, effective[SLOT_KEY[s]]!);
+    if (!isScheduled(s) && autoCfg.pinnedSlots.has(s) && isExpired(effective[SLOT_KEY[s]])) expiredPins.set(s, effective[SLOT_KEY[s]]!);
   }
   const slotsToAuto = activeSlots.filter((s) => !isPinnedActive(s));
   const alreadyAssignedFiles = new Set<string>();
@@ -774,7 +916,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   const picks = selectBoxesForSlots({
     ranked,
     slotsToFill: slotsToAuto,
-    excludeFiles: previousSnippets,
+    excludeFiles: scheduledExclude.size > 0 ? new Set([...previousSnippets, ...scheduledExclude]) : previousSnippets,
     alreadyAssignedFiles,
     eventKeysByFile,
     excludeEventKeys: previousEventKeys,
@@ -789,6 +931,10 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
   const selection: SlotSelectionRecord[] = [];
   for (const slot of activeSlots) {
+    if (isScheduled(slot)) {
+      selection.push(scheduledRecord(slot));
+      continue;
+    }
     if (isPinnedActive(slot)) {
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       selection.push({
@@ -822,8 +968,12 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
       });
     } else {
       const fallbackFile = effective[SLOT_KEY[slot]];
+      // #14334: oferta concorrente do pin com janela também não entra como
+      // fallback (mesma família do `evento` do #9104).
       const rejectReason = fallbackFile
-        ? checkFallbackEligibility({ file: fallbackFile, snippetByFile, assignedFiles: assignedForFallback, editionIsoDate })
+        ? scheduledExclude.has(fallbackFile)
+          ? ("evento" as const)
+          : checkFallbackEligibility({ file: fallbackFile, snippetByFile, assignedFiles: assignedForFallback, editionIsoDate })
         : null;
       if (fallbackFile && rejectReason) {
         // #9155: slot sai VAZIO em vez de usar um fallback que o #9104 barraria.

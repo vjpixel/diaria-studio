@@ -350,9 +350,11 @@ describe("#11547 X/Buffer: thumbnailOffset em results[].buffer e no registro", (
   const item = { destination: "x", mode: "guided" as const, action: "buffer" as const, caption: "texto", scheduledAt: "2026-10-29T15:00:00.000Z", detail: "" };
   it("offset conhecido vai no buffer; null não aparece", async () => {
     const withOffset = await prepareBufferItem(item, async () => "https://media/v.mp4", 0);
-    assert.equal(withOffset.buffer?.thumbnailOffset, 0);
+    assert.ok(withOffset.status === "handoff");
+    assert.equal(withOffset.buffer.thumbnailOffset, 0);
     const without = await prepareBufferItem(item, async () => "https://media/v.mp4");
-    assert.equal("thumbnailOffset" in (without.buffer ?? {}), false);
+    assert.ok(without.status === "handoff");
+    assert.equal("thumbnailOffset" in without.buffer, false);
   });
 
   it("--mark x=buffer grava a capa; a confirmação x=URL mantém o registro", () => {

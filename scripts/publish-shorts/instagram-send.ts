@@ -40,14 +40,21 @@ import {
   publishInstagramReel as publishInstagramReelReal,
   resolveInstagramReelInputs as resolveInstagramReelInputsReal,
 } from "./instagram.ts";
-import type { ShortsEnqueueItem, ShortsPublishItem, ShortsSendContext, ShortsSendIo, ShortsSendStep } from "./send-context.ts";
+import {
+  type ShortsEnqueueItem,
+  type ShortsInstagramQueueSendContext,
+  type ShortsInstagramReelSendContext,
+  type ShortsPublishItem,
+  type ShortsSendStep,
+  shortsResult,
+} from "./send-context.ts";
 
 /**
  * #14204: etapa do Reels com horário futuro na fila do Worker (#10823). A
  * capa e o vídeo sobem ao R2 pelas funções da rodada (memo por chave).
  */
 export async function sendInstagramQueueItem(
-  ctx: ShortsSendContext,
+  ctx: ShortsInstagramQueueSendContext,
   item: ShortsEnqueueItem,
   enqueue: InstagramEnqueueDeps["enqueue"] = (payload) => postToWorkerQueue(ctx.workerUrl, ctx.workerToken, payload, 2, "publish-shorts"),
 ): Promise<ShortsSendStep> {
@@ -96,9 +103,8 @@ export const defaultInstagramReelSendDeps: InstagramReelSendDeps = {
  * `ioDeps` troca a rede e o disco nos testes (o default é o I/O real).
  */
 export async function sendInstagramReelItem(
-  ctx: ShortsSendContext,
+  ctx: ShortsInstagramReelSendContext,
   item: ShortsPublishItem,
-  io: ShortsSendIo,
   ioDeps: InstagramReelSendDeps = defaultInstagramReelSendDeps,
 ): Promise<ShortsSendStep> {
   // Mesmos nomes das funções importadas: o corpo segue igual ao do laço inline (e aos guards estáticos).
@@ -218,7 +224,7 @@ export async function sendInstagramReelItem(
         ? { entry: recheck.hit.entry, matchedBy: recheck.hit.matchedBy, when: " na reconferência antes do publish" }
         : null;
   if (already) {
-    io.clearSending();
+    // #14327: o laço apaga o marcador de envio (`marker: "clear"`): o gate já registrou o Reels.
     // #11828/#11870: o Reels feito à mão pode ter saído sem o convite da @vjpixel; avisa sem bloquear o registro.
     const collabWarnings = await instagramTimerAlreadyCollabWarnings(deps, {
       matchedBy: already.matchedBy,
@@ -231,7 +237,8 @@ export async function sendInstagramReelItem(
     for (const w of collabWarnings) console.error(`[aviso] instagram: ${w}`);
     return {
       kind: "settled",
-      result: { destination: item.destination, ok: true, entry: already.entry, alreadyRegistered: true, matchedBy: already.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) },
+      marker: "clear",
+      result: shortsResult.already(item.destination, already.entry, { matchedBy: already.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) }),
     };
   }
   // Inalcançável: `already` acima cobre `step.kind === "already"`. Lança em vez de sumir com o destino do results[].

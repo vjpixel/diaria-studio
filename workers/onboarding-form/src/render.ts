@@ -9,7 +9,8 @@
  * área tem 13 opções e aparece inteira). `text`/`textarea` são campos livres
  * limitados a `FORM_ANSWER_MAX_LEN`.
  *
- * Perguntas numeradas (sem `subOf`) levam o número no `<legend>`; as
+ * Perguntas numeradas (sem `subOf`) levam o número no `<legend>` (a aberta
+ * também, com o `<label>` do campo dentro dele, #14349); as
  * subperguntas não têm número: o relato de falha (texto) fica DENTRO do
  * fieldset da pergunta-mãe, e as de escolha (escolha única, gasto mensal)
  * vêm num fieldset próprio logo depois. Só as opcionais levam "opcional".
@@ -204,29 +205,42 @@ function renderOpenSub(q: FormQuestion, prefill?: FormPrefill): string {
   return label + field;
 }
 
-/** Mensagem do erro dentro da pergunta recusada (#12522). */
-function questionError(message: string | undefined): string {
-  return message ? `<p class="erro" role="alert">${escapeHtml(message)}</p>` : "";
+/** Mensagem do erro dentro da pergunta recusada (#12522). `id` liga a
+ *  mensagem ao campo por `aria-describedby` (#14349). */
+function questionError(message: string | undefined, id?: string): string {
+  return message ? `<p class="erro"${id ? ` id="${id}"` : ""} role="alert">${escapeHtml(message)}</p>` : "";
 }
 
 function renderQuestion(q: FormQuestion, number: number | null, inner: readonly FormQuestion[], prefill?: FormPrefill, error?: string): string {
   const id = escapeHtml(q.id);
   const fs = fieldsetOpen(q, error != null);
-  const help = q.help ? `<p class="help">${escapeHtml(q.help)}</p>` : "";
   const num = number != null ? `<span class="n">${number}</span>` : "";
-  const legend = `<legend>${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</legend>`;
+  const title = `${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}`;
   const innerHtml = inner.map((x) => renderOpenSub(x, prefill)).join("");
-  const err = questionError(error);
   if (!isChoiceQuestion(q)) {
+    // #14349: pergunta aberta também tem `<legend>` (o grupo ganha nome, igual
+    // às de escolha) com o `<label>` dentro (o campo ganha nome e o toque no
+    // rótulo leva ao campo). O fieldset fica: o script esconde e desabilita a
+    // pergunta condicional por ele, e o erro aponta para `#q-{id}`. A ajuda e
+    // o erro se ligam ao campo por `aria-describedby`.
+    const helpId = `${id}-help`;
+    const errId = `${id}-erro`;
+    const help = q.help ? `<p class="help" id="${helpId}">${escapeHtml(q.help)}</p>` : "";
+    const err = questionError(error, errId);
+    const described = [error ? errId : "", q.help ? helpId : ""].filter(Boolean).join(" ");
+    const aria = described ? ` aria-describedby="${described}"` : "";
     const req = q.required && !isConditional(q) ? " required" : "";
     const max = ` maxlength="${FORM_ANSWER_MAX_LEN}"`;
     const v = prefill?.[q.id];
     const field =
       q.kind === "textarea"
-        ? `<textarea id="${id}" name="${id}"${max}${req}>${v ? escapeHtml(v) : ""}</textarea>`
-        : `<input id="${id}" name="${id}" type="text"${max}${req}${valueAttr(v)}>`;
-    return `${fs}<label class="q" for="${id}">${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</label>${err}${help}${field}${innerHtml}</fieldset>`;
+        ? `<textarea id="${id}" name="${id}"${max}${req}${aria}>${v ? escapeHtml(v) : ""}</textarea>`
+        : `<input id="${id}" name="${id}" type="text"${max}${req}${aria}${valueAttr(v)}>`;
+    return `${fs}<legend><label for="${id}">${title}</label></legend>${err}${help}${field}${innerHtml}</fieldset>`;
   }
+  const help = q.help ? `<p class="help">${escapeHtml(q.help)}</p>` : "";
+  const legend = `<legend>${title}</legend>`;
+  const err = questionError(error);
   const type = q.kind === "checkbox" ? "checkbox" : "radio";
   // `required` em rádio vale para o grupo; em caixa exigiria todas, então não vai.
   const req = type === "radio" && q.required && !isConditional(q) ? " required" : "";

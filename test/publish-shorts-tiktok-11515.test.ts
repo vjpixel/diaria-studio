@@ -128,7 +128,7 @@ describe("#11515 plano e --publish do TikTok", () => {
     const p = planShortsPublish({ ...base, now: BEFORE });
     const item = p.items.find((i) => i.destination === "tiktok") as any;
     const r = await prepareBufferItem(item, async () => "https://media.diar.ia.br/shorts/x.mp4", 1500);
-    assert.ok(r.ok);
+    assert.ok(r.status === "handoff");
     assert.deepEqual(r.buffer, {
       text: item.caption,
       dueAt: item.scheduledAt,
@@ -140,8 +140,9 @@ describe("#11515 plano e --publish do TikTok", () => {
     // O X segue sem canal/metadata no buffer (o canal dele vem do config do Twitter).
     const x = p.items.find((i) => i.destination === "x") as any;
     const rx = await prepareBufferItem(x, async () => "u");
-    assert.equal(rx.buffer!.channelId, undefined);
-    assert.equal(rx.buffer!.metadata, undefined);
+    assert.ok(rx.status === "handoff");
+    assert.equal(rx.buffer.channelId, undefined);
+    assert.equal(rx.buffer.metadata, undefined);
   });
 
   it("capa: só o thumbnailOffset, como o X", () => {
