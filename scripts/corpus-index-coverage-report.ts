@@ -40,7 +40,7 @@ import {
   type CorpusEditionSummary,
   type ThemeCoverageInput,
 } from "./lib/corpus-index-coverage.ts";
-import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./lib/shared/hub-meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HUBS_DIR = resolve(ROOT, "scripts", "lib", "hubs");

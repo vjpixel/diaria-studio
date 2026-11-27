@@ -75,10 +75,10 @@ import { getDeepfakeHub } from "./lib/hubs/deepfake.ts";
 // nav "Outros temas" — `scripts/lib/shared/hub-page.ts` NÃO importa
 // `HUB_META` diretamente (inverteria a fronteira que a docstring de
 // `meta.ts` estabelece; ver nota de `relatedHubs` em `hub-page.ts`).
-import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./lib/shared/hub-meta.ts";
 // #5131: mesmo racional de HUB_META acima — só o builder (Node-side) resolve
 // coverImage, `hub-page.ts` só recebe o resultado (ou undefined) já pronto.
-import titlesCacheRaw from "../workers/arquivo/src/titles-cache.json";
+import titlesCacheRaw from "./lib/shared/titles-cache.json";
 import type { TitlesCache } from "./generate-arquivo-titles.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./lib/shared/cover-image.ts";
 

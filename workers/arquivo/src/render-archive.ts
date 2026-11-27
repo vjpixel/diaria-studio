@@ -76,7 +76,7 @@ import {
   retrospectivaLinks,
   type RetrospectivaLink,
 } from "../../../scripts/lib/shared/retrospectiva-index.ts"; // #12032
-import titlesCacheRaw from "./titles-cache.json";
+import titlesCacheRaw from "../../../scripts/lib/shared/titles-cache.json"; // #13994: o cache mora em scripts/lib/shared/ (o pipeline também o lê)
 
 /** Shape de cada entrada do cache (espelha `ArquivoTitleEntry` de
  * `scripts/generate-arquivo-titles.ts` — não importado direto pra manter

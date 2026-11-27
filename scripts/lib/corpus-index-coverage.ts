@@ -58,7 +58,7 @@ export interface CorpusEditionSummary {
 }
 
 /** Um tema já publicado (hoje: os 6 hubs de `HUB_META`,
- * `workers/arquivo/src/hubs/meta.ts`) e as edições que ele cobre — mesma
+ * `scripts/lib/shared/hub-meta.ts`) e as edições que ele cobre — mesma
  * shape mínima de `HubSourceEntry[]` (`scripts/generate-hub-sources.ts`),
  * reduzida a `editionSlug` porque é só o que a contagem de cobertura usa. */
 export interface ThemeCoverageInput {
