@@ -21,22 +21,31 @@
  *   npx tsx scripts/poll-reconcile-identified-scores.ts --purge-do-from <backupDir>/...-pending-do-purge.json
  *
  * O `--apply`:
+ *   0. Recusa (nada gravado): hash divergente; família obrigatória listada com
+ *      0 chaves (`score:`, `score-by-month:`, `identify-linked:`, `vote:` —
+ *      listagem incompleta); chave listada sem valor na leitura.
  *   1. ADMIN_SECRET (ou POLL_ADMIN_SECRET) ausente com purga de DO planejada
  *      ⇒ aborta antes de tudo. Sem purga planejada, o secret não é exigido.
  *   2. Grava o backup JSON dos valores antigos e o relê (parse + contagem);
  *      falha ⇒ nenhuma escrita.
  *   3. Por e-mail: marcadores, depois score e mensal (cada chave relida antes
- *      do `put`; se mudou desde o dry-run, pula e reporta), depois a purga do
- *      DO ScoreCounter desse e-mail (com retry em status 0/429/5xx). Progresso
- *      chave a chave em `{backupDir}/...-progress.json`.
+ *      do `put`; se mudou desde o dry-run, pula essa e as restantes do e-mail
+ *      e reporta), depois a purga do DO ScoreCounter desse e-mail se ele vota
+ *      direto e teve `score:`/`score-by-month:` gravado (retry em status
+ *      0/429/5xx). Progresso chave a chave em `{backupDir}/...-progress.json`
+ *      (com `snapshotMonths`, para re-run); falha ao gravá-lo marca a execução
+ *      como falha e segue a limpeza.
  *   4. Erro numa escrita: para, imprime done/total, a chave e o backup, e
- *      ainda invalida os snapshots e purga o DO de quem já teve `score:`
- *      gravado. Purga que falhou vai para `...-pending-do-purge.json` (lista
- *      no arquivo, não no terminal); retomar com `--purge-do-from`.
+ *      ainda purga o DO de quem já teve score/mensal gravado. Purga que falhou
+ *      vai para `...-pending-do-purge.json` (gravado antes de invalidar os
+ *      snapshots; lista no arquivo, não no terminal); retomar com
+ *      `--purge-do-from`. Snapshots invalidados com erro logado por chave.
  *   5. Relê `score:` dos purgados e grava divergências em `...-divergences.json`.
- *   6. Espera ~90 s (consistência eventual da API REST do KV), invalida os
- *      snapshots de novo e roda um dry-run de verificação: exit 0 só com 0
- *      escritas planejadas, nada pulado e nenhuma purga pendente.
+ *   6. Repete as contagens de `fonte-ilegivel` e conferência manual. Espera
+ *      ~90 s (consistência eventual da API REST do KV) e invalida os snapshots
+ *      de novo, também no caminho de falha. Sem falha, roda um dry-run de
+ *      verificação: exit 0 só com 0 escritas planejadas, 0 chaves ilegíveis ou
+ *      ausentes, nada pulado, nenhuma purga pendente e nenhuma divergência.
  *
  * Credenciais (as mesmas do backend REST de `purge-leaderboard.ts`, #11253):
  * CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID; ADMIN_SECRET só se houver
@@ -89,7 +98,7 @@ export interface CliOptions {
   purgeDoFrom: string | null;
 }
 
-const VALUE_FLAGS = new Set(["--confirm-dry-run-hash", "--out", "--backup-dir", "--purge-do-from", "--purge-do-only"]);
+const VALUE_FLAGS = new Set(["--confirm-dry-run-hash", "--out", "--backup-dir", "--purge-do-from"]);
 const BOOL_FLAGS = new Set(["--apply", "--dry-run"]);
 
 export function parseArgs(argv: readonly string[]): { ok: true; opts: CliOptions } | { ok: false; error: string } {
@@ -143,11 +152,16 @@ async function purgeWithRetry(deps: ReconcileDeps, email: string, secret: string
   return last;
 }
 
-export async function loadKv(deps: ReconcileDeps): Promise<{ kv: Map<string, string>; listed: string[] }> {
+/** Famílias que precisam ter chaves: 0 numa delas é listagem quebrada, não KV vazio. */
+export const REQUIRED_FAMILIES = ["score:", "score-by-month:", "identify-linked:", "vote:"] as const;
+
+export async function loadKv(deps: ReconcileDeps): Promise<{ kv: Map<string, string>; listed: string[]; familyCounts: Record<string, number> }> {
   const names: string[] = [];
+  const familyCounts: Record<string, number> = {};
   for (const p of RECONCILE_KEY_PREFIXES) {
     const got = await withRetry(deps, `list ${p}`, () => deps.ops.list(BRAND_PREFIX + p));
     for (const n of got) if (n.startsWith(BRAND_PREFIX)) names.push(n.slice(BRAND_PREFIX.length));
+    familyCounts[p] = got.length;
     deps.log(`[reconcile] list ${BRAND_PREFIX}${p}: ${got.length} chaves`);
   }
   const listed = selectKeysToRead(names);
@@ -168,7 +182,7 @@ export async function loadKv(deps: ReconcileDeps): Promise<{ kv: Map<string, str
     const v = await withRetry(deps, "get", () => deps.ops.get(BRAND_PREFIX + k));
     if (v != null) kv.set(k, v);
   }
-  return { kv, listed };
+  return { kv, listed, familyCounts };
 }
 
 function writeJson(deps: ReconcileDeps, path: string, data: unknown): void {
@@ -186,18 +200,14 @@ function groupByEmail(report: ReconcileReport): Array<{ email: string; writes: P
     }
     groups.get(w.email)!.push(w);
   }
-  for (const e of report.doPurgeEmails) {
-    if (!groups.has(e)) {
-      groups.set(e, []);
-      order.push(e);
-    }
-  }
   return order.map((email) => ({ email, writes: groups.get(email)! }));
 }
 
 export interface ApplyOptions {
   backupDir: string;
 }
+
+const isScoreKind = (w: PlannedWrite) => w.kind === "score" || w.kind === "score-by-month";
 
 export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, opts: ApplyOptions): Promise<number> {
   const secret = deps.env.ADMIN_SECRET ?? deps.env.POLL_ADMIN_SECRET ?? null;
@@ -233,13 +243,21 @@ export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, op
   const progress = {
     hash: report.hash,
     total: report.writes.length,
+    snapshotMonths: report.snapshotMonths,
     done: [] as string[],
     skipped: [] as Array<{ key: string; reason: string }>,
     failed: null as null | { key: string; error: string },
     purged: [] as string[],
     purgeFailed: [] as Array<{ email: string; status: number; error?: string }>,
   };
-  const saveProgress = () => writeJson(deps, progressPath, progress);
+  // Progresso que não grava não pode passar em silêncio: marca falha e segue para a limpeza.
+  const saveProgress = () => {
+    try {
+      writeJson(deps, progressPath, progress);
+    } catch (e) {
+      if (!progress.failed) progress.failed = { key: "(arquivo de progresso)", error: (e as Error).message };
+    }
+  };
   const purgeOne = async (email: string) => {
     const r = await purgeWithRetry(deps, email, secret!);
     if (r.ok) progress.purged.push(email);
@@ -247,78 +265,112 @@ export async function applyPlan(report: ReconcileReport, deps: ReconcileDeps, op
     saveProgress();
   };
 
-  const groups = groupByEmail(report);
   const doPurge = new Set(report.doPurgeEmails);
-  for (const g of groups) {
-    let scoreSkipped = false;
-    for (const w of g.writes) {
+  const done = new Set<string>();
+  const wroteScoreFor = (email: string) => report.writes.some((w) => w.email === email && isScoreKind(w) && done.has(w.key));
+  for (const g of groupByEmail(report)) {
+    for (const [i, w] of g.writes.entries()) {
       try {
         const cur = await withRetry(deps, "reler", () => deps.ops.get(BRAND_PREFIX + w.key));
         if (cur !== w.old) {
+          // Mudou desde o dry-run: pula esta e as escritas restantes do e-mail.
           progress.skipped.push({ key: w.key, reason: "valor mudou desde o dry-run" });
-          if (w.kind === "score") scoreSkipped = true;
+          for (const rest of g.writes.slice(i + 1)) progress.skipped.push({ key: rest.key, reason: "e-mail pulado (outra chave mudou)" });
           saveProgress();
-          continue;
+          break;
         }
         await withRetry(deps, `put ${w.kind}`, () => deps.ops.put(BRAND_PREFIX + w.key, w.new));
+        done.add(w.key);
         progress.done.push(w.key);
         saveProgress();
       } catch (e) {
         progress.failed = { key: w.key, error: (e as Error).message };
         saveProgress();
-        break;
       }
+      if (progress.failed) break;
     }
     if (progress.failed) break;
-    if (doPurge.has(g.email) && !scoreSkipped) await purgeOne(g.email);
+    if (doPurge.has(g.email) && wroteScoreFor(g.email)) await purgeOne(g.email);
   }
 
   if (progress.failed) {
     deps.log(`[reconcile] ERRO na escrita: ${progress.done.length}/${progress.total} gravadas; falhou em ${progress.failed.key}: ${progress.failed.error}`);
     deps.log(`[reconcile] backup dos valores antigos: ${backupPath}; progresso: ${progressPath}`);
-    // Quem já teve `score:` gravado precisa do DO purgado, senão o próximo voto direto regrava o valor velho.
-    const done = new Set(progress.done);
-    for (const email of report.doPurgeEmails) {
-      if (done.has(`score:${email}`) && !progress.purged.includes(email) && !progress.purgeFailed.some((f) => f.email === email)) await purgeOne(email);
-    }
+  }
+  // Quem já teve score/mensal gravado precisa do DO purgado (inclusive no caminho de falha/pulo).
+  for (const email of report.doPurgeEmails) {
+    const handled = progress.purged.includes(email) || progress.purgeFailed.some((f) => f.email === email);
+    if (!handled && wroteScoreFor(email)) await purgeOne(email);
   }
 
-  const invalidate = async () => {
-    for (const m of report.snapshotMonths) await withRetry(deps, "delete snapshot", () => deps.ops.delete(`${BRAND_PREFIX}leaderboard-snapshot:${m}`));
-  };
-  await invalidate();
-  deps.log(`[reconcile] snapshots invalidados: ${report.snapshotMonths.length}`);
-
+  // Lista de purgas pendentes ANTES de invalidar snapshot (a invalidação pode falhar).
   if (progress.purgeFailed.length > 0) {
-    writeJson(deps, pendingPurgePath, { issue: 14222, emails: progress.purgeFailed.map((f) => f.email), failures: progress.purgeFailed });
-    deps.log(`[reconcile] purga do DO falhou para ${progress.purgeFailed.length} e-mail(s); lista em ${pendingPurgePath} (retomar com --purge-do-from)`);
+    try {
+      writeJson(deps, pendingPurgePath, { issue: 14222, emails: progress.purgeFailed.map((f) => f.email), failures: progress.purgeFailed });
+      deps.log(`[reconcile] purga do DO falhou para ${progress.purgeFailed.length} e-mail(s); lista em ${pendingPurgePath} (retomar com --purge-do-from)`);
+    } catch (e) {
+      deps.log(`[reconcile] purga do DO falhou para ${progress.purgeFailed.length} e-mail(s) e o arquivo de pendências não gravou (${(e as Error).message}); progresso: ${progressPath}`);
+    }
   }
   deps.log(`[reconcile] DO purgados: ${progress.purged.length}/${report.doPurgeEmails.length}`);
 
+  let invalidateFailures = 0;
+  const invalidate = async () => {
+    for (const m of report.snapshotMonths) {
+      const key = `${BRAND_PREFIX}leaderboard-snapshot:${m}`;
+      try {
+        await withRetry(deps, "delete snapshot", () => deps.ops.delete(key));
+      } catch (e) {
+        invalidateFailures += 1;
+        deps.log(`[reconcile] não invalidou ${key}: ${(e as Error).message}`);
+      }
+    }
+  };
+  await invalidate();
+  deps.log(`[reconcile] snapshots invalidados: ${report.snapshotMonths.length} (falhas: ${invalidateFailures})`);
+
   // Relê `score:` dos purgados que tiveram score gravado: tem que ser o planejado.
-  const planned = new Map(report.writes.filter((w) => w.kind === "score" && progress.done.includes(w.key)).map((w) => [w.email, w.new]));
+  const planned = new Map(report.writes.filter((w) => w.kind === "score" && done.has(w.key)).map((w) => [w.email, w.new]));
   const divergences: Array<{ email: string; expected: string; found: string | null }> = [];
   for (const email of progress.purged) {
     const expected = planned.get(email);
     if (expected === undefined) continue;
-    const found = await withRetry(deps, "reler score", () => deps.ops.get(`${BRAND_PREFIX}score:${email}`));
-    if (found !== expected) divergences.push({ email, expected, found });
+    try {
+      const found = await withRetry(deps, "reler score", () => deps.ops.get(`${BRAND_PREFIX}score:${email}`));
+      if (found !== expected) divergences.push({ email, expected, found });
+    } catch (e) {
+      divergences.push({ email, expected, found: `(erro na releitura: ${(e as Error).message})` });
+    }
   }
   if (divergences.length > 0) {
-    writeJson(deps, divergencesPath, { issue: 14222, divergences });
+    try {
+      writeJson(deps, divergencesPath, { issue: 14222, divergences });
+    } catch {
+      /* contagem abaixo já sinaliza */
+    }
     deps.log(`[reconcile] ${divergences.length} score(s) divergem do planejado após a purga; detalhe em ${divergencesPath}`);
   }
   if (progress.skipped.length > 0) deps.log(`[reconcile] ${progress.skipped.length} chave(s) puladas por mudança concorrente (ver ${progressPath})`);
+  const t = report.totals;
+  deps.log(`[reconcile] fora do plano: ${t.fonteIlegivelEmails} e-mail(s) fonte-ilegivel; ${t.conferenciaManualEmails} e-mail(s) para conferência manual`);
 
-  if (progress.failed) return 1;
-
-  deps.log(`[reconcile] esperando ${Math.round(VERIFY_WAIT_MS / 1000)} s antes do dry-run de verificação`);
+  // Consistência eventual da REST do KV: espera e invalida de novo, também no caminho de falha.
+  deps.log(`[reconcile] esperando ${Math.round(VERIFY_WAIT_MS / 1000)} s (consistência do KV)`);
   await deps.sleep(VERIFY_WAIT_MS);
   await invalidate();
+  if (progress.failed) return 1;
+
   const { kv, listed } = await loadKv(deps);
   const verify = reconcileIdentifiedScores(kv, { listedKeys: listed });
-  deps.log(`[reconcile] verificação: ${verify.writes.length} escrita(s) ainda planejada(s)`);
-  const clean = verify.writes.length === 0 && progress.skipped.length === 0 && progress.purgeFailed.length === 0 && divergences.length === 0;
+  deps.log(`[reconcile] verificação: ${verify.writes.length} escrita(s) planejada(s), ${verify.totals.unreadableKeys} chave(s) ilegível(is), ${verify.totals.missingKeys} ausente(s)`);
+  const clean =
+    verify.writes.length === 0 &&
+    verify.totals.unreadableKeys === 0 &&
+    verify.totals.missingKeys === 0 &&
+    progress.skipped.length === 0 &&
+    progress.purgeFailed.length === 0 &&
+    divergences.length === 0 &&
+    invalidateFailures === 0;
   return clean ? 0 : 1;
 }
 
@@ -365,8 +417,9 @@ export async function main(argv: readonly string[], deps: ReconcileDeps): Promis
     deps.log("[reconcile] --apply exige --confirm-dry-run-hash <hash do dry-run>; nada gravado");
     return 2;
   }
-  const { kv, listed } = await loadKv(deps);
+  const { kv, listed, familyCounts } = await loadKv(deps);
   const report = reconcileIdentifiedScores(kv, { listedKeys: listed });
+  const emptyFamilies = REQUIRED_FAMILIES.filter((f) => (familyCounts[f] ?? 0) === 0);
 
   let mode = "dry-run";
   let refusal: string | null = null;
@@ -374,6 +427,9 @@ export async function main(argv: readonly string[], deps: ReconcileDeps): Promis
     if (opts.confirmHash !== report.hash) {
       mode = "apply-recusado-hash";
       refusal = `hash do plano atual (${report.hash}) difere de --confirm-dry-run-hash (${opts.confirmHash}): o KV mudou desde o dry-run. Nada gravado; rode o dry-run de novo.`;
+    } else if (emptyFamilies.length > 0) {
+      mode = "apply-recusado-familia-vazia";
+      refusal = `família(s) listada(s) com 0 chaves: ${emptyFamilies.join(", ")} (listagem incompleta?); plano abortado, nada gravado.`;
     } else if (report.totals.missingKeys > 0) {
       mode = "apply-recusado-chaves-ausentes";
       refusal = `${report.totals.missingKeys} chave(s) listada(s) sem valor na leitura; plano abortado, nada gravado.`;
@@ -382,11 +438,12 @@ export async function main(argv: readonly string[], deps: ReconcileDeps): Promis
     }
   }
   if (opts.outPath) {
-    writeJson(deps, opts.outPath, { generated_at: deps.now().toISOString(), mode, ...report });
+    writeJson(deps, opts.outPath, { generated_at: deps.now().toISOString(), mode, familyCounts, ...report });
     deps.log(`[reconcile] relatório completo: ${opts.outPath}`);
   }
-  deps.out(JSON.stringify({ mode, ...redactReport(report) }, null, 2));
+  deps.out(JSON.stringify({ mode, familyCounts, ...redactReport(report) }, null, 2));
   if (!opts.apply) {
+    if (emptyFamilies.length > 0) deps.log(`[reconcile] aviso: família(s) com 0 chaves: ${emptyFamilies.join(", ")} — o --apply vai recusar`);
     deps.log(`[reconcile] dry-run: nada gravado. Para gravar: --apply --confirm-dry-run-hash ${report.hash}`);
     return 0;
   }

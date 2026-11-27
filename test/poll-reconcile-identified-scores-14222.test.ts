@@ -221,6 +221,9 @@ for (const [nome, extra, opts, reason] of [
   ["voto ilegível", { [`vote:261110:${E}`]: "x" }, {}, "json-ilegivel"],
   ["marcador ilegível", { [`identify-migrated:${E}:${A1}`]: "x" }, {}, "json-ilegivel"],
   ["sufixo de identify-linked que não é anônimo", { [`identify-linked:${E}:outro@example.com`]: "1" }, {}, "identidade-invalida"],
+  ["marcador de par sem identify-linked", { [`identify-migrated:${E}:${A2}`]: s(1, 1) }, {}, "vinculo-ausente"],
+  ["marcador mensal de par sem identify-linked", { [`identify-migrated-month:2026-11:${E}:${A2}`]: s(1, 1) }, {}, "vinculo-ausente"],
+  ["correct do voto fora de true/false/null", { [`vote:261110:${E}`]: JSON.stringify({ choice: "A", ts: "t", correct: "sim" }) }, {}, "contador-invalido"],
 ] as const) {
   test(`fonte incompleta nunca reduz: ${nome}`, () => {
     const entries: Record<string, string> = { ...INFLATED };
@@ -285,8 +288,16 @@ interface Harness {
   logs: string[];
 }
 
-function harness(entries: Record<string, string>, over: Partial<ReconcileDeps> = {}, env: Record<string, string> = { ADMIN_SECRET: "x" }): Harness {
-  const store = new Map(Object.entries(entries).map(([k, v]) => [BRAND_PREFIX + k, v]));
+/** Uma chave por família obrigatória (anônimo solto: nunca lido, não muda o plano). */
+const FAMILY_FILLER = {
+  [`score:${LOOSE}`]: s(1, 1),
+  [`score-by-month:2026-11:${LOOSE}`]: s(1, 1),
+  [`vote:261101:${LOOSE}`]: vote(true),
+  [`identify-linked:outra@example.com:${LOOSE}`]: "1",
+};
+
+function harness(entries: Record<string, string>, over: Partial<ReconcileDeps> = {}, env: Record<string, string> = { ADMIN_SECRET: "x" }, filler = true): Harness {
+  const store = new Map(Object.entries({ ...(filler ? FAMILY_FILLER : {}), ...entries }).map(([k, v]) => [BRAND_PREFIX + k, v]));
   const events: string[] = [];
   const files = new Map<string, string>();
   const logs: string[] = [];
@@ -442,4 +453,111 @@ test("purga do DO que falha: retry, lista no backupDir (não no terminal) e reto
   h.deps.purge = async (email) => (h.events.push(`purge ${email}`), { ok: true, status: 200 });
   assert.equal(await main(["--purge-do-from", path], h.deps), 0);
   assert.ok(h.events.includes(`purge ${E}`));
+});
+
+// ── Volta final do review da #14319 ──
+
+test("purga do DO só para quem vota direto E tem score/mensal no plano; e-mails da purga entram no hash", () => {
+  const soMarcador = reconcileIdentifiedScores(kv({
+    [`score:${E}`]: s(5, 3), [`score:${A1}`]: s(4, 2), [`identify-linked:${E}:${A1}`]: "1", [`vote:261110:${E}`]: vote(true),
+  }));
+  assert.equal(line(soMarcador).status, "so-marcadores");
+  assert.deepEqual(soMarcador.doPurgeEmails, []);
+  const soMensal = reconcileIdentifiedScores(kv({
+    [`score:${E}`]: s(5, 3), [`score:${A1}`]: s(4, 2), [`identify-linked:${E}:${A1}`]: "1", [`vote:261110:${E}`]: vote(true),
+    [`identify-migrated:${E}:${A1}`]: s(4, 2), [`score-by-month:2026-11:${E}`]: s(9, 3),
+  }));
+  assert.deepEqual(soMensal.writes.map((w) => w.kind), ["score-by-month"]);
+  assert.deepEqual(soMensal.doPurgeEmails, [E]);
+  assert.notEqual(planHash(soMensal.writes, []), planHash(soMensal.writes, [E]));
+  assert.equal(soMensal.hash, planHash(soMensal.writes, [E]));
+});
+
+test("vários anônimos, e-mail reduzido (misto), sem marcador prévio: marcador = anônimo inteiro em cada um", () => {
+  const r = reconcileIdentifiedScores(kv({
+    [`score:${E}`]: s(20, 3), [`score:${A1}`]: s(4, 2), [`score:${A2}`]: s(3, 3),
+    [`identify-linked:${E}:${A1}`]: "1", [`identify-linked:${E}:${A2}`]: "1",
+  }));
+  assert.equal(line(r).status, "misto");
+  assert.deepEqual(line(r).expected, { total: 7, correct: 3 });
+  assert.deepEqual(JSON.parse(r.writes.find((w) => w.key === identifyMigratedKey(E, A1))!.new), { total: 4, correct: 2 });
+  assert.deepEqual(JSON.parse(r.writes.find((w) => w.key === identifyMigratedKey(E, A2))!.new), { total: 3, correct: 3 });
+  assert.deepEqual(line(r).ambiguousMarkers, []);
+  // Com marcador prévio num deles: ambíguo, nada de marcador.
+  const r2 = reconcileIdentifiedScores(kv({
+    [`score:${E}`]: s(20, 3), [`score:${A1}`]: s(4, 2), [`score:${A2}`]: s(3, 3),
+    [`identify-linked:${E}:${A1}`]: "1", [`identify-linked:${E}:${A2}`]: "1", [`identify-migrated:${E}:${A1}`]: s(1, 1),
+  }));
+  assert.ok(!r2.writes.some((w) => w.kind === "identify-migrated"));
+  assert.equal(line(r2).ambiguousMarkers.length, 2);
+});
+
+test("família obrigatória com 0 chaves: --apply recusado; dry-run reporta a contagem por família", async () => {
+  const h = harness(INFLATED, {}, { ADMIN_SECRET: "x" }, false);
+  assert.equal(await main(["--apply", "--confirm-dry-run-hash", hashOf(INFLATED), "--out", "o.json", ...BK], h.deps), 1);
+  assert.ok(!h.events.some((e) => e.startsWith("put")));
+  const out = JSON.parse([...h.files.entries()].find(([p]) => p.endsWith("o.json"))![1]);
+  assert.equal(out.mode, "apply-recusado-familia-vazia");
+  assert.equal(out.familyCounts["vote:"], 0);
+  const h2 = harness(INFLATED, {}, {}, false);
+  let printed = "";
+  h2.deps.out = (l) => (printed = l);
+  assert.equal(await main([], h2.deps), 0);
+  assert.equal(JSON.parse(printed).familyCounts["score:"], 2);
+});
+
+test("verificação final só é limpa com 0 chaves ilegíveis", async () => {
+  const entries = { ...INFLATED, ["score:outro@example.com"]: "{quebrado" };
+  const h = harness(entries);
+  assert.equal(await main(["--apply", "--confirm-dry-run-hash", hashOf(entries), ...BK], h.deps), 1);
+  assert.ok(h.events.includes(`put ${BRAND_PREFIX}score:${E}`), "o plano dos demais é aplicado");
+  assert.ok(h.logs.some((l) => /1 chave\(s\) ilegível/.test(l)));
+  assert.ok(h.logs.some((l) => /1 e-mail\(s\) fonte-ilegivel/.test(l)));
+});
+
+const WITH_MONTH = { ...DIRECT, [`score-by-month:2026-11:${E}`]: s(10, 6), [`score-by-month:2026-11:${A1}`]: s(4, 2) };
+
+test("purga que falha: arquivo de pendências gravado ANTES da invalidação do snapshot", async () => {
+  const h = harness(WITH_MONTH, { purge: async () => ({ ok: false, status: 500, error: "x" }) });
+  assert.equal(await main(["--apply", "--confirm-dry-run-hash", hashOf(WITH_MONTH), ...BK], h.deps), 1);
+  const iPending = h.events.findIndex((e) => e.startsWith("write") && e.endsWith("-pending-do-purge.json"));
+  const iDelete = h.events.indexOf(`delete ${BRAND_PREFIX}leaderboard-snapshot:2026-11`);
+  assert.ok(iPending >= 0 && iPending < iDelete, h.events.join("\n"));
+});
+
+test("falha ao invalidar snapshot é logada por chave e a execução não sai limpa", async () => {
+  const h = harness(WITH_MONTH);
+  h.deps.ops.delete = async () => {
+    throw new Error("HTTP 403 — sem permissão");
+  };
+  assert.equal(await main(["--apply", "--confirm-dry-run-hash", hashOf(WITH_MONTH), ...BK], h.deps), 1);
+  assert.ok(h.logs.some((l) => l.includes("não invalidou web:leaderboard-snapshot:2026-11")));
+  assert.ok(h.events.includes(`purge ${E}`));
+});
+
+test("progresso que não grava marca falha sem relançar e mantém a limpeza (purga, espera, 2ª invalidação)", async () => {
+  const sleeps: number[] = [];
+  const h = harness(WITH_MONTH, { sleep: async (ms) => void sleeps.push(ms) });
+  const orig = h.deps.fs.writeFile;
+  let n = 0;
+  h.deps.fs.writeFile = (p, d) => {
+    if (p.endsWith("-progress.json") && ++n === 3) throw new Error("EIO") // 3º save = logo após o put do score:;
+    orig(p, d);
+  };
+  assert.equal(await main(["--apply", "--confirm-dry-run-hash", hashOf(WITH_MONTH), ...BK], h.deps), 1);
+  assert.ok(h.logs.some((l) => l.includes("falhou em (arquivo de progresso)")));
+  assert.ok(h.events.includes(`purge ${E}`), "quem teve score gravado é purgado");
+  assert.ok(sleeps.includes(90_000));
+  assert.equal(h.events.filter((e) => e === `delete ${BRAND_PREFIX}leaderboard-snapshot:2026-11`).length, 2);
+});
+
+test("chave do e-mail que mudou: pula as escritas restantes daquele e-mail", async () => {
+  const h = harness(WITH_MONTH);
+  const r = reconcileIdentifiedScores(kv(WITH_MONTH));
+  h.store.set(`${BRAND_PREFIX}${identifyMigratedKey(E, A1)}`, s(1, 1)); // 1ª escrita do grupo mudou
+  assert.equal(await applyPlan(r, h.deps, { backupDir: "bk" }), 1);
+  assert.ok(!h.events.some((e) => e.startsWith("put")), h.events.join("\n"));
+  assert.ok(!h.events.includes(`purge ${E}`), "nada gravado ⇒ sem purga");
+  const progress = JSON.parse([...h.files.entries()].find(([p]) => p.endsWith("-progress.json"))![1]);
+  assert.equal(progress.skipped.length, r.writes.length);
 });

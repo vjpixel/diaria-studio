@@ -33,8 +33,10 @@
  *   campo, por escopo (global e cada mês). O Worker soma `anônimo − marcador`
  *   no próximo sync, então o que falta ainda entra (e-mail 2, anônimo 5 ⇒
  *   marcador 2, o sync soma 3). Com vários anônimos num escopo abaixo do
- *   reconstruído a divisão é ambígua: nada é gravado e o marcador existente
- *   fica (listado em `ambiguousMarkers`). E-mail não reduzido nunca tem
+ *   reconstruído a divisão é ambígua: se o e-mail foi reduzido e nenhum deles
+ *   tem marcador prévio, cada marcador = anônimo inteiro (nunca sobe valor e
+ *   fecha a re-inflação); senão nada é gravado e o marcador existente fica
+ *   (listado em `ambiguousMarkers`). E-mail não reduzido nunca tem
  *   marcador existente sobrescrito (`markerConflicts`). Mês só recebe
  *   marcador com prova de que o Worker migrou aquele anônimo naquele mês (ver
  *   o laço mensal). Mês sem `score-by-month:{M}:{email}` nunca foi migrado:
@@ -43,7 +45,9 @@
  * ## Fonte incompleta nunca reduz
  *   Chave listada que não voltou na leitura, JSON ilegível, contador
  *   não-numérico/negativo/não-inteiro em `score:*`/`score-by-month:*`,
- *   `vote:*` que não é objeto, marcador ilegível, anônimo vinculado sem
+ *   `vote:*` que não é objeto ou com `correct` fora de true/false/null,
+ *   marcador ilegível, marcador `identify-migrated*` de par sem
+ *   `identify-linked` (`vinculo-ausente`), anônimo vinculado sem
  *   `score:{anon}` ou sufixo de `identify-linked` que não é identidade
  *   anônima: a chave entra em `unreadableKeys` e todo e-mail que depende dela
  *   fica `fonte-ilegivel`, sem nenhuma escrita (nem score nem marcador).
@@ -66,8 +70,10 @@
  *      `abaixo-do-reconstruido` (ou `misto`, se outro escopo reduz).
  *   3. O DO ScoreCounter (`web:{email}`) guarda cópia própria do score de quem
  *      vota direto; o próximo voto direto regrava o KV a partir dela. Por isso
- *      o `--apply` purga o DO dos e-mails com voto direto que mudaram (o DO
- *      volta a semear do KV já corrigido). Ver `needsDoPurge`.
+ *      o `--apply` purga o DO dos e-mails com voto direto que tiveram
+ *      `score:` ou `score-by-month:` gravado nesta execução (o DO volta a
+ *      semear do KV já corrigido); purga que falhou se retoma com
+ *      `--purge-do-from`. Ver `needsDoPurge`. Os e-mails da purga entram no hash.
  *   4. Campos que não são contador (`streak`, `last_edition`, `nickname`,
  *      `last_vote_ts`) ficam como estão.
  *   5. Cache: o único cache em KV do ranking é `leaderboard-snapshot:{M}`
@@ -111,7 +117,13 @@ export type ReconcileStatus =
   | "so-votos-diretos" // sem vínculo, com voto direto: não tocado, conferência manual
   | "fonte-ilegivel"; // depende de chave ausente/ilegível: não tocado
 
-export type UnreadableReason = "ausente" | "json-ilegivel" | "contador-invalido" | "identidade-invalida" | "score-anonimo-ausente";
+export type UnreadableReason =
+  | "ausente"
+  | "json-ilegivel"
+  | "contador-invalido"
+  | "identidade-invalida"
+  | "score-anonimo-ausente"
+  | "vinculo-ausente"; // marcador identify-migrated* de par sem identify-linked
 
 export interface UnreadableKey {
   key: string;
@@ -260,12 +272,29 @@ export function identifyMigratedKey(email: string, anon: string, month?: string)
   return month ? `identify-migrated-month:${month}:${email}:${anon}` : `identify-migrated:${email}:${anon}`;
 }
 
-/** 16 hex do sha256 das escritas planejadas, em ordem de chave: muda se o KV mudou. */
-export function planHash(writes: readonly PlannedWrite[]): string {
+/**
+ * 16 hex do sha256 do plano: escritas (chave, antigo, novo) em ordem de chave
+ * + e-mails com purga do DO planejada. Muda se o KV mudou.
+ */
+export function planHash(writes: readonly PlannedWrite[], doPurgeEmails: readonly string[] = []): string {
   const canon = [...writes]
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map((w) => [w.key, w.old, w.new]);
-  return createHash("sha256").update(JSON.stringify(canon)).digest("hex").slice(0, 16);
+  return createHash("sha256").update(JSON.stringify({ writes: canon, doPurge: [...doPurgeEmails].sort() })).digest("hex").slice(0, 16);
+}
+
+/** `identify-migrated:{email}:{anon}` / `identify-migrated-month:{M}:{email}:{anon}` → par. */
+function parseMarkerKey(key: string): { email: string; anon: string } | null {
+  let rest: string;
+  if (key.startsWith("identify-migrated-month:")) {
+    const p = splitFirst(key.slice("identify-migrated-month:".length));
+    if (!p) return null;
+    rest = p[1];
+  } else if (key.startsWith("identify-migrated:")) {
+    rest = key.slice("identify-migrated:".length);
+  } else return null;
+  const q = splitLast(rest);
+  return q ? { email: q[0], anon: q[1] } : null;
 }
 
 export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {}): ReconcileReport {
@@ -278,6 +307,7 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
   const ownVotes = new Map<string, { all: Counts; byMonth: Map<string, Counts>; n: number; keys: string[] }>();
   const monthKeysByIdentity = new Map<string, Set<string>>();
   const markers = new Map<string, Counts>();
+  const markerKeys: string[] = [];
   const identifiedEmails = new Set<string>();
 
   const allKeys = new Set<string>([...kv.keys(), ...bad.keys()]);
@@ -296,6 +326,7 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
       if (!linked.has(email)) linked.set(email, new Set());
       linked.get(email)!.add(anon);
     } else if (key.startsWith("identify-migrated")) {
+      markerKeys.push(key);
       if (raw === undefined) continue;
       const c = parseCounts(raw);
       if (c.ok) markers.set(key, c.value);
@@ -314,7 +345,12 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
         bad.set(key, v.reason);
         continue;
       }
-      const c: Counts = { total: 1, correct: v.value.correct === true ? 1 : 0 };
+      const vc = v.value.correct;
+      if (vc !== true && vc !== false && vc !== null) {
+        bad.set(key, "contador-invalido");
+        continue;
+      }
+      const c: Counts = { total: 1, correct: vc === true ? 1 : 0 };
       cur.all = add(cur.all, c);
       cur.n += 1;
       const m = editionToMonthSlug(edition);
@@ -339,6 +375,19 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
     }
   }
 
+  // Marcador de par sem `identify-linked`: não é resíduo do merge que conhecemos.
+  const markersByEmail = new Map<string, string[]>();
+  for (const k of markerKeys) {
+    const p = parseMarkerKey(k);
+    if (!p) {
+      if (!bad.has(k)) bad.set(k, "identidade-invalida");
+      continue;
+    }
+    if (!markersByEmail.has(p.email)) markersByEmail.set(p.email, []);
+    markersByEmail.get(p.email)!.push(k);
+    if (!linked.get(p.email)?.has(p.anon) && !bad.has(k)) bad.set(k, "vinculo-ausente");
+  }
+
   const emails: EmailLine[] = [];
   const writes: PlannedWrite[] = [];
   const doPurgeEmails: string[] = [];
@@ -351,7 +400,7 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
     const emailMonths = [...(monthKeysByIdentity.get(email) ?? [])].sort();
 
     // Dependências: qualquer chave ruim (ou score anônimo ausente) → intocado.
-    const deps: string[] = [scoreKey, ...emailMonths.map((m) => `score-by-month:${m}:${email}`), ...(own?.keys ?? []), ...(linkedKeys.get(email) ?? [])];
+    const deps: string[] = [scoreKey, ...emailMonths.map((m) => `score-by-month:${m}:${email}`), ...(own?.keys ?? []), ...(linkedKeys.get(email) ?? []), ...(markersByEmail.get(email) ?? [])];
     for (const a of anons) {
       const aKey = `score:${a}`;
       if (!counts.has(aKey) && !bad.has(aKey)) bad.set(aKey, "score-anonimo-ausente");
@@ -409,8 +458,11 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
     // então o marcador certo é a parte do anônimo que o score (já reduzido)
     // contém: `anônimo − (reconstruído − esperado)`, ≥ 0, campo a campo. Com
     // um anônimo no escopo a divisão é exata; com vários, só quando nada falta
-    // (cada marcador = anônimo inteiro). Senão: ambíguo, o existente fica.
+    // (cada marcador = anônimo inteiro), ou quando o e-mail foi reduzido e
+    // nenhum anônimo do escopo tem marcador prévio (marcador = anônimo
+    // inteiro). Senão: ambíguo, o existente fica.
     // E-mail NÃO reduzido nunca tem marcador existente sobrescrito.
+    // (scoreWrites vazio ⇔ não reduzido.)
     let missingMarkers = 0;
     const ambiguousMarkers: string[] = [];
     const markerConflicts: string[] = [];
@@ -435,6 +487,12 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
       wantMarker(identifyMigratedKey(email, a), present(counts.get(`score:${a}`)!, reconstructed, expected), "identify-migrated");
     } else if (covers(current, reconstructed)) {
       for (const a of anons) wantMarker(identifyMigratedKey(email, a), counts.get(`score:${a}`)!, "identify-migrated");
+    } else if (reduced && anons.every((a) => !markers.has(identifyMigratedKey(email, a)))) {
+      // Vários anônimos, e-mail reduzido, nenhum marcador prévio: campo a
+      // campo, onde o atual cobre o reconstruído o marcador é o anônimo
+      // inteiro, e onde fica abaixo também (nunca sobe valor e fecha a
+      // re-inflação; o que falta não é atribuível a um anônimo).
+      for (const a of anons) wantMarker(identifyMigratedKey(email, a), counts.get(`score:${a}`)!, "identify-migrated");
     } else {
       for (const a of anons) ambiguousMarkers.push(identifyMigratedKey(email, a));
     }
@@ -453,6 +511,9 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
         if (migrated) wantMarker(k, present(anonM(a), s.rec, s.exp), "identify-migrated-month");
       } else if (covers(s.cur, s.rec)) {
         for (const a of withMonth) wantMarker(identifyMigratedKey(email, a, s.m), anonM(a), "identify-migrated-month");
+      } else if (reduced && withMonth.every((a) => !markers.has(identifyMigratedKey(email, a, s.m)))) {
+        // Mesmo caso do escopo global (vários anônimos, reduzido, sem marcador prévio).
+        for (const a of withMonth) wantMarker(identifyMigratedKey(email, a, s.m), anonM(a), "identify-migrated-month");
       } else {
         for (const a of withMonth) ambiguousMarkers.push(identifyMigratedKey(email, a, s.m));
       }
@@ -461,10 +522,10 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
     writes.push(...markerWrites, ...scoreWrites);
 
     const status: ReconcileStatus = reduced && below ? "misto" : reduced ? "inflado" : below ? "abaixo-do-reconstruido" : missingMarkers > 0 ? "so-marcadores" : "ok";
-    // Purga do DO planejada SEMPRE para quem vota direto (idempotente: o DO
-    // volta a semear do KV); cobre também uma aplicação anterior que gravou o
-    // KV e não purgou.
-    const needsDoPurge = !!own;
+    // Purga do DO só para quem vota direto E tem `score:`/`score-by-month:`
+    // gravado neste plano (o DO guarda cópia própria desses dois). Retomada de
+    // uma purga que falhou: `--purge-do-from` com o arquivo do apply anterior.
+    const needsDoPurge = !!own && scoreWrites.length > 0;
     if (needsDoPurge) doPurgeEmails.push(email);
     emails.push({
       ...base, status, current, reconstructed, expected,
@@ -505,7 +566,7 @@ export function reconcileIdentifiedScores(kv: KvView, opts: ReconcileOptions = {
       scoreWrites: writes.filter((w) => w.kind === "score").length,
       monthWrites: writes.filter((w) => w.kind === "score-by-month").length,
     },
-    hash: planHash(writes),
+    hash: planHash(writes, doPurgeEmails),
   };
 }
 
