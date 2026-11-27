@@ -340,6 +340,8 @@ export interface RunState {
   clariceWarns?: string[];
   /** post-checks terminou com code 0 (o post-gate exige). */
   postChecksDone?: boolean;
+  /** Dispatch do title-picker ainda precisa da comparação estrutural (#14307). */
+  titlePickerStructurePending?: boolean;
   /** Clarices já rodaram no post-humanize (o post-checks exige). */
   clariceDone?: { newsletter?: ClariceOutcome; social?: ClariceOutcome };
 
@@ -1327,6 +1329,7 @@ function phasePostGate(ctx: Ctx): Stage2RunResult {
           picks_log_path: ctx.e("_internal/02-title-picks.json"),
         };
         if (st.youtubeResearchOk) params.youtube_title_research_path = ctx.e("_internal/youtube-title-research.json");
+        writeRunState(ctx.editionDir, { ...st, titlePickerStructurePending: true });
         return result(ctx, 0, {
           mode: st.mode,
           nextPhase: "post-gate",
@@ -1345,10 +1348,14 @@ function phasePostGate(ctx: Ctx): Stage2RunResult {
         });
       }
     } else {
-      const struct = ctx.run("validate-section-structure", "scripts/validate-section-structure.ts", ["--before", snapshot, "--after", reviewed]);
-      if (struct.code !== 0) {
-        copyFileSync(ctx.p("_internal/02-pre-title-picker.md"), ctx.p("02-reviewed.md"));
-        ctx.gateNotes.push("⚠️ title-picker corrompeu estrutura — 02-reviewed.md restaurado do snapshot. Pode podar 1 título por destaque manualmente.");
+      if (st.titlePickerStructurePending) {
+        const struct = ctx.run("validate-section-structure", "scripts/validate-section-structure.ts", ["--before", snapshot, "--after", reviewed]);
+        if (struct.code !== 0) {
+          copyFileSync(ctx.p("_internal/02-pre-title-picker.md"), ctx.p("02-reviewed.md"));
+          ctx.gateNotes.push("⚠️ title-picker corrompeu estrutura — 02-reviewed.md restaurado do snapshot. Pode podar 1 título por destaque manualmente.");
+        }
+        // Consumir antes dos demais checks: retries podem incluir reparos legítimos.
+        writeRunState(ctx.editionDir, { ...st, titlePickerStructurePending: false });
       }
       const titles = ctx.run("lint titles-per-highlight (pós title-picker)", "scripts/lint-newsletter-md.ts", ["--check", "titles-per-highlight", "--md", reviewed]);
       if (titles.code !== 0) {
