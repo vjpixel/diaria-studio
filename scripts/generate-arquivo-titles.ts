@@ -1,7 +1,7 @@
 /**
  * generate-arquivo-titles.ts (#4265 item 1)
  *
- * Gera `workers/arquivo/src/titles-cache.json` — um mapa `slug → {title,
+ * Gera `scripts/lib/shared/titles-cache.json` — um mapa `slug → {title,
  * publishDate}` construído a partir de `data/beehiiv-cache/posts/*.json`
  * (populado por `scripts/beehiiv-sync.ts`). Resolve o problema descrito em
  * #4265: `displayTextFromLoc` (`workers/arquivo/src/render-archive.ts`)
@@ -40,7 +40,7 @@
  *
  * Uso:
  *   npx tsx scripts/generate-arquivo-titles.ts
- *   npx tsx scripts/generate-arquivo-titles.ts --out workers/arquivo/src/titles-cache.json
+ *   npx tsx scripts/generate-arquivo-titles.ts --out scripts/lib/shared/titles-cache.json
  *   npx tsx scripts/generate-arquivo-titles.ts --check   # só reporta, não escreve
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -59,7 +59,7 @@ import { deriveDek } from "./lib/site-archive-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
-const DEFAULT_OUT = resolve(ROOT, "workers/arquivo/src/titles-cache.json");
+const DEFAULT_OUT = resolve(ROOT, "scripts/lib/shared/titles-cache.json");
 
 /** Shape mínimo lido de cada `data/beehiiv-cache/posts/{id}.json` — passthrough
  * (a API/cache carrega bem mais campos; só os usados aqui). `subtitle` não é

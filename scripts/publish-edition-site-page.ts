@@ -716,7 +716,7 @@ const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,
  * #9828: caminhos (relativos à raiz, forward-slash) cujo conteúdo decide o que
  * a página/home/archive saem: o FECHO TRANSITIVO de imports relativos a partir
  * de `publish-edition-site-page.ts` (hoje ~55 arquivos em `scripts/` +
- * `workers/arquivo/src/hubs/meta.ts`) mais `SITE_GENERATOR_EXTRA_PATHS`.
+ * `scripts/lib/shared/hub-meta.ts`) mais `SITE_GENERATOR_EXTRA_PATHS`.
  * Derivado do código em disco em vez de lista fixa pra não envelhecer quando
  * um import novo entra — e um import novo que `origin/master` adicione
  * aparece como mudança num arquivo que JÁ está no fecho local, então é pego.

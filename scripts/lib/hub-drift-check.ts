@@ -2,7 +2,7 @@
  * hub-drift-check.ts (#4750)
  *
  * Lógica PURA (sem I/O) do smoke-test de runtime que compara `HUB_META`
- * (`workers/arquivo/src/hubs/meta.ts`) contra o que o Worker `arquivo`
+ * (`scripts/lib/shared/hub-meta.ts`) contra o que o Worker `arquivo`
  * publicado de fato serve em `GET /temas/{slug}` — mesmo molde de
  * `scripts/lib/worker-drift-check.ts`/`scripts/lib/apoios-diff-alarm.ts`: uma
  * função de decisão testável (`evaluateHubDrift`) que recebe o resultado do
