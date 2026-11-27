@@ -621,5 +621,17 @@
       "https://finsidersbrasil.com.br/noticias-sobre-fintechs/nubank-demite-equipe-que-cacava-golpistas-e-coloca-a-ia-no-lugar/"
     ],
     "editionTitle": "Nubank demite time antifraude e põe IA no lugar"
+  },
+  {
+    "date": "2026-11-26",
+    "editionSlug": "anthropic-empresas-nao-demitem-mas-contratam-menos",
+    "url": "https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos",
+    "matchedHeadlines": [
+      "Anthropic: empresas não demitem, mas contratam menos"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/working-with-ai"
+    ],
+    "editionTitle": "Anthropic: empresas não demitem, mas contratam menos"
   }
 ]

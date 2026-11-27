@@ -221,7 +221,7 @@ const PUBLISHED_DATE = "2026-08-04";
 //    28/08), sem seção.
 // UPDATED_DATE já estava em 2026-11-13 (piso do regen #12977); a data agora
 // também marca esta revisão de corpo.
-const UPDATED_DATE = "2026-11-13";
+const UPDATED_DATE = "2026-11-27";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
