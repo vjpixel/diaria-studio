@@ -18,6 +18,7 @@ import {
   checkPhaseStart,
   joinCheck,
   phaseFlow,
+  parsePhaseEvents,
   phaseReport,
   videoPartMainThreadIntervals,
   type PhaseEvent,
@@ -36,7 +37,8 @@ const ev = (phase: string, part: string, event: PhaseEventKind, min: number, ext
 describe("#14115 fases do roteiro e da montagem", () => {
   it("toda fase roteiro-*/montagem-* é do fluxo certo, reversível e sem recurso", () => {
     const video = PUBLICA_PHASES.filter((p) => p.startsWith("roteiro-") || p.startsWith("montagem-"));
-    assert.ok(video.length >= 10);
+    assert.equal(video.filter((p) => p.startsWith("roteiro-")).length, 7);
+    assert.equal(video.filter((p) => p.startsWith("montagem-")).length, 9);
     for (const p of video) {
       assert.equal(phaseFlow(p), p.startsWith("roteiro-") ? "roteiro" : "montagem", p);
       assert.equal(PHASE_META[p].effect, "reversible", p);
@@ -47,10 +49,32 @@ describe("#14115 fases do roteiro e da montagem", () => {
     for (const p of PUBLICA_PHASES.filter((x) => !video.includes(x))) assert.equal(phaseFlow(p), "publica", p);
   });
 
-  it("fase do roteiro/montagem só com --part sessao", () => {
+  it("prefixo do nome ⇔ fluxo, para toda fase", () => {
+    for (const p of PUBLICA_PHASES) {
+      const expected = p.startsWith("roteiro-") ? "roteiro" : p.startsWith("montagem-") ? "montagem" : "publica";
+      assert.equal(phaseFlow(p), expected, p);
+      assert.equal(PHASE_META[p].flow, expected, p);
+    }
+  });
+
+  it("fase do roteiro/montagem só com --part sessao e sem recurso extra", () => {
     assert.throws(() => ev("montagem-build", "vertical", "start", 0), /só com --part sessao/);
     assert.throws(() => ev("roteiro-escrita", "horizontal", "start", 0), /só com --part sessao/);
+    assert.throws(
+      () => buildPhaseEvent({ edition: ED, phase: "roteiro-escrita", part: "sessao", event: "start", at: T0, attempt: 1, extraResources: ["chrome"] }),
+      /não segura recurso/,
+    );
     assert.equal(ev("montagem-build", "sessao", "start", 0).phase, "montagem-build");
+  });
+
+  it("parse: fase do roteiro com parte de vídeo e fase desconhecida viram problema (nunca somem)", () => {
+    const good = JSON.stringify(ev("roteiro-escrita", "sessao", "start", 0));
+    const badPart = good.replace('"part":"sessao"', '"part":"horizontal"');
+    const unknown = good.replace("roteiro-escrita", "roteiro-futura");
+    const r = parsePhaseEvents([good, badPart, unknown].join("\n"));
+    assert.equal(r.events.length, 1);
+    assert.match(r.problems[0], /só com --part sessao/);
+    assert.match(r.problems[1], /desconhecida .*sync-code/);
   });
 
   it("fase da montagem aberta não bloqueia a Etapa 5 nem entra na janela do vídeo", () => {
@@ -131,6 +155,11 @@ describe("#14115 CLI: start/end/join/report com --flow", () => {
     assert.match(readFileSync(join(dir, "_internal", "publica-phases.jsonl"), "utf8"), /roteiro-escrita/);
   });
 
+  it("join sem --flow (o do publica) ignora a fase do roteiro aberta", async () => {
+    assert.equal(await phaseMain(["start", ED, "--phase", "roteiro-iteracao", "--part", "sessao", "--edition-dir", dir], deps()), 0);
+    assert.equal(await phaseMain(["join", ED, "--edition-dir", dir], deps()), 0, errs.join("\n"));
+  });
+
   it("parte de vídeo numa fase da montagem e --flow inválido são erro de uso", async () => {
     assert.equal(await phaseMain(["start", ED, "--phase", "montagem-build", "--part", "vertical", "--edition-dir", dir], deps()), 2);
     assert.equal(await phaseMain(["report", ED, "--flow", "video", "--edition-dir", dir], deps()), 2);
@@ -149,10 +178,13 @@ describe("#14115 as skills de vídeo usam o publica-phase.ts", () => {
       assert.ok(text.includes(`join {AAMMDD} --flow ${flow}`));
       assert.ok(text.includes(`report {AAMMDD} --flow ${flow}`));
     });
-    it(`${skill}: toda fase do fluxo aparece na tabela, e nenhuma fase citada é desconhecida`, () => {
+    it(`${skill}: toda fase do fluxo aparece na tabela, e nenhuma fase da tabela é desconhecida`, () => {
+      const section = text.split("## Telemetria por fase (#14115)")[1]?.split(/\n## /)[0] ?? "";
+      const table = section.split("\n").filter((l) => l.startsWith("|")).join("\n");
+      assert.ok(table, `tabela da seção Telemetria ausente em ${skill}`);
       const own = PUBLICA_PHASES.filter((p) => phaseFlow(p) === flow);
-      for (const p of own) assert.ok(text.includes(`\`${p}\``), `${p} ausente de ${skill}`);
-      const cited = [...text.matchAll(new RegExp(`\`(${flow}-[a-z0-9-]+)\``, "g"))].map((m) => m[1]);
+      for (const p of own) assert.ok(table.includes(`\`${p}\``), `${p} ausente da tabela de ${skill}`);
+      const cited = [...table.matchAll(new RegExp(`\`(${flow}-[a-z0-9-]+)\``, "g"))].map((m) => m[1]);
       for (const c of cited) assert.ok((PUBLICA_PHASES as readonly string[]).includes(c), `${c} citado em ${skill} não existe`);
     });
   }

@@ -35,10 +35,10 @@ npx tsx scripts/publica-phase.ts end {AAMMDD} --phase {fase} --part sessao
 | 5a (revisão por vídeo, cada despacho) | `roteiro-revisao` |
 | 5b (fact-check do roteiro, cada despacho) | `roteiro-factcheck` |
 | 6 (iteração com o editor; o tempo é dele) | `roteiro-iteracao` |
-| 7 (humanizador e revisão final) | `roteiro-final` |
+| 7 (humanizador e revisão final; a revisão e o fact-check que ele roda de novo abrem `roteiro-revisao` e `roteiro-factcheck`, como no 5a e no 5b) | `roteiro-final` |
 | 8 (conferir a gravação) | `roteiro-conferencia` |
 
-Passo que roda de novo (outra rodada de revisão, outra iteração) abre um `start` novo: a tentativa sobe sozinha. Passo que falhou fecha com `error` (`--detail "motivo"`) em vez de `end`. A telemetria nunca para o roteiro: `publica-phase.ts` saindo diferente de 0 vira uma linha de aviso na entrega, e o passo segue. No fim (seção "Fim"), `npx tsx scripts/publica-phase.ts join {AAMMDD} --flow roteiro` (exit 1 = fase sem `end`: fechar com `end` ou `interrupted`) e `npx tsx scripts/publica-phase.ts report {AAMMDD} --flow roteiro` para as durações.
+Passo que roda de novo (outra rodada de revisão, outra iteração) abre um `start` novo: a tentativa sobe sozinha. Passo que falhou fecha com `error` em vez de `end`, com `--exit-code N` quando houver um exit de comando e `--detail "motivo"`. A telemetria nunca para o roteiro: `publica-phase.ts` saindo diferente de 0 vira uma linha de aviso na entrega, e o passo segue. No fim (seção "Fim"), `npx tsx scripts/publica-phase.ts join {AAMMDD} --flow roteiro` (exit 1 = fase sem fim ou linha ilegível no arquivo: fechar a fase com `end` ou `interrupted`, e relatar a linha ilegível) e `npx tsx scripts/publica-phase.ts report {AAMMDD} --flow roteiro` para as durações.
 
 ## Passo 1 — Ler antes de escrever
 

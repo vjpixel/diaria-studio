@@ -6,8 +6,11 @@
  * antes de cada `gh pr create` do diaria-studio. Confere, no checkout onde ele
  * mora (o worktree da PR):
  *
- * 1. `docs/editorial-invariants.md` igual ao markdown gerado do registry
- *    (`generateInvariantsMarkdown`, o mesmo do `list-invariants.ts --check`);
+ * 1. `docs/editorial-invariants.md` DO COMMIT (`git show HEAD:...`) igual ao
+ *    markdown gerado do registry (`generateInvariantsMarkdown`, o mesmo do
+ *    `list-invariants.ts --check`). Documento certo na árvore e defasado no
+ *    HEAD é "regenerado mas não commitado" (recusa); registry com mudança não
+ *    commitada não deixa conferir o commit (aviso).
  * 2. diff `BASE...HEAD` (merge-base, como o gate do CI, #9403) acima de 500
  *    adições sem `removal-declaration:` no corpo (#7115).
  *
@@ -15,14 +18,18 @@
  *
  * Uso:
  *   npx tsx scripts/check-pr-create-preflight.ts [--base origin/master] [--body-stdin | --body-file F]
- *       [--body-unknown MOTIVO]   (ou DIARIA_PREFLIGHT_BODY_UNKNOWN no ambiente)
+ *       [--body-unknown MOTIVO] [--warn-only MOTIVO]
  *
- * Sem `--body-stdin`/`--body-file`, o corpo conta como não determinável
- * (`--body-unknown` diz por quê): a falta da declaração vira aviso.
+ * `DIARIA_PREFLIGHT_BODY_UNKNOWN` no ambiente vale como `--body-unknown` (é
+ * por onde o hook passa o motivo). Sem
+ * `--body-stdin`/`--body-file`, o corpo conta como não determinável: a falta
+ * da declaração vira aviso. `--warn-only` transforma recusa em aviso (o hook
+ * usa quando o `gh pr create` tem `--head` de outra branch).
  *
- * Saída: JSON `{ deny, warn, removal }` no stdout.
- * Exit: 0 = nada a negar (pode haver aviso); 1 = negar; 2 = uso inválido.
+ * Saída: JSON `{ deny, warn, removal, body_unknown_reason }` na última linha do stdout.
+ * Exit: 0 = nada a negar (pode haver aviso); 1 = negar; 2 = erro inesperado.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +37,8 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { getDiffLineStats, type DiffLineStats } from "./lib/diff-line-stats.ts";
 import {
   INVARIANTS_DOC_PATH,
-  compareInvariantsDoc,
+  INVARIANTS_REGISTRY_PATHS,
+  assessInvariantsDoc,
   decidePrCreatePreflight,
   type InvariantsDocStatus,
   type PrCreatePreflightResult,
@@ -38,35 +46,66 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+function git(args: string[], cwd: string): { status: number | null; stdout: string; stderr: string } {
+  // Mensagens do git em inglês: o `show` distingue "arquivo fora do commit" pelo texto.
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C", LANGUAGE: "C" } });
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? String(r.error?.message ?? "") };
+}
+
 async function invariantsStatus(root: string): Promise<InvariantsDocStatus> {
   try {
     // Import dinâmico: um registry que não carrega (erro de módulo) vira aviso, não exceção do guard.
     const { generateInvariantsMarkdown } = await import("./list-invariants.ts");
-    const path = resolve(root, INVARIANTS_DOC_PATH);
-    return compareInvariantsDoc(generateInvariantsMarkdown(), existsSync(path) ? readFileSync(path, "utf8") : null);
+    const generated = generateInvariantsMarkdown();
+    const show = git(["show", `HEAD:${INVARIANTS_DOC_PATH}`], root);
+    const headDoc: string | null = show.status === 0 ? show.stdout : null;
+    // Só "o arquivo não está no commit" conta como ausente; outra falha do git (não é repo, sem HEAD) é indisponível.
+    if (show.status !== 0 && !/does not exist in|exists on disk, but not in/i.test(show.stderr)) {
+      return { status: "unavailable", detail: `git show HEAD:${INVARIANTS_DOC_PATH} falhou: ${show.stderr.slice(0, 200)}` };
+    }
+    const status = git(["status", "--porcelain", "--", ...INVARIANTS_REGISTRY_PATHS], root);
+    if (status.status !== 0) return { status: "unavailable", detail: `git status falhou: ${status.stderr.slice(0, 200)}` };
+    const diskPath = resolve(root, INVARIANTS_DOC_PATH);
+    return assessInvariantsDoc({
+      generated,
+      headDoc,
+      diskDoc: existsSync(diskPath) ? readFileSync(diskPath, "utf8") : null,
+      registryDirty: status.stdout.trim() !== "",
+    });
   } catch (e) {
     return { status: "unavailable", detail: (e as Error).message.slice(0, 300) };
   }
 }
 
-function readStdin(): string {
-  try {
-    return readFileSync(0, "utf8");
-  } catch {
-    return "";
-  }
+export interface PreflightIo {
+  /** Lê o corpo do stdin; lança quando o stdin não pode ser lido. */
+  readStdin: () => string;
+  /** Motivo do corpo não determinável vindo do hook (`DIARIA_PREFLIGHT_BODY_UNKNOWN`). */
+  bodyUnknownFromEnv: () => string | undefined;
 }
 
-export async function runPreflight(argv: string[], root = ROOT): Promise<{ code: number; result: PrCreatePreflightResult }> {
+const defaultIo: PreflightIo = {
+  readStdin: () => readFileSync(0, "utf8"),
+  bodyUnknownFromEnv: () => process.env.DIARIA_PREFLIGHT_BODY_UNKNOWN,
+};
+
+export async function runPreflight(
+  argv: string[],
+  root = ROOT,
+  io: PreflightIo = defaultIo,
+): Promise<{ code: number; result: PrCreatePreflightResult & { body_unknown_reason: string | null } }> {
   const { values, flags } = parseArgs(argv);
   const base = values["base"] ?? "origin/master";
 
   let body: string | null = null;
-  // O hook passa o motivo por ambiente: o spawn usa shell (npx .cmd no Windows) e o texto tem espaço.
-  let bodyUnknownReason: string | null = values["body-unknown"] ?? process.env.DIARIA_PREFLIGHT_BODY_UNKNOWN ?? "corpo não informado ao guard";
+  let bodyUnknownReason: string | null = values["body-unknown"] ?? io.bodyUnknownFromEnv() ??"corpo não informado ao guard";
   if (flags.has("body-stdin")) {
-    body = readStdin();
-    bodyUnknownReason = null;
+    try {
+      body = io.readStdin();
+      bodyUnknownReason = null;
+    } catch (e) {
+      bodyUnknownReason = `stdin ilegível: ${(e as Error).message}`;
+    }
   } else if (values["body-file"]) {
     try {
       body = readFileSync(resolve(values["body-file"]), "utf8");
@@ -90,8 +129,9 @@ export async function runPreflight(argv: string[], root = ROOT): Promise<{ code:
     statsError,
     body,
     bodyUnknownReason,
+    warnOnlyReason: values["warn-only"] ?? null,
   });
-  return { code: result.deny.length ? 1 : 0, result };
+  return { code: result.deny.length ? 1 : 0, result: { ...result, body_unknown_reason: body === null ? bodyUnknownReason : null } };
 }
 
 if (isMainModule(import.meta.url)) {

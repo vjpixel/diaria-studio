@@ -106,13 +106,27 @@ export interface PhaseMeta {
   stage: 5 | 6 | null;
   /** Recursos que a fase segura enquanto roda (dono único). */
   resources: readonly string[];
-  /** Skill dona da fase (#14115); ausente = `publica`. */
-  flow?: PhaseFlow;
+  /** Skill dona da fase (#14115). */
+  flow: PhaseFlow;
 }
 
 /** Skill dona da fase (#14115). */
 export function phaseFlow(phase: PublicaPhase): PhaseFlow {
-  return PHASE_META[phase].flow ?? "publica";
+  return PHASE_META[phase].flow;
+}
+
+/**
+ * Pure (#14115): o que está errado em `part`/recursos extras para a fase.
+ * Fase do roteiro/montagem com parte de vídeo cairia nas regras do publica
+ * (isolamento de custo, join), e recurso extra nelas faria a fase disputar o
+ * Chrome ou um registro com o publica. `null` = ok.
+ */
+export function flowPartDefect(phase: PublicaPhase, part: PublicaPart, extraResources: readonly string[] = []): string | null {
+  const flow = phaseFlow(phase);
+  if (flow === "publica") return null;
+  if (part !== "sessao") return `fase ${phase} (${flow}) só com --part sessao, não ${part}`;
+  if (extraResources.length) return `fase ${phase} (${flow}) não segura recurso (--resources ${extraResources.join(",")})`;
+  return null;
 }
 
 const prep = (flow: PhaseFlow, clock: PhaseClock = "active"): PhaseMeta => ({ clock, effect: "reversible", stage: null, resources: [], flow });
@@ -121,32 +135,34 @@ const prep = (flow: PhaseFlow, clock: PhaseClock = "active"): PhaseMeta => ({ cl
 export const CHROME_RESOURCE = "chrome";
 
 export const PHASE_META: Readonly<Record<PublicaPhase, PhaseMeta>> = {
-  preflight: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  fetch: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  plano: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  capa: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  decisoes: { clock: "wait", effect: "reversible", stage: null, resources: [] },
-  aprovacao: { clock: "wait", effect: "reversible", stage: null, resources: [] },
+  preflight: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  fetch: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  plano: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  capa: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  decisoes: { clock: "wait", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  aprovacao: { clock: "wait", effect: "reversible", stage: null, resources: [], flow: "publica" },
   upload: {
     clock: "active",
     effect: "external",
     stage: null,
     resources: ["registry:05-youtube-published", "registry:video-publish-authorizations"],
+    flow: "publica",
   },
   // `link-video-d1.ts --save` põe o 1º comentário do LinkedIn na fila do Worker e o vídeo no podcast;
   // a releitura do A4 grava no registro do upload.
-  link: { clock: "active", effect: "external", stage: null, resources: ["registry:05-video-url", "registry:05-youtube-published"] },
-  stage5: { clock: "active", effect: "external", stage: 5, resources: ["registry:06-social-published", "registry:05-published"] },
-  "stage6-teste": { clock: "active", effect: "reversible", stage: 6, resources: [] },
-  "stage6-gate": { clock: "wait", effect: "reversible", stage: 6, resources: [] },
-  "stage6-schedule": { clock: "active", effect: "external", stage: 6, resources: ["registry:05-published"] },
+  link: { clock: "active", effect: "external", stage: null, resources: ["registry:05-video-url", "registry:05-youtube-published"], flow: "publica" },
+  stage5: { clock: "active", effect: "external", stage: 5, resources: ["registry:06-social-published", "registry:05-published"], flow: "publica" },
+  "stage6-teste": { clock: "active", effect: "reversible", stage: 6, resources: [], flow: "publica" },
+  "stage6-gate": { clock: "wait", effect: "reversible", stage: 6, resources: [], flow: "publica" },
+  "stage6-schedule": { clock: "active", effect: "external", stage: 6, resources: ["registry:05-published"], flow: "publica" },
   "vertical-api": {
     clock: "active",
     effect: "external",
     stage: null,
     resources: ["registry:06-shorts-published", "registry:video-publish-authorizations"],
+    flow: "publica",
   },
-  "vertical-guiado": { clock: "active", effect: "external", stage: null, resources: [CHROME_RESOURCE, "registry:06-shorts-published"] },
+  "vertical-guiado": { clock: "active", effect: "external", stage: null, resources: [CHROME_RESOURCE, "registry:06-shorts-published"], flow: "publica" },
   // #14115: nada aqui publica (o upload para a pasta do Drive é do próprio
   // editor e reversível), não segura recurso nem entra no isolamento de custo.
   // `wait` = o tempo é do editor (a iteração por voz, o Gate 2).
@@ -239,11 +255,9 @@ export function buildPhaseEvent(input: BuildPhaseEventInput): PhaseEvent {
     throw new Error(`plan_sha256 inválido: ${input.planSha256} (64 hex)`);
   }
   const meta = PHASE_META[input.phase];
-  // #14115: fase do roteiro/montagem com parte de vídeo cairia nas regras do
-  // publica (isolamento de custo, join), que não valem para essas sessões.
-  if ((meta.flow ?? "publica") !== "publica" && input.part !== "sessao") {
-    throw new Error(`fase ${input.phase} (${meta.flow}) só com --part sessao, não ${input.part}`);
-  }
+  // #14115: fase do roteiro/montagem só com `sessao` e sem recurso.
+  const flowDefect = flowPartDefect(input.phase, input.part, input.extraResources ?? []);
+  if (flowDefect) throw new Error(flowDefect);
   const resources = [...new Set([...meta.resources, ...(input.extraResources ?? [])])].sort();
   return {
     schema: PUBLICA_PHASES_SCHEMA,
@@ -272,8 +286,13 @@ function phaseEventDefect(obj: unknown): string | null {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return "não é objeto";
   const o = obj as Record<string, unknown>;
   if (o.schema !== PUBLICA_PHASES_SCHEMA) return `schema ${JSON.stringify(o.schema)} (esperado ${PUBLICA_PHASES_SCHEMA})`;
-  if (typeof o.phase !== "string" || !isPublicaPhase(o.phase)) return `fase ${JSON.stringify(o.phase)}`;
+  if (typeof o.phase !== "string" || !isPublicaPhase(o.phase)) {
+    // #14115: fase nova gravada por um checkout mais novo (outra máquina) aparece aqui como desconhecida.
+    return `fase ${JSON.stringify(o.phase)} desconhecida (checkout defasado? rode npx tsx scripts/sync-code.ts)`;
+  }
   if (typeof o.part !== "string" || !isPublicaPart(o.part)) return `parte ${JSON.stringify(o.part)}`;
+  const flowDefect = flowPartDefect(o.phase, o.part);
+  if (flowDefect) return flowDefect;
   if (typeof o.event !== "string" || !(PHASE_EVENT_KINDS as readonly string[]).includes(o.event)) return `evento ${JSON.stringify(o.event)}`;
   if (typeof o.at !== "string" || !Number.isFinite(Date.parse(o.at))) return `instante ${JSON.stringify(o.at)}`;
   if (typeof o.attempt !== "number" || !Number.isInteger(o.attempt) || o.attempt < 1) return `tentativa ${JSON.stringify(o.attempt)}`;

@@ -45,14 +45,14 @@ npx tsx scripts/publica-phase.ts end {AAMMDD} --phase {fase} --part sessao
 | 0 (máquina) | `montagem-preflight` |
 | 1 (transcrição) | `montagem-transcricao` |
 | 2 (decupagem) | `montagem-decupagem` |
-| 2b (fact-check da fala em paralelo) | `montagem-factcheck`, com `--task-id factcheck` no `start` e no `end` |
+| 2b (fact-check da fala em paralelo; fase própria, aberta junto com a da decupagem) | `montagem-factcheck` |
 | 3 (roteiro final e Gate 2; o tempo é do editor) | `montagem-gate2` |
 | 4 (XML) | `montagem-build` |
 | 5 (prévias) | `montagem-preview` |
 | 6 (autorrevisão) | `montagem-review` |
 | 7 (legendas) | `montagem-legendas` |
 
-Passo refeito (outro `build` depois de um ajuste do editor, outra prévia) abre um `start` novo: a tentativa sobe sozinha. Passo que parou com erro fecha com `error --exit-code N` (o exit do comando do passo) em vez de `end`. A telemetria nunca para a montagem: `publica-phase.ts` saindo diferente de 0 vira uma linha de aviso no relato, e o passo segue. No relato final, `npx tsx scripts/publica-phase.ts join {AAMMDD} --flow montagem` (exit 1 = fase sem fim: fechar com `end` ou `interrupted`) e `npx tsx scripts/publica-phase.ts report {AAMMDD} --flow montagem`, com a duração de cada fase (`null` = indisponível, nunca zero).
+Passo refeito (outro `build` depois de um ajuste do editor, outra prévia) abre um `start` novo: a tentativa sobe sozinha. Passo que falhou fecha com `error` em vez de `end`, com `--exit-code N` quando houver um exit de comando e `--detail "motivo"`. A telemetria nunca para a montagem: `publica-phase.ts` saindo diferente de 0 vira uma linha de aviso no relato, e o passo segue. No relato final, `npx tsx scripts/publica-phase.ts join {AAMMDD} --flow montagem` (exit 1 = fase sem fim ou linha ilegível no arquivo: fechar a fase com `end` ou `interrupted`, e relatar a linha ilegível) e `npx tsx scripts/publica-phase.ts report {AAMMDD} --flow montagem`, com a duração de cada fase (`null` = indisponível, nunca zero).
 
 ## Passo 0 — Máquina
 

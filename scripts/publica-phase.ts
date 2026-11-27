@@ -22,7 +22,8 @@
  * - `--flow` (#14115): `join`/`report` de um fluxo só. As fases `roteiro-*`
  *   (`/diaria-video-roteiro`) e `montagem-*` (`/diaria-video-montagem`) vão
  *   no mesmo arquivo, com `--part sessao`; o default é o do `/diaria-publica`,
- *   que não vê as outras duas.
+ *   que não vê as outras duas. A conferência dos sentinels das Etapas 5/6 e
+ *   da capa vertical do Short no `join` só vale em `--flow publica`.
  *
  * - `start` recusa (exit 1, nada gravado) quando: o recurso (Chrome, um
  *   registro) está com outra fase; é fase do vídeo no thread principal com a
