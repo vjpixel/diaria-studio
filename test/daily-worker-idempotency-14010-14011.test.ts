@@ -218,10 +218,13 @@ describe("#14010 chave idempotente dos posts diários de Instagram e Threads", (
     ] as const) {
       const src = readFileSync(new URL(file, import.meta.url), "utf8");
       assert.match(src, /await enqueueDailyWorkerPost\(workerUrl, workerToken, \{/, `${file}: enqueue sem o helper`);
+      // #14300: a chave vai numa const (o `--retry` sobre chave disparada a cita no `reason`).
       assert.ok(
-        src.includes(`idempotency_key: dailyWorkerQueueIdempotencyKey("${ch}", editionDate, d, { isTest, editionDir })`),
-        `${file}: POST /queue sem idempotency_key do canal`,
+        src.includes(`const idempotencyKey = dailyWorkerQueueIdempotencyKey("${ch}", editionDate, d, { isTest, editionDir });`),
+        `${file}: chave idempotente sem o canal`,
       );
+      const enqueue = src.slice(src.indexOf("await enqueueDailyWorkerPost(workerUrl, workerToken, {"));
+      assert.match(enqueue.slice(0, enqueue.indexOf("})")), /idempotency_key: idempotencyKey,/, `${file}: POST /queue sem idempotency_key do canal`);
       assert.doesNotMatch(src, /await postToWorkerQueue\(workerUrl, workerToken, \{/, `${file}: sobrou enqueue sem chave`);
     }
   });
