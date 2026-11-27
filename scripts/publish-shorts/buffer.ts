@@ -7,7 +7,7 @@
 import { BUFFER_ID_RE, bufferReplaceNextSteps } from "../lib/diaria/short-scheduled-replace.ts";
 import type { ShortPublishedEntry } from "../lib/diaria/short-video.ts";
 import { BUFFER_DESTINATIONS, type ShortsPlanItem, type TikTokBufferMetadata } from "./_shared.ts";
-import type { ShortsSendContext, ShortsSendStep } from "./send-context.ts";
+import type { ShortsRunResult, ShortsSendContext, ShortsSettledStep } from "./send-context.ts";
 
 /** O que o `--publish` devolve pro destino do X (#10772): a URL pública do vertical pra Buffer, ou o erro. */
 export interface BufferPrepResult {
@@ -72,18 +72,16 @@ export async function prepareBufferItem(
 
 /**
  * #14204: etapa da Buffer (X, TikTok) no laço do `--publish` (`mainUnlocked`).
- * Só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com
- * `--mark`. O resultado leva o hash dos bytes (vai no `--mark`) e, na troca
- * (#12279), o post antigo que a skill apaga. Sempre `settled`: nada é
+ * #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra
+ * com `--mark`. #12279: o resultado leva o hash dos bytes (vai no `--mark`) e,
+ * na troca, o post antigo que a skill apaga. Sempre `settled`: nada é
  * registrado aqui.
  */
-export async function sendBufferItem(ctx: ShortsSendContext, item: Extract<ShortsPlanItem, { action: "buffer" }>): Promise<ShortsSendStep> {
-  // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
+export async function sendBufferItem(ctx: ShortsSendContext, item: Extract<ShortsPlanItem, { action: "buffer" }>): Promise<ShortsSettledStep> {
   const prep = await prepareBufferItem(item, ctx.uploadVideo, ctx.bufferOffsetMs);
   const bufferReplace = ctx.replaceTargetOf(item.destination);
   const { videoHash } = ctx;
-  // #12279: o preparo devolve o hash dos bytes (vai no --mark) e, na troca, o post antigo que a skill apaga.
-  const r = prep.ok && videoHash
+  const r: ShortsRunResult = prep.ok && videoHash
     ? {
         ...prep,
         buffer: { ...prep.buffer!, videoSha256: videoHash },

@@ -123,7 +123,7 @@ export async function sendYouTubeShortItem(
   prepared: { file: Buffer; firstFrame: { ms: number } | null } | null,
   uploadDeps: YouTubeUploadDeps = defaultYouTubeUploadDeps,
 ): Promise<ShortsSendStep> {
-  // #12100 opção 2: o arquivo foi preparado antes do marcador (acima); sem credencial, sobe o original (e a função recusa).
+  // #12100 opção 2: o laço preparou o arquivo antes do marcador de envio; sem credencial, sobe o original (e a função recusa).
   const yt = prepared ?? { file: ctx.file, firstFrame: null };
   const { corte, videoHash } = ctx;
   const outcome = await publishYouTubeShort({

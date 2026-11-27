@@ -11,22 +11,35 @@ import { corteBaseCommand, corteR2Key } from "../lib/diaria/short-corte.ts";
 import { INSTAGRAM_CHROME_ROUTE, type ShortPublishedEntry } from "../lib/diaria/short-video.ts";
 import { r2ObjectHasBody, r2PublicUrl } from "../lib/r2-object-upload.ts";
 import { postToWorkerQueue } from "../lib/worker-queue-client.ts";
-import { corteInstagramConfirmContext, instagramAccountGateApplies, instagramConfirmContext, sameDayOtherRegisteredIds } from "./confirm.ts";
+import {
+  corteInstagramConfirmContext,
+  instagramAccountGateApplies,
+  instagramConfirmContext as instagramConfirmContextReal,
+  sameDayOtherRegisteredIds as sameDayOtherRegisteredIdsReal,
+} from "./confirm.ts";
 import { defaultGraphDeps, type PublishOutcome } from "./facebook.ts";
 import {
   type InstagramConfirmDecision,
   type InstagramTimerAlreadyMatch,
   decideInstagramTimerAcrossAccounts,
   instagramConfirmExpectedCollabs,
-  instagramTimerAlreadyCollabWarnings,
+  instagramTimerAlreadyCollabWarnings as instagramTimerAlreadyCollabWarningsReal,
   instagramTimerBeforePublish,
   instagramTimerGate,
   instagramTimerPublishStep,
-  readAndDecideInstagramConfirm,
-  resolveChromeAuthorReader,
+  readAndDecideInstagramConfirm as readAndDecideInstagramConfirmReal,
+  resolveChromeAuthorReader as resolveChromeAuthorReaderReal,
   timerChromeAuthorDeps,
 } from "./instagram-confirm.ts";
-import { type InstagramEnqueueDeps, enqueueInstagramReel, instagramPublishRecheck, instagramReelRouteChoice, instagramReelVideoUrl, publishInstagramReel, resolveInstagramReelInputs } from "./instagram.ts";
+import {
+  type InstagramEnqueueDeps,
+  enqueueInstagramReel,
+  instagramPublishRecheck as instagramPublishRecheckReal,
+  instagramReelRouteChoice,
+  instagramReelVideoUrl,
+  publishInstagramReel as publishInstagramReelReal,
+  resolveInstagramReelInputs as resolveInstagramReelInputsReal,
+} from "./instagram.ts";
 import type { ShortsEnqueueItem, ShortsPublishItem, ShortsSendContext, ShortsSendIo, ShortsSendStep } from "./send-context.ts";
 
 /**
@@ -51,14 +64,54 @@ export async function sendInstagramQueueItem(
   return { kind: "outcome", outcome };
 }
 
+/** #14204: I/O da etapa do Reels pela API (rede da Graph, R2 e o registro em disco), trocável nos testes. */
+export interface InstagramReelSendDeps {
+  publishInstagramReel: typeof publishInstagramReelReal;
+  resolveInstagramReelInputs: typeof resolveInstagramReelInputsReal;
+  instagramPublishRecheck: typeof instagramPublishRecheckReal;
+  instagramConfirmContext: typeof instagramConfirmContextReal;
+  sameDayOtherRegisteredIds: typeof sameDayOtherRegisteredIdsReal;
+  resolveChromeAuthorReader: typeof resolveChromeAuthorReaderReal;
+  readAndDecideInstagramConfirm: typeof readAndDecideInstagramConfirmReal;
+  instagramTimerAlreadyCollabWarnings: typeof instagramTimerAlreadyCollabWarningsReal;
+}
+
+export const defaultInstagramReelSendDeps: InstagramReelSendDeps = {
+  publishInstagramReel: publishInstagramReelReal,
+  resolveInstagramReelInputs: resolveInstagramReelInputsReal,
+  instagramPublishRecheck: instagramPublishRecheckReal,
+  instagramConfirmContext: instagramConfirmContextReal,
+  sameDayOtherRegisteredIds: sameDayOtherRegisteredIdsReal,
+  resolveChromeAuthorReader: resolveChromeAuthorReaderReal,
+  readAndDecideInstagramConfirm: readAndDecideInstagramConfirmReal,
+  instagramTimerAlreadyCollabWarnings: instagramTimerAlreadyCollabWarningsReal,
+};
+
 /**
  * #14204: etapa do Reels pela API (Graph). No timer do Instagram e no corte
  * avulso (`instagramAccountGateApplies`) o gate confere a conta antes e de
  * novo logo antes do `media_publish`: Reels achado no ar é registrado e não
  * sai de novo (`settled`). Fora deles, publica com a releitura do registro
  * local. Sem autora pronta lança (o plano não marca `publish` sem ela).
+ * `ioDeps` troca a rede e o disco nos testes (o default é o I/O real).
  */
-export async function sendInstagramReelItem(ctx: ShortsSendContext, item: ShortsPublishItem, io: ShortsSendIo): Promise<ShortsSendStep> {
+export async function sendInstagramReelItem(
+  ctx: ShortsSendContext,
+  item: ShortsPublishItem,
+  io: ShortsSendIo,
+  ioDeps: InstagramReelSendDeps = defaultInstagramReelSendDeps,
+): Promise<ShortsSendStep> {
+  // Mesmos nomes das funções importadas: o corpo segue igual ao do laço inline (e aos guards estáticos).
+  const {
+    publishInstagramReel,
+    resolveInstagramReelInputs,
+    instagramPublishRecheck,
+    instagramConfirmContext,
+    sameDayOtherRegisteredIds,
+    resolveChromeAuthorReader,
+    readAndDecideInstagramConfirm,
+    instagramTimerAlreadyCollabWarnings,
+  } = ioDeps;
   const { igAuthor, shortsCfg, aammdd, videoPath, file, corte, r2, dir, deps, igApiVersion } = ctx;
   if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
   const author = igAuthor;
@@ -181,9 +234,7 @@ export async function sendInstagramReelItem(ctx: ShortsSendContext, item: Shorts
       result: { destination: item.destination, ok: true, entry: already.entry, alreadyRegistered: true, matchedBy: already.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) },
     };
   }
-  if (step.kind !== "published") {
-    io.clearSending();
-    return { kind: "settled", result: null }; // inalcançável: `already` acima cobre esse caso
-  }
+  // Inalcançável: `already` acima cobre `step.kind === "already"`. Lança em vez de sumir com o destino do results[].
+  if (step.kind !== "published") throw new Error("instagram: passo do timer sem desfecho (nem publicado, nem já na conta)");
   return { kind: "outcome", outcome: step.outcome };
 }

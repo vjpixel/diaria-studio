@@ -722,11 +722,11 @@ export function attachChromeUploadToPlan(
 }
 
 /**
- * #14204: etapa do arquivo do Chrome depois do laço (#10915). Instagram acima
- * do teto vira passo guiado no Chrome; a compressão só alimenta esse passo,
- * então roda DEPOIS das APIs: um encode lento ou travado nunca atrasa os
- * Reels/vídeos que saem por API. Sem passo guiado do Instagram (ou sem
- * duração legível) devolve o plano igual, sem encode.
+ * #14204: etapa do arquivo do Chrome (#10915). Instagram acima do teto vira
+ * passo guiado no Chrome; a compressão só alimenta esse passo, e o chamador
+ * deve invocá-la DEPOIS do laço de envio: um encode lento ou travado nunca
+ * atrasa os Reels/vídeos que saem por API. Sem passo guiado do Instagram (ou
+ * sem duração legível) devolve o plano igual, sem encode.
  */
 export function prepareInstagramChromeStep<P extends { items: ShortsPlanItem[]; warnings: string[] }>(
   plan: P,

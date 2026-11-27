@@ -36,36 +36,34 @@ export async function sendThreadsProfileItem(
 ): Promise<ShortsSendStep> {
   const { threadsCreds, corte, aammdd, plan } = ctx;
   if (!threadsCreds.ready) throw new Error(threadsCreds.reason); // o plano não marca publish sem credencial
-  {
-    // #11410: confere o perfil antes — um post à mão (depois de um
-    // skip_late) ou de uma rodada sem registro sincronizado não está no
-    // registro, mas está no perfil. Falha de leitura nunca vira "não está lá".
-    // #11742: em TODA rodada, não só na do timer: a task one-shot do app
-    // desktop com o config defasado corria com o timer do 300 no mesmo minuto.
-    const pre = await deps.preflight({
-      creds: threadsCreds.creds,
-      ...threadsProfilePreflightInput({
-        aammdd,
-        // 1ª linha do texto = o título do D1 (ou do corte) como o post o leva (cortado com … se não coube).
-        caption: item.caption,
-        corte: corte !== null,
-        sameDayOtherIds: deps.sameDayOtherIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION),
-      }),
-      now: () => new Date(),
-    });
-    if (pre.kind === "already") {
-      try {
-        ctx.registry.persist(pre.entry);
-      } catch (e) {
-        console.error(`[erro] threads_profile: o vídeo JÁ ESTÁ no perfil (${pre.entry.url ?? pre.entry.id}) mas o registro não foi gravado: ${(e as Error).message}`);
-        // marca de envio fica: o vídeo está no perfil e o registro não diz
-        return { kind: "settled", result: { destination: item.destination, ok: false, entry: pre.entry, error: `registro não gravado: ${(e as Error).message}`, cause: "preflight" } };
-      }
-      io.clearSending();
-      console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
-      if (plan.horizontalLinks?.threads_profile?.replyText) console.error(`[aviso] Threads: confira se o post existente tem a resposta "${plan.horizontalLinks.threads_profile.replyText}"; complete à mão se faltar (#13117).`);
-      return { kind: "settled", result: { destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true } };
+  // #11410: confere o perfil antes — um post à mão (depois de um
+  // skip_late) ou de uma rodada sem registro sincronizado não está no
+  // registro, mas está no perfil. Falha de leitura nunca vira "não está lá".
+  // #11742: em TODA rodada, não só na do timer: a task one-shot do app
+  // desktop com o config defasado corria com o timer do 300 no mesmo minuto.
+  const pre = await deps.preflight({
+    creds: threadsCreds.creds,
+    ...threadsProfilePreflightInput({
+      aammdd,
+      // 1ª linha do texto = o título do D1 (ou do corte) como o post o leva (cortado com … se não coube).
+      caption: item.caption,
+      corte: corte !== null,
+      sameDayOtherIds: deps.sameDayOtherIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION),
+    }),
+    now: () => new Date(),
+  });
+  if (pre.kind === "already") {
+    try {
+      ctx.registry.persist(pre.entry);
+    } catch (e) {
+      console.error(`[erro] threads_profile: o vídeo JÁ ESTÁ no perfil (${pre.entry.url ?? pre.entry.id}) mas o registro não foi gravado: ${(e as Error).message}`);
+      // marca de envio fica: o vídeo está no perfil e o registro não diz
+      return { kind: "settled", result: { destination: item.destination, ok: false, entry: pre.entry, error: `registro não gravado: ${(e as Error).message}`, cause: "preflight" } };
     }
+    io.clearSending();
+    console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
+    if (plan.horizontalLinks?.threads_profile?.replyText) console.error(`[aviso] Threads: confira se o post existente tem a resposta "${plan.horizontalLinks.threads_profile.replyText}"; complete à mão se faltar (#13117).`);
+    return { kind: "settled", result: { destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true } };
   }
   const outcome = await deps.publish({
     creds: threadsCreds.creds,

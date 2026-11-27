@@ -43,6 +43,12 @@ export interface ShortsRunResult {
   phase?: "cancel" | "record";
   /** #12279: o cancelamento saiu e não confirmou: o post antigo PODE ter saído. */
   uncertain?: true;
+  /** #12279 (Buffer): o preparo só subiu o vídeo ao R2; falta o `create_post` da skill e o `--mark`. */
+  pending_buffer_create?: true;
+  /** #12279 (Buffer, na troca): o post antigo que a skill apaga antes do `create_post`. */
+  replaces?: { id: string; at: string };
+  /** #12279 (Buffer, na troca): a sequência get_post → delete_post → --mark-replaced → create_post → --mark. */
+  next_steps?: string;
 }
 
 /**
@@ -115,9 +121,8 @@ export interface ShortsSendIo {
  * Desfecho de uma etapa de destino. `outcome`: a plataforma respondeu e o laço
  * segue com o pós-envio comum (registro, marcador, log). `settled`: a etapa já
  * resolveu o destino (achou-o no ar e registrou, ou não publicou) e o laço só
- * acrescenta `result` (se houver) ao `results[]`. Exceção lançada = recusa, que
- * o laço trata como antes (marcador apagado, `[erro]`).
+ * acrescenta `result` ao `results[]`. Exceção lançada = recusa, que o laço
+ * trata como antes (marcador apagado, `[erro]`).
  */
-export type ShortsSendStep =
-  | { kind: "outcome"; outcome: PublishOutcome }
-  | { kind: "settled"; result: ShortsRunResult | null };
+export type ShortsSettledStep = { kind: "settled"; result: ShortsRunResult };
+export type ShortsSendStep = { kind: "outcome"; outcome: PublishOutcome } | ShortsSettledStep;

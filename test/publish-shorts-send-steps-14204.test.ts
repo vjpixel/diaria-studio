@@ -9,7 +9,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { sendBufferItem } from "../scripts/publish-shorts/buffer.ts";
-import { sendInstagramQueueItem, sendInstagramReelItem } from "../scripts/publish-shorts/instagram-send.ts";
+import { sendInstagramQueueItem, sendInstagramReelItem, type InstagramReelSendDeps } from "../scripts/publish-shorts/instagram-send.ts";
+import { sendFacebookItem } from "../scripts/publish-shorts/facebook.ts";
+import { sendYouTubeShortItem } from "../scripts/publish-shorts/youtube.ts";
+import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { prepareInstagramChromeStep } from "../scripts/publish-shorts/instagram.ts";
 import { sendLinkedInProfileItem, sendPageRepostStep } from "../scripts/publish-shorts/linkedin.ts";
 import { sendDestinationItem } from "../scripts/publish-shorts/run.ts";
@@ -323,5 +326,182 @@ describe("#14204 sendDestinationItem (roteamento do laço)", () => {
     const step = sendDestinationItem(ctx({ uploadVideo: async () => { enqueued++; throw new Error("upload da fila"); } }), item as never, { clearSending: () => {} }, null);
     await assert.rejects(step, /upload da fila/);
     assert.equal(enqueued, 1);
+  });
+});
+
+describe("#14204 sendInstagramReelItem (deps falsas)", () => {
+  const author = { ready: true, igUserId: "IG1", token: "tokIG", username: "diar.ia.br", source: "env" } as const;
+  const reel = (id: string) => ({ destination: "instagram", status: "published", id, url: `https://www.instagram.com/reel/${id}/`, scheduled_at: null, at: "x" }) as ShortPublishedEntry;
+  const corte = { slug: "corte-x", date: "261127", hhmm: "18:00", title: "Título do corte", hook: "Gancho do corte bem longo para o marcador.", video: "v.mp4" } as never;
+
+  /** `decisions`: o que a leitura do /media devolve a cada chamada do gate (a última se repete). */
+  function igDeps(opts: { decisions?: unknown[]; collab?: string[]; calls: string[] }): InstagramReelSendDeps {
+    let n = 0;
+    return {
+      publishInstagramReel: (async (_d: unknown, _id: string, _t: string, _v: string, _s: unknown, _c: string, _co: string[], _cv: unknown, o: { beforePublish?: () => Promise<ShortPublishedEntry | null> | ShortPublishedEntry | null }) => {
+        opts.calls.push("publish");
+        const already = (await o.beforePublish?.()) ?? null;
+        if (already) return { entry: already, alreadyRegistered: true };
+        return { entry: reel("NOVO") };
+      }) as never,
+      resolveInstagramReelInputs: (async () => ({ source: { videoUrl: "https://r2.example/v.mp4" }, cover: undefined })) as never,
+      instagramPublishRecheck: (() => () => null) as never,
+      instagramConfirmContext: (() => ({ markers: ["Título do D1"], sinceIso: "2026-11-27T03:00:00.000Z", expectedAtIso: null, d1Title: "Título do D1" })) as never,
+      sameDayOtherRegisteredIds: () => {
+        opts.calls.push("sameDay");
+        return [];
+      },
+      resolveChromeAuthorReader: (async () => {
+        opts.calls.push("chrome");
+        return { reader: null, unavailable: "é a mesma conta da API", sameAccount: true };
+      }) as never,
+      readAndDecideInstagramConfirm: (async () => {
+        opts.calls.push("read");
+        const list = opts.decisions ?? [{ kind: "refuse", reason: "nada", candidates: [], cause: "none" }];
+        return list[Math.min(n++, list.length - 1)];
+      }) as never,
+      instagramTimerAlreadyCollabWarnings: (async () => {
+        opts.calls.push("collab");
+        return opts.collab ?? [];
+      }) as never,
+    };
+  }
+
+  it("rodada principal sem corte: sem gate da conta (nenhuma leitura do /media), publica", async () => {
+    const calls: string[] = [];
+    const step = await sendInstagramReelItem(ctx({ igAuthor: author }), publishItem("instagram"), { clearSending: () => assert.fail("não apaga o marcador") }, igDeps({ calls }));
+    assert.equal(step.kind, "outcome");
+    assert.deepEqual(calls, ["publish"]);
+  });
+
+  it("timer do Instagram: gate antes, Reels já na conta → registra, apaga o marcador 1×, avisos de collab, não publica", async () => {
+    const calls: string[] = [];
+    let cleared = 0;
+    const reg = memoryRegistry();
+    const step = await sendInstagramReelItem(
+      ctx({ igAuthor: author, writer: "instagram-timer", registry: reg }),
+      publishItem("instagram"),
+      { clearSending: () => cleared++ },
+      igDeps({ calls, decisions: [{ kind: "register", entry: reel("MAO"), candidates: [], matchedBy: "marker" }], collab: ["falta o convite da @vjpixel"] }),
+    );
+    assert.equal(cleared, 1);
+    assert.ok(!calls.includes("publish"), "não publica de novo");
+    assert.deepEqual(step, {
+      kind: "settled",
+      result: { destination: "instagram", ok: true, entry: reel("MAO"), alreadyRegistered: true, matchedBy: "marker", warnings: ["falta o convite da @vjpixel"] },
+    });
+    assert.deepEqual(reg.persisted.map((e) => e.id), ["MAO"]);
+  });
+
+  it("timer: nada no 1º gate, Reels achado na reconferência antes do media_publish → já registrado", async () => {
+    const calls: string[] = [];
+    let cleared = 0;
+    const step = await sendInstagramReelItem(
+      ctx({ igAuthor: author, writer: "instagram-timer" }),
+      publishItem("instagram"),
+      { clearSending: () => cleared++ },
+      igDeps({ calls, decisions: [{ kind: "refuse", reason: "nada", candidates: [], cause: "none" }, { kind: "register", entry: reel("MAO2"), candidates: [], matchedBy: "marker" }] }),
+    );
+    assert.equal(cleared, 1);
+    assert.deepEqual(calls.filter((c) => c === "read").length, 2, "gate antes e reconferência");
+    assert.equal(step.kind, "settled");
+    const r = step.kind === "settled" ? step.result : assert.fail();
+    assert.equal(r.alreadyRegistered, true);
+    assert.equal(r.matchedBy, "marker");
+    assert.equal(r.entry?.id, "MAO2");
+  });
+
+  it("timer: nada na conta → publica pelo gate (outcome) sem apagar o marcador aqui", async () => {
+    const calls: string[] = [];
+    const step = await sendInstagramReelItem(ctx({ igAuthor: author, writer: "instagram-timer" }), publishItem("instagram"), { clearSending: () => assert.fail("o laço apaga depois do registro") }, igDeps({ calls }));
+    assert.equal(step.kind, "outcome");
+    assert.deepEqual(calls, ["sameDay", "chrome", "read", "publish", "read"]);
+  });
+
+  it("corte avulso na rodada principal também passa pelo gate da conta", async () => {
+    const calls: string[] = [];
+    await sendInstagramReelItem(ctx({ igAuthor: author, writer: "main", corte }), publishItem("instagram"), { clearSending: () => {} }, igDeps({ calls }));
+    assert.ok(calls.includes("read"), "o corte confere a conta");
+  });
+});
+
+describe("#14204 sendYouTubeShortItem (fetch falso)", () => {
+  const SLOT = "2026-11-28T09:30:00.000Z";
+  const ENV = { GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "s", YOUTUBE_REFRESH_TOKEN: "r", YOUTUBE_CHANNEL_ID: "UC1" };
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  it("sobe o arquivo preparado, grava o send_unknown com o hash antes do PUT e devolve o outcome", async () => {
+    const saved: Record<string, string | undefined> = {};
+    for (const k of Object.keys(ENV)) {
+      saved[k] = process.env[k];
+      process.env[k] = ENV[k as keyof typeof ENV];
+    }
+    try {
+      const reg = memoryRegistry();
+      let putBody: unknown = null;
+      let persistedBeforePut = -1;
+      const deps: YouTubeUploadDeps = {
+        now: () => new Date("2026-11-27T12:00:00Z"),
+        fetch: async (url, init) => {
+          if (url === "https://oauth2.googleapis.com/token") return json(200, { access_token: "tok" });
+          if (url.includes("/youtube/v3/channels")) return json(200, { items: [{ id: "UC1" }] });
+          if (url.includes("uploadType=resumable")) return new Response(null, { status: 200, headers: { Location: "https://up/sess" } });
+          if (url === "https://up/sess") {
+            putBody = init?.body ?? null;
+            persistedBeforePut = reg.persisted.length;
+            return json(200, { id: "s1", status: { uploadStatus: "uploaded", privacyStatus: "private", publishAt: SLOT } });
+          }
+          if (url.includes("/youtube/v3/videos?part=status")) return json(200, { items: [{ id: "s1", status: { uploadStatus: "uploaded", privacyStatus: "private", publishAt: SLOT } }] });
+          throw new Error(`rota não mockada: ${url}`);
+        },
+      };
+      const prepared = { file: Buffer.from("mp4-com-capa"), firstFrame: null };
+      const step = await sendYouTubeShortItem(ctx({ forceYouTube: true, registry: reg }), { ...publishItem("youtube_shorts"), scheduledAt: SLOT }, prepared, deps);
+      assert.equal(step.kind, "outcome");
+      assert.equal(persistedBeforePut, 1, "o send_unknown vai ao registro antes do PUT dos bytes");
+      assert.equal(reg.persisted[0].status, "send_unknown");
+      assert.equal(reg.persisted[0].video_sha256, HASH);
+      assert.ok(putBody !== null && Buffer.from(putBody as Uint8Array).equals(prepared.file), "sobe o arquivo preparado, não o original");
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe("#14204 sendFacebookItem (fetch falso)", () => {
+  const page = { slug: "diaria", enabled: true, pageId: "179", token: "tok", missing: [] as string[], utmContent: "page-diaria" };
+  function shortMp4(seconds: number): Buffer {
+    const p = Buffer.alloc(100);
+    p.writeUInt32BE(1000, 12);
+    p.writeUInt32BE(seconds * 1000, 16);
+    const mvhd = Buffer.concat([Buffer.from([0, 0, 0, 108, 0x6d, 0x76, 0x68, 0x64]), p]);
+    return Buffer.concat([Buffer.from([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]), Buffer.from([0, 0, 0, 116, 0x6d, 0x6f, 0x6f, 0x76]), mvhd]);
+  }
+
+  it("página não resolvida lança com o destino (recusa do laço)", async () => {
+    await assert.rejects(sendFacebookItem(ctx(), publishItem("facebook:outra")), /facebook: página não resolvida para facebook:outra/);
+  });
+
+  it("publica o Reel da página do destino com a legenda e o horário do item", async () => {
+    const replies = [{ video_id: "v1" }, { success: true }, { success: true }, { status: { video_status: "ready" } }];
+    const bodies: Array<Record<string, string> | null> = [];
+    let i = 0;
+    const deps = {
+      fetch: async (_url: string, init?: RequestInit) => {
+        bodies.push(init?.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null);
+        return new Response(JSON.stringify(replies[i++] ?? {}), { status: 200 });
+      },
+      sleep: async () => {},
+      now: () => new Date("2026-11-27T12:00:00Z"),
+      log: () => {},
+    };
+    const step = await sendFacebookItem(ctx({ pages: [page] as never, deps, file: shortMp4(60) }), { ...publishItem("facebook:diaria"), scheduledAt: "2026-11-28T15:00:00.000Z" });
+    const o = step.kind === "outcome" ? step.outcome : assert.fail();
+    assert.equal(o.entry.destination, "facebook:diaria");
+    assert.equal(o.entry.status, "scheduled");
+    assert.equal(bodies[2]?.description, "Título do D1\n\nGancho.");
   });
 });

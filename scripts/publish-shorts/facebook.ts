@@ -460,11 +460,15 @@ export async function publishFacebookReel(
 
 /**
  * #14204: etapa do Reel de uma página do Facebook no laço do `--publish`
- * (`mainUnlocked`). A página sai do `pages` resolvido pelo id do destino; na
- * substituição (#12279) o envio sai no horário preservado ou não sai.
+ * (`mainUnlocked`). A página sai do `pages` resolvido pelo id do destino
+ * (página não resolvida lança: o laço trata como recusa). Na substituição
+ * (#12279), o horário preservado já passado é recusado pelo laço
+ * (`replacementUploadRefusal`) antes desta etapa, e `publishFacebookReel`
+ * (com `requireScheduled`) recusa o que ficou a menos de 10 min.
  */
 export async function sendFacebookItem(ctx: ShortsSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
-  const page = ctx.pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
+  const page = ctx.pages.find((p) => facebookDestinationId(p.slug) === item.destination);
+  if (!page) throw new Error(`facebook: página não resolvida para ${item.destination}`);
   const outcome = await publishFacebookReel(ctx.deps, page, ctx.apiVersion, ctx.file, item.caption, item.scheduledAt, ctx.shortCover.bytes, ctx.replaceRun);
   return { kind: "outcome", outcome };
 }

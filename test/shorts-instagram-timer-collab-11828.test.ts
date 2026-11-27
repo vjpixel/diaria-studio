@@ -80,9 +80,14 @@ describe("#11828: collab do Reel feito à mão que o timer registra", () => {
   it("o caminho `already` do timer em publish-shorts.ts chama a conferência e passa os avisos adiante", () => {
     const src = publishShortsSource();
     // #11870: o bloco passou a cobrir também o achado da reconferência antes do publish.
-    const i = src.indexOf("if (already) {");
-    assert.ok(i > 0, "bloco already do timer não encontrado");
-    const block = src.slice(i, src.indexOf("continue;", i));
+    // #14204: o bloco mora em `sendInstagramReelItem` (instagram-send.ts); termina no fim da função.
+    const fn = src.indexOf("export async function sendInstagramReelItem(");
+    assert.ok(fn > 0, "etapa do Instagram não encontrada");
+    const i = src.indexOf("if (already) {", fn);
+    assert.ok(i > fn, "bloco already do timer não encontrado");
+    const end = src.indexOf("\n}\n", i);
+    assert.ok(end > i, "fim da etapa do Instagram não encontrado");
+    const block = src.slice(i, end);
     assert.match(block, /instagramTimerAlreadyCollabWarnings\(/);
     assert.match(block, /warnings: collabWarnings/);
   });

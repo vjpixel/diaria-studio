@@ -1,8 +1,11 @@
 /**
- * Execução da rodada: `main` (lock da substituição) e `mainUnlocked`, o laço por destino.
+ * Execução da rodada: `main` (lock da substituição) e `mainUnlocked`, que orquestra
+ * a rodada e o laço de envio. O envio de cada destino é uma etapa no módulo dele
+ * (#14204), escolhida por `sendDestinationItem`; o laço guarda a releitura do
+ * registro, o marcador de envio, a recusa e o pós-envio comum.
  *
- * Parte de `scripts/publish-shorts.ts` (#14054): movido sem mudar a lógica; a entrada
- * reexporta o que os testes e os outros scripts importam.
+ * Parte de `scripts/publish-shorts.ts` (#14054); a entrada reexporta o que os
+ * testes e os outros scripts importam.
  */
 import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "../lib/diaria/published-video-cleanup.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -1189,9 +1192,7 @@ async function mainUnlocked(): Promise<number> {
       }
     }
     if (item.action === "buffer") {
-      // #10772/#14204: só sobe o vídeo (buffer.ts); a Buffer é chamada pela skill (MCP), que registra com --mark.
-      const step = await sendBufferItem(sendCtx, item);
-      if (step.kind === "settled" && step.result) results.push(step.result);
+      results.push((await sendBufferItem(sendCtx, item)).result); // #14204: buffer.ts
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;
@@ -1236,9 +1237,10 @@ async function mainUnlocked(): Promise<number> {
         if (refusal) throw new Error(refusal);
       }
       // #14204: uma etapa por destino (fila do Worker, LinkedIn, YouTube, Threads, Instagram, Facebook).
+      // O texto desta chamada é âncora dos guards #12100 e #11827 (ordem: preparo → marcador → envio); mudou aqui, mude lá.
       const step = await sendDestinationItem(sendCtx, item, { clearSending }, ytUpload);
       if (step.kind === "settled") {
-        if (step.result) results.push(step.result);
+        results.push(step.result);
         continue;
       }
       outcome = step.outcome;
