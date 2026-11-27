@@ -28,7 +28,7 @@
  *
  * ## A audiência é R$10+, e vem do MESMO lugar que o gate da web
  *
- * `ARTIGOS_ESPECIAIS_APOIO_THRESHOLD` (`workers/artigos/src/apoio-gate-config.ts`)
+ * `ARTIGOS_ESPECIAIS_APOIO_THRESHOLD` (`scripts/lib/shared/apoio-gate-config.ts`)
  * é a fonte única do limiar desde o #7030 — é ele que decide quem passa no
  * gate de `especial.diar.ia.br`. Importar de lá, em vez de repetir
  * `["apoiador", "mantenedor", "patrono"]` aqui, é o que impede o e-mail e a
@@ -39,7 +39,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ARTIGOS_ESPECIAIS_APOIO_THRESHOLD } from "../../workers/artigos/src/apoio-gate-config.ts";
+import { ARTIGOS_ESPECIAIS_APOIO_THRESHOLD } from "./shared/apoio-gate-config.ts";
 import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
 import { resolveAudienceTagName, type TagNameResolution } from "./shared/kit-apoio-tag.ts";
 

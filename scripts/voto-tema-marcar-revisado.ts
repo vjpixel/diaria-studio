@@ -23,7 +23,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hasFlag, isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { parseCicloVotacao, validarCedula } from "../workers/artigos/src/voto-tema-core.ts";
+import { parseCicloVotacao, validarCedula } from "./lib/shared/voto-tema-core.ts";
 import { VotoTemaGuardError } from "./lib/voto-tema-channel.ts";
 import { buildRevisaoMarker, checkRevisao, type CedulaTexto } from "./lib/voto-tema-revisao.ts";
 import { ballotInputPath } from "./voto-tema-open.ts";

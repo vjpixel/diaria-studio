@@ -70,7 +70,7 @@ import { putTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { APOIO_EXCLUSIVE_PREVIEW_TEXT } from "./lib/shared/apoio-preview-text.ts";
 import { BOX, COLORS, FONTS, LAYOUT } from "./lib/shared/design-tokens.ts";
 import { tealDot } from "./lib/shared/email-components.ts";
-import { parseCicloVotacao, htmlEscapeVotoTema, formatPrazo, pollTokenKvKeyMirror, type BallotTema } from "../workers/artigos/src/voto-tema-core.ts";
+import { parseCicloVotacao, htmlEscapeVotoTema, formatPrazo, pollTokenKvKeyMirror, type BallotTema } from "./lib/shared/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,

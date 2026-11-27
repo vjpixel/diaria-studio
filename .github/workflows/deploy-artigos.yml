@@ -38,11 +38,13 @@ on:
       # compartilhado não redeploya o Worker. Trava:
       # test/workers-deploy-workflow-coverage.test.ts.
       - 'scripts/lib/reward-tier-thresholds.ts'
+      - 'scripts/lib/shared/apoio-gate-config.ts'
       - 'scripts/lib/shared/apoio-level-verify.ts'
       - 'scripts/lib/shared/apoio-nivel-types.ts'
       - 'scripts/lib/shared/rate-limit.ts'
       - 'scripts/lib/shared/session-cookie.ts'
       - 'scripts/lib/shared/subscriber-verify.ts'
+      - 'scripts/lib/shared/voto-tema-core.ts'
   workflow_dispatch:
 
 concurrency:

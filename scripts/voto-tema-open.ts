@@ -43,7 +43,7 @@ import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
 import { updateSubscriberFields } from "./lib/kit-subscribers.ts";
 import { computePollToken, pollTokenKvKey } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
-import { ballotKey, parseCicloVotacao, validarCedula, eleitorHash, type BallotTema, type CandidatoTema, prazoEncerrado } from "../workers/artigos/src/voto-tema-core.ts";
+import { ballotKey, parseCicloVotacao, validarCedula, eleitorHash, type BallotTema, type CandidatoTema, prazoEncerrado } from "./lib/shared/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,
