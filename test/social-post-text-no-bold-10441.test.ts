@@ -134,7 +134,7 @@ describe("cards do carrossel continuam lendo o `**` (#10441)", () => {
   });
 
   it("gerador dos cards não passa pelo ponto único do texto de post", () => {
-    for (const file of ["scripts/gen-carousel-cards.ts", "scripts/lib/daily-carousel-card.ts"]) {
+    for (const file of ["scripts/gen-carousel-cards.ts", "scripts/lib/use-melhor-carousel-gen.ts", "scripts/lib/daily-carousel-card.ts"]) {
       const src = readFileSync(resolve(ROOT, file), "utf8");
       assert.ok(!src.includes("social-post-text") && !src.includes("toSocialPostText"), `${file} não pode remover o negrito`);
     }
