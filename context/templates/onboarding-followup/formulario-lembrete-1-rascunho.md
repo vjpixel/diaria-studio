@@ -1,7 +1,7 @@
 <!--
 lembrete 1 de 3 do formulário, variante para quem tem rascunho (#12504)
 assunto: "Viu meu pedido?"
-preview_text: "Até doze perguntas, uns três minutos."
+preview_text: "Até catorze perguntas, uns três minutos."
 ONBOARDING-CORPO-PENDENTE — remover esta linha quando o editor aprovar o texto.
 (O marcador fica aqui DE PROPÓSITO: o envio só destrava quando a linha sai da
 cópia em data/snippets, depois do merge.)
@@ -19,7 +19,7 @@ texto editado.
 -->
 <p>Olá! Tudo bem?</p>
 <p>Você começou o formulário e parou no meio. O que você já marcou está salvo, então é só continuar de onde parou.</p>
-<p>São até doze perguntas, e as obrigatórias são todas de marcar. É com elas que eu ajusto o que entra nas edições.</p>
+<p>São até catorze perguntas, e as obrigatórias são todas de marcar. É com elas que eu ajusto o que entra nas edições.</p>
 <p><a target="_blank" rel="noopener noreferrer nofollow" class="link" href="{{FORM_URL}}">Responder agora</a></p>
 <p>Quando você enviar, os lembretes param.</p>
 <p>Pixel</p>

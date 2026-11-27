@@ -24,6 +24,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   FORM_QUESTIONS,
+  FORM_TALLY_MIN_VERSION,
+  FORM_V4_ADDED_IDS,
   FORM_VERSION,
   formHistoryKey,
   formQuestionsFingerprint,
@@ -71,12 +73,22 @@ function person(over: Partial<FollowupPerson> = {}): FollowupPerson {
 const FINGERPRINT_BY_VERSION: Record<number, string> = {
   2: "9e5db495e2032072",
   3: "9ec3f169aa47babe", // v3 (#10605, aprovada pelo editor em 09/11/2026)
+  4: "5203bace206a03d4", // v4 (#14330: as duas perguntas de apoio, aprovadas em 27/11/2026)
 };
 
 describe("#12490 versão das perguntas", () => {
   it("FORM_VERSION está presa às perguntas atuais (mudou pergunta? suba FORM_VERSION e registre a impressão aqui)", () => {
     const fp = createHash("sha256").update(formQuestionsFingerprint(FORM_QUESTIONS)).digest("hex").slice(0, 16);
     assert.equal(FINGERPRINT_BY_VERSION[FORM_VERSION], fp, `FORM_VERSION ${FORM_VERSION} não corresponde às perguntas atuais (impressão ${fp})`);
+  });
+
+  it("#14330: a v4 só acrescentou perguntas à v3, então as respostas v3 seguem nas contagens (FORM_TALLY_MIN_VERSION)", () => {
+    // Se uma pergunta da v3 mudar, esta impressão deixa de bater com a da v3: suba FORM_TALLY_MIN_VERSION.
+    assert.equal(FORM_TALLY_MIN_VERSION, 3);
+    const semNovas = FORM_QUESTIONS.filter((q) => !FORM_V4_ADDED_IDS.includes(q.id));
+    assert.equal(semNovas.length, FORM_QUESTIONS.length - FORM_V4_ADDED_IDS.length, "toda id acrescentada existe");
+    const fp = createHash("sha256").update(formQuestionsFingerprint(semNovas)).digest("hex").slice(0, 16);
+    assert.equal(fp, FINGERPRINT_BY_VERSION[3]);
   });
 
   it("a impressão muda quando uma opção muda (o guard discrimina)", () => {

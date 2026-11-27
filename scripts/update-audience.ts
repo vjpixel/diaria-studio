@@ -215,7 +215,19 @@ export function renderWhoTheyAreBlocks(responses: BeehiivResponse[]): string[] {
     ...questionBlock("Quem paga as ferramentas de IA", responses, SURVEY_MATCHERS.whoPays),
     ...questionBlock("Gasto mensal com IA, do próprio bolso", responses, SURVEY_MATCHERS.monthlySpend),
     ...questionBlock("Maior gasto com curso ou material de estudo (dois anos)", responses, SURVEY_MATCHERS.biggestSpend),
+    ...questionBlock("Pagou para apoiar criador ou veículo independente (12 meses)", responses, SURVEY_MATCHERS.supportsIndependent),
+    ...renderSupportDecisionCount(responses),
   ];
+}
+
+/**
+ * #14330 (v4): a pergunta aberta sobre a decisão de apoiar entra no perfil só
+ * como contagem, como o relato de falha. O texto fica no Worker e é lido à
+ * mão para montar a versão fechada da pergunta.
+ */
+function renderSupportDecisionCount(responses: BeehiivResponse[]): string[] {
+  const n = countAnswers(responses, SURVEY_MATCHERS.supportDecision).reduce((s, e) => s + e.count, 0);
+  return n > 0 ? ["", `Respostas sobre o que pesa na decisão de apoiar a diar.ia.br: ${n} (o texto livre não entra no perfil).`] : [];
 }
 
 /**
