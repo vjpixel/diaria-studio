@@ -4,7 +4,7 @@
  * Config + I/O de KV compartilhados pelos scripts do ciclo de votação de
  * tema (`voto-tema-open.ts`, `-stats.ts`, `-lembrete.ts`, `-close.ts`,
  * `sync-apoio-voto-tema-tag-kit.ts`). A lógica de decisão fica em
- * `workers/artigos/src/voto-tema-core.ts` (pura, reusada tal-e-qual pelos
+ * `scripts/lib/shared/voto-tema-core.ts` (pura, reusada tal-e-qual pelos
  * scripts, ver docstring de lá sobre por que o formato do token não é
  * reimportado do worker `poll`); este módulo é só a conversa com o KV via
  * API REST da Cloudflare (os scripts rodam fora do runtime do Worker, não
@@ -26,7 +26,7 @@ import {
   voteKeyPrefix,
   type BallotTema,
   type VotoRegistrado,
-} from "../../workers/artigos/src/voto-tema-core.ts";
+} from "./shared/voto-tema-core.ts";
 import { resolveAudienceTagName, type TagNameResolution } from "./shared/kit-apoio-tag.ts";
 import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
 

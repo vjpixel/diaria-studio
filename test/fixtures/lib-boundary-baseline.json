@@ -78,7 +78,6 @@
     "scripts/clarice-plan-wave.ts -> workers/brevo-dashboard/src/brevo-api.ts",
     "scripts/clarice-plan-wave.ts -> workers/brevo-dashboard/src/sections-core.ts",
     "scripts/clarice-schedule-ramp.ts -> workers/brevo-dashboard/src/brevo-api.ts",
-    "scripts/lib/artigo-especial-kit-channel.ts -> workers/artigos/src/apoio-gate-config.ts",
     "scripts/lib/brevo-diaria-guardrail.ts -> workers/brevo-dashboard/src/experiment-cta.ts",
     "scripts/lib/clarice-guardrail-alarm.ts -> workers/brevo-dashboard/src/experiment-cta.ts",
     "scripts/lib/clarice-wave-plan.ts -> workers/brevo-dashboard/src/sections-core.ts",
@@ -86,10 +85,7 @@
     "scripts/lib/mensal/monthly-render.ts -> workers/poll/src/lib.ts",
     "scripts/lib/mensal/monthly-web-render.ts -> workers/poll/src/lib.ts",
     "scripts/lib/purge-score-counter-do.ts -> workers/poll/src/lib.ts",
-    "scripts/lib/voto-tema-channel.ts -> workers/artigos/src/voto-tema-core.ts",
-    "scripts/lib/voto-tema-revisao.ts -> workers/artigos/src/voto-tema-core.ts",
     "scripts/migrate-nickname-index.ts -> workers/poll/src/lib.ts",
-    "scripts/publish-voto-tema-kit.ts -> workers/artigos/src/voto-tema-core.ts",
     "scripts/purge-leaderboard.ts -> workers/poll/src/lib.ts",
     "scripts/rebuild-stats.ts -> workers/poll/src/lib.ts",
     "scripts/studio-snapshot-push.ts -> workers/diaria-dashboard/src/types.ts",
@@ -98,12 +94,6 @@
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/render-links.ts",
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/sections-core.ts",
     "scripts/studio-ui/dashboard-diaria.ts -> workers/diaria-dashboard/src/index.ts",
-    "scripts/update-voto-tema-box.ts -> workers/artigos/src/voto-tema-core.ts",
-    "scripts/verify-clarice-monthly-coverage.ts -> workers/brevo-dashboard/src/brevo-api.ts",
-    "scripts/voto-tema-close.ts -> workers/artigos/src/voto-tema-core.ts",
-    "scripts/voto-tema-lembrete.ts -> workers/artigos/src/voto-tema-core.ts",
-    "scripts/voto-tema-marcar-revisado.ts -> workers/artigos/src/voto-tema-core.ts",
-    "scripts/voto-tema-open.ts -> workers/artigos/src/voto-tema-core.ts",
-    "scripts/voto-tema-stats.ts -> workers/artigos/src/voto-tema-core.ts"
+    "scripts/verify-clarice-monthly-coverage.ts -> workers/brevo-dashboard/src/brevo-api.ts"
   ]
 }

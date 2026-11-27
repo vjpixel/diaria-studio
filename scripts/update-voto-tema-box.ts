@@ -5,7 +5,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { applyBoxPin, serializeConfigSurgically, type BoxesDivulgacaoConfig } from "./lib/box-slot-pin.ts";
 import { readBallotInput } from "./voto-tema-open.ts";
-import { formatPrazo, parseCicloVotacao, validarCedula } from "../workers/artigos/src/voto-tema-core.ts";
+import { formatPrazo, parseCicloVotacao, validarCedula } from "./lib/shared/voto-tema-core.ts";
 
 export const VOTO_BOX = "voto-tema-divulgacao.md";
 export const VOTO_CTA = "https://apoia.se/diaria?utm_source=newsletter&utm_medium=email&utm_campaign=voto-tema";

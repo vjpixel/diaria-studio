@@ -26,7 +26,7 @@
  * no KV também é recusada, com a instrução de reabrir com `--force`.
  */
 import { createHash } from "node:crypto";
-import type { CandidatoTema } from "../../workers/artigos/src/voto-tema-core.ts";
+import type { CandidatoTema } from "./shared/voto-tema-core.ts";
 
 /** Campos da cédula que viram texto no e-mail. */
 export interface CedulaTexto {

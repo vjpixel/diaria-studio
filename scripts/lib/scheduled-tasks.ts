@@ -3963,49 +3963,6 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     issue: "#12931",
   },
   {
-    // #12548 (resolve #12472) — a pasta de vídeo da diária no Drive cresce
-    // ~10 GB por edição, quase tudo bruto do celular, e a cota da conta
-    // Google (Gmail junto) acabava em ~2 semanas. Toda semana guarda os
-    // brutos das edições com vídeo publicado (ou com mais de 14 dias sem
-    // registro) em /mnt/hd-sata/arquivo-video, fora do espelho do bisync,
-    // confere tamanho + MD5 contra o Drive e só então apaga do Drive sem
-    // lixeira. #12789: a origem default é a diaria-studio-video da
-    // diaria.editor (gdrive-diaria:), que não tem espelho local; todo bruto é
-    // baixado e conferido, e nenhum bisync é pausado. Só numa rodada manual
-    // com espelho legado (VIDEO_ARCHIVE_LOCAL_ROOT + VIDEO_ARCHIVE_REMOTE_ROOT,
-    // a pasta antiga da vjpixel) o diaria-gdrive-bisync.timer é pausado
-    // durante a rodada (espera a rodada em curso, até 90 min) e religado no
-    // fim. Política em
-    // lib/diaria/video-bruto-archive.ts. #13631 (aprovado pelo editor em
-    // 19/11/2026): DIÁRIA às 03:00 BRT, era só sábado. Cada edição gera ~17 GiB
-    // de bruto e o Drive acumulava a semana inteira (pico de ~100 GiB); a
-    // regra de elegibilidade não muda. 03:00: madrugada, longe da gravação
-    // (tarde) e da /diaria-video-montagem (fim de tarde/noite, depois do gate
-    // 4), e antes das outras dailies de disco (Diaria-Tmp-Cleanup 03:20,
-    // Diaria-Video-Montage-Cache-Prune 03:50); nessa faixa só weeklies (domingo
-    // 03:00/03:30, sábado 03:40), que não usam o Drive de vídeo. Rodando todo
-    // dia, o aviso não pode virar ruído: falha deixa a unit `failed` (alarme
-    // de units) e o "não apagado/movido" por permissão abre UMA issue por
-    // conjunto de arquivos (`notDeletedFinding`); rodada limpa não avisa nada.
-    // Desde #13630/#13632/#13627 a mesma rodada também recolhe os finais das
-    // edições liberadas pelo /diaria-publica, move os brutos da pasta de uma
-    // edição renomeada e manda duplicatas entre pastas para a lixeira.
-    // Sem `guard` de data/: sem o junction a
-    // publicação fica "desconhecida" e só o teto de idade libera a pasta.
-    // HD desmontado, MD5 divergente ou erro do rclone saem exit 1 (unit
-    // `failed`, o alarme de units pega). A rodada é longa (MD5 de dezenas de
-    // GB) e o oneshot gerado não tem TimeoutStartSec.
-    // Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks arma no 300.
-    name: "Diaria-Video-Bruto-Archive",
-    failover: "catchup",
-    description:
-      "arquivamento diario do video: guarda brutos e finais liberados no HD do 300 (/mnt/hd-sata/arquivo-video), confere MD5 e apaga do Drive sem lixeira; duplicatas entre pastas vao para a lixeira (#12548, #13630, #13631, #13627)",
-    steps: [{ key: "archive", script: "scripts/archive-video-brutos.ts", args: ["--apply"] }],
-    logPath: "video-bruto-archive/.archive.log",
-    schedule: { kind: "daily", hour: 3, minute: 0 },
-    issue: "#12548, #13631",
-  },
-  {
     // #8828 — rede de seguranca do EDQUOT de 25/09/2026: Diaria-Tmp-Cleanup
     // (acima) so limpa a fatia de /tmp que e deste projeto; o resto do
     // consumo real (cache SSR do wrangler/esbuild, clones de isolamento de
@@ -4128,12 +4085,21 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
  *   caminho que dependia dele, passou a escrever direto no Kit. Desarmar
  *   `diaria-kit-subscriber-sync.{service,timer}` na `300` é ação manual;
  *   até lá, o disparo diário vira no-op aqui.
+ * - `"Diaria-Video-Bruto-Archive"` — removida no #14292 (decisão do editor,
+ *   27/11/2026: com o plano novo do Google Drive, o arquivamento diário dos
+ *   brutos e finais de vídeo do Drive para o HD do `300` deixou de ser
+ *   necessário). Rodava `scripts/archive-video-brutos.ts --apply` todo dia às
+ *   03:00 BRT (#12548, #13631); o script fica no repo para rodar à mão, e o
+ *   que já foi arquivado em `/mnt/hd-sata/arquivo-video` fica lá. Desarmar
+ *   `diaria-video-bruto-archive.{service,timer}` na `300` é ação manual pós-
+ *   merge; até lá, o disparo diário vira no-op aqui.
  */
 export const RETIRED_TASK_NAMES: ReadonlySet<string> = new Set([
   "Diaria-Clarice-Novos-Abort-Alarm",
   "Diaria-Microsoft-Ads-Editorial-Reasons",
   "Diaria-Microsoft-Ads-Spend-Ingest",
   "Diaria-Kit-Subscriber-Sync",
+  "Diaria-Video-Bruto-Archive",
 ]);
 
 /** `true` quando `name` é uma task retirada conhecida (ver `RETIRED_TASK_NAMES`). */
