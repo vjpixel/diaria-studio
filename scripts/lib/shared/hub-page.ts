@@ -108,7 +108,7 @@ export interface HubSourceEdition {
    * (issue #4918). */
   title: string;
   /** Título real da edição apontada por `url` (`post.title` do cache
-   * Beehiiv, ou fallback via `workers/arquivo/src/titles-cache.json` —
+   * Beehiiv, ou fallback via `scripts/lib/shared/titles-cache.json` —
    * `scripts/generate-hub-sources.ts`). Opcional: ausência cai no rótulo
    * antigo, só com `title` (#4918 Conserto 2). */
   editionTitle?: string;
@@ -193,7 +193,7 @@ export interface HubContent {
   /** Usado na rota (`/temas/{slug}`) e no path do arquivo gerado. */
   slug: string;
   /** `<title>` (via `pageTitle`, montado em `renderHubPage`) e rótulo curto
-   * usado por `og:title`/`workers/arquivo/src/hubs/meta.ts`. Ex: "Anthropic
+   * usado por `og:title`/`scripts/lib/shared/hub-meta.ts`. Ex: "Anthropic
    * e Claude". Continua a ÚNICA fonte desses dois consumidores — `h1` abaixo
    * não os substitui, só o `<h1>` visível. */
   title: string;
@@ -260,7 +260,7 @@ export interface HubContent {
    * OPCIONAL e preenchido por `scripts/build-hub-page.ts` (nunca pelo próprio
    * `get{Hub}Hub()` de `scripts/lib/hubs/{slug}.ts`) — é ele quem já enumera
    * `HUB_LOADERS`/importa `HUB_META` e filtra o slug atual. `hub-page.ts`
-   * (este módulo) NÃO importa `workers/arquivo/src/hubs/meta.ts` diretamente,
+   * (este módulo) NÃO importa `scripts/lib/shared/hub-meta.ts` diretamente,
    * de propósito: inverteria a fronteira que a docstring de `meta.ts`
    * estabelece (cada consumidor importa só o que consome; `test/lib-boundary.test.ts`
    * não pegaria essa direção, mas a razão aqui é de desenho, não de lint).
@@ -271,7 +271,7 @@ export interface HubContent {
    * mais viva, reusa asset que já existe — decisão da issue), não uma capa
    * fixa por hub. OPCIONAL e preenchido por `scripts/build-hub-page.ts`
    * (mesmo padrão de `relatedHubs` acima) via lookup em
-   * `workers/arquivo/src/titles-cache.json` — `hub-page.ts` (este módulo)
+   * `scripts/lib/shared/titles-cache.json` — `hub-page.ts` (este módulo)
    * não sabe de onde a URL vem, só que existe ou não. Ausente (post sem
    * thumbnail, ou cache ainda sem `coverImageUrl` — ver docstring de
    * `generate-arquivo-titles.ts`) → `renderSeoMeta` omite og:image,
@@ -279,7 +279,7 @@ export interface HubContent {
   coverImage?: { readonly url: string; readonly width: number; readonly height: number };
   /** Mapa `url → título real da edição` (#5265), OPCIONAL — resolvido por
    * `scripts/build-hub-page.ts` via lookup em
-   * `workers/arquivo/src/titles-cache.json` (mesmo cache que já alimenta
+   * `scripts/lib/shared/titles-cache.json` (mesmo cache que já alimenta
    * `coverImage` acima), NUNCA por `get{Hub}Hub()` (mesmo racional de
    * `relatedHubs`/`coverImage`: só o builder Node-side importa esse cache).
    * Cobre só `sections[].paragraphs`/`sections[].table.rows` — os links de
