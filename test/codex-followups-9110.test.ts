@@ -152,7 +152,12 @@ describe("#9110 item 5 mapa único de fallback", () => {
     assert.equal(backendNeedsEnglishPrompt("cloudflare"), true);
     assert.equal(backendNeedsEnglishPrompt("gemini"), false);
     assert.equal(backendNeedsEnglishPrompt("openai"), false);
-    assert.match(src("scripts/eia-compose.ts"), /backendNeedsEnglishPrompt\(fb\) && sdPromptLocale !== "en"/);
+    // #14269 (review da PR #14282): o gate "fallback precisa de EN?" saiu do
+    // catch inline para `resolveFallbackSdPromptChoice` (comportamento coberto
+    // em test/eia-compose-sd-prompt-source-14269.test.ts); o catch o chama com `fb`.
+    const eia = src("scripts/eia-compose.ts");
+    assert.match(eia, /!backendNeedsEnglishPrompt\(fallbackBackend\) \|\| primaryLocale === "en"/);
+    assert.match(eia, /resolveFallbackSdPromptChoice\(\s*fb,\s*primaryChoice,\s*sdPromptLocale,/);
   });
 });
 
