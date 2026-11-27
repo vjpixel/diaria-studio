@@ -1100,5 +1100,29 @@
       "https://canaltech.com.br/seguranca/alerta-para-devs-claude-code-vaza-senhas-e-chaves-de-api-em-massa-no-github/"
     ],
     "editionTitle": "Claude Code pode ter vazado suas senhas no GitHub"
+  },
+  {
+    "date": "2026-11-23",
+    "editionSlug": "anthropic-estreia-na-bolsa-e-levanta-us-119-5-bi",
+    "url": "https://diar.ia.br/p/anthropic-estreia-na-bolsa-e-levanta-us-119-5-bi",
+    "matchedHeadlines": [
+      "Anthropic estreia na bolsa e levanta US$ 119,5 bi"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/news/ipo-close"
+    ],
+    "editionTitle": "Anthropic estreia na bolsa e levanta US$ 119,5 bi"
+  },
+  {
+    "date": "2026-11-26",
+    "editionSlug": "anthropic-empresas-nao-demitem-mas-contratam-menos",
+    "url": "https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos",
+    "matchedHeadlines": [
+      "Anthropic: empresas não demitem, mas contratam menos"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/working-with-ai"
+    ],
+    "editionTitle": "Anthropic: empresas não demitem, mas contratam menos"
   }
 ]
