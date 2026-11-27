@@ -22,6 +22,12 @@
  *     do Stage 4; o bloco de intro do segmento Pending é copy fixa,
  *     reaproveitada edição a edição, não nova a cada disparo).
  *
+ * Skip rápido do regime semanal (#13981): fora da segunda (regime semanal
+ * efetivo, #11226), o dispatch sai `skipped` logo depois de ler config e
+ * store locais, SEM rodar o `--apply` nem chamar rede nenhuma. O `--apply`
+ * passou a rodar só no dispatch da edição de segunda (e todo dia no regime
+ * diário/transição); a avaliação segue diária pela task das 05:30.
+ *
  * Idempotência em resume (#5772): ANTES de rodar qualquer passo, checa se
  * `<edition-dir>/_internal/brevo-diaria-published.json` já tem um
  * `campaign_id` registrado — se sim, uma invocação anterior desta mesma
@@ -263,6 +269,25 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     return { status: "skipped", reason: resolved.reason };
   }
 
+  // #13981 — skip rápido do regime semanal, ANTES de qualquer chamada de rede.
+  // A decisão "não é segunda ⇒ sem campanha" só depende da data e da guarda de
+  // transição (`kit-sem-abertura:` em `in_brevo`, #10533), as duas lidas do
+  // store LOCAL. Antes, o `--apply` (avaliação, pool Pending, MV, sync Brevo/Kit,
+  // `sync-kit-frio`) rodava primeiro e segurava a Etapa 5 por >5 min só para
+  // sair `skipped` no fim. Efeito de cadência, aceito no briefing de 27/11/2026:
+  // o `--apply` deixa de rodar todo dia e passa a rodar só no dispatch da
+  // edição de segunda (e todo dia no regime diário/transição). A avaliação
+  // (Passo 1) segue diária pela task `Diaria-Brevo-Diaria-Evaluate` (05:30).
+  // Guarda contada ANTES do `--apply` aqui: com resíduo > 0 o caminho cheio
+  // segue (e recontado depois, como antes); com 0, o `--apply` só poderia
+  // criar resíduo pelo Passo 3c, desligado desde o #11221.
+  const kitSemAberturaBefore = storeExists ? countKitSemAberturaInBrevo(deps.readContacts(), ORIGIN_PREFIX.KIT_SEM_ABERTURA) : 0;
+  const earlyDecision = decideBrevoSemanalSend({ semanal, editionAammdd: basename(editionDir), kitSemAberturaInBrevo: kitSemAberturaBefore });
+  if (!earlyDecision.send) {
+    process.stderr.write(`[brevo-diaria stage5] skip rápido (#13981): ${earlyDecision.reason} — --apply não rodou.\n`);
+    return { status: "skipped", reason: earlyDecision.reason, warnings: [] };
+  }
+
   // #6793 "Faixa A" (30/08/2026, decisão do editor, item 7): freio de VOLUME
   // por meta diária removido — `--max-add` deixou de ser passado a
   // `brevo-diaria-run.ts`, então o backfill preenche TODOS os slots livres
@@ -289,8 +314,10 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     : resolved.totalAtual;
   const addedActual = Math.max(0, activeCountAfterApply - resolved.totalAtual);
 
-  // #11226 — regime semanal: contatos/rampa rodam todo dia (o clique na Brevo
-  // vira ida pro Kit na rodada seguinte), mas a CAMPANHA só sai na segunda.
+  // #11226 — regime semanal: a CAMPANHA só sai na segunda. Fora da segunda o
+  // skip rápido acima (#13981) já saiu sem `--apply`; chegar aqui num dia que
+  // não é segunda é o regime diário/transição, ou o `--apply` ter mudado a
+  // guarda de transição (recontada abaixo, como antes).
   const contactsNow = deps.storeExists() ? deps.readContacts() : [];
   const kitSemAberturaInBrevo = countKitSemAberturaInBrevo(contactsNow, ORIGIN_PREFIX.KIT_SEM_ABERTURA);
   const semanalDecision = decideBrevoSemanalSend({ semanal, editionAammdd: basename(editionDir), kitSemAberturaInBrevo });
