@@ -37,10 +37,11 @@ import {
   parseLatestVideoRecord,
   shouldReplaceLatestVideo,
 } from "../scripts/lib/shared/latest-video-redirect.ts";
-import { updateLatestVideoRedirect, type LatestVideoKv } from "../scripts/set-latest-video-redirect.ts";
+import { updateLatestVideoRedirect } from "../scripts/set-latest-video-redirect.ts";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const URL_H = "https://youtu.be/AbCdEfGhIjK";
 const LINE = `Assista no YouTube: ${URL_H}`;
@@ -239,20 +240,6 @@ describe("#12735 diar.ia.br/video: registro e redirect", () => {
     assert.equal(latestVideoClickSource(new URL("https://diar.ia.br/video")), "outro");
   });
 
-  function fakeKv(initial: Record<string, string> = {}): LatestVideoKv & { store: Record<string, string>; puts: number } {
-    const store = { ...initial };
-    const kv = {
-      store,
-      puts: 0,
-      get: async (k: string) => store[k] ?? null,
-      put: async (k: string, v: string) => {
-        store[k] = v;
-        kv.puts++;
-      },
-    };
-    return kv;
-  }
-
   function editionWithUrl(url: string | null): string {
     const dir = mkdtempSync(join(tmpdir(), "latest-video-12735-"));
     if (url !== null) {
@@ -267,17 +254,17 @@ describe("#12735 diar.ia.br/video: registro e redirect", () => {
     const semLink = editionWithUrl(null);
     const comLink = editionWithUrl(URL_H);
     try {
-      const kv = fakeKv();
+      const kv = makeTrackedKv();
       assert.equal((await updateLatestVideoRedirect({ editionDir: semLink, aammdd: "261111", kv, apply: true, now })).status, "no_link");
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261111", kv, apply: false, now })).status, "would_write");
-      assert.equal(kv.puts, 0, "sem --apply não grava");
+      assert.equal(kv.puts.length, 0, "sem --apply não grava");
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261111", kv, apply: true, now })).status, "written");
       // #12801 (resíduo): sem registro do upload, `public_at` presumido = 06:00 BRT da edição.
       // #12869: o registro guarda a fonte do `public_at`.
-      assert.deepEqual(parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]), { url: URL_H, aammdd: "261111", updated_at: now.toISOString(), public_at: "2026-11-11T09:00:00.000Z", public_at_source: "edition_default" });
+      assert.deepEqual(parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY)), { url: URL_H, aammdd: "261111", updated_at: now.toISOString(), public_at: "2026-11-11T09:00:00.000Z", public_at_source: "edition_default" });
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261111", kv, apply: true, now })).status, "unchanged");
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261110", kv, apply: true, now })).status, "older");
-      assert.equal(kv.puts, 1);
+      assert.equal(kv.puts.length, 1);
     } finally {
       rmSync(semLink, { recursive: true, force: true });
       rmSync(comLink, { recursive: true, force: true });

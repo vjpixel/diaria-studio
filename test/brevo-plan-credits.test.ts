@@ -18,6 +18,7 @@ import {
   billingCycleWindow,
 } from "../workers/brevo-dashboard/src/index.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
+import { jsonSeed, makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 /** Campanha Clarice mínima, sentDate dentro da janela de cobrança ATUAL
  * (`billingCycleWindow()`, sem argumento — "agora") — usada só pra alimentar
@@ -87,19 +88,7 @@ describe("extractPlanCredits (#2910)", () => {
 // ---------------------------------------------------------------------------
 
 function makeKv(initial: { credits?: number } | null = null) {
-  const store = new Map<string, string>();
-  if (initial) store.set(PLAN_CREDITS_KV_KEY, JSON.stringify(initial));
-  return {
-    get: async (key: string, type?: string) => {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return type === "json" ? JSON.parse(v) : v;
-    },
-    put: async (key: string, value: string) => {
-      store.set(key, value);
-    },
-    _store: store,
-  };
+  return makeTrackedKv(initial ? jsonSeed({ [PLAN_CREDITS_KV_KEY]: initial }) : {});
 }
 
 // #3081 (review): variante instrumentada de makeKv que conta chamadas a
@@ -132,7 +121,7 @@ describe("fetchPlanCredits (#2910)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await fetchPlanCredits({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
       assert.equal(result, 40000);
-      const cached = JSON.parse(kv._store.get(PLAN_CREDITS_KV_KEY)!);
+      const cached = JSON.parse(kv._map.get(PLAN_CREDITS_KV_KEY)!);
       assert.equal(cached.credits, 40000, "grava no KV pra servir de fallback depois");
     } finally {
       globalThis.fetch = origFetch;
@@ -353,7 +342,7 @@ describe("resolvePlanTotal (#6394)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
       assert.equal(result, 15000, "credits (10000) + estimativa de cumulativeSent (5000)");
-      const cached = JSON.parse(kv._store.get(PLAN_CREDITS_KV_KEY)!);
+      const cached = JSON.parse(kv._map.get(PLAN_CREDITS_KV_KEY)!);
       assert.equal(cached.credits, 10000);
       assert.equal(cached.sentAtFetch, 5000);
       assert.equal(cached.planTotal, 15000, "grava o par JÁ consistente, não só credits");

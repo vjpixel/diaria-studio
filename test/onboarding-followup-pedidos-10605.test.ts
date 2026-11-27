@@ -44,6 +44,7 @@ import { writeFileSync } from "node:fs";
 import { conversaRows, parseConversaArgs, renderConversaTable } from "../scripts/onboarding-form-conversas.ts";
 import { FORM_CONVERSA_SIM, type FormResponse } from "../scripts/lib/onboarding-form-contract.ts";
 import { emptyStore, readStore, writeStore, type OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const DAY = 86_400;
 const T0 = Date.parse("2026-01-01T12:00:00Z") / 1000;
@@ -527,23 +528,6 @@ describe("#10605 v3: --status e lista de conversas", () => {
 
 describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenchimento", () => {
   const SECRET = "segredo-de-teste-com-32-caracteres-ou-mais";
-  function memKv(seed: Record<string, string> = {}) {
-    const m = new Map(Object.entries(seed));
-    return {
-      m,
-      ns: {
-        async put(k: string, v: string) {
-          m.set(k, v);
-        },
-        async get(k: string) {
-          return m.get(k) ?? null;
-        },
-        async list({ prefix }: { prefix: string }) {
-          return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).sort().map((name) => ({ name })), list_complete: true, cursor: undefined };
-        },
-      },
-    };
-  }
   const minimal: [string, string][] = [
     ["uso_ia", "Uso pouco: só testei ou uso de vez em quando"],
     ["situacao", "Estudante"],
@@ -561,8 +545,8 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
     const { default: worker } = await import("../workers/onboarding-form/src/index.ts");
     const { signFormEmail } = await import("../scripts/lib/onboarding-form-link-sig.ts");
     const legacy = { email: "a@x.com", submitted_at: "2026-10-01T00:00:00Z", answers: { nivel_ia: "x" } };
-    const kv = memKv({ "resp:a@x.com": JSON.stringify(legacy) });
-    const env = { ONBOARDING_FORM: kv.ns, RESPONSES_TOKEN: "tok", ONBOARDING_FORM_LINK_SECRET: SECRET } as never;
+    const kv = makeTrackedKv({ "resp:a@x.com": JSON.stringify(legacy) }, { listPageSize: 1000 });
+    const env = { ONBOARDING_FORM: kv, RESPONSES_TOKEN: "tok", ONBOARDING_FORM_LINK_SECRET: SECRET } as never;
     const sig = await signFormEmail("a@x.com", SECRET);
     const page = await (await worker.fetch(new Request(`https://f.example/?email=a@x.com&sig=${sig}`), env)).text();
     const t = /name="t" value="([^"]+)"/.exec(page)?.[1];
@@ -573,16 +557,16 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
       assert.equal(res.status, 200);
       await new Promise((r) => setTimeout(r, 5));
     }
-    const hist = [...kv.m.keys()].filter((k) => k.startsWith("hist:a@x.com:"));
+    const hist = [...kv._map.keys()].filter((k) => k.startsWith("hist:a@x.com:"));
     assert.equal(hist.length, 3, "legado copiado + os dois envios, nada sobrescrito");
-    const latest = JSON.parse(kv.m.get("resp:a@x.com")!);
+    const latest = JSON.parse(kv._map.get("resp:a@x.com")!);
     assert.equal(latest.form_version, 3);
     assert.equal(typeof latest.duration_s, "number");
     assert.ok(latest.duration_s >= 0 && latest.duration_s < 60);
     // Token forjado: grava sem duration_s.
     const forged = new URLSearchParams([["email", "a@x.com"], ["sig", sig], ["t", "1.AAAA"], ...minimal]);
     await worker.fetch(new Request("https://f.example/enviar", { method: "POST", body: forged }), env);
-    assert.equal(JSON.parse(kv.m.get("resp:a@x.com")!).duration_s, undefined, "forjado sem tempo");
+    assert.equal(JSON.parse(kv._map.get("resp:a@x.com")!).duration_s, undefined, "forjado sem tempo");
     const get = async (q: string) => ((await (await worker.fetch(new Request(`https://f.example/api/respostas${q}`, { headers: { authorization: "Bearer tok" } }), env)).json()) as { responses: FormResponse[] }).responses;
     assert.equal((await get("")).length, 1, "a mais recente por pessoa");
     const all = await get("?historico=1");
@@ -593,8 +577,8 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
   it("registro ilegível no KV é pulado com log sem e-mail; falha ao assinar a hora não derruba a página", async () => {
     const { default: worker } = await import("../workers/onboarding-form/src/index.ts");
     const { signFormEmail } = await import("../scripts/lib/onboarding-form-link-sig.ts");
-    const kv = memKv({ "resp:a@x.com:2026-11-10T00:00:00.000Z:abcd1234": "{quebrado", "resp:b@x.com": JSON.stringify({ email: "b@x.com", submitted_at: "2026-10-01T00:00:00Z", answers: {} }) });
-    const env = { ONBOARDING_FORM: kv.ns, RESPONSES_TOKEN: "tok", ONBOARDING_FORM_LINK_SECRET: SECRET } as never;
+    const kv = makeTrackedKv({ "resp:a@x.com:2026-11-10T00:00:00.000Z:abcd1234": "{quebrado", "resp:b@x.com": JSON.stringify({ email: "b@x.com", submitted_at: "2026-10-01T00:00:00Z", answers: {} }) }, { listPageSize: 1000 });
+    const env = { ONBOARDING_FORM: kv, RESPONSES_TOKEN: "tok", ONBOARDING_FORM_LINK_SECRET: SECRET } as never;
     const errs: string[] = [];
     const origErr = console.error;
     console.error = (m: string) => void errs.push(String(m));

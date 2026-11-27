@@ -31,6 +31,7 @@ import {
 import { secretMatches } from "../scripts/lib/shared/secret-compare.ts";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
+import { makeTrackedKv, type TrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const HOTTOK = "hottok-de-teste";
 const READ_TOKEN = "token-de-leitura";
@@ -72,40 +73,11 @@ function build(payload: unknown, now = NOW) {
   return buildAbandonoRecord(payload, now, HASH);
 }
 
-type Stored = { value: string; metadata: unknown; ttl?: number };
-
 /** KV falso com as regras do real que importam aqui: metadata até 1024
  * bytes e listagem paginada (de 1 em 1, para exercitar o cursor). */
-function fakeKv() {
-  const store = new Map<string, Stored>();
-  const kv = {
-    store,
-    failList: false,
-    async put(key: string, value: string, opts?: { metadata?: unknown; expirationTtl?: number }) {
-      if (opts?.metadata !== undefined && new TextEncoder().encode(JSON.stringify(opts.metadata)).length > 1024) {
-        throw new Error("metadata too large");
-      }
-      store.set(key, { value, metadata: opts?.metadata, ttl: opts?.expirationTtl });
-    },
-    async get(key: string) {
-      return store.get(key)?.value ?? null;
-    },
-    async list(opts: { prefix?: string; cursor?: string }) {
-      if (kv.failList) throw new Error("kv fora");
-      const names = [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? "")).sort();
-      const start = opts.cursor ? Number(opts.cursor) : 0;
-      const done = start + 1 >= names.length;
-      return {
-        keys: names.slice(start, start + 1).map((name) => ({ name, metadata: store.get(name)?.metadata ?? null })),
-        list_complete: done,
-        cursor: done ? undefined : String(start + 1),
-      };
-    },
-  };
-  return kv;
-}
+const fakeKv = () => makeTrackedKv({}, { listPageSize: 1 });
 
-function envWith(kv: ReturnType<typeof fakeKv> | undefined, overrides: Partial<Env> = {}): Env {
+function envWith(kv: TrackedKv | undefined, overrides: Partial<Env> = {}): Env {
   return {
     ASSETS: { fetch: async () => new Response("asset", { status: 404 }) } as unknown as Env["ASSETS"],
     POLL: { get: async () => null } as unknown as Env["POLL"],
@@ -303,50 +275,52 @@ describe("#10082 POST /webhooks/hotmart", () => {
     const kv = fakeKv();
     const res = await worker.fetch(webhook(hotmartPayload(), "errado"), envWith(kv));
     assert.equal(res.status, 401);
-    assert.equal(kv.store.size, 0);
+    assert.equal(kv._map.size, 0);
   });
 
   it("sem cabeçalho de hottok → 401, e a autenticação vem antes de ler o corpo", async () => {
     const kv = fakeKv();
     assert.equal((await worker.fetch(webhook(hotmartPayload(), null), envWith(kv))).status, 401);
     assert.equal((await worker.fetch(webhook("{ não é json", "errado"), envWith(kv))).status, 401);
-    assert.equal(kv.store.size, 0);
+    assert.equal(kv._map.size, 0);
   });
 
   it("segredo HOTMART_HOTTOK não configurado → 503, mesmo com cabeçalho vazio", async () => {
     const kv = fakeKv();
     const res = await worker.fetch(webhook(hotmartPayload(), ""), envWith(kv, { HOTMART_HOTTOK: undefined }));
     assert.equal(res.status, 503);
-    assert.equal(kv.store.size, 0);
+    assert.equal(kv._map.size, 0);
   });
 
   it("payload no formato da doc → 200 e um registro sem dados pessoais, com TTL e metadata", async () => {
     const kv = fakeKv();
     const res = await worker.fetch(webhook(hotmartPayload()), envWith(kv));
     assert.equal(res.status, 200);
-    assert.equal(kv.store.size, 1);
-    const [key, stored] = [...kv.store.entries()][0];
+    assert.equal(kv._map.size, 1);
+    const [key, value] = [...kv._map.entries()][0];
+    const metadata = kv._meta.get(key);
+    const ttl = kv.puts.find((p) => p.key === key)?.opts?.expirationTtl;
     assert.equal(key, `${ABANDONO_KV_PREFIX}2026-10-11:9a2c8f2e-1b7d-4c1e-9f0a-1234567890ab`);
-    for (const text of [key, stored.value, JSON.stringify(stored.metadata), await res.text()]) {
+    for (const text of [key, value, JSON.stringify(metadata), await res.text()]) {
       for (const p of NAO_GRAVAR) assert.ok(!text.includes(p), `gravou ou devolveu: ${p}`);
     }
-    assert.deepEqual(stored.metadata, JSON.parse(stored.value));
-    assert.ok(stored.ttl && stored.ttl > 0);
+    assert.deepEqual(metadata, JSON.parse(value));
+    assert.ok(ttl && ttl > 0);
   });
 
   it("aceita o caminho com barra final", async () => {
     const kv = fakeKv();
     const res = await worker.fetch(webhook(hotmartPayload(), HOTTOK, `${HOTMART_WEBHOOK_PATH}/`), envWith(kv));
     assert.equal(res.status, 200);
-    assert.equal(kv.store.size, 1);
+    assert.equal(kv._map.size, 1);
   });
 
   it("origem com dado pessoal não chega ao KV", async () => {
     const kv = fakeKv();
     await worker.fetch(webhook(hotmartPayload({ data: { origin: { src: "fulana@example.com", sck: "5511999998888" } } })), envWith(kv));
-    const stored = [...kv.store.values()][0];
-    assert.equal(JSON.parse(stored.value).src, null);
-    assert.equal(JSON.parse(stored.value).sck, null);
+    const stored = [...kv._map.values()][0];
+    assert.equal(JSON.parse(stored).src, null);
+    assert.equal(JSON.parse(stored).sck, null);
   });
 
   it("reenvio do mesmo evento não duplica, com ou sem id", async () => {
@@ -356,7 +330,7 @@ describe("#10082 POST /webhooks/hotmart", () => {
     const semId = hotmartPayload({ id: undefined });
     await worker.fetch(webhook(semId), envWith(kv));
     await worker.fetch(webhook(semId), envWith(kv));
-    assert.equal(kv.store.size, 2);
+    assert.equal(kv._map.size, 2);
   });
 
   it("outro evento da Hotmart → 200 ignorado, nada gravado, aviso no log", async () => {
@@ -366,7 +340,7 @@ describe("#10082 POST /webhooks/hotmart", () => {
     const res = await worker.fetch(webhook({ event: "PURCHASE_BILLET_PRINTED", version: "2.0.0", data: {} }), envWith(kv));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, ignored: true });
-    assert.equal(kv.store.size, 0);
+    assert.equal(kv._map.size, 0);
     assert.ok(logs.some((l) => l.includes("evento ignorado: PURCHASE_BILLET_PRINTED")));
   });
 
@@ -375,9 +349,7 @@ describe("#10082 POST /webhooks/hotmart", () => {
     assert.equal((await worker.fetch(webhook([1, 2]), envWith(fakeKv()))).status, 400);
     assert.equal((await worker.fetch(webhook(hotmartPayload()), envWith(undefined))).status, 503);
     const broken = fakeKv();
-    broken.put = async () => {
-      throw new Error("kv fora");
-    };
+    broken.failPut = true;
     assert.equal((await worker.fetch(webhook(hotmartPayload()), envWith(broken))).status, 500);
   });
 

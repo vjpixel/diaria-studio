@@ -21,6 +21,7 @@ import type { SitemapEntry } from "../scripts/lib/fetch-sitemap.ts";
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 import { HUB_REGISTRY, HUB_LASTMOD } from "../workers/arquivo/src/hubs/registry.ts";
 import worker from "../workers/arquivo/src/index.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 function entry(loc: string, lastmod: string | null): SitemapEntry {
   return { loc, lastmod };
@@ -635,27 +636,11 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     }
   });
 
-  function makeFakeKv() {
-    const m = new Map<string, string>();
-    return {
-      async get(key: string) {
-        return m.get(key) ?? null;
-      },
-      async put(key: string, value: string) {
-        m.set(key, value);
-      },
-      async delete(key: string) {
-        m.delete(key);
-      },
-      _map: m,
-    } as unknown as KVNamespace & { _map: Map<string, string> };
-  }
-
   it("User-Agent de bot nomeado → incrementa o contador ai-fetch no KV (#4902)", async () => {
     const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
     globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
-    const kv = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const req = new Request("https://arquivo.diar.ia.br/", { headers: { "User-Agent": "OAI-SearchBot/1.0; +https://openai.com/searchbot" } });
     const res = await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
     assert.equal(res.status, 200);
@@ -667,7 +652,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
     globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
-    const kv = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const req = new Request("https://arquivo.diar.ia.br/", { headers: { "User-Agent": "GPTBot/1.1" } });
     await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
     // #5134 item 3: a raiz agora grava seu próprio cache de fallback no KV
@@ -682,7 +667,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
     globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
-    const kv = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const req = new Request("https://arquivo.diar.ia.br/", { headers: { Referer: "https://claude.ai/chat/abc" } });
     await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
     const day = new Date().toISOString().slice(0, 10);
@@ -1021,7 +1006,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
   <url><loc>https://diar.ia.br/p/edicao-cache</loc><lastmod>2026-08-01</lastmod></url>
 </urlset>`;
       globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
       assert.equal(res.status, 200);
       const raw = kv._map.get("cache:arquivo-root:html-v1");
@@ -1032,7 +1017,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     });
 
     it("HTTP não-200 do sitemap + KV com fallback bom → 200 com o HTML cacheado, NUNCA 502", async () => {
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       await kv.put(
         "cache:arquivo-root:html-v1",
         JSON.stringify({ html: "<html><body>fallback bom</body></html>", generatedAt: "2026-08-10T00:00:00.000Z" }),
@@ -1050,7 +1035,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     });
 
     it("erro de rede + KV com fallback bom → 200 com o HTML cacheado, NUNCA 502", async () => {
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       await kv.put(
         "cache:arquivo-root:html-v1",
         JSON.stringify({ html: "<html><body>fallback de rede</body></html>", generatedAt: "2026-08-10T00:00:00.000Z" }),
@@ -1065,7 +1050,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     });
 
     it("sitemap malformado + KV com fallback bom → 200 com o HTML cacheado, NUNCA 502", async () => {
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       await kv.put(
         "cache:arquivo-root:html-v1",
         JSON.stringify({ html: "<html><body>fallback de parse</body></html>", generatedAt: "2026-08-10T00:00:00.000Z" }),
@@ -1078,7 +1063,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     });
 
     it("upstream falha E KV sem cache nenhum (1º request de todos) → 502 de sempre (comportamento pré-#5134)", async () => {
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
 
       const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
@@ -1098,20 +1083,18 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
       const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
       globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
-      const kv = makeFakeKv();
-      kv.put = (async () => {
-        throw new Error("KV put falhou");
-      }) as unknown as KVNamespace["put"];
+      const kv = makeTrackedKvNamespace();
+      kv.failPut = true;
+      kv.failMessage = "KV put falhou";
 
       const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
       assert.equal(res.status, 200);
     });
 
     it("falha na LEITURA do KV (get rejeita) durante uma falha do upstream → 502 (nunca lança)", async () => {
-      const kv = makeFakeKv();
-      kv.get = (async () => {
-        throw new Error("KV get falhou");
-      }) as unknown as KVNamespace["get"];
+      const kv = makeTrackedKvNamespace();
+      kv.failGet = true;
+      kv.failMessage = "KV get falhou";
       globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
 
       const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
@@ -1146,7 +1129,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
 
     it("fetch OK → grava o XML completo no KV (cache:arquivo-sitemap:xml-v1)", async () => {
       globalThis.fetch = (async () => new Response(FAKE_SITEMAP_WITH_EDITIONS, { status: 200 })) as unknown as typeof fetch;
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
 
       const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"), { CURSOS_SUBSCRIBERS: kv });
       assert.equal(res.status, 200);
@@ -1158,7 +1141,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     });
 
     it("upstream falha + KV com fallback bom → 200 com o sitemap completo cacheado, NUNCA 502", async () => {
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       const cachedXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://diar.ia.br/p/edicao-cacheada</loc><lastmod>2026-08-01</lastmod></url>\n</urlset>\n`;
       await kv.put("cache:arquivo-sitemap:xml-v1", JSON.stringify({ xml: cachedXml, generatedAt: "2026-08-10T00:00:00.000Z" }));
       globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
@@ -1172,7 +1155,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     });
 
     it("upstream falha E KV sem cache nenhum → fallback ESTÁTICO (hub + raiz, sem edições), nunca 502", async () => {
-      const kv = makeFakeKv();
+      const kv = makeTrackedKvNamespace();
       globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
 
       const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"), { CURSOS_SUBSCRIBERS: kv });
