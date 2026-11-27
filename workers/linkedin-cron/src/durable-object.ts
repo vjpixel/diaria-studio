@@ -81,8 +81,10 @@ export interface DoStoredPayload {
  *                   `false` significa "outro caller já está processando" — não postar.
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
  *                   (#2230 bug 3) alarm() usa tryClaim() DIRETAMENTE — não via self-fetch.
- *   POST /mark-dlq body: { reason, claim_token } → `dlq` decidido pelo cron: grava
+ *   POST /mark-dlq body: { reason, claim_token, entry } → `dlq` decidido pelo cron: grava
  *                   `dlq_reason`, apaga payload, libera o claim do token (#14230)
+ *                 → 409 { marked: false, refused } se o DO é terminal, tem claim vivo
+ *                   de outro dono ou guarda a entry de outro enqueue (#14301)
  */
 
 /**
@@ -109,6 +111,28 @@ export async function firedOrAmbiguous(storage: Pick<DurableObjectStorage, "get"
 
 export async function isFiredOrAmbiguous(storage: Pick<DurableObjectStorage, "get">): Promise<boolean> {
   return (await firedOrAmbiguous(storage)) !== null;
+}
+
+/**
+ * #14301 — desfecho de `markDlq`. `marked: false` = nada gravado:
+ * `fired`/`send_unknown` (DO terminal, outra volta publicou ou terminou
+ * ambígua), `claiming` (claim vivo de outro dono) ou `replaced` (o DO guarda a
+ * entry de outro enqueue, a recuperação do #14241).
+ */
+export type MarkDlqResult =
+  | { marked: true; released: boolean }
+  | { marked: false; refused: "fired" | "send_unknown" | "claiming" | "replaced"; send_unknown?: string };
+
+/**
+ * #14301 — a entry armada no DO é a mesma que o chamador está movendo pra DLQ?
+ * `created_at` é gravado a cada enqueue (`handleEnqueue`), então separa a
+ * entry nova de uma recuperação (#14241, mesmo conteúdo, mesma chave
+ * idempotente) da antiga; o conteúdo (`sameQueueContent`) cobre o resto.
+ * `retry_count`/`reels_container` mudam entre o KV e o payload armado e ficam
+ * de fora de propósito.
+ */
+export function sameArmedEntry(armed: QueueEntry, expected: QueueEntry): boolean {
+  return armed.created_at === expected.created_at && sameQueueContent(armed, expected);
 }
 
 /** Corpo do 409 de `/arm`/`/cancel` para um DO terminal (#11238). */
@@ -199,12 +223,55 @@ export class LinkedInScheduler {
    * container de Reels, e libera o claim de quem apresentou o token. Um alarm
    * que dispare depois não tem o que postar nem ganha o claim. Não marca
    * `fired`: nada foi publicado, e um re-enqueue (`/cancel` + `/arm`) arma de novo.
+   *
+   * #14301 — a marcação era incondicional (o token só decidia o release), e
+   * fora de `blockConcurrencyWhile`. Um `/mark-dlq` tardio (claim vencido pelo
+   * TTL no meio do disparo, ou o cron no fallback sem DO, com token `null`)
+   * chegava depois de uma recuperação do #14241 (`/cancel` + KV put + `/arm`)
+   * e envenenava o DO: `dlq_reason` antigo + payload novo apagado, e a volta
+   * seguinte movia a entry nova pra DLQ sem disparar (202 no enqueue, post
+   * perdido). Ou, com o post já publicado por outra volta, deixava `fired` e
+   * `dlq_reason` juntos. Agora, numa seção crítica só:
+   *   - DO terminal (`fired`/`send_unknown`) → recusa (`refused` = o kind);
+   *   - token confere com o claim atual → marca e libera o claim;
+   *   - senão, claim vivo de outro → recusa (`claiming`): o dono decide;
+   *   - senão, marca só se o DO não guarda entry armada, ou guarda a MESMA
+   *     (`expected`: `created_at` + conteúdo, `sameArmedEntry`). Entry de outro
+   *     enqueue (a recuperação) → recusa (`replaced`).
    */
-  private async markDlq(reason: string, token: string | undefined): Promise<boolean> {
-    await this.state.storage.put("dlq_reason", reason);
-    await this.state.storage.delete("payload");
-    await this.state.storage.delete("reels_container");
-    return this.releaseOwnClaim(token);
+  private async markDlq(reason: string, token: string | undefined, expected: QueueEntry | undefined): Promise<MarkDlqResult> {
+    return this.state.blockConcurrencyWhile(async (): Promise<MarkDlqResult> => {
+      const terminal = await firedOrAmbiguous(this.state.storage);
+      if (terminal !== null) {
+        return {
+          marked: false,
+          refused: terminal.kind,
+          ...(terminal.kind === "send_unknown" && { send_unknown: terminal.reason }),
+        };
+      }
+      const ownsClaim = token !== undefined && token === await this.state.storage.get<string>("claim_token");
+      if (!ownsClaim) {
+        const claiming = await this.state.storage.get<boolean>("claiming");
+        const claimedAt = await this.state.storage.get<number>("claimed_at");
+        if (claiming && (claimedAt === undefined || Date.now() - claimedAt <= CLAIM_TTL_MS)) {
+          return { marked: false, refused: "claiming" };
+        }
+        const armed = (await this.state.storage.get<DoStoredPayload>("payload"))?.entry
+          ?? (await this.state.storage.get<QueueEntry>("replacement_entry"));
+        if (armed !== undefined && (expected === undefined || !sameArmedEntry(armed, expected))) {
+          return { marked: false, refused: "replaced" };
+        }
+      }
+      await this.state.storage.put("dlq_reason", reason);
+      await this.state.storage.delete("payload");
+      await this.state.storage.delete("reels_container");
+      if (ownsClaim) {
+        await this.state.storage.delete("claiming");
+        await this.state.storage.delete("claimed_at");
+        await this.state.storage.delete("claim_token");
+      }
+      return { marked: true, released: ownsClaim };
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -440,23 +507,30 @@ export class LinkedInScheduler {
     // esgotados) e move a entry do KV pra DLQ. Antes ele só liberava o claim: o
     // DO ficava com o payload e sem `dlq_reason`, e um alarm que disparasse
     // depois refazia o post (o carrossel inteiro, 2ª cópia). Mesma marcação do
-    // `dlq` do alarm (`markDlq`). Body `{ reason, claim_token }`; o token só
-    // decide se o claim deste cron é liberado — a marcação vale sempre, como o
-    // `/status-set-fired`, porque a entry está indo pra DLQ de qualquer forma.
+    // `dlq` do alarm (`markDlq`). Body `{ reason, claim_token, entry }`.
+    // #14301 — a marcação deixou de ser incondicional: só com o token do claim
+    // atual ou, sem claim vivo, com a mesma entry armada (`entry` é a que o
+    // cron está movendo). Recusa = 409 `{ marked: false, refused }`, nada
+    // gravado (ver `markDlq`).
     if (url.pathname === "/mark-dlq" && request.method === "POST") {
       let reason = "";
       let token: string | undefined;
+      let expected: QueueEntry | undefined;
       try {
-        const body = (await request.json()) as { reason?: unknown; claim_token?: unknown } | null;
+        const body = (await request.json()) as { reason?: unknown; claim_token?: unknown; entry?: unknown } | null;
         if (typeof body?.reason === "string") reason = body.reason;
         if (typeof body?.claim_token === "string") token = body.claim_token;
+        if (body?.entry !== null && typeof body?.entry === "object") expected = body.entry as QueueEntry;
       } catch { /* body ilegível: cai no 400 abaixo */ }
       if (reason === "") {
         return new Response(JSON.stringify({ error: "reason required" }), { status: 400 });
       }
-      const released = await this.markDlq(reason, token);
-      return new Response(JSON.stringify({ ok: true, released }), {
-        status: 200,
+      const result = await this.markDlq(reason, token, expected);
+      if (!result.marked) {
+        console.warn(`[DO mark-dlq] recusado (${result.refused}) — DO intacto (#14301)`);
+      }
+      return new Response(JSON.stringify({ ok: result.marked, ...result }), {
+        status: result.marked ? 200 : 409,
         headers: { "Content-Type": "application/json" },
       });
     }
@@ -585,7 +659,13 @@ export class LinkedInScheduler {
       // o cron lê o motivo no `/status` e move a entry pra DLQ sem redisparar.
       // Não marca `fired`: nada foi publicado, e um re-enqueue (`/cancel` +
       // `/arm`) segue podendo armar o item de novo.
-      await this.markDlq(outcome.reason, claimToken);
+      // #14301 — recusado quando o claim deste alarm venceu e outra volta o
+      // retomou (ou já publicou): o dono atual decide o desfecho.
+      const marked = await this.markDlq(outcome.reason, claimToken, payload.entry);
+      if (!marked.marked) {
+        console.warn(`[DO alarm] ${key} dlq não gravado (${marked.refused}): ${outcome.reason} — claim deste alarm já vencido (#14301)`);
+        return;
+      }
       console.error(`[DO alarm] ${key} dlq: ${outcome.reason} — não refeito, cron move pra DLQ (#14218)`);
       return;
     }
