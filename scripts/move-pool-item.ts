@@ -65,6 +65,7 @@ import { estimateUseMelhorTempoDetailed } from "./lib/use-melhor-curation.ts";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { fetchBodyForCache } from "./stitch-newsletter.ts";
 import { readTempoArtifact, writeTempoArtifact } from "./lib/use-melhor-tempo-refresh.ts";
+import { intentionalErrorJsonPath, loadIntentionalErrorJson } from "./lib/intentional-errors.ts";
 
 export const POOL_BUCKETS: readonly SectionBucket[] = ["lancamento", "radar", "use_melhor", "video"];
 
@@ -274,6 +275,16 @@ export function replaceInlineTempo(line: string, minutes: number): string {
 }
 
 const TEMPO_SUFFIX_RE = /\s*(?:\(\s*~?\s*\d+\s*min[^)]*\)|[–—]\s*~?\s*\d+\s*min(?:\s+de\s+leitura)?)\s*$/;
+
+/** #14270: verifica o texto resultante, inclusive em dry-run, sem replantar à mão. */
+export function intentionalErrorReplantNextSteps(editionDir: string, md: string): string[] {
+  const record = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
+  const wrong = typeof record?.wrong_value === "string" ? record.wrong_value.trim() : "";
+  if (record?.no_error === true || !wrong || md.includes(wrong)) return [];
+  return [
+    `O erro intencional (${wrong}) não aparece mais em 02-reviewed.md. Replantar: npx tsx scripts/replant-intentional-error.ts --edition-dir ${editionDir.replace(/\/+$/, "")}/`,
+  ];
+}
 
 export interface MdMoveResult {
   md: string;
@@ -518,7 +529,7 @@ export function movePoolItem(
     }
   }
 
-  const nextSteps: string[] = [];
+  const nextSteps: string[] = intentionalErrorReplantNextSteps(editionDir, mdResult.md);
   if (mdResult.from === "use_melhor" || to === "use_melhor") {
     const state = readUseMelhorPostState(editionDir);
     const chosen = state?.item && typeof state.item.url === "string" ? state.item.url : null;
