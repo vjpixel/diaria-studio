@@ -78,7 +78,7 @@ import type {
   AudienceSummary,
   AudienceCtrCategoryRow,
   AudienceSurveyItem,
-} from "../workers/diaria-dashboard/src/types.ts";
+} from "./lib/shared/diaria-dashboard-types.ts";
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
