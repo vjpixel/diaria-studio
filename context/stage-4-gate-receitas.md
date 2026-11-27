@@ -185,6 +185,9 @@ D1 trocado em edição sem vídeo: rodar o `set-d1-no-video.ts` do
    agents. O prompt manda ler `context/editorial-rules.md` e gravar em
    `_internal/03-social.tmp.md` / `_internal/03-curto.tmp.md`. Re-disparo do
    `## um`: `use_melhor_post_path` + `source_text_paths = {"um": ...}`.
+   Ajuste pedido pelo editor: incluir no prompt a linha
+   `Pedido do editor (literal): "<mensagem do editor>"` (#14271). É o único
+   sinal que os agents aceitam para uma regra do projeto ceder.
 2. Splice, nunca colar à mão (recusa legenda sem `-cards`):
    ```bash
    npx tsx scripts/splice-social-sections.ts --edition-dir {EDITION_DIR} --destaque d{N}   # 2 slots: --destaque d1,d3
