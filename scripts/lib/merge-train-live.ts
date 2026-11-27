@@ -60,6 +60,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveWorktreeRemoval } from "./worktree-remove.ts"; // #8209
+import { listProcessesForWorktreeGuard } from "./list-processes.ts"; // #14335
+import { makeOrphanRescuer } from "./orphan-rescue.ts"; // #14335
 import {
   parseClosesIssues,
   parseRefsIssues,
@@ -959,8 +961,10 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
   const worktreeResolved = resolveWorktreeRemoval(
     removeWorktree.ok ? { ok: true } : { ok: false, error: removeWorktree.stderr },
     worktreePath,
+    // #14335: remoção parcial só é limpa sem processo vivo e depois do resgate.
+    { getLiveProcesses: () => listProcessesForWorktreeGuard(), rescue: makeOrphanRescuer(mainCwd) },
   );
-  if (removeWorktree.ok && !worktreeResolved.ok) {
+  if (!worktreeResolved.ok && worktreeResolved.error !== removeWorktree.stderr) {
     runner.warn(`limpeza segura pós-remove (#8209) falhou pra ${worktreePath}: ${worktreeResolved.error}`);
   }
 

@@ -206,7 +206,9 @@ import {
   findPartialRemovalOrphans,
   resolveWorktreeRemoval,
   findLiveProcessesInPath,
+  cleanupPartialRemovalLeftover,
 } from "./lib/worktree-remove.ts"; // #8209, #8661, #14335
+import { makeOrphanRescuer, type OrphanRescueFn } from "./lib/orphan-rescue.ts"; // #14335
 import { listProcessesForWorktreeGuard, type ProcessInfo } from "./lib/list-processes.ts"; // #8661, #14335
 // #7044 + #7048: a extração pro módulo compartilhado vale pro guard PURO
 // (`shouldSkipForSharedSession`, re-exportado abaixo e reusado por
@@ -908,7 +910,7 @@ export function removeWorktreeSafe(
   path: string,
   cwd: string,
   liveProcesses?: readonly ProcessInfo[],
-  opts: { run?: WorktreeRemoveRunner; timeoutMs?: number } = {},
+  opts: { run?: WorktreeRemoveRunner; timeoutMs?: number; rescue?: OrphanRescueFn } = {},
 ): { ok: boolean; error?: string } {
   const livePids = findLiveProcessesInPath(path, liveProcesses);
   if (livePids.length > 0) {
@@ -936,7 +938,11 @@ export function removeWorktreeSafe(
   // e mesmo assim sobrou uma casca) mora em resolveWorktreeRemoval — helper
   // único compartilhado com branch-cleanup.ts e merge-train-live.ts (#8209
   // residual).
-  return resolveWorktreeRemoval(gitError ? { ok: false, error: gitError } : { ok: true }, path);
+  // #14335: na remoção parcial, o mesmo snapshot de processos e o resgate.
+  return resolveWorktreeRemoval(gitError ? { ok: false, error: gitError } : { ok: true }, path, {
+    getLiveProcesses: liveProcesses ? () => liveProcesses : undefined,
+    rescue: opts.rescue ?? makeOrphanRescuer(cwd),
+  });
 }
 
 /**
@@ -1359,6 +1365,9 @@ export function runMainWithCheckers(
      *  `git worktree list`, com arquivo real). Sem ele a varredura fica
      *  desligada (comportamento anterior). `main()` passa o real. */
     findOrphans?: (worktreesDir: string, tracked: Set<string>) => string[];
+    /** #14335 — resgate antes de apagar uma pasta de remoção parcial. Sem
+     *  ele, nenhuma pasta da varredura de órfãos é apagada. */
+    rescueOrphan?: OrphanRescueFn;
     /** #11446 — opcionais: sem os dois, o seletor de worktree já enviado
      *  fica desligado (comportamento anterior). `main()` passa os reais. */
     isHeadOnRemote?: (path: string) => boolean;
@@ -1487,21 +1496,25 @@ export function runMainWithCheckers(
           let orphanRemoved = 0;
           const liveProcesses = getLiveProcesses();
           for (const orphan of orphans) {
-            const live = findLiveProcessesInPath(orphan, liveProcesses);
-            if (live.length > 0) {
-              const detail = live.map((p) => `PID ${p.pid} (${p.cmd.slice(0, 120)})`).join("; ");
+            if (!checkers.rescueOrphan) {
               console.warn(
-                `[cleanup-merged-worktrees] pasta de remoção parcial preservada (#14335): ${orphan} — ` +
-                  `${live.length} processo(s) vivo(s) ainda a referenciam, tenta de novo na próxima rodada: ${detail}`,
+                `[cleanup-merged-worktrees] pasta de remoção parcial preservada (#14335): ${orphan} — sem resgate configurado, nada é apagado.`,
               );
               continue;
             }
-            const result = checkers.removeWorktreeDir(orphan);
-            if (result.dirRemoved) {
+            const result = cleanupPartialRemovalLeftover(orphan, {
+              getLiveProcesses: () => liveProcesses,
+              rescue: checkers.rescueOrphan,
+              removeDir: checkers.removeWorktreeDir,
+            });
+            if (result.ok) {
               orphanRemoved++;
-              console.log(`[cleanup-merged-worktrees] pasta de remoção parcial removida (#14335): ${orphan}`);
+              console.log(
+                `[cleanup-merged-worktrees] pasta de remoção parcial removida (#14335): ${orphan}` +
+                  (result.rescueDir ? ` (resgate em ${result.rescueDir})` : " (nada fora do repositório a resgatar)"),
+              );
             } else {
-              console.warn(`[cleanup-merged-worktrees] falha ao remover pasta de remoção parcial ${orphan}: ${result.errors.join("; ")}`);
+              console.warn(`[cleanup-merged-worktrees] pasta de remoção parcial preservada (#14335): ${orphan} — ${result.error}`);
             }
           }
           console.log(
@@ -1679,6 +1692,7 @@ function main(): void {
  * (`scripts/check-disk-space-guard.ts`) rodar a limpeza no mesmo processo.
  */
 export function runCleanupWithRealCheckers(args: Record<string, string>, repoRoot: string): void {
+  const rescue = makeOrphanRescuer(repoRoot); // #14335
   runMainWithCheckers(args, repoRoot, {
     isHeadOnRemote: (path) => isHeadOnRemoteSafe(path),
     lastActivityMs: (path) => getWorktreeLastActivityMsSafe(path),
@@ -1691,10 +1705,11 @@ export function runCleanupWithRealCheckers(args: Record<string, string>, repoRoo
     listActiveSessions: () => listActiveSessionsSafe(repoRoot),
     listProcesses: () => listProcessesForWorktreeGuard(),
     isWorktreeDirty: (path) => isWorktreeDirtySafe(path),
-    removeWorktree: (path, processes) => removeWorktreeSafe(path, repoRoot, processes),
+    removeWorktree: (path, processes) => removeWorktreeSafe(path, repoRoot, processes, { rescue }),
     removeWorktreeDir: (path) => removeWorktreeDirSafely(path),
     findHusks: (worktreesDir, tracked) => findWorktreeHusks(worktreesDir, tracked),
     findOrphans: (worktreesDir, tracked) => findPartialRemovalOrphans(worktreesDir, tracked),
+    rescueOrphan: rescue,
   });
 }
 

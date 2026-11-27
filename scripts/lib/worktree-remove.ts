@@ -47,7 +47,8 @@
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { isMainModule } from "./cli-args.ts";
-import { listAllProcesses, type ProcessInfo } from "./list-processes.ts";
+import { listAllProcesses, listProcessesForWorktreeGuard, type ProcessInfo } from "./list-processes.ts";
+import type { OrphanRescueFn } from "./orphan-rescue.ts";
 
 /** `true` só quando `path` existe e é um symlink (Linux/macOS) ou junction (Windows) — nunca segue o alvo. */
 export function isSymlinkOrJunction(path: string): boolean {
@@ -342,6 +343,47 @@ export function findPartialRemovalOrphans(
   return orphans;
 }
 
+/** #14335: dependências da limpeza de uma pasta de remoção parcial. */
+export interface PartialRemovalOpts {
+  /** Snapshot de processos (lido só se precisar). Default: `listProcessesForWorktreeGuard()`, que cobre o Windows. */
+  getLiveProcesses?: () => readonly ProcessInfo[];
+  /** Resgate do que não está no repositório (`makeOrphanRescuer` em `orphan-rescue.ts`). Sem ele nada é apagado. */
+  rescue?: OrphanRescueFn;
+  /** Remoção do diretório. Default: `removeWorktreeDirSafely`. Injetável só para teste. */
+  removeDir?: (path: string) => { dirRemoved: boolean; errors: string[] };
+}
+
+/**
+ * #14335: apaga uma pasta que o git deixou pela metade, nesta ordem: (1)
+ * processo vivo referenciando o caminho → preserva, com os PIDs no erro
+ * (matar não é papel daqui, #8661); (2) resgate → se falhar, preserva; (3)
+ * `removeWorktreeDirSafely` (links primeiro). Nunca lança.
+ */
+export function cleanupPartialRemovalLeftover(
+  path: string,
+  opts: PartialRemovalOpts & { rescue: OrphanRescueFn },
+): { ok: true; rescueDir: string | null } | { ok: false; error: string } {
+  let live: ProcessInfo[];
+  try {
+    live = findLiveProcessesInPath(path, (opts.getLiveProcesses ?? listProcessesForWorktreeGuard)());
+  } catch (e) {
+    return { ok: false, error: `não deu para listar processos (${(e as Error).message}), pasta preservada` };
+  }
+  if (live.length > 0) {
+    const detail = live.map((p) => `PID ${p.pid} (${p.cmd.slice(0, 120)})`).join("; ");
+    return { ok: false, error: `${live.length} processo(s) vivo(s) ainda referenciam a pasta, preservada para a próxima rodada: ${detail}` };
+  }
+  const rescued = opts.rescue(path);
+  if (!rescued.ok) return { ok: false, error: rescued.error };
+  const cleanup = (opts.removeDir ?? removeWorktreeDirSafely)(path);
+  if (cleanup.dirRemoved) return { ok: true, rescueDir: rescued.rescueDir };
+  const detail = cleanup.errors.join("; ") || "sem detalhe de erro";
+  return {
+    ok: false,
+    error: `a limpeza pelo sistema de arquivos falhou: ${detail}${rescued.rescueDir ? ` (resgate em ${rescued.rescueDir})` : ""}`,
+  };
+}
+
 export interface GitRemovalResult {
   ok: boolean;
   error?: string;
@@ -368,25 +410,29 @@ export interface GitRemovalResult {
  * **Exceção #14335: git falhou DEPOIS de apagar o `.git`.** O `git worktree
  * remove` apaga o diretório em ordem alfabética, para no primeiro arquivo que
  * não consegue apagar e desregistra o worktree mesmo assim. Sem o arquivo
- * `.git`, a pasta não é mais worktree e nenhum chamador volta a ela; o
- * fallback FS roda, e se ainda falhar (arquivo travado por processo vivo) o
- * erro sai com as duas causas e a pasta fica para a varredura de órfãos de
- * `cleanup-merged-worktrees.ts` (`findPartialRemovalOrphans`). Com o `.git`
- * ainda lá (git recusou antes de começar: lock, path em uso) segue a regra
- * acima, sem fallback.
+ * `.git`, a pasta não é mais worktree e nenhum chamador volta a ela, então
+ * roda `cleanupPartialRemovalLeftover` (processo vivo → preserva; resgate
+ * do que não está no repositório → só então apaga). Sem `opts.rescue` a
+ * pasta nunca é apagada aqui: fica para a varredura de órfãos de
+ * `cleanup-merged-worktrees.ts`, que resgata. Com o `.git` ainda lá (git
+ * recusou antes de começar: lock, path em uso) segue a regra acima, sem
+ * fallback.
  */
-export function resolveWorktreeRemoval(gitResult: GitRemovalResult, path: string): GitRemovalResult {
+export function resolveWorktreeRemoval(
+  gitResult: GitRemovalResult,
+  path: string,
+  opts: PartialRemovalOpts = {},
+): GitRemovalResult {
   if (!gitResult.ok) {
     if (!existsSync(path) || existsSync(join(path, ".git"))) return gitResult;
-    const cleanup = removeWorktreeDirSafely(path);
-    if (cleanup.dirRemoved) return { ok: true };
-    const detail = cleanup.errors.join("; ") || "sem detalhe de erro";
-    return {
-      ok: false,
-      error:
-        `${gitResult.error ?? "git worktree remove falhou"} — o git já tinha apagado o .git e desregistrado o worktree ` +
-        `(remoção parcial, #14335); a limpeza pelo sistema de arquivos também falhou: ${detail}`,
-    };
+    const prefix =
+      `${gitResult.error ?? "git worktree remove falhou"} — o git já tinha apagado o .git e desregistrado o worktree ` +
+      `(remoção parcial, #14335)`;
+    if (!opts.rescue) {
+      return { ok: false, error: `${prefix}; a pasta fica para a varredura de órfãos do cleanup-merged-worktrees, que resgata antes de apagar` };
+    }
+    const leftover = cleanupPartialRemovalLeftover(path, { ...opts, rescue: opts.rescue });
+    return leftover.ok ? { ok: true } : { ok: false, error: `${prefix}; ${leftover.error}` };
   }
   if (!existsSync(path)) return { ok: true };
 

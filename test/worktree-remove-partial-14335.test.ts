@@ -20,6 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   resolveWorktreeRemoval,
@@ -28,6 +29,7 @@ import {
   commandReferencesPath,
   findLiveProcessesInPath,
   normalizePathKey,
+  cleanupPartialRemovalLeftover,
   PARTIAL_REMOVAL_ORPHAN_MIN_IDLE_MS,
 } from "../scripts/lib/worktree-remove.ts";
 import {
@@ -37,6 +39,8 @@ import {
   type ProcessInfo,
 } from "../scripts/lib/list-processes.ts";
 import { runMainWithCheckers } from "../scripts/cleanup-merged-worktrees.ts";
+import { rescueOrphanDir, gitBlobsPresent, makeOrphanRescuer } from "../scripts/lib/orphan-rescue.ts";
+import { cleanupIntegrationBranch, type TrainRunner } from "../scripts/lib/merge-train-live.ts";
 
 function mktmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -65,9 +69,17 @@ test("#14335 resolveWorktreeRemoval: git falhou com 'Invalid argument' depois de
   const { dir, target } = makePartialRemovalLeftover(base, "agent-a29f");
   const gitError = "git worktree remove saiu com código 255 — stderr: error: failed to delete 'C:/x/agent-a29f': Invalid argument";
 
-  const result = resolveWorktreeRemoval({ ok: false, error: gitError }, dir);
+  const rescued: string[] = [];
+  const result = resolveWorktreeRemoval({ ok: false, error: gitError }, dir, {
+    getLiveProcesses: () => [],
+    rescue: (p) => {
+      rescued.push(p);
+      return { ok: true, rescueDir: null };
+    },
+  });
 
   assert.deepEqual(result, { ok: true });
+  assert.deepEqual(rescued, [dir], "resgate roda antes de apagar");
   assert.equal(existsSync(dir), false, "a pasta órfã precisa sumir");
   assert.equal(readFileSync(join(target, "canary.txt"), "utf8"), "conteúdo do alvo da junction");
   rmSync(base, { recursive: true, force: true });
@@ -276,6 +288,7 @@ test("#14335 runMainWithCheckers: sem worktree elegível, ainda varre e remove a
       "/repo",
       baseCheckers({
         findOrphans: () => [orphan],
+        rescueOrphan: () => ({ ok: true, rescueDir: "/repo/data/worktree-rescue/2026-11-27/agent-a29f" }),
         removeWorktreeDir: (p) => {
           removed.push(p);
           return { dirRemoved: true, errors: [] };
@@ -284,6 +297,7 @@ test("#14335 runMainWithCheckers: sem worktree elegível, ainda varre e remove a
     ),
   );
   assert.deepEqual(removed, [orphan]);
+  assert.ok(logs.some((l) => l.includes("resgate em /repo/data/worktree-rescue/2026-11-27/agent-a29f")), logs.join("\n"));
   assert.ok(logs.some((l) => l.includes("pasta de remoção parcial removida (#14335)")), logs.join("\n"));
   assert.ok(logs.some((l) => l.includes("varredura de remoção parcial (#14335): 1/1")));
 });
@@ -298,6 +312,7 @@ test("#14335 runMainWithCheckers: pasta referenciada por processo vivo é preser
       baseCheckers({
         findOrphans: () => [orphan],
         listProcesses: () => [{ pid: 62860, ppid: 52900, cmd: `node --require ${orphan}/node_modules/tsx/dist/preflight.cjs --test` }],
+        rescueOrphan: () => ({ ok: true, rescueDir: null }),
         removeWorktreeDir: (p) => {
           removed.push(p);
           return { dirRemoved: true, errors: [] };
@@ -332,4 +347,231 @@ test("#14335 runMainWithCheckers: --dry-run só relata a pasta, não remove nem 
   assert.deepEqual(removed, []);
   assert.equal(listed, 0);
   assert.ok(logs.some((l) => l.includes("(dry-run) 1 pasta(s) de remoção parcial (#14335)")), logs.join("\n"));
+});
+
+// ── coordenador, finding 1: processo vivo e resgate na remoção parcial ──
+
+test("#14335 resolveWorktreeRemoval: remoção parcial com processo vivo no caminho -> preserva, PID no erro, sem resgate nem remoção", () => {
+  const base = mktmp("diaria-wtrm-14335-live-");
+  const { dir } = makePartialRemovalLeftover(base, "agent-vivo");
+  let rescued = 0;
+  const result = resolveWorktreeRemoval({ ok: false, error: "Invalid argument" }, dir, {
+    getLiveProcesses: () => [{ pid: 62860, ppid: 52900, cmd: `node --require ${dir}\\node_modules\\tsx\\dist\\preflight.cjs` }],
+    rescue: () => {
+      rescued++;
+      return { ok: true, rescueDir: null };
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /PID 62860/);
+  assert.equal(rescued, 0);
+  assert.equal(existsSync(join(dir, "package.json")), true);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 resolveWorktreeRemoval: remoção parcial sem resgate configurado -> nada é apagado", () => {
+  const base = mktmp("diaria-wtrm-14335-norescue-");
+  const { dir } = makePartialRemovalLeftover(base, "agent-sem-resgate");
+  const result = resolveWorktreeRemoval({ ok: false, error: "Invalid argument" }, dir, { getLiveProcesses: () => [] });
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /varredura de órfãos/);
+  assert.equal(existsSync(join(dir, "package.json")), true);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 resolveWorktreeRemoval: resgate falhou -> preserva a pasta", () => {
+  const base = mktmp("diaria-wtrm-14335-rescuefail-");
+  const { dir } = makePartialRemovalLeftover(base, "agent-resgate-falhou");
+  const result = resolveWorktreeRemoval({ ok: false, error: "Invalid argument" }, dir, {
+    getLiveProcesses: () => [],
+    rescue: () => ({ ok: false, error: "resgate falhou (disco cheio), pasta preservada" }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /disco cheio/);
+  assert.equal(existsSync(join(dir, "package.json")), true);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 cleanupIntegrationBranch (merge-train-live): remoção parcial com processo vivo REAL no caminho é preservada", async () => {
+  const base = mktmp("diaria-wtrm-14335-mtl-");
+  const { dir } = makePartialRemovalLeftover(base, "wt-integracao");
+  const repo = makeRepoWithCommittedFiles(base);
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", dir], { stdio: "ignore" });
+  try {
+    await waitFor(() => listProcessesForWorktreeGuard().some((p) => p.pid === holder.pid));
+    const warnings: string[] = [];
+    const runner = {
+      exec: (_cmd: string, args: string[]) =>
+        args[0] === "worktree" ? { ok: false, stdout: "", stderr: "error: failed to delete: Invalid argument" } : { ok: true, stdout: "", stderr: "" },
+      sleep: async () => {},
+      now: () => 0,
+      mkTempDir: () => "",
+      warn: (m: string) => warnings.push(m),
+    } as unknown as TrainRunner;
+    const result = cleanupIntegrationBranch(runner, "merge-train/x", dir, repo);
+    assert.equal(result.ok, false);
+    assert.match(result.error!, new RegExp(`PID ${holder.pid}`));
+    assert.equal(existsSync(join(dir, "package.json")), true, "nada apagado com processo vivo");
+  } finally {
+    holder.kill();
+  }
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 branch-cleanup.ts: a remoção passa snapshot de processos e resgate ao resolveWorktreeRemoval", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "scripts", "branch-cleanup.ts"), "utf8");
+  assert.match(
+    src,
+    /resolveWorktreeRemoval\(removeResult, w\.path, \{\s*getLiveProcesses: \(\) => listProcessesForWorktreeGuard\(\),\s*rescue: makeOrphanRescuer\(cwd\),/,
+  );
+});
+
+// ── coordenador, finding 2: resgate antes de apagar ──
+
+function runGit(cwd: string, args: string[]): string {
+  const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+  return r.stdout;
+}
+
+/** Repo com `README.md`, `package.json` e `scripts/x.ts` (o conteúdo de `makePartialRemovalLeftover`) commitados, e `data/` presente. */
+function makeRepoWithCommittedFiles(base: string): string {
+  const repo = join(base, "repo");
+  mkdirSync(join(repo, "scripts"), { recursive: true });
+  mkdirSync(join(repo, "data"));
+  writeFileSync(join(repo, "package.json"), "{}\n");
+  writeFileSync(join(repo, "README.md"), "# readme\n");
+  writeFileSync(join(repo, "scripts", "x.ts"), "export {};\n");
+  runGit(base, ["init", "-q", repo]);
+  runGit(repo, ["add", "package.json", "README.md", "scripts/x.ts"]);
+  runGit(repo, ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "core.autocrlf=false", "commit", "-qm", "i"]);
+  return repo;
+}
+
+async function waitFor(cond: () => boolean, ms = 15_000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > ms) throw new Error("timeout esperando condição");
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+test("#14335 rescueOrphanDir: copia só o que não está no repo (_internal/, rastreado editado), ignora node_modules, registra link sem seguir", () => {
+  const base = mktmp("diaria-wtrm-14335-rescue-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const { dir, target } = makePartialRemovalLeftover(base, "agent-com-trabalho");
+  writeFileSync(join(dir, "README.md"), "# readme\r\n"); // mesmo conteúdo com CRLF (autocrlf): está no repo
+  mkdirSync(join(dir, "_internal"));
+  writeFileSync(join(dir, "_internal", "notas.json"), '{"trabalho":"não rastreado"}');
+  writeFileSync(join(dir, "scripts", "x.ts"), "export const editado = 1;\n");
+  symlinkSync(target, join(dir, "data"), "junction");
+  const rescueRoot = join(repo, "data", "worktree-rescue");
+  const nowMs = Date.UTC(2026, 10, 27);
+
+  const r = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitBlobsPresent(repo), nowMs });
+
+  assert.ok(r.rescueDir);
+  assert.equal(r.copied, 2);
+  assert.equal(r.alreadyInRepo, 2, "package.json e README.md (CRLF) já estão no repo");
+  assert.equal(r.symlinks, 1);
+  assert.match(r.rescueDir!.replace(/\\/g, "/"), /data\/worktree-rescue\/2026-11-27\/agent-com-trabalho$/);
+  assert.equal(readFileSync(join(r.rescueDir!, "files", "_internal", "notas.json"), "utf8"), '{"trabalho":"não rastreado"}');
+  assert.equal(readFileSync(join(r.rescueDir!, "files", "scripts", "x.ts"), "utf8"), "export const editado = 1;\n");
+  assert.equal(existsSync(join(r.rescueDir!, "files", "node_modules")), false, "node_modules fica fora");
+  assert.equal(existsSync(join(r.rescueDir!, "files", "package.json")), false);
+  const meta = JSON.parse(readFileSync(join(r.rescueDir!, "meta.json"), "utf8"));
+  assert.deepEqual(Object.keys(meta.symlinks), ["data"]);
+  assert.equal(readFileSync(join(target, "canary.txt"), "utf8"), "conteúdo do alvo da junction", "alvo do link intacto");
+
+  // 2º resgate no mesmo dia vai para `-2`, nunca sobrescreve.
+  const r2 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitBlobsPresent(repo), nowMs });
+  assert.match(r2.rescueDir!.replace(/\\/g, "/"), /agent-com-trabalho-2$/);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 rescueOrphanDir: tudo já no repo -> nenhum diretório de resgate criado", () => {
+  const base = mktmp("diaria-wtrm-14335-rescue-nada-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const dir = join(base, "agent-limpo");
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  writeFileSync(join(dir, "package.json"), "{}\n");
+  writeFileSync(join(dir, "scripts", "x.ts"), "export {};\n");
+  const r = rescueOrphanDir(dir, { rescueRoot: join(repo, "data", "worktree-rescue"), blobsPresent: gitBlobsPresent(repo) });
+  assert.deepEqual(r, { rescueDir: null, copied: 0, alreadyInRepo: 2, symlinks: 0 });
+  assert.equal(existsSync(join(repo, "data", "worktree-rescue")), false);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 makeOrphanRescuer + cleanupPartialRemovalLeftover: sem data/, acima do teto ou repo inválido -> resgate falha e a pasta fica", () => {
+  const base = mktmp("diaria-wtrm-14335-rescue-falha-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const { dir } = makePartialRemovalLeftover(base, "agent-falha");
+  mkdirSync(join(dir, "_internal"));
+  writeFileSync(join(dir, "_internal", "a.txt"), "trabalho");
+
+  rmSync(join(repo, "data"), { recursive: true });
+  const semData = cleanupPartialRemovalLeftover(dir, { getLiveProcesses: () => [], rescue: makeOrphanRescuer(repo) });
+  assert.equal(semData.ok, false);
+  assert.match((semData as { error: string }).error, /não existe para guardar o resgate/);
+  assert.equal(existsSync(join(dir, "_internal", "a.txt")), true);
+  assert.equal(existsSync(join(repo, "data")), false, "nunca cria um data/ de verdade");
+
+  mkdirSync(join(repo, "data"));
+  assert.throws(
+    () =>
+      rescueOrphanDir(dir, {
+        rescueRoot: join(repo, "data", "worktree-rescue"),
+        blobsPresent: gitBlobsPresent(repo),
+        limits: { maxFiles: 0, maxBytes: 1e9 },
+      }),
+    /teto do resgate/,
+  );
+  const repoInvalido = cleanupPartialRemovalLeftover(dir, { getLiveProcesses: () => [], rescue: makeOrphanRescuer(join(base, "nao-e-repo")) });
+  assert.equal(repoInvalido.ok, false);
+  assert.equal(existsSync(join(dir, "_internal", "a.txt")), true);
+
+  const okResult = cleanupPartialRemovalLeftover(dir, { getLiveProcesses: () => [], rescue: makeOrphanRescuer(repo) });
+  assert.equal(okResult.ok, true);
+  assert.equal(existsSync(dir), false);
+  const rescueDir = (okResult as { rescueDir: string }).rescueDir;
+  assert.equal(readFileSync(join(rescueDir, "files", "_internal", "a.txt"), "utf8"), "trabalho");
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 runMainWithCheckers: resgate da pasta órfã falhou -> não apaga", () => {
+  const removed: string[] = [];
+  const logs = captureLogs(() =>
+    runMainWithCheckers(
+      {},
+      "/repo",
+      baseCheckers({
+        findOrphans: () => ["/repo/.claude/worktrees/agent-x"],
+        rescueOrphan: () => ({ ok: false, error: "resgate falhou (x), pasta preservada" }),
+        removeWorktreeDir: (p) => {
+          removed.push(p);
+          return { dirRemoved: true, errors: [] };
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(removed, []);
+  assert.ok(logs.some((l) => l.includes("preservada (#14335)") && l.includes("resgate falhou")), logs.join("\n"));
+});
+
+test("#14335 runMainWithCheckers: sem rescueOrphan configurado, nenhuma pasta órfã é apagada", () => {
+  const removed: string[] = [];
+  captureLogs(() =>
+    runMainWithCheckers(
+      {},
+      "/repo",
+      baseCheckers({
+        findOrphans: () => ["/repo/.claude/worktrees/agent-x"],
+        removeWorktreeDir: (p) => {
+          removed.push(p);
+          return { dirRemoved: true, errors: [] };
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(removed, []);
 });

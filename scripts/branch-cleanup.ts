@@ -90,6 +90,8 @@
 import { execFileSync } from "node:child_process";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveWorktreeRemoval } from "./lib/worktree-remove.ts"; // #8209
+import { listProcessesForWorktreeGuard } from "./lib/list-processes.ts"; // #14335
+import { makeOrphanRescuer } from "./lib/orphan-rescue.ts"; // #14335
 import {
   classifyBranchForCleanup,
   classifyWorktreeForCleanup,
@@ -391,7 +393,12 @@ async function main(): Promise<void> {
       // a limpeza segura de fallback nesse caso (nunca quando o git em si
       // falhou — ver docstring do helper), mesmo helper único usado por
       // cleanup-merged-worktrees.ts e merge-train-live.ts.
-      const finalResult = resolveWorktreeRemoval(removeResult, w.path);
+      // #14335: remoção parcial (git falhou depois de apagar o .git) só é
+      // limpa sem processo vivo no caminho e depois do resgate.
+      const finalResult = resolveWorktreeRemoval(removeResult, w.path, {
+        getLiveProcesses: () => listProcessesForWorktreeGuard(),
+        rescue: makeOrphanRescuer(cwd),
+      });
       removalResults.push(finalResult);
       if (finalResult.ok) {
         removedWt++;
