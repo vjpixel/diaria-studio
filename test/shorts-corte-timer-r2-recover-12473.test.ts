@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CORTE_TIMER_CHILD_TIMEOUT_MS, runCorteTimerFor, type CorteTimerAlarmKey } from "../scripts/shorts-corte-timer.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";
 import { CORTE_SPEC_FILE, corteR2Key, parseCorteSpec, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
@@ -136,12 +137,44 @@ describe("#12473: o timer do corte recupera do R2 o vídeo que o OneDrive não t
     }
   });
 
-  it("sem os R2_* no .env: alarma missing-video dizendo o que falta", async () => {
+  it("#14325: sem os R2_* no ambiente: nenhum alarme, avisa que a execução está mal configurada e sai 1", async () => {
+    // 21/11 (guia-261117): uma execução sem os R2_* alarmou missing-video nos 3
+    // destinos; outra, segundos depois, recuperou do R2 e publicou. Alarme falso.
     const dir = corteSemVideo();
     const alarms: Alarm[] = [];
-    await runCorteTimerFor(dir, false, runDeps({ missing: ["R2_ACCOUNT_ID"] }, [], alarms));
-    assert.deepEqual(alarms.map((a) => a.key), ["missing-video", "missing-video"]);
-    assert.match(alarms[0].reason, /sem acesso ao R2 para recuperar \(R2_ACCOUNT_ID\)/);
+    const calls: string[][] = [];
+    const errors: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+    let code: number;
+    try {
+      code = await runCorteTimerFor(dir, false, runDeps({ missing: ["R2_ACCOUNT_ID"] }, calls, alarms));
+    } finally {
+      console.error = orig;
+    }
+    assert.deepEqual(alarms, [], "sem alarme ao editor");
+    assert.equal(calls.length, 0, "não publica");
+    assert.equal(code, 1, "a unit fica failed: a execução está mal configurada");
+    assert.ok(errors.some((l) => /EXECUÇÃO MAL CONFIGURADA/.test(l) && /R2_ACCOUNT_ID/.test(l)), errors.join("\n"));
+  });
+
+  it("#14325: com o vídeo presente, a falta dos R2_* não muda nada (publica)", async () => {
+    const dir = corteSemVideo();
+    writeFileSync(join(dir, BASE.video), VIDEO);
+    const alarms: Alarm[] = [];
+    const calls: string[][] = [];
+    const code = await runCorteTimerFor(dir, false, runDeps({ missing: ["R2_ACCOUNT_ID"] }, calls, alarms));
+    assert.deepEqual(alarms, []);
+    assert.equal(calls.length, 1);
+    assert.equal(code, 0);
+  });
+
+  it("#14325: o main carrega o .env antes de ler os R2_* (rodada à mão no 300 tem as credenciais)", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "shorts-corte-timer.ts"), "utf8");
+    const main = src.slice(src.indexOf("async function main()"));
+    const load = main.indexOf("loadProjectEnv()");
+    assert.ok(load > 0, "main chama loadProjectEnv()");
+    assert.ok(load < main.indexOf("loadR2UploadConfig("), "antes do loadR2UploadConfig");
   });
 
   it("dry-run não baixa nada", async () => {

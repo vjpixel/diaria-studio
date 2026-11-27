@@ -72,6 +72,12 @@
  * versão mais alta: com `_Youtube_V6` exportado depois do V5 promovido, vale o
  * V6. O original da cópia em `Editados/` sai do pool (é o mesmo vídeo).
  *
+ * **Sufixo de destino solto em `{AAMMDD}/` (#14325).** Sem `.mp4` em
+ * `Final/` nem em `Editados/` e sem "final" no nome, o `.mp4` com sufixo de
+ * destino na própria subpasta da edição vale como os de `Editados/` (a versão
+ * mais alta); o bruto, sem sufixo, nunca. Em 30/10 e 09/11 o timer do
+ * LinkedIn pessoal ficou em `missing-video` com 2 `.mp4` lá e 0 "final".
+ *
  * **Vertical de `Editados/` só com sufixo (#11423).** Para os destinos
  * verticais, um `.mp4` sem `_Instagram_`/`_Outras redes_` em `Editados/` é
  * rascunho e nunca é escolhido pela proporção.
@@ -340,6 +346,14 @@ export interface SelectDriveVideoOptions {
    * os nomes no padrão `_V{n}-{slug}` são reconhecidos.
    */
   cortes?: readonly CorteRef[];
+  /**
+   * #14325: sem `.mp4` em `Final/`/`Editados/` e sem "final" no nome na
+   * subpasta da edição, vale o `.mp4` com sufixo de destino solto em
+   * `{AAMMDD}/` (a versão mais alta, como em `Editados/`). Default `true`; o
+   * `fetch-drive-video.ts` passa `false` na sondagem que decide se desce em
+   * `Editados/`, para `Editados/` continuar à frente da raiz da edição.
+   */
+  editionSuffixFallback?: boolean;
 }
 
 /** Orientação pela proporção; `null` sem largura/altura válidas. */
@@ -577,12 +591,16 @@ export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVi
     const editionPool = finals.filter((f) => f.scope === "edition-folder");
     const fromEdition = pick(editionPool, opts.orientation);
     if (fromEdition) return fromEdition;
+    if (opts.editionSuffixFallback !== false) {
+      const fromSuffix = pickSuffixedInEditionFolder(files, opts.orientation, target);
+      if (fromSuffix) return fromSuffix;
+    }
     const videos = files.filter((f) => f.scope === "edition-folder" && isMp4VideoFile(f)).length;
     return {
       kind: "none",
       orientation: opts.orientation,
       reason:
-        `a subpasta da edição existe, mas não tem .mp4 ${opts.orientation} com "final" no nome ` +
+        `a subpasta da edição existe, mas não tem .mp4 ${opts.orientation} com "final" no nome nem com sufixo de destino ` +
         `(${editionPool.length} "final", ${videos} .mp4 lá dentro); a raiz não é consultada quando a subpasta existe`,
     };
   }
@@ -597,6 +615,29 @@ export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVi
       ? `sem subpasta da edição e nenhum .mp4 com "final" no nome na raiz (${videos} .mp4 listado(s))`
       : `sem subpasta da edição e nenhum .mp4 ${opts.orientation} com "final" no nome na raiz nas últimas ${windowHours}h`;
   return { kind: "none", orientation: opts.orientation, reason };
+}
+
+/**
+ * #14325: na subpasta da edição, sem nenhum "final" no nome, o `.mp4` com
+ * sufixo de destino (`_Vertical_V3`, `_Outras redes_V2`, `horizontal_V4`) é
+ * tratado como os de `Editados/`: 1 do destino vale; 2+ valem pela versão mais
+ * alta (`pickHighestVersion`), e sem versão desempatável seguem `ambiguous`.
+ * Sem sufixo (o bruto da gravação) nunca entra. Devolve o arquivo original
+ * (sem `editedFolder`), então o fetch não o promove para `Final/`. `null` =
+ * nenhum candidato.
+ */
+function pickSuffixedInEditionFolder(files: DriveVideoFile[], orientation: VideoOrientation, target: VideoTarget): DriveVideoSelection | null {
+  const suffixed = files.filter((f) => f.scope === "edition-folder" && isMp4VideoFile(f) && videoTargetOf(f.name) !== null);
+  if (!suffixed.length) return null;
+  const original = (f: DriveVideoFile) => suffixed.find((o) => o.id === f.id) ?? f;
+  const sel = pickFromFinalFolder(suffixed.map((f) => ({ ...f, editedFolder: true })), orientation, target);
+  if (!sel) return null;
+  if (sel.kind === "found") {
+    const why = sel.premise ? sel.premise.replace("em Editados/", "na subpasta da edição") : `único .mp4 do destino ${target} na subpasta da edição`;
+    return { kind: "found", orientation, file: original(sel.file), premise: `sem Final/ nem "final" no nome: ${original(sel.file).name} pelo sufixo de destino — ${why} (#14325)` };
+  }
+  if (sel.kind === "ambiguous") return { kind: "ambiguous", orientation, candidates: sel.candidates.map(original) };
+  return null;
 }
 
 export type CorteExportSelection =

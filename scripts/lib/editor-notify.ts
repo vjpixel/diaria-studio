@@ -132,7 +132,8 @@ export interface NotifyEditorFinding {
    * um e-mail que já era devido numa execução anterior e falhou no push: a 1ª
    * execução cria a issue e o e-mail falha; na 2ª a issue volta `reused` e,
    * sem isto, o e-mail nunca mais seria tentado. Só vale para `"acao"`/
-   * `"urgente"` com issue tratada com sucesso (`action !== "failed"`); quem
+   * `"urgente"` com issue tratada com sucesso (`action !== "failed"`; com a
+   * issue falhando, o `"urgente"` manda o e-mail de qualquer jeito, #14325); quem
    * passa guarda por conta própria que o e-mail daquele achado está pendente.
    */
   forceEmail?: boolean;
@@ -410,7 +411,20 @@ export async function notifyEditor(
       },
       rootDir,
     );
-    return { severity: finding.severity, emailPolicy, issue, emailSent: false };
+    // #14325: em 13/11 o 300 ficou sem DNS, a issue não abriu e o alarme
+    // `urgente` não chegou a ninguém (o e-mail dependia da issue). O urgente
+    // sai por e-mail mesmo sem a issue, dizendo que ela não foi aberta; o
+    // resultado segue `failed`, então o chamador tenta a issue de novo depois
+    // (e o e-mail sai de novo a cada tentativa enquanto o GitHub falhar).
+    // `acao` segue sem e-mail: sob `urgent_only` ele nunca manda.
+    if (finding.severity !== "urgente") {
+      return { severity: finding.severity, emailPolicy, issue, emailSent: false };
+    }
+    const fallback = await sendPush(
+      { subject: finding.subject, body: `${finding.body}\n\n(A issue de alarme no GitHub não foi aberta: ${issue.error ?? "erro desconhecido"}.)` },
+      { to: deps.emailTo, platformConfigPath },
+    );
+    return { severity: finding.severity, emailPolicy, issue, emailSent: fallback.ok, emailError: fallback.ok ? undefined : fallback.error };
   }
 
   if (!finding.forceEmail && !shouldEmailForIssueOutcome(finding.severity, issue, emailPolicy, finding.legacyResendIntent)) {
