@@ -298,22 +298,34 @@ describe("#14116 stage4-social-reseal prepare", () => {
 });
 
 describe("#14116 stage4-social-reseal after-humanizer", () => {
-  it("scoped: lint de abertura, snapshot pós, record-run com --sections/--note, verify com --note", () => {
+  it("scoped: lint de abertura, snapshot pós, record-run com --sections, verify (sem --note, #13933)", () => {
     const { deps, calls, copies } = rsDeps((s) =>
       s.endsWith("verify-scoped-humanization.ts") ? { stdout: JSON.stringify({ untouchedTargets: [], unexpectedChanges: [] }) } : undefined,
     );
-    const r = runAfterHumanizer(ED, { sections: ["main_d1"], note: "humanizador sem mudanças" }, deps);
+    const r = runAfterHumanizer(ED, { sections: ["main_d1"] }, deps);
     assert.equal(r.exit, 0);
     assert.deepEqual(copies, [[join(ED, "03-social.md"), join(ED, POST_HUMANIZER_SNAPSHOT)]]);
     assert.ok(isLint(calls[0], "no-unanchored-opening"));
     assert.deepEqual(calls[1].args, [
       "--record-run", "--step", "humanizador",
       "--pre", join(ED, PRE_SNAPSHOT), "--post", join(ED, POST_HUMANIZER_SNAPSHOT),
-      "--sections", "main_d1", "--note", "humanizador sem mudanças", "--edition-dir", ED,
+      "--sections", "main_d1", "--edition-dir", ED,
     ]);
     assert.deepEqual(calls[2].args, [
-      "--pre", join(ED, PRE_SNAPSHOT), "--post", join(ED, POST_HUMANIZER_SNAPSHOT), "--sections", "main_d1", "--note", "humanizador sem mudanças",
+      "--pre", join(ED, PRE_SNAPSHOT), "--post", join(ED, POST_HUMANIZER_SNAPSHOT), "--sections", "main_d1",
     ]);
+  });
+
+  it("#13933: CLI after-humanizer recusa --note (exit 6) sem rodar nenhum passo", () => {
+    for (const argv of [
+      ["after-humanizer", "--edition-dir", ED, "--sections", "main_d1", "--note", "humanizador sem mudanças"],
+      ["after-humanizer", "--edition-dir", ED, "--note"],
+    ]) {
+      const { deps, calls, copies } = rsDeps(() => undefined);
+      assert.equal(resealMain(argv, deps), 6);
+      assert.deepEqual(calls, []);
+      assert.deepEqual(copies, []);
+    }
   });
 
   it("full-file: sem --sections e sem verify", () => {
