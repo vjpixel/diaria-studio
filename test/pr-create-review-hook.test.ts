@@ -70,7 +70,7 @@ describe("resolveEffort (#2754)", () => {
   // não vai mais direto pro DEFAULT_EFFORT — resolve por tamanho de diff. Estes
   // dois fixtures usam um `execFn` de UM só argumento (ignora `args`), então a
   // MESMA string de branch também é devolvida pra chamada de
-  // `additions,deletions` — não é JSON válido, `getDiffLineCount` cai no catch
+  // `additions,deletions,files` — não é JSON válido, `getDiffLineCount` cai no catch
   // e retorna `null`, e É ISSO que faz o teste cair no ramo "tamanho
   // desconhecido" (reason "default"), não um diff grande implícito. Deixado
   // explícito via a asserção de `reason` abaixo — sem ela, um bug que fizesse
@@ -207,13 +207,58 @@ describe("resolveEffort (#2754)", () => {
 describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243; limiar 500 desde #5420)", () => {
   function makeExecFn({ branch = "develop/fix-4813\n", diff } = {}) {
     return (_cmd: string, args: string[]) => {
-      if (args.includes("additions,deletions")) {
-        if (diff === undefined) throw new Error("gh pr view --json additions,deletions failed");
+      if (args.includes("additions,deletions,files")) {
+        if (diff === undefined) throw new Error("gh pr view --json additions,deletions,files failed");
         return diff;
       }
       return branch;
     };
   }
+
+  it("pondera apenas test/ pela metade nos dois limiares (#14112)", () => {
+    for (const [branch, threshold] of [
+      ["develop/fix-14112", EFFORT_DIFF_LINE_THRESHOLD],
+      ["overnight/fix-14112", OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD],
+    ] as const) {
+      for (const [codeLines, testLines, expected] of [
+        [200, (threshold - 200) * 2 - 1, "low"], // meia linha abaixo
+        [200, (threshold - 200) * 2, "max"],
+        [0, threshold * 2 - 1, "low"],
+        [0, threshold * 2, "max"], // teste grande ainda recebe fleet
+      ] as const) {
+        const diff = JSON.stringify({
+          additions: codeLines + testLines - 1, deletions: 1,
+          files: [
+            { path: "scripts/example.ts", additions: codeLines, deletions: 0 },
+            { path: "test/nested/example.test.ts", additions: testLines - 1, deletions: 1 },
+          ],
+        });
+        const result = resolveEffort("https://github.com/o/r/pull/1", makeExecFn({ branch, diff }), noActiveRound);
+        assert.equal(result.effort, expected, `${branch}: ${codeLines} + ${testLines}/2`);
+      }
+    }
+  });
+
+  it("não desconta outros diretórios ou arquivos omitidos da lista (#14112)", () => {
+    for (const files of [
+      [{ path: "scripts/test/example.ts", additions: 700, deletions: 0 }],
+      [{ path: "tests/example.ts", additions: 700, deletions: 0 }],
+      [{ path: "test/example.ts", additions: 100, deletions: 0 }], // 600 omitidas
+    ]) {
+      const diff = JSON.stringify({ additions: 700, deletions: 0, files });
+      assert.equal(resolveEffort("https://github.com/o/r/pull/1", makeExecFn({ diff }), noActiveRound).effort, "max");
+    }
+  });
+
+  it("dados de arquivos inválidos preservam fallback de tamanho desconhecido (#14112)", () => {
+    for (const files of [null, {}, [{ path: "test/a.ts", additions: -1, deletions: 0 }],
+      [{ path: "test/a.ts", additions: 900, deletions: 0 }]]) {
+      const diff = JSON.stringify({ additions: 700, deletions: 0, files });
+      const result = resolveEffort("https://github.com/o/r/pull/1", makeExecFn({ diff }), noActiveRound);
+      assert.equal(result.effort, "max");
+      assert.equal(result.reason, "default");
+    }
+  });
 
   it("diff pequeno (< limiar) → low, mesmo com DEFAULT_EFFORT configurado como max", () => {
     const execFn = makeExecFn({ diff: JSON.stringify({ additions: 1, deletions: 0 }) });
@@ -294,7 +339,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   });
 
   it("falha ao obter o tamanho do diff (JSON malformado) → resolve o DEFAULT_EFFORT, reason default, nunca 'skip'", () => {
-    const execFn = (_cmd: string, args: string[]) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4813\n");
+    const execFn = (_cmd: string, args: string[]) => (args.includes("additions,deletions,files") ? "not valid json" : "develop/fix-4813\n");
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.reason, "default");
@@ -317,7 +362,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   it("#6393: branch overnight/* com diff PEQUENO (< limiar overnight) → low, reason branch_overnight (checando o diff)", () => {
     let diffChecked = false;
     const execFn = (_cmd: string, args: string[]) => {
-      if (args.includes("additions,deletions")) {
+      if (args.includes("additions,deletions,files")) {
         diffChecked = true;
         return JSON.stringify({ additions: 500, deletions: 400 }); // 900 < 1000
       }
@@ -331,7 +376,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
 
   it("#6393: branch overnight/* com diff GRANDE (>= limiar overnight) → max, reason branch_overnight_diff_grande", () => {
     const execFn = (_cmd: string, args: string[]) => {
-      if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 }); // 1100 >= 1000
+      if (args.includes("additions,deletions,files")) return JSON.stringify({ additions: 700, deletions: 400 }); // 1100 >= 1000
       return "overnight/fix-1234\n";
     };
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
@@ -341,7 +386,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
 
   it("#6393: branch overnight/* com diff exatamente no limiar overnight (1000) → max (limiar é exclusivo, mesma semântica do geral)", () => {
     const execFn = (_cmd: string, args: string[]) => {
-      if (args.includes("additions,deletions")) {
+      if (args.includes("additions,deletions,files")) {
         return JSON.stringify({ additions: OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD, deletions: 0 });
       }
       return "overnight/fix-1234\n";
@@ -353,7 +398,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
 
   it("#6393: branch overnight/* com diff DESCONHECIDO (gh falha) → low, reason branch_overnight (fail-direction barata preservada, nunca DEFAULT_EFFORT)", () => {
     const execFn = (_cmd: string, args: string[]) => {
-      if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
+      if (args.includes("additions,deletions,files")) throw new Error("gh pr view --json additions,deletions,files failed");
       return "overnight/fix-1234\n";
     };
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
@@ -367,7 +412,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   describe("sessao_overnight_ativa com limiar próprio (#6393)", () => {
     it("diff pequeno (< limiar overnight) → low, reason sessao_overnight_ativa, COM warning", () => {
       const execFn = (_cmd: string, args: string[]) => {
-        if (args.includes("additions,deletions")) return JSON.stringify({ additions: 100, deletions: 50 });
+        if (args.includes("additions,deletions,files")) return JSON.stringify({ additions: 100, deletions: 50 });
         return "fix-3321-branch-naming\n";
       };
       const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
@@ -378,7 +423,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
 
     it("diff grande (>= limiar overnight) → max, reason sessao_overnight_ativa_diff_grande, COM warning", () => {
       const execFn = (_cmd: string, args: string[]) => {
-        if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 });
+        if (args.includes("additions,deletions,files")) return JSON.stringify({ additions: 700, deletions: 400 });
         return "fix-3321-branch-naming\n";
       };
       const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
@@ -389,7 +434,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
 
     it("diff desconhecido (gh falha) → low, reason sessao_overnight_ativa (fail-direction barata preservada)", () => {
       const execFn = (_cmd: string, args: string[]) => {
-        if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
+        if (args.includes("additions,deletions,files")) throw new Error("gh pr view --json additions,deletions,files failed");
         return "fix-3321-branch-naming\n";
       };
       const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
@@ -404,7 +449,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   // nunca serem confundidos um pelo outro numa futura mudança.
   describe("#6393 — matriz dos dois limiares (overnight 1000 vs. geral 500)", () => {
     function execFnFor(branch: string, diff: Record<string, unknown>) {
-      return (_cmd: string, args: string[]) => (args.includes("additions,deletions") ? JSON.stringify(diff) : branch);
+      return (_cmd: string, args: string[]) => (args.includes("additions,deletions,files") ? JSON.stringify(diff) : branch);
     }
 
     it("overnight pequeno (900 < 1000) → low", () => {
@@ -924,7 +969,7 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
 
   it("diff pequeno (< limiar) → low, reason diff_pequeno", () => {
     const execFn = (_cmd: string, args: string[]) =>
-      args.includes("additions,deletions")
+      args.includes("additions,deletions,files")
         ? JSON.stringify({ additions: 1, deletions: 0 })
         : "develop/fix-4813\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
@@ -934,7 +979,7 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
 
   it("branch normal, sem rodada ativa, diff grande CONHECIDO (≥ limiar) → max, reason diff_grande", () => {
     const execFn = (_cmd: string, args: string[]) =>
-      args.includes("additions,deletions")
+      args.includes("additions,deletions,files")
         ? JSON.stringify({ additions: 700, deletions: 300 })
         : "develop/fix-4813\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
@@ -1120,7 +1165,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
   it("diff pequeno (< limiar, #4813/#5420) → low, evento loga motivo=diff_pequeno agentes=1", () => {
     const root = freshRoot();
     const execFn = (_cmd: string, args: string[]) =>
-      args.includes("additions,deletions")
+      args.includes("additions,deletions,files")
         ? JSON.stringify({ additions: 10, deletions: 5 })
         : "develop/fix-4252\n";
     const effort = runAndLog("https://github.com/o/r/pull/101", execFn, noActiveRound, root);
@@ -1132,7 +1177,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
   it("branch normal com diff grande CONHECIDO (≥ limiar, #4813/#5420), sem rodada ativa → max, evento loga motivo=diff_grande agentes=5", () => {
     const root = freshRoot();
     const execFn = (_cmd: string, args: string[]) =>
-      args.includes("additions,deletions")
+      args.includes("additions,deletions,files")
         ? JSON.stringify({ additions: 700, deletions: 300 })
         : "fix-something-manual\n";
     const effort = runAndLog("https://github.com/o/r/pull/102", execFn, noActiveRound, root);
@@ -1224,7 +1269,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
     withIsolatedGitCwd(() => {
       const execFn = (_cmd: string, args: string[]) => {
         if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
-        if (args[0] === "pr" && args[1] === "view" && args.includes("additions,deletions")) {
+        if (args[0] === "pr" && args[1] === "view" && args.includes("additions,deletions,files")) {
           return JSON.stringify({ additions: 700, deletions: 300 }); // diff grande, evita cair em diff_pequeno
         }
         throw new Error(`execFn inesperado neste teste: ${args.join(" ")}`);

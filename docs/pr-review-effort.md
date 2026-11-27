@@ -35,6 +35,21 @@ valor). Se o custo por PR voltar a incomodar, é essa constante que se mexe
 (histórico completo da trajetória `low`→`max`:
 `docs/claude-md-historical-incidents.md#princ-4234-effort-trajetoria`).
 
+## Peso dos testes (#14112)
+
+Decisão do editor no briefing de 27/11/2026: linhas adicionadas e removidas
+sob `test/` contam com peso **0,5**, nos dois limiares (500 geral, 1000
+overnight). Os demais paths mantêm peso 1. Por exemplo, 200 linhas de código
+e 500 de testes contam como 450 (`low` no caminho geral); 1000 linhas só de
+testes contam como 500 (`max`). Não há arredondamento de meias linhas.
+
+O hook consulta `additions,deletions,files` pelo `gh pr view` e desconta
+metade das linhas de `test/` dos totais do PR. Se a lista de arquivos vier
+incompleta, os arquivos omitidos mantêm peso 1; se ausente, usa o total
+integral. Esse fallback conservador pode manter `max` em PRs grandes.
+Falhas de consulta ou dados inválidos preservam as regras de tamanho
+desconhecido de cada caminho descritas acima.
+
 ## Mecanismo executável (#4234)
 
 Todo review automatizado — hook por PR e Fases 1.5 do overnight/develop —
