@@ -841,11 +841,10 @@ describe("Brand-prefix no DO id (#2233) — votos do mesmo email em brands disti
       return new Request(url.toString(), { method: "GET" });
     };
 
-    const makeKv = () => makeTrackedKv();
     // Brands distintos têm namespaces KV distintos — simular com KVs separados
     // (na prática brandedEnv prefixaria as chaves, mas o DO id é o ponto crítico).
-    const kvDiaria = makeKv();
-    const kvClarice = makeKv();
+    const kvDiaria = makeTrackedKv();
+    const kvClarice = makeTrackedKv();
 
     const envDiaria: Env = { POLL: kvDiaria as unknown as KVNamespace, VOTE_DEDUP: mockDO, POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };
     const envClarice: Env = { POLL: kvClarice as unknown as KVNamespace, VOTE_DEDUP: mockDO, POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };

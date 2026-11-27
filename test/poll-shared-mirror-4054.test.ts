@@ -24,6 +24,7 @@ import * as sharedRateLimit from "../scripts/lib/shared/rate-limit.ts";
 import * as mirrorRateLimit from "../workers/poll/src/rate-limit.ts";
 import { isOwnWorkOnlyCredit as originIsOwnWorkOnlyCredit } from "../scripts/eia-compose.ts";
 import { isOwnWorkOnlyCredit as mirrorIsOwnWorkOnlyCredit } from "../workers/poll/src/lib.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 describe("#4054 — espelho de session-cookie.ts não pode driftar", () => {
   it("assina e verifica idêntico (mesmo secret/email/ttl/now fixo)", async () => {
@@ -176,21 +177,9 @@ describe("#4054 — espelho de subscriber-verify.ts não pode driftar", () => {
 });
 
 describe("#4054 — espelho de rate-limit.ts não pode driftar", () => {
-  function makeMapKV() {
-    const m = new Map<string, string>();
-    return {
-      async get(k: string) {
-        return m.get(k) ?? null;
-      },
-      async put(k: string, v: string) {
-        m.set(k, v);
-      },
-    } as unknown as KVNamespace;
-  }
-
   it("checkKvRateLimit — mesma sequência allowed/count pros dois lados, janelas independentes", async () => {
-    const kvShared = makeMapKV();
-    const kvMirror = makeMapKV();
+    const kvShared = makeTrackedKvNamespace();
+    const kvMirror = makeTrackedKvNamespace();
     for (let i = 0; i < 5; i++) {
       const rShared = await sharedRateLimit.checkKvRateLimit(kvShared, "k", 3, 60);
       const rMirror = await mirrorRateLimit.checkKvRateLimit(kvMirror, "k", 3, 60);

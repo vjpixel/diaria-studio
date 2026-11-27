@@ -38,28 +38,14 @@ import {
   BrevoUpstreamError,
   CAMPAIGNS_BACKFILL_CURSOR_VERSION,
 } from "../workers/brevo-dashboard/src/brevo-api.ts";
+import { jsonSeed, makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const HOUR = 3600 * 1000;
 const DAY = 24 * HOUR;
 const T0 = Date.parse("2026-09-01T12:00:00Z");
 
 function makeKv(initial: Record<string, unknown> = {}) {
-  const store = new Map<string, string>(Object.entries(initial).map(([k, v]) => [k, JSON.stringify(v)]));
-  return {
-    store,
-    kv: {
-      get: async (key: string, type?: string) => {
-        const raw = store.get(key);
-        if (raw === undefined) return null;
-        return type === "json" ? JSON.parse(raw) : raw;
-      },
-      put: async (key: string, value: string) => {
-        store.set(key, value);
-      },
-      delete: async () => {},
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any,
-  };
+  return { kv: makeTrackedKvNamespace(jsonSeed(initial)) };
 }
 
 /** Conta Brevo simulada: `campaigns[0]` é a mais recente (sort=desc). */

@@ -21,18 +21,14 @@ import {
   parseLatestVideoRecord,
   type LatestVideoRecord,
 } from "../scripts/lib/shared/latest-video-redirect.ts";
-import { resolveEditionHorizontalPublicAt, updateLatestVideoRedirect, type LatestVideoKv } from "../scripts/set-latest-video-redirect.ts";
+import { resolveEditionHorizontalPublicAt, updateLatestVideoRedirect } from "../scripts/set-latest-video-redirect.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const URL_OLD = "https://youtu.be/AAAAAAAAAAA";
 const URL_NEW = "https://youtu.be/BBBBBBBBBBB";
 const EDITION_0600 = "2026-11-12T09:00:00.000Z"; // 06:00 BRT de 261112
 const NIGHT_BEFORE = new Date("2026-11-12T01:30:00Z"); // 22:30 BRT de 261111
 const AFTER_PUBLIC = new Date("2026-11-12T09:05:00Z");
-
-function fakeKv(initial: Record<string, string> = {}): LatestVideoKv & { store: Record<string, string> } {
-  const store = { ...initial };
-  return { store, get: async (k) => store[k] ?? null, put: async (k, v) => { store[k] = v; } };
-}
 
 function edition(url: string, upload?: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "latest-video-reserva-12801-"));
@@ -47,10 +43,10 @@ describe("#12801 resíduo: caminho de reserva (upload pelo Studio, sem 05-youtub
     const dir = edition(URL_NEW);
     try {
       const old: LatestVideoRecord = { url: URL_OLD, aammdd: "261111", updated_at: "2026-11-11T01:00:00.000Z" };
-      const kv = fakeKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
+      const kv = makeTrackedKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
       const out = await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
       assert.equal(out.status, "written");
-      const stored = parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]);
+      const stored = parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY));
       assert.equal(stored?.url, URL_NEW);
       assert.equal(stored?.public_at, EDITION_0600, "sem registro do upload: 06:00 BRT da edição presumido");
       assert.deepEqual(stored?.previous, old);
@@ -64,9 +60,9 @@ describe("#12801 resíduo: caminho de reserva (upload pelo Studio, sem 05-youtub
   it("sem horizontal anterior no KV: antes de 06:00 cai na lista do canal (null), nunca no novo", async () => {
     const dir = edition(URL_NEW);
     try {
-      const kv = fakeKv();
+      const kv = makeTrackedKv();
       await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
-      const stored = parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]);
+      const stored = parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY));
       assert.equal(effectiveLatestVideoRecord(stored, NIGHT_BEFORE), null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -77,9 +73,9 @@ describe("#12801 resíduo: caminho de reserva (upload pelo Studio, sem 05-youtub
     const dir = edition(URL_NEW);
     try {
       const old: LatestVideoRecord = { url: URL_OLD, aammdd: "261111", updated_at: "" };
-      const kv = fakeKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
+      const kv = makeTrackedKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
       await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: AFTER_PUBLIC });
-      const stored = parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]);
+      const stored = parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY));
       assert.equal(effectiveLatestVideoRecord(stored, AFTER_PUBLIC)?.url, URL_NEW);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -89,7 +85,7 @@ describe("#12801 resíduo: caminho de reserva (upload pelo Studio, sem 05-youtub
   it("rodar de novo o mesmo link no caminho de reserva: unchanged (public_at determinístico)", async () => {
     const dir = edition(URL_NEW);
     try {
-      const kv = fakeKv();
+      const kv = makeTrackedKv();
       await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
       const again = await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: AFTER_PUBLIC });
       assert.equal(again.status, "unchanged");
