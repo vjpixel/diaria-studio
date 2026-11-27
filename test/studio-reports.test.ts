@@ -311,6 +311,7 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
     const result = pruneReportsRegistry(r);
     assert.deepEqual(result, {
       ok: true,
+      remoteDuplicates: 0,
       linesBefore: 0,
       linesAfter: 0,
       removedDuplicates: 0,
@@ -357,7 +358,7 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
       createdAt: "2026-08-05T14:00:00.000Z",
       url: "/relatorios/clarice-novos-novos-260805",
     });
-    writeFileSync(join(path, "index.jsonl"), `${line1}\n${line2}\n`, "utf8");
+    writeFileSync(hostRegistryPath(r), `${line1}\n${line2}\n`, "utf8");
 
     const result = pruneReportsRegistry(r);
     assert.equal(result.ok, true);
@@ -366,7 +367,7 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
     assert.equal(result.removedDuplicates, 1);
     assert.equal(result.removedCorrupted, 0);
 
-    const raw = readFileSync(join(path, "index.jsonl"), "utf8");
+    const raw = readFileSync(hostRegistryPath(r), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim());
     assert.equal(lines.length, 1);
     assert.match(JSON.parse(lines[0]).title, /70 contatos agendados/);
@@ -405,7 +406,7 @@ describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () =>
         createdAt: "2026-08-05T08:00:00.000Z",
         url: "/relatorios/overnight-260805",
       });
-    writeFileSync(join(path, "index.jsonl"), `${mk("velho")}\n${mk("novo")}\n`, "utf8");
+    writeFileSync(hostRegistryPath(r), `${mk("velho")}\n${mk("novo")}\n`, "utf8");
 
     const first = pruneReportsRegistry(r);
     assert.equal(first.linesAfter, 1);
@@ -560,30 +561,27 @@ describe("registro por máquina (#14135 — 300 e Neo registrando na mesma janel
     assert.equal(calls.length, 1);
   });
 
-  it("pruneReportsRegistry trata cada arquivo por conta própria e não apaga o legado", () => {
+  it("prune limpa só o host local e preserva bytes dos índices remoto e legado (#14308)", () => {
     const r = makeRoot();
     mkdirSync(join(r, "data", "reports"), { recursive: true });
-    writeFileSync(
-      legacyRegistryPath(r),
-      `${legacyLine({ id: "overnight-261101", title: "velho" })}\n${legacyLine({ id: "overnight-261101", title: "novo" })}\n{ not json\n`,
-      "utf8",
-    );
-    registerReport(r, { kind: "develop", sessionId: "261126", title: "Develop", htmlPath: "b.md" }, undefined, false, { host: "neo" });
-    // Mesmo id do legado no arquivo de máquina: duplicata ENTRE arquivos fica
-    // (a união resolve), só a duplicata dentro de cada arquivo sai.
-    registerReport(r, { kind: "overnight", sessionId: "261101", title: "do neo", htmlPath: "x.md" }, undefined, false, { host: "neo" });
+    const raw = `${legacyLine({ id: "overnight-261101", title: "velho" })}\n${legacyLine({ id: "overnight-261101", title: "novo" })}\n{ not json\n`;
+    const remote = hostRegistryPath(r, `${registryHostTag()}-remote`);
+    writeFileSync(legacyRegistryPath(r), raw);
+    writeFileSync(remote, raw);
+    writeFileSync(hostRegistryPath(r), raw);
 
     const result = pruneReportsRegistry(r);
+    assert.equal(readFileSync(remote, "utf8"), raw);
+    assert.equal(readFileSync(legacyRegistryPath(r), "utf8"), raw);
     assert.equal(result.ok, true);
-    assert.equal(result.linesBefore, 5);
-    assert.equal(result.linesAfter, 3);
+    assert.equal(result.linesBefore, 3);
+    assert.equal(result.linesAfter, 1);
     assert.equal(result.removedDuplicates, 1);
     assert.equal(result.removedCorrupted, 1);
-    assert.ok(existsSync(legacyRegistryPath(r)), "o legado nunca é apagado");
-    const legacyLines = readFileSync(legacyRegistryPath(r), "utf8").split("\n").filter((l) => l.trim());
-    assert.equal(legacyLines.length, 1);
-    assert.equal(readFileSync(hostRegistryPath(r, "neo"), "utf8").split("\n").filter((l) => l.trim()).length, 2);
-    assert.deepEqual(listReports(r).map((x) => x.id).sort(), ["develop-261126", "overnight-261101"]);
+    assert.equal(result.remoteDuplicates, 2);
+    assert.equal(readFileSync(hostRegistryPath(r), "utf8").split("\n").filter(Boolean).length, 1);
+    assert.deepEqual(readdirSync(join(r, "data", "reports")).sort(),
+      [basename(hostRegistryPath(r)), basename(remote), "index.jsonl"].sort());
   });
 
   it("listRegistryFiles ignora .tmp, .lock e arquivos fora do padrão", () => {
