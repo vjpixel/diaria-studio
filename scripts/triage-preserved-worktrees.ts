@@ -17,6 +17,9 @@
  *   - `untracked.txt`           — lista dos arquivos untracked (não ignorados);
  *   - `untracked/`              — CÓPIA do conteúdo desses untracked, caminho preservado
  *                                 (symlink não é seguido: alvo em `untracked-symlinks.json`);
+ *   - `tracked-raw/`            — só quando há rastreado sujo e o `git diff` sai vazio
+ *                                 (sujeira só de fim de linha com `core.autocrlf`, #14336):
+ *                                 CÓPIA crua desses arquivos, caminho preservado;
  *   - `unpushed-commits.patch`  — `git format-patch --stdout HEAD --not --remotes`;
  *   - `meta.json`               — os fatos da triagem, HEAD e data.
  * Confere que os arquivos foram gravados (tamanho no disco = bytes gerados;
@@ -163,6 +166,54 @@ function listUntracked(path: string): UntrackedEntry[] | null {
   return out;
 }
 
+/**
+ * Caminhos rastreados que o `git status` dá como sujos (tudo menos `??`), do
+ * worktree atual. Em rename/cópia, só o destino (o `-z` traz a origem no campo
+ * seguinte). `null` quando o git falha.
+ */
+export function listTrackedDirtyPaths(path: string): string[] | null {
+  const r = git(["status", "--porcelain=v1", "-z"], path);
+  if (!r.ok) return null;
+  const tokens = r.stdout.toString("utf8").split("\0");
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.length < 4) continue;
+    const xy = t.slice(0, 2);
+    if (xy === "??" || xy === "!!") continue;
+    out.push(t.slice(3));
+    if (xy[0] === "R" || xy[0] === "C") i++;
+  }
+  return out;
+}
+
+/**
+ * Sujeira rastreada sem conteúdo no `git diff` (#14336): com `core.autocrlf`, o
+ * arquivo que só mudou de fim de linha aparece `M` no status e o diff sai
+ * vazio, então o patch não guarda nada. O resgate copia o arquivo cru, como
+ * está no disco, para `tracked-raw/`, conferido por tamanho + sha256. Lança
+ * se algum caminho sujo não for arquivo regular presente (deleção ou symlink
+ * apareceriam no diff; aqui seriam um caso que o resgate não sabe guardar).
+ */
+function copyTrackedRawVerified(srcRoot: string, destRoot: string): string[] {
+  const rels = listTrackedDirtyPaths(srcRoot);
+  if (rels === null) throw new Error("não deu para listar os rastreados sujos");
+  if (rels.length === 0) throw new Error("há arquivo rastreado sujo e o git diff saiu vazio");
+  const entries: UntrackedEntry[] = [];
+  for (const rel of rels) {
+    let st;
+    try {
+      st = lstatSync(join(srcRoot, rel));
+    } catch {
+      throw new Error(`rastreado sujo ${rel} sumiu do disco e o git diff saiu vazio`);
+    }
+    if (!st.isFile()) throw new Error(`rastreado sujo ${rel} não é arquivo regular e o git diff saiu vazio`);
+    entries.push({ rel, kind: "file", size: st.size });
+  }
+  copyUntrackedVerified(srcRoot, destRoot, entries);
+  return rels;
+}
+
 function sizeOf(entries: UntrackedEntry[] | null): UntrackedSize | null {
   if (entries === null) return null;
   return { files: entries.length, bytes: entries.reduce((s, e) => s + e.size, 0) };
@@ -284,9 +335,9 @@ export function saveRescueBundle(
   if (!head.ok) throw new Error(`git rev-parse HEAD falhou: ${head.stderr.trim()}`);
   const diff = git(["diff", "--binary", "HEAD"], facts.path);
   if (!diff.ok) throw new Error(`git diff falhou: ${diff.stderr.trim()}`);
-  if ((facts.dirty?.tracked ?? 0) > 0 && diff.stdout.length === 0) {
-    throw new Error("há arquivo rastreado sujo e o git diff saiu vazio");
-  }
+  // Diff vazio com rastreado sujo = sujeira só de fim de linha/stat (#14336):
+  // o patch não guarda nada, então vai a cópia crua (gravada mais abaixo).
+  const rawTracked = (facts.dirty?.tracked ?? 0) > 0 && diff.stdout.length === 0;
   // Remede na hora: o worktree pode ter mudado desde o relatório.
   const untrackedEntries = listUntracked(facts.path);
   if (untrackedEntries === null) throw new Error("não deu para listar/medir os untracked");
@@ -306,10 +357,18 @@ export function saveRescueBundle(
   if (Object.keys(symlinks).length > 0) {
     writeChecked(join(dir, "untracked-symlinks.json"), JSON.stringify(symlinks, null, 2) + "\n");
   }
+  const trackedRaw = rawTracked ? copyTrackedRawVerified(facts.path, join(dir, "tracked-raw")) : [];
   writeChecked(
     join(dir, "meta.json"),
     JSON.stringify(
-      { issue: 12374, saved_at: new Date(nowMs).toISOString(), head: head.stdout.toString("utf8").trim(), untracked_count: untrackedList.length, ...facts },
+      {
+        issue: 12374,
+        saved_at: new Date(nowMs).toISOString(),
+        head: head.stdout.toString("utf8").trim(),
+        untracked_count: untrackedList.length,
+        ...(trackedRaw.length > 0 ? { tracked_raw: trackedRaw, tracked_raw_reason: "git diff vazio com rastreado sujo (fim de linha, #14336)" } : {}),
+        ...facts,
+      },
       null,
       2,
     ) + "\n",
