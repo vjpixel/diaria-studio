@@ -9,7 +9,7 @@ import type { ResolvedFacebookPage } from "../lib/facebook-pages.ts";
 import { facebookDestinationId, facebookUploadRoute, mp4DurationSeconds, type ShortPublishedEntry } from "../lib/diaria/short-video.ts";
 import { withCoverRecord, type ShortCoverRecord } from "../lib/diaria/short-cover.ts";
 import { GRAPH, GRAPH_VIDEO, RUPLOAD } from "./_shared.ts";
-import type { ShortsPublishItem, ShortsSendContext, ShortsSendStep } from "./send-context.ts";
+import type { ShortsFacebookSendContext, ShortsPublishItem, ShortsSendStep } from "./send-context.ts";
 
 // ── Graph API ────────────────────────────────────────────────────────────────
 
@@ -466,7 +466,7 @@ export async function publishFacebookReel(
  * (`replacementUploadRefusal`) antes desta etapa, e `publishFacebookReel`
  * (com `requireScheduled`) recusa o que ficou a menos de 10 min.
  */
-export async function sendFacebookItem(ctx: ShortsSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
+export async function sendFacebookItem(ctx: ShortsFacebookSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
   const page = ctx.pages.find((p) => facebookDestinationId(p.slug) === item.destination);
   if (!page) throw new Error(`facebook: página não resolvida para ${item.destination}`);
   const outcome = await publishFacebookReel(ctx.deps, page, ctx.apiVersion, ctx.file, item.caption, item.scheduledAt, ctx.shortCover.bytes, ctx.replaceRun);

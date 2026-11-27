@@ -15,7 +15,7 @@ import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "../lib/linke
 import { withCoverRecord, type ShortCoverRecord } from "../lib/diaria/short-cover.ts";
 import type { ShortsPlanItem } from "./_shared.ts";
 import type { PublishOutcome } from "./facebook.ts";
-import type { ShortsPublishItem, ShortsRunRegistry, ShortsRunResult, ShortsSendContext, ShortsSendStep } from "./send-context.ts";
+import { type ShortsLinkedInSendContext, type ShortsPublishItem, type ShortsRunRegistry, type ShortsRunResult, type ShortsSendStep, shortsResult, shortsResultEntry } from "./send-context.ts";
 
 /** #10907 — motivo do bloqueio do repost quando o vídeo do perfil ficou em `send_unknown`. */
 export const PROFILE_SEND_UNKNOWN_BLOCKER =
@@ -121,8 +121,8 @@ export async function publishLinkedInProfileVideo(
  * #14204: etapa do vídeo no perfil pessoal do LinkedIn no laço do `--publish`
  * (`mainUnlocked`). Sem credencial lança (o plano não marca `publish` sem ela).
  */
-export async function sendLinkedInProfileItem(ctx: ShortsSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
-  if (!ctx.liCreds.ok) throw new Error(ctx.liCreds.reason); // o plano não marca publish sem credencial
+export async function sendLinkedInProfileItem(ctx: ShortsLinkedInSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
+  if (!ctx.liCreds.ready) throw new Error(ctx.liCreds.reason); // o plano não marca publish sem credencial
   const outcome = await publishLinkedInProfileVideo(
     { fetchFn: (u, i) => fetch(u, i), sleep: ctx.deps.sleep, log: ctx.deps.log, now: ctx.deps.now },
     ctx.liCreds.creds,
@@ -153,7 +153,9 @@ export async function sendPageRepostStep(input: {
   log?: (line: string) => void;
 }): Promise<{ items: ShortsPlanItem[]; result: ShortsRunResult | null }> {
   const log = input.log ?? ((l: string) => console.error(l));
-  const profileThisRun = input.results.find((r) => r.destination === "linkedin_profile" && r.ok && r.entry)?.entry as ShortPublishedEntry | undefined;
+  // #14327: `sent`/`already` com entrada (`ok` sem entrada não existe no perfil; `sent_unrecorded` não conta, como antes).
+  const profileHit = input.results.find((r) => r.destination === "linkedin_profile" && r.ok && shortsResultEntry(r));
+  const profileThisRun = profileHit ? shortsResultEntry(profileHit) : undefined;
   const repost = await enqueuePageRepostViaWorker(input.enqueue, {
     aammdd: input.aammdd,
     items: input.items,
@@ -166,11 +168,11 @@ export async function sendPageRepostStep(input: {
   if (repost.entry) {
     try {
       input.registry.persist(repost.entry);
-      result = { destination: "linkedin_page_repost", ok: true, entry: repost.entry };
+      result = shortsResult.sent("linkedin_page_repost", repost.entry);
       log(`[ok] linkedin_page_repost: ${repost.entry.status} pela fila do Worker (${repost.entry.id}${repost.entry.scheduled_at ? `, ${repost.entry.scheduled_at}` : ""})`);
     } catch (e) {
       const msg = `repost NA FILA do Worker (${repost.entry.id}) mas o registro não foi gravado: ${(e as Error).message}. Registre com --mark linkedin_page_repost=${repost.entry.id}; não reposte à mão.`;
-      result = { destination: "linkedin_page_repost", ok: false, entry: repost.entry, error: msg };
+      result = shortsResult.sentUnrecorded("linkedin_page_repost", repost.entry, msg);
       log(`[erro] linkedin_page_repost: ${msg}`);
     }
   }

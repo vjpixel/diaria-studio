@@ -7,20 +7,19 @@
 import { BUFFER_ID_RE, bufferReplaceNextSteps } from "../lib/diaria/short-scheduled-replace.ts";
 import type { ShortPublishedEntry } from "../lib/diaria/short-video.ts";
 import { BUFFER_DESTINATIONS, type ShortsPlanItem, type TikTokBufferMetadata } from "./_shared.ts";
-import type { ShortsRunResult, ShortsSendContext, ShortsSettledStep } from "./send-context.ts";
+import { type ShortsBufferSendContext, type ShortsFailedResult, type ShortsHandoffResult, shortsResult } from "./send-context.ts";
 
-/** O que o `--publish` devolve pro destino do X (#10772): a URL pública do vertical pra Buffer, ou o erro. */
-export interface BufferPrepResult {
-  destination: string;
-  ok: boolean;
-  error?: string;
-  buffer?: BufferPostInput;
-  /**
-   * #12279: o preparo só subiu o vídeo ao R2. O post ainda NÃO existe: falta o
-   * `create_post` da skill e o `--mark`. Nunca relatar como post criado.
-   */
-  pending_buffer_create?: true;
-}
+/**
+ * O que o `--publish` devolve pro destino do X (#10772): a URL pública do
+ * vertical pra Buffer (`handoff`), ou o erro (`failed`). #12279: no `handoff`
+ * o preparo só subiu o vídeo ao R2 (`pending_buffer_create`). O post ainda NÃO
+ * existe: falta o `create_post` da skill e o `--mark`. Nunca relatar como post
+ * criado.
+ */
+export type BufferPrepResult = ShortsHandoffResult | ShortsFailedResult;
+
+/** #14204/#14327: desfecho da etapa da Buffer (sempre `settled`, sem marcador de envio). */
+export type ShortsBufferStep = { kind: "settled"; result: BufferPrepResult };
 
 /**
  * O que a skill passa pra Buffer `create_post`. `thumbnailOffset` (#11547, ms)
@@ -52,11 +51,9 @@ export async function prepareBufferItem(
 ): Promise<BufferPrepResult> {
   try {
     const videoUrl = await uploadVideo();
-    return {
-      destination: item.destination,
-      ok: true,
-      pending_buffer_create: true,
-      buffer: {
+    return shortsResult.handoff(
+      item.destination,
+      {
         text: item.caption,
         dueAt: item.scheduledAt,
         videoUrl,
@@ -64,9 +61,10 @@ export async function prepareBufferItem(
         ...(item.channelId ? { channelId: item.channelId } : {}),
         ...(item.tiktok ? { metadata: { tiktok: item.tiktok } } : {}),
       },
-    };
+      { pending_buffer_create: true },
+    );
   } catch (e) {
-    return { destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) };
+    return shortsResult.failed(item.destination, e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -75,16 +73,16 @@ export async function prepareBufferItem(
  * #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra
  * com `--mark`. #12279: o resultado leva o hash dos bytes (vai no `--mark`) e,
  * na troca, o post antigo que a skill apaga. Sempre `settled`: nada é
- * registrado aqui.
+ * registrado aqui (e a Buffer sai antes do marcador de envio, que ela não usa).
  */
-export async function sendBufferItem(ctx: ShortsSendContext, item: Extract<ShortsPlanItem, { action: "buffer" }>): Promise<ShortsSettledStep> {
+export async function sendBufferItem(ctx: ShortsBufferSendContext, item: Extract<ShortsPlanItem, { action: "buffer" }>): Promise<ShortsBufferStep> {
   const prep = await prepareBufferItem(item, ctx.uploadVideo, ctx.bufferOffsetMs);
   const bufferReplace = ctx.replaceTargetOf(item.destination);
   const { videoHash } = ctx;
-  const r: ShortsRunResult = prep.ok && videoHash
+  const r: BufferPrepResult = prep.status === "handoff" && videoHash
     ? {
         ...prep,
-        buffer: { ...prep.buffer!, videoSha256: videoHash },
+        buffer: { ...prep.buffer, videoSha256: videoHash },
         ...(bufferReplace
           ? {
               replaces: { id: bufferReplace.old_id, at: bufferReplace.at },
@@ -93,7 +91,7 @@ export async function sendBufferItem(ctx: ShortsSendContext, item: Extract<Short
           : {}),
       }
     : prep;
-  console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
+  console.error(r.status === "handoff" ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
   return { kind: "settled", result: r };
 }
 

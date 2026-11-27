@@ -58,8 +58,11 @@ import {
   findExistingConflicts,
   countRows,
   makeRealImportRunClient,
+  diagnoseImportShortfall,
+  isEditorCopyOnlyShortfall,
+  editorCopyShortfallWarning,
   type ImportRunClient,
-} from "./clarice-import-waves.ts"; // #4602: reusa o cliente genérico (poll + reconciliação) do #4577
+} from "./clarice-import-waves.ts"; // #4602: reusa o cliente genérico (poll + reconciliação) do #4577; #14366: tolerância às cópias do editor
 import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-poll.ts"; // #4602
 import { loadSendsSummary, sendsSummaryPath } from "./lib/send-plan.ts";
 import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455
@@ -227,12 +230,21 @@ export interface ImportSendResult {
  * `completed` NÃO garante que toda linha entrou — só a reconciliação contra
  * `getListInfo` pega uma perda silenciosa da Brevo (o caso real do #4577,
  * `a15276@aecampo.pt`); divergência (`totalSubscribers < sentCount`) lança
- * nomeando a lista e o delta.
+ * nomeando a lista, o delta e (via diff, #4720) quem faltou — exceto quando o
+ * delta é só das cópias do editor, com todo leitor real na lista (#14366,
+ * mesma regra do #14337 em `importOneWave`).
  */
 export async function importOneSend(
   client: ImportRunClient,
   plan: Pick<Plan, "n" | "listName" | "csv" | "sentCount">,
-  opts: { folderId: number; poll?: PollOptions; now?: () => string; log?: (msg: string) => void },
+  opts: {
+    folderId: number;
+    poll?: PollOptions;
+    now?: () => string;
+    log?: (msg: string) => void;
+    /** #14366: endereços-seed do editor presentes no CSV (default `EDITOR_SEED_EMAILS`) — injetável pra teste. */
+    editorSeedEmails?: readonly string[];
+  },
 ): Promise<ImportSendResult> {
   const log = opts.log ?? ((m: string) => console.error(m));
   const now = opts.now ?? (() => new Date().toISOString());
@@ -249,12 +261,21 @@ export async function importOneSend(
   const info = await client.getListInfo(list.id);
   if (info.totalSubscribers < plan.sentCount) {
     const delta = plan.sentCount - info.totalSubscribers;
-    throw new Error(
-      `${label}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
-        `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
-        `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate). Abortando — limpe a ` +
-        `lista #${list.id} antes de re-rodar.`,
-    );
+    // #14366: mesma tolerância às cópias do editor que `importOneWave` ganhou
+    // no #14337 (helpers compartilhados de `clarice-import-waves.ts`): delta
+    // que cabe nas cópias do editor, com todo leitor real confirmado na lista
+    // pelo diff, avisa e segue; qualquer outro caso aborta como antes.
+    const diag = await diagnoseImportShortfall(client, list.id, plan.csv, opts.editorSeedEmails);
+    if (isEditorCopyOnlyShortfall(diag, delta)) {
+      log(editorCopyShortfallWarning(diag, delta, list.id, plan.sentCount));
+    } else {
+      throw new Error(
+        `${label}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
+          `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
+          `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate).${diag.missingDetail} ` +
+          `Abortando — limpe a lista #${list.id} antes de re-rodar.`,
+      );
+    }
   }
   log(`   ✓ confirmado: ${info.totalSubscribers} contato(s) na lista (${plan.sentCount} enviados).`);
 
