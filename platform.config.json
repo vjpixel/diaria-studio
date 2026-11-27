@@ -106,6 +106,27 @@
     "audience_tag": "apoio-stack",
     "audience_tag_note": "#12538 (09/11/2026) — audiência do e-mail do post semanal da Stack (o mesmo post do Radar de Notícias Stack, enviado pelo Kit pela task Diaria-Circle-Stack-Weekly-Publish logo depois do Circle, só com o ciclo aprovado em /diaria-stack): só Núcleo (apoio_nivel `patrono`), pedido do editor. TAG SEPARADA das outras tags de apoio de propósito: conjunto diferente (só Núcleo) que muda por motivo diferente. TAG e não segmento pelo mesmo motivo de kit_apoiadores.audience_tag_note (membresia de segmento não é legível pela API). Projeção de apoio_nivel: rodar scripts/sync-apoio-nivel-kit.ts --push antes de scripts/sync-apoio-stack-tag-kit.ts --push. A tag ainda NÃO existe na conta — o 1º --push do sync é quem a cria e popula; enquanto isso, publish-circle-stack-email-kit.ts recusa criar o broadcast (tag não resolvida ou vazia = falha segura, nunca fallback pra base inteira, #6126)."
   },
+  "kit_claude_semanal": {
+    "audience_tag": "claude-semanal",
+    "audience_niveis": ["patrono"],
+    "audience_note": "#14329 (27/11/2026) — e-mail semanal 'Claude na semana' (/diaria-claude-semanal) para assinantes do Claude. FASE DE TESTE: só o Núcleo (apoio_nivel `patrono`), decisão do editor; o público definitivo ainda não foi decidido. Trocar o público = editar audience_niveis (e, se for o caso, audience_tag, preview_text e footer_note) e rodar scripts/sync-apoio-claude-semanal-tag-kit.ts --push; nenhum código muda. Nome da tag não amarra a um nível de apoio de propósito. TAG e não segmento pelo motivo de kit_apoiadores.audience_tag_note. Projeção de apoio_nivel: rodar scripts/sync-apoio-nivel-kit.ts --push antes do sync da tag. A tag ainda NÃO existe na conta: o 1º --push do sync é quem a cria; até lá publish-claude-semanal-kit.ts recusa o envio (tag não resolvida ou vazia = falha segura, nunca a base inteira, #6126).",
+    "send_weekday": 0,
+    "send_time_brt": "08:00",
+    "min_items": 8,
+    "max_items": 15,
+    "preview_text": "Exclusivo para apoiadores",
+    "footer_note": "Você recebe este e-mail porque apoia a diar.ia.br no nível Núcleo. Obrigado por sustentar o projeto.",
+    "sources_note": "Só fontes oficiais da Anthropic/Claude (decisão do editor, 27/11/2026). URLs conferidas ao vivo em 27/11/2026: claude.com/blog redireciona para claude.com/resources/articles (RSS em /rss.xml); anthropic.com/news e /engineering não têm RSS (404 em /news/rss.xml); o feed de releases do Claude Code é o mesmo que seed/sources.csv já cadastra (#10952); a Academy está em academy.claude.com. Fontes `page` são lidas pela skill (WebFetch) e mescladas com claude-semanal-collect.ts --merge.",
+    "sources": [
+      { "name": "Blog do Claude", "url": "https://claude.com/resources/articles/rss.xml", "kind": "rss", "section_hint": "dia-a-dia" },
+      { "name": "Claude Code (releases)", "url": "https://github.com/anthropics/claude-code/releases.atom", "kind": "rss", "section_hint": "claude-code" },
+      { "name": "Anthropic News", "url": "https://www.anthropic.com/news", "kind": "page", "section_hint": "lancamentos" },
+      { "name": "Anthropic Engineering", "url": "https://www.anthropic.com/engineering", "kind": "page", "section_hint": "aprenda" },
+      { "name": "Release notes dos apps Claude", "url": "https://support.claude.com/en/articles/12138966-release-notes", "kind": "page", "section_hint": "dia-a-dia" },
+      { "name": "Release notes da plataforma (API e Agent SDK, só o que chega ao assinante)", "url": "https://platform.claude.com/docs/en/release-notes/overview", "kind": "page", "section_hint": "lancamentos" },
+      { "name": "Anthropic Academy", "url": "https://academy.claude.com/", "kind": "page", "section_hint": "aprenda" }
+    ]
+  },
   "inbox": {
     "address": "diariaeditor@gmail.com",
     "gmailQuery": "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}",
