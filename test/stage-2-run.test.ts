@@ -848,6 +848,27 @@ describe("--phase post-gate", () => {
     assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "antes\n", "estrutura corrompida restaurada");
   });
 
+  it("re-run pós-sentinel preserva mudança estrutural legítima (#14307)", async () => {
+    await preDispatch();
+    markChecksDone();
+    write("02-reviewed.md", "## RADAR\nItem original\n");
+    const first = makeDeps({ "lint-newsletter-md.ts": () => fail(1) });
+    const dispatch = await runStage2(["--phase", "post-gate", "--edition", E], first.deps);
+    const completion = makeDeps();
+    const completed = await runStage2(["--phase", "post-gate", "--edition", E, ...(dispatch.rerunArgs ?? [])], completion.deps);
+    assert.equal(completed.code, 0);
+    assert.ok(completion.calls.some((c) => c.script.includes("pipeline-sentinel")));
+
+    const repaired = "## USE MELHOR\nItem reclassificado legitimamente\n";
+    write("02-reviewed.md", repaired);
+    const retry = makeDeps({ "validate-section-structure.ts": () => fail(1) });
+    const r = await runStage2(["--phase", "post-gate", "--edition", E, "--after-title-picker"], retry.deps);
+    assert.equal(r.code, 0);
+    assert.ok(!retry.calls.some((c) => c.script.includes("validate-section-structure")));
+    assert.ok(retry.calls.some((c) => c.script.includes("lint-newsletter-md")));
+    assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), repaired);
+  });
+
   it("títulos excedentes depois do title-picker → code 3 com rerunArgs (#14094)", async () => {
     await preDispatch();
     markChecksDone();
