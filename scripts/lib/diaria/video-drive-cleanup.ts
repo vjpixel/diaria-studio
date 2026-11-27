@@ -1,8 +1,9 @@
 /**
  * scripts/lib/diaria/video-drive-cleanup.ts (#13627, #13630, #13632)
  *
- * Política PURA das três limpezas que a rotina diária do vídeo
- * (`scripts/archive-video-brutos.ts`, task `Diaria-Video-Bruto-Archive`) faz
+ * Política PURA das três limpezas que o arquivamento do vídeo
+ * (`scripts/archive-video-brutos.ts`; rodada manual desde a #14292, quando a
+ * task `Diaria-Video-Bruto-Archive` foi aposentada) faz
  * além do arquivamento dos brutos (`video-bruto-archive.ts`):
  *
  * 1. **Edição renomeada (#13632).** Quando uma edição muda de número (a 261109

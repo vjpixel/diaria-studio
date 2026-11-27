@@ -98,7 +98,10 @@
  * Renomeação e duplicatas usam uma listagem recursiva da pasta de vídeo e só
  * rodam sem espelho (o default).
  *
- * Task agendada: `Diaria-Video-Bruto-Archive` (diária 03:00 BRT desde a #13631, `--apply`), com os defaults (sem espelho).
+ * Sem task agendada desde a #14292 (decisão do editor, 27/11/2026: plano novo do
+ * Google Drive). A `Diaria-Video-Bruto-Archive` (diária 03:00 BRT, #13631,
+ * `--apply`) foi aposentada; o script fica para rodar à mão, com os defaults
+ * (sem espelho).
  * Aviso (#13631): falha = exit 1 (unit `failed`); o "não apagado/movido" por
  * permissão abre uma issue por conjunto de arquivos (`notDeletedFinding`). Final
  * ou prévia com nome repetido no Drive (#13675) entra no mesmo aviso e fica para
@@ -1451,11 +1454,11 @@ export function notDeletedFinding(report: ArchiveReport): NotifyEditorFinding | 
     severity: "acao",
     subject: `Vídeo no Drive: ${list.length} arquivo(s) que a rotina não conseguiu apagar ou mover (outro dono ou nome repetido)`,
     body: [
-      "A rotina diária do vídeo (`Diaria-Video-Bruto-Archive`, `scripts/archive-video-brutos.ts`) não conseguiu tirar do Drive estes arquivos: o Drive recusou por permissão (arquivo de outro dono, #12570/#13619) ou, em `final-nome-duplicado-mantido`, há dois arquivos com o mesmo nome em `Final/`/`Editado(s)/` (ou duas prévias) e apagar por nome não diz qual sai (#13675). A cópia conferida dos arquivados fica no HD do 300; as duplicatas, os brutos de edição renomeada e os finais de nome repetido continuam no Drive.",
+      "O arquivamento do vídeo (`scripts/archive-video-brutos.ts`, rodada manual desde a #14292) não conseguiu tirar do Drive estes arquivos: o Drive recusou por permissão (arquivo de outro dono, #12570/#13619) ou, em `final-nome-duplicado-mantido`, há dois arquivos com o mesmo nome em `Final/`/`Editado(s)/` (ou duas prévias) e apagar por nome não diz qual sai (#13675). A cópia conferida dos arquivados fica no HD do 300; as duplicatas, os brutos de edição renomeada e os finais de nome repetido continuam no Drive.",
       "",
       ...lines,
       "",
-      "Ação: apagar (ou mover) à mão pela conta dona, ou transferir a posse para a diaria.editor. Nos finais de nome repetido, renomear ou apagar um dos dois: a rotina do dia seguinte arquiva o resto.",
+      "Ação: apagar (ou mover) à mão pela conta dona, ou transferir a posse para a diaria.editor. Nos finais de nome repetido, renomear ou apagar um dos dois: a próxima rodada arquiva o resto.",
     ].join("\n"),
     priority: "P3",
     labels: ["enhancement"],
