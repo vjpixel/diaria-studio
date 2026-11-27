@@ -52,6 +52,31 @@ export interface UseMelhorCarouselStamp {
   cover_title?: string;
 }
 
+/**
+ * Resultado de `refreshStaleUseMelhorCarousel` (`scripts/gen-carousel-cards.ts`,
+ * #10834). Movido sem mudança de lá em #14001, para `lib/public-images-upload.ts`
+ * tipar o seam sem importar o CLI; `gen-carousel-cards.ts` reexporta.
+ */
+export interface UseMelhorCarouselRefresh {
+  /**
+   * - `noop`: nada a conferir (feature desligada, sem carimbo, sem item, sem `## um`);
+   * - `fresh`: carimbo em dia com o `## um` atual;
+   * - `regenerated`: estava defasado e foi regerado agora;
+   * - `skipped`: estava defasado e o regerar foi pulado (ex.: `## um` novo não cabe no card);
+   * - `failed`: estava defasado e o regerar falhou (fonte de marca ausente, sharp).
+   */
+  status: "noop" | "fresh" | "regenerated" | "skipped" | "failed";
+  reason?: string;
+  slots?: string[];
+  /**
+   * (#10879) Só com `status: "failed"`: `"font_missing"` quando a falha foi a
+   * fonte de marca (Georgia) ausente nesta máquina — o caso do servidor 300.
+   * Separado dos demais `failed` porque o conserto é outro (regerar numa
+   * máquina com Georgia), e quem consome precisa dizer isso em voz alta.
+   */
+  cause?: "font_missing";
+}
+
 export function readUseMelhorCarouselStamp(editionDir: string): UseMelhorCarouselStamp | null {
   const p = useMelhorCarouselHashPath(editionDir);
   if (!existsSync(p)) return null;

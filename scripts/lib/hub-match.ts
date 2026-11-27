@@ -32,7 +32,7 @@
  * destaque) seria arbitrário. Ambíguo → sem link, comportamento idêntico ao
  * de hoje (só o link fixo pra raiz do arquivo).
  */
-import { HUB_KEYWORD_PATTERNS, stripAccents } from "../generate-hub-sources.ts";
+import { HUB_KEYWORD_PATTERNS, stripAccents } from "./hub-sources.ts";
 import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { DIARIA_ARQUIVO_URL } from "./canonical-urls.ts";
 import { HUB_CONTEXTUAL_UTM } from "./shared/utm-registry.ts";
