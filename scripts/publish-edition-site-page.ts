@@ -332,7 +332,6 @@ import { logEvent } from "./lib/run-log.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { SITE_PAGE_HTML_RENDERED_FROM_FIELD, SITE_PAGE_REVIEWED_DIGEST_FIELD } from "./lib/site-page-staleness.ts";
 import { readRenderSourceStamp, REVIEWED_MD, sha256OfFileOrNull } from "./lib/newsletter-html-freshness.ts"; // #11987
-import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
 // slug + regeneração do índice paginado do acervo — ambos rodam como parte
 // deste próprio publish, ANTES do commit único (ver `backfillAndReindexArchive`).
@@ -716,7 +715,7 @@ const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,
  * #9828: caminhos (relativos à raiz, forward-slash) cujo conteúdo decide o que
  * a página/home/archive saem: o FECHO TRANSITIVO de imports relativos a partir
  * de `publish-edition-site-page.ts` (hoje ~55 arquivos em `scripts/` +
- * `workers/arquivo/src/hubs/meta.ts`) mais `SITE_GENERATOR_EXTRA_PATHS`.
+ * `scripts/lib/shared/hub-meta.ts`) mais `SITE_GENERATOR_EXTRA_PATHS`.
  * Derivado do código em disco em vez de lista fixa pra não envelhecer quando
  * um import novo entra — e um import novo que `origin/master` adicione
  * aparece como mudança num arquivo que JÁ está no fecho local, então é pego.
@@ -1357,15 +1356,28 @@ export interface MergeAttemptResult {
 export interface SitePageMergeLock {
   acquire: () => boolean;
   release: () => void;
+  /** #14276: motivo da última recusa do `acquire` (quem segura, backend,
+   * erro de infra), para o desfecho "lock ocupado" do waiter dizer POR QUÊ.
+   * Opcional: locks injetados nos testes não precisam informar. */
+  lastDenial?: () => string | undefined;
 }
 
 /**
- * Lock real: o MESMO arquivo de `session-registry merge-lock-acquire`
- * (`data/sessions/.merge-lock.json`, TTL 2min), com um dono próprio por
- * processo — o waiter não é sessão registrada, então o id é sintético e
- * nunca colide com o `session_id` de um coordenador. Serializa com os merges
- * de overnight/develop/continuo NESTA máquina; entre máquinas o lock segue
- * advisory (`docs/coordenacao-merges.md`), mesmo limite de todo merge.
+ * Lock real: o MESMO merge lock de `session-registry merge-lock-acquire`,
+ * pela MESMA porta — o CLI, que põe o D1 na frente (#12842) e usa o arquivo
+ * `data/sessions/.merge-lock.json` (TTL 2min) como espelho e fallback. O dono
+ * é próprio por processo: o waiter não é sessão registrada, então o id é
+ * sintético e nunca colide com o `session_id` de um coordenador.
+ *
+ * #14276: até aqui o waiter chamava `acquireMergeLock` direto, que só olha o
+ * arquivo local. Na edição 261127 ele (e o `check-site-page-pr-gate.ts`, que
+ * monta o lock por esta mesma função) ficou ~1h20 em "merge lock ocupado"
+ * enquanto o `merge-lock-acquire` manual, pelo CLI, adquiriu de primeira: o
+ * D1 concedeu e o arquivo local estava ilegível. O caminho do arquivo sozinho
+ * não tem a autoridade do D1 para passar por cima de um espelho defasado ou
+ * ilegível, e recusava sem dizer o motivo. Com o CLI, o waiter decide igual
+ * aos coordenadores, segura o lock também no D1 (exclusão entre máquinas) e
+ * a recusa guarda o texto do CLI (`lastDenial`), que nomeia quem segura.
  *
  * `data/` ausente no `rootDir` (junction não montada) = lock indisponível
  * (`acquire` → `false`, com aviso no stderr/log do waiter): o
@@ -1374,21 +1386,48 @@ export interface SitePageMergeLock {
  * #9695). O waiter segue no poll até o deadline e termina `timedOut`, que
  * dispara o alerta do #9616 — falha alta, nunca merge fora do lock.
  */
-export function makeSessionRegistryMergeLock(rootDir: string, prNumber: number): SitePageMergeLock {
+export function makeSessionRegistryMergeLock(
+  rootDir: string,
+  prNumber: number,
+  lock: LockRunner = defaultLockRunner,
+  warn: (msg: string) => void = (msg) => process.stderr.write(msg),
+): SitePageMergeLock {
   const owner = `site-page-merge-waiter:pr-${prNumber}:pid-${process.pid}`;
+  let lastDenial: string | undefined;
+  let lastLogged: string | undefined;
   return {
     acquire: () => {
       if (!existsSync(join(rootDir, "data"))) {
-        process.stderr.write(
+        lastDenial = `${join(rootDir, "data")} ausente (junction data/ não montada)`;
+        warn(
           `[site-page-merge-waiter] ${join(rootDir, "data")} ausente — junction data/ não montada; merge lock indisponível, não mergeio fora dele\n`,
         );
         return false;
       }
-      return acquireMergeLock(rootDir, owner);
+      const res = lock(["merge-lock-acquire", "--session-id", owner], rootDir);
+      if (res.ok) {
+        lastDenial = undefined;
+        return true;
+      }
+      const denied = /denied/i.test(res.stdout) || /denied/i.test(res.stderr);
+      const detail = `${res.stdout}\n${res.stderr}`.replace(/\s+/g, " ").trim() || "sem detalhe";
+      lastDenial = `${denied ? "negado" : "erro de infra (não é contenção)"}: ${detail}`;
+      // Uma linha por motivo distinto: o poll roda a cada 5s por até 35min.
+      if (lastDenial !== lastLogged) {
+        lastLogged = lastDenial;
+        warn(`[site-page-merge-waiter] merge-lock-acquire PR #${prNumber} ${lastDenial}\n`);
+      }
+      return false;
     },
     release: () => {
-      releaseMergeLock(rootDir, owner);
+      const res = lock(["merge-lock-release", "--session-id", owner], rootDir);
+      if (!res.ok) {
+        warn(
+          `[site-page-merge-waiter] aviso: merge-lock-release falhou (${res.stderr || res.stdout || "sem detalhe"}) — o TTL expira sozinho.\n`,
+        );
+      }
     },
+    lastDenial: () => lastDenial,
   };
 }
 
@@ -1799,10 +1838,20 @@ export function waitAndMergeSitePagePr(
       if (!acquired) {
         lockBusySeen = true;
         if (Date.now() >= deadline) {
+          // #14276: o motivo da última recusa (quem segura, backend do lock,
+          // erro de infra) entra no desfecho, que vai pro log e pro alerta.
+          let denial: string | undefined;
+          try {
+            denial = mergeLock.lastDenial?.();
+          } catch {
+            denial = undefined;
+          }
           return {
             merged: false,
             timedOut: true,
-            reason: `CI verde, mas o merge lock seguiu ocupado até o fim da janela de ${maxWaitMs}ms — PR #${prNumber} fica aberto pra revisão manual (#9621)`,
+            reason:
+              `CI verde, mas o merge lock seguiu ocupado até o fim da janela de ${maxWaitMs}ms — PR #${prNumber} fica aberto pra revisão manual (#9621)` +
+              (denial ? ` — última recusa: ${denial}` : ""),
           };
         }
         sleep(pollIntervalMs);

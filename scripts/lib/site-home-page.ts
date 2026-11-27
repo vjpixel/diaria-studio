@@ -28,7 +28,7 @@
 import { stripHtmlBasic } from "./strip-html.ts";
 import { escHtml } from "./html-escape.ts";
 import { parseSitemap, type SitemapEntry } from "./fetch-sitemap.ts";
-import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
+import { HUB_META } from "./shared/hub-meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
@@ -1093,7 +1093,7 @@ export function renderSignupForm(opts: { id: string; onDark?: boolean }): string
  *
  * Derivar da fonte, em vez de listar os 7 slugs à mão aqui, é o ponto: o
  * "4º passo ao publicar um hub novo" (ver a docstring de
- * `workers/arquivo/src/hubs/meta.ts`) deixa de existir como passo. Hub que
+ * `scripts/lib/shared/hub-meta.ts`) deixa de existir como passo. Hub que
  * entra em `HUB_META` ganha link na home na próxima regeneração, e o alarme
  * nunca mais dispara por esse eixo — antes o passo era manual (painel
  * Beehiiv), e foi por isso que os 7 hubs ficaram sem link de descoberta até

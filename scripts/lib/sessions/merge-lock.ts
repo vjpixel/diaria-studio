@@ -312,9 +312,20 @@ export function acquireMergeLock(
   // Fast path: nenhum lock existia — criação exclusiva atômica (ver docblock).
   try {
     if (io.tryCreateExclusive(path, data)) return true;
-  } catch {
+  } catch (e) {
     // Erro de I/O inesperado (não-EEXIST) — nunca assumir que adquirimos o
-    // lock sobre um estado que não conseguimos nem determinar.
+    // lock sobre um estado que não conseguimos nem determinar. #14276: a
+    // recusa saía muda e quem chamava só via "ocupado"; o código do erro vai
+    // pro stderr para a recusa por infra não se passar por contenção.
+    try {
+      const code = (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
+      process.stderr.write(
+        `session-registry: acquireMergeLock: criação exclusiva de "${path}" falhou (${code}) — recusando o lock ` +
+          "por erro de I/O, não por outra sessão segurando (#14276).\n",
+      );
+    } catch {
+      // log nunca quebra o caminho fail-closed
+    }
     return false;
   }
 
@@ -368,6 +379,9 @@ export function mergeLockAcquireOutcome(ok: boolean, sessionId: string, holder: 
       "use merge-lock-renew para estender ou siga com o merge)"
     );
   }
+  // #14276: nomeia quem segura e desde quando — "ocupado" sem dono não se
+  // diagnostica. O trecho entre parênteses fica igual (consumidores casam nele).
+  if (holder?.heldBy) return `denied (held by another session) — holder ${holder.heldBy} desde ${holder.acquiredAt}`;
   return "denied (held by another session)";
 }
 
@@ -544,8 +558,9 @@ export async function acquireMergeLockShared(
   }
   if (fileHolder !== undefined && !isRegisteredSessionId(repoRoot, fileHolder)) {
     // #12967: holder que não é sessão registrada (o waiter de merge da página
-    // do site, `site-page-merge-waiter:pr-N:pid-X`) só usa o arquivo e nunca
-    // escreve no D1. O hold dele é fresco (o `local()` acabou de recusar), então
+    // do site, `site-page-merge-waiter:pr-N:pid-X`) podia segurar só o arquivo
+    // (antes do #14276 o waiter não passava pelo D1; hoje passa pelo CLI, mas
+    // num fallback sem D1 o hold dele ainda é só local). O hold é fresco (o `local()` acabou de recusar), então
     // é um merge em curso nesta máquina: sobrescrever daria dois merges
     // simultâneos no mesmo repo. Devolve o D1 e recusa, como o O_EXCL fazia.
     await rollbackD1Lock(d1, name, sessionId, opts.d1Now !== undefined ? { now: opts.d1Now } : {}, warn, "merge-lock-acquire");

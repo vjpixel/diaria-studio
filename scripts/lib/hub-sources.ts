@@ -64,7 +64,7 @@
  *
  * **`--backfill-titles` (#4918 Conserto 2) — preenche `editionTitle` sem
  * precisar do junction `data/`.** Modo separado que lê o JSON JÁ commitado
- * e casa `editionSlug` contra `workers/arquivo/src/titles-cache.json`
+ * e casa `editionSlug` contra `scripts/lib/shared/titles-cache.json`
  * (também commitado) — roda em sessão cloud:
  *
  *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude --backfill-titles
@@ -761,14 +761,14 @@ export function loadPosts(): RawCachedPost[] {
   return loadUnifiedEditionCache() as RawCachedPost[];
 }
 
-const TITLES_CACHE_PATH = resolve(ROOT, "workers/arquivo/src/titles-cache.json");
+const TITLES_CACHE_PATH = resolve(ROOT, "scripts/lib/shared/titles-cache.json");
 
 export interface TitlesCacheEntry {
   title: string;
   publishDate: string;
 }
 
-/** Lê `workers/arquivo/src/titles-cache.json` (COMMITADO, gerado por
+/** Lê `scripts/lib/shared/titles-cache.json` (COMMITADO, gerado por
  * `generate-arquivo-titles.ts` — que sim exige o junction `data/`). Usado só
  * como FALLBACK por `backfillEditionTitles` — fail-soft: cache ausente ou
  * malformado devolve `{}` (backfill vira no-op, nunca aborta). */

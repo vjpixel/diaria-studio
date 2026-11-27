@@ -77,6 +77,11 @@ import type { Env } from "./index";
 import { htmlEscape, safeParseKv } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { performIdentifyMerge, type IdentifyMergeInput } from "./identify";
+import { buildSetCookieHeader } from "./session-cookie";
+// #14138: sessão `confirmed` no navegador que CLICOU no link — emitida por
+// web-gate.ts (único módulo que chama `issueWebSessionCookie`, guard do
+// #6293). Ciclo de import seguro: só usado em request-time.
+import { issueConfirmedSessionAfterMagicLink } from "./web-gate";
 // #4311: opt-in de assinatura precisa ser honrado também no caminho de
 // confirmação (o merge imediato em identify.ts já faz isto — ver
 // `handleJogarIdentify`). Sem import circular novo: subscribe.ts não importa
@@ -136,40 +141,68 @@ export async function markIdentifyLinked(bEnv: Env, email: string, anonEmail: st
 }
 
 /**
- * #6293: marcador de POSSE PROVADA de um e-mail — chave própria, sem TTL
- * (posse não caduca, ao contrário do token de merge em si, que é one-time-use
- * com TTL de 24h). Gravado por `handleConfirmMerge` (único ponto do worker
- * que sabe que uma pessoa de fato clicou num link enviado àquele endereço) e
- * lido por `handleJogarGateVerify` (web-gate.ts) pra decidir `confirmed` vs
- * `pending` no cookie de sessão do gate `/jogar`.
+ * #14138: prova de posse AMARRADA AO DISPOSITIVO que pediu o link.
  *
- * Por que server-side (KV) e não um cookie emitido aqui: o link é
- * tipicamente clicado num dispositivo DIFERENTE do que está jogando
- * (cross-device é a própria razão do #3996 existir) — um cookie sairia no
- * aparelho errado. O marcador no KV é por e-mail, não por sessão/dispositivo:
- * clicar no celular libera o desktop na próxima chamada a `/jogar/gate/verify`.
+ * Até o #14138 a prova era um marcador POR E-MAIL (`gate-email-verified:{email}`,
+ * #6293, sem TTL): depois que a dona de um e-mail V clicasse uma vez num link
+ * mágico, QUALQUER navegador que fizesse `POST /jogar/gate/verify` com
+ * o e-mail V no corpo recebia sessão `confirmed` — e `vote.ts` passava a
+ * gravar voto, score e nickname sob a identidade de V. O marcador não
+ * distinguia o desktop de V do de um terceiro.
  *
- * Key SEM hash e sem prefixo de escopo cruzado com `identify-linked:` —
- * mesma convenção já usada por essa família de chaves neste worker (plain
- * `{namespace}:{email}[...]`, e-mail já normalizado/lowercased pelos
- * callers antes de chegar aqui).
+ * Desenho atual (proposta da issue):
+ *   1. Quem pede o link (`handleOrphanIdentify`, identify.ts) recebe um nonce
+ *      aleatório (`generateMagicLinkToken`) num cookie HttpOnly próprio
+ *      (`POSSESSION_NONCE_COOKIE`), e o mesmo nonce viaja no registro do
+ *      pending merge (`PendingMerge.deviceNonce`).
+ *   2. O clique no link (`handleConfirmMerge`) grava
+ *      `gate-device-possession:{nonce}` → e-mail, e emite sessão `confirmed`
+ *      direto no navegador que clicou.
+ *   3. `handleJogarGateVerify` (web-gate.ts) só emite `confirmed` quando o
+ *      cookie de nonce DESTE navegador aponta, no KV, para o MESMO e-mail
+ *      digitado. Digitar um e-mail que já provou posse em outro aparelho
+ *      não basta mais.
+ *
+ * O cross-device continua funcionando: clicar no celular libera o desktop
+ * que PEDIU o link (ele tem o nonce), e só ele.
+ *
+ * Namespace: `handleConfirmMerge` roda com `bEnv` do brand `web` (rota
+ * `/confirm-merge?brand=web`) e grava sob o prefixo `web:`;
+ * `handleJogarGateVerify` recebe o `env` CRU, então lê pelo mesmo prefixo
+ * explicitamente (`brandedNamespace(env.POLL, brandKvPrefix("web"))`, ver
+ * web-gate.ts). Os helpers abaixo recebem o `KVNamespace` já embrulhado.
  */
-function emailPossessionVerifiedKey(email: string): string {
-  return `gate-email-verified:${email}`;
+export const POSSESSION_NONCE_COOKIE = "diaria_jogar_possession_nonce";
+/** Mesma vida da sessão do gate (`WEB_SESSION_TTL_SEC`, web-gate.ts — 30
+ * dias): o desktop pode só voltar ao gate dias depois do clique no celular.
+ * Constante local, não import, pra não depender de web-gate.ts no top-level. */
+export const POSSESSION_NONCE_TTL_SEC = 30 * 24 * 60 * 60;
+
+function devicePossessionKey(nonce: string): string {
+  return `gate-device-possession:${nonce}`;
 }
 
-/** true quando `email` já provou posse via magic link em algum momento —
- * único critério pra `handleJogarGateVerify` emitir sessão `confirmed`. */
-export async function hasProvenEmailPossession(bEnv: Env, email: string): Promise<boolean> {
-  return !!(await bEnv.POLL.get(emailPossessionVerifiedKey(email)));
+/** Grava que o nonce `nonce` (cookie do navegador que pediu o link) provou
+ * posse de `email` — chamado só por `handleConfirmMerge`, depois de consumir
+ * o token do link. */
+export async function markDevicePossessionProven(kv: KVNamespace, nonce: string, email: string): Promise<void> {
+  await kv.put(devicePossessionKey(nonce), email, { expirationTtl: POSSESSION_NONCE_TTL_SEC });
 }
 
-/** Grava o marcador de posse provada pra `email` — chamado por
- * `handleConfirmMerge` assim que o token do magic link é validado e
- * consumido (a prova é o clique em si, independente do merge de score
- * subsequente ter sucesso). */
-export async function markEmailPossessionVerified(bEnv: Env, email: string): Promise<void> {
-  await bEnv.POLL.put(emailPossessionVerifiedKey(email), "1");
+/** true só quando `nonce` (lido do cookie do navegador atual) tem forma de
+ * UUID E foi provado, por um clique no link, para EXATAMENTE `email`. Nonce
+ * ausente/malformado nunca toca o KV. Único critério pra
+ * `handleJogarGateVerify` emitir sessão `confirmed` (#14138). */
+export async function hasDevicePossessionProof(kv: KVNamespace, nonce: string | null, email: string): Promise<boolean> {
+  if (!nonce || !isValidMagicLinkToken(nonce)) return false;
+  const proven = await kv.get(devicePossessionKey(nonce));
+  return proven === email;
+}
+
+/** Header `Set-Cookie` do nonce de dispositivo (HttpOnly, mesmos atributos
+ * do cookie de sessão — `buildSetCookieHeader`). */
+export function buildPossessionNonceCookieHeader(nonce: string): string {
+  return buildSetCookieHeader(POSSESSION_NONCE_COOKIE, nonce, POSSESSION_NONCE_TTL_SEC);
 }
 
 /**
@@ -248,6 +281,11 @@ export interface PendingMerge {
    * do form era perdido assim que `handleOrphanIdentify` desviava pro link
    * mágico, mesmo corrigindo o `return` precoce em identify.ts. */
   optin: boolean;
+  /** #14138: nonce do navegador que PEDIU o link (cookie
+   * `POSSESSION_NONCE_COOKIE`). Opcional: registro criado antes do #14138
+   * (ainda vivo pelo TTL de 24h) não tem o campo — o clique ainda mergeia e
+   * confirma o navegador que clicou, só não libera outro aparelho. */
+  deviceNonce?: string;
 }
 
 /**
@@ -402,7 +440,7 @@ export async function sendMagicLinkEmail(
  * cobre token ausente/malformado/expirado/já usado — SEMPRE a mesma
  * mensagem genérica (nunca distingue o motivo, ver `consumePendingMerge`).
  */
-export function confirmMergeHtmlResponse(ok: boolean, message: string): Response {
+export function confirmMergeHtmlResponse(ok: boolean, message: string, setCookie?: string): Response {
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -422,7 +460,11 @@ export function confirmMergeHtmlResponse(ok: boolean, message: string): Response
 </html>`;
   return new Response(html, {
     status: ok ? 200 : 400,
-    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "Cache-Control": "no-store",
+      ...(setCookie ? { "Set-Cookie": setCookie } : {}),
+    },
   });
 }
 
@@ -457,11 +499,13 @@ export async function handleConfirmMerge(
   if (!pending) {
     return confirmMergeHtmlResponse(false, "Link inválido, expirado ou já usado.");
   }
-  // #6293: o clique em si É a prova de posse (só quem recebeu o e-mail
-  // consegue consumir o token) — grava o marcador ANTES do merge de score,
+  // #6293/#14138: o clique em si É a prova de posse (só quem recebeu o e-mail
+  // consegue consumir o token) — grava a prova ANTES do merge de score,
   // que é uma preocupação separada (e pode falhar/ser no-op sem invalidar
   // a posse já provada). NÃO reordenar: a prova é o clique, independente do
-  // merge ter sucesso.
+  // merge ter sucesso. Desde o #14138 a prova é do NONCE do navegador que
+  // pediu o link (`pending.deviceNonce`), nunca do e-mail sozinho — ver
+  // docstring de `markDevicePossessionProven`.
   //
   // Achado do review (#6293): o token já foi consumido acima (one-time-use)
   // quando chegamos aqui — se qualquer uma das duas escritas abaixo lançar,
@@ -478,7 +522,9 @@ export async function handleConfirmMerge(
     edition: pending.edition || null,
   };
   try {
-    await markEmailPossessionVerified(bEnv, pending.email);
+    if (pending.deviceNonce && isValidMagicLinkToken(pending.deviceNonce)) {
+      await markDevicePossessionProven(bEnv.POLL, pending.deviceNonce, pending.email);
+    }
   } catch (e) {
     console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "mark_possession", error: String(e) }));
     return confirmMergeHtmlResponse(false, "Não foi possível confirmar seu link agora. Tente novamente em alguns minutos.");
@@ -510,5 +556,17 @@ export async function handleConfirmMerge(
     }
   }
 
-  return confirmMergeHtmlResponse(true, `Pronto! Seu histórico foi migrado — você está no ranking como ${pending.email}.`);
+  // #14138: o navegador que CLICOU provou posse — sai com sessão `confirmed`
+  // na própria resposta. Sem `COOKIE_HMAC_SECRET` não há sessão possível
+  // (fail-closed, mesmo do gate); a falha ao assinar nunca desfaz o merge.
+  let setCookie: string | undefined;
+  if (bEnv.COOKIE_HMAC_SECRET) {
+    try {
+      setCookie = await issueConfirmedSessionAfterMagicLink(bEnv.COOKIE_HMAC_SECRET, pending.email);
+    } catch (e) {
+      console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "session_cookie", error: String(e) }));
+    }
+  }
+
+  return confirmMergeHtmlResponse(true, `Pronto! Seu histórico foi migrado — você está no ranking como ${pending.email}.`, setCookie);
 }

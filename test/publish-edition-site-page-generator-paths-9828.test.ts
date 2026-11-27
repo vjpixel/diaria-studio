@@ -188,7 +188,7 @@ describe("siteGeneratorDependencyPaths — repo real (#9828)", () => {
       "scripts/lib/site-archive-pages.ts",
       "scripts/gen-archive-index.ts",
       "scripts/lib/shared/design-tokens.ts",
-      "workers/arquivo/src/hubs/meta.ts",
+      "scripts/lib/shared/hub-meta.ts",
       "workers/site/",
       "package.json",
       "package-lock.json",
