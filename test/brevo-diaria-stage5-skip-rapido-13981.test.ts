@@ -447,10 +447,8 @@ describe("skip rápido leva o estado do --apply de hoje (review P2, #13981)", ()
     assert.match(skipRapidoApplyWarnings(null, TUE_1700)[0] ?? "", /NÃO registrado/);
   });
 
-  it("antes das 05:30 ⇒ aviso de que o vigente é o de ontem", () => {
-    const w = skipRapidoApplyWarnings(marker({ day: "2026-11-23" }), new Date("2026-11-24T07:00:00Z"));
-    assert.equal(w.length, 1);
-    assert.match(w[0], /ainda não rodou.*vigente é o de ontem.*2026-11-23/);
+  it("antes das 05:30 com o marcador de ontem limpo ⇒ nada (#14320; casos completos em brevo-diaria-followups-14320)", () => {
+    assert.deepEqual(skipRapidoApplyWarnings(marker({ day: "2026-11-23" }), new Date("2026-11-24T07:00:00Z")), []);
   });
 
   it("entre 05:30 e 06:00 sem marcador do dia ⇒ nada (a task pode estar rodando)", () => {
