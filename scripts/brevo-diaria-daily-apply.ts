@@ -43,12 +43,15 @@
  *         aqui viram ≠ 0 para a unit ficar vermelha. No kill switch, é o
  *         exit 3 do próprio evaluate, propagado;
  *   105 — `TRANSIENT_NETWORK_EXIT_CODE`: o `--apply` (ou o evaluate do kill
- *         switch, salvo o exit 3 dele) saiu ≠ 0 com assinatura de falha de rede na saída; a task
- *         declara `retryOnTransientNetwork: "step-declares"` e a unit tenta
- *         de novo em 15 min (o `--apply` é idempotente, e sem marcador
- *         gravado a nova rodada roda). Assinatura de rede de um passo
- *         fail-soft junto com uma falha dura de outro motivo também cai
- *         aqui: o custo é uma rerrodada idempotente a mais;
+ *         switch, salvo o exit 3 dele) saiu ≠ 0 com assinatura de falha de
+ *         rede; a task declara `retryOnTransientNetwork: "step-declares"` e a
+ *         unit tenta de novo em 15 min (o `--apply` é idempotente, e sem
+ *         marcador gravado a nova rodada roda). No `--apply`, quem decide é
+ *         o stderr do passo DURO que abortou (`failedStep` do JSON final do
+ *         `brevo-diaria-run.ts`, #14320): rede num passo fail-soft junto com
+ *         um abort determinístico de outro passo não reagenda. Sem o campo
+ *         (evaluate do kill switch, processo morto antes do JSON), vale a
+ *         saída inteira;
  *   1   — config inválida, lock do `--apply` diário que não saiu, ou o
  *         código do `--apply` com erro duro (qualquer outro ≠ 0 é repassado).
  *
@@ -113,9 +116,42 @@ export function resolveDailyApplyMode(config: { brevo_diaria?: { stage5_target_t
   return { mode: "apply" };
 }
 
-/** Pura: ≠ 0 com assinatura de rede vira 105 (retry da unit); o resto passa. */
+/**
+ * Pura (#14320): lê o `failedStep` do JSON final do `brevo-diaria-run.ts`
+ * (última linha do stdout). `undefined` = JSON ausente ou sem o campo (saída
+ * que não é a do run, ou o processo morreu antes de imprimir); `null` = o run
+ * declarou que nenhum passo abortou (abort de args, erro inesperado).
+ */
+export function parseRunFailedStep(stdout: string): { code: number; stderrTail: string } | null | undefined {
+  const lastLine = stdout.trim().split("\n").at(-1) ?? "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(lastLine);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || !("failedStep" in parsed)) return undefined;
+  const step = (parsed as { failedStep: unknown }).failedStep;
+  if (step === null) return null;
+  if (typeof step !== "object") return undefined;
+  const { code, stderrTail } = step as { code?: unknown; stderrTail?: unknown };
+  if (typeof code !== "number" || typeof stderrTail !== "string") return undefined;
+  return { code, stderrTail };
+}
+
+/**
+ * Pura: ≠ 0 com assinatura de rede vira 105 (retry da unit); o resto passa.
+ * Quando o stdout traz o `failedStep` do `brevo-diaria-run.ts` (#14320), só o
+ * stderr do passo DURO que abortou decide: um `fetch failed` de um passo
+ * fail-soft somado a um abort determinístico de outro (cota da conta, guard de
+ * custo do MV) não reagenda. Sem o campo (evaluate do kill switch, processo
+ * que morreu antes do JSON), vale a saída inteira, como antes.
+ */
 export function resolveFailureExitCode(r: ExecResult): number {
-  return hasTransientNetworkSignature(`${r.stderr}\n${r.stdout}`) ? TRANSIENT_NETWORK_EXIT_CODE : r.code;
+  const failed = parseRunFailedStep(r.stdout);
+  if (failed === null) return r.code;
+  const text = failed === undefined ? `${r.stderr}\n${r.stdout}` : failed.stderrTail;
+  return hasTransientNetworkSignature(text) ? TRANSIENT_NETWORK_EXIT_CODE : r.code;
 }
 
 function echo(r: ExecResult): void {
@@ -143,7 +179,7 @@ export function runDailyApply(deps: DailyApplyDeps): DailyApplyResult {
     return lock((): DailyApplyResult => {
       const today = brtDayKey(deps.now());
       const marker = deps.readMarker();
-      if (applyAlreadyRanToday(marker, today) && marker.warnings.length === 0) {
+      if (marker !== null && applyAlreadyRanToday(marker, today) && marker.warnings.length === 0) {
         const reason = `--apply já rodou hoje (${today}) por ${marker.by} às ${marker.at}, sem aviso — não roda de novo (#13981).`;
         deps.log(reason);
         return { code: 0, ran: "none", reason, warnings: [] };

@@ -187,9 +187,12 @@ export function realExec(rootDir: string): ExecFn {
 
 export class BrevoDiariaAbort extends Error {
   readonly code = 1 as const;
-  constructor(reason: string) {
+  /** #14320 — o passo DURO que abortou (ausente em abort de args ou erro inesperado). */
+  readonly failedStep: StepLog | null;
+  constructor(reason: string, failedStep: StepLog | null = null) {
     super(reason);
     this.name = "BrevoDiariaAbort";
+    this.failedStep = failedStep;
   }
 }
 
@@ -340,10 +343,12 @@ function step(
   const result = deps.exec(scriptRelPath, args);
   if (result.stderr.trim()) process.stderr.write(result.stderr.trim() + "\n");
   const stderrTail = result.stderr.trim().split("\n").slice(-8).join("\n");
-  log.push({ label, script: scriptRelPath, args, code: result.code, stderrTail });
+  const entry: StepLog = { label, script: scriptRelPath, args, code: result.code, stderrTail };
+  log.push(entry);
   if (result.code !== 0) {
     throw new BrevoDiariaAbort(
       `❌ ${label} falhou (exit ${result.code}): ${stderrTail.split("\n").slice(-4).join(" | ") || "(sem stderr)"}`,
+      entry,
     );
   }
   return result;
@@ -376,7 +381,8 @@ function stepEvaluate(deps: BrevoDiariaRunDeps, log: StepLog[], warnings: string
   const result = deps.exec("scripts/evaluate-brevo-diaria.ts", args);
   if (result.stderr.trim()) process.stderr.write(result.stderr.trim() + "\n");
   const stderrTail = result.stderr.trim().split("\n").slice(-8).join("\n");
-  log.push({ label, script: "scripts/evaluate-brevo-diaria.ts", args, code: result.code, stderrTail });
+  const entry: StepLog = { label, script: "scripts/evaluate-brevo-diaria.ts", args, code: result.code, stderrTail };
+  log.push(entry);
   if (result.code === 0) return;
   if (result.code === PARTIAL_FAILURE_EXIT_CODE) {
     const warning =
@@ -389,6 +395,7 @@ function stepEvaluate(deps: BrevoDiariaRunDeps, log: StepLog[], warnings: string
   }
   throw new BrevoDiariaAbort(
     `❌ ${label} falhou (exit ${result.code}): ${stderrTail.split("\n").slice(-4).join(" | ") || "(sem stderr)"}`,
+    entry,
   );
 }
 
@@ -441,6 +448,20 @@ export interface BrevoDiariaRunResult {
    *  que `brevo-diaria-stage5-dispatch.ts` os repasse ao orchestrator mesmo
    *  com `code: 0`. */
   warnings: string[];
+  /**
+   * #14320 — o passo DURO que abortou a sequência (`null` quando nada
+   * abortou, ou quando o abort não veio de um passo: args inválidos, erro
+   * inesperado). Sai no JSON do CLI com `code` e `stderrTail` para o
+   * `brevo-diaria-daily-apply.ts` decidir o retry por rede (105) só por esse
+   * passo, e não pela saída inteira, onde um `fetch failed` de um passo
+   * fail-soft se misturaria com o abort determinístico de outro.
+   */
+  failedStep: StepLog | null;
+}
+
+/** #14320 — forma do `failedStep` no JSON do CLI. */
+export function failedStepJson(s: StepLog | null): { label: string; script: string; code: number; stderrTail: string } | null {
+  return s ? { label: s.label, script: s.script, code: s.code, stderrTail: s.stderrTail } : null;
 }
 
 export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoDiariaRunResult {
@@ -468,6 +489,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
         mode: "preflight",
         steps,
         warnings,
+        failedStep: null,
         summary: withWarnings(
           "preflight concluído — nenhuma mutação aplicada. Apresente o stderr dos passos ao editor no gate " +
             "(Passo 4 do SKILL.md) antes de rodar `--apply` (--max-add N opcional, #6895).",
@@ -554,6 +576,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       mode: "apply",
       steps,
       warnings,
+      failedStep: null,
       summary: withWarnings(
         `apply concluído — ${steps.length} passo(s) rodado(s) na ordem fixa do Passo 4${maxAddLabel}.`,
         warnings,
@@ -567,7 +590,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
     // `--push`/mutação registrado, pra o resultado nunca afirmar "preflight"
     // sobre uma sequência que já mutou dado.
     const mutated = steps.some((s) => s.args.includes("--push"));
-    return { code: abort.code, mode: mutated ? "apply" : "preflight", steps, warnings, summary: abort.message };
+    return { code: abort.code, mode: mutated ? "apply" : "preflight", steps, warnings, summary: abort.message, failedStep: abort.failedStep };
   }
 }
 
@@ -585,6 +608,7 @@ if (isMainModule(import.meta.url)) {
       summary: result.summary,
       steps: result.steps.map((s) => ({ label: s.label, code: s.code })),
       warnings: result.warnings,
+      failedStep: failedStepJson(result.failedStep),
     }),
   );
   process.exitCode = result.code;
