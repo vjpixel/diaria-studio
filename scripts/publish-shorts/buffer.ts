@@ -4,9 +4,10 @@
  * Parte de `scripts/publish-shorts.ts` (#14054): movido sem mudar a lógica; a entrada
  * reexporta o que os testes e os outros scripts importam.
  */
-import { BUFFER_ID_RE } from "../lib/diaria/short-scheduled-replace.ts";
+import { BUFFER_ID_RE, bufferReplaceNextSteps } from "../lib/diaria/short-scheduled-replace.ts";
 import type { ShortPublishedEntry } from "../lib/diaria/short-video.ts";
 import { BUFFER_DESTINATIONS, type ShortsPlanItem, type TikTokBufferMetadata } from "./_shared.ts";
+import type { ShortsSendContext, ShortsSendStep } from "./send-context.ts";
 
 /** O que o `--publish` devolve pro destino do X (#10772): a URL pública do vertical pra Buffer, ou o erro. */
 export interface BufferPrepResult {
@@ -67,6 +68,35 @@ export async function prepareBufferItem(
   } catch (e) {
     return { destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * #14204: etapa da Buffer (X, TikTok) no laço do `--publish` (`mainUnlocked`).
+ * Só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com
+ * `--mark`. O resultado leva o hash dos bytes (vai no `--mark`) e, na troca
+ * (#12279), o post antigo que a skill apaga. Sempre `settled`: nada é
+ * registrado aqui.
+ */
+export async function sendBufferItem(ctx: ShortsSendContext, item: Extract<ShortsPlanItem, { action: "buffer" }>): Promise<ShortsSendStep> {
+  // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
+  const prep = await prepareBufferItem(item, ctx.uploadVideo, ctx.bufferOffsetMs);
+  const bufferReplace = ctx.replaceTargetOf(item.destination);
+  const { videoHash } = ctx;
+  // #12279: o preparo devolve o hash dos bytes (vai no --mark) e, na troca, o post antigo que a skill apaga.
+  const r = prep.ok && videoHash
+    ? {
+        ...prep,
+        buffer: { ...prep.buffer!, videoSha256: videoHash },
+        ...(bufferReplace
+          ? {
+              replaces: { id: bufferReplace.old_id, at: bufferReplace.at },
+              next_steps: bufferReplaceNextSteps(item.destination, bufferReplace.old_id, bufferReplace.at, videoHash),
+            }
+          : {}),
+      }
+    : prep;
+  console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
+  return { kind: "settled", result: r };
 }
 
 /** #12279: o registro de autorização como a conferência da Buffer o recebe (string = ilegível). */

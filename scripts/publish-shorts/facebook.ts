@@ -9,6 +9,7 @@ import type { ResolvedFacebookPage } from "../lib/facebook-pages.ts";
 import { facebookDestinationId, facebookUploadRoute, mp4DurationSeconds, type ShortPublishedEntry } from "../lib/diaria/short-video.ts";
 import { withCoverRecord, type ShortCoverRecord } from "../lib/diaria/short-cover.ts";
 import { GRAPH, GRAPH_VIDEO, RUPLOAD } from "./_shared.ts";
+import type { ShortsPublishItem, ShortsSendContext, ShortsSendStep } from "./send-context.ts";
 
 // ── Graph API ────────────────────────────────────────────────────────────────
 
@@ -455,6 +456,17 @@ export async function publishFacebookReel(
     unconfirmed: !confirmed,
     ...(warnings.length ? { warnings } : {}),
   };
+}
+
+/**
+ * #14204: etapa do Reel de uma página do Facebook no laço do `--publish`
+ * (`mainUnlocked`). A página sai do `pages` resolvido pelo id do destino; na
+ * substituição (#12279) o envio sai no horário preservado ou não sai.
+ */
+export async function sendFacebookItem(ctx: ShortsSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
+  const page = ctx.pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
+  const outcome = await publishFacebookReel(ctx.deps, page, ctx.apiVersion, ctx.file, item.caption, item.scheduledAt, ctx.shortCover.bytes, ctx.replaceRun);
+  return { kind: "outcome", outcome };
 }
 
 /**

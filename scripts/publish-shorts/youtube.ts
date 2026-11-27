@@ -13,6 +13,7 @@ import { checkYouTubeAudio, describeYouTubeAudioCheck, mp4HasAudioTrack } from "
 import { buildYouTubeInsertRequest, buildYouTubeTags, type YouTubeScheduleDecision } from "../lib/diaria/youtube-video.ts";
 import {
   ExistingEditionVideoError,
+  defaultYouTubeUploadDeps,
   describeYouTubeState,
   failedUploadStatus,
   isIndeterminateUploadFailure,
@@ -23,7 +24,9 @@ import {
 import { resolveYouTubeState } from "../lib/publish-state.ts";
 import { youtubeShortsCoverRecord, youtubeShortsVerticalCoverWarning } from "../lib/diaria/short-cover.ts";
 import { FIRST_FRAME_FFMPEG_TIMEOUT_MS, prepareYouTubeFirstFrameCover, type FirstFrameCoverDeps } from "../lib/diaria/short-first-frame-cover.ts";
+import { readShortReplacements } from "../lib/diaria/shorts-published-store.ts";
 import type { PublishOutcome } from "./facebook.ts";
+import type { ShortsPublishItem, ShortsSendContext, ShortsSendStep } from "./send-context.ts";
 
 /** #12100 opção 2: I/O real da capa no 1º frame (ffprobe/ffmpeg do PATH, diretório em `os.tmpdir()`). */
 export const defaultFirstFrameCoverDeps: FirstFrameCoverDeps = {
@@ -98,6 +101,52 @@ export function youtubeShortsPrepareBeforeMarker(
   env: Record<string, string | undefined>,
 ): boolean {
   return item.destination === "youtube_shorts" && item.action === "publish" && missingYouTubeCredentials(env).length === 0;
+}
+
+/**
+ * #12279: IDs de Short que uma troca tirou de cena (histórico). Histórico
+ * ilegível lança: a conferência do canal não segue às cegas.
+ */
+export function replacedYouTubeIds(dir: string): string[] {
+  return readShortReplacements(dir).filter((r) => r.destination === "youtube_shorts").map((r) => r.id);
+}
+
+/**
+ * #14204: etapa do YouTube Short no laço do `--publish` (`mainUnlocked`).
+ * `prepared` é o arquivo que o laço montou ANTES do marcador de envio (capa no
+ * 1º frame, #12100 opção 2); `null` = sem credencial, sobe o original e
+ * `publishYouTubeShort` recusa. O `send_unknown` vai ao registro antes do PUT.
+ */
+export async function sendYouTubeShortItem(
+  ctx: ShortsSendContext,
+  item: ShortsPublishItem,
+  prepared: { file: Buffer; firstFrame: { ms: number } | null } | null,
+  uploadDeps: YouTubeUploadDeps = defaultYouTubeUploadDeps,
+): Promise<ShortsSendStep> {
+  // #12100 opção 2: o arquivo foi preparado antes do marcador (acima); sem credencial, sobe o original (e a função recusa).
+  const yt = prepared ?? { file: ctx.file, firstFrame: null };
+  const { corte, videoHash } = ctx;
+  const outcome = await publishYouTubeShort({
+    deps: uploadDeps,
+    env: process.env,
+    aammdd: ctx.aammdd,
+    title: item.title ?? ctx.plan.youtube.title,
+    description: item.caption,
+    scheduledAt: item.scheduledAt,
+    file: yt.file,
+    firstFrame: yt.firstFrame,
+    cover: ctx.shortCover.bytes,
+    force: ctx.forceYouTube,
+    // #12279: o Short antigo de uma troca (private sem agendamento no canal) nunca conta como "já está lá".
+    ignoreVideoIds: replacedYouTubeIds(ctx.dir),
+    matchTitleOnly: corte !== null,
+    ...(corte ? { corteSlug: corte.slug } : {}),
+    // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
+    onBeforeBytes: (marker) => {
+      ctx.registry.persist(videoHash ? { ...marker, video_sha256: videoHash } : marker);
+    },
+  });
+  return { kind: "outcome", outcome };
 }
 
 /** URL pública do Short (#11070) — o `youtu.be/{id}` também abre, mas o registro guarda a de Shorts. */
