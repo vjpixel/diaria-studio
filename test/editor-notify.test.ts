@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
-import { notifyEditor, notifyEditorForOutcomes, resolveEmailPolicy, shouldEmailForIssueOutcome } from "../scripts/lib/editor-notify.ts";
+import { notifyEditor, notifyEditorForOutcomes, notifyEditorResultReachedEditor, resolveEmailPolicy, shouldEmailForIssueOutcome } from "../scripts/lib/editor-notify.ts";
 import type { AlarmFindingOutcome, AlarmIssueResult } from "../scripts/lib/alarm-issues.ts";
 import type { PushMessage } from "../scripts/lib/push-notify.ts";
 
@@ -246,10 +246,10 @@ describe("notifyEditor", () => {
     assert.equal(sendPush.mock.callCount(), 1);
   });
 
-  it("forceEmail não manda e-mail quando a issue falhou", async () => {
+  it("forceEmail não manda e-mail de 'acao' quando a issue falhou", async () => {
     const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
     const result = await notifyEditor(
-      { check: "x", fingerprint: "y", severity: "urgente", subject: "s", body: "b", forceEmail: true },
+      { check: "x", fingerprint: "y", severity: "acao", subject: "s", body: "b", forceEmail: true },
       { log: () => true, sendPush, emailPolicy: "urgent_only", ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh: offline" }) },
     );
     assert.equal(result.issue?.action, "failed");
@@ -267,7 +267,8 @@ describe("notifyEditor", () => {
     assert.equal(result.emailSent, true);
   });
 
-  it("ensureAlarmIssue falhando: nunca manda e-mail, resultado carrega action 'failed'", async () => {
+  it("#14325: ensureAlarmIssue falhando com 'urgente': manda o e-mail assim mesmo, resultado segue 'failed'", async () => {
+    // 13/11: o 300 sem DNS não abriu a issue e o missing-video não chegou a ninguém.
     const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
     const log = mock.fn();
     const result = await notifyEditor(
@@ -276,6 +277,38 @@ describe("notifyEditor", () => {
         log,
         sendPush,
         emailPolicy: "urgent_only",
+        ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh: offline" }),
+      },
+    );
+    assert.equal(result.issue?.action, "failed", "o chamador tenta a issue de novo");
+    assert.equal(result.emailSent, true);
+    assert.equal(sendPush.mock.callCount(), 1);
+    const msg = sendPush.mock.calls[0].arguments[0] as PushMessage;
+    assert.equal(msg.subject, "s");
+    assert.match(msg.body, /^b\n\n\(A issue de alarme no GitHub não foi aberta: /);
+    assert.equal(log.mock.callCount(), 1);
+    assert.equal(notifyEditorResultReachedEditor(result), false, "sem issue, o estado não grava 'alarmed'");
+  });
+
+  it("#14325: e-mail de fallback que falha vem em emailError", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: false, error: "smtp offline" }));
+    const result = await notifyEditor(
+      { check: "x", fingerprint: "y", severity: "urgente", subject: "s", body: "b" },
+      { log: () => true, sendPush, emailPolicy: "urgent_only", ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh: offline" }) },
+    );
+    assert.equal(result.emailSent, false);
+    assert.equal(result.emailError, "smtp offline");
+  });
+
+  it("ensureAlarmIssue falhando com 'acao': nunca manda e-mail, resultado carrega action 'failed'", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const log = mock.fn();
+    const result = await notifyEditor(
+      { check: "x", fingerprint: "y", severity: "acao", subject: "s", body: "b" },
+      {
+        log,
+        sendPush,
+        emailPolicy: "legacy",
         ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh: offline" }),
       },
     );

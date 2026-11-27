@@ -570,6 +570,85 @@ export interface ImportOneResult {
   importedAt: string;
 }
 
+/** Diagnóstico de uma divergência `totalSubscribers < sentCount` (#4720, #14337). */
+export interface ImportShortfallDiagnosis {
+  /** Nº de endereços-seed do editor distintos presentes no CSV. */
+  seedCount: number;
+  /** Leitores reais (não-seed) do CSV ausentes da lista; `null` = diff indisponível (paginação falhou). */
+  missingReal: string[] | null;
+  /** Seeds do editor do CSV ausentes da lista. */
+  missingSeeds: string[];
+  /** Sufixo pronto pra mensagem de erro/log, nomeando quem faltou (ou por que não deu pra nomear). */
+  missingDetail: string;
+}
+
+/**
+ * #4720 + #14337: pagina os membros da lista e diffa contra o CSV enviado,
+ * separando leitores reais de cópias do editor (`ensureEditorCopyRow`,
+ * #4045). Best-effort: falha da paginação vira `missingReal: null` e um
+ * `missingDetail` dizendo isso — nunca lança. Compartilhado por
+ * `importOneWave` (aqui) e `importOneSend` (`clarice-import-sends.ts`, #14366).
+ */
+export async function diagnoseImportShortfall(
+  client: Pick<ImportRunClient, "listContactEmails">,
+  listId: number,
+  csv: string,
+  editorSeedEmails: readonly string[] = EDITOR_SEED_EMAILS,
+): Promise<ImportShortfallDiagnosis> {
+  const seedSet = new Set(editorSeedEmails.map((e) => e.trim().toLowerCase()));
+  const csvEmails = extractCsvEmails(csv);
+  const seedCount = new Set(csvEmails.filter((e) => seedSet.has(e))).size;
+
+  let missingDetail = "";
+  let missingReal: string[] | null = null;
+  let missingSeeds: string[] = [];
+  try {
+    const actualEmails = await client.listContactEmails(listId);
+    const missing = findMissingContacts(csvEmails, actualEmails);
+    missingReal = missing.filter((e) => !seedSet.has(e));
+    missingSeeds = missing.filter((e) => seedSet.has(e));
+    missingDetail =
+      missing.length > 0
+        ? ` Contato(s) identificado(s): ${missing.join(", ")}.`
+        : " Diff não identificou o e-mail exato (todo e-mail do CSV apareceu na lista — investigar manualmente).";
+  } catch (diffErr) {
+    missingDetail = ` (diagnóstico automático do contato falhou: ${diffErr instanceof Error ? diffErr.message : diffErr} — nomeie manualmente.)`;
+  }
+  return { seedCount, missingReal, missingSeeds, missingDetail };
+}
+
+/**
+ * #14337: as cópias do editor contam em `sentCount`, mas não são leitores.
+ * Quando elas não entram na contagem da lista (ex.: endereço-seed
+ * recusado/descadastrado na conta Brevo Clarice), o delta inteiro pode ser só
+ * delas — e abortar ali prendia os leitores reais que entraram (27/11/2026:
+ * 36 leitores + 2 seeds, Brevo confirmou 36, rodada abortou e os 36 ficaram
+ * sem o e-mail). Tolera só quando o delta cabe nas cópias do editor E o diff
+ * confirma todo leitor real na lista. Leitor real ausente, delta maior que o
+ * nº de seeds, ou diff indisponível → `false` (o chamador aborta).
+ */
+export function isEditorCopyOnlyShortfall(diag: ImportShortfallDiagnosis, delta: number): boolean {
+  return diag.seedCount > 0 && delta <= diag.seedCount && diag.missingReal !== null && diag.missingReal.length === 0;
+}
+
+/** Linha de aviso do caso tolerado por `isEditorCopyOnlyShortfall` (#14337). */
+export function editorCopyShortfallWarning(
+  diag: ImportShortfallDiagnosis,
+  delta: number,
+  listId: number,
+  sentCount: number,
+): string {
+  const who =
+    diag.missingSeeds.length > 0
+      ? `fora da lista: ${diag.missingSeeds.join(", ")}`
+      : "todas aparecem como membro, mas fora da contagem de inscritos (provável descadastro/bloqueio na conta)";
+  return (
+    `   ⚠️  ${delta} cópia(s) do editor não entraram na contagem da lista #${listId} (${who}). ` +
+    `Todos os ${sentCount - diag.seedCount} leitor(es) reais do CSV estão na lista — seguindo; a cópia de ` +
+    `conferência do editor não deve chegar neste envio (#14337).`
+  );
+}
+
 /**
  * Cria a lista, dispara o import, aguarda o processo assíncrono terminar
  * (`pollProcessUntilTerminal`, scripts/lib/brevo-process-poll.ts — mesmo
@@ -654,50 +733,11 @@ export async function importOneWave(
     const isExpectedSuppression =
       info.totalBlacklisted !== undefined && delta === info.totalBlacklisted;
 
-    // #14337: as cópias do editor (`ensureEditorCopyRow`, #4045) contam em
-    // `sentCount`, mas não são leitores. Quando elas não entram na contagem
-    // da lista (ex.: endereço-seed recusado/descadastrado na conta Brevo
-    // Clarice), o delta inteiro pode ser só delas — e abortar ali prendia os
-    // leitores reais que entraram (27/11/2026: 36 leitores + 2 seeds, Brevo
-    // confirmou 36, rodada abortou e os 36 ficaram sem o e-mail).
-    const seedSet = new Set((opts.editorSeedEmails ?? EDITOR_SEED_EMAILS).map((e) => e.trim().toLowerCase()));
-    const csvEmails = extractCsvEmails(plan.csv);
-    const seedCount = new Set(csvEmails.filter((e) => seedSet.has(e))).size;
+    const diag = await diagnoseImportShortfall(client, list.id, plan.csv, opts.editorSeedEmails);
+    const { missingDetail } = diag;
 
-    let missingDetail = "";
-    // `null` = diff indisponível (paginação falhou): nunca autoriza seguir.
-    let missingReal: string[] | null = null;
-    let missingSeeds: string[] = [];
-    try {
-      const actualEmails = await client.listContactEmails(list.id);
-      const missing = findMissingContacts(csvEmails, actualEmails);
-      missingReal = missing.filter((e) => !seedSet.has(e));
-      missingSeeds = missing.filter((e) => seedSet.has(e));
-      missingDetail =
-        missing.length > 0
-          ? ` Contato(s) identificado(s): ${missing.join(", ")}.`
-          : " Diff não identificou o e-mail exato (todo e-mail do CSV apareceu na lista — investigar manualmente).";
-    } catch (diffErr) {
-      missingDetail = ` (diagnóstico automático do contato falhou: ${diffErr instanceof Error ? diffErr.message : diffErr} — nomeie manualmente.)`;
-    }
-
-    // #14337: o delta cabe nas cópias do editor E o diff confirma que todo
-    // leitor real está na lista → a cópia de conferência não chegou, mas
-    // nenhum leitor foi perdido. Avisa e segue. Qualquer leitor real ausente,
-    // delta maior que o nº de seeds, ou diff indisponível → aborta como antes.
-    const isEditorCopyOnlyShortfall =
-      !isExpectedSuppression && seedCount > 0 && delta <= seedCount && missingReal !== null && missingReal.length === 0;
-
-    if (isEditorCopyOnlyShortfall) {
-      const who =
-        missingSeeds.length > 0
-          ? `fora da lista: ${missingSeeds.join(", ")}`
-          : "todas aparecem como membro, mas fora da contagem de inscritos (provável descadastro/bloqueio na conta)";
-      log(
-        `   ⚠️  ${delta} cópia(s) do editor não entraram na contagem da lista #${list.id} (${who}). ` +
-          `Todos os ${plan.sentCount - seedCount} leitor(es) reais do CSV estão na lista — seguindo; a cópia de ` +
-          `conferência do editor não deve chegar neste envio (#14337).`,
-      );
+    if (!isExpectedSuppression && isEditorCopyOnlyShortfall(diag, delta)) {
+      log(editorCopyShortfallWarning(diag, delta, list.id, plan.sentCount));
     } else if (!isExpectedSuppression) {
       throw new Error(
         `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
