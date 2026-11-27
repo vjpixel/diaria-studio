@@ -1293,7 +1293,7 @@ function runNode(cmd: string, args: string[]): void {
 async function downloadFile(url: string, outPath: string): Promise<void> {
   // User-Agent conforme Wikimedia policy (#217); timeout de 30s evita pendurar Stage 1b.
   const res = await fetch(url, {
-    headers: { "User-Agent": "diar.ia.br/1.0 (https://diar.ia.br; vjpixel@gmail.com)" },
+    headers: { "User-Agent": "diar.ia.br/1.0 (https://diar.ia.br; diariaeditor@gmail.com)" },
     signal: AbortSignal.timeout(CONFIG.timeouts.wikimediaDownload),
   });
   if (!res.ok) {
