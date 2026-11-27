@@ -15,6 +15,7 @@ import {
   runMergeWaiter,
   makeSessionRegistryMergeLock,
   type GhRunner,
+  type LockRunner,
   type SitePageMergeLock,
 } from "../scripts/publish-edition-site-page.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
@@ -355,7 +356,14 @@ describe("makeSessionRegistryMergeLock (#9621 item 2)", () => {
   it("usa o MESMO lock do session-registry: enquanto o waiter segura, coordenador não adquire (e vice-versa)", () => {
     const root = mkdtempSync(join(tmpdir(), "site-merge-lock-9621-"));
     mkdirSync(join(root, "data"));
-    const lock = makeSessionRegistryMergeLock(root, 9588);
+    // #14276: o waiter passa pelo CLI `merge-lock-acquire`; aqui o runner
+    // reproduz o CLI sem D1 (só o arquivo), em processo.
+    const cliSemD1: LockRunner = (args, cwd) => {
+      const id = args[args.indexOf("--session-id") + 1];
+      const ok = args[0] === "merge-lock-acquire" ? acquireMergeLock(cwd, id) : releaseMergeLock(cwd, id);
+      return { ok, stdout: ok ? "ok" : "denied (held by another session)", stderr: "" };
+    };
+    const lock = makeSessionRegistryMergeLock(root, 9588, cliSemD1);
     assert.equal(lock.acquire(), true);
     assert.equal(acquireMergeLock(root, "coordenador"), false);
     lock.release();

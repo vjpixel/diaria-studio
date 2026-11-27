@@ -49,7 +49,11 @@ describe("mergeLockAcquireOutcome (#11380)", () => {
   });
 
   it("lock de outra sessão (ou ilegível): mantém 'held by another session'", () => {
-    assert.equal(mergeLockAcquireOutcome(false, "s1", { heldBy: "s2", acquiredAt: at }), "denied (held by another session)");
+    // #14276: com o dono legível, a recusa o nomeia (e desde quando).
+    assert.equal(
+      mergeLockAcquireOutcome(false, "s1", { heldBy: "s2", acquiredAt: at }),
+      `denied (held by another session) — holder s2 desde ${at}`,
+    );
     assert.equal(mergeLockAcquireOutcome(false, "s1", null), "denied (held by another session)");
   });
 });
@@ -73,5 +77,6 @@ describe("CLI merge-lock-acquire 2× na mesma sessão (#11380, cenário da 26102
     const other = cli(root, ["merge-lock-acquire", "--session-id", "sess-b", "--pr", "2"]);
     assert.equal(other.status, 1);
     assert.match(other.stdout, /merge-lock-acquire denied \(held by another session\)/);
+    assert.match(other.stdout, /holder sess-a desde \d{4}-\d{2}-\d{2}T/, "#14276: a recusa nomeia quem segura");
   });
 });
