@@ -44,5 +44,16 @@ export interface InvariantRule {
    * — `pipeline-sentinel.ts write` roda com `phase: "pre-dispatch"` e a pula.
    */
   postDispatchOnly?: boolean;
+  /**
+   * #14266: `true` quando a regra só pode passar DEPOIS do gate humano do
+   * stage — no Stage 2, `reviewed-titles-per-highlight`: antes do gate o
+   * `02-reviewed.md` tem 3 opções de título por destaque POR DESENHO
+   * (#159/#589; o editor poda no gate, o title-picker é o fallback pós-gate).
+   * `check-invariants.ts --stage 2 --phase pre-gate` (o `post-checks` do
+   * `stage-2-run.ts`) exclui essas regras; o `pipeline-sentinel.ts write`
+   * (pós-gate) e o `check-invariants --stage 2` sem `--phase` seguem rodando
+   * o conjunto completo, então a garantia de 1 título por destaque continua.
+   */
+  postGateOnly?: boolean;
   run: (editionDir: string) => InvariantViolation[];
 }

@@ -23,6 +23,11 @@
  *   # essas 2 como "error", mesmo com env vars/imagens 100% corretas.
  *   npx tsx scripts/check-invariants.ts --stage 5 --phase pre-dispatch --edition-dir data/editions/260508
  *
+ *   # Stage 2 pré-gate (post-checks do stage-2-run, #14266): exclui regras
+ *   # postGateOnly (reviewed-titles-per-highlight — 3 títulos por destaque
+ *   # antes do gate é o esperado; o sentinel pós-gate segue exigindo 1).
+ *   npx tsx scripts/check-invariants.ts --stage 2 --phase pre-gate --edition-dir data/editions/260508
+ *
  *   # Modo static (rodado em CI ou pre-commit; valida regras estruturais):
  *   npx tsx scripts/check-invariants.ts --static
  *
@@ -340,13 +345,17 @@ async function main(): Promise<void> {
   // podem passar DEPOIS que o dispatch já rodou; checá-las em §5a, antes de
   // qualquer publicação, sempre retorna error). Qualquer outro valor de
   // --phase (ou ausente) roda o conjunto completo, comportamento de sempre.
+  // #14266: --phase pre-gate exclui regras postGateOnly (Stage 2 —
+  // reviewed-titles-per-highlight: antes do gate há 3 títulos por destaque
+  // por desenho). O sentinel pós-gate segue rodando a regra.
   const phaseRaw = getArg(argv, "phase") || undefined;
-  if (phaseRaw !== undefined && phaseRaw !== "pre-dispatch") {
+  if (phaseRaw !== undefined && phaseRaw !== "pre-dispatch" && phaseRaw !== "pre-gate") {
     console.warn(
-      `check-invariants: --phase "${phaseRaw}" não reconhecido (esperado "pre-dispatch") — rodando o conjunto completo de regras, sem filtro de fase.`,
+      `check-invariants: --phase "${phaseRaw}" não reconhecido (esperado "pre-dispatch" ou "pre-gate") — rodando o conjunto completo de regras, sem filtro de fase.`,
     );
   }
-  const phase = phaseRaw === "pre-dispatch" ? ("pre-dispatch" as const) : undefined;
+  const phase =
+    phaseRaw === "pre-dispatch" || phaseRaw === "pre-gate" ? phaseRaw : undefined;
 
   if (!isStatic && !editionDir && stage === undefined) {
     console.error(
