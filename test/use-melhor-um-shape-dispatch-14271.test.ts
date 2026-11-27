@@ -68,6 +68,20 @@ describe("dispatch do '## um' manda o formato pelo item (#14271)", () => {
     assert.doesNotMatch(step, /exatamente 3 parágrafos/);
   });
 
+  it("formato escopado ao # Social; o # Curto mantém o próprio e fecha com 'Mais em {edition_url}'", () => {
+    for (const steps of [undefined, ["Abra o app", "Salve"]]) {
+      const step = dispatchStep(steps);
+      assert.match(step, /Formato do '## um' no # Social \(social-writer\)/);
+      assert.match(step, /# Curto \(social-curto\) mantém o formato próprio/);
+      assert.match(step, /Mais em \{edition_url\}/);
+      // A chamada datada não é atribuída ao # Curto.
+      assert.doesNotMatch(step, /# Curto[^.]*O guia completo/);
+    }
+    const swap = useMelhorUmShapeInstruction({}, "261127");
+    assert.match(swap, /no # Social \(social-writer\)/);
+    assert.match(swap, /# Curto \(social-curto\) mantém o formato próprio/);
+  });
+
   it("edição fora de AAMMDD: chamada genérica com DD/MM, sem inventar data", () => {
     const s = useMelhorUmShapeInstruction({}, "rascunho");
     assert.match(s, /O guia completo está na edição de DD\/MM\./);

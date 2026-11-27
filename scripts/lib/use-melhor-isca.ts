@@ -61,16 +61,21 @@ export function useMelhorUmShapeInstruction(
   const steps = Array.isArray(item?.steps) ? item.steps : [];
   const call = useMelhorEditionCall(editionId) ?? "O guia completo está na edição de DD/MM. (DD/MM = data da edição)";
   const noCopy = "Não copiar o formato do '## um' que já está em 03-social.md: o formato vem do item, não do texto anterior.";
+  // #14271 (review): a instrução vai ao social-writer E ao social-curto; o formato
+  // abaixo vale só para o `# Social`. O `# Curto` (≤280 chars) fecha com
+  // `Mais em {edition_url}` (editorial-rules, "Link da edição por rede").
+  const curto =
+    "O '## um' do # Curto (social-curto) mantém o formato próprio: não segue esta instrução e fecha com \"Mais em {edition_url}\".";
   if (steps.length > 0) {
     return (
-      `Formato do '## um': item COM steps (${steps.length}) → lista numerada no formato "1) ...", ` +
-      `um item por passo de item.steps, todos, sem cortar (#9585). ${noCopy}`
+      `Formato do '## um' no # Social (social-writer): item COM steps (${steps.length}) → lista numerada no formato "1) ...", ` +
+      `um item por passo de item.steps, todos, sem cortar (#9585). ${noCopy} ${curto}`
     );
   }
   return (
-    `Formato do '## um': item SEM steps → texto corrido em exatamente 3 parágrafos, sem lista numerada ` +
+    `Formato do '## um' no # Social (social-writer): item SEM steps → texto corrido em exatamente 3 parágrafos, sem lista numerada ` +
     `(nenhuma linha começando com "1)" ou "1."); o 3º parágrafo tem uma única frase antes da chamada datada ` +
-    `e fecha com ela: "${call}" (#10246, #11667). ${noCopy}`
+    `e fecha com ela: "${call}" (#10246, #11667). ${noCopy} ${curto}`
   );
 }
 
