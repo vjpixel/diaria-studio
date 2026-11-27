@@ -60,6 +60,10 @@ const ORIGINAL_16 = [
   "block-bash-protected-path-write.mjs",
 ];
 
+/** Guards que entraram no despachante depois do #14045, no fim da lista. */
+const ADDED_AFTER_14045 = ["block-pr-create-preflight.mjs"]; // #14216
+const CURRENT_GUARDS = [...ORIGINAL_16, ...ADDED_AFTER_14045];
+
 /** Mesma fórmula de `machineTag()` dos hooks de sessão (nome do arquivo de registro). */
 const machineTag = () => (hostname() || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
 
@@ -343,13 +347,13 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
 });
 
 describe("despachante (#14045): registro e contrato dos 16 guards reais", () => {
-  it("GUARDS é exatamente a lista antiga, na mesma ordem", () => {
-    assert.deepEqual(GUARDS.map((g) => g.file), ORIGINAL_16);
+  it("GUARDS é exatamente a lista antiga, na mesma ordem (guard novo só no fim)", () => {
+    assert.deepEqual(GUARDS.map((g) => g.file), CURRENT_GUARDS);
   });
 
   it("settings.json: o grupo Bash registra só o despachante", () => {
     assert.deepEqual(directBashPreToolUseScripts(), [DISPATCHER_FILE]);
-    assert.deepEqual(armedBashPreToolUseGuards().slice(1), ORIGINAL_16);
+    assert.deepEqual(armedBashPreToolUseGuards().slice(1), CURRENT_GUARDS);
   });
 
   it("P2: o teto do grupo no settings.json cobre o pior caso (cadeia em série = soma; aqui cada guard é um elo só)", () => {
@@ -433,7 +437,7 @@ describe("despachante (#14045): equivalência com os 16 scripts rodados um a um"
         tool_name: "Bash",
         tool_input: { command: c.command },
       });
-      const individual = ORIGINAL_16.map((f) => runScript(join(HOOKS, f), root, input));
+      const individual = CURRENT_GUARDS.map((f) => runScript(join(HOOKS, f), root, input));
       const expected = combineHookOutputs(individual);
       const actualRaw = runScript(DISPATCHER, root, input);
       const actual = actualRaw === "" ? null : JSON.parse(actualRaw);

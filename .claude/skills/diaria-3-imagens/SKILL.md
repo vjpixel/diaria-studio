@@ -17,7 +17,7 @@ Dispara a Etapa 3 da edição diar.ia.br: coleta o resultado do `eia-composer` (
   - Sem argumento → roda É IA? + todas as imagens de destaque (d1, d2, d3)
   - `eia` → roda só o É IA? (útil para regenerar sem refazer imagens)
   - `d1` / `d2` / `d3` → regenera só aquela imagem de destaque
-- `--no-gates` (opcional, #5738) = auto-aprova o gate deste stage. Existe para o runner AGENDADO (`scripts/overnight/run-scheduled-edicao.ts`), que desde o #5738 invoca uma skill `/diaria-N-*` por sessão em modo `--print`: sem esta flag o gate seria apresentado e ninguém responderia, queimando os turnos da sessão sem escrever sentinela. Equivale ao `auto_approve = true` que `/diaria-edicao` já setava internamente para os Stages 1-3 (pre-gate mode, #1523). **Nunca alcança publicação** — Stages 5/6 não estão em `STAGE_PLAN` e o runner nunca os invoca.
+- `--no-gates` (opcional, #5738) = auto-aprova o gate deste stage. Existe para o runner AGENDADO (`scripts/edicao-agendada/run-scheduled-edicao.ts`), que desde o #5738 invoca uma skill `/diaria-N-*` por sessão em modo `--print`: sem esta flag o gate seria apresentado e ninguém responderia, queimando os turnos da sessão sem escrever sentinela. Equivale ao `auto_approve = true` que `/diaria-edicao` já setava internamente para os Stages 1-3 (pre-gate mode, #1523). **Nunca alcança publicação** — Stages 5/6 não estão em `STAGE_PLAN` e o runner nunca os invoca.
 
 ## Placeholders
 

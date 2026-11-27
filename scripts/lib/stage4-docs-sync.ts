@@ -2,7 +2,8 @@
  * stage4-docs-sync.ts (#9964)
  *
  * Miolo do documento editável do gate do Stage 4 (Claude Docs). Decisão do
- * editor (12/10/2026, registrada na #9964): o documento sai SEMPRE no Stage 4
+ * editor (12/10/2026, registrada na #9964; opt-in desde o #14116, 27/11/2026,
+ * resposta `doc` no gate): o documento sai no Stage 4
  * (aditivo aos previews HTML, só para o TEXTO), com sync automático de volta
  * para `02-reviewed.md`/`03-social.md`. Condição: o repo segue fonte de
  * verdade — o sync de volta DETECTA e ACUSA conflito, nunca sobrescreve em

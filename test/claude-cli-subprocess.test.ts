@@ -14,7 +14,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { callClaudeCli, ClaudeCliError, describeExitCause } from "../scripts/lib/claude-cli-subprocess.ts";
-import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
+import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/edicao-agendada/run-scheduled-edicao.ts";
 
 function fakeExecFn(capturedEnvs: NodeJS.ProcessEnv[]) {
   return ((_bin: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {

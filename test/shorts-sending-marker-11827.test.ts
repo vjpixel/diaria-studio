@@ -156,7 +156,8 @@ describe("#11827 P2: publish-shorts grava a marca antes de publicar", () => {
   const src = publishShortsSource();
   it("marca antes da 1ª chamada de publicação do loop e apaga na recusa", () => {
     const mark = src.indexOf("markShortSending(dir, aammdd, writer");
-    const firstPublish = src.indexOf("outcome = await enqueueInstagramReel(");
+    // #14204: o 1º envio do laço é a chamada da etapa do destino (a fila do Worker mora em instagram-send.ts).
+    const firstPublish = src.indexOf("const step = await sendDestinationItem(sendCtx, item, { clearSending }, ytUpload);");
     assert.ok(mark > 0 && firstPublish > mark, "markShortSending precisa vir antes do envio");
     assert.match(src, /\} catch \(e\) \{\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*clearSending\(\);/);
   });

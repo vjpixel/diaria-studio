@@ -8,7 +8,7 @@ import { initialFirstCommentPending } from "../lib/diaria/instagram-first-commen
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "../lib/atomic-write.ts";
 import type { ResolvedFacebookPage } from "../lib/facebook-pages.ts";
 import {
@@ -31,6 +31,7 @@ import {
   CHROME_UPLOAD_MAX_BYTES,
   buildChromeUploadFfmpegPasses,
   chromeUploadBitrate,
+  chromeUploadFileName,
   chromeUploadReusable,
   chromeUploadSidecarPath,
   fitsChromeUpload,
@@ -718,6 +719,38 @@ export function attachChromeUploadToPlan(
     return { ...i, upload: { path: original.path, sizeBytes: original.sizeBytes, fitsChromeUpload: false } };
   });
   return { items: next, warnings };
+}
+
+/**
+ * #14204: etapa do arquivo do Chrome (#10915). Instagram acima do teto vira
+ * passo guiado no Chrome; a compressão só alimenta esse passo, e o chamador
+ * deve invocá-la DEPOIS do laço de envio: um encode lento ou travado nunca
+ * atrasa os Reels/vídeos que saem por API. Sem passo guiado do Instagram (ou
+ * sem duração legível) devolve o plano igual, sem encode.
+ */
+export function prepareInstagramChromeStep<P extends { items: ShortsPlanItem[]; warnings: string[] }>(
+  plan: P,
+  input: { aammdd: string; dir: string; videoPath: string; fileSizeBytes: number; durationSeconds: number | null },
+  deps: ChromeUploadDeps = defaultChromeUploadDeps,
+  log: (line: string) => void = (l) => console.error(l),
+): P {
+  if (input.durationSeconds === null || !plan.items.some((i) => i.destination === "instagram" && i.action === "guided")) return plan;
+  const upload = prepareInstagramChromeUpload(deps, {
+    source: input.videoPath,
+    output: join(input.dir, "_internal", chromeUploadFileName(input.aammdd)),
+    durationSeconds: input.durationSeconds,
+  });
+  const attached = attachChromeUploadToPlan(plan.items, upload, { path: input.videoPath, sizeBytes: input.fileSizeBytes });
+  const next = { ...plan, items: attached.items, warnings: [...plan.warnings, ...attached.warnings] };
+  if (upload.ok) {
+    const fits = fitsChromeUpload(upload.sizeBytes);
+    log(
+      `${fits ? "[ok]" : "[aviso]"} instagram: arquivo pro Chrome ${upload.reused ? "reaproveitado" : "gerado"} (${(upload.sizeBytes / 1e6).toFixed(1)} MB` +
+        `${fits ? "" : `, acima dos ${CHROME_UPLOAD_MAX_BYTES / 1e6} MB do file_upload`}) → ${upload.path}`,
+    );
+  }
+  for (const w of attached.warnings) log(`[aviso] ${w}`);
+  return next;
 }
 
 export interface InstagramEnqueueDeps {

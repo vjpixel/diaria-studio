@@ -7,11 +7,11 @@
  * Ex.: pesquisa roda em 2026-04-26 (BRT) → edição é 260427.
  *
  * Usado por `scripts/clarice-db-summary.ts` (cálculo de próxima edição pro
- * summary). Também consumido por `scripts/overnight/calc-next-edition-date.ts`
- * — CLI wrapper originalmente escrito pro runner agendado
- * `scripts/overnight/run-scheduled-edicao.ps1`, que foi desregistrado do Task
- * Scheduler em #3259/260711 (script mantido, dormente; ver
- * docs/scheduled-edicao-setup.md).
+ * summary). Também consumido por `scripts/edicao-agendada/calc-next-edition-date.ts`
+ * — CLI wrapper escrito pro runner agendado
+ * `scripts/edicao-agendada/run-scheduled-edicao.ps1` (antes em
+ * `scripts/overnight/`, hoje shim, #14121); estado operacional de cada via em
+ * docs/scheduled-edicao-setup.md.
  * Extraído como lib para permitir testes determinísticos (#633 / #2068).
  */
 

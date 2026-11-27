@@ -126,9 +126,13 @@ describe("#11913 cenário da issue: extra às 06:30, principal às 12:00", () =>
 
   it("wiring: as duas conferências da rodada passam os ids do outro lado do dia, na edição também", () => {
     const src = publishShortsSource();
-    const branch = src.slice(src.indexOf("} else if (item.destination === THREADS_PROFILE_DESTINATION) {"), src.indexOf('} else if (item.destination === "instagram") {'));
-    assert.ok(branch.includes("sameDayOtherIds: sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION)"), "Threads");
-    const ig = src.slice(src.indexOf('} else if (item.destination === "instagram") {'));
+    // #14204: o ramo de cada destino virou etapa própria (threads.ts, instagram-send.ts).
+    const branchStart = src.indexOf("export async function sendThreadsProfileItem(");
+    assert.ok(branchStart > 0, "etapa do threads_profile não achada");
+    const branch = src.slice(branchStart, src.indexOf("\n}\n", branchStart));
+    assert.ok(branch.includes("sameDayOtherIds: deps.sameDayOtherIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION)"), "Threads");
+    assert.ok(src.includes("sameDayOtherIds: sameDayOtherRegisteredIds,"), "Threads: o padrão é o registro do dia");
+    const ig = src.slice(src.indexOf("export async function sendInstagramReelItem("));
     assert.ok(ig.includes('const ignoreIds = sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, "instagram");'), "Instagram");
     const helper = src.slice(src.indexOf("export function sameDayOtherRegisteredIdsFor("), src.indexOf("export function sameDayOtherRegisteredIdsFor(") + 800); // #11965: miolo testável
     assert.ok(helper.includes("sameDayCorteRegisteredIds("), "a edição desconta os cortes do dia");

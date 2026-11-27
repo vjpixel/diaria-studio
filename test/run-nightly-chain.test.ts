@@ -50,7 +50,7 @@ import {
   spawnWithPersistentOutput,
   type NightlyChainDeps,
 } from "../scripts/overnight/run-nightly-chain.ts";
-import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
+import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/edicao-agendada/run-scheduled-edicao.ts";
 import { SCHEDULED_TASKS, getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
 interface FakeResult {

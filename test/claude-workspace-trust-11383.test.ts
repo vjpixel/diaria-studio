@@ -27,7 +27,7 @@ import {
   main as chainMain,
   type NightlyChainDeps,
 } from "../scripts/overnight/run-nightly-chain.ts";
-import { main as edicaoMain } from "../scripts/overnight/run-scheduled-edicao.ts";
+import { main as edicaoMain } from "../scripts/edicao-agendada/run-scheduled-edicao.ts";
 
 /** Linha real do CLI medida na prova do #11235. */
 const CLI_UNTRUSTED_LINE =
