@@ -22,7 +22,7 @@ Decisões do editor (19/10/2026, comentários da #10552): horário 00:15, zero p
 
 ## Como o overnight sobe
 
-O runner monta a sessão no molde de `scripts/overnight/run-scheduled-edicao.ts`:
+O runner monta a sessão no molde de `scripts/edicao-agendada/run-scheduled-edicao.ts`:
 
 - Remove `CLAUDE_CLI_STRIPPED_ENV_VARS` do ambiente do `claude`. O unit faz `EnvironmentFile=-.env`, e o `.env` tem `ANTHROPIC_API_KEY`; a sessão autentica sempre pela assinatura claude.ai (#5608/#6714).
 - Abre a sessão já em `--model claude-sonnet-5-5 --effort medium`, o par do #9530.

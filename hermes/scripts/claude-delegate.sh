@@ -652,7 +652,7 @@ for MODEL in "${MODELS[@]}"; do
     # do .env (legítima ali pra geo-citation-monitor.ts/audit-context-tokens.ts)
     # e o CLI troca a assinatura pela API paga em silêncio. Lista agora
     # alinhada ao subconjunto de auth de CLAUDE_CLI_STRIPPED_ENV_VARS
-    # (scripts/overnight/run-scheduled-edicao.ts) — API_KEY + as 2 de
+    # (scripts/edicao-agendada/run-scheduled-edicao.ts) — API_KEY + as 2 de
     # roteamento Bedrock/Vertex (mesma classe de shadowing). As 3 vars de
     # identidade de sessão pai daquela lista (#5791, hipótese não confirmada)
     # ficam de fora aqui de propósito: não são vetor de auth, são outra

@@ -21,11 +21,11 @@
  * runner gravou.
  *
  * **Quem escreve — um arquivo POR agendador** (`EDICAO_SCHEDULE_ATTESTATION_FILES`):
- * - Windows: `scripts/overnight/setup-edicao-schedule.ps1`, único ponto que
+ * - Windows: `scripts/edicao-agendada/setup-edicao-schedule.ps1`, único ponto que
  *   chama `Register-ScheduledTask`/`Unregister-ScheduledTask`, grava
  *   `edicao-diaria-schedule-attestation.json` (nome original, mantido por
  *   compat com o writer já em produção).
- * - Linux: `scripts/overnight/arm-edicao-schedule-systemd.ts` — wrapper que
+ * - Linux: `scripts/edicao-agendada/arm-edicao-schedule-systemd.ts` — wrapper que
  *   roda `systemctl --user enable|disable --now` E grava
  *   `edicao-diaria-schedule-attestation-systemd.json`. Substitui o
  *   `systemctl` digitado à mão (que nunca publicava nada — o TODO que a PR
@@ -42,8 +42,8 @@
  * @see scripts/lib/edicao-diaria-staleness-alarm.ts (consumidor — combina com `EdicaoTimerState` local)
  * @see scripts/lib/onedrive-sync-alarm.ts (mesmo padrão de canário cross-machine)
  * @see scripts/lib/machine-id.ts (identidade de máquina — mesmo sinal, `os.hostname()`)
- * @see scripts/overnight/setup-edicao-schedule.ps1 (writer Windows)
- * @see scripts/overnight/arm-edicao-schedule-systemd.ts (writer Linux)
+ * @see scripts/edicao-agendada/setup-edicao-schedule.ps1 (writer Windows)
+ * @see scripts/edicao-agendada/arm-edicao-schedule-systemd.ts (writer Linux)
  */
 
 import { existsSync, readFileSync } from "node:fs";

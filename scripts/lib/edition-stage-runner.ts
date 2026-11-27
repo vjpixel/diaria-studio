@@ -1,6 +1,6 @@
 /**
  * scripts/lib/edition-stage-runner.ts (#5744, extraído de
- * `scripts/overnight/run-scheduled-edicao.ts` do #5738)
+ * `scripts/edicao-agendada/run-scheduled-edicao.ts` do #5738)
  *
  * Laço "uma sessão `claude` por stage" — o efeito de um `/clear` entre os
  * stages da edição diária.

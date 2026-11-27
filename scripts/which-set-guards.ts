@@ -155,6 +155,7 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
     ],
     triggerPatterns: [
       "scripts/lib/scheduled-tasks.ts",
+      "scripts/lib/scheduled-tasks-table.ts",
       "docs/scheduled-tasks-registry.md",
       "docs/onedrive-dependencias-cloudflare.md",
     ],
