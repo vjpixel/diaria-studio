@@ -2,13 +2,14 @@
 /**
  * scripts/mark-video-liberada.ts (#13630)
  *
- * Marca a edição como LIBERADA para a rotina diária do vídeo tirar do Drive os
+ * Marca a edição como LIBERADA para o arquivamento do vídeo tirar do Drive os
  * finais, prévias e editados (`Final/`, `Editado(s)/`, `* - previa *.mp4`).
  * Último passo do `/diaria-publica`: a sessão de publicação só grava o
  * marcador `_internal/05-video-liberada.json`; quem baixa, confere (tamanho +
- * MD5) e apaga é a `Diaria-Video-Bruto-Archive` no 300, na madrugada seguinte
- * (`scripts/archive-video-brutos.ts`). Assim a sessão não fica presa
- * baixando GBs.
+ * MD5) e apaga é `scripts/archive-video-brutos.ts` no 300. Assim a sessão não
+ * fica presa baixando GBs. Desde a #14292 (27/11/2026, plano novo do Google
+ * Drive) a task diária `Diaria-Video-Bruto-Archive` foi aposentada: o marcador
+ * só tem efeito numa rodada manual do script.
  *
  * Só marca com o horizontal publicado (link no D1 ou `05-youtube-published.json`
  * com `videoId`, o mesmo sinal da rotina; o Studio sobe a partir de `Final/`,
@@ -117,7 +118,7 @@ function main(): void {
   const result = { ...check, liberada: check.already || written !== null, written };
   if (hasFlag(argv, "json")) console.log(JSON.stringify(result, null, 2));
   else if (result.liberada) {
-    console.log(`${LOG_PREFIX} ${edition} liberada${written ? ` (${written})` : " (já estava)"}: a Diaria-Video-Bruto-Archive recolhe os finais na próxima madrugada.`);
+    console.log(`${LOG_PREFIX} ${edition} liberada${written ? ` (${written})` : " (já estava)"}: uma rodada manual de scripts/archive-video-brutos.ts recolhe os finais (a task diária saiu na #14292).`);
   } else {
     console.log(`${LOG_PREFIX} ${edition} NÃO liberada${hasFlag(argv, "dry-run") ? " (dry-run)" : ""}: ${check.problems.join("; ")}`);
   }
