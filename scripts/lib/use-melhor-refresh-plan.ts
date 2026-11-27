@@ -10,7 +10,9 @@
  * variável por item) — vem do carimbo (`carouselSlots`) quando existe.
  */
 
+import { basename } from "node:path";
 import { USE_MELHOR_POST_ID, type UseMelhorPostStatusInput } from "./use-melhor-post.ts";
+import { useMelhorUmShapeInstruction } from "./use-melhor-isca.ts";
 
 export interface UseMelhorRefreshInput {
   /** URL do item gravado ANTES da re-seleção (null = nada gravado). */
@@ -100,7 +102,9 @@ export function buildUseMelhorRefreshPlan(
       `${n++}. Dispatchar social-writer e social-curto SÓ pro '## ${USE_MELHOR_POST_ID}' com ` +
         `use_melhor_post_path=${dir}/_internal/use-melhor-post.json` +
         (srcPath ? ` e source_text_paths={"${USE_MELHOR_POST_ID}":"${srcPath}"}` : " (sem source_text_path: fetch da fonte falhou, omitir a chave)") +
-        `; o prompt manda ler context/editorial-rules.md ANTES de escrever.`,
+        `; o prompt manda ler context/editorial-rules.md ANTES de escrever. ` +
+        // #14271: formato pelo item, nunca "use o '## um' atual como referência".
+        useMelhorUmShapeInstruction(item, basename(dir)),
       `${n++}. Integrar cirurgicamente (#495) o '## ${USE_MELHOR_POST_ID}' novo em '# Social' e '# Curto' de ${dir}/03-social.md.`,
       `${n++}. Re-humanizar SCOPED (changed_sections=main_${USE_MELHOR_POST_ID}) com Clarice, registrar os dois passos (check-humanizer-social.ts --record-run, #11534) e regravar o selo (check-humanizer-social.ts --write).`,
     );
