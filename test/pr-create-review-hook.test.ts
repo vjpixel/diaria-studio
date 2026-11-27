@@ -205,7 +205,7 @@ describe("resolveEffort (#2754)", () => {
 // diferente dos mocks acima (que ignoram os args): resolveEffort agora faz
 // duas chamadas de `gh` quando não há sinal de overnight.
 describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243; limiar 500 desde #5420)", () => {
-  function makeExecFn({ branch = "develop/fix-4813\n", diff } = {}) {
+  function makeExecFn({ branch = "develop/fix-4813\n", diff }: { branch?: string; diff?: string } = {}) {
     return (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions,files")) {
         if (diff === undefined) throw new Error("gh pr view --json additions,deletions,files failed");
