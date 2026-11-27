@@ -27,7 +27,7 @@
  * Nunca altera o título exibido — o substituto existe só para a comparação.
  */
 
-import { canonicalize } from "./url-utils.ts";
+import { canonicalize, dedupUrlKey } from "./url-utils.ts";
 import { isPlaceholderHighlightTitle } from "./placeholder-title-guard.ts";
 import { tokenizeForJaccard } from "./title-similarity.ts";
 
@@ -77,14 +77,17 @@ export type DedupTitleSource = "title" | "past-url" | "slug" | "placeholder";
 
 /**
  * Título a usar nas comparações do dedup contra edições passadas.
- * `pastTitleByUrl` é indexado pela URL canônica (`canonicalize`).
+ * `pastTitleByUrl` é indexado pela chave do dedup (`dedupUrlKey`, #14305) —
+ * o `dedup()` re-chaveia o mapa de `extractPastEditionArticleTitleByUrl`
+ * (chaveado por `canonicalize`); a busca cai na chave `canonicalize` quando a
+ * do dedup não acha, para quem passa o mapa sem re-chavear.
  */
 export function dedupComparisonTitle(
   art: { url: string; title?: string },
   pastTitleByUrl: Map<string, string>,
 ): { title: string | undefined; source: DedupTitleSource } {
   if (!isPlaceholderHighlightTitle(art.title)) return { title: art.title, source: "title" };
-  const fromPast = pastTitleByUrl.get(canonicalize(art.url));
+  const fromPast = pastTitleByUrl.get(dedupUrlKey(art.url)) ?? pastTitleByUrl.get(canonicalize(art.url));
   if (fromPast && !isPlaceholderHighlightTitle(fromPast)) return { title: fromPast, source: "past-url" };
   const fromSlug = slugTitleFromUrl(art.url);
   if (fromSlug) return { title: fromSlug, source: "slug" };
