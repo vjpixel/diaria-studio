@@ -94,9 +94,11 @@ import {
   dailyWorkerEnqueueFailure,
   dailyWorkerQueueIdempotencyKey,
   enqueueDailyWorkerPost,
+  isRetryOverFiredKey,
   isWorkerSendUnknownEntry,
+  workerRetryAlreadyFiredFailure,
   workerSendUnknownManualHint,
-} from "./lib/daily-worker-enqueue.ts"; // #14010, #14243, #14252
+} from "./lib/daily-worker-enqueue.ts"; // #14010, #14243, #14252, #14300
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
 import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
@@ -1047,8 +1049,9 @@ async function main(): Promise<number | void> {
 
       try {
         // #14010 — chave fixa por edição/canal/destaque (ver publish-instagram.ts).
+        const idempotencyKey = dailyWorkerQueueIdempotencyKey("threads", editionDate, d, { isTest, editionDir });
         const response = await enqueueDailyWorkerPost(workerUrl, workerToken, {
-          idempotency_key: dailyWorkerQueueIdempotencyKey("threads", editionDate, d, { isTest, editionDir }),
+          idempotency_key: idempotencyKey,
           text: chunks[0],
           image_url: null,
           ...(carouselImageUrls && { image_urls: carouselImageUrls }),
@@ -1056,17 +1059,26 @@ async function main(): Promise<number | void> {
           destaque: d,
           channel: "threads",
         }, { logPrefix: "publish-threads" });
-        const entry: PostEntry = {
-          platform: "threads",
-          destaque: d,
-          url: null,
-          status: "scheduled",
-          scheduled_at: scheduledIso,
-          worker_queue_key: response.key,
-        };
-        tagAndAppend(entry);
-        results.push(entry);
-        console.log(`OK threads/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
+        // #14300 — `--retry` sobre chave já disparada: nada novo enfileirado (ver publish-instagram.ts).
+        if (isRetryOverFiredKey(response, retryIds?.has(d) ?? false)) {
+          const failure = workerRetryAlreadyFiredFailure(idempotencyKey, response.key);
+          console.error(`SEND_UNKNOWN threads/${d}: ${failure.reason}`);
+          const entry: PostEntry = { platform: "threads", destaque: d, url: null, scheduled_at: null, ...failure };
+          tagAndAppend(entry);
+          results.push(entry);
+        } else {
+          const entry: PostEntry = {
+            platform: "threads",
+            destaque: d,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledIso,
+            worker_queue_key: response.key,
+          };
+          tagAndAppend(entry);
+          results.push(entry);
+          console.log(`OK threads/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
+        }
       } catch (e: any) {
         // #14243: 409 `send_unknown` (disparo anterior ambíguo) é estado
         // desconhecido, nunca `failed`: o post pode estar no ar.

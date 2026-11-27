@@ -145,13 +145,16 @@ describe("#13076: Instagram --retry (CLI real, sem rede)", () => {
     );
   const summaryOf = (stdout: string) => JSON.parse(stdout.slice(stdout.indexOf("{\n"))).summary;
 
-  it("sem --retry: send_unknown é pulado, com instrução de --retry d2 e contador no resumo", () => {
+  it("sem --retry: send_unknown é pulado, com instrução de recuperação e contador no resumo", () => {
     const { tmp, dir, publishedPath } = setup();
     try {
       const r = run(dir, []);
       assert.equal(r.code, 0, r.out);
       assert.match(r.out, /SKIP instagram\/d2 — already send_unknown/);
-      assert.match(r.out, /--retry d2/);
+      // #14300: o d2 é uma entry do Worker ausente do feed (chave já disparada):
+      // `--retry d2` devolveria 409, então a instrução é postar à mão.
+      assert.match(r.out, /AVISO instagram\/d2: .*postar à mão/);
+      assert.doesNotMatch(r.out, /rodar com --retry d2/);
       const s = summaryOf(r.stdout);
       assert.equal(s.send_unknown, 1, r.out);
       assert.equal(s.skipped, 3);

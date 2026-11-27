@@ -278,11 +278,14 @@ import {
 import {
   dailyWorkerEnqueueFailure,
   enqueueDailyWorkerPost,
+  isRetryOverFiredKey,
   isWorkerSendUnknownEntry,
+  workerRetryAlreadyFiredFailure,
   workerSendUnknownManualHint,
   type DailyWorkerEnqueueOptions,
   type DailyWorkerEnqueueResult,
-} from "./lib/daily-worker-enqueue.ts"; // #14242 — mesmo tratamento da diária (#14010); #14251, #14252
+  type WorkerSendUnknownEntryLike,
+} from "./lib/daily-worker-enqueue.ts"; // #14242 — mesmo tratamento da diária (#14010); #14251, #14252, #14300
 import {
   cancelAndRecordReschedule,
   deleteFacebookScheduledPost,
@@ -883,6 +886,27 @@ export function weeklyWorkerEnqueueFailureEntry(
   return { platform, destaque, url: null, scheduled_at: null, ...dailyWorkerEnqueueFailure(e) };
 }
 
+/**
+ * #14300 — entry que o semanal grava no `--retry instagram|threads` quando o
+ * Worker responde 409 `already_fired` à chave do carrossel: nada novo foi
+ * enfileirado, então `send_unknown` com a instrução de postar à mão, nunca
+ * `scheduled` (mesmo defeito que o #13088 fechou para o LinkedIn).
+ */
+export function weeklyWorkerRetryAlreadyFiredEntry(
+  platform: "instagram" | "threads",
+  destaque: string,
+  carouselKey: string,
+  workerKey: string,
+): PostEntry {
+  return {
+    platform,
+    destaque,
+    url: null,
+    scheduled_at: null,
+    ...workerRetryAlreadyFiredFailure(weeklyWorkerQueueIdempotencyKey(platform, carouselKey), workerKey),
+  };
+}
+
 /** #12394 — `check` do alarme de fallback do documento no lado do script. */
 export const LINKEDIN_DOCUMENT_FALLBACK_CHECK = "linkedin-document-fallback";
 
@@ -987,7 +1011,7 @@ export const WEEKLY_LINKEDIN_RETRY_REFUSAL =
  * #14252 — o `send_unknown` do 409 do Worker (`entry`) também não aceita
  * `--retry` (devolve o mesmo 409): a dica é conferir o perfil e postar à mão.
  */
-export function weeklySendUnknownHint(channel: string, label: string, entry?: Pick<PostEntry, "status" | "reason"> | null): string {
+export function weeklySendUnknownHint(channel: string, label: string, entry?: WorkerSendUnknownEntryLike | null): string {
   if (channel !== "linkedin" && isWorkerSendUnknownEntry(entry)) return workerSendUnknownManualHint(label);
   if (channel === "linkedin") {
     return `AVISO ${label}: envio não confirmado (send_unknown). Conferir a página no LinkedIn; se o carrossel não saiu, postar à mão — --retry linkedin não reposta (a chave do Worker já disparou, #13088).`;
@@ -2454,7 +2478,7 @@ async function runOneMode(
       console.error(`ERRO instagram/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
     } else {
-      let response: { key: string } | null = null;
+      let response: DailyWorkerEnqueueResult | null = null;
       try {
         // #14242: chave idempotente — o retry e o re-run caem na mesma entry.
         response = await enqueueWeeklyWorkerCarousel(workerUrl, workerToken, {
@@ -2471,7 +2495,12 @@ async function runOneMode(
         console.error(`${entry.status === "send_unknown" ? "SEND_UNKNOWN" : "FAILED"} instagram/${destaqueKey}: ${entry.reason}`);
         tagAndAppend(entry);
       }
-      if (response) {
+      if (response && isRetryOverFiredKey(response, retryChannels?.has("instagram") ?? false)) {
+        // #14300 — `--retry instagram` sobre chave já disparada: nada novo na fila.
+        const entry = weeklyWorkerRetryAlreadyFiredEntry("instagram", destaqueKey, carouselKey, response.key);
+        console.error(`SEND_UNKNOWN instagram/${destaqueKey}: ${entry.reason}`);
+        tagAndAppend(entry);
+      } else if (response) {
         console.log(`OK instagram/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
         try {
           tagAndAppend({
@@ -2561,7 +2590,7 @@ async function runOneMode(
       console.error(`ERRO threads/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
     } else {
-      let response: { key: string } | null = null;
+      let response: DailyWorkerEnqueueResult | null = null;
       try {
         // #14242: chave idempotente — o retry e o re-run caem na mesma entry.
         response = await enqueueWeeklyWorkerCarousel(workerUrl, workerToken, {
@@ -2578,7 +2607,12 @@ async function runOneMode(
         console.error(`${entry.status === "send_unknown" ? "SEND_UNKNOWN" : "FAILED"} threads/${destaqueKey}: ${entry.reason}`);
         tagAndAppend(entry);
       }
-      if (response) {
+      if (response && isRetryOverFiredKey(response, retryChannels?.has("threads") ?? false)) {
+        // #14300 — `--retry threads` sobre chave já disparada: nada novo na fila.
+        const entry = weeklyWorkerRetryAlreadyFiredEntry("threads", destaqueKey, carouselKey, response.key);
+        console.error(`SEND_UNKNOWN threads/${destaqueKey}: ${entry.reason}`);
+        tagAndAppend(entry);
+      } else if (response) {
         console.log(`OK threads/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
         try {
           tagAndAppend({

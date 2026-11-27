@@ -99,7 +99,7 @@ import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
-import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455
+import { EDITOR_SEED_EMAILS, ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455, #14337
 import { isWaveReleased, waveReleasedRefusal } from "./lib/clarice-wave-released.ts"; // #9761
 
 loadProjectEnv();
@@ -623,7 +623,14 @@ export interface ImportOneResult {
 export async function importOneWave(
   client: ImportRunClient,
   plan: Pick<Plan, "wave" | "listName" | "csv" | "sentCount">,
-  opts: { folderId: number; poll?: PollOptions; now?: () => string; log?: (msg: string) => void },
+  opts: {
+    folderId: number;
+    poll?: PollOptions;
+    now?: () => string;
+    log?: (msg: string) => void;
+    /** #14337: endereços-seed do editor presentes no CSV (default `EDITOR_SEED_EMAILS`) — injetável pra teste. */
+    editorSeedEmails?: readonly string[];
+  },
 ): Promise<ImportOneResult> {
   const log = opts.log ?? ((m: string) => console.error(m));
   const now = opts.now ?? (() => new Date().toISOString());
@@ -647,11 +654,25 @@ export async function importOneWave(
     const isExpectedSuppression =
       info.totalBlacklisted !== undefined && delta === info.totalBlacklisted;
 
+    // #14337: as cópias do editor (`ensureEditorCopyRow`, #4045) contam em
+    // `sentCount`, mas não são leitores. Quando elas não entram na contagem
+    // da lista (ex.: endereço-seed recusado/descadastrado na conta Brevo
+    // Clarice), o delta inteiro pode ser só delas — e abortar ali prendia os
+    // leitores reais que entraram (27/11/2026: 36 leitores + 2 seeds, Brevo
+    // confirmou 36, rodada abortou e os 36 ficaram sem o e-mail).
+    const seedSet = new Set((opts.editorSeedEmails ?? EDITOR_SEED_EMAILS).map((e) => e.trim().toLowerCase()));
+    const csvEmails = extractCsvEmails(plan.csv);
+    const seedCount = new Set(csvEmails.filter((e) => seedSet.has(e))).size;
+
     let missingDetail = "";
+    // `null` = diff indisponível (paginação falhou): nunca autoriza seguir.
+    let missingReal: string[] | null = null;
+    let missingSeeds: string[] = [];
     try {
       const actualEmails = await client.listContactEmails(list.id);
-      const expectedEmails = extractCsvEmails(plan.csv);
-      const missing = findMissingContacts(expectedEmails, actualEmails);
+      const missing = findMissingContacts(csvEmails, actualEmails);
+      missingReal = missing.filter((e) => !seedSet.has(e));
+      missingSeeds = missing.filter((e) => seedSet.has(e));
       missingDetail =
         missing.length > 0
           ? ` Contato(s) identificado(s): ${missing.join(", ")}.`
@@ -660,7 +681,24 @@ export async function importOneWave(
       missingDetail = ` (diagnóstico automático do contato falhou: ${diffErr instanceof Error ? diffErr.message : diffErr} — nomeie manualmente.)`;
     }
 
-    if (!isExpectedSuppression) {
+    // #14337: o delta cabe nas cópias do editor E o diff confirma que todo
+    // leitor real está na lista → a cópia de conferência não chegou, mas
+    // nenhum leitor foi perdido. Avisa e segue. Qualquer leitor real ausente,
+    // delta maior que o nº de seeds, ou diff indisponível → aborta como antes.
+    const isEditorCopyOnlyShortfall =
+      !isExpectedSuppression && seedCount > 0 && delta <= seedCount && missingReal !== null && missingReal.length === 0;
+
+    if (isEditorCopyOnlyShortfall) {
+      const who =
+        missingSeeds.length > 0
+          ? `fora da lista: ${missingSeeds.join(", ")}`
+          : "todas aparecem como membro, mas fora da contagem de inscritos (provável descadastro/bloqueio na conta)";
+      log(
+        `   ⚠️  ${delta} cópia(s) do editor não entraram na contagem da lista #${list.id} (${who}). ` +
+          `Todos os ${plan.sentCount - seedCount} leitor(es) reais do CSV estão na lista — seguindo; a cópia de ` +
+          `conferência do editor não deve chegar neste envio (#14337).`,
+      );
+    } else if (!isExpectedSuppression) {
       throw new Error(
         `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
           `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
@@ -671,13 +709,15 @@ export async function importOneWave(
       );
     }
 
-    // #4764: supressão esperada — informa em vez de abortar. Recriar a lista
-    // não resolveria nada aqui (o mesmo contato blacklistado reapareceria
-    // "perdido" pra sempre); segue pro caminho de sucesso normal abaixo.
-    log(
-      `   ℹ️  ${delta} contato(s) suprimido(s) por blacklist administrativo da Brevo (nunca receberiam o ` +
-        `e-mail de qualquer forma) — não é perda.${missingDetail}`,
-    );
+    if (isExpectedSuppression) {
+      // #4764: supressão esperada — informa em vez de abortar. Recriar a lista
+      // não resolveria nada aqui (o mesmo contato blacklistado reapareceria
+      // "perdido" pra sempre); segue pro caminho de sucesso normal abaixo.
+      log(
+        `   ℹ️  ${delta} contato(s) suprimido(s) por blacklist administrativo da Brevo (nunca receberiam o ` +
+          `e-mail de qualquer forma) — não é perda.${missingDetail}`,
+      );
+    }
   }
   log(`   ✓ confirmado: ${info.totalSubscribers} contato(s) na lista (${plan.sentCount} enviados).`);
 

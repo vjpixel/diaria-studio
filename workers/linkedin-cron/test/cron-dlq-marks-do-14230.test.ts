@@ -213,7 +213,7 @@ describe("#14230 dlq decidido pelo cron marca o DO como o alarm faz", () => {
     assert.equal(state.storage.store.has("payload"), true);
   });
 
-  it("/mark-dlq com token alheio marca o DO mas não libera o claim de outro", async () => {
+  it("/mark-dlq com token alheio e claim vivo de outro: recusa (409), DO intacto (#14301)", async () => {
     const state = new MockState();
     const s = new LinkedInScheduler(state as unknown as DurableObjectState);
     await state.storage.put("payload", { key: "k" });
@@ -222,9 +222,10 @@ describe("#14230 dlq decidido pelo cron marca o DO como o alarm faz", () => {
       method: "POST",
       body: JSON.stringify({ reason: "x", claim_token: "outro" }),
     }));
-    assert.equal(((await res.json()) as { released: boolean }).released, false);
-    assert.equal(state.storage.store.get("dlq_reason"), "x");
-    assert.equal(state.storage.store.has("payload"), false);
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { ok: false, marked: false, refused: "claiming" });
+    assert.equal(state.storage.store.has("dlq_reason"), false, "antes do #14301 o dlq_reason era gravado aqui");
+    assert.equal(state.storage.store.has("payload"), true);
     assert.equal(state.storage.store.get("claim_token"), claim.claim_token, "claim do dono intacto");
   });
 });

@@ -49,7 +49,7 @@ import {
 import { emptyStore, readStore, writeStore, type OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 import worker, { type Env } from "../workers/onboarding-form/src/index.ts";
 import { renderFormHtml, renderInvalidLinkHtml } from "../workers/onboarding-form/src/render.ts";
-import { FORM_QUESTIONS } from "../scripts/lib/onboarding-form-contract.ts";
+import { FORM_QUESTIONS, FORM_VERSION } from "../scripts/lib/onboarding-form-contract.ts";
 
 const SECRET = "segredo-de-teste-10657-com-mais-de-32-caracteres";
 const stored = (value: string): FormSigWriteResult => ({ kind: "stored", value });
@@ -622,7 +622,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const res = await worker.fetch(post([["email", "a@x.com"], ["sig", sig], ...answers()]), e);
     assert.equal(res.status, 200);
     assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), ["hist:a@x.com", "resp:a@x.com"]);
-    assert.equal(JSON.parse(puts[1][1]).form_version, 3);
+    assert.equal(JSON.parse(puts[1][1]).form_version, FORM_VERSION);
   });
 
   it("POST sem assinatura, com assinatura errada ou de OUTRO e-mail: 403, log e nada no KV", async () => {
