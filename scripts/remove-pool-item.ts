@@ -44,6 +44,7 @@ import type { SectionBucket } from "./lib/section-naming.ts";
 import { normalizeUseMelhorUrl, readUseMelhorPostState } from "./lib/use-melhor-post.ts";
 import {
   fixSectionHeaderPlurals,
+  intentionalErrorReplantNextSteps,
   locatePoolItem,
   reconcileIntroCount,
   removeBlockFromSection,
@@ -100,7 +101,7 @@ export function removePoolItem(
   const r = removeItemFromReviewedMd(readFileSync(mdPath, "utf8"), url);
   if (!dryRun) writeFilesVerified([{ path: mdPath, content: r.md }], "remove-pool-item");
 
-  const nextSteps: string[] = [];
+  const nextSteps: string[] = intentionalErrorReplantNextSteps(editionDir, r.md);
   const state = readUseMelhorPostState(editionDir);
   const chosen = state?.item && typeof state.item.url === "string" ? state.item.url : null;
   if (chosen && normalizeUseMelhorUrl(chosen) === normalizeUseMelhorUrl(url)) {
