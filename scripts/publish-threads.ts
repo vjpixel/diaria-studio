@@ -90,7 +90,13 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { runCli } from "./lib/cli-exit.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
-import { dailyWorkerEnqueueFailure, dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010, #14243
+import {
+  dailyWorkerEnqueueFailure,
+  dailyWorkerQueueIdempotencyKey,
+  enqueueDailyWorkerPost,
+  isWorkerSendUnknownEntry,
+  workerSendUnknownManualHint,
+} from "./lib/daily-worker-enqueue.ts"; // #14010, #14243, #14252
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
 import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
@@ -546,6 +552,26 @@ export function summarizeThreadsResults(results: PostEntry[], skippedCount: numb
     send_unknown: results.filter((r) => r.status === "send_unknown").length,
     skipped: skippedCount, // contador dedicado (não tautologia de results)
   };
+}
+
+/**
+ * #11105 — aviso final dos `send_unknown`: o que não saiu se refaz com `--retry`.
+ * #11131 — thread parcial (raiz no ar) nunca entra na sugestão de `--retry` puro.
+ * #14252 — o `send_unknown` do 409 do Worker também não: `--retry` devolve o
+ * mesmo 409, então a dica é conferir o perfil e postar à mão.
+ */
+export function threadsSendUnknownWarnings(results: PostEntry[]): string[] {
+  const out: string[] = [];
+  const ambiguous = results.filter((r) => r.status === "send_unknown" && !partialRootMediaId(r));
+  const retryIds = ambiguous.filter((r) => !isWorkerSendUnknownEntry(r)).map((r) => r.destaque);
+  if (retryIds.length > 0) {
+    out.push(
+      `ATENÇÃO threads: ${retryIds.length} post(s) com envio ambíguo (${retryIds.join(", ")}) — ` +
+        `conferir o perfil do Threads; o que não saiu se refaz com --retry ${retryIds.join(",")}.`,
+    );
+  }
+  for (const r of ambiguous.filter((x) => isWorkerSendUnknownEntry(x))) out.push(workerSendUnknownManualHint(`threads/${r.destaque}`));
+  return out;
 }
 
 /** #11105 — instrução de recuperação de um `send_unknown`: re-tenta só aquele post. */
@@ -1135,14 +1161,7 @@ async function main(): Promise<number | void> {
   }
 
   const summary = summarizeThreadsResults(results, skippedCount);
-  // #11131 — thread parcial (raiz no ar) nunca entra na sugestão de --retry puro.
-  const sendUnknownIds = results.filter((r) => r.status === "send_unknown" && !partialRootMediaId(r)).map((r) => r.destaque);
-  if (sendUnknownIds.length > 0) {
-    console.warn(
-      `ATENÇÃO threads: ${sendUnknownIds.length} post(s) com envio ambíguo (${sendUnknownIds.join(", ")}) — ` +
-        `conferir o perfil do Threads; o que não saiu se refaz com --retry ${sendUnknownIds.join(",")}.`,
-    );
-  }
+  for (const line of threadsSendUnknownWarnings(results)) console.warn(line);
   const partialIds = results.filter((r) => partialRootMediaId(r)).map((r) => r.destaque);
   if (partialIds.length > 0) {
     console.warn(

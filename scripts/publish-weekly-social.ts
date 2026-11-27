@@ -276,10 +276,13 @@ import {
   WorkerQueueError,
 } from "./lib/worker-queue-client.ts";
 import {
+  dailyWorkerEnqueueFailure,
   enqueueDailyWorkerPost,
+  isWorkerSendUnknownEntry,
+  workerSendUnknownManualHint,
   type DailyWorkerEnqueueOptions,
   type DailyWorkerEnqueueResult,
-} from "./lib/daily-worker-enqueue.ts"; // #14242 — mesmo tratamento da diária (#14010)
+} from "./lib/daily-worker-enqueue.ts"; // #14242 — mesmo tratamento da diária (#14010); #14251, #14252
 import {
   cancelAndRecordReschedule,
   deleteFacebookScheduledPost,
@@ -866,6 +869,20 @@ export async function enqueueWeeklyWorkerCarousel(
   );
 }
 
+/**
+ * #14251 — entry que o semanal grava quando `enqueueWeeklyWorkerCarousel`
+ * lança: o 409 `send_unknown` do Worker (o disparo anterior desta chave
+ * terminou ambíguo; o carrossel pode estar no ar) vira `send_unknown`, que a
+ * retomada pula; o resto segue `failed`. Mesma regra da diária (#14243).
+ */
+export function weeklyWorkerEnqueueFailureEntry(
+  platform: "instagram" | "threads",
+  destaque: string,
+  e: unknown,
+): PostEntry {
+  return { platform, destaque, url: null, scheduled_at: null, ...dailyWorkerEnqueueFailure(e) };
+}
+
 /** #12394 — `check` do alarme de fallback do documento no lado do script. */
 export const LINKEDIN_DOCUMENT_FALLBACK_CHECK = "linkedin-document-fallback";
 
@@ -965,8 +982,13 @@ export const WEEKLY_LINKEDIN_RETRY_REFUSAL =
   "LinkedIn failed: rode --schedule sem --retry (a retomada refaz failed). " +
   "LinkedIn send_unknown: confira a página no LinkedIn; se o carrossel não saiu, poste à mão.";
 
-/** #13088 — aviso de `send_unknown` na retomada, por canal (o LinkedIn não tem --retry). */
-export function weeklySendUnknownHint(channel: string, label: string): string {
+/**
+ * #13088 — aviso de `send_unknown` na retomada, por canal (o LinkedIn não tem --retry).
+ * #14252 — o `send_unknown` do 409 do Worker (`entry`) também não aceita
+ * `--retry` (devolve o mesmo 409): a dica é conferir o perfil e postar à mão.
+ */
+export function weeklySendUnknownHint(channel: string, label: string, entry?: Pick<PostEntry, "status" | "reason"> | null): string {
+  if (channel !== "linkedin" && isWorkerSendUnknownEntry(entry)) return workerSendUnknownManualHint(label);
   if (channel === "linkedin") {
     return `AVISO ${label}: envio não confirmado (send_unknown). Conferir a página no LinkedIn; se o carrossel não saiu, postar à mão — --retry linkedin não reposta (a chave do Worker já disparou, #13088).`;
   }
@@ -2031,7 +2053,7 @@ async function runOneMode(
       if (decision.action === "dispatch") return false;
       if (decision.action === "skip-existing") {
         console.log(`SKIP ${label} — already ${decision.existing.status}`);
-        if (decision.existing.status === "send_unknown") console.warn(weeklySendUnknownHint(channel, label));
+        if (decision.existing.status === "send_unknown") console.warn(weeklySendUnknownHint(channel, label, decision.existing));
       } else if (decision.action === "retry-refused") {
         console.error(`SKIP ${label}: --retry recusado — já está ${decision.existing.status}; refazer duplicaria. --retry só refaz failed/send_unknown.`);
       }
@@ -2444,8 +2466,10 @@ async function runOneMode(
           destaque: destaqueKey,
         });
       } catch (e: any) {
-        console.error(`FAILED instagram/${destaqueKey}: ${e.message}`);
-        tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+        // #14251: 409 `send_unknown` do Worker é estado desconhecido, nunca `failed`.
+        const entry = weeklyWorkerEnqueueFailureEntry("instagram", destaqueKey, e);
+        console.error(`${entry.status === "send_unknown" ? "SEND_UNKNOWN" : "FAILED"} instagram/${destaqueKey}: ${entry.reason}`);
+        tagAndAppend(entry);
       }
       if (response) {
         console.log(`OK instagram/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
@@ -2549,8 +2573,10 @@ async function runOneMode(
           destaque: destaqueKey,
         });
       } catch (e: any) {
-        console.error(`FAILED threads/${destaqueKey}: ${e.message}`);
-        tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+        // #14251: 409 `send_unknown` do Worker é estado desconhecido, nunca `failed`.
+        const entry = weeklyWorkerEnqueueFailureEntry("threads", destaqueKey, e);
+        console.error(`${entry.status === "send_unknown" ? "SEND_UNKNOWN" : "FAILED"} threads/${destaqueKey}: ${entry.reason}`);
+        tagAndAppend(entry);
       }
       if (response) {
         console.log(`OK threads/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
