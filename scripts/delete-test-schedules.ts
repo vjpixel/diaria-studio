@@ -31,7 +31,7 @@ loadProjectEnv();
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { parseArgsSimple, assertSimpleArgValues, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import {
   readSocialPublished,
@@ -132,13 +132,20 @@ export async function deleteLinkedinKey(
   return { ok: res.ok, httpStatus: res.status, body: body.slice(0, 300) };
 }
 
-function parseArgs(argv: string[]): {
+/**
+ * #14304: exportado para teste. `--dry-run`/`--no-require-is-test` antes de
+ * `--platform` não podem mais engolir o valor (antes `platform` caía em "all"
+ * e apagava Facebook E LinkedIn); `--platform`/`--edition-dir` sem valor
+ * são recusados em vez de cair no default.
+ */
+export function parseArgs(argv: string[]): {
   editionDir: string | null;
   platform: "all" | "facebook" | "linkedin";
   dryRun: boolean;
   requireIsTest: boolean;
 } {
   const parsed = parseArgsSimple(argv);
+  assertSimpleArgValues(argv, parsed, ["platform", "edition-dir"]);
   const editionDir = parsed["edition-dir"] ?? null;
 
   let platform: "all" | "facebook" | "linkedin" = "all";

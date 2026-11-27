@@ -185,6 +185,9 @@ D1 trocado em edição sem vídeo: rodar o `set-d1-no-video.ts` do
    agents. O prompt manda ler `context/editorial-rules.md` e gravar em
    `_internal/03-social.tmp.md` / `_internal/03-curto.tmp.md`. Re-disparo do
    `## um`: `use_melhor_post_path` + `source_text_paths = {"um": ...}`.
+   Ajuste pedido pelo editor: incluir no prompt a linha
+   `Pedido do editor (literal): "<mensagem do editor>"` (#14271). É o único
+   sinal que os agents aceitam para uma regra do projeto ceder.
 2. Splice, nunca colar à mão (recusa legenda sem `-cards`):
    ```bash
    npx tsx scripts/splice-social-sections.ts --edition-dir {EDITION_DIR} --destaque d{N}   # 2 slots: --destaque d1,d3
@@ -276,6 +279,7 @@ Com o servidor `--watch` vivo, reescrever o arquivo servido basta; sem ele, o
 - **Sem vídeo hoje**: rodar os `no_video_steps` de `npx tsx scripts/d1-video-invite-status.ts --edition-dir {EDITION_DIR} --json` e re-apresentar; não é aprovação (§4d, regras de apresentação).
 - **Resposta 🔎** ("1 sim", "2 não"): `npx tsx scripts/generic-study-gate-feedback.ts --edition-dir {EDITION_DIR} --record --answers "N=sim"`, assim que chega. O `sim` do gate nunca vira `--answers`.
 - **Domínio** (`dominio=retirar`/`manter`): `npx tsx scripts/editorial-domain-cuts.ts --record --edition {AAMMDD} --answers "dominio=retirar" --open-apply-issue`. Nunca `--apply-to-code` no checkout compartilhado.
+- **`doc`** (criar o doc editável, opt-in desde #14116): rodar o step 3b de §4b do `orchestrator-stage-4.md` (`stage4-docs-sync.ts render` → conector → `set-url`) e re-apresentar com o link. Já tem `doc_url`: só re-apresentar.
 - **Puxar doc**: export do conector para `_internal/04-docs-gate-export.md` e `npx tsx scripts/stage4-docs-sync.ts apply --edition-dir {EDITION_DIR} --doc-export {EDITION_DIR}/_internal/04-docs-gate-export.md`, sem `--final`; `pulled[]` = tratar como `ajustar` aplicado. Conflito: `apply --resolve "{file}=arquivo@{resolve_token}"` ou `=doc@{resolve_token}` (§4d, "Doc editável").
 - **Atualizar doc**: export, `apply`, `stage4-docs-sync.ts render ... --doc-version {doc_version}`, substituir com `container.version`, `confirm` (§4d).
 - **Erro intencional sumiu**: `npx tsx scripts/replant-intentional-error.ts --edition-dir {EDITION_DIR}/ [--entity X] [--section Y] [--dry-run]`, ou `{"no_error": true}`; re-render antes do sentinel (§4e).
@@ -293,4 +297,4 @@ Com o servidor `--watch` vivo, reescrever o arquivo servido basta; sem ele, o
 
 **`abortar`**: teardown, log warn `gate_revisao_abortado`, `edition-lock.ts release`, sem sentinel.
 
-Qualquer outra resposta: repetir o prompt (fail-closed).
+Qualquer outra resposta: repetir o prompt (fail-closed). As respostas não terminais da seção anterior (`doc`, puxar doc, 🔎, domínio) não contam como "outra".

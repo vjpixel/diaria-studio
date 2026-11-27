@@ -56,6 +56,7 @@ import {
   PARTIAL_FILE,
   planFactCheckScope,
   readUnitSourceInputs,
+  sameUnitHashes,
   SCOPE_FILE,
   type FactCheckScopeFile,
   type FactCheckUnitHashes,
@@ -1068,6 +1069,36 @@ export function fullPlanStamps(
   }
 }
 
+/**
+ * (#14306) Carimbo do arquivo inteiro do plano NENHUMA, para recarimbar o
+ * `fact-check.json` reaproveitado no passo 2. O `content_hash` é do arquivo
+ * inteiro e os hashes por unidade não são: mudança que preserva cada unidade
+ * (box do pool movido entre destaques) muda o primeiro e deixa o plano em
+ * NENHUMA — sem recarimbar, o aviso de defasado voltava a cada re-run e só o
+ * `--full` o apagava. Recarimba com o plano, não com o conteúdo atual: edição
+ * feita depois do plano continua saindo DEFASADA. `null` (mantém o carimbo)
+ * quando não há plano legível, o plano não é `none`, ou os hashes por unidade
+ * do resultado não são os que o plano comparou (o `fact-check.json` não é o
+ * que o plano declarou intacto).
+ */
+export function nonePlanStamps(
+  internalDir: string,
+  resultUnitHashes: unknown,
+): { content_hash: FactCheckContentHash; unit_hashes: FactCheckUnitHashes } | null {
+  try {
+    const scope = JSON.parse(readFileSync(join(internalDir, SCOPE_FILE), "utf8")) as Partial<FactCheckScopeFile>;
+    if (scope.mode !== "none") return null;
+    const contentHash = parseContentHash(scope.content_hash);
+    const planUnits = parseUnitHashes(scope.unit_hashes);
+    const resultUnits = parseUnitHashes(resultUnitHashes);
+    if (!contentHash || !planUnits || !resultUnits) return null;
+    if (!sameUnitHashes(planUnits, resultUnits)) return null;
+    return { content_hash: contentHash, unit_hashes: planUnits };
+  } catch {
+    return null;
+  }
+}
+
 export function formatScopeInstructions(scope: FactCheckScopeFile, editionDir: string): string[] {
   const internal = `${editionDir.replace(/[/\\]+$/, "")}/_internal`;
   if (scope.mode === "none") {
@@ -1467,6 +1498,14 @@ async function main(): Promise<number | void> {
     if (!result.content_hash) {
       result.content_hash = planStamps?.content_hash ?? currentHash;
       if (!result.unit_hashes) result.unit_hashes = planStamps?.unit_hashes ?? stamps.unit_hashes;
+    } else if (!flags.has("merge-partial")) {
+      // #14306: plano NENHUMA — as unidades provadamente não mudaram desde o
+      // fact-check; o carimbo do arquivo inteiro passa a ser o do plano.
+      const none = nonePlanStamps(internalDir, result.unit_hashes);
+      if (none) {
+        result.content_hash = none.content_hash;
+        result.unit_hashes = none.unit_hashes;
+      }
     }
     const staleness = factCheckStaleness(result.content_hash, currentHash);
 

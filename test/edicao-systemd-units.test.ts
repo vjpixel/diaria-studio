@@ -4,7 +4,7 @@
  * Cobertura de `scripts/lib/edicao-systemd-units.ts` (units systemd da
  * edição diária agendada, gerados FORA do registro declarativo — mesma
  * decisão do watchdog, ver topo daquele módulo) e de
- * `scripts/overnight/setup-edicao-schedule-systemd.ts` (CLI que escreve os
+ * `scripts/edicao-agendada/setup-edicao-schedule-systemd.ts` (CLI que escreve os
  * arquivos em disco). Espelha test/watchdog-systemd-units.test.ts.
  *
  * Estrutural: garante que NENHUM dos dois módulos chama `systemctl` (ou
@@ -27,7 +27,7 @@ import type { CheckedNodeBinaryDeps } from "../scripts/lib/systemd-node-binary-c
 import {
   generateEdicaoSystemdUnits,
   main as setupEdicaoSystemdMain,
-} from "../scripts/overnight/setup-edicao-schedule-systemd.ts";
+} from "../scripts/edicao-agendada/setup-edicao-schedule-systemd.ts";
 
 
 // #13151: resolução do node do ExecStart determinística nos testes do CLI —
@@ -99,7 +99,7 @@ describe("buildEdicaoSystemdUnitFiles (#4998)", () => {
     assert.match(files.serviceContent, new RegExp(`WorkingDirectory=${repoRootAbs}`));
     assert.match(
       files.serviceContent,
-      new RegExp(`ExecStart=.*--import tsx ${repoRootAbs}/scripts/overnight/run-scheduled-edicao\\.ts$`, "m"),
+      new RegExp(`ExecStart=.*--import tsx ${repoRootAbs}/scripts/edicao-agendada/run-scheduled-edicao\\.ts$`, "m"),
     );
   });
 
@@ -125,7 +125,7 @@ describe("buildEdicaoSystemdUnitFiles (#4998)", () => {
     const custom = buildEdicaoSystemdUnitFiles(repoRootAbs, "/home/x/.nvm/versions/node/v24.19.0/bin/node");
     assert.match(
       custom.serviceContent,
-      /^ExecStart=\/home\/x\/\.nvm\/versions\/node\/v24\.19\.0\/bin\/node --import tsx \/home\/editor\/diaria-studio\/scripts\/overnight\/run-scheduled-edicao\.ts$/m,
+      /^ExecStart=\/home\/x\/\.nvm\/versions\/node\/v24\.19\.0\/bin\/node --import tsx \/home\/editor\/diaria-studio\/scripts\/edicao-agendada\/run-scheduled-edicao\.ts$/m,
     );
   });
 });

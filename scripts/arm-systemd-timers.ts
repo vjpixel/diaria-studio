@@ -325,7 +325,7 @@ export function armSystemdTimers(
               // setup com --task geraria 0 arquivos.
               `units não encontrados em ${opts.unitsDirAbs} — a task está desativada ` +
               `(enabled: false), e o setup-systemd-timers.ts não gera unit de task desativada. ` +
-              `Mude para enabled: true no registro (scripts/lib/scheduled-tasks.ts) e rode ` +
+              `Mude para enabled: true no registro (scripts/lib/scheduled-tasks-table.ts) e rode ` +
               `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}", ou gere a unit à mão.`
             : `units não encontrados em ${opts.unitsDirAbs} — rode ` +
               `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}" primeiro.`,

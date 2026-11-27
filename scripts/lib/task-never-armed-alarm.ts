@@ -287,7 +287,7 @@ export function buildTaskNeverArmedAlarmEmail(
         `\`ActiveState=inactive\` — sinal de \`systemctl --user stop\` manual, não "nunca configurada":\n\n` +
         evaluation.stoppedDeliberately.map((n) => `  - ${n}`).join("\n") +
         "\n\nDecisão pendente do editor: religar (`systemctl --user enable --now <unit>.timer`, ou " +
-        "`arm-systemd-timers.ts --rearm-stopped`) ou remover a task de `scheduled-tasks.ts` se ela não faz mais " +
+        "`arm-systemd-timers.ts --rearm-stopped`) ou remover a task de `scripts/lib/scheduled-tasks-table.ts` se ela não faz mais " +
         "sentido. Este alarme NUNCA reverte a decisão de parar sozinho.",
     );
   }

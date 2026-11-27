@@ -26,7 +26,7 @@
  *
  * **Fonte de dado:** `data/overnight-schedule.log` (linha por execução,
  * formato `${ISO} | ${STATUS}  edition=${AAMMDD} ...` — ver
- * `scripts/overnight/run-scheduled-edicao.ts`) + existência de
+ * `scripts/edicao-agendada/run-scheduled-edicao.ts`) + existência de
  * a existência da edição em disco (ver `edicaoDirCandidates`) + o estado de
  * armamento da unit (`EdicaoTimerState`). I/O (leitura do log, `existsSync`,
  * `systemctl`, envio de e-mail) fica em

@@ -5,7 +5,7 @@
  * `distill-prompt-corrections.ts` precisar spawnar (crítica holística via
  * `social-critic.md`). Restrição de design NÃO-NEGOCIÁVEL da issue #7981:
  * reusar o MESMO mecanismo de filtragem de ambiente de
- * `scripts/overnight/run-scheduled-edicao.ts` — nunca reimplementar, nunca
+ * `scripts/edicao-agendada/run-scheduled-edicao.ts` — nunca reimplementar, nunca
  * abrir uma 2ª cópia da lista de vars que degradaria em silêncio se a
  * original crescesse (#5608/#6714, ver docstring de `CLAUDE_CLI_STRIPPED_ENV_VARS`
  * pro histórico completo do porquê de cada var).
@@ -22,7 +22,7 @@
 
 import { execFileSync } from "node:child_process";
 import { resolveClaudeBin } from "./resolve-claude-bin.ts";
-import { claudeCliEnv } from "../overnight/run-scheduled-edicao.ts";
+import { claudeCliEnv } from "../edicao-agendada/run-scheduled-edicao.ts";
 
 /**
  * Exceção estruturada lançada por `callClaudeCli` quando o subprocesso

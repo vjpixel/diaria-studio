@@ -2,7 +2,7 @@
  * test/run-scheduled-edicao.test.ts (#4998, reativação do #2068/#3259)
  *
  * Cobertura do guard de idempotência de
- * `scripts/overnight/run-scheduled-edicao.ts` (par Linux/systemd de
+ * `scripts/edicao-agendada/run-scheduled-edicao.ts` (par Linux/systemd de
  * run-scheduled-edicao.ps1): se `data/editions/{AAMMDD}/` já existe, o
  * runner pula sem invocar `claude` — nunca dispara duas vezes pra mesma
  * edição.
@@ -16,7 +16,7 @@ import {
   main as runScheduledEdicaoMain,
   claudeCliEnv,
   STAGE_PLAN,
-} from "../scripts/overnight/run-scheduled-edicao.ts";
+} from "../scripts/edicao-agendada/run-scheduled-edicao.ts";
 import { NO_BACKGROUND_DIRECTIVE, editionDirDirective } from "../scripts/lib/edition-stage-runner.ts";
 
 const AAMMDD = "260812";

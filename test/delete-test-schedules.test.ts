@@ -1,6 +1,38 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { deleteFbPost, deleteLinkedinKey } from "../scripts/delete-test-schedules.ts";
+import { deleteFbPost, deleteLinkedinKey, parseArgs } from "../scripts/delete-test-schedules.ts";
+
+describe("parseArgs (#14304) — ordem das flags não muda o alvo", () => {
+  it("--dry-run --platform linkedin mira só o LinkedIn (antes caía em all)", () => {
+    const a = parseArgs(["--edition-dir", "data/editions/2611/261127", "--dry-run", "--platform", "linkedin"]);
+    assert.equal(a.platform, "linkedin");
+    assert.equal(a.dryRun, true);
+  });
+
+  it("--no-require-is-test --platform linkedin mira só o LinkedIn", () => {
+    const a = parseArgs(["--no-require-is-test", "--platform", "linkedin", "--edition-dir", "X"]);
+    assert.equal(a.platform, "linkedin");
+    assert.equal(a.requireIsTest, false);
+    assert.equal(a.editionDir, "X");
+  });
+
+  it("--dry-run --edition-dir X preserva o edition-dir", () => {
+    const a = parseArgs(["--dry-run", "--edition-dir", "X"]);
+    assert.equal(a.editionDir, "X");
+    assert.equal(a.platform, "all");
+  });
+
+  it("as duas ordens dão o mesmo resultado", () => {
+    const a = parseArgs(["--dry-run", "--platform", "facebook", "--edition-dir", "X"]);
+    const b = parseArgs(["--platform", "facebook", "--edition-dir", "X", "--dry-run"]);
+    assert.deepEqual(a, b);
+  });
+
+  it("--platform sem valor é recusado, nunca vira all", () => {
+    assert.throws(() => parseArgs(["--edition-dir", "X", "--platform", "--dry-run"]), /--platform foi passado sem valor/);
+    assert.throws(() => parseArgs(["--edition-dir", "X", "--platform"]), /--platform/);
+  });
+});
 
 describe("deleteFbPost (#1058)", () => {
   let saved: typeof globalThis.fetch;

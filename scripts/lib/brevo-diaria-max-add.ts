@@ -42,6 +42,15 @@ export type ResolveStage5MaxAddResult =
  * canal com aviso" (fail-soft, #5772 — falha na derivação de `--max-add`
  * nunca deve travar os demais publicadores da Etapa 5).
  */
+/**
+ * `brevo_diaria.stage5_target_total` válido: número finito ≥ 0. Fonte única
+ * do critério, usada pela Etapa 5 (`resolveStage5MaxAdd`) e pela task diária
+ * (`scripts/brevo-diaria-daily-apply.ts`, #13981).
+ */
+export function isValidStage5TargetTotal(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0;
+}
+
 export function resolveStage5MaxAdd(params: {
   storeExists: boolean;
   currentActiveCount: number;
@@ -56,7 +65,7 @@ export function resolveStage5MaxAdd(params: {
     };
   }
   const { targetTotal } = params;
-  if (targetTotal == null || !Number.isFinite(targetTotal) || targetTotal < 0) {
+  if (!isValidStage5TargetTotal(targetTotal)) {
     return {
       ok: false,
       reason:

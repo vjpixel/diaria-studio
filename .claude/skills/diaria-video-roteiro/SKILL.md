@@ -19,6 +19,27 @@ Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do proces
 
 `/diaria-edicao` → `/diaria-video-roteiro` → (o editor grava) → `/diaria-video-montagem` → `/diaria-publica`. Sessão própria, sem encadear (#5578): ao terminar, sugerir o próximo passo sem rodá-lo.
 
+## Telemetria por fase (#14115)
+
+O tempo de cada passo vai para `_internal/publica-phases.jsonl` da edição pelo mesmo `scripts/publica-phase.ts` do `/diaria-publica`, com as fases `roteiro-*` e sempre `--part sessao`. Um `start` antes do passo e um `end` depois, cada um como comando standalone (nunca encadeado com o trabalho do passo):
+
+```bash
+npx tsx scripts/publica-phase.ts start {AAMMDD} --phase {fase} --part sessao
+npx tsx scripts/publica-phase.ts end {AAMMDD} --phase {fase} --part sessao
+```
+
+| Passo | Fase |
+|---|---|
+| 1 (ler antes de escrever) | `roteiro-leitura` |
+| 2 a 5 (primeira versão até a página) | `roteiro-escrita` |
+| 5a (revisão por vídeo, cada despacho) | `roteiro-revisao` |
+| 5b (fact-check do roteiro, cada despacho) | `roteiro-factcheck` |
+| 6 (iteração com o editor; o tempo é dele) | `roteiro-iteracao` |
+| 7 (humanizador e revisão final; a revisão e o fact-check que ele roda de novo abrem `roteiro-revisao` e `roteiro-factcheck`, como no 5a e no 5b) | `roteiro-final` |
+| 8 (conferir a gravação) | `roteiro-conferencia` |
+
+Passo que roda de novo (outra rodada de revisão, outra iteração) abre um `start` novo: a tentativa sobe sozinha. Passo que falhou fecha com `error` em vez de `end`, com `--exit-code N` quando houver um exit de comando e `--detail "motivo"`. A telemetria nunca para o roteiro: `publica-phase.ts` saindo diferente de 0 vira uma linha de aviso na entrega, e o passo segue. No fim (seção "Fim"), `npx tsx scripts/publica-phase.ts join {AAMMDD} --flow roteiro` (exit 1 = fase sem fim ou linha ilegível no arquivo: fechar a fase com `end` ou `interrupted`, e relatar a linha ilegível) e `npx tsx scripts/publica-phase.ts report {AAMMDD} --flow roteiro` para as durações.
+
 ## Passo 1 — Ler antes de escrever
 
 1. O D1 em `data/editions/{AAMM}/{AAMMDD}/02-reviewed.md` (título, texto, "Por que isso importa", link da fonte) e a fonte do D1, que o fact-check já baixou em `_internal/fact-check-sources/d1.txt` (sem esse arquivo, abrir o link).
@@ -248,5 +269,7 @@ Depois de gravar, quando o editor entrega nesta sessão a transcrição da grava
 ## Fim
 
 Dizer que o roteiro está pronto para gravar e que o próximo comando, depois da gravação, é `/diaria-video-montagem {AAMMDD}`. Não rodar. Se o editor quiser conferir a gravação antes, ele dita a transcrição nesta sessão (Passo 8).
+
+Antes da mensagem, o `join --flow roteiro` e o `report --flow roteiro` da seção "Telemetria por fase": fase pendente no `join` se fecha antes de entregar, e a entrega traz uma linha com a duração de cada fase (`null` = indisponível, nunca zero).
 
 Na mesma mensagem, repetir o título e o texto da capa de cada vídeo. O que segue daqui (#12751): a montagem lê o `roteiro-falas.json` para propor os blocos dos dois verticais (o vertical 2 como corte `guia`), e o `/diaria-publica` usa o título do horizontal no YouTube (salvo `--title`) e os textos da capa. A publicação do vertical 2 uma semana depois vai para o banco de agendamentos (#12774): quem registra é a montagem, depois do Gate 2, quando o corte `guia` existe (registrar aqui, antes da gravação, alarmaria um vertical que talvez nem seja gravado).

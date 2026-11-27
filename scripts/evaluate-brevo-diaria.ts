@@ -282,11 +282,13 @@
  * (loga e CONTINUA os Passos 2-4, mesmo padrão fail-soft já usado pro
  * pool Kit inactive, #8192) — qualquer outro código não-zero continua
  * abortando a sequência inteira, porque nesses casos não há garantia de
- * que o store tenha sido escrito. A task agendada standalone
- * (`Diaria-Brevo-Diaria-Evaluate`, roda `--push` direto, fora do
- * `brevo-diaria-run.ts`) continua tratando QUALQUER exit não-zero —
- * `3` incluso — como falha da rodada pro alarme de cron (nunca perde o
- * sinal de "N contato(s) precisam de atenção").
+ * que o store tenha sido escrito. A task agendada
+ * `Diaria-Brevo-Diaria-Evaluate` roda, desde o #13981, este script dentro
+ * do `brevo-diaria-run.ts --apply` (via `scripts/brevo-diaria-daily-apply.ts`),
+ * onde o `3` vira aviso; o `brevo-diaria-daily-apply.ts` lê os avisos do
+ * JSON final do `--apply` e sai `3` quando há algum, então a unit continua
+ * ficando vermelha pro alarme de cron (nunca perde o sinal de "N
+ * contato(s) precisam de atenção").
  *
  * ## Reconciliação de órfãos (#4579)
  *

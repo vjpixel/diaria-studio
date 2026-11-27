@@ -20,6 +20,11 @@
  *
  * O CLI é `scripts/publica-phase.ts`; o gate de efeito externo,
  * `publica-effect-gate.ts`.
+ *
+ * Desde o #14115 o mesmo arquivo recebe as fases do `/diaria-video-roteiro`
+ * e do `/diaria-video-montagem` (prefixos `roteiro-` e `montagem-`, sempre
+ * `--part sessao`, reversíveis e sem recurso). `PhaseMeta.flow` separa os
+ * três fluxos no `join` e no `report`.
  */
 
 export const PUBLICA_PHASES_SCHEMA = "diaria-publica-phases/v1";
@@ -40,8 +45,39 @@ export const PUBLICA_PHASES = [
   "stage6-schedule",
   "vertical-api",
   "vertical-guiado",
+  // #14115: fases das skills que vêm antes do `/diaria-publica` no mesmo dia,
+  // no mesmo arquivo da edição. Só com `--part sessao` (`buildPhaseEvent`),
+  // fora do join e do relatório do publica (`flow`).
+  "roteiro-leitura",
+  "roteiro-escrita",
+  "roteiro-revisao",
+  "roteiro-factcheck",
+  "roteiro-iteracao",
+  "roteiro-final",
+  "roteiro-conferencia",
+  "montagem-preflight",
+  "montagem-transcricao",
+  "montagem-decupagem",
+  "montagem-factcheck",
+  "montagem-gate2",
+  "montagem-build",
+  "montagem-preview",
+  "montagem-review",
+  "montagem-legendas",
 ] as const;
 export type PublicaPhase = (typeof PUBLICA_PHASES)[number];
+
+/**
+ * Skill dona da fase (#14115). `join` e `report` olham um fluxo por vez: uma
+ * fase do roteiro aberta (a sessão caiu) não segura o join do publica, e as
+ * fases do publica não aparecem como "indisponíveis" no relatório do roteiro.
+ */
+export const PHASE_FLOWS = ["publica", "roteiro", "montagem"] as const;
+export type PhaseFlow = (typeof PHASE_FLOWS)[number];
+
+export function isPhaseFlow(v: string): v is PhaseFlow {
+  return (PHASE_FLOWS as readonly string[]).includes(v);
+}
 
 export const PUBLICA_PARTS = ["horizontal", "vertical", "sessao"] as const;
 export type PublicaPart = (typeof PUBLICA_PARTS)[number];
@@ -70,38 +106,82 @@ export interface PhaseMeta {
   stage: 5 | 6 | null;
   /** Recursos que a fase segura enquanto roda (dono único). */
   resources: readonly string[];
+  /** Skill dona da fase (#14115). */
+  flow: PhaseFlow;
 }
+
+/** Skill dona da fase (#14115). */
+export function phaseFlow(phase: PublicaPhase): PhaseFlow {
+  return PHASE_META[phase].flow;
+}
+
+/**
+ * Pure (#14115): o que está errado em `part`/recursos extras para a fase.
+ * Fase do roteiro/montagem com parte de vídeo cairia nas regras do publica
+ * (isolamento de custo, join), e recurso extra nelas faria a fase disputar o
+ * Chrome ou um registro com o publica. `null` = ok.
+ */
+export function flowPartDefect(phase: PublicaPhase, part: PublicaPart, extraResources: readonly string[] = []): string | null {
+  const flow = phaseFlow(phase);
+  if (flow === "publica") return null;
+  if (part !== "sessao") return `fase ${phase} (${flow}) só com --part sessao, não ${part}`;
+  if (extraResources.length) return `fase ${phase} (${flow}) não segura recurso (--resources ${extraResources.join(",")})`;
+  return null;
+}
+
+const prep = (flow: PhaseFlow, clock: PhaseClock = "active"): PhaseMeta => ({ clock, effect: "reversible", stage: null, resources: [], flow });
 
 /** Recurso de dono único: uma aba logada do editor, uma ação por vez. */
 export const CHROME_RESOURCE = "chrome";
 
 export const PHASE_META: Readonly<Record<PublicaPhase, PhaseMeta>> = {
-  preflight: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  fetch: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  plano: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  capa: { clock: "active", effect: "reversible", stage: null, resources: [] },
-  decisoes: { clock: "wait", effect: "reversible", stage: null, resources: [] },
-  aprovacao: { clock: "wait", effect: "reversible", stage: null, resources: [] },
+  preflight: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  fetch: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  plano: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  capa: { clock: "active", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  decisoes: { clock: "wait", effect: "reversible", stage: null, resources: [], flow: "publica" },
+  aprovacao: { clock: "wait", effect: "reversible", stage: null, resources: [], flow: "publica" },
   upload: {
     clock: "active",
     effect: "external",
     stage: null,
     resources: ["registry:05-youtube-published", "registry:video-publish-authorizations"],
+    flow: "publica",
   },
   // `link-video-d1.ts --save` põe o 1º comentário do LinkedIn na fila do Worker e o vídeo no podcast;
   // a releitura do A4 grava no registro do upload.
-  link: { clock: "active", effect: "external", stage: null, resources: ["registry:05-video-url", "registry:05-youtube-published"] },
-  stage5: { clock: "active", effect: "external", stage: 5, resources: ["registry:06-social-published", "registry:05-published"] },
-  "stage6-teste": { clock: "active", effect: "reversible", stage: 6, resources: [] },
-  "stage6-gate": { clock: "wait", effect: "reversible", stage: 6, resources: [] },
-  "stage6-schedule": { clock: "active", effect: "external", stage: 6, resources: ["registry:05-published"] },
+  link: { clock: "active", effect: "external", stage: null, resources: ["registry:05-video-url", "registry:05-youtube-published"], flow: "publica" },
+  stage5: { clock: "active", effect: "external", stage: 5, resources: ["registry:06-social-published", "registry:05-published"], flow: "publica" },
+  "stage6-teste": { clock: "active", effect: "reversible", stage: 6, resources: [], flow: "publica" },
+  "stage6-gate": { clock: "wait", effect: "reversible", stage: 6, resources: [], flow: "publica" },
+  "stage6-schedule": { clock: "active", effect: "external", stage: 6, resources: ["registry:05-published"], flow: "publica" },
   "vertical-api": {
     clock: "active",
     effect: "external",
     stage: null,
     resources: ["registry:06-shorts-published", "registry:video-publish-authorizations"],
+    flow: "publica",
   },
-  "vertical-guiado": { clock: "active", effect: "external", stage: null, resources: [CHROME_RESOURCE, "registry:06-shorts-published"] },
+  "vertical-guiado": { clock: "active", effect: "external", stage: null, resources: [CHROME_RESOURCE, "registry:06-shorts-published"], flow: "publica" },
+  // #14115: nada aqui publica (o upload para a pasta do Drive é do próprio
+  // editor e reversível), não segura recurso nem entra no isolamento de custo.
+  // `wait` = o tempo é do editor (a iteração por voz, o Gate 2).
+  "roteiro-leitura": prep("roteiro"),
+  "roteiro-escrita": prep("roteiro"),
+  "roteiro-revisao": prep("roteiro"),
+  "roteiro-factcheck": prep("roteiro"),
+  "roteiro-iteracao": prep("roteiro", "wait"),
+  "roteiro-final": prep("roteiro"),
+  "roteiro-conferencia": prep("roteiro"),
+  "montagem-preflight": prep("montagem"),
+  "montagem-transcricao": prep("montagem"),
+  "montagem-decupagem": prep("montagem"),
+  "montagem-factcheck": prep("montagem"),
+  "montagem-gate2": prep("montagem", "wait"),
+  "montagem-build": prep("montagem"),
+  "montagem-preview": prep("montagem"),
+  "montagem-review": prep("montagem"),
+  "montagem-legendas": prep("montagem"),
 };
 
 /** Fases de preparo que contam como "background iniciado" antes da 1ª pergunta bloqueante. */
@@ -175,6 +255,9 @@ export function buildPhaseEvent(input: BuildPhaseEventInput): PhaseEvent {
     throw new Error(`plan_sha256 inválido: ${input.planSha256} (64 hex)`);
   }
   const meta = PHASE_META[input.phase];
+  // #14115: fase do roteiro/montagem só com `sessao` e sem recurso.
+  const flowDefect = flowPartDefect(input.phase, input.part, input.extraResources ?? []);
+  if (flowDefect) throw new Error(flowDefect);
   const resources = [...new Set([...meta.resources, ...(input.extraResources ?? [])])].sort();
   return {
     schema: PUBLICA_PHASES_SCHEMA,
@@ -203,8 +286,13 @@ function phaseEventDefect(obj: unknown): string | null {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return "não é objeto";
   const o = obj as Record<string, unknown>;
   if (o.schema !== PUBLICA_PHASES_SCHEMA) return `schema ${JSON.stringify(o.schema)} (esperado ${PUBLICA_PHASES_SCHEMA})`;
-  if (typeof o.phase !== "string" || !isPublicaPhase(o.phase)) return `fase ${JSON.stringify(o.phase)}`;
+  if (typeof o.phase !== "string" || !isPublicaPhase(o.phase)) {
+    // #14115: fase nova gravada por um checkout mais novo (outra máquina) aparece aqui como desconhecida.
+    return `fase ${JSON.stringify(o.phase)} desconhecida (checkout defasado? rode npx tsx scripts/sync-code.ts)`;
+  }
   if (typeof o.part !== "string" || !isPublicaPart(o.part)) return `parte ${JSON.stringify(o.part)}`;
+  const flowDefect = flowPartDefect(o.phase, o.part);
+  if (flowDefect) return flowDefect;
   if (typeof o.event !== "string" || !(PHASE_EVENT_KINDS as readonly string[]).includes(o.event)) return `evento ${JSON.stringify(o.event)}`;
   if (typeof o.at !== "string" || !Number.isFinite(Date.parse(o.at))) return `instante ${JSON.stringify(o.at)}`;
   if (typeof o.attempt !== "number" || !Number.isInteger(o.attempt) || o.attempt < 1) return `tentativa ${JSON.stringify(o.attempt)}`;
@@ -590,8 +678,10 @@ export function joinCheck(
   events: readonly PhaseEvent[],
   sentinels: { step5: boolean; step6: boolean },
   opts: DeriveOptions = {},
+  /** Só as tarefas deste fluxo (#14115); default o do `/diaria-publica`. */
+  flow: PhaseFlow = "publica",
 ): JoinResult {
-  const tasks = deriveTasks(events, opts);
+  const tasks = deriveTasks(events, opts).filter((t) => phaseFlow(t.phase) === flow);
   const pending = tasks.filter((t) => t.status === "running");
   const problems: string[] = pending.map(
     (t) =>
@@ -669,8 +759,14 @@ export interface PhaseReport {
 }
 
 /** Pure: relatório por fase. Nada é inventado: sem evento de fim, a duração é `null`. */
-export function phaseReport(edition: string, events: readonly PhaseEvent[], opts: DeriveOptions = {}): PhaseReport {
-  const tasks = deriveTasks(events.filter((e) => e.edition === edition), opts);
+export function phaseReport(
+  edition: string,
+  events: readonly PhaseEvent[],
+  opts: DeriveOptions = {},
+  /** Só as fases deste fluxo (#14115); default o do `/diaria-publica`. */
+  flow: PhaseFlow = "publica",
+): PhaseReport {
+  const tasks = deriveTasks(events.filter((e) => e.edition === edition && phaseFlow(e.phase) === flow), opts);
   const byKey = new Map<string, PhaseTask[]>();
   for (const t of tasks) {
     const k = `${t.phase}|${t.part}`;
@@ -699,7 +795,7 @@ export function phaseReport(edition: string, events: readonly PhaseEvent[], opts
   return {
     edition,
     rows,
-    unavailable: PUBLICA_PHASES.filter((p) => !seen.has(p)),
+    unavailable: PUBLICA_PHASES.filter((p) => phaseFlow(p) === flow && !seen.has(p)),
     critical_path_ms: union(done),
     active_ms: union(done.filter((t) => PHASE_META[t.phase].clock === "active")),
     wait_ms: union(done.filter((t) => PHASE_META[t.phase].clock === "wait")),

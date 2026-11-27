@@ -15,6 +15,7 @@ import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "../lib/linke
 import { withCoverRecord, type ShortCoverRecord } from "../lib/diaria/short-cover.ts";
 import type { ShortsPlanItem } from "./_shared.ts";
 import type { PublishOutcome } from "./facebook.ts";
+import type { ShortsPublishItem, ShortsRunRegistry, ShortsRunResult, ShortsSendContext, ShortsSendStep } from "./send-context.ts";
 
 /** #10907 — motivo do bloqueio do repost quando o vídeo do perfil ficou em `send_unknown`. */
 export const PROFILE_SEND_UNKNOWN_BLOCKER =
@@ -114,6 +115,66 @@ export async function publishLinkedInProfileVideo(
     };
   }
   throw new Error(r.reason);
+}
+
+/**
+ * #14204: etapa do vídeo no perfil pessoal do LinkedIn no laço do `--publish`
+ * (`mainUnlocked`). Sem credencial lança (o plano não marca `publish` sem ela).
+ */
+export async function sendLinkedInProfileItem(ctx: ShortsSendContext, item: ShortsPublishItem): Promise<ShortsSendStep> {
+  if (!ctx.liCreds.ok) throw new Error(ctx.liCreds.reason); // o plano não marca publish sem credencial
+  const outcome = await publishLinkedInProfileVideo(
+    { fetchFn: (u, i) => fetch(u, i), sleep: ctx.deps.sleep, log: ctx.deps.log, now: ctx.deps.now },
+    ctx.liCreds.creds,
+    ctx.liApiVersion,
+    ctx.file,
+    item.caption,
+    item.title ?? ctx.plan.youtube.title,
+    ctx.shortCover.bytes,
+  );
+  return { kind: "outcome", outcome };
+}
+
+/**
+ * #14204: etapa do repost da página depois do laço (#11121). O vídeo do perfil
+ * vem desta rodada (`results`) ou do registro; enfileirado, a entrada é gravada
+ * no registro e volta como resultado `ok`; registro que falha depois de
+ * enfileirar volta como falha com o caminho do `--mark`. `items` é o plano com
+ * o item do repost já atualizado (`skip_done` ou guiado com o motivo).
+ */
+export async function sendPageRepostStep(input: {
+  aammdd: string;
+  items: ShortsPlanItem[];
+  results: readonly ShortsRunResult[];
+  registry: ShortsRunRegistry;
+  enqueue: EnqueueFn | null;
+  now: Date;
+  corteSlug?: string;
+  log?: (line: string) => void;
+}): Promise<{ items: ShortsPlanItem[]; result: ShortsRunResult | null }> {
+  const log = input.log ?? ((l: string) => console.error(l));
+  const profileThisRun = input.results.find((r) => r.destination === "linkedin_profile" && r.ok && r.entry)?.entry as ShortPublishedEntry | undefined;
+  const repost = await enqueuePageRepostViaWorker(input.enqueue, {
+    aammdd: input.aammdd,
+    items: input.items,
+    profileEntry: profileThisRun ?? input.registry.current().entries.find((e) => e.destination === "linkedin_profile"),
+    now: input.now,
+    ...(input.corteSlug ? { corteSlug: input.corteSlug } : {}),
+  });
+  if (repost.warning) log(`[aviso] ${repost.warning}`);
+  let result: ShortsRunResult | null = null;
+  if (repost.entry) {
+    try {
+      input.registry.persist(repost.entry);
+      result = { destination: "linkedin_page_repost", ok: true, entry: repost.entry };
+      log(`[ok] linkedin_page_repost: ${repost.entry.status} pela fila do Worker (${repost.entry.id}${repost.entry.scheduled_at ? `, ${repost.entry.scheduled_at}` : ""})`);
+    } catch (e) {
+      const msg = `repost NA FILA do Worker (${repost.entry.id}) mas o registro não foi gravado: ${(e as Error).message}. Registre com --mark linkedin_page_repost=${repost.entry.id}; não reposte à mão.`;
+      result = { destination: "linkedin_page_repost", ok: false, entry: repost.entry, error: msg };
+      log(`[erro] linkedin_page_repost: ${msg}`);
+    }
+  }
+  return { items: repost.items, result };
 }
 
 /**

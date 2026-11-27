@@ -11,8 +11,8 @@
  * mapa do registro.
  */
 
-import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { withFileLock } from "../file-lock.ts";
 import { formatIssueRef, type IssueRef, legacyIssueNumber, normalizeRepoSlug } from "../issue-repos.ts";
@@ -899,8 +899,171 @@ function worktreeClaimKey(path: string): string {
   return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
 }
 
+function worktreeClaimsDir(root: string): string {
+  return join(root, "data", "sessions", ".worktree-claims");
+}
+
 function worktreeClaimFilePath(root: string, path: string): string {
-  return join(root, "data", "sessions", ".worktree-claims", `${worktreeClaimKey(path)}.json`);
+  return join(worktreeClaimsDir(root), `${worktreeClaimKey(path)}.json`);
+}
+
+/**
+ * Validade de uma claim de worktree (#14214). Era 30 min fixos e nada renovava,
+ * então o guard do hook vencia no meio da maioria das unidades. Agora são 3h.
+ * Renovação: `claim-worktree --renew`, que o implementador/fixer roda antes do
+ * self-review e antes do commit final (item 3 de
+ * `context/overnight-dispatch-rules.md`), e o `heartbeat` do CLI
+ * (`renewWorktreeClaimsForSession`). O heartbeat só roda nos call sites de
+ * onda do coordenador — o `session-beacon.mjs` NÃO o chama —, então ele é
+ * reforço, não garantia. A claim de unidade terminada sai por
+ * `unclaim-worktree`; a esquecida vence e o `gc` a recolhe.
+ */
+export const WORKTREE_CLAIM_TTL_MS = 3 * 60 * 60 * 1000;
+
+/** Claim vencida há mais que isto sai no `gc` (`gcExpiredWorktreeClaims`). */
+const WORKTREE_CLAIM_GC_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface WorktreeClaimRecord {
+  path?: string;
+  sessionId?: string;
+  branch?: string;
+  claimed_at?: string;
+  expires_at?: number;
+}
+
+/**
+ * Arquivos de claim de worktree. Diretório ausente = nenhuma claim (`[]`);
+ * qualquer outro erro de leitura relança, para o `heartbeat` e o `gc`
+ * reportarem em vez de tratar "não consegui ler" como "não há nada".
+ */
+function listWorktreeClaimFiles(root: string): string[] {
+  const dir = worktreeClaimsDir(root);
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => join(dir, f));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+}
+
+/** Falha por arquivo de claim (renovação ou gc). */
+interface WorktreeClaimFailure {
+  path: string;
+  reason: string;
+}
+
+/** `true` quando o worktree da claim ainda existe (o path e o `.git` dele). */
+function claimedWorktreeStillExists(record: WorktreeClaimRecord): boolean {
+  if (typeof record.path !== "string" || record.path === "") return false;
+  return existsSync(record.path) && existsSync(join(record.path, ".git"));
+}
+
+/**
+ * Renova (`expires_at` = agora + TTL) as claims de worktree VIVAS da sessão,
+ * sem tocar em `branch` (#14214). Chamada pelo `heartbeat` do CLI. Claim já
+ * vencida não ressuscita (vencer é o sinal de abandono), e claim de worktree
+ * que não existe mais em disco fica como está, para vencer e sair no `gc`.
+ * Cada arquivo tem `try/catch` próprio: a falha de um não impede os outros e
+ * volta em `failed`. A listagem do diretório relança (`listWorktreeClaimFiles`).
+ */
+export function renewWorktreeClaimsForSession(
+  repoRoot: string,
+  sessionId: string,
+  nowMs: number = Date.now(),
+): { renewed: number; failed: WorktreeClaimFailure[] } {
+  let renewed = 0;
+  const failed: WorktreeClaimFailure[] = [];
+  for (const file of listWorktreeClaimFiles(repoRoot)) {
+    try {
+      const peek = readJsonSafe<WorktreeClaimRecord>(file);
+      if (!peek || peek.sessionId !== sessionId || (peek.expires_at ?? 0) <= nowMs) continue;
+      if (!claimedWorktreeStillExists(peek)) continue;
+      const lockPath = `${file}.lock`;
+      breakStaleLock(lockPath);
+      withFileLock(lockPath, () => {
+        const current = readJsonSafe<WorktreeClaimRecord>(file);
+        if (!current || current.sessionId !== sessionId || (current.expires_at ?? 0) <= nowMs) return;
+        writeJsonSafe(file, { ...current, expires_at: nowMs + WORKTREE_CLAIM_TTL_MS });
+        renewed += 1;
+      });
+    } catch (e) {
+      failed.push({ path: file, reason: (e as Error).message });
+    }
+  }
+  return { renewed, failed };
+}
+
+/** Desfecho de `unclaimWorktree`. `unreadable`: o arquivo existe e não
+ * parseia — nunca lido como "não tinha claim". */
+type UnclaimWorktreeOutcome = "unclaimed" | "no-op-not-claimed" | "blocked-by-other" | "unreadable";
+
+/**
+ * Solta a claim de worktree, só quando é da própria sessão (#14214): fim da
+ * unidade ou cleanup do worktree. Claim de outra sessão nunca sai daqui.
+ */
+export function unclaimWorktree(path: string, sessionId: string, repoRoot: string): UnclaimWorktreeOutcome {
+  const claimFile = worktreeClaimFilePath(repoRoot, resolve(path));
+  if (!existsSync(claimFile)) return "no-op-not-claimed";
+  const lockPath = `${claimFile}.lock`;
+  breakStaleLock(lockPath);
+  let outcome: UnclaimWorktreeOutcome = "no-op-not-claimed";
+  withFileLock(lockPath, () => {
+    const current = readJsonSafe<WorktreeClaimRecord>(claimFile);
+    if (!current) {
+      if (existsSync(claimFile)) outcome = "unreadable";
+      return;
+    }
+    if (current.sessionId !== sessionId) {
+      outcome = "blocked-by-other";
+      return;
+    }
+    rmSync(claimFile, { force: true });
+    outcome = "unclaimed";
+  });
+  return outcome;
+}
+
+/**
+ * Remove as claims de worktree vencidas há mais de `olderThanMs` (#14214).
+ * Chamada pelo `gc` do CLI. `dryRun` só lista. Claim ilegível fica (pode ser
+ * escrita em curso); vencida há pouco também (o hook já a ignora). A remoção
+ * é feita sob o lock do arquivo, relendo dentro dele: uma claim renovada ou
+ * retomada entre a leitura e o lock não sai. Falha por arquivo volta em
+ * `failed`; a listagem do diretório relança.
+ */
+export function gcExpiredWorktreeClaims(
+  repoRoot: string,
+  opts: { nowMs?: number; olderThanMs?: number; dryRun?: boolean } = {},
+): { removed: string[]; failed: WorktreeClaimFailure[] } {
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoff = nowMs - (opts.olderThanMs ?? WORKTREE_CLAIM_GC_AFTER_MS);
+  const isStale = (r: WorktreeClaimRecord | null): r is WorktreeClaimRecord =>
+    !!r && typeof r.expires_at === "number" && r.expires_at <= cutoff;
+  const removed: string[] = [];
+  const failed: WorktreeClaimFailure[] = [];
+  for (const file of listWorktreeClaimFiles(repoRoot)) {
+    try {
+      const record = readJsonSafe<WorktreeClaimRecord>(file);
+      if (!isStale(record)) continue;
+      if (opts.dryRun) {
+        removed.push(record.path ?? file);
+        continue;
+      }
+      const lockPath = `${file}.lock`;
+      breakStaleLock(lockPath);
+      withFileLock(lockPath, () => {
+        const current = readJsonSafe<WorktreeClaimRecord>(file);
+        if (!isStale(current)) return;
+        rmSync(file, { force: true });
+        removed.push(current.path ?? file);
+      });
+    } catch (e) {
+      failed.push({ path: file, reason: (e as Error).message });
+    }
+  }
+  return { removed, failed };
 }
 
 export function claimWorktree(path: string, sessionId: string, repoRoot?: string, branch?: string): boolean {
@@ -917,7 +1080,7 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
   const claimFile = worktreeClaimFilePath(root, path);
   const lockPath = `${claimFile}.lock`;
   const nowMs = Date.now();
-  const ttl = 30 * 60 * 1000;
+  const ttl = WORKTREE_CLAIM_TTL_MS;
 
   mkdirSync(dirname(claimFile), { recursive: true });
   breakStaleLock(lockPath); // lock órfão (dono morreu) não pode travar o claim pra sempre
@@ -927,6 +1090,9 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
   let resolvedBranch: string | undefined;
   withFileLock(lockPath, () => {
     const currentClaim = readJsonSafe<any>(claimFile);
+    // #14214: arquivo presente que não parseia pode ser a claim de outra
+    // sessão corrompida ou em escrita — nunca sobrescrever às cegas.
+    if (!currentClaim && existsSync(claimFile)) return;
     const claimLive = currentClaim && (currentClaim.expires_at ?? 0) > nowMs;
     if (claimLive && currentClaim.sessionId !== sessionId) {
       return; // outro dono (sessionId distinto) segura este path vivo — recusa
@@ -953,6 +1119,81 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
   // antigos que já estão no disco são recolhidos por `planSessionGc`
   // (`isWorktreeClaimMirror`).
   return claimed;
+}
+
+/** Desfecho de `claimWorktreeChecked` (#14214, subcomando `claim-worktree`).
+ * Sem `export`: só o próprio retorno usa (knip acusaria export morto). */
+type ClaimWorktreeOutcome =
+  | { outcome: "claimed"; path: string; branch: string | undefined }
+  | { outcome: "blocked-by-other"; path: string; ownerSessionId: string | null }
+  | { outcome: "not-a-linked-worktree"; path: string }
+  /** O arquivo de claim existe e não parseia: nada foi gravado. */
+  | { outcome: "unreadable"; path: string; claimFile: string }
+  /** `--renew` sem claim viva da própria sessão: não há o que renovar. */
+  | { outcome: "nothing-to-renew"; path: string }
+  /** Claim viva da própria sessão com OUTRA branch, sem `--rebind`: a
+   * divergência é a evidência que `BLOCK_REASON_BRANCH_DIVERGE` existe para
+   * mostrar, e regravar a branch em silêncio a apagaria. */
+  | { outcome: "branch-mismatch"; path: string; claimedBranch: string; headBranch: string };
+
+/**
+ * Modo do `claim-worktree` (#14214, review da PR #14303):
+ * - `claim` (default): 1ª claim, grava a branch do HEAD. Recusa
+ *   (`branch-mismatch`) se a própria sessão já tem claim viva com outra branch.
+ * - `renew`: só estende o TTL da claim viva da própria sessão; a branch gravada
+ *   fica (chama `claimWorktree(..., undefined)`).
+ * - `rebind`: regrava a branch do HEAD, para quando o PRÓPRIO agente fez o
+ *   checkout de outra branch no worktree.
+ */
+type ClaimWorktreeMode = "claim" | "renew" | "rebind";
+
+/**
+ * Entrada do subcomando `claim-worktree` (#14214): até aqui nada em produção
+ * chamava `claimWorktree`, e o hook `.claude/hooks/block-worktree-alien-commit.mjs`
+ * lia um `.worktree-claims/` que ninguém gravava.
+ *
+ * Diferenças para `claimWorktree` cru:
+ * - `path` passa por `resolve()`, a mesma normalização que o hook aplica ao
+ *   `git rev-parse --show-toplevel` antes de calcular a chave: um caminho
+ *   relativo daria outro hash e o hook não acharia a claim.
+ * - Só reivindica WORKTREE VINCULADO (`.git` é arquivo, não diretório). O hook
+ *   ignora o checkout principal, e uma claim nele (o checkout compartilhado
+ *   por todas as sessões) barraria o commit das outras sessões ali.
+ * - Na recusa, devolve quem segura o path, para a mensagem do CLI.
+ */
+export function claimWorktreeChecked(
+  path: string,
+  sessionId: string,
+  repoRoot: string,
+  branch?: string,
+  mode: ClaimWorktreeMode = "claim",
+  nowMs: number = Date.now(),
+): ClaimWorktreeOutcome {
+  const normalized = resolve(path);
+  const gitPath = join(normalized, ".git");
+  let linked = false;
+  try {
+    linked = existsSync(gitPath) && !statSync(gitPath).isDirectory();
+  } catch {
+    linked = false;
+  }
+  if (!linked) return { outcome: "not-a-linked-worktree", path: normalized };
+  const claimFile = worktreeClaimFilePath(repoRoot, normalized);
+  const existing = readJsonSafe<WorktreeClaimRecord>(claimFile);
+  if (!existing && existsSync(claimFile)) return { outcome: "unreadable", path: normalized, claimFile };
+  const ownLive = !!existing && existing.sessionId === sessionId && (existing.expires_at ?? 0) > nowMs;
+  if (mode === "renew" && !ownLive) return { outcome: "nothing-to-renew", path: normalized };
+  if (mode === "claim" && ownLive && existing?.branch && branch && existing.branch !== branch) {
+    return { outcome: "branch-mismatch", path: normalized, claimedBranch: existing.branch, headBranch: branch };
+  }
+  if (claimWorktree(normalized, sessionId, repoRoot, mode === "renew" ? undefined : branch)) {
+    const record = readJsonSafe<any>(worktreeClaimFilePath(repoRoot, normalized));
+    return { outcome: "claimed", path: normalized, branch: record?.branch ?? branch };
+  }
+  const owner = readJsonSafe<any>(claimFile);
+  if (!owner && existsSync(claimFile)) return { outcome: "unreadable", path: normalized, claimFile };
+  const ownerSessionId = typeof owner?.sessionId === "string" ? owner.sessionId : null;
+  return { outcome: "blocked-by-other", path: normalized, ownerSessionId };
 }
 
 export function claimIssue(

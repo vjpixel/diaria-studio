@@ -13,12 +13,12 @@ import {
   buildSystemctlArgs,
   parseArmAction,
   type ArmDeps,
-} from "../scripts/overnight/arm-edicao-schedule-systemd.ts";
+} from "../scripts/edicao-agendada/arm-edicao-schedule-systemd.ts";
 import {
   EDICAO_SCHEDULE_ATTESTATION_FILES,
   parseEdicaoScheduleAttestation,
 } from "../scripts/lib/edicao-schedule-attestation.ts";
-import { buildEdicaoArmInstructions } from "../scripts/overnight/setup-edicao-schedule-systemd.ts";
+import { buildEdicaoArmInstructions } from "../scripts/edicao-agendada/setup-edicao-schedule-systemd.ts";
 
 describe("buildEdicaoArmInstructions — o que o gerador manda o operador rodar", () => {
   it("arma via wrapper, nunca `systemctl enable` direto (senão o alarme não fica sabendo)", () => {

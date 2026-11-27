@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, getArg, getIntArg, getStringArg, hasFlag, parseArgsSimple, isMainModule } from "../scripts/lib/cli-args.ts";
+import { parseArgs, getArg, getIntArg, getStringArg, hasFlag, parseArgsSimple, assertSimpleArgValues, isMainModule } from "../scripts/lib/cli-args.ts";
 
 describe("parseArgs — pares key-value", () => {
   it("extrai um par --key value", () => {
@@ -231,11 +231,38 @@ describe("parseArgsSimple — variante flat (#2834: consolida 21 duplicatas byte
     assert.equal(out["force"], undefined);
   });
 
-  it("--key seguido de outro --key consome o segundo como valor literal (sem semântica de flag booleana)", () => {
-    // Diferente de parseArgs: aqui não há distinção flags/values — o próximo
-    // elemento é sempre consumido como valor, mesmo que comece com "--".
+  it("#14304: --key seguido de outro --key NÃO engole o segundo (antes virava valor literal)", () => {
     const out = parseArgsSimple(["--mode", "--force"]);
-    assert.equal(out["mode"], "--force");
+    assert.equal(out["mode"], undefined);
+    assert.equal(out["force"], undefined);
+  });
+
+  it("#14304: flag booleana antes de flag de valor não descarta o valor", () => {
+    const out = parseArgsSimple(["--force", "--sd-prompt-text", "micrografia", "--edition", "261127"]);
+    assert.equal(out["force"], undefined);
+    assert.equal(out["sd-prompt-text"], "micrografia");
+    assert.equal(out["edition"], "261127");
+  });
+
+  it("#14304: valor que começa com um só hífen (negativo) continua sendo consumido", () => {
+    assert.equal(parseArgsSimple(["--offset", "-5"])["offset"], "-5");
+  });
+});
+
+describe("assertSimpleArgValues (#14304)", () => {
+  it("recusa flag de valor seguida de outra flag", () => {
+    const argv = ["--platform", "--dry-run"];
+    assert.throws(() => assertSimpleArgValues(argv, parseArgsSimple(argv), ["platform"]), /--platform foi passado sem valor/);
+  });
+
+  it("recusa flag de valor no fim do argv", () => {
+    const argv = ["--dry-run", "--platform"];
+    assert.throws(() => assertSimpleArgValues(argv, parseArgsSimple(argv), ["platform"]), /--platform/);
+  });
+
+  it("aceita flag com valor e ignora flag ausente", () => {
+    const argv = ["--dry-run", "--platform", "linkedin"];
+    assert.doesNotThrow(() => assertSimpleArgValues(argv, parseArgsSimple(argv), ["platform", "edition-dir"]));
   });
 
   it("retorna Record vazio para argv vazio", () => {

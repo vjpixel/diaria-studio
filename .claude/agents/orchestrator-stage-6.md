@@ -39,6 +39,7 @@ Exit code handling:
 - `1` → **FATAL:** "Etapa 5 (Publicacao): sentinel ausente nesta maquina. Se a Etapa 5 rodou em outra maquina, aguardar o sync do OneDrive (repassar a linha `[aviso]` do stderr, #11729: traz a idade do arquivo mais recente da edicao); se nao, re-rodar `/diaria-5-publicacao {AAMMDD}` antes de continuar." Parar.
 - `2` → **FATAL:** `newsletter-kit-published.json` ausente. "Re-rodar Etapa 5." Parar.
 - `3` → logar warn, continuar.
+- `4` → sentinel do Stage 5 presente mas malformado (#14133/#14221: JSON ilegível ou campos inválidos). **Não é o exit 4 do `stale-edition-guard.ts`** ("outra máquina à frente"): nada de rodar o guard. Halt banner `render-halt-banner.ts --stage "6 — Agendamento" --reason "sentinel do Stage 5 ilegível: {linha [error] do stderr}" --action "conferir {EDITION_DIR}/_internal/.step-5-done.json e aguardar o sync; se seguir inválido depois do sync (ou o [error] apontar campo inválido, não JSON ilegível), o editor confirma e re-roda `/diaria-5-publicacao {AAMMDD}` para regravar o sentinel"`. Nunca re-rodar a etapa anterior por conta própria. Parar.
 
 ### 6a. Pre-requisitos
 

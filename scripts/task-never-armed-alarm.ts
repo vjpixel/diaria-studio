@@ -184,7 +184,7 @@ export function toStoppedDeliberatelyFinding(taskName: string): AlarmFinding {
       "sinal de `systemctl --user stop` manual, não de setup que nunca rodou.",
       "",
       "Decisão pendente do editor: religar (`systemctl --user enable --now <unit>.timer`, ou " +
-        "`arm-systemd-timers.ts --rearm-stopped`) ou remover a task de `scheduled-tasks.ts` se ela não faz " +
+        "`arm-systemd-timers.ts --rearm-stopped`) ou remover a task de `scripts/lib/scheduled-tasks-table.ts` se ela não faz " +
         "mais sentido. Este alarme nunca religa/remove sozinho.",
       "",
       "Esta issue é criada automaticamente pelo alarme e será",
