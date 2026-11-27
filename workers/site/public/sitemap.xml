@@ -1303,26 +1303,10 @@
   <url>
     <loc>https://diar.ia.br/p/jensen-huang-esta-de-volta-a-nvidia-11-dias-depois-de-sair</loc>
     <lastmod>2026-11-24</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-24T00:00:00.000Z</news:publication_date>
-      <news:title>Jensen Huang está de volta à Nvidia 11 dias depois de sair</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/hackers-chineses-usam-agentes-que-acham-zero-day</loc>
     <lastmod>2026-11-25</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-25T00:00:00.000Z</news:publication_date>
-      <news:title>Hackers chineses usam agentes que acham zero-day</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos</loc>
@@ -1334,6 +1318,18 @@
       </news:publication>
       <news:publication_date>2026-11-26T00:00:00.000Z</news:publication_date>
       <news:title>Anthropic: empresas não demitem, mas contratam menos</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/seu-artifact-do-claude-pode-virar-app-no-windows</loc>
+    <lastmod>2026-11-27</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-27T00:00:00.000Z</news:publication_date>
+      <news:title>Seu artifact do Claude pode virar app no Windows</news:title>
     </news:news>
   </url>
 </urlset>
