@@ -20,21 +20,10 @@ import { fileURLToPath } from "node:url";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
 import { aiFetchBotCounterKey, aiFetchReferrerCounterKey } from "../scripts/lib/shared/ai-fetch-counters.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WRANGLER = resolve(ROOT, "workers", "site", "wrangler.toml");
-
-function makeFakeKv(): { kv: KVNamespace; puts: Record<string, string> } {
-  const puts: Record<string, string> = {};
-  const kv = {
-    get: async (key: string) => puts[key] ?? null,
-    put: async (key: string, value: string) => {
-      puts[key] = value;
-    },
-    delete: async () => {},
-  } as unknown as KVNamespace;
-  return { kv, puts };
-}
 
 function fakeEnv(kv: KVNamespace): Env {
   return {
@@ -48,7 +37,7 @@ function fakeEnv(kv: KVNamespace): Env {
 
 describe("workers/site — instrumentação de bot/referrer de IA (#8062)", () => {
   it("User-Agent de bot nomeado (ex: OAI-SearchBot) incrementa o contador com surface='site'", async () => {
-    const { kv, puts } = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const env = fakeEnv(kv);
     const req = new Request("https://diar.ia.br/", {
       headers: { "User-Agent": "OAI-SearchBot/1.0; +https://openai.com/searchbot" },
@@ -56,37 +45,37 @@ describe("workers/site — instrumentação de bot/referrer de IA (#8062)", () =
     await worker.fetch(req, env);
     const day = new Date().toISOString().slice(0, 10);
     const key = aiFetchBotCounterKey("OAI-SearchBot", day, "site");
-    assert.equal(puts[key], "1");
+    assert.equal(kv._map.get(key), "1");
   });
 
   it("Referer de assistente (ex: claude.ai) incrementa o contador com surface='site'", async () => {
-    const { kv, puts } = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const env = fakeEnv(kv);
     const req = new Request("https://diar.ia.br/p/algum-post", { headers: { Referer: "https://claude.ai/chat/abc" } });
     await worker.fetch(req, env);
     const day = new Date().toISOString().slice(0, 10);
     const key = aiFetchReferrerCounterKey("claude.ai", day, "site");
-    assert.equal(puts[key], "1");
+    assert.equal(kv._map.get(key), "1");
   });
 
   it("as chaves de 'site' nunca colidem com as de 'arquivo' no mesmo (bot, dia)", async () => {
-    const { kv, puts } = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const env = fakeEnv(kv);
     const req = new Request("https://diar.ia.br/", { headers: { "User-Agent": "Googlebot/2.1" } });
     await worker.fetch(req, env);
     const day = new Date().toISOString().slice(0, 10);
-    assert.equal(puts[aiFetchBotCounterKey("Googlebot", day, "site")], "1");
-    assert.equal(puts[aiFetchBotCounterKey("Googlebot", day, "arquivo")], undefined);
+    assert.equal(kv._map.get(aiFetchBotCounterKey("Googlebot", day, "site")), "1");
+    assert.equal(kv._map.get(aiFetchBotCounterKey("Googlebot", day, "arquivo")), undefined);
   });
 
   it("User-Agent/Referer comuns (sem bot/assistente conhecido) não escrevem nada no KV", async () => {
-    const { kv, puts } = makeFakeKv();
+    const kv = makeTrackedKvNamespace();
     const env = fakeEnv(kv);
     const req = new Request("https://diar.ia.br/", {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" },
     });
     await worker.fetch(req, env);
-    assert.equal(Object.keys(puts).length, 0);
+    assert.equal([...kv._map.keys()].length, 0);
   });
 
   it("KV ausente (binding não propagado) não derruba a resposta — fail-soft", async () => {

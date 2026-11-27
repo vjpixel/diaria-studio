@@ -13,6 +13,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { checkWebSubscriber, checkWebSubscriberDetailed } from "../workers/poll/src/web-gate.ts";
 import type { Env } from "../workers/poll/src/index.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -55,12 +56,6 @@ afterEach(() => {
 });
 
 /** KV falso: `presentes` são as chaves que existem (⇒ "active"). */
-function fakeKv(presentes: Set<string>): Env["SUBSCRIBERS_KV"] {
-  return {
-    get: async (key: string) => (presentes.has(key) ? "1" : null),
-  } as unknown as Env["SUBSCRIBERS_KV"];
-}
-
 function envCom(over: Partial<Env> = {}): Env {
   return {
     BEEHIIV_API_KEY: "bk",
@@ -163,7 +158,7 @@ describe("#6048 checkWebSubscriber — contrato binário preservado", () => {
   it("KV com a chave ⇒ active sem depender de nenhuma API", async () => {
     const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const email = "kv@exemplo.com";
-    const kv = fakeKv(new Set([await subscriberKvKey(email)]));
+    const kv = makeTrackedKvNamespace({ [await subscriberKvKey(email)]: "1" });
     assert.equal(await checkWebSubscriber(envCom({ SUBSCRIBERS_KV: kv }), email), "active");
   });
 });
