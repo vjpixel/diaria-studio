@@ -116,7 +116,16 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           // #14218 — o alarm terminou em `dlq` e não refez. Antes o cron via
           // `fired=false`, ganhava o claim e redisparava (o carrossel inteiro,
           // 2ª cópia quando a 1ª tinha saído). DLQ com o motivo do alarm.
+          // #14250 — o cron não segura claim aqui: um re-enqueue de recuperação
+          // (#14241) pode limpar o DO e gravar a entry nova entre o `/status`
+          // acima e o move. Relê antes de mover.
+          const stale = await dlqMoveStale(env, k.name, raw, status.dlq_reason);
+          if (stale !== null) {
+            console.warn(`[fire] ${k.name} dlq do alarm não movido: ${stale} (#14250)`);
+            continue;
+          }
           await moveToDlq(env, k.name, entry, status.dlq_reason);
+          await logIfRecoveredDuringMove(env, k.name, status.dlq_reason);
           console.error(`[fire] ${k.name} dlq no alarm — movido pra DLQ sem refazer: ${status.dlq_reason}`);
           dlq++;
           continue;
@@ -197,7 +206,9 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     // token), via `/mark-dlq`. Antes só liberava o claim, e um alarm que
     // disparasse depois refazia o post (o carrossel inteiro). Se a marcação
     // falhar, ao menos libera o claim, como antes.
-    const markCronDlq = async (reason: string) => {
+    // Devolve `true` quando o DO confirmou a marcação (#14250 usa isso pra saber
+    // se o `dlq_reason` relido antes do move é o deste cron).
+    const markCronDlq = async (reason: string): Promise<boolean> => {
       try {
         const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
         const res = await env.LINKEDIN_SCHEDULER.get(doId).fetch("https://do/mark-dlq", {
@@ -205,12 +216,13 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ reason, claim_token: claimToken ?? null }),
         });
-        if (res.ok) return;
+        if (res.ok) return true;
         console.error(`[fire] ${k.name} /mark-dlq devolveu ${res.status} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
       } catch (e) {
         console.error(`[fire] ${k.name} /mark-dlq falhou: ${String(e)} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
       }
       await releaseCronClaim();
+      return false;
     };
 
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
@@ -258,8 +270,17 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
       // fica com claiming=true permanente e o alarm fica travado até eviction.
       // #14230 — e marcar o DO (`dlq_reason`, sem payload): o alarm não refaz.
-      await markCronDlq(outcome.reason);
+      const marked = await markCronDlq(outcome.reason);
+      // #14250 — o `/mark-dlq` libera o claim, e a partir daí um re-enqueue de
+      // recuperação (#14241) pode limpar o DO e gravar a entry nova antes do
+      // move. Relê; sem a marcação confirmada, só o KV é conferido.
+      const stale = await dlqMoveStale(env, k.name, raw, marked ? outcome.reason : null);
+      if (stale !== null) {
+        console.warn(`[fire] ${k.name} dlq do cron não movido: ${stale} (#14250)`);
+        continue;
+      }
       const dlqKey = await moveToDlq(env, k.name, entry, outcome.reason);
+      if (marked) await logIfRecoveredDuringMove(env, k.name, outcome.reason);
       console.error(`[fire] ${k.name} dropped to dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
       dlq++;
       continue;
@@ -436,6 +457,73 @@ async function releaseClaim(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ claim_token: claimToken ?? null }),
   });
+}
+
+/**
+ * #14250 — conferência imediatamente antes de mover pra DLQ uma entry cujo
+ * desfecho `dlq` está gravado no DO (`dlq_reason`, #14218/#14230). Nesses dois
+ * caminhos o cron não segura claim no momento do move, então o re-enqueue de
+ * recuperação (#14241: `/cancel` que limpa o `dlq_reason`, KV put da entry
+ * nova, `/arm`) pode rodar inteiro entre a leitura do cron e o move, e o
+ * `KV.delete` apagaria a entry nova (DO armado sem entry; se o alarm falhasse,
+ * ninguém repetia, e o editor tinha recebido 202).
+ *
+ * Compare-and-set em duas partes: (1) o `dlq_reason` relido no DO tem de ser o
+ * mesmo que o cron leu (ou gravou via `/mark-dlq`); (2) o valor atual da chave
+ * no KV tem de ser o mesmo `raw` que o cron leu no início da volta. Qualquer
+ * divergência → não move (devolve o motivo). `expectedDlqReason = null` pula a
+ * parte (1) (marcação não confirmada pelo DO); DO indisponível na releitura
+ * também cai só na parte (2), como era antes do #14250.
+ *
+ * Resta uma janela de milissegundos entre esta releitura e o `KV.delete` (KV
+ * não tem compare-and-delete); `logIfRecoveredDuringMove` a torna visível.
+ */
+async function dlqMoveStale(
+  env: Env,
+  key: string,
+  raw: string,
+  expectedDlqReason: string | null,
+): Promise<string | null> {
+  if (expectedDlqReason !== null) {
+    const current = await readDoDlqReason(env, key);
+    if (current !== undefined && current !== expectedDlqReason) {
+      return current === null
+        ? "dlq_reason sumiu do DO (re-enqueue de recuperação, #14241)"
+        : `dlq_reason do DO mudou (${current})`;
+    }
+  }
+  const nowRaw = await env.LINKEDIN_QUEUE.get(key);
+  if (nowRaw !== raw) {
+    return nowRaw === null ? "entry já saiu do KV" : "entry do KV mudou desde a leitura do cron (re-enqueue)";
+  }
+  return null;
+}
+
+/** `dlq_reason` atual do DO: string, `null` (ausente) ou `undefined` (DO ilegível). */
+async function readDoDlqReason(env: Env, key: string): Promise<string | null | undefined> {
+  try {
+    const res = await env.LINKEDIN_SCHEDULER.get(env.LINKEDIN_SCHEDULER.idFromName(key)).fetch("https://do/status", {
+      method: "GET",
+    });
+    if (!res.ok) return undefined;
+    const s = (await res.json()) as { dlq_reason?: unknown };
+    return typeof s.dlq_reason === "string" && s.dlq_reason !== "" ? s.dlq_reason : null;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #14250 — depois do move, se o `dlq_reason` do DO já não é o do move, um
+ * re-enqueue de recuperação caiu na janela residual entre `dlqMoveStale` e o
+ * `KV.delete`: a entry nova pode ter sido apagada com o DO armado. Só loga
+ * (erro), pro editor conferir o post.
+ */
+async function logIfRecoveredDuringMove(env: Env, key: string, movedReason: string): Promise<void> {
+  const current = await readDoDlqReason(env, key);
+  if (current !== undefined && current !== movedReason) {
+    console.error(`[fire] ${key} re-enqueue de recuperação durante o move pra DLQ — a entry nova pode ter sido apagada com o DO armado; conferir o post (#14250)`);
+  }
 }
 
 /** Move a entry pra `dlq:` (PUT antes do delete, #894 P1-A) e devolve a key da DLQ. */
