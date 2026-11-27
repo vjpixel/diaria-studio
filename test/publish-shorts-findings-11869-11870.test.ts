@@ -146,9 +146,14 @@ describe("#11870: reconferência antes do media_publish leva o matchedBy ao cham
   it("o timer em publish-shorts.ts passa o callback e confere os collabs do achado da reconferência", () => {
     const src = publishShortsSource();
     assert.match(src, /instagramTimerBeforePublish\(\{ local: localRecheck, gate: accountGate, onAlready: onRecheckAlready \}\)/);
-    const i = src.indexOf("const recheck: { hit:");
-    assert.ok(i > 0, "captura do achado da reconferência não encontrada");
-    const block = src.slice(i, src.indexOf("continue;", i));
+    // #14204: o bloco mora em `sendInstagramReelItem` (instagram-send.ts); termina no fim da função.
+    const fn = src.indexOf("export async function sendInstagramReelItem(");
+    assert.ok(fn > 0, "etapa do Instagram não encontrada");
+    const i = src.indexOf("const recheck: { hit:", fn);
+    assert.ok(i > fn, "captura do achado da reconferência não encontrada");
+    const end = src.indexOf("\n}\n", i);
+    assert.ok(end > i, "fim da etapa do Instagram não encontrado");
+    const block = src.slice(i, end);
     assert.match(block, /publishReel\(accountGate, \(hit\) =>/);
     assert.match(block, /step\.outcome\.alreadyRegistered && recheck\.hit/);
     assert.match(block, /instagramTimerAlreadyCollabWarnings\(/);

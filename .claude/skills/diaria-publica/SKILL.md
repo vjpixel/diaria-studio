@@ -459,7 +459,7 @@ Os passos seguintes rodam **depois do `--publish` por API**: no fluxo inteiro, d
 - **Passo B5b**: X e TikTok pela Buffer (`create_post`, confirmação com `get_post`) e o repost da página no LinkedIn.
 - **Corte avulso, fora de edição (#11795)**: vertical que não é de edição sai pelo modo `--corte`, nunca com `02-reviewed.md` sintético.
 - **Passo B6**: verticais extras da edição (`video-extra-verticals.ts`) e o vertical 2 do roteiro (corte `guia`, banco de agendamentos).
-- **Passo B7**: `mark-video-liberada.ts {AAMMDD}`, o último passo.
+- **Passo B7**: dispensado desde 27/11/2026 (#14312, arquivamento diário aposentado na #14292); não rodar `mark-video-liberada.ts`.
 
 ## Relato único
 

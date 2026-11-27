@@ -80,6 +80,7 @@ describe("sync de apoio sem Beehiiv (#11225)", () => {
     const src = read("scripts/lib/scheduled-tasks.ts");
     const retired = src.slice(src.indexOf("export const RETIRED_TASK_NAMES"), src.indexOf("export function isRetiredTaskName"));
     assert.doesNotMatch(retired, /Diaria-Apoios-Diff-Alarm/);
-    assert.match(src, /name: "Diaria-Apoios-Diff-Alarm"/);
+    // #14121: as entradas moram na tabela separada.
+    assert.match(read("scripts/lib/scheduled-tasks-table.ts"), /name: "Diaria-Apoios-Diff-Alarm"/);
   });
 });

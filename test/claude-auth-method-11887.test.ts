@@ -26,7 +26,7 @@ import {
   type ClaudeAuthResult,
 } from "../scripts/lib/claude-auth-method.ts";
 import { DAILY_REVIEW_SCRIPT, main as chainMain, type NightlyChainDeps } from "../scripts/overnight/run-nightly-chain.ts";
-import { main as edicaoMain } from "../scripts/overnight/run-scheduled-edicao.ts";
+import { main as edicaoMain } from "../scripts/edicao-agendada/run-scheduled-edicao.ts";
 import { diagnoseExitCode } from "../scripts/diagnose-claude-auth.ts";
 
 type ExecFn = typeof import("node:child_process").execFileSync;

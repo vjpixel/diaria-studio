@@ -177,7 +177,8 @@ export interface AdsTestWatchDeps {
    *  systemd real (`diaria-brevo-diaria-evaluate.timer`, consultado no
    *  `300` via `systemctl --user show`) confirma `LoadState`/`ActiveState`
    *  ativos — `enabled: true` no registro sozinho NUNCA basta
-   *  (`scheduled-tasks.ts:2737`: "enabled:true não é a mesma coisa que
+   *  (comentário da entrada `Diaria-Brevo-Diaria-Evaluate` em
+   *  `scheduled-tasks-table.ts`: "enabled:true não é a mesma coisa que
    *  armada no 300"). `false` = desarmada de propósito no registro OU
    *  confirmado inativo no timer real. `null` = indeterminado (task não
    *  encontrada no registro, ou a consulta ao timer real falhou/não pôde
@@ -575,7 +576,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
     if (!isDryRun) {
       const result = deps.commentOnReligarBrevoIssue(
         `A task \`Diaria-Ads-Test-Watch\` confirma: D+21 (${runState.religar_brevo}) chegou — religar ` +
-          `\`Diaria-Brevo-Diaria-Evaluate\` agora (reverter \`enabled: false\` em scripts/lib/scheduled-tasks.ts).`,
+          `\`Diaria-Brevo-Diaria-Evaluate\` agora (reverter \`enabled: false\` em scripts/lib/scheduled-tasks-table.ts).`,
       );
       if (result.status !== 0) {
         console.error(`${LOG_PREFIX} falha ao comentar em #${RELIGAR_BREVO_ISSUE_NUMBER}: ${result.stderr}`);

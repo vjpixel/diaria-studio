@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
+import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/edicao-agendada/run-scheduled-edicao.ts";
 import { EXPECTED_EFFORT, EXPECTED_MODEL } from "../scripts/lib/effective-model-probe.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

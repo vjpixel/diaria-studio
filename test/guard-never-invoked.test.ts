@@ -18,6 +18,7 @@ import {
   isGuardCandidateName,
   listGuardCandidates,
   buildLocalCorpusText,
+  listPrimaryCorpusFiles,
   hasInvocationPoint,
   evaluateGuardNeverInvoked,
   KNOWN_INDIRECT_INVOCATIONS,
@@ -154,6 +155,31 @@ describe("buildLocalCorpusText — integração com o repo real", () => {
   it("inclui o conteúdo de scripts/lib/scheduled-tasks.ts (corpus fixo, sempre presente)", () => {
     const text = buildLocalCorpusText(ROOT);
     assert.ok(text.includes("SCHEDULED_TASKS"), "esperava achar a constante SCHEDULED_TASKS no corpus");
+  });
+
+  it("#14121: a tabela separada e scripts/edicao-agendada/ entram na lista de arquivos do corpus", () => {
+    const files = listPrimaryCorpusFiles(ROOT).map((f) => f.replace(/\\/g, "/"));
+    assert.ok(files.some((f) => f.endsWith("/scripts/lib/scheduled-tasks-table.ts")), "tabela fora do corpus");
+    assert.ok(
+      files.some((f) => f.endsWith("/scripts/edicao-agendada/run-scheduled-edicao.ts")),
+      "scripts/edicao-agendada/ fora do corpus",
+    );
+  });
+
+  it("#14121: token que só existe na tabela (e em scripts/edicao-agendada/) chega ao corpus", () => {
+    const repo = mkdtempSync(join(tmpdir(), "guard-corpus-14121-"));
+    try {
+      mkdirSync(join(repo, "scripts", "lib"), { recursive: true });
+      mkdirSync(join(repo, "scripts", "edicao-agendada"), { recursive: true });
+      writeFileSync(join(repo, "scripts", "lib", "scheduled-tasks.ts"), "// sem script nenhum\n");
+      writeFileSync(join(repo, "scripts", "lib", "scheduled-tasks-table.ts"), 'script: "scripts/so-na-tabela-14121.ts"\n');
+      writeFileSync(join(repo, "scripts", "edicao-agendada", "runner.ts"), "// chama so-no-runner-14121.ts\n");
+      const text = buildLocalCorpusText(repo);
+      assert.ok(hasInvocationPoint("so-na-tabela-14121", text), "entrada só na tabela não conta como invocação");
+      assert.ok(hasInvocationPoint("so-no-runner-14121", text), "scripts/edicao-agendada/ não entrou no corpus");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

@@ -9,7 +9,8 @@
  * issue (`.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`,
  * `.claude/settings.json`, `hermes/**`, `.github/workflows/*`,
  * `package.json`, `scripts/lib/scheduled-tasks.ts`,
- * `docs/scheduled-tasks-registry.md`, `scripts/overnight/*`). Lógica pura
+ * `docs/scheduled-tasks-registry.md`, `scripts/overnight/*`; desde o #14121
+ * também `scripts/lib/scheduled-tasks-table.ts` e `scripts/edicao-agendada/*`). Lógica pura
  * em `scripts/lib/guard-never-invoked.ts`.
  *
  * **Limitação conhecida, documentada de propósito (não é bug):** os timers

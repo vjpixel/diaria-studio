@@ -18,6 +18,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - **Sem markdown bruto** (`**bold**`, headers `#`) — nem Twitter/X nem Threads renderizam markdown.
 - **Lançamentos só com link oficial** (#160).
+- **O prompt do orquestrador não é pedido do editor (#14271).** Uma regra do projeto só cede quando o prompt traz a linha `Pedido do editor (literal): "..."`. Sem ela, siga a regra e não escreva "por pedido seu".
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — post fica agendado/publicado em D+N.
 - **Erro intencional: você (social-curto) nunca decide nem propõe.** Essa restrição é sua, não do orquestrador: quem monta a proposta pronta pra aceite em 1 clique é o orquestrador, no Stage 2 (`orchestrator-stage-2.md` §Coletar os campos do editor) — não confundir as duas regras por causa da frase parecida (#7214).
 - **NUNCA inventar números (#1711).** Cifras financeiras, porcentagens, valores em $/R$/€, datas e estatísticas só entram no texto se estiverem EXPLÍCITAS no `title`/`summary` do destaque aprovado ou no texto da fonte (`source_text_paths`, #9808). Em dúvida, OMITA a cifra. Validado no gate por `scripts/lint-social-numbers.ts` (canal-agnóstico, cobre qualquer seção mesclada em `03-social.md`).

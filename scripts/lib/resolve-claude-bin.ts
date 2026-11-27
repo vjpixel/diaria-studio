@@ -33,7 +33,7 @@
  * pra dentro do `execFileSync`, com a mensagem opaca que custou uma semana
  * de edições não preparadas. A mensagem lançada lista o que foi tentado.
  *
- * @see scripts/overnight/run-scheduled-edicao.ts (consumidor)
+ * @see scripts/edicao-agendada/run-scheduled-edicao.ts (consumidor)
  * @see test/resolve-claude-bin.test.ts
  */
 import { accessSync, constants, statSync } from "node:fs";

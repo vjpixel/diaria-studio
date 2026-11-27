@@ -68,7 +68,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveClaudeBin } from "./lib/resolve-claude-bin.ts";
-import { claudeCliEnv } from "./overnight/run-scheduled-edicao.ts";
+import { claudeCliEnv } from "./edicao-agendada/run-scheduled-edicao.ts";
 import { intentionalErrorHeadlessWarning } from "./lib/intentional-errors.ts";
 import {
   STAGE_PLAN,

@@ -298,7 +298,7 @@ describe("scripts/lib/scheduled-tasks.ts — Diaria-SEO-Weekly usa as dimensões
     // main()) — é guard contra alguém reintroduzir um --dimensions
     // explícito estreito no registry sem perceber que isso pisa no default
     // ampliado.
-    const src = readFileSync(resolve(ROOT, "scripts/lib/scheduled-tasks.ts"), "utf8");
+    const src = readFileSync(resolve(ROOT, "scripts/lib/scheduled-tasks-table.ts"), "utf8"); // #14121
     const pullStepMatch = src.match(/key:\s*"pull"[^}]*args:\s*\[[^\]]*\]/);
     assert.ok(pullStepMatch, "step 'pull' não encontrado em Diaria-SEO-Weekly");
     assert.ok(

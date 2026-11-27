@@ -126,11 +126,16 @@ describe("#11742 conferência do perfil do Threads fora do timer", () => {
 
   it("wiring: a rodada que publica threads_profile confere o perfil em qualquer writer", () => {
     const src = publishShortsSource();
-    const branch = src.slice(src.indexOf("} else if (item.destination === THREADS_PROFILE_DESTINATION) {"), src.indexOf('} else if (item.destination === "instagram") {'));
-    assert.ok(branch.includes("threadsProfilePreflight({"), "o ramo do threads_profile confere o perfil");
-    assert.ok(!/if \(writer === "threads-timer"\)/.test(branch), "a conferência não pode depender do writer do timer");
-    const ig = src.slice(src.indexOf('} else if (item.destination === "instagram") {'));
-    assert.ok(ig.includes("if (instagramAccountGateApplies(writer, corte !== null)) {"), "o Instagram do corte passa pela conferência da conta");
+    // #14204: o ramo de cada destino virou etapa própria (threads.ts, instagram-send.ts).
+    const branchStart = src.indexOf("export async function sendThreadsProfileItem(");
+    assert.ok(branchStart > 0, "etapa do threads_profile não achada");
+    const branch = src.slice(branchStart, src.indexOf("\n}\n", branchStart));
+    assert.ok(branch.includes("deps.preflight({"), "o ramo do threads_profile confere o perfil");
+    assert.ok(src.includes("preflight: threadsProfilePreflight,"), "a conferência padrão é a do perfil");
+    assert.ok(!/writer === "threads-timer"/.test(branch), "a conferência não pode depender do writer do timer");
+    assert.ok(src.includes("if (item.destination === THREADS_PROFILE_DESTINATION) return sendThreadsProfileItem(ctx, item, io);"), "o laço manda o threads_profile para a etapa em qualquer writer");
+    const ig = src.slice(src.indexOf("export async function sendInstagramReelItem("));
+    assert.ok(ig.includes("if (!instagramAccountGateApplies(ctx.writer, corte !== null)) {"), "o Instagram do corte passa pela conferência da conta");
   });
 });
 

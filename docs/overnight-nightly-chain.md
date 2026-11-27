@@ -14,7 +14,7 @@ O passo 2 roda **qualquer que seja o resultado do passo 1**: review limpo, noop,
 | Peça | Papel |
 |---|---|
 | `scripts/overnight/run-nightly-chain.ts` | Runner. Roda o review, depois o overnight, e devolve o exit code da cadeia. |
-| Task `Diaria-Nightly-Chain` (`scripts/lib/scheduled-tasks.ts`) | Daily 00:15 BRT. Nasceu `enabled: false`; ligada em 20/10/2026. |
+| Task `Diaria-Nightly-Chain` (`scripts/lib/scheduled-tasks-table.ts`) | Daily 00:15 BRT. Nasceu `enabled: false`; ligada em 20/10/2026. |
 | `/diaria-overnight --agendado` (`.claude/skills/diaria-overnight/SKILL.md`, "Modo agendado") | Zero perguntas, loop estendido ligado, sem teto de horário. |
 | `briefing.reason: "agendado-desassistido"` (`scripts/lib/overnight-plan-briefing.ts`) | Registro no `plan.json` (#7497). O gate reprova esse `reason` sem `loop_estendido: true`. |
 
@@ -22,7 +22,7 @@ Decisões do editor (19/10/2026, comentários da #10552): horário 00:15, zero p
 
 ## Como o overnight sobe
 
-O runner monta a sessão no molde de `scripts/overnight/run-scheduled-edicao.ts`:
+O runner monta a sessão no molde de `scripts/edicao-agendada/run-scheduled-edicao.ts`:
 
 - Remove `CLAUDE_CLI_STRIPPED_ENV_VARS` do ambiente do `claude`. O unit faz `EnvironmentFile=-.env`, e o `.env` tem `ANTHROPIC_API_KEY`; a sessão autentica sempre pela assinatura claude.ai (#5608/#6714).
 - Abre a sessão já em `--model claude-sonnet-5-5 --effort medium`, o par do #9530.
@@ -56,7 +56,7 @@ O que cada passo deixa no log da cadeia:
 
 Executado em 20/10/2026 (passos 1 a 3; o rearme do watchdog pós-#10565 incluso). Ordem original:
 
-1. **Ligar a task no registro.** Remover `enabled: false` da entrada `Diaria-Nightly-Chain` em `scripts/lib/scheduled-tasks.ts` (PR de uma linha). Sem isso o `setup-systemd-timers.ts` não gera o unit, e o `run-task.ts` pula a execução. Ela nasce desligada para o `Remediate-Never-Armed-Tasks` (#8153) não armá-la sozinho antes do passo 3.
+1. **Ligar a task no registro.** Remover `enabled: false` da entrada `Diaria-Nightly-Chain` em `scripts/lib/scheduled-tasks-table.ts` (PR de uma linha). Sem isso o `setup-systemd-timers.ts` não gera o unit, e o `run-task.ts` pula a execução. Ela nasce desligada para o `Remediate-Never-Armed-Tasks` (#8153) não armá-la sozinho antes do passo 3.
 2. **Gerar e armar o timer**, no checkout do `300` já atualizado com o merge:
    - `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Nightly-Chain`
    - `npx tsx scripts/arm-systemd-timers.ts --task Diaria-Nightly-Chain`
