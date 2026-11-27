@@ -27,9 +27,11 @@
  * store locais, SEM rodar o `--apply` nem chamar rede nenhuma. O `--apply`
  * segue diário pela task `Diaria-Brevo-Diaria-Evaluate` (05:30 BRT,
  * `scripts/brevo-diaria-daily-apply.ts`). Nas edições com campanha o dispatch
- * ainda roda o `--apply` antes do publish, salvo se a task já o rodou no
- * mesmo dia BRT (marcador `data/brevo-diaria/.daily-apply.json`,
- * `scripts/lib/brevo-diaria-daily-apply.ts`): no máximo 1 por dia.
+ * roda SEMPRE o `--apply` antes do publish e grava o marcador do dia
+ * (`data/brevo-diaria/.daily-apply.json`,
+ * `scripts/lib/brevo-diaria-daily-apply.ts`), que faz a task do mesmo dia
+ * BRT pular. No skip rápido, os avisos do `--apply` de hoje (marcador) vêm
+ * no resultado.
  *
  * Idempotência em resume (#5772): ANTES de rodar qualquer passo, checa se
  * `<edition-dir>/_internal/brevo-diaria-published.json` já tem um
@@ -94,7 +96,8 @@ import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts";
 import { checkSemanalCapacity, countKitSemAberturaInBrevo, decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #11226
 import { brtDayKey } from "./lib/shared/brt.ts"; // #13981
-import { applyAlreadyRanToday, readDailyApplyMarker, writeDailyApplyMarker, type DailyApplyMarker } from "./lib/brevo-diaria-daily-apply.ts"; // #13981
+import { applyAlreadyRanToday, readDailyApplyMarker, withDailyApplyLock, writeDailyApplyMarker, type DailyApplyMarker } from "./lib/brevo-diaria-daily-apply.ts"; // #13981
+import { STEP_MAX_BUFFER_BYTES } from "./lib/task-runner.ts"; // #13981 (64 MiB, #10071)
 import {
   BUSY_EXIT_CODE,
   DEFAULT_MAX_TOTAL_MS,
@@ -143,6 +146,9 @@ export function realExec(rootDir: string, opts: { workerPidFile?: string } = {})
     const result = spawnSync(process.execPath, buildExecArgs(rootDir, abs, args, opts.workerPidFile), {
       cwd: rootDir,
       encoding: "utf8",
+      // #13981: o stdout do `--apply` (sub-scripts encadeados) pode passar do
+      // 1 MiB default do spawnSync; mesmo teto do task-runner (#10071).
+      maxBuffer: STEP_MAX_BUFFER_BYTES,
       env: opts.workerPidFile ? { ...process.env, DIARIA_WORKER_PID_FILE: opts.workerPidFile } : process.env,
     });
     if (result.error || result.status === null) {
@@ -173,13 +179,16 @@ export interface Stage5BrevoDeps {
   /**
    * #13981 — marcador do `--apply` do dia (BRT), compartilhado com a task
    * `Diaria-Brevo-Diaria-Evaluate` (`scripts/brevo-diaria-daily-apply.ts`).
-   * Opcional: ausente ⇒ o dispatch sempre roda o `--apply` e não grava nada
-   * (comportamento anterior ao #13981, usado pelos testes antigos).
+   * O dispatch grava o marcador depois de um `--apply` ok e lê os avisos do
+   * dia no skip rápido; nunca o usa para pular o `--apply`. Opcional:
+   * ausente ⇒ não grava nem lê (testes antigos).
    */
   dailyApply?: {
     now: () => Date;
     readMarker: () => DailyApplyMarker | null;
     writeMarker: (m: DailyApplyMarker) => void;
+    /** Lock do marcador (`withDailyApplyLock`); default sem lock (testes). */
+    withLock?: <T>(fn: () => T) => T;
   };
 }
 
@@ -198,6 +207,7 @@ export function productionDeps(rootDir: string = ROOT, opts: { workerPidFile?: s
       now: () => new Date(),
       readMarker: () => readDailyApplyMarker(),
       writeMarker: (m) => writeDailyApplyMarker(m),
+      withLock: (fn) => withDailyApplyLock(fn),
     },
   };
 }
@@ -298,7 +308,7 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
   // sair `skipped` no fim. Cadência preservada (decisão do editor, 27/11/2026):
   // o `--apply` segue diário, agora pela task `Diaria-Brevo-Diaria-Evaluate`
   // (05:30, `scripts/brevo-diaria-daily-apply.ts`); o dispatch só o roda nas
-  // edições com campanha, e no máximo 1x por dia BRT (marcador abaixo).
+  // edições com campanha (marcador e lock abaixo).
   // Guarda contada ANTES do `--apply` aqui: com resíduo > 0 o caminho cheio
   // segue (e recontado depois, como antes); com 0, o `--apply` só poderia
   // criar resíduo pelo Passo 3c, desligado desde o #11221.
@@ -306,7 +316,13 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
   const earlyDecision = decideBrevoSemanalSend({ semanal, editionAammdd: basename(editionDir), kitSemAberturaInBrevo: kitSemAberturaBefore });
   if (!earlyDecision.send) {
     process.stderr.write(`[brevo-diaria stage5] skip rápido (#13981): ${earlyDecision.reason} — --apply não rodou.\n`);
-    return { status: "skipped", reason: earlyDecision.reason, warnings: [] };
+    // Os avisos do `--apply` de hoje (task das 05:30) vêm junto, para a falha
+    // de um passo fail-soft (pool Kit, `sync-kit-frio`) chegar à Etapa 5.
+    const m = deps.dailyApply ? deps.dailyApply.readMarker() : null;
+    const todayWarnings = deps.dailyApply && applyAlreadyRanToday(m, brtDayKey(deps.dailyApply.now()))
+      ? m!.warnings.map((w) => `--apply de hoje (${m!.by}): ${w}`)
+      : [];
+    return { status: "skipped", reason: earlyDecision.reason, warnings: todayWarnings };
   }
 
   // #6793 "Faixa A" (30/08/2026, decisão do editor, item 7): freio de VOLUME
@@ -321,35 +337,42 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
       `(sem teto aplicado, #6793 — max-add não é mais passado)\n`,
   );
 
-  // #13981 — no máximo 1 `--apply` por dia BRT: se a task das 05:30
-  // (`Diaria-Brevo-Diaria-Evaluate`) já rodou hoje, a lista e o pool já foram
-  // atualizados neste dia, antes deste dispatch; a campanha sai sobre esse
-  // estado. Se não rodou (task falhou, dispatch depois da meia-noite e antes
-  // das 05:30), o dispatch roda e grava o marcador, e a task do dia pula.
-  const today = deps.dailyApply ? brtDayKey(deps.dailyApply.now()) : null;
-  const marker = deps.dailyApply ? deps.dailyApply.readMarker() : null;
-  let warnings: string[];
-  if (today !== null && applyAlreadyRanToday(marker, today)) {
-    process.stderr.write(
-      `[brevo-diaria stage5] --apply já rodou hoje (${today}) por ${marker!.by} às ${marker!.at} — não roda de novo (#13981).\n`,
-    );
-    warnings = [];
-  } else {
-    const applyResult = deps.exec("scripts/brevo-diaria-run.ts", ["--apply"]);
-    if (applyResult.code !== 0) {
-      return { status: "failed", step: "brevo-diaria-run --apply", reason: tailReason(applyResult) };
-    }
-    warnings = extractRunWarnings(applyResult.stdout);
-    if (deps.dailyApply && today !== null) {
-      try {
-        deps.dailyApply.writeMarker({ day: today, at: deps.dailyApply.now().toISOString(), by: "stage5-dispatch" });
-      } catch (e) {
-        // Fail-soft: sem marcador, a task das 05:30 de amanhã não é afetada;
-        // só a de hoje (se ainda não rodou) repetiria o --apply, idempotente.
-        warnings.push(`marcador do --apply diário não gravado (${(e as Error).message}), #13981.`);
+  // #13981 — nas edições com campanha o dispatch roda SEMPRE o `--apply`
+  // antes de criar a campanha (a Brevo congela os destinatários no
+  // agendamento, então a lista é atualizada logo antes), mesmo que a task das
+  // 05:30 já tenha rodado hoje: no dia do dispatch da edição de segunda o
+  // `--apply` roda 2 vezes, custo aceito. O dispatch grava o marcador do dia
+  // para a task das 05:30 do mesmo dia BRT pular (dispatch de madrugada).
+  // Ler/rodar/gravar dentro do lock do marcador (mesma máquina).
+  const dailyApply = deps.dailyApply;
+  const lock = dailyApply?.withLock ?? (<T>(fn: () => T) => fn());
+  type ApplyOutcome = { ok: true; warnings: string[] } | { ok: false; result: Stage5BrevoResult };
+  let outcome: ApplyOutcome;
+  try {
+    outcome = lock((): ApplyOutcome => {
+      const applyResult = deps.exec("scripts/brevo-diaria-run.ts", ["--apply"]);
+      if (applyResult.code !== 0) {
+        return { ok: false, result: { status: "failed", step: "brevo-diaria-run --apply", reason: tailReason(applyResult) } };
       }
-    }
+      const w = extractRunWarnings(applyResult.stdout);
+      if (dailyApply) {
+        try {
+          const now = dailyApply.now();
+          dailyApply.writeMarker({ day: brtDayKey(now), at: now.toISOString(), by: "stage5-dispatch", warnings: [...w] });
+        } catch (e) {
+          // Fail-soft: sem marcador, a task das 05:30 de hoje (se ainda não
+          // rodou) repetiria o --apply, idempotente.
+          w.push(`marcador do --apply diário não gravado (${(e as Error).message}), #13981.`);
+        }
+      }
+      return { ok: true, warnings: w };
+    });
+  } catch (e) {
+    // Lock que não sai no teto (outro --apply desta máquina preso) ou erro de disco.
+    return { status: "failed", step: "daily-apply-lock", reason: `lock do --apply diário (#13981): ${(e as Error).message}` };
   }
+  if (!outcome.ok) return outcome.result;
+  const warnings = outcome.warnings;
 
   // Recontagem REAL pós-`--apply` (#5839) — sem cap (#6793), `addedActual`
   // reflete só quantos candidatos elegíveis existiam nesta rodada, não mais

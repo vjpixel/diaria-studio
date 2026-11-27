@@ -896,8 +896,9 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // #13981 — era só `evaluate-brevo-diaria.ts --push`. Desde que o dispatch
     // da Etapa 5 sai `skipped` fora da segunda sem `--apply` (regime semanal
     // #11226), o `--apply` diário (que começa pelo mesmo evaluate --push) roda
-    // aqui; no máximo 1x por dia BRT entre esta task e o dispatch (marcador
-    // em `scripts/lib/brevo-diaria-daily-apply.ts`).
+    // aqui; pula se o dispatch da Etapa 5 já o rodou no mesmo dia BRT
+    // (marcador em `scripts/lib/brevo-diaria-daily-apply.ts`). Sai 3 com
+    // aviso fail-soft do `--apply` (exit 3 do evaluate, pool Kit, frio).
     steps: [{ key: "daily-apply", script: "scripts/brevo-diaria-daily-apply.ts" }],
     logPath: "brevo-diaria/.evaluate.log",
     schedule: { kind: "daily", hour: 5, minute: 30 },
@@ -908,7 +909,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
         "montada ainda; abortando por seguranca, NAO rodando --push.",
     },
     enabled: true,
-    issue: "#4534, #4552, #5639, #5838",
+    issue: "#4534, #4552, #5639, #5838, #13981",
   },
   {
     name: "Diaria-Sunset-Weekly",
