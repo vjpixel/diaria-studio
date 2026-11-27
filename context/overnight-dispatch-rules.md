@@ -459,6 +459,13 @@ Se você adicionar, editar ou remover uma invariante em
 do coordenador. Commitar o `docs/editorial-invariants.md` regenerado junto com a
 mudança em `invariant-checks/`.
 
+Guard mecânico desde o #14216: `.claude/hooks/block-pr-create-preflight.mjs`
+(PreToolUse/Bash, pelo despachante) roda `scripts/check-pr-create-preflight.ts`
+antes do `gh pr create` e recusa a PR com o documento DO COMMIT (HEAD, não o
+arquivo da árvore) divergente do registry, com o comando de regenerar na
+mensagem. Regenerado e não commitado vira aviso (a mesma cadeia de comando
+pode commitar antes do `gh pr create`; o CI pega o caso real).
+
 ## 14. Preflight de duplicidade — checklist obrigatório (#5327 item 3)
 
 **Antes de implementar**, todo subagente implementador roda `gh pr list
@@ -649,6 +656,18 @@ substitui (código morto, caminho antigo, prosa que deixou de valer), ou por
 que legitimamente não remove nada — "feature nova, não substitui código
 existente" é resposta válida quando é verdade. Teste e snapshot regenerado
 contam como saldo positivo legítimo; vale dizer isso explicitamente.
+
+**Guard mecânico desde o #14216:** o mesmo preflight do item 13 mede o diff
+contra o merge-base com `origin/master` e recusa o `gh pr create` acima de 500
+adições quando o corpo lido (`--body` literal ou `"$(cat <<'EOF' ... EOF)"`
+com o delimitador entre aspas, `--body-file` com arquivo, ou `--body-file -`
+com heredoc) não tem a linha. Corpo que só existe ao rodar (variável,
+`--body-file` com `$` no nome, `--fill`) vira aviso, não recusa: prefira
+`--body-file` com caminho literal (sem `$`) ou `--body-file -` com heredoc.
+O nome com `$RANDOM` do item 9 sempre cai em aviso: gere o número antes e
+escreva o caminho já expandido. No Git Bash do Windows, `/tmp` é um caminho do
+MSYS que o hook (Node) não resolve igual: use o scratchpad da sessão ou um
+caminho Windows absoluto.
 
 **Onde plugar:** no prompt de dispatch de toda unidade cujo escopo sugira
 diff grande (módulo novo + suíte de teste nova, migração, reescrita de

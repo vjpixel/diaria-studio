@@ -76,6 +76,7 @@
 // bloquear; nenhuma saída para permitir (equivalente a "defer").
 
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
@@ -687,7 +688,20 @@ function runGit(args, cwd) {
  * relativo é resolvido contra `base`. Devolve `null` quando não há `cd`, o
  * que é o caso comum e não tem nada de errado.
  */
-export function cdTargetFromCommand(command, base) {
+/**
+ * Caminho do Git Bash (MSYS) para o caminho que o Node entende no Windows
+ * (#14216): `/c/Users/x` → `C:/Users/x`, `/tmp/x` → `{tmpdir}/x`. Sem isso o
+ * `resolve` do Node lê `/c/Users` como `C:\c\Users`. Fora do Windows, igual.
+ */
+export function normalizeMsysPath(p, platform = process.platform, tmp = tmpdir) {
+  if (platform !== "win32" || typeof p !== "string") return p;
+  const drive = /^\/([a-zA-Z])(?=\/|$)/.exec(p);
+  if (drive) return `${drive[1].toUpperCase()}:${p.slice(2) || "/"}`;
+  if (p === "/tmp" || p.startsWith("/tmp/")) return `${tmp().replaceAll("\\", "/")}${p.slice(4)}`;
+  return p;
+}
+
+export function cdTargetFromCommand(command, base, platform = process.platform) {
   if (typeof command !== "string" || command === "") return null;
   const ghAt = command.search(/\bgh\s+pr\s+create\b/i);
   const scope = ghAt >= 0 ? command.slice(0, ghAt) : command;
@@ -698,7 +712,7 @@ export function cdTargetFromCommand(command, base) {
   }
   if (alvo === null || alvo === "" || alvo === "-") return null;
   try {
-    return resolvePath(typeof base === "string" && base !== "" ? base : process.cwd(), alvo);
+    return resolvePath(typeof base === "string" && base !== "" ? base : process.cwd(), normalizeMsysPath(alvo, platform));
   } catch {
     return null;
   }

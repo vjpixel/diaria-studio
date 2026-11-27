@@ -57,7 +57,8 @@ const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER_SCRIPT = join(HOOK_DIR, "pretooluse-bash-dispatch-worker.mjs");
 
 /**
- * Os guards, na ordem do settings.json antes do #14045. `timeoutMs` é o
+ * Os guards, na ordem do settings.json antes do #14045 (guard novo entra no
+ * fim, #14216). `timeoutMs` é o
  * `timeout` que o hook tinha lá. `onFilterError` (só `spawn-if-applies`):
  * `"run"` roda o guard quando o `appliesTo` lança; `"skip"` (padrão) não.
  * `failureAsContext`: a falha do guard vai também no `additionalContext`
@@ -89,6 +90,8 @@ export const GUARDS = Object.freeze([
   { file: "block-handwritten-pr-checks-loop.mjs", mode: "worker", timeoutMs: 10_000 },
   { file: "block-raw-pr-review-comment.mjs", mode: "worker", timeoutMs: 10_000 },
   { file: "block-bash-protected-path-write.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
+  // Depois do #14045 (fora da lista antiga): preflight de invariantes e removal-declaration (#14216).
+  { file: "block-pr-create-preflight.mjs", mode: "spawn-if-applies", timeoutMs: 60_000 },
 ]);
 
 /** Folga sobre o maior teto: partida do node, das Workers e dos processos. */

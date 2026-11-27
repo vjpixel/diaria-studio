@@ -26,6 +26,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Lidas pelo código, mas fora do `.env` de propósito. */
 const NOT_IN_ENV_EXAMPLE: Record<string, string> = {
+  // Sinal interno hook → CLI do preflight do `gh pr create` (#14216), nunca no .env.
+  DIARIA_PREFLIGHT_BODY_UNKNOWN: "sinal interno do hook block-pr-create-preflight",
   // Sistema operacional / terminal / Node.
   PATH: "sistema",
   COMSPEC: "sistema (Windows)",
