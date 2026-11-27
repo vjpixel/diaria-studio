@@ -10,7 +10,7 @@ O envio diário do canal `brevo_diaria` (`scripts/publish-daily-brevo.ts`) mira 
 
 ## O que a task faz
 
-**Desde o #13981 (27/11/2026)** a task roda `scripts/brevo-diaria-daily-apply.ts`, que chama o `brevo-diaria-run.ts --apply` inteiro: começa pelo mesmo `evaluate-brevo-diaria.ts --push` descrito abaixo e segue com o refresh do pool Pending, MV, sync Brevo, pool Kit inactive, `sync-kit-frio --push` e órfãos da `envio-brevo`. Motivo: o dispatch da Etapa 5 sai `skipped` fora da segunda (regime semanal #11226) sem rodar o `--apply`, e sem esta task ele rodaria uma vez por semana. O dispatch, nas edições com campanha, roda sempre o `--apply` antes do publish e grava o marcador do dia (`data/brevo-diaria/.daily-apply.json`, `scripts/lib/brevo-diaria-daily-apply.ts`); a task pula se o marcador já é do dia BRT. Exit da task: 0 (ok, ou pulou), 3 (o `--apply` terminou com aviso fail-soft, inclusive o exit 3 do evaluate), outro ≠ 0 (erro duro do `--apply`). Canal desligado (`brevo_diaria` ausente ou `stage5_target_total` inválido) sai 0 sem rodar.
+**Desde o #13981 (27/11/2026)** a task roda `scripts/brevo-diaria-daily-apply.ts`, que chama o `brevo-diaria-run.ts --apply` inteiro: começa pelo mesmo `evaluate-brevo-diaria.ts --push` descrito abaixo e segue com o refresh do pool Pending, MV, sync Brevo, pool Kit inactive, `sync-kit-frio --push` e órfãos da `envio-brevo`. Motivo: o dispatch da Etapa 5 sai `skipped` fora da segunda (regime semanal #11226) sem rodar o `--apply`, e sem esta task ele rodaria uma vez por semana. O dispatch, nas edições com campanha, roda sempre o `--apply` antes do publish e grava o marcador do dia (`data/brevo-diaria/.daily-apply.json`, `scripts/lib/brevo-diaria-daily-apply.ts`); a task pula se o marcador já é do dia BRT e veio sem aviso. Custo aceito: em dia com campanha o `--apply` roda 2 vezes (no regime semanal, só no dia do dispatch da edição de segunda; no regime diário ou de transição, todo dia). Lock local da máquina (`os.tmpdir()`), nunca em `data/`, que sincroniza pelo Drive. Exit da task: 0 (ok, ou pulou), 3 (o `--apply` terminou com aviso fail-soft, inclusive o exit 3 do evaluate), 105 (falha só de rede, a unit tenta de novo em 15 min, `retryOnTransientNetwork: "step-declares"`), 1 (config inválida, lock, erro duro do `--apply`). Kill switch (`brevo_diaria` ausente ou `stage5_target_total: null`): roda só o `evaluate --push`, como antes do #13981, e propaga o exit dele (3 incluso); valor presente e inválido sai 1.
 
 Antes do #13981, a task `Diaria-Brevo-Diaria-Evaluate` (`scripts/lib/scheduled-tasks.ts`) rodava só `npx tsx scripts/evaluate-brevo-diaria.ts --push` — o fluxo **completo** já aprovado no desenho da #4476 (não reaberto aqui):
 
@@ -49,7 +49,7 @@ diário serviria igualmente bem para o propósito de higiene contínua — ver
 
 ## Setup (ação local one-time do editor — NÃO feito nesta sessão)
 
-Requer Linux/systemd + o junction `data/` (OneDrive) + `BREVO_DIARIA_API_KEY` + `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`). O antigo `.ps1` do Windows foi removido no #5115 (cutover final).
+Requer Linux/systemd + o link `data/` para o Google Drive da diaria.editor (#12359; era o OneDrive até 11/11/2026) + `BREVO_DIARIA_API_KEY` + `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`). Desde o #13981 a task roda o `--apply` inteiro, então precisa também de `MILLION_VERIFIER_API_KEY` (verificação MV do pool Pending e do pool Kit inactive) e `KIT_API_KEY` (pool Kit inactive, `sync-kit-frio`, órfãos da `envio-brevo`). O antigo `.ps1` do Windows foi removido no #5115 (cutover final).
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Brevo-Diaria-Evaluate
@@ -67,7 +67,18 @@ systemctl --user list-timers diaria-brevo-diaria-evaluate.timer
 
 ### Antes de confiar na task em produção
 
-Rodar o `--push` uma vez manualmente e conferir o resumo antes de deixar a task rodar sozinha:
+**Desde o #13981**, a validação manual do passo da task é em duas etapas, no checkout que roda a task (`300`):
+
+```bash
+# 1. dry-run da sequência inteira (Passos 1-3 + pools), sem mutar nada
+npx tsx scripts/brevo-diaria-run.ts --preflight
+# 2. o passo da task de verdade (--apply, grava o marcador do dia)
+npx tsx scripts/brevo-diaria-daily-apply.ts; echo "exit=$?"
+```
+
+`exit=0` limpo, `3` com aviso fail-soft (ler as linhas `AVISO:`), `105` falha só de rede (a unit tentaria de novo em 15 min), `1` config inválida, lock ou erro duro do `--apply`. Rodar o passo 2 de novo no mesmo dia, sem aviso, sai 0 sem fazer nada (marcador do dia).
+
+Antes do #13981 (e ainda no kill switch, `stage5_target_total: null`), o que a task roda é só o evaluate. Rodar o `--push` uma vez manualmente e conferir o resumo antes de deixar a task rodar sozinha:
 
 ```powershell
 npx tsx scripts/evaluate-brevo-diaria.ts --push
@@ -93,9 +104,14 @@ Nem o registro da task no systemd nem a 1ª execução `--push` ao vivo foram fe
 
 | Arquivo | Função |
 |---|---|
+| `scripts/brevo-diaria-daily-apply.ts` | Passo da task desde o #13981: `brevo-diaria-run.ts --apply` diário, kill switch, exits 0/3/105/1 |
+| `scripts/lib/brevo-diaria-daily-apply.ts` | Marcador `data/brevo-diaria/.daily-apply.json` (dia BRT, `by`, `warnings`) e lock local (`os.tmpdir()`) |
+| `scripts/brevo-diaria-run.ts` | Sequência do `--apply` (evaluate, pool Pending, MV, sync Brevo, pools Kit, `sync-kit-frio`, órfãos) |
+| `scripts/brevo-diaria-stage5-dispatch.ts` | Dispatch da Etapa 5: skip rápido fora da segunda; com campanha roda o `--apply` e grava o marcador |
 | `scripts/evaluate-brevo-diaria.ts` | Lógica de avaliação (descadastro nativo + auto-confirmação + score) |
 | `scripts/lib/task-runner.ts` | Executor da task agendada (log resiliente + exit code honesto) |
 | `scripts/lib/scheduled-tasks.ts` | Registro declarativo (schedule, steps) da task `Diaria-Brevo-Diaria-Evaluate` |
 | `docs/evaluate-brevo-diaria-setup.md` | Esta documentação |
 | `test/evaluate-brevo-diaria-4266.test.ts` | Testes de regressão da lógica de avaliação (#633) |
+| `test/brevo-diaria-stage5-skip-rapido-13981.test.ts` | Regressão do #13981: skip rápido, task diária, marcador, lock, kill switch |
 | `test/task-runner.test.ts` | Testes de regressão do executor (log resiliente + exit code honesto) |

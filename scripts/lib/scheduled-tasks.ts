@@ -906,8 +906,12 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
       requiredFile: "brevo-diaria/contacts.json",
       abortMessage:
         "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
-        "montada ainda; abortando por seguranca, NAO rodando --push.",
+        "montada ainda; abortando por seguranca, NAO rodando o --apply diario (nem o evaluate --push).",
     },
+    // #13981: o script sai 105 (`TRANSIENT_NETWORK_EXIT_CODE`) so quando o
+    // --apply (ou o evaluate do kill switch) falhou com assinatura de rede, sem
+    // marcador gravado; o --apply e idempotente, a rerrodada em 15 min e segura.
+    retryOnTransientNetwork: "step-declares",
     enabled: true,
     issue: "#4534, #4552, #5639, #5838, #13981",
   },
