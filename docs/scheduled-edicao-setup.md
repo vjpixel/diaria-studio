@@ -27,7 +27,7 @@
 > recuperar aquele `.ps1` literal (que duplicava toda a lógica e antecede a
 > proteção de auth do #5608), a via Windows agora é um wrapper fino que
 > invoca o mesmo runner TS multiplataforma do Linux
-> (`scripts/overnight/run-scheduled-edicao.ts`, criado no #4998). Ver
+> (`scripts/edicao-agendada/run-scheduled-edicao.ts`, criado no #4998). Ver
 > §"Setup — Windows" abaixo. O par `.service`/`.timer` do Linux continua no
 > repo, pronto para reativação se a via Windows precisar de fallback.
 
@@ -60,10 +60,12 @@ Isso é deliberadamente diferente de "deixar o orchestrator resumir": a resumabi
 
 | Arquivo | Função |
 |---|---|
-| `scripts/overnight/run-scheduled-edicao.ts` | Runner real — calcula AAMMDD, checa o guard, invoca `claude -p`, grava logs. Multiplataforma (Node puro); é o mesmo em ambas as vias |
-| `scripts/overnight/run-scheduled-edicao.ps1` | **Windows** — wrapper fino: resolve `CLAUDE_BIN` (ver §"Setup — Windows") e invoca `npx tsx run-scheduled-edicao.ts`. Nenhuma lógica de negócio aqui |
-| `scripts/overnight/setup-edicao-schedule.ps1` | **Windows** — registra/remove a task `Diaria-Edicao-Diaria` no Task Scheduler |
-| `scripts/overnight/setup-edicao-schedule-systemd.ts` | **Linux** — gera o par `.service`/`.timer` (não arma — ver §Linux abaixo) |
+| `scripts/edicao-agendada/run-scheduled-edicao.ts` | Runner real — calcula AAMMDD, checa o guard, invoca `claude -p`, grava logs. Multiplataforma (Node puro); é o mesmo em ambas as vias |
+| `scripts/edicao-agendada/run-scheduled-edicao.ps1` | **Windows** — wrapper fino: resolve `CLAUDE_BIN` (ver §"Setup — Windows") e invoca `npx tsx run-scheduled-edicao.ts`. Nenhuma lógica de negócio aqui |
+| `scripts/edicao-agendada/setup-edicao-schedule.ps1` | **Windows** — registra/remove a task `Diaria-Edicao-Diaria` no Task Scheduler |
+| `scripts/edicao-agendada/setup-edicao-schedule-systemd.ts` | **Linux** — gera o par `.service`/`.timer` (não arma — ver §Linux abaixo) |
+| `scripts/edicao-agendada/arm-edicao-schedule-systemd.ts` | **Linux** — arma/desarma o timer e publica a atestação cross-machine (#7036) |
+| `scripts/overnight/{run-scheduled-edicao,setup-edicao-schedule,setup-edicao-schedule-systemd,arm-edicao-schedule-systemd,calc-next-edition-date}.*` | **Shims** do caminho antigo (#14121): só chamam o arquivo de `scripts/edicao-agendada/`, para units e tasks já instalados seguirem funcionando sem regerar. Código e docs novos citam o caminho novo |
 | `scripts/lib/edicao-systemd-units.ts` | **Linux** — módulo puro que monta o conteúdo dos units systemd |
 | `scripts/lib/resolve-claude-bin.ts` | Resolve o binário `claude` a partir de um contexto sem o PATH do shell interativo (#5549) — escape-hatch `CLAUDE_BIN` usado pelo wrapper Windows |
 | `scripts/lib/next-edition-date.ts` | Lib TS — cálculo D+1 em `America/Sao_Paulo` (testável) |
@@ -83,11 +85,11 @@ separado — ao contrário do par Linux, não há um "gerador" intermediário; o
 # Registrar (ou atualizar) a task — rodar no clone PERMANENTE, nunca num
 # worktree temporário (o path do runner fica embutido na Action da task):
 powershell -NoProfile -ExecutionPolicy Bypass `
-    -File .\scripts\overnight\setup-edicao-schedule.ps1
+    -File .\scripts\edicao-agendada\setup-edicao-schedule.ps1
 
 # Remover:
 powershell -NoProfile -ExecutionPolicy Bypass `
-    -File .\scripts\overnight\setup-edicao-schedule.ps1 -Unregister
+    -File .\scripts\edicao-agendada\setup-edicao-schedule.ps1 -Unregister
 ```
 
 ### Verificar
@@ -145,7 +147,7 @@ Mesmo padrão de dois passos já usado pelo resto do repo (gerar → armar manua
 
 ```bash
 # Gera o par .service/.timer em .systemd-units/ (com nvm use/fnm use do .nvmrc já ativado):
-npx tsx scripts/overnight/setup-edicao-schedule-systemd.ts
+npx tsx scripts/edicao-agendada/setup-edicao-schedule-systemd.ts
 
 # Armar (ação manual, imprimida pelo gerador acima):
 mkdir -p ~/.config/systemd/user
@@ -153,7 +155,7 @@ cp .systemd-units/diaria-edicao-diaria.service .systemd-units/diaria-edicao-diar
 systemctl --user daemon-reload
 # Arma o timer E publica a atestação cross-machine (#7036) — não use
 # `systemctl --user enable --now` direto: arma sem avisar o alarme de edição.
-npx tsx scripts/overnight/arm-edicao-schedule-systemd.ts --arm
+npx tsx scripts/edicao-agendada/arm-edicao-schedule-systemd.ts --arm
 ```
 
 ### Verificar
@@ -166,7 +168,7 @@ journalctl --user -u diaria-edicao-diaria.service -n 50
 ### Remover
 
 ```bash
-npx tsx scripts/overnight/arm-edicao-schedule-systemd.ts --disarm
+npx tsx scripts/edicao-agendada/arm-edicao-schedule-systemd.ts --disarm
 rm ~/.config/systemd/user/diaria-edicao-diaria.service ~/.config/systemd/user/diaria-edicao-diaria.timer
 systemctl --user daemon-reload
 ```

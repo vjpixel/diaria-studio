@@ -2,7 +2,7 @@
  * scripts/lib/edicao-systemd-units.ts (#4998, reativação do #2068/#3259)
  *
  * Gera o par de units systemd (`.service`/`.timer`) da edição diária agendada
- * (`scripts/overnight/run-scheduled-edicao.ts`) — mesmo PAPEL de
+ * (`scripts/edicao-agendada/run-scheduled-edicao.ts`) — mesmo PAPEL de
  * `scripts/lib/systemd-units.ts` (registry declarativo) e de
  * `scripts/lib/watchdog-systemd-units.ts`, mas deliberadamente FORA do
  * registro (`scripts/lib/scheduled-tasks.ts`) pelo mesmo motivo já
@@ -15,11 +15,11 @@
  * editor com dois ajustes: horário 16:00 (era 14:00) e um guard de
  * idempotência — se `data/editions/{AAMMDD}` já existe (edição já iniciada
  * manualmente ou por uma run anterior), o runner pula sem invocar `claude`
- * (ver docstring de `scripts/overnight/run-scheduled-edicao.ts`).
+ * (ver docstring de `scripts/edicao-agendada/run-scheduled-edicao.ts`).
  *
- * @see scripts/overnight/setup-edicao-schedule-systemd.ts (CLI que consome este módulo — par Windows original removido no #5115, restaurado no #5611 com desenho diferente: wrapper `.ps1` fino que invoca `run-scheduled-edicao.ts` direto, sem consumir este módulo systemd-específico — timer Linux desabilitado desde #5611, ver docs/scheduled-edicao-setup.md)
+ * @see scripts/edicao-agendada/setup-edicao-schedule-systemd.ts (CLI que consome este módulo — par Windows original removido no #5115, restaurado no #5611 com desenho diferente: wrapper `.ps1` fino que invoca `run-scheduled-edicao.ts` direto, sem consumir este módulo systemd-específico — timer Linux desabilitado desde #5611, ver docs/scheduled-edicao-setup.md)
  * @see scripts/lib/systemd-units.ts (par genérico do registry — mesmo formato de saída)
- * @see scripts/overnight/run-scheduled-edicao.ts (script que os units invocam)
+ * @see scripts/edicao-agendada/run-scheduled-edicao.ts (script que os units invocam)
  * @see docs/scheduled-edicao-setup.md
  */
 import { BRT_TIMEZONE } from "./next-edition-date.ts";
@@ -46,7 +46,7 @@ export function buildEdicaoOnCalendar(hour: number = 16, minute: number = 0): st
 
 /**
  * Gera o CONTEÚDO (texto) dos dois arquivos de unit — não escreve nada em
- * disco (ver `scripts/overnight/setup-edicao-schedule-systemd.ts` pro CLI que
+ * disco (ver `scripts/edicao-agendada/setup-edicao-schedule-systemd.ts` pro CLI que
  * escreve). `repoRootAbs` precisa ser um path ABSOLUTO.
  *
  * `Type=oneshot` + `ExecStart=` chamando `run-scheduled-edicao.ts` DIRETO —
@@ -62,7 +62,7 @@ export function buildEdicaoSystemdUnitFiles(
   // fica só para chamadas de biblioteca e testes.
   nodeBin: string = process.execPath,
 ): SystemdUnitFiles {
-  const execStart = `${nodeBin} --import tsx ${repoRootAbs}/scripts/overnight/run-scheduled-edicao.ts`;
+  const execStart = `${nodeBin} --import tsx ${repoRootAbs}/scripts/edicao-agendada/run-scheduled-edicao.ts`;
   const onCalendar = buildEdicaoOnCalendar();
 
   const serviceContent = [

@@ -27,7 +27,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { resolveClaudeBin } from "./lib/resolve-claude-bin.ts";
-import { claudeCliEnv } from "./overnight/run-scheduled-edicao.ts";
+import { claudeCliEnv } from "./edicao-agendada/run-scheduled-edicao.ts";
 import {
   authBlocksRun,
   checkClaudeAuthMethod,

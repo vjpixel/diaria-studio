@@ -68,7 +68,7 @@ import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { getScheduledTaskByName } from "../lib/scheduled-tasks.ts";
 import { hasActiveSessionOfKind } from "../lib/session-registry.ts";
 import { NO_BACKGROUND_DIRECTIVE, dataAddDirArgs } from "../lib/edition-stage-runner.ts";
-import { claudeCliEnv } from "./run-scheduled-edicao.ts";
+import { claudeCliEnv } from "../edicao-agendada/run-scheduled-edicao.ts";
 import {
   EXIT_WORKSPACE_UNTRUSTED,
   checkWorkspaceTrust,

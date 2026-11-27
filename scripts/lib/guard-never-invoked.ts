@@ -21,7 +21,9 @@
  * (corpo da issue, 02/09/2026): `.claude/skills/**`, `.claude/agents/**`,
  * `.claude/hooks/**`, `.claude/settings.json`, `hermes/**`,
  * `.github/workflows/*`, `package.json`, `scripts/lib/scheduled-tasks.ts`,
- * `docs/scheduled-tasks-registry.md`, `scripts/overnight/*`. Deliberadamente
+ * `docs/scheduled-tasks-registry.md`, `scripts/overnight/*` (+ a tabela
+ * `scripts/lib/scheduled-tasks-table.ts` e `scripts/edicao-agendada/*`,
+ * que saíram desses dois lugares no #14121). Deliberadamente
  * NÃO inclui `scripts/**` genérico — um script referenciado só na docstring
  * de outro script (prosa que já provou apodrecer, #7137 comentário de
  * 02/09) não conta como ponto de invocação real. Referência é feita por
@@ -123,7 +125,8 @@ function walkFiles(dir: string): string[] {
 }
 
 /** Lista não-recursiva de arquivos diretos de `dir` (usado pra
- * `.github/workflows/*` e `scripts/overnight/*` — só o nível 1). */
+ * `.github/workflows/*`, `scripts/overnight/*` e `scripts/edicao-agendada/*`
+ * — só o nível 1). */
 function listFilesShallow(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -148,6 +151,8 @@ export function listPrimaryCorpusFiles(repoRoot: string): string[] {
     ...walkFiles(join(repoRoot, "hermes")),
     ...listFilesShallow(join(repoRoot, ".github", "workflows")),
     ...listFilesShallow(join(repoRoot, "scripts", "overnight")),
+    // #14121: o runner da edição agendada saiu de scripts/overnight/.
+    ...listFilesShallow(join(repoRoot, "scripts", "edicao-agendada")),
   ];
   const settingsPath = join(repoRoot, ".claude", "settings.json");
   if (existsSync(settingsPath)) files.push(settingsPath);
@@ -155,6 +160,9 @@ export function listPrimaryCorpusFiles(repoRoot: string): string[] {
   if (existsSync(packageJsonPath)) files.push(packageJsonPath);
   const scheduledTasksPath = join(repoRoot, "scripts", "lib", "scheduled-tasks.ts");
   if (existsSync(scheduledTasksPath)) files.push(scheduledTasksPath);
+  // #14121: os `script:` das entradas moram na tabela, fora do arquivo acima.
+  const scheduledTasksTablePath = join(repoRoot, "scripts", "lib", "scheduled-tasks-table.ts");
+  if (existsSync(scheduledTasksTablePath)) files.push(scheduledTasksTablePath);
   const registryDocPath = join(repoRoot, "docs", "scheduled-tasks-registry.md");
   if (existsSync(registryDocPath)) files.push(registryDocPath);
   return files;

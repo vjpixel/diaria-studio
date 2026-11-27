@@ -651,7 +651,7 @@ export function buildReligarBrevoDueEmail(religarDate: DateOnlyString): { subjec
       "",
       `A data de religamento pré-registrada (D+21 = ${religarDate}) chegou. #5838 rastreia esta ação —`,
       "ver o comentário automático desta task nela, ou reverter manualmente `enabled: false` na entrada",
-      "`Diaria-Brevo-Diaria-Evaluate` de scripts/lib/scheduled-tasks.ts.",
+      "`Diaria-Brevo-Diaria-Evaluate` de scripts/lib/scheduled-tasks-table.ts.",
     ].join("\n"),
   };
 }

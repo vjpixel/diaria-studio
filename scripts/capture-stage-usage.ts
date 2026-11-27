@@ -54,7 +54,7 @@
  * motivo é `session_file_not_found` (a sessão tem id mas NUNCA escreveu
  * transcript — comprovado ao vivo nas edições 260826/260827, causado por
  * `claude --print --no-session-persistence` no runner agendado, ver
- * `scripts/overnight/run-scheduled-edicao.ts`), o script não grava mais o
+ * `scripts/edicao-agendada/run-scheduled-edicao.ts`), o script não grava mais o
  * agregado contaminado — degrada pra `source: "unavailable"` (item 3), a
  * menos que `--all-sessions` tenha sido pedido explicitamente. `no_session_id`
  * (env var ausente, sem sinal de qual sessão é a nossa) continua com o
@@ -245,7 +245,7 @@ export function captureUsageForWindow(
   //
   // Achado ao vivo que motivou este guard: edições 260826 e 260827 — Stage 0
   // e Stage 1 rodados via `claude --print --no-session-persistence`
-  // (`scripts/overnight/run-scheduled-edicao.ts`, um spawn novo por stage
+  // (`scripts/edicao-agendada/run-scheduled-edicao.ts`, um spawn novo por stage
   // pra contexto limpo) nunca persistem transcript em `~/.claude/projects/`.
   // `session_filter_reason` bateu `session_file_not_found` nas duas edições
   // (não `no_session_id` — a hipótese original da issue); o Stage 1 de

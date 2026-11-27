@@ -4,7 +4,7 @@
 # persistem em ~/.claude/settings.json (ao contrário de `/model`/`/effort` digitados).
 #
 # `env -u` remove as vars de CLAUDE_CLI_STRIPPED_ENV_VARS
-# (scripts/overnight/run-scheduled-edicao.ts, regra #5608/#6714): sessão de
+# (scripts/edicao-agendada/run-scheduled-edicao.ts, regra #5608/#6714): sessão de
 # Claude Code nunca autentica pela API nem por gateway de terceiro. A lista é
 # espelhada aqui (bash não importa TS) e travada por
 # test/overnight-start-sh-strips-auth-env-9527.test.ts.
