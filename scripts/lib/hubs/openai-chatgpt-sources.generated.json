@@ -1251,5 +1251,17 @@
       "https://thenextweb.com/news/parents-sue-openai-chatgpt-seizure-medication"
     ],
     "editionTitle": "Pais acusam ChatGPT de matar sua filha"
+  },
+  {
+    "date": "2026-11-19",
+    "editionSlug": "openai-lanca-gpt-6-2-e-corta-preco-em-20",
+    "url": "https://diar.ia.br/p/openai-lanca-gpt-6-2-e-corta-preco-em-20",
+    "matchedHeadlines": [
+      "OpenAI lança GPT-6.2 e corta preço em 20%"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/introducing-gpt-6-2-astra-sol"
+    ],
+    "editionTitle": "OpenAI lança GPT-6.2 e corta preço em 20%"
   }
 ]
