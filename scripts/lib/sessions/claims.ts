@@ -899,6 +899,32 @@ function worktreeClaimKey(path: string): string {
   return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
 }
 
+/** Espera da 2ª leitura de um arquivo de claim que existe e não leu (#14321). */
+const WORKTREE_CLAIM_READ_RETRY_MS = 50;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Lê um arquivo de claim de worktree com UMA segunda tentativa (#14321):
+ * `readJsonSafe` devolve `null` tanto em JSON malformado quanto em
+ * EBUSY/EPERM transitório do Drive (sync segurando o arquivo), e os
+ * chamadores leem "existe e deu `null`" como `unreadable`. Só tenta de novo
+ * quando o arquivo existe; ausente é ausente na hora. `read`/`sleep` injetáveis
+ * para teste.
+ */
+export function readWorktreeClaimFileWithRetry<T>(
+  file: string,
+  read: (path: string) => T | null = (path) => readJsonSafe<T>(path),
+  sleep: (ms: number) => void = sleepSync,
+): T | null {
+  const first = read(file);
+  if (first !== null || !existsSync(file)) return first;
+  sleep(WORKTREE_CLAIM_READ_RETRY_MS);
+  return read(file);
+}
+
 function worktreeClaimsDir(root: string): string {
   return join(root, "data", "sessions", ".worktree-claims");
 }
@@ -1010,7 +1036,7 @@ export function unclaimWorktree(path: string, sessionId: string, repoRoot: strin
   breakStaleLock(lockPath);
   let outcome: UnclaimWorktreeOutcome = "no-op-not-claimed";
   withFileLock(lockPath, () => {
-    const current = readJsonSafe<WorktreeClaimRecord>(claimFile);
+    const current = readWorktreeClaimFileWithRetry<WorktreeClaimRecord>(claimFile);
     if (!current) {
       if (existsSync(claimFile)) outcome = "unreadable";
       return;
@@ -1089,7 +1115,7 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
   let claimedAt = new Date().toISOString();
   let resolvedBranch: string | undefined;
   withFileLock(lockPath, () => {
-    const currentClaim = readJsonSafe<any>(claimFile);
+    const currentClaim = readWorktreeClaimFileWithRetry<any>(claimFile);
     // #14214: arquivo presente que não parseia pode ser a claim de outra
     // sessão corrompida ou em escrita — nunca sobrescrever às cegas.
     if (!currentClaim && existsSync(claimFile)) return;
@@ -1179,7 +1205,7 @@ export function claimWorktreeChecked(
   }
   if (!linked) return { outcome: "not-a-linked-worktree", path: normalized };
   const claimFile = worktreeClaimFilePath(repoRoot, normalized);
-  const existing = readJsonSafe<WorktreeClaimRecord>(claimFile);
+  const existing = readWorktreeClaimFileWithRetry<WorktreeClaimRecord>(claimFile);
   if (!existing && existsSync(claimFile)) return { outcome: "unreadable", path: normalized, claimFile };
   const ownLive = !!existing && existing.sessionId === sessionId && (existing.expires_at ?? 0) > nowMs;
   if (mode === "renew" && !ownLive) return { outcome: "nothing-to-renew", path: normalized };
@@ -1190,7 +1216,7 @@ export function claimWorktreeChecked(
     const record = readJsonSafe<any>(worktreeClaimFilePath(repoRoot, normalized));
     return { outcome: "claimed", path: normalized, branch: record?.branch ?? branch };
   }
-  const owner = readJsonSafe<any>(claimFile);
+  const owner = readWorktreeClaimFileWithRetry<any>(claimFile);
   if (!owner && existsSync(claimFile)) return { outcome: "unreadable", path: normalized, claimFile };
   const ownerSessionId = typeof owner?.sessionId === "string" ? owner.sessionId : null;
   return { outcome: "blocked-by-other", path: normalized, ownerSessionId };
