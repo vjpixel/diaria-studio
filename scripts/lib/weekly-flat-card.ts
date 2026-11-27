@@ -35,7 +35,7 @@ import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { archiveUploadedFileToR2 } from "./public-images-archive.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
-import { esc, wrapTitle } from "../gen-social-card-4x5.ts";
+import { esc, wrapTitle } from "./social-card-4x5.ts";
 import { cloudflareKvKey } from "./cloudflare-kv-key.ts"; // #13997 (era ../upload-images-public.ts)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");

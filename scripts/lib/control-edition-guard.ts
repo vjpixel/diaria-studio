@@ -44,7 +44,7 @@
  * aceita como boa sem aviso (`reasons` lista exatamente por quê).
  */
 
-import type { StageStatusDoc } from "../update-stage-status.ts";
+import type { StageStatusDoc } from "./stage-status.ts";
 import { listActiveSessions, type SessionRecord } from "./session-registry.ts";
 
 export interface TranscriptContaminationCheck {

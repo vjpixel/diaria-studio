@@ -51,7 +51,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
+import { generateCard, WEEKLY_OVERLAY_WRAP } from "./social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { archiveUploadedFileToR2 } from "./public-images-archive.ts";
