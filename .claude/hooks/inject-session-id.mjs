@@ -143,6 +143,8 @@ const SESSION_ID_REQUIRED_SUBCOMMANDS = [
   "merge-lock-release",
   "merge-lock-renew",
   "self-authorize-merge",
+  "claim-worktree",
+  "unclaim-worktree",
 ];
 
 const TARGET_MARKER = "overnight-session-marker.ts";

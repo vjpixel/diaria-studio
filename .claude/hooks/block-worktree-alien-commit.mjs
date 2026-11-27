@@ -195,9 +195,16 @@ export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSess
   return findConflictingClaimSessionIdFromRecord(record, callerSessionId);
 }
 
-/** Branch do HEAD atual do worktree (`cwd: checkoutRoot`), `null` em erro
- * ou detached HEAD. */
-export function getHeadBranch(checkoutRoot) {
+/**
+ * Estado do HEAD do worktree (`cwd: checkoutRoot`), separando os três casos
+ * que o check de branch trata de forma diferente (#14214, review da PR #14303):
+ * - `{ kind: "branch", name }`: HEAD numa branch;
+ * - `{ kind: "detached" }`: `git rev-parse --abbrev-ref HEAD` devolveu o
+ *   literal `"HEAD"` (rebase com conflito, bisect, cherry-pick, ou checkout
+ *   destacado de propósito);
+ * - `{ kind: "error" }`: o git falhou ou estourou o timeout — fail-open.
+ */
+export function getHeadState(checkoutRoot) {
   try {
     // windowsHide (#7959): sem isso, este `execFileSync("git", ...)` aloca
     // console próprio no Windows a cada `git commit` interceptado.
@@ -207,10 +214,45 @@ export function getHeadBranch(checkoutRoot) {
       timeout: 1000,
       windowsHide: true,
     }).trim();
-    return out === "" ? null : out;
+    if (out === "") return { kind: "error" };
+    if (out === "HEAD") return { kind: "detached" };
+    return { kind: "branch", name: out };
   } catch {
-    return null;
+    return { kind: "error" };
   }
+}
+
+/** Branch do HEAD atual do worktree, `null` em erro ou HEAD destacado. */
+export function getHeadBranch(checkoutRoot) {
+  const state = getHeadState(checkoutRoot);
+  return state.kind === "branch" ? state.name : null;
+}
+
+/** Marcadores de operação em curso que deixam o HEAD destacado de forma legítima. */
+const IN_PROGRESS_GIT_PATHS = ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "BISECT_LOG"];
+
+/**
+ * `true` quando há rebase, cherry-pick ou bisect em curso no worktree
+ * (`git rev-parse --git-path X` existe). É o que libera o commit com HEAD
+ * destacado: o commit do próprio rebase com conflito. Falha do git aqui conta
+ * como "em curso" (fail-open, mesma regra do resto do hook).
+ */
+export function hasOperationInProgress(checkoutRoot) {
+  for (const marker of IN_PROGRESS_GIT_PATHS) {
+    let gitPath;
+    try {
+      gitPath = execFileSync("git", ["rev-parse", "--git-path", marker], {
+        cwd: checkoutRoot,
+        encoding: "utf8",
+        timeout: 1000,
+        windowsHide: true,
+      }).trim();
+    } catch {
+      return true;
+    }
+    if (gitPath && existsSync(resolvePath(checkoutRoot, gitPath))) return true;
+  }
+  return false;
 }
 
 export const BLOCK_REASON_CLAIM =
@@ -227,6 +269,12 @@ export const BLOCK_REASON_BRANCH_DIVERGE =
   "diverge da branch registrada NO MOMENTO DO CLAIM (`data/sessions/.worktree-claims/<hash>.json` → " +
   "`branch`) — sinal de que a branch foi trocada por baixo deste worktree entre o claim e agora. " +
   "Confirme com `git status`/`git branch` antes de commitar.";
+
+export const BLOCK_REASON_DETACHED =
+  "`git commit` bloqueado pelo guard mecânico #7722 item 4 (#14214): o HEAD deste worktree está DESTACADO, " +
+  "sem rebase/cherry-pick/bisect em curso, e a claim (`data/sessions/.worktree-claims/<hash>.json`) gravou a " +
+  "branch `branch` — um commit aqui fica fora da branch da unidade. Faça o checkout da branch da claim antes " +
+  "de commitar (ou, se trocou de propósito, `session-registry.ts claim-worktree --rebind` já na branch nova).";
 
 /**
  * Filtro do despachante único (#14045): o mesmo primeiro filtro do `runHook`
@@ -343,14 +391,20 @@ export function runHook(data, write = (s) => process.stdout.write(s)) {
       // podiam divergir por construção, código morto que parecia proteção).
       const claimedBranch = typeof claimRecord?.branch === "string" ? claimRecord.branch : null;
       if (claimedBranch) {
-        const branchNow = getHeadBranch(checkoutRoot);
-        if (branchNow && branchNow !== claimedBranch) {
+        // #14214: HEAD destacado só passa com rebase/cherry-pick/bisect em
+        // curso; destacado sem operação, com claim de branch, é negado com
+        // motivo próprio. Falha do git (timeout) segue fail-open.
+        const head = getHeadState(checkoutRoot);
+        let reason = null;
+        if (head.kind === "branch" && head.name !== claimedBranch) reason = BLOCK_REASON_BRANCH_DIVERGE;
+        else if (head.kind === "detached" && !hasOperationInProgress(checkoutRoot)) reason = BLOCK_REASON_DETACHED;
+        if (reason) {
           write(
             JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: "PreToolUse",
                 permissionDecision: "deny",
-                permissionDecisionReason: BLOCK_REASON_BRANCH_DIVERGE,
+                permissionDecisionReason: reason,
               },
             }),
           );

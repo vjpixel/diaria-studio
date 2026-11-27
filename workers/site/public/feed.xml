@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 26 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 27 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Seu artifact do Claude pode virar app no Windows</title>
+      <link>https://diar.ia.br/p/seu-artifact-do-claude-pode-virar-app-no-windows</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/seu-artifact-do-claude-pode-virar-app-no-windows</guid>
+      <pubDate>Fri, 27 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Deepfake sexual: 12,4% dos meninos admitem ter feito | ChatGPT passa a oferecer alerta de preço sozinho</description>
+    </item>
     <item>
       <title>Anthropic: empresas não demitem, mas contratam menos</title>
       <link>https://diar.ia.br/p/anthropic-empresas-nao-demitem-mas-contratam-menos</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/ceos-propoem-regras-proprias-pra-frear-a-ia</guid>
       <pubDate>Tue, 15 Sep 2026 09:00:00 GMT</pubDate>
       <description>Sua empresa já pode rodar agentes da OpenAI | Freelancers que usam IA ganham mais</description>
-    </item>
-    <item>
-      <title>IA cruza mais de 3000 páginas do caso Master</title>
-      <link>https://diar.ia.br/p/ia-cruza-mais-de-3000-paginas-do-caso-master</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/ia-cruza-mais-de-3000-paginas-do-caso-master</guid>
-      <pubDate>Mon, 14 Sep 2026 09:00:00 GMT</pubDate>
-      <description>CEO da Anthropic propõe desacelerar a IA | NYT flagra Grok criando fotos de abuso infantil</description>
     </item>
   </channel>
 </rss>

@@ -58,6 +58,60 @@ Primeiro passo é **`npm ci`** — worktree novo não tem `node_modules/` nem a
 junction `data/`. Escrita que a unidade precise fazer em `data/` volta ao
 coordenador, declarada no corpo da PR (item 35).
 
+**Claim do worktree logo depois do checkout da branch de trabalho (#14214).**
+Com o cwd no worktree e a branch da unidade já em HEAD (implementador: a
+branch nova do item 2; fixer: a branch da PR), rodar pela ferramenta Bash
+(o hook que injeta `--session-id` só vê o Bash, não o PowerShell), como
+comando standalone (item 18):
+
+`npx tsx scripts/lib/session-registry.ts claim-worktree`
+
+Grava `data/sessions/.worktree-claims/<hash>.json` com o path, a sessão e a
+branch do HEAD, que `.claude/hooks/block-worktree-alien-commit.mjs` confere
+antes de cada `git commit`: commit de outra sessão nesse worktree, ou com a
+branch trocada por baixo, é negado. A claim separa SESSÕES: implementadores
+irmãos da mesma rodada têm o mesmo `session_id` do coordenador e não se
+barram entre si; o que os separa é cada um ter o próprio worktree.
+
+Por isso a ordem: a claim feita antes do checkout grava a branch provisória
+do worktree. Se o próprio agente trocou de branch depois da claim (o caso
+acima, ou um checkout de propósito), `claim-worktree --rebind` regrava a
+branch do HEAD. Sem flag, com a claim viva em outra branch, o comando
+recusa: a divergência pode ser a troca por baixo que o guard existe para
+mostrar, e `--rebind` só vale quando foi você que fez o checkout. HEAD
+destacado sem `--branch` não grava claim (sai `erro —`).
+
+**Renovação é sua.** A claim vale 3h e vencida o hook não barra nada.
+Rodar `npx tsx scripts/lib/session-registry.ts claim-worktree --renew`
+(Bash, standalone) antes do self-review e antes do commit final: só estende
+o prazo e preserva a branch gravada. O `heartbeat` do CLI também renova as
+claims vivas da sessão, mas ele só roda nos call sites de onda do
+coordenador (o hook `session-beacon.mjs` não o chama): é reforço, não
+garantia. No fim da unidade (PR aberta e self-review feito, ou
+desistência), `npx tsx scripts/lib/session-registry.ts unclaim-worktree`,
+standalone, solta a claim; a esquecida o `gc` recolhe depois de vencida.
+
+**Exceção ao item 35:** a claim é escrita do próprio subagente em
+`data/sessions/.worktree-claims/` (estado de coordenação, não conteúdo), feita
+pelo script; não vai para a seção "Escrita pendente em `data/`" da PR.
+
+| Saída | Significado | O que fazer |
+|---|---|---|
+| `exit 0` | claim gravada/renovada | seguir |
+| `exit 1`, `erro —` | claim NÃO gravada (HEAD destacado, falha do git, arquivo de claim ilegível) | devolver ao coordenador com a mensagem |
+| `exit 1`, `--renew no-op` | não há claim viva desta sessão para renovar | rodar sem `--renew` |
+| `exit 1`, `RECUSADO … reivindicado por` | outra sessão segura este worktree | parar e devolver ao coordenador sem commitar |
+| `exit 1`, `RECUSADO — a claim desta sessão gravou a branch` | HEAD em outra branch que a da claim | se o checkout foi seu, `--rebind`; senão conferir `git status`/`git branch` antes de qualquer commit |
+| `exit 1`, `não é worktree vinculado` | o cwd não é worktree (checkout principal ou clone) | conferir o cwd antes de qualquer edição; no clone próprio é esperado (abaixo) |
+| `exit 1`, `--session-id ausente` | comando encadeado ou rodado fora da ferramenta Bash | refazer standalone pelo Bash |
+| `exit 3` | `data/sessions/` indisponível (#14009) | devolver ao coordenador com a mensagem do stderr |
+
+Pulam este passo: issue do `vjpixel/diaria-design` (item 32), porque o
+script mora no checkout do studio, não no worktree do design; e a unidade
+no clone próprio do item 33 (`C:/dw/{N}`), que não é worktree vinculado e
+sai `exit 1 não é worktree vinculado` por construção. Ali esse exit 1 é o
+esperado, não motivo para parar.
+
 **`npm ci`/`npm install` só dentro do worktree, NUNCA no checkout principal
 compartilhado (#5571).** O checkout principal é usado concorrentemente por
 outras sessões/tasks (Diaria-Studio-Server, outras sessões locais); dois

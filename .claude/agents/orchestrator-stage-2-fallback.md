@@ -23,6 +23,7 @@ Exit code handling:
 - `1` → **FATAL:** "Etapa 1 não completou (sentinel ausente). Re-rodar `/diaria-1-pesquisa {AAMMDD}` antes de continuar." Parar.
 - `2` → **FATAL:** "Outputs do Stage 1 ausentes. Re-rodar Etapa 1." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "stage1_sentinel_missing_legacy"`), continuar.
+- `4` → sentinel do Stage 1 presente mas malformado (#14133/#14221: JSON ilegível ou campos inválidos). **Não é o exit 4 do `stale-edition-guard.ts`** ("outra máquina à frente"): nada de rodar o guard. Halt banner `render-halt-banner.ts --stage "2 — Escrita" --reason "sentinel do Stage 1 ilegível: {linha [error] do stderr}" --action "conferir {EDITION_DIR}/_internal/.step-1-done.json e aguardar o sync; se seguir inválido depois do sync (ou o [error] apontar campo inválido, não JSON ilegível), o editor confirma e re-roda `/diaria-1-pesquisa {AAMMDD}` para regravar o sentinel"`. Nunca re-rodar a etapa anterior por conta própria. Parar.
 
 ### 2a. Writer + social em paralelo
 **Limites por bucket (#358, #742, #907) — aplicados antes de passar ao writer via `apply-stage2-caps.ts`:**

@@ -65,6 +65,10 @@ export const SESSION_ID_REQUIRED_SUBCOMMANDS = [
   // `requireSessionId(values)` igual aos demais, mas ficou de fora desta
   // lista até agora (era a regex do hook, sem fonte compartilhada).
   "self-authorize-merge",
+  // #14214 — a claim de worktree grava o `session_id` de quem a pede, que o
+  // hook `block-worktree-alien-commit.mjs` compara com o de quem commita.
+  "claim-worktree",
+  "unclaim-worktree",
 ] as const;
 
 // Sem `export`: nada no repo importa este tipo hoje (knip acusa dead export).
