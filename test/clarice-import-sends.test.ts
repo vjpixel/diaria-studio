@@ -7,8 +7,8 @@ import {
   mergeSendsSummaryWithListIds,
   importOneSend,
 } from "../scripts/clarice-import-sends.ts";
-import { countRows, type ImportRunClient } from "../scripts/clarice-import-waves.ts";
-import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
+import { countRows, extractCsvEmails, type ImportRunClient } from "../scripts/clarice-import-waves.ts";
+import { EDITOR_COPY_EMAIL, EDITOR_SEED_EMAILS } from "../scripts/lib/editor-copy.ts";
 
 describe("sendListName", () => {
   it("nome determinístico: dNN zero-padded + dia planejado", () => {
@@ -190,7 +190,7 @@ describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia 
     n: 1,
     day: "qua",
     listName: "Clarice Jun/2026 d01 (qua)",
-    csv: "EMAIL,NOME\na@x.com,Ana\nb@x.com,Bia\nvjpixel@gmail.com,Pixel (editor)\n",
+    csv: `EMAIL,NOME\na@x.com,Ana\nb@x.com,Bia\n${EDITOR_COPY_EMAIL},Pixel (editor)\n`,
     sentCount: 3, // 2 contatos reais + 1 cópia do editor
   };
   const noSleep = { sleep: async () => {}, intervalMs: 0 };
@@ -201,6 +201,9 @@ describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia 
       importCsv: async () => ({ processId: "proc-9" }),
       pollProcess: async () => ({ status: "completed" }),
       getListInfo: async () => ({ totalSubscribers: plan.sentCount }),
+      // #14366: default devolve TODOS os e-mails do plano — sobrescrito pelos
+      // testes que exercitam o diff (leitor real perdido / só a cópia do editor).
+      listContactEmails: async () => ["a@x.com", "b@x.com", EDITOR_COPY_EMAIL],
       ...overrides,
     };
   }
@@ -220,7 +223,13 @@ describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia 
   // (a15276@aecampo.pt) poderia acontecer em qualquer envio dNN da rampa
   // diária, não só nas waves.
   it("(b) completed com contagem confirmada MENOR que o CSV enviado → aborta nomeando a lista e o delta", async () => {
-    const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }) });
+    // #14366: a lista real mostra o leitor b@x.com ausente — com todos os
+    // leitores presentes e delta <= nº de cópias do editor, o delta é só da
+    // cópia de conferência e o import segue (describe #14366 abaixo).
+    const client = makeFakeClient({
+      getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }),
+      listContactEmails: async () => ["a@x.com", EDITOR_COPY_EMAIL],
+    });
     await assert.rejects(
       () => importOneSend(client, plan, { folderId: 1, poll: noSleep }),
       (err: Error) => {
@@ -228,6 +237,7 @@ describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia 
         assert.match(err.message, /1 contato\(s\) perdido/);
         assert.match(err.message, /Brevo confirma 2/);
         assert.match(err.message, /CSV enviado tinha 3/);
+        assert.match(err.message, /Contato\(s\) identificado\(s\): b@x\.com\./);
         return true;
       },
     );
@@ -256,5 +266,84 @@ describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia 
     const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount + 5 }) });
     const result = await importOneSend(client, plan, { folderId: 1, poll: noSleep });
     assert.equal(result.count, plan.sentCount + 5);
+  });
+
+  // #14366 — follow-up do #14337: a mesma tolerância que `importOneWave`
+  // ganhou, agora nos envios dNN. CSV real de envio passa por `toImportCsv`,
+  // que injeta TODAS as cópias do editor (EDITOR_SEED_EMAILS).
+  describe("#14366 — delta só das cópias do editor não aborta; leitor real perdido continua abortando", () => {
+    const readers = Array.from({ length: 5 }, (_, i) => `leitor${i}@x.com`);
+    const { csv } = toImportCsv(`email,NOME\n${readers.map((e, i) => `${e},L${i}`).join("\n")}\n`);
+    const sendPlan = { n: 3, listName: "Clarice Jun/2026 d03 (sex)", csv, sentCount: countRows(csv) };
+    const seeds = EDITOR_SEED_EMAILS.map((s) => s.toLowerCase());
+
+    it("pré-condição: o CSV carrega os 5 leitores + todas as cópias do editor", () => {
+      const emails = extractCsvEmails(csv);
+      assert.equal(sendPlan.sentCount, readers.length + seeds.length);
+      for (const s of seeds) assert.ok(emails.includes(s));
+    });
+
+    it("(a) cópias do editor fora da lista, todos os leitores presentes → não aborta, avisa nomeando as cópias", async () => {
+      const logs: string[] = [];
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: readers.length }),
+        listContactEmails: async () => readers,
+      });
+      const result = await importOneSend(client, sendPlan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      assert.equal(result.count, readers.length);
+      assert.equal(result.sentCount, sendPlan.sentCount);
+      const joined = logs.join("\n");
+      assert.match(joined, new RegExp(`${seeds.length} cópia\\(s\\) do editor não entraram`));
+      assert.match(joined, /Todos os 5 leitor\(es\) reais/);
+      for (const s of seeds) assert.ok(joined.includes(s));
+    });
+
+    it("(a') todo e-mail do CSV aparece como membro, contagem só sem as cópias → não aborta", async () => {
+      const logs: string[] = [];
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: readers.length }),
+        listContactEmails: async () => extractCsvEmails(csv),
+      });
+      const result = await importOneSend(client, sendPlan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      assert.equal(result.count, readers.length);
+      assert.match(logs.join("\n"), /fora da contagem de inscritos/);
+    });
+
+    it("(b) um leitor real perdido (delta cabe nas cópias) → continua abortando e nomeia o leitor", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: sendPlan.sentCount - 1 }),
+        listContactEmails: async () => [...readers.slice(1), ...seeds],
+      });
+      await assert.rejects(
+        () => importOneSend(client, sendPlan, { folderId: 1, poll: noSleep }),
+        (err: Error) => {
+          assert.match(err.message, /lista #55/);
+          assert.match(err.message, /perdido\(s\) em/);
+          assert.ok(err.message.includes(readers[0]), err.message);
+          return true;
+        },
+      );
+    });
+
+    it("(c) delta maior que o nº de cópias do editor → aborta mesmo com o diff limpo", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: sendPlan.sentCount - seeds.length - 1 }),
+        listContactEmails: async () => extractCsvEmails(csv),
+      });
+      await assert.rejects(() => importOneSend(client, sendPlan, { folderId: 1, poll: noSleep }), /perdido\(s\) em/);
+    });
+
+    it("(d) diff indisponível (paginação falha) → aborta, nunca assume que os leitores entraram", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: readers.length }),
+        listContactEmails: async () => {
+          throw new Error("HTTP 500");
+        },
+      });
+      await assert.rejects(
+        () => importOneSend(client, sendPlan, { folderId: 1, poll: noSleep }),
+        /diagnóstico automático do contato falhou: HTTP 500/,
+      );
+    });
   });
 });
