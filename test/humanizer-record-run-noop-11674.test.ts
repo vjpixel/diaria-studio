@@ -135,32 +135,57 @@ describe("#11674: --record-run da Clarice com --pre igual a --post", () => {
     }
   });
 
-  it("#13889: nota prova só a seção mantida selecionada e ainda exige Clarice", () => {
-    const h = planRunRecord(emptyRunRecord(), "humanizador", humanized, humanized,
-      ["main_d1"], { note: "humanizador sem mudanças" });
-    assert.deepEqual(h.recorded, ["main_d1"]);
-    assert.equal(h.record.humanizador_unchanged.length, 1);
-    assert.equal(h.record.runs.at(-1)?.note, "humanizador sem mudanças");
-    const rows = describeProvenance(humanized, h.record);
-    assert.deepEqual(rows.find((r) => r.section === "main_d1"),
-      { section: "main_d1", humanizador: true, clarice: false, kept: true, kept_noted: true });
-    assert.equal(rows.find((r) => r.section === "main_d2")?.humanizador, false);
-    const refused = planRunRecord(emptyRunRecord(), "humanizador", humanized, humanized,
-      ["main_d1"], { note: "  " });
-    assert.deepEqual(refused.recorded, []);
+  it("#13933 (decisão a do #11609): nota NÃO transforma run do humanizador sem mudança em prova", () => {
+    for (const sections of [["main_d1"], undefined]) {
+      const h = planRunRecord(emptyRunRecord(), "humanizador", humanized, humanized,
+        sections, { note: "humanizador sem mudanças" });
+      assert.equal(h.noop, true);
+      assert.deepEqual(h.recorded, []);
+      assert.deepEqual(h.record.humanizador, []);
+      assert.deepEqual(h.record.humanizador_unchanged, []);
+      assert.deepEqual(h.record.humanizador_noted, []);
+      assert.ok(h.skipped.every((s) => /#11609/.test(s.reason)), JSON.stringify(h.skipped));
+      const rows = describeProvenance(humanized, h.record);
+      assert.ok(rows.every((r) => !r.humanizador && !r.kept && !r.kept_noted));
+    }
   });
 
-  it("CLI: --note permite humanizador sem mudanças com prova mais fraca (#13889)", () => {
+  it("#13933: seção mantida segue provada quando outra seção do mesmo run mudou, com ou sem nota", () => {
+    const partial = SOCIAL("d1 humanizado", "d3 rascunho");
+    const h = planRunRecord(emptyRunRecord(), "humanizador", SOCIAL("d1 rascunho", "d3 rascunho"), partial, undefined, {
+      note: "auditoria",
+    });
+    assert.ok(h.recorded.includes("main_d1") && h.recorded.includes("main_d3"));
+    assert.deepEqual(h.record.humanizador_noted, [], "mantida com outra seção alterada não é prova mais fraca");
+  });
+
+  it("CLI: --note no passo do humanizador é rejeitado sem gravar nada (#11609, #13933)", () => {
     const { dir, cleanup } = mkEdition();
     try {
       const f = join(dir, "_internal", "x.md");
       writeFileSync(f, humanized, "utf8");
-      const r = runCli(["--record-run", "--step", "humanizador", "--pre", f, "--post", f, "--note", "x", "--edition-dir", dir]);
-      assert.equal(r.status, 0, r.stderr);
-      assert.equal(readRunRecord(dir).runs.at(-1)?.note, "x");
-      writeFileSync(join(dir, "03-social.md"), humanized);
-      const shown = runCli(["--provenance", "--edition-dir", dir]);
-      assert.match(shown.stderr, /texto mantido, run sem mudanças aceito por --note; prova mais fraca/);
+      const r = runCli(["--record-run", "--step", "humanizador", "--pre", f, "--post", f, "--note", "humanizador sem mudanças", "--edition-dir", dir]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /--note só vale para --step clarice/);
+      assert.equal(JSON.parse(r.stdout.trim()).reason, "note_not_valid_for_humanizador");
+      assert.equal(existsSync(runRecordPath(dir)), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("CLI: humanizador com --pre igual a --post e sem nota sai noop_without_note, sem gravar, apontando o --unproven-ok", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      const f = join(dir, "_internal", "x.md");
+      writeFileSync(f, humanized, "utf8");
+      const r = runCli(["--record-run", "--step", "humanizador", "--pre", f, "--post", f, "--sections", "main_d1", "--edition-dir", dir]);
+      assert.equal(r.status, 1);
+      assert.equal(JSON.parse(r.stdout.trim()).reason, "noop_without_note");
+      assert.match(r.stderr, /humanizador rodou/);
+      assert.match(r.stderr, /--unproven-ok/);
+      assert.doesNotMatch(r.stderr, /repita com --note/);
+      assert.equal(existsSync(runRecordPath(dir)), false);
     } finally {
       cleanup();
     }

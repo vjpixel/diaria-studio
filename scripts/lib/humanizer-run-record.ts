@@ -17,8 +17,8 @@
  *     texto e o manteve. Mas só quando ao menos outra seção do escopo do mesmo
  *     run mudou (#11609, opção a do editor): snapshots idênticos em todo o
  *     escopo são indistinguíveis de "a Skill não rodou" e não provam nada —
- *     desde #13889, uma nota explícita também aceita o run sem mudanças como
- *     prova mais fraca. Os hashes
+ *     nem com `--note` (#13933 restaurou a opção a, que o #13889 tinha
+ *     relaxado): run de uma única seção mantida cai em `--unproven-ok`. Os hashes
  *     mantidos ficam também em `humanizador_unchanged`, pra auditoria e pro
  *     `--provenance` mostrar "texto mantido". O escopo continua sendo o
  *     `--sections` pedido (ou o arquivo inteiro na passada full-file).
@@ -52,9 +52,10 @@ export interface HumanizerRunRecord {
   humanizador_unchanged: string[];
   /**
    * #13925: subconjunto de `humanizador_unchanged` — seções mantidas num run sem
-   * nenhuma mudança no escopo, aceito só com `--note` (#13889). É essa a prova
-   * mais fraca; a mantida com outra seção alterada no mesmo run (#11604) não é.
-   * Opcional: registro gravado antes do #13925 não tem o campo.
+   * nenhuma mudança no escopo, aceito com `--note` entre o #13889 e o #13933.
+   * Só legado: desde o #13933 a nota não prova o humanizador e nada novo entra
+   * aqui; o campo segue lido para o `--provenance` rotular registros dessa janela
+   * como prova mais fraca. Opcional: registro gravado antes do #13925 não tem o campo.
    */
   humanizador_noted?: string[];
   /** sha256 de seções que saíram da Clarice a partir de texto já humanizado. */
@@ -141,8 +142,10 @@ export interface RunRecordPlan {
 export interface PlanRunOptions {
   now?: Date;
   /**
-   * #11674/#13889: motivo explícito de um run sem mudança ("Clarice sem
-   * sugestões" ou "humanizador sem mudanças"). Sem ele, run sem mudança não prova nada.
+   * #11674: motivo explícito de um run da Clarice sem mudança ("Clarice sem
+   * sugestões"). Sem ele, run da Clarice sem mudança não prova nada. No
+   * humanizador a nota só vai para o run (auditoria, ex.: `--reseal-surgical`)
+   * e nunca transforma seção idêntica em prova (#11609, restaurado no #13933).
    */
   note?: string;
 }
@@ -182,8 +185,8 @@ export function planRunRecord(
   // humanizador leu e manteve" de "o humanizador não rodou" (Skill pulada ou
   // falha silenciosa deixa os dois snapshots iguais). Seção idêntica só vira
   // prova se ao menos outra seção do escopo deste run mudou — sinal de que o
-  // passo de fato reescreveu o arquivo. #13889: nota explícita permite registrar
-  // a passada sem mudanças como prova mais fraca, auditável no run.
+  // passo de fato reescreveu o arquivo. Run em que nada mudou não prova nada,
+  // nem com nota (#13933 reverteu o #13889).
   const inScope = Object.entries(post).filter(([name]) => !only || only.has(name));
   const runChangedSomething = inScope.some(([name, postHash]) => pre[name] !== postHash);
   const noop = inScope.length > 0 && !runChangedSomething;
@@ -192,7 +195,7 @@ export function planRunRecord(
     const preHash = pre[name];
     if (step === "humanizador") {
       if (preHash === postHash) {
-        if (!runChangedSomething && !note) {
+        if (!runChangedSomething) {
           skipped.push({
             section: name,
             reason:
@@ -202,8 +205,6 @@ export function planRunRecord(
         }
         // #11604: idêntica com outra seção alterada no mesmo run = o humanizador manteve o texto.
         unchanged.add(postHash);
-        // #13925: run sem mudança nenhuma, aceito só pela nota (#13889) = prova mais fraca.
-        if (!runChangedSomething) noted.add(postHash);
       }
       humanizador.add(postHash);
       recorded.push(name);
@@ -575,7 +576,7 @@ export function describeProvenance(
     section,
     ...sectionProof(hash, record),
     ...(record.humanizador_unchanged.includes(hash) ? { kept: true as const } : {}),
-    // #13925: só o run sem mudanças aceito por --note (#13889) é prova mais fraca.
+    // #13925: só o run sem mudanças aceito por --note na janela #13889–#13933 (legado) é prova mais fraca.
     ...(record.humanizador_noted?.includes(hash) ? { kept_noted: true as const } : {}),
     // #11674: Clarice registrada sem mudança, por --note (prova mais fraca).
     ...(record.clarice_unchanged.includes(hash) ? { clarice_unchanged: true as const } : {}),

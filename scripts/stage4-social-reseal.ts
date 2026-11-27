@@ -27,13 +27,16 @@
  *
  * Uso:
  *   npx tsx scripts/stage4-social-reseal.ts prepare --edition-dir DIR
- *   npx tsx scripts/stage4-social-reseal.ts after-humanizer --edition-dir DIR [--sections a,b] [--note "motivo"]
+ *   npx tsx scripts/stage4-social-reseal.ts after-humanizer --edition-dir DIR [--sections a,b]
  *   npx tsx scripts/stage4-social-reseal.ts seal --edition-dir DIR --reason "motivo" \
  *     [--sections a,b] [--clarice-no-suggestions | --clarice-pending "exit e motivo"]
  *
  * `--sections` vazio = fluxo FULL-FILE (sem `--sections` no `--record-run` e
- * sem verify). `--note` vai para o `--record-run` do humanizador e para o
- * verify (#13889, passada sem mudança). `--clarice-no-suggestions` registra a
+ * sem verify). `after-humanizer` recusa `--note` (exit 6, nada roda): nota não
+ * prova o humanizador (#11609, restaurado no #13933 depois do #13889). Run em
+ * que a Skill devolveu todo o escopo idêntico sai exit 2 (`--record-run`
+ * recusou); seção única mantida de fato vai para `--write --unproven-ok` à mão,
+ * fora do composto. `--clarice-no-suggestions` registra a
  * Clarice com `--note "Clarice sem sugestões"` (#11674): só quando ela rodou de
  * fato. `--clarice-pending` é a Clarice fora do ar (#13848).
  *
@@ -152,7 +155,7 @@ export interface AfterHumanizerReport {
 
 export function runAfterHumanizer(
   editionDir: string,
-  opts: { sections: string[]; note?: string },
+  opts: { sections: string[] },
   deps: ResealDeps,
 ): AfterHumanizerReport {
   const social = join(editionDir, "03-social.md");
@@ -165,7 +168,6 @@ export function runAfterHumanizer(
 
   const recordArgs = ["--record-run", "--step", "humanizador", "--pre", pre, "--post", post];
   if (opts.sections.length) recordArgs.push("--sections", opts.sections.join(","));
-  if (opts.note) recordArgs.push("--note", opts.note);
   recordArgs.push("--edition-dir", editionDir);
   const rec = deps.exec(HUMANIZER, recordArgs);
   steps.push(step("record-run-humanizador", rec));
@@ -173,7 +175,6 @@ export function runAfterHumanizer(
 
   if (!opts.sections.length) return { steps, untouched_targets: [], exit: 0 };
   const verifyArgs = ["--pre", pre, "--post", post, "--sections", opts.sections.join(",")];
-  if (opts.note) verifyArgs.push("--note", opts.note);
   const v = deps.exec("scripts/verify-scoped-humanization.ts", verifyArgs);
   steps.push(step("verify-scoped-humanization", v));
   const parsed = parseStepJson<{ untouchedTargets?: string[]; unexpectedChanges?: string[] }>(v.stdout) ?? {};
@@ -270,7 +271,7 @@ function splitSections(v: string | undefined): string[] {
 
 const USAGE =
   "Uso: stage4-social-reseal.ts prepare|after-humanizer|seal --edition-dir DIR " +
-  "[--sections a,b] [--note M] [--reason M] [--clarice-no-suggestions | --clarice-pending D]";
+  "[--sections a,b] [--reason M] [--clarice-no-suggestions | --clarice-pending D]";
 
 export function main(argv: string[], deps: ResealDeps = realDeps()): number {
   const { values, flags, positional } = parseArgs(argv);
@@ -289,7 +290,14 @@ export function main(argv: string[], deps: ResealDeps = realDeps()): number {
       return r.exit;
     }
     if (cmd === "after-humanizer") {
-      const r = runAfterHumanizer(editionDir, { sections, note: values["note"] }, deps);
+      if (values["note"] !== undefined || flags.has("note")) {
+        console.error(
+          "after-humanizer não aceita --note: nota não prova o humanizador (#11609, #13933). " +
+            'Re-rode a Skill no escopo; seção única que ela manteve vai para --write --unproven-ok "<motivo>".',
+        );
+        return 6;
+      }
+      const r = runAfterHumanizer(editionDir, { sections }, deps);
       console.log(JSON.stringify(r));
       return r.exit;
     }

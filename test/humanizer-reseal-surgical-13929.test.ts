@@ -16,7 +16,10 @@ it("#13929 reseals a gate edit with previous snapshot, preserves pending Clarice
     mkdirSync(internal);
     writeFileSync(join(dir, "03-social.md"), pre);
     writeFileSync(join(internal, "01-approved.json"), '{"highlights":[]}');
-    let record = planRunRecord(emptyRunRecord(), "humanizador", pre, pre, undefined, { note: "humanizador manteve texto" }).record;
+    // #13933: run sem mudança não prova o humanizador nem com nota — o registro sai de uma passada real (rascunho → pre).
+    const draft = pre.replace("Uma notícia sobre", "Notícia de").replace("Primeiro parágrafo", "Parágrafo um");
+    let record = planRunRecord(emptyRunRecord(), "humanizador", draft, pre).record;
+    assert.ok(record.humanizador.length >= 2, "seed: as duas seções provadas pelo humanizador");
     record = planClaricePending(record, pre, "clarice_unavailable", { detail: "API indisponível" }).record;
     writeRunRecord(dir, record);
     writeSentinel(dir);
