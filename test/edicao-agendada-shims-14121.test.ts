@@ -16,12 +16,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import { buildEdicaoSystemdUnitFiles } from "../scripts/lib/edicao-systemd-units.ts";
+import { EXIT_WORKSPACE_UNTRUSTED } from "../scripts/lib/claude-workspace-trust.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OLD_DIR = join(ROOT, "scripts", "overnight");
@@ -60,7 +61,8 @@ describe("#14121 — caminhos antigos de scripts/overnight/ continuam resolvendo
 
   it("todo scripts/overnight/* citado num arquivo versionado existe (registro, units, skills, agents, docs)", () => {
     const missing: string[] = [];
-    const re = /scripts\/overnight\/[A-Za-z0-9_.-]+\.(?:ts|ps1|sh)/g;
+    // `/` e `\` (forma Windows, ex.: `.\scripts\overnight\setup-edicao-schedule.ps1`).
+    const re = /scripts[\\/]overnight[\\/][A-Za-z0-9_.-]+\.(?:ts|ps1|sh)/g;
     for (const rel of trackedTextFiles()) {
       let text: string;
       try {
@@ -69,8 +71,9 @@ describe("#14121 — caminhos antigos de scripts/overnight/ continuam resolvendo
         continue;
       }
       for (const m of text.matchAll(re)) {
-        if (HISTORICAL_REMOVED.has(m[0])) continue;
-        if (!existsSync(join(ROOT, m[0]))) missing.push(`${m[0]} (citado em ${rel})`);
+        const cited = m[0].replace(/\\/g, "/");
+        if (HISTORICAL_REMOVED.has(cited)) continue;
+        if (!existsSync(join(ROOT, cited))) missing.push(`${m[0]} (citado em ${rel})`);
       }
     }
     assert.deepEqual(missing, []);
@@ -107,6 +110,49 @@ describe("#14121 — shims .ts re-exportam o módulo novo e rodam o mesmo CLI", 
       assert.match(src, new RegExp(`from "\\.\\./edicao-agendada/${f.replace(".", "\\.")}"`));
     });
   }
+
+  it("run-scheduled-edicao: o caminho antigo roda o mesmo CLI, com a raiz do repo vinda do arquivo novo", () => {
+    // Cópia de scripts/ dentro de node_modules/.cache (resolve os pacotes pelo
+    // node_modules da raiz sem symlink, e é gitignored). A raiz do repo da
+    // cópia é a própria cópia, então o `data/` do runner é o da cópia, nunca o
+    // real. HOME/CLAUDE_CONFIG_DIR vazios = workspace sem confiança: o runner
+    // sai no preflight (#11383) antes de resolver ou chamar o `claude`.
+    const cacheDir = join(ROOT, "node_modules", ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const copy = mkdtempSync(join(cacheDir, "shim-spawn-14121-"));
+    try {
+      cpSync(join(ROOT, "scripts"), join(copy, "scripts"), { recursive: true });
+      for (const f of ["package.json", "tsconfig.json", "platform.config.json"]) cpSync(join(ROOT, f), join(copy, f));
+      const home = join(copy, "home");
+      mkdirSync(home);
+      const env = {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        CLAUDE_CONFIG_DIR: home,
+        CLAUDE_BIN: join(copy, "claude-inexistente"),
+      };
+      const run = (rel: string) =>
+        spawnSync(process.execPath, ["--import", "tsx", join(copy, rel)], { cwd: ROOT, env, encoding: "utf8", timeout: 120_000 });
+      const viaOld = run("scripts/overnight/run-scheduled-edicao.ts");
+      const viaNew = run("scripts/edicao-agendada/run-scheduled-edicao.ts");
+      assert.equal(viaNew.status, EXIT_WORKSPACE_UNTRUSTED, viaNew.stderr);
+      assert.equal(viaOld.status, viaNew.status, viaOld.stderr);
+      const norm = (s: string) =>
+        s
+          .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, "TS")
+          .replace(/pid=\d+/g, "pid=N");
+      assert.equal(norm(viaOld.stderr), norm(viaNew.stderr));
+      assert.equal(viaOld.stdout, viaNew.stdout);
+      // A raiz usada é a da cópia (resolvida pelo arquivo novo). A cópia não
+      // tem data/, e o runner não cria: nada é gravado em lugar nenhum.
+      assert.ok(viaOld.stderr.includes(copy), "o runner não usou a raiz da cópia");
+      assert.match(viaOld.stderr, /data\/ não encontrado/);
+      assert.ok(!existsSync(join(copy, "data")), "o runner criou data/ na cópia");
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+  });
 
   it("calc-next-edition-date: o caminho antigo imprime o mesmo AAMMDD do novo", () => {
     const run = (p: string) =>

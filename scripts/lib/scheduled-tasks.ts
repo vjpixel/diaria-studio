@@ -58,7 +58,9 @@
  * desde o #14121** (só dados; este arquivo guarda os tipos, os helpers e o
  * CLI, e re-exporta a tabela). Adicionar ou mudar uma task é lá.
  *
- * **Este arquivo NÃO executa nada** — é dado puro. Execução é
+ * **Este arquivo NÃO executa nenhuma task** — é o schema (tipos), os helpers
+ * de consulta e o CLI `--list`/`--json`/`--desktop`; os dados são a tabela
+ * acima. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
  * systemd é `scripts/lib/systemd-units.ts` + `scripts/setup-systemd-timers.ts`.
  *
@@ -70,6 +72,7 @@
  * `.service`/`.timer` gerado por `scripts/setup-systemd-timers.ts` a partir
  * deste registro.
  *
+ * @see scripts/lib/scheduled-tasks-table.ts (a tabela SCHEDULED_TASKS, #14121)
  * @see scripts/lib/task-runner.ts (Fase 2 — executor)
  * @see scripts/run-task.ts (Fase 2 — entrypoint CLI)
  * @see scripts/lib/systemd-units.ts + scripts/setup-systemd-timers.ts (Fase 3)

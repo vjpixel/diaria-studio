@@ -37,7 +37,7 @@ Medido no `300` em 10/11/2026, com o `data/` ainda no OneDrive
 1. **Três máquinas escrevem em `data/`.** `data/sessions/` tem hoje registros
    de `300`, `Neo` e `Zenbook` (96, 28+9 e 5 arquivos). As 128 tasks rodam só no
    `300`; a única task fora dele é `diaria-short-video-relacionado`, no Neo
-   (`scripts/lib/scheduled-tasks.ts:3815`). Edições, `/diaria-develop`,
+   (`DESKTOP_SCHEDULED_TASKS` em `scripts/lib/scheduled-tasks.ts`). Edições, `/diaria-develop`,
    `/diaria-video-montagem` e `/diaria-publica` rodam no Neo ou no `300`.
 2. **Depois do cutover o `300` sincroniza em rodadas, não em tempo real.** O
    bisync dedicado de `data/` roda 1 min depois do fim da rodada anterior

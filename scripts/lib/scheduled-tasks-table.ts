@@ -11,7 +11,9 @@
  * Adicionar, mudar ou retirar uma task é aqui. Retirada também entra em
  * `RETIRED_TASK_NAMES` (`scheduled-tasks.ts`) e na prosa de
  * `docs/scheduled-tasks-registry.md` (drift travado por
- * `test/scheduled-tasks-drift.test.ts`).
+ * `test/scheduled-tasks-drift.test.ts`). Task nova, renomeada ou retirada
+ * também atualiza a contagem e o hash dos nomes em
+ * `test/scheduled-tasks-table-split-14121.test.ts` (a falha imprime os dois).
  *
  * Só `import type` de `scheduled-tasks.ts`: um import de VALOR de lá fecharia
  * um ciclo de módulos (aquele arquivo importa este), e uma constante lida no
@@ -1117,7 +1119,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // Diária 10:50 — fecha o cluster matinal de alarmes, depois de
     // Diaria-Branch-Cleanup (10:45). 10:40 foi a 1ª escolha e está OCUPADO
     // por Diaria-Npm-Version-Drift-Alarm (#6960) — conferido com
-    // `scheduled-tasks.ts --list`, não por leitura deste arquivo, justamente
+    // `scheduled-tasks.ts --list` (o CLI), não por leitura desta tabela, justamente
     // porque a lista ordenada é o que revela colisão.
     //
     // **Por que DIÁRIA e não mais frequente (#7250, registro no #7316).** A
@@ -1655,7 +1657,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // #5826 (02/09/2026): minuto movido de :00 pra :10 — `Diaria-Clarice-
     // Dashboard-Precompute` roda em `interval hours:1`, que `scheduleToOnCalendar`
     // traduz SEMPRE pro minuto :00 de cada hora (`OnCalendar=*-*-* 0/N:00:00`,
-    // ver o tipo `ScheduledTaskSchedule` no topo deste arquivo) — ou seja,
+    // ver o tipo `ScheduledTaskSchedule` no topo de `scheduled-tasks.ts`) — ou seja,
     // TODA hora cheia, inclusive 19:00, o precompute dispara. Com esta task
     // também em :00, as duas batiam no MESMO minuto TODO dia (confirmado ao
     // vivo: journal mostra as duas arrancando "19:00:08" em 01/09/2026),

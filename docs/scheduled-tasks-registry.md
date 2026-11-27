@@ -12,8 +12,11 @@ arquivo viver em `docs/` e não em `context/`.
 **Onde mora a definição (#14121):** as entradas da tabela `SCHEDULED_TASKS`
 ficam em `scripts/lib/scheduled-tasks-table.ts` (só dados). Tipos, helpers e o
 CLI `--list`/`--json` seguem em `scripts/lib/scheduled-tasks.ts`, que
-re-exporta a tabela. Onde esta prosa diz "a entrada em
-`scripts/lib/scheduled-tasks.ts`", a linha a editar está no arquivo da tabela.
+re-exporta a tabela. Toda citação de entrada, cadência, `args`, `guard` ou
+`enabled` de uma task em `scripts/lib/scheduled-tasks.ts` nesta prosa vale
+como `scripts/lib/scheduled-tasks-table.ts`: é lá que está a linha a editar.
+`RETIRED_TASK_NAMES`, `DESKTOP_SCHEDULED_TASKS` e o CLI continuam em
+`scheduled-tasks.ts`.
 
 Conteúdo preservado integralmente (só realocação, não resumo). Para
 armar/verificar qualquer task, seguir o doc de setup específico citado em

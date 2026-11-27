@@ -93,6 +93,14 @@ describe("matchingSetGuards — um path por regra", () => {
     assert.ok(doc.hits.some((h) => h.ruleId === "scheduled-tasks"));
   });
 
+  it("scheduled-tasks: a tabela separada (#14121) também dispara e traz o teste do split", () => {
+    const tabela = matchingSetGuards(["scripts/lib/scheduled-tasks-table.ts"]);
+    const hit = tabela.hits.find((h) => h.ruleId === "scheduled-tasks");
+    assert.ok(hit, "scripts/lib/scheduled-tasks-table.ts não disparou a regra scheduled-tasks");
+    const rule = SET_GUARDS.find((g) => g.id === "scheduled-tasks")!;
+    assert.ok(rule.testFiles.includes("test/scheduled-tasks-table-split-14121.test.ts"));
+  });
+
   it("lib-boundary: scripts/lib/** e scripts/studio-ui/**", () => {
     const lib = matchingSetGuards(["scripts/lib/session-registry.ts"]);
     assert.ok(lib.hits.some((h) => h.ruleId === "lib-boundary"));

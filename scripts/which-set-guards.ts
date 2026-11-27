@@ -150,6 +150,8 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
       "test/scheduled-tasks.test.ts",
       "test/scheduled-tasks-drift.test.ts",
       "test/scheduled-tasks-4819.test.ts",
+      // #14121: forma do split tabela/lógica + nomes das tasks.
+      "test/scheduled-tasks-table-split-14121.test.ts",
       // #12736: apêndice A do mapa de dependências do data/ sincronizado.
       "test/onedrive-dependencias-inventario-12736.test.ts",
     ],
