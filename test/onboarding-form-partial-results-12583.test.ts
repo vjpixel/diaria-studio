@@ -77,6 +77,26 @@ const RESPONSES: FormResponse[] = [
   resp("pixel@memelab.com.br", "2026-11-09T11:40:00.000Z", { relato_falha: "teste do editor" }),
 ];
 
+describe("#14330 buildFormPartialResults: respostas v3 seguem nas contagens da v4", () => {
+  it("v3 conta nas opções junto com a v4; v2 fica em versao_anterior; pergunta nova conta só quem respondeu", () => {
+    const rs = [
+      resp("v3@x.com", "2026-11-20T10:00:00.000Z", { uso_ia: "Uso pouco: só testei ou uso de vez em quando" }, 3),
+      resp("v4@x.com", "2026-11-28T10:00:00.000Z", { uso_ia: "Uso pouco: só testei ou uso de vez em quando", apoio_independente: "Sim", apoio_decisao: "Quero saber para onde vai o dinheiro" }, 4),
+      resp("v2@x.com", "2026-11-01T10:00:00.000Z", { uso_ia: "Uso pouco: só testei ou uso de vez em quando" }, null),
+    ];
+    const out = buildFormPartialResults(rs, { currentVersion: 4 });
+    assert.equal(out.versao_anterior, 1);
+    const uso = out.perguntas.find((p) => p.id === "uso_ia")!;
+    assert.equal(uso.responderam, 2);
+    const apoio = out.perguntas.find((p) => p.id === "apoio_independente")!;
+    assert.equal(apoio.responderam, 1);
+    assert.equal(apoio.opcoes.find((o) => o.opcao === "Sim")!.n, 1);
+    assert.deepEqual(out.abertas.find((a) => a.id === "apoio_decisao")!.respostas.map((a) => a.texto), ["Quero saber para onde vai o dinheiro"]);
+    // Sem compatibilidade declarada, a v3 sairia das contagens (o que o #14330 evita).
+    assert.equal(buildFormPartialResults(rs, { currentVersion: 4, minVersion: 4 }).versao_anterior, 2);
+  });
+});
+
 describe("#12583 buildFormPartialResults", () => {
   const r = buildFormPartialResults(RESPONSES, { people: PEOPLE });
 

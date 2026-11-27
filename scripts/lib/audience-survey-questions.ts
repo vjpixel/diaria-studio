@@ -14,7 +14,7 @@
  * (pergunta que só a survey da Beehiiv tinha) saiu. Na v3 (09/11/2026) os
  * matchers seguem as 15 perguntas novas (17 desde a v4, #14330: as duas de apoio); nível, seções, inglês, preço e o
  * "mais alguma coisa" saíram (`LEGACY_FORM_ANSWER_IDS`, contados à parte).
- * Texto livre (relato de falha, "Outro/Outra") nunca sai daqui com o texto:
+ * Texto livre (relato de falha, decisão de apoiar, "Outro/Outra") nunca sai daqui com o texto:
  * a pergunta aberta vira só a marca `OPEN_ANSWER_MARK`, para o perfil contar.
  *
  * Puro (sem I/O). `test/onboarding-form-questions-10605.test.ts` trava que

@@ -74,8 +74,10 @@ export function formatDuration(seconds: number | null): string | null {
 /**
  * @pure — rótulo de cada pergunta de escolha no artefato: perguntas
  * principais numeradas em sequência ("1", "2", …), subpergunta (`subOf`) com o
- * número da principal ("8 · sub"). Pergunta aberta não recebe número, mas a
- * subpergunta aberta também não avança a contagem.
+ * número da principal ("8 · sub"). Toda pergunta principal avança a contagem,
+ * inclusive a aberta (`apoio_decisao`, a 13 da v4, #14330), para o número
+ * bater com o do formulário; a aberta só não entra no mapa. A subpergunta
+ * aberta não avança a contagem.
  */
 export function questionNumbers(questions: readonly FormQuestion[] = FORM_QUESTIONS): Map<string, string> {
   const out = new Map<string, string>();
@@ -86,9 +88,8 @@ export function questionNumbers(questions: readonly FormQuestion[] = FORM_QUESTI
       if (parent && isChoiceQuestion(q)) out.set(q.id, `${parent.split(" ")[0]} · sub`);
       continue;
     }
-    if (!isChoiceQuestion(q)) continue;
     n++;
-    out.set(q.id, String(n));
+    if (isChoiceQuestion(q)) out.set(q.id, String(n));
   }
   return out;
 }

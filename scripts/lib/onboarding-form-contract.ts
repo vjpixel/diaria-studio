@@ -198,7 +198,7 @@ const FORMATOS = [
   "Comunidade para trocar experiências com outros leitores",
 ] as const;
 
-/** v3 (#10605, aprovada pelo editor em 09/11/2026). */
+/** v3 (#10605, aprovada pelo editor em 09/11/2026); v4 acrescenta as duas de apoio (#14330, 27/11/2026). */
 export const FORM_QUESTIONS: readonly FormQuestion[] = [
   {
     id: "uso_ia",
@@ -614,6 +614,22 @@ export interface FormResponsesPayload {
  */
 export const FORM_VERSION = 4;
 
+/**
+ * #14330: versão mais antiga cujas respostas entram nas contagens por opção
+ * junto com as da versão atual. Vale quando as versões entre ela e
+ * `FORM_VERSION` só ACRESCENTARAM perguntas: toda pergunta que existe nas
+ * duas tem o mesmo id, tipo, rótulo e opções. A v4 só acrescentou
+ * `FORM_V4_ADDED_IDS`, então as respostas v3 seguem contando, e as perguntas
+ * novas contam só quem as respondeu. Mudou uma pergunta existente (rótulo ou
+ * opção)? Suba este número para `FORM_VERSION`: as contagens recomeçam.
+ * `test/onboarding-form-history-12490.test.ts` confere a premissa contra a
+ * impressão digital da v3.
+ */
+export const FORM_TALLY_MIN_VERSION = 3;
+
+/** #14330: perguntas que a v4 acrescentou à v3 (nenhuma outra mudou). */
+export const FORM_V4_ADDED_IDS: readonly string[] = ["apoio_independente", "apoio_decisao"];
+
 /** Versão das respostas antigas, gravadas antes do campo `form_version`. */
 export const FORM_VERSION_LEGACY = 2;
 
@@ -752,7 +768,7 @@ function selectAllowedOptions(q: SelectQuestion, answers: Readonly<Record<string
  * os lembretes e não marca "preencheu". Decisão do editor (comentário de
  * 09/11/2026 na #12504): ele entra no perfil de audiência por pergunta (cada
  * pessoa uma vez, a resposta enviada vence o rascunho), na lista de conversas
- * (Q12 "Sim, topo", marcado "não enviou"), na estatística de abandono por
+ * (pergunta da conversa, a 14 desde a v4, "Sim, topo", marcado "não enviou"), na estatística de abandono por
  * pergunta e escolhe a variante dos lembretes para quem começou e parou.
  *
  * KV: `draft:{e-mail}`, expira `FORM_DRAFT_TTL_S` depois da última mudança
@@ -926,7 +942,7 @@ export function parseFormDraft(
   return { email, answers, last_question: last };
 }
 
-/** @pure — o número (1..12) da pergunta numerada de `id`, ou da pergunta-mãe se for subpergunta. */
+/** @pure — o número (1..14 desde a v4) da pergunta numerada de `id`, ou da pergunta-mãe se for subpergunta. */
 export function numberedQuestionIndex(id: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): number | null {
   const q = questions.find((x) => x.id === id);
   if (!q) return null;

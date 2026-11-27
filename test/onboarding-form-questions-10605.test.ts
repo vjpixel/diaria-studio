@@ -680,6 +680,18 @@ describe("#10605 v3: respostas do formulário no perfil de audiência", () => {
     assert.equal(formRespondentsNote(conv), " (2 do formulário do onboarding)");
   });
 
+  it("#14330 v4: apoio vira bloco na seção 3 e a decisão entra só como contagem, sem o texto", () => {
+    const v4 = { ...R({ apoio_independente: "Sim", apoio_decisao: "Texto livre do apoio" }, "c@x.com"), form_version: 4 };
+    const conv = onboardingFormToSurveyResponses([...sample, v4]).responses;
+    const s3 = renderWhoTheyAreBlocks(conv).join("\n");
+    assert.ok(s3.includes("### Pagou para apoiar criador ou veículo independente (12 meses)"));
+    assert.ok(s3.includes("- **Sim**"));
+    assert.ok(s3.includes("Respostas sobre o que pesa na decisão de apoiar a diar.ia.br: 1 (o texto livre não entra no perfil)."));
+    assert.ok(!s3.includes("Texto livre do apoio"));
+    assert.ok(!JSON.stringify(conv).includes("Texto livre do apoio"), "o texto nem chega ao formato da survey");
+    assert.ok(!renderWhoTheyAreBlocks(onboardingFormToSurveyResponses(sample).responses).join("\n").includes("decisão de apoiar"), "sem resposta, sem linha");
+  });
+
   const ctrCsv = () => {
     const date = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
     const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
