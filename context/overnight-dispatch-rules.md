@@ -78,17 +78,28 @@ do worktree. Se o próprio agente trocou de branch depois da claim (o caso
 acima, ou um checkout de propósito), `claim-worktree --rebind` regrava a
 branch do HEAD. Sem flag, com a claim viva em outra branch, o comando
 recusa: a divergência pode ser a troca por baixo que o guard existe para
-mostrar, e `--rebind` só vale quando foi você que fez o checkout. A claim
-vale 3h, e o `heartbeat` do coordenador a renova enquanto a sessão está
-viva, sem mexer na branch; `claim-worktree --renew` também só estende o
-prazo. Vencida, o hook não barra nada. No fim da unidade (PR aberta e
-self-review feito, ou desistência), `npx tsx
-scripts/lib/session-registry.ts unclaim-worktree`, standalone, solta a
-claim; a esquecida o `gc` recolhe depois de vencida.
+mostrar, e `--rebind` só vale quando foi você que fez o checkout. HEAD
+destacado sem `--branch` não grava claim (sai `erro —`).
+
+**Renovação é sua.** A claim vale 3h e vencida o hook não barra nada.
+Rodar `npx tsx scripts/lib/session-registry.ts claim-worktree --renew`
+(Bash, standalone) antes do self-review e antes do commit final: só estende
+o prazo e preserva a branch gravada. O `heartbeat` do CLI também renova as
+claims vivas da sessão, mas ele só roda nos call sites de onda do
+coordenador (o hook `session-beacon.mjs` não o chama): é reforço, não
+garantia. No fim da unidade (PR aberta e self-review feito, ou
+desistência), `npx tsx scripts/lib/session-registry.ts unclaim-worktree`,
+standalone, solta a claim; a esquecida o `gc` recolhe depois de vencida.
+
+**Exceção ao item 35:** a claim é escrita do próprio subagente em
+`data/sessions/.worktree-claims/` (estado de coordenação, não conteúdo), feita
+pelo script; não vai para a seção "Escrita pendente em `data/`" da PR.
 
 | Saída | Significado | O que fazer |
 |---|---|---|
 | `exit 0` | claim gravada/renovada | seguir |
+| `exit 1`, `erro —` | claim NÃO gravada (HEAD destacado, falha do git, arquivo de claim ilegível) | devolver ao coordenador com a mensagem |
+| `exit 1`, `--renew no-op` | não há claim viva desta sessão para renovar | rodar sem `--renew` |
 | `exit 1`, `RECUSADO … reivindicado por` | outra sessão segura este worktree | parar e devolver ao coordenador sem commitar |
 | `exit 1`, `RECUSADO — a claim desta sessão gravou a branch` | HEAD em outra branch que a da claim | se o checkout foi seu, `--rebind`; senão conferir `git status`/`git branch` antes de qualquer commit |
 | `exit 1`, `não é worktree vinculado` | o cwd não é worktree (checkout principal ou clone) | conferir o cwd antes de qualquer edição; no clone próprio é esperado (abaixo) |

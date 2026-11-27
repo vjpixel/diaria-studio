@@ -124,7 +124,10 @@
  *     `.claude/hooks/block-worktree-alien-commit.mjs` lê antes de cada `git
  *     commit` — até aqui nada em produção gravava esse arquivo. Default: o
  *     worktree do cwd e a branch do HEAD, então roda DEPOIS do checkout da
- *     branch de trabalho. TTL de 3h, renovado pelo `heartbeat` da sessão.
+ *     branch de trabalho. TTL de 3h: o implementador renova com `--renew`;
+ *     o `heartbeat` também renova, mas só roda nos call sites de onda do
+ *     coordenador. Sem branch resolvida (HEAD destacado, falha do git) e sem
+ *     `--branch`, `claim`/`--rebind` recusam (`erro —`, claim não gravada).
  *     `--renew` só estende o TTL e preserva a branch gravada; `--rebind`
  *     regrava a branch do HEAD (o próprio agente trocou de branch). Sem flag,
  *     com claim viva desta sessão em outra branch, recusa — a divergência é a
@@ -572,18 +575,24 @@ function refuseIfRegistryUnverifiable(repoRoot: string, command: string): boolea
  * devolve o próprio `--path` (o chamador recusa por não ser worktree).
  */
 function resolveWorktreeToplevel(explicitPath: string | undefined): string | null {
-  if (explicitPath) return gitOutput(["rev-parse", "--show-toplevel"], explicitPath) ?? explicitPath;
-  return gitOutput(["rev-parse", "--show-toplevel"], process.cwd());
+  if (explicitPath) return gitOutput(["rev-parse", "--show-toplevel"], explicitPath).out ?? explicitPath;
+  return gitOutput(["rev-parse", "--show-toplevel"], process.cwd()).out;
 }
 
-/** stdout aparado de um `git` no `cwd`, ou `null` em falha (#14214). */
-function gitOutput(args: string[], cwd: string): string | null {
+/**
+ * stdout aparado de um `git` no `cwd` (#14214). Em falha, `out` é `null` e
+ * `error` traz o stderr (ou o motivo do spawn), para a mensagem distinguir
+ * falha do git de um resultado legítimo como `HEAD`.
+ */
+function gitOutput(args: string[], cwd: string): { out: string | null; error: string | null } {
   try {
     const res = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, windowsHide: true });
-    const out = res.status === 0 ? res.stdout?.trim() : "";
-    return out ? out : null;
-  } catch {
-    return null;
+    if (res.error) return { out: null, error: res.error.message };
+    if (res.status !== 0) return { out: null, error: (res.stderr ?? "").trim() || `exit ${res.status}` };
+    const out = res.stdout?.trim() ?? "";
+    return out ? { out, error: null } : { out: null, error: "saída vazia" };
+  } catch (e) {
+    return { out: null, error: (e as Error).message };
   }
 }
 
@@ -671,15 +680,21 @@ async function main(): Promise<void> {
         // #14214: sessão viva mantém vivas as claims de worktree que fez.
         // Só `expires_at`; a branch gravada no claim nunca muda aqui. Falha de
         // I/O nas claims não derruba o heartbeat (é proteção, não registro).
-        let renewedClaims = 0;
+        // A falha vai no STDOUT, em sufixo de alerta, porque é o que a skill lê.
+        let renewedSuffix = "";
         if (result.ok) {
           try {
-            renewedClaims = renewWorktreeClaimsForSession(repoRoot, sessionId);
+            const renewal = renewWorktreeClaimsForSession(repoRoot, sessionId);
+            if (renewal.renewed > 0) renewedSuffix += ` [${renewal.renewed} claim(s) de worktree renovada(s)]`;
+            if (renewal.failed.length > 0) {
+              renewedSuffix +=
+                ` [ALERTA: ${renewal.failed.length} claim(s) de worktree NÃO renovada(s): ` +
+                `${renewal.failed.map((f) => `${f.path} (${f.reason})`).join("; ")}]`;
+            }
           } catch (e) {
-            process.stderr.write(`session-registry: heartbeat — falha ao renovar claims de worktree: ${(e as Error).message}\n`);
+            renewedSuffix += ` [ALERTA: renovação das claims de worktree falhou: ${(e as Error).message}]`;
           }
         }
-        const renewedSuffix = renewedClaims > 0 ? ` [${renewedClaims} claim(s) de worktree renovada(s)]` : "";
         process.stdout.write(
           `session-registry: heartbeat ${result.ok ? "ok" : "no-op (sessão inexistente mesmo após tentativa de auto-registro)"}${autoRegisterSuffix}${renewedSuffix}\n`,
         );
@@ -963,8 +978,24 @@ async function main(): Promise<void> {
         // Default: a branch do HEAD agora. Por isso o subcomando roda DEPOIS
         // do checkout da branch de trabalho — a claim gravada com a branch
         // provisória do worktree faria o hook barrar o commit na branch real.
-        const headBranch = values.branch ?? gitOutput(["rev-parse", "--abbrev-ref", "HEAD"], path);
-        const branch = headBranch && headBranch !== "HEAD" ? headBranch : undefined;
+        // `claim`/`--rebind` sem branch gravariam uma claim que nunca detecta
+        // troca de branch: recusa, dizendo se é HEAD destacado ou falha do
+        // git. `--renew` não precisa — preserva a branch já gravada.
+        let branch: string | undefined = values.branch;
+        if (branch === undefined && mode !== "renew") {
+          const head = gitOutput(["rev-parse", "--abbrev-ref", "HEAD"], path);
+          if (head.out && head.out !== "HEAD") {
+            branch = head.out;
+          } else {
+            const why =
+              head.out === "HEAD"
+                ? "HEAD destacado (sem branch para gravar; faça o checkout da branch de trabalho ou passe --branch)"
+                : `falha do git ao ler a branch do HEAD: ${head.error}`;
+            process.stdout.write(`session-registry: claim-worktree erro — ${why}; claim NÃO gravada (${path})\n`);
+            process.exitCode = 1;
+            break;
+          }
+        }
         const result = claimWorktreeChecked(path, sessionId, repoRoot, branch, mode);
         switch (result.outcome) {
           case "claimed":
@@ -1002,6 +1033,13 @@ async function main(): Promise<void> {
             );
             process.exitCode = 1;
             break;
+          case "unreadable":
+            process.stdout.write(
+              `session-registry: claim-worktree erro — arquivo de claim ilegível (${result.claimFile}) para ` +
+                `${result.path}; claim NÃO gravada, nada sobrescrito\n`,
+            );
+            process.exitCode = 1;
+            break;
         }
         break;
       }
@@ -1021,6 +1059,11 @@ async function main(): Promise<void> {
           process.stdout.write(`session-registry: unclaim-worktree ok (liberado) path=${path}\n`);
         } else if (outcome === "blocked-by-other") {
           process.stdout.write(`session-registry: unclaim-worktree RECUSADO — ${path} é reivindicado por outra sessão\n`);
+          process.exitCode = 1;
+        } else if (outcome === "unreadable") {
+          process.stdout.write(
+            `session-registry: unclaim-worktree erro — arquivo de claim ilegível para ${path}; nada removido\n`,
+          );
           process.exitCode = 1;
         } else {
           process.stdout.write(`session-registry: unclaim-worktree no-op (${path} não tinha claim)\n`);
@@ -1582,9 +1625,18 @@ async function main(): Promise<void> {
           `session-registry: gc ${isDryRun ? "--dry-run: " : ""}${removedCount}/${plan.length} identidade(s) ${isDryRun ? "seriam removidas" : "removidas"}\n`,
         );
         // #14214: claims de worktree vencidas há mais de 7 dias.
-        const staleClaims = gcExpiredWorktreeClaims(repoRoot, { dryRun: isDryRun });
-        for (const claimPath of staleClaims) {
-          process.stdout.write(`session-registry: gc ${isDryRun ? "would-remove" : "removed"} worktree-claim ${claimPath}\n`);
+        try {
+          const staleClaims = gcExpiredWorktreeClaims(repoRoot, { dryRun: isDryRun });
+          for (const claimPath of staleClaims.removed) {
+            process.stdout.write(`session-registry: gc ${isDryRun ? "would-remove" : "removed"} worktree-claim ${claimPath}\n`);
+          }
+          for (const f of staleClaims.failed) {
+            process.stdout.write(`session-registry: gc ALERTA worktree-claim ${f.path} não removida (${f.reason})\n`);
+          }
+          if (staleClaims.failed.length > 0) process.exitCode = 1;
+        } catch (e) {
+          process.stdout.write(`session-registry: gc ALERTA — claims de worktree não lidas: ${(e as Error).message}\n`);
+          process.exitCode = 1;
         }
         break;
       }
