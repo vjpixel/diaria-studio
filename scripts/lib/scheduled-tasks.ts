@@ -892,8 +892,13 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
   {
     name: "Diaria-Brevo-Diaria-Evaluate",
     failover: "catchup",
-    description: "evaluate diario do canal brevo_diaria (--push)",
-    steps: [{ key: "evaluate", script: "scripts/evaluate-brevo-diaria.ts", args: ["--push"] }],
+    description: "brevo-diaria-run --apply diario do canal brevo_diaria (evaluate --push + pool/rampa/sync-kit-frio)",
+    // #13981 — era só `evaluate-brevo-diaria.ts --push`. Desde que o dispatch
+    // da Etapa 5 sai `skipped` fora da segunda sem `--apply` (regime semanal
+    // #11226), o `--apply` diário (que começa pelo mesmo evaluate --push) roda
+    // aqui; no máximo 1x por dia BRT entre esta task e o dispatch (marcador
+    // em `scripts/lib/brevo-diaria-daily-apply.ts`).
+    steps: [{ key: "daily-apply", script: "scripts/brevo-diaria-daily-apply.ts" }],
     logPath: "brevo-diaria/.evaluate.log",
     schedule: { kind: "daily", hour: 5, minute: 30 },
     guard: {

@@ -10,7 +10,9 @@ O envio diário do canal `brevo_diaria` (`scripts/publish-daily-brevo.ts`) mira 
 
 ## O que a task faz
 
-A task `Diaria-Brevo-Diaria-Evaluate` (`scripts/lib/scheduled-tasks.ts`) roda `npx tsx scripts/evaluate-brevo-diaria.ts --push` — o fluxo **completo** já aprovado no desenho da #4476 (não reaberto aqui):
+**Desde o #13981 (27/11/2026)** a task roda `scripts/brevo-diaria-daily-apply.ts`, que chama o `brevo-diaria-run.ts --apply` inteiro: começa pelo mesmo `evaluate-brevo-diaria.ts --push` descrito abaixo e segue com o refresh do pool Pending, MV, sync Brevo, pool Kit inactive, `sync-kit-frio --push` e órfãos da `envio-brevo`. Motivo: o dispatch da Etapa 5 sai `skipped` fora da segunda (regime semanal #11226) sem rodar o `--apply`, e sem esta task ele rodaria uma vez por semana. No máximo 1 `--apply` por dia BRT entre a task e o dispatch (marcador `data/brevo-diaria/.daily-apply.json`, `scripts/lib/brevo-diaria-daily-apply.ts`): quem chega primeiro roda, o outro pula.
+
+Antes do #13981, a task `Diaria-Brevo-Diaria-Evaluate` (`scripts/lib/scheduled-tasks.ts`) rodava só `npx tsx scripts/evaluate-brevo-diaria.ts --push` — o fluxo **completo** já aprovado no desenho da #4476 (não reaberto aqui):
 
 1. **Descadastro nativo** (Passo 0) — contato que clicou no opt-out do bloco de intro (`emailBlacklisted: true` na Brevo) é reconhecido como saída terminal e a Beehiiv é atualizada em paralelo (`unsubscribe: true`, #4538).
 2. **Auto-confirmação** (Passo 1) — contato que confirmou o double opt-in da Beehiiv por conta própria nesse meio-tempo é promovido, independente da taxa de abertura.
