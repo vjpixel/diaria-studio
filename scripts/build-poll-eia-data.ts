@@ -62,7 +62,7 @@ import { existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from 
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
-import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } from "../workers/diaria-dashboard/src/types.ts";
+import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } from "./lib/shared/diaria-dashboard-types.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
