@@ -99,13 +99,21 @@ export interface DailyWorkerEnqueueOptions {
  * DLQ) e o Worker não re-enfileira por cima. Diferente do 4xx de validação,
  * não prova que nada saiu: o publisher grava `send_unknown`, nunca `failed`.
  */
+/**
+ * #14252 — início fixo do `reason` que `dailyWorkerEnqueueFailure` grava para
+ * o 409 `send_unknown`. É por ele que a retomada distingue este `send_unknown`
+ * (o Worker recusa a chave para sempre) do `send_unknown` de um envio ambíguo
+ * comum (que `--retry` resolve).
+ */
+export const WORKER_SEND_UNKNOWN_REASON_PREFIX = "send_unknown: o Worker recusou o enfileiramento (409)";
+
 export class DailyWorkerSendUnknownError extends Error {
   readonly idempotencyKey: string;
   /** Key da entry no Worker, quando o 409 a trouxe. */
   readonly key: string | null;
   constructor(idempotencyKey: string, key: string | null) {
     super(
-      `send_unknown: o Worker recusou o enfileiramento (409) porque o disparo anterior de ${idempotencyKey} ` +
+      `${WORKER_SEND_UNKNOWN_REASON_PREFIX} porque o disparo anterior de ${idempotencyKey} ` +
         `terminou ambíguo; o post pode estar no ar. Confira o perfil antes de repostar à mão: ` +
         `o Worker não re-enfileira esta chave por cima (#14243).`,
     );
@@ -137,7 +145,8 @@ function sendUnknownConflictKey(e: WorkerQueueError): string | null {
 /**
  * #14243 — status e motivo que o publisher grava quando o enqueue falha:
  * `send_unknown` para o disparo ambíguo (a retomada pula, `RESUME_SKIP_STATUSES`),
- * `failed` para o resto. Fonte única para Instagram e Threads.
+ * `failed` para o resto. Fonte única para Instagram e Threads, diários, do
+ * carrossel semanal e da Retrospectiva (#14251).
  */
 export function dailyWorkerEnqueueFailure(e: unknown): {
   status: "send_unknown" | "failed";
@@ -148,6 +157,23 @@ export function dailyWorkerEnqueueFailure(e: unknown): {
     return { status: "send_unknown", reason: e.message, ...(e.key && { worker_queue_key: e.key }) };
   }
   return { status: "failed", reason: e instanceof Error ? e.message : String(e) };
+}
+
+/**
+ * #14252 — a entry é o `send_unknown` gravado a partir do 409 do Worker? Nesse
+ * caso `--retry` reenvia o POST e recebe o mesmo 409 (o DO guarda o marcador e
+ * a entry já foi para a DLQ): a saída é conferir o perfil e postar à mão.
+ */
+export function isWorkerSendUnknownEntry(entry: { status?: string | null; reason?: string | null } | null | undefined): boolean {
+  return entry?.status === "send_unknown" && typeof entry.reason === "string" && entry.reason.startsWith(WORKER_SEND_UNKNOWN_REASON_PREFIX);
+}
+
+/** #14252 — aviso da retomada para o `send_unknown` do 409 do Worker (sem `--retry`, que repete o 409). */
+export function workerSendUnknownManualHint(label: string): string {
+  return (
+    `AVISO ${label}: envio não confirmado (send_unknown, o Worker recusou a chave com 409). Conferir o perfil; ` +
+    `se o post não saiu, postar à mão e atualizar a entry no store. --retry não resolve: devolve o mesmo 409 (#14252).`
+  );
 }
 
 /**
