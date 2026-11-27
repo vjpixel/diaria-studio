@@ -22,7 +22,7 @@ import {
   writeVideoPlanManifest,
   type VideoPlanManifest,
 } from "../lib/diaria/video-publish-plan.ts";
-import { authorizationRefusalMessage, consumeBeforeExternalEffects, readAuthorizationStore } from "../lib/diaria/video-publish-authorization.ts";
+import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "../lib/diaria/video-publish-authorization.ts";
 import {
   applyReplacementTimes,
   planScheduledReplacements,
@@ -77,7 +77,6 @@ import {
   threadsTimerScopeError,
   persistShortEntry,
   readShortsRegistry,
-  readShortReplacements,
   recordShortReplacement,
   shortsRegistryPath,
   shortsRegistryWriterFor,
@@ -94,7 +93,7 @@ import { postToWorkerQueue, resolveSocialWorkerToken, resolveSocialWorkerUrl } f
 import { linkedInPostUrnFrom } from "../lib/diaria/linkedin-page-actions.ts";
 import { resolveShortEntryState } from "../lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, defaultLinkedInApiVersion, readPersonalCreds } from "../lib/linkedin-personal.ts";
-import { clampBufferThumbnailOffsetMs, carryOverCover, withMissingCoverRecord, SHORT_COVER_MISSING_ERROR } from "../lib/diaria/short-cover.ts";
+import { clampBufferThumbnailOffsetMs, withMissingCoverRecord, SHORT_COVER_MISSING_ERROR } from "../lib/diaria/short-cover.ts";
 import { THREADS_PROFILE_DESTINATION, ThreadsTimerGateError, readThreadsPersonalCreds } from "../lib/threads-personal-video.ts";
 import {
   ROOT,
@@ -126,7 +125,7 @@ import { InstagramTimerGateError } from "./instagram-confirm.ts";
 import { youtubeShortUploadFile, youtubeShortsPrepareBeforeMarker, youtubeShortUrl, sendYouTubeShortItem } from "./youtube.ts";
 import { sendThreadsProfileItem } from "./threads.ts";
 import { sendInstagramQueueItem, sendInstagramReelItem } from "./instagram-send.ts";
-import type { ShortsEnqueueItem, ShortsPublishItem, ShortsRunResult, ShortsSendContext, ShortsSendIo, ShortsSendStep } from "./send-context.ts";
+import { type ShortsEnqueueItem, type ShortsPublishItem, type ShortsRunResult, type ShortsSendContext, type ShortsSendStep, linkedInSendCreds, shortsResult, shortsResultEntry } from "./send-context.ts";
 import {
   readShortCover,
   corteManualTimerDestinations,
@@ -136,19 +135,11 @@ import {
   loadScheduledGrid,
   loadEditionDayGrid,
   loadWorkerQueueForGrid,
-  parseMarkArg,
-  buildMarkEntry,
-  parseThumbnailOffsetArg,
   resolveEditionUrlInput,
 } from "./run-checks.ts";
-import {
-  sendBufferItem,
-  type ReplacementStoreArg,
-  bufferDeletedRefusal,
-  bufferReplacementMarkRefusal,
-  applyBufferReplacementMark,
-} from "./buffer.ts";
+import { sendBufferItem } from "./buffer.ts";
 import { runUpdateScheduled } from "./update-scheduled.ts";
+import { runMark, runMarkReplaced } from "./mark.ts";
 import {
   USAGE,
   replaceScheduledArgsError,
@@ -173,7 +164,7 @@ import {
   runCorteLifecycle,
 } from "./corte.ts";
 import { updatePublishedArgsError, runUpdatePublished } from "./update-published.ts";
-import { credentialSkippedItems, readInstagramManualFirstCommentReminder, confirmInstagram } from "./confirm.ts";
+import { credentialSkippedItems, confirmInstagram } from "./confirm.ts";
 
 // #14204: a etapa do YouTube mora em youtube.ts; a entrada reexporta daqui.
 export { replacedYouTubeIds } from "./youtube.ts";
@@ -270,19 +261,19 @@ export function replaceLockBusy(dir: string, acquire: typeof acquireTimerLock = 
  * passou pela releitura do registro e tem o marcador de envio gravado). A
  * ordem das condições é a do laço inline de antes: `enqueue` (fila do Worker
  * do Instagram) primeiro, Facebook por último (todo destino de API que sobra é
- * uma página). Exceção = recusa, tratada pelo laço.
+ * uma página). Exceção = recusa, tratada pelo laço. #14327: o marcador de
+ * envio é do laço (`settled.marker`); a etapa não o recebe.
  */
 export async function sendDestinationItem(
   ctx: ShortsSendContext,
   item: ShortsPublishItem | ShortsEnqueueItem,
-  io: ShortsSendIo,
   ytUpload: { file: Buffer; firstFrame: { ms: number } | null } | null,
 ): Promise<ShortsSendStep> {
   if (item.action === "enqueue") return sendInstagramQueueItem(ctx, item);
   if (item.destination === "linkedin_profile") return sendLinkedInProfileItem(ctx, item);
   if (item.destination === "youtube_shorts") return sendYouTubeShortItem(ctx, item, ytUpload);
-  if (item.destination === THREADS_PROFILE_DESTINATION) return sendThreadsProfileItem(ctx, item, io);
-  if (item.destination === "instagram") return sendInstagramReelItem(ctx, item, io);
+  if (item.destination === THREADS_PROFILE_DESTINATION) return sendThreadsProfileItem(ctx, item);
+  if (item.destination === "instagram") return sendInstagramReelItem(ctx, item);
   return sendFacebookItem(ctx, item);
 }
 
@@ -457,128 +448,10 @@ async function mainUnlocked(): Promise<number> {
     }
   }
 
-  if (values["mark-replaced"] !== undefined) {
-    // #12279: logo depois do delete_post do post antigo na Buffer: o registro deixa de apontá-lo.
-    let entries: ShortPublishedEntry[];
-    try {
-      entries = readShortsRegistry(dir, aammdd).entries;
-    } catch (e) {
-      console.error(`publish-shorts: ${(e as Error).message}`);
-      return 2;
-    }
-    let store: ReplacementStoreArg;
-    try {
-      store = readAuthorizationStore(dir, aammdd);
-    } catch (e) {
-      store = (e as Error).message;
-    }
-    const r = bufferDeletedRefusal({ mark: values["mark-replaced"], entries, store });
-    if (!r.ok) {
-      console.error(`publish-shorts: ${r.error}`);
-      return 2;
-    }
-    try {
-      recordShortReplacement(dir, { destination: r.entry.destination, id: r.entry.id, scheduled_at: r.entry.scheduled_at ?? null, replaced_at: new Date().toISOString(), new_video_sha256: null });
-    } catch (e) {
-      console.error(`publish-shorts: histórico não gravado (${(e as Error).message}): o registro ainda aponta ${r.entry.id}; repita o --mark-replaced (#12279)`);
-      return 2;
-    }
-    console.log(JSON.stringify({ mark_replaced: r.entry.destination, id: r.entry.id, scheduled_at: r.entry.scheduled_at ?? null }));
-    return 0;
-  }
-
+  // #14327: --mark-replaced e --mark moram em mark.ts.
+  if (values["mark-replaced"] !== undefined) return runMarkReplaced({ dir, aammdd, markReplaced: values["mark-replaced"] });
   if (values["mark"]) {
-    let mark: ReturnType<typeof parseMarkArg>;
-    try {
-      mark = parseMarkArg(values["mark"]);
-    } catch (e) {
-      console.error((e as Error).message);
-      return 2;
-    }
-    const markScopeErr =
-      linkedinTimerScopeError({ linkedinTimer, only: null, markDestination: mark.destination }) ??
-      instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: null, markDestination: mark.destination }) ??
-      threadsTimerScopeError({ threadsTimer, viaTimer: configuredThreadsViaTimer(), only: null, markDestination: mark.destination });
-    if (markScopeErr) {
-      console.error(`publish-shorts: ${markScopeErr}`);
-      return 2;
-    }
-    // #11547: a capa do X só entra no registro com o offset que a skill DE FATO passou à Buffer.
-    const offset = parseThumbnailOffsetArg(values["thumbnail-offset"], Boolean(mark.bufferId));
-    if (!offset.ok) {
-      console.error(offset.error);
-      return 2;
-    }
-    const built = buildMarkEntry(mark, values["scheduled-at"], new Date().toISOString(), offset.value);
-    if (!built.ok) {
-      console.error(built.error);
-      return 2;
-    }
-    const videoSha = values["video-sha256"];
-    if (videoSha !== undefined && !/^[a-f0-9]{64}$/.test(videoSha)) {
-      console.error("publish-shorts: --video-sha256 espera o hash hexadecimal de 64 caracteres (o `video_sha256` do preparo da Buffer)");
-      return 2;
-    }
-    const readStore = (): ReplacementStoreArg => {
-      try {
-        return readAuthorizationStore(dir, aammdd);
-      } catch (e) {
-        return (e as Error).message;
-      }
-    };
-    // #11547: a confirmação (`x=URL`) mantém o registro da capa do agendamento.
-    const markEntry = carryOverCover(built.entry, values["replaces"] !== undefined ? undefined : published.entries.find((e) => e.destination === mark.destination));
-    const newEntry = videoSha ? { ...markEntry, video_sha256: videoSha } : markEntry;
-    if (values["replaces"] !== undefined) {
-      // #12279: o post novo da Buffer que troca o agendado antigo (criado pela skill depois da rodada de troca).
-      let replaced: ReturnType<typeof readShortReplacements>;
-      try {
-        replaced = readShortReplacements(dir);
-      } catch (e) {
-        console.error(`publish-shorts: ${(e as Error).message}`);
-        return 2;
-      }
-      const refusal = bufferReplacementMarkRefusal({
-        destination: mark.destination,
-        bufferId: mark.bufferId ?? null,
-        replaces: values["replaces"],
-        scheduledAt: values["scheduled-at"],
-        videoSha256: videoSha,
-        entries: published.entries,
-        replaced,
-        store: readStore(),
-      });
-      if (refusal) {
-        console.error(`publish-shorts: ${refusal}`);
-        return 2;
-      }
-      const old = published.entries.find((e) => e.destination === mark.destination) ?? replaced.find((r) => r.destination === mark.destination && r.id === values["replaces"])!;
-      const applied = applyBufferReplacementMark({
-        persist: () => {
-          published = persist(newEntry);
-        },
-        record: () =>
-          recordShortReplacement(dir, { destination: mark.destination, id: values["replaces"], scheduled_at: old.scheduled_at ?? null, replaced_at: new Date().toISOString(), new_video_sha256: videoSha ?? null }),
-        warn: (m) => console.error(`[aviso] ${mark.destination}: ${m}`),
-      });
-      if (!applied.ok) {
-        console.error(`publish-shorts: ${applied.error}`);
-        return 2;
-      }
-    } else {
-      published = persist(newEntry);
-    }
-    if (corte) {
-      syncCorteAgendamentoFailSoft(() =>
-        syncCorteAgendamento(ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries, [], new Date()),
-      );
-    }
-    // #13781: o Reels registrado à mão não ganha o 1º comentário sozinho; lembra o editor.
-    const firstCommentReminder = mark.destination === "instagram" && !corte ? readInstagramManualFirstCommentReminder(dir, aammdd) : null;
-    if (firstCommentReminder) console.error(`[aviso] instagram: ${firstCommentReminder}`);
-    console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}), ...(firstCommentReminder ? { first_comment_reminder: firstCommentReminder } : {}) }));
-    cleanup();
-    return 0;
+    return runMark({ dir, aammdd, markArg: values["mark"], values, corte, linkedinTimer, instagramTimer, threadsTimer, published, persist, cleanup });
   }
 
   // #11159/#11265: a rodada de um timer só toca o destino dele — checado antes
@@ -1040,7 +913,7 @@ async function mainUnlocked(): Promise<number> {
   // #12279 (F1 do review da PR #13107): falha ou incerteza do cancelamento entra no resultado e no exit code.
   for (const r of replaceResults) {
     if (r.outcome === "failed" || r.outcome === "uncertain") {
-      results.push({ destination: r.target.destination, ok: false, error: r.error, phase: r.phase, ...(r.outcome === "uncertain" ? { uncertain: true as const } : {}) });
+      results.push(shortsResult.failed(r.target.destination, r.error, { phase: r.phase, ...(r.outcome === "uncertain" ? { uncertain: true as const } : {}) }));
     }
   }
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
@@ -1136,7 +1009,7 @@ async function mainUnlocked(): Promise<number> {
     workerUrl,
     workerToken,
     igAuthor,
-    liCreds,
+    liCreds: linkedInSendCreds(liCreds),
     liApiVersion,
     threadsCreds,
     registry: {
@@ -1152,7 +1025,7 @@ async function mainUnlocked(): Promise<number> {
   for (const item of plan.items) {
     if (corteLockBusy && corteLockDests.includes(item.destination)) {
       const busy = afterCancelMessage(replaceTargetOf(item.destination), corteLockBusy); // #12279
-      results.push({ destination: item.destination, ok: false, error: busy });
+      results.push(shortsResult.failed(item.destination, busy));
       console.error(`[erro] ${item.destination}: ${busy}`);
       continue;
     }
@@ -1166,12 +1039,12 @@ async function mainUnlocked(): Promise<number> {
       const bufferTarget = item.action === "buffer" ? replaceTargetOf(item.destination) : undefined;
       if (bufferTarget && recheck.kind === "already" && recheck.entry.id !== bufferTarget.old_id) {
         const msg = `o registro de ${item.destination} mudou durante a troca (agora ${recheck.entry.id}, não ${bufferTarget.old_id}): nada enviado`;
-        results.push({ destination: item.destination, ok: false, error: msg });
+        results.push(shortsResult.failed(item.destination, msg));
         console.error(`[erro] ${item.destination}: ${msg}`);
         continue;
       }
       if (recheck.kind === "unreadable") {
-        results.push({ destination: item.destination, ok: false, error: afterCancel(recheck.error) });
+        results.push(shortsResult.failed(item.destination, afterCancel(recheck.error)));
         console.error(`[erro] ${item.destination}: ${afterCancel(recheck.error)}`);
         continue;
       }
@@ -1179,14 +1052,14 @@ async function mainUnlocked(): Promise<number> {
       const apiTarget = replaceTargetOf(item.destination);
       if (apiTarget?.kind === "api" && recheck.kind === "already") {
         const msg = afterCancel(`o registro ainda tem ${recheck.entry.id} (${recheck.entry.status}) em ${item.destination} depois do cancelamento: V2 não enviado`);
-        results.push({ destination: item.destination, ok: false, error: msg });
+        results.push(shortsResult.failed(item.destination, msg));
         console.error(`[erro] ${item.destination}: ${msg}`);
         continue;
       }
       if (recheck.kind === "already" && !bufferTarget) {
         const already = recheck.entry;
         published = recheck.fresh;
-        results.push({ destination: item.destination, ok: true, entry: already, alreadyRegistered: true });
+        results.push(shortsResult.already(item.destination, already));
         console.error(`[aviso] ${item.destination}: registrado por outro processo durante esta rodada (${already.status}${already.url ? `, ${already.url}` : ""}) — não publica de novo`);
         continue;
       }
@@ -1218,7 +1091,7 @@ async function mainUnlocked(): Promise<number> {
       markShortSending(dir, aammdd, writer, { destination: item.destination, started_at: new Date().toISOString(), pid: process.pid });
     } catch (e) {
       const msg = afterCancel(`marcador de envio não gravado (${(e as Error).message}) — não publica sem ele`);
-      results.push({ destination: item.destination, ok: false, error: msg });
+      results.push(shortsResult.failed(item.destination, msg));
       console.error(`[erro] ${item.destination}: ${msg}`);
       continue;
     }
@@ -1238,8 +1111,10 @@ async function mainUnlocked(): Promise<number> {
       }
       // #14204: uma etapa por destino (fila do Worker, LinkedIn, YouTube, Threads, Instagram, Facebook).
       // O texto desta chamada é âncora dos guards #12100 e #11827 (ordem: preparo → marcador → envio); mudou aqui, mude lá.
-      const step = await sendDestinationItem(sendCtx, item, { clearSending }, ytUpload);
+      const step = await sendDestinationItem(sendCtx, item, ytUpload);
       if (step.kind === "settled") {
+        // #14327: o marcador é do laço; `keep` = a plataforma tem o post e o registro não diz.
+        if (step.marker === "clear") clearSending();
         results.push(step.result);
         continue;
       }
@@ -1251,14 +1126,19 @@ async function mainUnlocked(): Promise<number> {
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof InstagramTimerGateError) {
         // #11265: o gate não deixou publicar — o timer não pode tratar isso como "o publish falhou".
-        results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure, ...(e.entry ? { entry: e.entry } : {}) });
+        // #14327: com `entry`, o gate achou o Reels no ar e o registro falhou (`persist-failed`): não reenviar.
+        results.push(
+          e.entry
+            ? shortsResult.sentUnrecorded(item.destination, e.entry, msg, { cause: "preflight", preflight: e.failure })
+            : shortsResult.failed(item.destination, msg, { cause: "preflight", preflight: e.failure }),
+        );
       } else if (e instanceof ThreadsTimerGateError) {
         // #11410: idem pro Threads pessoal (perfil ilegível ou vídeo do dia sem marcador).
-        results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure });
+        results.push(shortsResult.failed(item.destination, msg, { cause: "preflight", preflight: e.failure }));
       } else {
         // #12279: na troca o post antigo já saiu: a falha diz isso, com a causa e o caminho de volta.
         const full = afterCancel(msg);
-        results.push({ destination: item.destination, ok: false, error: full });
+        results.push(shortsResult.failed(item.destination, full));
         console.error(`[erro] ${item.destination}: ${full}`);
         continue;
       }
@@ -1267,7 +1147,7 @@ async function mainUnlocked(): Promise<number> {
     }
     if (outcome.alreadyRegistered) {
       clearSending();
-      results.push({ destination: item.destination, ok: true, entry: outcome.entry, alreadyRegistered: true });
+      results.push(shortsResult.already(item.destination, outcome.entry));
       console.error(`[aviso] ${item.destination}: registrado por outro processo antes do publish (${outcome.entry.status}${outcome.entry.url ? `, ${outcome.entry.url}` : ""}) — não publica de novo`);
       continue;
     }
@@ -1285,11 +1165,11 @@ async function mainUnlocked(): Promise<number> {
         `[erro] ${item.destination}: ${entry.status === "scheduled" ? "AGENDADO" : "PUBLICADO"} (${entry.url ?? entry.id}) mas o registro não foi gravado: ${(e as Error).message}. ` +
           `NÃO rode --publish de novo para este destino sem antes registrá-lo em ${publishedPath}.`,
       );
-      results.push({ destination: item.destination, ok: false, entry, error: `registro não gravado: ${(e as Error).message}` });
+      results.push(shortsResult.sentUnrecorded(item.destination, entry, `registro não gravado: ${(e as Error).message}`));
       continue; // marca de envio fica: a plataforma aceitou e o registro não diz
     }
     clearSending();
-    results.push({ destination: item.destination, ok: true, entry, unconfirmed, ...(outcome.warnings?.length ? { warnings: outcome.warnings } : {}) });
+    results.push(shortsResult.sent(item.destination, entry, { unconfirmed, ...(outcome.warnings?.length ? { warnings: outcome.warnings } : {}) }));
     const where = item.action === "enqueue" ? `na fila do Worker para ${entry.scheduled_at} (key ${entry.id})` : (entry.url ?? entry.id);
     console.error(`[ok] ${item.destination}: ${entry.status} (estado ${state}) ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
     for (const w of outcome.warnings ?? []) console.error(`[aviso] ${item.destination}: ${w}`);
@@ -1354,12 +1234,12 @@ async function mainUnlocked(): Promise<number> {
     );
   }
   const summary = {
-    published: results.filter((r) => r.ok && r.entry?.status === "published").length,
-    scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
+    published: results.filter((r) => r.ok && shortsResultEntry(r)?.status === "published").length,
+    scheduled: results.filter((r) => r.ok && shortsResultEntry(r)?.status === "scheduled").length,
     failed: results.filter((r) => !r.ok).length,
     /** #10772: envio ambíguo — conferir na rede antes de dizer "publicado". */
-    unknown: results.filter((r) => r.ok && r.entry?.status === "send_unknown").length,
-    buffer: results.filter((r) => r.ok && r.buffer).length,
+    unknown: results.filter((r) => r.ok && shortsResultEntry(r)?.status === "send_unknown").length,
+    buffer: results.filter((r) => r.status === "handoff").length,
     pending: plan.items.filter((i) => i.action === "pending_schedule").length,
     skipped: plan.items.filter((i) => i.action.startsWith("skip_") && i.action !== "skip_done").length,
     guided: plan.items.filter((i) => i.action === "guided").length,

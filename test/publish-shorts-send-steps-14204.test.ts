@@ -74,7 +74,7 @@ function ctx(over: Partial<ShortsSendContext> = {}): ShortsSendContext {
     workerUrl: "",
     workerToken: "",
     igAuthor: { ready: false, reason: "autora do Instagram fora desta rodada" },
-    liCreds: { ok: false, reason: "sem LINKEDIN_PERSONAL_ACCESS_TOKEN" } as ShortsSendContext["liCreds"],
+    liCreds: { ready: false, reason: "sem LINKEDIN_PERSONAL_ACCESS_TOKEN" },
     liApiVersion: "202611",
     threadsCreds: { ready: false, reason: "sem THREADS_ACCESS_TOKEN" } as ShortsSendContext["threadsCreds"],
     registry: memoryRegistry(),
@@ -103,10 +103,11 @@ describe("#14204 sendBufferItem", () => {
     const c = ctx();
     const step = await sendBufferItem(c, item);
     assert.equal(step.kind, "settled");
-    const r = step.kind === "settled" ? step.result! : assert.fail();
+    const r = step.result;
+    assert.ok(r.status === "handoff");
     assert.equal(r.ok, true);
-    assert.equal(r.buffer?.videoUrl, "https://r2.example/shorts/261127.mp4");
-    assert.equal(r.buffer?.videoSha256, HASH);
+    assert.equal(r.buffer.videoUrl, "https://r2.example/shorts/261127.mp4");
+    assert.equal(r.buffer.videoSha256, HASH);
     assert.equal((c.registry as ReturnType<typeof memoryRegistry>).persisted.length, 0);
   });
 
@@ -119,9 +120,10 @@ describe("#14204 sendBufferItem", () => {
 
   it("falha no upload vira resultado de erro, sem lançar", async () => {
     const step = await sendBufferItem(ctx({ uploadVideo: async () => { throw new Error("R2 fora"); } }), item);
-    const r = step.kind === "settled" ? step.result! : assert.fail();
+    const r = step.result;
+    assert.ok(r.status === "failed");
     assert.equal(r.ok, false);
-    assert.match(r.error ?? "", /R2 fora/);
+    assert.match(r.error, /R2 fora/);
   });
 });
 
@@ -153,7 +155,7 @@ describe("#14204 sendThreadsProfileItem", () => {
   });
 
   it("sem credencial lança (o laço trata como recusa)", async () => {
-    await assert.rejects(sendThreadsProfileItem(ctx(), publishItem("threads_profile"), { clearSending: () => {} }, fakeDeps()), /sem THREADS_ACCESS_TOKEN/);
+    await assert.rejects(sendThreadsProfileItem(ctx(), publishItem("threads_profile"), fakeDeps()), /sem THREADS_ACCESS_TOKEN/);
   });
 
   it("confere o perfil em qualquer writer, com os ids do outro lado do dia", async () => {
@@ -163,7 +165,6 @@ describe("#14204 sendThreadsProfileItem", () => {
       await sendThreadsProfileItem(
         ctx({ writer, threadsCreds: ready }),
         publishItem("threads_profile"),
-        { clearSending: () => {} },
         fakeDeps({
           preflight: (async (input: unknown) => {
             seen.push(input);
@@ -180,41 +181,41 @@ describe("#14204 sendThreadsProfileItem", () => {
     }
   });
 
-  it("vídeo já no perfil: registra, apaga o marcador e não publica", async () => {
+  it("vídeo já no perfil: registra, pede ao laço para apagar o marcador e não publica", async () => {
     const reg = memoryRegistry();
-    let cleared = 0;
     let published = 0;
     const entry = { destination: "threads_profile", status: "published", id: "T1", url: "https://threads.net/p/T1", scheduled_at: null, at: "x" } as ShortPublishedEntry;
-    const step = await sendThreadsProfileItem(ctx({ threadsCreds: ready, registry: reg }), publishItem("threads_profile"), { clearSending: () => cleared++ }, fakeDeps({
+    const step = await sendThreadsProfileItem(ctx({ threadsCreds: ready, registry: reg }), publishItem("threads_profile"), fakeDeps({
       preflight: (async () => ({ kind: "already", entry })) as never,
       publish: (async () => {
         published++;
         return {} as never;
       }) as never,
     }));
-    assert.deepEqual(step, { kind: "settled", result: { destination: "threads_profile", ok: true, entry, alreadyRegistered: true } });
-    assert.equal(cleared, 1);
+    assert.deepEqual(step, { kind: "settled", marker: "clear", result: { destination: "threads_profile", status: "already", ok: true, entry, alreadyRegistered: true } });
     assert.equal(published, 0);
     assert.deepEqual(reg.persisted, [entry]);
   });
 
-  it("já no perfil e o registro falha: erro de preflight e o marcador FICA", async () => {
-    let cleared = 0;
+  it("já no perfil e o registro falha: sent_unrecorded com cause record (#14327) e o marcador FICA", async () => {
     const entry = { destination: "threads_profile", status: "published", id: "T1", scheduled_at: null, at: "x" } as ShortPublishedEntry;
-    const step = await sendThreadsProfileItem(ctx({ threadsCreds: ready, registry: memoryRegistry([], true) }), publishItem("threads_profile"), { clearSending: () => cleared++ }, fakeDeps({
+    const step = await sendThreadsProfileItem(ctx({ threadsCreds: ready, registry: memoryRegistry([], true) }), publishItem("threads_profile"), fakeDeps({
       preflight: (async () => ({ kind: "already", entry })) as never,
     }));
-    const r = step.kind === "settled" ? step.result! : assert.fail();
+    assert.ok(step.kind === "settled");
+    assert.equal(step.marker, "keep");
+    const r = step.result;
+    assert.ok(r.status === "sent_unrecorded");
     assert.equal(r.ok, false);
-    assert.equal(r.cause, "preflight");
-    assert.match(r.error ?? "", /registro não gravado: EBUSY/);
-    assert.equal(cleared, 0);
+    assert.equal(r.cause, "record");
+    assert.deepEqual(r.entry, entry);
+    assert.match(r.error, /registro não gravado: EBUSY/);
   });
 
   it("fora do perfil: publica com a URL do R2 e a resposta do link do horizontal", async () => {
     const args: Record<string, unknown>[] = [];
     const c = ctx({ threadsCreds: ready, plan: { youtube: { title: "t" }, horizontalLinks: { threads_profile: { replyText: "Vídeo completo: diar.ia.br/video/261127" } } } as never });
-    const step = await sendThreadsProfileItem(c, publishItem("threads_profile"), { clearSending: () => {} }, fakeDeps({
+    const step = await sendThreadsProfileItem(c, publishItem("threads_profile"), fakeDeps({
       publish: (async (a: Record<string, unknown>) => {
         args.push(a);
         return { entry: { destination: "threads_profile", status: "published", id: "T9", scheduled_at: null, at: "x" } };
@@ -250,6 +251,7 @@ describe("#14204 sendPageRepostStep", () => {
       log: () => {},
     });
     assert.equal(r.result?.ok, true);
+    assert.equal(r.result?.status, "sent");
     assert.equal(r.items[0].action, "skip_done");
     assert.equal(reg.persisted[0]?.id, "rp-1");
   });
@@ -259,7 +261,7 @@ describe("#14204 sendPageRepostStep", () => {
     await sendPageRepostStep({
       aammdd: "261127",
       items: [guided],
-      results: [{ destination: "linkedin_profile", ok: true, entry: { ...profile, id: "urn:li:share:999" } }],
+      results: [{ destination: "linkedin_profile", status: "sent", ok: true, entry: { ...profile, id: "urn:li:share:999" } }],
       registry: memoryRegistry([profile]),
       enqueue: async (p) => {
         payloads.push(p);
@@ -282,7 +284,8 @@ describe("#14204 sendPageRepostStep", () => {
       log: () => {},
     });
     assert.equal(r.result?.ok, false);
-    assert.match(r.result?.error ?? "", /--mark linkedin_page_repost=rp-1/);
+    assert.ok(r.result?.status === "sent_unrecorded", "o repost está na fila: não reenviar");
+    assert.match(r.result.error, /--mark linkedin_page_repost=rp-1/);
   });
 });
 
@@ -311,19 +314,18 @@ describe("#14204 prepareInstagramChromeStep", () => {
 describe("#14204 sendDestinationItem (roteamento do laço)", () => {
   it("cada destino vai para a sua etapa (a recusa de credencial de cada uma prova a rota)", async () => {
     const c = ctx();
-    const io = { clearSending: () => {} };
-    await assert.rejects(sendDestinationItem(c, publishItem("linkedin_profile"), io, null), /sem LINKEDIN_PERSONAL_ACCESS_TOKEN/);
-    await assert.rejects(sendDestinationItem(c, publishItem("threads_profile"), io, null), /sem THREADS_ACCESS_TOKEN/);
-    await assert.rejects(sendDestinationItem(c, publishItem("instagram"), io, null), /autora do Instagram fora desta rodada/);
+    await assert.rejects(sendDestinationItem(c, publishItem("linkedin_profile"), null), /sem LINKEDIN_PERSONAL_ACCESS_TOKEN/);
+    await assert.rejects(sendDestinationItem(c, publishItem("threads_profile"), null), /sem THREADS_ACCESS_TOKEN/);
+    await assert.rejects(sendDestinationItem(c, publishItem("instagram"), null), /autora do Instagram fora desta rodada/);
     await assert.rejects(sendLinkedInProfileItem(c, publishItem("linkedin_profile")), /sem LINKEDIN_PERSONAL_ACCESS_TOKEN/);
-    await assert.rejects(sendInstagramReelItem(c, publishItem("instagram"), io), /autora do Instagram fora desta rodada/);
+    await assert.rejects(sendInstagramReelItem(c, publishItem("instagram")), /autora do Instagram fora desta rodada/);
   });
 
   it("enqueue vai para a fila do Worker antes de olhar o destino", async () => {
     let enqueued = 0;
     const item = { destination: "instagram", mode: "api", action: "enqueue", caption: "l", scheduledAt: "2026-11-28T15:00:00.000Z", igAccount: "diaria", idempotencyKey: "k" } as const;
     // Sem Worker configurado o postToWorkerQueue real recusaria; a rota é provada pelo upload do vídeo que a fila faz primeiro.
-    const step = sendDestinationItem(ctx({ uploadVideo: async () => { enqueued++; throw new Error("upload da fila"); } }), item as never, { clearSending: () => {} }, null);
+    const step = sendDestinationItem(ctx({ uploadVideo: async () => { enqueued++; throw new Error("upload da fila"); } }), item as never, null);
     await assert.rejects(step, /upload da fila/);
     assert.equal(enqueued, 1);
   });
@@ -369,58 +371,55 @@ describe("#14204 sendInstagramReelItem (deps falsas)", () => {
 
   it("rodada principal sem corte: sem gate da conta (nenhuma leitura do /media), publica", async () => {
     const calls: string[] = [];
-    const step = await sendInstagramReelItem(ctx({ igAuthor: author }), publishItem("instagram"), { clearSending: () => assert.fail("não apaga o marcador") }, igDeps({ calls }));
+    const step = await sendInstagramReelItem(ctx({ igAuthor: author }), publishItem("instagram"), igDeps({ calls }));
     assert.equal(step.kind, "outcome");
     assert.deepEqual(calls, ["publish"]);
   });
 
-  it("timer do Instagram: gate antes, Reels já na conta → registra, apaga o marcador 1×, avisos de collab, não publica", async () => {
+  it("timer do Instagram: gate antes, Reels já na conta → registra, pede para apagar o marcador, avisos de collab, não publica", async () => {
     const calls: string[] = [];
-    let cleared = 0;
     const reg = memoryRegistry();
     const step = await sendInstagramReelItem(
       ctx({ igAuthor: author, writer: "instagram-timer", registry: reg }),
       publishItem("instagram"),
-      { clearSending: () => cleared++ },
       igDeps({ calls, decisions: [{ kind: "register", entry: reel("MAO"), candidates: [], matchedBy: "marker" }], collab: ["falta o convite da @vjpixel"] }),
     );
-    assert.equal(cleared, 1);
     assert.ok(!calls.includes("publish"), "não publica de novo");
     assert.deepEqual(step, {
       kind: "settled",
-      result: { destination: "instagram", ok: true, entry: reel("MAO"), alreadyRegistered: true, matchedBy: "marker", warnings: ["falta o convite da @vjpixel"] },
+      marker: "clear",
+      result: { destination: "instagram", status: "already", ok: true, entry: reel("MAO"), alreadyRegistered: true, matchedBy: "marker", warnings: ["falta o convite da @vjpixel"] },
     });
     assert.deepEqual(reg.persisted.map((e) => e.id), ["MAO"]);
   });
 
   it("timer: nada no 1º gate, Reels achado na reconferência antes do media_publish → já registrado", async () => {
     const calls: string[] = [];
-    let cleared = 0;
     const step = await sendInstagramReelItem(
       ctx({ igAuthor: author, writer: "instagram-timer" }),
       publishItem("instagram"),
-      { clearSending: () => cleared++ },
       igDeps({ calls, decisions: [{ kind: "refuse", reason: "nada", candidates: [], cause: "none" }, { kind: "register", entry: reel("MAO2"), candidates: [], matchedBy: "marker" }] }),
     );
-    assert.equal(cleared, 1);
     assert.deepEqual(calls.filter((c) => c === "read").length, 2, "gate antes e reconferência");
-    assert.equal(step.kind, "settled");
-    const r = step.kind === "settled" ? step.result : assert.fail();
+    assert.ok(step.kind === "settled");
+    assert.equal(step.marker, "clear");
+    const r = step.result;
+    assert.ok(r.status === "already");
     assert.equal(r.alreadyRegistered, true);
     assert.equal(r.matchedBy, "marker");
-    assert.equal(r.entry?.id, "MAO2");
+    assert.equal(r.entry.id, "MAO2");
   });
 
   it("timer: nada na conta → publica pelo gate (outcome) sem apagar o marcador aqui", async () => {
     const calls: string[] = [];
-    const step = await sendInstagramReelItem(ctx({ igAuthor: author, writer: "instagram-timer" }), publishItem("instagram"), { clearSending: () => assert.fail("o laço apaga depois do registro") }, igDeps({ calls }));
+    const step = await sendInstagramReelItem(ctx({ igAuthor: author, writer: "instagram-timer" }), publishItem("instagram"), igDeps({ calls }));
     assert.equal(step.kind, "outcome");
     assert.deepEqual(calls, ["sameDay", "chrome", "read", "publish", "read"]);
   });
 
   it("corte avulso na rodada principal também passa pelo gate da conta", async () => {
     const calls: string[] = [];
-    await sendInstagramReelItem(ctx({ igAuthor: author, writer: "main", corte }), publishItem("instagram"), { clearSending: () => {} }, igDeps({ calls }));
+    await sendInstagramReelItem(ctx({ igAuthor: author, writer: "main", corte }), publishItem("instagram"), igDeps({ calls }));
     assert.ok(calls.includes("read"), "o corte confere a conta");
   });
 });
