@@ -20,7 +20,13 @@
  *
  * Uso:
  *   npx tsx scripts/eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force] \
- *     [--selection criterion|fallback_last|manual] [--pct-correct <number|null>]
+ *     [--selection criterion|fallback_last|manual] [--pct-correct <number|null>] \
+ *     [--sd-prompt-text "<texto>"]
+ *
+ * `--sd-prompt-text` (#14269) substitui o texto da Wikimedia no prompt positivo
+ * da imagem de IA (o sufixo de estilo/enquadramento continua) — correção do
+ * editor quando a descrição fala do preparo da amostra e não da imagem. Para
+ * regerar a mesma edição, combinar com `--force`.
  *
  * `--selection`/`--pct-correct` (#2869) são só pro caller mensal — gravados em
  * `_internal/01-eia-meta.json` pra rastreabilidade de COMO a edição do É IA?
@@ -29,6 +35,7 @@
  *
  * Output JSON em stdout: { out_md, out_real, out_ia, out_meta, image_title, image_credit, image_date_used, rejections[], sd_prompt_locale }
  * (#4625: sd_prompt_locale é "pt" | "en" | "pt_fallback" — ver resolveSdPromptDescription.)
+ * (#14269: sd_prompt_source é "override" | "caption" | "caption+description" | "description" — ver chooseSdPromptText.)
  * Exit code != 0 em qualquer falha bloqueante (Wikimedia API down, sem POTD elegível, Gemini down).
  *
  * Resume-aware (#192): se Stage 4 já completo (md + meta + par de imagens
@@ -1227,6 +1234,107 @@ export async function resolveSdPromptDescription(
 const FRAMING_SUFFIX =
   ". Leave at least 12% empty margin on all four edges of the frame; the main subjects — especially any that readers are meant to compare closely — must occupy no more than the upper two-thirds of the frame height, fully visible and never touching or cropped by the top, bottom, left or right edge.";
 
+/**
+ * #14269: padrões de descrição que falam do PREPARO da amostra ("como a foto
+ * foi feita") em vez do conteúdo visual. Caso real (edição 261127, POTD
+ * "Liquid Crystal Phase Transition"): "Após ampliar a imagem 100 vezes, uma
+ * gota de cristal líquido foi colocada em uma lâmina de vidro e uma lamela
+ * foi colocada por cima." — o gerador desenhou uma lâmina de vidro sobre uma
+ * mesa, e a foto real é uma micrografia de luz polarizada. Heurística
+ * deliberadamente simples (PT e EN); errar para o lado de "parece preparo"
+ * só troca a fonte para a legenda, que também descreve a imagem.
+ */
+const PREPARATION_PATTERNS: RegExp[] = [
+  // PT
+  /\b(foi|foram) (colocad|preparad|montad|depositad|aplicad|espalhad|tingid|corad)[oa]s?\b/i,
+  /\bl[âa]mina(s)? de vidro\b/i,
+  /\bl[âa]m[íi]nula\b/i,
+  /\blamela\b/i,
+  /\bap[óo]s (ampliar|preparar|colocar|montar)\b/i,
+  /\bamostra (foi|era)\b/i,
+  // EN
+  /\b(was|were) (placed|prepared|mounted|deposited|applied|spread|stained)\b/i,
+  /\b(glass|microscope) slides?\b/i,
+  /\bcover ?slips?\b/i,
+  /\bsample (was|is) (prepared|placed|mounted)\b/i,
+  /\bafter (magnifying|preparing|placing|mounting)\b/i,
+];
+
+/** #14269: true quando o texto soa a "como a amostra foi preparada", não ao que se vê. */
+export function looksLikePreparationText(text: string): boolean {
+  const plain = stripHtml(text);
+  return PREPARATION_PATTERNS.some((re) => re.test(plain));
+}
+
+/**
+ * #14269: legenda estruturada (`structured.captions`) da imagem, que descreve
+ * o conteúdo visual. Ordem: `en` primeiro (legenda do Commons costuma nascer
+ * em inglês e serve a todos os backends, inclusive os treinados em EN), depois
+ * `pt`, `pt-br` e a primeira não vazia.
+ */
+export function pickVisualCaption(
+  image: Pick<WikimediaImage, "structured">,
+  englishOnly = false,
+): string | undefined {
+  const captions = image.structured?.captions;
+  if (!captions) return undefined;
+  // Backend treinado em EN (comfyui/cloudflare, #4620): legenda em outra
+  // língua misturada ao prompt EN degradaria o resultado — só `en` serve.
+  const picked = englishOnly
+    ? captions.en
+    : captions.en ||
+      captions.pt ||
+      captions["pt-br"] ||
+      Object.values(captions).find((v) => typeof v === "string" && v.trim() !== "");
+  const clean = picked ? stripHtml(picked).trim() : "";
+  return clean || undefined;
+}
+
+export type SdPromptSource = "override" | "caption" | "caption+description" | "description";
+
+/**
+ * #14269: decide o texto final que vira o prompt positivo, a partir do texto
+ * já resolvido por `resolveSdPromptDescription` (idioma) e da legenda visual.
+ *
+ * - `override` (flag `--sd-prompt-text`) vence sempre: correção do editor sem
+ *   editar JSON.
+ * - descrição que soa a preparo + legenda disponível → só a legenda.
+ * - legenda disponível e não contida na descrição → legenda + descrição (a
+ *   legenda abre o prompt, ancorando o conteúdo visual).
+ * - sem legenda (ou legenda igual à descrição) → descrição, como antes.
+ *
+ * `englishOnly`: backend que exige prompt EN (`backendNeedsEnglishPrompt`) só
+ * aceita a legenda `en`.
+ */
+export function chooseSdPromptText(
+  descriptionText: string,
+  image: Pick<WikimediaImage, "structured">,
+  opts: { overrideText?: string; englishOnly?: boolean } = {},
+): { text: string; source: SdPromptSource } {
+  const override = opts.overrideText?.trim();
+  if (override) return { text: override, source: "override" };
+  const description = stripHtml(descriptionText).trim();
+  const caption = pickVisualCaption(image, opts.englishOnly ?? false);
+  if (!caption) return { text: descriptionText, source: "description" };
+  const norm = (s: string) => stripHtml(s).toLowerCase().replace(/\s+/g, " ").replace(/[.\s]+$/, "").trim();
+  // Sem `description` nativa, `resolveDescriptionText` já devolveu uma das
+  // legendas (#8198): o texto já é legenda, não há o que combinar.
+  const captionValues = Object.values(image.structured?.captions ?? {}).filter(
+    (v): v is string => typeof v === "string" && v.trim() !== "",
+  );
+  if (description && captionValues.some((v) => norm(v) === norm(description))) {
+    return { text: descriptionText, source: "caption" };
+  }
+  if (!description || looksLikePreparationText(description)) {
+    return { text: caption, source: "caption" };
+  }
+  if (norm(description).includes(norm(caption))) {
+    return { text: descriptionText, source: "description" };
+  }
+  const captionSentence = /[.!?]$/.test(caption) ? caption : `${caption}.`;
+  return { text: `${captionSentence} ${description}`, source: "caption+description" };
+}
+
 /** #4620: transform puro texto→prompt — caller resolve qual texto (idioma/fonte) passar, ver `resolveSdPromptDescription`. */
 export function buildSdPrompt(descriptionText: string): {
   positive: string;
@@ -1309,7 +1417,7 @@ async function main(): Promise<number | void> {
   const args = parseArgs(process.argv.slice(2));
   const edition = args.edition;
   if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("Uso: eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force]");
+    console.error('Uso: eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force] [--sd-prompt-text "<texto>"]');
     return 1;
   }
   const force = process.argv.includes("--force");
@@ -1479,7 +1587,17 @@ async function main(): Promise<number | void> {
     imageDate,
     edition,
   );
-  const sdPrompt = buildSdPrompt(sdDescriptionText);
+  // #14269: legenda visual vs. descrição (que às vezes fala do preparo da
+  // amostra) vs. override do editor (`--sd-prompt-text`). A fonte usada vai
+  // pro stderr (o stdout é o JSON que o orchestrator parseia) e pro contrato
+  // JSON final (`sd_prompt_source`).
+  const sdPromptOverride = args["sd-prompt-text"];
+  const { text: sdPromptText, source: sdPromptSource } = chooseSdPromptText(sdDescriptionText, image, {
+    overrideText: sdPromptOverride,
+    englishOnly: backendNeedsEnglishPrompt(imageGenerator),
+  });
+  process.stderr.write(`[eia-compose] info: prompt de imagem do É IA? — fonte do texto: ${sdPromptSource}\n`);
+  const sdPrompt = buildSdPrompt(sdPromptText);
   const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
   const iaPath = resolve(outDir, iaFilename);
@@ -1501,7 +1619,9 @@ async function main(): Promise<number | void> {
     // a descrição pro backend do fallback antes de gerar.
     if (backendNeedsEnglishPrompt(fb) && sdPromptLocale !== "en") {
       const { text: fbText } = await resolveSdPromptDescription(fb as ImageGenerator, image, imageDate, edition);
-      writeFileSync(sdPromptPath, JSON.stringify(buildSdPrompt(fbText), null, 2));
+      const fbChoice = chooseSdPromptText(fbText, image, { overrideText: sdPromptOverride, englishOnly: true });
+      process.stderr.write(`[eia-compose] info: prompt do fallback ${fb} — fonte do texto: ${fbChoice.source}\n`);
+      writeFileSync(sdPromptPath, JSON.stringify(buildSdPrompt(fbChoice.text), null, 2));
     }
     runNode(fbScript, [sdPromptPath, iaPath, "diaria_eia_"]);
   }
@@ -1676,6 +1796,8 @@ async function main(): Promise<number | void> {
       // `rejections[]` — orchestrator-stage-3.md reporta quando vier
       // "pt_fallback" (ver docstring de resolveSdPromptDescription).
       sd_prompt_locale: sdPromptLocale,
+      // #14269: de onde veio o texto do prompt positivo.
+      sd_prompt_source: sdPromptSource,
     }),
   );
 }
