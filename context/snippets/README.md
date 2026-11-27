@@ -31,6 +31,16 @@ tendência de queda + anti-repetição vs. a edição anterior, controlada por
 automação — continua manual/opt-in raro, decisão do #4274. Ver a docstring
 de `select-boxes-by-clicks.ts` pra precedência completa.
 
+**Caixa de um dia só (#14334): `boxes_divulgacao_auto.scheduled_pins`.**
+Cada entrada `{ "slot": 1|2, "file": "X.md", "from": "AAAA-MM-DD",
+"until": "AAAA-MM-DD", "exclude_files": [...] }` ocupa o slot só nas edições
+cuja DATA cai na janela (inclusive); `exclude_files` (oferta concorrente)
+não sai em nenhum outro slot nessas edições. Fora da janela a entrada não
+tem efeito, sem reverter nada depois, e as edições produzidas antes do dia
+não recebem a caixa (o `pinned_slots` comum entra no ar no merge e fica
+preso até alguém despinar, #10303). O `expires:` do header continua valendo
+por cima. Registro: `mode: "scheduled-pin"` em `_internal/box-selection.json`.
+
 **A anti-repetição vale só pros candidatos automáticos, não pro fallback
 (#9217, decisão do editor).** Quando nenhum candidato sobra, o slot cai em
 `boxes_divulgacao.slotN` — e esse fallback PODE repetir a caixa (ou o
