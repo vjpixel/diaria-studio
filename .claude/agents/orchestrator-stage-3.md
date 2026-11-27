@@ -28,7 +28,7 @@ Exit code handling:
 - `1` → **FATAL:** "Etapa 2 não completou (sentinel ausente). Re-rodar `/diaria-2-escrita {AAMMDD}` antes de continuar." Parar.
 - `2` → **FATAL:** "Outputs do Stage 2 ausentes. Re-rodar Etapa 2." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message "stage2_sentinel_missing_legacy"`), continuar.
-- `4` → sentinel do Stage 2 presente mas malformado (#14133/#14221: JSON ilegível ou campos inválidos). **Não é o exit 4 do `stale-edition-guard.ts`** ("outra máquina à frente"): nada de rodar o guard. Halt banner `render-halt-banner.ts --stage "3 — Imagens" --reason "sentinel do Stage 2 ilegível: {linha [error] do stderr}" --action "conferir {EDITION_DIR}/_internal/.step-2-done.json e aguardar o sync; se seguir inválido depois do sync (ou o [error] apontar campo inválido, não JSON ilegível), o editor confirma e re-roda `/diaria-2-escrita {AAMMDD}` para regravar o sentinel"`. Nunca re-rodar a etapa anterior por conta própria. Parar.
+- `4` → sentinel do Stage 2 presente mas malformado (#14133/#14221). **Não é o exit 4 do `stale-edition-guard.ts`**. Halt banner com a linha `[error]` no `--reason`: conferir `.step-2-done.json` e aguardar o sync; se seguir inválido, o editor confirma e re-roda `/diaria-2-escrita {AAMMDD}`. Nunca por conta própria. Parar.
 
 **MCP disconnect logging:** ver `orchestrator.md` § "MCP disconnect — logging + halt banner" (#759/#737). Nesta etapa: `--stage 3`, banner `--stage "3 — Imagens"`, reason inclui também falha na API de imagem (Gemini/ComfyUI).
 
