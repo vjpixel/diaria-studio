@@ -101,7 +101,7 @@ import {
   resolveSocialWorkerToken,
   resolveSocialWorkerUrl,
 } from "./lib/worker-queue-client.ts";
-import { enqueueDailyWorkerPost, type DailyWorkerEnqueueOptions } from "./lib/daily-worker-enqueue.ts"; // #14242
+import { dailyWorkerEnqueueFailure, enqueueDailyWorkerPost, type DailyWorkerEnqueueOptions } from "./lib/daily-worker-enqueue.ts"; // #14242, #14251
 import { dispatchFacebookCarousel, facebookOutcomeEntry, validateScheduledTime } from "./publish-facebook.ts"; // #14170
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
@@ -961,13 +961,14 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
             ? await o.dispatchers.facebook(input, u.page!.slug)
             : await o.dispatchers.worker(channel, input);
     } catch (e) {
+      // #14251: o 409 `send_unknown` do Worker (disparo anterior ambíguo, o
+      // post pode estar no ar) vira `send_unknown`, nunca `failed`.
       entry = {
         platform: RETROSPECTIVA_SOCIAL_PLATFORM[channel],
         destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
         url: null,
-        status: "failed",
         scheduled_at: null,
-        reason: (e as Error).message,
+        ...dailyWorkerEnqueueFailure(e),
       };
     }
     entry = { ...entry, historia, ...(u.page ? { page: u.page.slug } : {}) };
@@ -990,7 +991,8 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       results.push({ ...base, action: "failed", reason });
       continue;
     }
-    // #14170: envio ambíguo do Facebook (o post pode existir na página). Sai
+    // #14170: envio ambíguo do Facebook (o post pode existir na página), ou
+    // (#14251) o 409 `send_unknown` do Worker no Instagram/Threads. Sai
     // como falha no resumo (exit != 0, o editor confere a página), mas o
     // store guarda `send_unknown`, que `findLiveSocialDispatch` trata como
     // vivo: a reexecução não reenvia (senão duplicaria o post).

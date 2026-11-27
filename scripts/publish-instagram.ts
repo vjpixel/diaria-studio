@@ -116,7 +116,13 @@ import {
   resolveSocialWorkerToken,
   type WorkerQueuePayload,
 } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
-import { dailyWorkerEnqueueFailure, dailyWorkerQueueIdempotencyKey, enqueueDailyWorkerPost } from "./lib/daily-worker-enqueue.ts"; // #14010, #14243
+import {
+  dailyWorkerEnqueueFailure,
+  dailyWorkerQueueIdempotencyKey,
+  enqueueDailyWorkerPost,
+  isWorkerSendUnknownEntry,
+  workerSendUnknownManualHint,
+} from "./lib/daily-worker-enqueue.ts"; // #14010, #14243, #14252
 import {
   fetchInstagramContainerStatus,
   findRecentInstagramMediaByCaption,
@@ -144,8 +150,13 @@ export function parseInstagramRetryIds(
   return parseRetryIdList(raw, flagWithoutValue, INSTAGRAM_RETRY_IDS, { noun: "os posts", example: "--retry d2 ou --retry d2,um" });
 }
 
-/** #13076 — instrução de recuperação de um `send_unknown`: re-tenta só aquele post. */
-export function sendUnknownInstagramHint(d: string): string {
+/**
+ * #13076 — instrução de recuperação de um `send_unknown`: re-tenta só aquele post.
+ * #14252 — exceto o `send_unknown` do 409 do Worker (`entry`), em que `--retry`
+ * devolve o mesmo 409: aí a dica é conferir o perfil e postar à mão.
+ */
+export function sendUnknownInstagramHint(d: string, entry?: Pick<PostEntry, "status" | "reason"> | null): string {
+  if (isWorkerSendUnknownEntry(entry)) return workerSendUnknownManualHint(`instagram/${d}`);
   return `AVISO instagram/${d}: envio não confirmado (send_unknown). Conferir o perfil do Instagram; se o post não saiu, rodar com --retry ${d} (re-tenta só este post).`;
 }
 
@@ -910,7 +921,7 @@ async function main(): Promise<number | void> {
     if (decision.action === "not-selected") continue;
     if (decision.action === "skip-existing") {
       console.log(`SKIP instagram/${d} — already ${decision.existing.status}`);
-      if (decision.existing.status === "send_unknown") console.warn(sendUnknownInstagramHint(d));
+      if (decision.existing.status === "send_unknown") console.warn(sendUnknownInstagramHint(d, decision.existing));
       results.push(decision.existing);
       skippedCount += 1;
       continue;
