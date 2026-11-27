@@ -325,12 +325,41 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
     ];
     const leve = await runGuards(JSON.stringify({ tool_input: { command: "leve" } }), { guards, hooksDir: dir });
     assert.deepEqual(leve.outputs, ["", ""]);
-    assert.equal(existsSync(marker), false, "não se aplica: nenhum processo");
+    assert.equal(existsSync(marker), false, "não se aplica: CLI não executado");
     assert.match(leve.notices.join("\n"), /lanca-filtro\.mjs filtro lançou/, "filtro que lança é registrado");
     const out = await dispatch(JSON.stringify({ tool_input: { command: "pesado" } }), { guards, hooksDir: dir });
     assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, "pesado");
     assert.equal(JSON.parse(readFileSync(marker, "utf8")).tool_input.command, "pesado", "o processo recebe o stdin original");
   });
+
+  for (const [name, source] of [
+    ["appliesTo síncrono", "export function appliesTo() { while (true) {} }"],
+    ["import síncrono", "while (true) {}"],
+    ["import assíncrono", "setInterval(() => {}, 1000); await new Promise(() => {});"],
+  ]) {
+    it(`#14302: ${name} travado não impede outro guard de negar`, () => {
+      const dir = fixtureDir({ "filtro.mjs": source, "nega.mjs": denyGuard("deny preservado") });
+      const runner = join(dir, "runner.mjs");
+      writeFileSync(runner, `
+        import { dispatch } from ${JSON.stringify(pathToFileURL(DISPATCHER).href)};
+        const out = await dispatch("{}", {
+          hooksDir: ${JSON.stringify(dir)},
+          guards: [
+            { file: "filtro.mjs", mode: "spawn-if-applies", timeoutMs: 700 },
+            { file: "nega.mjs", mode: "worker", timeoutMs: 3000 },
+          ],
+        });
+        process.stdout.write(out);
+      `);
+      // Processo externo com teto: a regressão antiga não pode travar a suíte.
+      const result = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 5000, windowsHide: true });
+      assert.equal(result.error, undefined, result.stderr);
+      assert.equal(result.status, 0, result.stderr);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecisionReason, "deny preservado");
+      assert.match(output.systemMessage, /filtro\.mjs passou de 700 ms/);
+    });
+  }
 
   it("guard de processo próprio que passa do teto é morto e fica sem saída", async () => {
     const script = [

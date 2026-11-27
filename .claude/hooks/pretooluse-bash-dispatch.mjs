@@ -14,9 +14,10 @@
 //   dele e ele fica sem saída.
 // - `spawn-if-applies`: todo guard que toca disco ou git, em processo
 //   próprio, só quando o filtro dele (`appliesTo`, exportado pelo hook, puro,
-//   sem disco) diz que ele tem o que decidir. Processo travado em disco, git
+//   sem disco) diz que ele tem o que decidir. Import e filtro também rodam
+//   em processo cancelável, dentro do mesmo teto (#14302). Processo travado em disco, git
 //   ou rede é morto no teto dele com a árvore de filhos (`killProcessTree`),
-//   como o harness fazia. No Bash comum nenhum se aplica e não há spawn.
+//   como o harness fazia. O CLI só é iniciado quando o filtro se aplica.
 //
 // O que é preservado, guard a guard:
 // - Mesma entrada: cada guard recebe o stdin CRU original (no harness os 16
@@ -238,21 +239,6 @@ function runInWorker(guard, raw, hooksDir) {
   return { done, stop };
 }
 
-/** Avalia o `appliesTo` do guard: `{ applies, notice? }`. */
-async function evaluateFilter(guard, payload, payloadError, hooksDir) {
-  // stdin que não é JSON: um aviso só, em `runGuards`; o guard fail-closed roda.
-  if (payloadError !== null) return { applies: guard.onFilterError === "run" };
-  try {
-    const mod = await import(pathToFileURL(join(hooksDir, guard.file)).href);
-    if (typeof mod.appliesTo !== "function") throw new Error("não exporta appliesTo (contrato #14045)");
-    return { applies: mod.appliesTo(payload) === true };
-  } catch (err) {
-    const run = guard.onFilterError === "run";
-    const what = `filtro lançou (${err?.message ?? err})${run ? ", guard rodado por precaução" : ""}`;
-    return { applies: run, notice: notice(guard.file, what) };
-  }
-}
-
 /**
  * Mata o processo do guard E os filhos dele (tsc, node --test, git): no
  * win32 `taskkill /T /F`, no POSIX o grupo de processos (o filho nasce
@@ -282,32 +268,33 @@ export function killProcessTree(child, { platform = process.platform, spawnFn = 
 }
 
 /** Guard em processo próprio, só quando o filtro dele diz que se aplica. */
-function runSpawnIfApplies(guard, raw, payload, payloadError, hooksDir) {
+function runSpawnIfApplies(guard, raw, payloadError, hooksDir) {
   let child;
   let stopped = false;
+  let timer;
   const stop = () => {
     stopped = true;
+    clearTimeout(timer);
     killProcessTree(child);
   };
-  const done = (async () => {
-    const filter = await evaluateFilter(guard, payload, payloadError, hooksDir);
-    // Quando o guard rodou por precaução, o aviso do filtro vai junto da saída dele.
-    const filterNotice = filter.notice;
-    if (!filter.applies || stopped) return { out: "", notice: filterNotice };
-    return new Promise((resolve) => {
-      let out = "";
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        const notices = [filterNotice, value.notice].filter(Boolean);
-        resolve({ out: value.out, notice: notices.length > 0 ? notices.join("\n") : undefined });
-      };
-      const timer = setTimeout(() => {
-        stop();
-        finish({ out: "", notice: notice(guard.file, `passou de ${guard.timeoutMs} ms`) });
-      }, guard.timeoutMs);
+  const done = new Promise((resolve) => {
+    let filterNotice;
+    let out = "";
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const notices = [filterNotice, value.notice].filter(Boolean);
+      resolve({ out: value.out, notice: notices.length > 0 ? notices.join("\n") : undefined });
+    };
+    // Um teto único cobre import, filtro e CLI (#14302).
+    timer = setTimeout(() => {
+      stop();
+      finish({ out: "", notice: notice(guard.file, `passou de ${guard.timeoutMs} ms`) });
+    }, guard.timeoutMs);
+    const runCli = () => {
+      if (stopped || settled) return;
       try {
         child = spawn(process.execPath, [join(hooksDir, guard.file)], {
           stdio: ["pipe", "pipe", "inherit"],
@@ -325,8 +312,44 @@ function runSpawnIfApplies(guard, raw, payload, payloadError, hooksDir) {
       child.on("close", () => finish({ out }));
       child.stdin.on("error", () => {});
       child.stdin.end(raw);
-    });
-  })();
+    };
+    const filterFailed = (error) => {
+      const run = guard.onFilterError === "run";
+      filterNotice = notice(guard.file, `filtro lançou (${error})${run ? ", guard rodado por precaução" : ""}`);
+      if (run) runCli();
+      else finish({ out: "" });
+    };
+    if (payloadError !== null) {
+      if (guard.onFilterError === "run") runCli();
+      else finish({ out: "" });
+    } else {
+      // Processo, não Worker: até import preso em I/O nativo pode ser morto.
+      let filter;
+      let answered = false;
+      const answer = (message) => {
+        if (answered || settled || stopped) return;
+        answered = true;
+        killProcessTree(filter);
+        if (message.error !== undefined) filterFailed(message.error);
+        else if (message.applies === true) runCli();
+        else finish({ out: "" });
+      };
+      try {
+        filter = child = spawn(process.execPath, [join(HOOK_DIR, "pretooluse-bash-dispatch-filter.mjs"), pathToFileURL(join(hooksDir, guard.file)).href], {
+          stdio: ["pipe", "ignore", "inherit", "ipc"],
+          windowsHide: true,
+          detached: process.platform !== "win32",
+        });
+        filter.on("message", answer);
+        filter.on("error", (err) => answer({ error: err.message }));
+        filter.on("close", () => answer({ error: "filtro saiu sem resposta" }));
+        filter.stdin.on("error", () => {});
+        filter.stdin.end(raw);
+      } catch (err) {
+        answer({ error: err?.message ?? String(err) });
+      }
+    }
+  });
   return { done, stop };
 }
 
@@ -339,10 +362,9 @@ function runSpawnIfApplies(guard, raw, payload, payloadError, hooksDir) {
  * encerrados antes de resolver.
  */
 export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
-  let payload = null;
   let payloadError = null;
   try {
-    payload = JSON.parse(raw || "{}");
+    JSON.parse(raw || "{}");
   } catch (err) {
     payloadError = err;
   }
@@ -351,7 +373,7 @@ export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
   const settled = new Array(guards.length).fill(false);
   const runs = guards.map((g) =>
     g.mode === "spawn-if-applies"
-      ? runSpawnIfApplies(g, raw, payload, payloadError, hooksDir)
+      ? runSpawnIfApplies(g, raw, payloadError, hooksDir)
       : runInWorker(g, raw, hooksDir),
   );
   return new Promise((resolve) => {
