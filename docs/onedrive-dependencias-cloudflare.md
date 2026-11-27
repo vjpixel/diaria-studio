@@ -580,7 +580,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Clarice-Sync | daily 08:30 | armada | `scripts/clarice-sync-brevo.ts` | `clarice-subscribers/.brevo-sync-daily.log` |  | G8, G5, G10 |
 | Diaria-Cursos-Kv-Sync | daily 09:15 | armada | `scripts/sync-cursos-subscribers-kv.ts` | `cursos-subscribers/.kv-sync.log` |  | G10 |
 | Diaria-Hotmart-Vendas-Sync | weekly Saturday 04:30 | armada | `scripts/sync-hotmart-vendas.ts` | `hotmart/.vendas-sync.log` | `diaria-subscribers/diaria-subscribers.db` | G8, G10 |
-| Diaria-Brevo-Diaria-Evaluate | daily 05:30 | armada | `scripts/evaluate-brevo-diaria.ts` | `brevo-diaria/.evaluate.log` | `brevo-diaria/contacts.json` | G5, G7, G10 |
+| Diaria-Brevo-Diaria-Evaluate | daily 05:30 | armada | `scripts/brevo-diaria-daily-apply.ts` | `brevo-diaria/.evaluate.log` | `brevo-diaria/contacts.json` | G5, G7, G10 |
 | Diaria-Sunset-Weekly | weekly Sunday 09:20 | desarmada | `scripts/sunset-dead-subscribers.ts` | `brevo-diaria/.sunset-weekly.log` | `brevo-diaria/contacts.json` | G5, G7, G10 |
 | Diaria-Geo-Citation-Monitor | weekly Sunday 07:00 | armada | `scripts/geo-citation-monitor.ts` | `geo-citations/.monitor.log` |  | G10 |
 | Diaria-Geo-Citation-Staleness-Alarm | weekly Sunday 10:30 | armada | `scripts/geo-citation-staleness-alarm.ts` | `geo-citations/.staleness-alarm.log` |  | G10 |

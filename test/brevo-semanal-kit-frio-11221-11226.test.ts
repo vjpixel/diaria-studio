@@ -1233,11 +1233,11 @@ describe("Stage 5 Brevo no regime semanal (#11226)", () => {
       readPublished: () => (calls.includes("scripts/publish-daily-brevo.ts") ? { campaign_id: 5 } : null),
     };
   }
-  it("terça: contatos rodam, campanha não", () => {
+  it("terça: skip rápido, nem contatos nem campanha (#13981 trocou o --apply diário)", () => {
     const calls: string[] = [];
     const r = runStage5BrevoDispatch("/fake/data/editions/2611/261103", deps("261103", calls));
     assert.equal(r.status, "skipped");
-    assert.deepEqual(calls, ["scripts/brevo-diaria-run.ts"]);
+    assert.deepEqual(calls, []);
   });
   it("config semanal inválida ⇒ failed (não skipped), antes de qualquer passo", () => {
     const calls: string[] = [];

@@ -242,6 +242,12 @@ describe("registro: quem tem retry de rede (#13017)", () => {
     // test/transient-network-retry-send-units-13017.test.ts.
     "Diaria-Clarice-Novos",
     "Diaria-Clarice-Novos-Tarde",
+    // #13981 (review da PR #14281): `brevo-diaria-daily-apply.ts` roda o
+    // `brevo-diaria-run.ts --apply`, que sincroniza contatos/listas/tags e não
+    // envia e-mail (a ativação no Kit é o form de sistema, sem e-mail,
+    // `kit.activateFormId_note`). Modo "step-declares": só sai 105 quando o
+    // `--apply` saiu ≠ 0 com assinatura de rede, sem marcador gravado.
+    "Diaria-Brevo-Diaria-Evaluate",
   ];
   // Enviam e NÃO são idempotentes sob rerrodada (15/11/2026):
   // - Onboarding-Welcome-Run: o e-mail 1/2 só é marcado depois da resposta do
