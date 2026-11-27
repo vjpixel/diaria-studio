@@ -74,8 +74,13 @@ export interface DailyApplyMarker {
   warnings: string[];
 }
 
-/** Pura: o `--apply` já rodou neste dia BRT? Type guard do marcador. */
-export function applyAlreadyRanToday(marker: DailyApplyMarker | null, todayBrt: string): marker is DailyApplyMarker {
+/**
+ * Pura: o `--apply` já rodou neste dia BRT? Devolve `boolean`, sem type guard
+ * (#14320): um `marker is DailyApplyMarker` estreitava o ramo falso para
+ * `null`, mas um marcador de OUTRO dia também cai no ramo falso. O caller que
+ * precisa do marcador no ramo verdadeiro testa `marker !== null` antes.
+ */
+export function applyAlreadyRanToday(marker: DailyApplyMarker | null, todayBrt: string): boolean {
   return marker !== null && marker.day === todayBrt;
 }
 

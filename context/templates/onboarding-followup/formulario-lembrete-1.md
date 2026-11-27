@@ -1,7 +1,7 @@
 <!--
 lembrete 1 de 3 do formulário (#10605)
 assunto: "Viu meu pedido?"
-preview_text: "Até doze perguntas, uns três minutos."
+preview_text: "Até catorze perguntas, uns três minutos."
 ONBOARDING-CORPO-PENDENTE — remover esta linha quando o editor aprovar o texto.
 (O marcador fica aqui DE PROPÓSITO: o texto já está aprovado, mas o envio só
 destrava quando a linha sai da cópia em data/snippets, depois do merge.)
@@ -18,7 +18,7 @@ data/snippets/formulario-lembrete-1.md, sem sobrescrever texto editado).
 -->
 <p>Olá! Tudo bem?</p>
 <p>Faz um tempo que te mandei um formulário curto sobre você e sobre como você usa IA, e a sua resposta ainda não chegou.</p>
-<p>São até doze perguntas, e as obrigatórias são todas de marcar. É com elas que eu ajusto o que entra nas edições.</p>
+<p>São até catorze perguntas, e as obrigatórias são todas de marcar. É com elas que eu ajusto o que entra nas edições.</p>
 <p><a target="_blank" rel="noopener noreferrer nofollow" class="link" href="{{FORM_URL}}">Responder agora</a></p>
 <p>Quando você enviar, os lembretes param.</p>
 <p>Pixel</p>

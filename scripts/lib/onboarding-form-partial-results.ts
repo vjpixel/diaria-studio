@@ -11,9 +11,10 @@
  *    origem do convite: lote da base (`form_base`), onboarding (`form`, o D+6
  *    da escada) ou sem convite registrado no store;
  *  - contagem por opção em cada pergunta de marcar de `FORM_QUESTIONS`
- *    (só respostas da versão atual das perguntas; as de versões anteriores
- *    são contadas à parte, porque as opções eram outras);
- *  - respostas abertas (`relato_falha` e os textos de "Outro/Outra"), SEM
+ *    (respostas da versão atual e das compatíveis, de `FORM_TALLY_MIN_VERSION`
+ *    em diante, #14330; as de versões anteriores a ela são contadas à parte,
+ *    porque as opções eram outras);
+ *  - respostas abertas (`relato_falha`, `apoio_decisao` e os textos de "Outro/Outra"), SEM
  *    e-mail, mais recentes primeiro;
  *  - quantas pessoas toparam a conversa de 20 minutos e, num bloco separado,
  *    quem (e-mail + data), para o editor escrever, com a marcação da persona 2
@@ -31,6 +32,7 @@ import {
   FORM_NADA_DISSO,
   FORM_PAGA_DO_BOLSO,
   FORM_QUESTIONS,
+  FORM_TALLY_MIN_VERSION,
   FORM_VERSION,
   formVersionOf,
   isChoiceQuestion,
@@ -96,7 +98,7 @@ export interface FormPartialResults {
   por_origem: Record<FormResponseOrigin, number>;
   /** Respostas de teste (endereços do editor) deixadas de fora. */
   testes_excluidos: number;
-  /** Respondentes cuja resposta mais recente é de uma versão anterior das perguntas (fora das contagens por opção). */
+  /** Respondentes cuja resposta mais recente é de uma versão anterior a `FORM_TALLY_MIN_VERSION` (fora das contagens por opção). */
   versao_anterior: number;
   /** Versão das perguntas que as contagens usam. */
   versao_atual: number;
@@ -251,6 +253,8 @@ export interface BuildFormPartialResultsOptions {
   questions?: readonly FormQuestion[];
   testEmails?: readonly string[];
   currentVersion?: number;
+  /** #14330: versão mais antiga que conta junto (default `FORM_TALLY_MIN_VERSION`). */
+  minVersion?: number;
 }
 
 /**
@@ -262,6 +266,7 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
   const questions = opts.questions ?? FORM_QUESTIONS;
   const testEmails = opts.testEmails ?? EDITOR_SEED_EMAILS;
   const currentVersion = opts.currentVersion ?? FORM_VERSION;
+  const minVersion = Math.min(opts.minVersion ?? FORM_TALLY_MIN_VERSION, currentVersion);
   const byEmail = indexPeopleByEmail(opts.people ?? {});
   const baseRecipients = new Set((opts.baseRecipientEmails ?? []).map(normalizeFormEmail));
 
@@ -282,7 +287,11 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
     porOrigem[o]++;
   }
 
-  const current = kept.filter((r) => formVersionOf(r) === currentVersion);
+  // #14330: versões compatíveis (só acrescentaram perguntas) contam juntas.
+  const current = kept.filter((r) => {
+    const v = formVersionOf(r);
+    return v >= minVersion && v <= currentVersion;
+  });
   const dates = kept.map((r) => day(r.submitted_at)).filter((d) => d !== "").sort();
   const stamps = kept.map((r) => String(r.submitted_at ?? "")).filter((t) => t !== "").sort();
 

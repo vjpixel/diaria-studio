@@ -270,14 +270,13 @@ export function extractRunWarnings(stdout: string): string[] {
  * `--apply` diário da task `Diaria-Brevo-Diaria-Evaluate`:
  * - marcador do dia BRT ⇒ os avisos gravados nele (vazio se o `--apply` foi limpo);
  * - sem marcador do dia, a partir das 06:00 BRT ⇒ a task falhou ou não rodou;
- * - sem marcador do dia, antes das 05:30 ⇒ a task ainda não rodou, vale o de ontem;
+ * - sem marcador do dia, antes das 05:30 ⇒ a task ainda não rodou e vale o de
+ *   ontem: nada se o marcador é de ontem e limpo (#14320: o dispatch de
+ *   madrugada não sai com aviso à toa); senão, aviso, com os avisos de ontem;
  * - entre 05:30 e 06:00 sem marcador ⇒ a task pode estar rodando: nada.
  */
 export function skipRapidoApplyWarnings(marker: DailyApplyMarker | null, now: Date): string[] {
-  // Cópia sem narrowing: o type guard abaixo estreita `marker` para `null`
-  // no ramo falso, mas lá ele pode ser o marcador de outro dia.
-  const previous: DailyApplyMarker | null = marker;
-  if (applyAlreadyRanToday(marker, brtDayKey(now))) {
+  if (marker !== null && applyAlreadyRanToday(marker, brtDayKey(now))) {
     return marker.warnings.map((w) => `--apply de hoje (${marker.by}): ${w}`);
   }
   const hhmm = hhmmBrt(now.getTime());
@@ -287,8 +286,13 @@ export function skipRapidoApplyWarnings(marker: DailyApplyMarker | null, now: Da
     ];
   }
   if (hhmm < "05:30") {
-    const last = previous ? ` (último --apply registrado: ${previous.day}, por ${previous.by})` : " (nenhum --apply registrado)";
-    return [`--apply de hoje ainda não rodou (task das 05:30): o vigente é o de ontem${last}.`];
+    // BRT não tem horário de verão desde 2019: 24h antes é sempre o dia civil anterior.
+    const yesterday = brtDayKey(new Date(now.getTime() - 24 * 60 * 60_000));
+    if (marker !== null && marker.day === yesterday && marker.warnings.length === 0) return [];
+    const last = marker ? ` (último --apply registrado: ${marker.day}, por ${marker.by})` : " (nenhum --apply registrado)";
+    const head = `--apply de hoje ainda não rodou (task das 05:30) e o de ontem não está limpo${last}.`;
+    const fromYesterday = marker !== null && marker.day === yesterday ? marker.warnings.map((w) => `--apply de ontem (${marker.by}): ${w}`) : [];
+    return [head, ...fromYesterday];
   }
   return [];
 }

@@ -14,9 +14,9 @@ para os lembretes. `scripts/audience-run.ts` lê o mesmo endpoint e gera o
 perfil de audiência (`context/audience-profile.md`) SÓ com estas respostas
 (decisão 10 do editor, 08/11/2026: a survey da Beehiiv foi descartada).
 
-Contrato e perguntas (v3, aprovada pelo editor em 09/11/2026):
-`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`): 12 perguntas
-numeradas e 3 subperguntas sem número, todas de rádio ou caixa (nunca menu
+Contrato e perguntas (v3 aprovada pelo editor em 09/11/2026; v4 em 27/11/2026, #14330):
+`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`): 14 perguntas
+numeradas e 3 subperguntas sem número; as de escolha são de rádio ou caixa (nunca menu
 suspenso). Condicionais (`hiddenWhen`/`shownWhen`), opção exclusiva e o limite
 de "até 3" rodam no cliente (`FORM_SCRIPT` em `src/render.ts`) e são
 validados de novo no servidor, que descarta o que vier de pergunta que não
@@ -24,7 +24,7 @@ aparece. HTML: `src/render.ts` (mobile primeiro, sem dependência de runtime
 de Worker).
 
 Histórico e versão (#12490): cada envio é uma chave própria no KV
-(`resp:{e-mail}:{submitted_at}:{nonce}`), com `form_version: "v3"`, e nunca
+(`resp:{e-mail}:{submitted_at}:{nonce}`), com `form_version` (número da versão do contrato), e nunca
 sobrescreve o anterior. `GET /api/respostas` devolve todos os envios
 (inclusive os antigos `resp:{e-mail}`); o perfil e os lembretes usam o mais
 recente por e-mail (`latestFormResponses`). Tempo de preenchimento: a página

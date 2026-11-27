@@ -160,20 +160,96 @@ export function dailyWorkerEnqueueFailure(e: unknown): {
 }
 
 /**
+ * #14300 — início fixo do `reason` do `send_unknown` que o `--retry` grava
+ * quando o Worker responde 409 `already_fired`/`fire_in_progress` à chave
+ * fixa: o Worker já disparou (ou está disparando) esta chave e não posta nada
+ * novo. Antes o publisher gravava `scheduled` com `scheduled_at` no passado.
+ */
+export const WORKER_ALREADY_FIRED_REASON_PREFIX = "send_unknown: o Worker já disparou esta chave (409 already_fired)";
+
+/**
+ * #14300 — `failure_reason` que outros gravadores põem no `send_unknown` de
+ * uma entry do Worker: a DLQ do Worker (`verify-social-worker-dispatch.ts`,
+ * `send_unknown:`) e a reconciliação de feed (`social-feed-reconcile.ts`,
+ * `absent_from_feed:`, o post disparado e ausente do feed). Nas duas a chave
+ * fixa (#14010) já disparou ou foi para a DLQ, e `--retry` devolve 409.
+ */
+const WORKER_FAILURE_REASON_PREFIXES = ["send_unknown:", "absent_from_feed:"] as const;
+
+/** Campos de uma entry do store que `isWorkerSendUnknownEntry` lê. */
+export interface WorkerSendUnknownEntryLike {
+  status?: string | null;
+  reason?: unknown;
+  failure_reason?: unknown;
+  worker_queue_key?: unknown;
+}
+
+/**
  * #14252 — a entry é o `send_unknown` gravado a partir do 409 do Worker? Nesse
  * caso `--retry` reenvia o POST e recebe o mesmo 409 (o DO guarda o marcador e
  * a entry já foi para a DLQ): a saída é conferir o perfil e postar à mão.
+ *
+ * #14300 — também o `send_unknown` do `--retry` sobre chave já disparada
+ * (`reason` com `WORKER_ALREADY_FIRED_REASON_PREFIX`) e o gravado por quem usa
+ * `failure_reason` (DLQ e feed), desde que a entry tenha `worker_queue_key`:
+ * sem ela o post não passou pelo Worker (publicação imediata) e `--retry`
+ * publica de novo pela API, o que resolve.
  */
-export function isWorkerSendUnknownEntry(entry: { status?: string | null; reason?: string | null } | null | undefined): boolean {
-  return entry?.status === "send_unknown" && typeof entry.reason === "string" && entry.reason.startsWith(WORKER_SEND_UNKNOWN_REASON_PREFIX);
+export function isWorkerSendUnknownEntry(entry: WorkerSendUnknownEntryLike | null | undefined): boolean {
+  if (entry?.status !== "send_unknown") return false;
+  const reason = entry.reason;
+  if (
+    typeof reason === "string" &&
+    (reason.startsWith(WORKER_SEND_UNKNOWN_REASON_PREFIX) || reason.startsWith(WORKER_ALREADY_FIRED_REASON_PREFIX))
+  ) {
+    return true;
+  }
+  const failureReason = entry.failure_reason;
+  return (
+    typeof entry.worker_queue_key === "string" &&
+    entry.worker_queue_key !== "" &&
+    typeof failureReason === "string" &&
+    WORKER_FAILURE_REASON_PREFIXES.some((p) => failureReason.startsWith(p))
+  );
 }
 
 /** #14252 — aviso da retomada para o `send_unknown` do 409 do Worker (sem `--retry`, que repete o 409). */
 export function workerSendUnknownManualHint(label: string): string {
   return (
-    `AVISO ${label}: envio não confirmado (send_unknown, o Worker recusou a chave com 409). Conferir o perfil; ` +
-    `se o post não saiu, postar à mão e atualizar a entry no store. --retry não resolve: devolve o mesmo 409 (#14252).`
+    `AVISO ${label}: envio não confirmado (send_unknown, o Worker já disparou ou recusou a chave). Conferir o perfil; ` +
+    `se o post não saiu, postar à mão e atualizar a entry no store. --retry não resolve: a mesma chave devolve 409 (#14252, #14300).`
   );
+}
+
+/**
+ * #14300 — o `--retry` deste post caiu numa chave que o Worker já disparou?
+ * `enqueueDailyWorkerPost` trata o 409 `already_fired`/`fire_in_progress` como
+ * sucesso (certo no re-run da Etapa 5, em que a entry ainda está agendada), mas
+ * no `--retry` de um `failed`/`send_unknown` nada novo foi enfileirado: gravar
+ * `scheduled` seria afirmar um agendamento que não existe.
+ */
+export function isRetryOverFiredKey(response: DailyWorkerEnqueueResult, retrying: boolean): boolean {
+  return retrying && response.recovered === "already_fired";
+}
+
+/**
+ * #14300 — status e motivo que o publisher grava no `--retry` sobre chave já
+ * disparada: `send_unknown` (o post pode ter saído no disparo anterior), com a
+ * instrução de conferir o perfil e postar à mão. A retomada pula a entry e
+ * `isWorkerSendUnknownEntry` a reconhece, então o aviso não manda `--retry` de
+ * novo.
+ */
+export function workerRetryAlreadyFiredFailure(
+  idempotencyKey: string,
+  key: string,
+): { status: "send_unknown"; reason: string; worker_queue_key: string } {
+  return {
+    status: "send_unknown",
+    reason:
+      `${WORKER_ALREADY_FIRED_REASON_PREFIX}: o --retry não enfileirou nada novo para ${idempotencyKey}. ` +
+      `Conferir o perfil; se o post não saiu, postar à mão (#14300).`,
+    worker_queue_key: key,
+  };
 }
 
 /**

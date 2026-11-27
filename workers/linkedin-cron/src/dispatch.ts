@@ -74,8 +74,10 @@ export interface FireConfig {
   /** #10856 — teto total do poll do Reels (ms). Só os testes passam;
    * produção usa `REELS_POLL_DEADLINE_MS`. */
   reelsPollDeadlineMs?: number;
-  /** #14219 — teto da fase pré-publish do carrossel (IG e Threads, ms). Só os
-   * testes passam; produção usa `CAROUSEL_PREPUBLISH_DEADLINE_MS`. */
+  /** #14219 — teto da fase pré-publish do carrossel (IG e Threads, ms); desde o
+   * #14301 vale também para a imagem única do Threads e para o documento e o
+   * carrossel do LinkedIn. Só os testes passam; produção usa
+   * `CAROUSEL_PREPUBLISH_DEADLINE_MS`. */
   carouselDeadlineMs?: number;
 }
 
@@ -258,8 +260,21 @@ function resolveImageUrls(entry: QueueEntry): string[] {
  * Headers exigidos em toda chamada REST do LinkedIn: `Authorization: Bearer
  * {token}`, `LinkedIn-Version: {apiVersion}` (formato YYYYMM) e
  * `X-Restli-Protocol-Version: 2.0.0`.
+ *
+ * #14301 — a fase antes do `POST /rest/posts` (N × initializeUpload + fetch
+ * dos bytes + PUT, até 30 s cada) corre sob o mesmo teto do carrossel da Meta
+ * (`CAROUSEL_PREPUBLISH_DEADLINE_MS`): sem ele, 10 imagens passavam de 15 min,
+ * muito acima do `CLAIM_TTL_MS` da fila, e outra volta publicava o mesmo
+ * carrossel. Estourar o teto acontece antes do post (nada saiu): `dlq`.
+ * `budget` vem do documento quando este carrossel é o fallback dele (o teto
+ * é um só para os dois).
  */
-async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds: LinkedInCreds): Promise<FireOutcome> {
+async function fireLinkedInCarousel(
+  imageUrls: string[],
+  caption: string,
+  creds: LinkedInCreds,
+  budget: PrepublishBudget = carouselBudget(CAROUSEL_PREPUBLISH_DEADLINE_MS),
+): Promise<FireOutcome> {
   // Defesa em profundidade — mesmo padrão de fireInstagramCarousel: o enqueue
   // (handleEnqueue) já barra >CAROUSEL_MAX_ITEMS, isto cobre entries
   // legacy/inseridas fora do caminho normal.
@@ -285,12 +300,15 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
 
     let uploadUrl: string;
     let imageUrn: string;
+    if (budget.exceeded()) {
+      return { status: "dlq", reason: budget.reason(`LinkedIn carrossel: initializeUpload ${i + 1}/${imageUrls.length}`, imageUrns.length) };
+    }
     try {
       const initRes = await fetch("https://api.linkedin.com/rest/images?action=initializeUpload", {
         method: "POST",
         headers: restHeaders,
         body: JSON.stringify({ initializeUploadRequest: { owner: creds.authorUrn } }),
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: budget.fetchSignal(),
       });
       const text = await initRes.text();
       let data: { value?: { uploadUrl?: string; image?: string }; message?: string };
@@ -320,8 +338,11 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
     }
 
     let imageBytes: ArrayBuffer;
+    if (budget.exceeded()) {
+      return { status: "dlq", reason: budget.reason(`LinkedIn carrossel: fetch da imagem ${i + 1}/${imageUrls.length}`, imageUrns.length) };
+    }
     try {
-      const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      const imgRes = await fetch(imageUrl, { signal: budget.fetchSignal() });
       if (!imgRes.ok) {
         return {
           status: "dlq",
@@ -338,12 +359,15 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
       };
     }
 
+    if (budget.exceeded()) {
+      return { status: "dlq", reason: budget.reason(`LinkedIn carrossel: upload da imagem ${i + 1}/${imageUrls.length}`, imageUrns.length) };
+    }
     try {
       const putRes = await fetch(uploadUrl, {
         method: "PUT",
         headers: { Authorization: `Bearer ${creds.accessToken}` },
         body: imageBytes,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: budget.fetchSignal(),
       });
       if (!putRes.ok) {
         const body = await putRes.text();
@@ -365,6 +389,9 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
   }
 
   // Fase 2: criar o post com content.multiImage.images (ordem preservada).
+  if (budget.exceeded()) {
+    return { status: "dlq", reason: budget.reason("LinkedIn carrossel: POST /rest/posts", imageUrns.length) };
+  }
   try {
     const postRes = await fetch("https://api.linkedin.com/rest/posts", {
       method: "POST",
@@ -464,10 +491,16 @@ async function uploadLinkedInDocument(
   documentUrl: string,
   creds: LinkedInCreds,
   restHeaders: Record<string, string>,
+  budget: PrepublishBudget,
 ): Promise<string> {
+  // #14301 — teto da fase antes do post (ver `fireLinkedInDocument`).
+  const checkBudget = (step: string) => {
+    if (budget.exceeded()) throw new DocumentStepError(budget.reason(step, 0));
+  };
   let pdfBytes: ArrayBuffer;
+  checkBudget("fetch do PDF");
   try {
-    const docRes = await fetch(documentUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const docRes = await fetch(documentUrl, { signal: budget.fetchSignal() });
     if (!docRes.ok) {
       await docRes.body?.cancel().catch(() => {});
       throw new DocumentStepError(`fetch do PDF (${documentUrl}) falhou: HTTP ${docRes.status}`);
@@ -494,12 +527,13 @@ async function uploadLinkedInDocument(
 
   let uploadUrl: string;
   let documentUrn: string;
+  checkBudget("initializeUpload");
   try {
     const initRes = await fetch("https://api.linkedin.com/rest/documents?action=initializeUpload", {
       method: "POST",
       headers: restHeaders,
       body: JSON.stringify({ initializeUploadRequest: { owner: creds.authorUrn } }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: budget.fetchSignal(),
     });
     const text = await initRes.text();
     let data: { value?: { uploadUrl?: string; document?: string }; message?: string };
@@ -518,12 +552,13 @@ async function uploadLinkedInDocument(
     throw new DocumentStepError(`initializeUpload fetch ${fetchFailure(e as Error)}`);
   }
 
+  checkBudget("upload do PDF");
   try {
     const putRes = await fetch(uploadUrl, {
       method: "PUT",
       headers: { Authorization: `Bearer ${creds.accessToken}` },
       body: pdfBytes,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: budget.fetchSignal(),
     });
     if (!putRes.ok) {
       const body = await putRes.text();
@@ -555,6 +590,14 @@ async function uploadLinkedInDocument(
  * `POST /rest/posts` NÃO cai no fallback — o post pode ter saído, e o
  * carrossel em cima seria duplicado: vira `send_unknown` (#11106), que
  * nenhum dos dois caminhos (cron e alarm) refaz.
+ *
+ * #14301 — teto de tempo: o download do PDF, o initializeUpload e o PUT (até
+ * 30 s cada) e, no fallback, a fase de upload do carrossel inteira correm sob
+ * UM só orçamento (`CAROUSEL_PREPUBLISH_DEADLINE_MS`). Somados aos dois
+ * `POST /rest/posts` possíveis (documento e carrossel), o disparo fica em
+ * ≤ 260 s, abaixo do `CLAIM_TTL_MS`. Estourar antes do post do documento cai
+ * no fallback, que já encontra o teto estourado e termina em `dlq` sem
+ * publicar nada.
  */
 async function fireLinkedInDocument(
   documentUrl: string,
@@ -562,7 +605,9 @@ async function fireLinkedInDocument(
   caption: string,
   creds: LinkedInCreds,
   fallbackImageUrls: string[],
+  deadlineMs: number = CAROUSEL_PREPUBLISH_DEADLINE_MS,
 ): Promise<FireOutcome> {
+  const budget = carouselBudget(deadlineMs);
   const restHeaders = {
     Authorization: `Bearer ${creds.accessToken}`,
     "Content-Type": "application/json",
@@ -575,7 +620,7 @@ async function fireLinkedInDocument(
       return { status: "dlq", reason: `LinkedIn documento: ${why} (sem carrossel de fallback)` };
     }
     console.warn(`[dispatch] LinkedIn documento: ${why} — fallback: carrossel de ${fallbackImageUrls.length} imagens`);
-    const outcome = await fireLinkedInCarousel(fallbackImageUrls, caption, creds);
+    const outcome = await fireLinkedInCarousel(fallbackImageUrls, caption, creds, budget);
     // #12372 item 2 — o fallback publicou, mas o documento não: o caller
     // alarma (`documentFallback`), senão um motivo recorrente fica invisível.
     if (outcome.status === "fired") return { ...outcome, documentFallback: `LinkedIn documento: ${why}` };
@@ -592,10 +637,11 @@ async function fireLinkedInDocument(
 
   let documentUrn: string;
   try {
-    documentUrn = await uploadLinkedInDocument(documentUrl, creds, restHeaders);
+    documentUrn = await uploadLinkedInDocument(documentUrl, creds, restHeaders, budget);
   } catch (e) {
     return fallback((e as Error).message);
   }
+  if (budget.exceeded()) return fallback(budget.reason("POST /rest/posts", 0));
 
   let postRes: Response;
   try {
@@ -1200,7 +1246,9 @@ async function publishInstagramContainer(
  */
 export const CAROUSEL_PREPUBLISH_DEADLINE_MS = 200_000;
 
-/** #14219 — orçamento de tempo da fase pré-publish de um carrossel. */
+/** #14219 — orçamento de tempo da fase pré-publish de um carrossel (e, desde
+ * o #14301, da imagem única do Threads e do documento do LinkedIn). */
+type PrepublishBudget = ReturnType<typeof carouselBudget>;
 function carouselBudget(deadlineMs: number) {
   const deadlineAt = Date.now() + deadlineMs;
   const left = () => Math.max(0, deadlineAt - Date.now());
@@ -1955,7 +2003,7 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds, carouselDeadl
   }
   const images = resolveImageUrls(entry);
   if (images.length === 0) return fireThreadsText(entry.text, creds);
-  if (images.length === 1) return fireThreadsSingleImage(images[0], entry.text, creds);
+  if (images.length === 1) return fireThreadsSingleImage(images[0], entry.text, creds, carouselDeadlineMs);
   return fireThreadsCarousel(images, entry.text, creds, carouselDeadlineMs);
 }
 
@@ -2295,9 +2343,9 @@ async function pollThreadsContainerStatus(
   base: string,
   containerId: string,
   accessToken: string,
-  // #14219 — teto total de tempo de parede (ms), passado pelo carrossel com o
-  // que resta de `CAROUSEL_PREPUBLISH_DEADLINE_MS`. Undefined = sem teto
-  // (imagem única, comportamento de antes).
+  // #14219 — teto total de tempo de parede (ms), passado pelo carrossel e,
+  // desde o #14301, pela imagem única, com o que resta de
+  // `CAROUSEL_PREPUBLISH_DEADLINE_MS`. Undefined = sem teto.
   deadlineMs?: number,
 ): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
   const deadline = deadlineMs === undefined ? Infinity : Date.now() + deadlineMs;
@@ -2391,8 +2439,20 @@ async function pollThreadsContainerStatus(
  * `dlq`; timeout de tentativas esgotadas (`permanent:false` — pode ter sido
  * só lentidão do lado da Meta) vira `failed`, retriable.
  */
-async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: ThreadsCreds): Promise<FireOutcome> {
+async function fireThreadsSingleImage(
+  imageUrl: string,
+  caption: string,
+  creds: ThreadsCreds,
+  deadlineMs: number = CAROUSEL_PREPUBLISH_DEADLINE_MS,
+): Promise<FireOutcome> {
   const base = `https://graph.threads.net/${creds.apiVersion}`;
+  // #14301 — mesmo teto do carrossel (#14219) na fase antes do publish (POST
+  // do container + poll). Sem ele, o pior caso (30 s de POST + 10 polls de até
+  // 30 s + 9 × 2 s + 30 s de publish, cerca de 378 s) passava do
+  // `CLAIM_TTL_MS` (300 s): outra volta tomava o claim vencido e o post saía 2
+  // vezes. Teto estourado = nada publicado: `failed` (retriable), como o poll
+  // esgotado.
+  const budget = carouselBudget(deadlineMs);
 
   let containerId: string;
   try {
@@ -2405,7 +2465,7 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
     const res = await fetch(`${base}/${creds.userId}/threads`, {
       method: "POST",
       body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: budget.fetchSignal(),
     });
     const text = await res.text();
     let data: { id?: string; error?: { message?: string } };
@@ -2427,7 +2487,7 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
     return { status: "failed", reason: `Threads /threads (IMAGE) fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
   }
 
-  const poll = await pollThreadsContainerStatus(base, containerId, creds.accessToken);
+  const poll = await pollThreadsContainerStatus(base, containerId, creds.accessToken, budget.left());
   if (!poll.ok) return { status: poll.permanent ? "dlq" : "failed", reason: poll.reason };
 
   return publishThreadsCreation(base, creds, containerId, {
@@ -2638,7 +2698,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
           "channel=linkedin com documento (document_url) mas credenciais da API direta do LinkedIn (LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN) não configuradas — ver #8055",
       };
     }
-    return fireLinkedInDocument(entry.document_url, entry.document_title ?? "", entry.text, config.linkedin, linkedInImages);
+    return fireLinkedInDocument(entry.document_url, entry.document_title ?? "", entry.text, config.linkedin, linkedInImages, config.carouselDeadlineMs);
   }
 
   if (linkedInImages.length > 1) {
@@ -2649,7 +2709,12 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
           "channel=linkedin com carrossel (image_urls) mas credenciais da API direta do LinkedIn (LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN) não configuradas — ver #8052",
       };
     }
-    return fireLinkedInCarousel(linkedInImages, entry.text, config.linkedin);
+    return fireLinkedInCarousel(
+      linkedInImages,
+      entry.text,
+      config.linkedin,
+      carouselBudget(config.carouselDeadlineMs ?? CAROUSEL_PREPUBLISH_DEADLINE_MS),
+    );
   }
 
   const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";

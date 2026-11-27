@@ -120,9 +120,12 @@ import {
   dailyWorkerEnqueueFailure,
   dailyWorkerQueueIdempotencyKey,
   enqueueDailyWorkerPost,
+  isRetryOverFiredKey,
   isWorkerSendUnknownEntry,
+  workerRetryAlreadyFiredFailure,
   workerSendUnknownManualHint,
-} from "./lib/daily-worker-enqueue.ts"; // #14010, #14243, #14252
+  type WorkerSendUnknownEntryLike,
+} from "./lib/daily-worker-enqueue.ts"; // #14010, #14243, #14252, #14300
 import {
   fetchInstagramContainerStatus,
   findRecentInstagramMediaByCaption,
@@ -155,7 +158,7 @@ export function parseInstagramRetryIds(
  * #14252 — exceto o `send_unknown` do 409 do Worker (`entry`), em que `--retry`
  * devolve o mesmo 409: aí a dica é conferir o perfil e postar à mão.
  */
-export function sendUnknownInstagramHint(d: string, entry?: Pick<PostEntry, "status" | "reason"> | null): string {
+export function sendUnknownInstagramHint(d: string, entry?: WorkerSendUnknownEntryLike | null): string {
   if (isWorkerSendUnknownEntry(entry)) return workerSendUnknownManualHint(`instagram/${d}`);
   return `AVISO instagram/${d}: envio não confirmado (send_unknown). Conferir o perfil do Instagram; se o post não saiu, rodar com --retry ${d} (re-tenta só este post).`;
 }
@@ -1065,8 +1068,9 @@ async function main(): Promise<number | void> {
         // #14010 — chave fixa por edição/canal/destaque: o retry do POST e o
         // re-run da Etapa 5 caem na mesma entry, e a falha ambígua consulta a
         // fila antes de gravar `failed` (sem isso, dois posts públicos).
+        const idempotencyKey = dailyWorkerQueueIdempotencyKey("instagram", editionDate, d, { isTest, editionDir });
         const response = await enqueueDailyWorkerPost(workerUrl, workerToken, {
-          idempotency_key: dailyWorkerQueueIdempotencyKey("instagram", editionDate, d, { isTest, editionDir }),
+          idempotency_key: idempotencyKey,
           text: caption,
           image_url: imageUrl,
           // #6005 Parte B — omitido (undefined) quando não há carrossel,
@@ -1079,18 +1083,28 @@ async function main(): Promise<number | void> {
           // #11724: o Worker comenta o permalink logo depois do media_publish (fail-soft lá).
           ...(umReady?.firstComment && { first_comment: umReady.firstComment }),
         }, { logPrefix: "publish-instagram" });
-        const entry: PostEntry = {
-          platform: "instagram",
-          destaque: d,
-          url: null,
-          status: "scheduled",
-          scheduled_at: scheduledIso,
-          worker_queue_key: response.key,
-          ...(umReady?.firstComment && { first_comment_queued: true }), // #11724
-        };
-        tagAndAppend(entry);
-        results.push(entry);
-        console.log(`OK instagram/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
+        // #14300 — `--retry` sobre chave já disparada: o 409 `already_fired`
+        // não enfileirou nada; gravar `scheduled` diria que o post vai sair.
+        if (isRetryOverFiredKey(response, retryIds?.has(d) ?? false)) {
+          const failure = workerRetryAlreadyFiredFailure(idempotencyKey, response.key);
+          console.error(`SEND_UNKNOWN instagram/${d}: ${failure.reason}`);
+          const entry: PostEntry = { platform: "instagram", destaque: d, url: null, scheduled_at: null, ...failure };
+          tagAndAppend(entry);
+          results.push(entry);
+        } else {
+          const entry: PostEntry = {
+            platform: "instagram",
+            destaque: d,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledIso,
+            worker_queue_key: response.key,
+            ...(umReady?.firstComment && { first_comment_queued: true }), // #11724
+          };
+          tagAndAppend(entry);
+          results.push(entry);
+          console.log(`OK instagram/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
+        }
       } catch (e: any) {
         // #14243: 409 `send_unknown` (disparo anterior ambíguo) é estado
         // desconhecido, nunca `failed`: o post pode estar no ar.
