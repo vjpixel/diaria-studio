@@ -58,6 +58,28 @@ Primeiro passo é **`npm ci`** — worktree novo não tem `node_modules/` nem a
 junction `data/`. Escrita que a unidade precise fazer em `data/` volta ao
 coordenador, declarada no corpo da PR (item 35).
 
+**Claim do worktree logo depois do checkout da branch de trabalho (#14214).**
+Com o cwd no worktree e a branch da unidade já em HEAD (implementador: a
+branch nova do item 2; fixer: a branch da PR), rodar, standalone (item 18,
+`--session-id` auto-injetado):
+
+`npx tsx scripts/lib/session-registry.ts claim-worktree`
+
+Grava `data/sessions/.worktree-claims/<hash>.json` com o path, a sessão e a
+branch do HEAD, que `.claude/hooks/block-worktree-alien-commit.mjs` confere
+antes de cada `git commit`: commit de outra sessão nesse worktree, ou com a
+branch trocada por baixo, é negado. Por isso a ordem: a claim feita antes do
+checkout grava a branch provisória do worktree e o hook barra o commit na
+branch real; nesse caso, rodar de novo regrava a branch. A claim vale 30 min
+(vencida, o hook não barra nada) e rodar de novo renova. Saídas: `exit 0`
+segue; `exit 1` com `RECUSADO … reivindicado por` = outra sessão segura este
+worktree, parar e devolver ao coordenador sem commitar; `exit 1` com `não é
+worktree vinculado` = o cwd não é o worktree da unidade, conferir antes de
+qualquer edição; `exit 3` = `data/sessions/` indisponível (#14009), devolver
+ao coordenador com a mensagem do stderr. Issue do `vjpixel/diaria-design`
+(item 32) pula este passo: o script mora no checkout do studio, não no
+worktree do design.
+
 **`npm ci`/`npm install` só dentro do worktree, NUNCA no checkout principal
 compartilhado (#5571).** O checkout principal é usado concorrentemente por
 outras sessões/tasks (Diaria-Studio-Server, outras sessões locais); dois

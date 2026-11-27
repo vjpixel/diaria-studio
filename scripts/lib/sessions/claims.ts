@@ -11,8 +11,8 @@
  * mapa do registro.
  */
 
-import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { withFileLock } from "../file-lock.ts";
 import { formatIssueRef, type IssueRef, legacyIssueNumber, normalizeRepoSlug } from "../issue-repos.ts";
@@ -953,6 +953,51 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
   // antigos que já estão no disco são recolhidos por `planSessionGc`
   // (`isWorktreeClaimMirror`).
   return claimed;
+}
+
+/** Desfecho de `claimWorktreeChecked` (#14214, subcomando `claim-worktree`).
+ * Sem `export`: só o próprio retorno usa (knip acusaria export morto). */
+type ClaimWorktreeOutcome =
+  | { outcome: "claimed"; path: string; branch: string | undefined }
+  | { outcome: "blocked-by-other"; path: string; ownerSessionId: string | null }
+  | { outcome: "not-a-linked-worktree"; path: string };
+
+/**
+ * Entrada do subcomando `claim-worktree` (#14214): até aqui nada em produção
+ * chamava `claimWorktree`, e o hook `.claude/hooks/block-worktree-alien-commit.mjs`
+ * lia um `.worktree-claims/` que ninguém gravava.
+ *
+ * Diferenças para `claimWorktree` cru:
+ * - `path` passa por `resolve()`, a mesma normalização que o hook aplica ao
+ *   `git rev-parse --show-toplevel` antes de calcular a chave: um caminho
+ *   relativo daria outro hash e o hook não acharia a claim.
+ * - Só reivindica WORKTREE VINCULADO (`.git` é arquivo, não diretório). O hook
+ *   ignora o checkout principal, e uma claim nele (o checkout compartilhado
+ *   por todas as sessões) barraria o commit das outras sessões ali.
+ * - Na recusa, devolve quem segura o path, para a mensagem do CLI.
+ */
+export function claimWorktreeChecked(
+  path: string,
+  sessionId: string,
+  repoRoot: string,
+  branch?: string,
+): ClaimWorktreeOutcome {
+  const normalized = resolve(path);
+  const gitPath = join(normalized, ".git");
+  let linked = false;
+  try {
+    linked = existsSync(gitPath) && !statSync(gitPath).isDirectory();
+  } catch {
+    linked = false;
+  }
+  if (!linked) return { outcome: "not-a-linked-worktree", path: normalized };
+  if (claimWorktree(normalized, sessionId, repoRoot, branch)) {
+    const record = readJsonSafe<any>(worktreeClaimFilePath(repoRoot, normalized));
+    return { outcome: "claimed", path: normalized, branch: record?.branch ?? branch };
+  }
+  const owner = readJsonSafe<any>(worktreeClaimFilePath(repoRoot, normalized));
+  const ownerSessionId = typeof owner?.sessionId === "string" ? owner.sessionId : null;
+  return { outcome: "blocked-by-other", path: normalized, ownerSessionId };
 }
 
 export function claimIssue(
