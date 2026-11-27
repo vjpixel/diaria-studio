@@ -280,6 +280,16 @@ export function dedup(
     ? new Set([...pastDestaqueUrlsSet].map(dedupUrlKey))
     : undefined;
   const destaqueUpgradeEligibleKeys = new Set([...destaqueUpgradeEligibleUrls].map(dedupUrlKey));
+  // #14305: o mapa URL → título passado chega chaveado por `canonicalize`; o
+  // Pass 1 casa por `dedupUrlKey` (www./esquema/idioma), então a busca do
+  // título passado precisa da mesma chave, senão `https://www.x.com/a`
+  // publicado não acha o título de `https://x.com/a` que volta. Re-chaveado
+  // uma vez; a 1ª entrada (edição mais recente) vence, como na origem.
+  const pastTitleByKey = new Map<string, string>();
+  for (const [url, title] of pastArticleTitleByUrl) {
+    const key = dedupUrlKey(url);
+    if (!pastTitleByKey.has(key)) pastTitleByKey.set(key, title);
+  }
   const afterPass1: Article[] = [];
   let promotedFromSecondary = 0;
   for (const art of afterPass0) {
@@ -376,7 +386,7 @@ export function dedup(
   const selfPastTitles = (art: Article): Set<string> => {
     const out = new Set<string>();
     if (typeof art[DESTAQUE_ONLY_FIELD] !== "string") return out;
-    const byUrl = pastArticleTitleByUrl.get(canonicalize(art.url));
+    const byUrl = pastTitleByKey.get(dedupUrlKey(art.url)); // #14305
     if (byUrl) out.add(normTitle(byUrl));
     if (art.title) out.add(normTitle(art.title));
     return out;
@@ -391,7 +401,7 @@ export function dedup(
     for (const art of afterPass1) {
       // #10641: título placeholder compara pelo substituto (mesma URL no
       // pool recente, ou slug), senão o placeholder não casa com nada.
-      const { title: cmpTitle, source: cmpSource } = dedupComparisonTitle(art, pastArticleTitleByUrl);
+      const { title: cmpTitle, source: cmpSource } = dedupComparisonTitle(art, pastTitleByKey); // #14305: chave dedupUrlKey
       if (!cmpTitle) {
         afterPass1b.push(art);
         continue;
@@ -439,7 +449,7 @@ export function dedup(
     }));
     for (const art of afterPass1b) {
       // #10641: idem Pass-1b — placeholder compara pelo substituto.
-      const { title: cmpTitle, source: cmpSource } = dedupComparisonTitle(art, pastArticleTitleByUrl);
+      const { title: cmpTitle, source: cmpSource } = dedupComparisonTitle(art, pastTitleByKey); // #14305: chave dedupUrlKey
       if (!cmpTitle) {
         afterPass1c.push(art);
         continue;
