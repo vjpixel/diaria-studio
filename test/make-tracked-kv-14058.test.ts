@@ -9,7 +9,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { makeTrackedKv, makeTrackedKvNamespace, readKv } from "./_helpers/make-tracked-kv.ts";
+import { jsonSeed, KV_METADATA_MAX_BYTES, makeTrackedKv, makeTrackedKvNamespace, readKv } from "./_helpers/make-tracked-kv.ts";
 
 describe("makeTrackedKv (#14058)", () => {
   it("seed inicial, get de chave ausente devolve null", async () => {
@@ -73,6 +73,61 @@ describe("makeTrackedKv (#14058)", () => {
     await a.put("k", "v");
     assert.equal(await b.get("k"), null);
     assert.equal(b.puts.length, 0);
+  });
+});
+
+describe("makeTrackedKv: extensões do resíduo (#14058)", () => {
+  it("falha injetada: failGet/failPut/failList lançam failMessage e o put falho não grava", async () => {
+    const kv = makeTrackedKv({ a: "1" });
+    kv.failGet = true;
+    await assert.rejects(kv.get("a"), /^Error: kv fora$/);
+    await assert.rejects(kv.getWithMetadata("a"), /kv fora/);
+    kv.failGet = false;
+    kv.failPut = true;
+    kv.failMessage = "HTTP 503";
+    await assert.rejects(kv.put("b", "2"), /HTTP 503/);
+    assert.equal(kv._map.has("b"), false);
+    assert.equal(kv.puts.length, 0);
+    kv.failList = true;
+    await assert.rejects(kv.list(), /HTTP 503/);
+    kv.failPut = false;
+    kv.failList = false;
+    await kv.put("b", "2");
+    assert.equal(await kv.get("b"), "2");
+  });
+
+  it("metadata: put guarda em _meta, getWithMetadata e list a devolvem; sem metadata o list fica só com name", async () => {
+    const kv = makeTrackedKv();
+    await kv.put("m", "v", { metadata: { n: 1 }, expirationTtl: 60 });
+    await kv.put("s", "v");
+    assert.deepEqual(kv._meta.get("m"), { n: 1 });
+    assert.deepEqual(await kv.getWithMetadata("m"), { value: "v", metadata: { n: 1 } });
+    assert.deepEqual((await kv.list()).keys, [{ name: "m", metadata: { n: 1 } }, { name: "s" }]);
+    await kv.put("m", "v2");
+    assert.equal(kv._meta.has("m"), false, "regravar sem metadata limpa a anterior, como o KV real");
+    await kv.put("s", "v", { metadata: { x: 1 } });
+    await kv.delete("s");
+    assert.equal(kv._meta.has("s"), false);
+  });
+
+  it(`metadata acima de ${KV_METADATA_MAX_BYTES} bytes é recusada, como o KV real`, async () => {
+    const kv = makeTrackedKv();
+    await assert.rejects(kv.put("k", "v", { metadata: "x".repeat(KV_METADATA_MAX_BYTES) }), /metadata too large/);
+    assert.equal(kv._map.has("k"), false);
+  });
+
+  it("listPageSize: páginas em ordem lexicográfica, cursor até list_complete", async () => {
+    const kv = makeTrackedKv({ "p:c": "3", "q:1": "x", "p:a": "1", "p:b": "2" }, { listPageSize: 2 });
+    const p1 = await kv.list({ prefix: "p:" });
+    assert.deepEqual(p1, { keys: [{ name: "p:a" }, { name: "p:b" }], list_complete: false, cursor: "2" });
+    const p2 = await kv.list({ prefix: "p:", cursor: p1.cursor });
+    assert.deepEqual(p2, { keys: [{ name: "p:c" }], list_complete: true, cursor: undefined });
+  });
+
+  it("jsonSeed serializa cada valor com JSON.stringify", async () => {
+    const kv = makeTrackedKv(jsonSeed({ a: { n: 1 }, b: "txt" }));
+    assert.deepEqual(await kv.get("a", "json"), { n: 1 });
+    assert.equal(kv._map.get("b"), '"txt"');
   });
 });
 

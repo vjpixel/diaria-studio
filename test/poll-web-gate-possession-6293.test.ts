@@ -44,6 +44,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeTrackedKv, makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // mesmo fix de #5095/beehiiv-double-opt-override — `new URL("..", import.meta.url).pathname`
 // dobra a drive letter no Windows.
@@ -121,31 +122,6 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
 });
 
 describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
-  function makeMapKV(initial: Record<string, string> = {}) {
-    const m = new Map<string, string>(Object.entries(initial));
-    return {
-      async get(key: string) {
-        const v = m.get(key);
-        return v === undefined ? null : v;
-      },
-      async getWithMetadata(key: string) {
-        const v = m.get(key);
-        return { value: v ?? null, metadata: null };
-      },
-      async put(key: string, value: string) {
-        m.set(key, value);
-      },
-      async delete(key: string) {
-        m.delete(key);
-      },
-      async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-        const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-        return { keys, list_complete: true, cursor: undefined };
-      },
-      _map: m,
-    };
-  }
-
   it("e-mail ATIVO (Beehiiv/KV) sem marcador de posse → cookie PENDING, override de vote.ts NÃO dispara", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
@@ -154,12 +130,12 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
     const email = "so-existe@example.com";
     const key = await subscriberKvKey(email);
     const env = {
-      POLL: makeMapKV(),
+      POLL: makeTrackedKv(),
       POLL_SECRET: "poll-secret",
       ADMIN_SECRET: "admin-secret",
       ALLOWED_ORIGINS: "*",
       COOKIE_HMAC_SECRET: "cookie-secret",
-      SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace,
+      SUBSCRIBERS_KV: makeTrackedKvNamespace({ [key]: "1" }),
     };
 
     const res = await worker.fetch(
@@ -185,14 +161,14 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
 
     const email = "provou-posse@example.com";
     const key = await subscriberKvKey(email);
-    const pollKv = makeMapKV({ [key]: "1" });
+    const pollKv = makeTrackedKv({ [key]: "1" });
     const env = {
       POLL: pollKv,
       POLL_SECRET: "poll-secret",
       ADMIN_SECRET: "admin-secret",
       ALLOWED_ORIGINS: "*",
       COOKIE_HMAC_SECRET: "cookie-secret",
-      SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace,
+      SUBSCRIBERS_KV: makeTrackedKvNamespace({ [key]: "1" }),
     };
     await markEmailPossessionVerified(env as never, email);
 
@@ -218,14 +194,14 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
 
     const email = "dono-real@example.com";
     const key = await subscriberKvKey(email);
-    const pollKv = makeMapKV();
+    const pollKv = makeTrackedKv();
     const env = {
       POLL: pollKv,
       POLL_SECRET: "poll-secret",
       ADMIN_SECRET: "admin-secret",
       ALLOWED_ORIGINS: "*",
       COOKIE_HMAC_SECRET: "cookie-secret",
-      SUBSCRIBERS_KV: makeMapKV({ [key]: "1" }) as unknown as KVNamespace,
+      SUBSCRIBERS_KV: makeTrackedKvNamespace({ [key]: "1" }),
     };
     await markEmailPossessionVerified(env as never, email);
 

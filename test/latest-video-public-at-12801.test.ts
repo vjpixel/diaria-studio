@@ -21,20 +21,16 @@ import {
   parseLatestVideoRecord,
   type LatestVideoRecord,
 } from "../scripts/lib/shared/latest-video-redirect.ts";
-import { previousForNewRecord, readEditionHorizontalPublicAt, updateLatestVideoRedirect, type LatestVideoKv } from "../scripts/set-latest-video-redirect.ts";
+import { previousForNewRecord, readEditionHorizontalPublicAt, updateLatestVideoRedirect } from "../scripts/set-latest-video-redirect.ts";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const URL_OLD = "https://youtu.be/AAAAAAAAAAA";
 const URL_NEW = "https://youtu.be/BBBBBBBBBBB";
 const PUBLIC_AT = "2026-11-12T09:00:00.000Z"; // 06:00 BRT de 261112
 const NIGHT_BEFORE = new Date("2026-11-12T01:30:00Z"); // 22:30 BRT de 261111
 const AFTER_PUBLIC = new Date("2026-11-12T09:05:00Z");
-
-function fakeKv(initial: Record<string, string> = {}): LatestVideoKv & { store: Record<string, string> } {
-  const store = { ...initial };
-  return { store, get: async (k) => store[k] ?? null, put: async (k, v) => { store[k] = v; } };
-}
 
 function edition(url: string, upload?: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "latest-video-12801-"));
@@ -55,10 +51,10 @@ describe("#12801 diar.ia.br/video não aponta para horizontal ainda privado", ()
     const dir = edition(URL_NEW, scheduledUpload("BBBBBBBBBBB"));
     try {
       const old: LatestVideoRecord = { url: URL_OLD, aammdd: "261111", updated_at: "2026-11-11T01:00:00.000Z" };
-      const kv = fakeKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
+      const kv = makeTrackedKv({ [LATEST_VIDEO_KV_KEY]: JSON.stringify(old) });
       const out = await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
       assert.equal(out.status, "written");
-      const stored = parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]);
+      const stored = parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY));
       assert.equal(stored?.url, URL_NEW);
       assert.equal(stored?.public_at, PUBLIC_AT);
       assert.deepEqual(stored?.previous, old);
@@ -132,9 +128,9 @@ describe("#12801 diar.ia.br/video não aponta para horizontal ainda privado", ()
   it("upload na hora (sem publishAt): grava sem public_at, o link vale já", async () => {
     const dir = edition(URL_NEW, { videoId: "BBBBBBBBBBB", requested: { privacyStatus: "public", publishAt: null } });
     try {
-      const kv = fakeKv();
+      const kv = makeTrackedKv();
       await updateLatestVideoRedirect({ editionDir: dir, aammdd: "261112", kv, apply: true, now: NIGHT_BEFORE });
-      const stored = parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]);
+      const stored = parseLatestVideoRecord(kv._map.get(LATEST_VIDEO_KV_KEY));
       assert.equal(stored?.public_at, undefined);
       assert.equal(effectiveLatestVideoRecord(stored, NIGHT_BEFORE)?.url, URL_NEW);
     } finally {

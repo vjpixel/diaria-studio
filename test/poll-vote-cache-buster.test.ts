@@ -21,6 +21,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { votePageHtml, upsertOwnEntryInSnapshot, type Env, type SnapshotEntry, type OwnScoreEntry } from "../workers/poll/src/index.ts";
 import { hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
+import { makeTrackedKvNamespace } from "./_helpers/make-tracked-kv.ts";
 
 // ── (a) Cache-buster no link "Ver leaderboard" ──────────────────────────────
 
@@ -73,19 +74,6 @@ describe("votePageHtml — cache-buster no link leaderboard (#2113a)", () => {
 
 // ── (b) Upsert da própria entry no snapshot ─────────────────────────────────
 
-function makeKv(store: Record<string, string> = {}): KVNamespace {
-  const data = { ...store };
-  return {
-    get: async (key: string) => data[key] ?? null,
-    put: async (key: string, value: string) => { data[key] = value; },
-    delete: async (key: string) => { delete data[key]; },
-    getWithMetadata: async () => ({ value: null, metadata: null }),
-    list: async () => ({ keys: [], list_complete: true, cursor: undefined }),
-    // Expose underlying data for assertions
-    _data: data,
-  } as unknown as KVNamespace & { _data: Record<string, string> };
-}
-
 function makeEnv(kv: KVNamespace): Env {
   return { POLL: kv, POLL_SECRET: "test", ADMIN_SECRET: "test", ALLOWED_ORIGINS: "*" };
 }
@@ -95,12 +83,12 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
     // Modelo híbrido: snapshot ausente → skip. O próximo GET lazy-computa via
     // getOrComputeSnapshot. Evita gravar snapshot de 1 entrada que apagaria
     // os N votantes existentes (#2152) e evita N gets dentro do voto (#F3).
-    const kv = makeKv() as unknown as KVNamespace & { _data: Record<string, string> };
+    const kv = makeTrackedKvNamespace();
     const env = makeEnv(kv);
     const own: OwnScoreEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const snapKey = "leaderboard-snapshot:2026-05";
-    const raw = (kv as unknown as { _data: Record<string, string> })._data[snapKey];
+    const raw = kv._map.get(snapKey);
     assert.equal(raw, undefined, "skip-on-missing: nenhum snapshot gravado quando ausente");
   });
 
@@ -111,11 +99,11 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
       entries: [{ uid: hashEmailForMatch("a@x.com"), masked: maskEmail("a@x.com"), nickname: null, correct: 0, total: 1 }],
       computed_at: "2026-06-01T00:00:00Z",
     });
-    const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
+    const kv = makeTrackedKvNamespace({ "leaderboard-snapshot:2026-05": existing });
     const env = makeEnv(kv);
     const own: OwnScoreEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 2 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
-    const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
+    const raw = kv._map.get("leaderboard-snapshot:2026-05")!;
     const parsed = JSON.parse(raw);
     assert.equal(parsed.entries.length, 1, "não deve duplicar a entry");
     assert.equal(parsed.entries[0].correct, 1, "correct deve ser atualizado");
@@ -128,11 +116,11 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
       entries: [{ uid: hashEmailForMatch("b@x.com"), masked: maskEmail("b@x.com"), nickname: "Bob", correct: 3, total: 5 }],
       computed_at: "2026-06-01T00:00:00Z",
     });
-    const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
+    const kv = makeTrackedKvNamespace({ "leaderboard-snapshot:2026-05": existing });
     const env = makeEnv(kv);
     const own: OwnScoreEntry = { email: "a@x.com", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
-    const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
+    const raw = kv._map.get("leaderboard-snapshot:2026-05")!;
     const parsed = JSON.parse(raw);
     assert.equal(parsed.entries.length, 2, "deve ter 2 entries");
     // #4123: entries persistidas não carregam mais `email` — compara por `uid`.
@@ -151,24 +139,24 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
       entries: [],
       computed_at: "2026-06-01T00:00:00Z",
     });
-    const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
+    const kv = makeTrackedKvNamespace({ "leaderboard-snapshot:2026-05": existing });
     const env = makeEnv(kv);
     const own: OwnScoreEntry = { email: "A@X.COM", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
-    const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
+    const raw = kv._map.get("leaderboard-snapshot:2026-05")!;
     const parsed = JSON.parse(raw);
     assert.equal(parsed.entries[0].uid, hashEmailForMatch("a@x.com"));
     assert.equal(parsed.entries[0].masked, maskEmail("A@X.COM"));
   });
 
   it("snapshot corrompido → deleta e retorna sem gravar entry", async () => {
-    const kv = makeKv({ "leaderboard-snapshot:2026-05": "{ corrupted json [" }) as unknown as KVNamespace & { _data: Record<string, string> };
+    const kv = makeTrackedKvNamespace({ "leaderboard-snapshot:2026-05": "{ corrupted json [" });
     const env = makeEnv(kv);
     const own: OwnScoreEntry = { email: "a@x.com", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     // Snap deve ter sido deletado (não regravado com dados parciais)
     assert.equal(
-      (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"],
+      kv._map.get("leaderboard-snapshot:2026-05"),
       undefined,
       "snapshot corrompido deve ser removido",
     );
@@ -179,12 +167,12 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
       entries: [{ uid: hashEmailForMatch("a@x.com"), masked: maskEmail("a@x.com"), nickname: null, correct: 0, total: 1 }],
       computed_at: "2026-06-01T00:00:00Z",
     });
-    const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
+    const kv = makeTrackedKvNamespace({ "leaderboard-snapshot:2026-05": existing });
     const env = makeEnv(kv);
     // Mesmo email em uppercase → deve fazer upsert, não append
     const own: OwnScoreEntry = { email: "A@X.COM", nickname: "Ana", correct: 1, total: 2 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
-    const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
+    const raw = kv._map.get("leaderboard-snapshot:2026-05")!;
     const parsed = JSON.parse(raw);
     assert.equal(parsed.entries.length, 1, "não deve duplicar mesmo com casing diferente");
     assert.equal(parsed.entries[0].total, 2);
