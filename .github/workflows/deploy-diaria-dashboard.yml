@@ -28,6 +28,11 @@ on:
     branches: [master]
     paths:
       - 'workers/diaria-dashboard/**'
+      # #13994: módulo de fora de workers/diaria-dashboard/ que entra no bundle
+      # (fecho de imports a partir do `main`). Sem ele, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/shared/diaria-dashboard-types.ts'
   workflow_dispatch:
 
 concurrency:

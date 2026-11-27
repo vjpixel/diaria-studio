@@ -47,7 +47,7 @@ import { buildStudioState, type StudioState } from "./studio-ui/studio-state.ts"
 import type {
   StudioSnapshot,
   StudioSnapshotPlanSummary,
-} from "../workers/diaria-dashboard/src/types.ts";
+} from "./lib/shared/diaria-dashboard-types.ts";
 
 export type { StudioSnapshot, StudioSnapshotPlanSummary };
 
