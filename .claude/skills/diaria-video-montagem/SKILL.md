@@ -31,6 +31,29 @@ Com `porVideo.horizontal.trechoCompartilhar` no roteiro, o `build` grava `_inter
 
 **Arquivo de trabalho sumido no sync (#13404).** Erro de "ausente" num arquivo de `_internal/video-montagem/` (`blocks.json`, `plan.json`…) que aponta uma cópia `{nome}.conflictN`: ler `.claude/skills/diaria-video-montagem/reference/conflito-sync.md` antes de restaurar. Mostrar ao editor qual cópia é e só com o ok dele rodar de novo com `--restore-conflict {nome}`. Um `roteiro` que falha avisa com `[erro]` que o `roteiro.md` do disco é da rodada anterior: não usar no Gate 2.
 
+## Telemetria por fase (#14115)
+
+O tempo de cada passo vai para `_internal/publica-phases.jsonl` da edição pelo mesmo `scripts/publica-phase.ts` do `/diaria-publica`, com as fases `montagem-*` e sempre `--part sessao`. Um `start` antes do passo e um `end` depois, cada um como comando standalone (nunca encadeado com o comando do passo, que segue rodando sozinho para o exit dele ser lido como antes):
+
+```bash
+npx tsx scripts/publica-phase.ts start {AAMMDD} --phase {fase} --part sessao
+npx tsx scripts/publica-phase.ts end {AAMMDD} --phase {fase} --part sessao
+```
+
+| Passo | Fase |
+|---|---|
+| 0 (máquina) | `montagem-preflight` |
+| 1 (transcrição) | `montagem-transcricao` |
+| 2 (decupagem) | `montagem-decupagem` |
+| 2b (fact-check da fala em paralelo) | `montagem-factcheck`, com `--task-id factcheck` no `start` e no `end` |
+| 3 (roteiro final e Gate 2; o tempo é do editor) | `montagem-gate2` |
+| 4 (XML) | `montagem-build` |
+| 5 (prévias) | `montagem-preview` |
+| 6 (autorrevisão) | `montagem-review` |
+| 7 (legendas) | `montagem-legendas` |
+
+Passo refeito (outro `build` depois de um ajuste do editor, outra prévia) abre um `start` novo: a tentativa sobe sozinha. Passo que parou com erro fecha com `error --exit-code N` (o exit do comando do passo) em vez de `end`. A telemetria nunca para a montagem: `publica-phase.ts` saindo diferente de 0 vira uma linha de aviso no relato, e o passo segue. No relato final, `npx tsx scripts/publica-phase.ts join {AAMMDD} --flow montagem` (exit 1 = fase sem fim: fechar com `end` ou `interrupted`) e `npx tsx scripts/publica-phase.ts report {AAMMDD} --flow montagem`, com a duração de cada fase (`null` = indisponível, nunca zero).
+
 ## Passo 0 — Máquina
 
 Roda no **Neo** (Drive for desktop em `I:`) ou no **300** (sem `I:`, a pasta da edição pela API do Drive, #11643). Conferir antes, nas duas:
@@ -305,7 +328,7 @@ Roda uma vez, com as prévias aprovadas (#12579), nas verticais e nos cortes. Se
 
 ## Relato e passagem para o Premiere
 
-Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs das verticais (o do horizontal não sai na montagem, #13212) e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto, os achados que sobraram da revisão e, com o corte `guia`, a linha do vertical 2 no banco de agendamentos (id, alvo e dono, a saída do `registrar`). Depois, o que fica com o editor:
+Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs das verticais (o do horizontal não sai na montagem, #13212) e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto, os achados que sobraram da revisão, as durações por fase do `report --flow montagem` (seção "Telemetria por fase", depois do `join`) e, com o corte `guia`, a linha do vertical 2 no banco de agendamentos (id, alvo e dono, a saída do `registrar`). Depois, o que fica com o editor:
 
 0. **Bruto local no Mac (#13229):** com `publishing.video.premiere_bruto_root` (e o `premiere_root`) no config, o build grava também `{nome}-local.xml`, com só o bruto apontando para a pasta local do Mac. No Mac, depois de `git pull` (o script lê o config do checkout de lá, ou recebe `--local-root`), rodar `node scripts/video/prepara-bruto-mac.ts {AAMMDD}`: limpa as cópias de edições passadas, copia o bruto do Drive e confere o tamanho de cada cópia. Importar o `-local.xml` regravado pelo `srt` (com a legenda). Passo a passo e saídas em `docs/video-bruto-local-mac-13229.md`.
 1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 2 sequências (se o bruto estiver espelhado). Enquanto o 1º import não confirmar, conferir que o Audio Levels dos clipes de áudio veio com o ganho do relato (#11755), que o **título apareceu na V2 com fundo transparente** fora da caixa (o PNG via XML, padrão desde o #12091; sem ele, arrastar o PNG da pasta para a V2) e que o **rosto está centrado** na vertical, como na prévia (#12091: a unidade do Center, fração do bruto, foi validada na 261104; o valor corrigido está pendente de re-import). Conferir também o **card de CTA no fim da V1**, com o fade-in (#12571; o Horizontal Flip nunca vai nele, é arte, não o bruto), e, com `capaInicio`, a **capa na faixa do topo** nos primeiros quadros das verticais, com o fundo transparente no alto (#13123; também é arte, sem Flip).

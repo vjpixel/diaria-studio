@@ -20,6 +20,11 @@
  *
  * O CLI é `scripts/publica-phase.ts`; o gate de efeito externo,
  * `publica-effect-gate.ts`.
+ *
+ * Desde o #14115 o mesmo arquivo recebe as fases do `/diaria-video-roteiro`
+ * e do `/diaria-video-montagem` (prefixos `roteiro-` e `montagem-`, sempre
+ * `--part sessao`, reversíveis e sem recurso). `PhaseMeta.flow` separa os
+ * três fluxos no `join` e no `report`.
  */
 
 export const PUBLICA_PHASES_SCHEMA = "diaria-publica-phases/v1";
@@ -40,8 +45,39 @@ export const PUBLICA_PHASES = [
   "stage6-schedule",
   "vertical-api",
   "vertical-guiado",
+  // #14115: fases das skills que vêm antes do `/diaria-publica` no mesmo dia,
+  // no mesmo arquivo da edição. Só com `--part sessao` (`buildPhaseEvent`),
+  // fora do join e do relatório do publica (`flow`).
+  "roteiro-leitura",
+  "roteiro-escrita",
+  "roteiro-revisao",
+  "roteiro-factcheck",
+  "roteiro-iteracao",
+  "roteiro-final",
+  "roteiro-conferencia",
+  "montagem-preflight",
+  "montagem-transcricao",
+  "montagem-decupagem",
+  "montagem-factcheck",
+  "montagem-gate2",
+  "montagem-build",
+  "montagem-preview",
+  "montagem-review",
+  "montagem-legendas",
 ] as const;
 export type PublicaPhase = (typeof PUBLICA_PHASES)[number];
+
+/**
+ * Skill dona da fase (#14115). `join` e `report` olham um fluxo por vez: uma
+ * fase do roteiro aberta (a sessão caiu) não segura o join do publica, e as
+ * fases do publica não aparecem como "indisponíveis" no relatório do roteiro.
+ */
+export const PHASE_FLOWS = ["publica", "roteiro", "montagem"] as const;
+export type PhaseFlow = (typeof PHASE_FLOWS)[number];
+
+export function isPhaseFlow(v: string): v is PhaseFlow {
+  return (PHASE_FLOWS as readonly string[]).includes(v);
+}
 
 export const PUBLICA_PARTS = ["horizontal", "vertical", "sessao"] as const;
 export type PublicaPart = (typeof PUBLICA_PARTS)[number];
@@ -70,7 +106,16 @@ export interface PhaseMeta {
   stage: 5 | 6 | null;
   /** Recursos que a fase segura enquanto roda (dono único). */
   resources: readonly string[];
+  /** Skill dona da fase (#14115); ausente = `publica`. */
+  flow?: PhaseFlow;
 }
+
+/** Skill dona da fase (#14115). */
+export function phaseFlow(phase: PublicaPhase): PhaseFlow {
+  return PHASE_META[phase].flow ?? "publica";
+}
+
+const prep = (flow: PhaseFlow, clock: PhaseClock = "active"): PhaseMeta => ({ clock, effect: "reversible", stage: null, resources: [], flow });
 
 /** Recurso de dono único: uma aba logada do editor, uma ação por vez. */
 export const CHROME_RESOURCE = "chrome";
@@ -102,6 +147,25 @@ export const PHASE_META: Readonly<Record<PublicaPhase, PhaseMeta>> = {
     resources: ["registry:06-shorts-published", "registry:video-publish-authorizations"],
   },
   "vertical-guiado": { clock: "active", effect: "external", stage: null, resources: [CHROME_RESOURCE, "registry:06-shorts-published"] },
+  // #14115: nada aqui publica (o upload para a pasta do Drive é do próprio
+  // editor e reversível), não segura recurso nem entra no isolamento de custo.
+  // `wait` = o tempo é do editor (a iteração por voz, o Gate 2).
+  "roteiro-leitura": prep("roteiro"),
+  "roteiro-escrita": prep("roteiro"),
+  "roteiro-revisao": prep("roteiro"),
+  "roteiro-factcheck": prep("roteiro"),
+  "roteiro-iteracao": prep("roteiro", "wait"),
+  "roteiro-final": prep("roteiro"),
+  "roteiro-conferencia": prep("roteiro"),
+  "montagem-preflight": prep("montagem"),
+  "montagem-transcricao": prep("montagem"),
+  "montagem-decupagem": prep("montagem"),
+  "montagem-factcheck": prep("montagem"),
+  "montagem-gate2": prep("montagem", "wait"),
+  "montagem-build": prep("montagem"),
+  "montagem-preview": prep("montagem"),
+  "montagem-review": prep("montagem"),
+  "montagem-legendas": prep("montagem"),
 };
 
 /** Fases de preparo que contam como "background iniciado" antes da 1ª pergunta bloqueante. */
@@ -175,6 +239,11 @@ export function buildPhaseEvent(input: BuildPhaseEventInput): PhaseEvent {
     throw new Error(`plan_sha256 inválido: ${input.planSha256} (64 hex)`);
   }
   const meta = PHASE_META[input.phase];
+  // #14115: fase do roteiro/montagem com parte de vídeo cairia nas regras do
+  // publica (isolamento de custo, join), que não valem para essas sessões.
+  if ((meta.flow ?? "publica") !== "publica" && input.part !== "sessao") {
+    throw new Error(`fase ${input.phase} (${meta.flow}) só com --part sessao, não ${input.part}`);
+  }
   const resources = [...new Set([...meta.resources, ...(input.extraResources ?? [])])].sort();
   return {
     schema: PUBLICA_PHASES_SCHEMA,
@@ -590,8 +659,10 @@ export function joinCheck(
   events: readonly PhaseEvent[],
   sentinels: { step5: boolean; step6: boolean },
   opts: DeriveOptions = {},
+  /** Só as tarefas deste fluxo (#14115); default o do `/diaria-publica`. */
+  flow: PhaseFlow = "publica",
 ): JoinResult {
-  const tasks = deriveTasks(events, opts);
+  const tasks = deriveTasks(events, opts).filter((t) => phaseFlow(t.phase) === flow);
   const pending = tasks.filter((t) => t.status === "running");
   const problems: string[] = pending.map(
     (t) =>
@@ -669,8 +740,14 @@ export interface PhaseReport {
 }
 
 /** Pure: relatório por fase. Nada é inventado: sem evento de fim, a duração é `null`. */
-export function phaseReport(edition: string, events: readonly PhaseEvent[], opts: DeriveOptions = {}): PhaseReport {
-  const tasks = deriveTasks(events.filter((e) => e.edition === edition), opts);
+export function phaseReport(
+  edition: string,
+  events: readonly PhaseEvent[],
+  opts: DeriveOptions = {},
+  /** Só as fases deste fluxo (#14115); default o do `/diaria-publica`. */
+  flow: PhaseFlow = "publica",
+): PhaseReport {
+  const tasks = deriveTasks(events.filter((e) => e.edition === edition && phaseFlow(e.phase) === flow), opts);
   const byKey = new Map<string, PhaseTask[]>();
   for (const t of tasks) {
     const k = `${t.phase}|${t.part}`;
@@ -699,7 +776,7 @@ export function phaseReport(edition: string, events: readonly PhaseEvent[], opts
   return {
     edition,
     rows,
-    unavailable: PUBLICA_PHASES.filter((p) => !seen.has(p)),
+    unavailable: PUBLICA_PHASES.filter((p) => phaseFlow(p) === flow && !seen.has(p)),
     critical_path_ms: union(done),
     active_ms: union(done.filter((t) => PHASE_META[t.phase].clock === "active")),
     wait_ms: union(done.filter((t) => PHASE_META[t.phase].clock === "wait")),

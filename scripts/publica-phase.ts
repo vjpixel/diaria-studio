@@ -16,8 +16,13 @@
  *   npx tsx scripts/publica-phase.ts end|error|interrupted AAMMDD --phase P --part X
  *       [--task-id ID] [--attempt N] [--exit-code N] [--detail TEXTO] [--edition-dir DIR]
  *   npx tsx scripts/publica-phase.ts run AAMMDD --phase P --part X [--background] [...] -- comando args...
- *   npx tsx scripts/publica-phase.ts join AAMMDD [--edition-dir DIR]
- *   npx tsx scripts/publica-phase.ts report AAMMDD [--edition-dir DIR]
+ *   npx tsx scripts/publica-phase.ts join AAMMDD [--flow publica|roteiro|montagem] [--edition-dir DIR]
+ *   npx tsx scripts/publica-phase.ts report AAMMDD [--flow publica|roteiro|montagem] [--edition-dir DIR]
+ *
+ * - `--flow` (#14115): `join`/`report` de um fluxo só. As fases `roteiro-*`
+ *   (`/diaria-video-roteiro`) e `montagem-*` (`/diaria-video-montagem`) vão
+ *   no mesmo arquivo, com `--part sessao`; o default é o do `/diaria-publica`,
+ *   que não vê as outras duas.
  *
  * - `start` recusa (exit 1, nada gravado) quando: o recurso (Chrome, um
  *   registro) está com outra fase; é fase do vídeo no thread principal com a
@@ -81,8 +86,11 @@ import { logEvent } from "./lib/run-log.ts";
 import { buildSpawnInvocation } from "./lib/spawn-argv.ts";
 import { currentSessionId } from "./lib/session-transcript.ts";
 import {
+  PHASE_FLOWS,
   PHASE_META,
   PUBLICA_PHASES_FILE,
+  isPhaseFlow,
+  type PhaseFlow,
   buildPhaseEvent,
   canResumeExisting,
   checkPhaseStart,
@@ -121,7 +129,7 @@ export const RUN_TELEMETRY_LOST_EXIT = 4;
 const USAGE =
   "uso: publica-phase.ts start|end|error|interrupted AAMMDD --phase P --part horizontal|vertical|sessao [--background] [--task-id ID] [--attempt N] [--plan-sha256 H] [--resources a,b] [--serial-reason TEXTO] [--resume-existing] [--exit-code N] [--detail TEXTO] [--edition-dir DIR]\n" +
   "     publica-phase.ts run AAMMDD --phase P --part X [--background] [...] -- comando args...\n" +
-  "     publica-phase.ts join|report AAMMDD [--edition-dir DIR]";
+  "     publica-phase.ts join|report AAMMDD [--flow publica|roteiro|montagem] [--edition-dir DIR]";
 
 export interface PhaseCliDeps {
   log: (line: string) => void;
@@ -253,6 +261,14 @@ function parseCommon(argv: string[], deps: PhaseCliDeps, needsPhase: boolean): C
     return 2;
   }
   return { aammdd, dir, phase, part, values, flags };
+}
+
+/** `--flow publica|roteiro|montagem` do `join`/`report` (#14115); default `publica`. `null` = inválido (já avisado). */
+function flowOf(a: CommonArgs, deps: PhaseCliDeps): PhaseFlow | null {
+  const raw = a.values["flow"] ?? "publica";
+  if (isPhaseFlow(raw)) return raw;
+  deps.err(`publica-phase: --flow inválido: ${raw} (válidos: ${PHASE_FLOWS.join(", ")})`);
+  return null;
 }
 
 function parseIntOpt(raw: string | undefined): number | undefined {
@@ -517,14 +533,23 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
   if (cmd === "join") {
     const a = parseCommon(rest, deps, false);
     if (typeof a === "number") return a;
+    const flow = flowOf(a, deps);
+    if (flow === null) return 2;
     const { events, problems: parseProblems } = readEvents(a.dir, deps.err);
     const r = joinCheck(
       events,
       { step5: existsSync(join(a.dir, STAGE5_DONE_FILE)), step6: existsSync(join(a.dir, STAGE6_DONE_FILE)) },
       deriveOptionsOf(deps),
+      flow,
     );
     // Linha ilegível pode esconder uma tarefa pendente: o join não fecha às cegas.
     const problems = [...r.problems, ...parseProblems.map((p) => `linha ilegível: ${p}`)];
+    if (flow !== "publica") {
+      // #14115: roteiro e montagem não têm sentinel de etapa nem capa do Short.
+      for (const p of problems) deps.err(`publica-phase join (${flow}): ${p}`);
+      deps.log(JSON.stringify({ ok: problems.length === 0, flow, problems }, null, 2));
+      return problems.length === 0 ? 0 : 1;
+    }
     // #13708: a capa vertical do Short (Passo B3a) é obrigatória: pendente sem dono segura o join.
     const cover = verticalCoverJoin(a.dir, a.aammdd, deps.now());
     if (cover.problem) problems.push(cover.problem);
@@ -537,8 +562,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
   if (cmd === "report") {
     const a = parseCommon(rest, deps, false);
     if (typeof a === "number") return a;
+    const flow = flowOf(a, deps);
+    if (flow === null) return 2;
     const { events } = readEvents(a.dir, deps.err);
-    deps.log(JSON.stringify(phaseReport(a.aammdd, events, deriveOptionsOf(deps)), null, 2));
+    deps.log(JSON.stringify({ flow, ...phaseReport(a.aammdd, events, deriveOptionsOf(deps), flow) }, null, 2));
     return 0;
   }
   deps.err(USAGE);
