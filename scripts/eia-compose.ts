@@ -1335,6 +1335,55 @@ export function chooseSdPromptText(
   return { text: `${captionSentence} ${description}`, source: "caption+description" };
 }
 
+/**
+ * #14269 (review da PR #14282): `--sd-prompt-text` sem `--force` numa edição
+ * com o Stage 4 completo cai no skip resume-aware (#192) e o override não é
+ * aplicado. Devolve o aviso pro stderr nesse caso, `null` fora dele.
+ */
+export function sdPromptOverrideIgnoredWarning(
+  overrideText: string | undefined,
+  force: boolean,
+): string | null {
+  if (force || !overrideText?.trim()) return null;
+  return (
+    "[eia-compose] aviso: --sd-prompt-text foi ignorado porque o Stage 4 já está completo. " +
+    "Rode de novo com --force para gerar a imagem com o texto novo (isso refaz o sorteio A/B)."
+  );
+}
+
+/**
+ * #14269 (review da PR #14282): escolha do texto do prompt quando o Codex
+ * falha e o fallback (comfyui/cloudflare) exige EN. Re-resolve a descrição pro
+ * backend do fallback e refaz a escolha da fonte; quando não precisa
+ * re-resolver, devolve a escolha primária. `reResolved` diz se o prompt em
+ * disco precisa ser reescrito. O `source` devolvido é o que vai pro
+ * `sd_prompt_source` do JSON final: antes ele seguia o da escolha primária
+ * mesmo com o prompt reescrito a partir de outra fonte.
+ */
+export async function resolveFallbackSdPromptChoice(
+  fallbackBackend: string,
+  primary: { text: string; source: SdPromptSource },
+  primaryLocale: "pt" | "en" | "pt_fallback",
+  image: Pick<WikimediaImage, "description" | "structured">,
+  imageDate: string,
+  edition: string,
+  overrideText: string | undefined,
+  fetchEn?: (iso: string) => Promise<WikimediaImage | null>,
+): Promise<{ text: string; source: SdPromptSource; reResolved: boolean }> {
+  if (!backendNeedsEnglishPrompt(fallbackBackend) || primaryLocale === "en") {
+    return { ...primary, reResolved: false };
+  }
+  const { text } = await resolveSdPromptDescription(
+    fallbackBackend as ImageGenerator,
+    image,
+    imageDate,
+    edition,
+    fetchEn,
+  );
+  const choice = chooseSdPromptText(text, image, { overrideText, englishOnly: true });
+  return { ...choice, reResolved: true };
+}
+
 /** #4620: transform puro texto→prompt — caller resolve qual texto (idioma/fonte) passar, ver `resolveSdPromptDescription`. */
 export function buildSdPrompt(descriptionText: string): {
   positive: string;
@@ -1466,6 +1515,8 @@ async function main(): Promise<number | void> {
       `[eia-compose] Stage 4 já completo em ${outDir}. ` +
         `Re-rodar mudaria o sorteio A/B (#192). Use --force pra regenerar.`,
     );
+    const ignoredOverrideWarning = sdPromptOverrideIgnoredWarning(args["sd-prompt-text"], force);
+    if (ignoredOverrideWarning) console.error(ignoredOverrideWarning);
     console.log(
       JSON.stringify({
         skipped: true,
@@ -1592,12 +1643,15 @@ async function main(): Promise<number | void> {
   // pro stderr (o stdout é o JSON que o orchestrator parseia) e pro contrato
   // JSON final (`sd_prompt_source`).
   const sdPromptOverride = args["sd-prompt-text"];
-  const { text: sdPromptText, source: sdPromptSource } = chooseSdPromptText(sdDescriptionText, image, {
+  const primaryChoice = chooseSdPromptText(sdDescriptionText, image, {
     overrideText: sdPromptOverride,
     englishOnly: backendNeedsEnglishPrompt(imageGenerator),
   });
+  // `let`: o fallback do Codex pode reescrever o prompt a partir de outra
+  // fonte, e o JSON final reporta a fonte do prompt que de fato gerou a imagem.
+  let sdPromptSource: SdPromptSource = primaryChoice.source;
   process.stderr.write(`[eia-compose] info: prompt de imagem do É IA? — fonte do texto: ${sdPromptSource}\n`);
-  const sdPrompt = buildSdPrompt(sdPromptText);
+  const sdPrompt = buildSdPrompt(primaryChoice.text);
   const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
   const iaPath = resolve(outDir, iaFilename);
@@ -1617,9 +1671,17 @@ async function main(): Promise<number | void> {
     // #9110 item 5 / #4620: o prompt foi resolvido pro Codex (multilíngue, pode
     // estar em pt-BR). Fallback comfyui/cloudflare precisa de EN — re-resolve
     // a descrição pro backend do fallback antes de gerar.
-    if (backendNeedsEnglishPrompt(fb) && sdPromptLocale !== "en") {
-      const { text: fbText } = await resolveSdPromptDescription(fb as ImageGenerator, image, imageDate, edition);
-      const fbChoice = chooseSdPromptText(fbText, image, { overrideText: sdPromptOverride, englishOnly: true });
+    const fbChoice = await resolveFallbackSdPromptChoice(
+      fb,
+      primaryChoice,
+      sdPromptLocale,
+      image,
+      imageDate,
+      edition,
+      sdPromptOverride,
+    );
+    if (fbChoice.reResolved) {
+      sdPromptSource = fbChoice.source;
       process.stderr.write(`[eia-compose] info: prompt do fallback ${fb} — fonte do texto: ${fbChoice.source}\n`);
       writeFileSync(sdPromptPath, JSON.stringify(buildSdPrompt(fbChoice.text), null, 2));
     }

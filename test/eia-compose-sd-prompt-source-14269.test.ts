@@ -11,7 +11,9 @@ import {
   chooseSdPromptText,
   looksLikePreparationText,
   pickVisualCaption,
+  resolveFallbackSdPromptChoice,
   resolveSdPromptDescription,
+  sdPromptOverrideIgnoredWarning,
   type WikimediaImage,
 } from "../scripts/eia-compose.ts";
 
@@ -116,5 +118,76 @@ describe("pickVisualCaption (#14269)", () => {
     assert.equal(pickVisualCaption({ structured: { captions: { pt: "a" } } }, true), undefined);
     assert.equal(pickVisualCaption({}), undefined);
     assert.equal(pickVisualCaption({ structured: { captions: { en: "  " } } }), undefined);
+  });
+});
+
+describe("resolveFallbackSdPromptChoice (#14269, review da PR #14282)", () => {
+  const PREP_EN = "A drop of liquid crystal was placed on a glass slide and covered with a coverslip.";
+  // Sem legenda en: o Codex (multilíngue) usa a legenda pt; o fallback EN não pode.
+  const PT_CAPTION_ONLY: WikimediaImage = {
+    title: "File:x.jpg",
+    description: { text: PREP_PT, html: PREP_PT, lang: "pt" },
+    structured: { captions: { pt: "Micrografia de cristal líquido em luz polarizada" } },
+  } as WikimediaImage;
+  const fetchEnPrep = async (): Promise<WikimediaImage | null> =>
+    ({ description: { text: PREP_EN, lang: "en" } }) as WikimediaImage;
+
+  it("REGRESSÃO: fallback comfyui reescreve o prompt e a fonte reportada segue o texto reescrito", async () => {
+    const primary = chooseSdPromptText(PREP_PT, PT_CAPTION_ONLY);
+    assert.equal(primary.source, "caption");
+    const fb = await resolveFallbackSdPromptChoice(
+      "comfyui",
+      primary,
+      "pt",
+      PT_CAPTION_ONLY,
+      "2026-11-26",
+      "261127",
+      undefined,
+      fetchEnPrep,
+    );
+    assert.equal(fb.reResolved, true);
+    assert.equal(fb.source, "description");
+    assert.equal(fb.text, PREP_EN);
+  });
+
+  it("override do editor segue como fonte no fallback", async () => {
+    const fb = await resolveFallbackSdPromptChoice(
+      "cloudflare",
+      { text: "Polarized micrograph", source: "override" },
+      "pt",
+      PT_CAPTION_ONLY,
+      "2026-11-26",
+      "261127",
+      "Polarized micrograph",
+      fetchEnPrep,
+    );
+    assert.deepEqual(fb, { text: "Polarized micrograph", source: "override", reResolved: true });
+  });
+
+  it("fallback que não exige EN (gemini) ou prompt primário já em en: mantém a escolha primária", async () => {
+    const primary = { text: CAPTION_EN, source: "caption" as const };
+    const noFetch = async (): Promise<WikimediaImage | null> => {
+      throw new Error("não deveria buscar EN");
+    };
+    assert.deepEqual(
+      await resolveFallbackSdPromptChoice("gemini", primary, "pt", REAL_CASE, "2026-11-26", "261127", undefined, noFetch),
+      { ...primary, reResolved: false },
+    );
+    assert.deepEqual(
+      await resolveFallbackSdPromptChoice("comfyui", primary, "en", REAL_CASE, "2026-11-26", "261127", undefined, noFetch),
+      { ...primary, reResolved: false },
+    );
+  });
+});
+
+describe("sdPromptOverrideIgnoredWarning (#14269, review da PR #14282)", () => {
+  it("avisa quando --sd-prompt-text vem sem --force (skip resume-aware)", () => {
+    const msg = sdPromptOverrideIgnoredWarning("Polarized micrograph", false);
+    assert.ok(msg && /--sd-prompt-text/.test(msg) && /--force/.test(msg), String(msg));
+  });
+  it("sem aviso com --force, sem a flag ou com a flag vazia", () => {
+    assert.equal(sdPromptOverrideIgnoredWarning("Polarized micrograph", true), null);
+    assert.equal(sdPromptOverrideIgnoredWarning(undefined, false), null);
+    assert.equal(sdPromptOverrideIgnoredWarning("   ", false), null);
   });
 });
