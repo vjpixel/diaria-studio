@@ -294,4 +294,4 @@ Com o servidor `--watch` vivo, reescrever o arquivo servido basta; sem ele, o
 
 **`abortar`**: teardown, log warn `gate_revisao_abortado`, `edition-lock.ts release`, sem sentinel.
 
-Qualquer outra resposta: repetir o prompt (fail-closed).
+Qualquer outra resposta: repetir o prompt (fail-closed). As respostas não terminais da seção anterior (`doc`, puxar doc, 🔎, domínio) não contam como "outra".
