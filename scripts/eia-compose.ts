@@ -61,7 +61,7 @@ import { CONFIG } from "./lib/config.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
-import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, assertSimpleArgValues, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts"; // #4620
 import { CODEX_FALLBACK_SCRIPTS, backendNeedsEnglishPrompt } from "./lib/image-backends.ts"; // #9110 item 5
 import { parsePlatformConfig } from "./lib/schemas/platform-config.ts"; // #4625 item 4
@@ -1461,15 +1461,30 @@ async function downloadFile(url: string, outPath: string): Promise<void> {
   writeFileSync(outPath, buf);
 }
 
+/**
+ * #14304: argv do CLI. `--force` é booleana e lida à parte; as demais são
+ * `--key valor`. A ordem do texto de uso (`--force --sd-prompt-text "..."`)
+ * fazia o parser antigo engolir `--sd-prompt-text` como valor de `--force`
+ * e descartar o texto do editor sem aviso. `--sd-prompt-text` sem valor é
+ * recusado em vez de cair na descrição da Wikimedia.
+ */
+export function parseEiaComposeArgs(argv: string[]): {
+  args: Record<string, string>;
+  force: boolean;
+} {
+  const args = parseArgs(argv);
+  assertSimpleArgValues(argv, args, ["sd-prompt-text"]);
+  return { args, force: argv.includes("--force") };
+}
+
 async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
+  const { args, force } = parseEiaComposeArgs(process.argv.slice(2));
   const edition = args.edition;
   if (!edition || !/^\d{6}$/.test(edition)) {
     console.error('Uso: eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force] [--sd-prompt-text "<texto>"]');
     return 1;
   }
-  const force = process.argv.includes("--force");
   const outDir =
     args["out-dir"] ?? resolve(ROOT, editionDir(edition));
   const internalDir = resolve(outDir, "_internal");

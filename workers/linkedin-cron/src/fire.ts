@@ -13,6 +13,16 @@ import { alertLinkedInDocumentFallback } from "./maintenance";
 
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
+/** #14301 — resultado do `/mark-dlq` visto pelo cron. */
+type CronMarkDlq =
+  | { kind: "marked" }
+  /** DO terminal: outra volta publicou (`sendUnknown: null`) ou terminou ambígua. */
+  | { kind: "terminal"; sendUnknown: string | null }
+  /** Claim vivo de outro dono, ou entry de outro enqueue armada no DO. */
+  | { kind: "refused"; why: string }
+  /** DO indisponível ou resposta inesperada: nada confirmado. */
+  | { kind: "failed" };
+
 /**
  * #880 — move entry pra dlq:{uuid} após esgotar retries.
  * #881 — fetch (Make ou Instagram Graph API, via dispatch.ts) tem timeout via
@@ -112,6 +122,16 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           dlq++;
           continue;
         }
+        // #14301 — `fired` antes de `dlq_reason`: um `/mark-dlq` tardio (antes da
+        // recusa em DO terminal) deixava os dois juntos num post publicado, e
+        // esta ordem o mandava pra DLQ, convidando a uma republicação manual.
+        if (status.fired) {
+          // DO já disparou — apenas limpar KV entry sem re-fire
+          await env.LINKEDIN_QUEUE.delete(k.name);
+          console.log(`[fire] ${k.name} already fired by DO alarm — cleaning KV (idempotency)`);
+          fired++; // conta como fired pra estatísticas
+          continue;
+        }
         if (typeof status.dlq_reason === "string" && status.dlq_reason !== "") {
           // #14218 — o alarm terminou em `dlq` e não refez. Antes o cron via
           // `fired=false`, ganhava o claim e redisparava (o carrossel inteiro,
@@ -128,13 +148,6 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
           await logIfRecoveredDuringMove(env, k.name, status.dlq_reason);
           console.error(`[fire] ${k.name} dlq no alarm — movido pra DLQ sem refazer: ${status.dlq_reason}`);
           dlq++;
-          continue;
-        }
-        if (status.fired) {
-          // DO já disparou — apenas limpar KV entry sem re-fire
-          await env.LINKEDIN_QUEUE.delete(k.name);
-          console.log(`[fire] ${k.name} already fired by DO alarm — cleaning KV (idempotency)`);
-          fired++; // conta como fired pra estatísticas
           continue;
         }
         // Telemetria de crash mid-flight: claiming=true + fired=false indica que o alarm()
@@ -206,23 +219,37 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     // token), via `/mark-dlq`. Antes só liberava o claim, e um alarm que
     // disparasse depois refazia o post (o carrossel inteiro). Se a marcação
     // falhar, ao menos libera o claim, como antes.
-    // Devolve `true` quando o DO confirmou a marcação (#14250 usa isso pra saber
-    // se o `dlq_reason` relido antes do move é o deste cron).
-    const markCronDlq = async (reason: string): Promise<boolean> => {
+    // Devolve `marked` quando o DO confirmou a marcação (#14250 usa isso pra
+    // saber se o `dlq_reason` relido antes do move é o deste cron).
+    // #14301 — a `entry` vai junto: sem claim vivo deste cron (claim vencido
+    // pelo TTL, ou fallback sem DO com token null), o DO só marca se ainda
+    // guarda a mesma entry. 409 = recusado, nada gravado no DO: `terminal`
+    // (outra volta publicou ou terminou ambígua) ou `refused` (claim vivo de
+    // outro dono, ou entry de um re-enqueue de recuperação, #14241).
+    const markCronDlq = async (reason: string): Promise<CronMarkDlq> => {
       try {
         const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
         const res = await env.LINKEDIN_SCHEDULER.get(doId).fetch("https://do/mark-dlq", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason, claim_token: claimToken ?? null }),
+          body: JSON.stringify({ reason, claim_token: claimToken ?? null, entry }),
         });
-        if (res.ok) return true;
+        if (res.ok) return { kind: "marked" };
+        if (res.status === 409) {
+          const body = (await res.json().catch(() => ({}))) as { refused?: unknown; send_unknown?: unknown };
+          const refused = typeof body.refused === "string" ? body.refused : "desconhecido";
+          console.warn(`[fire] ${k.name} /mark-dlq recusado (${refused}) — DO intacto (#14301)`);
+          if (refused === "fired" || refused === "send_unknown") {
+            return { kind: "terminal", sendUnknown: typeof body.send_unknown === "string" && body.send_unknown !== "" ? body.send_unknown : null };
+          }
+          return { kind: "refused", why: refused };
+        }
         console.error(`[fire] ${k.name} /mark-dlq devolveu ${res.status} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
       } catch (e) {
         console.error(`[fire] ${k.name} /mark-dlq falhou: ${String(e)} — DO pode manter o payload; alarm tardio pode refazer (#14230)`);
       }
       await releaseCronClaim();
-      return false;
+      return { kind: "failed" };
     };
 
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
@@ -270,7 +297,34 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
       // fica com claiming=true permanente e o alarm fica travado até eviction.
       // #14230 — e marcar o DO (`dlq_reason`, sem payload): o alarm não refaz.
-      const marked = await markCronDlq(outcome.reason);
+      const mark = await markCronDlq(outcome.reason);
+      if (mark.kind === "terminal" || mark.kind === "refused") {
+        // #14301 — o DO recusou: o claim deste cron venceu no meio do disparo e
+        // outra volta o retomou (ou já publicou), ou um re-enqueue de
+        // recuperação armou a entry nova. Mover esta entry pra DLQ diria
+        // "não saiu" de um post que pode ter saído, ou apagaria a nova.
+        const stale = await dlqMoveStale(env, k.name, raw, null);
+        if (stale !== null) {
+          console.warn(`[fire] ${k.name} dlq do cron não movido (DO recusou a marcação): ${stale} (#14301)`);
+          continue;
+        }
+        if (mark.kind === "refused") {
+          console.warn(`[fire] ${k.name} dlq do cron não movido: DO recusou (${mark.why}); o dono atual do claim decide (#14301)`);
+          continue;
+        }
+        // Mesma leitura do `/status` no início da volta (#11106, #10992).
+        if (mark.sendUnknown !== null) {
+          const dlqKey = await moveToDlq(env, k.name, entry, mark.sendUnknown);
+          console.error(`[fire] ${k.name} dlq do cron descartado: outra volta terminou ambígua — dlq: ${mark.sendUnknown} (dlq_key=${dlqKey}) (#14301)`);
+          dlq++;
+        } else {
+          await env.LINKEDIN_QUEUE.delete(k.name);
+          console.warn(`[fire] ${k.name} dlq do cron descartado: outra volta já publicou — KV limpo (#14301)`);
+          fired++;
+        }
+        continue;
+      }
+      const marked = mark.kind === "marked";
       // #14250 — o `/mark-dlq` libera o claim, e a partir daí um re-enqueue de
       // recuperação (#14241) pode limpar o DO e gravar a entry nova antes do
       // move. Relê; sem a marcação confirmada, só o KV é conferido.

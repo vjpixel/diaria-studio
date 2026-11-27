@@ -361,25 +361,56 @@ export function getIntArg(
 
 /**
  * Variante "flat" — retorna Record<string, string> direto (sem separar
- * flags/values/positional). Regra: `--key` seguido de QUALQUER próximo
- * elemento (mesmo que comece com `--`) consome esse elemento como valor;
- * `--key` no fim do array é ignorado (não vira flag booleana).
+ * flags/values/positional). Regra: `--key` seguido de um elemento que NÃO
+ * começa com `--` consome esse elemento como valor; `--key` no fim do array,
+ * ou seguido de outro `--flag`, é ignorado (não vira flag booleana nem
+ * engole a flag seguinte).
+ *
+ * #14304: até aqui o próximo elemento era consumido mesmo começando com
+ * `--`. Os chamadores que leem flags booleanas à parte
+ * (`process.argv.includes("--force")`) perdiam a flag de valor que viesse
+ * logo depois: `--force --sd-prompt-text "x"` fazia `out.force =
+ * "--sd-prompt-text"` e o texto virava token solto (eia-compose), e
+ * `--dry-run --platform linkedin` deixava `platform` sem valor, ou seja
+ * "all" (delete-test-schedules). Mesma classe do #5995.
+ *
+ * Flag de valor passada sem valor (`--platform --dry-run`) agora some do
+ * resultado em vez de receber "--dry-run": quem precisa recusar esse caso
+ * usa `assertSimpleArgValues`.
  *
  * #2834: era duplicada byte-a-byte (a menos de nome de variável local) em
- * 21 scripts — todos scripts que só usam `--key value`, nunca flags
- * booleanas standalone. NÃO usar em scripts que precisam de flags
- * booleanas (`--force` sem valor) — usar `parseArgs`/`hasFlag` para esses.
+ * 21 scripts. Para flags booleanas use `hasFlag`/`argv.includes`, ou o
+ * `parseArgs`, que separa flags de values.
  */
 export function parseArgsSimple(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length) {
+    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       out[a.slice(2)] = argv[i + 1];
       i++;
     }
   }
   return out;
+}
+
+/**
+ * #14304: recusa uma flag de valor que apareceu em `argv` sem valor (no fim
+ * do array ou seguida de outra `--flag`), caso que `parseArgsSimple` descarta
+ * do resultado. Sem isso `--platform --dry-run` cairia no default ("all") em
+ * silêncio. Só olha a forma `--key` separada (a única que `parseArgsSimple`
+ * entende).
+ */
+export function assertSimpleArgValues(
+  argv: string[],
+  parsed: Record<string, string>,
+  keys: readonly string[],
+): void {
+  for (const key of keys) {
+    if (argv.includes(`--${key}`) && parsed[key] === undefined) {
+      throw new Error(`--${key} foi passado sem valor (ex: "--${key} <valor>").`);
+    }
+  }
 }
 
 /**
