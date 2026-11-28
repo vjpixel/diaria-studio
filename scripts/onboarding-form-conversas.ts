@@ -17,12 +17,14 @@
  * e "Outro/Outra") só saem AQUI, no terminal de quem roda; nunca vão para o perfil de audiência nem para arquivo versionado.
  * Não grava nada, não chama o Kit.
  *
- * Filtros (todos opcionais, combinam com E; o valor casa por trecho, sem
- * diferença de maiúscula/acento):
+ * Filtros (todos opcionais, combinam com E; sem diferença de
+ * maiúscula/acento). Os de texto casam por trecho:
  *   --uso-ia <trecho> --situacao <trecho> --area <trecho> --motivacao <trecho>
- *   --dificuldade <trecho> --maior-gasto <trecho> --apoio <trecho>
+ *   --dificuldade <trecho> --maior-gasto <trecho>
+ *   --apoio <valor>   (exato, #14381: "sim", "não" ou "não lembro")
  *   --desde AAAA-MM-DD
- * (`--apoio` filtra por `apoio_independente`: "sim", "não", "não lembro".)
+ * `--apoio` filtra por `apoio_independente` com valor EXATO: `--apoio não`
+ * não traz quem respondeu "Não lembro" (#14381). `--help` mostra o uso.
  * Saída: tabela em texto (padrão) ou `--json`.
  *
  * Uso:
@@ -83,6 +85,25 @@ const FILTER_FLAGS: Record<string, keyof ConversaFilters> = {
   "--desde": "desde",
 };
 
+/**
+ * Filtros de resposta fechada que casam pelo valor inteiro, não por trecho
+ * (#14381): por trecho, `--apoio não` trazia também "Não lembro".
+ */
+const EXACT_FILTERS: ReadonlySet<keyof ConversaFilters> = new Set(["apoio_independente"]);
+
+export const CONVERSA_USAGE = `Uso: npx tsx scripts/onboarding-form-conversas.ts [filtros] [--json]
+
+Lista quem topou a conversa de 20 minutos no formulário (só leitura).
+Filtros combinam com E, sem diferença de maiúscula/acento:
+  --uso-ia <trecho>       --situacao <trecho>     --area <trecho>
+  --motivacao <trecho>    --dificuldade <trecho>  --maior-gasto <trecho>
+  --apoio <valor>         valor EXATO de "já apoiou": sim | não | "não lembro"
+                          (--apoio não NÃO traz quem respondeu "Não lembro")
+  --desde AAAA-MM-DD
+  --json                  saída em JSON
+  --help                  mostra esta ajuda
+`;
+
 function fold(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 }
@@ -132,6 +153,10 @@ export function conversaRows(responses: readonly FormResponse[], filters: Conver
         if (row.data < v) return false;
         continue;
       }
+      if (EXACT_FILTERS.has(k)) {
+        if (fold(row[k]).trim() !== fold(v).trim()) return false;
+        continue;
+      }
       if (!fold(row[k]).includes(fold(v))) return false;
     }
     return true;
@@ -166,11 +191,12 @@ function isIsoDate(v: string): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
-export function parseConversaArgs(argv: readonly string[]): { filters: ConversaFilters; json: boolean } {
+export function parseConversaArgs(argv: readonly string[]): { filters: ConversaFilters; json: boolean; help?: true } {
   const filters: ConversaFilters = {};
   let json = false;
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i];
+    if (f === "--help" || f === "-h") return { filters, json, help: true };
     if (f === "--json") json = true;
     else if (f in FILTER_FLAGS) {
       const v = argv[++i];
@@ -189,6 +215,10 @@ async function main(): Promise<void> {
   } catch (e) {
     process.stderr.write(`[onboarding-form-conversas] ${(e as Error).message}\n`);
     throw new CliExit(2);
+  }
+  if (args.help) {
+    process.stdout.write(CONVERSA_USAGE);
+    return;
   }
   loadProjectEnv();
   const raw = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as { onboarding?: { followup?: FollowupConfigRaw } };
