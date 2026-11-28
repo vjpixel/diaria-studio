@@ -26,3 +26,17 @@ describe('#13957 IPO: empresa depois de "rival"/"competitor" é sujeito', () => 
     assert.deepEqual(recurringEventThemes('Startup apoiada pela Nvidia estreia na bolsa'), []);
   });
 });
+
+// #13963: "rivals" como verbo torna a empresa seguinte coadjuvante.
+describe('#13963 IPO: rivals como verbo', () => {
+  it('não atribui à OpenAI o IPO de uma startup que rivaliza com ela', () => {
+    const title = 'Startup that rivals OpenAI files for IPO';
+    assert.deepEqual(recurringEventThemes(title), []);
+    assert.notEqual(sameEvent(title, 'OpenAI prepares its IPO', SAME_EDITION)?.removable, true);
+  });
+
+  it('mantém apenas o sujeito conhecido antes da oração relativa', () => {
+    assert.deepEqual(recurringEventThemes('Anthropic, which rivals OpenAI, prepares IPO'), ['IPO anthropic']);
+    assert.deepEqual(recurringEventThemes('Cerebras rivals Nvidia, files for IPO'), []);
+  });
+});
