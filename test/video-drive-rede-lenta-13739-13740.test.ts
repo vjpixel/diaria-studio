@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,11 +22,15 @@ import {
 } from "../scripts/lib/diaria/video-montage-drive.ts";
 import { copyMarcaIntoRoot, loadVinhetaForLocalRoot } from "../scripts/video-montagem.ts";
 import {
+  BRUTO_MIN_RATE_ENV,
+  BRUTO_READER_SCRIPT,
+  BRUTO_READ_MIN_BYTES_PER_SEC,
   BrutoNotLocalError,
   WIN_ATTR_RECALL_ON_DATA_ACCESS,
   assertBrutosLocal,
   checkBrutosLocal,
   cloudOnlyAttributes,
+  minReadBytesPerSec,
   readWindowsAttributes,
   timedReadBrutos,
   type BrutoLocalDeps,
@@ -356,7 +360,7 @@ describe("#13740 leitura cronometrada: o Drive for desktop não expõe atributo 
     assert.throws(() => assertBrutosLocal("inventory", [lento, baixado], deps, { settleMs: 1, readTimeoutMs: 15_000 }), (e: unknown) => {
       assert.ok(e instanceof BrutoNotLocalError);
       assert.deepEqual(e.problems.map((p) => [p.path, p.reason]), [[lento, "lento"]]);
-      assert.match(e.message, /20261118_163332\.mp4: ler 1 MB do início e do fim não terminou em 15 s/);
+      assert.match(e.message, /20261118_163332\.mp4: ler 8 trechos do início ao fim não terminou em 15 s/);
       assert.match(e.message, /Drive for desktop ainda está baixando/);
       assert.doesNotMatch(e.message, /20261118_151000/);
       return true;
@@ -411,6 +415,84 @@ describe("#13740 leitura cronometrada: o Drive for desktop não expõe atributo 
     const lixo = (() => ({ status: 0, stdout: "não é json" })) as unknown as typeof import("node:child_process").spawnSync;
     assert.equal(timedReadBrutos(["/r/a.mp4"], 100, { run: lixo }), null);
     assert.deepEqual(timedReadBrutos([], 100), new Map());
+  });
+});
+
+describe("#14405 vazão da sonda: o Drive serve leitura parcial rápida de um bruto só na nuvem", () => {
+  const withReads = (base: BrutoLocalDeps, outcomes: Record<string, TimedReadOutcome>): BrutoLocalDeps => ({
+    ...base,
+    timedRead: () => new Map(Object.entries(outcomes)),
+  });
+
+  it("o cenário da issue: bruto de 9 GB só na nuvem lido dentro do prazo, mas abaixo do piso de vazão, para nomeando o arquivo", () => {
+    const nuvem = "I:/Meu Drive/diaria-studio-video/261119/20261118_163332.mp4";
+    const local = "I:/Meu Drive/diaria-studio-video/261119/20261118_151000.mp4";
+    const deps = withReads(
+      fakeLocal({ [nuvem]: [9.57e9, 9.57e9], [local]: [2e9, 2e9] }, { platform: "win32", attrs: { [nuvem]: 0x80, [local]: 0x80 } }),
+      { [nuvem]: "devagar", [local]: "ok" },
+    );
+    assert.throws(() => assertBrutosLocal("transcribe", [nuvem, local], deps, { settleMs: 1 }), (e: unknown) => {
+      assert.ok(e instanceof BrutoNotLocalError);
+      assert.deepEqual(e.problems.map((p) => [p.path, p.reason]), [[nuvem, "lento"]]);
+      assert.match(e.message, /20261118_163332\.mp4: a leitura de 8 trechos espalhados pelo arquivo ficou abaixo do piso de vazão/);
+      assert.match(e.message, new RegExp(BRUTO_MIN_RATE_ENV));
+      assert.doesNotMatch(e.message, /20261118_151000/);
+      return true;
+    });
+  });
+
+  it("o leitor de verdade: leitura que termina rápido mas abaixo do piso sai 'devagar' (antes da #14405: 'ok')", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bruto-vazao-"));
+    try {
+      const p = join(dir, "bruto.mp4");
+      writeFileSync(p, Buffer.alloc(2 * 1024 * 1024, 1));
+      // Piso impossível para qualquer disco: o arquivo responde em milissegundos, como o trecho que o Drive serve sob demanda.
+      const t0 = Date.now();
+      const r = timedReadBrutos([p], 10_000, { probeBytes: 256 * 1024, minBytesPerSec: 1e15, minRateBytes: 1024 })!;
+      assert.equal(r.get(p), "devagar");
+      assert.ok(Date.now() - t0 < 8000, "a vazão é julgada sem esperar o prazo");
+      // O mesmo arquivo com o piso desligado (0) ou acima do piso real: ok.
+      assert.equal(timedReadBrutos([p], 10_000, { probeBytes: 256 * 1024, minBytesPerSec: 0, minRateBytes: 1024 })!.get(p), "ok");
+      assert.equal(timedReadBrutos([p], 10_000, { probeBytes: 256 * 1024, minBytesPerSec: 1, minRateBytes: 1024 })!.get(p), "ok");
+      // Arquivo menor que o mínimo para julgar a vazão: só o prazo vale.
+      assert.equal(timedReadBrutos([p], 10_000, { probeBytes: 256 * 1024, minBytesPerSec: 1e15 })!.get(p), "ok");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("o leitor lê trechos espalhados pelo arquivo inteiro, não só o início e o fim", () => {
+    // Leitor espião: o script real, com readSync embrulhado para gravar as posições lidas num arquivo.
+    const dir = mkdtempSync(join(tmpdir(), "bruto-trechos-"));
+    try {
+      const p = join(dir, "bruto.mp4");
+      const log = join(dir, "pos.json");
+      writeFileSync(p, Buffer.alloc(1000 * 1024, 1));
+      const spy = [
+        // O script real declara `fs`; o espião usa outro nome para o mesmo módulo.
+        "const spyFs = require('node:fs'); const orig = spyFs.readSync; const pos = [];",
+        "spyFs.readSync = (...a) => { pos.push(a[4]); return orig(...a); };",
+        `const exit = process.exit; process.exit = (c) => { spyFs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(pos)); exit(c); };`,
+        BRUTO_READER_SCRIPT,
+      ].join("\n");
+      assert.equal(timedReadBrutos([p], 10_000, { reader: ["-e", spy], probeBytes: 100 * 1024, probeChunks: 8, minBytesPerSec: 0 })!.get(p), "ok");
+      const pos = JSON.parse(readFileSync(log, "utf8")) as number[];
+      const span = 1000 * 1024 - 100 * 1024;
+      assert.deepEqual(pos, [0, 1, 2, 3, 4, 5, 6, 7].map((i) => Math.floor((span * i) / 7)));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("um bruto por vez, cada um com o próprio prazo: o preso não leva os outros junto", () => {
+    const reader = ["-e", "if (process.argv[1].includes('preso')) setTimeout(() => {}, 20000); else process.exit(0);"];
+    const r = timedReadBrutos(["/r/a.mp4", "/r/preso.mp4", "/r/b.mp4"], 500, { reader })!;
+    assert.deepEqual([...r.entries()], [["/r/a.mp4", "ok"], ["/r/preso.mp4", "timeout"], ["/r/b.mp4", "ok"]]);
+  });
+
+  it("piso pelo ambiente: MB/s, vírgula aceita, 0 desliga, valor inválido volta ao default", () => {
+    assert.equal(minReadBytesPerSec({}), BRUTO_READ_MIN_BYTES_PER_SEC);
+    assert.equal(minReadBytesPerSec({ [BRUTO_MIN_RATE_ENV]: "5" }), 5 * 1024 * 1024);
+    assert.equal(minReadBytesPerSec({ [BRUTO_MIN_RATE_ENV]: "2,5" }), Math.round(2.5 * 1024 * 1024));
+    assert.equal(minReadBytesPerSec({ [BRUTO_MIN_RATE_ENV]: "0" }), 0);
+    assert.equal(minReadBytesPerSec({ [BRUTO_MIN_RATE_ENV]: "-3" }), BRUTO_READ_MIN_BYTES_PER_SEC);
+    assert.equal(minReadBytesPerSec({ [BRUTO_MIN_RATE_ENV]: "abc" }), BRUTO_READ_MIN_BYTES_PER_SEC);
   });
 });
 
