@@ -46,6 +46,7 @@ on:
       - 'scripts/lib/dashboard-kv-types.ts'
       - 'scripts/lib/editor-copy.ts'
       - 'scripts/lib/next-edition-date.ts'
+      - 'scripts/lib/shared/brevo-arm-guardrails.ts'
       - 'scripts/lib/shared/brevo-billing-cycle.ts'
       - 'scripts/lib/shared/brevo-campaign-stats.ts'
       - 'scripts/lib/shared/brevo-dashboard-types.ts'

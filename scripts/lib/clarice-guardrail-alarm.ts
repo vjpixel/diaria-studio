@@ -18,11 +18,11 @@
  * ~10h após CADA envio (`GUARDRAIL_EVAL_WINDOW_MS` — abertura já estabilizou,
  * folga antes do envio seguinte, que sai 06:00 BRT no dia seguinte). Reusa
  * `evaluateArmGuardrails`/`thresholds.ts`
- * (workers/brevo-dashboard/src/experiment-cta.ts) SEM reimplementar limiar —
+ * (scripts/lib/shared/brevo-arm-guardrails.ts, #13994) SEM reimplementar limiar —
  * `armMetricsFromCampaign` só adapta o shape de UMA campanha (não um
  * experimento A/B) pro formato `ArmMetrics` que essa função já espera.
  * EXCEÇÃO (#4154): spam usa `CTA_SPAM_BREACH_YELLOW_PCT` (constante própria
- * de `experiment-cta.ts`, não `thresholds.spamRate`) — ver docstring de
+ * de `shared/brevo-arm-guardrails.ts`, não `thresholds.spamRate`) — ver docstring de
  * `describeBreaches` abaixo.
  */
 import {
@@ -30,7 +30,7 @@ import {
   CTA_SPAM_BREACH_YELLOW_PCT,
   type ArmMetrics,
   type ArmGuardrailResult,
-} from "../../workers/brevo-dashboard/src/experiment-cta.ts";
+} from "./shared/brevo-arm-guardrails.ts";
 import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "./shared/brevo-health-thresholds.ts";
 
 /** Janela de espera pós-envio antes de avaliar guardrails (decisão do editor,
