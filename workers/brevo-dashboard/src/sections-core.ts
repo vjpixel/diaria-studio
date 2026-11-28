@@ -1,6 +1,7 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry, ClariceHourTestKvState, MonthlyTotalsArchive } from "./types.ts"; // #5189: ClariceHourTestKvState; #8115: MonthlyTotalsArchive
 import type { CouponClariceClassPayload } from "../../../scripts/lib/coupon-clarice-class.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
+import { isClariceAvulsaCampaign } from "../../../scripts/lib/shared/clarice-avulsa.ts"; // #14339
 // #4405: desempate de ciclo por conteúdo em resolveCampaignCycle (abaixo) — mesma
 // função que render-links.ts já usa pra classificar URL→conteúdo.
 import { classifyLinkContent } from "./link-content.ts";
@@ -581,7 +582,9 @@ export function renderDashboardHtml(
   const volumeSection = renderVolumeSection(cumSentBilling, billingWindow, planCredits, volumeMayUndercount);
   // #3081: nota diagnóstica de campanhas com naming não reconhecido por
   // NENHUM classificador Clarice — sinaliza sem quebrar o render.
-  const unclassifiedNote = renderUnclassifiedCampaignsNote(findUnclassifiedCampaignNames(campaigns));
+  const unclassifiedNote =
+    renderUnclassifiedCampaignsNote(findUnclassifiedCampaignNames(campaigns)) +
+    renderAvulsaCampaignsNote(findAvulsaCampaignNames(campaigns)); // #14339
   // #4449 item 2: nota diagnóstica IRMÃ, mas pro caso oposto — campanha
   // `--group` já CLASSIFICADA (warm, só pelo nome) cuja célula A/B/C
   // esperada não foi extraível da lista (naming da LISTA divergente, #4447).
@@ -1836,7 +1839,9 @@ export function calcCumulativeSentInBillingWindow(
 ): number {
   let total = 0;
   for (const c of campaigns) {
-    if (!classifyClariceAudience(c.name)) continue; // só campanhas Clarice (warm ou cold)
+    // só campanhas Clarice (warm ou cold) — e as AVULSAS (#14339): fora dos
+    // agregados de ciclo/onda, mas consomem crédito do plano como qualquer envio.
+    if (!classifyClariceAudience(c.name) && !isClariceAvulsaCampaign(c)) continue;
     if (!isInBillingWindow(c.sentDate, window)) continue;
     const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
     if (!picked) continue;
@@ -1931,14 +1936,36 @@ export function groupMonthlyAbcTests(
  * nenhum caso que `parseAbcAudienceCampaign` reconheceria.
  */
 export function findUnclassifiedCampaignNames(
-  campaigns: Array<Pick<BrevoCampaign, "name">>,
+  campaigns: Array<Pick<BrevoCampaign, "name"> & { id?: number }>,
 ): string[] {
   const names: string[] = [];
   for (const c of campaigns) {
     if (classifyClariceAudience(c.name)) continue;
+    // #14339: avulsa é categoria conhecida, não "naming fora do padrão" —
+    // tem nota própria (`renderAvulsaCampaignsNote`).
+    if (isClariceAvulsaCampaign(c)) continue;
     names.push(c.name);
   }
   return names;
+}
+
+/**
+ * #14339: campanhas AVULSAS (fora da maquinaria de ondas, ex.: Black Friday
+ * #438/#439) presentes na lista — entram no volume do ciclo de cobrança e
+ * ficam fora dos agregados de ciclo/onda (Resumo A/B/C, ondas `grupo:`, open
+ * rate por dia da semana). Exportado pra teste unitário.
+ */
+export function findAvulsaCampaignNames(
+  campaigns: Array<Pick<BrevoCampaign, "name"> & { id?: number }>,
+): string[] {
+  return campaigns.filter((c) => isClariceAvulsaCampaign(c)).map((c) => c.name);
+}
+
+/** Nota informativa das avulsas (vazia sem nenhuma). Exportado pra teste. */
+export function renderAvulsaCampaignsNote(names: string[]): string {
+  if (names.length === 0) return "";
+  const plural = names.length === 1 ? "" : "s";
+  return `<p class="section-note"><small>${names.length} campanha${plural} avulsa${plural} (fora dos agregados de ciclo/onda, dentro do volume do ciclo de cobrança): ${names.map((n) => escHtml(n)).join(", ")}.</small></p>`;
 }
 
 /**
@@ -3310,6 +3337,11 @@ export function aggregateByWeekday(
       const parsed = parseClariceCampaignKey(c.name);
       if (!parsed || parsed.cycle !== cycle) continue;
     }
+
+    // #14339: avulsa (ex.: Black Friday, 88k num disparo, público e oferta
+    // fora do padrão) distorceria a média do dia da semana que o plano
+    // semanal usa pra escolher os dias das ondas regulares.
+    if (isClariceAvulsaCampaign(c)) continue;
 
     if (!c.sentDate) continue;
 

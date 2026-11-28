@@ -51,6 +51,7 @@ on:
       - 'scripts/lib/shared/brevo-health-thresholds.ts'
       - 'scripts/lib/shared/brevo-link-content.ts'
       - 'scripts/lib/shared/brt.ts'
+      - 'scripts/lib/shared/clarice-avulsa.ts'
       - 'scripts/lib/shared/clarice-weekly-plan.ts'
       - 'scripts/lib/stripe-coupons.ts'
   workflow_dispatch:
