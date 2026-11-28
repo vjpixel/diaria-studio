@@ -19,7 +19,7 @@ import { SCHEDULED_TASKS, getScheduledTaskByName } from "../scripts/lib/schedule
 
 // 261027 é terça; 261031 é sábado.
 const WEEKDAY = "261027";
-const SHORT_AT = brtInstant(WEEKDAY, "12:00");
+const SHORT_AT = brtInstant(WEEKDAY, "06:30"); // slot real do YouTube Shorts (#12250)
 const AFTER_DEADLINE = brtInstant(WEEKDAY, "13:30");
 
 const registry: FileRead<ShortsPublishedFile> = {
@@ -27,8 +27,8 @@ const registry: FileRead<ShortsPublishedFile> = {
   value: {
     aammdd: WEEKDAY,
     entries: [
-      { destination: "instagram", status: "published", id: "ig1", at: "2026-10-27T15:00:00.000Z" },
-      { destination: "youtube_shorts", status: "published", id: "abcdefghijk", url: "https://youtube.com/shorts/abcdefghijk", at: "2026-10-27T15:00:00.000Z" },
+      { destination: "instagram", status: "published", id: "ig1", at: "2026-10-27T09:30:00.000Z" },
+      { destination: "youtube_shorts", status: "published", id: "abcdefghijk", url: "https://youtube.com/shorts/abcdefghijk", at: "2026-10-27T09:30:00.000Z" },
     ],
   },
 };
@@ -67,7 +67,7 @@ describe("#11353 evaluateShortRelatedMissed", () => {
     assert.equal(ev.verdict, "missing-record");
     assert.ok(isAlarmingShortRelatedVerdict(ev.verdict));
     assert.equal(ev.shortRef, "https://youtube.com/shorts/abcdefghijk");
-    assert.equal(ev.deadline, brtInstant(WEEKDAY, "13:00").toISOString());
+    assert.equal(ev.deadline, brtInstant(WEEKDAY, "09:30").toISOString());
   });
 
   it("registro com alertedAt: a task já avisou, não alarma de novo", () => {
@@ -101,19 +101,19 @@ describe("#11353 evaluateShortRelatedMissed", () => {
     assert.ok(isAlarmingShortRelatedVerdict(ev.verdict));
   });
 
-  it("antes de shortAt + 60 min não alarma, mesmo sem registro", () => {
-    const ev = evaluateShortRelatedMissed(input({ now: brtInstant(WEEKDAY, "12:59") }));
+  it("antes de shortAt + SHORT_RELATED_GIVE_UP_MINUTES (180 min, #14369) não alarma, mesmo sem registro", () => {
+    const ev = evaluateShortRelatedMissed(input({ now: brtInstant(WEEKDAY, "09:29") }));
     assert.equal(ev.verdict, "before-deadline");
     assert.equal(isAlarmingShortRelatedVerdict(ev.verdict), false);
   });
 
   it("exatamente no prazo já alarma", () => {
-    assert.equal(evaluateShortRelatedMissed(input({ now: brtInstant(WEEKDAY, "13:00") })).verdict, "missing-record");
+    assert.equal(evaluateShortRelatedMissed(input({ now: brtInstant(WEEKDAY, "09:30") })).verdict, "missing-record");
   });
 
-  it("slot cedo (06:30): às 13:30 o prazo de 07:30 já passou", () => {
-    const ev = evaluateShortRelatedMissed(input({ shortAt: brtInstant(WEEKDAY, "06:30") }));
-    assert.equal(ev.verdict, "missing-record");
+  it("slot 12:00 do teste rotativo antigo: às 13:30 o prazo de 15:00 (180 min, #14369) ainda não passou", () => {
+    const ev = evaluateShortRelatedMissed(input({ shortAt: brtInstant(WEEKDAY, "12:00") }));
+    assert.equal(ev.verdict, "before-deadline");
   });
 
   it("horário do Short não derivado: o prazo é o próprio instante da checagem", () => {
@@ -163,7 +163,7 @@ describe("#11353 evaluateShortRelatedMissed", () => {
     const bad: FileRead<ShortsPublishedFile> = { kind: "unreadable", error: "sem entries" };
     assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: bad })).verdict, "shorts-registry-unreadable");
     assert.equal(
-      evaluateShortRelatedMissed(input({ shortsRegistry: bad, now: brtInstant(WEEKDAY, "12:30") })).verdict,
+      evaluateShortRelatedMissed(input({ shortsRegistry: bad, now: brtInstant(WEEKDAY, "09:00") })).verdict,
       "before-deadline",
     );
   });
@@ -196,7 +196,7 @@ describe("#11353 buildShortRelatedMissedAlarm", () => {
 });
 
 describe("#11353 Diaria-Short-Related-Missed-Alarm no registro", () => {
-  it("diária 13:30 BRT, depois do prazo do slot mais tardio (12:00 + 60 min)", () => {
+  it("diária 13:30 BRT, depois do prazo do slot mais tardio (06:30 + 180 min, #14369)", () => {
     const t = getScheduledTaskByName("Diaria-Short-Related-Missed-Alarm");
     assert.ok(t);
     assert.deepEqual(t!.steps.map((s) => s.script), ["scripts/short-related-missed-alarm.ts"]);

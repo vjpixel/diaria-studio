@@ -62,6 +62,7 @@ function input(over: Partial<ShortRelatedPlanInput> = {}): ShortRelatedPlanInput
     short: { id: S, source: "shorts-registry" },
     horizontalState: "published",
     horizontalTitle: TITLE,
+    shortState: "published",
     shortAt: brtInstant(ED, "12:00"),
     record: null,
     ...over,
@@ -213,15 +214,15 @@ describe("#10811 — decisão", () => {
     assert.equal(decideShortRelatedPlan(input({ horizontalState: "unknown" })).action, "wait");
   });
 
-  it("depois do horário do Short e antes do prazo: wait com alertDue (avisa e continua tentando)", () => {
-    const p = decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "12:10") }));
+  it("depois do horário do Short + folga e antes do prazo: wait com alertDue (avisa e continua tentando)", () => {
+    const p = decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "12:40") }));
     assert.equal(p.action, "wait");
     assert.equal(p.alertDue, true);
     assert.equal(p.giveUpAt, new Date(brtInstant(ED, "12:00").getTime() + SHORT_RELATED_GIVE_UP_MINUTES * 60_000).toISOString());
   });
 
   it("depois do prazo de desistência → alert", () => {
-    assert.equal(decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "13:00") })).action, "alert");
+    assert.equal(decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "15:00") })).action, "alert");
   });
 
   it("erro transitório (rede/5xx) → wait antes do prazo, nunca link", () => {
@@ -241,7 +242,7 @@ describe("#10811 — decisão", () => {
     const p = decideShortRelatedPlan(input({ short: null, resolveError: "06-shorts-published.json: JSON inválido" }));
     assert.equal(p.action, "wait");
     assert.match(p.reason, /JSON inválido/);
-    assert.equal(decideShortRelatedPlan(input({ short: null, now: brtInstant(ED, "13:01") })).action, "alert");
+    assert.equal(decideShortRelatedPlan(input({ short: null, now: brtInstant(ED, "15:01") })).action, "alert");
   });
 
   it("horizontal ausente → wait", () => {
@@ -347,7 +348,7 @@ describe("#10811 — --alert (runShortRelatedAlert)", () => {
       aammdd: ED,
       note: "horizontal não ficou público",
       now: new Date("2026-10-28T15:05:00Z"),
-      computePlan: async () => decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "12:05") })),
+      computePlan: async () => decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "12:35") })),
       readRecord: () => null,
       send: async (m) => {
         sent.push(m);
@@ -424,7 +425,7 @@ describe("#10811 — --alert (runShortRelatedAlert)", () => {
   });
 
   it("texto do alerta cita a edição, os IDs e o caminho manual no Studio", () => {
-    const p = decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "13:30") }));
+    const p = decideShortRelatedPlan(input({ horizontalState: "draft", now: brtInstant(ED, "15:30") }));
     const m = buildShortRelatedAlert(p, null);
     assert.match(m.subject, /261028/);
     assert.match(m.body, new RegExp(H));

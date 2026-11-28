@@ -64,7 +64,8 @@ import { hhmmBrt } from "./lib/shared/brt.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
-import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
+import { notifyEditor, type NotifySeverity } from "./lib/editor-notify.ts";
+import { type ShortsTimerNotifyDeps, withEmailCredentialPreflight } from "./lib/diaria/shorts-timer-email-preflight.ts";
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { loadShortScheduleConfig, loadShortsConfig, parseShortsPublishedFile, resolveShortTime, shortVideoFileName } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
@@ -357,7 +358,7 @@ export async function threadsAlarm(
   key: ThreadsTimerAlarmKey,
   reason: string,
   at: string | null,
-  notifyDeps: NotifyEditorDeps = { cwd: ROOT },
+  notifyDeps: ShortsTimerNotifyDeps = { cwd: ROOT },
   selection?: string,
 ): Promise<boolean> {
   const statePath = join(dir, THREADS_TIMER_ALARM_STATE_FILE);
@@ -369,7 +370,10 @@ export async function threadsAlarm(
   }
   const { subject, body } = buildThreadsTimerAlarm({ aammdd, key, reason, at, ...(selection ? { selection } : {}) });
   const res = await notifyEditor(
-    { check: "shorts-threads-timer", fingerprint: `${aammdd}:${id}`, severity: threadsAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, id) },
+    withEmailCredentialPreflight(
+      { check: "shorts-threads-timer", fingerprint: `${aammdd}:${id}`, severity: threadsAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, id) },
+      notifyDeps,
+    ),
     notifyDeps,
   );
   const delivery = alarmDelivery(res);
@@ -394,7 +398,7 @@ export interface ThreadsTimerRunDeps {
   lookupVertical: () => ThreadsVerticalLookup;
   /** Roda `npx tsx <args>` (o publish-shorts). */
   runScript: (args: string[]) => { status: number | null; stdout: string; stderr: string };
-  notify: NotifyEditorDeps;
+  notify: ShortsTimerNotifyDeps;
   /**
    * #11911: `data/cortes` do repo. Presente = toda execução também vigia os
    * cortes avulsos sem dono deste destino (`watchCortesWithoutOwner`). Ausente
