@@ -32,7 +32,7 @@ const activeRound = () => true;
 type Call = { cmd: string; args: string[]; timeout: number };
 
 /**
- * execFn fake: responde headRefName / additions,deletions e registra o timeout
+ * execFn fake: responde headRefName / additions,deletions,files e registra o timeout
  * de cada chamada. `advance` simula o tempo que a chamada consome.
  */
 function fakeGh(opts: { branch: string; additions?: number; advance?: number; clock: { t: number } }) {
@@ -41,7 +41,7 @@ function fakeGh(opts: { branch: string; additions?: number; advance?: number; cl
     calls.push({ cmd, args, timeout: o.timeout });
     opts.clock.t += opts.advance ?? 0;
     if (args.includes("headRefName")) return `${opts.branch}\n`;
-    if (args.includes("additions,deletions")) return JSON.stringify({ additions: opts.additions ?? 10, deletions: 0 });
+    if (args.includes("additions,deletions,files")) return JSON.stringify({ additions: opts.additions ?? 10, deletions: 0 });
     throw new Error(`chamada inesperada: ${cmd} ${args.join(" ")}`);
   };
   return { execFn, calls };
