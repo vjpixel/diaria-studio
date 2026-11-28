@@ -151,6 +151,10 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
     ["stack-writer"],
     "texto próprio do post semanal da Stack (#11184, skill /diaria-stack: abertura + descrição dos itens de lista) — saída validada mecanicamente por lib/circle-stack-copy.ts (cobertura de todos os itens, teto, sem markdown/URL/emoji/seta), humanizada e revisada pelo editor na prévia antes do --publish manual; sem fixture de replay ainda.",
   ),
+  ...excludedGroup(
+    ["claude-semanal-writer"],
+    "e-mail semanal do Claude para assinantes (#14329, skill /diaria-claude-semanal: resumo + como usar por item) — saída validada mecanicamente por lib/claude-semanal.ts (fontes oficiais, dedup entre semanas, volume, tetos, sem markdown/URL/seta), humanizada, passada pela Clarice e revisada pelo editor no gate antes do agendamento; sem fixture de replay ainda.",
+  ),
   ...excludedGroup(["title-picker"], "fallback de escolha entre títulos JÁ escritos por writer-destaque — não gera texto novo, os graders de texto não discriminam nada aqui."),
 ];
 
