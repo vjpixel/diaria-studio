@@ -293,11 +293,18 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       continue;
     }
 
-    if (outcome.status === "dlq") {
+    // Desfecho `dlq` decidido pelo cron: o do `fireQueueEntry` (abaixo) e o de
+    // retries esgotados (#14344). Marca o DO ANTES de mexer no KV e só move se
+    // a marcação não foi recusada. `move` faz o PUT dlq + delete da fila e
+    // devolve a key da DLQ; o retorno diz qual contador somar.
+    const cronToDlq = async (
+      reason: string,
+      move: () => Promise<string>,
+    ): Promise<"dlq" | "fired" | "skipped"> => {
       // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
       // fica com claiming=true permanente e o alarm fica travado até eviction.
       // #14230 — e marcar o DO (`dlq_reason`, sem payload): o alarm não refaz.
-      const mark = await markCronDlq(outcome.reason);
+      const mark = await markCronDlq(reason);
       if (mark.kind === "terminal" || mark.kind === "refused") {
         // #14301 — o DO recusou: o claim deste cron venceu no meio do disparo e
         // outra volta o retomou (ou já publicou), ou um re-enqueue de
@@ -306,37 +313,41 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
         const stale = await dlqMoveStale(env, k.name, raw, null);
         if (stale !== null) {
           console.warn(`[fire] ${k.name} dlq do cron não movido (DO recusou a marcação): ${stale} (#14301)`);
-          continue;
+          return "skipped";
         }
         if (mark.kind === "refused") {
           console.warn(`[fire] ${k.name} dlq do cron não movido: DO recusou (${mark.why}); o dono atual do claim decide (#14301)`);
-          continue;
+          return "skipped";
         }
         // Mesma leitura do `/status` no início da volta (#11106, #10992).
         if (mark.sendUnknown !== null) {
           const dlqKey = await moveToDlq(env, k.name, entry, mark.sendUnknown);
           console.error(`[fire] ${k.name} dlq do cron descartado: outra volta terminou ambígua — dlq: ${mark.sendUnknown} (dlq_key=${dlqKey}) (#14301)`);
-          dlq++;
-        } else {
-          await env.LINKEDIN_QUEUE.delete(k.name);
-          console.warn(`[fire] ${k.name} dlq do cron descartado: outra volta já publicou — KV limpo (#14301)`);
-          fired++;
+          return "dlq";
         }
-        continue;
+        await env.LINKEDIN_QUEUE.delete(k.name);
+        console.warn(`[fire] ${k.name} dlq do cron descartado: outra volta já publicou — KV limpo (#14301)`);
+        return "fired";
       }
       const marked = mark.kind === "marked";
       // #14250 — o `/mark-dlq` libera o claim, e a partir daí um re-enqueue de
       // recuperação (#14241) pode limpar o DO e gravar a entry nova antes do
       // move. Relê; sem a marcação confirmada, só o KV é conferido.
-      const stale = await dlqMoveStale(env, k.name, raw, marked ? outcome.reason : null);
+      const stale = await dlqMoveStale(env, k.name, raw, marked ? reason : null);
       if (stale !== null) {
         console.warn(`[fire] ${k.name} dlq do cron não movido: ${stale} (#14250)`);
-        continue;
+        return "skipped";
       }
-      const dlqKey = await moveToDlq(env, k.name, entry, outcome.reason);
-      if (marked) await logIfRecoveredDuringMove(env, k.name, outcome.reason);
-      console.error(`[fire] ${k.name} dropped to dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
-      dlq++;
+      const dlqKey = await move();
+      if (marked) await logIfRecoveredDuringMove(env, k.name, reason);
+      console.error(`[fire] ${k.name} dropped to dlq: ${reason} (dlq_key=${dlqKey})`);
+      return "dlq";
+    };
+
+    if (outcome.status === "dlq") {
+      const r = await cronToDlq(outcome.reason, () => moveToDlq(env, k.name, entry, outcome.reason));
+      if (r === "dlq") dlq++;
+      else if (r === "fired") fired++;
       continue;
     }
 
@@ -402,20 +413,30 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
         // Reusa o UUID original pra rastreabilidade (`queue:<ts>:<uuid>` →
         // `dlq:<ts>:<uuid>`). Pra schema legacy (`queue:<uuid>`), usa o uuid
         // direto. Mantém vínculo entre entry da fila e entry no DLQ.
-        const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
-        const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry, last_error: failureReason };
-        await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry), {
-          expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
-        });
-        await env.LINKEDIN_QUEUE.delete(k.name);
-        // #14230 — mesma marcação do outcome `dlq`, DEPOIS das escritas no KV
-        // (o release do claim fica nesse ponto, #11045); `/mark-dlq` libera o claim.
+        //
+        // #14344 — mesma marcação do outcome `dlq` (#14230), agora ANTES do
+        // move e com o retorno conferido (`cronToDlq`). Antes a entry ia pra
+        // DLQ e o `/mark-dlq` vinha depois, com o resultado ignorado: se outra
+        // volta já tinha publicado (409 `fired`), a DLQ mostrava falha de um
+        // post que saiu. `/mark-dlq` libera o claim (ou `markCronDlq` o libera
+        // na falha), por isso o release do `finally` sai daqui; o re-enqueue
+        // que cabe na janela até o move é pego pela releitura (#14250).
         releaseAfterWrites = false;
-        await markCronDlq(failureReason ?? `retries esgotados (${nextRetry})`);
-        console.error(
-          `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
-        );
-        dlq++;
+        const reason = failureReason ?? `retries esgotados (${nextRetry})`;
+        const r = await cronToDlq(reason, async () => {
+          const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
+          const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry, last_error: failureReason };
+          await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry), {
+            expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
+          });
+          await env.LINKEDIN_QUEUE.delete(k.name);
+          console.error(
+            `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
+          );
+          return dlqKey;
+        });
+        if (r === "dlq") dlq++;
+        else if (r === "fired") fired++;
       } else {
         // Re-write com retry_count incrementado
         const updated: QueueEntry = { ...entry, retry_count: nextRetry };
