@@ -631,21 +631,72 @@ export function isEditorCopyOnlyShortfall(diag: ImportShortfallDiagnosis, delta:
   return diag.seedCount > 0 && delta <= diag.seedCount && diag.missingReal !== null && diag.missingReal.length === 0;
 }
 
-/** Linha de aviso do caso tolerado por `isEditorCopyOnlyShortfall` (#14337). */
+/**
+ * #4764: delta inteiro explicado por blacklist GLOBAL da conta Brevo (contato
+ * que nunca receberia o e-mail de qualquer forma) → supressão esperada, não o
+ * drop silencioso do #4577/#4720. `totalBlacklisted` ausente (fake de teste
+ * antigo / campo faltando na resposta) → `false`, toda divergência segue
+ * tratada como perda. Compartilhado por `importOneWave` e `importOneSend`
+ * (#14406 — o `importOneSend` não tinha o check e atribuía às cópias do editor
+ * um delta que era de leitor em blacklist).
+ */
+export function isBlacklistOnlyShortfall(info: { totalBlacklisted?: number }, delta: number): boolean {
+  return info.totalBlacklisted !== undefined && delta === info.totalBlacklisted;
+}
+
+/** Linha de log do caso #4764 (`isBlacklistOnlyShortfall`). */
+export function blacklistSuppressionInfo(delta: number, missingDetail: string): string {
+  return (
+    `   ℹ️  ${delta} contato(s) suprimido(s) por blacklist administrativo da Brevo (nunca receberiam o ` +
+    `e-mail de qualquer forma) — não é perda.${missingDetail}`
+  );
+}
+
+/**
+ * Linha de aviso do caso tolerado por `isEditorCopyOnlyShortfall` (#14337).
+ *
+ * #14406: o delta só é atribuído às cópias do editor quando o diff PROVA isso
+ * — a cópia está fora da lista (`missingSeeds`). Contato que é membro da lista
+ * e fica fora de `totalSubscribers` (blacklist global, descadastro) passa no
+ * diff como "presente", e pode ser tanto uma cópia do editor quanto um leitor
+ * real: a Brevo não diz qual. Essa parte do delta sai como "causa não
+ * identificada", com o `totalBlacklisted` da lista quando a resposta traz o
+ * campo, em vez de afirmar que a cópia do editor não chega.
+ */
 export function editorCopyShortfallWarning(
   diag: ImportShortfallDiagnosis,
   delta: number,
   listId: number,
   sentCount: number,
+  totalBlacklisted?: number,
 ): string {
-  const who =
-    diag.missingSeeds.length > 0
-      ? `fora da lista: ${diag.missingSeeds.join(", ")}`
-      : "todas aparecem como membro, mas fora da contagem de inscritos (provável descadastro/bloqueio na conta)";
+  const realCount = sentCount - diag.seedCount;
+  const seedsOut = Math.min(diag.missingSeeds.length, delta);
+  const membersOut = delta - seedsOut;
+
+  if (membersOut === 0) {
+    return (
+      `   ⚠️  ${delta} cópia(s) do editor não entraram na contagem da lista #${listId} ` +
+      `(fora da lista: ${diag.missingSeeds.join(", ")}). ` +
+      `Todos os ${realCount} leitor(es) reais do CSV estão na lista — seguindo; a cópia de ` +
+      `conferência não deve chegar neste envio para ${diag.missingSeeds.join(", ")} (#14337).`
+    );
+  }
+
+  const seedPart =
+    seedsOut > 0 ? `${seedsOut} cópia(s) do editor fora da lista (${diag.missingSeeds.join(", ")}); ` : "";
+  const blacklistPart =
+    totalBlacklisted === undefined
+      ? "a resposta da Brevo não trouxe a contagem de blacklist"
+      : totalBlacklisted > 0
+        ? `a Brevo reporta ${totalBlacklisted} contato(s) da lista em blacklist da conta`
+        : "a Brevo reporta 0 contato(s) da lista em blacklist";
   return (
-    `   ⚠️  ${delta} cópia(s) do editor não entraram na contagem da lista #${listId} (${who}). ` +
-    `Todos os ${sentCount - diag.seedCount} leitor(es) reais do CSV estão na lista — seguindo; a cópia de ` +
-    `conferência do editor não deve chegar neste envio (#14337).`
+    `   ⚠️  ${delta} contato(s) fora da contagem da lista #${listId}: ${seedPart}` +
+    `${membersOut} aparece(m) como membro, mas fora da contagem de inscritos — causa NÃO identificada ` +
+    `(${blacklistPart}; pode ser cópia do editor ou leitor real em blacklist/descadastro, que não recebe). ` +
+    `Todos os ${realCount} leitor(es) reais do CSV são membros da lista — seguindo; não dá pra afirmar ` +
+    `se a cópia de conferência do editor chega neste envio (#14337, #14406).`
   );
 }
 
@@ -730,14 +781,13 @@ export async function importOneWave(
     // que #4577/#4720 existem pra pegar. `totalBlacklisted` ausente (fake
     // de teste antigo / campo faltando na resposta) preserva o comportamento
     // anterior — sempre trata a divergência como perda.
-    const isExpectedSuppression =
-      info.totalBlacklisted !== undefined && delta === info.totalBlacklisted;
+    const isExpectedSuppression = isBlacklistOnlyShortfall(info, delta);
 
     const diag = await diagnoseImportShortfall(client, list.id, plan.csv, opts.editorSeedEmails);
     const { missingDetail } = diag;
 
     if (!isExpectedSuppression && isEditorCopyOnlyShortfall(diag, delta)) {
-      log(editorCopyShortfallWarning(diag, delta, list.id, plan.sentCount));
+      log(editorCopyShortfallWarning(diag, delta, list.id, plan.sentCount, info.totalBlacklisted));
     } else if (!isExpectedSuppression) {
       throw new Error(
         `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
@@ -753,10 +803,7 @@ export async function importOneWave(
       // #4764: supressão esperada — informa em vez de abortar. Recriar a lista
       // não resolveria nada aqui (o mesmo contato blacklistado reapareceria
       // "perdido" pra sempre); segue pro caminho de sucesso normal abaixo.
-      log(
-        `   ℹ️  ${delta} contato(s) suprimido(s) por blacklist administrativo da Brevo (nunca receberiam o ` +
-          `e-mail de qualquer forma) — não é perda.${missingDetail}`,
-      );
+      log(blacklistSuppressionInfo(delta, missingDetail));
     }
   }
   log(`   ✓ confirmado: ${info.totalSubscribers} contato(s) na lista (${plan.sentCount} enviados).`);
