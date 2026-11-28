@@ -14,9 +14,18 @@
  *   ou sincronizando. Tamanho 0 também para (placeholder vazio, cópia que nem
  *   começou).
  *
+ * - a leitura cronometrada (investigação no Neo em 27/11/2026): o Drive for
+ *   desktop monta um volume virtual próprio e deixa todo arquivo com atributo
+ *   `0x80` (Normal), baixado ou não, então o atributo acima não pega o bruto
+ *   que está só na nuvem. Por isso o primeiro e o último 1 MB de cada bruto
+ *   são lidos num processo à parte, com prazo curto (`BRUTO_READ_TIMEOUT_MS`):
+ *   estourou = o conteúdo ainda vem da nuvem.
+ *
  * Qualquer um desses para o comando com a mensagem nomeando cada arquivo, em
  * vez de pendurar. Atributo ilegível (PowerShell ausente, erro) não bloqueia:
- * só o tamanho é conferido, e a mensagem diz que o atributo não foi lido.
+ * só o tamanho é conferido, e a mensagem diz que o atributo não foi lido. A
+ * sonda de leitura que falha por si (o node filho não sobe) também não
+ * bloqueia, e a mensagem diz isso.
  *
  * Funções puras com IO injetável (testadas); o default usa `statSync`, uma
  * espera síncrona e, só no Windows, uma única chamada ao PowerShell para todos
@@ -38,6 +47,14 @@ const CLOUD_ONLY_MASK = WIN_ATTR_OFFLINE | WIN_ATTR_RECALL_ON_OPEN | WIN_ATTR_RE
 /** Espera entre as duas leituras do tamanho (o arquivo sendo copiado cresce bem mais que isso nesse tempo). */
 export const BRUTO_SIZE_SETTLE_MS = 1500;
 
+/** Prazo da leitura cronometrada dos brutos (2 MB de disco local levam milissegundos). */
+export const BRUTO_READ_TIMEOUT_MS = 15_000;
+/** Quanto a sonda lê do início e do fim de cada bruto. */
+export const BRUTO_READ_PROBE_BYTES = 1024 * 1024;
+
+/** Resultado da leitura cronometrada de um bruto: leu, estourou o prazo ou deu erro. */
+export type TimedReadOutcome = "ok" | "timeout" | "erro";
+
 /** O atributo diz que o conteúdo está só na nuvem? */
 export function cloudOnlyAttributes(attrs: number): boolean {
   return Number.isSafeInteger(attrs) && attrs >= 0 && (attrs & CLOUD_ONLY_MASK) !== 0;
@@ -50,12 +67,17 @@ export interface BrutoLocalDeps {
   sleep(ms: number): void;
   /** Atributos do Windows por caminho, ou null se não deu para ler (fora do Windows: não chamado). */
   windowsAttributes?(paths: readonly string[]): Map<string, number> | null;
+  /**
+   * Leitura cronometrada do início e do fim de cada caminho, ou null se a
+   * própria sonda falhou. Ausente = leitura não conferida.
+   */
+  timedRead?(paths: readonly string[], timeoutMs: number): Map<string, TimedReadOutcome> | null;
   platform: NodeJS.Platform;
 }
 
 export interface BrutoLocalProblem {
   path: string;
-  reason: "nuvem" | "crescendo" | "vazio" | "ilegivel";
+  reason: "nuvem" | "crescendo" | "vazio" | "ilegivel" | "lento";
   detail: string;
 }
 
@@ -63,12 +85,14 @@ export interface BrutoLocalCheck {
   problems: BrutoLocalProblem[];
   /** Windows sem o atributo lido: só o tamanho foi conferido. */
   attributesUnread: boolean;
+  /** A sonda de leitura cronometrada falhou por si: o conteúdo não foi conferido. */
+  readUnchecked?: boolean;
 }
 
 const gb = (n: number) => `${(n / 1e9).toFixed(2)} GB`;
 
 /** Confere cada caminho (puro com `deps`): atributo de nuvem, tamanho zero, tamanho mudando. */
-export function checkBrutosLocal(paths: readonly string[], deps: BrutoLocalDeps, opts: { settleMs?: number } = {}): BrutoLocalCheck {
+export function checkBrutosLocal(paths: readonly string[], deps: BrutoLocalDeps, opts: { settleMs?: number; readTimeoutMs?: number } = {}): BrutoLocalCheck {
   const unique = [...new Set(paths)];
   const problems: BrutoLocalProblem[] = [];
   if (!unique.length) return { problems, attributesUnread: false };
@@ -108,10 +132,28 @@ export function checkBrutosLocal(paths: readonly string[], deps: BrutoLocalDeps,
     }
     if (a !== b) problems.push({ path: p, reason: "crescendo", detail: `tamanho mudando (${gb(a)} → ${gb(b)} em ${((opts.settleMs ?? BRUTO_SIZE_SETTLE_MS) / 1000).toFixed(1)} s): ainda copiando ou sincronizando` });
     else if (b === 0) problems.push({ path: p, reason: "vazio", detail: "0 bytes: cópia que não começou ou item ainda não baixado" });
+    else continue;
+    flagged.add(p);
+  }
+  // O que passou no metadado é lido de verdade, com prazo, num processo à parte.
+  let readUnchecked = false;
+  const toRead = unique.filter((p) => !flagged.has(p));
+  if (deps.timedRead && toRead.length) {
+    const timeoutMs = opts.readTimeoutMs ?? BRUTO_READ_TIMEOUT_MS;
+    const outcomes = deps.timedRead(toRead, timeoutMs);
+    if (!outcomes) readUnchecked = true;
+    else {
+      for (const p of toRead) {
+        const o = outcomes.get(p);
+        if (o === "timeout") problems.push({ path: p, reason: "lento", detail: `ler 1 MB do início e do fim não terminou em ${Math.round(timeoutMs / 1000)} s: o Drive for desktop ainda está baixando o arquivo da nuvem` });
+        else if (o === "erro") problems.push({ path: p, reason: "ilegivel", detail: "a leitura do conteúdo falhou (arquivo travado ou ainda sincronizando)" });
+        else if (o === undefined) readUnchecked = true;
+      }
+    }
   }
   // A ordem de entrada, para a mensagem bater com a lista do comando.
   problems.sort((x, y) => unique.indexOf(x.path) - unique.indexOf(y.path));
-  return { problems, attributesUnread };
+  return readUnchecked ? { problems, attributesUnread, readUnchecked } : { problems, attributesUnread };
 }
 
 /** Bruto que não está inteiro e local: o comando para em vez de pendurar na leitura (#13740). */
@@ -130,11 +172,12 @@ export function brutoNotLocalMessage(what: string, check: BrutoLocalCheck): stri
     ...lines,
     "Espere a cópia ou o Drive for desktop terminar (no Drive for desktop: botão direito > Disponibilizar off-line), ou copie o arquivo para uma raiz local (--drive-root) e rode de novo.",
     ...(check.attributesUnread ? ["(atributo de nuvem do Windows não lido: só o tamanho foi conferido)"] : []),
+    ...(check.readUnchecked ? ["(a leitura cronometrada não rodou: o conteúdo não foi conferido)"] : []),
   ].join("\n");
 }
 
 /** Para com `BrutoNotLocalError` se algum caminho não está inteiro e local. */
-export function assertBrutosLocal(what: string, paths: readonly string[], deps: BrutoLocalDeps = defaultBrutoLocalDeps(), opts: { settleMs?: number } = {}): BrutoLocalCheck {
+export function assertBrutosLocal(what: string, paths: readonly string[], deps: BrutoLocalDeps = defaultBrutoLocalDeps(), opts: { settleMs?: number; readTimeoutMs?: number } = {}): BrutoLocalCheck {
   const check = checkBrutosLocal(paths, deps, opts);
   if (check.problems.length) throw new BrutoNotLocalError(brutoNotLocalMessage(what, check), check.problems);
   return check;
@@ -170,11 +213,96 @@ export function readWindowsAttributes(paths: readonly string[], run: typeof spaw
   return out;
 }
 
+/**
+ * Leitor de um bruto, rodado num processo neto: lê o primeiro e o último
+ * `n` bytes do caminho (`node -e SCRIPT caminho n`); sai 0 ao ler, 2 no erro.
+ */
+export const BRUTO_READER_SCRIPT = [
+  "const fs = require('node:fs');",
+  "try {",
+  "  const p = process.argv[1]; const n = Number(process.argv[2]);",
+  "  const fd = fs.openSync(p, 'r'); const size = fs.fstatSync(fd).size; const buf = Buffer.alloc(n);",
+  "  fs.readSync(fd, buf, 0, Math.min(n, size), 0);",
+  "  if (size > n) fs.readSync(fd, buf, 0, n, size - n);",
+  "  fs.closeSync(fd); process.exit(0);",
+  "} catch { process.exit(2); }",
+].join("\n");
+
+/**
+ * Coordenador da sonda, rodado num processo filho: dispara um neto por bruto
+ * (destacado e sem pipe, para o filho poder sair com o neto ainda preso na
+ * leitura), espera até o prazo e imprime `{caminho: "ok"|"timeout"|"erro"}`.
+ * Ao sair, manda kill para os netos sem esperar por eles: um processo preso
+ * numa leitura do volume do Drive pode não morrer na hora.
+ */
+const BRUTO_PROBE_COORDINATOR = [
+  "const { spawn } = require('node:child_process');",
+  "const paths = JSON.parse(process.env.DIARIA_BRUTO_PATHS);",
+  "const reader = JSON.parse(process.env.DIARIA_BRUTO_READER);",
+  "const timeoutMs = Number(process.env.DIARIA_BRUTO_TIMEOUT_MS);",
+  "const probeBytes = process.env.DIARIA_BRUTO_PROBE_BYTES;",
+  "const out = {}; const kids = []; let pending = paths.length;",
+  "const finish = () => { for (const k of kids) { try { if (k.exitCode === null) k.kill('SIGKILL'); } catch {} } process.stdout.write(JSON.stringify(out), () => process.exit(0)); };",
+  "const timer = setTimeout(() => { for (const p of paths) if (!(p in out)) out[p] = 'timeout'; finish(); }, timeoutMs);",
+  "for (const p of paths) {",
+  "  const k = spawn(process.execPath, [...reader, p, probeBytes], { detached: true, stdio: 'ignore', windowsHide: true });",
+  "  kids.push(k); k.unref();",
+  "  const done = (v) => { if (p in out) return; out[p] = v; if (--pending === 0) { clearTimeout(timer); finish(); } };",
+  "  k.on('error', () => done('erro'));",
+  "  k.on('exit', (code) => done(code === 0 ? 'ok' : 'erro'));",
+  "}",
+].join("\n");
+
+/**
+ * Leitura cronometrada de vários brutos: um processo filho lê cada um em
+ * paralelo e devolve o resultado até o prazo, sem pendurar este processo.
+ * `reader` são os argumentos do `node` do neto antes do caminho e do tamanho
+ * (injetável: os testes simulam a leitura lenta). Falha da própria sonda (o
+ * filho não sobe, saída ilegível) = null.
+ */
+export function timedReadBrutos(
+  paths: readonly string[],
+  timeoutMs: number,
+  opts: { reader?: readonly string[]; probeBytes?: number; run?: typeof spawnSync } = {},
+): Map<string, TimedReadOutcome> | null {
+  if (!paths.length) return new Map();
+  const r = (opts.run ?? spawnSync)(process.execPath, ["-e", BRUTO_PROBE_COORDINATOR], {
+    encoding: "utf8",
+    // Margem para o filho subir e imprimir; se nem ele responder, o kill vem do spawnSync.
+    timeout: timeoutMs + 10_000,
+    killSignal: "SIGKILL",
+    // Caminhos e leitor vão por variável de ambiente, nunca interpolados no código.
+    env: {
+      ...process.env,
+      DIARIA_BRUTO_PATHS: JSON.stringify(paths),
+      DIARIA_BRUTO_READER: JSON.stringify(opts.reader ?? ["-e", BRUTO_READER_SCRIPT]),
+      DIARIA_BRUTO_TIMEOUT_MS: String(timeoutMs),
+      DIARIA_BRUTO_PROBE_BYTES: String(opts.probeBytes ?? BRUTO_READ_PROBE_BYTES),
+    },
+    windowsHide: true,
+  });
+  if (r.error || r.status !== 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(r.stdout ?? ""));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const out = new Map<string, TimedReadOutcome>();
+  for (const p of paths) {
+    const v = (parsed as Record<string, unknown>)[p];
+    if (v === "ok" || v === "timeout" || v === "erro") out.set(p, v);
+  }
+  return out;
+}
+
 export function defaultBrutoLocalDeps(): BrutoLocalDeps {
   return {
     size: (p) => statSync(p).size,
     sleep: sleepSync,
     windowsAttributes: (paths) => readWindowsAttributes(paths),
+    timedRead: (paths, timeoutMs) => timedReadBrutos(paths, timeoutMs),
     platform: process.platform,
   };
 }

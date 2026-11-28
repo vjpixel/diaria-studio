@@ -28,7 +28,9 @@ import {
   checkBrutosLocal,
   cloudOnlyAttributes,
   readWindowsAttributes,
+  timedReadBrutos,
   type BrutoLocalDeps,
+  type TimedReadOutcome,
 } from "../scripts/lib/diaria/video-bruto-local.ts";
 import { localBrutoProbe } from "../scripts/check-video-env.ts";
 import { SyncReadError, isSyncIoError, readTextOrSyncError } from "../scripts/lib/diaria/sync-read-error.ts";
@@ -333,6 +335,82 @@ describe("#13740 bruto inteiro e local antes de ler", () => {
       assert.equal(good.ok, true);
       assert.equal(localBrutoProbe(mkdtempSync(join(tmpdir(), "ed-vazia-"))).ok, true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("#13740 leitura cronometrada: o Drive for desktop não expõe atributo de nuvem", () => {
+  // Investigação no Neo (27/11): os brutos em `I:\Meu Drive` saem todos 0x80, baixados ou não.
+  const withReads = (base: BrutoLocalDeps, outcomes: Record<string, TimedReadOutcome> | null, asked: string[][] = []): BrutoLocalDeps => ({
+    ...base,
+    timedRead: (paths, _t) => { asked.push([...paths]); return outcomes === null ? null : new Map(Object.entries(outcomes)); },
+  });
+
+  it("o cenário real: atributo 0x80 e tamanho estável, mas a leitura não termina no prazo, para nomeando o arquivo", () => {
+    const dir = "I:/Meu Drive/diaria-studio-video/261119";
+    const lento = `${dir}/20261118_163332.mp4`;
+    const baixado = `${dir}/20261118_151000.mp4`;
+    const deps = withReads(
+      fakeLocal({ [lento]: [9.57e9, 9.57e9], [baixado]: [2e9, 2e9] }, { platform: "win32", attrs: { [lento]: 0x80, [baixado]: 0x80 } }),
+      { [lento]: "timeout", [baixado]: "ok" },
+    );
+    assert.throws(() => assertBrutosLocal("inventory", [lento, baixado], deps, { settleMs: 1, readTimeoutMs: 15_000 }), (e: unknown) => {
+      assert.ok(e instanceof BrutoNotLocalError);
+      assert.deepEqual(e.problems.map((p) => [p.path, p.reason]), [[lento, "lento"]]);
+      assert.match(e.message, /20261118_163332\.mp4: ler 1 MB do início e do fim não terminou em 15 s/);
+      assert.match(e.message, /Drive for desktop ainda está baixando/);
+      assert.doesNotMatch(e.message, /20261118_151000/);
+      return true;
+    });
+  });
+
+  it("só lê o que passou no metadado (o que já parou por tamanho não é lido de novo)", () => {
+    const asked: string[][] = [];
+    const deps = withReads(fakeLocal({ "/r/a.mp4": [5, 6], "/r/b.mp4": [7, 7], "/r/c.mp4": [0, 0] }), { "/r/b.mp4": "ok" }, asked);
+    const c = checkBrutosLocal(["/r/a.mp4", "/r/b.mp4", "/r/c.mp4"], deps, { settleMs: 1 });
+    assert.deepEqual(asked, [["/r/b.mp4"]]);
+    assert.deepEqual(c.problems.map((p) => p.reason), ["crescendo", "vazio"]);
+  });
+
+  it("erro na leitura para; sonda que falhou por si não bloqueia e a mensagem diz que o conteúdo não foi conferido", () => {
+    const err = checkBrutosLocal(["/r/a.mp4"], withReads(fakeLocal({ "/r/a.mp4": [5, 5] }), { "/r/a.mp4": "erro" }), { settleMs: 1 });
+    assert.deepEqual(err.problems.map((p) => p.reason), ["ilegivel"]);
+    const off = checkBrutosLocal(["/r/a.mp4"], withReads(fakeLocal({ "/r/a.mp4": [5, 5] }), null), { settleMs: 1 });
+    assert.deepEqual(off.problems, []);
+    assert.equal(off.readUnchecked, true);
+    assert.throws(
+      () => assertBrutosLocal("transcribe", ["/r/a.mp4", "/r/b.mp4"], withReads(fakeLocal({ "/r/a.mp4": [5, 5], "/r/b.mp4": [1, 2] }), null), { settleMs: 1 }),
+      /a leitura cronometrada não rodou/,
+    );
+  });
+
+  it("timedReadBrutos de verdade: lê o início e o fim de um arquivo local e marca o ausente como erro", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bruto-leitura-"));
+    try {
+      const p = join(dir, "bruto.mp4");
+      writeFileSync(p, Buffer.alloc(3 * 1024 * 1024, 1));
+      const r = timedReadBrutos([p, join(dir, "sumiu.mp4")], 10_000)!;
+      assert.equal(r.get(p), "ok");
+      assert.equal(r.get(join(dir, "sumiu.mp4")), "erro");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("timedReadBrutos com leitura lenta simulada: devolve timeout no prazo, sem esperar o leitor preso", () => {
+    // Leitor que pendura 20 s no arquivo "lento" (a leitura pela nuvem) e lê na hora o outro.
+    const reader = ["-e", "if (process.argv[1].includes('lento')) setTimeout(() => {}, 20000); else process.exit(0);"];
+    const t0 = Date.now();
+    const r = timedReadBrutos(["/r/lento.mp4", "/r/local.mp4"], 600, { reader })!;
+    const elapsed = Date.now() - t0;
+    assert.equal(r.get("/r/lento.mp4"), "timeout");
+    assert.equal(r.get("/r/local.mp4"), "ok");
+    assert.ok(elapsed < 8000, `voltou em ${elapsed} ms, não esperou os 20 s do leitor preso`);
+  });
+
+  it("timedReadBrutos: processo filho que falha ou saída ilegível = null (não bloqueia)", () => {
+    const fail = (() => ({ status: 1, stdout: "" })) as unknown as typeof import("node:child_process").spawnSync;
+    assert.equal(timedReadBrutos(["/r/a.mp4"], 100, { run: fail }), null);
+    const lixo = (() => ({ status: 0, stdout: "não é json" })) as unknown as typeof import("node:child_process").spawnSync;
+    assert.equal(timedReadBrutos(["/r/a.mp4"], 100, { run: lixo }), null);
+    assert.deepEqual(timedReadBrutos([], 100), new Map());
   });
 });
 

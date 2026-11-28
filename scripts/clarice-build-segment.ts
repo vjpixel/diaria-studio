@@ -224,6 +224,14 @@
  *                default (mais estreito ou mais largo, à escolha do
  *                operador) — nunca soma/intersecta com ele.
  *
+ *                #14339: o cooldown de campanha AVULSA
+ *                (`excludeAvulsaCooldown`, scripts/lib/shared/clarice-avulsa.ts)
+ *                roda logo depois, independente da flag: quem recebeu uma
+ *                avulsa registrada (Black Friday #438/#439) fica fora por
+ *                `cooldownDays` contados da data dela, inclusive na virada
+ *                do mês que o cutoff mensal deixa passar. Referência = a
+ *                `--send-date` quando passada, senão a data BRT de hoje.
+ *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv                     (colunas: email,NOME — compatível com clarice-import-waves)
  *   {group}-priority-snapshot.csv   (#4763 — colunas: email,priority_points,cohort,priority_optin;
@@ -341,6 +349,7 @@ import {
   excludeSentSince,
   type RecencyCutoffSource,
 } from "./lib/clarice-recency.ts";
+import { excludeAvulsaCooldown, brtDateOf } from "./lib/shared/clarice-avulsa.ts"; // #14339
 import { firstName, hasCorruptedName } from "./lib/clarice-name.ts";
 import {
   DAILY_QUEUE_SNAPSHOT_DIR,
@@ -1172,6 +1181,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       : `🔒 filtro de recência automático (${autoCutoffOrigem}): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`,
   );
 
+  // #14339: cooldown de campanha avulsa — o cutoff mensal acima não cobre a
+  // avulsa de fim de mês (Black Friday 27-28/11 → onda de 01/12 passaria).
+  // Roda com ou sem flag explícita de recência: é outro eixo (a avulsa não é
+  // onda de ciclo nenhum), não um default que a flag sobrescreve.
+  const avulsaRefDate = sendDateArg ?? brtDateOf(new Date());
+  const avulsaCooldown = excludeAvulsaCooldown(afterRecency, avulsaRefDate);
+  const afterAvulsa = avulsaCooldown.kept;
+  if (avulsaCooldown.active.length > 0) {
+    console.error(
+      `🔒 cooldown de campanha avulsa (#14339, ref ${avulsaRefDate}): ${avulsaCooldown.excluded} contato(s) excluído(s) — ` +
+        avulsaCooldown.active.map((a) => `#${a.id} ${a.label} (${a.sentDate} + ${a.cooldownDays}d)`).join("; ") +
+        ".",
+    );
+  }
+
   // #4347: guard de campanha comprometida (excludeCommittedToQueuedCampaigns, a
   // mesma checagem já usada por weekly-send-plan-audience.ts/
   // clarice-schedule-ramp.ts/cohort-order-dryrun.ts) — vale pros 4 grupos
@@ -1286,8 +1310,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // pós-recência, e a exclusão por contato acontece dentro de
   // `buildDailySendQueue` (computeArtifact abaixo). Nos outros 2 modos,
   // comportamento inalterado.
-  const universe = dailyArg ? afterRecency : excludeCommittedToQueuedCampaigns(afterRecency, guardListIds);
-  const committedExcludedLegacy = dailyArg ? 0 : afterRecency.length - universe.length;
+  const universe = dailyArg ? afterAvulsa : excludeCommittedToQueuedCampaigns(afterAvulsa, guardListIds);
+  const committedExcludedLegacy = dailyArg ? 0 : afterAvulsa.length - universe.length;
   if (committedExcludedLegacy > 0) {
     // A causa nomeada acompanha o escopo: em RE-envio nunca é "disparada".
     console.error(
@@ -1566,6 +1590,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     not_sent_cutoff: notSentCutoff,
     recency_cutoff_source: recencyCutoffSource,
     excluded_by_recency: excludedByRecency || undefined,
+    // #14339: presente só com avulsa em cooldown na data da onda — explica um
+    // déficit da reconciliação (#5395) que de outro modo parece guard quebrado.
+    avulsa_cooldown: avulsaCooldown.active.length > 0
+      ? { ref_date: avulsaRefDate, campaigns: avulsaCooldown.active.map((a) => a.id), excluded: avulsaCooldown.excluded }
+      : undefined,
     // Sempre presente nos modos --group/--tiers (não `|| undefined`): saber
     // QUAL escopo de guard rodou é o que permite auditar, meses depois, por
     // que um contato entrou ou não numa rodada — e este guard já falhou em
@@ -1621,6 +1650,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `(${alreadyTracked} excluído(s) via sent-or-queued.json)` +
         (cohort ? `, se a safra '${cohort}' (--cohort) tem contatos elegíveis pro predicado` : "") +
         `, ou se o filtro de recência (${recencyCutoffSource === "explicit" ? "--not-sent-within/--not-sent-since" : "automático — início do mês de envio, #4765"}: ${excludedByRecency} excluído(s)) zerou o universo` +
+        (avulsaCooldown.excluded > 0 ? `, ou se o cooldown de campanha avulsa (#14339: ${avulsaCooldown.excluded} excluído(s)) zerou o universo` : "") +
         `. Nada escrito.`,
     );
     return exitAfterCampaignQuotaKvFlush(1);
