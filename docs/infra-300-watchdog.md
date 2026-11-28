@@ -17,6 +17,25 @@ O valor é JSON `{timestamp: ISO-8601 UTC, hostname: string}`. Idade >20 min é
 Ambos abrem incidente. Falha de leitura lança erro e não abre/fecha incidente.
 O heartbeat não expira, permitindo distinguir atraso de ausência.
 
+**Sondas de saída (#14368).** Desde o #14368 o valor é
+`{timestamp, hostname, probes: {github, r2}}`. A cada batida o script faz um
+HEAD (timeout de 5 s, em paralelo) em `https://api.github.com/` e no endpoint
+S3 do R2 (`https://{R2_ACCOUNT_ID ou CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com/`).
+Qualquer resposta HTTP conta como `ok` (o R2 responde 400/403 a um HEAD sem
+assinatura: o que se mede é DNS, TCP e TLS chegando ao host); erro de rede ou
+timeout é `falha`; sem id de conta é `sem-config`. A falha de uma sonda nunca
+impede a gravação do heartbeat: a queda parcial aparece como heartbeat fresco
+com sonda em falha. O Worker só avalia as sondas num heartbeat `fresco` (o
+atrasado/ausente já é o alarme de queda total), conta batidas pelo
+`timestamp` distinto (a mesma batida lida em dois crons conta uma vez) e
+manda um e-mail "[infra] 300 sem acesso a {host}" quando a sonda falha em 3
+batidas seguidas (`PROBE_FAIL_BEATS`, ~15 min), e um "voltou a acessar" quando
+ela responde de novo. O canal é o mesmo Gmail do Worker, que não depende do
+GitHub nem da rede do 300. Heartbeat sem `probes` (script antigo) ou sonda
+`sem-config` nunca alarma. Estado por sonda no Durable Object (chave
+`probes`), com o "voltou" retido para retry se o envio falhar, no mesmo
+padrão do #14136.
+
 Um Durable Object singleton `300` serializa as checagens, persiste o instante
 da primeira detecção e a confirmação do envio, e espelha o instante ISO em
 `infra:300:down-since` antes do e-mail. Retorno remove a chave e envia aviso
@@ -73,6 +92,8 @@ Não alterar o lease `infra:scheduler-owner` por este monitor.
 
 `npx tsx --test test/infra-300-heartbeat.test.ts` simula passagem do tempo,
 queda, retorno, persistência entre checagens e falhas sem chamar rede.
+`test/infra-300-heartbeat-probes-14368.test.ts` cobre as sondas (fetch
+injetado) e o alarme de N batidas seguidas.
 No repo os templates são inertes; no 300 estão instalados à mão (passo 4). Referências oficiais:
 [DO concurrency barrier](https://developers.cloudflare.com/durable-objects/api/state/)
 e [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/).
