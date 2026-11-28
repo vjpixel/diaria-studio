@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../workers/poll/src/index.ts";
 import { handleVote } from "../workers/poll/src/index.ts";
-import { computePollToken, pollTokenKvKey, VOTE_TOKEN_DOMAIN } from "../workers/poll/src/poll-token.ts";
+import { computePollToken, pollTokenKvKey, VOTE_TOKEN_DOMAIN } from "../scripts/lib/shared/poll-token.ts";
 import { makeTrackedKv, readKv } from "./_helpers/make-tracked-kv.ts";
 import { makePollEnv } from "./_helpers/make-poll-env.ts";
 

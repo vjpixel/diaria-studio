@@ -35,8 +35,8 @@
  * 3. Simula a substituição de merge tag que a Brevo faz no envio.
  * 4. Confirma que a URL final resultante passa em `isValidVoteEmailFormat` — o
  *    MESMO guard que `handleVote` aplica antes de qualquer resolução.
- * 5. Fecha o loop: `extractPollToken` (workers/poll/src/poll-token.ts, o
- *    espelho usado em produção pelo Worker) extrai de volta o MESMO token que
+ * 5. Fecha o loop: `extractPollToken` (scripts/lib/shared/poll-token.ts, o
+ *    módulo que o Worker importa em produção) extrai de volta o MESMO token que
  *    foi gravado no KV — prova que o par escrita↔leitura é consistente
  *    ponta-a-ponta.
  *
@@ -56,7 +56,7 @@ import assert from "node:assert/strict";
 import { run } from "../scripts/inject-poll-token-brevo.ts";
 import { renderEIA, type EIA } from "../scripts/lib/newsletter-render-html.ts";
 import { isValidVoteEmailFormat } from "../workers/poll/src/lib.ts";
-import { extractPollToken } from "../workers/poll/src/poll-token.ts";
+import { extractPollToken } from "../scripts/lib/shared/poll-token.ts";
 import { pollTokenKvKey } from "../scripts/lib/shared/poll-token.ts";
 import type { CloudflareKVConfig } from "../scripts/lib/cloudflare-kv-upload.ts";
 

@@ -78,11 +78,9 @@
  *
  * **Fronteira `lib/shared/` (#2747):** só Web Crypto (`crypto.subtle`),
  * zero import de `node:*` — roda idêntico em Node (script de injeção,
- * testes) e no runtime Cloudflare Workers. Espelhado byte-a-byte em
- * `workers/poll/src/poll-token.ts` (o bundle do Worker `poll` não alcança
- * `scripts/**`, mesmo motivo/mecanismo de `session-cookie.ts`/
- * `utm-registry.ts` — ver header desse arquivo). Sincronia lint-enforced
- * por `test/poll-token-mirror-4487.test.ts`.
+ * testes) e no runtime Cloudflare Workers. O Worker `poll` importa este
+ * arquivo direto (`workers/poll/src/vote.ts`); até o #14053 havia uma cópia
+ * em `workers/poll/src/poll-token.ts`, travada por teste de espelho.
  */
 
 /**
@@ -151,7 +149,7 @@ export async function computePollToken(secret: string, email: string): Promise<P
  * TOKEN CRU (`computePollToken`, sem domínio) — NÃO o valor desta função.
  * `computePollTokenEmail` não tem caller de produção hoje (só testes, que
  * simulam/verificam a identidade final pós-substituição) — mantida como
- * utilidade pura pequena, testada e espelhada, não removida por não ter
+ * utilidade pura pequena e testada, não removida por não ter
  * custo de manutenção real. */
 export async function computePollTokenEmail(secret: string, email: string): Promise<string> {
   const token = await computePollToken(secret, email);

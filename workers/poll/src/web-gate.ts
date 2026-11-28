@@ -7,12 +7,9 @@
  * cookie de sessão HMAC-assinado + verificação de assinante (KV primário +
  * Beehiiv `by_email` secundário) + cadastro inline (honeypot + rate-limit +
  * double opt-in via Beehiiv). Os PRIMITIVOS (assinatura de cookie, hash de
- * e-mail, rate-limit por KV) são os mesmos de `scripts/lib/shared/`, mas
- * ESPELHADOS localmente (`session-cookie.ts`, `subscriber-verify.ts`,
- * `rate-limit.ts` neste diretório) — o bundle do worker `poll` não alcança
- * `scripts/**`, ver o header de qualquer um desses 3 arquivos pro rationale
- * completo (mesmo mecanismo já em produção pra `utm-registry.ts`/
- * `ds-tokens.generated.ts`).
+ * e-mail, rate-limit por KV) vêm direto de `scripts/lib/shared/`
+ * (`session-cookie.ts`, `subscriber-verify.ts`, `rate-limit.ts`). Até o
+ * #14053 eram cópias locais neste diretório, travadas por teste de espelho.
  *
  * Diferença de #4052 (cursos, gate PARCIAL: teaser sempre visível, cadastro é
  * convite): aqui o gate é POR RODADA — nunca é preciso e-mail pra JOGAR
@@ -56,15 +53,15 @@ import {
   verifySubscriberViaBeehiivByEmail,
   verifySubscriberViaKitByEmail,
   verifySubscriberViaKv,
-} from "./subscriber-verify";
-import { checkKvRateLimit, clientIpFromRequest, type RateLimitResult } from "./rate-limit";
+} from "../../../scripts/lib/shared/subscriber-verify.ts";
+import { checkKvRateLimit, clientIpFromRequest, type RateLimitResult } from "../../../scripts/lib/shared/rate-limit.ts";
 import {
   buildClearCookieHeader,
   buildSetCookieHeader,
   parseCookieHeader,
   signSessionCookie,
   verifySessionCookie,
-} from "./session-cookie";
+} from "../../../scripts/lib/shared/session-cookie.ts";
 import { brandKvPrefix, isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeViaConfiguredBackend, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
 import { hasDevicePossessionProof, POSSESSION_NONCE_COOKIE } from "./magic-link"; // #6293/#14138: só o navegador que pediu o link E teve o clique confirmado vira "confirmed"

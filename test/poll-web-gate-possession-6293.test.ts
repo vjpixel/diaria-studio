@@ -142,7 +142,7 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
 describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
   it("e-mail ATIVO (Beehiiv/KV) sem marcador de posse → cookie PENDING, override de vote.ts NÃO dispara", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
-    const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+    const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const { readWebSession, WEB_SESSION_COOKIE } = await import("../workers/poll/src/web-gate.ts");
 
     const email = "so-existe@example.com";
@@ -174,7 +174,7 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
   it("navegador com prova de posse (nonce do magic link já clicado) → cookie CONFIRMED", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
     const idx = await import("../workers/poll/src/index.ts");
-    const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+    const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const { readWebSession, WEB_SESSION_COOKIE } = await import("../workers/poll/src/web-gate.ts");
     const { markDevicePossessionProven, POSSESSION_NONCE_COOKIE } = await import("../workers/poll/src/magic-link.ts");
     const nonce = "9b2f7c1e-4d3a-4f5b-8c6d-1a2b3c4d5e6f";
@@ -211,7 +211,7 @@ describe("#6293: handleJogarGateVerify — comportamento fim-a-fim", () => {
 
   it("cookie CONFIRMED só emitido pós-posse-provada sobrepõe identidade em GET /vote (brand=web)", async () => {
     const worker = (await import("../workers/poll/src/index.ts")).default;
-    const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+    const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const idx = await import("../workers/poll/src/index.ts");
     const { markDevicePossessionProven, POSSESSION_NONCE_COOKIE } = await import("../workers/poll/src/magic-link.ts");
     const nonce = "9b2f7c1e-4d3a-4f5b-8c6d-1a2b3c4d5e6f";

@@ -77,7 +77,7 @@ import type { Env } from "./index";
 import { htmlEscape, safeParseKv } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { performIdentifyMerge, type IdentifyMergeInput } from "./identify";
-import { buildSetCookieHeader } from "./session-cookie";
+import { buildSetCookieHeader } from "../../../scripts/lib/shared/session-cookie.ts";
 // #14138: sessão `confirmed` no navegador que CLICOU no link — emitida por
 // web-gate.ts (único módulo que chama `issueWebSessionCookie`, guard do
 // #6293). Ciclo de import seguro: só usado em request-time.

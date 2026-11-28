@@ -11,15 +11,12 @@
  * ## Por que reimplementa (não importa) o formato do token de voto
  *
  * O token opaco (`?t=...`) é o MESMO token de 24 hex chars que o "É IA?" já
- * usa (`computePollToken`, `scripts/lib/shared/poll-token.ts` /
- * `workers/poll/src/poll-token.ts`) — reusar a tabela reversa
- * `polltoken:{token} -> email` do namespace KV `POLL` é o ponto central do
- * desenho (ver corpo da #8371). Mas `workers/poll/src/poll-token.ts` é o
- * bundle de OUTRO worker — importar um arquivo de `workers/poll/src/**` de
- * dentro de `workers/artigos/src/**` acoplaria os dois bundles por um
- * arquivo que só existe pra evitar acoplar bundles (a própria docstring dele
- * explica por que `scripts/lib/shared/poll-token.ts` não é importado
- * diretamente). A forma do token (24 hex chars minúsculos) e a key KV
+ * usa (`computePollToken`, `scripts/lib/shared/poll-token.ts`) — reusar a
+ * tabela reversa `polltoken:{token} -> email` do namespace KV `POLL` é o
+ * ponto central do desenho (ver corpo da #8371). Quando este módulo nasceu,
+ * o Worker `poll` usava uma cópia local de `poll-token.ts` em
+ * `workers/poll/src/` (apagada no #14053, que passou a importar o shared
+ * direto) e a decisão foi não acoplar os bundles. A forma do token (24 hex chars minúsculos) e a key KV
  * (`polltoken:{token}`) são um contrato ESTÁVEL e pequeno o bastante pra
  * duplicar aqui sem risco de deriva — se um dia divergir, é porque o
  * contrato do "É IA?" mudou, e nesse caso os DOIS lados (poll e artigos)
