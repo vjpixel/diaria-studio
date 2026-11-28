@@ -47,7 +47,7 @@ import {
   WEB_SESSION_COOKIE,
   ROUNDS_PLAYED_COOKIE,
 } from "../workers/poll/src/web-gate.ts";
-import { signSessionCookie } from "../workers/poll/src/session-cookie.ts";
+import { signSessionCookie } from "../scripts/lib/shared/session-cookie.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
@@ -129,7 +129,7 @@ describe("#4121: handleJogarGateSubscribe emite cookie PENDING (não confirmed)"
 
 describe("#6293: handleJogarGateVerify — 'active' sozinho NÃO promove mais a CONFIRMED", () => {
   it("assinante ativo SEM posse provada → cookie de sessão é PENDING (correção do #6293)", async () => {
-    const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+    const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
     const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace });
@@ -224,7 +224,7 @@ describe("#4121 (achado relacionado): domínio reservado da identidade anônima 
   });
 
   it("handleJogarGateVerify rejeita e-mail sob @web.eia.diaria.local mesmo se 'ativo' no KV", async () => {
-    const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+    const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const key = await subscriberKvKey(VALID_EMAIL);
     const env = makeEnv({ SUBSCRIBERS_KV: makeTrackedKv({ [key]: "1" }) as unknown as KVNamespace });
     const res = await worker.fetch(

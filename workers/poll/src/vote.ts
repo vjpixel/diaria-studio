@@ -29,10 +29,10 @@ import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./in
 // #4487: resolução do token opaco de voto → e-mail real, via lookup KV.
 // #4581: hoje só o canal BREVO (`brevo_diaria`) manda token — o e-mail diário
 // da Beehiiv voltou ao `{{email}}` cru e cai em `not-token-domain`, que é o
-// caminho DOMINANTE deste handler. Ver header de poll-token.ts pro design.
+// caminho DOMINANTE deste handler. Ver header de scripts/lib/shared/poll-token.ts pro design.
 // #4518: classifyPollTokenEmail substitui extractPollToken/isPollTokenIdentity
 // neste call site (discriminated union — ver rationale no ponto de uso).
-import { classifyPollTokenEmail, pollTokenKvKey } from "./poll-token";
+import { classifyPollTokenEmail, pollTokenKvKey } from "../../../scripts/lib/shared/poll-token.ts";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 // #4169: DO que serializa o read-modify-write de score:{email} (global) e

@@ -6,7 +6,7 @@ Roteiro da task LOCAL `diaria-short-video-relacionado` (app Claude desktop, MCP 
 
 **Por que 06:05:** o horizontal publica às 06:00, e o Short sai às 06:30 (`publishing.shorts.schedule.by_destination.youtube_shorts`, #12250; o loader recusa horário às 06:00 ou antes). Às 06:05 a task normalmente já encontra o horizontal público; se ainda não estiver, o `wait` cobre o atraso.
 
-**Divisão de trabalho:** a API (pelo script) acha os IDs, confirma que o horizontal está **público** (#573) e lê o título dele. O Chrome só clica no Studio e relê a página. Nada aqui publica, agenda, despublica ou edita outro campo do vídeo.
+**Divisão de trabalho:** a API (pelo script) acha os IDs, confirma que o horizontal e o Short estão **públicos** (#573, #14369) e lê o título do horizontal. O Chrome só clica no Studio e relê a página. Nada aqui publica, agenda, despublica ou edita outro campo do vídeo.
 
 Rode tudo a partir do checkout `C:\Users\vjpix\Projects\diaria-studio`: é ali que ficam `data/` e o `.env` com as credenciais do YouTube e do Gmail. O script lê `GOOGLE_CLIENT_*` do `.env`, e esse valor vence o do ambiente, porque o app desktop injeta outro client OAuth (#8237).
 
@@ -26,7 +26,8 @@ Sem AAMMDD, o script usa a edição de **hoje em BRT**, calculada no TS. Não us
 - `wait`: algo ainda não está pronto. Pode ser o horizontal ainda não público, um ID ainda não registrado, o título ainda não lido ou o estado não conferido por falha **transitória** de rede/5xx.
   - Com `alertDue: true` e `alreadyAlerted: false` (o horário do Short passou), rode o Passo 5 **uma vez** e depois volte a este passo. O vínculo depois do Short no ar ainda vale.
   - Nos demais casos, rode o mesmo comando de novo.
-  - **Teto:** no máximo 12 rodadas deste comando no total (cerca de 1h50). Ao atingir o teto, vá ao Passo 5.
+  - **Teto:** no máximo 26 rodadas deste comando no total (cerca de 4h, o bastante para cobrir o `giveUpAt`, que desde o #14369 é 3 h depois do horário do Short). Ao atingir o teto, vá ao Passo 5.
+  - Desde o #14369 o `link` só sai com o Short também **público** pela API (antes, só o horizontal). Até o Short ir ao ar (06:30), o normal é `wait`; o `alertDue` só vem 30 min depois do horário do Short.
 
 ## Passo 2: abrir o Short no Studio
 

@@ -12,13 +12,16 @@
  *   - `skip`  — fim de semana, sem edição, edição sem vídeo (marcador manual
  *               ou, desde o #12541, sem evidência positiva de vídeo —
  *               `assessEditionVideoEvidence`), ou já vinculado;
- *   - `link`  — horizontal confirmado PÚBLICO pela API (e com título lido, que
- *               é o que o seletor do Studio mostra): abrir o Studio e vincular;
+ *   - `link`  — horizontal E Short confirmados PÚBLICOS pela API (#14369: o
+ *               Short também, antes só o horizontal) e título do horizontal
+ *               lido, que é o que o seletor do Studio mostra: abrir o Studio
+ *               e vincular;
  *   - `wait`  — algo ainda não está pronto (horizontal não público, ID ainda
  *               não registrado, título não lido, estado não conferido por
  *               falha TRANSITÓRIA de rede/5xx) e o prazo de desistência não
- *               passou: tentar de novo. Depois do horário do Short o `wait`
- *               vem com `alertDue: true` — o editor é avisado no prazo, mas a
+ *               passou: tentar de novo. Passada a folga
+ *               `SHORT_RELATED_ALERT_GRACE_MINUTES` depois do horário do
+ *               Short, o `wait` vem com `alertDue: true` — o editor é avisado no prazo, mas a
  *               task segue tentando por `SHORT_RELATED_GIVE_UP_MINUTES`,
  *               porque o vínculo depois do Short no ar ainda vale;
  *   - `alert` — não adianta esperar: erro PERMANENTE (credencial ausente ou
@@ -46,8 +49,20 @@ export const DIARIA_YOUTUBE_CHANNEL_ID = "UCSsppeUnBy6q-4a5hsl5u0w";
 /** Intervalo entre conferências enquanto o plano diz `wait` (o `--poll-minutes` do CLI usa o mesmo). */
 export const SHORT_RELATED_RETRY_MINUTES = 2;
 
-/** Quanto tempo depois do horário do Short a task ainda tenta vincular. */
-export const SHORT_RELATED_GIVE_UP_MINUTES = 60;
+/**
+ * Quanto tempo depois do horário do Short a task ainda tenta vincular. Era 60
+ * até o #14369: em 17/11 e 19/11 o Short não estava no canal no horário do
+ * slot e a task desistiu 1 h depois. Com o Short às 06:30, o prazo vai a 09:30.
+ */
+export const SHORT_RELATED_GIVE_UP_MINUTES = 180;
+
+/**
+ * Folga depois do horário do Short antes de o `wait` pedir alerta (#14369).
+ * Desde que o vínculo exige o Short PÚBLICO, todo dia o plano espera o
+ * agendado virar público às 06:30; sem a folga, o alerta sairia todo dia nos
+ * primeiros minutos depois do slot.
+ */
+export const SHORT_RELATED_ALERT_GRACE_MINUTES = 30;
 
 /**
  * Lista de Shorts do canal no Studio. Abrir `/video/{id}/edit` direto às vezes
@@ -339,6 +354,8 @@ export interface ShortRelatedPlan {
   horizontalState: PublishState | null;
   /** Título do horizontal pela API — é o que o seletor do Studio mostra. */
   horizontalTitle: string | null;
+  /** Estado do Short relido pela API (#14369); `null` = não conferido. */
+  shortState: PublishState | null;
   studioUrl: string;
   /** Horário do Short (ISO) — prazo do alerta; `null` se não derivado. */
   shortAt: string | null;
@@ -370,6 +387,12 @@ export interface ShortRelatedPlanInput {
   short: ResolvedVideoId | null;
   horizontalState: PublishState | null;
   horizontalTitle?: string | null;
+  /**
+   * #14369: estado do Short pela API. Só `published` libera o `link`;
+   * obrigatório de propósito, como `videoEvidence` (um caller que esquecesse
+   * dele vincularia sem conferir o Short).
+   */
+  shortState: PublishState | null;
   /** Motivo de não ter conferido o estado (sem credencial, erro da API). */
   stateError?: string | null;
   /** Default: `classifyYouTubeError(stateError)`. */
@@ -392,6 +415,7 @@ export function decideShortRelatedPlan(input: ShortRelatedPlanInput): ShortRelat
     shortSource: input.short?.source ?? null,
     horizontalState: input.horizontalState,
     horizontalTitle: input.horizontalTitle ?? null,
+    shortState: input.shortState,
     studioUrl: studioShortsListUrl(input.channelId),
     shortAt: input.shortAt ? input.shortAt.toISOString() : null,
     giveUpAt: giveUp ? giveUp.toISOString() : null,
@@ -425,19 +449,20 @@ export function decideShortRelatedPlan(input: ShortRelatedPlanInput): ShortRelat
   }
 
   const nowMs = input.now.getTime();
-  const pastAlert = input.shortAt !== null && nowMs >= input.shortAt.getTime();
+  const pastShort = input.shortAt !== null && nowMs >= input.shortAt.getTime();
+  const pastAlert = input.shortAt !== null && nowMs >= input.shortAt.getTime() + SHORT_RELATED_ALERT_GRACE_MINUTES * 60_000;
   const pastGiveUp = giveUp !== null && nowMs >= giveUp.getTime();
   const alertNow = (why: string): ShortRelatedPlan => done("alert", `${why} — vincule à mão no Studio`);
   const notReady = (why: string): ShortRelatedPlan => {
     if (input.shortAt === null) return alertNow(`${why}; horário do Short não derivado, não há prazo para esperar`);
     if (pastGiveUp) return alertNow(`${why}; passou ${SHORT_RELATED_GIVE_UP_MINUTES} min do horário do Short (${base.shortAt})`);
     if (pastAlert) {
-      return done("wait", `${why}; horário do Short (${base.shortAt}) já passou — alertar e continuar tentando até ${base.giveUpAt}`, {
+      return done("wait", `${why}; passou ${SHORT_RELATED_ALERT_GRACE_MINUTES} min do horário do Short (${base.shortAt}) — alertar e continuar tentando até ${base.giveUpAt}`, {
         retry: SHORT_RELATED_RETRY_MINUTES,
         alertDue: true,
       });
     }
-    return done("wait", `${why}; tentar de novo até o horário do Short (${base.shortAt})`, { retry: SHORT_RELATED_RETRY_MINUTES });
+    return done("wait", `${why}; tentar de novo (prazo ${base.giveUpAt})`, { retry: SHORT_RELATED_RETRY_MINUTES });
   };
 
   const errorKind = input.stateError ? (input.stateErrorKind ?? classifyYouTubeError(input.stateError)) : null;
@@ -464,7 +489,12 @@ export function decideShortRelatedPlan(input: ShortRelatedPlanInput): ShortRelat
   if (!input.horizontalTitle) {
     return notReady(`horizontal ${input.horizontal.id} público, mas o título não foi lido pela API (o seletor do Studio escolhe pelo título)`);
   }
-  const late = pastAlert ? " (depois do horário do Short — o vínculo ainda vale)" : "";
+  // #14369: o vínculo só depois de o Short estar no ar (17/11 e 19/11: o Short
+  // não estava no canal no horário do slot).
+  if (input.shortState !== "published") {
+    return notReady(`Short ${input.short.id} ainda não está público (estado ${input.shortState ?? "não conferido"})`);
+  }
+  const late = pastShort ? " (depois do horário do Short — o vínculo ainda vale)" : "";
   return done("link", `horizontal ${input.horizontal.id} público pela API${late}`);
 }
 
@@ -503,7 +533,7 @@ export function buildShortRelatedAlert(plan: ShortRelatedPlan, note: string | nu
       "",
       `Motivo: ${note ?? plan.reason}`,
       `Horizontal: ${plan.horizontalId ?? "não encontrado"}${plan.horizontalTitle ? ` "${plan.horizontalTitle}"` : ""} (${plan.horizontalState ?? "estado não conferido"})`,
-      `Short: ${plan.shortId ?? "não encontrado"}`,
+      `Short: ${plan.shortId ?? "não encontrado"} (${plan.shortState ?? "estado não conferido"})`,
       `Horário do Short: ${plan.shortAt ?? "desconhecido"}`,
       plan.action === "wait" ? `A task segue tentando até ${plan.giveUpAt}.` : "A task desistiu.",
       "",

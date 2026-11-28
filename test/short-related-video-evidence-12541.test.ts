@@ -61,7 +61,8 @@ function planInput(aammdd: string, over: Partial<ShortRelatedPlanInput>): ShortR
     horizontal: null,
     short: null,
     horizontalState: null,
-    shortAt: brtInstant(aammdd, "12:00"),
+    shortState: null,
+    shortAt: brtInstant(aammdd, "06:30"),
     record: null,
     ...over,
   };
@@ -173,7 +174,7 @@ describe("#12541 caso real 261109: edição sem vídeo e sem marcador", () => {
       noVideo: false,
       shortsRegistry: { kind: "absent" },
       record: { kind: "absent" },
-      shortAt: brtInstant("261109", "12:00"),
+      shortAt: brtInstant("261109", "06:30"),
     });
     assert.equal(ev.verdict, "no-video");
     assert.equal(isAlarmingShortRelatedVerdict(ev.verdict), false);
@@ -189,7 +190,7 @@ describe("#12541 caso real 261105: registro do vínculo ausente no data/ do 300"
       noVideo: false,
       shortsRegistry: shortsOk("261105"),
       record: { kind: "absent" },
-      shortAt: brtInstant("261105", "12:00"),
+      shortAt: brtInstant("261105", "06:30"),
     });
     assert.equal(ev.verdict, "missing-record");
     assert.equal(shortRelatedMissedSeverity(ev.verdict), "acao");
@@ -220,7 +221,7 @@ describe("#12541 plano e alarme não divergem na precondição", () => {
               now: brtInstant("261105", "13:30"),
               editionExists: true,
               record: { kind: "absent" },
-              shortAt: brtInstant("261105", "12:00"),
+              shortAt: brtInstant("261105", "06:30"),
               ...src,
             });
             const label = JSON.stringify(src);

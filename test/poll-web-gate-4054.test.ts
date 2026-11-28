@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import worker, { type Env } from "../workers/poll/src/index.ts";
-import { subscriberKvKey } from "../workers/poll/src/subscriber-verify.ts";
+import { subscriberKvKey } from "../scripts/lib/shared/subscriber-verify.ts";
 import {
   issueWebSessionCookie,
   WEB_SESSION_COOKIE,
@@ -277,7 +277,7 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
   it("sessão EXPIRADA → gate continua ativo", async () => {
     const env = makeEnv();
     const expired = (
-      await import("../workers/poll/src/session-cookie.ts")
+      await import("../scripts/lib/shared/session-cookie.ts")
     ).signSessionCookie;
     const expiredCookieValue = await expired("cookie-secret", "leitor@example.com", -10);
     const res = await worker.fetch(
