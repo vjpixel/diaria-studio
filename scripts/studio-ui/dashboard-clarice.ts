@@ -95,7 +95,7 @@ import {
 } from "../lib/brevo-rate-state.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "../../workers/brevo-dashboard/src/sections-core.ts"; // #6394: calcCumulativeSentInBillingWindow
 import { billingCycleWindow } from "../lib/shared/brevo-billing-cycle.ts"; // #6394: pareia credits+cumulativeSent no caminho AO VIVO
-import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; // #4206: label do banner de fetchedAt
+import { fmtTimeBRT } from "../lib/shared/brt.ts"; // #4206: label do banner de fetchedAt
 import type { Env, ContactsSummary, LinkSectionMap } from "../lib/shared/brevo-dashboard-types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
 import { loadLinkSectionMapForCycle, loadLinkTitleMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184 / #4198

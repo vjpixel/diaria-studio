@@ -74,11 +74,8 @@
     "scripts/clarice-plan-wave.ts -> workers/brevo-dashboard/src/brevo-api.ts",
     "scripts/clarice-plan-wave.ts -> workers/brevo-dashboard/src/sections-core.ts",
     "scripts/clarice-schedule-ramp.ts -> workers/brevo-dashboard/src/brevo-api.ts",
-    "scripts/lib/brevo-diaria-guardrail.ts -> workers/brevo-dashboard/src/experiment-cta.ts",
-    "scripts/lib/clarice-guardrail-alarm.ts -> workers/brevo-dashboard/src/experiment-cta.ts",
     "scripts/lib/clarice-wave-plan.ts -> workers/brevo-dashboard/src/sections-core.ts",
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/brevo-api.ts",
-    "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/render-links.ts",
     "scripts/studio-ui/dashboard-clarice.ts -> workers/brevo-dashboard/src/sections-core.ts",
     "scripts/studio-ui/dashboard-diaria.ts -> workers/diaria-dashboard/src/index.ts",
     "scripts/verify-clarice-monthly-coverage.ts -> workers/brevo-dashboard/src/brevo-api.ts"

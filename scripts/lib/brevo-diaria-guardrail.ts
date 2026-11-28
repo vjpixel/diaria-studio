@@ -10,7 +10,7 @@
  * canário", números fechados 260802): abertura <15%, bounce duro ≥2%, bounce
  * total ≥5%, spam ≥0,1%, unsub ≥3%. Reusa `evaluateArmGuardrails`/
  * `DEFAULT_HEALTH_THRESHOLDS`/`CTA_SPAM_BREACH_YELLOW_PCT`
- * (`workers/brevo-dashboard/src/experiment-cta.ts`+`thresholds.ts`) — a MESMA
+ * (`shared/brevo-arm-guardrails.ts`+`shared/brevo-health-thresholds.ts`) — a MESMA
  * fonte única de limiar que `clarice-guardrail-alarm.ts` já usa pro alarme do
  * ramp Clarice, sem reimplementar nenhum número aqui.
  *
@@ -76,7 +76,7 @@ import { fileURLToPath } from "node:url";
 import {
   evaluateArmGuardrails,
   type ArmGuardrailResult,
-} from "../../workers/brevo-dashboard/src/experiment-cta.ts";
+} from "./shared/brevo-arm-guardrails.ts";
 import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "./shared/brevo-health-thresholds.ts";
 import { describeBreaches, type CampaignGuardrailInput } from "./clarice-guardrail-alarm.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
