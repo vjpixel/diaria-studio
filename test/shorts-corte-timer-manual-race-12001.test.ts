@@ -33,7 +33,7 @@ import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-downl
 import { MAX_FIRE_LATENESS_MS } from "../scripts/lib/linkedin-personal.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
-import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
+import { publishShortsModuleSource, publishShortsMainUnlockedSource } from "./_helpers/publish-shorts-source.ts"; // #14054, #14327
 
 const SLUG = "corte-12001";
 const DATE = "261103";
@@ -231,10 +231,14 @@ describe("#12001 quem toma o lock no publish-shorts", () => {
   it("main: o lock é o mesmo arquivo do timer, tomado antes do laço de envios e solto depois (fonte)", () => {
     assert.equal(TIMER_REEXPORT_LOCK_FILE, CORTE_TIMER_LOCK_FILE);
     assert.equal(linkedinTimerLock, acquireTimerLock);
-    const src = publishShortsSource();
-    assert.match(src, /corteManualTimerDestinations\(plan\.items, corte \? \{ timerRun: requireCorteAuth \} : null\)/);
-    assert.match(src, /acquireTimerLock\(join\(dir, CORTE_TIMER_LOCK_FILE\)[,)][\s\S]*for \(const item of plan\.items\) \{\s*if \(corteLockBusy && corteLockDests\.includes\(item\.destination\)\)/);
-    assert.match(src, /\n  releaseCorteLock\(\);\n  const finalItems = blockRepostOnProfileFailure/);
+    // #14327: o lock é tomado em takeCorteManualLock (run-corte.ts); o mainUnlocked a chama antes do laço.
+    const corteMod = publishShortsModuleSource("run-corte");
+    assert.match(corteMod, /corteManualTimerDestinations\(items, corte \? \{ timerRun: requireCorteAuth \} : null\)/);
+    assert.match(corteMod, /if \(corte && dests\.length\) \{[\s\S]*acquireTimerLock\(join\(dir, CORTE_TIMER_LOCK_FILE\)[,)]/);
+    const main = publishShortsMainUnlockedSource();
+    assert.match(main, /takeCorteManualLock\(plan\.items, dir, corte, requireCorteAuth\)[\s\S]*for \(const item of plan\.items\) \{\s*if \(corteLockBusy && corteLockDests\.includes\(item\.destination\)\)/);
+    assert.match(main, /\{ dests: corteLockDests, busy: corteLockBusy, release: releaseCorteLock \} = takeCorteManualLock\(/);
+    assert.match(main, /\n  releaseCorteLock\(\);\n  const finalItems = blockRepostOnProfileFailure/);
     const timerSrc = readFileSync(new URL("../scripts/shorts-corte-timer.ts", import.meta.url), "utf8");
     assert.match(timerSrc, /sendingMarks: readShortsSending\(dir, spec\.date\)/);
   });
