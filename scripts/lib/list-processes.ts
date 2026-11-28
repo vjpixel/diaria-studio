@@ -39,6 +39,8 @@ export interface ProcessInfo {
 export interface ListProcessesOps {
   execFileSync: typeof execFileSync;
   platform: NodeJS.Platform;
+  /** #14335: PID que uma listagem válida tem que conter (default `process.pid`). Só `listProcessesStrict` lê. */
+  selfPid?: number;
 }
 
 const defaultOps: ListProcessesOps = { execFileSync, platform: process.platform };
@@ -198,11 +200,22 @@ export function listProcessesForWorktreeGuard(ops: ListProcessesOps = defaultOps
 
 /**
  * #14335: snapshot de processos que LANÇA quando não consegue listar (falha
- * ou timeout do PowerShell no Windows, falha do `ps` no POSIX). Para os
+ * ou timeout do PowerShell no Windows, lista vazia ou sem o próprio PID no
+ * Windows, falha do `ps` no POSIX). Para os
  * caminhos que apagam pelo sistema de arquivos uma pasta de remoção parcial
  * (`cleanupPartialRemovalLeftover`, varredura de órfãos): sem saber se há
  * processo vivo, a pasta fica.
  */
 export function listProcessesStrict(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
-  return ops.platform === "win32" ? listWindowsProcesses(ops) : listAllProcesses(ops);
+  if (ops.platform !== "win32") return listAllProcesses(ops);
+  // No Windows o PowerShell pode sair 0 com saída vazia ou truncada. Uma
+  // listagem que não contém nem este processo (que está vivo) não serve:
+  // lança, e o chamador preserva a pasta.
+  const list = listWindowsProcesses(ops);
+  const selfPid = ops.selfPid ?? process.pid;
+  if (list.length === 0) throw new Error("listagem de processos do Windows veio vazia");
+  if (!list.some((p) => p.pid === selfPid)) {
+    throw new Error(`listagem de processos do Windows não contém o próprio processo (PID ${selfPid}); incompleta`);
+  }
+  return list;
 }

@@ -608,6 +608,7 @@ test("#14335 listProcessesStrict: falha ou timeout do PowerShell LANÇA (não vi
   const seen: Array<Record<string, unknown>> = [];
   const okOps = {
     platform: "win32",
+    selfPid: 3,
     execFileSync: ((_f: string, _a: string[], o: Record<string, unknown>) => {
       seen.push(o);
       return JSON.stringify({ ProcessId: 3, ParentProcessId: 1, CommandLine: "node z" });
@@ -791,5 +792,80 @@ test("#14335 resolveWorktreeRemoval: rescueDir do resgate chega ao resultado; cl
   assert.ok(dest, warnings.join("\n"));
   const rescueDir = dest!.split("resgate em ")[1];
   assert.equal(readFileSync(join(rescueDir, "files", "_internal", "a.txt"), "utf8"), "trabalho");
+  rmSync(base, { recursive: true, force: true });
+});
+
+// ── proteção de dado antes do merge (coordenador) ──
+
+test("#14335 listProcessesStrict (Windows): exit 0 com lista vazia ou sem o próprio PID LANÇA", () => {
+  const opsWith = (json: string) =>
+    ({
+      platform: "win32",
+      selfPid: 4242,
+      execFileSync: (() => json) as unknown as ListProcessesOps["execFileSync"],
+    }) as ListProcessesOps;
+  assert.throws(() => listProcessesStrict(opsWith("")), /vazia/);
+  assert.throws(() => listProcessesStrict(opsWith("[]")), /vazia/);
+  assert.throws(
+    () => listProcessesStrict(opsWith(JSON.stringify([{ ProcessId: 1, ParentProcessId: 0, CommandLine: "x" }]))),
+    /não contém o próprio processo \(PID 4242\)/,
+  );
+  assert.deepEqual(
+    listProcessesStrict(opsWith(JSON.stringify([{ ProcessId: 4242, ParentProcessId: 1, CommandLine: "node" }]))),
+    [{ pid: 4242, ppid: 1, cmd: "node" }],
+  );
+  // O guard antigo segue fail-soft e não faz essa conferência.
+  assert.deepEqual(listProcessesForWorktreeGuard(opsWith("[]")), []);
+});
+
+test("#14335 rescueOrphanDir: cópia do resgate anterior apagada ou alterada -> não reaproveita, copia de novo", () => {
+  const base = mktmp("diaria-wtrm-14335-intact-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const dir = join(base, "agent-intacto");
+  mkdirSync(join(dir, "_internal"), { recursive: true });
+  writeFileSync(join(dir, "_internal", "a.txt"), "trabalho A");
+  writeFileSync(join(dir, "_internal", "b.txt"), "trabalho B");
+  const rescueRoot = join(repo, "data", "worktree-rescue");
+  const nowMs = Date.UTC(2026, 10, 28);
+
+  const r1 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs });
+  assert.equal(r1.reused, false);
+  // Cópia alterada depois do resgate.
+  writeFileSync(join(r1.rescueDir!, "files", "_internal", "a.txt"), "corrompido");
+  const r2 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs });
+  assert.equal(r2.reused, false);
+  assert.notEqual(r2.rescueDir, r1.rescueDir);
+  assert.equal(readFileSync(join(r2.rescueDir!, "files", "_internal", "a.txt"), "utf8"), "trabalho A");
+  // Cópia apagada.
+  rmSync(join(r2.rescueDir!, "files", "_internal", "b.txt"));
+  const r3 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs });
+  assert.equal(r3.reused, false);
+  assert.equal(readFileSync(join(r3.rescueDir!, "files", "_internal", "b.txt"), "utf8"), "trabalho B");
+  // Íntegra: agora reaproveita.
+  const r4 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs });
+  assert.equal(r4.reused, true);
+  assert.equal(r4.rescueDir, r3.rescueDir);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 rescueOrphanDir: meta.json registra in_repo {rel: blob} dos não copiados, e o blob reconstrói o arquivo", () => {
+  const base = mktmp("diaria-wtrm-14335-inrepo-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const dir = join(base, "agent-inrepo");
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  mkdirSync(join(dir, "_internal"));
+  writeFileSync(join(dir, "package.json"), "{}\n");
+  writeFileSync(join(dir, "README.md"), "# readme\r\n"); // casa pelo hash LF
+  writeFileSync(join(dir, "scripts", "x.ts"), "export {};\n");
+  writeFileSync(join(dir, "_internal", "n.txt"), "fora do repo");
+  const r = rescueOrphanDir(dir, { rescueRoot: join(repo, "data", "worktree-rescue"), blobsPresent: gitReachableBlobs(repo) });
+  const meta = JSON.parse(readFileSync(join(r.rescueDir!, "meta.json"), "utf8"));
+  assert.deepEqual(Object.keys(meta.in_repo).sort(), ["README.md", "package.json", "scripts/x.ts"]);
+  assert.equal(meta.in_repo["_internal/n.txt"], undefined);
+  for (const [rel, sha] of Object.entries(meta.in_repo as Record<string, string>)) {
+    assert.match(sha, /^[0-9a-f]{40}$/);
+    const content = runGit(repo, ["cat-file", "blob", sha]);
+    assert.equal(content, readFileSync(join(dir, rel), "utf8").replace(/\r\n/g, "\n"), rel);
+  }
   rmSync(base, { recursive: true, force: true });
 });

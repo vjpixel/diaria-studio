@@ -150,6 +150,13 @@ export function rescueOrphanDir(
   const present = opts.blobsPresent([...new Set([...candidates.values()].flat())]);
   // Arquivo vazio sempre vai: o blob vazio existe em qualquer repo e não diz nada sobre este arquivo.
   const toCopy = files.filter((f) => f.size === 0 || !candidates.get(f.rel)!.some((sha) => present.has(sha)));
+  // Os que ficaram: blob alcançável com que cada um casou, para o meta.json
+  // permitir reconstruir a pasta (`git cat-file blob <sha>`).
+  const inRepo: Record<string, string> = {};
+  for (const f of files) {
+    if (toCopy.includes(f)) continue;
+    inRepo[f.rel] = candidates.get(f.rel)!.find((sha) => present.has(sha))!;
+  }
 
   if (toCopy.length === 0 && links.length === 0) {
     return { rescueDir: null, copied: 0, alreadyInRepo: files.length, symlinks: 0, reused: false };
@@ -164,7 +171,7 @@ export function rescueOrphanDir(
   for (const f of toCopy) fileHashes[f.rel] = sha256File(join(dir, f.rel));
   const symlinks: Record<string, string> = {};
   for (const l of links) symlinks[l.rel] = readlinkSync(join(dir, l.rel));
-  const previous = findEquivalentRescue(opts.rescueRoot, dir, fileHashes, symlinks);
+  const previous = findEquivalentRescue(opts.rescueRoot, dir, fileHashes, symlinks, inRepo);
   if (previous !== null) {
     return { rescueDir: previous, copied: 0, alreadyInRepo: files.length - toCopy.length, symlinks: links.length, reused: true };
   }
@@ -189,6 +196,7 @@ export function rescueOrphanDir(
     source: dir,
     files: fileHashes,
     already_in_repo: files.length - toCopy.length,
+    in_repo: inRepo,
     symlinks,
   };
   const metaText = JSON.stringify(meta, null, 2) + "\n";
@@ -197,6 +205,19 @@ export function rescueOrphanDir(
     throw new Error("meta.json do resgate gravado incompleto");
   }
   return { rescueDir, copied: toCopy.length, alreadyInRepo: files.length - toCopy.length, symlinks: links.length, reused: false };
+}
+
+/** Cada `files/<rel>` do resgate existe e tem o sha256 esperado. */
+function rescueCopiesIntact(rescueDir: string, files: Record<string, string>): boolean {
+  for (const [rel, sha] of Object.entries(files)) {
+    const copy = join(rescueDir, "files", rel);
+    try {
+      if (!statSync(copy).isFile() || sha256File(copy) !== sha) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 function sameRecord(a: Record<string, string>, b: unknown): boolean {
@@ -208,14 +229,17 @@ function sameRecord(a: Record<string, string>, b: unknown): boolean {
 
 /**
  * Resgate anterior (`{rescueRoot}/{dia}/{nome}[-N]/meta.json`, #14335) da
- * mesma pasta `source` com os mesmos arquivos (caminho + sha256) e links, ou
- * `null`. `meta.json` ilegível é ignorado (não reaproveita, copia de novo).
+ * mesma pasta `source` com os mesmos arquivos (caminho + sha256), links e
+ * `in_repo`, ou `null`. Só reaproveita se cada `files/<rel>` do resgate ainda
+ * existir com o sha256 do meta.json: cópia apagada ou alterada depois faz
+ * copiar de novo. `meta.json` ilegível é ignorado (copia de novo).
  */
 export function findEquivalentRescue(
   rescueRoot: string,
   source: string,
   files: Record<string, string>,
   symlinks: Record<string, string>,
+  inRepo: Record<string, string> = {},
 ): string | null {
   const safe = rescueSubdirFor(basename(source), 0).split("/")[1];
   let days: string[];
@@ -235,7 +259,14 @@ export function findEquivalentRescue(
       if (name !== safe && !name.startsWith(`${safe}-`)) continue;
       try {
         const meta = JSON.parse(readFileSync(join(rescueRoot, day, name, "meta.json"), "utf8")) as Record<string, unknown>;
-        if (meta.issue === 14335 && meta.source === source && sameRecord(files, meta.files) && sameRecord(symlinks, meta.symlinks)) {
+        if (
+          meta.issue === 14335 &&
+          meta.source === source &&
+          sameRecord(files, meta.files) &&
+          sameRecord(symlinks, meta.symlinks) &&
+          sameRecord(inRepo, meta.in_repo) &&
+          rescueCopiesIntact(join(rescueRoot, day, name), files)
+        ) {
           return join(rescueRoot, day, name);
         }
       } catch {
