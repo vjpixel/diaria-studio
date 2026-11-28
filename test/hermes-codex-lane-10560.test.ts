@@ -1213,6 +1213,8 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     cpSync(join(ROOT, ".claude/hooks/lib/gh-pr-merge-command.mjs"), join(r, ".claude/hooks/lib/gh-pr-merge-command.mjs"));
     // #13550: o guard de PII importa o detector de `gh pr create` (prefixo de ambiente e wrappers).
     cpSync(join(ROOT, ".claude/hooks/lib/gh-pr-create-command.mjs"), join(r, ".claude/hooks/lib/gh-pr-create-command.mjs"));
+    // #14321: normalizeMsysPath saiu do guard de PII para lib/msys-path.mjs.
+    cpSync(join(ROOT, ".claude/hooks/lib/msys-path.mjs"), join(r, ".claude/hooks/lib/msys-path.mjs"));
     writeFileSync(join(r, "_prbody.md"), "corpo solto\n");
     assert.equal(sh("git", ["add", "_prbody.md"], r).status, 0);
     assert.equal(sh("git", ["commit", "-q", "-m", "artefato"], r).status, 0);
