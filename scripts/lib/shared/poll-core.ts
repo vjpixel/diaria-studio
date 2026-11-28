@@ -42,7 +42,7 @@ export const CYCLE_EDITION_RE = /^\d{4}-\d{2}$/;
  * Antes desta versão, a checagem era só de COMPRIMENTO (`length > 0 && <=
  * 32`), permitindo qualquer caractere — inclusive `:` — passar. Um `edition`
  * como `"2607-08:evil"` (13 chars, sob o teto de 32) produzia uma chave KV
- * `vote:2607-08:evil:attacker@x.com` que ainda batia no prefixo escaneado
+ * `vote:2607-08:evil:{email do atacante}` que ainda batia no prefixo escaneado
  * por `handleAdminCorrect` (`vote:{edition}:`) — poluindo correções
  * administrativas de score sem autenticação nenhuma (modo merge-tag não
  * exige HMAC). Achado de segurança #3279, cadeia de exploit verificada
