@@ -159,6 +159,8 @@ export function checkBrutosLocal(paths: readonly string[], deps: BrutoLocalDeps,
       b = deps.size(p);
     } catch (e) {
       problems.push({ path: p, reason: "ilegivel", detail: `metadado ilegível (${(e as Error).message})` });
+      // #14414: sem isto a leitura cronometrada abaixo conferia o mesmo arquivo de novo e ele saía 2x.
+      flagged.add(p);
       continue;
     }
     if (a !== b) problems.push({ path: p, reason: "crescendo", detail: `tamanho mudando (${gb(a)} → ${gb(b)} em ${((opts.settleMs ?? BRUTO_SIZE_SETTLE_MS) / 1000).toFixed(1)} s): ainda copiando ou sincronizando` });
