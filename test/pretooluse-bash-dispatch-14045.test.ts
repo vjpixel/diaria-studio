@@ -24,6 +24,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  FILTER_TOTAL_TIMEOUT_MS,
   GUARDS,
   STARTUP_MARGIN_MS,
   killProcessTree,
@@ -339,39 +340,85 @@ describe("despachante (#14045): mecânica com guards de teste", () => {
   ]) {
     it(`#14302: ${name} travado não impede outro guard de negar`, () => {
       const dir = fixtureDir({ "filtro.mjs": source, "nega.mjs": denyGuard("deny preservado") });
-      const runner = join(dir, "runner.mjs");
-      writeFileSync(runner, `
-        import { dispatch } from ${JSON.stringify(pathToFileURL(DISPATCHER).href)};
-        const out = await dispatch("{}", {
-          hooksDir: ${JSON.stringify(dir)},
-          guards: [
-            { file: "filtro.mjs", mode: "spawn-if-applies", timeoutMs: 700 },
-            { file: "nega.mjs", mode: "worker", timeoutMs: 3000 },
-          ],
-        });
-        process.stdout.write(out);
-      `);
-      // Processo externo com teto: a regressão antiga não pode travar a suíte.
-      const result = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 5000, windowsHide: true });
-      assert.equal(result.error, undefined, result.stderr);
-      assert.equal(result.status, 0, result.stderr);
-      const output = JSON.parse(result.stdout);
+      const output = dispatchIsolated(dir, [
+        { file: "filtro.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
+        { file: "nega.mjs", mode: "worker", timeoutMs: 3000 },
+      ]);
       assert.equal(output.hookSpecificOutput.permissionDecisionReason, "deny preservado");
-      assert.match(output.systemMessage, /filtro\.mjs passou de 700 ms/);
+      assert.match(output.systemMessage, /filtro\.mjs filtro não decidiu em 700 ms;/);
     });
   }
 
+  /** CLI que nega com `reason` (e grava `marker`, se dado) quando roda como processo próprio. */
+  const cliDeny = (reason: string, appliesTo: string, marker?: string) =>
+    [
+      `import { writeFileSync } from "node:fs";`,
+      `import { pathToFileURL } from "node:url";`,
+      appliesTo,
+      `if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {`,
+      marker ? `  writeFileSync(${JSON.stringify(marker)}, "x");` : "",
+      `  process.stdout.write(${JSON.stringify(deny(reason))});`,
+      `}`,
+    ].join("\n");
+
+  /**
+   * Roda o despachante num processo externo com teto (a regressão antiga não
+   * pode travar a suíte), com passo de filtro de 700 ms.
+   */
+  function dispatchIsolated(dir: string, guards: DispatchGuard[]) {
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(runner, `
+      import { dispatch } from ${JSON.stringify(pathToFileURL(DISPATCHER).href)};
+      const out = await dispatch("{}", { hooksDir: ${JSON.stringify(dir)}, guards: ${JSON.stringify(guards)}, filterStepMs: 700, filterTotalMs: 3000 });
+      process.stdout.write(out);
+    `);
+    const result = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 8000, windowsHide: true });
+    assert.equal(result.error, undefined, result.stderr);
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  }
+
+  it("#14302: filtro em laço de guard onFilterError run vira deny (o CLI roda por precaução)", () => {
+    const marker = join(tmp("dispatch-filter-run"), "rodou.txt");
+    const dir = fixtureDir({ "merge.mjs": cliDeny("merge negado", "export function appliesTo() { while (true) {} }", marker) });
+    const output = dispatchIsolated(dir, [{ file: "merge.mjs", mode: "spawn-if-applies", timeoutMs: 10_000, onFilterError: "run" }]);
+    assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(output.hookSpecificOutput.permissionDecisionReason, "merge negado");
+    assert.equal(existsSync(marker), true, "o CLI do guard fail-closed rodou");
+    assert.match(output.systemMessage, /merge\.mjs filtro não decidiu em 700 ms, guard rodado por precaução/);
+  });
+
+  it("#14302: filtro travado não derruba os filtros seguintes (Worker nova para o resto)", () => {
+    const dir = fixtureDir({
+      "trava.mjs": "export function appliesTo() { while (true) {} }",
+      "depois.mjs": cliDeny("depois negou", "export function appliesTo() { return true; }"),
+    });
+    const output = dispatchIsolated(dir, [
+      { file: "trava.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
+      { file: "depois.mjs", mode: "spawn-if-applies", timeoutMs: 10_000 },
+    ]);
+    assert.equal(output.hookSpecificOutput.permissionDecisionReason, "depois negou");
+    assert.match(output.systemMessage, /trava\.mjs filtro não decidiu em 700 ms;/);
+  });
+
   it("guard de processo próprio que passa do teto é morto e fica sem saída", async () => {
+    const marker = join(tmp("dispatch-cli-timeout"), "cli-rodou.txt");
     const script = [
+      `import { writeFileSync } from "node:fs";`,
       `import { pathToFileURL } from "node:url";`,
       `export function appliesTo() { return true; }`,
-      `if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) setTimeout(() => process.stdout.write("{}"), 5000);`,
+      `if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {`,
+      `  writeFileSync(${JSON.stringify(marker)}, "x");`,
+      `  setTimeout(() => process.stdout.write("{}"), 8000);`,
+      `}`,
     ].join("\n");
     const dir = fixtureDir({ "trava.mjs": script });
     const t = Date.now();
-    const run = await runGuards("{}", { guards: [{ file: "trava.mjs", mode: "spawn-if-applies", timeoutMs: 200 }], hooksDir: dir });
+    const run = await runGuards("{}", { guards: [{ file: "trava.mjs", mode: "spawn-if-applies", timeoutMs: 1500 }], hooksDir: dir });
     assert.deepEqual(run.outputs, [""]);
-    assert.ok(Date.now() - t < 4000, "não esperou o processo travado");
+    assert.equal(existsSync(marker), true, "o CLI chegou a rodar: o teto pegou o CLI, não o filtro");
+    assert.match(run.notices.join("\n"), /trava\.mjs passou de 1500 ms/);
+    assert.ok(Date.now() - t < 6000, "não esperou o processo travado");
   });
 });
 
@@ -390,7 +437,8 @@ describe("despachante (#14045): registro e contrato dos 16 guards reais", () => 
     const groupMs = settings.hooks.PreToolUse.find((g: { matcher: string }) => g.matcher === "Bash").hooks[0].timeout * 1000;
     // Nenhum guard espera outro: a cadeia em série mais longa tem um guard só,
     // e a soma dela é o maior teto individual. Mais a folga de partida.
-    const longestSerialChainMs = Math.max(...GUARDS.map((g) => g.timeoutMs));
+    // Cada elo é a fase de filtros (#14302) seguida do CLI do guard.
+    const longestSerialChainMs = FILTER_TOTAL_TIMEOUT_MS + Math.max(...GUARDS.map((g) => g.timeoutMs));
     assert.equal(worstCaseMs(), longestSerialChainMs + STARTUP_MARGIN_MS);
     assert.ok(groupMs >= worstCaseMs(), `teto do grupo ${groupMs} ms < pior caso ${worstCaseMs()} ms`);
     // Referência: em série (o modelo antigo de dentro do despachante) seria a soma.

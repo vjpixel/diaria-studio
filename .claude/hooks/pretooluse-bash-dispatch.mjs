@@ -14,10 +14,13 @@
 //   dele e ele fica sem saída.
 // - `spawn-if-applies`: todo guard que toca disco ou git, em processo
 //   próprio, só quando o filtro dele (`appliesTo`, exportado pelo hook, puro,
-//   sem disco) diz que ele tem o que decidir. Import e filtro também rodam
-//   em processo cancelável, dentro do mesmo teto (#14302). Processo travado em disco, git
-//   ou rede é morto no teto dele com a árvore de filhos (`killProcessTree`),
-//   como o harness fazia. O CLI só é iniciado quando o filtro se aplica.
+//   sem disco) diz que ele tem o que decidir. Os filtros de todos esses
+//   guards rodam numa Worker única (`pretooluse-bash-dispatch-filter.mjs`),
+//   com teto por passo e teto da fase (#14302): filtro travado é terminado
+//   e os seguintes continuam numa Worker nova. No Bash comum nenhum se
+//   aplica e não há spawn de processo, só essa thread. Processo travado em
+//   disco, git ou rede é morto no teto dele com a árvore de filhos
+//   (`killProcessTree`), como o harness fazia.
 //
 // O que é preservado, guard a guard:
 // - Mesma entrada: cada guard recebe o stdin CRU original (no harness os 16
@@ -36,14 +39,18 @@
 //   ou travado depois dele não atrasa nem apaga o deny.
 // - Falha de guard (não carregou, lançou, passou do teto, filtro lançou)
 //   aparece no `systemMessage`, além do stderr: nunca é silêncio com exit 0.
-// - Filtro que lança: o guard de PII e o de merge rodam mesmo assim
-//   (`onFilterError: "run"`, fail-closed); os demais ficam sem decisão,
-//   com o aviso.
+// - Filtro que lança ou não decide no teto dele (#14302): o guard de PII e
+//   o de merge rodam mesmo assim (`onFilterError: "run"`, fail-closed), com
+//   o teto do CLI inteiro; os demais ficam sem decisão, com o aviso.
 //
 // Por que nenhum guard de disco roda em Worker: uma Worker presa numa chamada
 // nativa bloqueante não termina com `terminate()`, e o Node espera a thread
 // antes de sair, com qualquer forma de saída que devolva código 0 (ver o
-// docblock de `GUARDS`). Teste: `test/pretooluse-bash-dispatch-14045.test.ts`
+// docblock de `GUARDS`). A Worker de filtros só roda `appliesTo`, que é puro
+// por contrato; o resíduo é um import preso em I/O nativo (disco travado),
+// que antes do #14302 travava a própria thread principal. Um processo por
+// filtro cobriria esse caso, mas custava ~3x a latência de todo Bash
+// (medição na PR #14326). Teste: `test/pretooluse-bash-dispatch-14045.test.ts`
 // trava que os guards de `worker` não importam `node:fs` nem
 // `node:child_process`.
 //
@@ -56,6 +63,17 @@ import { Worker } from "node:worker_threads";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKER_SCRIPT = join(HOOK_DIR, "pretooluse-bash-dispatch-worker.mjs");
+const FILTER_SCRIPT = join(HOOK_DIR, "pretooluse-bash-dispatch-filter.mjs");
+
+/**
+ * Teto de um passo da Worker de filtros (import + `appliesTo` de um guard),
+ * em ms (#14302). Um filtro normal decide em milissegundos; o primeiro passo
+ * inclui a partida da Worker e o import das libs comuns.
+ */
+export const FILTER_STEP_TIMEOUT_MS = 2_000;
+
+/** Teto da fase de filtros inteira, em ms (#14302): soma-se ao maior teto de CLI no pior caso. */
+export const FILTER_TOTAL_TIMEOUT_MS = 5_000;
 
 /**
  * Os guards, na ordem do settings.json antes do #14045 (guard novo entra no
@@ -100,11 +118,12 @@ export const STARTUP_MARGIN_MS = 15_000;
 
 /**
  * Pior caso do grupo, em ms. Os guards correm todos em paralelo (nenhum
- * espera outro), então a cadeia em série tem um elo só por guard e o pior
- * caso é o maior teto mais a folga de partida.
+ * espera outro), então a cadeia em série de cada guard é o filtro (teto da
+ * fase de filtros, #14302) e depois o CLI (o teto dele): o pior caso é a
+ * fase de filtros mais o maior teto, mais a folga de partida.
  */
 export function worstCaseMs(guards = GUARDS) {
-  return Math.max(0, ...guards.map((g) => g.timeoutMs)) + STARTUP_MARGIN_MS;
+  return FILTER_TOTAL_TIMEOUT_MS + Math.max(0, ...guards.map((g) => g.timeoutMs)) + STARTUP_MARGIN_MS;
 }
 
 const DECISION_RANK = { deny: 3, ask: 2, allow: 1 };
@@ -267,8 +286,125 @@ export function killProcessTree(child, { platform = process.platform, spawnFn = 
   }
 }
 
-/** Guard em processo próprio, só quando o filtro dele diz que se aplica. */
-function runSpawnIfApplies(guard, raw, payloadError, hooksDir) {
+/**
+ * Avalia os filtros (`import` + `appliesTo`) dos guards `spawn-if-applies`
+ * numa Worker única (#14302): uma thread por Bash, sem processo por filtro.
+ * Os filtros são puros, então `terminate()` encerra qualquer um travado
+ * (laço síncrono, import que nunca resolve).
+ *
+ * A Worker decide os guards em série, na ordem de `entries`. Um passo que
+ * passa de `stepMs` sem resposta é do primeiro guard pendente: a Worker é
+ * terminada, esse guard sai com `{ timeout }` e outra Worker segue com os
+ * demais. `totalMs` limita a fase inteira: quem não decidiu até lá sai com
+ * `{ timeout }`. Erro ou saída da Worker sem resposta caem no primeiro
+ * pendente do mesmo jeito.
+ *
+ * Devolve `{ results, stop }`: `results` mapeia o índice do guard para uma
+ * promessa de `{ applies } | { error } | { timeout }`; `stop()` encerra a
+ * Worker viva (as promessas pendentes ficam sem resolver).
+ */
+function startFilters(entries, raw, hooksDir, { stepMs, totalMs }) {
+  const resolvers = new Map();
+  const results = new Map();
+  for (const { i } of entries) results.set(i, new Promise((resolve) => resolvers.set(i, resolve)));
+  let pending = entries.slice();
+  let worker = null;
+  let stepTimer;
+  let stopped = false;
+  const started = Date.now();
+
+  const settle = (i, value) => {
+    const resolve = resolvers.get(i);
+    if (!resolve) return;
+    resolvers.delete(i);
+    pending = pending.filter((e) => e.i !== i);
+    resolve(value);
+  };
+  const terminate = () => {
+    clearTimeout(stepTimer);
+    const w = worker;
+    worker = null;
+    if (!w) return;
+    w.removeAllListeners();
+    w.on("error", () => {});
+    try {
+      w.terminate();
+    } catch {
+      // já saiu
+    }
+  };
+  const failHead = (value) => {
+    terminate();
+    if (pending.length > 0) settle(pending[0].i, value);
+    launch();
+  };
+  const arm = () => {
+    clearTimeout(stepTimer);
+    const left = totalMs - (Date.now() - started);
+    if (left <= 0) {
+      terminate();
+      for (const { i } of [...pending]) settle(i, { timeout: totalMs });
+      return;
+    }
+    const wait = Math.min(stepMs, left);
+    stepTimer = setTimeout(() => {
+      if (Date.now() - started >= totalMs) {
+        terminate();
+        for (const { i } of [...pending]) settle(i, { timeout: totalMs });
+      } else {
+        failHead({ timeout: wait });
+      }
+    }, wait);
+  };
+  const launch = () => {
+    if (stopped || pending.length === 0) return;
+    let w;
+    try {
+      w = new Worker(FILTER_SCRIPT, {
+        workerData: {
+          raw,
+          entries: pending.map(({ i, guard }) => ({ i, url: pathToFileURL(join(hooksDir, guard.file)).href })),
+        },
+        // Escrita solta de um import não corrompe o JSON do despachante.
+        stdout: true,
+        stderr: false,
+      });
+      w.stdout.resume();
+    } catch (err) {
+      for (const { i } of [...pending]) settle(i, { error: `não abriu a Worker de filtros (${err?.message ?? err})` });
+      return;
+    }
+    worker = w;
+    w.on("message", (m) => {
+      if (worker !== w) return;
+      if (m?.error !== undefined) settle(m.i, { error: String(m.error) });
+      else settle(m?.i, { applies: m?.applies === true });
+      if (pending.length > 0) arm();
+      else terminate();
+    });
+    w.on("error", (err) => worker === w && failHead({ error: `Worker de filtros falhou (${err?.message ?? err})` }));
+    w.on("exit", () => worker === w && failHead({ error: "filtro saiu sem resposta" }));
+    arm();
+  };
+
+  launch();
+  return {
+    results,
+    stop: () => {
+      stopped = true;
+      terminate();
+    },
+  };
+}
+
+/**
+ * Guard em processo próprio, só quando o filtro dele diz que se aplica.
+ * `filterResult` é a promessa de `startFilters` para este guard. O teto do
+ * guard (`timeoutMs`) conta a partir do spawn do CLI; o filtro tem o teto
+ * dele (#14302). Filtro que não decide a tempo é tratado como filtro que
+ * lançou: com `onFilterError: "run"` o CLI roda por precaução (fail-closed).
+ */
+function runSpawnIfApplies(guard, raw, payloadError, hooksDir, filterResult) {
   let child;
   let stopped = false;
   let timer;
@@ -288,13 +424,12 @@ function runSpawnIfApplies(guard, raw, payloadError, hooksDir) {
       const notices = [filterNotice, value.notice].filter(Boolean);
       resolve({ out: value.out, notice: notices.length > 0 ? notices.join("\n") : undefined });
     };
-    // Um teto único cobre import, filtro e CLI (#14302).
-    timer = setTimeout(() => {
-      stop();
-      finish({ out: "", notice: notice(guard.file, `passou de ${guard.timeoutMs} ms`) });
-    }, guard.timeoutMs);
     const runCli = () => {
       if (stopped || settled) return;
+      timer = setTimeout(() => {
+        stop();
+        finish({ out: "", notice: notice(guard.file, `passou de ${guard.timeoutMs} ms`) });
+      }, guard.timeoutMs);
       try {
         child = spawn(process.execPath, [join(hooksDir, guard.file)], {
           stdio: ["pipe", "pipe", "inherit"],
@@ -313,41 +448,23 @@ function runSpawnIfApplies(guard, raw, payloadError, hooksDir) {
       child.stdin.on("error", () => {});
       child.stdin.end(raw);
     };
-    const filterFailed = (error) => {
+    const filterFailed = (what) => {
       const run = guard.onFilterError === "run";
-      filterNotice = notice(guard.file, `filtro lançou (${error})${run ? ", guard rodado por precaução" : ""}`);
+      filterNotice = notice(guard.file, `${what}${run ? ", guard rodado por precaução" : ""}`);
       if (run) runCli();
       else finish({ out: "" });
     };
-    if (payloadError !== null) {
+    if (payloadError !== null || !filterResult) {
       if (guard.onFilterError === "run") runCli();
       else finish({ out: "" });
     } else {
-      // Processo, não Worker: até import preso em I/O nativo pode ser morto.
-      let filter;
-      let answered = false;
-      const answer = (message) => {
-        if (answered || settled || stopped) return;
-        answered = true;
-        killProcessTree(filter);
-        if (message.error !== undefined) filterFailed(message.error);
-        else if (message.applies === true) runCli();
+      filterResult.then((res) => {
+        if (settled || stopped) return;
+        if (res.timeout !== undefined) filterFailed(`filtro não decidiu em ${res.timeout} ms`);
+        else if (res.error !== undefined) filterFailed(`filtro lançou (${res.error})`);
+        else if (res.applies === true) runCli();
         else finish({ out: "" });
-      };
-      try {
-        filter = child = spawn(process.execPath, [join(HOOK_DIR, "pretooluse-bash-dispatch-filter.mjs"), pathToFileURL(join(hooksDir, guard.file)).href], {
-          stdio: ["pipe", "ignore", "inherit", "ipc"],
-          windowsHide: true,
-          detached: process.platform !== "win32",
-        });
-        filter.on("message", answer);
-        filter.on("error", (err) => answer({ error: err.message }));
-        filter.on("close", () => answer({ error: "filtro saiu sem resposta" }));
-        filter.stdin.on("error", () => {});
-        filter.stdin.end(raw);
-      } catch (err) {
-        answer({ error: err?.message ?? String(err) });
-      }
+      });
     }
   });
   return { done, stop };
@@ -361,7 +478,11 @@ function runSpawnIfApplies(guard, raw, payloadError, hooksDir) {
  * guard ainda pendente numa saída antecipada ficam `""`). Os pendentes são
  * encerrados antes de resolver.
  */
-export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
+export function runGuards(
+  raw,
+  { guards = GUARDS, hooksDir = HOOK_DIR, filterStepMs = FILTER_STEP_TIMEOUT_MS, filterTotalMs = FILTER_TOTAL_TIMEOUT_MS } = {},
+) {
+  // Parse só para detectar stdin inválido; cada filtro faz o próprio parse.
   let payloadError = null;
   try {
     JSON.parse(raw || "{}");
@@ -371,9 +492,17 @@ export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
   const outputs = new Array(guards.length).fill("");
   const noticesByGuard = new Array(guards.length).fill(null);
   const settled = new Array(guards.length).fill(false);
-  const runs = guards.map((g) =>
+  const filterEntries =
+    payloadError === null
+      ? guards.flatMap((guard, i) => (guard.mode === "spawn-if-applies" ? [{ i, guard }] : []))
+      : [];
+  const filters =
+    filterEntries.length > 0
+      ? startFilters(filterEntries, raw, hooksDir, { stepMs: filterStepMs, totalMs: filterTotalMs })
+      : null;
+  const runs = guards.map((g, i) =>
     g.mode === "spawn-if-applies"
-      ? runSpawnIfApplies(g, raw, payloadError, hooksDir)
+      ? runSpawnIfApplies(g, raw, payloadError, hooksDir, filters?.results.get(i))
       : runInWorker(g, raw, hooksDir),
   );
   return new Promise((resolve) => {
@@ -381,6 +510,7 @@ export function runGuards(raw, { guards = GUARDS, hooksDir = HOOK_DIR } = {}) {
     const conclude = (early) => {
       if (resolved) return;
       resolved = true;
+      filters?.stop();
       for (const [i, r] of runs.entries()) if (!settled[i]) r.stop();
       const notices = noticesByGuard.filter(Boolean);
       if (payloadError !== null) notices.unshift(notice("stdin", `não é JSON (${payloadError.message})`));

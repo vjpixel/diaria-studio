@@ -25,6 +25,16 @@ export interface GuardRun {
 
 export const GUARDS: readonly DispatchGuard[];
 export const STARTUP_MARGIN_MS: number;
+export const FILTER_STEP_TIMEOUT_MS: number;
+export const FILTER_TOTAL_TIMEOUT_MS: number;
+export interface DispatchOptions {
+  guards?: readonly DispatchGuard[];
+  hooksDir?: string;
+  /** Teto de um passo (import + `appliesTo` de um guard) da Worker de filtros, em ms (#14302). */
+  filterStepMs?: number;
+  /** Teto da fase de filtros inteira, em ms (#14302). */
+  filterTotalMs?: number;
+}
 export function worstCaseMs(guards?: readonly DispatchGuard[]): number;
 export function combineHookOutputs(
   outputs: readonly string[],
@@ -41,6 +51,6 @@ export function killProcessTree(
 ): void;
 export function runGuards(
   raw: string,
-  opts?: { guards?: readonly DispatchGuard[]; hooksDir?: string },
+  opts?: DispatchOptions,
 ): Promise<GuardRun>;
-export function dispatch(raw: string, opts?: { guards?: readonly DispatchGuard[]; hooksDir?: string }): Promise<string>;
+export function dispatch(raw: string, opts?: DispatchOptions): Promise<string>;
