@@ -231,11 +231,13 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
       "alarma quando a task do vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição do dia depois do prazo (#11353)",
     steps: [{ key: "alarm", script: "scripts/short-related-missed-alarm.ts" }],
     logPath: "short-related-missed-alarm/.alarm.log",
-    // Diária 13:30 BRT: o slot mais tardio do teste de horário do vertical é
-    // 12:00 (`publishing.shorts.schedule`, #10831) e a task do Neo desiste
-    // 60 min depois (`SHORT_RELATED_GIVE_UP_MINUTES`) — 13:00, mais 30 min de
-    // folga pra replicação do OneDrive. O prazo exato por edição
-    // (`shortAt + 60 min`) é conferido de novo pela lógica pura; fim de
+    // Diária 13:30 BRT: o Short do YouTube sai às 06:30
+    // (`publishing.shorts.schedule.by_destination.youtube_shorts`, #12250) e a
+    // task do Neo desiste 180 min depois (`SHORT_RELATED_GIVE_UP_MINUTES`,
+    // #14369; eram 60) — 09:30, com folga pra replicação do `data/`. Edição
+    // antiga do teste rotativo com slot 12:00 tem prazo 15:00 e sai
+    // `before-deadline` às 13:30. O prazo exato por edição
+    // (`shortAt + SHORT_RELATED_GIVE_UP_MINUTES`) é conferido pela lógica pura; fim de
     // semana sai `weekend` sem alarmar. Slot livre (nenhuma task às 13:xx).
     // Só LÊ `data/editions/` — nunca grava na pasta da edição, que é do Neo.
     schedule: { kind: "daily", hour: 13, minute: 30 },

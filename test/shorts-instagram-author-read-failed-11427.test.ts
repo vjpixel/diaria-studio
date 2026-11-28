@@ -12,6 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
 import {
   decideInstagramConfirm,
   decideInstagramTimerAcrossAccounts,
@@ -19,9 +20,8 @@ import {
   instagramTimerPublishStep,
   resolveChromeAuthorReader,
   timerChromeAuthorDeps,
-  type GraphDeps,
   type InstagramConfirmDecision,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import { alarmSuppressed, interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

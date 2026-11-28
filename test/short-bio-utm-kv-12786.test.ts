@@ -31,7 +31,7 @@ import {
   planShortHorizontalLinks,
   shouldUpdateLatestVideoOnPublish,
   type ShortsPlanItem,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/_shared.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 describe("#12786 item 1: UTMs da bio no registry", () => {
@@ -87,11 +87,22 @@ describe("#12786 item 2: KV do /video só na rodada principal", () => {
   });
   it("o --publish chama o helper antes de tocar o KV", () => {
     const src = publishShortsSource();
+    // #14327: a gravação do KV mora em `updateShortVideoRedirects` (run-authorize.ts); a condição fica no
+    // `mainUnlocked`. O invariante é o mesmo: o KV só é lido/gravado por essa função, e ela só é chamada
+    // logo dentro do `if` do helper.
+    const def = src.indexOf("export async function updateShortVideoRedirects(");
+    assert.ok(def > 0, "a gravação do KV saiu da função dedicada");
+    const defEnd = src.indexOf("\n}\n", def);
+    assert.equal(src.split("pollKvFromEnv()").length, 2, "uma única leitura do KV no publisher");
+    const kv = src.indexOf("pollKvFromEnv()");
+    assert.ok(kv > def && kv < defEnd, "a leitura do KV fica dentro de updateShortVideoRedirects");
+    const calls = src.split("await updateShortVideoRedirects(").length - 1;
+    assert.equal(calls, 1, "uma única chamada da gravação do KV");
     const call = src.indexOf("if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer })");
-    const kv = src.indexOf("pollKvFromEnv()", call);
-    assert.ok(call > 0 && kv > call && kv - call < 600, "a gravação do KV não está guardada pelo helper");
+    const use = src.indexOf("await updateShortVideoRedirects(", call);
+    assert.ok(call > 0 && use > call && use - call < 400, "a gravação do KV não está guardada pelo helper");
     // #12654: rodada da edição sem destino autorizado a agir não grava o KV.
-    assert.match(src.slice(call, kv), /gatedActing === null \|\| gatedActing\.length > 0/);
+    assert.match(src.slice(call, use), /gatedActing === null \|\| gatedActing\.length > 0\)\) \{/);
   });
 });
 

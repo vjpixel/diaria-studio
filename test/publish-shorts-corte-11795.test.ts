@@ -15,16 +15,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  CORTE_FORBIDDEN_FLAGS,
-  DIARIA_HOME_URL,
-  assignShortsDestinationOwners,
-  instagramReelRouteChoice,
-  loadEditionDayGrid,
-  parseShortsCliArgs,
-  planShortsPublish,
-  prepareCorteRun,
-} from "../scripts/publish-shorts.ts";
+import { DIARIA_HOME_URL, assignShortsDestinationOwners } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { instagramReelRouteChoice } from "../scripts/publish-shorts/instagram.ts";
+import { loadEditionDayGrid } from "../scripts/publish-shorts/run-checks.ts";
+import { parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
+import { CORTE_FORBIDDEN_FLAGS, prepareCorteRun } from "../scripts/publish-shorts/corte.ts";
 import {
   CORTE_SPEC_FILE,
   corteBaseCommand,

@@ -18,7 +18,8 @@ import {
   resolveShortHorizontalTitle,
 } from "../scripts/lib/diaria/short-video.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
-import { readVerticalCta, planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
+import { readVerticalCta, readHorizontalVideoForShort } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const D1 = {

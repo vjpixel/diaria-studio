@@ -31,7 +31,7 @@ import { keepStudioWebVerticalFeed, type ShortCoverRecord } from "../scripts/lib
 import { SHORTS_PUBLISHED_FILE, type ShortPublishedEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 import { main as coverMain } from "../scripts/short-vertical-cover.ts";
 import { main as phaseMain, defaultPhaseCliDeps } from "../scripts/publica-phase.ts";
-import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts.ts";
+import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts/run-checks.ts";
 
 const ED = "261119";
 const VID = "AbCdEfGhIjK";

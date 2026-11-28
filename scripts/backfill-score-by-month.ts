@@ -39,7 +39,7 @@
 // normalizar para `.js` sem migrar o runner do repo inteiro.
 import "dotenv/config";
 import { runCli } from "./lib/cli-exit.ts";
-import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
+import { editionToMonthSlug } from "./lib/shared/poll-core.ts";
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -125,8 +125,8 @@ async function kvDelete(key: string): Promise<void> {
   }
 }
 
-// #2123: editionToMonthSlug importado da fonte canônica (workers/poll/src/lib.ts —
-// módulo puro, sem deps de runtime do Worker). A cópia local anterior divergiu
+// #2123: editionToMonthSlug importado da fonte canônica (lib/shared/poll-core.ts
+// desde o #13994, reexportada pelo Worker `poll` — módulo puro, sem deps de runtime do Worker). A cópia local anterior divergiu
 // silenciosamente no #2115; import direto elimina a classe de bug.
 
 async function main(): Promise<number | void> {

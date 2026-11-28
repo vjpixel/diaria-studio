@@ -91,9 +91,9 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import {
   notifyEditor,
-  type NotifyEditorDeps,
   type NotifySeverity,
 } from "./lib/editor-notify.ts";
+import { type ShortsTimerNotifyDeps, withEmailCredentialPreflight } from "./lib/diaria/shorts-timer-email-preflight.ts";
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import {
   INSTAGRAM_CHROME_ROUTE,
@@ -941,7 +941,7 @@ export async function alarm(
   key: InstagramTimerAlarmKey,
   reason: string,
   ctx: AlarmContext = {},
-  notifyDeps: NotifyEditorDeps = { cwd: ROOT },
+  notifyDeps: ShortsTimerNotifyDeps = { cwd: ROOT },
 ): Promise<boolean> {
   const statePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
@@ -967,7 +967,10 @@ export async function alarm(
     ...(ctx.selection ? { selection: ctx.selection } : {}),
   });
   const res = await notifyEditor(
-    { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${id}`, severity: alarmSeverity(key), family: "evento", subject, body, forceEmail },
+    withEmailCredentialPreflight(
+      { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${id}`, severity: alarmSeverity(key), family: "evento", subject, body, forceEmail },
+      notifyDeps,
+    ),
     notifyDeps,
   );
   const delivery = alarmDelivery(res);
@@ -994,7 +997,7 @@ export interface InstagramTimerRunDeps {
   lookupGenericVertical: () => InstagramCutLookup;
   /** Roda `npx tsx <args>` (o publish-shorts). */
   runScript: (args: string[]) => { status: number | null; stdout: string; stderr: string };
-  notify: NotifyEditorDeps;
+  notify: ShortsTimerNotifyDeps;
   /** #11389: duração (s) de um MP4 do disco; null = ilegível. Ausente = lê o arquivo (`mp4DurationSeconds`). */
   videoDurationSeconds?: (path: string) => number | null;
   /**

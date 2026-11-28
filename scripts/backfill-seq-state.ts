@@ -63,7 +63,7 @@
 // (tsx). Ver o mesmo comentário em backfill-score-by-month.ts.
 import "dotenv/config";
 import { runCli } from "./lib/cli-exit.ts";
-import { editionToMonthSlug, todayAammddBrt } from "../workers/poll/src/lib.ts";
+import { editionToMonthSlug, todayAammddBrt } from "./lib/shared/poll-core.ts";
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;

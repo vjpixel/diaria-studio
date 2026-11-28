@@ -43,7 +43,12 @@ import {
 } from "../scripts/lib/diaria/video-publish-authorization.ts";
 import { main as authorizeMain } from "../scripts/video-publish-authorize.ts";
 import { main as registryStatusMain } from "../scripts/video-publish-registry-status.ts";
-import { buildShortsPlanManifest, planShortsPublish, shortsMainPublishCommand, shortsRunDestinations } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import {
+  buildShortsPlanManifest,
+  shortsMainPublishCommand,
+  shortsRunDestinations,
+} from "../scripts/publish-shorts/run.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 

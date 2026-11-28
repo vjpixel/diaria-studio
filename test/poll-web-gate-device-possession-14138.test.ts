@@ -49,7 +49,7 @@ function makeMapKV(initial: Record<string, string> = {}) {
 
 async function setup() {
   const worker = (await import("../workers/poll/src/index.ts")).default;
-  const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+  const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
   const subKey = await subscriberKvKey(VICTIM);
   // V já tem ranking sob o e-mail (é o que faz o identify cair no caminho
   // órfão e mandar o link mágico).
@@ -155,7 +155,7 @@ describe("#14138: prova de posse do gate amarrada ao dispositivo", () => {
     const { nonceCookie, token } = await victimRequestsLink(worker, env, pollKv);
     await worker.fetch(new Request(`https://poll.test/confirm-merge?token=${token}&brand=web`), env as never);
 
-    const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
+    const { subscriberKvKey } = await import("../scripts/lib/shared/subscriber-verify.ts");
     const other = "outra-pessoa@example.com";
     await (env.SUBSCRIBERS_KV as unknown as { put: (k: string, v: string) => Promise<void> }).put(await subscriberKvKey(other), "1");
     const s = await gateVerify(worker, env, other, nonceCookie);

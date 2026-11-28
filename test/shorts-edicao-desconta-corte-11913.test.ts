@@ -21,9 +21,11 @@ import {
   INSTAGRAM_CAPTION_FORMAT_MARKER,
   instagramTimerGate,
   readAndDecideInstagramConfirm,
+} from "../scripts/publish-shorts/instagram-confirm.ts";
+import {
   sameDayCorteRegisteredIds,
   threadsProfilePreflightInput,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/confirm.ts";
 import { threadsProfilePreflight, type ThreadsPersonalCreds } from "../scripts/lib/threads-personal-video.ts";
 import { persistShortEntry } from "../scripts/lib/diaria/shorts-published-store.ts";
 import { resolveEditionScheduledAt } from "../scripts/lib/edition-scheduled-at.ts";

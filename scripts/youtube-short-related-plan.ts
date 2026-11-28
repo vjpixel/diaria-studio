@@ -8,8 +8,8 @@
  * com o Claude in Chrome no YouTube Studio
  * (`.claude/skills/diaria-publica-video/short-related-task.md`). Este script
  * só (1) resolve os IDs do horizontal e do Short, (2) confere pela API que o
- * horizontal está PÚBLICO (#573, `resolveYouTubeState`) e lê o título dele e
- * (3) devolve a ação (`link` | `wait` | `skip` | `alert`). Lógica pura em
+ * horizontal está PÚBLICO (#573, `resolveYouTubeState`) e lê o título dele,
+ * (3) confere que o Short também está público (#14369) e (4) devolve a ação (`link` | `wait` | `skip` | `alert`). Lógica pura em
  * `scripts/lib/diaria/youtube-short-related.ts`.
  *
  * Fontes dos IDs, nesta ordem:
@@ -165,7 +165,7 @@ async function computePlan(aammdd: string, dir: string, now: Date): Promise<Shor
     record,
   };
   if (!isWeekdayEdition(aammdd) || !editionExists || common.noVideo || !common.videoEvidence.hasEvidence) {
-    return decideShortRelatedPlan({ ...common, horizontal: null, short: null, horizontalState: null });
+    return decideShortRelatedPlan({ ...common, horizontal: null, short: null, horizontalState: null, shortState: null });
   }
 
   const resolveErrors: string[] = [];
@@ -189,7 +189,7 @@ async function computePlan(aammdd: string, dir: string, now: Date): Promise<Shor
   if (creds.overridden.length) console.error(`[premissa] ${creds.overridden.join(", ")} do .env do repo vencem o ambiente (#8237)`);
   if (!creds.credentials) {
     return decideShortRelatedPlan({
-      ...common, horizontal, short, horizontalState: null, resolveError,
+      ...common, horizontal, short, horizontalState: null, shortState: null, resolveError,
       stateError: `credenciais do YouTube ausentes (${creds.missing.join(", ")})`, stateErrorKind: "permanent",
     });
   }
@@ -197,6 +197,7 @@ async function computePlan(aammdd: string, dir: string, now: Date): Promise<Shor
   const deps = defaultYouTubeUploadDeps;
   let horizontalState: PublishState | null = null;
   let horizontalTitle: string | null = null;
+  let shortState: PublishState | null = null;
   let stateError: string | null = null;
   try {
     const token = await refreshYouTubeAccessToken(deps, { ...creds.credentials, channelId: DIARIA_YOUTUBE_CHANNEL_ID });
@@ -227,10 +228,17 @@ async function computePlan(aammdd: string, dir: string, now: Date): Promise<Shor
         }
       }
     }
+    // #14369: o vínculo só sai com o Short confirmado público pela API.
+    // Sem o vídeo na resposta, o estado fica `null` (não conferido) e o plano espera.
+    if (short && horizontalState === "published") {
+      const shortStatus = await fetchVideoStatus(deps, token, short.id);
+      if (shortStatus) shortState = resolveYouTubeState({ status: shortStatus }, now);
+      else console.error(`[aviso] a API não devolveu o Short ${short.id} (ainda não subiu, removido, ou de outro canal)`);
+    }
   } catch (e) {
     stateError = (e as Error).message;
   }
-  return decideShortRelatedPlan({ ...common, horizontal, short, horizontalState, horizontalTitle, stateError, resolveError });
+  return decideShortRelatedPlan({ ...common, horizontal, short, horizontalState, horizontalTitle, shortState, stateError, resolveError });
 }
 
 function print(obj: Record<string, unknown>, json: boolean): void {

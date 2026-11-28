@@ -17,7 +17,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VERTICAL_COMMENT_CTA_LINE, resolveVerticalBioCta } from "../scripts/lib/diaria/short-video.ts";
 import { validarRoteiroFalas } from "../scripts/lib/diaria/roteiro-gravacao.ts";
-import { planShortsPublish, readHorizontalVideoForShort, readVerticalCta, verticalBioCtaFromHorizontal } from "../scripts/publish-shorts.ts";
+import {
+  readHorizontalVideoForShort,
+  readVerticalCta,
+  verticalBioCtaFromHorizontal,
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const D1 = {

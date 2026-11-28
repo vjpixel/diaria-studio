@@ -17,7 +17,9 @@ import {
 } from "../scripts/lib/diaria/short-published-update.ts";
 import { updatePublishedVideoText } from "../scripts/lib/diaria/youtube-upload.ts";
 import { updatePersonalPostCommentary } from "../scripts/lib/linkedin-personal.ts";
-import { parseShortsCliArgs, updateFacebookPublishedVideoText, updatePublishedArgsError, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { updateFacebookPublishedVideoText, type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
+import { updatePublishedArgsError } from "../scripts/publish-shorts/update-published.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

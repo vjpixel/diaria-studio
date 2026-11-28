@@ -29,17 +29,16 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  SHORTS_BOOLEAN_FLAGS,
   assignShortsDestinationOwners,
   canonicalShortsEditionDir,
   checkEditionDir,
   nonCanonicalEditionDir,
   ownersContextAfterPublish,
-  parseShortsCliArgs,
-  planShortsPublish,
-  prepareCorteRun,
   type ShortsPlanInput,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { SHORTS_BOOLEAN_FLAGS, parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
+import { prepareCorteRun } from "../scripts/publish-shorts/corte.ts";
 import { ALLOW_UNWATCHED_DIR_FLAG, CORTE_SPEC_FILE, checkCorteDir, corteBaseCommand, realpathLenient, shellQuote } from "../scripts/lib/diaria/short-corte.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

@@ -8,7 +8,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { instagramConfirmExpectedCollabs, instagramTimerAlreadyCollabWarnings, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import {
+  instagramConfirmExpectedCollabs,
+  instagramTimerAlreadyCollabWarnings,
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import { interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 

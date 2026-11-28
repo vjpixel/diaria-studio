@@ -16,9 +16,9 @@ import {
   SHORTS_TIMER_TASKS,
   THREADS_TIMER_DETAIL,
   assignShortsDestinationOwners,
-  planShortsPublish,
   type ShortsPlanItem,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

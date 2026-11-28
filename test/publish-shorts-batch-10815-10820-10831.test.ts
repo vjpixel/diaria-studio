@@ -17,16 +17,18 @@ import {
   loadShortScheduleConfig,
   resolveShortTime,
 } from "../scripts/lib/diaria/short-video.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import {
   checkInstagramCollaborators,
-  planShortsPublish,
-  publishFacebookReel,
   publishInstagramReel,
   resolveInstagramAuthor,
-  uploadFacebookVideoResumable,
   wantsInstagram,
+} from "../scripts/publish-shorts/instagram.ts";
+import {
+  publishFacebookReel,
+  uploadFacebookVideoResumable,
   type GraphDeps,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/facebook.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 // #10998: janela do cenário, independente do default e da config de produção.

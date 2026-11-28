@@ -11,7 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { planShortsPublish } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import type { ScheduledSlot } from "../scripts/lib/social-slot-planner.ts";
 

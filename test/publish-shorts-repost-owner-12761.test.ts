@@ -12,12 +12,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   LINKEDIN_TIMER_DETAIL,
-  PROFILE_REPOST_CHAIN_MAX_MS,
   assignShortsDestinationOwners,
-  isProfileRepostChainStale,
-  planShortsPublish,
   type ShortsPlanItem,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import {
+  PROFILE_REPOST_CHAIN_MAX_MS,
+  isProfileRepostChainStale,
+} from "../scripts/publish-shorts/linkedin.ts";
 import { LINKEDIN_REPOST_MIN_DELAY_MINUTES } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

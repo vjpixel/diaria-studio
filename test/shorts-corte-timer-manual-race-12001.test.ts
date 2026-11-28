@@ -17,13 +17,12 @@ import {
   decideCorteTimerRun,
   runCorteTimerFor,
 } from "../scripts/shorts-corte-timer.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import {
   corteManualTimerDestinations,
   corteTimerLockBusyError,
-  planShortsPublish,
-  prepareCorteRun,
-  recordCortePublishAuthorization,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/run-checks.ts";
+import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts/corte.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_INTERVAL_MS, CORTE_TIMER_LOCK_FILE, parseCorteSpec, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
 import { markShortSending, type ShortSendingMark } from "../scripts/lib/diaria/shorts-sending-marker.ts";

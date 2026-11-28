@@ -30,7 +30,11 @@ import {
   type ScheduledSlot,
 } from "../scripts/lib/social-slot-planner.ts";
 import { planShortSlots, shortDestinationAlsoAccounts, type ShortDestination } from "../scripts/lib/diaria/short-video.ts";
-import { loadScheduledGrid, loadWorkerQueueForGrid, WORKER_QUEUE_LIST_TIMEOUT_MS } from "../scripts/publish-shorts.ts";
+import {
+  loadScheduledGrid,
+  loadWorkerQueueForGrid,
+  WORKER_QUEUE_LIST_TIMEOUT_MS,
+} from "../scripts/publish-shorts/run-checks.ts";
 
 const at = (date: string, hhmm: string) => new Date(`${date}T${hhmm}:00-03:00`).toISOString();
 const hhmm = (iso: string | null) => (iso ? new Date(Date.parse(iso) - 3 * 3_600_000).toISOString().slice(11, 16) : null);

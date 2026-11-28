@@ -31,7 +31,10 @@ import {
   shortVideoFileName,
   upsertShortEntry,
 } from "../scripts/lib/diaria/short-video.ts";
-import { parseMarkArg, planShortsPublish, publishFacebookReel, publishInstagramReel, resolveInstagramAuthor, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { publishInstagramReel, resolveInstagramAuthor } from "../scripts/publish-shorts/instagram.ts";
+import { publishFacebookReel, type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { parseMarkArg } from "../scripts/publish-shorts/run-checks.ts";
 import { matchPages } from "../scripts/facebook-page-token-setup.ts";
 import { loadFacebookPagesConfig, type ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

@@ -21,14 +21,13 @@ import {
   planLinkedInRepostSlot,
   upsertShortEntry,
 } from "../scripts/lib/diaria/short-video.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import {
   blockRepostOnProfileFailure,
-  buildMarkEntry,
-  parseMarkArg,
-  planShortsPublish,
-  prepareBufferItem,
   publishLinkedInProfileVideo,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/linkedin.ts";
+import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts/run-checks.ts";
+import { prepareBufferItem } from "../scripts/publish-shorts/buffer.ts";
 import { postVideoToPersonalProfile, validateUploadInstructions, LINKEDIN_VIDEOS_FINALIZE_URL, LINKEDIN_VIDEOS_INIT_URL } from "../scripts/lib/linkedin-video.ts";
 import { LINKEDIN_POSTS_URL } from "../scripts/lib/linkedin-personal.ts";
 import { gridFromLinkedInPersonalIntent, gridFromShortsPublished, type ScheduledSlot } from "../scripts/lib/social-slot-planner.ts";
