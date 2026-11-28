@@ -57,6 +57,14 @@ export async function sendMail(env: Env, subject: string, body: string): Promise
 export async function check(env: Env, storage: Storage, now = Date.now(), mail = sendMail): Promise<void> {
   const raw = await env.OPS_STATE.get(HEARTBEAT_KEY);
   const status = classifyHeartbeat(raw, now);
+  let heartbeatError: unknown = null;
+  try { await checkHeartbeat(env, storage, raw, status, now, mail); } catch (e) { heartbeatError = e; }
+  // #14368: probes only mean something on a fresh beat; a stale/absent one is already the
+  // outage alarm above. Run even when the heartbeat branch threw, then surface that error.
+  if (status === 'fresco') await checkProbes(env, storage, raw!, mail);
+  if (heartbeatError) throw heartbeatError;
+}
+async function checkHeartbeat(env: Env, storage: Storage, raw: string | null, status: ReturnType<typeof classifyHeartbeat>, now: number, mail: typeof sendMail): Promise<void> {
   let state = await storage.get<State>('state') ?? {downSince: null, notified: false};
   if (status !== 'fresco') {
     if (!state.downSince) {
@@ -85,6 +93,77 @@ export async function check(env: Env, storage: Storage, now = Date.now(), mail =
     await recoveryMail(env, state.recoveryPending, mail);
     await storage.put('state', {...state, recoveryPending: null});
   }
+}
+/**
+ * #14368: partial network loss on the 300. The heartbeat carries `probes: {github, r2}`
+ * (`scripts/infra-300-heartbeat.ts`); a probe that fails on PROBE_FAIL_BEATS consecutive
+ * beats sends one e-mail (Gmail via the Worker, so it does not depend on the GitHub or on the
+ * 300's own network), and one "voltou" when it answers again. Beats are counted by distinct
+ * heartbeat timestamps, never by cron runs, so a beat read twice counts once. A heartbeat
+ * without `probes` (older script) or a probe in `sem-config` never alarms and never resets.
+ */
+export const PROBE_NAMES = ['github', 'r2'] as const;
+export type ProbeName = typeof PROBE_NAMES[number];
+export const PROBE_FAIL_BEATS = 3;
+export const PROBE_LABELS: Record<ProbeName, string> = {github: 'api.github.com', r2: 'endpoint S3 do R2'};
+export type ProbeVerdict = 'ok' | 'falha' | 'sem-sinal';
+export function readProbes(raw: string): Record<ProbeName, {verdict: ProbeVerdict; detail: string}> {
+  let probes: Record<string, {status?: unknown; error?: unknown; http?: unknown}> = {};
+  try { const value = JSON.parse(raw); if (value && typeof value.probes === 'object' && value.probes) probes = value.probes; } catch { /* classifyHeartbeat already rejected it */ }
+  const out = {} as Record<ProbeName, {verdict: ProbeVerdict; detail: string}>;
+  for (const name of PROBE_NAMES) {
+    const p = probes[name];
+    const verdict: ProbeVerdict = p?.status === 'ok' ? 'ok' : p?.status === 'falha' ? 'falha' : 'sem-sinal';
+    out[name] = {verdict, detail: verdict === 'falha' ? String(p?.error ?? 'erro desconhecido').slice(0, 200) : verdict === 'ok' ? `HTTP ${String(p?.http)}` : ''};
+  }
+  return out;
+}
+interface ProbeState {
+  lastBeat: string | null;
+  failBeats: number;
+  since: string | null;
+  notified: boolean;
+  recoveryPending: {since: string; recoveredAt: string} | null;
+}
+const emptyProbe = (): ProbeState => ({lastBeat: null, failBeats: 0, since: null, notified: false, recoveryPending: null});
+async function checkProbes(env: Env, storage: Storage, raw: string, mail: typeof sendMail): Promise<void> {
+  const beat = JSON.parse(raw).timestamp as string;
+  const probes = readProbes(raw);
+  const all = await storage.get<Record<ProbeName, ProbeState>>('probes') ?? {} as Record<ProbeName, ProbeState>;
+  for (const name of PROBE_NAMES) {
+    const st = {...emptyProbe(), ...all[name]};
+    if (st.lastBeat !== beat) {
+      const {verdict} = probes[name];
+      if (verdict === 'falha') {
+        st.failBeats += 1;
+        st.since ??= beat;
+      } else if (verdict === 'ok') {
+        // Close the episode before mailing (#14136 pattern): a failing "voltou" is retried alone.
+        if (st.notified && st.since) st.recoveryPending = {since: st.since, recoveredAt: beat};
+        st.failBeats = 0; st.since = null; st.notified = false;
+      }
+      st.lastBeat = beat;
+    }
+    all[name] = st;
+  }
+  await storage.put('probes', all);
+  const errors: unknown[] = [];
+  for (const name of PROBE_NAMES) {
+    const st = all[name];
+    try {
+      if (st.recoveryPending) {
+        await mail(env, `[infra] 300 voltou a acessar ${PROBE_LABELS[name]}`, `Sonda ${name} respondeu de novo. Falha desde ${st.recoveryPending.since}. Retorno: ${st.recoveryPending.recoveredAt}.`);
+        all[name] = {...st, recoveryPending: null};
+        await storage.put('probes', all);
+      }
+      if (!all[name].notified && all[name].failBeats >= PROBE_FAIL_BEATS) {
+        await mail(env, `[infra] 300 sem acesso a ${PROBE_LABELS[name]}`, `O heartbeat do 300 segue chegando, mas a sonda ${name} falhou em ${all[name].failBeats} batidas seguidas, desde ${all[name].since}. Último erro: ${probes[name].detail}. Queda parcial de rede: alarmes que dependem dessa saída podem não abrir.`);
+        all[name] = {...all[name], notified: true};
+        await storage.put('probes', all);
+      }
+    } catch (e) { errors.push(e); }
+  }
+  if (errors.length) throw errors[0];
 }
 export class InfraWatchdog {
   constructor(private state: {storage: Storage; blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>}, private env: Env) {}
