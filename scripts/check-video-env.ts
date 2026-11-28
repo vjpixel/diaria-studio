@@ -227,8 +227,10 @@ export function explicitDriveRoot(flag: string | undefined, env: string | undefi
 /**
  * #13740: no modo local, os brutos soltos da pasta da edição (os candidatos do
  * `transcribe`, `pickRawSource`) estão inteiros e locais? Mesmo critério do
- * `transcribe`/`inventory` (`checkBrutosLocal`): atributo de nuvem no Windows e
- * tamanho estável. Pasta sem bruto = ok (o bruto ainda não chegou).
+ * `transcribe`/`inventory` (`checkBrutosLocal`): atributo de nuvem no Windows,
+ * tamanho estável e leitura cronometrada do início e do fim (o Drive for
+ * desktop não expõe atributo de nuvem). Pasta sem bruto = ok (o bruto ainda
+ * não chegou).
  */
 export function localBrutoProbe(dir: string, deps: BrutoLocalDeps = defaultBrutoLocalDeps(), opts: { settleMs?: number } = {}): MontageProbe {
   let files: Array<{ name: string; size: number }>;
@@ -248,7 +250,11 @@ export function localBrutoProbe(dir: string, deps: BrutoLocalDeps = defaultBruto
       fix: "esperar a cópia ou o Drive for desktop terminar (botão direito > Disponibilizar off-line), ou copiar o bruto para uma raiz local (--drive-root)",
     };
   }
-  return { ok: true, detail: `${paths.length} bruto(s) inteiro(s) e local(is)${check.attributesUnread ? " (atributo de nuvem não lido: só o tamanho conferido)" : ""}` };
+  const notes = [
+    ...(check.attributesUnread ? ["atributo de nuvem não lido"] : []),
+    ...(check.readUnchecked ? ["leitura cronometrada não rodou, conteúdo não conferido"] : []),
+  ];
+  return { ok: true, detail: `${paths.length} bruto(s) inteiro(s) e local(is)${notes.length ? ` (${notes.join("; ")})` : ""}` };
 }
 
 async function probeDrive(edition: string | undefined, driveRootFlag?: string): Promise<DriveProbe> {
