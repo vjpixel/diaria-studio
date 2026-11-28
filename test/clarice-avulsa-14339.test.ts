@@ -47,6 +47,7 @@ import {
   renderAvulsaCampaignsNote,
   aggregateByWeekday,
   billingCycleWindow,
+  renderCouponTabPanel,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 const BF_NAME = "Clarice Black Friday 2026 (NEWS65) — elegíveis";
@@ -255,6 +256,16 @@ describe("cupons: NEWS65 monitorado, BLACKFRIDAY60 só comparação (#14339)", (
     assert.equal(isCouponExpired("NEWS65", new Date("2026-12-01T02:59:00Z")), false);
     assert.equal(isCouponExpired("NEWS65", new Date("2026-12-01T03:00:00Z")), true);
     assert.equal(isCouponExpired("NEWS50", new Date("2030-01-01T00:00:00Z")), false);
+  });
+
+  it("aba Cupons rotula NEWS65 como expirado depois do prazo, sem tirar o histórico", () => {
+    const entry = { couponIds: [], timesRedeemed: 0, rowCount: 0, totalProjectedDiscountCents: 0, redemptions: [] };
+    const report: CouponUsageReport = { NEWS65: entry, NEWS50: entry };
+    const before = renderCouponTabPanel(report, new Date("2026-11-30T12:00:00Z"));
+    assert.doesNotMatch(before, /coupon-expired-note/);
+    const after = renderCouponTabPanel(report, new Date("2026-12-02T12:00:00Z"));
+    assert.match(after, /coupon-expired-note">NEWS65 expirado em 30\/11\/2026\. Histórico/);
+    assert.doesNotMatch(after, /NEWS50 expirado/);
   });
 
   it("fetchCouponUsage busca os códigos pedidos (default = TARGET_CODES, sem comparação)", async () => {
