@@ -63,7 +63,8 @@ import { hhmmBrt } from "./lib/shared/brt.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
-import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
+import { notifyEditor, type NotifySeverity } from "./lib/editor-notify.ts";
+import { type ShortsTimerNotifyDeps, withEmailCredentialPreflight } from "./lib/diaria/shorts-timer-email-preflight.ts";
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import {
   SHORTS_PUBLISHED_FILE,
@@ -424,7 +425,7 @@ export async function linkedinAlarm(
   key: LinkedinTimerAlarmKey,
   reason: string,
   at: string,
-  notifyDeps: NotifyEditorDeps = { cwd: ROOT },
+  notifyDeps: ShortsTimerNotifyDeps = { cwd: ROOT },
   drive: { selection?: string; videoSelection?: string } = {},
 ): Promise<boolean> {
   const statePath = join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE);
@@ -435,7 +436,10 @@ export async function linkedinAlarm(
   }
   const { subject, body } = buildLinkedinTimerAlarm({ aammdd, key, reason, at, ...drive });
   const res = await notifyEditor(
-    { check: "shorts-linkedin-timer", fingerprint: `${aammdd}:${key}`, severity: linkedinAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, key) },
+    withEmailCredentialPreflight(
+      { check: "shorts-linkedin-timer", fingerprint: `${aammdd}:${key}`, severity: linkedinAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, key) },
+      notifyDeps,
+    ),
     notifyDeps,
   );
   const delivery = alarmDelivery(res);
@@ -469,7 +473,7 @@ export interface LinkedinTimerRunDeps {
   now: Date;
   /** Roda `npx tsx <args>`; `capture` devolve o stdout (o fetch-drive-video). */
   runScript: (args: string[], capture: boolean) => { status: number | null; stdout: string };
-  notify: NotifyEditorDeps;
+  notify: ShortsTimerNotifyDeps;
   /**
    * #11911: `data/cortes` do repo. Presente = toda execução também vigia os
    * cortes avulsos sem dono deste destino (`watchCortesWithoutOwner`). Ausente

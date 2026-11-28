@@ -100,7 +100,8 @@ import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
-import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
+import { notifyEditor, type NotifySeverity } from "./lib/editor-notify.ts";
+import { type ShortsTimerNotifyDeps, withEmailCredentialPreflight } from "./lib/diaria/shorts-timer-email-preflight.ts";
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile, type ShortPublishedEntry } from "./lib/diaria/short-video.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_DESTINATIONS, CORTE_TIMER_LOCK_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
@@ -738,7 +739,7 @@ export async function corteAlarm(
   destination: string,
   key: CorteTimerAlarmKey,
   reason: string,
-  notifyDeps: NotifyEditorDeps,
+  notifyDeps: ShortsTimerNotifyDeps,
   variant?: string,
 ): Promise<boolean> {
   const statePath = join(dir, CORTE_TIMER_ALARM_STATE_FILE);
@@ -751,7 +752,10 @@ export async function corteAlarm(
   }
   const { subject, body } = buildCorteTimerAlarm({ spec, destination, key, reason });
   const res = await notifyEditor(
-    { check: "shorts-corte-timer", fingerprint: `${spec.slug}:${id}`, severity: corteAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, id) },
+    withEmailCredentialPreflight(
+      { check: "shorts-corte-timer", fingerprint: `${spec.slug}:${id}`, severity: corteAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, id) },
+      notifyDeps,
+    ),
     notifyDeps,
   );
   const delivery = alarmDelivery(res);
@@ -774,7 +778,7 @@ export interface CorteTimerRunDeps {
   now: Date;
   /** Roda `npx tsx <args>` (o publish-shorts). `timedOut` (#11966): morto pelo teto. */
   runScript: (args: string[]) => CorteTimerChildRun;
-  notify: NotifyEditorDeps;
+  notify: ShortsTimerNotifyDeps;
   /** Teste: troca o alarme real (notifyEditor). `variant`: ver `corteAlarmId`. */
   alarm?: (dir: string, spec: CorteSpec, destination: string, key: CorteTimerAlarmKey, reason: string, variant?: string) => Promise<boolean>;
   /**

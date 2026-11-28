@@ -124,7 +124,7 @@ export interface ShortRelatedMissedEvaluation {
   /**
    * #13571: quando o Short foi ao ar (registro do vertical: `scheduled_at`,
    * senão `at`), se DEPOIS do prazo da task do Neo. A task roda uma vez por dia
-   * (06:05 BRT) e desiste em `shortAt + 60 min`; um Short publicado depois
+   * (06:05 BRT) e desiste em `shortAt + SHORT_RELATED_GIVE_UP_MINUTES` (180 min desde o #14369); um Short publicado depois
    * disso nunca é vinculado por ela, e a falta de registro não é atraso de
    * replicação. `null` = no horário, ou sem horário para comparar.
    */
