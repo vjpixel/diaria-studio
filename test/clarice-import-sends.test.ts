@@ -333,6 +333,35 @@ describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia 
       await assert.rejects(() => importOneSend(client, sendPlan, { folderId: 1, poll: noSleep }), /perdido\(s\) em/);
     });
 
+    // #14406 — CSV com as cópias do editor e 1 leitor real em blacklist
+    // global: o leitor é membro da lista (passa no diff) e fica fora da
+    // contagem. Sem o check do #4764 o delta 1 era atribuído à cópia do editor.
+    it("#14406: 1 leitor em blacklist (delta === totalBlacklisted) → supressão do #4764, nunca culpa a cópia do editor", async () => {
+      const logs: string[] = [];
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: sendPlan.sentCount - 1, totalBlacklisted: 1 }),
+        listContactEmails: async () => extractCsvEmails(csv),
+      });
+      const result = await importOneSend(client, sendPlan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      assert.equal(result.count, sendPlan.sentCount - 1);
+      const joined = logs.join("\n");
+      assert.match(joined, /suprimido\(s\) por blacklist administrativo/);
+      assert.doesNotMatch(joined, /cópia\(s\) do editor/);
+    });
+
+    it("#14406: delta sem seed fora da lista e sem bater a blacklist → segue, mas com causa não identificada", async () => {
+      const logs: string[] = [];
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: sendPlan.sentCount - 1, totalBlacklisted: 0 }),
+        listContactEmails: async () => extractCsvEmails(csv),
+      });
+      await importOneSend(client, sendPlan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      const joined = logs.join("\n");
+      assert.match(joined, /causa NÃO identificada/);
+      assert.match(joined, /reporta 0 contato\(s\) da lista em blacklist/);
+      assert.doesNotMatch(joined, /não deve chegar/);
+    });
+
     it("(d) diff indisponível (paginação falha) → aborta, nunca assume que os leitores entraram", async () => {
       const client = makeFakeClient({
         getListInfo: async () => ({ totalSubscribers: readers.length }),
