@@ -90,6 +90,8 @@
 import { execFileSync } from "node:child_process";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveWorktreeRemoval } from "./lib/worktree-remove.ts"; // #8209
+import { listProcessesStrict } from "./lib/list-processes.ts"; // #14335
+import { makeOrphanRescuer } from "./lib/orphan-rescue.ts"; // #14335
 import {
   classifyBranchForCleanup,
   classifyWorktreeForCleanup,
@@ -386,16 +388,25 @@ async function main(): Promise<void> {
         continue;
       }
       const removeResult = execFileSyncCaptured(["worktree", "remove", "--force", w.path], cwd);
-      // #8209: git pode reportar sucesso e a pasta sobreviver (junction
-      // node_modules/data dentro do worktree) — resolveWorktreeRemoval faz
-      // a limpeza segura de fallback nesse caso (nunca quando o git em si
-      // falhou — ver docstring do helper), mesmo helper único usado por
-      // cleanup-merged-worktrees.ts e merge-train-live.ts.
-      const finalResult = resolveWorktreeRemoval(removeResult, w.path);
+      // Limpeza pós-git em resolveWorktreeRemoval, helper único com
+      // cleanup-merged-worktrees.ts e merge-train-live.ts: casca de junction
+      // depois de git ok (#8209); remoção parcial (git falhou depois de apagar
+      // o .git, #14335) só é limpa com um snapshot novo e estrito de
+      // processos, sem processo vivo no caminho, e depois do resgate. Git
+      // falho com o .git presente não é tocado.
+      const finalResult = resolveWorktreeRemoval(removeResult, w.path, {
+        getLiveProcesses: () => listProcessesStrict(),
+        rescue: makeOrphanRescuer(cwd),
+      });
       removalResults.push(finalResult);
       if (finalResult.ok) {
         removedWt++;
-        console.log(`${LOG_PREFIX} worktree removido: ${w.path}`);
+        console.log(
+          `${LOG_PREFIX} worktree removido: ${w.path}` +
+            (finalResult.outcome === "partial-cleaned"
+              ? ` (remoção parcial limpa, #14335${finalResult.rescueDir ? `; resgate em ${finalResult.rescueDir}` : ""})`
+              : ""),
+        );
       } else {
         console.error(`${LOG_PREFIX} falha ao remover worktree ${w.path}: ${finalResult.error}`);
       }

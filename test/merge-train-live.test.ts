@@ -398,7 +398,10 @@ describe("cleanupIntegrationBranch", () => {
 
     const result = cleanupIntegrationBranch(runner, "merge-train/lote-1", "/tmp/wt1", MAIN_CWD);
     assert.equal(result.ok, false);
-    assert.ok(runner.warnings.some((w) => /worktree remove/.test(w)));
+    // #14335: git falho sem remoção parcial (pasta inexistente) = só o aviso do
+    // git; o da limpeza pós-remove não repete o mesmo erro.
+    assert.equal(runner.warnings.length, 1, runner.warnings.join("\n"));
+    assert.match(runner.warnings[0], /git worktree remove --force falhou pra \/tmp\/wt1 .*worktree travado/);
   });
 
   it("#8209 (regressão #633): git reporta sucesso mas sobra uma casca com junction node_modules -> resolveWorktreeRemoval limpa via fallback, alvo intacto", () => {

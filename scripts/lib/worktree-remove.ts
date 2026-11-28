@@ -44,10 +44,11 @@
  * dois SOs).
  */
 
-import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync, unlinkSync, type Dirent } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { isMainModule } from "./cli-args.ts";
-import { listAllProcesses, type ProcessInfo } from "./list-processes.ts";
+import { listAllProcesses, listProcessesStrict, type ProcessInfo } from "./list-processes.ts";
+import type { OrphanRescueFn } from "./orphan-rescue.ts";
 
 /** `true` só quando `path` existe e é um symlink (Linux/macOS) ou junction (Windows) — nunca segue o alvo. */
 export function isSymlinkOrJunction(path: string): boolean {
@@ -138,8 +139,34 @@ function escapeRegExp(literal: string): string {
  * só o fim do path precisa ser delimitado, o início não.
  */
 export function commandReferencesPath(cmd: string, worktreePath: string): boolean {
-  const boundaryRe = new RegExp(`${escapeRegExp(worktreePath)}(?![A-Za-z0-9_-])`);
-  return boundaryRe.test(cmd);
+  // #14335: no Windows a cmdline traz o path com `\` (`--require C:\...\tsx\
+  // preflight.cjs`) e o `git worktree list` com `/`; as duas pontas viram `/`
+  // antes da comparação. Path com letra de drive compara sem caixa (NTFS).
+  const normCmd = cmd.replace(/\\/g, "/");
+  const normPath = worktreePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const flags = /^[A-Za-z]:\//.test(normPath) ? "i" : "";
+  const boundaryRe = new RegExp(`${escapeRegExp(normPath)}(?![A-Za-z0-9_-])`, flags);
+  return boundaryRe.test(normCmd);
+}
+
+/**
+ * #14335: conjunto de chaves para excluir caminhos já registrados no `git
+ * worktree list` (`C:/...`) de uma varredura que monta caminhos com `join`
+ * (`C:\...` no Windows). Puro.
+ */
+export function buildExcludedPathKeys(paths: Iterable<string>): Set<string> {
+  return new Set([...paths].map(normalizePathKey));
+}
+
+/** #14335: `true` se `candidate` está no conjunto de `buildExcludedPathKeys`, qualquer que seja o separador ou a caixa da letra de drive. */
+export function isExcludedPath(candidate: string, excludedKeys: ReadonlySet<string>): boolean {
+  return excludedKeys.has(normalizePathKey(candidate));
+}
+
+/** #14335: chave de comparação de path — `/` como separador, sem `/` final, minúsculo quando tem letra de drive. */
+export function normalizePathKey(path: string): string {
+  const p = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[A-Za-z]:\//.test(p) ? p.toLowerCase() : p;
 }
 
 /**
@@ -151,7 +178,8 @@ export function commandReferencesPath(cmd: string, worktreePath: string): boolea
  * sozinho; a próxima rodada de limpeza tenta de novo). `[]` sempre que a
  * plataforma não é suportada por `listAllProcesses` (Windows — ver
  * docstring de lá) ou quando genuinamente não há processo vivo apontando
- * pro path.
+ * pro path. O guard real de `cleanup-merged-worktrees.ts` passa o snapshot de
+ * `listProcessesForWorktreeGuard()`, que desde o #14335 cobre o Windows.
  */
 export function findLiveProcessesInPath(
   worktreePath: string,
@@ -256,46 +284,181 @@ export function findWorktreeHusks(baseDir: string, excludePaths: ReadonlySet<str
   } catch {
     return [];
   }
+  const excluded = buildExcludedPathKeys(excludePaths);
   const husks: string[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const full = join(baseDir, entry.name);
-    if (excludePaths.has(full)) continue;
+    // #14335: `git worktree list` dá `C:/...` e o `join` dá `C:\...` — comparar normalizado.
+    if (isExcludedPath(full, excluded)) continue;
     if (isHuskDirectory(full)) husks.push(full);
   }
   return husks;
 }
 
-export interface GitRemovalResult {
-  ok: boolean;
-  error?: string;
+/**
+ * #14335: idade mínima (mtime do diretório) para tratar uma pasta sob
+ * `.claude/worktrees/` como sobra de remoção parcial. Folga contra corrida
+ * com um `git worktree add` em andamento, que cria o diretório antes de o
+ * registro aparecer no `git worktree list`.
+ */
+export const PARTIAL_REMOVAL_ORPHAN_MIN_IDLE_MS = 30 * 60 * 1000;
+
+/**
+ * #14335: pastas de `baseDir` (o `.claude/worktrees/` do repo) que sobraram
+ * de um `git worktree remove` interrompido no meio: sem `.git`, fora do `git
+ * worktree list` (`excludePaths`), com arquivo real dentro (as só-links são
+ * cascas do #8209, `findWorktreeHusks`) e paradas há pelo menos `minIdleMs`.
+ *
+ * O caso que originou: no Windows, um processo vivo com DLL carregada de
+ * dentro do worktree (teste pendurado com `sharp`) faz o `git` falhar com
+ * "Invalid argument" na primeira entrada que não consegue apagar. O git apaga
+ * na ordem do readdir (alfabética no NTFS) e para no primeiro erro, então o `.git` já se foi e o
+ * worktree já saiu do registro, mas tudo depois de `node_modules/@img` fica.
+ * Nenhuma outra varredura vê essa pasta: não é mais worktree e não é casca.
+ *
+ * Só olha `.claude/worktrees/`, que é diretório do harness para worktrees:
+ * pasta sem `.git` ali não é checkout de ninguém. Fail-soft, nunca lança.
+ */
+export function findPartialRemovalOrphans(
+  baseDir: string,
+  excludePaths: ReadonlySet<string> = new Set(),
+  opts: { nowMs?: number; minIdleMs?: number; getMtimeMs?: (path: string) => number | null } = {},
+): string[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const minIdleMs = opts.minIdleMs ?? PARTIAL_REMOVAL_ORPHAN_MIN_IDLE_MS;
+  const getMtimeMs =
+    opts.getMtimeMs ??
+    ((p: string) => {
+      try {
+        return statSync(p).mtimeMs;
+      } catch {
+        return null;
+      }
+    });
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(baseDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const excluded = buildExcludedPathKeys(excludePaths);
+  const orphans: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = join(baseDir, entry.name);
+    if (isExcludedPath(full, excluded)) continue;
+    if (existsSync(join(full, ".git"))) continue;
+    if (isHuskDirectory(full)) continue;
+    const mtime = getMtimeMs(full);
+    if (mtime === null || nowMs - mtime < minIdleMs) continue;
+    orphans.push(full);
+  }
+  return orphans;
+}
+
+/** #14335: dependências da limpeza de uma pasta de remoção parcial. */
+export interface PartialRemovalOpts {
+  /**
+   * Snapshot de processos, tirado na hora (nunca reaproveitado de uma checagem
+   * anterior ao `git worktree remove`). Default: `listProcessesStrict()`, que
+   * cobre o Windows e LANÇA quando não consegue listar; lançar preserva a pasta.
+   */
+  getLiveProcesses?: () => readonly ProcessInfo[];
+  /** Resgate do que não está no repositório (`makeOrphanRescuer` em `orphan-rescue.ts`). Sem ele nada é apagado. */
+  rescue?: OrphanRescueFn;
+  /** Remoção do diretório. Default: `removeWorktreeDirSafely`. Injetável só para teste. */
+  removeDir?: (path: string) => { dirRemoved: boolean; errors: string[] };
 }
 
 /**
- * Aplica a limpeza segura do #8209 em cima do resultado de um
- * `git worktree remove --force` já executado pelo chamador: quando o git
- * reporta SUCESSO mas `path` sobrevive — a casca com junction/symlink que
- * motivou a issue —, tenta `removeWorktreeDirSafely` antes de reportar
- * falha. **Deliberadamente NÃO tenta o fallback quando o `git` reporta
- * FALHA** — um exit não-zero pode significar path bloqueado/em uso por
- * outro processo (condição de corrida) ou motivo alheio à junction, e
- * forçar limpeza via FS nesse caso mudaria o contrato de falha da função
- * sem necessidade: o caso real da issue é sempre git bem-sucedido +
- * diretório remanescente (mesma decisão já tomada em
- * `cleanup-merged-worktrees.ts` no PR #8216 — este helper extrai essa
- * lógica pra ser compartilhada, em vez de reimplementada, por
- * `cleanup-merged-worktrees.ts`, `branch-cleanup.ts` e
- * `merge-train-live.ts`). Só toca o sistema de arquivos (nenhuma chamada a
- * `git`), então é testável com um diretório temporário real, sem precisar
- * mockar subprocess.
+ * #14335: apaga uma pasta que o git deixou pela metade, nesta ordem: (1)
+ * processo vivo referenciando o caminho → preserva, com os PIDs no erro
+ * (matar não é papel daqui, #8661); não conseguir listar processos também
+ * preserva; (2) resgate → se falhar, preserva; (3) `removeWorktreeDirSafely`
+ * (links primeiro). Nunca lança.
  */
-export function resolveWorktreeRemoval(gitResult: GitRemovalResult, path: string): GitRemovalResult {
-  if (!gitResult.ok) return gitResult;
-  if (!existsSync(path)) return { ok: true };
+export function cleanupPartialRemovalLeftover(
+  path: string,
+  opts: PartialRemovalOpts & { rescue: OrphanRescueFn },
+): { ok: true; rescueDir: string | null } | { ok: false; error: string } {
+  let live: ProcessInfo[];
+  try {
+    live = findLiveProcessesInPath(path, (opts.getLiveProcesses ?? listProcessesStrict)());
+  } catch (e) {
+    return { ok: false, error: `não deu para listar processos (${(e as Error).message}), pasta preservada` };
+  }
+  if (live.length > 0) {
+    const detail = live.map((p) => `PID ${p.pid} (${p.cmd.slice(0, 120)})`).join("; ");
+    return { ok: false, error: `${live.length} processo(s) vivo(s) ainda referenciam a pasta, preservada para a próxima rodada: ${detail}` };
+  }
+  const rescued = opts.rescue(path);
+  if (!rescued.ok) return { ok: false, error: rescued.error };
+  const cleanup = (opts.removeDir ?? removeWorktreeDirSafely)(path);
+  if (cleanup.dirRemoved) return { ok: true, rescueDir: rescued.rescueDir };
+  const detail = cleanup.errors.join("; ") || "sem detalhe de erro";
+  return {
+    ok: false,
+    error: `a limpeza pelo sistema de arquivos falhou: ${detail}${rescued.rescueDir ? ` (resgate em ${rescued.rescueDir})` : ""}`,
+  };
+}
+
+export interface GitRemovalResult {
+  ok: boolean;
+  error?: string;
+  /**
+   * #14335: só na saída de `resolveWorktreeRemoval`. `"partial-cleaned"` = o
+   * git parou no meio e a sobra foi resgatada e apagada aqui; `rescueDir` é o
+   * destino do resgate (ausente quando não havia nada fora do repositório).
+   * O chamador loga os dois.
+   */
+  outcome?: "removed" | "partial-cleaned";
+  rescueDir?: string;
+}
+
+/**
+ * Aplica a limpeza segura em cima do resultado de um `git worktree remove
+ * --force` já executado pelo chamador. Helper único de
+ * `cleanup-merged-worktrees.ts`, `branch-cleanup.ts` e `merge-train-live.ts`.
+ * Não chama `git`; com `opts` injetado (processos, resgate, remoção), é
+ * testável com diretório temporário real.
+ *
+ * - **git ok e a pasta sobrou (#8209):** casca com junction/symlink. Roda
+ *   `removeWorktreeDirSafely` (links primeiro, nunca seguindo o alvo).
+ * - **git falhou com o `.git` ainda na pasta:** o git recusou antes de
+ *   começar (lock, path em uso, motivo alheio). Nada é tocado; o erro do git
+ *   volta intacto.
+ * - **git falhou e o `.git` já não existe (#14335):** remoção parcial. O
+ *   `git worktree remove` apaga na ordem do readdir (alfabética no NTFS),
+ *   para no primeiro arquivo que não consegue apagar e desregistra o
+ *   worktree mesmo assim; nenhum chamador volta a essa pasta. Roda
+ *   `cleanupPartialRemovalLeftover`: processo vivo (ou não conseguir listar)
+ *   preserva, o resgate do que não está no repositório vem antes de apagar.
+ *   Sem `opts.rescue` a pasta nunca é apagada aqui: fica para a varredura de
+ *   órfãos de `cleanup-merged-worktrees.ts`, que resgata.
+ */
+export function resolveWorktreeRemoval(
+  gitResult: GitRemovalResult,
+  path: string,
+  opts: PartialRemovalOpts = {},
+): GitRemovalResult {
+  if (!gitResult.ok) {
+    if (!existsSync(path) || existsSync(join(path, ".git"))) return gitResult;
+    const prefix =
+      `${gitResult.error ?? "git worktree remove falhou"} — o git já tinha apagado o .git e desregistrado o worktree ` +
+      `(remoção parcial, #14335)`;
+    if (!opts.rescue) {
+      return { ok: false, error: `${prefix}; a pasta fica para a varredura de órfãos do cleanup-merged-worktrees, que resgata antes de apagar` };
+    }
+    const leftover = cleanupPartialRemovalLeftover(path, { ...opts, rescue: opts.rescue });
+    if (!leftover.ok) return { ok: false, error: `${prefix}; ${leftover.error}` };
+    return leftover.rescueDir ? { ok: true, outcome: "partial-cleaned", rescueDir: leftover.rescueDir } : { ok: true, outcome: "partial-cleaned" };
+  }
+  if (!existsSync(path)) return { ok: true, outcome: "removed" };
 
   const cleanup = removeWorktreeDirSafely(path);
   if (cleanup.dirRemoved) {
-    return { ok: true };
+    return { ok: true, outcome: "removed" };
   }
 
   const detail = cleanup.errors.join("; ") || "diretório sobreviveu à limpeza pós-remove, sem detalhe de erro";

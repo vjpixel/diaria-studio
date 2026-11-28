@@ -1,8 +1,10 @@
 /**
  * scripts/lib/list-processes.ts (#8661)
  *
- * Enumeração de processos vivos com cmdline completo — POSIX apenas (Linux/
- * macOS via `ps -eo pid=,ppid=,args=`). Extraído como módulo próprio porque
+ * Enumeração de processos vivos com cmdline completo: POSIX via `ps -eo
+ * pid=,ppid=,args=` (`listAllProcesses`) e, desde o #14335, Windows via CIM
+ * (`listWindowsProcesses`, usado só pelos guards de remoção de worktree, fim
+ * do arquivo). Extraído como módulo próprio porque
  * duas features precisam da mesma pergunta ("que processos existem, com que
  * cmdline?"): `scripts/orphaned-test-process-sweep.ts` (varre a máquina
  * inteira atrás de processos `--test-isolation=process` cujo worktree já
@@ -11,7 +13,10 @@
  * `git worktree remove --force`). Sem este módulo compartilhado, o parsing
  * de `ps` seria duplicado nos dois lugares.
  *
- * Windows: sem implementação (retorna `[]`, fail-soft) — o incidente de
+ * Windows: `listAllProcesses` sem implementação (retorna `[]`, fail-soft).
+ * Desde o #14335 o guard de remoção de worktree usa
+ * `listProcessesForWorktreeGuard` (fim do arquivo), que no Windows lê o CIM;
+ * o sweep que mata processo continua POSIX-only. O incidente de
  * origem (#8661) foi medido no servidor Linux ("300"), onde processos de
  * teste ficam órfãos por dias rodando `--test` dentro de worktrees já
  * removidos (rodadas overnight/develop/continuo desassistidas, o único
@@ -34,6 +39,8 @@ export interface ProcessInfo {
 export interface ListProcessesOps {
   execFileSync: typeof execFileSync;
   platform: NodeJS.Platform;
+  /** #14335: PID que uma listagem válida tem que conter (default `process.pid`). Só `listProcessesStrict` lê. */
+  selfPid?: number;
 }
 
 const defaultOps: ListProcessesOps = { execFileSync, platform: process.platform };
@@ -116,4 +123,99 @@ export function readProcessNow(pid: number, ops: ListProcessesOps = defaultOps):
   } catch {
     return null; // `ps -p` sai não-zero quando o PID não existe mais
   }
+}
+
+/**
+ * #14335: faz o parsing do JSON de `Get-CimInstance Win32_Process | Select
+ * ProcessId,ParentProcessId,CommandLine | ConvertTo-Json` — puro. O
+ * `ConvertTo-Json` devolve um objeto solto (não array) quando só há um
+ * processo; os dois formatos são aceitos. Entrada sem `ProcessId` numérico é
+ * ignorada; `CommandLine` nulo (processo de sistema sem permissão de leitura)
+ * vira string vazia, que nunca casa um path. JSON inválido lança: quem chama
+ * decide o fail-soft.
+ */
+export function parseWin32ProcessJson(raw: string): ProcessInfo[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const parsed: unknown = JSON.parse(trimmed);
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  const result: ProcessInfo[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    if (typeof r.ProcessId !== "number" || !Number.isFinite(r.ProcessId)) continue;
+    const ppid = typeof r.ParentProcessId === "number" && Number.isFinite(r.ParentProcessId) ? r.ParentProcessId : 0;
+    result.push({ pid: r.ProcessId, ppid, cmd: typeof r.CommandLine === "string" ? r.CommandLine : "" });
+  }
+  return result;
+}
+
+/** #14335: teto do PowerShell/CIM. Estourou = lança (o chamador estrito preserva a pasta). */
+export const WIN32_PROCESS_QUERY_TIMEOUT_MS = 30_000;
+
+const WIN32_PROCESS_QUERY =
+  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
+
+/**
+ * #14335: processos vivos com cmdline no Windows, pelo CIM (`Win32_Process`).
+ * Existe para o guard de remoção de worktree (`removeWorktreeSafe`, #8661),
+ * não para o sweep que mata processo (`orphaned-test-process-sweep.ts`
+ * segue POSIX-only via `listAllProcesses`): no Windows um processo vivo com
+ * DLL carregada de dentro do worktree (`@img/sharp-win32-x64/lib/*.dll`, num
+ * teste pendurado) faz o `git worktree remove --force` parar no meio com
+ * "Invalid argument", depois de já ter apagado o `.git` e desregistrado o
+ * worktree. Lança se o PowerShell falhar ou passar de
+ * `WIN32_PROCESS_QUERY_TIMEOUT_MS`.
+ */
+export function listWindowsProcesses(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
+  const raw = ops.execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WIN32_PROCESS_QUERY], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+    timeout: WIN32_PROCESS_QUERY_TIMEOUT_MS,
+  });
+  return parseWin32ProcessJson(String(raw));
+}
+
+/**
+ * #14335: snapshot de processos para o guard ANTIGO, antes do `git worktree
+ * remove` (#8661, `removeWorktreeSafe`). POSIX: `listAllProcesses` (propaga
+ * falha do `ps`, como antes). Windows: `listWindowsProcesses`, fail-soft — se
+ * o PowerShell falhar, devolve `[]` com aviso no stderr, o mesmo
+ * comportamento de antes do #14335 (a remoção segue, sem a checagem). Os
+ * caminhos NOVOS do #14335, que apagam a pasta pelo sistema de arquivos,
+ * usam `listProcessesStrict`: lá "não deu para listar" preserva a pasta.
+ */
+export function listProcessesForWorktreeGuard(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
+  if (ops.platform !== "win32") return listAllProcesses(ops);
+  try {
+    return listWindowsProcesses(ops);
+  } catch (e) {
+    process.stderr.write(
+      `[list-processes] aviso: não deu pra listar processos no Windows (#14335), remoção segue sem checar processo vivo: ${(e as Error).message}\n`,
+    );
+    return [];
+  }
+}
+
+/**
+ * #14335: snapshot de processos que LANÇA quando não consegue listar (falha
+ * ou timeout do PowerShell no Windows, lista vazia ou sem o próprio PID no
+ * Windows, falha do `ps` no POSIX). Para os
+ * caminhos que apagam pelo sistema de arquivos uma pasta de remoção parcial
+ * (`cleanupPartialRemovalLeftover`, varredura de órfãos): sem saber se há
+ * processo vivo, a pasta fica.
+ */
+export function listProcessesStrict(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
+  if (ops.platform !== "win32") return listAllProcesses(ops);
+  // No Windows o PowerShell pode sair 0 com saída vazia ou truncada. Uma
+  // listagem que não contém nem este processo (que está vivo) não serve:
+  // lança, e o chamador preserva a pasta.
+  const list = listWindowsProcesses(ops);
+  const selfPid = ops.selfPid ?? process.pid;
+  if (list.length === 0) throw new Error("listagem de processos do Windows veio vazia");
+  if (!list.some((p) => p.pid === selfPid)) {
+    throw new Error(`listagem de processos do Windows não contém o próprio processo (PID ${selfPid}); incompleta`);
+  }
+  return list;
 }

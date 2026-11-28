@@ -253,6 +253,10 @@ test("resolveWorktreeRemoval: git falhou -> NUNCA tenta o fallback (decisão del
   writeFileSync(join(target, "canary.txt"), "não deve ser tocado");
   mkdirSync(worktree, { recursive: true });
   symlinkSync(target, join(worktree, "node_modules"), "dir");
+  // #14335: com o `.git` ainda lá, o git recusou antes de começar a apagar —
+  // é esse o caso sem fallback. Sem `.git` (remoção parcial) há fallback,
+  // coberto em test/worktree-remove-partial-14335.test.ts.
+  writeFileSync(join(worktree, ".git"), "gitdir: /repo/.git/worktrees/worktree\n");
 
   const result = resolveWorktreeRemoval({ ok: false, error: "worktree travado por outro processo" }, worktree);
 
