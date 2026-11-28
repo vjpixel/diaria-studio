@@ -400,7 +400,10 @@ export const EFFORT_DIFF_LINE_THRESHOLD = 500;
 export const OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD = 1000;
 
 /**
- * Soma additions+deletions do PR via `gh pr view --json additions,deletions`.
+ * Soma additions+deletions com peso 0,5 para paths sob `test/` (#14112).
+ * Usa os totais do PR e desconta metade das linhas dos testes listados em
+ * `files`. Se gh truncar essa lista (PR grande), arquivos omitidos mantêm
+ * peso 1: a contagem é conservadora, nunca subestima por paginação.
  * Retorna `null` em QUALQUER falha (gh indisponível, JSON malformado, campos
  * não-numéricos) — o caller trata `null` como "não dá pra saber o tamanho do
  * diff" e nunca deixa isso virar "pular o review" (#4243/#4813: fail-soft
@@ -409,14 +412,29 @@ export const OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD = 1000;
 function getDiffLineCount(num, execFn, timeoutMs = 10_000) {
   try {
     // windowsHide (#8017): mesma razão de resolveMainRepoRoot acima.
-    const raw = execFn("gh", ["pr", "view", num, "--json", "additions,deletions"], {
+    const raw = execFn("gh", ["pr", "view", num, "--json", "additions,deletions,files"], {
       encoding: "utf8",
       timeout: timeoutMs,
       windowsHide: true,
     });
     const parsed = JSON.parse(raw);
     const total = Number(parsed.additions) + Number(parsed.deletions);
-    return Number.isFinite(total) ? total : null;
+    if (!Number.isFinite(total) || total < 0) return null;
+    // Sem lista, preserva o tamanho integral (fallback conservador).
+    if (parsed.files === undefined) return total;
+    if (!Array.isArray(parsed.files)) return null;
+    let testLines = 0;
+    let listedLines = 0;
+    for (const file of parsed.files) {
+      if (typeof file.path !== "string" ||
+          !Number.isSafeInteger(file.additions) || file.additions < 0 ||
+          !Number.isSafeInteger(file.deletions) || file.deletions < 0) return null;
+      const lines = file.additions + file.deletions;
+      listedLines += lines;
+      if (file.path.startsWith("test/")) testLines += lines;
+    }
+    if (listedLines > total) return null;
+    return total - testLines * 0.5;
   } catch {
     return null;
   }
