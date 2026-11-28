@@ -56,6 +56,10 @@ const NOT_IN_ENV_EXAMPLE: Record<string, string> = {
   // Passadas de processo pai para filho, nunca configuradas à mão.
   NM_INTEGRITY_PKG: "check-node-modules-integrity.ts passa ao filho que sonda o import",
   DIARIA_WORKER_PID_FILE: "o dispatch Brevo passa ao preload record-worker-pid.mjs (#14037)",
+  DIARIA_BRUTO_PATHS: "video-bruto-local.ts passa ao filho/PowerShell que lê o bruto (#13740)",
+  DIARIA_BRUTO_READER: "video-bruto-local.ts passa ao filho que lê o bruto (#13740)",
+  DIARIA_BRUTO_TIMEOUT_MS: "video-bruto-local.ts passa ao filho que lê o bruto (#13740)",
+  DIARIA_BRUTO_PROBE_BYTES: "video-bruto-local.ts passa ao filho que lê o bruto (#13740)",
   // Overrides de teste.
   DIARIA_PROJECT_ROOT: "override de raiz para teste e2e (check-invariants)",
   DIARIA_QUIET_SCHEDULE_LOG: "silencia log em CI/teste (compute-social-schedule)",
