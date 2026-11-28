@@ -124,7 +124,22 @@ function splitPipes(expr: string): string[] {
   return parts;
 }
 
-function checkFilters(field: string, tag: string, expr: string, out: BrevoTemplateIssue[]): void {
+/**
+ * Numa tag de bloco (`{% if %}`, `{% for %}`…) o filtro pode vir seguido de
+ * operador ou de outra parte da expressão: `{% if params.items|length > 0 %}`,
+ * `{% if contact.X|lower == "sim" %}` (#14380). Aceita como sobra o que começa
+ * por operador de comparação, palavra lógica (`and`, `or`, `not`, `in`, `is`),
+ * `)` de agrupamento ou `,`. Em `{{ }}` a sobra segue estrita.
+ */
+const BLOCK_FILTER_REST_RE = /^(==|!=|<=|>=|<|>|\)|,|(and|or|not|in|is)\b)/;
+
+function checkFilters(
+  field: string,
+  tag: string,
+  expr: string,
+  out: BrevoTemplateIssue[],
+  mode: "variable" | "block" = "variable",
+): void {
   const parts = splitPipes(expr);
   for (const raw of parts.slice(1)) {
     const f = raw.trim();
@@ -147,7 +162,7 @@ function checkFilters(field: string, tag: string, expr: string, out: BrevoTempla
       });
       continue;
     }
-    if (rest !== "" && !rest.startsWith(":")) {
+    if (rest !== "" && !rest.startsWith(":") && !(mode === "block" && BLOCK_FILTER_REST_RE.test(rest))) {
       out.push({ field, snippet: clip(tag), message: `filtro "${name}" com sobra inesperada: "${clip(rest, 40)}"` });
       continue;
     }
@@ -240,7 +255,7 @@ export function lintBrevoTemplate(text: string, field = "text"): BrevoTemplateIs
       out.push({ field, snippet: clip(tag), message: `tag "{% ${name} %}" não é aceita pela Brevo Template Language` });
       continue;
     }
-    if (args.includes("|")) checkFilters(field, tag, args, out);
+    if (args.includes("|")) checkFilters(field, tag, args, out, "block");
 
     const top = stack[stack.length - 1];
     switch (name) {

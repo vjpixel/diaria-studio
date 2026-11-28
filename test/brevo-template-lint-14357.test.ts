@@ -159,3 +159,30 @@ describe("CLI brevo-template-lint (#14357)", () => {
     assert.equal(runLint({ html: "/nao/existe.html" }).code, 2);
   });
 });
+
+describe("filtro em tag de bloco seguido de operador (#14380)", () => {
+  it("aceita filtro válido seguido de operador dentro de {% if %}/{% elif %}", () => {
+    for (const t of [
+      `{% if params.items|length > 0 %}x{% endif %}`,
+      `{% if contact.X|lower == "sim" %}x{% endif %}`,
+      `{% if contact.X | lower != "não" and contact.Y %}x{% endif %}`,
+      `{% if contact.X|length>=3 or contact.Z|upper == "A" %}x{% endif %}`,
+      `{% if (contact.X|lower == "a") %}x{% endif %}`,
+      `{% if contact.X|lower in "abc" %}x{% endif %}`,
+      `{% if contact.A %}a{% elif contact.X|lower == "b" %}b{% endif %}`,
+      `{% if contact.X|default:"a" == "b" %}x{% endif %}`,
+    ]) {
+      assert.deepEqual(lintBrevoTemplate(t), [], t);
+    }
+  });
+
+  it("segue recusando filtro inexistente, com parênteses ou sobra sem operador no bloco", () => {
+    assert.match(lintBrevoTemplate(`{% if contact.X|capitalize == "Sim" %}x{% endif %}`)[0].message, /"capitalize" não existe/);
+    assert.match(lintBrevoTemplate(`{% if contact.X|lower() == "a" %}x{% endif %}`)[0].message, /parênteses/);
+    assert.match(lintBrevoTemplate(`{% if contact.X|lower lixo %}x{% endif %}`)[0].message, /sobra inesperada/);
+  });
+
+  it("em {{ }} a sobra continua estrita", () => {
+    assert.match(lintBrevoTemplate(`{{ contact.X|lower == "sim" }}`)[0].message, /sobra inesperada/);
+  });
+});
