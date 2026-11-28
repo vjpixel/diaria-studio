@@ -79,6 +79,21 @@ const RECURRING_MODIFIER_BEFORE = new Set([
   "by", "pela", "pelo", "investida", "investido", "rivals",
 ]);
 
+/**
+ * #13960: preposição entre o modificador e a empresa ("rival to Nvidia",
+ * "concorrente da Nvidia", "parceira do Google", "apoiada por Nvidia") marca a
+ * empresa como OBJETO do modificador — coadjuvante, não sujeito. Só vale com o
+ * modificador logo antes da preposição: "IPO do Google" segue com o Google
+ * como sujeito.
+ */
+const RECURRING_OBJECT_PREPOSITIONS = new Set([
+  "to", "of", "da", "do", "de", "das", "dos", "por",
+]);
+const RECURRING_MODIFIER_WITH_PREPOSITION = new Set([
+  ...RECURRING_MODIFIER_AFTER,
+  "apoiada", "apoiado", "financiada", "financiado", "investida", "investido", "rivais",
+]);
+
 /** Empresas citadas como SUJEITO (não coadjuvante) nos tokens normalizados — #13951. */
 function recurringSubjectCompanies(tokens: string[]): Set<string> {
   const out = new Set<string>();
@@ -86,6 +101,10 @@ function recurringSubjectCompanies(tokens: string[]): Set<string> {
     const c = EVENT_COMPANY_ALIASES[t];
     if (!c) return;
     if (RECURRING_MODIFIER_AFTER.has(tokens[i + 1] ?? "") || RECURRING_MODIFIER_BEFORE.has(tokens[i - 1] ?? "")) return;
+    // #13960: "rival to Nvidia", "concorrente da Nvidia", "apoiada por Nvidia".
+    if (RECURRING_OBJECT_PREPOSITIONS.has(tokens[i - 1] ?? "") && RECURRING_MODIFIER_WITH_PREPOSITION.has(tokens[i - 2] ?? "")) return;
+    // #13960: possessivo EN "Nvidia's partner X" tokeniza como `nvidia s partner`.
+    if (tokens[i + 1] === "s" && RECURRING_MODIFIER_AFTER.has(tokens[i + 2] ?? "")) return;
     out.add(c);
   });
   return out;
