@@ -35,7 +35,7 @@ import { escHtml } from "../html-escape.ts";
 import { breakBrandDomainAutolink } from "../shared/brand-wordmark.ts";
 import { applyBrandWordmark } from "../shared/brand-wordmark.ts";
 import { FAVICON_DATA_URI } from "../shared/seo-meta.ts";
-import type { Brand } from "../../../workers/poll/src/lib.ts";
+import type { Brand } from "../shared/poll-core.ts";
 import {
   CADASTRO_BOX_KICKER,
   classifySection,
