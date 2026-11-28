@@ -227,10 +227,13 @@
  *                #14339: o cooldown de campanha AVULSA
  *                (`excludeAvulsaCooldown`, scripts/lib/shared/clarice-avulsa.ts)
  *                roda logo depois, independente da flag: quem recebeu uma
- *                avulsa registrada (Black Friday #438/#439) fica fora por
- *                `cooldownDays` contados da data dela, inclusive na virada
- *                do mês que o cutoff mensal deixa passar. Referência = a
- *                `--send-date` quando passada, senão a data BRT de hoje.
+ *                avulsa registrada (Black Friday #438/#439), pelo sinal das
+ *                listas dela (#14403), fica fora por `cooldownDays` contados
+ *                da data dela, inclusive na virada do mês que o cutoff
+ *                mensal deixa passar. Referência = a `--send-date` quando
+ *                passada, senão a data BRT de hoje; nesse caso, se um
+ *                cooldown começa ou termina amanhã, o log avisa que a onda
+ *                montada na véspera erra por 1 dia e pede a `--send-date`.
  *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv                     (colunas: email,NOME — compatível com clarice-import-waves)
@@ -349,7 +352,7 @@ import {
   excludeSentSince,
   type RecencyCutoffSource,
 } from "./lib/clarice-recency.ts";
-import { excludeAvulsaCooldown, brtDateOf } from "./lib/shared/clarice-avulsa.ts"; // #14339
+import { excludeAvulsaCooldown, brtDateOf, avulsaCooldownChangesNextDay } from "./lib/shared/clarice-avulsa.ts"; // #14339, #14403
 import { firstName, hasCorruptedName } from "./lib/clarice-name.ts";
 import {
   DAILY_QUEUE_SNAPSHOT_DIR,
@@ -1186,11 +1189,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // Roda com ou sem flag explícita de recência: é outro eixo (a avulsa não é
   // onda de ciclo nenhum), não um default que a flag sobrescreve.
   const avulsaRefDate = sendDateArg ?? brtDateOf(new Date());
+  if (!sendDateArg) {
+    // #14403: sem --send-date a referência é hoje, não o dia em que a onda sai.
+    const viraAmanha = avulsaCooldownChangesNextDay(avulsaRefDate);
+    if (viraAmanha.length > 0) {
+      console.error(
+        `⚠️ cooldown de campanha avulsa (#14403): sem --send-date, a referência é hoje (${avulsaRefDate}), ` +
+          `e o cooldown de ${viraAmanha.map((id) => `#${id}`).join(", ")} começa ou termina amanhã. ` +
+          "Se a onda não sai hoje, passe --send-date YYYY-MM-DD com a data de envio.",
+      );
+    }
+  }
   const avulsaCooldown = excludeAvulsaCooldown(afterRecency, avulsaRefDate);
   const afterAvulsa = avulsaCooldown.kept;
   if (avulsaCooldown.active.length > 0) {
     console.error(
-      `🔒 cooldown de campanha avulsa (#14339, ref ${avulsaRefDate}): ${avulsaCooldown.excluded} contato(s) excluído(s) — ` +
+      `🔒 cooldown de campanha avulsa (#14339, ref ${avulsaRefDate}): ${avulsaCooldown.excluded} contato(s) nas listas da avulsa excluído(s) — ` +
         avulsaCooldown.active.map((a) => `#${a.id} ${a.label} (${a.sentDate} + ${a.cooldownDays}d)`).join("; ") +
         ".",
     );
