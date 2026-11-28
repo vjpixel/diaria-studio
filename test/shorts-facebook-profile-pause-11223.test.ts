@@ -12,7 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SHORTS_CONFIG, listShortDestinations, loadShortsConfig } from "../scripts/lib/diaria/short-video.ts";
 import { shortsVideoTerminal } from "../scripts/lib/diaria/published-video-cleanup.ts";
-import { planShortsPublish } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

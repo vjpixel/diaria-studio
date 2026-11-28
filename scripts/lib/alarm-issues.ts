@@ -162,6 +162,20 @@ const ALARM_ACTION_LABEL_DESCRIPTION =
   // em ALARM_EVENT_LABEL_DESCRIPTION).
   "Alarme de ESTADO que só normaliza por AÇÃO humana/de código (#6772)";
 
+/**
+ * #14370 — label da issue de alarme aberta enquanto a credencial de envio de
+ * e-mail (`data/.credentials.json`) falta na máquina que roda o alarme: o
+ * e-mail não sai e a issue é o único canal (decisão do editor, briefing
+ * 261128). Aplicada hoje pelos timers de Shorts do 300
+ * (`scripts/lib/diaria/shorts-timer-email-preflight.ts`). Sem efeito em
+ * `classifyExecTrack`.
+ */
+export const ALARM_EMAIL_NO_CREDENTIAL_LABEL = "email-sem-credencial";
+const ALARM_EMAIL_NO_CREDENTIAL_LABEL_COLOR = "fbca04";
+const ALARM_EMAIL_NO_CREDENTIAL_LABEL_DESCRIPTION =
+  // Teto de 100 chars do GitHub (ver ALARM_EVENT_LABEL_DESCRIPTION).
+  "Alarme aberto sem a credencial de e-mail no 300: o e-mail não saiu (#14370)";
+
 /** Metadados de toda label que este módulo sabe AUTO-CRIAR via self-heal
  * (#5338, generalizado no #5553) — usado tanto por `ensureLabelExists` quanto
  * pelo setup manual documentado. Adicionar uma label nova ao mecanismo de
@@ -170,6 +184,7 @@ const SELF_HEALABLE_LABELS: Record<string, { color: string; description: string 
   [ALARM_LABEL]: { color: ALARM_LABEL_COLOR, description: ALARM_LABEL_DESCRIPTION },
   [ALARM_EVENT_LABEL]: { color: ALARM_EVENT_LABEL_COLOR, description: ALARM_EVENT_LABEL_DESCRIPTION },
   [ALARM_ACTION_LABEL]: { color: ALARM_ACTION_LABEL_COLOR, description: ALARM_ACTION_LABEL_DESCRIPTION },
+  [ALARM_EMAIL_NO_CREDENTIAL_LABEL]: { color: ALARM_EMAIL_NO_CREDENTIAL_LABEL_COLOR, description: ALARM_EMAIL_NO_CREDENTIAL_LABEL_DESCRIPTION },
 };
 
 export type AlarmPriority = "P0" | "P1" | "P2" | "P3";

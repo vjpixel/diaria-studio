@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerCorteLockCleanup, corteTimerLockBusyError } from "../scripts/publish-shorts.ts";
+import { registerCorteLockCleanup, corteTimerLockBusyError } from "../scripts/publish-shorts/run-checks.ts";
 import { acquireTimerLock } from "../scripts/lib/diaria/timer-lock.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 

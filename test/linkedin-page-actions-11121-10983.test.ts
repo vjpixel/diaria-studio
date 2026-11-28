@@ -32,7 +32,8 @@ import {
   type EnqueueFn,
 } from "../scripts/lib/diaria/linkedin-page-actions.ts";
 import { WorkerQueueError, type WorkerQueuePayload } from "../scripts/lib/worker-queue-client.ts";
-import { enqueuePageRepostViaWorker, type ShortsPlanItem } from "../scripts/publish-shorts.ts";
+import { type ShortsPlanItem } from "../scripts/publish-shorts/_shared.ts";
+import { enqueuePageRepostViaWorker } from "../scripts/publish-shorts/linkedin.ts";
 import { VIDEO_LINK_APPLY_FILE, deadlineForEdition, runVideoD1LinkWatch, type VideoD1WatchDeps } from "../scripts/lib/diaria/video-d1-link-watch.ts";
 
 const VIDEO_URL = "https://youtu.be/abcdefghijk";

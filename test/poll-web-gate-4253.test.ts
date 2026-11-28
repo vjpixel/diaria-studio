@@ -23,7 +23,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import worker, { type Env } from "../workers/poll/src/index.ts";
-import { subscriberKvKey } from "../workers/poll/src/subscriber-verify.ts";
+import { subscriberKvKey } from "../scripts/lib/shared/subscriber-verify.ts";
 import {
   ROUNDS_PLAYED_COOKIE,
   ROUNDS_NUDGE_INTERVAL,

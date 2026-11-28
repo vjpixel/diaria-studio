@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { decideInstagramConfirm } from "../scripts/publish-shorts.ts";
+import { decideInstagramConfirm } from "../scripts/publish-shorts/instagram-confirm.ts";
 
 const nowIso = "2026-10-23T10:30:00.000Z";
 

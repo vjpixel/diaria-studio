@@ -24,7 +24,8 @@ import {
   normalizeVideoTitle,
   resolveVerticalBioCta,
 } from "../scripts/lib/diaria/short-video.ts";
-import { planShortsPublish, verticalBioCtaFromHorizontal } from "../scripts/publish-shorts.ts";
+import { verticalBioCtaFromHorizontal } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const D1 = {

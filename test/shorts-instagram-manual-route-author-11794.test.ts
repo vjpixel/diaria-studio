@@ -11,10 +11,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultGraphDeps, type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
 import {
   confirmChromeAuthorDeps,
-  confirmInstagram,
-  defaultGraphDeps,
   decideInstagramConfirm,
   decideInstagramConfirmAcrossAccounts,
   decideInstagramTimerAcrossAccounts,
@@ -22,9 +21,9 @@ import {
   instagramTimerGate,
   resolveChromeAuthorReader,
   timerChromeAuthorDeps,
-  type GraphDeps,
   type InstagramConfirmDecision,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
+import { confirmInstagram } from "../scripts/publish-shorts/confirm.ts";
 import { buildInstagramTimerAlarm } from "../scripts/shorts-instagram-timer.ts";
 import { INSTAGRAM_CHROME_ROUTE, buildReelsCaption, instagramChromeRouteText, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";

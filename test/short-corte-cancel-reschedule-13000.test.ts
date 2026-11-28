@@ -20,12 +20,12 @@ import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-upda
 import { rescheduleScheduledVideo } from "../scripts/lib/diaria/youtube-upload.ts";
 import {
   cancelFacebookScheduledVideo,
-  corteLifecycleArgsError,
   facebookScheduledMs,
-  parseShortsCliArgs,
   rescheduleFacebookScheduledVideo,
   type GraphDeps,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/facebook.ts";
+import { parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
+import { corteLifecycleArgsError } from "../scripts/publish-shorts/corte.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

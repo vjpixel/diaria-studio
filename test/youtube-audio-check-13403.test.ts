@@ -21,7 +21,7 @@ import {
   type YouTubeAudioDegraded,
   type YouTubeFileDetailsItem,
 } from "../scripts/lib/diaria/youtube-audio-check.ts";
-import { publishYouTubeShort } from "../scripts/publish-shorts.ts";
+import { publishYouTubeShort } from "../scripts/publish-shorts/youtube.ts";
 import { audioCheckExitCode, runCheckYouTubeAudio } from "../scripts/check-youtube-audio.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054

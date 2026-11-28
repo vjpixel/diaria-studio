@@ -52,18 +52,15 @@ import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import { main as authorizeMain } from "../scripts/video-publish-authorize.ts";
 import { matchEditionVideo } from "../scripts/lib/diaria/youtube-upload.ts";
 import { shortsSendingPath } from "../scripts/lib/diaria/shorts-sending-marker.ts";
+import { cancelFacebookScheduledVideo, publishFacebookReel } from "../scripts/publish-shorts/facebook.ts";
 import {
   applyBufferReplacementMark,
   bufferDeletedRefusal,
   bufferReplacementMarkRefusal,
-  cancelFacebookScheduledVideo,
-  replacedYouTubeIds,
   prepareBufferItem,
-  publishFacebookReel,
-  replaceLockBusy,
-  replaceScheduledArgsError,
-  SHORTS_BOOLEAN_FLAGS,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/buffer.ts";
+import { replaceScheduledArgsError, SHORTS_BOOLEAN_FLAGS } from "../scripts/publish-shorts/cli.ts";
+import { replacedYouTubeIds, replaceLockBusy } from "../scripts/publish-shorts/run.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ED = "261115";

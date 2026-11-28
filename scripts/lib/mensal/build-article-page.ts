@@ -55,7 +55,7 @@ import { draftToWebArticle, monthLabelFromYymm, renderMonthlyWebPage } from "./m
 import { DIARIA_RETROSPECTIVA_URL } from "../canonical-urls.ts";
 import { mensalPathFromCycle } from "../shared/retrospectiva-path.ts";
 import { deriveDescription } from "../shared/retrospectiva-seo.ts";
-import type { Brand } from "../../../workers/poll/src/lib.ts";
+import type { Brand } from "../shared/poll-core.ts";
 import { assertNoLegacyBrand, checkLegacyBrand } from "../shared/legacy-brand-guard.ts";
 
 /**

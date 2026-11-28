@@ -119,7 +119,7 @@ import { purgeScoreCounterDo } from "./lib/purge-score-counter-do.ts"; // #4474
 import { dohFetch } from "./lib/doh-fetch.ts"; // #4474
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4474
 import { summarizePurgeDoResults, type PurgeDoStepResult } from "./lib/purge-leaderboard-do-summary.ts"; // #4477 achado 1
-import type { Brand } from "../workers/poll/src/lib.ts"; // #4477 achado 3
+import type { Brand } from "./lib/shared/poll-core.ts"; // #4477 achado 3
 import { sanitizedCloudflareOAuthEnv } from "./lib/cloudflare-oauth-env.ts"; // #6900
 import { resolveWranglerBin } from "./lib/resolve-wrangler-bin.ts"; // #7117
 import { checkWranglerAuth } from "./check-wrangler-auth.ts"; // #11253

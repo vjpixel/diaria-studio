@@ -25,7 +25,7 @@ import { parseSocialInviteIcons, renderSocialInviteIconsHtml } from "../shared/e
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import { applyDarkModeClasses, darkModeMediaRules } from "../shared/email-dark-mode.ts"; // #13525 — modo escuro do conteúdo
 import { imageCreditCaption, imageToolNameFromCaption, applyImageToolNameToCredits } from "../shared/image-tool-name.ts"; // #10826 — mesmo mapa slug → ferramenta da diária
-import type { Brand } from "../../../workers/poll/src/lib.ts"; // #7633 — fonte única do vocabulário de brand (só o TIPO, sem runtime do worker)
+import type { Brand } from "../shared/poll-core.ts"; // #7633 — fonte única do vocabulário de brand (só o TIPO, sem runtime do worker)
 // #4040/#4041: fonte única dos valores de UTM + composição do sufixo de posição.
 import {
   MENSAL_UTM_SOURCE,
@@ -188,11 +188,10 @@ export interface MonthlyUtmProfile {
    * ao lado de um `pollMergeTag` que já é união fechada por causa do #4510. E
    * a forma de errar é concreta: os perfis são objetos quase idênticos, então
    * copiar um pra criar o próximo e esquecer de trocar este campo compilava.
-   * Agora é o `Brand` canônico de `workers/poll/src/lib.ts` — um brand
-   * inexistente (typo) ou copiado do perfil errado deixou de compilar, e a
-   * checagem sai de graça em qualquer perfil novo. O import cruzado
-   * `scripts/` → `workers/poll/src/lib.ts` já é padrão no repo
-   * (`backfill-score-by-month.ts`, `backfill-seq-state.ts`).
+   * Agora é o `Brand` canônico (`lib/shared/poll-core.ts` desde o #13994,
+   * que o Worker `poll` reexporta) — um brand inexistente (typo) ou copiado
+   * do perfil errado deixou de compilar, e a checagem sai de graça em
+   * qualquer perfil novo.
    */
   pollBrand: Brand;
 }

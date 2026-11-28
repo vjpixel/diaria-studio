@@ -118,7 +118,7 @@ import {
   renderJogarGateBoxBlock,
   jogarGateBoxScript,
 } from "./web-gate";
-import { parseCookieHeader } from "./session-cookie";
+import { parseCookieHeader } from "../../../scripts/lib/shared/session-cookie.ts";
 // #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
 // puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
 // `robots-txt.ts`, #4777 — ver docstring de `brand-wordmark.ts`).

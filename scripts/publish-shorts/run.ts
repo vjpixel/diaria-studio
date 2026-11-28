@@ -3,6 +3,10 @@
  * a rodada e o laço de envio. O envio de cada destino é uma etapa no módulo dele
  * (#14204), escolhida por `sendDestinationItem`; o laço guarda a releitura do
  * registro, o marcador de envio, a recusa e o pós-envio comum.
+ * #14327: as fases que não são destino saíram para `run-replace.ts` (lock,
+ * alvos e fase destrutiva da troca) e `run-authorize.ts` (manifesto do
+ * dry-run, consumo da autorização do plano, KV do /video); as condições de
+ * cada uma seguem aqui.
  *
  * Parte de `scripts/publish-shorts.ts` (#14054); a entrada reexporta o que os
  * testes e os outros scripts importam.
@@ -10,33 +14,15 @@
 import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "../lib/diaria/published-video-cleanup.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { publishConfirmSuffix, publishConfirmationError } from "../lib/diaria/publish-confirm.ts";
+import { publishConfirmationError } from "../lib/diaria/publish-confirm.ts";
+import { PAGE_REPOST_DESTINATION, sha256Hex } from "../lib/diaria/video-publish-plan.ts";
 import {
-  buildReplacementManifest,
-  buildVerticalManifest,
-  PAGE_REPOST_DESTINATION,
-  planSha256,
-  readVideoPlanSources,
-  sha256Hex,
-  VERTICAL_RUN_ACTIONS,
-  writeVideoPlanManifest,
-  type VideoPlanManifest,
-} from "../lib/diaria/video-publish-plan.ts";
-import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "../lib/diaria/video-publish-authorization.ts";
-import {
-  applyReplacementTimes,
-  planScheduledReplacements,
-  REPLACE_MIN_LEAD_MS,
-  replacementPublishCommand,
   afterCancelMessage,
-  replacementSurvivors,
   replacementUploadRefusal,
-  runScheduledReplacement,
   shortVideoChangeWarnings,
   type ReplacementCancelResult,
   type ShortReplacementTarget,
 } from "../lib/diaria/short-scheduled-replace.ts";
-import { alarmTaskAuthorizationRefusal } from "../lib/diaria/video-publish-authorization-alarm.ts";
 import { editionDir as editionDirFor } from "../lib/edition-paths.ts";
 import {
   CORTE_SPEC_FILE,
@@ -54,7 +40,6 @@ import {
 import { corteContentFingerprintFromBytes } from "../lib/diaria/corte-content.ts";
 import { loadResolvedFacebookPages } from "../lib/facebook-pages.ts";
 import {
-  facebookDestinationId,
   facebookUploadRoute,
   knownDestinationIds,
   loadShortsConfig,
@@ -65,32 +50,23 @@ import {
 } from "../lib/diaria/short-video.ts";
 import { alarmYouTubeAudioDegraded, notifyYouTubeAudioDegraded, type YouTubeAudioAlarmFn } from "../lib/diaria/youtube-audio-check.ts";
 import {
-  describeEditionVideoOutcome,
-  describeLatestVideoOutcome,
-  pollKvFromEnv,
-  updateEditionVideoRedirect,
-  updateLatestVideoRedirect,
-} from "../set-latest-video-redirect.ts";
-import {
   instagramTimerScopeError,
   linkedinTimerScopeError,
   threadsTimerScopeError,
   persistShortEntry,
   readShortsRegistry,
-  recordShortReplacement,
   shortsRegistryPath,
   shortsRegistryWriterFor,
 } from "../lib/diaria/shorts-published-store.ts";
-import { clearShortSending, clearShortSendingAll, markShortSending, openSendingMarks, readShortsSending } from "../lib/diaria/shorts-sending-marker.ts";
+import { clearShortSending, markShortSending } from "../lib/diaria/shorts-sending-marker.ts";
 import { acquireTimerLock, TIMER_LOCK_HEARTBEAT_MS } from "../lib/diaria/timer-lock.ts";
 import { readCorteTimerHeartbeat } from "../lib/diaria/corte-timer-heartbeat.ts";
-import { defaultYouTubeUploadDeps, missingYouTubeCredentials, rescheduleScheduledVideo } from "../lib/diaria/youtube-upload.ts";
+import { missingYouTubeCredentials } from "../lib/diaria/youtube-upload.ts";
 import { gFetchRetry } from "../lib/drive-helpers.ts";
 import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, DriveDownloadEmptyError, downloadDriveFileById } from "../lib/drive-download.ts";
 import { PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT } from "../lib/diaria/vertical-download-guard.ts";
 import { loadR2UploadConfig, reuseOrUploadToR2 } from "../lib/r2-object-upload.ts";
 import { postToWorkerQueue, resolveSocialWorkerToken, resolveSocialWorkerUrl } from "../lib/worker-queue-client.ts";
-import { linkedInPostUrnFrom } from "../lib/diaria/linkedin-page-actions.ts";
 import { resolveShortEntryState } from "../lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, defaultLinkedInApiVersion, readPersonalCreds } from "../lib/linkedin-personal.ts";
 import { clampBufferThumbnailOffsetMs, withMissingCoverRecord, SHORT_COVER_MISSING_ERROR } from "../lib/diaria/short-cover.ts";
@@ -99,7 +75,6 @@ import {
   ROOT,
   publicVideoUnavailableReason,
   publicVideoUnavailableCause,
-  type ShortsPlanItem,
   type ShortsPlan,
   shouldUpdateLatestVideoOnPublish,
   assignShortsDestinationOwners,
@@ -120,7 +95,7 @@ import {
   prepareInstagramChromeStep,
 } from "./instagram.ts";
 import { blockRepostOnProfileFailure, sendLinkedInProfileItem, sendPageRepostStep } from "./linkedin.ts";
-import { defaultGraphDeps, type PublishOutcome, cancelFacebookScheduledVideo, sendFacebookItem } from "./facebook.ts";
+import { defaultGraphDeps, type PublishOutcome, sendFacebookItem } from "./facebook.ts";
 import { InstagramTimerGateError } from "./instagram-confirm.ts";
 import { youtubeShortUploadFile, youtubeShortsPrepareBeforeMarker, youtubeShortUrl, sendYouTubeShortItem } from "./youtube.ts";
 import { sendThreadsProfileItem } from "./threads.ts";
@@ -143,8 +118,6 @@ import { runMark, runMarkReplaced } from "./mark.ts";
 import {
   USAGE,
   replaceScheduledArgsError,
-  markReplaceCancelling,
-  SHORTS_REPLACE_LOCK_FILE,
   parseShortsCliArgs,
   configuredThreadsViaTimer,
   configuredInstagramBackend,
@@ -165,67 +138,18 @@ import {
 } from "./corte.ts";
 import { updatePublishedArgsError, runUpdatePublished } from "./update-published.ts";
 import { credentialSkippedItems, confirmInstagram } from "./confirm.ts";
+import { consumeShortsPlanAuthorization, shortsPlanDryRunManifest, updateShortVideoRedirects } from "./run-authorize.ts";
+import { runShortsReplacePhase, selectShortsReplacement, takeShortsReplaceLock, type ShortsReplaceSelection } from "./run-replace.ts";
 
 // #14204: a etapa do YouTube mora em youtube.ts; a entrada reexporta daqui.
 export { replacedYouTubeIds } from "./youtube.ts";
 
+// #14327: o manifesto, o consumo da autorização do plano e o KV do /video moram em
+// run-authorize.ts; o lock e as fases da substituição, em run-replace.ts.
+export { buildShortsPlanManifest, shortsMainPublishCommand, shortsRunDestinations } from "./run-authorize.ts";
+export { replaceLockBusy } from "./run-replace.ts";
+
 let releaseReplaceLock: () => void = () => {};
-
-/**
- * #12654: manifesto canônico do plano do vertical da edição (hashes dos bytes
- * do vídeo e da capa, título/descrição do Short, horário e modo/instante
- * efetivo por destino, texto de cada destino, dono/comando, fontes
- * editoriais). O dry-run grava e imprime o `plan_sha256` que o editor aprova;
- * o `--publish` (rodada principal e task one-shot) recalcula e confere a
- * projeção de cada destino que vai agir antes de qualquer escrita externa
- * (leituras com credencial, como a Graph e a fila do Worker para a grade,
- * acontecem antes, no plano). Só no modo edição: o corte tem a autorização
- * própria (#11912) e os timers do 300 a da config que os ligou (#11741).
- */
-export function buildShortsPlanManifest(
-  plan: ShortsPlan,
-  input: { editionDir: string; videoBytes: Buffer | null; coverBytes: Buffer | null; generatedAt?: string },
-): VideoPlanManifest {
-  return buildVerticalManifest({
-    aammdd: plan.aammdd,
-    items: plan.items,
-    owners: plan.owners,
-    destinationAt: (id) => plan.destinationTimes[id]?.at ?? plan.shortTime.at,
-    horizontalLink: (id) => plan.horizontalLinks?.[id]?.link ?? null,
-    metadata: { title: plan.youtube.title, description: plan.youtube.description },
-    media: {
-      video_sha256: input.videoBytes ? sha256Hex(input.videoBytes) : null,
-      cover_sha256: input.coverBytes ? sha256Hex(input.coverBytes) : null,
-      captions_sha256: null, // o vertical não sobe legenda em arquivo: o texto de cada destino está em `content`
-    },
-    sources: readVideoPlanSources(input.editionDir),
-    publishCommand: shortsMainPublishCommand(plan.aammdd),
-    ...(input.generatedAt ? { generatedAt: input.generatedAt } : {}),
-  });
-}
-
-/** #12654: o comando da rodada principal do vertical (dono dos destinos que saem nela). */
-export function shortsMainPublishCommand(aammdd: string): string {
-  return `npx tsx scripts/publish-shorts.ts ${aammdd} --publish ${publishConfirmSuffix(aammdd)}`;
-}
-
-/**
- * #12654: destinos que esta rodada `--publish` executa (escrita externa pelo
- * publisher): publish/enqueue/buffer e o repost da página quando ele vai à
- * fila do Worker (guiado, Worker configurado e o vídeo do perfil conhecido no
- * registro ou saindo nesta rodada). Cada um consome a sua autorização antes do
- * 1º efeito; com a lista vazia a rodada não faz escrita externa nenhuma.
- */
-export function shortsRunDestinations(
-  items: readonly ShortsPlanItem[],
-  opts: { repostViaWorker?: boolean; profileUrnKnown?: boolean } = {},
-): string[] {
-  const run = items.filter((i) => VERTICAL_RUN_ACTIONS.has(i.action)).map((i) => i.destination);
-  const repost = items.some((i) => i.destination === PAGE_REPOST_DESTINATION && i.action === "guided");
-  const profileThisRun = run.includes("linkedin_profile");
-  if (repost && opts.repostViaWorker === true && (opts.profileUrnKnown === true || profileThisRun)) run.push(PAGE_REPOST_DESTINATION);
-  return run;
-}
 
 export async function main(): Promise<number> {
   try {
@@ -234,26 +158,6 @@ export async function main(): Promise<number> {
     // #12279: o lock da substituição vive a rodada inteira (do consumo da autorização ao último envio).
     releaseReplaceLock();
   }
-}
-
-/**
- * #12279: o lock da substituição está vivo? (um `--replace-scheduled --publish` em
- * curso nesta máquina). Lock velho (processo morto há mais que o teto) é
- * reaproveitado e solto na hora, como nos timers.
- */
-export function replaceLockBusy(dir: string, acquire: typeof acquireTimerLock = acquireTimerLock): "free" | "busy" | { unreadable: string } {
-  const path = join(dir, SHORTS_REPLACE_LOCK_FILE);
-  if (!existsSync(path)) return "free";
-  let rel: (() => void) | null;
-  try {
-    rel = acquire(path, Date.now());
-  } catch (e) {
-    // Falha fechada: lock ilegível segura o --publish, com a mensagem própria.
-    return { unreadable: `${path} ilegível (${(e as Error).message}): confira o arquivo e remova-o à mão se nenhuma troca estiver em curso` };
-  }
-  if (!rel) return "busy";
-  rel();
-  return "free";
 }
 
 /**
@@ -420,31 +324,12 @@ async function mainUnlocked(): Promise<number> {
   // #12279: a substituição segura o lock a rodada inteira, e o lock vale para qualquer --publish
   // da rodada principal (inclusive o --update-scheduled): nenhuma flag o contorna.
   if (flags.has("publish") && !corte && writer === "main") {
-    if (replaceRun) {
-      let rel: (() => void) | null = null;
-      try {
-        rel = acquireTimerLock(join(dir, SHORTS_REPLACE_LOCK_FILE), Date.now(), { heartbeatMs: TIMER_LOCK_HEARTBEAT_MS });
-      } catch (e) {
-        console.error(`publish-shorts: lock da substituição não tomado (${(e as Error).message}): nada feito (#12279)`);
-        return 2;
-      }
-      if (!rel) {
-        console.error("publish-shorts: outra substituição (--replace-scheduled --publish) está em curso nesta edição: nada feito (#12279)");
-        return 2;
-      }
-      releaseReplaceLock = rel;
+    const lock = takeShortsReplaceLock(dir, replaceRun); // #14327: run-replace.ts
+    if (typeof lock === "number") return lock;
+    if (lock.release) {
+      releaseReplaceLock = lock.release;
       // Relido sob o lock: a leitura do início pode estar velha.
       published = readShortsRegistry(dir, aammdd);
-    } else {
-      const lock = replaceLockBusy(dir);
-      if (lock === "busy") {
-        console.error("publish-shorts: substituição do vertical agendado (--replace-scheduled) em curso nesta edição: aguarde o desfecho dela antes de publicar (#12279)");
-        return 2;
-      }
-      if (lock !== "free") {
-        console.error(`publish-shorts: lock da substituição ${lock.unreadable}: nada publicado (#12279)`);
-        return 2;
-      }
     }
   }
 
@@ -530,37 +415,13 @@ async function mainUnlocked(): Promise<number> {
   // #12279: a substituição escolhe os alvos no registro e planeja como se eles não estivessem
   // registrados (o envio novo é planejado; o post antigo só sai depois do consumo da autorização).
   let replaceTargets: ShortReplacementTarget[] = [];
-  let replaceSkipped: ReturnType<typeof planScheduledReplacements>["skipped"] = [];
+  let replaceSkipped: ShortsReplaceSelection["skipped"] = [];
   let planPublished = published;
   let planOnly = onlyList;
   if (replaceRun) {
-    if (!file || !videoHash || !duration) {
-      console.error(`publish-shorts: --replace-scheduled exige o vídeo novo (V2) em MP4 válido: ${videoPath}${file ? " sem duração MP4 legível" : " ausente"} (--video PATH, num caminho próprio)`);
-      return 2;
-    }
-    let selection: ReturnType<typeof planScheduledReplacements>;
-    try {
-      selection = planScheduledReplacements(published.entries, {
-        now: new Date(),
-        only: onlyList,
-        videoSha256: videoHash,
-        openMarks: openSendingMarks(readShortsSending(dir, aammdd), published.entries),
-      });
-    } catch (e) {
-      console.error(`publish-shorts: ${(e as Error).message}`);
-      return 2;
-    }
-    for (const s of selection.skipped) console.error(`[aviso] ${s.destination}: não trocado — ${s.reason}`);
-    if (!selection.targets.length) {
-      console.error("publish-shorts: --replace-scheduled: nenhum post agendado a trocar (veja os avisos): nada feito");
-      console.log(JSON.stringify({ dry_run: !flags.has("publish"), replace_scheduled: true, aammdd, video: videoPath, video_sha256: videoHash, targets: [], skipped: selection.skipped }, null, 2));
-      return flags.has("publish") ? 1 : 0;
-    }
-    replaceTargets = selection.targets;
-    replaceSkipped = selection.skipped;
-    const targetDests = new Set(replaceTargets.map((t) => t.destination));
-    planPublished = { ...published, entries: published.entries.filter((e) => !targetDests.has(e.destination)) };
-    planOnly = [...targetDests];
+    const selection = selectShortsReplacement({ dir, aammdd, published, onlyList, videoPath, file, videoHash, duration, publish: flags.has("publish") }); // #14327: run-replace.ts
+    if (typeof selection === "number") return selection;
+    ({ targets: replaceTargets, skipped: replaceSkipped, planPublished, planOnly } = selection);
   }
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
@@ -676,145 +537,21 @@ async function mainUnlocked(): Promise<number> {
   // próprio (o grant --replace-scheduled), e a fase destrutiva só depois do consumo.
   let replaceResults: ReplacementCancelResult[] = [];
   if (replaceRun) {
-    const timed = applyReplacementTimes(plan.items, replaceTargets);
-    if (!timed.ok) {
-      console.error(`publish-shorts: --replace-scheduled: ${timed.error}`);
-      return 2;
-    }
-    plan = { ...plan, items: timed.items };
-    const ownerCommand = replacementPublishCommand(aammdd, { video: values["video"] });
-    const replacementManifest = (generatedAt?: string) =>
-      buildReplacementManifest(
-        buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes, ...(generatedAt ? { generatedAt } : {}) }),
-        replaceTargets,
-        ownerCommand,
-      );
-    if (!flags.has("publish")) {
-      const manifest = replacementManifest(new Date().toISOString());
-      const planHash = planSha256(manifest);
-      try {
-        const manifestPath = writeVideoPlanManifest(dir, manifest, { replacement: true });
-        console.error(
-          `[premissa] substituição do vertical agendado: plan_sha256 ${planHash} (${manifestPath}). Depois do "pode publicar" explícito do editor sobre ESTA troca: ` +
-            `npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part vertical --replace-scheduled --plan-sha256 ${planHash} --confirmation "{resposta do editor}" e então ${ownerCommand} (#12279)`,
-        );
-      } catch (e) {
-        // Sem o manifesto o grant recusa: o plano impresso não é aprovável, a rodada sai ≠0.
-        console.error(`publish-shorts: manifesto da substituição não gravado (${(e as Error).message}): sem ele o grant recusa e o --publish não sai (#12279)`);
-        console.log(JSON.stringify({ dry_run: true, replace_scheduled: true, aammdd, manifest_written: false, targets: replaceTargets, skipped: replaceSkipped }, null, 2));
-        return 1;
-      }
-      console.log(
-        JSON.stringify(
-          {
-            dry_run: true,
-            replace_scheduled: true,
-            aammdd,
-            video: videoPath,
-            video_sha256: videoHash,
-            targets: replaceTargets,
-            skipped: replaceSkipped,
-            items: plan.items,
-            buffer_instructions: replaceTargets.some((t) => t.kind === "buffer")
-              ? "X/TikTok: nada é apagado antes do --publish desta troca. Depois dele (results[] com pending_buffer_create), por destino: get_post do post antigo (conferir na fila, não enviado, dueAt igual ao horário do plano com mais de 30 min), delete_post, logo em seguida --mark-replaced DEST=buffer:ANTIGO, create_post com results[].buffer, e por fim --mark DEST=buffer:NOVO --replaces buffer:ANTIGO --scheduled-at HORÁRIO --video-sha256 HASH."
-              : undefined,
-            plan_sha256: planHash,
-            plan_manifest: manifest,
-          },
-          null,
-          2,
-        ),
-      );
-      return 0;
-    }
-    // --publish: o consumo da autorização de substituição de TODOS os alvos vem ANTES da 1ª exclusão.
-    const authCommand = `npx tsx scripts/publish-shorts.ts ${process.argv.slice(2).join(" ")}`;
-    const ytCreds = () => {
-      if (ytMissing.length) throw new Error(`faltam ${ytMissing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
-      return {
-        clientId: (process.env.GOOGLE_CLIENT_ID ?? "").trim(),
-        clientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
-        refreshToken: (process.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
-        channelId: (process.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
-      };
-    };
-    const phase = await runScheduledReplacement(replaceTargets, {
-      consume: () => {
-        const auth = consumeBeforeExternalEffects({
-          editionDir: dir, edition: aammdd,
-          manifest: replacementManifest(),
-          destinations: replaceTargets.map((t) => t.destination), now: new Date(), pid: process.pid, by: "publish-shorts --replace-scheduled --publish",
-          command: authCommand,
-          fallbackCommand: ownerCommand,
-          replacement: true,
-        });
-        return auth.ok ? { ok: true } : { ok: false, error: auth.error };
-      },
-      stillRegistered: (t) => {
-        const e = readShortsRegistry(dir, aammdd).entries.find((x) => x.destination === t.destination);
-        return !!e && e.id === t.old_id && e.status === "scheduled" && !!e.scheduled_at && Date.parse(e.scheduled_at) === Date.parse(t.at);
-      },
-      cancel: async (t, onBeforeWrite) => {
-        // A releitura confere também o horário do plano: post relido em outro horário não é tocado.
-        if (t.destination === "youtube_shorts") {
-          // YouTube: o antigo volta a private SEM agendamento (nada apagado; o editor apaga no Studio se quiser).
-          await rescheduleScheduledVideo(defaultYouTubeUploadDeps, ytCreds(), t.old_id, null, REPLACE_MIN_LEAD_MS, { expectedAt: t.at, onBeforeWrite });
-          return;
-        }
-        const page = pages.find((p) => facebookDestinationId(p.slug) === t.destination);
-        if (!page || page.missing.length) throw new Error(`página ${t.destination} sem credencial (${page ? page.missing.join(", ") : "fora de publishing.social.facebook.pages"})`);
-        await cancelFacebookScheduledVideo(defaultGraphDeps, page, apiVersion, t.old_id, REPLACE_MIN_LEAD_MS, { expectedAt: t.at, onBeforeWrite });
-      },
-      // Marca "cancelando" = marca de envio do destino: a releitura (video-publish-registry-status) e o dry-run a acusam.
-      markCancelling: (t) => markReplaceCancelling(dir, aammdd, t.destination),
-      clearCancelling: (d) => clearShortSending(dir, aammdd, "main", d),
-      record: (t) => recordShortReplacement(dir, { destination: t.destination, id: t.old_id, scheduled_at: t.at, replaced_at: new Date().toISOString(), new_video_sha256: videoHash }),
-      clearMarks: (d) => {
-        clearShortSendingAll(dir, aammdd, d);
-      },
-      warn: (m) => console.error(`[aviso] ${m}`),
+    // #14327: dry-run da troca (sai aqui) ou consumo + cancelamento dos posts antigos, em run-replace.ts.
+    const phase = await runShortsReplacePhase({
+      plan, dir, aammdd, publish: flags.has("publish"), videoArg: values["video"], videoPath, file, videoHash,
+      coverBytes: shortCover.bytes, replaceTargets, replaceSkipped, ytMissing, pages, apiVersion,
     });
-    if (phase.refused !== null) {
-      console.error(
-        `publish-shorts --replace-scheduled: substituição recusada pela autorização do plano (#12279, #12654): ${phase.refused}. Nada foi apagado nem enviado. ` +
-          `Para trocar: dry-run --replace-scheduled, plano (plan_sha256) ao editor, "pode publicar" explícito, ` +
-          `npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part vertical --replace-scheduled --plan-sha256 {hash} --confirmation "{resposta do editor}" e só então o comando.`,
-      );
-      console.log(JSON.stringify({ dry_run: false, replace_scheduled: true, aammdd, refused: phase.refused, targets: replaceTargets }, null, 2));
-      return 2;
-    }
-    console.error(`[ok] autorização de substituição consumida (uso único): ${replaceTargets.map((t) => t.destination).join(", ")} (#12279)`);
-    replaceResults = phase.results;
-    for (const r of replaceResults) {
-      if (r.outcome === "cancelled") console.error(`[ok] ${r.target.destination}: post antigo ${r.target.old_id} cancelado; envio novo no horário preservado ${r.target.at}`);
-      else if (r.outcome === "failed" || r.outcome === "uncertain") console.error(`[erro] ${r.target.destination}: ${r.error}`);
-    }
-    // Só o alvo cancelado (API) ou da Buffer recebe envio novo; falha e incerteza entram em results (exit ≠ 0).
-    const going = replacementSurvivors(replaceResults);
-    plan = { ...plan, items: plan.items.filter((i) => going.has(i.destination)) };
+    if (typeof phase === "number") return phase;
+    ({ plan, results: replaceResults } = phase);
   }
 
   // #12654: o plano da edição (fora do corte e dos timers do 300) passa pela autorização por hash.
   // #12279: a substituição já consumiu a autorização dela acima (no mesmo processo, sob o lock).
   const planGated = !corte && writer === "main";
   if (!flags.has("publish")) {
-    let planOut: { plan_sha256: string; plan_manifest: VideoPlanManifest } | Record<string, never> = {};
-    if (planGated) {
-      const manifest = buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes, generatedAt: new Date().toISOString() });
-      const planHash = planSha256(manifest);
-      planOut = { plan_sha256: planHash, plan_manifest: manifest };
-      // Só a rodada de plano inteiro grava o manifesto que o grant lê (um --only parcial não substitui o plano da parte).
-      if (!onlyList) {
-        try {
-          const manifestPath = writeVideoPlanManifest(dir, manifest);
-          console.error(`[premissa] plano do vertical: plan_sha256 ${planHash} (${manifestPath}). Depois do "pode publicar" explícito do editor sobre ESTE plano: npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part vertical --plan-sha256 ${planHash} --confirmation "{resposta do editor}" (#12654)`);
-        } catch (e) {
-          console.error(`[aviso] manifesto do plano não gravado (${(e as Error).message}): sem ele o grant recusa e o --publish não sai (#12654)`);
-        }
-      } else {
-        console.error(`[premissa] plano parcial (--only): plan_sha256 ${planHash} só confere; o manifesto da parte não é regravado (#12654)`);
-      }
-    }
+    // #14327: o manifesto e o plan_sha256 do dry-run vêm de run-authorize.ts; a impressão fica aqui.
+    const planOut = shortsPlanDryRunManifest({ plan, dir, aammdd, planGated, partial: onlyList !== null, file, coverBytes: shortCover.bytes });
     console.log(JSON.stringify({ dry_run: true, ...plan, ...revokedOut(), ...planOut }, null, 2));
     return 0;
   }
@@ -825,57 +562,18 @@ async function mainUnlocked(): Promise<number> {
   // #12654: destinos com escrita externa nesta rodada. Fora do plano com autorização (corte, timers) vale tudo como antes.
   let gatedActing: string[] | null = null;
   if (planGated && !replaceRun) {
-    // Confere e consome (uso único) a autorização de cada destino que esta rodada executa, com o
-    // manifesto recalculado agora, ANTES da 1ª escrita externa (KV do link da bio, R2, APIs, fila do Worker).
-    const acting = shortsRunDestinations(plan.items, {
+    // #14327: consumo (uso único) antes da 1ª escrita externa, em run-authorize.ts.
+    const auth = await consumeShortsPlanAuthorization({
+      plan, dir, aammdd, file, coverBytes: shortCover.bytes, published,
       repostViaWorker: Boolean(workerUrl && workerToken),
-      profileUrnKnown: linkedInPostUrnFrom(published.entries.find((e) => e.destination === "linkedin_profile")) !== null,
+      forceNow: flags.has("now"),
     });
-    gatedActing = acting;
-    if (acting.length) {
-      const authCommand = `npx tsx scripts/publish-shorts.ts ${process.argv.slice(2).join(" ")}`;
-      const auth = consumeBeforeExternalEffects({
-        editionDir: dir, edition: aammdd,
-        manifest: buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes }),
-        destinations: acting, now: new Date(), pid: process.pid, by: "publish-shorts --publish",
-        command: authCommand,
-        fallbackCommand: shortsMainPublishCommand(aammdd),
-        forceNow: flags.has("now"),
-      });
-      if (!auth.ok) {
-        console.error(authorizationRefusalMessage("publish-shorts", "vertical", aammdd, auth.error));
-        // #12859: a task one-shot roda sem ninguém olhando; a recusa dela vira alarme ao editor.
-        await alarmTaskAuthorizationRefusal({ editionDir: dir, aammdd, part: "vertical", command: authCommand, refusals: auth.refusals ?? [], notifyDeps: { cwd: ROOT } });
-        return 2;
-      }
-      console.error(`[ok] autorização do plano consumida (uso único): ${auth.consumed.map((a) => a.destination).join(", ")} (#12654)`);
-    } else {
-      console.error("[premissa] nenhum destino sai por esta rodada: nenhuma autorização consumida e nenhuma escrita externa (KV do diar.ia.br/video, fila do Worker); os adiados saem pelos donos do owners[], cada um com a sua (#12654)");
-    }
+    if (typeof auth === "number") return auth;
+    gatedActing = auth.acting;
   }
   if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer }) && !replaceRun && (gatedActing === null || gatedActing.length > 0)) {
-    // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.
-    // Fail-soft: o vertical sai mesmo sem o KV; a gravação só avança (edição anterior não sobrescreve).
-    // #12786: só a rodada principal; as dos timers do 300 não leem nem gravam o KV.
-    try {
-      const kvEnv = pollKvFromEnv();
-      if (!kvEnv.kv) console.error(`[aviso] diar.ia.br/video não atualizado: ${kvEnv.reason} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
-      else {
-        try {
-          console.error(`[ok] ${describeLatestVideoOutcome(await updateLatestVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))} (#12735)`);
-        } catch (e) {
-          console.error(`[aviso] diar.ia.br/video não atualizado: ${(e as Error).message} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
-        }
-        // #13709: o link por edição do 1º comentário (Instagram) e da resposta (Threads), independente do mais recente.
-        try {
-          console.error(`[ok] ${describeEditionVideoOutcome(aammdd, await updateEditionVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))}`);
-        } catch (e) {
-          console.error(`[aviso] diar.ia.br/video/${aammdd} não atualizado: ${(e as Error).message} — o link do 1º comentário cai na lista do canal; rode set-latest-video-redirect.ts ${aammdd} --apply (#13709)`);
-        }
-      }
-    } catch (e) {
-      console.error(`[aviso] diar.ia.br/video não atualizado: ${(e as Error).message} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
-    }
+    // #12735/#12786/#13709: link fixo da bio e link por edição, fail-soft, em run-authorize.ts.
+    await updateShortVideoRedirects(dir, aammdd);
   }
   // #11912: só o --publish confirmado do corte grava o "pode publicar" (e o --only usado) no
   // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled já

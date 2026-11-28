@@ -24,7 +24,7 @@ import {
   publishConfirmArgs,
   publishConfirmationError,
 } from "../scripts/lib/diaria/publish-confirm.ts";
-import { assignShortsDestinationOwners } from "../scripts/publish-shorts.ts";
+import { assignShortsDestinationOwners } from "../scripts/publish-shorts/_shared.ts";
 import { threadsPublishArgs } from "../scripts/shorts-threads-profile-timer.ts";
 import { instagramPublishArgs } from "../scripts/shorts-instagram-timer.ts";
 import { summarizeVideoRegistries } from "../scripts/video-publish-registry-status.ts";
