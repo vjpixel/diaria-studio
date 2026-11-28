@@ -4,7 +4,7 @@
  * Regressão (#633): `git worktree remove --force` que para no meio. No
  * Windows (Neo, 27/11/2026) um teste pendurado com a DLL do `sharp` carregada
  * de dentro do worktree fez o git sair com "Invalid argument" depois de já ter
- * apagado o `.git` (ordem alfabética, para no primeiro erro) e desregistrado o
+ * apagado o `.git` (ordem do readdir, alfabética no NTFS; para no primeiro erro) e desregistrado o
  * worktree. A pasta ficou com arquivos rastreados e a junction de workspace
  * em `node_modules/`, invisível a todas as varreduras.
  *
@@ -30,16 +30,25 @@ import {
   findLiveProcessesInPath,
   normalizePathKey,
   cleanupPartialRemovalLeftover,
+  buildExcludedPathKeys,
+  isExcludedPath,
   PARTIAL_REMOVAL_ORPHAN_MIN_IDLE_MS,
 } from "../scripts/lib/worktree-remove.ts";
 import {
   parseWin32ProcessJson,
   listProcessesForWorktreeGuard,
+  listProcessesStrict,
+  WIN32_PROCESS_QUERY_TIMEOUT_MS,
   type ListProcessesOps,
   type ProcessInfo,
 } from "../scripts/lib/list-processes.ts";
-import { runMainWithCheckers } from "../scripts/cleanup-merged-worktrees.ts";
-import { rescueOrphanDir, gitBlobsPresent, makeOrphanRescuer } from "../scripts/lib/orphan-rescue.ts";
+import {
+  runMainWithCheckers,
+  removeWorktreeSafe,
+  buildRealCheckers,
+  describeRemovalOutcome,
+} from "../scripts/cleanup-merged-worktrees.ts";
+import { rescueOrphanDir, gitReachableBlobs, makeOrphanRescuer } from "../scripts/lib/orphan-rescue.ts";
 import { cleanupIntegrationBranch, type TrainRunner } from "../scripts/lib/merge-train-live.ts";
 
 function mktmp(prefix: string): string {
@@ -78,7 +87,7 @@ test("#14335 resolveWorktreeRemoval: git falhou com 'Invalid argument' depois de
     },
   });
 
-  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(result, { ok: true, outcome: "partial-cleaned" });
   assert.deepEqual(rescued, [dir], "resgate roda antes de apagar");
   assert.equal(existsSync(dir), false, "a pasta órfã precisa sumir");
   assert.equal(readFileSync(join(target, "canary.txt"), "utf8"), "conteúdo do alvo da junction");
@@ -187,7 +196,7 @@ test("#14335 parseWin32ProcessJson: array, objeto solto e CommandLine nulo", () 
   assert.throws(() => parseWin32ProcessJson("{não é json"));
 });
 
-test("#14335 listProcessesForWorktreeGuard: no Windows lê o CIM pelo PowerShell; falha vira [] (comportamento anterior)", () => {
+test("#14335 listProcessesForWorktreeGuard (guard ANTIGO, antes do git): lê o CIM no Windows; falha vira [] só aqui", () => {
   const calls: string[] = [];
   const okOps = {
     platform: "win32",
@@ -256,6 +265,7 @@ function baseCheckers(overrides: Partial<Parameters<typeof runMainWithCheckers>[
     listWorktrees: () => [{ path: "/repo", branch: "master", locked: false }],
     listActiveSessions: () => ({ sessions: [], readable: true }),
     listProcesses: () => [],
+    listProcessesStrict: () => [],
     isWorktreeDirty: () => false,
     removeWorktree: () => ({ ok: true }),
     removeWorktreeDir: () => ({ dirRemoved: true, errors: [] }),
@@ -311,7 +321,9 @@ test("#14335 runMainWithCheckers: pasta referenciada por processo vivo é preser
       "/repo",
       baseCheckers({
         findOrphans: () => [orphan],
-        listProcesses: () => [{ pid: 62860, ppid: 52900, cmd: `node --require ${orphan}/node_modules/tsx/dist/preflight.cjs --test` }],
+        // O guard antigo (fail-soft) não vê nada; o snapshot estrito da varredura vê.
+        listProcesses: () => [],
+        listProcessesStrict: () => [{ pid: 62860, ppid: 52900, cmd: `node --require ${orphan}/node_modules/tsx/dist/preflight.cjs --test` }],
         rescueOrphan: () => ({ ok: true, rescueDir: null }),
         removeWorktreeDir: (p) => {
           removed.push(p);
@@ -334,6 +346,10 @@ test("#14335 runMainWithCheckers: --dry-run só relata a pasta, não remove nem 
       baseCheckers({
         findOrphans: () => ["/repo/.claude/worktrees/agent-x"],
         listProcesses: () => {
+          listed++;
+          return [];
+        },
+        listProcessesStrict: () => {
           listed++;
           return [];
         },
@@ -422,7 +438,7 @@ test("#14335 branch-cleanup.ts: a remoção passa snapshot de processos e resgat
   const src = readFileSync(join(import.meta.dirname, "..", "scripts", "branch-cleanup.ts"), "utf8");
   assert.match(
     src,
-    /resolveWorktreeRemoval\(removeResult, w\.path, \{\s*getLiveProcesses: \(\) => listProcessesForWorktreeGuard\(\),\s*rescue: makeOrphanRescuer\(cwd\),/,
+    /resolveWorktreeRemoval\(removeResult, w\.path, \{\s*getLiveProcesses: \(\) => listProcessesStrict\(\),\s*rescue: makeOrphanRescuer\(cwd\),/,
   );
 });
 
@@ -468,9 +484,10 @@ test("#14335 rescueOrphanDir: copia só o que não está no repo (_internal/, ra
   const rescueRoot = join(repo, "data", "worktree-rescue");
   const nowMs = Date.UTC(2026, 10, 27);
 
-  const r = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitBlobsPresent(repo), nowMs });
+  const r = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs });
 
   assert.ok(r.rescueDir);
+  assert.equal(r.reused, false);
   assert.equal(r.copied, 2);
   assert.equal(r.alreadyInRepo, 2, "package.json e README.md (CRLF) já estão no repo");
   assert.equal(r.symlinks, 1);
@@ -483,9 +500,18 @@ test("#14335 rescueOrphanDir: copia só o que não está no repo (_internal/, ra
   assert.deepEqual(Object.keys(meta.symlinks), ["data"]);
   assert.equal(readFileSync(join(target, "canary.txt"), "utf8"), "conteúdo do alvo da junction", "alvo do link intacto");
 
-  // 2º resgate no mesmo dia vai para `-2`, nunca sobrescreve.
-  const r2 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitBlobsPresent(repo), nowMs });
-  assert.match(r2.rescueDir!.replace(/\\/g, "/"), /agent-com-trabalho-2$/);
+  // 2º resgate com o MESMO conteúdo reaproveita o anterior, sem cópia nova.
+  const r2 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs: nowMs + 86_400_000 });
+  assert.equal(r2.reused, true);
+  assert.equal(r2.rescueDir, r.rescueDir);
+  assert.equal(r2.copied, 0);
+  assert.equal(existsSync(`${r.rescueDir}-2`), false);
+  // Conteúdo mudou: resgate novo, em `-2`, sem sobrescrever o anterior.
+  writeFileSync(join(dir, "_internal", "notas.json"), '{"trabalho":"mudou"}');
+  const r3 = rescueOrphanDir(dir, { rescueRoot, blobsPresent: gitReachableBlobs(repo), nowMs });
+  assert.equal(r3.reused, false);
+  assert.match(r3.rescueDir!.replace(/\\/g, "/"), /agent-com-trabalho-2$/);
+  assert.equal(readFileSync(join(r.rescueDir!, "files", "_internal", "notas.json"), "utf8"), '{"trabalho":"não rastreado"}');
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -496,8 +522,8 @@ test("#14335 rescueOrphanDir: tudo já no repo -> nenhum diretório de resgate c
   mkdirSync(join(dir, "scripts"), { recursive: true });
   writeFileSync(join(dir, "package.json"), "{}\n");
   writeFileSync(join(dir, "scripts", "x.ts"), "export {};\n");
-  const r = rescueOrphanDir(dir, { rescueRoot: join(repo, "data", "worktree-rescue"), blobsPresent: gitBlobsPresent(repo) });
-  assert.deepEqual(r, { rescueDir: null, copied: 0, alreadyInRepo: 2, symlinks: 0 });
+  const r = rescueOrphanDir(dir, { rescueRoot: join(repo, "data", "worktree-rescue"), blobsPresent: gitReachableBlobs(repo) });
+  assert.deepEqual(r, { rescueDir: null, copied: 0, alreadyInRepo: 2, symlinks: 0, reused: false });
   assert.equal(existsSync(join(repo, "data", "worktree-rescue")), false);
   rmSync(base, { recursive: true, force: true });
 });
@@ -521,7 +547,7 @@ test("#14335 makeOrphanRescuer + cleanupPartialRemovalLeftover: sem data/, acima
     () =>
       rescueOrphanDir(dir, {
         rescueRoot: join(repo, "data", "worktree-rescue"),
-        blobsPresent: gitBlobsPresent(repo),
+        blobsPresent: gitReachableBlobs(repo),
         limits: { maxFiles: 0, maxBytes: 1e9 },
       }),
     /teto do resgate/,
@@ -574,4 +600,196 @@ test("#14335 runMainWithCheckers: sem rescueOrphan configurado, nenhuma pasta ó
     ),
   );
   assert.deepEqual(removed, []);
+});
+
+// ── review de 5 agentes (coordenador) ──
+
+test("#14335 listProcessesStrict: falha ou timeout do PowerShell LANÇA (não vira []); passa o teto de 30 s ao execFileSync", () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const okOps = {
+    platform: "win32",
+    execFileSync: ((_f: string, _a: string[], o: Record<string, unknown>) => {
+      seen.push(o);
+      return JSON.stringify({ ProcessId: 3, ParentProcessId: 1, CommandLine: "node z" });
+    }) as unknown as ListProcessesOps["execFileSync"],
+  } as ListProcessesOps;
+  assert.deepEqual(listProcessesStrict(okOps), [{ pid: 3, ppid: 1, cmd: "node z" }]);
+  assert.equal(seen[0].timeout, WIN32_PROCESS_QUERY_TIMEOUT_MS);
+  assert.equal(WIN32_PROCESS_QUERY_TIMEOUT_MS, 30_000);
+
+  const timeoutOps = {
+    platform: "win32",
+    execFileSync: (() => {
+      throw Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" });
+    }) as unknown as ListProcessesOps["execFileSync"],
+  } as ListProcessesOps;
+  assert.throws(() => listProcessesStrict(timeoutOps), /ETIMEDOUT/);
+  const posixFail = {
+    platform: "linux",
+    execFileSync: (() => {
+      throw new Error("ps quebrado");
+    }) as unknown as ListProcessesOps["execFileSync"],
+  } as ListProcessesOps;
+  assert.throws(() => listProcessesStrict(posixFail), /ps quebrado/);
+});
+
+test("#14335 cleanupPartialRemovalLeftover: não conseguir listar processos (timeout) PRESERVA a pasta, sem resgate", () => {
+  const base = mktmp("diaria-wtrm-14335-listfail-");
+  const { dir } = makePartialRemovalLeftover(base, "agent-sem-lista");
+  let rescued = 0;
+  const result = cleanupPartialRemovalLeftover(dir, {
+    getLiveProcesses: () => {
+      throw new Error("spawnSync powershell.exe ETIMEDOUT");
+    },
+    rescue: () => {
+      rescued++;
+      return { ok: true, rescueDir: null };
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.match((result as { error: string }).error, /não deu para listar processos.*ETIMEDOUT/);
+  assert.equal(rescued, 0);
+  assert.equal(existsSync(join(dir, "package.json")), true);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 runMainWithCheckers: listagem estrita falhou (ou ausente) -> nenhuma pasta órfã é apagada", () => {
+  for (const strict of [
+    () => {
+      throw new Error("powershell ausente");
+    },
+    undefined,
+  ]) {
+    const removed: string[] = [];
+    const logs = captureLogs(() =>
+      runMainWithCheckers(
+        {},
+        "/repo",
+        baseCheckers({
+          findOrphans: () => ["/repo/.claude/worktrees/agent-x"],
+          listProcessesStrict: strict,
+          rescueOrphan: () => ({ ok: true, rescueDir: null }),
+          removeWorktreeDir: (p) => {
+            removed.push(p);
+            return { dirRemoved: true, errors: [] };
+          },
+        }),
+      ),
+    );
+    assert.deepEqual(removed, []);
+    assert.ok(logs.some((l) => l.includes("preservada (#14335)") && /listar|listagem/.test(l)), logs.join("\n"));
+  }
+});
+
+test("#14335 removeWorktreeSafe ponta a ponta: git apaga o .git e falha -> snapshot NOVO de processos, resgate, rescueDir no resultado", () => {
+  const base = mktmp("diaria-wtrm-14335-e2e-");
+  const { dir } = makePartialRemovalLeftover(base, "agent-e2e");
+  writeFileSync(join(dir, ".git"), "gitdir: /repo/.git/worktrees/agent-e2e\n");
+  const run = () => {
+    rmSync(join(dir, ".git")); // o git apagou o .git e parou no meio
+    return { status: 255, stderr: `error: failed to delete '${dir}': Invalid argument`, stdout: "" };
+  };
+  const rescued: string[] = [];
+  let snapshots = 0;
+  const result = removeWorktreeSafe(dir, base, [], {
+    run,
+    getLiveProcesses: () => {
+      snapshots++;
+      return [];
+    },
+    rescue: (p) => {
+      rescued.push(p);
+      return { ok: true, rescueDir: join(base, "data", "worktree-rescue", "2026-11-28", "agent-e2e") };
+    },
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    outcome: "partial-cleaned",
+    rescueDir: join(base, "data", "worktree-rescue", "2026-11-28", "agent-e2e"),
+  });
+  assert.equal(snapshots, 1, "snapshot novo depois do git");
+  assert.deepEqual(rescued, [dir]);
+  assert.equal(existsSync(dir), false);
+  assert.match(describeRemovalOutcome(result), /resgate em .*agent-e2e/);
+  assert.equal(describeRemovalOutcome({ ok: true, outcome: "removed" }), "");
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 removeWorktreeSafe: o snapshot antigo vazio não vale na remoção parcial; o novo vê o processo e preserva", () => {
+  const base = mktmp("diaria-wtrm-14335-e2e-live-");
+  const { dir } = makePartialRemovalLeftover(base, "agent-e2e-vivo");
+  writeFileSync(join(dir, ".git"), "gitdir: x\n");
+  const result = removeWorktreeSafe(dir, base, [], {
+    run: () => {
+      rmSync(join(dir, ".git"));
+      return { status: 255, stderr: "Invalid argument", stdout: "" };
+    },
+    getLiveProcesses: () => [{ pid: 777, ppid: 1, cmd: `node ${dir}/x.js` }],
+    rescue: () => ({ ok: true, rescueDir: null }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /PID 777/);
+  assert.equal(existsSync(join(dir, "package.json")), true);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 buildRealCheckers: guard antigo com listProcessesForWorktreeGuard; varredura com listProcessesStrict", () => {
+  const c = buildRealCheckers("/repo-que-nao-existe");
+  assert.equal(c.listProcesses, listProcessesForWorktreeGuard);
+  assert.equal(c.listProcessesStrict, listProcessesStrict);
+  assert.equal(typeof c.rescueOrphan, "function");
+  assert.equal(typeof c.findOrphans, "function");
+});
+
+test("#14335 buildExcludedPathKeys/isExcludedPath: 'C:\\...' do join casa 'c:/.../' do git, em qualquer SO", () => {
+  const keys = buildExcludedPathKeys(["C:/Users/vjpix/Projects/diaria-studio/.claude/worktrees/agent-a29f/"]);
+  assert.equal(isExcludedPath("C:\\Users\\vjpix\\Projects\\diaria-studio\\.claude\\worktrees\\agent-a29f", keys), true);
+  assert.equal(isExcludedPath("c:\\users\\VJPIX\\projects\\diaria-studio\\.claude\\worktrees\\agent-a29f", keys), true);
+  assert.equal(isExcludedPath("C:\\Users\\vjpix\\Projects\\diaria-studio\\.claude\\worktrees\\agent-a29f0", keys), false);
+  const posix = buildExcludedPathKeys(["/home/u/wt/Agent"]);
+  assert.equal(isExcludedPath("/home/u/wt/Agent", posix), true);
+  assert.equal(isExcludedPath("/home/u/wt/agent", posix), false, "POSIX mantém a caixa");
+});
+
+test("#14335 rescueOrphanDir: blob só no object DB (não alcançável por ref) e arquivo vazio são copiados", () => {
+  const base = mktmp("diaria-wtrm-14335-reach-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const dir = join(base, "agent-reach");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "package.json"), "{}\n"); // alcançável (commitado)
+  writeFileSync(join(dir, "solto.txt"), "só no object DB\n");
+  writeFileSync(join(dir, "vazio.txt"), "");
+  // `hash-object -w` grava o blob no DB sem nenhuma ref apontando (como o índice de um worktree removido).
+  runGit(repo, ["hash-object", "-w", join(dir, "solto.txt")]);
+  const r = rescueOrphanDir(dir, { rescueRoot: join(repo, "data", "worktree-rescue"), blobsPresent: gitReachableBlobs(repo) });
+  assert.equal(r.copied, 2);
+  assert.equal(readFileSync(join(r.rescueDir!, "files", "solto.txt"), "utf8"), "só no object DB\n");
+  assert.equal(existsSync(join(r.rescueDir!, "files", "vazio.txt")), true);
+  assert.equal(existsSync(join(r.rescueDir!, "files", "package.json")), false);
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("#14335 resolveWorktreeRemoval: rescueDir do resgate chega ao resultado; cleanupIntegrationBranch loga o destino", () => {
+  const base = mktmp("diaria-wtrm-14335-dest-");
+  const repo = makeRepoWithCommittedFiles(base);
+  const { dir } = makePartialRemovalLeftover(base, "wt-dest");
+  mkdirSync(join(dir, "_internal"));
+  writeFileSync(join(dir, "_internal", "a.txt"), "trabalho");
+  const warnings: string[] = [];
+  const runner = {
+    exec: (_cmd: string, args: string[]) =>
+      args[0] === "worktree" ? { ok: false, stdout: "", stderr: "Invalid argument" } : { ok: true, stdout: "", stderr: "" },
+    sleep: async () => {},
+    now: () => 0,
+    mkTempDir: () => "",
+    warn: (m: string) => warnings.push(m),
+  } as unknown as TrainRunner;
+  const result = cleanupIntegrationBranch(runner, "merge-train/x", dir, repo);
+  assert.equal(result.ok, true, warnings.join("\n"));
+  assert.equal(existsSync(dir), false);
+  const dest = warnings.find((w) => w.includes("remoção parcial") && w.includes("resgate em"));
+  assert.ok(dest, warnings.join("\n"));
+  const rescueDir = dest!.split("resgate em ")[1];
+  assert.equal(readFileSync(join(rescueDir, "files", "_internal", "a.txt"), "utf8"), "trabalho");
+  rmSync(base, { recursive: true, force: true });
 });

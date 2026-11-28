@@ -5,15 +5,22 @@
  * metade, ANTES de apagá-la. A pasta já não tem `.git`, então não dá para
  * perguntar ao git o que é rastreado (o resgate de `triage-preserved-
  * worktrees.ts`, #12374, parte do `git ls-files`/`git diff`). O critério aqui
- * é o conteúdo: arquivo cujo blob já existe no repositório (`git cat-file
- * --batch-check` no checkout principal) está salvo; o resto (não rastreado
- * como `_internal/`, rastreado editado sem commit) é copiado para
+ * é o conteúdo: arquivo cujo blob é ALCANÇÁVEL por alguma ref do repositório
+ * (`git rev-list --objects --all` no checkout principal) está salvo. Blob que
+ * só existe no object DB (índice ou reflog do worktree removido, que somem
+ * com `.git/worktrees/<nome>` e caem no `gc`) não conta. Arquivo vazio é
+ * sempre copiado. O resto (não rastreado como `_internal/`, rastreado editado
+ * sem commit) é copiado para
  * `data/worktree-rescue/{AAAA-MM-DD}/{nome}/files/`, com tamanho e sha256
  * conferidos contra a origem, na mesma convenção de diretório do #12374
  * (`rescueSubdirFor`, `nextFreeRescueDir`, mesmo teto `DEFAULT_RESCUE_LIMITS`).
  *
  * `node_modules/` (em qualquer nível) fica fora: é reinstalável. Symlink e
- * junction fora dele nunca são seguidos; o alvo vai para `symlinks.json`.
+ * junction fora dele nunca são seguidos; o alvo vai para o campo `symlinks`
+ * do `meta.json`. Resgate já feito da mesma pasta com o mesmo conjunto de
+ * arquivos (caminho + sha256) e links é reaproveitado, sem cópia nova: a
+ * pasta preservada por processo vivo volta toda rodada e não deve acumular
+ * cópias.
  *
  * Qualquer falha lança: sem resgate íntegro, o chamador não apaga.
  */
@@ -74,29 +81,37 @@ export function blobCandidates(content: Buffer): string[] {
   return [raw, gitBlobSha1(lf)];
 }
 
-/** Recebe hashes, devolve o subconjunto que existe no repositório. Lança se não conseguir perguntar. */
+/** Recebe hashes, devolve o subconjunto salvo no repositório. Lança se não conseguir perguntar. */
 export type BlobsPresentFn = (shas: string[]) => Set<string>;
 
-/** `git cat-file --batch-check` no `repoRoot`, numa chamada só. */
-export function gitBlobsPresent(repoRoot: string): BlobsPresentFn {
+/**
+ * Objetos alcançáveis por alguma ref (`git rev-list --objects --all
+ * --no-object-names` no `repoRoot`), lidos uma vez e reaproveitados pelas
+ * chamadas seguintes do mesmo verificador. Lança se o git falhar.
+ */
+export function gitReachableBlobs(repoRoot: string): BlobsPresentFn {
+  let reachable: Set<string> | null = null;
   return (shas) => {
-    if (shas.length === 0) return new Set();
-    const r = spawnSync("git", ["cat-file", "--batch-check"], {
-      cwd: repoRoot,
-      input: shas.join("\n") + "\n",
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      windowsHide: true,
-    });
-    if (r.status !== 0 || r.error) {
-      throw new Error(`git cat-file --batch-check falhou: ${(r.stderr || r.error?.message || "").trim()}`);
+    if (reachable === null) {
+      const r = spawnSync("git", ["rev-list", "--objects", "--all", "--no-object-names"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 512 * 1024 * 1024,
+        windowsHide: true,
+        timeout: 120_000,
+      });
+      if (r.status !== 0 || r.error) {
+        throw new Error(`git rev-list --objects --all falhou: ${(r.stderr || r.error?.message || "").trim()}`);
+      }
+      reachable = new Set(
+        r.stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => /^[0-9a-f]{40}$/.test(l)),
+      );
     }
-    const present = new Set<string>();
-    for (const line of r.stdout.split("\n")) {
-      const m = line.match(/^([0-9a-f]{40}) blob /);
-      if (m) present.add(m[1]);
-    }
-    return present;
+    const set = reachable;
+    return new Set(shas.filter((sha) => set.has(sha)));
   };
 }
 
@@ -107,6 +122,8 @@ function sha256File(file: string): string {
 export interface OrphanRescueResult {
   /** Diretório do resgate, ou `null` quando não havia nada a copiar. */
   rescueDir: string | null;
+  /** `true` quando `rescueDir` é um resgate anterior equivalente, reaproveitado sem cópia nova. */
+  reused: boolean;
   copied: number;
   alreadyInRepo: number;
   symlinks: number;
@@ -131,15 +148,25 @@ export function rescueOrphanDir(
   const candidates = new Map<string, string[]>();
   for (const f of files) candidates.set(f.rel, blobCandidates(readFileSync(join(dir, f.rel))));
   const present = opts.blobsPresent([...new Set([...candidates.values()].flat())]);
-  const toCopy = files.filter((f) => !candidates.get(f.rel)!.some((sha) => present.has(sha)));
+  // Arquivo vazio sempre vai: o blob vazio existe em qualquer repo e não diz nada sobre este arquivo.
+  const toCopy = files.filter((f) => f.size === 0 || !candidates.get(f.rel)!.some((sha) => present.has(sha)));
 
   if (toCopy.length === 0 && links.length === 0) {
-    return { rescueDir: null, copied: 0, alreadyInRepo: files.length, symlinks: 0 };
+    return { rescueDir: null, copied: 0, alreadyInRepo: files.length, symlinks: 0, reused: false };
   }
   const over = untrackedOverLimit({ files: toCopy.length, bytes: toCopy.reduce((s, f) => s + f.size, 0) }, limits);
   if (over !== null) throw new Error(over.replace("untracked", "arquivos fora do repositório"));
   if (!existsSync(dirname(resolve(opts.rescueRoot)))) {
     throw new Error(`${dirname(resolve(opts.rescueRoot))} não existe para guardar o resgate`);
+  }
+
+  const fileHashes: Record<string, string> = {};
+  for (const f of toCopy) fileHashes[f.rel] = sha256File(join(dir, f.rel));
+  const symlinks: Record<string, string> = {};
+  for (const l of links) symlinks[l.rel] = readlinkSync(join(dir, l.rel));
+  const previous = findEquivalentRescue(opts.rescueRoot, dir, fileHashes, symlinks);
+  if (previous !== null) {
+    return { rescueDir: previous, copied: 0, alreadyInRepo: files.length - toCopy.length, symlinks: links.length, reused: true };
   }
 
   const rescueDir = nextFreeRescueDir(join(opts.rescueRoot, rescueSubdirFor(basename(dir), nowMs)), existsSync);
@@ -152,17 +179,15 @@ export function rescueOrphanDir(
     if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`caminho fora do resgate: ${f.rel}`);
     mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(src, dest);
-    if (statSync(src).size !== statSync(dest).size || sha256File(src) !== sha256File(dest)) {
+    if (statSync(src).size !== statSync(dest).size || fileHashes[f.rel] !== sha256File(dest)) {
       throw new Error(`cópia de ${f.rel} não confere com a origem`);
     }
   }
-  const symlinks: Record<string, string> = {};
-  for (const l of links) symlinks[l.rel] = readlinkSync(join(dir, l.rel));
   const meta = {
     issue: 14335,
     saved_at: new Date(nowMs).toISOString(),
     source: dir,
-    copied: toCopy.map((f) => f.rel),
+    files: fileHashes,
     already_in_repo: files.length - toCopy.length,
     symlinks,
   };
@@ -171,18 +196,66 @@ export function rescueOrphanDir(
   if (statSync(join(rescueDir, "meta.json")).size !== Buffer.byteLength(metaText)) {
     throw new Error("meta.json do resgate gravado incompleto");
   }
-  return { rescueDir, copied: toCopy.length, alreadyInRepo: files.length - toCopy.length, symlinks: links.length };
+  return { rescueDir, copied: toCopy.length, alreadyInRepo: files.length - toCopy.length, symlinks: links.length, reused: false };
+}
+
+function sameRecord(a: Record<string, string>, b: unknown): boolean {
+  if (!b || typeof b !== "object") return false;
+  const bb = b as Record<string, unknown>;
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(bb).length && ka.every((k) => bb[k] === a[k]);
+}
+
+/**
+ * Resgate anterior (`{rescueRoot}/{dia}/{nome}[-N]/meta.json`, #14335) da
+ * mesma pasta `source` com os mesmos arquivos (caminho + sha256) e links, ou
+ * `null`. `meta.json` ilegível é ignorado (não reaproveita, copia de novo).
+ */
+export function findEquivalentRescue(
+  rescueRoot: string,
+  source: string,
+  files: Record<string, string>,
+  symlinks: Record<string, string>,
+): string | null {
+  const safe = rescueSubdirFor(basename(source), 0).split("/")[1];
+  let days: string[];
+  try {
+    days = readdirSync(rescueRoot);
+  } catch {
+    return null;
+  }
+  for (const day of days.sort().reverse()) {
+    let names: string[];
+    try {
+      names = readdirSync(join(rescueRoot, day));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name !== safe && !name.startsWith(`${safe}-`)) continue;
+      try {
+        const meta = JSON.parse(readFileSync(join(rescueRoot, day, name, "meta.json"), "utf8")) as Record<string, unknown>;
+        if (meta.issue === 14335 && meta.source === source && sameRecord(files, meta.files) && sameRecord(symlinks, meta.symlinks)) {
+          return join(rescueRoot, day, name);
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
 }
 
 export type OrphanRescueFn = (dir: string) => { ok: true; rescueDir: string | null } | { ok: false; error: string };
 
-/** Resgate pronto para os chamadores: `data/worktree-rescue/` e o object DB do `repoRoot`. Nunca lança. */
+/** Resgate pronto para os chamadores: `data/worktree-rescue/` e os blobs alcançáveis do `repoRoot`. Nunca lança. */
 export function makeOrphanRescuer(repoRoot: string, nowMs?: () => number): OrphanRescueFn {
+  const reachable = gitReachableBlobs(repoRoot); // lido uma vez por rescuer
   return (dir) => {
     try {
       const r = rescueOrphanDir(dir, {
         rescueRoot: join(repoRoot, "data", "worktree-rescue"),
-        blobsPresent: gitBlobsPresent(repoRoot),
+        blobsPresent: reachable,
         nowMs: nowMs?.(),
       });
       return { ok: true, rescueDir: r.rescueDir };

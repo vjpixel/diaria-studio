@@ -207,9 +207,10 @@ import {
   resolveWorktreeRemoval,
   findLiveProcessesInPath,
   cleanupPartialRemovalLeftover,
+  type GitRemovalResult,
 } from "./lib/worktree-remove.ts"; // #8209, #8661, #14335
 import { makeOrphanRescuer, type OrphanRescueFn } from "./lib/orphan-rescue.ts"; // #14335
-import { listProcessesForWorktreeGuard, type ProcessInfo } from "./lib/list-processes.ts"; // #8661, #14335
+import { listProcessesForWorktreeGuard, listProcessesStrict, type ProcessInfo } from "./lib/list-processes.ts"; // #8661, #14335
 // #7044 + #7048: a extração pro módulo compartilhado vale pro guard PURO
 // (`shouldSkipForSharedSession`, re-exportado abaixo e reusado por
 // `scripts/branch-cleanup.ts`), mas NÃO pro `listActiveSessionsSafe` — o #7048
@@ -870,16 +871,17 @@ export function getWorktreeMtimeMsSafe(path: string): number | null {
  * caller logar. **#8209**: no Windows, `git worktree remove` retorna SUCESSO
  * (apaga os arquivos rastreados e a metadata do worktree) mas NÃO remove o
  * diretório quando ele contém junction (`node_modules`/`data`) — sobra uma
- * "casca" sem `.git`. Só quando o git reporta SUCESSO e ainda assim o
+ * "casca" sem `.git`. Quando o git reporta SUCESSO e ainda assim o
  * diretório sobrevive, `removeWorktreeDirSafely` faz a limpeza segura de
  * rede (remove os links primeiro, sem seguir pro alvo, só então o resto) —
  * nunca um `rm -rf`/equivalente que seguiria a junction pro `node_modules`
- * do checkout principal ou pro `data/` do OneDrive. **Deliberadamente NÃO
- * tenta o fallback quando o `git` reporta FALHA** — um exit não-zero pode
- * significar path bloqueado/em uso por outro processo (condição de corrida)
- * ou motivo alheio à junction, e forçar limpeza via FS nesse caso mudaria o
- * contrato de falha pré-existente da função sem necessidade: o caso real da
- * issue é sempre git bem-sucedido + diretório remanescente.
+ * do checkout principal ou pro `data/` do OneDrive. Quando o `git` reporta
+ * FALHA com o `.git` ainda na pasta (path em uso, lock, motivo alheio), nada
+ * é tocado. **#14335:** falha DEPOIS de o git apagar o `.git` é remoção
+ * parcial; aí `resolveWorktreeRemoval` tira um snapshot NOVO de processos
+ * (`listProcessesStrict`, que lança e preserva se não conseguir listar),
+ * resgata o que não está no repositório e só então apaga. Ver o docblock de
+ * `resolveWorktreeRemoval` (`scripts/lib/worktree-remove.ts`).
  *
  * **#8661**: ANTES de chamar `git worktree remove` de qualquer forma, checa
  * se algum processo vivo ainda referencia `path` na cmdline
@@ -896,11 +898,13 @@ export function getWorktreeMtimeMsSafe(path: string): number | null {
  * vez usa `listAllProcesses()`, `[]` em plataforma não suportada — mesmo
  * comportamento de antes do #8661 nesse caso, nunca bloqueia a remoção só
  * por não saber checar). **#14335**: o `main()` real passa o snapshot de
- * `listProcessesForWorktreeGuard()`, que no Windows lê o CIM: lá um teste
- * pendurado com DLL do `sharp` carregada de dentro do worktree fazia o `git`
- * parar no meio ("Invalid argument") depois de apagar o `.git`, e a pasta
- * ficava órfã. Remoção parcial que ainda assim aconteça cai no fallback de
- * `resolveWorktreeRemoval` e, se sobrar, na varredura de órfãos do fim.
+ * `listProcessesForWorktreeGuard()`, que no Windows lê o CIM (fail-soft só
+ * aqui, no guard antes do git): lá um teste pendurado com DLL do `sharp`
+ * carregada de dentro do worktree fazia o `git` parar no meio ("Invalid
+ * argument") depois de apagar o `.git`, e a pasta ficava órfã.
+ * `opts.getLiveProcesses` e `opts.rescue` são os da remoção parcial
+ * (injetáveis para teste; default `listProcessesStrict` e
+ * `makeOrphanRescuer(cwd)`).
  *
  * **#12457**: `opts.run` (runner do `git`) e `opts.timeoutMs` são injetáveis
  * só para teste; o default é `spawnSync` com `WORKTREE_REMOVE_TIMEOUT_MS`
@@ -910,8 +914,13 @@ export function removeWorktreeSafe(
   path: string,
   cwd: string,
   liveProcesses?: readonly ProcessInfo[],
-  opts: { run?: WorktreeRemoveRunner; timeoutMs?: number; rescue?: OrphanRescueFn } = {},
-): { ok: boolean; error?: string } {
+  opts: {
+    run?: WorktreeRemoveRunner;
+    timeoutMs?: number;
+    rescue?: OrphanRescueFn;
+    getLiveProcesses?: () => readonly ProcessInfo[];
+  } = {},
+): GitRemovalResult {
   const livePids = findLiveProcessesInPath(path, liveProcesses);
   if (livePids.length > 0) {
     const detail = livePids.map((p) => `PID ${p.pid} (${p.cmd.slice(0, 120)})`).join("; ");
@@ -934,13 +943,12 @@ export function removeWorktreeSafe(
     gitError = `git worktree remove lançou: ${(e as Error).message}`;
   }
 
-  // A lógica de fallback (limpeza segura só quando o git reportou sucesso
-  // e mesmo assim sobrou uma casca) mora em resolveWorktreeRemoval — helper
-  // único compartilhado com branch-cleanup.ts e merge-train-live.ts (#8209
-  // residual).
-  // #14335: na remoção parcial, o mesmo snapshot de processos e o resgate.
+  // A limpeza pós-git (casca do #8209, remoção parcial do #14335) mora em
+  // resolveWorktreeRemoval, helper único compartilhado com branch-cleanup.ts
+  // e merge-train-live.ts. Na remoção parcial o snapshot de processos é
+  // NOVO (o `liveProcesses` acima é de antes do git e fail-soft).
   return resolveWorktreeRemoval(gitError ? { ok: false, error: gitError } : { ok: true }, path, {
-    getLiveProcesses: liveProcesses ? () => liveProcesses : undefined,
+    getLiveProcesses: opts.getLiveProcesses ?? (() => listProcessesStrict()),
     rescue: opts.rescue ?? makeOrphanRescuer(cwd),
   });
 }
@@ -1358,7 +1366,7 @@ export function runMainWithCheckers(
     listActiveSessions: () => ActiveSessionsProbe;
     listProcesses: () => ProcessInfo[];
     isWorktreeDirty: (path: string) => boolean | null;
-    removeWorktree: (path: string, processes: ProcessInfo[]) => { ok: boolean; error?: string };
+    removeWorktree: (path: string, processes: ProcessInfo[]) => GitRemovalResult;
     removeWorktreeDir: (path: string) => { dirRemoved: boolean; errors: string[] };
     findHusks: (worktreesDir: string, tracked: Set<string>) => string[];
     /** #14335 — opcional: pastas de remoção parcial (sem `.git`, fora do
@@ -1368,6 +1376,11 @@ export function runMainWithCheckers(
     /** #14335 — resgate antes de apagar uma pasta de remoção parcial. Sem
      *  ele, nenhuma pasta da varredura de órfãos é apagada. */
     rescueOrphan?: OrphanRescueFn;
+    /** #14335 — snapshot de processos da varredura de órfãos, tirado na hora
+     *  e ESTRITO: lança quando não consegue listar, e aí nenhuma pasta é
+     *  apagada. Sem ele, a varredura também não apaga nada. `main()` passa
+     *  `listProcessesStrict`. */
+    listProcessesStrict?: () => ProcessInfo[];
     /** #11446 — opcionais: sem os dois, o seletor de worktree já enviado
      *  fica desligado (comportamento anterior). `main()` passa os reais. */
     isHeadOnRemote?: (path: string) => boolean;
@@ -1448,7 +1461,7 @@ export function runMainWithCheckers(
     // #14335: cascas (#8209) e pastas de remoção parcial são varridas também
     // quando não há worktree elegível — antes o `return` de "nada a fazer"
     // pulava as duas varreduras.
-    const sweepLeftoverDirs = (getLiveProcesses: () => ProcessInfo[]): void => {
+    const sweepLeftoverDirs = (): void => {
       // #8209: varredura de CASCAS — diretórios sob `.claude/worktrees/` que
       // sobraram de um `git worktree remove` anterior que não conseguiu
       // apagar o diretório por causa de junction/symlink (Windows), e por
@@ -1494,16 +1507,30 @@ export function runMainWithCheckers(
           );
         } else {
           let orphanRemoved = 0;
-          const liveProcesses = getLiveProcesses();
+          // Snapshot NOVO e estrito, um por varredura (nunca o fail-soft do
+          // guard antes do git): não conseguir listar preserva todas.
+          let liveProcesses: ProcessInfo[] | null = null;
+          let listError: string | null = null;
+          if (checkers.listProcessesStrict) {
+            try {
+              liveProcesses = checkers.listProcessesStrict();
+            } catch (e) {
+              listError = `não deu para listar processos (${(e as Error).message})`;
+            }
+          } else {
+            listError = "sem listagem estrita de processos configurada";
+          }
           for (const orphan of orphans) {
-            if (!checkers.rescueOrphan) {
+            if (!checkers.rescueOrphan || liveProcesses === null) {
               console.warn(
-                `[cleanup-merged-worktrees] pasta de remoção parcial preservada (#14335): ${orphan} — sem resgate configurado, nada é apagado.`,
+                `[cleanup-merged-worktrees] pasta de remoção parcial preservada (#14335): ${orphan} — ` +
+                  `${!checkers.rescueOrphan ? "sem resgate configurado" : listError}, nada é apagado.`,
               );
               continue;
             }
+            const snapshot = liveProcesses;
             const result = cleanupPartialRemovalLeftover(orphan, {
-              getLiveProcesses: () => liveProcesses,
+              getLiveProcesses: () => snapshot,
               rescue: checkers.rescueOrphan,
               removeDir: checkers.removeWorktreeDir,
             });
@@ -1526,7 +1553,7 @@ export function runMainWithCheckers(
 
     if (candidates.length === 0) {
       console.log("[cleanup-merged-worktrees] nenhum worktree elegível — nada a fazer.");
-      sweepLeftoverDirs(() => checkers.listProcesses());
+      sweepLeftoverDirs();
       return;
     }
 
@@ -1642,7 +1669,7 @@ export function runMainWithCheckers(
         continue;
       }
       const removeStartedAt = clock();
-      let result: { ok: boolean; error?: string };
+      let result: GitRemovalResult;
       try {
         result = checkers.removeWorktree(entry.path, liveProcessSnapshot);
       } catch (e) {
@@ -1652,7 +1679,10 @@ export function runMainWithCheckers(
       const took = formatSeconds(clock() - removeStartedAt);
       if (result.ok) {
         removed++;
-        console.log(`[cleanup-merged-worktrees] removido: ${entry.path} (branch ${entry.branch}, motivo: ${reason}, ${took})`);
+        console.log(
+          `[cleanup-merged-worktrees] removido: ${entry.path} (branch ${entry.branch}, motivo: ${reason}, ${took})` +
+            describeRemovalOutcome(result),
+        );
       } else {
         failed++;
         console.warn(
@@ -1667,7 +1697,7 @@ export function runMainWithCheckers(
       );
     }
 
-    sweepLeftoverDirs(() => liveProcessSnapshot);
+    sweepLeftoverDirs();
   } catch (e) {
     console.warn(`[cleanup-merged-worktrees] erro inesperado, pulando cleanup (fail-soft): ${(e as Error).message}`);
   } finally {
@@ -1692,8 +1722,21 @@ function main(): void {
  * (`scripts/check-disk-space-guard.ts`) rodar a limpeza no mesmo processo.
  */
 export function runCleanupWithRealCheckers(args: Record<string, string>, repoRoot: string): void {
+  runMainWithCheckers(args, repoRoot, buildRealCheckers(repoRoot));
+}
+
+/** #14335: sufixo de log de uma remoção que caiu na limpeza da remoção parcial (destino do resgate). */
+export function describeRemovalOutcome(result: GitRemovalResult): string {
+  if (result.outcome !== "partial-cleaned") return "";
+  return result.rescueDir
+    ? `; remoção parcial limpa (#14335), resgate em ${result.rescueDir}`
+    : "; remoção parcial limpa (#14335), nada fora do repositório a resgatar";
+}
+
+/** Checkers reais de `runCleanupWithRealCheckers`, exportados para o teste fixar a fiação (#14335). */
+export function buildRealCheckers(repoRoot: string): Parameters<typeof runMainWithCheckers>[2] {
   const rescue = makeOrphanRescuer(repoRoot); // #14335
-  runMainWithCheckers(args, repoRoot, {
+  return {
     isHeadOnRemote: (path) => isHeadOnRemoteSafe(path),
     lastActivityMs: (path) => getWorktreeLastActivityMsSafe(path),
     remoteBranchesContainingHead: (path) => remoteBranchesContainingHeadSafe(path),
@@ -1703,14 +1746,15 @@ export function runCleanupWithRealCheckers(args: Record<string, string>, repoRoo
     issueClosedAtMs: (issueNumber) => getIssueClosedAtMsViaGh(issueNumber, repoRoot),
     listWorktrees: () => listWorktreesSafe(repoRoot),
     listActiveSessions: () => listActiveSessionsSafe(repoRoot),
-    listProcesses: () => listProcessesForWorktreeGuard(),
+    listProcesses: listProcessesForWorktreeGuard, // fail-soft: guard antes do git (#8661)
+    listProcessesStrict, // #14335: varredura de órfãos
     isWorktreeDirty: (path) => isWorktreeDirtySafe(path),
     removeWorktree: (path, processes) => removeWorktreeSafe(path, repoRoot, processes, { rescue }),
     removeWorktreeDir: (path) => removeWorktreeDirSafely(path),
     findHusks: (worktreesDir, tracked) => findWorktreeHusks(worktreesDir, tracked),
     findOrphans: (worktreesDir, tracked) => findPartialRemovalOrphans(worktreesDir, tracked),
     rescueOrphan: rescue,
-  });
+  };
 }
 
 if (isMainModule(import.meta.url)) {

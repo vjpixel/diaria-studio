@@ -60,7 +60,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveWorktreeRemoval } from "./worktree-remove.ts"; // #8209
-import { listProcessesForWorktreeGuard } from "./list-processes.ts"; // #14335
+import { listProcessesStrict } from "./list-processes.ts"; // #14335
 import { makeOrphanRescuer } from "./orphan-rescue.ts"; // #14335
 import {
   parseClosesIssues,
@@ -951,21 +951,28 @@ export function cleanupIntegrationBranch(runner: TrainRunner, branchName: string
     runner.warn(`git worktree remove --force falhou pra ${worktreePath} — diretório temp pode ficar órfão: ${removeWorktree.stderr}`);
   }
 
-  // #8209: git pode reportar sucesso e mesmo assim `worktreePath` sobreviver
-  // (junction/symlink dentro dele) — resolveWorktreeRemoval faz a limpeza
-  // segura de fallback só nesse caso (nunca quando o git em si falhou, ver
-  // docstring do helper), mesmo mecanismo compartilhado por
-  // cleanup-merged-worktrees.ts e branch-cleanup.ts. Só toca o filesystem —
-  // não passa pelo TrainRunner injetado, então nunca precisa de mock de
-  // `exec` pra ser testado.
+  // Limpeza pós-git em resolveWorktreeRemoval (helper único com
+  // cleanup-merged-worktrees.ts e branch-cleanup.ts): casca de junction
+  // depois de git ok (#8209), ou remoção parcial depois de git falho sem
+  // `.git` (#14335: snapshot novo e estrito de processos, resgate, só então
+  // apaga). Git falho com o `.git` presente não é tocado. Não passa pelo
+  // TrainRunner injetado.
   const worktreeResolved = resolveWorktreeRemoval(
     removeWorktree.ok ? { ok: true } : { ok: false, error: removeWorktree.stderr },
     worktreePath,
-    // #14335: remoção parcial só é limpa sem processo vivo e depois do resgate.
-    { getLiveProcesses: () => listProcessesForWorktreeGuard(), rescue: makeOrphanRescuer(mainCwd) },
+    { getLiveProcesses: () => listProcessesStrict(), rescue: makeOrphanRescuer(mainCwd) },
   );
+  // Avisa só o que o aviso do git acima não disse: a casca que sobrou depois
+  // de git ok, ou o desfecho da remoção parcial (preservada, ou limpa e onde
+  // ficou o resgate).
   if (!worktreeResolved.ok && worktreeResolved.error !== removeWorktree.stderr) {
-    runner.warn(`limpeza segura pós-remove (#8209) falhou pra ${worktreePath}: ${worktreeResolved.error}`);
+    runner.warn(`limpeza segura pós-remove (#8209/#14335) falhou pra ${worktreePath}: ${worktreeResolved.error}`);
+  }
+  if (worktreeResolved.outcome === "partial-cleaned") {
+    runner.warn(
+      `remoção parcial de ${worktreePath} limpa (#14335)` +
+        (worktreeResolved.rescueDir ? `; resgate em ${worktreeResolved.rescueDir}` : "; nada fora do repositório a resgatar"),
+    );
   }
 
   runner.exec("git", ["push", "origin", "--delete", branchName], mainCwd); // best-effort — branch pode nunca ter sido pushada

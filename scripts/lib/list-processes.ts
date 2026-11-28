@@ -1,8 +1,10 @@
 /**
  * scripts/lib/list-processes.ts (#8661)
  *
- * Enumeração de processos vivos com cmdline completo — POSIX apenas (Linux/
- * macOS via `ps -eo pid=,ppid=,args=`). Extraído como módulo próprio porque
+ * Enumeração de processos vivos com cmdline completo: POSIX via `ps -eo
+ * pid=,ppid=,args=` (`listAllProcesses`) e, desde o #14335, Windows via CIM
+ * (`listWindowsProcesses`, usado só pelos guards de remoção de worktree, fim
+ * do arquivo). Extraído como módulo próprio porque
  * duas features precisam da mesma pergunta ("que processos existem, com que
  * cmdline?"): `scripts/orphaned-test-process-sweep.ts` (varre a máquina
  * inteira atrás de processos `--test-isolation=process` cujo worktree já
@@ -146,6 +148,9 @@ export function parseWin32ProcessJson(raw: string): ProcessInfo[] {
   return result;
 }
 
+/** #14335: teto do PowerShell/CIM. Estourou = lança (o chamador estrito preserva a pasta). */
+export const WIN32_PROCESS_QUERY_TIMEOUT_MS = 30_000;
+
 const WIN32_PROCESS_QUERY =
   "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
 
@@ -157,23 +162,27 @@ const WIN32_PROCESS_QUERY =
  * DLL carregada de dentro do worktree (`@img/sharp-win32-x64/lib/*.dll`, num
  * teste pendurado) faz o `git worktree remove --force` parar no meio com
  * "Invalid argument", depois de já ter apagado o `.git` e desregistrado o
- * worktree. Lança se o PowerShell falhar.
+ * worktree. Lança se o PowerShell falhar ou passar de
+ * `WIN32_PROCESS_QUERY_TIMEOUT_MS`.
  */
 export function listWindowsProcesses(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
   const raw = ops.execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WIN32_PROCESS_QUERY], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
+    timeout: WIN32_PROCESS_QUERY_TIMEOUT_MS,
   });
   return parseWin32ProcessJson(String(raw));
 }
 
 /**
- * #14335: snapshot de processos para decidir se um worktree pode ser
- * removido agora. POSIX: `listAllProcesses` (propaga falha do `ps`, como
- * antes). Windows: `listWindowsProcesses`, fail-soft — se o PowerShell
- * falhar, devolve `[]` com aviso no stderr, o mesmo comportamento de antes
- * do #14335 (a remoção segue, sem a checagem).
+ * #14335: snapshot de processos para o guard ANTIGO, antes do `git worktree
+ * remove` (#8661, `removeWorktreeSafe`). POSIX: `listAllProcesses` (propaga
+ * falha do `ps`, como antes). Windows: `listWindowsProcesses`, fail-soft — se
+ * o PowerShell falhar, devolve `[]` com aviso no stderr, o mesmo
+ * comportamento de antes do #14335 (a remoção segue, sem a checagem). Os
+ * caminhos NOVOS do #14335, que apagam a pasta pelo sistema de arquivos,
+ * usam `listProcessesStrict`: lá "não deu para listar" preserva a pasta.
  */
 export function listProcessesForWorktreeGuard(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
   if (ops.platform !== "win32") return listAllProcesses(ops);
@@ -185,4 +194,15 @@ export function listProcessesForWorktreeGuard(ops: ListProcessesOps = defaultOps
     );
     return [];
   }
+}
+
+/**
+ * #14335: snapshot de processos que LANÇA quando não consegue listar (falha
+ * ou timeout do PowerShell no Windows, falha do `ps` no POSIX). Para os
+ * caminhos que apagam pelo sistema de arquivos uma pasta de remoção parcial
+ * (`cleanupPartialRemovalLeftover`, varredura de órfãos): sem saber se há
+ * processo vivo, a pasta fica.
+ */
+export function listProcessesStrict(ops: ListProcessesOps = defaultOps): ProcessInfo[] {
+  return ops.platform === "win32" ? listWindowsProcesses(ops) : listAllProcesses(ops);
 }
