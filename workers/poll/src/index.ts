@@ -285,7 +285,7 @@ export interface Env {
   _requestOrigin?: string | null;
   /** #4054: KV do sync de assinantes ATIVOS da diar.ia.br (mesma população de
    * `CURSOS_SUBSCRIBERS`, #4052 — chave `subscriber:{sha256(email)}`, ver
-   * `subscriber-verify.ts`). Verificação PRIMÁRIA de "?jogar=" quem chegou por
+   * `scripts/lib/shared/subscriber-verify.ts`). Verificação PRIMÁRIA de "?jogar=" quem chegou por
    * fora já é assinante" (`web-gate.ts`, `checkWebSubscriber`). OPCIONAL — sem
    * este binding, `checkWebSubscriber` cai direto no fallback Beehiiv
    * (`BEEHIIV_API_KEY`/`BEEHIIV_PUBLICATION_ID`) ou, sem os dois, trata todo
@@ -297,8 +297,8 @@ export interface Env {
    * depende de qual worker está perguntando). */
   SUBSCRIBERS_KV?: KVNamespace;
   /** #4054: assina/verifica o cookie de sessão do caminho `/jogar` (brand
-   * `web`), mesmo primitivo de `workers/cursos` (#4052, ver `session-cookie.ts`
-   * espelhado neste diretório). OPCIONAL SÓ pra não quebrar fixtures de teste
+   * `web`), mesmo primitivo de `workers/cursos` (#4052, ver
+   * `scripts/lib/shared/session-cookie.ts`). OPCIONAL SÓ pra não quebrar fixtures de teste
    * que não testam o gate — em produção, sem este secret, `/jogar/gate/verify`
    * e `/jogar/gate/subscribe` NUNCA emitem sessão (nenhum cookie sai sem
    * segredo pra assiná-lo). Configurar via `wrangler secret put

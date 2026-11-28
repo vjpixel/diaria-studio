@@ -358,9 +358,9 @@ export function maskEmail(email: string): string {
  * #4258 item 2: Wikimedia grava "Own work" (e variantes localizadas) no
  * crédito quando quem enviou a imagem é o próprio fotógrafo sem propagar um
  * nome de verdade — ruído pro leitor, não informação. Espelho de
- * `isOwnWorkOnlyCredit` em `scripts/eia-compose.ts` (mesmo predicado, mesmo
- * motivo de espelhamento de `session-cookie.ts`/`subscriber-verify.ts`: o
- * bundle do Worker não alcança `scripts/**`). Defensivo — cobre edições
+ * `isOwnWorkOnlyCredit` em `scripts/eia-compose.ts` (mesmo predicado; a
+ * origem não é `scripts/lib/shared/`, então segue espelhada, travada por
+ * `test/poll-shared-mirror-4054.test.ts`). Defensivo — cobre edições
  * ANTIGAS já gravadas no KV com "Own work" cru, que o fix na origem (script)
  * não retroage.
  */
