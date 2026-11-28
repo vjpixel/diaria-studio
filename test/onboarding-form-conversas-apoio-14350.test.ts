@@ -45,7 +45,7 @@ describe("#14350 lista de conversas: respostas de apoio (v4)", () => {
     assert.doesNotMatch(blockB, /já apoiou|o que pesa/);
   });
 
-  it("--apoio filtra por apoio_independente, por trecho e sem acento", () => {
+  it("--apoio filtra por apoio_independente, valor exato (#14381) e sem acento", () => {
     assert.deepEqual(parseConversaArgs(["--apoio", "nao"]), { filters: { apoio_independente: "nao" }, json: false });
     const nao = R("c@x.com", "2026-11-27T00:00:00Z", { conversa: FORM_CONVERSA_SIM, apoio_independente: "Não" });
     assert.deepEqual(conversaRows([v4, v3, nao], { apoio_independente: "nao" }).map((r) => r.email), ["c@x.com"]);

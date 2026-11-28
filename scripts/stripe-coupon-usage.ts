@@ -2,7 +2,10 @@
 /**
  * stripe-coupon-usage.ts (#2717)
  *
- * Consulta a Stripe API para ver o uso dos cupons de desconto NEWS50 e NEWS25.
+ * Consulta a Stripe API para ver o uso dos cupons de desconto (`TARGET_CODES`:
+ * NEWS50, NEWS25, NEWS65) e, só como comparação, dos cupons públicos da
+ * Clarice (`COMPARISON_CODES`: BLACKFRIDAY60, #14339). Os de comparação saem
+ * numa seção própria do stdout e nunca entram na comissão, no CSV nem no KV.
  * Read-only: apenas GET requests. Nunca escreve nem publica nada.
  *
  * Uso:
@@ -32,6 +35,9 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 // que importam deste módulo (#2718: extraídos pra scripts/lib/stripe-coupons.ts).
 export {
   TARGET_CODES,
+  COMPARISON_CODES,
+  splitComparisonCodes,
+  isCouponExpired,
   aggregateCouponUsage,
   fetchCouponUsage,
   // #2743: comissão sobre o realizado
@@ -65,7 +71,14 @@ export {
   type InvoiceDiscountRaw,
 } from "./lib/stripe-coupons.ts";
 
-import { TARGET_CODES, fetchCouponUsage } from "./lib/stripe-coupons.ts";
+import {
+  TARGET_CODES,
+  COMPARISON_CODES,
+  COUPON_EXPIRES_AT,
+  fetchCouponUsage,
+  isCouponExpired,
+  splitComparisonCodes,
+} from "./lib/stripe-coupons.ts";
 import type { RedemptionRow } from "./lib/stripe-coupons.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
@@ -206,7 +219,12 @@ async function main(): Promise<void> {
   if (writeKv) assertKvCreds();
 
   console.log("Buscando dados na Stripe API…");
-  const report = await fetchCouponUsage(apiKey);
+  // #14339: uma busca só (a listagem de assinaturas é a parte cara) com os
+  // códigos de comparação junto; `report` (o que vai pro KV/CSV/comissão)
+  // fica só com os nossos.
+  const fullReport = await fetchCouponUsage(apiKey, undefined, undefined, [...TARGET_CODES, ...COMPARISON_CODES]);
+  const { target: report, comparison } = splitComparisonCodes(fullReport);
+  const now = new Date();
 
   console.log("\n=== Uso de Cupons ===\n");
   for (const code of TARGET_CODES) {
@@ -215,7 +233,8 @@ async function main(): Promise<void> {
       console.log(`${code}: nenhum promotion_code encontrado.`);
       continue;
     }
-    console.log(`${code} (coupon: ${entry.couponIds.join(", ")})`);
+    const expired = isCouponExpired(code, now) ? `  [expirado em ${COUPON_EXPIRES_AT[code]}, histórico mantido]` : "";
+    console.log(`${code} (coupon: ${entry.couponIds.join(", ")})${expired}`);
     console.log(`  Resgates (times_redeemed): ${entry.timesRedeemed}`);
     console.log(`  Assinaturas encontradas:   ${entry.rowCount}`);
     console.log(`  Pago total (12m):          ${fmtBRL(entry.totalPaidCents ?? 0)}`);
@@ -247,6 +266,18 @@ async function main(): Promise<void> {
     0,
   );
   console.log(`>>> Comissão total a receber (40% do pago em 12m): ${fmtBRL(grandCommission)}\n`);
+
+  // #14339: comparação — resgates do cupom público, sem comissão, sem PII.
+  console.log("=== Comparação (cupons públicos, fora da comissão) ===\n");
+  for (const code of COMPARISON_CODES) {
+    const entry = comparison[code];
+    if (!entry) {
+      console.log(`${code}: nenhum promotion_code encontrado.`);
+      continue;
+    }
+    console.log(`${code}: resgates (times_redeemed) ${entry.timesRedeemed}, assinaturas encontradas ${entry.rowCount}`);
+  }
+  console.log();
 
   // #2743: `--write-kv` repopula o KV `coupons:usage` do dashboard (reproduzível,
   // em vez de wrangler kv put manual). Roda ANTES do early-return de "0 resgates"

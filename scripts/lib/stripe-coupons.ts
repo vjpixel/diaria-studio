@@ -5,13 +5,66 @@
  * Seguro para bundle Cloudflare Workers e para Node 24+ sem flags.
  *
  * Exports públicos:
- *   TARGET_CODES          — cupons monitorados (NEWS50, NEWS25)
+ *   TARGET_CODES          — cupons monitorados (NEWS50, NEWS25, NEWS65)
+ *   COMPARISON_CODES      — cupons só de comparação, fora da comissão (BLACKFRIDAY60)
  *   aggregateCouponUsage  — agrega dados brutos em CouponUsageReport
  *   fetchCouponUsage      — faz os GETs na Stripe API (fetchImpl injetável p/ testes)
  *   tipos                 — PromoCodeRaw, CouponRaw, ... CouponUsageReport
  */
 
-export const TARGET_CODES = ["NEWS50", "NEWS25"] as const;
+/**
+ * Cupons nossos: entram no KV `coupons:usage`, na aba Cupons do dashboard e
+ * no total de comissão.
+ *
+ * `NEWS65` (#14339): Black Friday 2026 da Clarice (coupon `DIjHXM5A`, 65%
+ * `once`), campanhas avulsas #438/#439 e box da diária 261130. Vence em
+ * 30/11/2026 às 23:59 BRT (`COUPON_EXPIRES_AT`) e CONTINUA aqui depois disso:
+ * o relatório é remontado do zero a cada refresh a partir da Stripe, então
+ * tirar o código da lista apagaria o histórico de resgates e a comissão dos
+ * 12 meses seguintes (`COMMISSION_WINDOW_MONTHS`). "Fora do monitoramento
+ * ativo" é o rótulo de expirado, não a remoção.
+ */
+export const TARGET_CODES = ["NEWS50", "NEWS25", "NEWS65"] as const;
+
+/**
+ * Cupons de COMPARAÇÃO (#14339): buscados junto, mas nunca somados à
+ * comissão nem gravados no KV do dashboard — não são cupons nossos.
+ * `BLACKFRIDAY60` é o cupom público da Black Friday da Clarice; resgate dele
+ * na janela das campanhas #438/#439 é quem clicou no nosso link e não trocou
+ * pelo NEWS65 que o e-mail pedia.
+ */
+export const COMPARISON_CODES = ["BLACKFRIDAY60"] as const;
+
+/** Fim da validade de cada cupom com prazo (ISO UTC). Ausente = sem prazo conhecido. */
+export const COUPON_EXPIRES_AT: Readonly<Record<string, string>> = {
+  NEWS65: "2026-12-01T02:59:59.000Z", // 30/11/2026 23:59:59 BRT
+};
+
+/** O cupom já venceu em `now`? Sem prazo registrado → `false`. Pura. */
+export function isCouponExpired(code: string, now: Date): boolean {
+  const iso = COUPON_EXPIRES_AT[code];
+  if (!iso) return false;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) && now.getTime() > ms;
+}
+
+/**
+ * Separa um report buscado com `[...TARGET_CODES, ...COMPARISON_CODES]` em
+ * duas partes: `target` (KV, dashboard, comissão) e `comparison` (só leitura
+ * no CLI). Um código fora das duas listas fica em `target`, como antes. Pura.
+ */
+export function splitComparisonCodes(report: CouponUsageReport): {
+  target: CouponUsageReport;
+  comparison: CouponUsageReport;
+} {
+  const comparisonSet = new Set<string>(COMPARISON_CODES);
+  const target: CouponUsageReport = {};
+  const comparison: CouponUsageReport = {};
+  for (const [code, entry] of Object.entries(report)) {
+    (comparisonSet.has(code) ? comparison : target)[code] = entry;
+  }
+  return { target, comparison };
+}
 
 const STRIPE_BASE = "https://api.stripe.com/v1";
 
@@ -725,9 +778,13 @@ export async function fetchCouponUsage(
   // testes pro mesmo motivo de `fetchImpl`: determinismo sem depender de
   // Date.now() embutido (mesmo padrão de computeMvStatus/buildCohorts).
   generatedAt?: string,
+  // #14339: códigos a buscar. Default = só os nossos (o cron do Worker e o
+  // KV nunca veem os de comparação); o CLI passa também COMPARISON_CODES e
+  // separa com `splitComparisonCodes`, numa listagem só de assinaturas.
+  targetCodes: readonly string[] = TARGET_CODES,
 ): Promise<CouponUsageReport> {
   const codes: PromoCodeRaw[] = [];
-  for (const code of TARGET_CODES) {
+  for (const code of targetCodes) {
     const list = await stripeListAll<PromoCodeRaw>(
       `/promotion_codes?code=${encodeURIComponent(code)}`,
       apiKey,

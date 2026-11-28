@@ -65,7 +65,9 @@ import { estimateUseMelhorTempoDetailed } from "./lib/use-melhor-curation.ts";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { fetchBodyForCache } from "./stitch-newsletter.ts";
 import { readTempoArtifact, writeTempoArtifact } from "./lib/use-melhor-tempo-refresh.ts";
-import { intentionalErrorJsonPath, loadIntentionalErrorJson } from "./lib/intentional-errors.ts";
+import { intentionalErrorJsonPath, isIntentionalErrorPlaceholder, loadIntentionalErrorJson } from "./lib/intentional-errors.ts";
+import { sectionKeyFromLocation, sectionTexts } from "./lib/intentional-error-sections.ts";
+import { countWholeWord } from "./replant-intentional-error.ts";
 
 export const POOL_BUCKETS: readonly SectionBucket[] = ["lancamento", "radar", "use_melhor", "video"];
 
@@ -276,13 +278,63 @@ export function replaceInlineTempo(line: string, minutes: number): string {
 
 const TEMPO_SUFFIX_RE = /\s*(?:\(\s*~?\s*\d+\s*min[^)]*\)|[–—]\s*~?\s*\d+\s*min(?:\s+de\s+leitura)?)\s*$/;
 
-/** #14270: verifica o texto resultante, inclusive em dry-run, sem replantar à mão. */
-export function intentionalErrorReplantNextSteps(editionDir: string, md: string): string[] {
+/**
+ * `wrong_value` verificável do erro intencional da edição, ou `null` quando não
+ * há o que conferir: JSON ausente, `no_error`, valor vazio ou placeholder
+ * `{PREENCHER ...}` (#14278 — o placeholder nunca aparece no texto, e o
+ * replantio pula a checagem de "erro antigo ainda presente" para ele, então
+ * mandar replantar deixaria a edição com 2 erros plantados e 1 declarado).
+ */
+function verifiableIntentionalError(editionDir: string): { wrong: string; location: string | undefined } | null {
   const record = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
   const wrong = typeof record?.wrong_value === "string" ? record.wrong_value.trim() : "";
-  if (record?.no_error === true || !wrong || md.includes(wrong)) return [];
+  if (record?.no_error === true || !wrong || isIntentionalErrorPlaceholder(wrong)) return null;
+  return { wrong, location: typeof record?.location === "string" ? record.location : undefined };
+}
+
+/**
+ * #14270: verifica o texto resultante, inclusive em dry-run, sem replantar à mão.
+ * #14278: placeholder não dispara o aviso, e a presença é por palavra inteira
+ * (`countWholeWord`, a mesma regra do replantio desde o #10234).
+ */
+export function intentionalErrorReplantNextSteps(editionDir: string, md: string): string[] {
+  const err = verifiableIntentionalError(editionDir);
+  if (!err || countWholeWord(md, err.wrong) > 0) return [];
   return [
-    `O erro intencional (${wrong}) não aparece mais em 02-reviewed.md. Replantar: npx tsx scripts/replant-intentional-error.ts --edition-dir ${editionDir.replace(/\/+$/, "")}/`,
+    `O erro intencional (${err.wrong}) não aparece mais em 02-reviewed.md. Replantar: npx tsx scripts/replant-intentional-error.ts --edition-dir ${editionDir.replace(/\/+$/, "")}/`,
+  ];
+}
+
+const BUCKET_SECTION_KEY: Record<SectionBucket, string> = {
+  lancamento: "LANÇAMENTOS",
+  radar: "RADAR",
+  use_melhor: "USE MELHOR",
+  video: "VÍDEOS",
+};
+
+/**
+ * #14278 (ponto lateral): o item que carrega o erro foi MOVIDO de seção — a
+ * `location` declarada e a linha "Nessa edição, ... na seção X" passam a
+ * apontar para a seção antiga. Avisa quando a `location` resolve para a seção
+ * de origem, o erro não está mais nela e agora aparece na de destino.
+ */
+export function intentionalErrorMovedNextSteps(
+  editionDir: string,
+  md: string,
+  from: SectionBucket,
+  to: SectionBucket,
+): string[] {
+  const err = verifiableIntentionalError(editionDir);
+  if (!err || from === to) return [];
+  const fromKey = BUCKET_SECTION_KEY[from];
+  const toKey = BUCKET_SECTION_KEY[to];
+  if (sectionKeyFromLocation(err.location) !== fromKey) return [];
+  const texts = sectionTexts(md);
+  if (countWholeWord(texts.get(fromKey) ?? "", err.wrong) > 0) return [];
+  if (countWholeWord(texts.get(toKey) ?? "", err.wrong) === 0) return [];
+  return [
+    `O item com o erro intencional (${err.wrong}) mudou de ${fromKey} para ${toKey}: atualizar \`location\` em ` +
+      `_internal/intentional-error.json (e data/intentional-errors.jsonl) e a linha "Nessa edição, ..." de 02-reviewed.md para a seção ${toKey}.`,
   ];
 }
 
@@ -529,7 +581,10 @@ export function movePoolItem(
     }
   }
 
-  const nextSteps: string[] = intentionalErrorReplantNextSteps(editionDir, mdResult.md);
+  const nextSteps: string[] = [
+    ...intentionalErrorReplantNextSteps(editionDir, mdResult.md),
+    ...intentionalErrorMovedNextSteps(editionDir, mdResult.md, mdResult.from, to),
+  ];
   if (mdResult.from === "use_melhor" || to === "use_melhor") {
     const state = readUseMelhorPostState(editionDir);
     const chosen = state?.item && typeof state.item.url === "string" ? state.item.url : null;

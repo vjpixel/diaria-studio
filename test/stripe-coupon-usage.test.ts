@@ -1051,6 +1051,8 @@ describe("fetchCouponUsage — recupera redemption via invoice quando sub.discou
         has_more: false,
       });
     }
+    // #14339: NEWS65 entrou em TARGET_CODES — sem promotion_code neste fixture.
+    if (u.includes("/promotion_codes?code=NEWS65")) return mkRes(200, { data: [], has_more: false });
     if (u.includes("/promotion_codes?code=NEWS25")) return mkRes(200, { data: [], has_more: false });
     if (u.includes("/coupons/cpnOnceLive")) {
       return mkRes(200, { id: "cpnOnceLive", object: "coupon", amount_off: null, percent_off: 50, currency: null,
@@ -1305,6 +1307,8 @@ describe("fetchCouponUsage — tolera coupon 404 (#2750)", () => {
         has_more: false,
       });
     }
+    // #14339: NEWS65 entrou em TARGET_CODES — sem promotion_code neste fixture.
+    if (u.includes("/promotion_codes?code=NEWS65")) return mkRes(200, { data: [], has_more: false });
     if (u.includes("/promotion_codes?code=NEWS25")) {
       return mkRes(200, {
         data: [
@@ -1389,6 +1393,8 @@ describe("fetchCouponUsage — coupon deletado MAS ainda usado por assinatura at
     if (u.includes("/promotion_codes?code=NEWS50")) {
       return mkRes(200, { data: [], has_more: false });
     }
+    // #14339: NEWS65 entrou em TARGET_CODES — sem promotion_code neste fixture.
+    if (u.includes("/promotion_codes?code=NEWS65")) return mkRes(200, { data: [], has_more: false });
     if (u.includes("/promotion_codes?code=NEWS25")) {
       return mkRes(200, {
         data: [{ id: "promo_25", object: "promotion_code", active: true, code: "NEWS25", created: 1779209686,
@@ -1456,6 +1462,8 @@ describe("fetchCouponUsage — NÃO tolera erro não-404 (#2750)", () => {
         has_more: false,
       });
     }
+    // #14339: NEWS65 entrou em TARGET_CODES — sem promotion_code neste fixture.
+    if (u.includes("/promotion_codes?code=NEWS65")) return mkRes(200, { data: [], has_more: false });
     if (u.includes("/promotion_codes?code=NEWS25")) return mkRes(200, { data: [], has_more: false });
     // 401 — chave revogada/inválida. NÃO deve ser tolerado como o 404.
     if (u.includes("/coupons/cpnX")) return mkRes(401, { error: { code: "api_key_expired" } });
