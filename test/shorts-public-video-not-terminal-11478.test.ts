@@ -21,7 +21,9 @@ import {
   shortsVideoTerminal,
 } from "../scripts/lib/diaria/published-video-cleanup.ts";
 import { loadShortsConfig } from "../scripts/lib/diaria/short-video.ts";
-import { credentialSkippedItems, planShortsPublish, publicVideoUnavailableReason } from "../scripts/publish-shorts.ts";
+import { publicVideoUnavailableReason } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { credentialSkippedItems } from "../scripts/publish-shorts/confirm.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const AAMMDD = "261022";

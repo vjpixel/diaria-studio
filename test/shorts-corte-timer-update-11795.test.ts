@@ -28,7 +28,9 @@ import {
   type CorteTimerAlarmKey,
 } from "../scripts/shorts-corte-timer.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
-import { assignShortsDestinationOwners, executeScheduledUpdates, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { assignShortsDestinationOwners } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { executeScheduledUpdates } from "../scripts/publish-shorts/update-scheduled.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
 import { updateScheduledVideo } from "../scripts/lib/diaria/youtube-upload.ts";
 import { SCHEDULED_TASKS, getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";

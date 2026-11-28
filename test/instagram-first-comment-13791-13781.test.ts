@@ -22,13 +22,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  GraphResponseError,
-  confirmInstagram,
   firstCommentErrorIsUncertain,
-  instagramManualFirstCommentReminder,
   postInstagramReelFirstComment,
-  type GraphDeps,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram.ts";
+import { GraphResponseError, type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { confirmInstagram, instagramManualFirstCommentReminder } from "../scripts/publish-shorts/confirm.ts";
 import {
   INSTAGRAM_FIRST_COMMENT_MAX_ATTEMPTS,
   applyFirstCommentAttempt,

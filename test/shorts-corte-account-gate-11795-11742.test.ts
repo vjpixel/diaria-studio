@@ -20,13 +20,15 @@ import { join } from "node:path";
 import {
   INSTAGRAM_CAPTION_FORMAT_MARKER,
   InstagramTimerGateError,
+  instagramTimerGate,
+  readAndDecideInstagramConfirm,
+} from "../scripts/publish-shorts/instagram-confirm.ts";
+import {
   corteInstagramConfirmContext,
   editionDayRegisteredIds,
   instagramAccountGateApplies,
-  instagramTimerGate,
-  readAndDecideInstagramConfirm,
   threadsProfilePreflightInput,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/confirm.ts";
 import { decideThreadsProfileDuplicate, threadsProfilePreflight, type ThreadsPersonalCreds } from "../scripts/lib/threads-personal-video.ts";
 import { buildCorteTimerAlarm, interpretCorteTimerOutput } from "../scripts/shorts-corte-timer.ts";
 import { resolveEditionScheduledAt } from "../scripts/lib/edition-scheduled-at.ts";

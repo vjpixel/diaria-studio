@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { instagramTimerBeforePublish, publishFacebookReel, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { publishFacebookReel, type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { instagramTimerBeforePublish } from "../scripts/publish-shorts/instagram-confirm.ts";
 import { isDestinationDone, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 

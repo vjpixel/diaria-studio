@@ -17,19 +17,21 @@ import { fileURLToPath } from "node:url";
 import { instagramApiMaxSecondsPremise, instagramReelUploadRoute, loadInstagramApiMaxSeconds, resolveInstagramApiMaxSeconds, shortInstagramVideoFileName, shortVideoFileName, type ShortPublishedEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 import { etagConflictsBody, R2_RETENTION_POLICIES, uploadToR2 } from "../scripts/lib/r2-object-upload.ts";
 import {
-  credentialSkippedItems,
+  publicVideoUnavailableCause,
+  publicVideoUnavailableReason,
+  type ShortsPlanInput,
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import {
   instagramPublishRecheck,
   instagramR2VideoKey,
   instagramReelRouteChoice,
   instagramReelVideoUrl,
-  planShortsPublish,
-  publicVideoUnavailableCause,
-  publicVideoUnavailableReason,
   publishInstagramReel,
   resolveInstagramReelInputs,
-  type GraphDeps,
-  type ShortsPlanInput,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram.ts";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { credentialSkippedItems } from "../scripts/publish-shorts/confirm.ts";
 import { alarmSeverity, alarmSuppressed, buildInstagramTimerAlarm, interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");

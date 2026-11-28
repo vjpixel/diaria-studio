@@ -31,7 +31,7 @@ import {
   planShortHorizontalLinks,
   shouldUpdateLatestVideoOnPublish,
   type ShortsPlanItem,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/_shared.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 describe("#12786 item 1: UTMs da bio no registry", () => {

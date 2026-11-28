@@ -23,7 +23,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { nonCanonicalEditionDir, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { nonCanonicalEditionDir } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import {
   CORTE_WATCH_HORIZON_MS,
   buildCorteWatchAlarm,

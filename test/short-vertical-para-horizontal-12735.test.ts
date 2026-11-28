@@ -24,7 +24,12 @@ import {
 } from "../scripts/lib/diaria/short-video.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
 import { planPublishedTextUpdates } from "../scripts/lib/diaria/short-published-update.ts";
-import { readVerticalCta, planShortHorizontalLinks, planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
+import {
+  readVerticalCta,
+  planShortHorizontalLinks,
+  readHorizontalVideoForShort,
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import { computeTwitterWeightedLength, TWITTER_CHAR_LIMIT } from "../scripts/lib/twitter-weight.ts";
 import {
   LATEST_VIDEO_FALLBACK_URL,

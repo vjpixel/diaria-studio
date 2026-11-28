@@ -6,12 +6,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  enqueueInstagramReel,
-  planShortsPublish,
-  resolveInstagramQueueReadiness,
-  type ShortsPlanInput,
-} from "../scripts/publish-shorts.ts";
+import { type ShortsPlanInput } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { enqueueInstagramReel, resolveInstagramQueueReadiness } from "../scripts/publish-shorts/instagram.ts";
 import { WorkerQueueError, type WorkerQueuePayload } from "../scripts/lib/worker-queue-client.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

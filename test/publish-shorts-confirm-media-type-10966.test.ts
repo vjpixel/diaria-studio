@@ -10,7 +10,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { decideInstagramConfirm, fetchInstagramRecentMedia, instagramEditionMarkers } from "../scripts/publish-shorts.ts";
+import {
+  decideInstagramConfirm,
+  fetchInstagramRecentMedia,
+  instagramEditionMarkers,
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import type { ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 
 const empty: ShortsPublishedFile = { aammdd: "261023", entries: [] };

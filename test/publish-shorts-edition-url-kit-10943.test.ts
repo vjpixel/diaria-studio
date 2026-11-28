@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { planShortsPublish } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import { deriveEditionUrl } from "../scripts/lib/edition-url.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

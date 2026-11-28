@@ -20,7 +20,8 @@ import {
 } from "../scripts/lib/diaria/published-video-cleanup.ts";
 import { DEFAULT_SHORTS_CONFIG } from "../scripts/lib/diaria/short-video.ts";
 import { readShortsRegistry } from "../scripts/lib/diaria/shorts-published-store.ts";
-import { credentialSkippedItems, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { credentialSkippedItems } from "../scripts/publish-shorts/confirm.ts";
 
 const edition = "261027";
 const video = `diaria-comentada-${edition}-short.mp4`;

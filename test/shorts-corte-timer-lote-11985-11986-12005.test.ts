@@ -29,7 +29,8 @@ import {
   runCorteTimerFor,
   type CorteTimerAlarmKey,
 } from "../scripts/shorts-corte-timer.ts";
-import { corteTimerStaleWarning, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { corteTimerStaleWarning } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_LOCK_FILE, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { markShortSending, readShortsSending, shortsSendingPath, type ShortSendingMark } from "../scripts/lib/diaria/shorts-sending-marker.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";
