@@ -28,7 +28,7 @@ import {
 import { CORTE_SPEC_FILE, corteAuthorizedDestinations, parseCorteSpec, type CorteContentFingerprint, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
 import { SHORT_COVER_FILE } from "../scripts/lib/diaria/short-cover.ts";
-import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
+import { publishShortsSource, publishShortsModuleSource, publishShortsMainUnlockedSource } from "./_helpers/publish-shorts-source.ts"; // #14054, #14327
 
 const keys = (refused: string) =>
   interpretCorteTimerOutput(2, JSON.stringify({ authorization_refused: refused, reason: "m" }), ["instagram"]).map((o) => (o.kind === "alarm" ? o.key : o.kind));
@@ -133,8 +133,9 @@ describe("#11923 item 4: capa existente e ilegível não grava o 'pode publicar'
   });
 
   it("o main repassa o unreadable da capa à gravação da autorização (fonte)", () => {
-    const src = publishShortsSource();
-    assert.match(src, /recordCortePublishAuthorization\([^;]*shortCover\.unreadable\)/);
+    // #14327: a gravação mora em run-corte.ts; o mainUnlocked passa o unreadable da capa à fase.
+    assert.match(publishShortsModuleSource("run-corte"), /recordCortePublishAuthorization\([^;]*input\.coverUnreadable\)/);
+    assert.match(publishShortsMainUnlockedSource(), /authorizeCortePublish\(\{[^}]*coverUnreadable: shortCover\.unreadable,/);
   });
 });
 

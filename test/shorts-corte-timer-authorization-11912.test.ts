@@ -55,7 +55,8 @@ import {
   syncCorteAuthorizationWithContent,
   type CorteRevocation,
 } from "../scripts/publish-shorts/corte.ts";
-import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
+import { authorizeCortePublish } from "../scripts/publish-shorts/run-corte.ts";
+import { publishShortsSource, publishShortsModuleSource, publishShortsMainUnlockedSource } from "./_helpers/publish-shorts-source.ts"; // #14054, #14327
 
 const BASE: CorteSpec = { slug: "corte-extra", date: "261103", hhmm: "08:00", title: "Título do corte", hook: "Gancho do corte.", video: "corte-corte-extra.mp4" };
 const AT = "2026-11-03T11:00:00.000Z"; // 08:00 BRT
@@ -120,10 +121,9 @@ const deps = (now: Date, calls: string[][], alarms: Alarm[], stdout = JSON.strin
   },
 });
 const SRC = () => publishShortsSource();
-const MAIN = () => {
-  const src = SRC();
-  return src.slice(src.indexOf("async function main(): Promise<number>"));
-};
+// #14327: o corpo do `mainUnlocked` (ordem das fases) e o módulo de cada fase extraída.
+const MAIN = () => publishShortsMainUnlockedSource();
+const MOD = (name: "run-args" | "run-drive" | "run-corte") => publishShortsModuleSource(name);
 
 describe("#11912 decideCorteTimerRun exige o 'pode publicar'", () => {
   it("corte só com dry-run (sem marcador): não publica no horário", () => {
@@ -297,28 +297,43 @@ describe("#11912 marcador de autorização no corte.json", () => {
   // Trava de FONTE (a ligação no `main` não roda em teste: o guard de publicação
   // proíbe executar o publish-shorts com --publish). Garante que a gravação vem
   // depois de TODAS as validações que abortam e antes do 1º envio.
+  // #14327: a gravação mora em `authorizeCortePublish` (run-corte.ts) e a confirmação
+  // do --publish em `resolveShortsRunTarget` (run-args.ts); a ordem é a das chamadas no mainUnlocked.
   it("publish-shorts grava a autorização só depois das validações que abortam e antes do 1º envio", () => {
     const src = SRC();
-    const mainStart = src.indexOf("async function main(): Promise<number>");
-    assert.ok(mainStart > 0);
-    const call = src.indexOf("recordCortePublishAuthorization(dir,", mainStart);
+    const first = src.indexOf("recordCortePublishAuthorization(dir,");
+    assert.ok(first > 0);
+    assert.equal(src.indexOf("recordCortePublishAuthorization(dir,", first + 1), -1, "uma única chamada no publisher");
+    const main = MAIN();
+    const call = main.indexOf("authorizeCortePublish({");
     assert.ok(call > 0);
-    assert.equal(src.indexOf("recordCortePublishAuthorization(dir,", call + 1), -1, "uma única chamada");
+    assert.equal(main.indexOf("authorizeCortePublish({", call + 1), -1, "uma única chamada no mainUnlocked");
+    assert.match(main.slice(call - 300, call), /if \(corte\) \{\n\s*\/\/[^\n]*\n\s*const refused = $/, "só no corte");
+    assert.match(main.slice(call), /^authorizeCortePublish\(\{[^}]*\}\);\n\s*if \(refused !== null\) return refused;/, "a recusa vira o exit code");
     const before = (needle: string, label: string) => {
-      const i = src.indexOf(needle, mainStart);
+      const i = main.indexOf(needle);
       assert.ok(i > 0 && i < call, `${label} vem antes da gravação`);
     };
-    before("publishConfirmationError({", "confirmação (#11741)");
+    before("await resolveShortsRunTarget(", "argumentos e confirmação (#11741)");
     before("if (values[\"mark\"]) {", "--mark (sai sem gravar)");
     before("const scopeErr =", "escopo dos timers");
     before('if (flags.has("update-scheduled")) {', "--update-scheduled (sai sem gravar)");
-    before("plan = planShortsPublish({", "plano (valida o --only contra a config)");
+    before("await buildShortsRunPlan({", "plano (valida o --only contra a config)");
     before('if (!flags.has("publish")) {', "dry-run (sai sem gravar)");
     before("vídeo curto ausente em ${videoPath}`);\n    return 1;", "vídeo ausente");
-    const firstSend = src.indexOf("for (const item of plan.items)", mainStart);
+    const firstSend = main.indexOf("for (const item of plan.items)");
     assert.ok(firstSend > call, "a gravação vem antes do 1º envio (o timer depende dela)");
-    const window = src.slice(call - 400, call + 300);
-    assert.match(window, /knownDestinationIds\(shortsCfg\), corteContent,/, "valida os nomes e grava a impressão digital dos bytes da rodada");
+    // A confirmação do --publish (#11741) sai com 2 dentro da fase dos argumentos, antes de ela devolver o alvo.
+    const args = MOD("run-args");
+    const confirm = args.indexOf("publishConfirmationError({");
+    assert.ok(confirm > 0 && confirm < args.lastIndexOf("return {"), "confirmação antes de devolver o alvo");
+    assert.match(args.slice(confirm, confirm + 300), /if \(confirmErr\) \{\n\s*console\.error\(confirmErr\);\n\s*return 2;/);
+    assert.match(main.slice(call, call + 400), /known: knownDestinationIds\(shortsCfg\)/, "valida os nomes contra a config");
+    const corteMod = MOD("run-corte");
+    const rec = corteMod.indexOf("recordCortePublishAuthorization(dir,");
+    assert.ok(rec > 0);
+    const window = corteMod.slice(rec, rec + 300);
+    assert.match(window, /^recordCortePublishAuthorization\(dir, input\.onlyArg, input\.known, corteContent,/, "grava a impressão digital dos bytes da rodada");
     assert.match(window, /return 2;/, "destino desconhecido aborta com exit 2");
   });
 });
@@ -459,12 +474,18 @@ describe("#11912: trocar vídeo ou capa depois do 'pode publicar' não herda a a
   });
 
   it("J: em main, o sync pós --from-drive vem depois do download e antes de ler o vídeo, e nunca no filho do timer", () => {
+    // #14327: o download e o sync moram em run-drive.ts; o mainUnlocked chama a fase antes de ler o vídeo.
+    const drive = MOD("run-drive");
+    const download = drive.indexOf("await downloadDriveFileById(");
+    const sync = drive.indexOf("syncCorteAuthorizationWithContent(dir,");
+    assert.ok(download > 0 && sync > download, `ordem na fase: download ${download} < sync ${sync}`);
+    assert.match(drive.slice(sync - 80, sync), /if \(corte && !requireCorteAuth\) corte = $/);
+    assert.match(drive.slice(sync), /^[^\n]*\n\s*return \{ corte \};/, "o corte reconferido volta ao mainUnlocked");
     const main = MAIN();
-    const download = main.indexOf("await downloadDriveFileById(");
-    const sync = main.indexOf("syncCorteAuthorizationWithContent(dir,");
+    const phase = main.indexOf("await fetchShortsVideoFromDrive({");
     const read = main.indexOf("const file = videoExists ? readFileSync(videoPath) : null;");
-    assert.ok(download > 0 && sync > download && read > sync, `ordem: download ${download} < sync ${sync} < leitura ${read}`);
-    assert.match(main.slice(sync - 80, sync), /if \(corte && !requireCorteAuth\) corte = $/);
+    assert.ok(phase > 0 && read > phase, `ordem: fase do Drive ${phase} < leitura ${read}`);
+    assert.match(main.slice(phase, read), /requireCorteAuth[\s\S]*if \(typeof drive === "number"\) return drive;\n\s*corte = drive\.corte;/);
   });
 
   it("F: impressão digital dos bytes = a do disco; capa vazia = ausente; a capa sobe dos bytes já lidos", () => {
@@ -475,8 +496,10 @@ describe("#11912: trocar vídeo ou capa depois do 'pode publicar' não herda a a
     assert.deepEqual(corteContentFingerprintFromBytes(Buffer.from("mp4"), Buffer.from("jpg")), corteContentFingerprint(dir, readSpec(dir)));
     writeFileSync(join(dir, SHORT_COVER_FILE), "");
     assert.equal(corteContentFingerprint(dir, readSpec(dir)).cover_sha256, null);
+    // #14327: a impressão digital sai em run-corte.ts dos bytes que o mainUnlocked passa (o vídeo lido e a capa do readShortCover).
+    assert.match(MOD("run-corte"), /const corteContent = corteContentFingerprintFromBytes\(input\.file, input\.coverBytes\);/);
     const main = MAIN();
-    assert.match(main, /const corteContent = corte \? corteContentFingerprintFromBytes\(file, shortCover\.bytes\) : null;/);
+    assert.match(main, /authorizeCortePublish\(\{\n\s*corte, dir, file, coverBytes: shortCover\.bytes,/);
     const upload = main.slice(main.indexOf("const uploadCover = async"), main.indexOf("for (const item of plan.items)"));
     assert.match(upload, /coverKey, coverBytes, "image\/jpeg"/);
     assert.doesNotMatch(upload, /readFileSync\(/, "a capa não é relida do disco depois da conferência");
@@ -499,7 +522,7 @@ describe("#11912: o filho do timer só confere a autorização, nunca concede ne
     assert.match(corteRequireAuthArgsError(f("publish", "require-corte-authorization"), { ...ok, cover: "x.jpg" }) ?? "", /recebeu --cover/);
     assert.match(corteRequireAuthArgsError(f("publish", "require-corte-authorization"), { ...ok, "from-drive": "abc" }) ?? "", /recebeu --from-drive/);
     assert.match(corteRequireAuthArgsError(f("publish", "require-corte-authorization"), { ...ok, title: "t", hook: "h" }) ?? "", /recebeu --title, --hook/);
-    assert.match(MAIN(), /const requireAuthArgsErr = corteRequireAuthArgsError\(flags, values\);/);
+    assert.match(MOD("run-args"), /const requireAuthArgsErr = corteRequireAuthArgsError\(flags, values\);/); // #14327
   });
 
   it("corteRunAuthorizationError: o motivo estruturado da recusa", () => {
@@ -556,16 +579,41 @@ describe("#11912: o filho do timer só confere a autorização, nunca concede ne
 
   // Trava de FONTE: o guard de publicação proíbe executar o publish-shorts com --publish.
   it("main: com a flag lê o corte só para conferir, recusa em JSON com exit 2; a gravação fica no else", () => {
-    const main = MAIN();
-    assert.match(main, /prepareCorteRun\(\{[^}]*readOnly: requireCorteAuth \}\)/);
-    const check = main.indexOf("if (corte && corteContent && requireCorteAuth) {");
-    const record = main.indexOf("recordCortePublishAuthorization(dir,");
+    // #14327: o prepareCorteRun mora em run-args.ts e a conferência/gravação em run-corte.ts.
+    assert.match(MOD("run-args"), /prepareCorteRun\(\{[^}]*readOnly: requireCorteAuth \}\)/);
+    const corteMod = MOD("run-corte");
+    const check = corteMod.indexOf("if (input.requireCorteAuth) {");
+    const record = corteMod.indexOf("recordCortePublishAuthorization(dir,");
     assert.ok(check > 0 && record > check);
-    const block = main.slice(check, record);
+    const block = corteMod.slice(check, record);
     // #11923: drift + conferência da autorização vivem em corteTimerChildRefusal (testada no comportamento).
-    assert.match(block, /corteTimerChildRefusal\(parseCorteSpec\([^)]*\), specPath\), corte, onlyList, corteContent\)/);
+    assert.match(block, /corteTimerChildRefusal\(parseCorteSpec\([^)]*\), specPath\), corte, input\.onlyList, corteContent\)/);
     assert.match(block, /authorization_refused: refusal\.refused/);
-    assert.match(block, /return 2;[\s\S]*\} else if \(corte && corteContent\) \{/);
+    assert.match(block, /return 2;[\s\S]*\} else \{/);
+    assert.match(MAIN(), /authorizeCortePublish\(\{[^}]*requireCorteAuth,/);
+  });
+
+  it("#14327 authorizeCortePublish: o filho confere sem gravar (exit 2 sem o 'pode publicar'); a rodada manual grava", () => {
+    const dir = corteDir();
+    const input = { dir, file: Buffer.from("mp4"), coverBytes: null, coverUnreadable: undefined, onlyArg: "instagram", onlyList: ["instagram"], known: KNOWN };
+    const [err, log] = [console.error, console.log];
+    const out: string[] = [];
+    console.error = () => {};
+    console.log = (l: string) => void out.push(l);
+    try {
+      const before = readFileSync(join(dir, CORTE_SPEC_FILE), "utf8");
+      assert.equal(authorizeCortePublish({ ...input, corte: readSpec(dir), requireCorteAuth: true }), 2, "sem autorização: o filho recusa");
+      assert.equal(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), before, "o filho nunca grava");
+      assert.equal(JSON.parse(out[0]).dry_run, false);
+      assert.ok(JSON.parse(out[0]).authorization_refused, "a recusa sai em JSON para o timer");
+      assert.equal(authorizeCortePublish({ ...input, corte: readSpec(dir), requireCorteAuth: false }), null, "a rodada manual grava e segue");
+      assert.deepEqual(corteAuthorizedDestinations(readSpec(dir)), ["instagram"]);
+      assert.equal(authorizeCortePublish({ ...input, corte: readSpec(dir), requireCorteAuth: true }), null, "com o 'pode publicar' e os mesmos bytes, o filho segue");
+      assert.equal(authorizeCortePublish({ ...input, onlyArg: "tiktok", corte: readSpec(dir), requireCorteAuth: false }), 2, "destino desconhecido aborta");
+    } finally {
+      console.error = err;
+      console.log = log;
+    }
   });
 });
 

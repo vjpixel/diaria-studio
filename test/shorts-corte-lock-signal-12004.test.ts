@@ -7,7 +7,7 @@ import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCorteLockCleanup, corteTimerLockBusyError } from "../scripts/publish-shorts/run-checks.ts";
 import { acquireTimerLock } from "../scripts/lib/diaria/timer-lock.ts";
-import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
+import { publishShortsModuleSource, publishShortsMainUnlockedSource } from "./_helpers/publish-shorts-source.ts"; // #14054, #14327
 
 // No Windows `child.kill(sinal)` encerra o processo à força (TerminateProcess):
 // nenhum handler de SIGINT/SIGTERM roda, então não há liberação a medir (#13738).
@@ -149,8 +149,9 @@ it("#12004 conclusão normal remove handlers e libera uma única vez", () => {
   release();
   assert.equal(calls, 1);
   assert.deepEqual(events.map((e) => process.listenerCount(e)), before);
-  const src = publishShortsSource();
-  assert.match(src, /releaseCorteLock = registerCorteLockCleanup\(rel\)/);
+  // #14327: o lock é tomado em run-corte.ts e o mainUnlocked solta pelo `release` que ela devolve.
+  assert.match(publishShortsModuleSource("run-corte"), /release = registerCorteLockCleanup\(rel\)/);
+  assert.match(publishShortsMainUnlockedSource(), /release: releaseCorteLock \} = takeCorteManualLock\(/);
   assert.match(corteTimerLockBusyError("teste"), /manual ou timer/);
   assert.doesNotMatch(corteTimerLockBusyError("teste"), /o timer do 300 .*está publicando/);
 });

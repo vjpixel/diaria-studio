@@ -3,42 +3,28 @@
  * a rodada e o laço de envio. O envio de cada destino é uma etapa no módulo dele
  * (#14204), escolhida por `sendDestinationItem`; o laço guarda a releitura do
  * registro, o marcador de envio, a recusa e o pós-envio comum.
- * #14327: as fases que não são destino saíram para `run-replace.ts` (lock,
- * alvos e fase destrutiva da troca) e `run-authorize.ts` (manifesto do
- * dry-run, consumo da autorização do plano, KV do /video); as condições de
- * cada uma seguem aqui.
+ * #14327: as fases que não são destino saíram para `run-args.ts` (argumentos,
+ * corte avulso, confirmação, pasta e escritor), `run-drive.ts` (`--from-drive`),
+ * `run-plan.ts` (config, credenciais e o plano), `run-replace.ts` (lock, alvos
+ * e fase destrutiva da troca), `run-authorize.ts` (manifesto do dry-run,
+ * consumo da autorização do plano, KV do /video) e `run-corte.ts`
+ * (autorização e lock do timer do corte); as condições e a ordem de cada uma
+ * seguem aqui, travadas por `test/publish-shorts-run-phases-14327.test.ts`.
  *
  * Parte de `scripts/publish-shorts.ts` (#14054); a entrada reexporta o que os
  * testes e os outros scripts importam.
  */
-import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "../lib/diaria/published-video-cleanup.ts";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { cleanupPublishedVideo, recordCredentialSkips } from "../lib/diaria/published-video-cleanup.ts";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { publishConfirmationError } from "../lib/diaria/publish-confirm.ts";
 import { PAGE_REPOST_DESTINATION, sha256Hex } from "../lib/diaria/video-publish-plan.ts";
 import {
   afterCancelMessage,
   replacementUploadRefusal,
-  shortVideoChangeWarnings,
   type ReplacementCancelResult,
   type ShortReplacementTarget,
 } from "../lib/diaria/short-scheduled-replace.ts";
-import { editionDir as editionDirFor } from "../lib/edition-paths.ts";
-import {
-  CORTE_SPEC_FILE,
-  CORTE_TIMER_LOCK_FILE,
-  ALLOW_UNWATCHED_DIR_FLAG,
-  CORTES_REL_DIR,
-  checkCorteDir,
-  corteR2Key,
-  corteRelDir,
-  corteVideoPortabilityWarning,
-  resolveCorteVideo,
-  parseCorteSpec,
-  type CorteSpec,
-} from "../lib/diaria/short-corte.ts";
-import { corteContentFingerprintFromBytes } from "../lib/diaria/corte-content.ts";
-import { loadResolvedFacebookPages } from "../lib/facebook-pages.ts";
+import { CORTE_SPEC_FILE, corteR2Key, resolveCorteVideo, parseCorteSpec } from "../lib/diaria/short-corte.ts";
 import {
   facebookUploadRoute,
   knownDestinationIds,
@@ -56,44 +42,15 @@ import {
   persistShortEntry,
   readShortsRegistry,
   shortsRegistryPath,
-  shortsRegistryWriterFor,
 } from "../lib/diaria/shorts-published-store.ts";
 import { clearShortSending, markShortSending } from "../lib/diaria/shorts-sending-marker.ts";
-import { acquireTimerLock, TIMER_LOCK_HEARTBEAT_MS } from "../lib/diaria/timer-lock.ts";
-import { readCorteTimerHeartbeat } from "../lib/diaria/corte-timer-heartbeat.ts";
-import { missingYouTubeCredentials } from "../lib/diaria/youtube-upload.ts";
-import { gFetchRetry } from "../lib/drive-helpers.ts";
-import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, DriveDownloadEmptyError, downloadDriveFileById } from "../lib/drive-download.ts";
-import { PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT } from "../lib/diaria/vertical-download-guard.ts";
-import { loadR2UploadConfig, reuseOrUploadToR2 } from "../lib/r2-object-upload.ts";
-import { postToWorkerQueue, resolveSocialWorkerToken, resolveSocialWorkerUrl } from "../lib/worker-queue-client.ts";
+import { reuseOrUploadToR2 } from "../lib/r2-object-upload.ts";
+import { postToWorkerQueue } from "../lib/worker-queue-client.ts";
 import { resolveShortEntryState } from "../lib/publish-state.ts";
-import { LINKEDIN_PERSONAL_ENV, defaultLinkedInApiVersion, readPersonalCreds } from "../lib/linkedin-personal.ts";
-import { clampBufferThumbnailOffsetMs, withMissingCoverRecord, SHORT_COVER_MISSING_ERROR } from "../lib/diaria/short-cover.ts";
-import { THREADS_PROFILE_DESTINATION, ThreadsTimerGateError, readThreadsPersonalCreds } from "../lib/threads-personal-video.ts";
-import {
-  ROOT,
-  publicVideoUnavailableReason,
-  publicVideoUnavailableCause,
-  type ShortsPlan,
-  shouldUpdateLatestVideoOnPublish,
-  assignShortsDestinationOwners,
-  nonCanonicalEditionDir,
-  canonicalShortsEditionDir,
-  checkEditionDir,
-  ownersContextAfterPublish,
-  readHorizontalVideoForShort,
-} from "./_shared.ts";
-import { planShortsPublish } from "./plan.ts";
-import {
-  uploadCoverOrFallback,
-  type ReelCoverUpload,
-  resolveInstagramQueueReadiness,
-  wantsInstagram,
-  type InstagramAuthor,
-  resolveInstagramAuthor,
-  prepareInstagramChromeStep,
-} from "./instagram.ts";
+import { withMissingCoverRecord } from "../lib/diaria/short-cover.ts";
+import { THREADS_PROFILE_DESTINATION, ThreadsTimerGateError } from "../lib/threads-personal-video.ts";
+import { ROOT, shouldUpdateLatestVideoOnPublish, assignShortsDestinationOwners, ownersContextAfterPublish } from "./_shared.ts";
+import { uploadCoverOrFallback, type ReelCoverUpload, prepareInstagramChromeStep } from "./instagram.ts";
 import { blockRepostOnProfileFailure, sendLinkedInProfileItem, sendPageRepostStep } from "./linkedin.ts";
 import { defaultGraphDeps, type PublishOutcome, sendFacebookItem } from "./facebook.ts";
 import { InstagramTimerGateError } from "./instagram-confirm.ts";
@@ -101,45 +58,20 @@ import { youtubeShortUploadFile, youtubeShortsPrepareBeforeMarker, youtubeShortU
 import { sendThreadsProfileItem } from "./threads.ts";
 import { sendInstagramQueueItem, sendInstagramReelItem } from "./instagram-send.ts";
 import { type ShortsEnqueueItem, type ShortsPublishItem, type ShortsRunResult, type ShortsSendContext, type ShortsSendStep, linkedInSendCreds, shortsResult, shortsResultEntry } from "./send-context.ts";
-import {
-  readShortCover,
-  corteManualTimerDestinations,
-  registerCorteLockCleanup,
-  corteTimerLockBusyError,
-  recheckBeforePublish,
-  loadScheduledGrid,
-  loadEditionDayGrid,
-  loadWorkerQueueForGrid,
-  resolveEditionUrlInput,
-} from "./run-checks.ts";
+import { recheckBeforePublish } from "./run-checks.ts";
 import { sendBufferItem } from "./buffer.ts";
 import { runUpdateScheduled } from "./update-scheduled.ts";
 import { runMark, runMarkReplaced } from "./mark.ts";
-import {
-  USAGE,
-  replaceScheduledArgsError,
-  parseShortsCliArgs,
-  configuredThreadsViaTimer,
-  configuredInstagramBackend,
-} from "./cli.ts";
-import {
-  CORTE_FORBIDDEN_FLAGS,
-  type CorteRevocation,
-  corteRequireAuthArgsError,
-  prepareCorteRun,
-  syncCorteAuthorizationWithContent,
-  syncCorteAgendamento,
-  syncCorteAgendamentoFailSoft,
-  recordCortePublishAuthorization,
-  type CorteAuthorizationRefusal,
-  corteTimerChildRefusal,
-  corteLifecycleArgsError,
-  runCorteLifecycle,
-} from "./corte.ts";
-import { updatePublishedArgsError, runUpdatePublished } from "./update-published.ts";
+import { configuredThreadsViaTimer, configuredInstagramBackend } from "./cli.ts";
+import { syncCorteAgendamento, syncCorteAgendamentoFailSoft } from "./corte.ts";
+import { runUpdatePublished } from "./update-published.ts";
 import { credentialSkippedItems, confirmInstagram } from "./confirm.ts";
 import { consumeShortsPlanAuthorization, shortsPlanDryRunManifest, updateShortVideoRedirects } from "./run-authorize.ts";
 import { runShortsReplacePhase, selectShortsReplacement, takeShortsReplaceLock, type ShortsReplaceSelection } from "./run-replace.ts";
+import { resolveShortsRunTarget } from "./run-args.ts";
+import { fetchShortsVideoFromDrive } from "./run-drive.ts";
+import { buildShortsRunPlan } from "./run-plan.ts";
+import { authorizeCortePublish, takeCorteManualLock } from "./run-corte.ts";
 
 // #14204: a etapa do YouTube mora em youtube.ts; a entrada reexporta daqui.
 export { replacedYouTubeIds } from "./youtube.ts";
@@ -182,134 +114,14 @@ export async function sendDestinationItem(
 }
 
 async function mainUnlocked(): Promise<number> {
-  const parsed = parseShortsCliArgs(process.argv.slice(2));
-  if (!parsed.ok) {
-    console.error(`publish-shorts: ${parsed.error}`);
-    console.error(USAGE);
-    return 2;
-  }
-  const { flags, values } = parsed;
-  let aammdd = parsed.aammdd;
+  // #14327: argumentos, corte avulso, confirmação do --publish, pasta e escritor em run-args.ts.
+  const target = await resolveShortsRunTarget(process.argv.slice(2));
+  if (typeof target === "number") return target;
+  const { flags, values, aammdd, corteOutside, corteRevocations, requireCorteAuth, replaceRun, dir, editionDirOverride, unwatchedEditionWarning, linkedinTimer, instagramTimer, threadsTimer, writer } = target;
+  let corte = target.corte;
+  const revokedOut = () => (corteRevocations.length ? { corte_authorization_revoked: corteRevocations } : {});
   // #13403: alarme do áudio degradado do youtube_shorts (disparado depois de gravar o registro).
   const notifyAudioDegraded: YouTubeAudioAlarmFn = (check, ctx) => notifyYouTubeAudioDegraded(check, ctx, { cwd: ROOT });
-  // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
-  const corteSlug = values["corte"];
-  let corte: CorteSpec | null = null;
-  // #11911: corte fora de data/cortes/ aceito por --allow-unwatched-dir (sem alarme de destino faltante).
-  let corteOutside: { dir: string; warning: string } | undefined;
-  // #11912: derrubadas do "pode publicar" nesta rodada — saem no JSON, não só no stderr.
-  const corteRevocations: CorteRevocation[] = [];
-  const revokedOut = () => (corteRevocations.length ? { corte_authorization_revoked: corteRevocations } : {});
-  const requireCorteAuth = flags.has("require-corte-authorization");
-  // #11912: o filho do timer só CONFERE a autorização; nunca muda o plano nem grava nada.
-  const requireAuthArgsErr = corteRequireAuthArgsError(flags, values);
-  if (requireAuthArgsErr) {
-    console.error(`publish-shorts: ${requireAuthArgsErr}`);
-    return 2;
-  }
-  // #13000: --cancel/--reschedule do corte — conferido antes de qualquer leitura ou gravação.
-  const lifecycleErr = corteLifecycleArgsError(flags, values);
-  if (lifecycleErr) {
-    console.error(`publish-shorts: ${lifecycleErr}`);
-    return 2;
-  }
-  // #12936: --update-published — conferido antes de qualquer leitura ou gravação.
-  const updatePublishedErr = updatePublishedArgsError(flags, values, aammdd);
-  if (updatePublishedErr) {
-    console.error(`publish-shorts: ${updatePublishedErr}`);
-    return 2;
-  }
-  // #12279: --replace-scheduled — conferido antes de qualquer leitura ou gravação.
-  const replaceRun = flags.has("replace-scheduled");
-  const replaceArgsErr = replaceScheduledArgsError(flags, values);
-  if (replaceArgsErr) {
-    console.error(`publish-shorts: ${replaceArgsErr}`);
-    return 2;
-  }
-  if (corteSlug !== undefined) {
-    const forbidden = CORTE_FORBIDDEN_FLAGS.filter((f) => flags.has(f));
-    if (forbidden.length) {
-      console.error(`publish-shorts: --corte não combina com ${forbidden.map((f) => `--${f}`).join(", ")} (timers e conferência do Instagram são da edição; registre à mão com --mark)`);
-      return 2;
-    }
-    if (values["edition"] !== undefined) {
-      console.error("publish-shorts: --corte usa --date AAMMDD, não --edition");
-      return 2;
-    }
-    const corteDir = resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corteSlug)));
-    // #11911: só data/cortes/{slug}/ é vista pelo timer do corte e pelo vigia de cortes sem dono.
-    // Conferido antes de qualquer gravação (o prepareCorteRun já grava o corte.json).
-    const dirCheck = checkCorteDir({ slug: corteSlug, dir: corteDir, cortesRoot: join(ROOT, CORTES_REL_DIR), allowUnwatched: flags.has(ALLOW_UNWATCHED_DIR_FLAG) });
-    if (!dirCheck.ok) {
-      console.error(`publish-shorts: ${dirCheck.error}`);
-      return 2;
-    }
-    if (dirCheck.outside) {
-      corteOutside = { dir: dirCheck.dir, warning: dirCheck.warning };
-      console.error(`[aviso] ${dirCheck.warning}`);
-    }
-    // #13000: antes do prepareCorteRun, que gravaria o --date/--at novos e derrubaria o "pode publicar".
-    if (flags.has("cancel") || flags.has("reschedule")) return runCorteLifecycle({ dir: corteDir, slug: corteSlug, flags, values });
-    // #12936: antes do prepareCorteRun, que gravaria --title/--hook e derrubaria o "pode publicar".
-    if (flags.has("update-published")) {
-      return runUpdatePublished({ dir: corteDir, aammdd: "", corteSlug, values, only: values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null });
-    }
-    try {
-      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r), unwatchedDirWarning: corteOutside?.warning, readOnly: requireCorteAuth });
-    } catch (e) {
-      console.error(`publish-shorts: ${(e as Error).message}`);
-      return 2;
-    }
-    aammdd = corte.date;
-    console.error(`[premissa] corte avulso "${corte.slug}": ${corte.date} às ${corte.hhmm} BRT, vídeo ${resolveCorteVideo(corteDir, corte.video)}, registro em ${corteDir}`);
-    const portability = corteVideoPortabilityWarning(resolveCorteVideo(corteDir, corte.video), join(ROOT, "data"));
-    if (portability) console.error(`[aviso] ${portability}`);
-  }
-  // #11741: `--publish` tem efeito público — só com a confirmação explícita da
-  // edição (no corte avulso, a data do corte), checada antes de qualquer
-  // download, credencial, API ou gravação de registro.
-  if (flags.has("publish")) {
-    const confirmErr = publishConfirmationError({ script: "publish-shorts", mode: "--publish", aammdd, flags, values });
-    if (confirmErr) {
-      console.error(confirmErr);
-      return 2;
-    }
-  }
-  // #11911: a pasta canônica da edição é a do repo (ROOT), nunca relativa ao cwd — mesmo critério do corte.
-  const canonicalEditionDir = canonicalShortsEditionDir(aammdd);
-  const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? canonicalEditionDir);
-  // #11911: `--edition-dir` fora de data/editions/{AAMM}/{AAMMDD}: nada é delegado aos timers do 300.
-  const editionDirOverride = corte ? undefined : nonCanonicalEditionDir(dir, canonicalEditionDir);
-  // #11911: e é recusada sem --allow-unwatched-dir. Em 02/11 a rodada original foi no modo edição com
-  // --edition-dir ~/diaria-cortes/... e os timers de Instagram da edição ficaram cegos; o
-  // `--instagram-timer` com a mesma pasta foi só a remediação manual (12:38 BRT).
-  // Depois da confirmação do --publish e antes de qualquer leitura ou gravação na pasta.
-  let unwatchedEditionWarning: string | undefined;
-  if (!corte) {
-    const editionCheck = checkEditionDir({ aammdd, override: editionDirOverride, allowUnwatched: flags.has(ALLOW_UNWATCHED_DIR_FLAG), canonicalDir: canonicalEditionDir });
-    if (!editionCheck.ok) {
-      console.error(`publish-shorts: ${editionCheck.error}`);
-      return 2;
-    }
-    if (editionCheck.outside) {
-      unwatchedEditionWarning = editionCheck.warning;
-      console.error(`[aviso] ${editionCheck.warning}`);
-    }
-  }
-  // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
-  // toda gravação relê do disco e troca só a própria entrada, sob lock.
-  const linkedinTimer = flags.has("linkedin-timer");
-  const instagramTimer = flags.has("instagram-timer");
-  const threadsTimer = flags.has("threads-timer");
-  if (linkedinTimer && instagramTimer) {
-    console.error("publish-shorts: --instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)");
-    return 2;
-  }
-  if (threadsTimer && (linkedinTimer || instagramTimer)) {
-    console.error("publish-shorts: --threads-timer não combina com outro timer (cada timer grava o próprio registro)");
-    return 2;
-  }
-  const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer, threadsTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
   // #11795: o vídeo do corte é do editor (ou da pasta de cortes) — a limpeza do vertical da edição nunca o apaga.
@@ -373,38 +185,14 @@ async function mainUnlocked(): Promise<number> {
     return 1;
   }
   const videoPath = corte ? resolveCorteVideo(dir, corte.video) : resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
-  // #12279: na substituição todos os destinos já estão registrados; o V2 baixa assim mesmo.
-  if (values["from-drive"] && !replaceRun && !existsSync(videoPath) && shortsVideoTerminal(dir, aammdd,
-    loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
-    cleanup();
-    console.error("[ok] destinos do vertical já concluídos — nada a baixar");
-    return 0;
-  }
   if (values["from-drive"]) {
-    const id = values["from-drive"];
-    if (!/^[\w-]{10,}$/.test(id)) {
-      console.error(`--from-drive espera o id do arquivo no Drive, recebido ${JSON.stringify(id)}`);
-      return 2;
-    }
-    if (existsSync(videoPath)) console.error(`[aviso] substituindo ${videoPath} pelo arquivo do Drive`);
-    // #11082: mesmo download protegido do fetch-drive-video.ts (.part, teto de 20 min,
-    // 60 s sem bytes aborta, tamanho conferido contra o metadado, só .mp4).
-    try {
-      const { bytes } = await downloadDriveFileById(
-        { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) },
-        id,
-        videoPath,
-        DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS,
-        (line) => console.error(line),
-      );
-      console.error(`[ok] vídeo curto baixado do Drive (${(bytes / 1e6).toFixed(1)} MB) → ${videoPath}`);
-    } catch (e) {
-      console.error(`publish-shorts: ${(e as Error).message}`);
-      // #13540/#13541: arquivo ainda subindo para o Drive — exit próprio, que os timers leem como espera.
-      return e instanceof DriveDownloadEmptyError ? PUBLISH_SHORTS_DRIVE_NOT_READY_EXIT : 1;
-    }
-    // #11912: outro arquivo no lugar do vídeo aprovado não herda o "pode publicar".
-    if (corte && !requireCorteAuth) corte = syncCorteAuthorizationWithContent(dir, new Date().toISOString(), { log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r) });
+    // #14327: download protegido e reconferência do "pode publicar" do corte, em run-drive.ts.
+    const drive = await fetchShortsVideoFromDrive({
+      driveId: values["from-drive"], dir, aammdd, videoPath, replaceRun, corte, requireCorteAuth, cleanup,
+      onRevoked: (r) => corteRevocations.push(r),
+    });
+    if (typeof drive === "number") return drive;
+    corte = drive.corte;
   }
   const videoExists = existsSync(videoPath);
   // #10893: a duração decide já no plano (dry-run incluso) se o Instagram vai pela API ou vira passo guiado.
@@ -423,115 +211,15 @@ async function mainUnlocked(): Promise<number> {
     if (typeof selection === "number") return selection;
     ({ targets: replaceTargets, skipped: replaceSkipped, planPublished, planOnly } = selection);
   }
-  const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-  const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
-  const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
-  let shortsCfg: ReturnType<typeof loadShortsConfig>;
-  try {
-    shortsCfg = loadShortsConfig(config);
-  } catch (e) {
-    console.error(`publish-shorts: ${(e as Error).message}`);
-    return 2;
-  }
-  const igAuthor: InstagramAuthor = wantsInstagram(shortsCfg, planOnly, planPublished)
-    ? await resolveInstagramAuthor(defaultGraphDeps, shortsCfg.instagramAuthorPage, pages, igApiVersion, {
-        igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
-        token: process.env.INSTAGRAM_ACCESS_TOKEN ?? "",
-      })
-    : { ready: false, reason: "fora desta rodada" };
-  if (igAuthor.ready) {
-    const collab = shortsCfg.instagramCollaborators.length ? ` + collab ${shortsCfg.instagramCollaborators.map((c) => `@${c}`).join(", ")}` : "";
-    console.error(`[premissa] Instagram: autora ${igAuthor.username ? `@${igAuthor.username}` : igAuthor.igUserId} (${igAuthor.source})${collab}`);
-  }
-  const editionUrlIn = resolveEditionUrlInput(dir, values["edition-url"]);
-  // #10823: fila do Worker pro Reels com horário futuro (mesmas vars do publish-instagram.ts --schedule).
-  const workerUrl: string = resolveSocialWorkerUrl(config, { preferSlot: "instagram" });
-  const workerToken = resolveSocialWorkerToken();
-  const r2 = loadR2UploadConfig(process.env);
-  // #10772: LinkedIn pessoal (mesmo token do 4º post) e o vídeo completo do YouTube pro texto.
-  const liCreds = readPersonalCreds(process.env, new Date());
-  const liApiVersion = process.env[LINKEDIN_PERSONAL_ENV.apiVersion]?.trim() || defaultLinkedInApiVersion(new Date());
-  // #11122: Threads pessoal (fail-soft até o token existir, #10772/#11077).
-  const threadsCreds = readThreadsPersonalCreds(process.env);
-  // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
-  const ytMissing = missingYouTubeCredentials(process.env);
-  // #11265: a fila do Worker só entra com o backend antigo. O R2 é cobrado no
-  // plano: X, Threads e, desde o #11355, o Reels da @diar.ia.br dependem dele.
-  const instagramQueue =
-    shortsCfg.instagramBackend === "worker-r2"
-      ? resolveInstagramQueueReadiness({
-          authorPage: shortsCfg.instagramAuthorPage,
-          workerUrl,
-          workerToken,
-          r2Missing: r2.ready ? [] : r2.missing,
-        })
-      : undefined;
-  // #10819: a fila do Worker entra na grade (só leitura, fail-soft).
-  const warnGrid = (m: string) => console.error(`[aviso] ${m}`);
-  const workerQueue = await loadWorkerQueueForGrid(workerUrl, workerToken, fetch, warnGrid);
-
-  const shortCover = readShortCover(dir, (l) => console.error(l)); // #11547
-  // #11660: capa ausente nesta máquina é aviso explícito (e vai pro registro de cada destino), nunca silêncio.
-  if (!shortCover.path) console.error(`[aviso] capa do vertical: ${SHORT_COVER_MISSING_ERROR}`);
-  // #11679 item 2: offset do X fora do vertical (sequência do Premiere que não começa em 00:00:00:00) não vai à Buffer.
-  const bufferOffsetMs = clampBufferThumbnailOffsetMs(shortCover.bufferOffsetMs, duration);
-  if (shortCover.bufferOffsetMs !== null && bufferOffsetMs === null) {
-    console.error(`[aviso] capa do X: offset ${shortCover.bufferOffsetMs} ms do timecode do Still fica fora do vertical — a Buffer escolhe o frame`);
-  }
-  let plan: ShortsPlan;
-  try {
-    plan = planShortsPublish({
-      aammdd,
-      coverPath: shortCover.path,
-      coverUploadReady: r2.ready,
-      coverBufferOffsetMs: bufferOffsetMs,
-      reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
-      // #11964: o filho do timer (--require-corte-authorization) é o único que publica os destinos do timer na janela.
-      ...(corte
-        ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook, timerRun: requireCorteAuth }, ...(corteOutside ? { corteOutside } : {}) }
-        : editionDirOverride !== undefined
-          ? { editionDirOverride, unwatchedEditionWarning: unwatchedEditionWarning! }
-          : {}),
-      // #12191: a descrição do Short (edição, nunca corte) cita o vídeo horizontal.
-      ...(corte ? {} : { horizontalVideo: readHorizontalVideoForShort(dir) }),
-      // #11986: a rodada manual confere se o timer do corte, a quem entrega destinos, está vivo.
-      ...(corte && !requireCorteAuth ? { corteTimerHeartbeat: readCorteTimerHeartbeat(join(ROOT, CORTES_REL_DIR)) } : {}),
-      now: new Date(),
-      config,
-      pages,
-      instagramReady: igAuthor.ready,
-      instagramNotReadyReason: igAuthor.ready ? undefined : igAuthor.reason,
-      instagramWarnings: igAuthor.ready ? igAuthor.warnings : undefined,
-      instagramQueue,
-      linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
-      threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing), cause: publicVideoUnavailableCause(shortsCfg.instagramBackend, r2.missing) },
-      youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
-      writer,
-      published: planPublished,
-      video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
-      videoDurationSeconds: duration,
-      editionUrl: editionUrlIn.url,
-      editionUrlSource: editionUrlIn.source,
-      forceNow: flags.has("now"),
-      only: planOnly,
-      grid: [
-        ...loadScheduledGrid(dir, planPublished, shortsCfg.instagramAuthorPage, warnGrid, {
-          instagramCollaborators: shortsCfg.instagramCollaborators,
-          workerQueue,
-        }),
-        // #11795: o corte disputa as contas com a edição do mesmo dia (só leitura, fail-soft).
-        ...(corte ? loadEditionDayGrid(editionDirFor(aammdd), aammdd, shortsCfg.instagramAuthorPage, shortsCfg.instagramCollaborators, warnGrid) : []),
-      ],
-    });
-  } catch (e) {
-    console.error(`publish-shorts: ${(e as Error).message}`);
-    return 2;
-  }
-  // #12279: no dry-run normal, o vídeo local que não é o registrado vira aviso (V2 re-exportado).
-  if (!replaceRun && !corte && videoHash) plan.warnings.push(...shortVideoChangeWarnings(published.entries, videoHash));
-  for (const p of plan.premises) console.error(`[premissa] ${p}`);
-  for (const w of plan.warnings) console.error(`[aviso] ${w}`);
+  // #14327: config, credenciais, grade, capa e o plano (com premissas e avisos impressos), em run-plan.ts.
+  const planned = await buildShortsRunPlan({
+    aammdd, dir, corte, corteOutside, requireCorteAuth, editionDirOverride, unwatchedEditionWarning, writer, replaceRun,
+    editionUrlArg: values["edition-url"], forceNow: flags.has("now"), reviewedPath, videoPath, videoExists, duration, videoHash,
+    published, planPublished, planOnly,
+  });
+  if (typeof planned === "number") return planned;
+  const { config, pages, apiVersion, igApiVersion, shortsCfg, igAuthor, workerUrl, workerToken, r2, liCreds, liApiVersion, threadsCreds, ytMissing, shortCover, bufferOffsetMs } = planned;
+  let plan = planned.plan;
 
   // #12279: a substituição — plano com o horário PRESERVADO de cada post antigo, manifesto
   // próprio (o grant --replace-scheduled), e a fase destrutiva só depois do consumo.
@@ -579,31 +267,13 @@ async function mainUnlocked(): Promise<number> {
   // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled já
   // saíram acima. Fica DEPOIS de todas as validações que abortam (confirmação, escopo dos
   // timers, plano com o --only, vídeo) e ANTES do 1º envio.
-  // #11912: a impressão digital é dos bytes que esta rodada sobe (o vídeo já lido, a capa do readShortCover).
-  const corteContent = corte ? corteContentFingerprintFromBytes(file, shortCover.bytes) : null;
-  if (corte && corteContent && requireCorteAuth) {
-    // #11912: o filho do timer só confere (autorização presente, cobre o --only, o mesmo plano com que montou
-    // título e gancho, vídeo/capa iguais aos aprovados). A recusa sai em JSON: o timer alarma o motivo certo.
-    const specPath = join(dir, CORTE_SPEC_FILE);
-    let refusal: { refused: CorteAuthorizationRefusal; reason: string } | null;
-    try {
-      refusal = corteTimerChildRefusal(parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corte, onlyList, corteContent);
-    } catch (e) {
-      // #11923: falha ao reler o corte.json (EBUSY do OneDrive, JSON pela metade) não é revogação.
-      refusal = { refused: "spec-unreadable", reason: `corte.json ilegível nesta rodada: ${(e as Error).message}` };
-    }
-    if (refusal) {
-      console.error(`publish-shorts: --require-corte-authorization: ${refusal.reason} — nada publicado`);
-      console.log(JSON.stringify({ dry_run: false, authorization_refused: refusal.refused, reason: refusal.reason }, null, 2));
-      return 2;
-    }
-  } else if (corte && corteContent) {
-    try {
-      recordCortePublishAuthorization(dir, values["only"], knownDestinationIds(shortsCfg), corteContent, new Date().toISOString(), (l) => console.error(l), shortCover.unreadable);
-    } catch (e) {
-      console.error(`publish-shorts: ${(e as Error).message}`);
-      return 2;
-    }
+  if (corte) {
+    // #14327: conferência (filho do timer) ou gravação da autorização, em run-corte.ts.
+    const refused = authorizeCortePublish({
+      corte, dir, file, coverBytes: shortCover.bytes, coverUnreadable: shortCover.unreadable, requireCorteAuth,
+      onlyArg: values["only"], onlyList, known: knownDestinationIds(shortsCfg),
+    });
+    if (refused !== null) return refused;
   }
   console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
   const deps = defaultGraphDeps;
@@ -656,25 +326,8 @@ async function mainUnlocked(): Promise<number> {
     );
     return uploadedCover;
   };
-  // #12001: a rodada manual que publica destinos do timer do corte (a última hora antes do teto,
-  // #11996) toma o MESMO lock do timer: o timer que passar junto acha o lock e sai sem publicar,
-  // e se o timer já está com ele, esses destinos não saem por aqui. Falha ao tomar = recusa.
-  const corteLockDests = corteManualTimerDestinations(plan.items, corte ? { timerRun: requireCorteAuth } : null);
-  let corteLockBusy: string | null = null;
-  let releaseCorteLock = () => {};
-  if (corte && corteLockDests.length) {
-    let rel: (() => void) | null = null;
-    try {
-      rel = acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE), Date.now(), { heartbeatMs: TIMER_LOCK_HEARTBEAT_MS }); // #12005: rodada sem teto renova o lock
-    } catch (e) {
-      corteLockBusy = `lock do timer do corte não tomado (${(e as Error).message}): nada enviado neste destino para não duplicar o post com o timer (#12001)`;
-    }
-    if (rel) {
-      releaseCorteLock = registerCorteLockCleanup(rel);
-    } else if (!corteLockBusy) {
-      corteLockBusy = corteTimerLockBusyError(corte.slug);
-    }
-  }
+  // #12001: lock do timer do corte para os destinos dele que esta rodada manual publica (run-corte.ts).
+  const { dests: corteLockDests, busy: corteLockBusy, release: releaseCorteLock } = takeCorteManualLock(plan.items, dir, corte, requireCorteAuth);
   // #14204: o que é fixo na rodada e cada etapa de destino lê. O registro (`published`) passa por
   // `registry`, que lê e grava a variável desta função: cada etapa vê a versão mais recente.
   const sendCtx: ShortsSendContext = {

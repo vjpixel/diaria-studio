@@ -41,6 +41,27 @@ export function publishShortsModuleFiles(): string[] {
   return names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((n) => join(DIR, `${n}.ts`));
 }
 
+/**
+ * #14327: texto de UM módulo de `scripts/publish-shorts/` (sem `.ts`). Os guards
+ * de ordem leem o módulo onde a fase mora, e não a concatenação: nela, a ordem
+ * entre módulos é a deste arquivo, não a de execução.
+ */
+export function publishShortsModuleSource(name: string): string {
+  return readFileSync(join(DIR, `${name}.ts`), "utf8");
+}
+
+/**
+ * #14327: corpo de `mainUnlocked` (`run.ts`), que chama as fases da rodada em
+ * ordem. Guard de ordem entre fases lê daqui: a chamada de cada fase, não o
+ * texto dela (que mora no módulo da fase).
+ */
+export function publishShortsMainUnlockedSource(): string {
+  const run = publishShortsModuleSource("run");
+  const at = run.indexOf("async function mainUnlocked(): Promise<number>");
+  if (at < 0) throw new Error("mainUnlocked não encontrado em scripts/publish-shorts/run.ts");
+  return run.slice(at);
+}
+
 /** Texto de todo o publisher dos verticais: módulos de `scripts/publish-shorts/` + a entrada. */
 export function publishShortsSource(): string {
   return [...publishShortsModuleFiles(), join(ROOT, "scripts", "publish-shorts.ts")]
