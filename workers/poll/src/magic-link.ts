@@ -343,6 +343,43 @@ export async function consumePendingMerge(bEnv: Env, token: string): Promise<Pen
 }
 
 /**
+ * #14223: devolve ao KV um token que `consumePendingMerge` acabou de consumir,
+ * para o MESMO link voltar a funcionar quando uma escrita seguinte de
+ * `handleConfirmMerge` (marcador de posse, merge de score) falha. Sem isso a
+ * resposta dizia "tente novamente" com o link já morto, e o 2º clique caía em
+ * "Link inválido, expirado ou já usado".
+ *
+ * Regrava as duas chaves de `createPendingMerge` com o TTL cheio
+ * (`MAGIC_LINK_TTL_SEC`): o KV não devolve o TTL restante na leitura, e
+ * renovar a janela de 24h de um link que a pessoa de fato tentou usar é o
+ * custo aceito. Repetir o clique é seguro: a posse é um `put` idempotente e o
+ * merge soma só o delta desde a última migração do par (#14222).
+ *
+ * Retorna `false` (nunca lança) quando a própria restauração falha — o
+ * chamador troca a mensagem por "peça um novo link pelo jogo", que é o único
+ * caminho que ainda funciona.
+ */
+export async function restorePendingMerge(bEnv: Env, token: string, pending: PendingMerge): Promise<boolean> {
+  try {
+    await Promise.all([
+      bEnv.POLL.put(pendingMergeKey(token), JSON.stringify(pending), { expirationTtl: MAGIC_LINK_TTL_SEC }),
+      bEnv.POLL.put(pendingForKey(pending.email, pending.anonEmail), token, { expirationTtl: MAGIC_LINK_TTL_SEC }),
+    ]);
+    return true;
+  } catch (e) {
+    console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "restore_token", error: String(e) }));
+    return false;
+  }
+}
+
+/** Mensagens de falha de `handleConfirmMerge` depois do consumo do token
+ * (#14223): "tente novamente" só quando o link foi restaurado e o mesmo
+ * clique de fato volta a funcionar. */
+export const CONFIRM_MERGE_RETRY_MESSAGE = "Não foi possível confirmar seu link agora. Tente novamente em alguns minutos.";
+export const CONFIRM_MERGE_NEW_LINK_MESSAGE =
+  "Não foi possível confirmar seu link agora. Volte ao jogo e peça um novo link de confirmação.";
+
+/**
  * Pure (#3996): monta a URL de confirmação a partir da URL da request atual
  * (mesmo host/protocolo — nunca hardcoded) + `?brand=web` (o router de
  * index.ts deriva `bEnv` do brand na query string; `/confirm-merge` só faz
@@ -515,6 +552,14 @@ export async function handleConfirmMerge(
   // no log. Cobrimos as duas escritas com o MESMO tratamento do bloco de
   // opt-in logo abaixo: log estruturado (`stage` diferencia qual escrita
   // falhou) + resposta de erro explícita — nunca deixar a exceção propagar.
+  //
+  // #14223: na falha, o token é RESTAURADO (`restorePendingMerge`) antes de
+  // responder, para o "tente novamente" ser verdade com o mesmo link. Se a
+  // restauração também falhar, a mensagem manda pedir um link novo.
+  const failAfterConsume = async (): Promise<Response> => {
+    const restored = await restorePendingMerge(bEnv, token, pending);
+    return confirmMergeHtmlResponse(false, restored ? CONFIRM_MERGE_RETRY_MESSAGE : CONFIRM_MERGE_NEW_LINK_MESSAGE);
+  };
   const mergeInput: IdentifyMergeInput = {
     email: pending.email,
     anonEmail: pending.anonEmail,
@@ -527,13 +572,13 @@ export async function handleConfirmMerge(
     }
   } catch (e) {
     console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "mark_possession", error: String(e) }));
-    return confirmMergeHtmlResponse(false, "Não foi possível confirmar seu link agora. Tente novamente em alguns minutos.");
+    return failAfterConsume();
   }
   try {
     await performIdentifyMerge(bEnv, mergeInput);
   } catch (e) {
     console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "score_merge", error: String(e) }));
-    return confirmMergeHtmlResponse(false, "Não foi possível confirmar seu link agora. Tente novamente em alguns minutos.");
+    return failAfterConsume();
   }
 
   if (pending.optin) {
