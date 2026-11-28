@@ -35,7 +35,7 @@ import { runCli } from "./lib/cli-exit.ts";
 // estrita), que rejeitava silenciosamente edições de ciclo válidas em vez de
 // processá-las. `lib.ts` não depende de runtime Cloudflare (mesmo padrão já
 // usado por scripts/backfill-score-by-month.ts e scripts/migrate-nickname-index.ts).
-import { isValidVoteEditionFormat } from "../workers/poll/src/lib.ts";
+import { isValidVoteEditionFormat } from "./lib/shared/poll-core.ts";
 
 export interface VoteRecord {
   choice: "A" | "B";

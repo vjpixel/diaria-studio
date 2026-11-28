@@ -51,7 +51,7 @@
 // #2130: extensão `.ts` intencional (convenção tsx do repo) — ver mesma nota
 // em backfill-score-by-month.ts.
 import "dotenv/config";
-import { normalizeNickname } from "../workers/poll/src/lib.ts";
+import { normalizeNickname } from "./lib/shared/poll-core.ts";
 // #2834: isMainModule as isEntryModule — alias pra evitar colisão com a const
 // local `isMainModule` já usada por este script (mesmo nome, propósito idêntico).
 import { isMainModule as isEntryModule } from "./lib/cli-args.ts";

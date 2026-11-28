@@ -22,12 +22,10 @@
 import { createHmac } from "node:crypto";
 import type { DohFetchInit, DohFetchResponse } from "./doh-fetch.ts";
 // #4477 (fleet review #4383, achado 3): `brand` era `string` solto — trocado
-// pro union `Brand` já existente em workers/poll/src/lib.ts (mesmo padrão de
-// import cruzado scripts/lib/ → workers/poll/src/lib.ts já usado em
-// scripts/backfill-seq-state.ts etc.; arquivos na RAIZ de scripts/lib/ não
-// são restritos por test/lib-boundary.test.ts). Sem breaking change — os
-// call sites já passavam valores que batem no union.
-import type { Brand } from "../../workers/poll/src/lib.ts";
+// pro union `Brand` do Worker `poll`, que desde o #13994 mora em
+// scripts/lib/shared/poll-core.ts (scripts/ não importa workers/*/src). Sem
+// breaking change — os call sites já passavam valores que batem no union.
+import type { Brand } from "./shared/poll-core.ts";
 
 /** Assinatura injetável de fetch — em produção `dohFetch`, em teste um mock
  * sem rede real. Aceita tanto `DohFetchResponse` quanto `Response` nativo
