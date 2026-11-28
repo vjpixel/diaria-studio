@@ -1,5 +1,5 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary, CohortStatsRow } from "./types.ts";
-import { type CouponUsageReport, type CouponCodeReport, commissionCents, redemptionEpoch } from "../../../scripts/lib/stripe-coupons.ts";
+import { type CouponUsageReport, type CouponCodeReport, commissionCents, redemptionEpoch, isCouponExpired, COUPON_EXPIRES_AT } from "../../../scripts/lib/stripe-coupons.ts";
 import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 import { type CouponClariceClassPayload, clariceClassKey } from "../../../scripts/lib/coupon-clarice-class.ts";
 // #2857 fase B: cohortSendRank ordena as sub-linhas do breakdown de 1º envio
@@ -1673,8 +1673,18 @@ export function renderCouponTabPanel(
     ? `<p class="section-note coupon-detail-empty">Nenhum resgate nos últimos ${DETAIL_WINDOW_DAYS} dias.</p>`
     : "";
 
+  // #14339: cupom com prazo vencido (`COUPON_EXPIRES_AT`) continua somando
+  // resgates e comissão — o rótulo diz que saiu do monitoramento ativo.
+  const expiredCodes = codes.filter((code) => isCouponExpired(code, headerNow));
+  const expiredNote = expiredCodes.length > 0
+    ? `<p class="section-note coupon-expired-note">${expiredCodes
+        .map((code) => `${escHtml(code)} expirado em ${escHtml(fmtDate(Math.floor(Date.parse(COUPON_EXPIRES_AT[code]!) / 1000)))}`)
+        .join("; ")}. Histórico de resgates e comissão mantido.</p>`
+    : "";
+
   return `
 ${generatedAtNote}
+${expiredNote}
 <p class="section-note coupon-refresh-policy">Cupons usam dados salvos em cache. “Atualizar agora” não renova estes dados. O refresh diário está agendado para 06:00 BRT no GitHub Actions, mas pode atrasar; os dados mudam após a conclusão da coleta.</p>
 <section class="phase2-section" id="coupon-monthly">
   <h2 class="section-title">${escHtml(opts.monthlyTitle ?? "Total por mês")}</h2>
