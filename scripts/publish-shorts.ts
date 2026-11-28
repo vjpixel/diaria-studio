@@ -220,7 +220,8 @@
 // #14054: o código mora em `scripts/publish-shorts/` (um módulo por destino:
 // facebook, instagram, linkedin, youtube, buffer, corte, mais o plano, a CLI e
 // a execução da rodada em `run.ts`). Esta entrada só carrega o .env, reexporta
-// o que os testes e os outros scripts importam daqui e roda a CLI.
+// o que os outros scripts importam daqui e roda a CLI. Os testes importam
+// direto dos módulos (#14327, trava em test/publish-shorts-test-imports-14327.test.ts).
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";

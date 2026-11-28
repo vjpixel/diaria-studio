@@ -20,18 +20,16 @@ import {
   stillTimecodeOffsetMs,
   withMissingCoverRecord,
 } from "../scripts/lib/diaria/short-cover.ts";
+import { enqueueInstagramReel, publishInstagramReel } from "../scripts/publish-shorts/instagram.ts";
+import { publishLinkedInProfileVideo } from "../scripts/publish-shorts/linkedin.ts";
+import { publishFacebookReel, type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { publishYouTubeShort } from "../scripts/publish-shorts/youtube.ts";
 import {
   buildMarkEntry,
-  enqueueInstagramReel,
   parseThumbnailOffsetArg,
-  prepareBufferItem,
-  publishFacebookReel,
-  publishInstagramReel,
-  publishLinkedInProfileVideo,
-  publishYouTubeShort,
   readShortCover,
-  type GraphDeps,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/run-checks.ts";
+import { prepareBufferItem } from "../scripts/publish-shorts/buffer.ts";
 import { writeShortCoverSourceSidecar } from "../scripts/fetch-drive-video.ts";
 import { LINKEDIN_VIDEOS_FINALIZE_URL, LINKEDIN_VIDEOS_INIT_URL } from "../scripts/lib/linkedin-video.ts";
 import { LINKEDIN_POSTS_URL } from "../scripts/lib/linkedin-personal.ts";

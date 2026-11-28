@@ -12,7 +12,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readSkillWithReferences } from "./_helpers/skill-text.ts";
-import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts.ts";
+import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts/run-checks.ts";
 import { upsertShortEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 
 // #14040: o Passo B5b vive em reference/; o helper junta SKILL.md + reference/*.md.

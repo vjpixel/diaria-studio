@@ -37,18 +37,20 @@ import {
   chromeUploadFileName,
   chromeUploadSidecarPath,
 } from "../scripts/lib/diaria/instagram-chrome-upload.ts";
+import { type ShortsPlanItem } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import {
   attachChromeUploadToPlan,
   collabInviteWarnings,
+  prepareInstagramChromeUpload,
+  type ChromeUploadDeps,
+} from "../scripts/publish-shorts/instagram.ts";
+import {
   decideInstagramConfirm,
   fetchInstagramRecentMedia,
   instagramAlreadyRegistered,
   instagramEditionMarkers,
-  planShortsPublish,
-  prepareInstagramChromeUpload,
-  type ChromeUploadDeps,
-  type ShortsPlanItem,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 // #10998: janela do cenário, independente do default e da config de produção.

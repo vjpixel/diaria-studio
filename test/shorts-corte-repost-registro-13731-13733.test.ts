@@ -30,7 +30,9 @@ import {
 } from "../scripts/shorts-corte-timer.ts";
 import { CORTE_SPEC_FILE, parseCorteSpec, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
-import { delegateCorteRepostToTimer, planShortsPublish, prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { delegateCorteRepostToTimer } from "../scripts/publish-shorts/linkedin.ts";
+import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts/corte.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const REPOST = "linkedin_page_repost";

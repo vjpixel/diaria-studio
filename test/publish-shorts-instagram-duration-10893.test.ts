@@ -16,7 +16,10 @@ import {
   instagramReelsApiFit,
   loadInstagramApiMaxSeconds,
 } from "../scripts/lib/diaria/short-video.ts";
-import { parseMarkArg, planShortsPublish, publishInstagramReel, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { publishInstagramReel } from "../scripts/publish-shorts/instagram.ts";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
+import { parseMarkArg } from "../scripts/publish-shorts/run-checks.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const reviewed = "DESTAQUE 1 | X\n\n[Título do D1](https://a.com/x)\n\nCorpo do destaque. Segunda frase.\n";

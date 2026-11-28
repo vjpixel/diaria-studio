@@ -39,17 +39,18 @@ import {
 } from "../scripts/shorts-instagram-timer.ts";
 import {
   INSTAGRAM_TIMER_DETAIL,
+  publicVideoUnavailableReason,
+  type ShortsPlanInput,
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import {
   InstagramTimerGateError,
-  SHORTS_BOOLEAN_FLAGS,
-  credentialSkippedItems,
   instagramTimerGate,
   instagramTimerPreflight,
   instagramTimerPublishStep,
-  parseShortsCliArgs,
-  planShortsPublish,
-  publicVideoUnavailableReason,
-  type ShortsPlanInput,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
+import { SHORTS_BOOLEAN_FLAGS, parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
+import { credentialSkippedItems } from "../scripts/publish-shorts/confirm.ts";
 import {
   loadShortsConfig,
   shortDestinationAccount,

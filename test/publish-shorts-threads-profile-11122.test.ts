@@ -16,7 +16,9 @@ import {
   parseShortsPublishedFile,
   upsertShortEntry,
 } from "../scripts/lib/diaria/short-video.ts";
-import { MARKABLE_DESTINATIONS, buildMarkEntry, parseMarkArg, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { MARKABLE_DESTINATIONS } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts/run-checks.ts";
 import { THREADS_PROFILE_DESTINATION } from "../scripts/lib/threads-personal-video.ts";
 import { gridFromShortsPublished } from "../scripts/lib/social-slot-planner.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";

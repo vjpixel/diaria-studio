@@ -32,7 +32,10 @@ import {
   verticalDownloadInProgress,
   type ThreadsTimerRunDeps,
 } from "../scripts/shorts-threads-profile-timer.ts";
-import { THREADS_TIMER_DETAIL, SHORTS_BOOLEAN_FLAGS, planShortsPublish, threadsEditionMarkers, type ShortsPlanInput } from "../scripts/publish-shorts.ts";
+import { THREADS_TIMER_DETAIL, type ShortsPlanInput } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { SHORTS_BOOLEAN_FLAGS } from "../scripts/publish-shorts/cli.ts";
+import { threadsEditionMarkers } from "../scripts/publish-shorts/confirm.ts";
 import { loadShortScheduleConfig, loadShortsConfig, shortVideoFileName, timerDueTimes, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import {
   SHORTS_THREADS_TIMER_LEDGER_FILE,

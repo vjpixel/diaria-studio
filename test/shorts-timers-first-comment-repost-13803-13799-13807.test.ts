@@ -51,7 +51,7 @@ import {
 } from "../scripts/shorts-corte-timer.ts";
 import { CORTE_SPEC_FILE, parseCorteSpec, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
-import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts.ts";
+import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts/corte.ts";
 
 const AAMMDD = "261027";
 const NOW = new Date("2026-10-27T16:00:00.000Z");

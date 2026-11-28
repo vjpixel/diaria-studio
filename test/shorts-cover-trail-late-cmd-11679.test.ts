@@ -13,14 +13,14 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { lateNowArgs } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
 import {
   enqueueInstagramReel,
-  lateNowArgs,
-  planShortsPublish,
   publishInstagramReel,
   uploadCoverOrFallback,
-  type GraphDeps,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram.ts";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
 import { SHORT_COVER_OFFSET_FALLBACK_MAX_MS, clampBufferThumbnailOffsetMs, stillTimecodeOffsetMs } from "../scripts/lib/diaria/short-cover.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 

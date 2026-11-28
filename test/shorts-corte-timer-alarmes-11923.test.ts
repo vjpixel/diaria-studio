@@ -18,13 +18,13 @@ import {
   type CorteTimerDecision,
   type CorteTimerSideAlarm,
 } from "../scripts/shorts-corte-timer.ts";
+import { readShortCover } from "../scripts/publish-shorts/run-checks.ts";
 import {
   corteTimerChildRefusal,
   prepareCorteRun,
-  readShortCover,
   recordCortePublishAuthorization,
   restoreCorteAuthorizationAfterUpdate,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/corte.ts";
 import { CORTE_SPEC_FILE, corteAuthorizedDestinations, parseCorteSpec, type CorteContentFingerprint, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
 import { SHORT_COVER_FILE } from "../scripts/lib/diaria/short-cover.ts";

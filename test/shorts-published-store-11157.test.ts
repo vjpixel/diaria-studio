@@ -27,7 +27,7 @@ import {
 } from "../scripts/lib/diaria/shorts-published-store.ts";
 import { SHORTS_PUBLISHED_FILE, isDestinationDone, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import { decideTimerRun } from "../scripts/shorts-linkedin-profile-timer.ts";
-import { registeredSinceRead } from "../scripts/publish-shorts.ts";
+import { registeredSinceRead } from "../scripts/publish-shorts/run-checks.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const AAMMDD = "261027";

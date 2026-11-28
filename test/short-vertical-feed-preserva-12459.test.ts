@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { executeScheduledUpdates } from "../scripts/publish-shorts.ts";
+import { executeScheduledUpdates } from "../scripts/publish-shorts/update-scheduled.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
 import { keepStudioWebVerticalFeed, youtubeShortsCoverRecord } from "../scripts/lib/diaria/short-cover.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";

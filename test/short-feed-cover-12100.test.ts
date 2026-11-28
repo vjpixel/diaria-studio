@@ -29,7 +29,7 @@ import {
 } from "../scripts/lib/diaria/short-cover.ts";
 import { DHASH_SIZE, FEED_COVER_MATCH_MAX_DISTANCE, assessFeedCover, dHash, hashDistance } from "../scripts/lib/diaria/short-feed-cover-check.ts";
 import { YOUTUBE_VIDEO_ID_RE, fetchFeedImage } from "../scripts/check-short-feed-cover.ts";
-import { publishYouTubeShort } from "../scripts/publish-shorts.ts";
+import { publishYouTubeShort } from "../scripts/publish-shorts/youtube.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { readSkillWithReferences } from "./_helpers/skill-text.ts";
 
