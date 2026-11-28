@@ -24,7 +24,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { horizontalRoteiroWarnings, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
+import { horizontalRoteiroWarnings, readHorizontalVideoForShort } from "../scripts/publish-shorts/_shared.ts";
 import { prepareHorizontalPlan } from "../scripts/publish-youtube.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "../scripts/lib/diaria/youtube-upload.ts";
 import { youtubeVideoFileName } from "../scripts/lib/diaria/youtube-video.ts";

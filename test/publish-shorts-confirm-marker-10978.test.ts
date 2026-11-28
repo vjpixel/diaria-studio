@@ -16,7 +16,7 @@ import {
   INSTAGRAM_HOOK_MARKER_MIN_CHARS,
   decideInstagramConfirm,
   instagramEditionMarkers,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import { buildReelsCaption } from "../scripts/lib/diaria/short-video.ts";
 
 const AAMMDD = "261028";

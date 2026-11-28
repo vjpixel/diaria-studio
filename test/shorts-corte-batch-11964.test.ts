@@ -33,13 +33,13 @@ import {
   type CorteTimerAlarmKey,
 } from "../scripts/shorts-corte-timer.ts";
 import {
-  corteRestoreBlockingFailures,
   nonCanonicalEditionDir,
   ownersContextAfterPublish,
-  planShortsPublish,
-  sameDayOtherRegisteredIdsFor,
   assignShortsDestinationOwners,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { corteRestoreBlockingFailures } from "../scripts/publish-shorts/corte.ts";
+import { sameDayOtherRegisteredIdsFor } from "../scripts/publish-shorts/confirm.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_INTERVAL_MS, CORTE_TIMER_TASK, checkCorteDir, corteBaseCommand, samePathOnPlatform, shellQuote, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";

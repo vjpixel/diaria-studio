@@ -14,9 +14,9 @@ import {
   instagramEditionMarkers,
   instagramMediaPagingDone,
   INSTAGRAM_CONFIRM_MAX_PAGES,
-  parseShortsCliArgs,
   readAndDecideInstagramConfirm,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
+import { parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
 import type { ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 
 describe("#10978 item 3: ordem dos argumentos do --confirm-instagram", () => {

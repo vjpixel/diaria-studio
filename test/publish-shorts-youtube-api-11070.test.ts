@@ -11,7 +11,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { loadShortsConfig } from "../scripts/lib/diaria/short-video.ts";
 import { matchEditionVideo, type YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
-import { planShortsPublish, publishYouTubeShort, youtubeShortUrl } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { publishYouTubeShort, youtubeShortUrl } from "../scripts/publish-shorts/youtube.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 

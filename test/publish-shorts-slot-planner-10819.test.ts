@@ -14,7 +14,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { planShortSlots, type ShortDestination } from "../scripts/lib/diaria/short-video.ts";
-import { loadScheduledGrid, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { loadScheduledGrid } from "../scripts/publish-shorts/run-checks.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import type { ScheduledSlot } from "../scripts/lib/social-slot-planner.ts";
 

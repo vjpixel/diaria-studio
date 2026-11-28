@@ -24,7 +24,8 @@ import {
 } from "../scripts/lib/diaria/shorts-published-store.ts";
 import { acquireLock, releaseLock } from "../scripts/lib/file-lock.ts";
 import type { ShortPublishedEntry, ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
-import { LINKEDIN_TIMER_DETAIL, recheckBeforePublish } from "../scripts/publish-shorts.ts";
+import { LINKEDIN_TIMER_DETAIL } from "../scripts/publish-shorts/_shared.ts";
+import { recheckBeforePublish } from "../scripts/publish-shorts/run-checks.ts";
 
 const AAMMDD = "261027";
 

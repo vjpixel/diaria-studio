@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { syncCorteAgendamento, syncCorteAgendamentoFailSoft } from '../scripts/publish-shorts.ts';
+import { syncCorteAgendamento, syncCorteAgendamentoFailSoft } from '../scripts/publish-shorts/corte.ts';
 import { addAgendamento, emptyBanco, agendamentosPath, saveAgendamentos, loadAgendamentos } from '../scripts/lib/diaria/agendamentos.ts';
 import type { CorteSpec } from '../scripts/lib/diaria/short-corte.ts';
 const now = new Date('2026-11-13T02:00:00Z');

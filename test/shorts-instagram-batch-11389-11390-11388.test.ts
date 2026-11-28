@@ -35,7 +35,7 @@ import {
   instagramTimerPublishStep,
   instagramConfirmUrlEntry,
   type InstagramConfirmDecision,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import {
   INSTAGRAM_CHROME_ROUTE,
   INSTAGRAM_REELS_CTA,

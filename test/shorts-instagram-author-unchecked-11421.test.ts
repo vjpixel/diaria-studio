@@ -25,7 +25,7 @@ import {
   instagramTimerGate,
   instagramTimerPublishStep,
   type InstagramConfirmDecision,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import { buildReelsCaption, shortInstagramVideoFileName } from "../scripts/lib/diaria/short-video.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 

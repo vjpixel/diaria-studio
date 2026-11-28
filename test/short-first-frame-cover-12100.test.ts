@@ -40,7 +40,11 @@ import {
   youtubeShortsVerticalCoverWarning,
 } from "../scripts/lib/diaria/short-cover.ts";
 import { loadShortsConfig, loadYouTubeFirstFrameCoverMs } from "../scripts/lib/diaria/short-video.ts";
-import { publishYouTubeShort, youtubeShortUploadFile, youtubeShortsPrepareBeforeMarker } from "../scripts/publish-shorts.ts";
+import {
+  publishYouTubeShort,
+  youtubeShortUploadFile,
+  youtubeShortsPrepareBeforeMarker,
+} from "../scripts/publish-shorts/youtube.ts";
 import { feedImageUrl, fetchFeedImage, main as checkShortFeedCoverMain, parseFeedImageKind } from "../scripts/check-short-feed-cover.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054

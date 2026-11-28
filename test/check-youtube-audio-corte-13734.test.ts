@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describeYouTubeAudioCheck, youtubeAudioCheckCommand, type YouTubeFileDetailsItem } from "../scripts/lib/diaria/youtube-audio-check.ts";
 import { runCheckYouTubeAudio } from "../scripts/check-youtube-audio.ts";
-import { publishYouTubeShort } from "../scripts/publish-shorts.ts";
+import { publishYouTubeShort } from "../scripts/publish-shorts/youtube.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 
 const NOW = new Date("2026-11-19T12:00:00Z");

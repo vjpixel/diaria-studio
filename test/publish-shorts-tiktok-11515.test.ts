@@ -22,7 +22,14 @@ import {
   shortDestinationAccount,
 } from "../scripts/lib/diaria/short-video.ts";
 import { planCoverDestination } from "../scripts/lib/diaria/short-cover.ts";
-import { buildMarkEntry, parseMarkArg, parseThumbnailOffsetArg, planShortsPublish, prepareBufferItem, assignShortsDestinationOwners } from "../scripts/publish-shorts.ts";
+import { assignShortsDestinationOwners } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import {
+  buildMarkEntry,
+  parseMarkArg,
+  parseThumbnailOffsetArg,
+} from "../scripts/publish-shorts/run-checks.ts";
+import { prepareBufferItem } from "../scripts/publish-shorts/buffer.ts";
 import { resolveShortEntryState } from "../scripts/lib/publish-state.ts";
 import { EXTERNAL_UTM_SURFACES } from "../scripts/lib/shared/utm-registry.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";

@@ -6,7 +6,13 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { runFetchDriveVideo, type FetchDriveVideoDeps } from "../scripts/fetch-drive-video.ts";
 import { driveCoverCandidates, type DriveVideoFile } from "../scripts/lib/diaria/drive-video-source.ts";
-import { planShortsPublish, publishInstagramReel, enqueueInstagramReel, uploadCoverOrFallback, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import {
+  publishInstagramReel,
+  enqueueInstagramReel,
+  uploadCoverOrFallback,
+} from "../scripts/publish-shorts/instagram.ts";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
 
 const folder = (id: string, name: string) => ({ id, name, mimeType: "application/vnd.google-apps.folder" });
 const still = (id: string, name = "Diaria comentada_Youtube_V1.00_00_03_08.Still001.png"): DriveVideoFile =>

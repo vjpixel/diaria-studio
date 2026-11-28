@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { publicVideoUnavailableReason } from "../scripts/publish-shorts.ts";
+import { publicVideoUnavailableReason } from "../scripts/publish-shorts/_shared.ts";
 import { publishShortsModuleFiles } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const ROOT = join(import.meta.dirname, "..");

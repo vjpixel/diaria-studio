@@ -28,7 +28,9 @@ import {
 } from "../scripts/lib/shared/latest-video-redirect.ts";
 import { UTM_EMITTERS } from "../scripts/lib/shared/utm-registry.ts";
 import { updateEditionVideoRedirect, type LatestVideoKv } from "../scripts/set-latest-video-redirect.ts";
-import { planShortsPublish, postInstagramReelFirstComment, publishInstagramReel, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { postInstagramReelFirstComment, publishInstagramReel } from "../scripts/publish-shorts/instagram.ts";
+import { type GraphDeps } from "../scripts/publish-shorts/facebook.ts";
 import { VERTICAL_COMMENT_CTA_LINE, VERTICAL_REPLY_CTA_LINE, buildReelsCaption, buildShortSocialText, buildTikTokPost } from "../scripts/lib/diaria/short-video.ts";
 import worker from "../workers/site/src/index.ts";
 import type { Env } from "../workers/site/src/index.ts";

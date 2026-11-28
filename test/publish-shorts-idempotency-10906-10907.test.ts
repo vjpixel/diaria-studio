@@ -13,14 +13,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
+import { type ShortsPlanInput } from "../scripts/publish-shorts/_shared.ts";
+import { planShortsPublish } from "../scripts/publish-shorts/plan.ts";
+import { enqueueInstagramReel, shortsReelsIdempotencyKey } from "../scripts/publish-shorts/instagram.ts";
 import {
   PROFILE_SEND_UNKNOWN_BLOCKER,
   blockRepostOnProfileFailure,
-  enqueueInstagramReel,
-  planShortsPublish,
-  shortsReelsIdempotencyKey,
-  type ShortsPlanInput,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/linkedin.ts";
 import { postToWorkerQueue, type WorkerQueuePayload } from "../scripts/lib/worker-queue-client.ts";
 import { upsertShortEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";

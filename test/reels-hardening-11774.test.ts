@@ -10,16 +10,18 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { publishInstagramReel } from "../scripts/publish-shorts/instagram.ts";
 import {
   GRAPH_REQUEST_TIMEOUT_MS,
   GraphResponseError,
-  InstagramTimerGateError,
-  instagramTimerBeforePublish,
   isGraphAuthError,
   mediaPublishFailureIsDefinitive,
-  publishInstagramReel,
   type GraphDeps,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/facebook.ts";
+import {
+  InstagramTimerGateError,
+  instagramTimerBeforePublish,
+} from "../scripts/publish-shorts/instagram-confirm.ts";
 import { R2_PUT_TIMEOUT_MS, R2_REQUEST_TIMEOUT_MS, r2ObjectHasBody, uploadToR2, type R2UploadConfig } from "../scripts/lib/r2-object-upload.ts";
 import { INSTAGRAM_TIMER_CHILD_TIMEOUT_MS } from "../scripts/shorts-instagram-timer.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";

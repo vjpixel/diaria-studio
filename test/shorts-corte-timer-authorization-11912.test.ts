@@ -54,7 +54,7 @@ import {
   restoreCorteAuthorizationAfterUpdate,
   syncCorteAuthorizationWithContent,
   type CorteRevocation,
-} from "../scripts/publish-shorts.ts";
+} from "../scripts/publish-shorts/corte.ts";
 import { publishShortsSource } from "./_helpers/publish-shorts-source.ts"; // #14054
 
 const BASE: CorteSpec = { slug: "corte-extra", date: "261103", hhmm: "08:00", title: "Título do corte", hook: "Gancho do corte.", video: "corte-corte-extra.mp4" };

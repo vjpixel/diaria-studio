@@ -12,7 +12,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { canonicalShortsEditionDir } from "../scripts/publish-shorts.ts";
+import { canonicalShortsEditionDir } from "../scripts/publish-shorts/_shared.ts";
 import { isSensitivePath } from "../scripts/lib/sensitive-path-guard.ts";
 import { publishShortsModuleFiles } from "./_helpers/publish-shorts-source.ts";
 

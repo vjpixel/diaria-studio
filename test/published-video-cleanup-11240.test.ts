@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupPublishedVideo, shortsVideoTerminal } from "../scripts/lib/diaria/published-video-cleanup.ts";
 import { DEFAULT_SHORTS_CONFIG } from "../scripts/lib/diaria/short-video.ts";
-import { parseShortsCliArgs } from "../scripts/publish-shorts.ts";
+import { parseShortsCliArgs } from "../scripts/publish-shorts/cli.ts";
 
 const edition = "261027";
 const cfg = { ...DEFAULT_SHORTS_CONFIG, facebookPages: [], instagram: true, linkedinProfile: true, threadsProfile: false, x: false };

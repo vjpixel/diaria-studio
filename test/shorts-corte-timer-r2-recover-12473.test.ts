@@ -21,7 +21,7 @@ import { CORTE_SPEC_FILE, corteR2Key, parseCorteSpec, type CorteSpec } from "../
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
 import { CORTE_R2_RECOVER_TIMEOUT_MS, corteHasMissingApprovedFiles, recoverCorteFilesFromR2, type CorteR2RecoverDeps } from "../scripts/lib/diaria/corte-r2-recover.ts";
 import { SHORT_COVER_FILE } from "../scripts/lib/diaria/short-cover.ts";
-import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts.ts";
+import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts/corte.ts";
 
 const BASE: CorteSpec = { slug: "modelos-chatgpt-261108", date: "261108", hhmm: "18:00", title: "Modelos do ChatGPT", hook: "Gancho.", video: "corte-modelos-chatgpt-261108.mp4" };
 const AT = "2026-11-08T21:00:00.000Z"; // 18:00 BRT
