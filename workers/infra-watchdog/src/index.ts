@@ -61,9 +61,18 @@ export async function check(env: Env, storage: Storage, now = Date.now(), mail =
   try { await checkHeartbeat(env, storage, raw, status, now, mail); } catch (e) { heartbeatError = e; }
   // #14368: probes only mean something on a fresh beat; a stale/absent one is already the
   // outage alarm above. Run even when the heartbeat branch threw, then surface that error.
-  if (status === 'fresco') await checkProbes(env, storage, raw!, mail);
+  let probeError: unknown = null;
+  if (status === 'fresco') {
+    try { await checkProbes(env, storage, raw!, mail); } catch (e) { probeError = e; }
+  }
+  // #14407: when both throw, neither is dropped — the Worker log gets both diagnostics.
+  if (heartbeatError && probeError) {
+    throw new AggregateError([heartbeatError, probeError], `heartbeat: ${errorMessage(heartbeatError)}; sondas: ${errorMessage(probeError)}`);
+  }
   if (heartbeatError) throw heartbeatError;
+  if (probeError) throw probeError;
 }
+const errorMessage = (e: unknown): string => e instanceof Error ? e.message : String(e);
 async function checkHeartbeat(env: Env, storage: Storage, raw: string | null, status: ReturnType<typeof classifyHeartbeat>, now: number, mail: typeof sendMail): Promise<void> {
   let state = await storage.get<State>('state') ?? {downSince: null, notified: false};
   if (status !== 'fresco') {
