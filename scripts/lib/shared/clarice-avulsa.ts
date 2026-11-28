@@ -117,6 +117,29 @@ export function activeAvulsaCooldowns(
   });
 }
 
+/**
+ * O conjunto de avulsas em cooldown muda entre `refDate` e o dia seguinte?
+ * (#14403) Sem `--send-date`, o build-segment usa a data BRT de hoje como
+ * referência; a onda montada na véspera sai no dia seguinte, e se um
+ * cooldown começa ou termina nessa virada o filtro erra por 1 dia. Devolve
+ * os ids que entram ou saem, pra o chamador avisar. Pura.
+ */
+export function avulsaCooldownChangesNextDay(
+  refDate: string,
+  registry: readonly ClariceAvulsaCampaign[] = CLARICE_AVULSA_CAMPAIGNS,
+): number[] {
+  const refMs = brtMidnightMs(refDate);
+  if (!Number.isFinite(refMs)) {
+    throw new Error(`avulsaCooldownChangesNextDay: data inválida "${refDate}" — esperado YYYY-MM-DD.`);
+  }
+  const nextDate = new Date(refMs + DAY_MS - 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = new Set(activeAvulsaCooldowns(refDate, registry).map((a) => a.id));
+  const tomorrow = new Set(activeAvulsaCooldowns(nextDate, registry).map((a) => a.id));
+  return registry
+    .map((a) => a.id)
+    .filter((id) => today.has(id) !== tomorrow.has(id));
+}
+
 function parseListIds(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {
@@ -135,19 +158,26 @@ export interface AvulsaCooldownResult<T> {
 
 /**
  * Tira do universo de uma onda regular quem recebeu uma avulsa ainda em
- * cooldown na data da onda. Dois sinais do store, qualquer um basta:
+ * cooldown na data da onda. O sinal é a lista da avulsa: `brevo_list_ids`
+ * (sincronizado do `listIds` do contato) contém uma lista de uma avulsa ativa.
  *
- *   1. `last_sent_at >= 00:00 BRT da sentDate` da avulsa (o sync por contato
- *      grava o último envio de QUALQUER campanha, inclusive a avulsa);
- *   2. `brevo_list_ids` contém uma lista da avulsa (cobre quem o sync
- *      incremental ainda não revisitou com o `last_sent_at` novo).
+ * Só esse sinal (#14403). Até o #14403 havia um 2º, `last_sent_at >= 00:00
+ * BRT da sentDate`, mas o `last_sent_at` é o último envio de QUALQUER
+ * campanha: um contato fora das listas que recebeu uma onda regular depois
+ * da avulsa ficava barrado até o fim do cooldown sem ter recebido a avulsa, e
+ * entrava na contagem `avulsa_cooldown` do `segment-meta`. A lista não tem
+ * esse falso positivo e não perde ninguém que o `last_sent_at` pegaria: o
+ * `listIds` e o `last_sent_at` vêm do mesmo sync por contato, e a inclusão na
+ * lista é anterior ao envio. O intervalo entre ondas regulares é do filtro de
+ * recência (#4719/#7234), não deste.
  *
- * Os dois dependem do store sincronizado, como o filtro de recência do
- * #4719 (mesma pré-condição). Sem avulsa ativa, devolve a cópia intacta.
- * Pura.
+ * Depende do store sincronizado, como o filtro de recência do #4719 (mesma
+ * pré-condição). A consolidação de listas (#9532) só apaga lista com 45+
+ * dias, muito depois de qualquer cooldown. Sem avulsa ativa, devolve a cópia
+ * intacta. Pura.
  */
 export function excludeAvulsaCooldown<
-  T extends { last_sent_at?: string | null; brevo_list_ids?: string | null },
+  T extends { brevo_list_ids?: string | null },
 >(
   rows: readonly T[],
   refDate: string,
@@ -155,14 +185,7 @@ export function excludeAvulsaCooldown<
 ): AvulsaCooldownResult<T> {
   const active = activeAvulsaCooldowns(refDate, registry);
   if (active.length === 0) return { kept: rows.slice(), excluded: 0, active };
-  const earliestStartMs = Math.min(...active.map((a) => brtMidnightMs(a.sentDate)));
   const lists = new Set(active.flatMap((a) => a.listIds.map(String)));
-  const kept = rows.filter((r) => {
-    if (r.last_sent_at) {
-      const ms = Date.parse(r.last_sent_at);
-      if (Number.isFinite(ms) && ms >= earliestStartMs) return false;
-    }
-    return !parseListIds(r.brevo_list_ids).some((id) => lists.has(id));
-  });
+  const kept = rows.filter((r) => !parseListIds(r.brevo_list_ids).some((id) => lists.has(id)));
   return { kept, excluded: rows.length - kept.length, active };
 }

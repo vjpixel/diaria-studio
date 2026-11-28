@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import {
   CLARICE_AVULSA_CAMPAIGNS,
   activeAvulsaCooldowns,
+  avulsaCooldownChangesNextDay,
   brtDateOf,
   excludeAvulsaCooldown,
   isClariceAvulsaCampaign,
@@ -107,7 +108,7 @@ describe("cooldown de recência da avulsa (#14339)", () => {
   const rows = [
     // recebeu a #438 e o sync já gravou o last_sent_at
     { email: "a@x.com", last_sent_at: "2026-11-27T15:02:00.000Z", brevo_list_ids: "[12,431]" },
-    // recebeu a #439, mas o sync incremental ainda não trouxe o last_sent_at
+    // recebeu a #439 (o last_sent_at do sync ainda é o da onda de 10/11)
     { email: "b@x.com", last_sent_at: "2026-11-10T12:00:00.000Z", brevo_list_ids: "[432]" },
     // fora das duas: última onda regular em 10/11
     { email: "c@x.com", last_sent_at: "2026-11-10T12:00:00.000Z", brevo_list_ids: "[12]" },
@@ -133,6 +134,31 @@ describe("cooldown de recência da avulsa (#14339)", () => {
   it("brevo_list_ids corrompido não derruba nem exclui", () => {
     const r = excludeAvulsaCooldown([{ last_sent_at: null, brevo_list_ids: "{nope" }], "2026-12-01");
     assert.equal(r.kept.length, 1);
+  });
+
+  it("#14403: onda regular depois da avulsa, fora das listas 431/432, não entra no cooldown", () => {
+    const regular = [
+      // recebeu uma onda regular em 29/11, nunca esteve nas listas da avulsa
+      { email: "e@x.com", last_sent_at: "2026-11-29T12:00:00.000Z", brevo_list_ids: "[12,500]" },
+      // recebeu a #438 em 27/11 e depois uma onda regular em 29/11
+      { email: "f@x.com", last_sent_at: "2026-11-29T12:00:00.000Z", brevo_list_ids: "[431,500]" },
+    ];
+    const r = excludeAvulsaCooldown(regular, "2026-12-01");
+    assert.deepEqual(r.kept.map((x) => x.email), ["e@x.com"]);
+    assert.equal(r.excluded, 1, "avulsa_cooldown só conta quem está nas listas da avulsa");
+  });
+
+  it("#14403: avisa quando um cooldown começa ou termina no dia seguinte à referência", () => {
+    // #438 termina em 03/12 (último dia), #439 em 04/12
+    assert.deepEqual(avulsaCooldownChangesNextDay("2026-12-03"), [438]);
+    assert.deepEqual(avulsaCooldownChangesNextDay("2026-12-04"), [439]);
+    // #438 começa em 27/11, #439 em 28/11
+    assert.deepEqual(avulsaCooldownChangesNextDay("2026-11-26"), [438]);
+    assert.deepEqual(avulsaCooldownChangesNextDay("2026-11-27"), [439]);
+    // meio da janela e depois dela: nada muda
+    assert.deepEqual(avulsaCooldownChangesNextDay("2026-12-01"), []);
+    assert.deepEqual(avulsaCooldownChangesNextDay("2026-12-10"), []);
+    assert.throws(() => avulsaCooldownChangesNextDay("03/12/2026"), /data inválida/);
   });
 
   it("brtDateOf usa o dia de Brasília (01:00Z de 02/12 ainda é 01/12 BRT)", () => {
