@@ -79,6 +79,19 @@ export function loadClaudeSemanalSent(dataRoot: string, currentWeek: string) {
   return sentUrlsFromRecords(readClaudeSemanalRecords(dataRoot), currentWeek);
 }
 
+/** Aviso único das semanas que o dedup não considera (ilegíveis, `pending`, `cancel-failed`). */
+export function logClaudeSemanalDedupGaps(
+  r: { unreadable: readonly string[]; skipped: readonly string[] },
+  log: (msg: string) => void,
+): void {
+  const parts: string[] = [];
+  if (r.unreadable.length > 0) parts.push(`registro ilegível em ${r.unreadable.join(", ")}`);
+  if (r.skipped.length > 0) parts.push(`semana sem envio confirmado em ${r.skipped.join(", ")}`);
+  if (parts.length > 0) {
+    log(`AVISO: o dedup não considera os itens destas semanas (${parts.join("; ")}). Confira o Kit e o registro antes de confiar no dedup.`);
+  }
+}
+
 /** Lê e valida `platform.config.json` → `kit_claude_semanal`. Lança `ClaudeSemanalGuardError`. */
 export function loadClaudeSemanalConfig(rootDir: string): {
   config: ClaudeSemanalConfig;

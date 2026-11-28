@@ -90,6 +90,12 @@ export interface ClaudeSemanalSource {
   kind: "rss" | "page";
   /** Seção mais provável dos itens desta fonte — só uma dica ao writer. */
   section_hint?: ClaudeSemanalSectionId;
+  /**
+   * Só `rss`: página oficial que cobre o que o feed não cobrir (feed que não
+   * alcança o início da janela, ou cortado pelo teto de itens). Ausente = a
+   * própria `url` do feed vai para `pages_to_fetch`.
+   */
+  coverage_page?: string;
 }
 
 /** Forma crua de `platform.config.json` → `kit_claude_semanal`. */
@@ -198,7 +204,16 @@ export function resolveClaudeSemanalConfig(
       if (src.section_hint !== undefined && !isClaudeSemanalSectionId(src.section_hint)) {
         return { ok: false, reason: `${k}.sources: section_hint inválido em "${src.name}".` };
       }
-      sources.push({ name: src.name, url: src.url, kind: src.kind, ...(src.section_hint ? { section_hint: src.section_hint } : {}) });
+      if (src.coverage_page !== undefined && (typeof src.coverage_page !== "string" || !isOfficialClaudeUrl(src.coverage_page))) {
+        return { ok: false, reason: `${k}.sources: coverage_page de "${src.name}" não é página oficial.` };
+      }
+      sources.push({
+        name: src.name,
+        url: src.url,
+        kind: src.kind,
+        ...(src.section_hint ? { section_hint: src.section_hint } : {}),
+        ...(src.coverage_page ? { coverage_page: src.coverage_page } : {}),
+      });
     }
   }
 
@@ -241,10 +256,19 @@ export interface ClaudeSemanalWeek {
   windowStart: string;
   /** Fim (exclusivo) da janela: meia-noite BRT do dia seguinte ao envio, em ISO UTC. */
   windowEnd: string;
-  /** 1º e último dia da janela, AAAA-MM-DD, só para mensagens e para o título do e-mail. */
+  /** 1º e último dia da janela de COLETA, AAAA-MM-DD. */
   firstDay: string;
   lastDay: string;
+  /** 1º dia da semana EXIBIDA no e-mail (envio − 6 dias); a coleta pode começar antes. */
+  displayFirstDay: string;
+  /** Semana do último envio `sent` anterior a esta (a que ancora a janela), ou null. */
+  lastSentWeek: string | null;
+  /** A semana imediatamente anterior (envio − 7 dias) tem registro `sent`? */
+  previousWeekSent: boolean;
 }
+
+/** Recuo mínimo da janela de coleta em relação ao dia do envio. */
+export const CLAUDE_SEMANAL_MIN_LOOKBACK_DAYS = 14;
 
 function parseAammdd(s: string): { y: number; mo: number; d: number } | null {
   if (!/^\d{6}$/.test(s)) return null;
@@ -271,14 +295,22 @@ function toAammdd(t: number): string {
  * (default domingo): uma data fora dele é quase sempre erro de digitação, e
  * uma semana com chave errada quebraria o dedup entre semanas.
  *
- * Janela de coleta: os 7 dias anteriores ao envio MAIS o próprio dia do envio
- * (8 dias, de domingo a domingo no default). A sobreposição de um dia com a
- * semana anterior é de propósito: item publicado no domingo depois da coleta
- * entra na semana seguinte, e o dedup impede que o mesmo item saia duas vezes.
+ * Janela de coleta: do dia do último envio `sent` anterior (`lastSentWeek`)
+ * ou de envio − 14 dias, o que for MAIS CEDO, até o fim do dia do envio. A
+ * janela larga é de propósito: o dedup entre semanas impede repetição, e assim
+ * nada some quando a skill roda antes do domingo, quando um item sai no
+ * domingo depois da coleta ou quando uma semana inteira é perdida (aí a janela
+ * recua até o último envio).
+ *
+ * `sentWeeks`: semanas com registro `sent` (de `sentWeeksFromRecords`).
  *
  * @pure
  */
-export function resolveClaudeSemanalWeek(week: string, sendWeekday: number): ClaudeSemanalWeek {
+export function resolveClaudeSemanalWeek(
+  week: string,
+  sendWeekday: number,
+  sentWeeks: readonly string[] = [],
+): ClaudeSemanalWeek {
   const p = parseAammdd(week);
   if (!p) throw new ClaudeSemanalGuardError(`semana inválida: ${JSON.stringify(week)} (esperado AAMMDD do dia do envio).`);
   const day = Date.UTC(p.y, p.mo - 1, p.d);
@@ -287,14 +319,37 @@ export function resolveClaudeSemanalWeek(week: string, sendWeekday: number): Cla
       `${week} não cai no dia de envio configurado (send_weekday ${sendWeekday}, 0 = domingo). Passe a data do envio.`,
     );
   }
-  const first = day - 7 * DAY_MS;
+  // AAMMDD ordena como data no mesmo século.
+  const earlier = sentWeeks.filter((w) => w < week && parseAammdd(w)).sort();
+  const lastSentWeek = earlier.length > 0 ? earlier[earlier.length - 1] : null;
+  const previousWeek = toAammdd(day - 7 * DAY_MS);
+  let first = day - CLAUDE_SEMANAL_MIN_LOOKBACK_DAYS * DAY_MS;
+  if (lastSentWeek) {
+    const ls = parseAammdd(lastSentWeek)!;
+    first = Math.min(first, Date.UTC(ls.y, ls.mo - 1, ls.d));
+  }
   return {
     week,
     windowStart: new Date(first + BRT_OFFSET_H * 3_600_000).toISOString(),
     windowEnd: new Date(day + DAY_MS + BRT_OFFSET_H * 3_600_000).toISOString(),
     firstDay: isoDay(first),
     lastDay: isoDay(day),
+    displayFirstDay: isoDay(day - 6 * DAY_MS),
+    lastSentWeek,
+    previousWeekSent: sentWeeks.includes(previousWeek),
   };
+}
+
+/**
+ * Pure: aviso para o banner quando a semana anterior não tem envio `sent` —
+ * a janela recua até o último envio (ou 14 dias) para cobrir o buraco.
+ *
+ * @pure
+ */
+export function claudeSemanalWindowBanner(w: ClaudeSemanalWeek): string | null {
+  if (w.previousWeekSent) return null;
+  const desde = w.lastSentWeek ? `desde o último envio (${w.lastSentWeek})` : "sem nenhum envio anterior registrado";
+  return `a semana anterior não tem envio registrado (sent) — coleta ${desde}, de ${w.firstDay} a ${w.lastDay}.`;
 }
 
 /**
@@ -344,6 +399,8 @@ const OFFICIAL_REGISTRABLE = ["anthropic.com", "claude.com", "claude.ai"] as con
  * sem comunidade nem terceiros). Domínios `anthropic.com`, `claude.com`,
  * `claude.ai` e subdomínios (docs, support, code, platform, academy), mais o
  * GitHub da organização `anthropics` (releases do Claude Code). Só https.
+ * `claude.ai/share/…` e `claude.ai/public/…` (conversas e artefatos de
+ * usuários) ficam de fora.
  *
  * @pure
  */
@@ -356,6 +413,9 @@ export function isOfficialClaudeUrl(url: string): boolean {
   }
   if (u.protocol !== "https:") return false;
   const host = u.hostname.toLowerCase();
+  // Conversa e artefato compartilhados em claude.ai são conteúdo de USUÁRIO
+  // (terceiro), não página da Anthropic.
+  if ((host === "claude.ai" || host.endsWith(".claude.ai")) && /^\/(share|public)(\/|$)/i.test(u.pathname)) return false;
   if (OFFICIAL_REGISTRABLE.some((d) => host === d || host.endsWith(`.${d}`))) return true;
   if (host === "github.com") return /^\/anthropics\/[^/]+/i.test(u.pathname);
   return false;
@@ -409,34 +469,89 @@ export interface ClaudeSemanalSentItem {
  *
  * Registro ilegível ou de forma desconhecida é IGNORADO aqui, mas listado em
  * `unreadable` para o caller avisar: o pior caso é um item repetido, e o
- * editor vê a prévia antes do envio.
+ * editor vê a prévia antes do envio. Semana `pending`/`cancel-failed` sai em
+ * `skipped`, para o mesmo aviso.
+ *
+ * Itens de um envio anterior que um `--force` sobrescreveu continuam valendo:
+ * o registro novo os guarda em `previousItems`, e um `pending`/`cancel-failed`
+ * guarda o registro anterior inteiro em `previous` (texto) — os dois são lidos
+ * aqui. Sem isso, um `--force` apagaria do dedup o que já saiu.
+ *
+ * `sentWeeks` lista as semanas `sent` (todas, inclusive a atual) e ancora a
+ * janela de coleta (`resolveClaudeSemanalWeek`).
  *
  * @pure
  */
 export function sentUrlsFromRecords(
   records: readonly { week: string; raw: unknown }[],
   currentWeek: string,
-): { sent: Map<string, string>; unreadable: string[] } {
+): { sent: Map<string, string>; unreadable: string[]; skipped: string[]; sentWeeks: string[] } {
   const sent = new Map<string, string>();
   const unreadable: string[] = [];
-  for (const { week, raw } of records) {
-    if (week === currentWeek) continue;
-    const r = raw as { status?: unknown; items?: unknown } | null;
-    if (!r || typeof r !== "object") {
-      unreadable.push(week);
-      continue;
-    }
-    if (r.status !== "sent") continue;
-    if (!Array.isArray(r.items)) {
-      unreadable.push(week);
-      continue;
-    }
-    for (const it of r.items) {
+  const skipped: string[] = [];
+  const sentWeeks: string[] = [];
+  const addItems = (items: unknown, week: string) => {
+    if (!Array.isArray(items)) return;
+    for (const it of items) {
       const url = (it as { url?: unknown })?.url;
       if (typeof url === "string" && url.trim()) sent.set(normalizeClaudeSemanalUrl(url), week);
     }
+  };
+  const addPreviousRaw = (previous: unknown, week: string) => {
+    if (typeof previous !== "string") return;
+    try {
+      const p = JSON.parse(previous) as { status?: unknown; items?: unknown; previousItems?: unknown; previous?: unknown };
+      if (p?.status === "sent") {
+        addItems(p.items, week);
+        addItems(p.previousItems, week);
+      } else {
+        addPreviousRaw(p?.previous, week);
+      }
+    } catch {
+      /* registro anterior ilegível: nada a somar */
+    }
+  };
+  for (const { week, raw } of records) {
+    const r = raw as { status?: unknown; items?: unknown; previousItems?: unknown; previous?: unknown } | null;
+    if (!r || typeof r !== "object") {
+      if (week !== currentWeek) unreadable.push(week);
+      continue;
+    }
+    if (r.status === "sent") {
+      if (!Array.isArray(r.items)) {
+        if (week !== currentWeek) unreadable.push(week);
+        continue;
+      }
+      sentWeeks.push(week);
+      if (week === currentWeek) continue;
+      addItems(r.items, week);
+      addItems(r.previousItems, week);
+      continue;
+    }
+    if (week === currentWeek) continue;
+    if (r.status === "pending" || r.status === "cancel-failed") {
+      skipped.push(`${week} (${r.status})`);
+      addPreviousRaw(r.previous, week);
+      continue;
+    }
+    unreadable.push(week);
   }
-  return { sent, unreadable };
+  return { sent, unreadable, skipped, sentWeeks: sentWeeks.sort() };
+}
+
+/** Pure: itens já enviados por um registro `sent` (os dele + os que ele herdou de um `--force`). */
+export function accumulatedSentItems(record: { items?: unknown; previousItems?: unknown }): ClaudeSemanalSentItem[] {
+  const out: ClaudeSemanalSentItem[] = [];
+  for (const list of [record.items, record.previousItems]) {
+    if (!Array.isArray(list)) continue;
+    for (const it of list) {
+      const x = it as Partial<ClaudeSemanalSentItem>;
+      if (typeof x?.url === "string" && typeof x.title === "string" && isClaudeSemanalSectionId(x.section)) {
+        out.push({ url: x.url, title: x.title, section: x.section });
+      }
+    }
+  }
+  return out;
 }
 
 // ── candidatos da coleta ──────────────────────────────────────────────────
@@ -523,6 +638,37 @@ export function selectWeekCandidates(
   }
   out.candidates.sort((a, b) => a.published_at.localeCompare(b.published_at));
   return out;
+}
+
+/** Dias de folga, antes do início da janela, pedidos ao feed para medir se ele alcança a janela. */
+export const CLAUDE_SEMANAL_FEED_LOOKBACK_EXTRA_DAYS = 30;
+
+/**
+ * Pure: o feed cobre a janela inteira? O collect pede ao feed a janela MAIS
+ * `CLAUDE_SEMANAL_FEED_LOOKBACK_EXTRA_DAYS` dias; se mesmo assim a entrada
+ * mais antiga que voltou é posterior ao início da janela, o feed não alcança
+ * a janela (feed curto, ou cortado pelo teto de itens — `truncated`) e itens
+ * do começo dela podem ter ficado de fora. Devolve o motivo, ou null.
+ *
+ * Feed cortado pelo teto mas cuja entrada mais antiga mantida já é anterior à
+ * janela cobre a janela inteira (o teto corta as MAIS ANTIGAS) e não é buraco.
+ * Feed sem nenhuma entrada no período não é buraco (é semana sem post).
+ *
+ * @pure
+ */
+export function feedCoverageGap(
+  articles: readonly { published_at: string | null }[],
+  truncated: number,
+  windowStart: string,
+): string | null {
+  const times = articles.map((a) => (a.published_at ? Date.parse(a.published_at) : NaN)).filter((t) => !Number.isNaN(t));
+  if (times.length === 0) return null;
+  const oldest = Math.min(...times);
+  if (oldest <= Date.parse(windowStart)) return null;
+  const oldestIso = new Date(oldest).toISOString();
+  return truncated > 0
+    ? `feed cortado pelo teto (${truncated} entrada(s) a mais) e a mais antiga mantida (${oldestIso}) é posterior ao início da janela (${windowStart})`
+    : `a entrada mais antiga do feed (${oldestIso}) é posterior ao início da janela (${windowStart}): o feed não alcança a janela`;
 }
 
 // ── volume: nunca pula semana ─────────────────────────────────────────────
@@ -658,14 +804,13 @@ export function claudeSemanalCopyProblems(text: string, where: string): string[]
 }
 
 export interface ClaudeSemanalDraftCheckOptions {
-  minItems: number;
-  maxItems: number;
   /** URLs normalizadas já enviadas em outras semanas → semana do envio. */
   sent: ReadonlyMap<string, string>;
 }
 
 /**
  * Pure: tudo que impede o rascunho de sair. Lista vazia = pode ir ao gate.
+ * O volume fica de fora de propósito (aviso, ver `evaluateClaudeSemanalVolume`).
  *
  * @pure
  */
@@ -705,8 +850,9 @@ export function claudeSemanalDraftProblems(draft: ClaudeSemanalDraft, opts: Clau
       ...claudeSemanalCopyProblems(it.como_usar, `${where} como usar`),
     );
   }
-  const vol = evaluateClaudeSemanalVolume(draftItems(draft).length, opts.minItems, opts.maxItems);
-  if (vol.kind !== "ok") out.push(`volume: ${vol.instrucao}`);
+  // Volume fora de min..max NÃO entra aqui: é aviso (`evaluateClaudeSemanalVolume`),
+  // nunca bloqueio. A semana não é pulada, e a aprovação do editor no gate já é
+  // o consentimento para sair com menos (ou mais) itens (#14329).
   return out;
 }
 
@@ -759,7 +905,8 @@ export function renderClaudeSemanalEmail(
   const subject = buildClaudeSemanalSubject(draft.subject);
   const previewText = copy.previewText ?? draft.intro.split(/(?<=[.!?])\s/)[0].slice(0, 140);
   const footer = copy.footerNote ?? "Você recebe este e-mail da diar.ia.br.";
-  const range = formatClaudeSemanalRange(week.firstDay, week.lastDay);
+  // A semana exibida é a do envio (7 dias); a janela de coleta pode ser maior.
+  const range = formatClaudeSemanalRange(week.displayFirstDay, week.lastDay);
 
   const htmlSections: string[] = [];
   const textSections: string[] = [];

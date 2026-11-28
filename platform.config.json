@@ -118,8 +118,8 @@
     "footer_note": "Você recebe este e-mail porque apoia a diar.ia.br no nível Núcleo. Obrigado por sustentar o projeto.",
     "sources_note": "Só fontes oficiais da Anthropic/Claude (decisão do editor, 27/11/2026). URLs conferidas ao vivo em 27/11/2026: claude.com/blog redireciona para claude.com/resources/articles (RSS em /rss.xml); anthropic.com/news e /engineering não têm RSS (404 em /news/rss.xml); o feed de releases do Claude Code é o mesmo que seed/sources.csv já cadastra (#10952); a Academy está em academy.claude.com. Fontes `page` são lidas pela skill (WebFetch) e mescladas com claude-semanal-collect.ts --merge.",
     "sources": [
-      { "name": "Blog do Claude", "url": "https://claude.com/resources/articles/rss.xml", "kind": "rss", "section_hint": "dia-a-dia" },
-      { "name": "Claude Code (releases)", "url": "https://github.com/anthropics/claude-code/releases.atom", "kind": "rss", "section_hint": "claude-code" },
+      { "name": "Blog do Claude", "url": "https://claude.com/resources/articles/rss.xml", "kind": "rss", "section_hint": "dia-a-dia", "coverage_page": "https://claude.com/resources/articles" },
+      { "name": "Claude Code (releases)", "url": "https://github.com/anthropics/claude-code/releases.atom", "kind": "rss", "section_hint": "claude-code", "coverage_page": "https://code.claude.com/docs/en/changelog" },
       { "name": "Anthropic News", "url": "https://www.anthropic.com/news", "kind": "page", "section_hint": "lancamentos" },
       { "name": "Anthropic Engineering", "url": "https://www.anthropic.com/engineering", "kind": "page", "section_hint": "aprenda" },
       { "name": "Release notes dos apps Claude", "url": "https://support.claude.com/en/articles/12138966-release-notes", "kind": "page", "section_hint": "dia-a-dia" },

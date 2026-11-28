@@ -21,6 +21,8 @@ import {
   ClaudeSemanalIncidentError,
   claudeSemanalCopyProblems,
   claudeSemanalDraftProblems,
+  claudeSemanalWindowBanner,
+  feedCoverageGap,
   defaultClaudeSemanalWeek,
   evaluateClaudeSemanalVolume,
   isOfficialClaudeUrl,
@@ -134,12 +136,31 @@ describe("resolveClaudeSemanalConfig (#14329)", () => {
 // ── semana e horário ──────────────────────────────────────────────────────
 
 describe("semana e horário (#14329)", () => {
-  it("janela de 8 dias, de domingo a domingo, em BRT", () => {
+  it("sem envio anterior: janela recua 14 dias (BRT) e o banner avisa", () => {
     const w = resolveClaudeSemanalWeek(WEEK, 0);
-    assert.equal(w.firstDay, "2026-11-22");
+    assert.equal(w.firstDay, "2026-11-15");
     assert.equal(w.lastDay, "2026-11-29");
-    assert.equal(w.windowStart, "2026-11-22T03:00:00.000Z");
+    assert.equal(w.windowStart, "2026-11-15T03:00:00.000Z");
     assert.equal(w.windowEnd, "2026-11-30T03:00:00.000Z");
+    assert.equal(w.displayFirstDay, "2026-11-23", "o e-mail exibe a semana do envio, não a janela de coleta");
+    assert.equal(w.previousWeekSent, false);
+    assert.match(claudeSemanalWindowBanner(w) ?? "", /sem nenhum envio anterior/);
+  });
+
+  it("semana anterior enviada: janela de 14 dias, sem banner", () => {
+    const w = resolveClaudeSemanalWeek(WEEK, 0, ["261122"]);
+    assert.equal(w.firstDay, "2026-11-15");
+    assert.equal(w.lastSentWeek, "261122");
+    assert.equal(w.previousWeekSent, true);
+    assert.equal(claudeSemanalWindowBanner(w), null);
+  });
+
+  it("semanas perdidas: a janela recua até o último envio, e o banner diz isso", () => {
+    const w = resolveClaudeSemanalWeek(WEEK, 0, ["261025", "261101", WEEK, "261206"]);
+    assert.equal(w.lastSentWeek, "261101", "só envios ANTERIORES ancoram");
+    assert.equal(w.firstDay, "2026-11-01");
+    assert.equal(w.windowStart, "2026-11-01T03:00:00.000Z");
+    assert.match(claudeSemanalWindowBanner(w) ?? "", /desde o último envio \(261101\)/);
   });
 
   it("data fora do dia de envio configurado é recusada", () => {
@@ -183,6 +204,8 @@ describe("fonte oficial e dedup entre semanas (#14329)", () => {
       "https://anthropic.com.evil.example/x",
       "https://www.reddit.com/r/ClaudeAI/",
       "http://www.anthropic.com/news",
+      "https://claude.ai/share/abc-123",
+      "https://claude.ai/public/artifacts/xyz",
       "nota",
     ]) {
       assert.equal(isOfficialClaudeUrl(u), false, u);
@@ -219,10 +242,10 @@ describe("fonte oficial e dedup entre semanas (#14329)", () => {
     const rel = "https://github.com/anthropics/claude-code/releases/tag/v2.1.0";
     const d = draft(10);
     d.sections[2].items = [item(7, rel), item(8, rel)];
-    assert.deepEqual(claudeSemanalDraftProblems(d, { minItems: 8, maxItems: 15, sent: new Map() }), []);
+    assert.deepEqual(claudeSemanalDraftProblems(d, { sent: new Map() }), []);
     const d2 = draft(10);
     d2.sections[1].items[1] = item(99, d2.sections[1].items[0].url);
-    const p = claudeSemanalDraftProblems(d2, { minItems: 8, maxItems: 15, sent: new Map() });
+    const p = claudeSemanalDraftProblems(d2, { sent: new Map() });
     assert.ok(p.some((x) => /link repetido/.test(x)), p.join("\n"));
   });
 
@@ -265,7 +288,7 @@ describe("fonte oficial e dedup entre semanas (#14329)", () => {
   it("rascunho com item já enviado em outra semana é recusado", () => {
     const d = draft();
     const sent = new Map([[normalizeClaudeSemanalUrl(d.sections[0].items[0].url), "261122"]]);
-    const problems = claudeSemanalDraftProblems(d, { minItems: 8, maxItems: 15, sent });
+    const problems = claudeSemanalDraftProblems(d, { sent });
     assert.ok(problems.some((p) => /já enviado na semana 261122/.test(p)), problems.join("\n"));
   });
 });
@@ -305,10 +328,10 @@ describe("cópia e render (#14329)", () => {
     assert.deepEqual(claudeSemanalCopyProblems("No app, abra um projeto - e siga.", "x"), []);
   });
 
-  it("rascunho válido de 10 itens não tem problema; 5 itens acusa volume", () => {
-    assert.deepEqual(claudeSemanalDraftProblems(draft(10), { minItems: 8, maxItems: 15, sent: new Map() }), []);
-    const p = claudeSemanalDraftProblems(draft(5), { minItems: 8, maxItems: 15, sent: new Map() });
-    assert.ok(p.some((x) => /volume: faltam 3/.test(x)), p.join("\n"));
+  it("volume fora de min..max nunca é problema bloqueante (é aviso à parte)", () => {
+    assert.deepEqual(claudeSemanalDraftProblems(draft(10), { sent: new Map() }), []);
+    assert.deepEqual(claudeSemanalDraftProblems(draft(5), { sent: new Map() }), []);
+    assert.equal(evaluateClaudeSemanalVolume(5, 8, 15).kind, "abaixo");
   });
 
   it("parse estrito: semana errada, seção desconhecida e campo vazio lançam", () => {
@@ -334,7 +357,7 @@ describe("cópia e render (#14329)", () => {
     assert.match(r.html, /<strong>Como usar:<\/strong>/);
     assert.doesNotMatch(r.html, /[→←]/);
     assert.doesNotMatch(r.html, /\{\{/);
-    assert.match(r.html, /22\/nov a 29\/nov/);
+    assert.match(r.html, /23\/nov a 29\/nov/);
   });
 });
 

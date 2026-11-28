@@ -39,9 +39,13 @@ Peças: `scripts/claude-semanal-collect.ts` (coleta), `.claude/agents/claude-sem
   e seguir, sem perguntar. Data que não cai no dia de envio configurado é
   recusada pelos scripts (exit 2).
 
-A janela de coleta são os 7 dias anteriores ao envio mais o próprio dia (8
-dias, de domingo a domingo). A sobreposição de um dia com a semana anterior é
-de propósito; o dedup impede que um item saia duas vezes.
+A janela de coleta vai do dia do último envio `sent` anterior, ou de 14 dias
+antes do envio, o que for mais cedo, até o fim do dia do envio. A janela larga
+é de propósito: o dedup impede que um item saia duas vezes, e assim nada some
+quando a skill roda antes do domingo ou quando uma semana é perdida. Se o
+domingo anterior não tem envio `sent`, o collect imprime um banner (`banner`
+no JSON) dizendo desde quando coletou; repassar ao editor. O e-mail exibe só
+a semana do envio (os 7 dias até o domingo).
 
 ## Guard de execução
 
@@ -63,7 +67,10 @@ de propósito; o dedup impede que um item saia duas vezes.
    oficiais (`kind: "rss"` em `kit_claude_semanal.sources`), filtra pela janela,
    por fonte oficial e pelo dedup contra os envios anteriores, e grava
    `data/claude-semanal/{AAMMDD}/_internal/01-candidates.json`. A saída lista
-   `pages_to_fetch`: as fontes sem feed (e as de feed que falhou).
+   `pages_to_fetch`: as fontes sem feed, mais a página de cobertura
+   (`coverage_page`) de cada feed que falhou ou não cobre a janela inteira
+   (entrada mais antiga posterior ao início da janela, inclusive por corte do
+   teto de itens), registrado em `feed_errors`.
 2. Para cada página de `pages_to_fetch`, ler com WebFetch e extrair os itens
    **publicados ou atualizados dentro da janela** (`window` do JSON), com a URL
    oficial de cada um, título, data (`published_at` ISO) e um resumo curto do
@@ -79,9 +86,13 @@ de propósito; o dedup impede que um item saia duas vezes.
    (nunca um por versão). Gravar a lista num arquivo do scratchpad com o número
    da issue e sufixo aleatório (ex.: `paginas-14329-{random}.json`) e mesclar:
    `npx tsx scripts/claude-semanal-collect.ts --week {AAMMDD} --merge {arquivo}`.
-   O merge passa pelos mesmos filtros (item sem data, fora da janela, não
-   oficial ou já enviado fica de fora, listado em `rejected`/`already_sent`).
-3. Imprimir um resumo: candidatos por fonte, já enviados, rejeitados.
+   O merge passa pelos mesmos filtros: item sem data ou não oficial sai em
+   `rejected`, já enviado em `already_sent`, e fora da janela só entra na
+   contagem `out_of_window_count` (não é listado). O merge soma à coleta
+   gravada; sem `01-candidates.json` legível, ele busca os feeds de novo antes
+   de mesclar.
+3. Imprimir um resumo: candidatos por fonte, já enviados, rejeitados, fora da
+   janela, `feed_errors` e o `banner`, se houver.
 
 ## Passo 2 — Volume: nunca pular semana
 
@@ -92,7 +103,9 @@ de ajuda (`support.claude.com`), páginas de boas práticas e guias de
 organização `anthropics` no GitHub. Mesclar com `--merge` e repetir até chegar
 ao mínimo. Não existe saída "sem e-mail esta semana": se mesmo assim faltar, o
 writer escreve os que houver, e o gate mostra o volume abaixo do mínimo para o
-editor decidir o que acrescentar (nunca se ele quer pular).
+editor decidir o que acrescentar (nunca se ele quer pular). Volume fora de
+`min_items`..`max_items` é **aviso**, nunca bloqueio: aprovado no gate, o
+`--send` cria o broadcast assim mesmo e grava o volume no registro.
 
 ## Passo 3 — Escrita (agente `claude-semanal-writer`)
 
@@ -107,7 +120,8 @@ voltar ao Passo 2 com a dica do agente e chamá-lo de novo.
 
 ## Passo 4 — Humanizador e Clarice
 
-Igual à diária, sobre `02-draft.json` ({D}):
+Igual à diária, sobre `02-draft.json` ({D}): este passo roda o humanizador e
+chama a Clarice; nenhum script faz isso sozinho.
 
 1. Humanizador, passe completo:
    Skill("humanizador", "Leia {D}, humanize SÓ os campos intro, subject_options, subject e, em cada item de sections[].items, title, resumo e como_usar (passe completo), e salve no mesmo arquivo sem tocar week, id nem url. Tetos: subject e cada subject_option até 52 caracteres; intro 320; title 120; resumo 2 a 3 frases e 480 caracteres; como_usar uma linha e 220 caracteres. Sem markdown, sem URL, sem emoji, sem seta, sem bajulação. Nomes de produto e de recurso ficam como estão.")
@@ -132,13 +146,14 @@ Igual à diária, sobre `02-draft.json` ({D}):
 2. Validação + prévia + contagem real:
    `npx tsx scripts/publish-claude-semanal-kit.ts --week {AAMMDD} --check-audience`
    (só GET no Kit). Grava a prévia em `_internal/claude-semanal-preview.html` e
-   `.txt` e devolve `problems`, `audienceMemberCount`, `sendAt` e `late`. Exit 2
-   com tag vazia ou inexistente: voltar ao item 1, nunca seguir.
+   `.txt` e devolve `problems`, `volume`, `audienceMemberCount`, `sendAt` e
+   `late`. Exit 2 com tag vazia ou inexistente: voltar ao item 1, nunca seguir.
 3. Cada item de `problems` é consertado no rascunho (fonte não oficial ou item
    já enviado: trocar pelo próximo candidato; teto de caracteres: reescrever,
    nunca truncar; seta/markdown/URL no texto: tirar) e o item 2 roda de novo,
-   até `problems` vir vazio. Volume abaixo do mínimo é o único problema que pode
-   chegar ao gate, e só depois do Passo 2 esgotado.
+   até `problems` vir vazio. O volume não está em `problems`: fora de
+   `min_items`..`max_items`, ele vai ao gate como aviso, depois do Passo 2
+   esgotado.
 4. Publicar a prévia como Artifact privado (`Artifact(file_path: "{abs do HTML}",
    title: "Claude na semana {AAMMDD}", description: "Prévia do e-mail semanal do Claude", icon: "news")`;
    na 2ª rodada da mesma semana, republicar no mesmo arquivo). Sem a ferramenta
@@ -167,14 +182,22 @@ Falha do `AskUserQuestion` = halt banner (#3938).
 
 Cria o broadcast agendado para `sendAt`, com a tag como filtro e
 `public: false`, relê e confere, e grava
-`_internal/claude-semanal-published.json` com os itens (é dele que o dedup das
-semanas seguintes lê). Até `sendAt` o envio é cancelável no painel do Kit.
+`_internal/claude-semanal-published.json` com os itens e o volume (é dele que o
+dedup das semanas seguintes lê). Até `sendAt` o envio é cancelável no painel
+do Kit, **mas cancelar no painel não mexe no registro**: ele continua `sent`, a
+semana responde "já enviada" e os itens dela nunca mais entram (o dedup os
+conta como enviados). Cancelou no painel: apagar o
+`claude-semanal-published.json` da semana antes de agendar de novo. Um
+`--force` por cima do registro também agenda, mas guarda os itens anteriores
+em `previousItems`, que seguem no dedup: só serve quando o envio anterior saiu
+de fato.
 
 | Saída | O que fazer |
 |---|---|
-| `exit 0`, `kind: "enviado"` | informar o editor: broadcast id, horário BRT, membros da tag |
+| `exit 0`, `kind: "enviado"` | informar o editor: broadcast id, horário BRT, membros da tag, volume |
 | `exit 0`, `kind: "ja-enviado"` | a semana já estava agendada; informar o id e o horário |
 | `exit 2` (guard) | nada foi criado: mostrar a mensagem, corrigir e rodar de novo |
+| `exit 3` (cancelado, exclusão conferida) | o broadcast foi criado, a audiência não se confirmou e ele foi APAGADO com a exclusão conferida: nada saiu. Corrigir a causa (tag, filtro) e rodar de novo, sem `--force` |
 | `exit 1` (incidente) | um broadcast PODE existir no Kit: mostrar a mensagem inteira ao editor e não reexecutar; `--force` só depois de ele conferir o Kit |
 
 ## Fora de escopo

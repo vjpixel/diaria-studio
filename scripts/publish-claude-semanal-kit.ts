@@ -6,8 +6,9 @@
  * `platform.config.json` → `kit_claude_semanal.audience_tag` (fase de teste:
  * Núcleo). Lê o rascunho do writer (`data/claude-semanal/{AAMMDD}/_internal/02-draft.json`),
  * renderiza com `lib/claude-semanal.ts` e cria o broadcast AGENDADO para o
- * horário configurado (default domingo 08:00 BRT). Chamado só pelo Passo 6 de
- * `/diaria-claude-semanal`, depois da aprovação do editor no gate.
+ * horário configurado (default domingo 08:00 BRT). Em `/diaria-claude-semanal`,
+ * o dry-run e o `--check-audience` rodam no Passo 5 (prévia) e o `--send` só no
+ * Passo 7, depois da aprovação do editor no gate do Passo 6.
  *
  * Modos:
  *   - sem flag: dry-run — valida, grava a prévia (HTML + texto) e NÃO chama o Kit;
@@ -20,18 +21,25 @@
  *     filtro não resolvido no Kit é a BASE INTEIRA (#6126);
  *   - `public: false` sempre: o e-mail é recompensa de apoio na fase de teste e
  *     `public_url` o publicaria no Kit;
- *   - releitura do broadcast: filtro igual ao enviado (#6582) E agendado. Sem as
- *     duas confirmações, apaga e confere a exclusão (404);
+ *   - releitura do broadcast com três confirmações: filtro igual ao enviado
+ *     (#6582), broadcast agendado e `public` não verdadeiro. Sem as três, apaga e
+ *     confere a exclusão (404);
  *   - rascunho com problema (fonte não oficial, item já enviado em outra
- *     semana, volume fora de 8 a 15, cópia com seta/markdown/URL) não sai;
+ *     semana, cópia com seta/markdown/URL, teto de caracteres) não sai;
+ *   - VOLUME fora de `min_items`..`max_items` (config) é AVISO, nunca bloqueio:
+ *     a semana não é pulada e a aprovação do gate é o consentimento. O volume
+ *     vai na saída e no registro `sent`;
  *   - lock `wx` por semana; registro gravado como `pending` ANTES do POST.
- *     Registro que não seja `sent` é ambíguo: recusa até alguém conferir o Kit
- *     e passar `--force`.
+ *     Registro que não seja `sent` (inclusive ilegível, ou `sent` sem
+ *     `broadcastId`) é ambíguo: recusa até alguém conferir o Kit e passar
+ *     `--force`.
  *
- * O registro `sent` guarda os itens: é dele que o dedup entre semanas lê
+ * O registro `sent` guarda os itens (e, num `--force` por cima de outro `sent`,
+ * os itens anteriores em `previousItems`): é dele que o dedup entre semanas lê
  * (`lib/claude-semanal-store.ts`).
  *
- * Exit codes: 0 ok/já enviado · 1 incidente ou erro · 2 guard.
+ * Exit codes: 0 ok/já enviado · 1 incidente (um broadcast PODE existir) ou erro · 2 guard (nada criado) ·
+ *   3 cancelado com exclusão conferida (nada saiu, pode rodar de novo).
  *
  * Uso:
  *   npx tsx scripts/publish-claude-semanal-kit.ts --week 261129                     # dry-run
@@ -62,21 +70,28 @@ import {
   ClaudeSemanalGuardError,
   ClaudeSemanalIncidentError,
   claudeSemanalDraftProblems,
+  accumulatedSentItems,
   draftItems,
+  evaluateClaudeSemanalVolume,
   parseClaudeSemanalDraft,
   renderClaudeSemanalEmail,
   resolveClaudeSemanalSendAt,
   resolveClaudeSemanalWeek,
   type ClaudeSemanalSentItem,
+  type ClaudeSemanalVolume,
   type RenderedClaudeSemanalEmail,
 } from "./lib/claude-semanal.ts";
-import { claudeSemanalPaths, loadClaudeSemanalConfig, loadClaudeSemanalSent, type ClaudeSemanalPaths } from "./lib/claude-semanal-store.ts";
+import {
+  claudeSemanalPaths,
+  loadClaudeSemanalConfig,
+  loadClaudeSemanalSent,
+  logClaudeSemanalDedupGaps,
+  type ClaudeSemanalPaths,
+} from "./lib/claude-semanal-store.ts";
 import { formatStackEmailBrt as formatBrt } from "./lib/circle-stack-email-render.ts";
 import {
-  toPersistedVerification,
   verifyAudienceFilter,
   type AudienceVerification,
-  type PersistedAudienceVerification,
 } from "./publish-artigo-especial-kit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -93,9 +108,25 @@ export interface ClaudeSemanalSent {
   audienceTag: string;
   audienceTagId: number;
   audienceMemberCount: number;
-  audienceVerification: PersistedAudienceVerification;
+  /** Só a audiência CONFIRMADA chega a `sent`; os outros casos cancelam antes. */
+  audienceVerification: { status: "confirmed" };
+  /** Volume do rascunho aprovado (fora de min..max é aviso, não bloqueio). */
+  volume: ClaudeSemanalVolumeRecord;
   items: ClaudeSemanalSentItem[];
+  /** Itens de um envio anterior da mesma semana sobrescrito por `--force` (continuam no dedup). */
+  previousItems?: ClaudeSemanalSentItem[];
   createdAt: string;
+}
+
+export type ClaudeSemanalVolumeRecord =
+  | { kind: "ok"; count: number }
+  | { kind: "abaixo"; count: number; faltam: number }
+  | { kind: "acima"; count: number; sobram: number };
+
+function toVolumeRecord(v: ClaudeSemanalVolume): ClaudeSemanalVolumeRecord {
+  if (v.kind === "abaixo") return { kind: "abaixo", count: v.count, faltam: v.faltam };
+  if (v.kind === "acima") return { kind: "acima", count: v.count, sobram: v.sobram };
+  return { kind: "ok", count: v.count };
 }
 
 type ClaudeSemanalRecord =
@@ -114,8 +145,12 @@ export function readClaudeSemanalRecord(path: string): RecordRead {
   } catch (e) {
     return { kind: "ambiguous", reason: `${path} existe mas está ilegível (${(e as Error).message})` };
   }
-  if (parsed?.status === "sent" && typeof parsed.broadcastId === "number" && typeof parsed.sendAt === "string") {
-    return { kind: "sent", record: parsed as unknown as ClaudeSemanalSent };
+  if (parsed?.status === "sent") {
+    if (typeof parsed.broadcastId === "number" && typeof parsed.sendAt === "string") {
+      return { kind: "sent", record: parsed as unknown as ClaudeSemanalSent };
+    }
+    // `sent` sem broadcastId/sendAt não prova envio nenhum: ambíguo, nunca "nada a fazer".
+    return { kind: "ambiguous", reason: `${path} diz "sent" mas não traz broadcastId/sendAt válidos` };
   }
   if (parsed?.status === "pending") {
     return {
@@ -256,6 +291,8 @@ export type ClaudeSemanalResult =
       audienceTag: string;
       /** Só com `--check-audience`: membros da tag lidos no Kit. */
       audienceMemberCount?: number;
+      /** Aviso, nunca bloqueio. */
+      volume: ClaudeSemanalVolumeRecord;
       problems: string[];
     }
   | { kind: "enviado"; record: ClaudeSemanalSent }
@@ -317,9 +354,11 @@ export async function runClaudeSemanal(options: ClaudeSemanalRunOptions): Promis
     throw new ClaudeSemanalGuardError(`${paths.draftPath} não é JSON válido: ${(e as Error).message}`);
   }
   const draft = parseClaudeSemanalDraft(draftRaw, week.week);
-  const { sent, unreadable } = loadClaudeSemanalSent(dataRoot, week.week);
-  if (unreadable.length > 0) log(`AVISO: registro de envio ilegível nas semanas ${unreadable.join(", ")} — o dedup não os considera.`);
-  const problems = claudeSemanalDraftProblems(draft, { minItems: config.minItems, maxItems: config.maxItems, sent });
+  const dedup = loadClaudeSemanalSent(dataRoot, week.week);
+  logClaudeSemanalDedupGaps(dedup, log);
+  const problems = claudeSemanalDraftProblems(draft, { sent: dedup.sent });
+  const volume = evaluateClaudeSemanalVolume(draftItems(draft).length, config.minItems, config.maxItems);
+  if (volume.kind !== "ok") log(`AVISO de volume (não bloqueia, a semana não é pulada): ${volume.instrucao}`);
   const email = renderClaudeSemanalEmail(draft, week, { previewText: config.previewText, footerNote: config.footerNote });
   const { sendAt, late } = resolveClaudeSemanalSendAt(week.week, config.sendTimeBrt, now());
 
@@ -350,6 +389,7 @@ export async function runClaudeSemanal(options: ClaudeSemanalRunOptions): Promis
       late,
       audienceTag: config.audienceTag,
       ...(audienceMemberCount !== undefined ? { audienceMemberCount } : {}),
+      volume: toVolumeRecord(volume),
       problems,
     };
   }
@@ -371,6 +411,7 @@ export async function runClaudeSemanal(options: ClaudeSemanalRunOptions): Promis
       niveis: config.audienceNiveis,
       sendAt,
       late,
+      volume: toVolumeRecord(volume),
       force: mode.force,
       deps,
       log,
@@ -390,6 +431,7 @@ interface SendArgs {
   niveis: Parameters<typeof resolveVerifiedAudience>[4];
   sendAt: string;
   late: boolean;
+  volume: ClaudeSemanalVolumeRecord;
   force: boolean;
   deps: ClaudeSemanalDeps;
   log: (m: string) => void;
@@ -412,6 +454,9 @@ async function sendLocked(a: SendArgs): Promise<ClaudeSemanalResult> {
   }
   if (prior.kind !== "none") log(`AVISO: --force passando por cima do registro anterior (${prior.kind}).`);
   const priorRaw = prior.kind === "none" ? null : readFileSync(paths.publishedPath, "utf8");
+  // Itens de envios anteriores desta semana que este --force sobrescreve:
+  // continuam no dedup das próximas semanas (gravados em `previousItems`).
+  const previousItems = priorRaw === null ? [] : previousItemsFromRaw(priorRaw);
 
   const kitConfigResult = deps.resolveKitConfig();
   if (!kitConfigResult.ok) throw new ClaudeSemanalGuardError(kitConfigResult.reason);
@@ -468,10 +513,13 @@ async function sendLocked(a: SendArgs): Promise<ClaudeSemanalResult> {
     audienceTag: audience.tagName,
     audienceTagId: audience.tagId,
     audienceMemberCount: audience.memberCount,
-    audienceVerification: toPersistedVerification(verification),
+    audienceVerification: { status: "confirmed" },
+    volume: a.volume,
     items: a.items,
+    ...(previousItems.length > 0 ? { previousItems } : {}),
     createdAt: now().toISOString(),
   };
+  if (a.volume.kind !== "ok") log(`volume registrado: ${a.volume.kind} (${a.volume.count} item(ns)).`);
   try {
     writeRecord(record);
   } catch (e) {
@@ -483,6 +531,22 @@ async function sendLocked(a: SendArgs): Promise<ClaudeSemanalResult> {
     );
   }
   return { kind: "enviado", record };
+}
+
+/**
+ * Itens já enviados que um registro anterior carrega: os de um `sent` (com o
+ * que ele herdou), ou os do `sent` guardado em `previous` por um
+ * `pending`/`cancel-failed`. Registro ilegível não contribui.
+ */
+export function previousItemsFromRaw(raw: string): ClaudeSemanalSentItem[] {
+  let parsed: { status?: unknown; items?: unknown; previousItems?: unknown; previous?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (parsed?.status === "sent") return accumulatedSentItems(parsed);
+  return typeof parsed?.previous === "string" ? previousItemsFromRaw(parsed.previous) : [];
 }
 
 /** Audiência não confirmada: apaga o broadcast e confere a exclusão (404). Sempre lança. */
@@ -541,6 +605,17 @@ async function cancelUnverified(
   );
 }
 
+/**
+ * Pura: exit code do CLI. 2 = guard (nada criado); 3 = incidente com
+ * cancelamento CONFERIDO (o broadcast foi apagado, nada saiu, pode rodar de
+ * novo); 1 = incidente em que um broadcast PODE existir, ou erro inesperado.
+ */
+export function claudeSemanalExitCode(e: unknown): number {
+  if (e instanceof ClaudeSemanalGuardError) return 2;
+  if (e instanceof ClaudeSemanalIncidentError && e.cancelled) return 3;
+  return 1;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -565,7 +640,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(res));
   } catch (e) {
     log((e as Error).message);
-    process.exit(e instanceof ClaudeSemanalGuardError ? 2 : 1);
+    process.exit(claudeSemanalExitCode(e));
   }
 }
 
