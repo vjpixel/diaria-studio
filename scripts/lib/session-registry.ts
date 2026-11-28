@@ -395,6 +395,7 @@ export {
   gcExpiredWorktreeClaims,
   renewWorktreeClaimsForSession,
   unclaimWorktree,
+  readWorktreeClaimFileWithRetry,
   WORKTREE_CLAIM_TTL_MS,
   claimIssue,
   unclaimIssue,

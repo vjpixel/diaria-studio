@@ -106,11 +106,16 @@ describe("block-worktree-alien-commit.mjs — payload PreToolUse real via stdin 
     assert.equal(exitCode, 0);
   });
 
-  it("git commit real, sem claim conflitante registrado: não bloqueia (passa)", () => {
+  it("git commit real, sem claim conflitante registrado: não bloqueia (passa)", async () => {
+    // #14321: `cwd` explícito fora de qualquer checkout. Sem ele o hook cai no
+    // diretório do próprio arquivo, e num worktree reivindicado pelo
+    // `claim-worktree` (#14214) a claim real da sessão que roda o teste nega.
+    const { tmpdir } = await import("node:os");
     const { stdout, exitCode } = runHook({
       tool_name: "Bash",
       tool_input: { command: 'git commit -m "test"' },
       session_id: "test-session-sem-conflito",
+      cwd: tmpdir(),
     });
     assert.equal(stdout, "");
     assert.equal(exitCode, 0);

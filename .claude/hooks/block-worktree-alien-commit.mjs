@@ -1,7 +1,10 @@
-// PreToolUse hook — recusa `git commit` quando a sessão que está commitando
-// não é a dona do claim de worktree para este diretório, ou quando a branch
-// do HEAD diverge do que `git worktree list` reporta para este path (#7722
-// item 4, "corrigindo #7806 stub que sempre retornava blocked:false").
+// PreToolUse hook — recusa `git commit` num worktree vinculado quando (1) a
+// claim do worktree (`data/sessions/.worktree-claims/<hash>.json`) é de outra
+// sessão, (2) a branch do HEAD diverge da branch gravada na claim, ou (3) o
+// HEAD está destacado sem rebase/cherry-pick/bisect/merge/revert/sequencer em curso
+// (#7722 item 4, #7903, #14214). O worktree julgado é o diretório em que cada
+// `git commit` da cadeia de fato roda: `payload.cwd` mais os `cd` da cadeia e
+// os `-C`/`--work-tree` do git (#14321).
 //
 // Cenário: outra sessão adota/mexe num worktree que não é dela e troca a
 // branch por baixo (`git checkout master` no meio de um worktree que tinha
@@ -52,10 +55,13 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+// lib/, nunca o hook de PII: um guard não importa outro (#14321).
+import { normalizeMsysPath } from "./lib/msys-path.mjs";
 
 /**
  * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
@@ -63,27 +69,322 @@ import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
  */
 export { stripQuotedSpans };
 
-const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
+/**
+ * Comando shell em entradas na ordem em que aparecem (#14321):
+ * `{ type: "seg", words, sep }` para cada comando simples (separados por
+ * `&&`, `||`, `;`, `|`, `|&`, `&` e newline; `sep` é o separador que o fecha,
+ * `"&"` para o comando mandado para o fundo, `""` no fim), e
+ * `{ type: "open" }`/`{ type: "close" }` para `(`/`)` de subshell, que
+ * delimitam o alcance de um `cd`. O `&` de redirecionamento (`2>&1`, `>&2`,
+ * `&>arq`) fica dentro da palavra, não separa.
+ *
+ * Diferente de `stripQuotedSpans` (que APAGA o conteúdo entre aspas), aqui o
+ * conteúdo citado fica dentro da palavra, sem as aspas: o diretório de
+ * `git -C "C:/com espaço" commit` ou de `cd "x y"` precisa do texto. Texto
+ * citado nunca vira separador nem comando (`echo "git commit"` é uma palavra
+ * só). Regras de escape iguais às do tokenizer compartilhado: `\x` fora de
+ * aspas é literal, `\<newline>` é continuação, `$'...'` aceita `\'`.
+ */
+export function shellEntries(command) {
+  const entries = [];
+  if (typeof command !== "string") return entries;
+  let words = [];
+  let word = "";
+  let inWord = false;
+  const pushWord = () => {
+    if (inWord) words.push(word);
+    word = "";
+    inWord = false;
+  };
+  const pushSeg = (sep = "") => {
+    pushWord();
+    if (words.length > 0) entries.push({ type: "seg", words, sep });
+    words = [];
+  };
+  const n = command.length;
+  let i = 0;
+  while (i < n) {
+    const ch = command[i];
+    const next = command[i + 1];
+    if (ch === "\\" && i + 1 < n) {
+      if (next !== "\n") {
+        word += next;
+        inWord = true;
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === "$" && next === "'") {
+      let j = i + 2;
+      while (j < n && command[j] !== "'") {
+        if (command[j] === "\\" && j + 1 < n) {
+          word += command[j + 1];
+          j += 2;
+          continue;
+        }
+        word += command[j];
+        j++;
+      }
+      inWord = true;
+      i = j + 1;
+      continue;
+    }
+    if (ch === "'") {
+      let j = i + 1;
+      while (j < n && command[j] !== "'") word += command[j++];
+      inWord = true;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\" && j + 1 < n && '"\\$`'.includes(command[j + 1])) {
+          word += command[j + 1];
+          j += 2;
+          continue;
+        }
+        word += command[j];
+        j++;
+      }
+      inWord = true;
+      i = j + 1;
+      continue;
+    }
+    // `&` de redirecionamento: `2>&1`/`>&2`/`<&3` (depois de `>`/`<`) e `&>arq`.
+    if (ch === "&" && ((inWord && /[<>]$/.test(word)) || next === ">")) {
+      word += ch;
+      inWord = true;
+      i++;
+      continue;
+    }
+    if ((ch === "&" && next === "&") || (ch === "|" && (next === "|" || next === "&"))) {
+      pushSeg(ch === "&" ? "&&" : next === "|" ? "||" : "|");
+      i += 2;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
+      pushSeg(ch);
+      i++;
+      continue;
+    }
+    if (ch === "(" || ch === ")") {
+      pushSeg(ch);
+      entries.push({ type: ch === "(" ? "open" : "close" });
+      i++;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      pushWord();
+      i++;
+      continue;
+    }
+    word += ch;
+    inWord = true;
+    i++;
+  }
+  pushSeg();
+  return entries;
+}
 
-function commandSegments(command) {
-  if (typeof command !== "string") return [];
-  const stripped = stripQuotedSpans(command);
-  return stripped
-    .split(SEPARATOR_RE)
-    .map((seg) => seg.trim().split(/\s+/).filter(Boolean))
-    .filter((tokens) => tokens.length > 0);
+/** Atribuição de variável antes do comando (`GIT_AUTHOR_NAME=x git commit`). */
+const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** Opções globais do git que consomem o argumento seguinte (`-C dir`, `-c k=v`). */
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--config-env",
+]);
+
+/**
+ * Lê uma invocação do git a partir das palavras de um comando simples
+ * (#14321): pula as opções globais antes do subcomando (`-C <dir>`,
+ * `-c chave=valor`, `--git-dir`, `--no-pager`, `--git-dir=x`…) e devolve o
+ * subcomando, os `-C` na ordem e o `--work-tree`. `null` se não é git.
+ * Até o #14321 o guard exigia `tokens[1] === "commit"`, e `git -C <wt>
+ * commit` passava direto.
+ *
+ * Antes do binário pula atribuições `NOME=valor`, `env` (com `-i`, `-u NOME`,
+ * `--unset=…`; o `-C dir`/`--chdir` do env entra como primeiro `-C`) e
+ * `command [-p]`. O binário vale pelo basename (`/usr/bin/git`,
+ * `C:\...\git.exe`). Fora de escopo, declarado: `bash -c "git commit"`,
+ * `env -S`, `sudo`/`xargs` e afins (devolve `null`, o guard não vê o commit).
+ */
+export function parseGitInvocation(words) {
+  if (!Array.isArray(words) || words.length === 0) return null;
+  const cDirs = [];
+  let start = 0;
+  for (;;) {
+    const w = words[start];
+    // `{ git commit; }`: a chave do agrupamento é palavra própria no bash.
+    if (w === "{" || w === "}" || (typeof w === "string" && ASSIGNMENT_RE.test(w))) {
+      start++;
+      continue;
+    }
+    if (w === "command") {
+      start++;
+      while (words[start] === "-p") start++;
+      continue;
+    }
+    if (w === "env") {
+      start++;
+      while (typeof words[start] === "string" && words[start].startsWith("-")) {
+        const opt = words[start];
+        if (opt === "-u" || opt === "--unset") start += 2;
+        else if (opt === "-C" || opt === "--chdir") {
+          if (typeof words[start + 1] === "string") cDirs.push(words[start + 1]);
+          start += 2;
+        } else if (opt.startsWith("--chdir=")) {
+          cDirs.push(opt.slice("--chdir=".length));
+          start++;
+        } else if (opt === "-S" || opt.startsWith("--split-string")) return null;
+        else start++;
+      }
+      continue;
+    }
+    break;
+  }
+  const bin = words[start]?.split(/[\\/]/).pop()?.toLowerCase();
+  if (bin !== "git" && bin !== "git.exe") return null;
+  let workTree = null;
+  let i = start + 1;
+  while (i < words.length && words[i].startsWith("-")) {
+    const w = words[i];
+    const eq = w.indexOf("=");
+    const name = w.startsWith("--") && eq > 0 ? w.slice(0, eq) : w;
+    if (GIT_GLOBAL_OPTS_WITH_VALUE.has(name)) {
+      let value;
+      if (name !== w) value = w.slice(eq + 1);
+      else {
+        value = words[i + 1];
+        i++;
+      }
+      if (name === "-C" && typeof value === "string") cDirs.push(value);
+      if (name === "--work-tree" && typeof value === "string") workTree = value;
+    }
+    i++;
+  }
+  const sub = words[i];
+  return { subcommand: typeof sub === "string" ? sub.toLowerCase() : null, cDirs, workTree };
 }
 
 /** `true` quando `tokens` é um segmento `git commit` real (token exato, não
- * substring de outro subcomando como `git commit-graph`). */
+ * substring de outro subcomando como `git commit-graph`), com ou sem opções
+ * globais antes do subcomando (#14321). */
 export function isGitCommitCommand(tokens) {
-  if (tokens[0]?.toLowerCase() !== "git") return false;
-  return tokens[1]?.toLowerCase() === "commit";
+  return parseGitInvocation(tokens)?.subcommand === "commit";
 }
 
 /** `true` se `command` contém algum `git commit` como comando real. */
 export function commandHasGitCommit(command) {
-  return commandSegments(command).some(isGitCommitCommand);
+  return shellEntries(command).some((e) => e.type === "seg" && isGitCommitCommand(e.words));
+}
+
+/** Caminho como o shell o entenderia: `~` expandido, `/c/...` do Git Bash. */
+function shellPath(p, platform) {
+  let out = p;
+  if (out === "~" || out.startsWith("~/")) out = homedir() + out.slice(1);
+  return normalizeMsysPath(out, platform);
+}
+
+/**
+ * Diretório em que cada `git commit` do comando de fato roda (#14321), na
+ * ordem: parte de `baseCwd` (o `payload.cwd`), aplica os `cd`/`pushd` da
+ * cadeia (escopados a subshell `( … )`), depois os `-C` do próprio git (cada
+ * um relativo ao anterior, como o git faz) e por fim o `--work-tree`. Antes
+ * o guard julgava `cd <wt> && git commit` pelo `payload.cwd`, que é o
+ * diretório de ANTES do `cd`: o `PreToolUse` dispara antes do comando rodar.
+ *
+ * Diretório que não dá para saber estaticamente volta ao `baseCwd`, nunca
+ * ao último resolvido: `cd -`, `cd`/`-C` com `$VAR`, `$(...)` ou crase,
+ * `popd`, `pushd` sem argumento, caminho que o Node não resolve, e o fim de
+ * um comando mandado para o fundo com `&` simples (o `cd` de um job em
+ * background não muda o diretório do resto da cadeia). Não é só fail-open:
+ * seguir no último resolvido julgaria o commit num worktree em que ele não
+ * roda e poderia NEGAR um commit legítimo por aproximação. Voltar ao
+ * `baseCwd` repete o comportamento de antes do #14321 para esses casos.
+ * `cd` sem argumento vai para o home, como no shell.
+ */
+export function commitTargetDirs(command, baseCwd, platform = process.platform) {
+  const out = [];
+  let cwd = baseCwd;
+  const stack = [];
+  const resolveKnown = (from, p) => {
+    if (p === "-" || /[$`]/.test(p)) return null;
+    try {
+      return resolvePath(from, shellPath(p, platform));
+    } catch {
+      return null;
+    }
+  };
+  for (const entry of shellEntries(command)) {
+    if (entry.type === "open") {
+      stack.push(cwd);
+      continue;
+    }
+    if (entry.type === "close") {
+      if (stack.length > 0) cwd = stack.pop();
+      continue;
+    }
+    const words = entry.words;
+    let start = 0;
+    while (words[start] === "{" || words[start] === "}") start++;
+    const bin = words[start];
+    if (bin === "cd" || bin === "pushd" || bin === "popd") {
+      const target = words.slice(start + 1).find((w) => !w.startsWith("-") || w === "-");
+      if (bin === "popd" || (bin === "pushd" && target === undefined)) cwd = baseCwd;
+      else if (target === undefined) cwd = homedir();
+      else cwd = resolveKnown(cwd, target) ?? baseCwd;
+    } else {
+      const inv = parseGitInvocation(words);
+      if (inv?.subcommand === "commit") {
+        let dir = cwd;
+        for (const d of [...inv.cDirs, ...(inv.workTree ? [inv.workTree] : [])]) {
+          if (d === "") continue;
+          dir = resolveKnown(dir, d);
+          if (dir === null) break;
+        }
+        out.push(dir ?? baseCwd);
+      }
+    }
+    // Job em background: o que ele fez com o diretório não vale para o resto.
+    if (entry.sep === "&") cwd = baseCwd;
+  }
+  return out;
+}
+
+/**
+ * Raiz do worktree quando `git rev-parse --show-toplevel` falha ou estoura o
+ * timeout (#14321). Antes o hook usava o `payload.cwd` cru, e a chave da
+ * claim (hash do path) só batia se a grafia coincidisse com a do git. Aqui o
+ * caminho é normalizado como o git o devolveria: `/c/...` do Git Bash vira
+ * `C:/...`, `realpath` nativo dá a caixa real das pastas no Windows, a
+ * subpasta sobe até o diretório que tem `.git` (o toplevel) e a letra do
+ * drive fica maiúscula.
+ */
+export function fallbackCheckoutRoot(probeCwd, platform = process.platform) {
+  let dir = resolvePath(normalizeMsysPath(probeCwd, platform));
+  try {
+    dir = realpathSync.native(dir);
+  } catch {
+    // diretório inexistente ou ilegível: segue com o resolvido
+  }
+  for (let cur = dir; ; ) {
+    if (existsSync(join(cur, ".git"))) {
+      dir = cur;
+      break;
+    }
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  if (platform === "win32") dir = dir.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
+  return dir;
 }
 
 /** Duplicado de `isLinkedWorktree` dos hooks irmãos. */
@@ -121,6 +422,23 @@ function worktreeClaimKey(path) {
   return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
 }
 
+/** Espera antes da 2ª leitura do arquivo de claim (#14321). */
+const CLAIM_READ_RETRY_MS = 50;
+
+/** Espera síncrona: `Atomics.wait` num buffer que ninguém notifica. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Linha de aviso no stderr; nunca lança (o hook é fail-open). */
+function warnStderr(line) {
+  try {
+    process.stderr.write(`${line}\n`);
+  } catch {
+    // stderr fechado: nada a fazer
+  }
+}
+
 function worktreeClaimFilePath(repoRoot, path) {
   return join(repoRoot, "data", "sessions", ".worktree-claims", `${worktreeClaimKey(path)}.json`);
 }
@@ -141,14 +459,34 @@ function worktreeClaimFilePath(repoRoot, path) {
  * path é a fonte de verdade desde o #7892; ler só ele fecha esse
  * falso-negativo.
  */
-export function readWorktreeClaimRecord(repoRoot, checkoutRoot, now = Date.now()) {
+export function readWorktreeClaimRecord(
+  repoRoot,
+  checkoutRoot,
+  now = Date.now(),
+  { read = (f) => readFileSync(f, "utf8"), sleep = sleepSync, warn = warnStderr } = {},
+) {
   const claimFile = worktreeClaimFilePath(repoRoot, resolvePath(checkoutRoot));
+  if (!existsSync(claimFile)) return null;
   let record;
-  try {
-    if (!existsSync(claimFile)) return null;
-    record = JSON.parse(readFileSync(claimFile, "utf8"));
-  } catch {
-    return null;
+  // #14321: EBUSY/EPERM do Drive (sync segurando o arquivo) ou escrita em
+  // curso: 2ª tentativa depois de 50 ms. Persistindo, avisa no stderr antes
+  // de liberar (fail-open, mas não em silêncio).
+  for (let attempt = 1; ; attempt++) {
+    try {
+      record = JSON.parse(read(claimFile));
+      break;
+    } catch (e) {
+      if (attempt >= 2 || !existsSync(claimFile)) {
+        if (existsSync(claimFile)) {
+          warn(
+            `block-worktree-alien-commit: claim de worktree ilegível (${claimFile}): ${e?.message ?? e}; ` +
+              "commit liberado sem checar a claim (fail-open, #14321)",
+          );
+        }
+        return null;
+      }
+      sleep(CLAIM_READ_RETRY_MS);
+    }
   }
   if (!record || typeof record !== "object") return null;
   const expiresAt = record.expires_at ?? record.expiresAt;
@@ -228,31 +566,49 @@ export function getHeadBranch(checkoutRoot) {
   return state.kind === "branch" ? state.name : null;
 }
 
-/** Marcadores de operação em curso que deixam o HEAD destacado de forma legítima. */
-const IN_PROGRESS_GIT_PATHS = ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "BISECT_LOG"];
+/**
+ * Marcadores de operação em curso que deixam o HEAD destacado de forma legítima.
+ * `MERGE_HEAD`, `REVERT_HEAD` e `sequencer` entraram no #14321: um merge ou
+ * revert com conflito sobre HEAD destacado (o `git revert`/`cherry-pick` de
+ * vários commits grava o andamento em `sequencer/`) termina com um `git
+ * commit` legítimo, o mesmo caso do rebase com conflito que já passava. Sem
+ * eles o guard negaria esse commit com `BLOCK_REASON_DETACHED`.
+ */
+export const IN_PROGRESS_GIT_PATHS = Object.freeze([
+  "rebase-merge",
+  "rebase-apply",
+  "CHERRY_PICK_HEAD",
+  "BISECT_LOG",
+  "MERGE_HEAD",
+  "REVERT_HEAD",
+  "sequencer",
+]);
 
 /**
- * `true` quando há rebase, cherry-pick ou bisect em curso no worktree
- * (`git rev-parse --git-path X` existe). É o que libera o commit com HEAD
- * destacado: o commit do próprio rebase com conflito. Falha do git aqui conta
- * como "em curso" (fail-open, mesma regra do resto do hook).
+ * `true` quando há rebase, cherry-pick, bisect, merge, revert ou sequencer em
+ * curso no worktree (algum `git rev-parse --git-path X` existe). É o que libera o
+ * commit com HEAD destacado: o commit do próprio rebase com conflito. Uma
+ * chamada só ao git para todos os marcadores (#14321; eram 4). Falha do git,
+ * ou saída com número de linhas diferente do de marcadores, conta como "em
+ * curso" (fail-open, mesma regra do resto do hook).
  */
 export function hasOperationInProgress(checkoutRoot) {
-  for (const marker of IN_PROGRESS_GIT_PATHS) {
-    let gitPath;
-    try {
-      gitPath = execFileSync("git", ["rev-parse", "--git-path", marker], {
-        cwd: checkoutRoot,
-        encoding: "utf8",
-        timeout: 1000,
-        windowsHide: true,
-      }).trim();
-    } catch {
-      return true;
-    }
-    if (gitPath && existsSync(resolvePath(checkoutRoot, gitPath))) return true;
+  let lines;
+  try {
+    lines = execFileSync("git", ["rev-parse", ...IN_PROGRESS_GIT_PATHS.flatMap((m) => ["--git-path", m])], {
+      cwd: checkoutRoot,
+      encoding: "utf8",
+      timeout: 1000,
+      windowsHide: true,
+    })
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l !== "");
+  } catch {
+    return true;
   }
-  return false;
+  if (lines.length !== IN_PROGRESS_GIT_PATHS.length) return true;
+  return lines.some((gitPath) => existsSync(resolvePath(checkoutRoot, gitPath)));
 }
 
 export const BLOCK_REASON_CLAIM =
@@ -272,7 +628,7 @@ export const BLOCK_REASON_BRANCH_DIVERGE =
 
 export const BLOCK_REASON_DETACHED =
   "`git commit` bloqueado pelo guard mecânico #7722 item 4 (#14214): o HEAD deste worktree está DESTACADO, " +
-  "sem rebase/cherry-pick/bisect em curso, e a claim (`data/sessions/.worktree-claims/<hash>.json`) gravou a " +
+  "sem rebase/cherry-pick/bisect/merge/revert/sequencer em curso, e a claim (`data/sessions/.worktree-claims/<hash>.json`) gravou a " +
   "branch `branch` — um commit aqui fica fora da branch da unidade. Faça o checkout da branch da claim antes " +
   "de commitar (ou, se trocou de propósito, `session-registry.ts claim-worktree --rebind` já na branch nova).";
 
@@ -307,7 +663,11 @@ if (
  * CLI acima passa o `process.stdout.write` de sempre. O corpo mantém a
  * indentação de antes do #14045 para o diff ficar só nas bordas.
  */
-export function runHook(data, write = (s) => process.stdout.write(s)) {
+export function runHook(
+  data,
+  write = (s) => process.stdout.write(s),
+  { check = denyReasonForCommitAt, warn = warnStderr } = {},
+) {
     try {
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
@@ -325,13 +685,54 @@ export function runHook(data, write = (s) => process.stdout.write(s)) {
       // vem ausente do payload (nunca deveria acontecer em uso real, mas
       // mantém o hook testável/funcional fora do harness).
       const payloadCwd = typeof payload.cwd === "string" && payload.cwd !== "" ? payload.cwd : null;
-      const probeCwd = payloadCwd ?? join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-      // `payload.cwd` pode ser uma SUBPASTA do worktree (a sessão pode ter
+      const baseCwd = payloadCwd ?? join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+      // #14321: o diretório de cada `git commit` sai da própria cadeia
+      // (`cd X && git commit`, `git -C X commit`), não só do `payload.cwd`.
+      // Sem nenhum resolvido (não deveria acontecer, já que o filtro acima
+      // achou o commit), cai no `baseCwd` de antes.
+      const targets = commitTargetDirs(command, baseCwd);
+      const callerSessionId = payload.session_id;
+      for (const probeCwd of new Set(targets.length > 0 ? targets : [baseCwd])) {
+        // try por alvo (#14321): a exceção num diretório não pula a checagem
+        // dos outros commits da cadeia.
+        let reason = null;
+        try {
+          reason = check(probeCwd, callerSessionId);
+        } catch (err) {
+          warn(`block-worktree-alien-commit: erro ao checar ${probeCwd}: ${err?.message ?? err} (fail-open)`);
+        }
+        if (reason) {
+          write(
+            JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: reason,
+              },
+            }),
+          );
+          return;
+        }
+      }
+    } catch (err) {
+      // Fail-open, sempre: um hook quebrado não pode travar `git commit`
+      // legítimo. Mas não em silêncio (#14321).
+      warn(`block-worktree-alien-commit: erro, commit liberado (fail-open): ${err?.message ?? err}`);
+    }
+}
+
+/**
+ * Motivo para negar um `git commit` que roda em `probeCwd`, ou `null`
+ * (#14321: extraído do `runHook` para julgar cada commit da cadeia no
+ * diretório em que ele de fato roda). Fail-open em qualquer estado ambíguo.
+ */
+export function denyReasonForCommitAt(probeCwd, callerSessionId) {
+      // `probeCwd` pode ser uma SUBPASTA do worktree (a sessão pode ter
       // dado `cd` antes do `git commit`), não necessariamente a raiz — usa
       // `git rev-parse --show-toplevel` pra resolver a raiz de verdade, que
       // é o que `worktree_claim.path`/`isLinkedWorktree` (checagem de
       // `.git` DIRETO sob o path) esperam.
-      let checkoutRoot = probeCwd;
+      let checkoutRoot;
       try {
         // windowsHide (#7959): mesma razão de getHeadBranch acima.
         const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -340,11 +741,13 @@ export function runHook(data, write = (s) => process.stdout.write(s)) {
           timeout: 1000,
           windowsHide: true,
         }).trim();
-        if (toplevel) checkoutRoot = toplevel;
+        checkoutRoot = toplevel || fallbackCheckoutRoot(probeCwd);
       } catch {
-        // fail-open: usa probeCwd mesmo (pode não ser a raiz exata do worktree)
+        // #14321: sem o git, normaliza como o git faria (a chave da claim é
+        // o hash do caminho, e grafia diferente não acharia a claim).
+        checkoutRoot = fallbackCheckoutRoot(probeCwd);
       }
-      if (!isLinkedWorktree(checkoutRoot)) return; // fora de escopo: só worktree (mesmo escopo de block-worktree-bare-push.mjs)
+      if (!isLinkedWorktree(checkoutRoot)) return null; // fora de escopo: só worktree (mesmo escopo de block-worktree-bare-push.mjs)
 
       // git-common-dir (repo root para data/sessions) — cada worktree tem seu
       // próprio checkoutRoot, mas data/sessions/ vive só no checkout principal.
@@ -367,50 +770,22 @@ export function runHook(data, write = (s) => process.stdout.write(s)) {
         // fail-open: usa checkoutRoot mesmo
       }
 
-      const callerSessionId = payload.session_id;
       // Lido uma vez, reusado pelos dois checks abaixo (claim conflitante +
       // divergência de branch) — evita 2 leituras do mesmo arquivo.
       const claimRecord = readWorktreeClaimRecord(repoRoot, checkoutRoot);
-      const conflictingSessionId = findConflictingClaimSessionIdFromRecord(claimRecord, callerSessionId);
-      if (conflictingSessionId) {
-        write(
-          JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "deny",
-              permissionDecisionReason: BLOCK_REASON_CLAIM,
-            },
-          }),
-        );
-        return;
-      }
+      if (findConflictingClaimSessionIdFromRecord(claimRecord, callerSessionId)) return BLOCK_REASON_CLAIM;
 
       // #7903: compara contra a branch gravada NO MOMENTO DO CLAIM (não
       // mais contra `git worktree list --porcelain` — ambos os dois lados
       // dessa comparação vinham do MESMO HEAD deste worktree, então nunca
       // podiam divergir por construção, código morto que parecia proteção).
       const claimedBranch = typeof claimRecord?.branch === "string" ? claimRecord.branch : null;
-      if (claimedBranch) {
-        // #14214: HEAD destacado só passa com rebase/cherry-pick/bisect em
-        // curso; destacado sem operação, com claim de branch, é negado com
-        // motivo próprio. Falha do git (timeout) segue fail-open.
-        const head = getHeadState(checkoutRoot);
-        let reason = null;
-        if (head.kind === "branch" && head.name !== claimedBranch) reason = BLOCK_REASON_BRANCH_DIVERGE;
-        else if (head.kind === "detached" && !hasOperationInProgress(checkoutRoot)) reason = BLOCK_REASON_DETACHED;
-        if (reason) {
-          write(
-            JSON.stringify({
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse",
-                permissionDecision: "deny",
-                permissionDecisionReason: reason,
-              },
-            }),
-          );
-        }
-      }
-    } catch {
-      // Fail-open, sempre: um hook quebrado não pode travar `git commit` legítimo.
-    }
+      if (!claimedBranch) return null;
+      // #14214: HEAD destacado só passa com rebase/cherry-pick/bisect/merge/
+      // revert/sequencer em curso (`IN_PROGRESS_GIT_PATHS`); destacado sem operação, com claim de branch, é
+      // negado com motivo próprio. Falha do git (timeout) segue fail-open.
+      const head = getHeadState(checkoutRoot);
+      if (head.kind === "branch" && head.name !== claimedBranch) return BLOCK_REASON_BRANCH_DIVERGE;
+      if (head.kind === "detached" && !hasOperationInProgress(checkoutRoot)) return BLOCK_REASON_DETACHED;
+      return null;
 }

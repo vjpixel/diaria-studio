@@ -98,7 +98,8 @@ pelo script; não vai para a seção "Escrita pendente em `data/`" da PR.
 | Saída | Significado | O que fazer |
 |---|---|---|
 | `exit 0` | claim gravada/renovada | seguir |
-| `exit 1`, `erro —` | claim NÃO gravada (HEAD destacado, falha do git, arquivo de claim ilegível) | devolver ao coordenador com a mensagem |
+| `exit 1`, `erro —` por HEAD destacado | claim NÃO gravada: o worktree está sem branch em HEAD | fazer o checkout da branch da unidade e rodar o `claim-worktree` de novo |
+| `exit 1`, `erro —` por falha do git ou arquivo de claim ilegível | claim NÃO gravada | devolver ao coordenador com a mensagem |
 | `exit 1`, `--renew no-op` | não há claim viva desta sessão para renovar | rodar sem `--renew` |
 | `exit 1`, `RECUSADO … reivindicado por` | outra sessão segura este worktree | parar e devolver ao coordenador sem commitar |
 | `exit 1`, `RECUSADO — a claim desta sessão gravou a branch` | HEAD em outra branch que a da claim | se o checkout foi seu, `--rebind`; senão conferir `git status`/`git branch` antes de qualquer commit |
