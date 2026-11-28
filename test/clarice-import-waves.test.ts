@@ -1131,6 +1131,43 @@ describe("importOneWave (#4577 — confirma o processo assíncrono + reconcilia 
       );
     });
 
+    // #14406 — membro da lista fora de `totalSubscribers` (blacklist global)
+    // passa no diff como "presente": o delta não pode ser atribuído às cópias
+    // do editor sem prova. 1 seed fora da lista + 1 leitor em blacklist →
+    // delta 2, totalBlacklisted 1 (não bate o #4764), tolerado pelo #14337.
+    it("#14406: 1 seed fora da lista + 1 leitor em blacklist → aviso não culpa as 2 cópias do editor", async () => {
+      const logs: string[] = [];
+      const [seedOut, seedIn] = EDITOR_SEED_EMAILS.map((s) => s.toLowerCase());
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: 36, totalBlacklisted: 1 }),
+        listContactEmails: async () => [...readers, seedIn],
+      });
+      const result = await importOneWave(client, novosPlan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      assert.equal(result.count, 36);
+      const joined = logs.join("\n");
+      assert.doesNotMatch(joined, /2 cópia\(s\) do editor não entraram/);
+      assert.match(joined, /1 cópia\(s\) do editor fora da lista/);
+      assert.ok(joined.includes(seedOut));
+      assert.match(joined, /1 aparece\(m\) como membro/);
+      assert.match(joined, /causa NÃO identificada/);
+      assert.match(joined, /reporta 1 contato\(s\) da lista em blacklist/);
+      assert.doesNotMatch(joined, /não deve chegar/);
+    });
+
+    it("#14406: sem seed fora da lista, o aviso nunca afirma que a cópia do editor não chega", async () => {
+      const logs: string[] = [];
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: 36 }),
+        listContactEmails: async () => extractCsvEmails(csv),
+      });
+      await importOneWave(client, novosPlan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      const joined = logs.join("\n");
+      assert.doesNotMatch(joined, /cópia\(s\) do editor não entraram/);
+      assert.doesNotMatch(joined, /não deve chegar/);
+      assert.match(joined, /causa NÃO identificada/);
+      assert.match(joined, /não trouxe a contagem de blacklist/);
+    });
+
     it("CSV sem nenhuma cópia do editor → comportamento do #4577 intacto, aborta", async () => {
       const noSeedCsv = `EMAIL,NOME\n${readers.map((e, i) => `${e},L${i}`).join("\n")}\n`;
       const client = makeFakeClient({

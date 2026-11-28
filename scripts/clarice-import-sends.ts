@@ -61,8 +61,10 @@ import {
   diagnoseImportShortfall,
   isEditorCopyOnlyShortfall,
   editorCopyShortfallWarning,
+  isBlacklistOnlyShortfall,
+  blacklistSuppressionInfo,
   type ImportRunClient,
-} from "./clarice-import-waves.ts"; // #4602: reusa o cliente genérico (poll + reconciliação) do #4577; #14366: tolerância às cópias do editor
+} from "./clarice-import-waves.ts"; // #4602: reusa o cliente genérico (poll + reconciliação) do #4577; #14366: tolerância às cópias do editor; #14406: check de blacklist do #4764
 import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-poll.ts"; // #4602
 import { loadSendsSummary, sendsSummaryPath } from "./lib/send-plan.ts";
 import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455
@@ -265,9 +267,14 @@ export async function importOneSend(
     // no #14337 (helpers compartilhados de `clarice-import-waves.ts`): delta
     // que cabe nas cópias do editor, com todo leitor real confirmado na lista
     // pelo diff, avisa e segue; qualquer outro caso aborta como antes.
+    // #14406: antes, o mesmo check do #4764 que `importOneWave` faz — delta
+    // inteiro explicado por blacklist da conta é supressão esperada, e não
+    // pode ser atribuído às cópias do editor.
     const diag = await diagnoseImportShortfall(client, list.id, plan.csv, opts.editorSeedEmails);
-    if (isEditorCopyOnlyShortfall(diag, delta)) {
-      log(editorCopyShortfallWarning(diag, delta, list.id, plan.sentCount));
+    if (isBlacklistOnlyShortfall(info, delta)) {
+      log(blacklistSuppressionInfo(delta, diag.missingDetail));
+    } else if (isEditorCopyOnlyShortfall(diag, delta)) {
+      log(editorCopyShortfallWarning(diag, delta, list.id, plan.sentCount, info.totalBlacklisted));
     } else {
       throw new Error(
         `${label}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +

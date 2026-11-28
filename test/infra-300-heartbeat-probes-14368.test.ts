@@ -141,6 +141,32 @@ test('watchdog: falha do e-mail de "voltou" do heartbeat não impede a sonda de 
   assert.deepEqual(f.emails, ['[infra] 300 sem heartbeat', '[infra] 300 sem acesso a api.github.com']);
 });
 
+test('#14407: heartbeat e sonda lançando na mesma volta sobem os dois erros, nenhum descartado', async () => {
+  const f = fixture();
+  f.kv.set(HEARTBEAT_KEY, JSON.stringify({ timestamp: new Date(t0 - 40 * 60_000).toISOString(), hostname: '300' }));
+  await check(f.env, f.storage, t0, f.mail); // queda do heartbeat alertada
+  for (const m of [0, 5]) {
+    f.kv.set(HEARTBEAT_KEY, JSON.stringify({ timestamp: new Date(t0 + m * 60_000).toISOString(), hostname: '300', probes: { github: { status: 'falha', error: 'ENOTFOUND' } } }));
+    await assert.rejects(check(f.env, f.storage, t0 + m * 60_000, async (e, s) => { if (s === '[infra] 300 voltou') throw Error('recusado'); await f.mail(e, s); }));
+  }
+  // 3ª batida em falha: o "voltou" do heartbeat E o alarme da sonda lançam.
+  f.kv.set(HEARTBEAT_KEY, JSON.stringify({ timestamp: new Date(t0 + 10 * 60_000).toISOString(), hostname: '300', probes: { github: { status: 'falha', error: 'ENOTFOUND' } } }));
+  const both = async (_e: Env, s: string) => { throw Error(s === '[infra] 300 voltou' ? 'recusado-heartbeat' : 'recusado-sonda'); };
+  await assert.rejects(check(f.env, f.storage, t0 + 10 * 60_000, both), (err: unknown) => {
+    assert.ok(err instanceof AggregateError);
+    assert.deepEqual(err.errors.map((x: Error) => x.message), ['recusado-heartbeat', 'recusado-sonda']);
+    assert.match(err.message, /heartbeat: recusado-heartbeat; sondas: recusado-sonda/);
+    return true;
+  });
+});
+
+test('#14407: só a sonda lançando sobe o erro da sonda, sem embrulho', async () => {
+  const f = fixture();
+  for (const m of [0, 5]) await beat(f, m, 'falha');
+  f.ctl.up = false;
+  await assert.rejects(beat(f, 10, 'falha'), (err: unknown) => !(err instanceof AggregateError) && /gmail fora/.test((err as Error).message));
+});
+
 test('buildHeartbeat sonda as duas e grava o contrato {timestamp, hostname, probes}', async () => {
   const v = await buildHeartbeat('300', {}, async () => new Response(null, { status: 200 }), new Date(t0));
   assert.deepEqual(v, { timestamp: new Date(t0).toISOString(), hostname: '300', probes: { github: { status: 'ok', http: 200 }, r2: { status: 'sem-config' } } });

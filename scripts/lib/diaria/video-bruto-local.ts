@@ -17,9 +17,20 @@
  * - a leitura cronometrada (investigação no Neo em 27/11/2026): o Drive for
  *   desktop monta um volume virtual próprio e deixa todo arquivo com atributo
  *   `0x80` (Normal), baixado ou não, então o atributo acima não pega o bruto
- *   que está só na nuvem. Por isso o primeiro e o último 1 MB de cada bruto
- *   são lidos num processo à parte, com prazo curto (`BRUTO_READ_TIMEOUT_MS`):
- *   estourou = o conteúdo ainda vem da nuvem.
+ *   que está só na nuvem. Por isso cada bruto é lido num processo à parte,
+ *   com prazo curto (`BRUTO_READ_TIMEOUT_MS`): estourou = o conteúdo ainda vem
+ *   da nuvem.
+ * - a vazão dessa leitura (#14405): o Drive for desktop pode servir leitura
+ *   por trecho sob demanda (como na reprodução de vídeo), e 2 MB chegam em
+ *   menos de 1 s numa rede de 50 Mbit/s, então o prazo sozinho só pega rede
+ *   muito lenta. A sonda lê `BRUTO_READ_PROBE_CHUNKS` trechos espalhados pelo
+ *   arquivo inteiro (o meio fura o cache de início/fim que o player costuma
+ *   pedir) e mede a vazão: abaixo de `BRUTO_READ_MIN_BYTES_PER_SEC`, piso
+ *   folgado para qualquer disco local, o bruto conta como servido da nuvem.
+ *   Os brutos são lidos um por vez, cada um com o próprio prazo, para a vazão
+ *   de um não cair por disputa de disco com os outros. Piso não medido no Neo
+ *   (premissa da #14405): `DIARIA_BRUTO_MIN_MB_POR_S` troca o piso, e `0`
+ *   desliga a checagem de vazão.
  *
  * Qualquer um desses para o comando com a mensagem nomeando cada arquivo, em
  * vez de pendurar. Atributo ilegível (PowerShell ausente, erro) não bloqueia:
@@ -47,13 +58,33 @@ const CLOUD_ONLY_MASK = WIN_ATTR_OFFLINE | WIN_ATTR_RECALL_ON_OPEN | WIN_ATTR_RE
 /** Espera entre as duas leituras do tamanho (o arquivo sendo copiado cresce bem mais que isso nesse tempo). */
 export const BRUTO_SIZE_SETTLE_MS = 1500;
 
-/** Prazo da leitura cronometrada dos brutos (2 MB de disco local levam milissegundos). */
+/** Prazo da leitura cronometrada de cada bruto (32 MB de disco local levam menos de 1 s). */
 export const BRUTO_READ_TIMEOUT_MS = 15_000;
-/** Quanto a sonda lê do início e do fim de cada bruto. */
-export const BRUTO_READ_PROBE_BYTES = 1024 * 1024;
+/** Tamanho de cada trecho que a sonda lê. */
+export const BRUTO_READ_PROBE_BYTES = 4 * 1024 * 1024;
+/** Quantos trechos, do início ao fim do arquivo em passos iguais (32 MB no total). */
+export const BRUTO_READ_PROBE_CHUNKS = 8;
+/**
+ * Piso de vazão da sonda: 20 MiB/s (~170 Mbit/s). Disco local, SSD ou HD, lê
+ * trechos de 4 MB bem acima disso; o Drive servindo da nuvem numa rede
+ * doméstica fica abaixo (50 Mbit/s ≈ 6 MB/s).
+ */
+export const BRUTO_READ_MIN_BYTES_PER_SEC = 20 * 1024 * 1024;
+/** Abaixo disso lido no total (arquivo pequeno), a vazão não é julgada: só o prazo vale. */
+export const BRUTO_READ_MIN_RATE_BYTES = 16 * 1024 * 1024;
+/** Variável que troca o piso de vazão, em MB/s (`0` desliga a checagem de vazão). */
+export const BRUTO_MIN_RATE_ENV = "DIARIA_BRUTO_MIN_MB_POR_S";
 
-/** Resultado da leitura cronometrada de um bruto: leu, estourou o prazo ou deu erro. */
-export type TimedReadOutcome = "ok" | "timeout" | "erro";
+/** Resultado da leitura cronometrada de um bruto: leu, leu abaixo do piso de vazão, estourou o prazo ou deu erro. */
+export type TimedReadOutcome = "ok" | "devagar" | "timeout" | "erro";
+
+/** Piso de vazão em bytes/s a partir do ambiente (valor inválido = o default). */
+export function minReadBytesPerSec(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[BRUTO_MIN_RATE_ENV]?.trim();
+  if (!raw) return BRUTO_READ_MIN_BYTES_PER_SEC;
+  const mb = Number(raw.replace(",", "."));
+  return Number.isFinite(mb) && mb >= 0 ? Math.round(mb * 1024 * 1024) : BRUTO_READ_MIN_BYTES_PER_SEC;
+}
 
 /** O atributo diz que o conteúdo está só na nuvem? */
 export function cloudOnlyAttributes(attrs: number): boolean {
@@ -145,7 +176,8 @@ export function checkBrutosLocal(paths: readonly string[], deps: BrutoLocalDeps,
     else {
       for (const p of toRead) {
         const o = outcomes.get(p);
-        if (o === "timeout") problems.push({ path: p, reason: "lento", detail: `ler 1 MB do início e do fim não terminou em ${Math.round(timeoutMs / 1000)} s: o Drive for desktop ainda está baixando o arquivo da nuvem` });
+        if (o === "timeout") problems.push({ path: p, reason: "lento", detail: `ler ${BRUTO_READ_PROBE_CHUNKS} trechos do início ao fim não terminou em ${Math.round(timeoutMs / 1000)} s: o Drive for desktop ainda está baixando o arquivo da nuvem` });
+        else if (o === "devagar") problems.push({ path: p, reason: "lento", detail: `a leitura de ${BRUTO_READ_PROBE_CHUNKS} trechos espalhados pelo arquivo ficou abaixo do piso de vazão de um disco local: o Drive for desktop está servindo o arquivo da nuvem sob demanda (piso em ${BRUTO_MIN_RATE_ENV}, 0 desliga)` });
         else if (o === "erro") problems.push({ path: p, reason: "ilegivel", detail: "a leitura do conteúdo falhou (arquivo travado ou ainda sincronizando)" });
         else if (o === undefined) readUnchecked = true;
       }
@@ -214,62 +246,93 @@ export function readWindowsAttributes(paths: readonly string[], run: typeof spaw
 }
 
 /**
- * Leitor de um bruto, rodado num processo neto: lê o primeiro e o último
- * `n` bytes do caminho (`node -e SCRIPT caminho n`); sai 0 ao ler, 2 no erro.
+ * Leitor de um bruto, rodado num processo neto (`node -e SCRIPT caminho
+ * trecho trechos piso minimo`): lê `trechos` blocos de `trecho` bytes em
+ * posições iguais do início ao fim e cronometra só a leitura. Sai 0 ao ler,
+ * 3 quando leu ao menos `minimo` bytes abaixo de `piso` bytes/s (`piso` 0 =
+ * vazão não julgada), 2 no erro.
  */
 export const BRUTO_READER_SCRIPT = [
   "const fs = require('node:fs');",
   "try {",
-  "  const p = process.argv[1]; const n = Number(process.argv[2]);",
-  "  const fd = fs.openSync(p, 'r'); const size = fs.fstatSync(fd).size; const buf = Buffer.alloc(n);",
-  "  fs.readSync(fd, buf, 0, Math.min(n, size), 0);",
-  "  if (size > n) fs.readSync(fd, buf, 0, n, size - n);",
-  "  fs.closeSync(fd); process.exit(0);",
+  "  const p = process.argv[1]; const chunk = Number(process.argv[2]); const chunks = Math.max(1, Number(process.argv[3]));",
+  "  const minBps = Number(process.argv[4]); const minBytes = Number(process.argv[5]);",
+  "  const fd = fs.openSync(p, 'r'); const size = fs.fstatSync(fd).size; const len = Math.min(chunk, size);",
+  "  const buf = Buffer.alloc(Math.max(1, len)); const span = size - len; let read = 0;",
+  "  const t0 = process.hrtime.bigint();",
+  "  for (let i = 0; i < chunks; i++) {",
+  "    const pos = chunks === 1 ? 0 : Math.floor((span * i) / (chunks - 1));",
+  "    let off = 0;",
+  "    while (off < len) { const n = fs.readSync(fd, buf, off, len - off, pos + off); if (n <= 0) break; off += n; }",
+  "    read += off;",
+  "    if (span === 0) break;",
+  "  }",
+  "  const secs = Number(process.hrtime.bigint() - t0) / 1e9;",
+  "  fs.closeSync(fd);",
+  "  process.exit(minBps > 0 && read >= minBytes && secs > 0 && read / secs < minBps ? 3 : 0);",
   "} catch { process.exit(2); }",
 ].join("\n");
 
 /**
- * Coordenador da sonda, rodado num processo filho: dispara um neto por bruto
- * (destacado e sem pipe, para o filho poder sair com o neto ainda preso na
- * leitura), espera até o prazo e imprime `{caminho: "ok"|"timeout"|"erro"}`.
- * Ao sair, manda kill para os netos sem esperar por eles: um processo preso
- * numa leitura do volume do Drive pode não morrer na hora.
+ * Coordenador da sonda, rodado num processo filho: lê os brutos UM POR VEZ,
+ * cada um num neto (destacado e sem pipe, para o filho poder sair com o neto
+ * ainda preso na leitura) com o próprio prazo, e imprime `{caminho:
+ * "ok"|"devagar"|"timeout"|"erro"}`. Um por vez para a vazão medida de um
+ * bruto não cair por disputa de disco com os outros. No prazo estourado,
+ * manda kill para o neto sem esperar por ele (um processo preso numa leitura
+ * do volume do Drive pode não morrer na hora) e segue para o próximo.
  */
 const BRUTO_PROBE_COORDINATOR = [
   "const { spawn } = require('node:child_process');",
   "const paths = JSON.parse(process.env.DIARIA_BRUTO_PATHS);",
   "const reader = JSON.parse(process.env.DIARIA_BRUTO_READER);",
   "const timeoutMs = Number(process.env.DIARIA_BRUTO_TIMEOUT_MS);",
-  "const probeBytes = process.env.DIARIA_BRUTO_PROBE_BYTES;",
-  "const out = {}; const kids = []; let pending = paths.length;",
-  "const finish = () => { for (const k of kids) { try { if (k.exitCode === null) k.kill('SIGKILL'); } catch {} } process.stdout.write(JSON.stringify(out), () => process.exit(0)); };",
-  "const timer = setTimeout(() => { for (const p of paths) if (!(p in out)) out[p] = 'timeout'; finish(); }, timeoutMs);",
-  "for (const p of paths) {",
-  "  const k = spawn(process.execPath, [...reader, p, probeBytes], { detached: true, stdio: 'ignore', windowsHide: true });",
-  "  kids.push(k); k.unref();",
-  "  const done = (v) => { if (p in out) return; out[p] = v; if (--pending === 0) { clearTimeout(timer); finish(); } };",
+  "const args = JSON.parse(process.env.DIARIA_BRUTO_READER_ARGS);",
+  "const out = {}; let i = 0;",
+  "const finish = () => process.stdout.write(JSON.stringify(out), () => process.exit(0));",
+  "const next = () => {",
+  "  if (i >= paths.length) return finish();",
+  "  const p = paths[i++]; let timer = null; let settled = false;",
+  "  const k = spawn(process.execPath, [...reader, p, ...args], { detached: true, stdio: 'ignore', windowsHide: true });",
+  "  k.unref();",
+  "  const done = (v) => { if (settled) return; settled = true; clearTimeout(timer); out[p] = v; if (v === 'timeout') { try { k.kill('SIGKILL'); } catch {} } next(); };",
+  "  timer = setTimeout(() => done('timeout'), timeoutMs);",
   "  k.on('error', () => done('erro'));",
-  "  k.on('exit', (code) => done(code === 0 ? 'ok' : 'erro'));",
-  "}",
+  "  k.on('exit', (code) => done(code === 0 ? 'ok' : code === 3 ? 'devagar' : 'erro'));",
+  "};",
+  "next();",
 ].join("\n");
 
 /**
- * Leitura cronometrada de vários brutos: um processo filho lê cada um em
- * paralelo e devolve o resultado até o prazo, sem pendurar este processo.
- * `reader` são os argumentos do `node` do neto antes do caminho e do tamanho
+ * Leitura cronometrada de vários brutos: um processo filho lê um por vez, cada
+ * um com prazo de `timeoutMs`, e devolve o resultado sem pendurar este
+ * processo. `reader` são os argumentos do `node` do neto antes do caminho
  * (injetável: os testes simulam a leitura lenta). Falha da própria sonda (o
  * filho não sobe, saída ilegível) = null.
  */
 export function timedReadBrutos(
   paths: readonly string[],
   timeoutMs: number,
-  opts: { reader?: readonly string[]; probeBytes?: number; run?: typeof spawnSync } = {},
+  opts: {
+    reader?: readonly string[];
+    probeBytes?: number;
+    probeChunks?: number;
+    minBytesPerSec?: number;
+    minRateBytes?: number;
+    run?: typeof spawnSync;
+  } = {},
 ): Map<string, TimedReadOutcome> | null {
   if (!paths.length) return new Map();
+  const readerArgs = [
+    opts.probeBytes ?? BRUTO_READ_PROBE_BYTES,
+    opts.probeChunks ?? BRUTO_READ_PROBE_CHUNKS,
+    opts.minBytesPerSec ?? BRUTO_READ_MIN_BYTES_PER_SEC,
+    opts.minRateBytes ?? BRUTO_READ_MIN_RATE_BYTES,
+  ].map(String);
   const r = (opts.run ?? spawnSync)(process.execPath, ["-e", BRUTO_PROBE_COORDINATOR], {
     encoding: "utf8",
-    // Margem para o filho subir e imprimir; se nem ele responder, o kill vem do spawnSync.
-    timeout: timeoutMs + 10_000,
+    // Um prazo por bruto, mais a margem para o filho subir e imprimir; se nem ele responder, o kill vem do spawnSync.
+    timeout: timeoutMs * paths.length + 10_000,
     killSignal: "SIGKILL",
     // Caminhos e leitor vão por variável de ambiente, nunca interpolados no código.
     env: {
@@ -277,7 +340,7 @@ export function timedReadBrutos(
       DIARIA_BRUTO_PATHS: JSON.stringify(paths),
       DIARIA_BRUTO_READER: JSON.stringify(opts.reader ?? ["-e", BRUTO_READER_SCRIPT]),
       DIARIA_BRUTO_TIMEOUT_MS: String(timeoutMs),
-      DIARIA_BRUTO_PROBE_BYTES: String(opts.probeBytes ?? BRUTO_READ_PROBE_BYTES),
+      DIARIA_BRUTO_READER_ARGS: JSON.stringify(readerArgs),
     },
     windowsHide: true,
   });
@@ -292,7 +355,7 @@ export function timedReadBrutos(
   const out = new Map<string, TimedReadOutcome>();
   for (const p of paths) {
     const v = (parsed as Record<string, unknown>)[p];
-    if (v === "ok" || v === "timeout" || v === "erro") out.set(p, v);
+    if (v === "ok" || v === "devagar" || v === "timeout" || v === "erro") out.set(p, v);
   }
   return out;
 }
@@ -302,7 +365,7 @@ export function defaultBrutoLocalDeps(): BrutoLocalDeps {
     size: (p) => statSync(p).size,
     sleep: sleepSync,
     windowsAttributes: (paths) => readWindowsAttributes(paths),
-    timedRead: (paths, timeoutMs) => timedReadBrutos(paths, timeoutMs),
+    timedRead: (paths, timeoutMs) => timedReadBrutos(paths, timeoutMs, { minBytesPerSec: minReadBytesPerSec() }),
     platform: process.platform,
   };
 }
