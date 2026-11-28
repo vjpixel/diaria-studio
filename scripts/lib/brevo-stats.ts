@@ -44,6 +44,24 @@ function asArray(v: unknown): any[] {
   return [];
 }
 
+/**
+ * Entradas de `statistics.{categoria}`, com `unsubscriptions` achatado (#14414).
+ * A Brevo devolve `unsubscriptions` como `{ userUnsubscription: [...],
+ * adminUnsubscription: [...] }`; o `asArray` cru contava as duas listas como
+ * 2 entradas (descadastro marcado mesmo com as duas vazias) e perdia o
+ * `campaignId`/`eventTime` de cada evento.
+ */
+function categoryEntries(stats: Record<string, unknown>, category: string): any[] {
+  const v = stats[category];
+  if (category === "unsubscriptions" && v && typeof v === "object" && !Array.isArray(v)) {
+    const o = v as Record<string, unknown>;
+    if (Array.isArray(o.userUnsubscription) || Array.isArray(o.adminUnsubscription)) {
+      return [...asArray(o.userUnsubscription), ...asArray(o.adminUnsubscription)];
+    }
+  }
+  return asArray(v);
+}
+
 /** Valor cru de timestamp (ISO string ou epoch) do 1º campo de TIME_FIELDS presente, ou undefined. */
 function rawTimeField(obj: Record<string, unknown>): string | number | undefined {
   for (const f of TIME_FIELDS) {
@@ -168,7 +186,7 @@ export function extractContactEvents(contact: Record<string, any>): BrevoContact
   const out: BrevoContactEvent[] = [];
 
   for (const category of BREVO_STAT_CATEGORIES) {
-    const entries = asArray(stats[category]);
+    const entries = categoryEntries(stats, category);
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
       const e = entry as Record<string, unknown>;
@@ -227,7 +245,7 @@ export function parseBrevoContact(contact: Record<string, any>): BrevoColumns {
   const hardBounces = asArray(stats.hardBounces).length;
   const softBounces = asArray(stats.softBounces).length;
   const complaints = asArray(stats.complaints).length;
-  const unsubs = asArray(stats.unsubscriptions).length;
+  const unsubs = categoryEntries(stats, "unsubscriptions").length;
   const opens = asArray(stats.opened).length;
   const clicks = asArray(stats.clicked).length;
   const sent = asArray(stats.messagesSent).length;
